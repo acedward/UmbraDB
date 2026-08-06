@@ -132,6 +132,18 @@ export class NodeRpcClient {
     return this.call<string>("chain_getFinalizedHead", []);
   }
 
+  /**
+   * Substrate `state_call`: invoke a runtime API at a block. `method` is the
+   * `TraitName_method_name` string (e.g. `SystemParametersApi_get_d_parameter`), `dataHex` the
+   * 0x-hex SCALE-encoded arguments (`0x` for no-arg calls); returns 0x-hex SCALE-encoded result
+   * bytes. Node-only replacement for data the indexer used to compute from its own runtime-API
+   * calls (`midnight-indexer/chain-indexer/src/infra/subxt_node/runtimes/v1_0_0.rs`).
+   */
+  async stateCall(method: string, dataHex: string, at?: string): Promise<string> {
+    const params: unknown[] = at === undefined ? [method, dataHex] : [method, dataHex, at];
+    return this.call<string>("state_call", params);
+  }
+
   /** Convenience: resolves a hash to its height via `getHeader` -- the RPC surface has no
    *  direct "height of this hash" call, so this is the standard two-hop lookup.
    *
