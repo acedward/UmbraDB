@@ -25,7 +25,8 @@ export type Hex32 = string;
 export const Hex32Schema = z.string().regex(/^[0-9a-f]{64}$/, "expected 64 lowercase hex chars (32 bytes)");
 
 export type BlobRole =
-  | "block_header" | "block_body" | "tx_raw" | "proof" | "verifier_key" | "bridge_observation";
+  | "block_header" | "block_body" | "tx_raw" | "proof" | "verifier_key" | "bridge_observation"
+  | "contract_state";
 
 export type BlockStatus = "seen" | "canonical" | "orphaned" | "pruned";
 
@@ -123,15 +124,32 @@ export interface BridgeObservationRecord {
   rawBytes: Uint8Array;
 }
 
+/** One captured contract state: at `(net, blockHeight, blockHash)`, contract `contractAddress`
+ *  had ledger-serialized state `stateBytes` (sprint 9, Part 2 -- fetched from the node's
+ *  `midnight_contractState` at that block hash, mirroring the reference indexer's per-action
+ *  runtime-API capture). Bytes are content-addressed into `chain_blobs` (role
+ *  `'contract_state'`), so an unchanged state across many blocks stores one blob. */
+export interface ContractStateRecord {
+  net: string;
+  blockHeight: number;
+  blockHash: Hex32;
+  /** Ledger-serialized contract address, lowercase hex (32 bytes). */
+  contractAddress: Hex32;
+  stateBytes: Uint8Array;
+}
+
 /** Everything one call to `putBlockBundle` needs to ingest a single block atomically: the block
- *  row itself plus every transaction/bridge-observation row that belongs to it. `transactions`/
- *  `bridgeObservations` may be empty (e.g. a block with no `pallet_midnight` transactions, or no
- *  D-parameter change since the previous block) -- `putBlockBundle` still only writes the
- *  `blocks` row in that case, inside the same one transaction. */
+ *  row itself plus every transaction/bridge-observation/contract-state row that belongs to it.
+ *  `transactions`/`bridgeObservations`/`contractStates` may be empty (e.g. a block with no
+ *  `pallet_midnight` transactions, no D-parameter change since the previous block, or no
+ *  contract-touching transaction) -- `putBlockBundle` still only writes the `blocks` row in that
+ *  case, inside the same one transaction. `contractStates` is optional so pre-sprint-9 callers
+ *  and fixtures remain valid unchanged. */
 export interface BlockBundle {
   block: BlockRecord;
   transactions: readonly TransactionRecord[];
   bridgeObservations: readonly BridgeObservationRecord[];
+  contractStates?: readonly ContractStateRecord[];
 }
 
 export type VerifierKeyScope = "protocol" | "contract";
@@ -229,8 +247,9 @@ export interface ChainArchiveStore {
   putBridgeObservations(obs: readonly BridgeObservationRecord[]): Promise<void>;
 
   /**
-   * Ingests one full block -- `bundle.block`, `bundle.transactions`, and
-   * `bundle.bridgeObservations` -- inside ONE Postgres transaction, so a partial block (e.g. the
+   * Ingests one full block -- `bundle.block`, `bundle.transactions`,
+   * `bundle.bridgeObservations`, and (sprint 9) `bundle.contractStates` -- inside ONE Postgres
+   * transaction, so a partial block (e.g. the
    * `blocks` row committed but its transactions not, because the write was interrupted or the
    * caller's own upstream data source was itself inconsistent mid-ingest) can never become
    * durably visible. This is the fix for the sprint-fix round's Fix 1: previously, a real

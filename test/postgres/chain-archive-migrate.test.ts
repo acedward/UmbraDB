@@ -41,6 +41,7 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
         "000_schema",
         "001_chain_archive_core",
         "002_zswap_root",
+        "003_contract_state",
       ]);
 
       // --- idempotent re-run: applies zero additional migrations ---
@@ -330,6 +331,87 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
         where net = ${net} and height = 402 and block_hash = ${finalizingHash}
       `;
       expect(finalizingRow[0]!.finalized).toBe(true);
+    } finally {
+      await sql.end({ timeout: 5 });
+    }
+  }, 60_000);
+
+  /**
+   * Sprint 9 (003_contract_state): the migration must apply INCREMENTALLY on a database that
+   * already ran the pre-sprint-9 lineage (exactly the live archive's situation), and the new
+   * `contract_states` table must carry the same integrity guarantees as its 001 siblings:
+   * blob-role trigger on insert, removal-guard branch on role delete, zswap_state_root length
+   * CHECK, and the `feed_contract_states_v1` read view rendering hex.
+   */
+  it("sprint 9: 003_contract_state applies incrementally and enforces blob-role integrity on contract_states", async () => {
+    const schema = "chain_archive_s9_contract_state_test";
+    const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    try {
+      // --- incremental apply: first the pre-sprint-9 lineage alone, THEN the full lineage ---
+      await runMigrations(sql, { schema, migrations: chainArchiveMigrations.slice(0, 3) });
+      await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
+      const applied = await sql<{ name: string }[]>`
+        select name from ${sql(schema)}._migrations order by name
+      `;
+      expect(applied.map((r) => r.name)).toEqual([
+        "000_schema", "001_chain_archive_core", "002_zswap_root", "003_contract_state",
+      ]);
+
+      const h = (n: number): string => n.toString(16).padStart(64, "0");
+      const net = "s9_net";
+      const registerBlob = async (hashHex: string, role: string): Promise<Buffer> => {
+        const hash = Buffer.from(hashHex, "hex");
+        await sql`insert into ${sql(schema)}.chain_blobs (hash, data) values (${hash}, ${Buffer.from("payload-" + hashHex)})`;
+        await sql`insert into ${sql(schema)}.chain_blob_roles (blob_hash, role) values (${hash}, ${role})`;
+        return hash;
+      };
+
+      // --- a block with a zswap_state_root (33 bytes -- the live-observed tagged length) ---
+      const headerBlob = await registerBlob(h(600), "block_header");
+      const blockHash = Buffer.from(h(601), "hex");
+      const zswapRoot = Buffer.from("73" + h(0).slice(2) + "aa", "hex"); // 33 bytes
+      await sql`insert into ${sql(schema)}.blocks
+        (net, block_hash, height, parent_hash, state_root, extrinsics_root, header_blob_hash, zswap_state_root)
+        values (${net}, ${blockHash}, 9, ${Buffer.from(h(0), "hex")},
+                ${Buffer.from(h(2), "hex")}, ${Buffer.from(h(3), "hex")}, ${headerBlob}, ${zswapRoot})`;
+
+      // --- happy path: a classified contract-state blob + row, readable through the view ---
+      const stateBlob = await registerBlob(h(610), "contract_state");
+      const contractAddress = Buffer.from(h(611), "hex");
+      await sql`insert into ${sql(schema)}.contract_states
+        (net, block_height, block_hash, contract_address, state_blob_hash)
+        values (${net}, 9, ${blockHash}, ${contractAddress}, ${stateBlob})`;
+      const viewRows = await sql<{ contract_address: string; state: string }[]>`
+        select contract_address, state from ${sql(schema)}.feed_contract_states_v1
+        where net = ${net} and block_height = 9
+      `;
+      expect(viewRows).toHaveLength(1);
+      expect(viewRows[0]!.contract_address).toBe(h(611));
+      expect(viewRows[0]!.state).toBe(Buffer.from("payload-" + h(610)).toString("hex"));
+
+      // --- an UNCLASSIFIED state blob is rejected by the trigger (23514) ---
+      const unclassified = Buffer.from(h(620), "hex");
+      await sql`insert into ${sql(schema)}.chain_blobs (hash, data) values (${unclassified}, ${Buffer.from("x")})`;
+      await expect(
+        sql`insert into ${sql(schema)}.contract_states
+          (net, block_height, block_hash, contract_address, state_blob_hash)
+          values (${net}, 9, ${blockHash}, ${Buffer.from(h(621), "hex")}, ${unclassified})`,
+      ).rejects.toMatchObject({ code: "23514" });
+
+      // --- the v4 removal guard's new branch: a contract_state role still referenced by a live
+      // contract_states row cannot be deleted ---
+      await expect(
+        sql`delete from ${sql(schema)}.chain_blob_roles where blob_hash = ${stateBlob} and role = 'contract_state'`,
+      ).rejects.toMatchObject({ code: "23514" });
+
+      // --- zswap_state_root length CHECK: 31 bytes is rejected ---
+      await expect(
+        sql`insert into ${sql(schema)}.blocks
+          (net, block_hash, height, parent_hash, state_root, extrinsics_root, header_blob_hash, zswap_state_root)
+          values (${net}, ${Buffer.from(h(630), "hex")}, 10, ${Buffer.from(h(0), "hex")},
+                  ${Buffer.from(h(2), "hex")}, ${Buffer.from(h(3), "hex")}, ${headerBlob},
+                  ${Buffer.alloc(31)})`,
+      ).rejects.toMatchObject({ code: "23514" });
     } finally {
       await sql.end({ timeout: 5 });
     }

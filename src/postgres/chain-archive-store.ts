@@ -9,6 +9,7 @@ import {
   type BlockRecord,
   type BridgeObservationRecord,
   type ChainArchiveStore,
+  type ContractStateRecord,
   type Hex32,
   type TransactionMeta,
   type TransactionRecord,
@@ -256,6 +257,36 @@ export class PgChainArchiveStore implements ChainArchiveStore {
     }
   }
 
+  /** Shared insert for `putBlockBundle.contractStates` (sprint 9, Part 2). Same content-
+   *  addressed blob + metadata-row shape as `insertTransactionRows`; the terminal insert is
+   *  `ON CONFLICT ... DO NOTHING` on the table PK for the same retry-safety contract. */
+  private async insertContractStateRows(
+    tx: ChainArchiveTx, states: readonly ContractStateRecord[],
+  ): Promise<void> {
+    for (const s of states) {
+      const stateHashHex = sha256Hex(s.stateBytes);
+      const stateHash = hexToBuf(stateHashHex);
+      await tx`
+        INSERT INTO ${tx(this.schema)}.chain_blobs (hash, data)
+        VALUES (${stateHash}, ${Buffer.from(s.stateBytes)})
+        ON CONFLICT (hash) DO NOTHING
+      `;
+      await tx`
+        INSERT INTO ${tx(this.schema)}.chain_blob_roles (blob_hash, role)
+        VALUES (${stateHash}, 'contract_state')
+        ON CONFLICT (blob_hash, role) DO NOTHING
+      `;
+      await tx`
+        INSERT INTO ${tx(this.schema)}.contract_states
+          (net, block_height, block_hash, contract_address, state_blob_hash)
+        VALUES
+          (${s.net}, ${s.blockHeight}, ${hexToBuf(s.blockHash)},
+           ${hexToBuf(s.contractAddress)}, ${stateHash})
+        ON CONFLICT (net, block_height, block_hash, contract_address) DO NOTHING
+      `;
+    }
+  }
+
   /** Shared by `putBridgeObservations` and `putBlockBundle`. */
   private async insertBridgeObservationRows(tx: ChainArchiveTx, obs: readonly BridgeObservationRecord[]): Promise<void> {
     for (const o of obs) {
@@ -322,7 +353,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
    *  committed at all -- see this method's own doc on `ChainArchiveStore` for the full
    *  before/after failure-mode writeup. */
   async putBlockBundle(bundle: BlockBundle): Promise<{ headerBlobHash: Hex32; bodyBlobHash?: Hex32 }> {
-    const { block, transactions: txs, bridgeObservations: obs } = bundle;
+    const { block, transactions: txs, bridgeObservations: obs, contractStates: states = [] } = bundle;
     assertHex32(block.blockHash, "putBlockBundle.blockHash");
     assertHex32(block.parentHash, "putBlockBundle.parentHash");
     assertHex32(block.stateRoot, "putBlockBundle.stateRoot");
@@ -332,17 +363,22 @@ export class PgChainArchiveStore implements ChainArchiveStore {
       assertHex32(t.txHash, "putBlockBundle.transactions.txHash");
       assertHex32(t.blockHash, "putBlockBundle.transactions.blockHash");
     }
+    for (const s of states) {
+      assertHex32(s.blockHash, "putBlockBundle.contractStates.blockHash");
+      assertHex32(s.contractAddress, "putBlockBundle.contractStates.contractAddress");
+    }
 
     try {
       return await this.sql.begin(async (tx) => {
         const result = await this.insertBlockRow(tx, block);
-        // FK-ordering note: `transactions`/`bridge_observations` both carry a real FK back to
-        // `blocks (net, height, block_hash)` (001_chain_archive_core.ts) -- inserting the block
-        // row first, in the SAME transaction, makes it visible to these later statements' own FK
-        // checks (ordinary same-transaction MVCC visibility), so the FK is satisfied even though
-        // the referenced row hasn't committed yet.
+        // FK-ordering note: `transactions`/`bridge_observations`/`contract_states` all carry a
+        // real FK back to `blocks (net, height, block_hash)` (001/002 migrations) -- inserting
+        // the block row first, in the SAME transaction, makes it visible to these later
+        // statements' own FK checks (ordinary same-transaction MVCC visibility), so the FK is
+        // satisfied even though the referenced row hasn't committed yet.
         if (txs.length > 0) await this.insertTransactionRows(tx, txs);
         if (obs.length > 0) await this.insertBridgeObservationRows(tx, obs);
+        if (states.length > 0) await this.insertContractStateRows(tx, states);
         return result;
       });
     } catch (err) {

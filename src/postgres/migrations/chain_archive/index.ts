@@ -1,6 +1,7 @@
 import * as migration000 from "../000_schema.js";
 import * as chainArchiveCore from "./001_chain_archive_core.js";
 import * as zswapRoot from "./002_zswap_root.js";
+import * as contractState from "./003_contract_state.js";
 import type { Migration } from "../../migrate.js";
 
 /**
@@ -30,7 +31,19 @@ import type { Migration } from "../../migrate.js";
  * lineage, design-stage only, gated on design-council ratification before any real wiring or
  * live apply.
  */
-export const chainArchiveMigrations: Migration[] = [migration000, chainArchiveCore, zswapRoot];
+export const chainArchiveMigrations: Migration[] = [
+  migration000,
+  chainArchiveCore,
+  zswapRoot,
+  contractState,
+];
+
+// 003 note (sprint 9): `contractState` adds the `contract_states` table (+ its height
+// partitions, blob-role trigger, and a `'contract_state'` branch in the v4 removal guard), the
+// `'contract_state'` blob role, and the `feed_contract_states_v1` read view. It does NOT add
+// `blocks.zswap_state_root` -- that column belongs to `002_zswap_root`, which owns block-level
+// node readings; adding it in both made the two un-composable. See `003_contract_state.ts` for the full
+// reasoning.
 
 // v3 note: `chainArchiveCore` now also creates `chain_archive_assert_blob_role` (a shared
 // plpgsql helper) and one thin `BEFORE INSERT OR UPDATE` trigger per blob-referencing table
