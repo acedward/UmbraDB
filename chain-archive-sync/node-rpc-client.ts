@@ -184,6 +184,22 @@ export class NodeRpcClient {
     return Buffer.from(root).toString("hex");
   }
 
+  /**
+   * `midnight_contractState` -- the node's OWN custom JSON-RPC surface
+   * (`midnight-node/pallets/midnight/rpc/src/lib.rs`, `#[method(name = "midnight_contractState")]`):
+   * plain hex strings in and out, no SCALE involved. Returns the ledger-serialized contract state
+   * at `at` (or the node's best block when omitted). This is the very same runtime API the
+   * indexer called per contract action (`subxt_node.rs:679`) -- state at that block, not replay.
+   *
+   * Ops note: historical `at` hashes need un-pruned state -- a live-follow ingest near the
+   * finalized tip is always safe; deep backfill needs `--state-pruning archive` on the node.
+   */
+  async midnightContractState(contractAddressHex: string, at?: string): Promise<string> {
+    const addr = contractAddressHex.startsWith("0x") ? contractAddressHex.slice(2) : contractAddressHex;
+    const params: unknown[] = at === undefined ? [addr] : [addr, at];
+    return this.call<string>("midnight_contractState", params);
+  }
+
   /** Convenience: resolves a hash to its height via `getHeader` -- the RPC surface has no
    *  direct "height of this hash" call, so this is the standard two-hop lookup.
    *

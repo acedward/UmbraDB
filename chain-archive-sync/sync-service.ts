@@ -4,6 +4,7 @@ import type {
   BlockRecord,
   BridgeObservationRecord,
   ChainArchiveStore,
+  ContractStateRecord,
   Hex32,
   TransactionRecord,
 } from "../src/interfaces/chain-archive-store.js";
@@ -32,7 +33,8 @@ import { decodeArchivedTransaction, loadLedgerV8 } from "./tx-replay-decoder.js"
  * locally via the ledger WASM, protocol version from the header's MNSV consensus digest,
  * D-parameter via `state_call`). With the `indexer` option present, behavior is the pre-sprint-9
  * ingest plus a hard ORACLE CROSS-CHECK of the node-derived view against the indexer's on every
- * block. See `ChainArchiveSyncServiceOptions`'s field docs for the full
+ * block. `captureZswapRoot` archives the per-block zswap state root; `captureContractState`
+ * archives contract ledger state. Both work in either mode. See `ChainArchiveSyncServiceOptions`'s field docs for the full
  * mode table and scope boundaries (system transactions stay out of node-only scope).
  *
  * **Dependency shape, stated precisely (Sol-audit fix round, Finding 7 -- an earlier version of
@@ -150,6 +152,17 @@ export interface ChainArchiveSyncServiceOptions {
    * `--state-pruning archive`, or ingest near the tip.
    */
   captureZswapRoot?: boolean;
+  /**
+   * Sprint 9 Part 2 (independent of the indexer question): when true, each ingested block also
+   * captures (a) the node-reported zswap state root (`blocks.zswap_state_root`) and (b) the
+   * ledger-serialized state of every contract touched by this block's regular transactions
+   * (`contract_states` + `'contract_state'` blobs), fetched from `midnight_contractState` at
+   * THIS block's hash -- the exact capture the reference indexer performs per contract action
+   * (`subxt_node.rs:679`). Requires the ledger WASM (touched-address discovery decodes the
+   * archived payloads' `intent.actions`). Default false: existing deployments' write set is
+   * unchanged unless explicitly opted in.
+   */
+  captureContractState?: boolean;
 }
 
 export interface SyncOnceResult {
@@ -186,9 +199,11 @@ export class ChainArchiveSyncService {
   /** `undefined` -> node-only mode (sprint 9); present -> indexer-sourced ingest + oracle
    *  cross-check. See `ChainArchiveSyncServiceOptions.indexer`'s doc for the full mode table. */
   private readonly indexer: IndexerClient | undefined;
+  private readonly captureContractState: boolean;
   /** Lazily-loaded `@midnight-ntwrk/ledger-v8` WASM module (`loadLedgerV8`). Required in
-   *  node-only mode (transaction hashes); never loaded otherwise, so a plain indexer-sourced
-   *  deployment keeps working without the sibling wallet checkout. */
+   *  node-only mode (tx hashes) and whenever `captureContractState` is on (touched-address
+   *  discovery); never loaded otherwise, so a plain indexer-sourced deployment keeps working
+   *  without the sibling wallet checkout. */
   private ledgerPromise: Promise<unknown> | undefined;
   /** See `ChainArchiveSyncServiceOptions.oracleCrossCheck`. */
   private readonly oracleCrossCheckEnabled: boolean;
@@ -213,14 +228,15 @@ export class ChainArchiveSyncService {
     this.oracleCrossCheckEnabled = opts.oracleCrossCheck ?? false;
     this.expectedGenesisHash =
       opts.expectedGenesisHash === undefined ? undefined : hexNoPrefix(opts.expectedGenesisHash);
+    this.captureContractState = opts.captureContractState ?? false;
     this.net = opts.net;
     this.captureZswapRoot = opts.captureZswapRoot ?? false;
   }
 
   /** Loads the ledger WASM exactly once, on first need. Throws `loadLedgerV8`'s own descriptive
    *  error (which names the checkout candidates and the `MIDNIGHT_WALLET_REPO` override) if no
-   *  built wallet checkout exists -- a hard requirement of node-only mode,
-   *  deliberately NOT of plain indexer-sourced ingest. */
+   *  built wallet checkout exists -- a hard requirement of node-only mode and of
+   *  `captureContractState`, deliberately NOT of plain indexer-sourced ingest. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private ledger(): Promise<any> {
     this.ledgerPromise ??= loadLedgerV8();
@@ -610,6 +626,20 @@ export class ChainArchiveSyncService {
       );
     }
 
+    // ── Contract state (migration 003). The zswap root is NOT fetched here: it is a block-level
+    // node reading owned by `captureZswapRoot` and migration 002 above. Capturing it in both
+    // places meant two RPCs per block for one column, and -- when the two migrations were both
+    // numbered 002 -- a duplicate-column error that made them un-composable. One reading, one
+    // owner. ──
+    // `classifyBlock()` rather than a precomputed list: classification is now called only where
+    // node-derived payloads are actually needed, so that a runtime this build cannot classify
+    // never gates a path that does not require it. Contract-state capture DOES require them --
+    // touched addresses come from decoding the payloads' intents -- so it asks for them here.
+    let contractStates: ContractStateRecord[] = [];
+    if (this.captureContractState) {
+      contractStates = await this.captureContractStates(height, blockHash, classifyBlock());
+    }
+
     const blockRecord: BlockRecord = {
       net: this.net,
       blockHash,
@@ -634,6 +664,7 @@ export class ChainArchiveSyncService {
       block: blockRecord,
       transactions,
       bridgeObservations: bridge.records,
+      contractStates,
     });
 
     // Only remember this block as the continuity anchor once it is durably written -- same
@@ -804,6 +835,53 @@ export class ChainArchiveSyncService {
       numPermissionedCandidates: bytes.readUInt16LE(0),
       numRegisteredCandidates: bytes.readUInt16LE(2),
     };
+  }
+
+  /**
+   * Sprint 9 Part 2: capture the ledger-serialized state of every contract touched by this
+   * block's REGULAR transactions, at THIS block's hash -- exactly the reference indexer's
+   * per-contract-action runtime-API capture (`subxt_node.rs:679`), via the node's own
+   * `midnight_contractState` JSON-RPC. Touched addresses come from decoding the payloads'
+   * `intent.actions` (deploy/call/maintain each carry the address) -- archived bytes plus the
+   * WASM, no indexer.
+   *
+   * A per-address fetch failure SKIPS that address rather than aborting the block: a contract
+   * call inside a transaction whose fallible segment failed can reference an address that never
+   * came to exist, and `midnight_contractState` correctly errors for it -- absence of a
+   * `contract_states` row is the honest representation of that outcome (the schema documents
+   * the column set as capture-when-available, not guaranteed-per-action).
+   */
+  private async captureContractStates(
+    height: number,
+    blockHash: Hex32,
+    nodePayloads: readonly { kind: "regular" | "system"; payload: Uint8Array }[],
+  ): Promise<ContractStateRecord[]> {
+    const ledger = await this.ledger();
+    const addresses = new Set<string>();
+    for (const p of nodePayloads) {
+      if (p.kind !== "regular") continue;
+      const decoded = decodeArchivedTransaction(ledger, p.payload);
+      for (const action of decoded.contractActions) {
+        addresses.add(hexNoPrefix(action.address).toLowerCase());
+      }
+    }
+    const records: ContractStateRecord[] = [];
+    for (const address of [...addresses].sort()) {
+      let stateHex: string;
+      try {
+        stateHex = await this.node.midnightContractState(address, `0x${blockHash}`);
+      } catch {
+        continue; // documented skip -- see method doc
+      }
+      records.push({
+        net: this.net,
+        blockHeight: height,
+        blockHash,
+        contractAddress: address,
+        stateBytes: new Uint8Array(Buffer.from(hexNoPrefix(stateHex), "hex")),
+      });
+    }
+    return records;
   }
 
   /**
