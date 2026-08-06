@@ -9,12 +9,23 @@ import type {
 } from "../src/interfaces/chain-archive-store.js";
 import { IndexerClient, type IndexerBlock, type IndexerClientOptions } from "./indexer-client.js";
 import { NodeRpcClient, type NodeRpcClientOptions, type SubstrateHeader } from "./node-rpc-client.js";
+import { decodeMidnightExtrinsic, decodeProtocolVersionFromDigest } from "./extrinsic-decoder.js";
+import { decodeArchivedTransaction, loadLedgerV8 } from "./tx-replay-decoder.js";
 
 /**
  * The real ingestion/sync service that populates the `chain_archive` schema from a live Midnight
- * node (JSON-RPC, raw block bytes) and indexer (GraphQL, structured transaction metadata) --
- * `design/full-chain-storage-design.md`'s Tier-1.5 archive, made real per this implementation
- * sprint's task.
+ * node (JSON-RPC, raw block bytes) and OPTIONALLY an indexer (GraphQL, structured transaction
+ * metadata) -- `design/full-chain-storage-design.md`'s Tier-1.5 archive, made real per this
+ * implementation sprint's task.
+ *
+ * **Sprint 9 (indexer independence):** the indexer is no longer a required dependency. With no
+ * `indexer` option the service runs NODE-ONLY -- regular-transaction ingest derived entirely
+ * from the node (extrinsic-envelope decode via `extrinsic-decoder.ts`, tx hashes recomputed
+ * locally via the ledger WASM, protocol version from the header's MNSV consensus digest,
+ * D-parameter via `state_call`). With the `indexer` option present, behavior is the pre-sprint-9
+ * ingest plus a hard ORACLE CROSS-CHECK of the node-derived view against the indexer's on every
+ * block. See `ChainArchiveSyncServiceOptions`'s field docs for the full
+ * mode table and scope boundaries (system transactions stay out of node-only scope).
  *
  * **Dependency shape, stated precisely (Sol-audit fix round, Finding 7 -- an earlier version of
  * this comment overclaimed "interface injection")**: this module directly imports and constructs
@@ -80,7 +91,25 @@ export interface ChainArchiveSyncServiceOptions {
   net: string;
   schema?: string;
   node: NodeRpcClientOptions;
-  indexer: IndexerClientOptions;
+  /**
+   * OPTIONAL as of sprint 9 (indexer independence). Three modes fall out of this one option:
+   *
+   *   - **absent** -> NODE-ONLY ingest: every archived field is derived from the node alone
+   *     (extrinsic-envelope decode + ledger-WASM `transactionHash()` + MNSV header digest +
+   *     `state_call`). Scope: REGULAR transactions only -- runtime-generated system
+   *     transactions are not in `chain_getBlock.extrinsics` (they surface via the
+   *     `SystemTransactionApplied` event, whose decode needs runtime metadata -- a recorded
+   *     deferral, not a structural impossibility), and extrinsic-borne system payloads
+   *     (genesis) are skipped too because the ledger WASM exposes no
+   *     `SystemTransaction.hash()` accessor to compute their `tx_hash` PK with.
+   *   - **present** -> the pre-sprint-9 indexer-sourced ingest, UNCHANGED in what it writes,
+   *     plus the ORACLE CROSS-CHECK: node-derived records are computed anyway and any
+   *     disagreement with the indexer's (tx hash, raw bytes, protocolVersion, per-regular-tx)
+   *     throws before anything is written -- every synced block becomes a continuous Run-B-style
+   *     differential check for free while the indexer still exists.
+   *   - at indexer shutdown, the cutover is: stop passing this option.
+   */
+  indexer?: IndexerClientOptions;
 }
 
 export interface SyncOnceResult {
@@ -108,7 +137,13 @@ export class ChainArchiveSyncService {
    *  "Dependency shape" note (Finding 7). */
   readonly store: ChainArchiveStore;
   private readonly node: NodeRpcClient;
-  private readonly indexer: IndexerClient;
+  /** `undefined` -> node-only mode (sprint 9); present -> indexer-sourced ingest + oracle
+   *  cross-check. See `ChainArchiveSyncServiceOptions.indexer`'s doc for the full mode table. */
+  private readonly indexer: IndexerClient | undefined;
+  /** Lazily-loaded `@midnight-ntwrk/ledger-v8` WASM module (`loadLedgerV8`). Required in
+   *  node-only mode (transaction hashes); never loaded otherwise, so a plain indexer-sourced
+   *  deployment keeps working without the sibling wallet checkout. */
+  private ledgerPromise: Promise<unknown> | undefined;
   private readonly net: string;
   /** Last-seen D-parameter, in-memory, this instance's lifetime only -- used to dedupe
    *  `bridge_observations` inserts (§"stub/initial pass") so a healthy chain with an unchanging
@@ -122,8 +157,18 @@ export class ChainArchiveSyncService {
   constructor(opts: ChainArchiveSyncServiceOptions) {
     this.store = new PgChainArchiveStore(opts.sql, opts.schema ?? "chain_archive");
     this.node = new NodeRpcClient(opts.node);
-    this.indexer = new IndexerClient(opts.indexer);
+    this.indexer = opts.indexer === undefined ? undefined : new IndexerClient(opts.indexer);
     this.net = opts.net;
+  }
+
+  /** Loads the ledger WASM exactly once, on first need. Throws `loadLedgerV8`'s own descriptive
+   *  error (which names the checkout candidates and the `MIDNIGHT_WALLET_REPO` override) if no
+   *  built wallet checkout exists -- a hard requirement of node-only mode,
+   *  deliberately NOT of plain indexer-sourced ingest. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private ledger(): Promise<any> {
+    this.ledgerPromise ??= loadLedgerV8();
+    return this.ledgerPromise;
   }
 
   private watermarkKey(): string {
@@ -200,17 +245,50 @@ export class ChainArchiveSyncService {
     const { block } = await this.node.getBlock(`0x${blockHash}`);
     const header = block.header;
 
-    // One indexer fetch per block, shared by the transaction-ingestion and bridge-observation
-    // paths below -- avoids two redundant GraphQL round trips for the same block. Fetched BEFORE
-    // any store write (Fix 1) so the throw immediately below never leaves a partially-ingested
-    // block behind.
-    const indexerBlock = await this.indexer.getBlockByHeight(height);
-    if (indexerBlock === undefined) {
-      // Indexer hasn't synced this height yet -- do NOT advance the watermark past it (syncOnce
-      // only advances the watermark after this whole method returns successfully), so a later
-      // syncOnce() call re-attempts this exact height once the indexer catches up. No store write
-      // has happened yet at this point, so that retry starts completely fresh.
-      throw new Error(`indexer has not yet synced height ${height} (node has); retry later`);
+    // Sprint 9: the node-derived view is ALWAYS computed -- it is the source of truth in
+    // node-only mode and the oracle comparand in indexer mode. `decodeMidnightExtrinsic`
+    // throws (rather than skipping) on a corrupted envelope, so a malformed node response
+    // aborts the block before any write, same as every other pre-write failure here.
+    const nodePayloads = block.extrinsics
+      .map((e) => decodeMidnightExtrinsic(e))
+      .filter((d): d is NonNullable<typeof d> => d !== null);
+    const nodeProtocolVersion = decodeProtocolVersionFromDigest(header.digest.logs);
+
+    let transactions: TransactionRecord[];
+    let bridge: { records: BridgeObservationRecord[]; newDParameterJson: string | undefined };
+
+    if (this.indexer !== undefined) {
+      // ── INDEXER-SOURCED MODE (pre-sprint-9 behavior, plus the oracle cross-check) ──
+      // One indexer fetch per block, shared by the transaction-ingestion and bridge-observation
+      // paths below. Fetched BEFORE any store write (Fix 1) so the throw immediately below never
+      // leaves a partially-ingested block behind.
+      const indexerBlock = await this.indexer.getBlockByHeight(height);
+      if (indexerBlock === undefined) {
+        // Indexer hasn't synced this height yet -- do NOT advance the watermark past it (syncOnce
+        // only advances the watermark after this whole method returns successfully), so a later
+        // syncOnce() call re-attempts this exact height once the indexer catches up. No store
+        // write has happened yet at this point, so that retry starts completely fresh.
+        throw new Error(`indexer has not yet synced height ${height} (node has); retry later`);
+      }
+      this.oracleCrossCheck(height, nodePayloads, nodeProtocolVersion, indexerBlock);
+      transactions = this.buildTransactionRecords(height, blockHash, block.extrinsics, indexerBlock);
+      bridge = this.buildBridgeObservationRecords(
+        height, blockHash, indexerBlock.systemParameters.dParameter,
+      );
+    } else {
+      // ── NODE-ONLY MODE (sprint 9) -- no network call to any indexer endpoint anywhere. ──
+      if (nodeProtocolVersion === undefined) {
+        // Same hard-failure stance as the reference indexer's own MissingProtocolVersionHeader:
+        // a block without the MNSV consensus digest cannot be attributed to a protocol version,
+        // and guessing one would poison every downstream decode-version decision.
+        throw new Error(`no MNSV protocol-version digest item in header at height ${height}`);
+      }
+      transactions = await this.buildNodeOnlyTransactionRecords(
+        height, blockHash, nodePayloads, nodeProtocolVersion,
+      );
+      bridge = this.buildBridgeObservationRecords(
+        height, blockHash, await this.fetchDParameterFromNode(blockHash),
+      );
     }
 
     const blockRecord: BlockRecord = {
@@ -230,18 +308,144 @@ export class ChainArchiveSyncService {
       finalized: true,
     };
 
-    const transactions = this.buildTransactionRecords(height, blockHash, block.extrinsics, indexerBlock);
-    const { records: bridgeObservations, newDParameterJson } =
-      this.buildBridgeObservationRecords(height, blockHash, indexerBlock);
-
-    await this.store.putBlockBundle({ block: blockRecord, transactions, bridgeObservations });
+    await this.store.putBlockBundle({
+      block: blockRecord,
+      transactions,
+      bridgeObservations: bridge.records,
+    });
 
     // Fix 2 (sprint-fix round, HIGH): only advance the in-memory D-parameter dedup cursor AFTER
     // the durable write above has succeeded -- see `buildBridgeObservationRecords`'s own doc for
     // why updating it any earlier silently drops observations on retry.
-    if (newDParameterJson !== undefined) {
-      this.lastDParameterJson = newDParameterJson;
+    if (bridge.newDParameterJson !== undefined) {
+      this.lastDParameterJson = bridge.newDParameterJson;
     }
+  }
+
+  /**
+   * Sprint 9 oracle cross-check: with the indexer still configured, every block's node-derived
+   * view must agree with the indexer's before anything is written. Two comparisons, neither
+   * needing the ledger WASM:
+   *
+   *   1. The SEQUENCE of regular-transaction raw payloads must be byte-identical, element for
+   *      element -- the node's extrinsic-envelope decode against the indexer's `Transaction.raw`.
+   *      (Byte equality subsumes hash equality: the tx hash is a pure function of these bytes,
+   *      proven by `test/integration/chain-archive-replay-decode.integration.test.ts`.) System
+   *      transactions are deliberately outside this check: runtime-generated ones exist only on
+   *      the indexer side (event-borne), so the two sides' system-tx sets differ by design.
+   *   2. Every indexer-reported per-tx `protocolVersion` must equal the header's MNSV digest
+   *      value -- and that digest must exist at all.
+   *
+   * Throwing here (before any store write) makes every synced block a continuous Run-B-style
+   * differential check for free, for as long as the indexer exists to compare against.
+   */
+  private oracleCrossCheck(
+    height: number,
+    nodePayloads: readonly { kind: "regular" | "system"; payload: Uint8Array }[],
+    nodeProtocolVersion: number | undefined,
+    indexerBlock: IndexerBlock,
+  ): void {
+    if (nodeProtocolVersion === undefined) {
+      throw new Error(`oracle cross-check: no MNSV protocol-version digest at height ${height}`);
+    }
+    const nodeRegular = nodePayloads
+      .filter((p) => p.kind === "regular")
+      .map((p) => Buffer.from(p.payload).toString("hex"));
+    const indexerRegular = indexerBlock.transactions
+      .map((t) => hexNoPrefix(t.raw))
+      .filter((raw) => !Buffer.from(raw, "hex")
+        .subarray(0, SYSTEM_TX_TAG.length).toString("utf8").startsWith(SYSTEM_TX_TAG));
+    if (nodeRegular.length !== indexerRegular.length) {
+      throw new Error(
+        `oracle cross-check FAILED at height ${height}: node-derived regular tx count ` +
+          `${nodeRegular.length} != indexer's ${indexerRegular.length}`,
+      );
+    }
+    for (let i = 0; i < nodeRegular.length; i++) {
+      if (nodeRegular[i] !== indexerRegular[i]) {
+        throw new Error(
+          `oracle cross-check FAILED at height ${height}, regular tx ${i}: node-derived payload ` +
+            `bytes differ from indexer raw (${nodeRegular[i]!.length / 2} vs ` +
+            `${indexerRegular[i]!.length / 2} bytes)`,
+        );
+      }
+    }
+    for (const t of indexerBlock.transactions) {
+      if (t.protocolVersion !== nodeProtocolVersion) {
+        throw new Error(
+          `oracle cross-check FAILED at height ${height}: indexer protocolVersion ` +
+            `${t.protocolVersion} != MNSV digest ${nodeProtocolVersion} (tx ${hexNoPrefix(t.hash)})`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Sprint 9 node-only transaction records. Scope: REGULAR transactions only (see
+   * `ChainArchiveSyncServiceOptions.indexer`'s mode table for why system payloads are excluded
+   * -- no WASM hash accessor for the `tx_hash` PK, and runtime-generated ones aren't in the
+   * block body at all). `position` therefore numbers the REGULAR transactions of the block
+   * 0..n-1; in blocks that also carry system transactions the indexer-sourced ingest assigns
+   * different absolute positions, so cross-mode comparison joins on `tx_hash`, never on
+   * `position` (recorded in the Run-B differ's own docs).
+   *
+   * `tx_hash` is the ledger's own transaction hash, recomputed locally from the payload bytes
+   * via the WASM `Transaction.transactionHash()` -- the SAME method (and therefore the same
+   * value) the indexer's `hash` field comes from
+   * (`chain-indexer/src/infra/subxt_node.rs:675`, `make_regular_transaction`).
+   */
+  private async buildNodeOnlyTransactionRecords(
+    height: number,
+    blockHash: Hex32,
+    nodePayloads: readonly { kind: "regular" | "system"; payload: Uint8Array }[],
+    protocolVersion: number,
+  ): Promise<TransactionRecord[]> {
+    const ledger = await this.ledger();
+    const records: TransactionRecord[] = [];
+    let position = 0;
+    for (const p of nodePayloads) {
+      if (p.kind !== "regular") continue;
+      const decoded = decodeArchivedTransaction(ledger, p.payload);
+      if (decoded.transactionHash === undefined) {
+        // Unreachable for a standard-tagged payload (decodeArchivedTransaction always computes
+        // it); guarded so a future decoder change fails loudly instead of inserting a bad PK.
+        throw new Error(`node-only ingest: no transaction hash decodable at height ${height}`);
+      }
+      records.push({
+        net: this.net,
+        txHash: hexNoPrefix(decoded.transactionHash).toLowerCase(),
+        blockHeight: height,
+        blockHash,
+        position: position++,
+        kind: "regular",
+        protocolVersion,
+        rawBytes: p.payload,
+      });
+    }
+    return records;
+  }
+
+  /** SCALE-decodes `SystemParametersApi_get_d_parameter` at `blockHash`:
+   *  `DParameter { num_permissioned_candidates: u16, num_registered_candidates: u16 }`
+   *  (`midnight-node/partner-chains/toolkit/sidechain/domain/src/lib.rs:1165`), two
+   *  little-endian u16s. Verified live against this devnet: node bytes `0x0a000000` == the
+   *  indexer-reported `{"numPermissionedCandidates":10,"numRegisteredCandidates":0}`. */
+  private async fetchDParameterFromNode(
+    blockHash: Hex32,
+  ): Promise<{ numPermissionedCandidates: number; numRegisteredCandidates: number }> {
+    const resultHex = hexNoPrefix(
+      await this.node.stateCall("SystemParametersApi_get_d_parameter", "0x", `0x${blockHash}`),
+    );
+    const bytes = Buffer.from(resultHex, "hex");
+    if (bytes.length < 4) {
+      throw new Error(
+        `SystemParametersApi_get_d_parameter returned ${bytes.length} bytes (need >= 4): 0x${resultHex}`,
+      );
+    }
+    return {
+      numPermissionedCandidates: bytes.readUInt16LE(0),
+      numRegisteredCandidates: bytes.readUInt16LE(2),
+    };
   }
 
   /**
@@ -355,9 +559,13 @@ export class ChainArchiveSyncService {
    * correct.
    */
   private buildBridgeObservationRecords(
-    height: number, blockHash: Hex32, indexerBlock: IndexerBlock,
+    height: number, blockHash: Hex32,
+    d: { numPermissionedCandidates: number; numRegisteredCandidates: number },
   ): { records: BridgeObservationRecord[]; newDParameterJson: string | undefined } {
-    const d = indexerBlock.systemParameters.dParameter;
+    // Sprint 9: `d` is source-agnostic -- the indexer's reported `systemParameters.dParameter`
+    // in indexer mode, or `fetchDParameterFromNode`'s SCALE decode in node-only mode (verified
+    // live to produce identical values, so the dedupe cursor and the stored JSON bytes are
+    // mode-independent).
     const json = JSON.stringify({
       numPermissionedCandidates: d.numPermissionedCandidates,
       numRegisteredCandidates: d.numRegisteredCandidates,

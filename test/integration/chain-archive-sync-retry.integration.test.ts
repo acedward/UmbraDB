@@ -26,24 +26,55 @@ interface FakeChainBlock {
   parentHash: Hex32;
   stateRoot: Hex32;
   extrinsicsRoot: Hex32;
-  /** hex, no 0x prefix -- must CONTAIN the indexer's reported tx raw hex as a substring, matching
-   *  the real node/indexer byte-relationship `sync-service.ts` cross-checks. */
+  /** hex, no 0x prefix -- a VALIDLY SCALE-FRAMED bare extrinsic wrapping `txRawHex[i]` as its
+   *  single `Vec<u8>` argument. Sprint 9's node-derived ingest path decodes every extrinsic's
+   *  envelope for real (`extrinsic-decoder.ts`) and oracle-cross-checks the extracted payload
+   *  against the indexer's reported raw, so a fake chain must reproduce the real byte
+   *  relationship, not merely substring containment. */
   extrinsics: string[];
   txHashes: Hex32[];
   txRawHex: string[];
   dParameter: { numPermissionedCandidates: number; numRegisteredCandidates: number };
 }
 
+/** SCALE compact-u32 encode (the two modes these small fixtures can need). */
+function compactU32Hex(value: number): string {
+  if (value < 64) return ((value << 2) >>> 0).toString(16).padStart(2, "0");
+  if (value < 16_384) {
+    const v = ((value << 2) | 0b01) >>> 0;
+    return Buffer.from([v & 0xff, (v >> 8) & 0xff]).toString("hex");
+  }
+  throw new Error("fixture compactU32Hex: value out of supported fixture range");
+}
+
+/** Wraps `payloadHex` exactly the way the real node frames a bare
+ *  `pallet_midnight::send_mn_transaction` extrinsic (verified live in
+ *  `test/chain-archive-sync/extrinsic-decoder.test.ts`): compact total length | version 0x05
+ *  (bare v5) | pallet 5 | call 0 | compact arg length | payload. */
+function bareMidnightExtrinsicHex(payloadHex: string): string {
+  const payloadLen = payloadHex.length / 2;
+  const inner = "05" + "05" + "00" + compactU32Hex(payloadLen) + payloadHex;
+  return compactU32Hex(inner.length / 2) + inner;
+}
+
+/** The real MNSV consensus digest item (Consensus | "MNSV" | compact 4 | u32 LE), here carrying
+ *  protocol version 1 to match the fake indexer's per-tx `protocolVersion: 1`. */
+const MNSV_DIGEST_V1 = "0x044d4e53561001000000";
+
 function fakeChain(blocks: { height: number; dParamSeed: number }[]): FakeChainBlock[] {
   return blocks.map(({ height, dParamSeed }) => {
-    const txRaw = Buffer.from(`tx-raw-${height}`, "utf8").toString("hex");
+    // The payload must carry the real `midnight:transaction` self-tag: both the envelope
+    // decoder's midnight-or-null classification and `sync-service.ts`'s own kind field key off
+    // it (design.md §6.1 -- classification is byte-derived, so a fake payload without the tag is
+    // not a regular transaction anywhere in the pipeline).
+    const txRaw = Buffer.from(`midnight:transaction-fake-tx-raw-${height}`, "utf8").toString("hex");
     return {
       height,
       hash: hx(height, 0xa),
       parentHash: height === 0 ? hx(0, 0x00) : hx(height - 1, 0xa),
       stateRoot: hx(height, 0xb),
       extrinsicsRoot: hx(height, 0xc),
-      extrinsics: [txRaw],
+      extrinsics: [bareMidnightExtrinsicHex(txRaw)],
       txHashes: [hx(height, 0xd)],
       txRawHex: [txRaw],
       dParameter: { numPermissionedCandidates: dParamSeed, numRegisteredCandidates: dParamSeed + 1 },
@@ -68,7 +99,7 @@ function fakeNodeFetch(blocks: FakeChainBlock[], finalizedHeight: number, badHea
           const blk = blocks.find((b) => b.hash === hash)!;
           result = {
             parentHash: "0x" + blk.parentHash, number: "0x" + blk.height.toString(16),
-            stateRoot: "0x" + blk.stateRoot, extrinsicsRoot: "0x" + blk.extrinsicsRoot, digest: { logs: [] },
+            stateRoot: "0x" + blk.stateRoot, extrinsicsRoot: "0x" + blk.extrinsicsRoot, digest: { logs: [MNSV_DIGEST_V1] },
           };
         }
         break;
@@ -85,7 +116,7 @@ function fakeNodeFetch(blocks: FakeChainBlock[], finalizedHeight: number, badHea
           block: {
             header: {
               parentHash: "0x" + blk.parentHash, number: "0x" + blk.height.toString(16),
-              stateRoot: "0x" + blk.stateRoot, extrinsicsRoot: "0x" + blk.extrinsicsRoot, digest: { logs: [] },
+              stateRoot: "0x" + blk.stateRoot, extrinsicsRoot: "0x" + blk.extrinsicsRoot, digest: { logs: [MNSV_DIGEST_V1] },
             },
             extrinsics: blk.extrinsics.map((e) => "0x" + e),
           },
