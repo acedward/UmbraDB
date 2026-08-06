@@ -113,6 +113,19 @@ export interface DecodedDustRegistration {
   allowFeePayment: bigint;
 }
 
+/** One contract interaction carried by an intent -- `Intent.actions` in the ledger WASM API
+ *  (`ContractAction = ContractCall | ContractDeploy | MaintenanceUpdate`, each with a readonly
+ *  `address`). This is the address list the reference indexer feeds its per-action
+ *  `get_contract_state` runtime-API call from (`chain-indexer/src/infra/subxt_node.rs:679`) --
+ *  extracted here from the archived bytes alone so the contract-state capture path
+ *  (`sync-service.ts`) can do the same without any indexer. */
+export interface DecodedContractAction {
+  segmentId: number;
+  kind: "deploy" | "call" | "maintain";
+  /** Contract address (hex). */
+  address: string;
+}
+
 export interface DecodedArchivedTransaction {
   kind: "system" | "standard";
   /** Ledger-recomputed transaction hash (hex) for standard transactions -- recomputed from the
@@ -128,6 +141,7 @@ export interface DecodedArchivedTransaction {
   unshieldedOutputs: DecodedUnshieldedOutput[];
   dustSpends: DecodedDustSpend[];
   dustRegistrations: DecodedDustRegistration[];
+  contractActions: DecodedContractAction[];
 }
 
 /** Normalizes a WASM-returned hex string to the archive's lowercase, unprefixed form. */
@@ -183,6 +197,7 @@ export function decodeArchivedTransaction(ledger: any, rawBytes: Uint8Array): De
       transactionHash: systemHash,
       systemDescription: String(sysTx.toString()),
       zswapOutputs: [], zswapInputs: [], unshieldedOutputs: [], dustSpends: [], dustRegistrations: [],
+      contractActions: [],
     };
   }
   if (!isStandardTransaction(rawBytes)) {
@@ -226,10 +241,31 @@ export function decodeArchivedTransaction(ledger: any, rawBytes: Uint8Array): De
   const unshieldedOutputs: DecodedUnshieldedOutput[] = [];
   const dustSpends: DecodedDustSpend[] = [];
   const dustRegistrations: DecodedDustRegistration[] = [];
+  const contractActions: DecodedContractAction[] = [];
+  // Classify one `Intent.actions` element. instanceof against the INJECTED module's own classes
+  // (never a static import -- module doc) with a duck-typing fallback keyed on each class's
+  // distinguishing readonly field (`entryPoint` / `initialState` / `updates`, per ledger-v8.d.ts)
+  // in case a future build's class identity differs across module instances.
+  const kindOfAction = (action: any): DecodedContractAction["kind"] | undefined => {
+    if (ledger.ContractDeploy !== undefined && action instanceof ledger.ContractDeploy) return "deploy";
+    if (ledger.ContractCall !== undefined && action instanceof ledger.ContractCall) return "call";
+    if (ledger.MaintenanceUpdate !== undefined && action instanceof ledger.MaintenanceUpdate) return "maintain";
+    if (action.entryPoint !== undefined) return "call";
+    if (action.initialState !== undefined) return "deploy";
+    if (action.updates !== undefined) return "maintain";
+    return undefined;
+  };
   if (tx.intents !== undefined && tx.intents !== null) {
     for (const [segmentIdRaw, intent] of tx.intents) {
       const segmentId = Number(segmentIdRaw);
       const intentHash = String(intent.intentHash(segmentId));
+      if (intent.actions !== undefined && intent.actions !== null) {
+        for (const action of intent.actions) {
+          const kind = kindOfAction(action);
+          if (kind === undefined || action.address === undefined) continue;
+          contractActions.push({ segmentId, kind, address: String(action.address) });
+        }
+      }
       // The indexer numbers `output_index` across the intent's full output list, guaranteed
       // section first, then fallible (confirmed empirically against real testnet rows) -- one
       // shared counter here reproduces that numbering.
@@ -272,7 +308,7 @@ export function decodeArchivedTransaction(ledger: any, rawBytes: Uint8Array): De
     kind: "standard",
     transactionHash: String(tx.transactionHash()),
     systemDescription: undefined,
-    zswapOutputs, zswapInputs, unshieldedOutputs, dustSpends, dustRegistrations,
+    zswapOutputs, zswapInputs, unshieldedOutputs, dustSpends, dustRegistrations, contractActions,
   };
 }
 
