@@ -615,7 +615,26 @@ export class ChainArchiveSyncService {
     const records: TransactionRecord[] = [];
     let position = 0;
     for (const p of nodePayloads) {
-      if (p.kind !== "regular") continue;
+      if (p.kind !== "regular") {
+        // REFUSE rather than skip. This payload is a system transaction the indexer-sourced path
+        // WOULD have archived, so silently omitting it produces an archive that is not a
+        // replacement for the indexer's -- and, critically, one that cannot be repaired later:
+        // every terminal insert is `ON CONFLICT DO NOTHING`, so re-ingesting the range once
+        // system transactions are supported would skip the already-written rows and leave the
+        // gap permanent, while corrected positions would collide with what is already there.
+        //
+        // An incomplete archive that looks complete is worse than a refusal. Node-only ingest is
+        // therefore not usable on a range containing system transactions until they can be
+        // archived with their authoritative hash -- see
+        // `openspec/changes/sprint-9-indexer-independence/system-transactions-plan.md`.
+        throw new Error(
+          `height ${height}: node-only ingest encountered a system transaction, which it cannot ` +
+            "yet archive (the ledger WASM exposes no SystemTransaction hash, and block 0 emits no " +
+            "SystemTransactionApplied event to take one from). Refusing rather than writing an " +
+            "archive that silently omits it and cannot be repaired in place. Use indexer-sourced " +
+            "ingest for this range, or a range with no system transactions.",
+        );
+      }
       // Audit finding (HIGH/DoS): the envelope decoder classifies by the payload's `midnight:`
       // self-tag, which any caller can forge -- a bare `System::remark(Vec<u8>)` whose bytes
       // merely START with that tag reaches here (proven with a PoC). Previously the ledger's

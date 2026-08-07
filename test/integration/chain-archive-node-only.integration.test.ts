@@ -64,16 +64,25 @@ describe.skipIf(!up || !haveLedger)("node-only ingest against a real node (no in
     await container?.stop();
   }, 60_000);
 
-  it("ingests real blocks, issues no indexer request, and produces well-formed rows", async () => {
+  it("refuses at genesis rather than archiving without system transactions", async () => {
+    // The honest current state of node-only ingest, asserted rather than described.
+    //
+    // Genesis carries system transactions on every Midnight chain, and node-only ingest cannot
+    // archive them: the ledger WASM exposes no SystemTransaction hash, and block 0 emits no
+    // SystemTransactionApplied event to take one from. Since `syncOnce` starts at height 0 for an
+    // empty archive, node-only ingest therefore cannot build a full archive of ANY chain today.
+    //
+    // It REFUSES instead of omitting them, because every terminal insert is
+    // `ON CONFLICT DO NOTHING`: an archive written now without system transactions could not be
+    // repaired by re-ingesting later, and corrected positions would collide with the rows already
+    // there. An incomplete archive that looks complete is the worse failure.
+    //
+    // When this is fixed, this test should invert: the same range must ingest and match the
+    // indexer's transaction sequence exactly. See system-transactions-plan.md.
     const schema = "node_only_gate";
     sql = createClient({ connectionString: container.getConnectionUri(), schema });
     await bootstrapChainArchiveSchema(sql, schema);
 
-    // The recorder is installed BEFORE the service is constructed, deliberately: both RPC clients
-    // capture `fetch` at construction (`opts.fetchImpl ?? fetch`), so wrapping the global
-    // afterwards records nothing. The first version of this test did exactly that, and the
-    // "recorder actually ran" assertion below is what caught it -- without that guard the test
-    // would have reported a clean no-indexer result while watching nothing at all.
     const requested: string[] = [];
     const realFetch = globalThis.fetch;
     globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
@@ -81,86 +90,26 @@ describe.skipIf(!up || !haveLedger)("node-only ingest against a real node (no in
       return realFetch(input, init);
     }) as typeof fetch;
 
-    let result;
     try {
-      // No `indexer` option at all -- the service cannot construct a client it was never given.
       const service = new ChainArchiveSyncService({
-        sql,
-        net: NET,
-        schema,
-        node: { url: NODE_URL, timeoutMs: 30_000 },
+        sql, net: NET, schema, node: { url: NODE_URL, timeoutMs: 30_000 },
       });
-      result = await service.syncOnce({ maxBlocks: 40 });
+      await expect(service.syncOnce({ maxBlocks: 40 })).rejects.toThrow(
+        /system transaction, which it cannot yet archive/,
+      );
+      // Nothing was written: the refusal happens before any durable write for that block.
+      const blocks = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM ${sql(schema)}.blocks WHERE net = ${NET}
+      `;
+      expect(blocks[0]!.n).toBe(0);
     } finally {
       globalThis.fetch = realFetch;
     }
 
-    expect(result.ingestedBlocks).toBeGreaterThan(0);
-
-    // THE assertion this file exists for.
+    // The no-indexer guarantee still holds during the attempt, and is still verified by observing
+    // the requests actually made rather than by inspecting configuration.
     const indexerCalls = requested.filter((u) => INDEXER_SHAPED.test(u));
     expect(indexerCalls, `unexpected indexer-shaped request(s): ${indexerCalls.join(", ")}`).toEqual([]);
-    // Sanity: the recorder was actually wired, so an empty list means "none", not "not watching".
     expect(requested.length).toBeGreaterThan(0);
-
-    // Blocks are contiguous from genesis, which is what the continuity check should guarantee.
-    // `AS h`, not a bare `height::text`: an unqualified ORDER BY resolves to the OUTPUT column,
-    // so selecting `height::text` under its own name sorts lexicographically (0,1,10,11,...,2)
-    // and a contiguity assertion becomes meaningless. Aliasing keeps ORDER BY on the bigint.
-    const blocks = await sql<{ h: string }[]>`
-      SELECT height::text AS h FROM ${sql(schema)}.blocks WHERE net = ${NET} ORDER BY height
-    `;
-    expect(blocks.length).toBe(result.ingestedBlocks);
-    const heights = blocks.map((b) => Number(b.h));
-    expect(heights, `archived heights: ${JSON.stringify(heights.slice(0, 45))}`).toEqual(
-      heights.map((_, i) => i),
-    );
-
-    // Every archived transaction carries the properties the indexer used to supply: a 32-byte
-    // ledger hash, non-empty raw bytes, and a known kind. Positions are contiguous per block.
-    const txs = await sql<{ block_height: string; position: number; kind: string; hash_len: number; raw_len: number }[]>`
-      SELECT t.block_height::text, t.position, t.kind,
-             octet_length(t.tx_hash) AS hash_len, octet_length(b.data) AS raw_len
-      FROM ${sql(schema)}.transactions t
-      JOIN ${sql(schema)}.chain_blobs b ON b.hash = t.raw_blob_hash
-      WHERE t.net = ${NET}
-      ORDER BY t.block_height, t.position
-    `;
-    for (const t of txs) {
-      expect(t.hash_len).toBe(32);
-      expect(t.raw_len).toBeGreaterThan(0);
-      expect(["regular", "system"]).toContain(t.kind);
-    }
-    const byBlock = new Map<string, number[]>();
-    for (const t of txs) byBlock.set(t.block_height, [...(byBlock.get(t.block_height) ?? []), t.position]);
-    for (const [height, positions] of byBlock) {
-      expect(positions, `positions in block ${height} must be contiguous from 0`).toEqual(
-        positions.map((_, i) => i),
-      );
-    }
-  }, 180_000);
-
-  it("resumes across a restart without re-ingesting or breaking continuity", async () => {
-    // A fresh service instance against the same archive: the in-memory continuity anchor is gone,
-    // so this exercises the store-backed path a real deployment takes on every start.
-    const schema = "node_only_gate";
-    const resumed = new ChainArchiveSyncService({
-      sql, net: NET, schema, node: { url: NODE_URL, timeoutMs: 30_000 },
-    });
-    const before = await resumed.getSyncedHeight();
-    expect(before).toBeGreaterThan(0);
-
-    const result = await resumed.syncOnce({ maxBlocks: 5 });
-    const after = await resumed.getSyncedHeight();
-    expect(after).toBeGreaterThanOrEqual(before!);
-    // Whatever it ingested, it did not duplicate: one row per (net, height).
-    const dupes = await sql<{ n: number }[]>`
-      SELECT count(*)::int AS n FROM (
-        SELECT height FROM ${sql(schema)}.blocks WHERE net = ${NET}
-        GROUP BY height HAVING count(*) > 1
-      ) d
-    `;
-    expect(dupes[0]!.n).toBe(0);
-    expect(result.midnightTaggedForeignCalls).toBe(0);
   }, 180_000);
 });
