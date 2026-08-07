@@ -4,6 +4,7 @@ import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
 import { NodeRpcInvalidHeightError } from "../../chain-archive-sync/node-rpc-client.js";
+import { ledgerV8EntryPath } from "../../chain-archive-sync/tx-replay-decoder.js";
 import type { BlockBundle, Hex32 } from "../../src/interfaces/chain-archive-store.js";
 
 /**
@@ -128,6 +129,19 @@ function fakeNodeFetch(blocks: FakeChainBlock[], finalizedHeight: number, badHea
         };
         break;
       }
+      case "state_call": {
+        // SystemParametersApi_get_d_parameter -> SCALE `DParameter { u16, u16 }`, little-endian,
+        // matching what the live node returned (0x0a000000 == {10, 0}) and what the fake
+        // indexer reports for the same block, so node-only and oracle modes agree.
+        const at = (params[2] as string | undefined)?.replace(/^0x/, "");
+        const blk = at === undefined ? blocks[finalizedHeight]! : blocks.find((b) => b.hash === at)!;
+        const buf = Buffer.alloc(4);
+        buf.writeUInt16LE(blk.dParameter.numPermissionedCandidates, 0);
+        buf.writeUInt16LE(blk.dParameter.numRegisteredCandidates, 2);
+        result = "0x" + buf.toString("hex");
+        break;
+      }
+
       default:
         throw new Error(`fakeNodeFetch: unhandled method ${method}`);
     }
@@ -184,6 +198,57 @@ describe("ChainArchiveSyncService retry safety (sprint-fix round Fixes 1-3)", ()
     });
     return { service, schema };
   }
+
+  // Node-only mode needs the ledger WASM to classify payloads, and that dependency is resolved
+  // from a sibling checkout rather than package.json (audit finding F6). Reported as SKIPPED
+  // where it is absent -- never as a vacuous pass. This test is the reason F6 matters: the DoS
+  // regression cannot be enforced in CI until the dependency is packaged.
+  it.skipIf(ledgerV8EntryPath() === undefined)(
+    "audit F2: a forged midnight-tagged System::remark cannot wedge node-only ingest", async () => {
+    // The denial of service this closes: the envelope decoder classifies by the payload's
+    // `midnight:` self-tag, which anyone can forge. A bare System::remark(Vec<u8>) whose bytes
+    // merely START with that tag was accepted, then failed to deserialize as a transaction, and
+    // that failure aborted the block. Because the watermark only advances on success, ingest
+    // retried the same height forever -- a permanent stall for the price of one remark.
+    const blocks = fakeChain([{ height: 0, dParamSeed: 1 }]);
+    // The block carries one GENUINE transaction and one forgery.
+    //
+    // The genuine one must be a real serialized Midnight transaction, because node-only mode
+    // classifies with the ledger itself -- the fake chain's synthetic payloads deliberately are
+    // not, so they would be skipped too and the test would prove nothing. This is the real
+    // genesis regular-transaction extrinsic captured from a 1.0.0 devnet.
+    const REAL_TX_EXTRINSIC =
+      "81030505006d036d69646e696768743a7472616e73616374696f6e5b76395d287369676e61747572655b76315d2c70726f6f662c706564657273656e2d7363686e6f72725b76315d293a040051020128756e6465706c6f7965640b00203d88792d86f71b8a7a21bfe16a2bb2eab74475073fa5b773854f151ed548dba77a2c58157815f0843fc0701ec174828174fbc4e03d122b40fe97741dd131c92658f533496e48e284ce47644a1d68449ce51b8e20a4c624566827c2f437120e31ec4e628b94c4bcb7dec5a1dbd186677de26fdcacb19130f4126359efe37f471bb9c2496900";
+    // A System::remark (pallet 0, call 1) carrying a forged `midnight:` tag over bytes that are
+    // NOT a serializable transaction -- the attack.
+    const forged = Buffer.from(
+      "midnight:transaction[v9](signature[v1],proof,pedersen-schnorr[v1]):NOT-A-TRANSACTION",
+      "latin1",
+    ).toString("hex");
+    const inner = "05" + "00" + "01" + compactU32Hex(forged.length / 2) + forged;
+    blocks[0]!.extrinsics = [REAL_TX_EXTRINSIC, compactU32Hex(inner.length / 2) + inner];
+
+    const schema = `retry_test_${schemaCounter++}`;
+    sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    await bootstrapChainArchiveSchema(sql, schema);
+    // NODE-ONLY: no indexer option at all, which is the mode the forged payload attacks.
+    const service = new ChainArchiveSyncService({
+      sql, net: NET, schema,
+      node: { url: "http://fake-node", fetchImpl: fakeNodeFetch(blocks, 0) },
+    });
+
+    // Must complete, not throw, and must not archive the forged payload as a transaction.
+    const result = await service.syncOnce({ maxBlocks: 10 });
+    expect(result.ingestedBlocks).toBe(1);
+    expect(await service.getSyncedHeight()).toBe(0);
+    // The skip is REPORTED, not silent.
+    expect(result.skippedUndecodablePayloads).toBe(1);
+
+    const rows = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM ${sql(schema)}.transactions WHERE net = ${NET}
+    `;
+    expect(rows[0]!.n).toBe(1); // only the genuine transaction
+  }, 60_000);
 
   it("audit F3: a block whose parent is not the archived block below it is rejected, not spliced", async () => {
     // Archive heights 0 and 1 normally, then hand the service a height-2 block whose parentHash

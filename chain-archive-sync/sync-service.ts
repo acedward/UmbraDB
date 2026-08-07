@@ -121,6 +121,11 @@ export interface SyncOnceResult {
   fromHeight: number | undefined;
   toHeight: number | undefined;
   targetTipHeight: number;
+  /** Node-only mode: payloads that carried a `midnight:` self-tag but did not deserialize as a
+   *  Midnight transaction, and were therefore skipped rather than archived (see
+   *  `buildNodeOnlyTransactionRecords`). Normally 0. A non-zero value means someone is putting
+   *  midnight-tagged bytes into non-Midnight calls -- worth looking at, not worth halting for. */
+  skippedUndecodablePayloads: number;
 }
 
 const WATERMARK_KEY_PREFIX = "sync_cursor:";
@@ -232,6 +237,7 @@ export class ChainArchiveSyncService {
 
   async syncOnce(opts?: { maxBlocks?: number }): Promise<SyncOnceResult> {
     const maxBlocks = opts?.maxBlocks ?? 100;
+    this.skippedUndecodablePayloads = 0;
     await this.assertChainIdentity();
     const finalizedHash = await this.node.getFinalizedHead();
     const targetTipHeight = await this.node.getHeightOf(finalizedHash);
@@ -239,7 +245,10 @@ export class ChainArchiveSyncService {
     const synced = await this.getSyncedHeight();
     const startHeight = synced === undefined ? 0 : synced + 1;
     if (startHeight > targetTipHeight) {
-      return { ingestedBlocks: 0, fromHeight: undefined, toHeight: undefined, targetTipHeight };
+      return {
+        ingestedBlocks: 0, fromHeight: undefined, toHeight: undefined, targetTipHeight,
+        skippedUndecodablePayloads: this.skippedUndecodablePayloads,
+      };
     }
     const endHeight = Math.min(targetTipHeight, startHeight + maxBlocks - 1);
 
@@ -249,7 +258,10 @@ export class ChainArchiveSyncService {
       await this.store.setWatermark(this.watermarkKey(), { height });
       ingested++;
     }
-    return { ingestedBlocks: ingested, fromHeight: startHeight, toHeight: endHeight, targetTipHeight };
+    return {
+      ingestedBlocks: ingested, fromHeight: startHeight, toHeight: endHeight, targetTipHeight,
+      skippedUndecodablePayloads: this.skippedUndecodablePayloads,
+    };
   }
 
   /**
@@ -289,6 +301,9 @@ export class ChainArchiveSyncService {
    * invariant and a hole means something outside this service moved the cursor.
    */
   private lastArchived: { height: number; blockHash: Hex32 } | undefined;
+
+  /** Reset at the start of each `syncOnce` and reported in its result. */
+  private skippedUndecodablePayloads = 0;
 
   private async assertParentContinuity(height: number, header: SubstrateHeader): Promise<void> {
     if (height === 0) return; // genesis parent is all-zero by construction
@@ -494,11 +509,35 @@ export class ChainArchiveSyncService {
     let position = 0;
     for (const p of nodePayloads) {
       if (p.kind !== "regular") continue;
-      const decoded = decodeArchivedTransaction(ledger, p.payload);
+      // Audit finding (HIGH/DoS): the envelope decoder classifies by the payload's `midnight:`
+      // self-tag, which any caller can forge -- a bare `System::remark(Vec<u8>)` whose bytes
+      // merely START with that tag reaches here (proven with a PoC). Previously the ledger's
+      // rejection of those bytes propagated out, aborting the block; because the watermark only
+      // advances on success, ingest retried that height forever. Any user could permanently wedge
+      // a node-only archive for the price of one remark.
+      //
+      // The ledger itself is the authoritative classifier: bytes that do not deserialize as a
+      // Midnight transaction ARE NOT ONE, whoever framed them. So a decode failure means "not a
+      // transaction, skip it", not "abort the chain". This is safe precisely because the
+      // protocol-version gate above already rejected unsupported ledger versions -- a GENUINE
+      // transaction failing to decode under a SUPPORTED version cannot silently reach this path.
+      //
+      // Skips are counted and surfaced on SyncOnceResult rather than swallowed, so a spike is
+      // visible to operators instead of quietly shrinking the archive.
+      //
+      // This does not remove the need for exact runtime-metadata call matching (the real fix for
+      // classification); it removes the denial of service that misclassification enabled.
+      let decoded;
+      try {
+        decoded = decodeArchivedTransaction(ledger, p.payload);
+      } catch {
+        this.skippedUndecodablePayloads++;
+        continue;
+      }
       if (decoded.transactionHash === undefined) {
-        // Unreachable for a standard-tagged payload (decodeArchivedTransaction always computes
-        // it); guarded so a future decoder change fails loudly instead of inserting a bad PK.
-        throw new Error(`node-only ingest: no transaction hash decodable at height ${height}`);
+        // Not a standard transaction after all (e.g. a system-tagged payload): same reasoning.
+        this.skippedUndecodablePayloads++;
+        continue;
       }
       records.push({
         net: this.net,
