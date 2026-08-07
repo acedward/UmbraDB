@@ -11,7 +11,7 @@ import { IndexerClient, type IndexerBlock, type IndexerClientOptions } from "./i
 import { NodeRpcClient, type NodeRpcClientOptions, type SubstrateHeader } from "./node-rpc-client.js";
 import {
   assertSupportedProtocolVersion,
-  decodeMidnightExtrinsic,
+  classifyExtrinsic,
   decodeProtocolVersionFromDigest,
   requireCallIndices,
 } from "./extrinsic-decoder.js";
@@ -122,11 +122,12 @@ export interface SyncOnceResult {
   fromHeight: number | undefined;
   toHeight: number | undefined;
   targetTipHeight: number;
-  /** Node-only mode: payloads that carried a `midnight:` self-tag but did not deserialize as a
-   *  Midnight transaction, and were therefore skipped rather than archived (see
-   *  `buildNodeOnlyTransactionRecords`). Normally 0. A non-zero value means someone is putting
-   *  midnight-tagged bytes into non-Midnight calls -- worth looking at, not worth halting for. */
-  skippedUndecodablePayloads: number;
+  /** Extrinsics whose payload carried a `midnight:` self-tag but whose DISPATCHED CALL was not a
+   *  Midnight transaction call, so the ledger never applied them. Normally 0 and unreachable for
+   *  an ordinary user on the 1.0 runtime. Surfaced rather than dropped because the same signal
+   *  fires if a runtime renumbers its pallets -- in which case genuine transactions would
+   *  otherwise vanish from the archive without a word. */
+  midnightTaggedForeignCalls: number;
 }
 
 const WATERMARK_KEY_PREFIX = "sync_cursor:";
@@ -238,7 +239,7 @@ export class ChainArchiveSyncService {
 
   async syncOnce(opts?: { maxBlocks?: number }): Promise<SyncOnceResult> {
     const maxBlocks = opts?.maxBlocks ?? 100;
-    this.skippedUndecodablePayloads = 0;
+    this.midnightTaggedForeignCalls = 0;
     await this.assertChainIdentity();
     const finalizedHash = await this.node.getFinalizedHead();
     const targetTipHeight = await this.node.getHeightOf(finalizedHash);
@@ -248,7 +249,7 @@ export class ChainArchiveSyncService {
     if (startHeight > targetTipHeight) {
       return {
         ingestedBlocks: 0, fromHeight: undefined, toHeight: undefined, targetTipHeight,
-        skippedUndecodablePayloads: this.skippedUndecodablePayloads,
+        midnightTaggedForeignCalls: this.midnightTaggedForeignCalls,
       };
     }
     const endHeight = Math.min(targetTipHeight, startHeight + maxBlocks - 1);
@@ -261,7 +262,7 @@ export class ChainArchiveSyncService {
     }
     return {
       ingestedBlocks: ingested, fromHeight: startHeight, toHeight: endHeight, targetTipHeight,
-      skippedUndecodablePayloads: this.skippedUndecodablePayloads,
+      midnightTaggedForeignCalls: this.midnightTaggedForeignCalls,
     };
   }
 
@@ -304,7 +305,7 @@ export class ChainArchiveSyncService {
   private lastArchived: { height: number; blockHash: Hex32 } | undefined;
 
   /** Reset at the start of each `syncOnce` and reported in its result. */
-  private skippedUndecodablePayloads = 0;
+  private midnightTaggedForeignCalls = 0;
 
   private async assertParentContinuity(height: number, header: SubstrateHeader): Promise<void> {
     if (height === 0) return; // genesis parent is all-zero by construction
@@ -356,12 +357,19 @@ export class ChainArchiveSyncService {
     }
     // Classification is driven by the runtime's own call numbering for this protocol version.
     // A supported ledger version with no verified index mapping halts here rather than guessing.
-    const nodePayloads =
-      nodeProtocolVersion === undefined
-        ? []
-        : block.extrinsics
-            .map((e) => decodeMidnightExtrinsic(e, requireCallIndices(nodeProtocolVersion, height)))
-            .filter((d): d is NonNullable<typeof d> => d !== null);
+    const nodePayloads: { kind: "regular" | "system"; payload: Uint8Array }[] = [];
+    if (nodeProtocolVersion !== undefined) {
+      const indices = requireCallIndices(nodeProtocolVersion, height);
+      for (const e of block.extrinsics) {
+        const c = classifyExtrinsic(e, indices);
+        if (c.outcome === "midnight") nodePayloads.push(c.extrinsic);
+        // A payload claiming to be a Midnight transaction while riding a different call. On the
+        // 1.0 runtime a user cannot produce this, so a non-zero count means a trusted-boundary
+        // construction or -- the case worth catching -- a runtime that renumbered its pallets,
+        // which would otherwise make genuine transactions disappear from the archive silently.
+        else if (c.outcome === "midnight_tagged_foreign_call") this.midnightTaggedForeignCalls++;
+      }
+    }
 
     let transactions: TransactionRecord[];
     let bridge: { records: BridgeObservationRecord[]; newDParameterJson: string | undefined };
@@ -537,17 +545,20 @@ export class ChainArchiveSyncService {
       //
       // This does not remove the need for exact runtime-metadata call matching (the real fix for
       // classification); it removes the denial of service that misclassification enabled.
-      let decoded;
-      try {
-        decoded = decodeArchivedTransaction(ledger, p.payload);
-      } catch {
-        this.skippedUndecodablePayloads++;
-        continue;
-      }
+      // Fail LOUD here, deliberately. An earlier revision skipped undecodable payloads and
+      // advanced the watermark, to stop a forged payload from stalling ingest -- but that threat
+      // turned out to be unreachable (a user cannot get arbitrary bytes into this call: it is
+      // gated by pallet_midnight's ValidateUnsigned, whose pre_dispatch runs the ledger's own
+      // validation first). So bytes that reach this point have ALREADY been validated by the
+      // node's ledger, and a decode failure means a real problem -- a version mismatch, or a bug
+      // here. Skipping would write a permanently incomplete block and record nothing about it,
+      // which is the worse failure for an archive.
+      const decoded = decodeArchivedTransaction(ledger, p.payload);
       if (decoded.transactionHash === undefined) {
-        // Not a standard transaction after all (e.g. a system-tagged payload): same reasoning.
-        this.skippedUndecodablePayloads++;
-        continue;
+        throw new Error(
+          `node-only ingest at height ${height}: a payload dispatched to the Midnight transaction ` +
+            "call did not decode to a transaction hash. Refusing to archive the block incomplete.",
+        );
       }
       records.push({
         net: this.net,

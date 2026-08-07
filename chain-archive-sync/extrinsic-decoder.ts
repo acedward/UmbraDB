@@ -26,12 +26,27 @@ import { SYSTEM_TX_TAG_PREFIX, STANDARD_TX_TAG_PREFIX } from "./tx-replay-decode
  *   - block-45 extrinsic 3: `6d d8 04 05 00 59 d8 6d69...` -- bare v4 (the wallet SDK submits
  *     v4-framed extrinsics; the node's own inherents use v5), pallet 5, call 0.
  *
- * The decoder deliberately does NOT hardcode pallet indices (5/6 on this devnet runtime; a
- * different runtime build may renumber): the authoritative filter is the payload's own
- * `midnight:` self-tag (design doc §3.2 -- the payload is domain-separated ASCII-tagged), plus
- * the structural requirement that the single trailing `Vec<u8>` argument spans EXACTLY to the
- * extrinsic's end. A non-midnight extrinsic (Timestamp::set and the other inherents) fails the
- * tag check and returns `null`; a midnight extrinsic on a renumbered runtime still decodes.
+ * **Classification is by DISPATCHED CALL, not by payload content.** An earlier version of this
+ * module deliberately ignored the pallet/call indices and filtered on the payload's own
+ * `midnight:` self-tag, reasoning that a renumbered runtime should still decode. That is
+ * backwards: the self-tag lives inside the payload, and a payload is only ever bytes that someone
+ * put into some call. `LedgerApi::apply_transaction` is reached from exactly one call --
+ * `pallet_midnight::send_mn_transaction`, call_index 0 -- so bytes carried by any OTHER call were
+ * never applied to the ledger, whatever they are shaped like. The reference indexer selects
+ * transactions the same way (`runtimes/v1_0_0.rs` matches the call variants; `_ => None`).
+ *
+ * The self-tag is kept as a corroborating check: a call and a payload that disagree are rejected
+ * rather than archived.
+ *
+ * **Scope, so this is not oversold.** On the 1.0 runtime an ordinary user cannot get
+ * midnight-tagged bytes into a non-Midnight call at all: `pallet_midnight` holds the runtime's
+ * ONLY `ValidateUnsigned`, and its `pre_dispatch` admits only `send_mn_transaction`, so a BARE
+ * non-Midnight call is refused by the node -- and an ordinary SIGNED one is refused by this
+ * decoder before the pallet index is even read. The reachable cases are trusted-boundary
+ * constructions (the genesis chain-spec itself builds a bare remark) and future runtimes that add
+ * unsigned-validated calls taking a `Vec<u8>`. This is correctness hardening that matches the
+ * authoritative source, NOT a fix for a live permissionless exploit; an earlier version of this
+ * comment and of the sprint's security note claimed otherwise and was wrong.
  */
 
 /**
@@ -44,9 +59,11 @@ import { SYSTEM_TX_TAG_PREFIX, STANDARD_TX_TAG_PREFIX } from "./tx-replay-decode
  * other call were never applied to the ledger, no matter what they look like.
  *
  * Classifying by the payload's `midnight:` self-tag instead, as this decoder originally did,
- * classifies by ATTACKER-CONTROLLED CONTENT: `System::remark(Vec<u8>)` is a real, fee-paying,
- * no-op call that puts arbitrary bytes on chain, so anyone could wrap a real transaction's bytes
- * in a remark and have them archived as a transaction that the Midnight pallet never executed.
+ * classifies by the CONTENT of the call rather than by the call itself -- so any call carrying a
+ * `Vec<u8>` that happened to start with the tag would be archived as a transaction the ledger
+ * never executed. See the module header for who can and cannot actually produce such a call on
+ * the 1.0 runtime: on that runtime the answer is nobody, short of the trusted genesis
+ * construction, which is why this is hardening rather than an exploit fix.
  */
 export interface RuntimeCallIndices {
   /** Runtime index of `pallet_midnight`. */
@@ -185,10 +202,31 @@ function tagKindOf(payload: Uint8Array): "regular" | "system" | undefined {
  * actual byte count), which indicates a corrupted input rather than a benign non-midnight
  * extrinsic.
  */
+export type ExtrinsicClassification =
+  /** A genuine Midnight transaction call. */
+  | { outcome: "midnight"; extrinsic: DecodedMidnightExtrinsic }
+  /** The payload carries a `midnight:` self-tag but the DISPATCHED CALL is not a Midnight call,
+   *  so the ledger never applied it. Normally impossible for a user to produce on the 1.0
+   *  runtime (see the module header); a non-zero count means either a trusted-boundary
+   *  construction or -- the case worth catching -- a runtime that renumbered its pallets, which
+   *  would otherwise make genuine transactions vanish from the archive in silence. */
+  | { outcome: "midnight_tagged_foreign_call"; palletIndex: number; callIndex: number }
+  /** Anything else: inherents, signed extrinsics, non-`Vec<u8>` calls. The overwhelming majority. */
+  | { outcome: "not_midnight" };
+
+/** Convenience wrapper for callers that only care about genuine Midnight calls. */
 export function decodeMidnightExtrinsic(
   extrinsicHex: string,
   indices: RuntimeCallIndices,
 ): DecodedMidnightExtrinsic | null {
+  const c = classifyExtrinsic(extrinsicHex, indices);
+  return c.outcome === "midnight" ? c.extrinsic : null;
+}
+
+export function classifyExtrinsic(
+  extrinsicHex: string,
+  indices: RuntimeCallIndices,
+): ExtrinsicClassification {
   const bytes = hexToBytes(extrinsicHex);
   const { value: bodyLen, size: lenSize } = decodeCompactU32(bytes, 0);
   if (lenSize + bodyLen !== bytes.length) {
@@ -198,15 +236,15 @@ export function decodeMidnightExtrinsic(
     );
   }
   // Body must at least hold version + pallet + call + a 1-byte compact.
-  if (bodyLen < 4) return null;
+  if (bodyLen < 4) return { outcome: "not_midnight" };
 
   const version = bytes[lenSize]!;
   // Bits 6-7 of the version byte are the extrinsic type: 00 = bare, 10 = signed, 01 = "general"
   // (v5). Midnight payload calls are submitted bare (observed live, both wallet- and
   // node-authored); anything else cannot be a plain single-argument wrap of the payload.
-  if ((version & 0b1100_0000) !== 0) return null;
+  if ((version & 0b1100_0000) !== 0) return { outcome: "not_midnight" };
   const formatVersion = version & 0b0011_1111;
-  if (formatVersion !== 4 && formatVersion !== 5) return null;
+  if (formatVersion !== 4 && formatVersion !== 5) return { outcome: "not_midnight" };
 
   const palletIndex = bytes[lenSize + 1]!;
   const callIndex = bytes[lenSize + 2]!;
@@ -215,13 +253,13 @@ export function decodeMidnightExtrinsic(
   try {
     arg = decodeCompactU32(bytes, lenSize + 3);
   } catch {
-    return null; // truncated compact ⇒ not the shape we're looking for
+    return { outcome: "not_midnight" }; // truncated compact => not the shape we're looking for
   }
   const payloadStart = lenSize + 3 + arg.size;
   // The single Vec<u8> argument must span EXACTLY to the end of the extrinsic -- this is what
   // rules out multi-argument calls from other pallets that happen to start with byte patterns
   // resembling a compact length.
-  if (payloadStart + arg.value !== bytes.length) return null;
+  if (payloadStart + arg.value !== bytes.length) return { outcome: "not_midnight" };
 
   const payload = bytes.subarray(payloadStart);
 
@@ -235,15 +273,26 @@ export function decodeMidnightExtrinsic(
       : palletIndex === indices.midnightSystemPallet && callIndex === indices.sendSystemTransactionCall
         ? "system"
         : undefined;
-  if (kind === undefined) return null;
+  if (kind === undefined) {
+    // Not a Midnight call. Distinguish the ordinary case (an inherent, another pallet) from the
+    // one worth counting: a payload that CLAIMS to be a Midnight transaction while riding a
+    // different call.
+    return tagKindOf(payload) === undefined
+      ? { outcome: "not_midnight" }
+      : { outcome: "midnight_tagged_foreign_call", palletIndex, callIndex };
+  }
 
-  // The self-tag is now a corroborating check, not the classifier. A genuine Midnight call always
-  // carries the matching tag, so a disagreement means the payload is not what the call says it is
-  // -- reject rather than archive it. Fail-closed, and without throwing: a hostile payload must
-  // never be able to halt ingest (see sync-service's skip path for that lesson).
-  if (tagKindOf(payload) !== kind) return null;
+  // The self-tag is a corroborating check, not the classifier. A genuine Midnight call always
+  // carries the matching tag, so a disagreement means the payload is not what the call says it
+  // is -- reject rather than archive it.
+  if (tagKindOf(payload) !== kind) {
+    return { outcome: "midnight_tagged_foreign_call", palletIndex, callIndex };
+  }
 
-  return { version: formatVersion, palletIndex, callIndex, payload, kind };
+  return {
+    outcome: "midnight",
+    extrinsic: { version: formatVersion, palletIndex, callIndex, payload, kind },
+  };
 }
 
 /** Engine id of the Midnight protocol-version consensus digest item: ASCII "MNSV"

@@ -211,32 +211,36 @@ describe("protocol-version gate", () => {
 });
 
 describe("classification is by call, not by payload content (security)", () => {
-  // A `System::remark(Vec<u8>)` is a real, fee-paying, NO-OP call whose whole purpose is putting
-  // arbitrary bytes on chain. The Midnight pallet never sees them; `apply_transaction` is reached
-  // only from `pallet_midnight::send_mn_transaction`. So bytes in a remark were never executed,
-  // whatever they look like -- and the node accepting the EXTRINSIC is not the node accepting a
-  // TRANSACTION.
-  const remarkWrapping = (payloadHex: string): string => {
+  // Bytes carried by a call OTHER than `pallet_midnight::send_mn_transaction` were never applied
+  // to the ledger, whatever they look like -- the node accepting an EXTRINSIC is not the node
+  // accepting a TRANSACTION.
+  //
+  // Pallet 0 below stands for "not the Midnight pallet"; the call index is NOT claimed to be any
+  // particular System call, since that index has not been verified against this runtime. These
+  // extrinsics are constructed directly and are not submittable by a user on the 1.0 runtime
+  // (pallet_midnight holds the only ValidateUnsigned) -- they exercise the classifier, and they
+  // are the exact shape a pallet renumbering would give GENUINE transactions.
+  const foreignCallWrapping = (payloadHex: string): string => {
     const compact = (n: number): string =>
       n < 64
         ? ((n << 2) >>> 0).toString(16).padStart(2, "0")
         : Buffer.from([((n << 2) | 1) & 0xff, (((n << 2) | 1) >> 8) & 0xff]).toString("hex");
-    const inner = "05" + "00" + "01" + compact(payloadHex.length / 2) + payloadHex; // pallet 0, call 1
+    const inner = "05" + "00" + "01" + compact(payloadHex.length / 2) + payloadHex; // pallet 0 = not Midnight
     return "0x" + compact(inner.length / 2) + inner;
   };
 
-  it("rejects a REAL transaction's bytes smuggled through System::remark", () => {
+  it("rejects a REAL transaction's bytes carried by a NON-Midnight call", () => {
     // The severe case: the payload is a genuine, deserializable Midnight transaction (these are
     // the real captured genesis bytes), so no amount of decoding the CONTENT can detect the
     // forgery. Only the carrying call distinguishes them. Archiving this would assert that a
     // transaction occurred in a block where the ledger never applied it.
     const realTxPayload = GENESIS_REGULAR_TX_EXTRINSIC.slice(2 + 7 * 2);
-    expect(decodeMidnightExtrinsic(remarkWrapping(realTxPayload), V1)).toBeNull();
+    expect(decodeMidnightExtrinsic(foreignCallWrapping(realTxPayload), V1)).toBeNull();
   });
 
   it("rejects junk bytes wearing the midnight self-tag", () => {
     const forged = Buffer.from("midnight:transaction[v9]:NOT-A-TRANSACTION", "latin1").toString("hex");
-    expect(decodeMidnightExtrinsic(remarkWrapping(forged), V1)).toBeNull();
+    expect(decodeMidnightExtrinsic(foreignCallWrapping(forged), V1)).toBeNull();
   });
 
   it("still accepts the genuine calls, so the check is not merely rejecting everything", () => {

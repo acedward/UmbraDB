@@ -14,8 +14,9 @@ node validates and executes each one according to *that call's* rules:
 - `pallet_midnight::send_mn_transaction(midnight_tx: Vec<u8>)` — call index 0 — is the **only**
   path that reaches `LedgerApi::apply_transaction`
   (`midnight-node/pallets/midnight/src/lib.rs`). Bytes arriving here become ledger state.
-- `System::remark(Vec<u8>)` is a real, fee-paying call that does **nothing**. Its entire purpose
-  is to put arbitrary bytes on chain. The Midnight pallet never sees them.
+- Any other call taking a `Vec<u8>` — `System::remark` is the familiar example — does something
+  else, or nothing at all. The Midnight pallet never sees those bytes. (Whether such a call can
+  actually be submitted is the next section, and the answer on the 1.0 runtime is no.)
 
 Both are "data the node accepted". Only one is a transaction.
 
@@ -29,25 +30,40 @@ _ => None,
 ```
 
 The archive did not. It ignored which call carried the bytes and classified by the *payload's own*
-`midnight:` self-tag — a string inside data that any user can write. That is classifying by
-attacker-controlled content.
+`midnight:` self-tag — a string that lives inside the call's data rather than in the dispatch
+information the node acted on.
 
-## Why the fee doesn't save you
+## Who can actually produce such a call — and the correction
 
-Submitting a remark costs a fee, so the attack isn't free. It is, however, *cheap and
-permissionless* — no privileged access, no compromised node, no consensus attack. An ordinary
-user with an ordinary account can do it, repeatedly, and the fee is the same one they'd pay to
-store any data on chain.
+An earlier version of this document claimed an ordinary user could do this cheaply and
+permissionlessly. **That was wrong, and an independent review was right to reject it.** On the 1.0
+runtime both routes are closed:
+
+- A **bare (unsigned)** foreign call is refused by the node. `pallet_midnight` holds the runtime's
+  ONLY `ValidateUnsigned`, and its `pre_dispatch` admits only `send_mn_transaction`
+  (`pallets/midnight/src/lib.rs`); every other call returns an error. Bare Midnight transactions
+  work precisely *because* that validator exists, and nothing equivalent covers other pallets.
+- An ordinary **signed** call is refused by this decoder before the pallet index is ever read —
+  signed and "general" extrinsic types return early.
+
+So the reachable cases are the trusted genesis chain-spec, which does construct a bare remark, and
+future runtimes that add unsigned-validated calls taking a `Vec<u8>`. Neither is a live
+permissionless exploit.
+
+**This is therefore correctness hardening, not an exploit fix.** It is still worth doing: it makes
+classification match the authoritative source instead of depending on a property of the runtime
+that is true today, easy to lose, and nowhere stated as a guarantee this archive may rely on.
 
 ## What it actually costs
 
 Two distinct failures came out of the same root cause.
 
-### Case 1 — Forgery (the severe one)
+### Case 1 — Forgery
 
-Wrap a **genuine** transaction's bytes — copy them from any block, or any chain running the same
-ledger version — in a `System::remark`. The archive records a transaction that the ledger never
-applied, with a valid hash, attributed to a block it never executed in.
+Put a **genuine** transaction's bytes — copied from any block, or any chain on the same ledger
+version — into a non-Midnight call. The archive records a transaction the ledger never applied,
+with a valid hash, attributed to a block it never executed in. (Constructible only at the
+trusted boundary on the 1.0 runtime; see above.)
 
 This is undetectable from the payload, because the payload *is* a real transaction. Only the
 carrying call tells them apart, and that was the information being thrown away.
@@ -58,13 +74,17 @@ reporting values never added to the ledger, and any balance derived from the fee
 indexer would report none of it — so the archive would not be a faithful replacement, which is the
 entire premise of this sprint.
 
-### Case 2 — Denial of service
+### Case 2 — Ingest stall
 
-Put **junk** under the same forged tag. The archive accepted it, the ledger refused to
-deserialize it, and the resulting error aborted the block. Because the sync watermark only
-advances on success, ingest retried that height forever.
+Put **junk** under the same tag. The archive accepted it, the ledger refused to deserialize it,
+and the error aborted the block; because the watermark only advances on success, ingest retried
+that height indefinitely.
 
-One remark, and a node-only archive stalls permanently at a height of the attacker's choosing.
+The same reachability limit applies — this was never user-triggerable on the 1.0 runtime. The
+archive's response to it has since been reverted to failing loudly: bytes that reach the ledger
+decoder have already passed `validate_unsigned`, which runs the ledger's own validation, so a
+decode failure there is a real defect and silently skipping it would write a permanently
+incomplete block while recording nothing.
 
 ## The fix
 
@@ -73,18 +93,21 @@ protocol-version range — the same thing the reference indexer does. The self-t
 corroborating check: a call and a payload that disagree are rejected rather than archived.
 
 Pinning constants is sound here because ingest is already gated to known protocol versions, and
-within a version the runtime's pallet numbering is fixed. It is deliberately **fail-closed**: if a
-runtime renumbers pallets inside a supported range, genuine transactions stop being recognized —
-visible and fixable — rather than forged ones starting to be accepted, which would be silent and
-permanent.
+within a version the runtime's pallet numbering is fixed. It is **fail-closed**: if a runtime renumbers pallets inside a
+supported range, genuine transactions stop being recognized rather than forged ones starting to be
+accepted. That failure is not self-announcing, so it is counted — `SyncOnceResult.
+midnightTaggedForeignCalls` rises when a payload claims to be a Midnight transaction while riding
+another call, which is exactly the shape a renumbering produces. Resolving indices from runtime
+metadata removes the pinning altogether and is the intended successor.
 
 Node 0.22.x is deliberately absent from the index table. Its ledger codec is supported, but its
 pallet indices have never been observed here, and guessing them would either drop real
 transactions or archive forged ones. It fails with a message naming exactly what is missing.
 
-A second layer remains behind classification: a payload inside a *genuine* Midnight call that
-fails to deserialize is skipped and counted on `SyncOnceResult`, not thrown. Nothing an attacker
-can put on chain should be able to halt ingest.
+Behind classification, a payload inside a *genuine* Midnight call that fails to deserialize now
+**halts ingest** rather than being skipped. Those bytes have already passed the node's own ledger
+validation, so a failure here is a real defect; completing the block without them would make the
+archive permanently and silently incomplete.
 
 ## Verifying it yourself
 
@@ -97,9 +120,11 @@ docker compose -f test/compose/docker-compose.yml run --rm tests \
   npx vitest run test/chain-archive-sync/extrinsic-decoder.test.ts
 ```
 
-The forgery case is the one worth reading — it smuggles the **real** captured genesis transaction
-through a remark and asserts the decoder returns `null`. To confirm the test is not vacuous,
-revert the classification to the self-tag and watch it fail.
+The forgery case is the one worth reading — it puts the **real** captured genesis transaction
+into a non-Midnight call and asserts the decoder rejects it. The fixture constructs that extrinsic
+directly rather than claiming to reproduce a submittable one, precisely because it is not
+submittable on this runtime. To confirm the test is not vacuous, revert the classification to the
+self-tag and watch it fail.
 
 To confirm the check does not reject genuine traffic, run both ingest modes against one chain and
 compare. Measured on a live 1.0.0 devnet: node-only and indexer-sourced both archive **21 regular
