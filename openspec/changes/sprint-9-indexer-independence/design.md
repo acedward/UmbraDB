@@ -163,6 +163,39 @@ Consequences for scope:
 
 The honest statement of the remaining gap is therefore: **five genesis rows, blocked upstream on a
 WASM export** -- not "system transactions are unsupported".
+## 6b. Contract ledger state in the archive (owner-directed addition, 2026-08-06)
+
+This design's own §0/§1 analysis divided the indexer's data into published per-transaction values
+(recoverable from archived bytes, statelessly), accumulated sets (recoverable by folding), and
+**applied state** — contract state, zswap root — which no fold over archived bytes can produce,
+because it is the *output* of running the state transition. The owner directed closing that last
+category at ingest time rather than leaving it to a future replay engine, which is exactly how the
+reference indexer itself handles it: **a node runtime-API query at that block, per contract
+action** (`chain-indexer/src/infra/subxt_node.rs:679`), never replay.
+
+Mechanism (implemented; evidence in `tasks.md` §6b):
+
+1. **Discovery** — which contracts a block touched — comes from the archived bytes themselves:
+   `tx-replay-decoder.ts` exposes `intent.actions` (`ContractCall`/`ContractDeploy`/
+   `MaintenanceUpdate`, each carrying `address`). No indexer, no events.
+2. **Fetch** — the node's plain-JSON-RPC `midnight_contractState(addressHex, at=blockHash)`
+   (`midnight-node/pallets/midnight/rpc/src/lib.rs`) returns the ledger-serialized state; hex in,
+   hex out, no SCALE at the call boundary. One call per touched address per block. Per-block
+   `midnight_zswapStateRoot(at)` closes the `Midnight:ZswapRoot` gap for one extra call.
+3. **Storage** — migration `002_contract_state`: `contract_states` rows (fork-safe PK, FK to
+   `blocks`) pointing at content-addressed `chain_blobs` under the `'contract_state'` role, so an
+   unchanged state across N blocks is one blob + N cheap metadata rows; `blocks.zswap_state_root`
+   (nullable — absence is honest for pre-migration rows); `feed_contract_states_v1` as the
+   versioned read view (§2: the database is the interface).
+4. **Atomicity** — state rows ride in the same `putBlockBundle` transaction as the block (§4's
+   invariant extends: the watermark can never claim a height whose state rows are missing).
+
+Boundary, stated plainly: this captures state **at ingest time, going forward** (and backward only
+as far as the node's state pruning allows — archive-pruning node for deep backfill). It is a
+capture of the node's answer, not an independent recomputation; cross-checking it against an
+independent replay remains future work if trust-but-verify is ever required. While the indexer
+exists, the capture IS oracle-checked: verified byte-identical to the indexer's
+`contractAction.state` on the live devnet.
 
 ---
 

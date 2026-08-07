@@ -203,6 +203,46 @@ Work in the effectstream repository, tracked here because it is this sprint's sc
     blocked with the reason — stating alongside it that the feed is regular-transaction only, so
     "ready" is scoped to that boundary rather than to full parity with the indexer.
 
+## 6b. Contract ledger state + zswap root capture (owner-directed scope addition, 2026-08-06)
+
+Added on the owner's directive ("we need to keep in the umbra db the contracts ledger state") —
+independent of the indexer-bypass work, closing the one data category the sprint's own analysis
+called genuinely non-recoverable from archived bytes (contract state is a *result* of the state
+transition, not a published value). Mechanism mirrors the reference indexer exactly
+(`chain-indexer/src/infra/subxt_node.rs:679` — a node runtime API queried at that block per
+contract action, NOT replay), via the node's own plain-JSON-RPC surface
+(`midnight-node/pallets/midnight/rpc/src/lib.rs`: `midnight_contractState`,
+`midnight_zswapStateRoot`).
+
+- [x] 6b.1 Migration `002_contract_state` (`src/postgres/migrations/chain_archive/`):
+  `contract_states` table (height-partitioned, fork-safe PK, FK to `blocks`, content-addressed
+  state blobs under a new `'contract_state'` role with the full v3/v4 blob-role integrity
+  pattern), `blocks.zswap_state_root` (nullable), `feed_contract_states_v1` read view.
+  - **DONE:** applies incrementally on a pre-sprint-9 database
+    (`test/postgres/chain-archive-migrate.test.ts`, "sprint 9" case: fresh + incremental apply,
+    blob-role rejection, removal-guard branch, length CHECK, view rendering — all green).
+- [x] 6b.2 Touched-address discovery from archived bytes: `tx-replay-decoder.ts` now emits
+  `contractActions` (`deploy`/`call`/`maintain` + address) from the WASM's `intent.actions`.
+  - **DONE:** verified against the live archive — deploy at block 30, calls at 45/48, all
+    reporting the deployed counter contract's address.
+- [x] 6b.3 Ingest hook: `sync-service.ts` `captureContractState` option — per touched address,
+  fetch `midnight_contractState(addr, at=blockHash)` and write rows in the SAME atomic
+  `putBlockBundle` as the block (watermark can never claim a height whose state rows are absent);
+  per-block `midnight_zswapStateRoot` stored on the block row. Per-address fetch failures skip
+  that address (a failed deploy's address legitimately has no state), documented in the method.
+  - **DONE, verified live (2026-08-06):** `chain_archive_nodeonly` holds contract state at
+    exactly blocks 30/45/48 (8795 bytes each, `midnight:contract-state[v6]:`-tagged), deduped by
+    content addressing to ONE blob (the mint calls don't mutate counter state); the captured
+    bytes are BYTE-IDENTICAL to the indexer's independently-reported
+    `contractAction.state` for the same block (oracle check while the indexer still exists).
+    `zswap_state_root` present on all 1230 blocks with exactly 3 distinct values, transitioning
+    at heights 45 (shielded mint's commitment) and 549 (the zswap) — matching the chain's actual
+    zswap activity.
+  - **Ops constraint, recorded:** `midnight_contractState` at a historical hash needs un-pruned
+    state. A live-follow ingest near the finalized tip is always safe; deep backfill of contract
+    state requires an archive-pruning node. (The compose devnet node retains all state; the
+    0→1225 backfill above succeeded including height-30 state.)
+
 ## 6d. Test stack (`test/compose/`)
 
 The Midnight stack used to verify this work now lives at `test/compose/docker-compose.yml`,
