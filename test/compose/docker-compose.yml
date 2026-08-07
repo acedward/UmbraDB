@@ -135,7 +135,17 @@ services:
       TESTCONTAINERS_HOST_OVERRIDE: 'host.docker.internal'
       # Testcontainers' own reaper connects back to the daemon the same way.
       TESTCONTAINERS_RYUK_DISABLED: '${TESTCONTAINERS_RYUK_DISABLED:-false}'
-    command: ['npm', 'test']
+    # Worker cap, and why it is not a detail. Vitest fans out across test files, and ~15 of this
+    # repo's files provision their own Postgres via Testcontainers -- so an uncapped run asks a
+    # shared machine for a dozen-plus database containers at once. Measured here, on a box also
+    # running several unrelated stacks: uncapped produced 2, then 3, then 10 failures across
+    # three runs, a DIFFERENT random subset each time, all of them container-startup timeouts
+    # rather than assertion failures. Capped at 2 the same suite passed clean -- 535 passed, 0
+    # failed -- and took no longer in wall-clock (338s vs 344s), because the parallelism was
+    # buying nothing once the machine was saturated.
+    #
+    # Raise it on a big idle runner (VITEST_MAX_WORKERS=8); leave it alone anywhere shared.
+    command: ['sh', '-c', 'npx vitest run --maxWorkers=${VITEST_MAX_WORKERS:-2}']
     depends_on:
       node:
         condition: service_healthy
