@@ -12,6 +12,9 @@ import { NodeRpcClient, type NodeRpcClientOptions, type SubstrateHeader } from "
 import {
   assertSupportedProtocolVersion,
   classifyExtrinsic,
+  decodeCompactU32,
+  decodeBlockTimestampMs,
+  callIndicesForProtocolVersion,
   decodeProtocolVersionFromDigest,
   requireCallIndices,
 } from "./extrinsic-decoder.js";
@@ -133,6 +136,20 @@ export interface ChainArchiveSyncServiceOptions {
    * identity.
    */
   expectedGenesisHash?: string;
+
+  /**
+   * Capture the node's `midnight_zswapStateRoot` for each ingested block into
+   * `blocks.zswap_state_root` (one extra JSON-RPC round trip per block).
+   *
+   * Off by default: it costs a round trip per block and is only needed by consumers reading the
+   * `feed_zswap_roots_v1` view (effectstream's `Midnight:ZswapRoot` primitive). Blocks ingested
+   * with it off keep a NULL root, and the feed view omits them -- absence is modelled rather
+   * than faked, so a consumer never mistakes "not captured" for "no root".
+   *
+   * Requires the node to serve state at the block hash being ingested: run with
+   * `--state-pruning archive`, or ingest near the tip.
+   */
+  captureZswapRoot?: boolean;
 }
 
 export interface SyncOnceResult {
@@ -186,6 +203,8 @@ export class ChainArchiveSyncService {
    *  uniqueness constraint on content, only on `(net, block_height, block_hash,
    *  observation_index)`, so this can never produce a duplicate-key error either way). */
   private lastDParameterJson: string | undefined;
+  /** See `ChainArchiveSyncServiceOptions.captureZswapRoot`. */
+  private readonly captureZswapRoot: boolean;
 
   constructor(opts: ChainArchiveSyncServiceOptions) {
     this.store = new PgChainArchiveStore(opts.sql, opts.schema ?? "chain_archive");
@@ -195,6 +214,7 @@ export class ChainArchiveSyncService {
     this.expectedGenesisHash =
       opts.expectedGenesisHash === undefined ? undefined : hexNoPrefix(opts.expectedGenesisHash);
     this.net = opts.net;
+    this.captureZswapRoot = opts.captureZswapRoot ?? false;
   }
 
   /** Loads the ledger WASM exactly once, on first need. Throws `loadLedgerV8`'s own descriptive
@@ -524,6 +544,27 @@ export class ChainArchiveSyncService {
       return payloads;
     };
 
+    // The block timestamp is decoded from the block's own `Timestamp::set` inherent in BOTH
+    // modes -- it is body-only data, so the indexer-sourced path has no separate source for it.
+    //
+    // Resolved LENIENTLY, via callIndicesForProtocolVersion rather than requireCallIndices: an
+    // unverified runtime means no timestamp for that block, not a failed ingest. Using the
+    // throwing form here would put a node-side call-numbering gate back in front of
+    // indexer-sourced ingest -- the exact regression the classification split removed -- for the
+    // sake of one nullable column.
+    let timestampMs: number | undefined;
+    if (nodeProtocolVersion !== undefined) {
+      const indices = callIndicesForProtocolVersion(nodeProtocolVersion);
+      if (indices !== undefined) timestampMs = decodeBlockTimestampMs(block.extrinsics, indices);
+    }
+
+    // One extra RPC per block, only when a consumer needs the root (see `captureZswapRoot`).
+    // Pinned to THIS block's hash, never the best block: resolving it by height-then-tip would
+    // race a newly-imported block and silently attribute a later root to an earlier height.
+    const zswapStateRoot = this.captureZswapRoot
+      ? await this.node.midnightZswapStateRoot(blockHash)
+      : undefined;
+
     let transactions: TransactionRecord[];
     let bridge: { records: BridgeObservationRecord[]; newDParameterJson: string | undefined };
 
@@ -581,6 +622,8 @@ export class ChainArchiveSyncService {
       extrinsicsRoot: hexNoPrefix(header.extrinsicsRoot),
       headerBytes: headerBytes(header),
       bodyBytes: extrinsicsBytes(block.extrinsics),
+      zswapStateRoot,
+      timestampMs,
       isCanonical: true,
       status: "canonical",
       finalized: true,

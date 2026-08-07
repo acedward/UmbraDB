@@ -55,6 +55,8 @@ interface BlockRow {
   is_canonical: boolean;
   status: string;
   finalized: boolean;
+  zswap_state_root: Buffer | null;
+  timestamp_ms: string | bigint | null;
 }
 
 interface TxRow {
@@ -80,6 +82,15 @@ function toBlockMeta(row: BlockRow): BlockMeta {
     author: row.author ? bufToHex(row.author) : undefined,
     headerBlobHash: bufToHex(row.header_blob_hash),
     bodyBlobHash: row.body_blob_hash ? bufToHex(row.body_blob_hash) : undefined,
+    // Not `bufToHex`: that asserts the 32-byte Hex32 shape, and this root is ledger-serialized
+    // (33 bytes live, 32..64 permitted by the schema CHECK).
+    zswapStateRoot: row.zswap_state_root === null
+      ? undefined
+      : Buffer.from(row.zswap_state_root).toString("hex"),
+    // `bigint` columns arrive from the driver as a string or a JS bigint depending on
+    // configuration -- normalize through Number, which is exact for ms-since-epoch (~1.8e12,
+    // four orders of magnitude below MAX_SAFE_INTEGER).
+    timestampMs: row.timestamp_ms === null ? undefined : Number(row.timestamp_ms),
     isCanonical: row.is_canonical,
     status: row.status as BlockMeta["status"],
     finalized: row.finalized,
@@ -188,15 +199,22 @@ export class PgChainArchiveStore implements ChainArchiveStore {
       `;
     }
 
+    // `zswap_state_root` is variable-length (33 bytes live, 32..64 permitted) so it does NOT go
+    // through `hexToBuf`, which asserts the 32-byte Hex32 shape.
+    const zswapRoot = block.zswapStateRoot === undefined
+      ? null
+      : Buffer.from(block.zswapStateRoot, "hex");
     await tx`
       INSERT INTO ${tx(this.schema)}.blocks
         (net, block_hash, height, parent_hash, state_root, extrinsics_root, author,
-         header_blob_hash, body_blob_hash, is_canonical, status, finalized)
+         header_blob_hash, body_blob_hash, is_canonical, status, finalized,
+         zswap_state_root, timestamp_ms)
       VALUES
         (${block.net}, ${hexToBuf(block.blockHash)}, ${block.height},
          ${hexToBuf(block.parentHash)}, ${hexToBuf(block.stateRoot)},
          ${hexToBuf(block.extrinsicsRoot)}, ${block.author ? hexToBuf(block.author) : null},
-         ${headerHash}, ${bodyHash}, ${block.isCanonical}, ${block.status}, ${block.finalized})
+         ${headerHash}, ${bodyHash}, ${block.isCanonical}, ${block.status}, ${block.finalized},
+         ${zswapRoot}, ${block.timestampMs ?? null})
       ON CONFLICT (net, height, block_hash) DO NOTHING
     `;
 
@@ -403,7 +421,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
   async getBlocksAtHeight(net: string, height: number): Promise<BlockMeta[]> {
     try {
       const rows = await this.sql<BlockRow[]>`
-        SELECT net, block_hash, height, parent_hash, state_root, extrinsics_root, author,
+        SELECT net, block_hash, height, parent_hash, state_root, extrinsics_root, author, zswap_state_root, timestamp_ms,
                header_blob_hash, body_blob_hash, is_canonical, status, finalized
         FROM ${this.sql(this.schema)}.blocks
         WHERE net = ${net} AND height = ${height}
@@ -418,7 +436,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
   async getCanonicalBlockAtHeight(net: string, height: number): Promise<BlockMeta | undefined> {
     try {
       const rows = await this.sql<BlockRow[]>`
-        SELECT net, block_hash, height, parent_hash, state_root, extrinsics_root, author,
+        SELECT net, block_hash, height, parent_hash, state_root, extrinsics_root, author, zswap_state_root, timestamp_ms,
                header_blob_hash, body_blob_hash, is_canonical, status, finalized
         FROM ${this.sql(this.schema)}.blocks
         WHERE net = ${net} AND height = ${height} AND is_canonical
@@ -462,7 +480,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
   async getCanonicalChainRange(net: string, fromHeight: number, toHeight: number): Promise<BlockMeta[]> {
     try {
       const rows = await this.sql<BlockRow[]>`
-        SELECT net, block_hash, height, parent_hash, state_root, extrinsics_root, author,
+        SELECT net, block_hash, height, parent_hash, state_root, extrinsics_root, author, zswap_state_root, timestamp_ms,
                header_blob_hash, body_blob_hash, is_canonical, status, finalized
         FROM ${this.sql(this.schema)}.blocks
         WHERE net = ${net} AND height BETWEEN ${fromHeight} AND ${toHeight} AND is_canonical

@@ -24,6 +24,10 @@
  *   ORACLE_CROSS_CHECK  "1" additionally validates every block's node-derived view against the
  *                   indexer's, throwing on disagreement (validation mode; off by default)
  *   MAX_BLOCKS      blocks ingested per syncOnce call (default 200)
+ *   CAPTURE_ZSWAP_ROOT  "1" also captures midnight_zswapStateRoot per block into
+ *                   blocks.zswap_state_root, which is what populates feed_zswap_roots_v1 for
+ *                   effectstream's Midnight:ZswapRoot primitive. Costs one extra RPC per block
+ *                   and needs a node serving historical state (--state-pruning archive).
  *
  * Run:  ARCHIVE_PG=postgres://user:pass@host:5432/db npx tsx chain-archive-sync/sync-cli.ts
  */
@@ -46,6 +50,7 @@ const NODE_ONLY = process.env.NODE_ONLY === "1" || process.env.INDEXER_URL === "
 // default, so indexer-sourced ingest behaves exactly as it did before node reading existed.
 const ORACLE_CROSS_CHECK = process.env.ORACLE_CROSS_CHECK === "1";
 const MAX_BLOCKS = Number(process.env.MAX_BLOCKS ?? "200");
+const CAPTURE_ZSWAP_ROOT = process.env.CAPTURE_ZSWAP_ROOT === "1";
 
 const sql = createClient({ connectionString: CONN, schema: SCHEMA });
 await bootstrapChainArchiveSchema(sql, SCHEMA);
@@ -59,6 +64,7 @@ const service = new ChainArchiveSyncService({
   // construction, not by configuration discipline.
   ...(NODE_ONLY ? {} : { indexer: { url: INDEXER_URL, timeoutMs: 30_000 } }),
   oracleCrossCheck: ORACLE_CROSS_CHECK,
+  captureZswapRoot: CAPTURE_ZSWAP_ROOT,
 });
 
 let stop = false;
@@ -73,6 +79,7 @@ console.log(
   `[archive-sync] START net=${NET} schema=${SCHEMA} node=${NODE_URL} ` +
     `indexer=${NODE_ONLY ? "NONE (node-only mode)" : INDEXER_URL} ` +
     `oracle=${ORACLE_CROSS_CHECK ? "on" : "off"}`,
+    `zswapRoot=${CAPTURE_ZSWAP_ROOT ? "captured" : "off"}`,
 );
 while (!stop) {
   try {

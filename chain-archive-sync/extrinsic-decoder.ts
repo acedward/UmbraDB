@@ -74,6 +74,10 @@ export interface RuntimeCallIndices {
   sendTransactionCall: number;
   /** `send_mn_system_transaction`'s call index within `pallet_midnight_system`. */
   sendSystemTransactionCall: number;
+  /** Runtime index of `pallet_timestamp`. */
+  timestampPallet: number;
+  /** `set`'s call index within `pallet_timestamp`. */
+  timestampSetCall: number;
 }
 
 /**
@@ -104,6 +108,11 @@ const CALL_INDICES_BY_PROTOCOL: readonly {
       midnightSystemPallet: 6,
       sendTransactionCall: 0,
       sendSystemTransactionCall: 0,
+      // Timestamp is pallet 1 / call 0 on this runtime, verified the same way: the block-45
+      // inherent `0x280501000be07b93d89f01` is bare v5, pallet 1, call 0, one `Compact<u64>`
+      // moment decoding to 1786044972000 ms. Also a fixture in this decoder's test file.
+      timestampPallet: 1,
+      timestampSetCall: 0,
     },
     verifiedAgainst: "midnightntwrk/midnight-node:1.0.0",
   },
@@ -315,6 +324,65 @@ export function classifyExtrinsic(
     outcome: "midnight",
     extrinsic: { version: formatVersion, palletIndex, callIndex, payload, kind },
   };
+}
+
+/**
+ * Milliseconds since the Unix epoch for the block whose extrinsics these are, decoded from its
+ * own `pallet_timestamp::set` inherent, or `undefined` if the block carries none.
+ *
+ * Why the block needs a timestamp at all: consumers place a block on the root chain's clock from
+ * it (effectstream's `MidnightSyncState.toRootPage`), and stateful ledger replay will need it as
+ * `BlockContext.tblock`. The node exposes it nowhere else -- it is not in the header, only in the
+ * body as the first inherent -- so decoding it here is the only node-only route.
+ *
+ * Shape (verified live, block 45): `28 05 01 00 0b e07b93d89f01` -- compact body length, bare v5
+ * version byte, pallet 1, call 0, then ONE `Compact<u64>` argument in big-integer mode (`0x0b` =>
+ * six little-endian bytes) decoding to 1786044972000.
+ *
+ * Classification is by dispatched call, exactly as for transaction payloads: an extrinsic is the
+ * timestamp inherent because it *is* `Timestamp::set`, never because its bytes look like a
+ * plausible moment. Anything malformed is skipped rather than thrown, since a block without a
+ * decodable timestamp must degrade to a NULL column, not halt ingest.
+ */
+export function decodeBlockTimestampMs(
+  extrinsicHexes: readonly string[],
+  indices: RuntimeCallIndices,
+): number | undefined {
+  for (const hex of extrinsicHexes) {
+    let bytes: Uint8Array;
+    let bodyLen: number;
+    let lenSize: number;
+    try {
+      bytes = hexToBytes(hex);
+      ({ value: bodyLen, size: lenSize } = decodeCompactU32(bytes, 0));
+    } catch {
+      continue;
+    }
+    if (lenSize + bodyLen !== bytes.length || bodyLen < 4) continue;
+
+    const version = bytes[lenSize]!;
+    if ((version & 0b1100_0000) !== 0) continue; // inherents are bare
+    const formatVersion = version & 0b0011_1111;
+    if (formatVersion !== 4 && formatVersion !== 5) continue;
+    if (bytes[lenSize + 1] !== indices.timestampPallet) continue;
+    if (bytes[lenSize + 2] !== indices.timestampSetCall) continue;
+
+    let moment: { value: number; size: number };
+    try {
+      // `decodeCompactU32` handles every SCALE compact mode including big-integer, and rejects
+      // anything past MAX_SAFE_INTEGER rather than truncating -- ms-since-epoch (~1.8e12) is four
+      // orders of magnitude inside that bound, so the u32 in the name is a misnomer here, not a
+      // limit.
+      moment = decodeCompactU32(bytes, lenSize + 3);
+    } catch {
+      continue;
+    }
+    // The single argument must span exactly to the end, same shape check as a payload call: this
+    // is what rules out a multi-argument call that merely begins with a plausible compact.
+    if (lenSize + 3 + moment.size !== bytes.length) continue;
+    return moment.value;
+  }
+  return undefined;
 }
 
 /** Engine id of the Midnight protocol-version consensus digest item: ASCII "MNSV"

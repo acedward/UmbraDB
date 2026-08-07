@@ -156,6 +156,34 @@ export class NodeRpcClient {
     return this.call<string>("state_call", params);
   }
 
+  /**
+   * `midnight_zswapStateRoot` -- the node's own plain-JSON-RPC surface
+   * (`midnight-node/pallets/midnight/rpc/src/lib.rs`), so no SCALE decoding at the boundary. The
+   * zswap state root at `at` (a block hash), or at the best block when omitted.
+   *
+   * Returned as a JSON byte ARRAY (serde's `Vec<u8>` default) on the 1.0 node, normalized to
+   * lowercase hex here; the string form is accepted too, since that is a serialization detail of
+   * the RPC layer rather than a guarantee.
+   *
+   * **Historical hashes need un-pruned state**: run the node with `--state-pruning archive` (or
+   * follow near the tip). A pruned node answers for recent blocks and fails for old ones, which
+   * is why the compose stack pins archive mode rather than leaving it to chance.
+   */
+  async midnightZswapStateRoot(at?: string): Promise<string> {
+    const params: unknown[] = at === undefined ? [] : [at];
+    const root = await this.call<number[] | string>("midnight_zswapStateRoot", params);
+    if (typeof root === "string") {
+      return (root.startsWith("0x") ? root.slice(2) : root).toLowerCase();
+    }
+    if (!Array.isArray(root)) {
+      throw new Error(
+        `midnight_zswapStateRoot returned an unexpected shape (expected a byte array or hex ` +
+          `string): ${JSON.stringify(root)?.slice(0, 120)}`,
+      );
+    }
+    return Buffer.from(root).toString("hex");
+  }
+
   /** Convenience: resolves a hash to its height via `getHeader` -- the RPC surface has no
    *  direct "height of this hash" call, so this is the standard two-hop lookup.
    *
