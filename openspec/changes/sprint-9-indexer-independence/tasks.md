@@ -173,10 +173,10 @@ Work in the effectstream repository, tracked here because it is this sprint's sc
   - **Acceptance:** the ingest completes over the pinned range with no network call to any indexer
     endpoint. Verify by blocking the endpoint, not by inspecting configuration.
   - **DONE (2026-08-06):** executed with the indexer CONTAINER STOPPED (`docker stop
-    umbra-sprint9-indexer-1`), not merely unconfigured — heights 0→1225 ingested into a fresh
-    `chain_archive_nodeonly` schema in ~10s, D-parameter sourced via
-    `state_call(SystemParametersApi_get_d_parameter)` (verified byte-equal to the indexer-reported
-    values), zswap state root + contract state captured per block (`CAPTURE_CONTRACT_STATE=1`).
+    umbradb-test-indexer-1`), not merely unconfigured — heights 0→1225 ingested into a fresh
+    `chain_archive_nodeonly` schema in ~10s, with the D-parameter sourced via
+    `state_call(SystemParametersApi_get_d_parameter)` and verified byte-equal to the values the
+    indexer had reported.
     Node-only mode passes NO indexer option, so the service never constructs an `IndexerClient` —
     independence holds by construction.
 - [ ] 6.3 Execute Run B over the pinned range.
@@ -193,6 +193,27 @@ Work in the effectstream repository, tracked here because it is this sprint's sc
   - **Acceptance:** an explicit written verdict for `Midnight:UnshieldedCreate` — cutover-ready, or
     blocked with the reason — stating alongside it that the feed is regular-transaction only, so
     "ready" is scoped to that boundary rather than to full parity with the indexer.
+
+## 6d. Test stack (`test/compose/`)
+
+The Midnight stack used to verify this work now lives at `test/compose/docker-compose.yml`,
+not under this change's own directory -- an openspec change gets archived when its sprint
+closes, and the repo's live-devnet integration suite depends on this stack, so it needs a
+durable home.
+
+It publishes NO host ports. Services are reachable only on the compose network under their
+canonical ports (node 9944, indexer 8088, proof server 6300, postgres 5432), so several stacks
+coexist on one machine under different project names without negotiating a port range. This
+also fixes a real mis-binding: `test/integration/chain-archive-sync.integration.test.ts` probes
+a node URL and runs against whatever answers, so on a shared machine it could silently test
+against an unrelated devnet -- and did, failing on foreign data. Its endpoints are now
+`MIDNIGHT_TEST_NODE_URL` / `MIDNIGHT_TEST_INDEXER_URL` (defaults unchanged), which the compose
+`tests` service points at its own services.
+
+    docker compose -f test/compose/docker-compose.yml up -d node indexer proof-server postgres
+    docker compose -f test/compose/docker-compose.yml run --rm tests
+
+Layer `docker-compose.hostports.yml` when host access is actually wanted.
 
 ## 7. Close-out
 

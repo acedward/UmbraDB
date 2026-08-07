@@ -1,0 +1,143 @@
+# A self-contained Midnight stack (node + indexer + proof server) plus Postgres, for running
+# this repo's live-devnet integration tests and for driving real transactions against a real
+# chain during development.
+#
+# ── No host ports, deliberately ──────────────────────────────────────────────────────────────
+# Nothing here publishes to the host. Every service is reachable only on the compose network,
+# under its CANONICAL port (node 9944, indexer 8088, proof server 6300, postgres 5432), which
+# means:
+#
+#   - several of these stacks can run side by side on one machine with zero port collisions,
+#     as long as each uses its own project name (`docker compose -p <name> ...`). Docker gives
+#     each project its own network, so `node:9944` in one is a different container than
+#     `node:9944` in another.
+#   - no agent or developer sharing the machine has to negotiate a host port range, and no
+#     test can accidentally bind to a DIFFERENT stack that happens to occupy the port it
+#     expected. (That mis-binding is real: this repo's live-devnet suite probes a node URL and
+#     runs against whatever answers, so on a shared machine it could silently test against an
+#     unrelated devnet and fail on foreign data.)
+#
+# If you DO want host access -- psql from a GUI, a browser on the indexer -- layer the optional
+# override, which publishes the same services on a configurable, non-default host port block:
+#
+#   docker compose -f test/compose/docker-compose.yml \
+#                  -f test/compose/docker-compose.hostports.yml up -d
+#
+# ── Running the tests inside the network ─────────────────────────────────────────────────────
+#   docker compose -f test/compose/docker-compose.yml up -d node indexer proof-server postgres
+#   docker compose -f test/compose/docker-compose.yml run --rm tests
+#
+# The `tests` service runs the suite from inside the compose network, so the live-devnet tests
+# reach `http://node:9944` / `http://indexer:8088` with no host involvement at all.
+#
+# Versions pin the proven midnight-1.0.0 set; override with NODE_TAG / INDEXER_TAG / PROOF_TAG.
+
+name: umbradb-test
+
+services:
+  node:
+    restart: unless-stopped
+    image: 'midnightntwrk/midnight-node:${NODE_TAG:-1.0.0}'
+    environment:
+      CFG_PRESET: 'dev'
+      SIDECHAIN_BLOCK_BENEFICIARY: '04bcf7ad3be7a5c790460be82a713af570f22e0f801f6659ab8e84a52be6969e'
+    healthcheck:
+      test:
+        - 'CMD-SHELL'
+        - >
+          curl -fs -H 'Content-Type: application/json' -d
+          '{"id":1,"jsonrpc":"2.0","method":"chain_getBlockHash","params":[1]}' http://localhost:9944 | grep -q
+          '"result":"0x'
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  indexer:
+    restart: unless-stopped
+    image: 'midnightntwrk/indexer-standalone:${INDEXER_TAG:-4.3.2}'
+    environment:
+      RUST_LOG: 'indexer=info,chain_indexer=info,indexer_api=info,wallet_indexer=info,indexer_common=info,fastrace_opentelemetry=off,info'
+      APP__APPLICATION__NETWORK_ID: 'undeployed'
+      APP__INFRA__NODE__URL: 'ws://node:9944'
+      APP__INFRA__STORAGE__PASSWORD: 'indexer'
+      APP__INFRA__PUB_SUB__PASSWORD: 'indexer'
+      APP__INFRA__LEDGER_STATE_STORAGE__PASSWORD: 'indexer'
+      APP__INFRA__SECRET: '303132333435363738393031323334353637383930313233343536373839303132'
+      APP__INFRA__SPO_NODE__URL: 'ws://node:9944'
+      APP__INFRA__SPO_NODE__BLOCKFROST_ID: 'umbradb-test-dummy-id'
+    healthcheck:
+      # image has neither curl nor wget -- probe the file the indexer writes when running
+      test: ['CMD-SHELL', 'cat /var/run/indexer-standalone/running']
+      interval: 5s
+      timeout: 5s
+      retries: 36
+      start_period: 60s
+    depends_on:
+      node:
+        condition: service_healthy
+
+  proof-server:
+    restart: unless-stopped
+    image: 'midnightntwrk/proof-server:${PROOF_TAG:-8.1.0}'
+    environment:
+      RUST_BACKTRACE: 'full'
+      EXTRA_ARGS: '-v'
+    # distroless image: no shell, so no healthcheck -- consumers retry on the port
+
+  # UmbraDB supplies no database of its own: "You supply the database; UmbraDB owns a schema
+  # inside it" (README). This is that database -- for manual/CLI use. The automated suite does
+  # NOT use it: 15 test files provision their own ephemeral Postgres via Testcontainers, so
+  # each suite gets a pristine database and they cannot interfere with one another.
+  postgres:
+    restart: unless-stopped
+    image: 'postgres:17'
+    environment:
+      POSTGRES_USER: 'umbra'
+      POSTGRES_PASSWORD: 'umbra'
+      POSTGRES_DB: 'umbra'
+    # UmbraDB's durability probe REFUSES to migrate when fsync or full_page_writes are off, and
+    # warns on synchronous_commit=off. Postgres 17 defaults satisfy all three; they are set
+    # explicitly so a future edit that breaks the contract fails loudly here rather than at
+    # migration time.
+    command:
+      - 'postgres'
+      - '-c'
+      - 'fsync=on'
+      - '-c'
+      - 'full_page_writes=on'
+      - '-c'
+      - 'synchronous_commit=on'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U umbra -d umbra']
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # The test runner, inside the network. `run --rm tests` executes the suite with the live
+  # devnet endpoints pointing at this project's own node/indexer.
+  #
+  # Testcontainers still needs the Docker daemon to provision each suite's Postgres, hence the
+  # socket mount. Those containers are siblings on the HOST's daemon, not children of this one,
+  # so their mapped ports are host ports -- TESTCONTAINERS_HOST_OVERRIDE + the host-gateway
+  # alias are what let this container reach them.
+  tests:
+    image: 'node:${NODE_IMAGE_TAG:-24-bookworm}'
+    working_dir: /repo
+    volumes:
+      - '../..:/repo'
+      - '/var/run/docker.sock:/var/run/docker.sock'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    environment:
+      MIDNIGHT_TEST_NODE_URL: 'http://node:9944'
+      MIDNIGHT_TEST_INDEXER_URL: 'http://indexer:8088/api/v3/graphql'
+      TESTCONTAINERS_HOST_OVERRIDE: 'host.docker.internal'
+      # Testcontainers' own reaper connects back to the daemon the same way.
+      TESTCONTAINERS_RYUK_DISABLED: '${TESTCONTAINERS_RYUK_DISABLED:-false}'
+    command: ['npm', 'test']
+    depends_on:
+      node:
+        condition: service_healthy
+      indexer:
+        condition: service_healthy

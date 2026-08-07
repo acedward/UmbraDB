@@ -28,7 +28,7 @@ import { IndexerClient } from "../../chain-archive-sync/indexer-client.js";
  */
 async function devnetIsUp(): Promise<boolean> {
   try {
-    const res = await fetch("http://localhost:9944", {
+    const res = await fetch(NODE_URL, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "system_chain", params: [] }),
       signal: AbortSignal.timeout(3000),
@@ -40,8 +40,13 @@ async function devnetIsUp(): Promise<boolean> {
 }
 
 const NET = "undeployed1";
-const NODE_URL = "http://localhost:9944";
-const INDEXER_URL = "http://localhost:8088/api/v3/graphql";
+// Endpoint overrides (defaults unchanged, so an existing local-devnet workflow is unaffected).
+// `test/compose/docker-compose.yml` sets these to its own in-network services, which is what
+// lets this suite run against a KNOWN stack instead of whatever happens to answer on the
+// default host ports -- on a shared machine that could be an unrelated devnet, and the suite
+// would then fail on foreign data rather than skipping.
+const NODE_URL = process.env.MIDNIGHT_TEST_NODE_URL ?? "http://localhost:9944";
+const INDEXER_URL = process.env.MIDNIGHT_TEST_INDEXER_URL ?? "http://localhost:8088/api/v3/graphql";
 
 // Probed once at collection time (top-level await) so the whole suite can be genuinely
 // `describe.skipIf`-skipped -- shows up as SKIPPED, never as a vacuous PASS (Finding 4).
