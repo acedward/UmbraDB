@@ -394,6 +394,58 @@ export class ChainArchiveSyncService {
     }
   }
 
+  /**
+   * `System::Events` storage key: twox128("System") ++ twox128("Events"). A well-known Substrate
+   * constant, not derived at runtime -- computing it would need a twox128 implementation for no
+   * benefit, since it is fixed for every Substrate chain.
+   */
+  private static readonly SYSTEM_EVENTS_KEY =
+    "0x26aa394eea5630e07c48ae0c9558cef780d41e5e16056765bc8461851072c9d7";
+
+  /**
+   * Refuse a block whose events carry system transactions this build did not archive.
+   *
+   * The gap being guarded: system transactions reach the node two ways. Extrinsic-borne ones are
+   * archived (they are in `chain_getBlock.extrinsics`). Runtime-GENERATED ones exist only as
+   * `SystemTransactionApplied` events, which this build does not decode -- so on a chain that
+   * mints block rewards, a node-only archive would be short of an indexer-sourced one WITHOUT
+   * SAYING SO. That silence is the problem: `ON CONFLICT DO NOTHING` means such an archive cannot
+   * be repaired by re-ingesting later.
+   *
+   * The check counts occurrences of the system-transaction self-tag in the raw events blob and
+   * compares against how many system transactions this block actually archived. Counting, not
+   * decoding: delimiting an event payload needs runtime metadata, which is exactly what this
+   * build lacks. It is deliberately a DETECTION, not a classification -- the tag is never used to
+   * decide what something IS, only to notice that something is there that we did not account for.
+   *
+   * Directional by design. More tagged payloads in events than archived means at least one is
+   * missing, so refuse. Fewer is fine and expected: a root-dispatched system call that FAILED is
+   * archived from its extrinsic and emits no event. Genesis emits no events at all, so the case
+   * that works today is unaffected.
+   */
+  private async assertNoUnarchivedEventSystemTransactions(
+    height: number,
+    blockHash: Hex32,
+    archivedSystemCount: number,
+  ): Promise<void> {
+    const raw = await this.node.storageAt(ChainArchiveSyncService.SYSTEM_EVENTS_KEY, `0x${blockHash}`);
+    if (raw === undefined) return; // no events recorded for this block (genesis, notably)
+    const events = Buffer.from(hexNoPrefix(raw), "hex");
+    const tag = Buffer.from(SYSTEM_TX_TAG, "latin1");
+    let tagged = 0;
+    for (let i = events.indexOf(tag); i !== -1; i = events.indexOf(tag, i + 1)) tagged++;
+    if (tagged > archivedSystemCount) {
+      throw new Error(
+        `height ${height}: the block's events carry ${tagged} system-transaction payload(s) but ` +
+          `only ${archivedSystemCount} were archived from extrinsics. Runtime-generated system ` +
+          "transactions exist only in the SystemTransactionApplied event, which this build does " +
+          "not decode, so archiving this block would silently omit them -- and inserts are ON " +
+          "CONFLICT DO NOTHING, so re-ingesting later would not repair it. Use indexer-sourced " +
+          "ingest for this range until event decoding lands.",
+      );
+    }
+  }
+
   private async ingestOneBlock(height: number): Promise<void> {
     const blockHash = hexNoPrefix(await this.node.getBlockHash(height));
     const { block } = await this.node.getBlock(`0x${blockHash}`);
@@ -491,6 +543,12 @@ export class ChainArchiveSyncService {
       }
       transactions = await this.buildNodeOnlyTransactionRecords(
         height, blockHash, classifyBlock(), nodeProtocolVersion,
+      );
+      // Before anything is written: confirm the block's events hold no system transaction this
+      // build could not archive. Node-only mode only -- indexer-sourced ingest gets them from the
+      // indexer, which does decode events.
+      await this.assertNoUnarchivedEventSystemTransactions(
+        height, blockHash, transactions.filter((t) => t.kind === "system").length,
       );
       bridge = this.buildBridgeObservationRecords(
         height, blockHash, await this.fetchDParameterFromNode(blockHash),

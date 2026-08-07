@@ -133,6 +133,18 @@ export class NodeRpcClient {
   }
 
   /**
+   * Raw value of a storage key at a block, or `undefined` when the key is unset.
+   *
+   * Used to read `System::Events`, which is where the runtime records what it DID -- including
+   * system transactions it generated rather than received as extrinsics. Those never appear in
+   * `chain_getBlock.extrinsics` at all.
+   */
+  async storageAt(keyHex: string, at: string): Promise<string | undefined> {
+    const value = await this.call<string | null>("state_getStorageAt", [keyHex, at]);
+    return value ?? undefined;
+  }
+
+  /**
    * Substrate `state_call`: invoke a runtime API at a block. `method` is the
    * `TraitName_method_name` string (e.g. `SystemParametersApi_get_d_parameter`), `dataHex` the
    * 0x-hex SCALE-encoded arguments (`0x` for no-arg calls); returns 0x-hex SCALE-encoded result
