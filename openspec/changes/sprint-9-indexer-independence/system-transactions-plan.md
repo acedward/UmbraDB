@@ -1,197 +1,259 @@
-# Plan: recovering system transactions in node-only archive ingest
+# Plan: completing node-side decoding for exact indexer parity
 
-**Written for an independent reviewer with no prior context.** Everything needed to judge this is
-below, including how each claim was verified and which earlier claims turned out to be wrong.
+**Revision 2.** Revision 1 was reviewed and blocked. Three of its findings were verified as correct
+and are incorporated; separately, revision 1 overstated both of its blockers, and the corrections
+make the work smaller and entirely ours to schedule. Changes from revision 1 are listed in §9.
+
+**Written for an independent reviewer with no prior context.**
 
 ---
 
 ## 1. Background
 
-**UmbraDB** is a TypeScript library over PostgreSQL. One of its components, `chain-archive-sync/`,
-ingests the Midnight blockchain into a `chain_archive` schema: blocks, transactions (raw bytes,
-content-addressed), and a little metadata. It is an archive, not a state store — it records what
-was on chain, and other things derive meaning from it later.
+**UmbraDB** is a TypeScript library over PostgreSQL. Its `chain-archive-sync/` component ingests the
+Midnight blockchain into a `chain_archive` schema: blocks, transactions (raw bytes,
+content-addressed), and lean metadata. It is an archive, not a state store.
 
-Until this work, ingest **required the Midnight indexer** (`midnight-indexer`, a separate service
-that replays the ledger and serves GraphQL). For each block, UmbraDB fetched the indexer's view and
-stored what it was handed: each transaction's hash, protocol version and raw payload bytes.
+Ingest used to **require the Midnight indexer** (`midnight-indexer`, a service that replays the
+ledger and serves GraphQL). UmbraDB stored what the indexer handed it: per transaction, a hash, a
+protocol version and raw payload bytes.
 
-**The indexer is being decommissioned.** The branch under review replaces it with direct reads from
-a Midnight node's JSON-RPC. The goal is narrow and worth stating plainly:
+**The indexer is being decommissioned.** This branch replaces it with direct reads from a Midnight
+node's JSON-RPC. The goal is deliberately narrow:
 
 > Change **where the archive's bytes come from**. Do not change what the archive contains, what it
 > means, or what anything downstream reads.
 
-Anything that adds new stored data is explicitly a different piece of work on a separate branch.
+**Repository:** `/home/eddie/umbradb-fork`. **Branch:** `feat/indexer-independent-ingest`.
+**Reference sources** (read-only): `/home/eddie/midnight-reference-mainnet/v1.0.0/`, containing
+`midnight-node`, `midnight-indexer` and `midnight-ledger`.
 
-**Repository:** `/home/eddie/umbradb-fork` (a fork; upstream is `CharlesHoskinson/UmbraDB`).
-**Branch:** `feat/indexer-independent-ingest`.
-**Reference implementation** (read-only, for grounding claims):
-`/home/eddie/midnight-reference-mainnet/v1.0.0/` — contains both `midnight-node` and
-`midnight-indexer` sources.
+## 2. Current state
 
-## 2. Status: what already works
+Regular, *unsigned* transactions ingest correctly from the node. Bytes come from decoding the
+extrinsic envelope; the transaction hash is recomputed locally via the ledger WASM (the same ledger
+function the indexer calls, so the values agree by construction); the protocol version comes from
+the header's `MNSV` digest; the D-parameter from a runtime `state_call`. Measured on one chain over
+one range, both ways: 21 regular transactions, byte-identical, empty symmetric difference.
 
-Node-only ingest is implemented and verified against a live 1.0.0 devnet. Transaction bytes come
-from decoding the Substrate extrinsic envelope; the ledger transaction hash is recomputed locally
-via the ledger WASM (the same value the indexer served, since it is the same ledger function); the
-protocol version comes from the block header's `MNSV` consensus digest; the D-parameter comes from
-a runtime `state_call`.
+**Node-only ingest currently refuses to run** on any range containing a system transaction, rather
+than silently omitting it. Since genesis carries system transactions on every Midnight chain, and
+ingest starts at height 0 for an empty archive, **node-only ingest cannot presently build a full
+archive of any chain.** That is deliberate — see §4.
 
-Measured on one chain, ingesting the same range both ways: **21 regular transactions each,
-byte-identical, empty symmetric difference.** A separate test ingests from a real node with no
-indexer service running and asserts, by recording every outgoing HTTP request, that no
-indexer-shaped request occurs.
+## 3. The gap
 
-**One gap remains, and it is the subject of this plan.**
+Indexer-sourced vs node-only ingest of the **same chain and range**:
 
-## 3. The gap, measured
-
-Indexer-sourced and node-only ingest of the **same chain and range**:
-
-| | regular transactions | system transactions |
+| | regular | system |
 |---|---|---|
 | indexer-sourced | 21 | **5** |
 | node-only | 21 | **0** |
 
-System transactions are runtime-level transactions (block rewards, treasury payouts, parameter
-updates) rather than user submissions. Node-only ingest currently drops all of them, so the archive
-it produces is **not** a faithful replacement for the indexer-sourced one. That is a regression
-introduced by the source substitution, and closing it is in scope by the definition in §1.
+Three distinct defects produce it. Revision 1 described only the first, and described it wrongly.
 
-*(Note for completeness: `transactions.result` is also unpopulated, but that is NOT a regression —
-it has been NULL in indexer mode too since long before this branch, because the GraphQL query never
-requested it. Populating it would be a new feature and is out of scope here.)*
+### 3.1 System transactions are not archived at all
 
-## 4. Why they are missing, precisely
+They are runtime-level transactions — block rewards, treasury payouts, governance parameter
+changes. They reach the node two ways, and **both occur at any height**:
 
-The reasoning below matters because an earlier version of it was wrong, and the wrong version is
-what justified excluding system transactions in the first place.
+- as **extrinsics**, via `pallet_midnight_system::send_mn_system_transaction`, which is a
+  root-dispatched call (`ensure_root(origin)`) — not a genesis-only construct;
+- as **events**, `SystemTransactionApplied`, emitted after successful application.
 
-### 4.1 Where system transactions live
+The reference indexer reads both and prepends the event-derived ones
+(`midnight-indexer/chain-indexer/src/infra/subxt_node/runtimes/v1_0_0.rs`). This branch reads only
+extrinsics, and discards system-kind ones.
 
-Two different places, and this is the crux:
+Because a successful root-dispatched system transaction appears in **both** sources, combination
+rules are required, not optional — see §6.3.
 
-- **Genesis (block 0):** carried inside `chain_getBlock.extrinsics`, as ordinary extrinsics
-  dispatching to `pallet_midnight_system::send_mn_system_transaction`.
-- **Every other block:** produced *during block execution*. They are **not** extrinsics at all.
-  They surface only as the `SystemTransactionApplied` event.
+### 3.2 Signed and "general" extrinsics are rejected before their call is read
 
-The reference indexer reads **both** — extrinsics *and* events — and prepends the event-derived
-system transactions before the extrinsic-derived ones
-(`midnight-indexer/chain-indexer/src/infra/subxt_node/runtimes/v1_0_0.rs`, `make_block_details`).
+`decodeMidnightExtrinsic` returns `null` for any extrinsic whose version byte carries the signed or
+general bits, before the pallet index is examined. But
+`send_mn_transaction(_origin: OriginFor<T>, …)` **ignores its origin**
+(`midnight-node/pallets/midnight/src/lib.rs`), so a signed Midnight transaction is valid and
+executes — and the reference indexer decodes call data for *every* extrinsic regardless of framing.
 
-This branch reads only extrinsics. That is the root cause.
+**This affects regular transactions, not only system ones.** Revision 1's claim that "one gap
+remains" was wrong.
 
-### 4.2 What was verified, and how
+### 3.3 Positions do not match indexer semantics
 
-| Claim | Status | How verified |
-|---|---|---|
-| All 5 missing rows are at height 0 | **Verified** | Queried the indexer-sourced archive: all five have `block_height = 0` |
-| Genesis system transactions are in the extrinsics | **Verified** | This repo's own decoder fixtures: genesis extrinsic 0 is pallet 6 / call 0 with a 41-byte `midnight:system-transaction[v6]` payload — matching the 41-byte archived row exactly |
-| The decoder already recognises them | **Verified** | `classifyExtrinsic` returns them with `kind: "system"`; `buildNodeOnlyTransactionRecords` explicitly skips them |
-| `SystemTransactionApplied` carries the hash AND the bytes | **Verified** | `midnight-node/pallets/midnight-system/src/lib.rs` — `struct SystemTransactionApplied { hash: Hash, serialized_system_transaction: Vec<u8> }` |
-| Substrate emits no events at block 0 | **Verified** | Probed `System::Events` storage at height 0 on the devnet: returns nothing. The reference indexer documents the same limitation (Parity PR #5463) and works around it by reading pallet storage directly |
-| The ledger WASM cannot hash a system transaction | **Verified twice** | `@midnight-ntwrk/ledger-v8` typings expose only `deserialize/serialize/toString`; the compiled bindings export only `systemtransaction_{deserialize,free,new,serialize,toString}` |
-| Rust's ledger *can* hash one | **Verified** | `midnight-indexer/indexer-common/src/domain/ledger/transaction.rs` calls `transaction.transaction_hash()` on a `SystemTransaction`. This is how the indexer produced the five hashes above |
-| This devnet has no non-genesis system transactions | **Verified** | Event blobs at heights 50 and 200 are 49 bytes and contain no system-transaction payload |
+Node-only numbers regular transactions `0..n-1`. Indexer-sourced uses the indexer's own ordering,
+which includes system transactions. Even once §3.1 and §3.2 are fixed, cross-mode comparison stays
+impossible until ordering matches.
 
-### 4.3 The resulting three-way split
+*(Out of scope, stated to prevent confusion: `transactions.result` is unpopulated, but it has been
+NULL in indexer mode too since before this branch — the GraphQL query never requested it. Filling
+it is a new feature, not a parity repair.)*
 
-**The bytes are not the problem.** For genesis they are already decoded and discarded; for other
-blocks they are in the event.
+## 4. Why ingest refuses instead of omitting
 
-**The `tx_hash` primary key is the problem**, and it splits:
+The archive's inserts are all `ON CONFLICT DO NOTHING`. An archive written today without system
+transactions therefore **cannot be repaired by re-ingesting the range later**: existing rows would
+be skipped, and corrected positions (§3.3) would collide with what is already stored. The
+incompleteness would be permanent and invisible.
 
-1. **Non-genesis system transactions** — hash available from the event. Needs event decoding.
-2. **Genesis system transactions** — bytes available today, hash available from *neither* route:
-   no events exist at block 0, and the WASM exposes no hash function.
-3. Therefore genesis is **blocked upstream**, on a binding that exists in Rust but is not exported
-   to JS. It is a missing WASM export, **not** a protocol limitation.
+Refusing is the only safe behaviour until parity exists. Marking blocks was considered and rejected:
+it would add stored data, which this branch's scope forbids, and a log-only marker does not protect
+a downstream reader.
 
-**A correction the reviewer should weigh when judging this analysis:** the exclusion of system
-transactions was originally justified to the owner on the grounds that "the ledger WASM exposes no
-`SystemTransaction` hash accessor, so the primary key cannot be computed." That is true but was
-presented as the whole story; it ignored that the node hands the hash over directly for every
-non-genesis block. The scope decision was made on incomplete information.
+## 5. The two "blockers", corrected
 
-## 5. Options
+Revision 1 presented both as external dependencies. Both are smaller, and neither is blocked on
+another team.
 
-### Option A — Event decoding for non-genesis, genesis declared out of scope
+### 5.1 The system-transaction hash: a five-line binding gap
 
-Decode block events, extract `SystemTransactionApplied`, archive those transactions with the
-event's hash and bytes. Genesis system transactions remain unarchived, with §4.3 as the recorded
-reason.
+The hash exists in the Rust ledger:
 
-- Closes the gap on any chain that mints rewards — in practice almost all system transactions.
-- Does **not** close it on this devnet, whose only system transactions are at genesis.
-- Requires decoding a heterogeneous SCALE event enum, which needs runtime metadata. Realistically
-  a dependency such as `@polkadot/api`, in a directory that currently uses plain `fetch` and no
-  SDK. That dependency would also unlock `transactions.result` and per-segment outcomes later.
+```
+midnight-ledger/ledger/src/structure.rs:2202
+    impl SystemTransaction {
+        pub fn transaction_hash(&self) -> TransactionHash   // line 2203
+```
 
-### Option B — Request the upstream WASM export, then close the gap completely
+The npm package `@midnight-ntwrk/ledger-v8` is a `wasm-bindgen` wrapper over **that same crate**,
+and its binding is in-tree:
 
-Ask for `transaction_hash()` to be exported on `SystemTransaction` in `@midnight-ntwrk/ledger-v8`
-(it already exists in the Rust ledger). Genesis system transactions then archive from bytes already
-in hand, with no metadata dependency at all. Combined with Option A, parity is total.
+```
+midnight-ledger/ledger-wasm/src/tx.rs:1696
+    #[wasm_bindgen]
+    impl SystemTransaction {
+        new / serialize / deserialize / to_string        // transaction_hash is simply not wrapped
+    }
+```
 
-- Only route that closes the genesis case.
-- Blocked on an external team; timeline not ours.
-- On its own it fixes only genesis, i.e. exactly this devnet, and leaves reward-bearing chains
-  needing Option A anyway.
+So this is a **missing export, not a missing capability**, and the fix mirrors three methods
+already present. Two routes, neither requiring anyone else's schedule:
 
-### Option C — Reimplement the hash in TypeScript
+- request the export upstream and pin the resulting version; or
+- build `ledger-wasm` locally with the export and pin that artifact.
 
-Rejected, and recorded so a reviewer need not re-derive it: the hash is a primary key that other
-consumers rely on. A locally-invented implementation that disagreed even for one input would
-produce rows that silently fail to join with anything else. This should not be done without an
-authoritative specification of the algorithm, and even then it is duplicated trust for no gain.
+Reimplementing the hash in TypeScript remains rejected: it is a primary key other consumers join
+on, and a local implementation that disagreed on one input would produce rows that silently fail to
+join.
 
-### Recommendation
+### 5.2 Metadata: build-time artifacts, not runtime resolution
 
-**A + B, in that order, and neither blocks merging what exists.**
+Revision 1 said this needed runtime metadata resolution, "realistically `@polkadot/api`". **The
+indexer does not do that.** It captures metadata offline, per node version:
 
-Option A is the substantive fix and is bounded by the dependency decision, which is the owner's.
-Option B is a request that costs nothing to raise now and may take a while to land.
+- `get_node_metadata.sh <version>` runs the node in Docker and dumps metadata via the `subxt` CLI
+  to `.node/<version>/metadata.scale`;
+- `NODE_VERSIONS` pins exactly two: `0.22.0`, `1.0.0-rc.3`;
+- `build.rs` generates typed decoders from those files at build time;
+- at runtime it dispatches on the protocol version from the block header.
 
-Until either lands, node-only ingest should **refuse to run on a chain whose archive would be
-incomplete**, rather than silently producing a smaller archive — see the acceptance criteria.
+That pattern transfers directly, and shrinks the dependency: we need something that can decode SCALE
+against a **metadata blob**, which `@polkadot/types` does — not the provider/RPC layer of
+`@polkadot/api`. The capture mechanism already exists and is reusable.
+
+It also matches the security posture already in place: ingest is gated to known protocol versions,
+so decoding against metadata captured for exactly those versions is consistent with it. This
+branch's hand-rolled `CALL_INDICES_BY_PROTOCOL` is a miniature of the same idea and would be
+replaced by it.
 
 ## 6. Proposed work
 
-1. **Make the incompleteness impossible to miss.** Node-only ingest currently drops system
-   transactions silently. It should either refuse, or record per block that system transactions
-   were not archived, so no operator can mistake a node-only archive for a complete one. *This part
-   needs no dependency decision and should be done regardless of which option is chosen.*
-2. **Decide the dependency** (owner). Metadata-driven event decoding, or not.
-3. **If yes:** decode block events, match `SystemTransactionApplied`, archive with the event's hash
-   and bytes, and place them in the block's transaction ordering the way the reference indexer does
-   — prepended before extrinsic-derived transactions.
-4. **Raise the upstream request** for `transaction_hash` on `SystemTransaction`.
-5. **Reconcile positions.** Node-only currently numbers regular transactions 0..n-1; indexer mode
-   uses the indexer's own positions, which include system transactions. Once system transactions
-   are archived, positions must match indexer semantics or cross-mode comparison stays impossible.
+### 6.1 Complete the extrinsic decoder
+
+Decode call data for **every** extrinsic framing — bare, signed and general — rather than rejecting
+signed ones before reading the call (§3.2). Classification must stay driven by the dispatched
+`(pallet, call)`, never by payload content.
+
+### 6.2 Decode events
+
+Resolve `SystemTransactionApplied` from block events, taking both the authoritative hash and the
+serialized transaction from the event. Metadata must be resolved for **the block being ingested**,
+never the chain tip, or a historical block spanning a runtime upgrade is decoded with the wrong
+layout.
+
+### 6.3 Define combination, deduplication and ordering
+
+Required cases, each needing an explicit rule and a test:
+
+| Case | Sources | Rule |
+|---|---|---|
+| Runtime-generated system transaction | event only | archive from event |
+| Root-dispatched call that **failed** | extrinsic only (no event) | ? — must be decided; the indexer's own behaviour is the reference |
+| Root-dispatched call that **succeeded** | extrinsic **and** event | archive once; define which supplies bytes and position |
+| Same hash, different raw bytes | both | must fail loudly — it means one source is misread |
+| Genesis | extrinsic only (no events at block 0) | needs §5.1 for the hash |
+
+Ordering must reproduce indexer semantics — event-derived system transactions prepended before
+extrinsic-derived transactions — so that `position` matches across modes (§3.3).
+
+### 6.4 Source the hash
+
+Per §5.1. Where both a computed hash and an event hash are available, they must be compared and
+disagreement must fail.
 
 ## 7. Acceptance criteria
 
-- Ingesting a range **both ways on one chain** yields the same transaction set: same count, same
-  `tx_hash` values, same `kind`, same raw bytes, same ordering. This is the single criterion that
-  matters; today it fails 26 vs 21.
-- A chain containing non-genesis system transactions must be used. This devnet is insufficient
-  (§4.2) — preprod, or a devnet configured to mint rewards.
-- If any category remains unarchivable, ingest must fail or mark the block, never silently omit.
-- The existing node-only regression gate must still pass: no indexer request issued, verified by
-  observing requests rather than inspecting configuration.
+**One criterion decides this: ingesting a range both ways on one chain must produce identical
+persisted transaction sequences** — an exact ordered per-block comparison of every persisted field:
 
-## 8. Explicitly out of scope
+```
+block_height, block_hash, position, tx_hash, kind, protocol_version, raw bytes
+```
 
-- `transactions.result` and per-segment outcomes — never populated in indexer mode either, so not a
-  regression (§3).
-- Any projection, view, feed or effectstream protocol built on top of the archive.
-- Anything that adds stored data beyond restoring indexer parity.
+Set equality is insufficient; ordering is part of the contract (§3.3). Today this fails 26 vs 21.
 
-## 9. Question for the reviewer
+The comparison range must contain, and each must be asserted:
 
-Is **Option A + B** the right call, and is criterion §7's "same transaction set both ways on one
-chain" the correct definition of done for a source substitution — or is there a parity dimension
-this plan has missed?
+- genesis system transactions;
+- non-genesis, event-generated system transactions;
+- system and regular transactions mixed in one block;
+- signed or general regular calls;
+- a failed root-dispatched system call;
+- a runtime-upgrade boundary, if the pinned chain has one.
+
+Further requirements:
+
+- **the gate must not self-skip.** The existing node-only test skips when its prerequisites are
+  absent, which is honest for a developer machine but unacceptable for a required gate. It must run
+  against a pinned chain that actually produces system transactions — the current devnet does not
+  (its only ones are at genesis), so preprod or a reward-producing devnet is required.
+- restart, and indexer↔node source switching, must be exercised.
+- an archive partially written by the current regular-only implementation must be detected rather
+  than silently extended (§4).
+
+## 8. Sequencing
+
+1. Capture immutable indexer ground truth **now**, while the indexer still exists: network, genesis
+   hash, exact range, indexer version, queries, and checksums of the result. Every parity claim
+   afterwards depends on an oracle that is being switched off.
+2. Raise the upstream WASM export request (§5.1) — it costs nothing to start and may take longest.
+3. Capture pinned metadata per supported node version, following the indexer's mechanism (§5.2).
+4. Complete the extrinsic decoder (§6.1).
+5. Decode events (§6.2).
+6. Define and implement combination/ordering (§6.3), from observed indexer behaviour rather than
+   inference.
+7. Build the non-skipping parity gate (§7) on a chain that produces system transactions.
+8. Reconcile the normative corpus: the spec, design, tasks and store interface still declare system
+   transactions excluded.
+
+## 9. What changed from revision 1
+
+| Revision 1 | Revision 2 |
+|---|---|
+| "One gap remains: system transactions" | Three gaps: system transactions, signed/general extrinsics, positions |
+| System transactions are genesis-extrinsic or event-only | They arrive as extrinsics **at any height** (root-dispatched) and as events; both sources can carry the same one |
+| No combination or dedup rules | §6.3 enumerates the cases and requires explicit rules |
+| Hash blocked upstream, timeline not ours | A five-line export on an in-tree binding; local build is a viable fallback |
+| Metadata needs runtime resolution, `@polkadot/api` | Build-time pinned artifacts, as the indexer does; `@polkadot/types`-scale |
+| "Neither should block merging" | Withdrawn. Incomplete archives are unrepairable in place, so ingest now refuses |
+| Acceptance: "same transaction set" | Exact **ordered** per-block comparison of every persisted field, on a chain that actually produces system transactions, with a non-skipping gate |
+
+One factual correction also carried from the review: the reference indexer's genesis pallet-storage
+workaround is for **cNight registrations**, not for genesis system transactions. Revision 1 implied
+otherwise.
+
+## 10. Question for the reviewer
+
+With both blockers reduced to in-house work, is the §8 sequencing right — specifically, is
+capturing indexer ground truth first (step 1) urgent enough to precede all implementation, given
+the oracle disappears when the indexer is switched off?
