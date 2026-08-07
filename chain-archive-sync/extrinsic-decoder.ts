@@ -161,7 +161,14 @@ export function decodeProtocolVersionFromDigest(digestLogs: string[]): number | 
     const bytes = hexToBytes(logHex);
     // DigestItem variant tags (SCALE enum): 6 PreRuntime, 4 Consensus, 5 Seal, 0 Other,
     // 8 RuntimeEnvironmentUpdated. Only Consensus can carry MNSV.
-    if (bytes.length < 1 + 4 || bytes[0] !== 4) continue;
+    //
+    // The length floor is 6, not 5: variant byte + 4 engine-id bytes + AT LEAST ONE compact
+    // byte for the payload length. With a floor of 5 a truncated 5-byte MNSV item passes this
+    // guard and then makes `decodeCompactU32(bytes, 5)` read at offset === length, which throws
+    // -- and that exception escapes this function entirely, aborting ingest with an opaque
+    // "offset past end of input" instead of the `undefined` this function contracts to return
+    // (which the caller turns into a clear "no MNSV protocol-version digest at height N").
+    if (bytes.length < 1 + 4 + 1 || bytes[0] !== 4) continue;
     const engine = (bytes[1]! << 24) | (bytes[2]! << 16) | (bytes[3]! << 8) | bytes[4]!;
     if (engine !== MNSV) continue;
     const { value: len, size } = decodeCompactU32(bytes, 5);

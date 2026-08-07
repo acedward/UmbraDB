@@ -156,6 +156,18 @@ describe("decodeProtocolVersionFromDigest", () => {
     expect(decodeProtocolVersionFromDigest(BLOCK_45_DIGEST)).toBe(1_000_000);
   });
 
+  it("returns undefined, rather than throwing, on a truncated MNSV item", () => {
+    // Consensus variant + "MNSV" and nothing else: 5 bytes, one short of the minimum valid
+    // item. This must be skipped like any other unusable log. Before the length floor was
+    // raised to 6 it reached decodeCompactU32 at offset === length, which threw and aborted
+    // ingest with an opaque decoder error instead of the caller's clear missing-digest message.
+    expect(decodeProtocolVersionFromDigest(["0x044d4e5356"])).toBeUndefined();
+    // Truncated one byte further into the u32 payload: also skipped, not thrown.
+    expect(decodeProtocolVersionFromDigest(["0x044d4e5356104042"])).toBeUndefined();
+    // A truncated item must not mask a VALID one later in the same digest.
+    expect(decodeProtocolVersionFromDigest(["0x044d4e5356", "0x044d4e53561040420f00"])).toBe(1_000_000);
+  });
+
   it("returns undefined when no MNSV item exists", () => {
     expect(
       decodeProtocolVersionFromDigest(["0x066175726120b225be1100000000"]),
