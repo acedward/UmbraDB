@@ -78,9 +78,28 @@ so nothing is lost and the rewrite is auditable.
 because after the split it no longer captures the root. The body states that explicitly rather
 than leaving a reader to notice the subject no longer matches the diff.
 
-## Unchanged by this split
+## Corrected: "submitted versus executed" is not a Part A blocker
 
-The standing blocker is untouched: the archive establishes **what was submitted**, not **what
-executed**. Deriving applied outputs needs the runtime's outcome events, which needs a
-runtime-metadata dependency that has not been decided. Neither branch should cut over from the
-indexer on the strength of what is here.
+Earlier revisions of this document, and several of my own summaries, treated it as one. That was
+wrong, and a reviewer was right to reject it.
+
+The archive records what was **submitted**, not what **executed** — a transaction that reverted is
+archived indistinguishably from one that succeeded. But that is equally true of the
+INDEXER-sourced archive: the `transactions` table never carried an execution outcome, and
+`transactions.result` has been NULL on every row since long before this branch. Part A changes
+where the bytes come from. It does not change what they mean, and it makes nothing worse.
+
+The limitation is real and belongs to the projection and feed — anything deriving created outputs
+must derive them from the runtime's outcome events, not from a transaction's offers. It should
+gate THAT work. It should not gate a source substitution whose own parity is demonstrable, which
+is what conflating the two was doing.
+
+## Genuinely unresolved
+
+The system-transaction scope decision rests on a premise that turned out to be false. It was made
+partly on the claim that the ledger WASM exposes no `SystemTransaction` hash accessor, so the
+`tx_hash` primary key could not be computed. The node emits `SystemTransactionApplied` carrying
+BOTH the authoritative hash and the serialized transaction
+(`midnight-node/pallets/midnight-system/src/lib.rs`) — nothing needed computing. Whether to
+recover them, and match the reference indexer's ordering, is an open decision rather than a
+settled exclusion.
