@@ -283,6 +283,41 @@ describe("ChainArchiveSyncService retry safety (sprint-fix round Fixes 1-3)", ()
     await expect(spliced.syncOnce({ maxBlocks: 10 })).rejects.toThrow(/chain continuity BROKEN at height 2/);
   }, 60_000);
 
+  it("audit F4: a misdirected first sync cannot poison an empty archive's identity", async () => {
+    // The failure the previous implementation had: identity was RECORDED on first sync, so an
+    // empty archive pointed at the wrong node once carried that foreign identity permanently --
+    // and returning to the correct node was then rejected forever. Anchoring on the archive's own
+    // genesis block instead means an empty archive has nothing to poison.
+    const chainWrong = fakeChain([{ height: 0, dParamSeed: 1 }]);
+    chainWrong[0]!.hash = hx(7777, 0xc);
+    const schema = `retry_test_${schemaCounter++}`;
+    sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    await bootstrapChainArchiveSchema(sql, schema);
+    const mk = (b: FakeChainBlock[]): ChainArchiveSyncService =>
+      new ChainArchiveSyncService({
+        sql: sql!, net: NET, schema,
+        node: { url: "http://fake-node", fetchImpl: fakeNodeFetch(b, 0) },
+        indexer: { url: "http://fake-indexer", fetchImpl: fakeIndexerFetch(b) },
+      });
+
+    // Point at the WRONG chain first and let it write.
+    await mk(chainWrong).syncOnce({ maxBlocks: 10 });
+
+    // Now the CORRECT chain. Under the old watermark scheme this was refused forever; the archive
+    // must simply reject the mismatch against what it actually holds, in the right direction.
+    const chainRight = fakeChain([{ height: 0, dParamSeed: 1 }]);
+    await expect(mk(chainRight).syncOnce({ maxBlocks: 10 })).rejects.toThrow(
+      /chain identity mismatch/,
+    );
+    // ...and the archive still holds the chain it actually ingested, not a metadata claim about
+    // some other one -- so recovery is "use a different NET or a clean schema", never
+    // "hand-edit a watermark row".
+    const rows = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM ${sql(schema)}.blocks WHERE net = ${NET}
+    `;
+    expect(rows[0]!.n).toBe(1);
+  }, 60_000);
+
   it("audit F3 (restart): continuity is re-checked from the STORE, not just in-memory", async () => {
     // The in-run path keeps the previous block hash in memory. After a restart that anchor is
     // gone and the check must fall back to the archived block at height-1 -- a different code

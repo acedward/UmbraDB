@@ -12,7 +12,6 @@ import { NodeRpcClient, type NodeRpcClientOptions, type SubstrateHeader } from "
 import {
   assertSupportedProtocolVersion,
   classifyExtrinsic,
-  decodeCompactU32,
   decodeProtocolVersionFromDigest,
   requireCallIndices,
 } from "./extrinsic-decoder.js";
@@ -126,6 +125,14 @@ export interface ChainArchiveSyncServiceOptions {
    * indexer path is now behaviourally unchanged unless this is explicitly turned on.
    */
   oracleCrossCheck?: boolean;
+  /**
+   * The genesis hash this archive is expected to be built from. Optional, and only load-bearing
+   * on the FIRST sync of an empty archive -- after that the archived genesis block is the anchor.
+   * Set it when an archive is being created against an endpoint that could be misconfigured, so
+   * a wrong chain is refused before any row is written rather than becoming the archive's
+   * identity.
+   */
+  expectedGenesisHash?: string;
 }
 
 export interface SyncOnceResult {
@@ -168,6 +175,8 @@ export class ChainArchiveSyncService {
   private ledgerPromise: Promise<unknown> | undefined;
   /** See `ChainArchiveSyncServiceOptions.oracleCrossCheck`. */
   private readonly oracleCrossCheckEnabled: boolean;
+  /** See `ChainArchiveSyncServiceOptions.expectedGenesisHash`. */
+  private readonly expectedGenesisHash: string | undefined;
   private readonly net: string;
   /** Last-seen D-parameter, in-memory, this instance's lifetime only -- used to dedupe
    *  `bridge_observations` inserts (§"stub/initial pass") so a healthy chain with an unchanging
@@ -183,6 +192,8 @@ export class ChainArchiveSyncService {
     this.node = new NodeRpcClient(opts.node);
     this.indexer = opts.indexer === undefined ? undefined : new IndexerClient(opts.indexer);
     this.oracleCrossCheckEnabled = opts.oracleCrossCheck ?? false;
+    this.expectedGenesisHash =
+      opts.expectedGenesisHash === undefined ? undefined : hexNoPrefix(opts.expectedGenesisHash);
     this.net = opts.net;
   }
 
@@ -233,51 +244,41 @@ export class ChainArchiveSyncService {
    * `net` records it; every later sync must match. Stored in the archive's own watermarks table
    * (arbitrary key/JSON value), so this needs no migration.
    */
-  private chainIdentity: { genesisHash: string; networkId: string | undefined } | undefined;
-
+  /**
+   * Refuse to ingest a chain other than the one this archive already holds.
+   *
+   * The anchor is the archive's OWN archived genesis block, not a metadata record written
+   * alongside it. An earlier revision stored a `chain_identity:<net>` watermark on first sync,
+   * which was wrong twice over: Part A is meant to add no stored data, and an EMPTY archive
+   * pointed at the wrong node once would record that foreign identity permanently -- after which
+   * returning to the correct node was rejected forever, with the operator's only recourse being
+   * to hand-edit a watermark. Deriving the anchor from block 0 has neither problem: an empty
+   * archive has nothing to poison, and a populated one carries its own proof.
+   *
+   * `expectedGenesisHash` covers the one case the archive cannot self-anchor: the very first
+   * sync, where there is no archived block to compare against. Configure it and a misdirected
+   * first run is caught before anything is written; leave it unset and the first sync establishes
+   * the anchor by archiving genesis, which every later run is then checked against.
+   */
   private async assertChainIdentity(): Promise<void> {
-    const genesisHash = hexNoPrefix(await this.node.getBlockHash(0));
-    // The runtime's own name for the network. Strictly weaker than the genesis hash as an
-    // identifier -- two chains cannot share a genesis, but they can share a network id -- so it
-    // is recorded for the error message and as a second disagreement signal, never as the
-    // primary check. Optional: a node that does not expose the API is not a failure.
-    let networkId: string | undefined;
-    try {
-      const raw = hexNoPrefix(await this.node.stateCall("MidnightRuntimeApi_get_network_id", "0x"));
-      const bytes = Buffer.from(raw, "hex");
-      const { value: len, size } = decodeCompactU32(new Uint8Array(bytes), 0); // SCALE String
-      networkId = bytes.subarray(size, size + len).toString("utf8");
-    } catch {
-      networkId = undefined;
+    const nodeGenesis = hexNoPrefix(await this.node.getBlockHash(0));
+
+    if (this.expectedGenesisHash !== undefined && nodeGenesis !== this.expectedGenesisHash) {
+      throw new Error(
+        `chain identity: the configured node serves genesis ${nodeGenesis}, but this sync is ` +
+          `configured to expect ${this.expectedGenesisHash}. Refusing to ingest.`,
+      );
     }
 
-    const key = `chain_identity:${this.net}`;
-    const stored = (await this.store.getWatermark(key)) as
-      | { genesisHash?: string; networkId?: string }
-      | undefined;
-    if (stored?.genesisHash === undefined) {
-      await this.store.setWatermark(key, { genesisHash, networkId: networkId ?? null });
-      this.chainIdentity = { genesisHash, networkId };
-      return;
-    }
-    if (stored.genesisHash !== genesisHash) {
+    const archivedGenesis = await this.store.getCanonicalBlockAtHeight(this.net, 0);
+    if (archivedGenesis !== undefined && archivedGenesis.blockHash !== nodeGenesis) {
       throw new Error(
-        `chain identity mismatch for net=${this.net}: this archive was built from genesis ` +
-          `${stored.genesisHash}` +
-          (stored.networkId ? ` (network "${stored.networkId}")` : "") +
-          `, but the configured node serves genesis ${genesisHash}` +
-          (networkId ? ` (network "${networkId}")` : "") +
-          ". Refusing to splice a different chain into an existing archive -- use a different NET, " +
-          "or point at the original chain.",
+        `chain identity mismatch for net=${this.net}: this archive holds genesis ` +
+          `${archivedGenesis.blockHash}, but the configured node serves ${nodeGenesis}. Refusing ` +
+          "to splice a different chain into an existing archive -- use a different NET, or point " +
+          "at the original chain.",
       );
     }
-    if (stored.networkId != null && networkId !== undefined && stored.networkId !== networkId) {
-      throw new Error(
-        `chain identity mismatch for net=${this.net}: same genesis ${genesisHash}, but the node ` +
-          `now reports network "${networkId}" where the archive recorded "${stored.networkId}".`,
-      );
-    }
-    this.chainIdentity = { genesisHash: stored.genesisHash, networkId: stored.networkId ?? undefined };
   }
 
   async syncOnce(opts?: { maxBlocks?: number }): Promise<SyncOnceResult> {
@@ -362,11 +363,11 @@ export class ChainArchiveSyncService {
       // genesis under an identity already recorded. Binding the check to the block actually being
       // committed closes that. Every block ABOVE genesis is already bound transitively, because
       // parent continuity chains each one back to this block.
-      if (this.chainIdentity !== undefined && blockHash !== this.chainIdentity.genesisHash) {
+      if (this.expectedGenesisHash !== undefined && blockHash !== this.expectedGenesisHash) {
         throw new Error(
-          `chain identity race at genesis (net=${this.net}): identity was established as ` +
-            `${this.chainIdentity.genesisHash}, but the block being committed at height 0 is ` +
-            `${blockHash}. The node endpoint changed chains mid-sync.`,
+          `chain identity race at genesis (net=${this.net}): the block being committed at height ` +
+            `0 is ${blockHash}, but ${this.expectedGenesisHash} was expected. The node endpoint ` +
+            "changed chains between the identity check and this write.",
         );
       }
       return;
