@@ -9,7 +9,11 @@ import type {
 } from "../src/interfaces/chain-archive-store.js";
 import { IndexerClient, type IndexerBlock, type IndexerClientOptions } from "./indexer-client.js";
 import { NodeRpcClient, type NodeRpcClientOptions, type SubstrateHeader } from "./node-rpc-client.js";
-import { decodeMidnightExtrinsic, decodeProtocolVersionFromDigest } from "./extrinsic-decoder.js";
+import {
+  assertSupportedProtocolVersion,
+  decodeMidnightExtrinsic,
+  decodeProtocolVersionFromDigest,
+} from "./extrinsic-decoder.js";
 import { decodeArchivedTransaction, loadLedgerV8 } from "./tx-replay-decoder.js";
 
 /**
@@ -253,6 +257,15 @@ export class ChainArchiveSyncService {
       .map((e) => decodeMidnightExtrinsic(e))
       .filter((d): d is NonNullable<typeof d> => d !== null);
     const nodeProtocolVersion = decodeProtocolVersionFromDigest(header.digest.logs);
+    // Gate the version BEFORE any payload reaches the ledger WASM, in BOTH modes. The archive
+    // wires exactly one ledger codec (v8); a protocol upgrade outside the known ranges must halt
+    // ingest with a version-named error rather than decode an unknown ledger with the v8
+    // deserializer and persist whatever comes out. Placed here, ahead of the mode split, so
+    // indexer-sourced ingest is gated identically -- the indexer would keep serving rows across
+    // an upgrade, and silently trusting them is the same failure by a different route.
+    if (nodeProtocolVersion !== undefined) {
+      assertSupportedProtocolVersion(nodeProtocolVersion, height);
+    }
 
     let transactions: TransactionRecord[];
     let bridge: { records: BridgeObservationRecord[]; newDParameterJson: string | undefined };

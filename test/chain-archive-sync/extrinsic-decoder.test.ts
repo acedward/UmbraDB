@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertSupportedProtocolVersion,
   decodeCompactU32,
   decodeMidnightExtrinsic,
   decodeProtocolVersionFromDigest,
+  isSupportedProtocolVersion,
 } from "../../chain-archive-sync/extrinsic-decoder.js";
 
 /**
@@ -173,5 +175,32 @@ describe("decodeProtocolVersionFromDigest", () => {
       decodeProtocolVersionFromDigest(["0x066175726120b225be1100000000"]),
     ).toBeUndefined();
     expect(decodeProtocolVersionFromDigest([])).toBeUndefined();
+  });
+});
+
+describe("protocol-version gate", () => {
+  it("accepts exactly the ranges the reference implementation supports", () => {
+    // node 1.0.x -- the version this archive is verified against, live.
+    expect(isSupportedProtocolVersion(1_000_000)).toBe(true);
+    expect(isSupportedProtocolVersion(1_000_999)).toBe(true);
+    // node 0.22.x (the reference's `0_022_000..0_023_000`).
+    expect(isSupportedProtocolVersion(22_000)).toBe(true);
+    expect(isSupportedProtocolVersion(22_999)).toBe(true);
+  });
+
+  it("rejects versions outside them, including the exclusive upper bounds", () => {
+    expect(isSupportedProtocolVersion(23_000)).toBe(false); // upper bound is exclusive
+    expect(isSupportedProtocolVersion(1_001_000)).toBe(false); // ditto
+    expect(isSupportedProtocolVersion(21_999)).toBe(false);
+    expect(isSupportedProtocolVersion(2_000_000)).toBe(false); // a future ledger v9-era version
+    expect(isSupportedProtocolVersion(0)).toBe(false);
+  });
+
+  it("assert throws with the offending version and height named", () => {
+    // The whole point: a protocol upgrade must halt ingest with a diagnosable error rather than
+    // decode an unknown ledger with the hard-wired v8 codec and persist the result.
+    expect(() => assertSupportedProtocolVersion(2_000_000, 4242)).toThrow(/2000000/);
+    expect(() => assertSupportedProtocolVersion(2_000_000, 4242)).toThrow(/4242/);
+    expect(() => assertSupportedProtocolVersion(1_000_000, 4242)).not.toThrow();
   });
 });

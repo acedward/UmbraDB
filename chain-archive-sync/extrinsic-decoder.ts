@@ -147,6 +147,45 @@ export function decodeMidnightExtrinsic(extrinsicHex: string): DecodedMidnightEx
 const MNSV = 0x4d4e5356;
 
 /**
+ * Protocol-version ranges this archive knows how to decode, mirroring the reference
+ * implementation's own gate (`midnight-indexer/indexer-common/src/domain/protocol_version.rs`,
+ * `TryFrom<u32> for ProtocolVersion`): node 0.22.x is `0_022_000..0_023_000` and node 1.0.x is
+ * `1_000_000..1_001_000`. Both map to ledger version V8, which is the ONE ledger implementation
+ * `tx-replay-decoder.ts` is wired to.
+ *
+ * The ranges exist because the version alone decides which ledger codec is correct. Accepting an
+ * unknown version would silently decode a future ledger (v9+) with the v8 deserializer -- either
+ * garbage that still parses, or an opaque WASM error attributed to the wrong cause. Failing
+ * loudly on an unrecognized version is the only safe response, and matches what the reference
+ * does rather than being a local invention.
+ */
+// Written as 22_000 rather than the reference's `0_022_000`: TypeScript rejects a numeric
+// separator directly after a leading zero. Same values.
+const SUPPORTED_PROTOCOL_RANGES: readonly (readonly [number, number])[] = [
+  [22_000, 23_000],
+  [1_000_000, 1_001_000],
+];
+
+/** True if `version` falls in a range whose ledger codec this archive actually implements. */
+export function isSupportedProtocolVersion(version: number): boolean {
+  return SUPPORTED_PROTOCOL_RANGES.some(([lo, hi]) => version >= lo && version < hi);
+}
+
+/**
+ * Throws unless `version` is one this archive can decode. Called at ingest, before any payload is
+ * handed to the ledger WASM, so a protocol upgrade halts the archive with a version-named error
+ * instead of quietly producing wrong rows.
+ */
+export function assertSupportedProtocolVersion(version: number, height: number): void {
+  if (isSupportedProtocolVersion(version)) return;
+  throw new Error(
+    `unsupported Midnight protocol version ${version} at height ${height}: this archive decodes ` +
+      `only ${SUPPORTED_PROTOCOL_RANGES.map(([lo, hi]) => `[${lo},${hi})`).join(" and ")} ` +
+      "(all ledger v8). Ingest stops rather than decode an unknown ledger with the v8 codec.",
+  );
+}
+
+/**
  * Extracts the Midnight protocol version (e.g. `1_000_000` for node 1.0.0) from a block header's
  * `digest.logs` as returned by `chain_getHeader`/`chain_getBlock` -- each log is a 0x-hex SCALE
  * `DigestItem`; the protocol version lives in the `Consensus("MNSV", scale(u32))` item
