@@ -3,7 +3,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
-import { ledgerV8EntryPath } from "../../chain-archive-sync/tx-replay-decoder.js";
+import {
+  ledgerSupportsSystemTransactionHash,
+  ledgerV8EntryPath,
+} from "../../chain-archive-sync/tx-replay-decoder.js";
 
 /**
  * The node-only regression gate: ingest from a REAL Midnight node with no indexer involved, and
@@ -50,6 +53,11 @@ async function nodeIsUp(): Promise<boolean> {
 
 const up = await nodeIsUp();
 const haveLedger = ledgerV8EntryPath() !== undefined;
+// The two outcomes below are SEPARATE required tests, gated on the capability rather than folded
+// into one that accepts either. A single test that returns early on the refusal passes in both
+// environments, so CI can be green having never exercised successful ingest -- which is exactly
+// what an earlier version of this file did.
+const haveSystemHash = haveLedger && (await ledgerSupportsSystemTransactionHash());
 
 describe.skipIf(!up || !haveLedger)("node-only ingest against a real node (no indexer)", () => {
   let container: StartedPostgreSqlContainer;
@@ -64,62 +72,74 @@ describe.skipIf(!up || !haveLedger)("node-only ingest against a real node (no in
     await container?.stop();
   }, 60_000);
 
-  it("ingests from genesis including system transactions, with no indexer request", async () => {
-    // Node-only ingest now archives system transactions, so it can build a full archive from
-    // block 0. It gets their authoritative hash from SystemTransaction.transactionHash(); that
-    // export is absent from every published @midnight-ntwrk/ledger-v8, so this asserts the
-    // REFUSAL instead when running against a stock package -- refusing is correct there, because
-    // an archive written without them cannot be repaired in place (all inserts are
-    // ON CONFLICT DO NOTHING).
-    const schema = "node_only_gate";
-    sql = createClient({ connectionString: container.getConnectionUri(), schema });
-    await bootstrapChainArchiveSchema(sql, schema);
+  it.skipIf(!haveSystemHash)(
+    "ingests from genesis including system transactions, with no indexer request",
+    async () => {
+      const schema = "node_only_gate";
+      sql = createClient({ connectionString: container.getConnectionUri(), schema });
+      await bootstrapChainArchiveSchema(sql, schema);
 
-    const requested: string[] = [];
-    const realFetch = globalThis.fetch;
-    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-      requested.push(typeof input === "string" ? input : input.toString());
-      return realFetch(input, init);
-    }) as typeof fetch;
+      const requested: string[] = [];
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+        requested.push(typeof input === "string" ? input : input.toString());
+        return realFetch(input, init);
+      }) as typeof fetch;
 
-    let ingested = 0;
-    let refusedForMissingExport = false;
-    try {
+      let ingested = 0;
+      try {
+        const service = new ChainArchiveSyncService({
+          sql, net: NET, schema, node: { url: NODE_URL, timeoutMs: 30_000 },
+        });
+        ingested = (await service.syncOnce({ maxBlocks: 40 })).ingestedBlocks;
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+
+      expect(ingested).toBeGreaterThan(0);
+      const indexerCalls = requested.filter((u) => INDEXER_SHAPED.test(u));
+      expect(indexerCalls, `unexpected indexer-shaped request(s): ${indexerCalls.join(", ")}`).toEqual([]);
+      expect(requested.length).toBeGreaterThan(0);
+
+      const txs = await sql<{ h: string; position: number; kind: string; hash_len: number }[]>`
+        SELECT block_height::text AS h, position, kind, octet_length(tx_hash) AS hash_len
+        FROM ${sql(schema)}.transactions WHERE net = ${NET} ORDER BY block_height, position
+      `;
+      // Genesis carries system transactions on every Midnight chain; archiving them is the point.
+      expect(txs.some((t) => t.kind === "system")).toBe(true);
+      for (const t of txs) expect(t.hash_len).toBe(32);
+      // Positions contiguous from 0 across BOTH kinds -- the ordering the indexer uses.
+      const byBlock = new Map<string, number[]>();
+      for (const t of txs) byBlock.set(t.h, [...(byBlock.get(t.h) ?? []), t.position]);
+      for (const [h, positions] of byBlock) {
+        expect(positions, `positions in block ${h} must be contiguous from 0`).toEqual(
+          positions.map((_, i) => i),
+        );
+      }
+    },
+    180_000,
+  );
+
+  it.skipIf(haveSystemHash)(
+    "refuses, rather than omitting, when the ledger cannot hash a system transaction",
+    async () => {
+      // The stock published ledger has no SystemTransaction.transactionHash(). Refusing is correct
+      // there: inserts are ON CONFLICT DO NOTHING, so an archive written without system
+      // transactions could not be repaired by re-ingesting later.
+      const schema = "node_only_refusal";
+      sql = createClient({ connectionString: container.getConnectionUri(), schema });
+      await bootstrapChainArchiveSchema(sql, schema);
       const service = new ChainArchiveSyncService({
         sql, net: NET, schema, node: { url: NODE_URL, timeoutMs: 30_000 },
       });
-      try {
-        ingested = (await service.syncOnce({ maxBlocks: 40 })).ingestedBlocks;
-      } catch (e) {
-        if (!/exposes no SystemTransaction\.transactionHash/.test((e as Error).message)) throw e;
-        refusedForMissingExport = true;
-      }
-    } finally {
-      globalThis.fetch = realFetch;
-    }
-
-    // The no-indexer guarantee holds either way, verified by observing the requests made.
-    const indexerCalls = requested.filter((u) => INDEXER_SHAPED.test(u));
-    expect(indexerCalls, `unexpected indexer-shaped request(s): ${indexerCalls.join(", ")}`).toEqual([]);
-    expect(requested.length).toBeGreaterThan(0);
-
-    if (refusedForMissingExport) return; // stock ledger build: refusal is the correct outcome
-
-    expect(ingested).toBeGreaterThan(0);
-    const txs = await sql<{ h: string; position: number; kind: string; hash_len: number }[]>`
-      SELECT block_height::text AS h, position, kind, octet_length(tx_hash) AS hash_len
-      FROM ${sql(schema)}.transactions WHERE net = ${NET} ORDER BY block_height, position
-    `;
-    // Genesis carries system transactions on every Midnight chain; archiving them is the point.
-    expect(txs.some((t) => t.kind === "system")).toBe(true);
-    for (const t of txs) expect(t.hash_len).toBe(32);
-    // Positions are contiguous from 0 across BOTH kinds -- the ordering the indexer uses.
-    const byBlock = new Map<string, number[]>();
-    for (const t of txs) byBlock.set(t.h, [...(byBlock.get(t.h) ?? []), t.position]);
-    for (const [h, positions] of byBlock) {
-      expect(positions, `positions in block ${h} must be contiguous from 0`).toEqual(
-        positions.map((_, i) => i),
+      await expect(service.syncOnce({ maxBlocks: 40 })).rejects.toThrow(
+        /exposes no SystemTransaction\.transactionHash/,
       );
-    }
-  }, 180_000);
+      const blocks = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM ${sql(schema)}.blocks WHERE net = ${NET}
+      `;
+      expect(blocks[0]!.n).toBe(0);
+    },
+    180_000,
+  );
 });

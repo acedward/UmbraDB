@@ -269,6 +269,29 @@ export function decodeArchivedTransaction(ledger: any, rawBytes: Uint8Array): De
   };
 }
 
+/**
+ * Whether the ledger build that will actually be loaded exposes
+ * `SystemTransaction.transactionHash()`.
+ *
+ * One source of truth for a capability that changes BEHAVIOUR, not just performance: with it,
+ * node-only ingest archives system transactions; without it, ingest refuses rather than omitting
+ * them. Tests gate on this so that "the export is absent" produces a visible SKIP of the ingest
+ * path -- never a pass. A test that silently substitutes the refusal path for the ingest path can
+ * be green in CI while never once exercising successful ingest.
+ *
+ * Probes the loaded module rather than inspecting configuration, because configuration can point
+ * at a build that does not have it.
+ */
+export async function ledgerSupportsSystemTransactionHash(): Promise<boolean> {
+  try {
+    const ledger = await loadLedgerV8();
+    const proto = ledger?.SystemTransaction?.prototype;
+    return typeof proto?.transactionHash === "function";
+  } catch {
+    return false;
+  }
+}
+
 /** Candidate roots for a BUILT sibling `midnight-wallet` checkout, in precedence order --
  *  `MIDNIGHT_WALLET_REPO` first (same override the wallet-sdk loader honors), then the two
  *  layouts real environments have used.
@@ -302,7 +325,18 @@ export function ledgerV8EntryPath(): string | undefined {
   // Deliberately an env var rather than a `file:` dependency: package.json stays portable, and
   // when the export ships upstream this override is deleted and the version bumped instead.
   const override = process.env.MIDNIGHT_LEDGER_WASM;
-  if (override !== undefined && existsSync(override)) return override;
+  if (override !== undefined && override !== "") {
+    if (!existsSync(override)) {
+      // Fail rather than fall back. Falling through to the stock package would silently swap the
+      // ledger the operator selected for a different one, and since the two differ in whether
+      // system transactions can be archived at all, that changes ingest behaviour without a word.
+      throw new Error(
+        `MIDNIGHT_LEDGER_WASM points at ${override}, which does not exist. Refusing to fall back ` +
+          "to the published package, whose behaviour differs (it cannot hash system transactions).",
+      );
+    }
+    return override;
+  }
 
   // This repo's OWN dependency first. Node-only ingest hard-depends on the ledger to classify and
   // hash transactions, so resolving it from an out-of-band sibling checkout meant the headline
