@@ -211,7 +211,15 @@ export type ExtrinsicClassification =
    *  construction or -- the case worth catching -- a runtime that renumbered its pallets, which
    *  would otherwise make genuine transactions vanish from the archive in silence. */
   | { outcome: "midnight_tagged_foreign_call"; palletIndex: number; callIndex: number }
-  /** Anything else: inherents, signed extrinsics, non-`Vec<u8>` calls. The overwhelming majority. */
+  /** A framing this decoder cannot read the call out of -- signed or "general" -- whose bytes
+   *  nonetheless carry a Midnight self-tag. `send_mn_transaction` ignores its origin, so a SIGNED
+   *  Midnight transaction is valid and the reference indexer archives it; skipping the extrinsic
+   *  before reading its call would therefore drop a real transaction in silence. Reading it needs
+   *  runtime metadata (the signature, address and signed-extension layouts are chain config), so
+   *  until that lands this is reported for the caller to refuse on. */
+  | { outcome: "midnight_tagged_undecodable_framing"; version: number }
+  /** Anything else: inherents, other pallets' calls, non-`Vec<u8>` calls. The overwhelming
+   *  majority, and none of it a Midnight transaction. */
   | { outcome: "not_midnight" };
 
 /** Convenience wrapper for callers that only care about genuine Midnight calls. */
@@ -242,7 +250,21 @@ export function classifyExtrinsic(
   // Bits 6-7 of the version byte are the extrinsic type: 00 = bare, 10 = signed, 01 = "general"
   // (v5). Midnight payload calls are submitted bare (observed live, both wallet- and
   // node-authored); anything else cannot be a plain single-argument wrap of the payload.
-  if ((version & 0b1100_0000) !== 0) return { outcome: "not_midnight" };
+  // Signed / "general" framings: the call sits behind an address, signature and signed extensions
+  // whose layouts come from runtime metadata, so it cannot be read here. Silently skipping them
+  // would drop genuine signed Midnight transactions (the pallet ignores its origin, so they are
+  // valid and the reference indexer archives them). Report those carrying a Midnight self-tag so
+  // the caller can refuse; a signed extrinsic WITHOUT the tag cannot be a Midnight transaction,
+  // because the payload is the serialized transaction and it is always self-tagged.
+  //
+  // As elsewhere, the tag is a DETECTION signal only -- it decides nothing about what the bytes
+  // are, just that something is here this build cannot account for.
+  if ((version & 0b1100_0000) !== 0) {
+    const body = Buffer.from(bytes.subarray(lenSize));
+    return body.includes(Buffer.from(STANDARD_TX_TAG_PREFIX, "latin1"))
+      ? { outcome: "midnight_tagged_undecodable_framing", version }
+      : { outcome: "not_midnight" };
+  }
   const formatVersion = version & 0b0011_1111;
   if (formatVersion !== 4 && formatVersion !== 5) return { outcome: "not_midnight" };
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertSupportedProtocolVersion,
   callIndicesForProtocolVersion,
+  classifyExtrinsic,
   decodeCompactU32,
   decodeMidnightExtrinsic,
   decodeProtocolVersionFromDigest,
@@ -261,5 +262,38 @@ describe("classification is by call, not by payload content (security)", () => {
     expect(callIndicesForProtocolVersion(22_500)).toBeUndefined(); // 0.22.x: decodable, unverified
     expect(() => requireCallIndices(22_500, 7)).toThrow(/no verified runtime call indices/);
     expect(requireCallIndices(1_000_000, 7).midnightPallet).toBe(5);
+  });
+});
+
+describe("signed and general framings (which this build cannot decode)", () => {
+  // `send_mn_transaction` ignores its origin, so a SIGNED Midnight transaction is valid and the
+  // reference indexer archives it. This decoder cannot read the call out of a signed framing --
+  // address, signature and signed-extension layouts come from runtime metadata -- so the best it
+  // can do is NOTICE one and let the caller refuse, rather than dropping a real transaction.
+  const signedWrapping = (payloadHex: string): string => {
+    const compact = (n: number): string =>
+      n < 64
+        ? ((n << 2) >>> 0).toString(16).padStart(2, "0")
+        : Buffer.from([((n << 2) | 1) & 0xff, (((n << 2) | 1) >> 8) & 0xff]).toString("hex");
+    // 0x84 = signed (bit 7) + version 4, then opaque signature material, then the payload.
+    const inner = "84" + "00".repeat(64) + payloadHex;
+    return "0x" + compact(inner.length / 2) + inner;
+  };
+
+  it("reports a signed extrinsic carrying a midnight transaction payload", () => {
+    const payload = GENESIS_REGULAR_TX_EXTRINSIC.slice(2 + 7 * 2);
+    const c = classifyExtrinsic(signedWrapping(payload), V1);
+    expect(c.outcome).toBe("midnight_tagged_undecodable_framing");
+  });
+
+  it("stays silent on an ordinary signed extrinsic", () => {
+    // No midnight self-tag: the payload of a Midnight transaction is always self-tagged, so its
+    // absence means this cannot be one. Reporting these would refuse on ordinary chain traffic.
+    const c = classifyExtrinsic(signedWrapping(Buffer.from("ordinary payload").toString("hex")), V1);
+    expect(c.outcome).toBe("not_midnight");
+  });
+
+  it("still rejects bare non-Midnight calls as before", () => {
+    expect(decodeMidnightExtrinsic(TIMESTAMP_INHERENT, V1)).toBeNull();
   });
 });

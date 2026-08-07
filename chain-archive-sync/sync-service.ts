@@ -496,6 +496,20 @@ export class ChainArchiveSyncService {
         const c = classifyExtrinsic(e, indices);
         if (c.outcome === "midnight") payloads.push(c.extrinsic);
         else if (c.outcome === "midnight_tagged_foreign_call") foreign++;
+        else if (c.outcome === "midnight_tagged_undecodable_framing") {
+          // A signed or "general" extrinsic carrying a Midnight transaction payload. The pallet
+          // ignores its origin, so this is a VALID transaction that the reference indexer archives
+          // -- reading its call needs runtime metadata this build does not have. Refuse rather
+          // than drop it silently: inserts are ON CONFLICT DO NOTHING, so a block written without
+          // it could not be repaired by re-ingesting once metadata decoding lands.
+          throw new Error(
+            `height ${height}: an extrinsic with v${c.version} signed/general framing carries a ` +
+              "Midnight transaction payload. Such transactions are valid and the indexer archives " +
+              "them, but reading the call out of a signed framing needs runtime metadata this " +
+              "build does not decode. Refusing rather than omitting it. Use indexer-sourced " +
+              "ingest for this range until metadata decoding lands.",
+          );
+        }
       }
       if (foreign > 0) {
         this.midnightTaggedForeignCalls += foreign;
