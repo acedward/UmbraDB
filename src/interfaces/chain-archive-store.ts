@@ -50,6 +50,11 @@ export interface BlockRecord {
   /** Milliseconds since the Unix epoch, decoded from this block's own `Timestamp::set` inherent.
    *  Optional for the same reason as `zswapStateRoot`. */
   timestampMs?: number;
+  /** Protocol version from this block's header `Consensus("MNSV", u32)` digest item. A block-level
+   *  property; `transactions.protocol_version` carries the same value per transaction, but an
+   *  empty block has no transaction to carry it. Optional: absent on rows ingested before
+   *  migration `002_zswap_root`, or when the header carried no MNSV item. */
+  protocolVersion?: number;
   isCanonical: boolean;
   status: BlockStatus;
   finalized: boolean;
@@ -72,6 +77,8 @@ export interface BlockMeta {
   zswapStateRoot?: string;
   /** See {@link BlockRecord.timestampMs} -- absent when not captured. */
   timestampMs?: number;
+  /** See {@link BlockRecord.protocolVersion} -- absent when not captured. */
+  protocolVersion?: number;
   isCanonical: boolean;
   status: BlockStatus;
   finalized: boolean;
