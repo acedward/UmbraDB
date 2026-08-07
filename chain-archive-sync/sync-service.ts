@@ -500,6 +500,7 @@ export class ChainArchiveSyncService {
       bodyBytes: extrinsicsBytes(block.extrinsics),
       zswapStateRoot,
       timestampMs,
+      protocolVersion: nodeProtocolVersion,
       isCanonical: true,
       status: "canonical",
       finalized: true,

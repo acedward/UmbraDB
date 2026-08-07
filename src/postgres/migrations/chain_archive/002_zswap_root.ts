@@ -61,6 +61,17 @@ export async function up(sql: ISql, schema: string): Promise<void> {
         CHECK (timestamp_ms IS NULL OR timestamp_ms >= 0)
   `;
 
+  // The protocol version is a property of the BLOCK -- it comes from the header's
+  // `Consensus("MNSV", u32)` digest item -- but 001 only persisted it per transaction, so a block
+  // with no transactions carried it nowhere. Storing it here is not new information (ingest
+  // already decodes it for every block, to gate the ledger codec) and it means a block feed can
+  // report the version without inventing one for empty blocks.
+  await sql`
+    ALTER TABLE ${sql(schema)}.blocks
+      ADD COLUMN protocol_version integer
+        CHECK (protocol_version IS NULL OR protocol_version >= 0)
+  `;
+
   // ---------------------------------------------------------------------------------------
   // feed_blocks_v1 -- the versioned block feed. The database is the interface: consumers query
   // views, never tables, so the layout underneath can evolve behind a stable contract.
@@ -78,6 +89,7 @@ export async function up(sql: ISql, schema: string): Promise<void> {
         encode(b.block_hash, 'hex')       AS block_hash,
         encode(b.parent_hash, 'hex')      AS parent_hash,
         b.timestamp_ms,
+        b.protocol_version,
         encode(b.zswap_state_root, 'hex') AS zswap_state_root,
         b.finalized
       FROM ${sql(schema)}.blocks b

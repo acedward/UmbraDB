@@ -57,6 +57,7 @@ interface BlockRow {
   finalized: boolean;
   zswap_state_root: Buffer | null;
   timestamp_ms: string | bigint | null;
+  protocol_version: number | null;
 }
 
 interface TxRow {
@@ -91,6 +92,7 @@ function toBlockMeta(row: BlockRow): BlockMeta {
     // configuration -- normalize through Number, which is exact for ms-since-epoch (~1.8e12,
     // four orders of magnitude below MAX_SAFE_INTEGER).
     timestampMs: row.timestamp_ms === null ? undefined : Number(row.timestamp_ms),
+    protocolVersion: row.protocol_version ?? undefined,
     isCanonical: row.is_canonical,
     status: row.status as BlockMeta["status"],
     finalized: row.finalized,
@@ -208,13 +210,13 @@ export class PgChainArchiveStore implements ChainArchiveStore {
       INSERT INTO ${tx(this.schema)}.blocks
         (net, block_hash, height, parent_hash, state_root, extrinsics_root, author,
          header_blob_hash, body_blob_hash, is_canonical, status, finalized,
-         zswap_state_root, timestamp_ms)
+         zswap_state_root, timestamp_ms, protocol_version)
       VALUES
         (${block.net}, ${hexToBuf(block.blockHash)}, ${block.height},
          ${hexToBuf(block.parentHash)}, ${hexToBuf(block.stateRoot)},
          ${hexToBuf(block.extrinsicsRoot)}, ${block.author ? hexToBuf(block.author) : null},
          ${headerHash}, ${bodyHash}, ${block.isCanonical}, ${block.status}, ${block.finalized},
-         ${zswapRoot}, ${block.timestampMs ?? null})
+         ${zswapRoot}, ${block.timestampMs ?? null}, ${block.protocolVersion ?? null})
       ON CONFLICT (net, height, block_hash) DO NOTHING
     `;
 
@@ -421,7 +423,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
   async getBlocksAtHeight(net: string, height: number): Promise<BlockMeta[]> {
     try {
       const rows = await this.sql<BlockRow[]>`
-        SELECT net, block_hash, height, parent_hash, state_root, extrinsics_root, author, zswap_state_root, timestamp_ms,
+        SELECT net, block_hash, height, parent_hash, state_root, extrinsics_root, author, zswap_state_root, timestamp_ms, protocol_version,
                header_blob_hash, body_blob_hash, is_canonical, status, finalized
         FROM ${this.sql(this.schema)}.blocks
         WHERE net = ${net} AND height = ${height}
@@ -436,7 +438,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
   async getCanonicalBlockAtHeight(net: string, height: number): Promise<BlockMeta | undefined> {
     try {
       const rows = await this.sql<BlockRow[]>`
-        SELECT net, block_hash, height, parent_hash, state_root, extrinsics_root, author, zswap_state_root, timestamp_ms,
+        SELECT net, block_hash, height, parent_hash, state_root, extrinsics_root, author, zswap_state_root, timestamp_ms, protocol_version,
                header_blob_hash, body_blob_hash, is_canonical, status, finalized
         FROM ${this.sql(this.schema)}.blocks
         WHERE net = ${net} AND height = ${height} AND is_canonical
@@ -480,7 +482,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
   async getCanonicalChainRange(net: string, fromHeight: number, toHeight: number): Promise<BlockMeta[]> {
     try {
       const rows = await this.sql<BlockRow[]>`
-        SELECT net, block_hash, height, parent_hash, state_root, extrinsics_root, author, zswap_state_root, timestamp_ms,
+        SELECT net, block_hash, height, parent_hash, state_root, extrinsics_root, author, zswap_state_root, timestamp_ms, protocol_version,
                header_blob_hash, body_blob_hash, is_canonical, status, finalized
         FROM ${this.sql(this.schema)}.blocks
         WHERE net = ${net} AND height BETWEEN ${fromHeight} AND ${toHeight} AND is_canonical
