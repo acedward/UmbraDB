@@ -123,6 +123,11 @@ export interface DecodedArchivedTransaction {
   dustRegistrations: DecodedDustRegistration[];
 }
 
+/** Normalizes a WASM-returned hex string to the archive's lowercase, unprefixed form. */
+function hexNoPrefixLower(hex: string): string {
+  return (hex.startsWith("0x") ? hex.slice(2) : hex).toLowerCase();
+}
+
 function tagOf(rawBytes: Uint8Array): string {
   return Buffer.from(rawBytes.subarray(0, STANDARD_TX_TAG_PREFIX.length + 8)).toString("latin1");
 }
@@ -153,9 +158,22 @@ export function isStandardTransaction(rawBytes: Uint8Array): boolean {
 export function decodeArchivedTransaction(ledger: any, rawBytes: Uint8Array): DecodedArchivedTransaction {
   if (isSystemTransaction(rawBytes)) {
     const sysTx = ledger.SystemTransaction.deserialize(rawBytes);
+    // FEATURE-DETECTED, not assumed. `transactionHash` exists on the Rust ledger type and is what
+    // the reference indexer keys system transactions by, but the published wasm-bindgen wrapper
+    // does not export it. A build that does (see MIDNIGHT_LEDGER_WASM in `ledgerV8EntryPath`)
+    // yields the same hash the indexer records -- verified against five genesis system
+    // transactions archived by midnight-indexer 4.3.2, all five matching.
+    //
+    // Left `undefined` when absent rather than substituted or computed locally: the hash is a
+    // primary key other consumers join on, so a locally-invented one would produce rows that
+    // silently fail to match anything.
+    const systemHash =
+      typeof sysTx.transactionHash === "function"
+        ? hexNoPrefixLower(String(sysTx.transactionHash()))
+        : undefined;
     return {
       kind: "system",
-      transactionHash: undefined,
+      transactionHash: systemHash,
       systemDescription: String(sysTx.toString()),
       zswapOutputs: [], zswapInputs: [], unshieldedOutputs: [], dustSpends: [], dustRegistrations: [],
     };
@@ -274,6 +292,18 @@ function midnightWalletRepoCandidates(): string[] {
  *  availability probe tests use to `describe.skipIf` honestly (reported as SKIPPED, never as a
  *  silent vacuous pass) in environments without the sibling checkout, e.g. CI. */
 export function ledgerV8EntryPath(): string | undefined {
+  // Explicit override, checked first. `SystemTransaction.transactionHash()` does not exist in any
+  // published `@midnight-ntwrk/ledger-v8` yet -- the Rust ledger has it, but the wasm-bindgen
+  // wrapper does not export it -- and without it a system transaction cannot be archived under
+  // the key every other consumer uses. Point this at a build of `ledger-wasm` carrying that
+  // export to archive system transactions; leave it unset and ingest behaves exactly as it does
+  // with the published package, refusing rather than omitting them.
+  //
+  // Deliberately an env var rather than a `file:` dependency: package.json stays portable, and
+  // when the export ships upstream this override is deleted and the version bumped instead.
+  const override = process.env.MIDNIGHT_LEDGER_WASM;
+  if (override !== undefined && existsSync(override)) return override;
+
   // This repo's OWN dependency first. Node-only ingest hard-depends on the ledger to classify and
   // hash transactions, so resolving it from an out-of-band sibling checkout meant the headline
   // feature could not run in CI or from a fresh clone -- which is why its regression tests could

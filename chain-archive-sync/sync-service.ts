@@ -615,66 +615,51 @@ export class ChainArchiveSyncService {
     const records: TransactionRecord[] = [];
     let position = 0;
     for (const p of nodePayloads) {
-      if (p.kind !== "regular") {
-        // REFUSE rather than skip. This payload is a system transaction the indexer-sourced path
-        // WOULD have archived, so silently omitting it produces an archive that is not a
-        // replacement for the indexer's -- and, critically, one that cannot be repaired later:
-        // every terminal insert is `ON CONFLICT DO NOTHING`, so re-ingesting the range once
-        // system transactions are supported would skip the already-written rows and leave the
-        // gap permanent, while corrected positions would collide with what is already there.
-        //
-        // An incomplete archive that looks complete is worse than a refusal. Node-only ingest is
-        // therefore not usable on a range containing system transactions until they can be
-        // archived with their authoritative hash -- see
-        // `openspec/changes/sprint-9-indexer-independence/system-transactions-plan.md`.
-        throw new Error(
-          `height ${height}: node-only ingest encountered a system transaction, which it cannot ` +
-            "yet archive (the ledger WASM exposes no SystemTransaction hash, and block 0 emits no " +
-            "SystemTransactionApplied event to take one from). Refusing rather than writing an " +
-            "archive that silently omits it and cannot be repaired in place. Use indexer-sourced " +
-            "ingest for this range, or a range with no system transactions.",
-        );
-      }
-      // Audit finding (HIGH/DoS): the envelope decoder classifies by the payload's `midnight:`
-      // self-tag, which any caller can forge -- a bare `System::remark(Vec<u8>)` whose bytes
-      // merely START with that tag reaches here (proven with a PoC). Previously the ledger's
-      // rejection of those bytes propagated out, aborting the block; because the watermark only
-      // advances on success, ingest retried that height forever. Any user could permanently wedge
-      // a node-only archive for the price of one remark.
-      //
-      // The ledger itself is the authoritative classifier: bytes that do not deserialize as a
-      // Midnight transaction ARE NOT ONE, whoever framed them. So a decode failure means "not a
-      // transaction, skip it", not "abort the chain". This is safe precisely because the
-      // protocol-version gate above already rejected unsupported ledger versions -- a GENUINE
-      // transaction failing to decode under a SUPPORTED version cannot silently reach this path.
-      //
-      // Skips are counted and surfaced on SyncOnceResult rather than swallowed, so a spike is
-      // visible to operators instead of quietly shrinking the archive.
-      //
-      // This does not remove the need for exact runtime-metadata call matching (the real fix for
-      // classification); it removes the denial of service that misclassification enabled.
-      // Fail LOUD here, deliberately. An earlier revision skipped undecodable payloads and
-      // advanced the watermark, to stop a forged payload from stalling ingest -- but that threat
-      // turned out to be unreachable (a user cannot get arbitrary bytes into this call: it is
-      // gated by pallet_midnight's ValidateUnsigned, whose pre_dispatch runs the ledger's own
-      // validation first). So bytes that reach this point have ALREADY been validated by the
-      // node's ledger, and a decode failure means a real problem -- a version mismatch, or a bug
-      // here. Skipping would write a permanently incomplete block and record nothing about it,
-      // which is the worse failure for an archive.
+      // Bytes reaching here have already passed the node's own validation, so a decode failure is
+      // a real defect -- a version mismatch, or a bug here -- not hostile input. Fail loud: an
+      // earlier revision skipped and advanced the watermark, which wrote a permanently incomplete
+      // block and recorded nothing about it.
       const decoded = decodeArchivedTransaction(ledger, p.payload);
-      if (decoded.transactionHash === undefined) {
+
+      if (p.kind === "system") {
+        // System transactions are archived only when their AUTHORITATIVE hash is available.
+        // `SystemTransaction.transactionHash()` exists on the Rust ledger and is what the
+        // reference indexer keys them by, but the published wasm-bindgen wrapper does not export
+        // it (see MIDNIGHT_LEDGER_WASM in tx-replay-decoder.ts). Without it the row cannot be
+        // written under the key every other consumer uses.
+        //
+        // Refuse rather than omit. Every terminal insert is `ON CONFLICT DO NOTHING`, so an
+        // archive written without these could not be repaired by re-ingesting later -- the rows
+        // already present would be skipped and corrected positions would collide. An incomplete
+        // archive that looks complete is the worse failure.
+        if (decoded.transactionHash === undefined) {
+          throw new Error(
+            `height ${height}: node-only ingest found a system transaction but this ledger build ` +
+              "exposes no SystemTransaction.transactionHash(), so it cannot be archived under its " +
+              "real key. Refusing rather than writing an archive that silently omits it and cannot " +
+              "be repaired in place. Set MIDNIGHT_LEDGER_WASM to a build carrying that export, or " +
+              "use indexer-sourced ingest for this range.",
+          );
+        }
+      } else if (decoded.transactionHash === undefined) {
         throw new Error(
           `node-only ingest at height ${height}: a payload dispatched to the Midnight transaction ` +
             "call did not decode to a transaction hash. Refusing to archive the block incomplete.",
         );
       }
+
+      // ONE counter across both kinds, advancing in extrinsic order. The indexer numbers a
+      // block's transactions across its whole list, so genesis -- whose system transactions are
+      // extrinsic-borne and whose blocks carry no events -- yields exactly the same positions
+      // this produces. Numbering only regular transactions, as an earlier revision did, made the
+      // two modes disagree on `position` for every block containing a system transaction.
       records.push({
         net: this.net,
-        txHash: hexNoPrefix(decoded.transactionHash).toLowerCase(),
+        txHash: hexNoPrefix(decoded.transactionHash!).toLowerCase(),
         blockHeight: height,
         blockHash,
         position: position++,
-        kind: "regular",
+        kind: p.kind,
         protocolVersion,
         rawBytes: p.payload,
       });
