@@ -100,6 +100,59 @@ question for that change, not a decision inherited silently from this one.
 
 ---
 
+## 6a. System transactions: what is actually recoverable, measured
+
+The exclusion in §6 was justified partly on a claim that turned out to be wrong, and partly on one
+that survives. Measured against a live 1.0.0 devnet on 2026-08-07, indexer-sourced vs node-only
+ingest of the SAME chain:
+
+| | regular | system |
+|---|---|---|
+| indexer-sourced | 21 | **5** |
+| node-only | 21 | **0** |
+
+So the parity gap is real and it is exactly the system transactions. Locating them changes what
+the fix is:
+
+**All five are at height 0**, and genesis system transactions are carried IN
+`chain_getBlock.extrinsics` (this decoder's own fixtures: genesis extrinsic 0 is pallet 6 / call 0
+with a 41-byte `midnight:system-transaction[v6]` payload -- matching the 41-byte archived row
+exactly). The bytes are already in hand: `classifyExtrinsic` already returns them with
+`kind: "system"`, and `buildNodeOnlyTransactionRecords` simply skips them.
+
+**The blocker is the `tx_hash` primary key, and it is narrower than "needs runtime metadata".**
+
+- The claim that `SystemTransactionApplied` makes this a non-issue is right for MOST blocks: the
+  event carries the authoritative hash AND the serialized transaction
+  (`pallets/midnight-system/src/lib.rs`). Runtime-generated system transactions are recoverable
+  that way, and that path does need event decoding.
+- It does NOT help at genesis. Substrate emits no events for block 0 (Parity PR #5463 -- the
+  reference indexer has the same problem and works around it by reading pallet storage directly
+  for its genesis cNight registrations). Probing `System::Events` at height 0 on the devnet
+  returns nothing at all, confirming it.
+- And the ledger WASM exposes no hash for a system transaction. Verified twice, against the
+  typings and against the compiled bindings, which export only
+  `deserialize / free / new / serialize / toString`. The RUST ledger DOES have
+  `SystemTransaction::transaction_hash()` (which is how the reference indexer hashes them), so
+  this is a **missing WASM export, not a protocol limitation**.
+
+Consequences for scope:
+
+1. Non-genesis system transactions are recoverable from events, at the cost of metadata-driven
+   event decoding. On a chain that mints block rewards this is the bulk of them.
+2. Genesis system transactions are recoverable in BYTES today but not in HASH, and no amount of
+   work in this repo changes that -- it needs `transaction_hash` exported on `SystemTransaction`
+   in `@midnight-ntwrk/ledger-v8`, or an authoritative statement of the algorithm. Inventing a
+   hash here would produce a primary key that disagrees with every other consumer.
+3. This devnet produced NO system transactions outside genesis (its event blobs at heights 50 and
+   200 are 49 bytes and contain none), so the event path cannot be exercised against it. Testing
+   that path needs preprod or a reward-producing chain.
+
+The honest statement of the remaining gap is therefore: **five genesis rows, blocked upstream on a
+WASM export** -- not "system transactions are unsupported".
+
+---
+
 ## 7. Run A / Run B
 
 Per `proposal.md`, two runs with different ingest sources. Concretely:
