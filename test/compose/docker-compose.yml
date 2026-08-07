@@ -146,8 +146,17 @@ services:
     #
     # Raise it on a big idle runner (VITEST_MAX_WORKERS=8); leave it alone anywhere shared.
     command: ['sh', '-c', 'npx vitest run --maxWorkers=${VITEST_MAX_WORKERS:-2}']
+    # Depends on the NODE only. It deliberately does NOT wait on the indexer: this repo's headline
+    # claim is that the archive can be built from the node alone, and a test runner that cannot
+    # start until an indexer is healthy quietly contradicts it -- the node-only suite would have
+    # been passing inside a stack that could not come up without the very service it claims not to
+    # need. Suites that DO want an indexer are guarded on reaching it and skip when it is absent
+    # (`chain-archive-sync.integration.test.ts`), which is the honest way to express that.
+    #
+    #   docker compose -f test/compose/docker-compose.yml up -d node postgres
+    #   docker compose -f test/compose/docker-compose.yml run --rm tests
+    #
+    # brings up NO indexer at all, and the node-only gate below runs green in that stack.
     depends_on:
       node:
-        condition: service_healthy
-      indexer:
         condition: service_healthy
