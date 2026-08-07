@@ -12,6 +12,7 @@ import { NodeRpcClient, type NodeRpcClientOptions, type SubstrateHeader } from "
 import {
   assertSupportedProtocolVersion,
   classifyExtrinsic,
+  decodeCompactU32,
   decodeProtocolVersionFromDigest,
   requireCallIndices,
 } from "./extrinsic-decoder.js";
@@ -219,22 +220,51 @@ export class ChainArchiveSyncService {
    * `net` records it; every later sync must match. Stored in the archive's own watermarks table
    * (arbitrary key/JSON value), so this needs no migration.
    */
+  private chainIdentity: { genesisHash: string; networkId: string | undefined } | undefined;
+
   private async assertChainIdentity(): Promise<void> {
     const genesisHash = hexNoPrefix(await this.node.getBlockHash(0));
+    // The runtime's own name for the network. Strictly weaker than the genesis hash as an
+    // identifier -- two chains cannot share a genesis, but they can share a network id -- so it
+    // is recorded for the error message and as a second disagreement signal, never as the
+    // primary check. Optional: a node that does not expose the API is not a failure.
+    let networkId: string | undefined;
+    try {
+      const raw = hexNoPrefix(await this.node.stateCall("MidnightRuntimeApi_get_network_id", "0x"));
+      const bytes = Buffer.from(raw, "hex");
+      const { value: len, size } = decodeCompactU32(new Uint8Array(bytes), 0); // SCALE String
+      networkId = bytes.subarray(size, size + len).toString("utf8");
+    } catch {
+      networkId = undefined;
+    }
+
     const key = `chain_identity:${this.net}`;
-    const stored = (await this.store.getWatermark(key)) as { genesisHash?: string } | undefined;
+    const stored = (await this.store.getWatermark(key)) as
+      | { genesisHash?: string; networkId?: string }
+      | undefined;
     if (stored?.genesisHash === undefined) {
-      await this.store.setWatermark(key, { genesisHash });
+      await this.store.setWatermark(key, { genesisHash, networkId: networkId ?? null });
+      this.chainIdentity = { genesisHash, networkId };
       return;
     }
     if (stored.genesisHash !== genesisHash) {
       throw new Error(
         `chain identity mismatch for net=${this.net}: this archive was built from genesis ` +
-          `${stored.genesisHash}, but the configured node serves genesis ${genesisHash}. Refusing ` +
-          "to splice a different chain into an existing archive -- use a different NET, or point " +
-          "at the original chain.",
+          `${stored.genesisHash}` +
+          (stored.networkId ? ` (network "${stored.networkId}")` : "") +
+          `, but the configured node serves genesis ${genesisHash}` +
+          (networkId ? ` (network "${networkId}")` : "") +
+          ". Refusing to splice a different chain into an existing archive -- use a different NET, " +
+          "or point at the original chain.",
       );
     }
+    if (stored.networkId != null && networkId !== undefined && stored.networkId !== networkId) {
+      throw new Error(
+        `chain identity mismatch for net=${this.net}: same genesis ${genesisHash}, but the node ` +
+          `now reports network "${networkId}" where the archive recorded "${stored.networkId}".`,
+      );
+    }
+    this.chainIdentity = { genesisHash: stored.genesisHash, networkId: stored.networkId ?? undefined };
   }
 
   async syncOnce(opts?: { maxBlocks?: number }): Promise<SyncOnceResult> {
@@ -307,8 +337,27 @@ export class ChainArchiveSyncService {
   /** Reset at the start of each `syncOnce` and reported in its result. */
   private midnightTaggedForeignCalls = 0;
 
-  private async assertParentContinuity(height: number, header: SubstrateHeader): Promise<void> {
-    if (height === 0) return; // genesis parent is all-zero by construction
+  private async assertParentContinuity(
+    height: number,
+    header: SubstrateHeader,
+    blockHash: Hex32,
+  ): Promise<void> {
+    if (height === 0) {
+      // The one block with no parent to check, and therefore the one place the identity check
+      // above can be raced: it resolves genesis at the START of a batch, and an endpoint or load
+      // balancer that switches chains between then and now would commit a different chain's
+      // genesis under an identity already recorded. Binding the check to the block actually being
+      // committed closes that. Every block ABOVE genesis is already bound transitively, because
+      // parent continuity chains each one back to this block.
+      if (this.chainIdentity !== undefined && blockHash !== this.chainIdentity.genesisHash) {
+        throw new Error(
+          `chain identity race at genesis (net=${this.net}): identity was established as ` +
+            `${this.chainIdentity.genesisHash}, but the block being committed at height 0 is ` +
+            `${blockHash}. The node endpoint changed chains mid-sync.`,
+        );
+      }
+      return;
+    }
     const parentHash = hexNoPrefix(header.parentHash);
     const expected =
       this.lastArchived?.height === height - 1
@@ -335,7 +384,7 @@ export class ChainArchiveSyncService {
     const blockHash = hexNoPrefix(await this.node.getBlockHash(height));
     const { block } = await this.node.getBlock(`0x${blockHash}`);
     const header = block.header;
-    await this.assertParentContinuity(height, header);
+    await this.assertParentContinuity(height, header, blockHash);
 
     // Sprint 9: the node-derived view is ALWAYS computed -- it is the source of truth in
     // node-only mode and the oracle comparand in indexer mode. `decodeMidnightExtrinsic`

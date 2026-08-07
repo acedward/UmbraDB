@@ -280,6 +280,40 @@ describe("ChainArchiveSyncService retry safety (sprint-fix round Fixes 1-3)", ()
     await expect(spliced.syncOnce({ maxBlocks: 10 })).rejects.toThrow(/chain continuity BROKEN at height 2/);
   }, 60_000);
 
+  it("audit F3 (restart): continuity is re-checked from the STORE, not just in-memory", async () => {
+    // The in-run path keeps the previous block hash in memory. After a restart that anchor is
+    // gone and the check must fall back to the archived block at height-1 -- a different code
+    // path, and the one a real deployment actually exercises on every start. The earlier test
+    // covered only the in-memory path.
+    const blocks = fakeChain([
+      { height: 0, dParamSeed: 1 },
+      { height: 1, dParamSeed: 1 },
+      { height: 2, dParamSeed: 1 },
+    ]);
+    const schema = `retry_test_${schemaCounter++}`;
+    sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    await bootstrapChainArchiveSchema(sql, schema);
+    const mk = (b: FakeChainBlock[], tip: number): ChainArchiveSyncService =>
+      new ChainArchiveSyncService({
+        sql: sql!, net: NET, schema,
+        node: { url: "http://fake-node", fetchImpl: fakeNodeFetch(b, tip) },
+        indexer: { url: "http://fake-indexer", fetchImpl: fakeIndexerFetch(b) },
+      });
+
+    // First process: archive heights 0-1, then go away.
+    await mk(blocks, 1).syncOnce({ maxBlocks: 10 });
+
+    // Second process, SAME archive, fresh instance so nothing is remembered. Height 2 now claims
+    // a foreign parent; only a store lookup can catch it.
+    blocks[2]!.parentHash = hx(999, 0xf);
+    const restarted = mk(blocks, 2);
+    await expect(restarted.syncOnce({ maxBlocks: 10 })).rejects.toThrow(
+      /chain continuity BROKEN at height 2/,
+    );
+    // The cursor did not advance past the last good block.
+    expect(await restarted.getSyncedHeight()).toBe(1);
+  }, 60_000);
+
   it("audit F3: an archive built from one genesis refuses a node serving a different genesis", async () => {
     const chainA = fakeChain([{ height: 0, dParamSeed: 1 }]);
     const { service: a, schema } = await newService(chainA, 0);
