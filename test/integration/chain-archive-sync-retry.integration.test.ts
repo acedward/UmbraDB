@@ -204,7 +204,7 @@ describe("ChainArchiveSyncService retry safety (sprint-fix round Fixes 1-3)", ()
   // where it is absent -- never as a vacuous pass. This test is the reason F6 matters: the DoS
   // regression cannot be enforced in CI until the dependency is packaged.
   it.skipIf(ledgerV8EntryPath() === undefined)(
-    "audit F2: midnight-tagged bytes in a NON-Midnight call are neither archived nor silently dropped", async () => {
+    "audit F2/F3: midnight-tagged bytes under an unrecognized call REFUSE the block", async () => {
     // The denial of service this closes: the envelope decoder classifies by the payload's
     // `midnight:` self-tag, which anyone can forge. A bare System::remark(Vec<u8>) whose bytes
     // merely START with that tag was accepted, then failed to deserialize as a transaction, and
@@ -242,20 +242,23 @@ describe("ChainArchiveSyncService retry safety (sprint-fix round Fixes 1-3)", ()
       node: { url: "http://fake-node", fetchImpl: fakeNodeFetch(blocks, 0) },
     });
 
-    // Must complete, not throw, and must not archive the forged payload as a transaction.
-    const result = await service.syncOnce({ maxBlocks: 10 });
-    expect(result.ingestedBlocks).toBe(1);
-    expect(await service.getSyncedHeight()).toBe(0);
-    // Rejected at CLASSIFICATION: the payload is not carried by the Midnight call, so it never
-    // reaches the ledger decoder. It is COUNTED rather than dropped in silence, because the same
-    // signal fires if a runtime renumbers its pallets -- and then genuine transactions would be
-    // the ones disappearing.
-    expect(result.midnightTaggedForeignCalls).toBe(1);
-
+    // Must REFUSE the block, not complete it. The shape being detected -- midnight-tagged bytes
+    // under a call this build does not recognize as a Midnight call -- is exactly what a runtime
+    // that renumbered its pallets produces from GENUINE transactions. Counting it and writing the
+    // block anyway (an earlier revision did) would persist a silently incomplete archive and
+    // advance the watermark past the gap. It is safe to fail closed here precisely because a user
+    // cannot produce this shape: pallet_midnight holds the only ValidateUnsigned and admits only
+    // its own call, so a bare foreign call is refused by the node and a signed one is refused by
+    // the decoder before classification.
+    await expect(service.syncOnce({ maxBlocks: 10 })).rejects.toThrow(
+      /does not recognize as a Midnight call/,
+    );
+    // Nothing was written, and the cursor did not move past the refused block.
+    expect(await service.getSyncedHeight()).toBeUndefined();
     const rows = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM ${sql(schema)}.transactions WHERE net = ${NET}
     `;
-    expect(rows[0]!.n).toBe(1); // only the genuine transaction
+    expect(rows[0]!.n).toBe(0);
   }, 60_000);
 
   it("audit F3: a block whose parent is not the archived block below it is rejected, not spliced", async () => {

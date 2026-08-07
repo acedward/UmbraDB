@@ -19,6 +19,10 @@
  *                   NODE-ONLY ingest with no indexer involvement at all. The historical default
  *                   (hosted Preprod indexer) is kept so existing invocations behave unchanged.
  *   NODE_ONLY       "1" forces node-only mode regardless of INDEXER_URL
+ *   ORACLE_CROSS_CHECK  "1" additionally validates each block's node-derived view against the
+ *                   indexer's, throwing on disagreement (validation mode; off by default)
+ *   ORACLE_CROSS_CHECK  "1" additionally validates every block's node-derived view against the
+ *                   indexer's, throwing on disagreement (validation mode; off by default)
  *   MAX_BLOCKS      blocks ingested per syncOnce call (default 200)
  *
  * Run:  ARCHIVE_PG=postgres://user:pass@host:5432/db npx tsx chain-archive-sync/sync-cli.ts
@@ -38,6 +42,9 @@ const SCHEMA = process.env.ARCHIVE_SCHEMA ?? "chain_archive";
 const NODE_URL = process.env.NODE_URL ?? "https://rpc.preprod.midnight.network";
 const INDEXER_URL = process.env.INDEXER_URL ?? "https://indexer.preprod.midnight.network/api/v4/graphql";
 const NODE_ONLY = process.env.NODE_ONLY === "1" || process.env.INDEXER_URL === "none";
+// Validation mode: compare the node-derived view against the indexer's on every block. Off by
+// default, so indexer-sourced ingest behaves exactly as it did before node reading existed.
+const ORACLE_CROSS_CHECK = process.env.ORACLE_CROSS_CHECK === "1";
 const MAX_BLOCKS = Number(process.env.MAX_BLOCKS ?? "200");
 
 const sql = createClient({ connectionString: CONN, schema: SCHEMA });
@@ -51,6 +58,7 @@ const service = new ChainArchiveSyncService({
   // constructs an IndexerClient, so "no network call to any indexer endpoint" holds by
   // construction, not by configuration discipline.
   ...(NODE_ONLY ? {} : { indexer: { url: INDEXER_URL, timeoutMs: 30_000 } }),
+  oracleCrossCheck: ORACLE_CROSS_CHECK,
 });
 
 let stop = false;
@@ -63,7 +71,8 @@ process.on("SIGTERM", requestStop);
 // eslint-disable-next-line no-console
 console.log(
   `[archive-sync] START net=${NET} schema=${SCHEMA} node=${NODE_URL} ` +
-    `indexer=${NODE_ONLY ? "NONE (node-only mode)" : INDEXER_URL}`,
+    `indexer=${NODE_ONLY ? "NONE (node-only mode)" : INDEXER_URL} ` +
+    `oracle=${ORACLE_CROSS_CHECK ? "on" : "off"}`,
 );
 while (!stop) {
   try {

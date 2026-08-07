@@ -116,6 +116,16 @@ export interface ChainArchiveSyncServiceOptions {
    *   - at indexer shutdown, the cutover is: stop passing this option.
    */
   indexer?: IndexerClientOptions;
+  /**
+   * Cross-check the node-derived view against the indexer's on every block, throwing on any
+   * disagreement. A VALIDATION mode, off by default.
+   *
+   * It was briefly mandatory whenever an indexer was configured, which was wrong: it made a
+   * node-side decode path a hard dependency of the long-standing indexer-sourced ingest, so a
+   * runtime this build cannot classify would fail a sync that never needed classification. The
+   * indexer path is now behaviourally unchanged unless this is explicitly turned on.
+   */
+  oracleCrossCheck?: boolean;
 }
 
 export interface SyncOnceResult {
@@ -156,6 +166,8 @@ export class ChainArchiveSyncService {
    *  node-only mode (transaction hashes); never loaded otherwise, so a plain indexer-sourced
    *  deployment keeps working without the sibling wallet checkout. */
   private ledgerPromise: Promise<unknown> | undefined;
+  /** See `ChainArchiveSyncServiceOptions.oracleCrossCheck`. */
+  private readonly oracleCrossCheckEnabled: boolean;
   private readonly net: string;
   /** Last-seen D-parameter, in-memory, this instance's lifetime only -- used to dedupe
    *  `bridge_observations` inserts (§"stub/initial pass") so a healthy chain with an unchanging
@@ -170,6 +182,7 @@ export class ChainArchiveSyncService {
     this.store = new PgChainArchiveStore(opts.sql, opts.schema ?? "chain_archive");
     this.node = new NodeRpcClient(opts.node);
     this.indexer = opts.indexer === undefined ? undefined : new IndexerClient(opts.indexer);
+    this.oracleCrossCheckEnabled = opts.oracleCrossCheck ?? false;
     this.net = opts.net;
   }
 
@@ -404,21 +417,45 @@ export class ChainArchiveSyncService {
     if (nodeProtocolVersion !== undefined) {
       assertSupportedProtocolVersion(nodeProtocolVersion, height);
     }
-    // Classification is driven by the runtime's own call numbering for this protocol version.
-    // A supported ledger version with no verified index mapping halts here rather than guessing.
-    const nodePayloads: { kind: "regular" | "system"; payload: Uint8Array }[] = [];
-    if (nodeProtocolVersion !== undefined) {
+    /**
+     * Classify this block's extrinsics with the runtime's own call numbering.
+     *
+     * Called only where node-derived payloads are actually NEEDED -- node-only ingest, and the
+     * opt-in oracle cross-check -- never unconditionally. An earlier revision ran it ahead of the
+     * source split so both modes were gated identically, which read as defensive but was a
+     * regression: `requireCallIndices` refuses a protocol version with no verified index mapping,
+     * and 0.22 is a SUPPORTED ledger version with no such mapping. An indexer-backed sync of a
+     * 0.22 chain that worked before would have started failing before it ever consulted the
+     * indexer -- a node-side gate breaking a path that does not depend on the node's call
+     * numbering at all.
+     *
+     * A foreign-call anomaly ABORTS the block rather than being counted and written past. The
+     * shape it detects is a runtime that renumbered its pallets, in which case the "anomalies"
+     * are genuine transactions about to be dropped; completing the block would persist a
+     * silently incomplete archive and advance the watermark past it.
+     */
+    const classifyBlock = (): { kind: "regular" | "system"; payload: Uint8Array }[] => {
+      if (nodeProtocolVersion === undefined) return [];
       const indices = requireCallIndices(nodeProtocolVersion, height);
+      const payloads: { kind: "regular" | "system"; payload: Uint8Array }[] = [];
+      let foreign = 0;
       for (const e of block.extrinsics) {
         const c = classifyExtrinsic(e, indices);
-        if (c.outcome === "midnight") nodePayloads.push(c.extrinsic);
-        // A payload claiming to be a Midnight transaction while riding a different call. On the
-        // 1.0 runtime a user cannot produce this, so a non-zero count means a trusted-boundary
-        // construction or -- the case worth catching -- a runtime that renumbered its pallets,
-        // which would otherwise make genuine transactions disappear from the archive silently.
-        else if (c.outcome === "midnight_tagged_foreign_call") this.midnightTaggedForeignCalls++;
+        if (c.outcome === "midnight") payloads.push(c.extrinsic);
+        else if (c.outcome === "midnight_tagged_foreign_call") foreign++;
       }
-    }
+      if (foreign > 0) {
+        this.midnightTaggedForeignCalls += foreign;
+        throw new Error(
+          `height ${height}: ${foreign} extrinsic(s) carry a midnight transaction payload under a ` +
+            `call this build does not recognize as a Midnight call (protocol ${nodeProtocolVersion}). ` +
+            "The most likely cause is a runtime that renumbered its pallets, which would make GENUINE " +
+            "transactions vanish from the archive. Refusing to write the block. Verify the call " +
+            "indices for this runtime and add them to CALL_INDICES_BY_PROTOCOL.",
+        );
+      }
+      return payloads;
+    };
 
     let transactions: TransactionRecord[];
     let bridge: { records: BridgeObservationRecord[]; newDParameterJson: string | undefined };
@@ -436,7 +473,9 @@ export class ChainArchiveSyncService {
         // write has happened yet at this point, so that retry starts completely fresh.
         throw new Error(`indexer has not yet synced height ${height} (node has); retry later`);
       }
-      this.oracleCrossCheck(height, nodePayloads, nodeProtocolVersion, indexerBlock);
+      if (this.oracleCrossCheckEnabled) {
+        this.oracleCrossCheck(height, classifyBlock(), nodeProtocolVersion, indexerBlock);
+      }
       transactions = this.buildTransactionRecords(height, blockHash, block.extrinsics, indexerBlock);
       bridge = this.buildBridgeObservationRecords(
         height, blockHash, indexerBlock.systemParameters.dParameter,
@@ -450,7 +489,7 @@ export class ChainArchiveSyncService {
         throw new Error(`no MNSV protocol-version digest item in header at height ${height}`);
       }
       transactions = await this.buildNodeOnlyTransactionRecords(
-        height, blockHash, nodePayloads, nodeProtocolVersion,
+        height, blockHash, classifyBlock(), nodeProtocolVersion,
       );
       bridge = this.buildBridgeObservationRecords(
         height, blockHash, await this.fetchDParameterFromNode(blockHash),
