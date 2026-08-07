@@ -3,6 +3,12 @@
 This file is the sprint's only checkbox/status authority. Every phase closes only after its
 specified persona review passes or all findings are fixed and re-reviewed (`AGENTS.md`).
 
+**Scope boundary (owner, 2026-08-07):** Part A is ONLY reading from the node instead of the
+indexer — it adds no migrations, columns or views. Everything that STORES new data is Part B, which
+is primarily the contract ledger state. Two commits were moved from A to B to enforce this, which
+also surfaced a duplicate-column collision between two parallel implementations; see
+`scope-split.md` for the old-to-new commit mapping and the resolution.
+
 **Status (2026-08-07):** Phases 6.1/6.2 and 6d are implemented and checked below; every other box
 is genuinely unchecked. Two independent audits have returned BLOCK on the implementation branch,
 and their findings are being worked through -- see `security-classification.md` for the
