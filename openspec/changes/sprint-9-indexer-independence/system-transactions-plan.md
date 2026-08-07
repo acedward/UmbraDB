@@ -1,10 +1,10 @@
 # Plan: replacing the indexer with the node as the archive's ingest source
 
-**Revision 3.** Revision 1 was blocked; revision 2 rewrote it against that review; this revision
-records that **exact parity has been achieved on the test chain**, documents the second repository
-the work now spans, and narrows what remains. §10 lists changes from revision 2.
+**Revision 4.** Revisions 1–3 were each reviewed and blocked; every finding is now either fixed or
+carried explicitly below. This revision records that **node-only ingest has no silent gaps left**,
+and reduces what remains to one engineering task and four decisions.
 
-**Written for an independent reviewer with no prior context.**
+**Written for an independent reviewer with no prior context.** All paths are absolute.
 
 ---
 
@@ -14,59 +14,65 @@ the work now spans, and narrows what remains. §10 lists changes from revision 2
 the Midnight blockchain into a `chain_archive` schema: blocks, transactions (raw bytes,
 content-addressed), lean metadata. It is an archive, not a state store.
 
-Ingest used to **require the Midnight indexer** (`midnight-indexer`, a service that replays the
-ledger and serves GraphQL). UmbraDB stored what it was handed.
+Ingest used to **require the Midnight indexer** (a service that replays the ledger and serves
+GraphQL). UmbraDB stored what it was handed. **The indexer is being decommissioned.**
 
-**The indexer is being decommissioned.** The goal is exactly one thing:
+> **The goal:** replace the indexer with the node as the source of the archive's bytes. Produce the
+> **same archive**. Change nothing about what it contains, what it means, or what reads it.
 
-> Replace the indexer with the node as the source of the archive's bytes. Produce the **same
-> archive**. Change nothing about what it contains, what it means, or what reads it.
+Success is therefore not a feature list. It is that ingesting a range both ways yields **identical
+rows**. Anything that adds stored data, derives new values, or builds a feed is out of scope.
 
-Anything that adds stored data, derives new values, or builds a feed is **out of scope** and lives
-on a separate branch. The measure of success is therefore not a feature list — it is that ingesting
-a range both ways yields identical rows.
+## 2. Repositories and key files (absolute paths)
 
-## 2. Repositories
+| Path | Role |
+|---|---|
+| `/home/eddie/umbradb-fork` | UmbraDB fork. Branch `feat/indexer-independent-ingest`, **31 commits**, tree clean. Branch `feat/contract-ledger-state` stacks 6 more and is **out of scope here** |
+| `/home/eddie/midnight-ledger-fork` | Clone of `midnightntwrk/midnight-ledger`. Branch `feat/expose-system-transaction-hash`, **2 commits, UNPUSHED** |
+| `/home/eddie/midnight-reference-mainnet/v1.0.0` | Read-only reference: `midnight-node`, `midnight-indexer`, `midnight-ledger` |
 
-| Path | What it is | State |
-|---|---|---|
-| `/home/eddie/umbradb-fork` | The UmbraDB fork carrying this work. Branch `feat/indexer-independent-ingest` (26 commits); `feat/contract-ledger-state` stacks 6 more, and is **out of scope here** | clean |
-| `/home/eddie/midnight-ledger-fork` | Clone of `midnightntwrk/midnight-ledger`, branch `feat/expose-system-transaction-hash`, commit `de62430`. A 16-line addition exposing `SystemTransaction::transactionHash` to WASM — **needs upstreaming** | clean; built artifact in `ledger-wasm/pkg` (19 MB, gitignored) |
-| `/home/eddie/midnight-reference-mainnet/v1.0.0` | Read-only reference: `midnight-node`, `midnight-indexer`, `midnight-ledger` sources | reference only |
+**Implementation:**
+- `/home/eddie/umbradb-fork/chain-archive-sync/extrinsic-decoder.ts` — envelope decode, call-index classification, protocol-version gate
+- `/home/eddie/umbradb-fork/chain-archive-sync/sync-service.ts` — ingest, mode split, continuity, identity, all refusal conditions
+- `/home/eddie/umbradb-fork/chain-archive-sync/tx-replay-decoder.ts` — ledger loading, transaction/system-transaction decode, capability probe
+- `/home/eddie/umbradb-fork/chain-archive-sync/node-rpc-client.ts` — JSON-RPC surface
 
-The second repository exists because one method the indexer relies on was never exposed to
-JavaScript. See §5.
+**Tests:**
+- `/home/eddie/umbradb-fork/test/chain-archive-sync/extrinsic-decoder.test.ts` — 24 unit tests
+- `/home/eddie/umbradb-fork/test/integration/chain-archive-sync-retry.integration.test.ts` — 10 tests, fake node/indexer
+- `/home/eddie/umbradb-fork/test/integration/chain-archive-node-only.integration.test.ts` — real node, **no indexer service**
+- `/home/eddie/umbradb-fork/test/integration/chain-archive-source-parity.integration.test.ts` — **the acceptance gate**
+- `/home/eddie/umbradb-fork/test/compose/docker-compose.yml` — node/indexer/proof/postgres, no host ports
+
+**Ledger fix:** `/home/eddie/midnight-ledger-fork/ledger-wasm/src/tx.rs` (the export),
+`/home/eddie/midnight-ledger-fork/ledger-wasm/ledger-v8.template.d.ts` (authored typings),
+`/home/eddie/midnight-ledger-fork/ledger-wasm/pkg/` (local build, gitignored, 19 MB).
 
 ## 3. The indexer's code path — what we are reproducing
 
-Every mechanism below is what `midnight-indexer` does against the same node. This is the
-specification; anything we do differently is a deviation to justify, not a design choice.
+The indexer reads the same node. Its implementation is the specification; anything we do
+differently is a deviation to justify. Paths under `/home/eddie/midnight-reference-mainnet/v1.0.0/`.
 
-All paths relative to `/home/eddie/midnight-reference-mainnet/v1.0.0/`.
-
-| Concern | Indexer implementation | Our equivalent |
+| Concern | Indexer | Status |
 |---|---|---|
-| Block traversal, parent continuity | `midnight-indexer/chain-indexer/src/infra/subxt_node.rs:353` (`ParentHashMismatch`) | implemented |
-| Extrinsic → call decoding | `.../runtimes/v1_0_0.rs:30` `make_block_details`, decoding **every** extrinsic via `decode_call_data_as::<Call>()` | **partial** — signed/general framings rejected (§4.2) |
-| Regular transactions | `.../runtimes/v1_0_0.rs:78` matches `Call::Midnight(send_mn_transaction)` | implemented |
-| System transactions, extrinsic-borne | `.../runtimes/v1_0_0.rs:82` matches `Call::MidnightSystem(send_mn_system_transaction)` | implemented (§5) |
-| System transactions, event-borne | `.../runtimes/v1_0_0.rs:113` reads `Event::MidnightSystem(SystemTransactionApplied)`, prepending them before extrinsic-derived ones | **not implemented** (§4.1) |
-| Transaction hash | `midnight-indexer/indexer-common/src/domain/ledger/transaction.rs:58` (regular), `:213` (system) — both call the ledger's `transaction_hash()` | implemented, via the WASM export in §5 |
-| Protocol version | header `MNSV` consensus digest, `chain-indexer/src/infra/subxt_node/header.rs` | implemented |
-| Supported version ranges | `indexer-common/src/domain/protocol_version.rs:55` rejects unknown ranges | implemented |
-| D-parameter | `runtimes.rs` `get_d_parameter` runtime API | implemented via `state_call` |
-| Runtime metadata | captured OFFLINE per node version: `midnight-indexer/get_node_metadata.sh`, `NODE_VERSIONS`, `chain-indexer/build.rs` generating decoders; dispatched at runtime on the header's protocol version | **pinned constants instead** (§4.3) |
-| Contract state | `subxt_node.rs:681` runtime API per contract action | out of scope (Part B) |
+| Parent continuity | `midnight-indexer/chain-indexer/src/infra/subxt_node.rs:353` | ✅ |
+| Extrinsic → call decode (**every** framing) | `.../runtimes/v1_0_0.rs:30`, `decode_call_data_as::<Call>()` | ⚠️ bare only; signed/general **refused** (§5.2) |
+| Regular transactions | `.../runtimes/v1_0_0.rs:78` | ✅ |
+| System transactions, extrinsic-borne | `.../runtimes/v1_0_0.rs:82` | ✅ |
+| System transactions, event-borne | `.../runtimes/v1_0_0.rs:113` | ⚠️ not decoded; **refused** (§5.1) |
+| Transaction hash | `midnight-indexer/indexer-common/src/domain/ledger/transaction.rs:58` and `:213` | ✅ via §4 |
+| Protocol version | `.../subxt_node/header.rs` (`MNSV` digest) | ✅ |
+| Supported version ranges | `midnight-indexer/indexer-common/src/domain/protocol_version.rs:55` | ✅ |
+| D-parameter | `runtimes.rs` `get_d_parameter` | ✅ via `state_call` |
+| Runtime metadata | captured OFFLINE per node version: `midnight-indexer/get_node_metadata.sh`, `NODE_VERSIONS`, `chain-indexer/build.rs` | ❌ pinned constants (§5.3) |
 
-The metadata row is the important one: **the indexer does not resolve metadata at runtime.** It
-captures it per node version offline and compiles decoders. That pattern is directly available to
-us and is what §4.3 proposes.
+**The metadata row is the remaining work.** Note the indexer does *not* resolve metadata at
+runtime — it captures it per node version offline and compiles decoders. That pattern transfers.
 
-## 4. Current state
+## 4. What is done
 
-**Exact parity is achieved on the test chain.** Ingesting heights 0–1599 both ways, then comparing
-every persisted field in order (`block_height, position, tx_hash, kind, protocol_version`, raw
-bytes):
+**Exact parity on the test chain.** Ingesting heights 0–1599 both ways and comparing every
+persisted field in order (`block_height, position, tx_hash, kind, protocol_version`, raw bytes):
 
 ```
 indexer-sourced: 26 rows
@@ -74,157 +80,133 @@ node-only:       26 rows
 IDENTICAL — every field, in order
 ```
 
-Previously 26 vs 21. Also verified: node-only ingest issues no indexer request, demonstrated by
-recording every outgoing HTTP request during a real-node sync rather than by inspecting
-configuration.
+Now enforced automatically by `chain-archive-source-parity.integration.test.ts`, which ingests both
+ways into two schemas and compares. Verified to fail when node-only is sabotaged to drop system
+transactions (21 vs 26).
 
-**This does not mean parity is proven in general.** Three gaps remain, and the test chain exercises
-none of them.
+**System transactions are archived**, keyed by the ledger's own hash. This required a 16-line
+`wasm-bindgen` export: `SystemTransaction::transaction_hash()` exists on the Rust ledger
+(`/home/eddie/midnight-reference-mainnet/v1.0.0/midnight-ledger/ledger/src/structure.rs:2203`) and
+the indexer calls it directly, but the WASM wrapper never exposed it — so JavaScript could read a
+system transaction's bytes yet not its identity. Verified by recomputing the five hashes
+`midnight-indexer 4.3.2` recorded for the devnet's genesis: **5/5 match**, which also proved the
+8.0.3 → 8.1.0 version gap irrelevant for hashing.
 
-### 4.1 Event-borne system transactions — not implemented
+**Also done:** call-based classification (never payload content); protocol-version gating; parent
+continuity; chain identity anchored on the archived genesis block; positions numbered across both
+transaction kinds in extrinsic order; a real-node gate proving no indexer request is issued by
+recording every outgoing request.
 
-System transactions reach the node two ways, both at any height: as extrinsics
-(`send_mn_system_transaction`, root-dispatched) and as `SystemTransactionApplied` events emitted
-after successful application. We read only extrinsics.
+## 5. What remains — and why nothing is silent
 
-The test chain's only system transactions are the five at genesis, all extrinsic-borne, so it
-cannot exercise this. A reward-bearing chain (preprod) can.
+All three gaps are the same underlying task: **block-scoped runtime-metadata decoding**. Until it
+lands, each is **detected and refused** rather than silently omitted. That distinction is
+load-bearing: every terminal insert is `ON CONFLICT DO NOTHING`, so an archive written incomplete
+**cannot be repaired by re-ingesting later**.
 
-Because a successful root-dispatched call appears in **both** sources, combination rules are
-required, not optional:
+### 5.1 Event-borne system transactions — refused
 
-| Case | Sources | Rule |
-|---|---|---|
-| Runtime-generated | event only | archive from event |
-| Root-dispatched, failed | extrinsic only (no event) | to be decided from the indexer's behaviour |
-| Root-dispatched, succeeded | extrinsic **and** event | archive once; define which supplies bytes and position |
-| Same hash, differing bytes | both | must fail loudly — one source is being misread |
+Runtime-generated system transactions exist only in the `SystemTransactionApplied` event, which
+this build does not decode. Ingest reads `System::Events`, counts occurrences of the
+system-transaction self-tag, and refuses if there are more than it archived from extrinsics.
 
-### 4.2 Signed and general extrinsics — rejected before their call is read
+Counting, not decoding — delimiting an event payload needs metadata. The tag is a **detection**
+signal only; it never decides what anything is. Directional: fewer than archived is expected (a
+*failed* root-dispatched call emits no event). Genesis emits no events, so the working path is
+unaffected.
 
-`decodeMidnightExtrinsic` returns `null` for any extrinsic carrying the signed or general framing
-bits, before the pallet index is examined. But `send_mn_transaction(_origin: OriginFor<T>, …)`
-**ignores its origin** (`midnight-node/pallets/midnight/src/lib.rs:365`), so a signed Midnight
-transaction is valid and executes — and the indexer decodes call data for every extrinsic
-regardless of framing.
+### 5.2 Signed and general extrinsic framings — refused
 
-This affects **regular** transactions. The test chain's wallet submits bare extrinsics only, so
-parity there is not evidence of parity in general.
+`send_mn_transaction` ignores its origin, so a **signed** Midnight transaction is valid and the
+indexer archives it. Reading the call out of a signed framing needs metadata (address, signature
+and signed-extension layouts are chain config). Such an extrinsic carrying a Midnight self-tag is
+now reported and refused. A signed extrinsic *without* the tag cannot be a Midnight transaction —
+the payload is always self-tagged — so ordinary chain traffic does not trip this.
 
-### 4.3 Call indices are pinned constants, not metadata-derived
+**This affects regular transactions, not only system ones.**
+
+### 5.3 Call indices are pinned constants
 
 `CALL_INDICES_BY_PROTOCOL` hardcodes `(pallet, call)` per protocol-version range, verified only
-against node 1.0.x. It is fail-closed — a renumbered runtime stops recognising genuine
-transactions, and that case now aborts the block rather than being counted past — but it is a
-hand-rolled miniature of what the indexer generates from captured metadata.
-
-Node 0.22.x is deliberately absent: its ledger codec is supported but its indices were never
+against node 1.0.x. Fail-closed: a renumbered runtime aborts the block rather than misclassifying.
+Node 0.22.x is deliberately absent — its ledger codec is supported but its indices were never
 observed, and guessing would either drop real transactions or archive forged ones.
 
-## 5. The second repository, and why it exists
+### 5.4 The consequence, stated plainly
 
-`SystemTransaction::transaction_hash()` has always existed on the Rust ledger
-(`midnight-ledger/ledger/src/structure.rs:2203`), and the indexer calls it directly to key the
-system transactions it archives. The `wasm-bindgen` wrapper over that same type
-(`midnight-ledger/ledger-wasm/src/tx.rs`) exposed only `new / serialize / deserialize / toString`.
-
-So a JavaScript consumer could deserialize a system transaction and read its bytes but not obtain
-its identity — and therefore could not store one under the key every other consumer uses. That
-asymmetry, not any protocol limitation, is why system transactions were unarchivable.
-
-**The fix** is 16 lines mirroring the `Transaction::transactionHash` binding beside it, on branch
-`feat/expose-system-transaction-hash` in `/home/eddie/midnight-ledger-fork`.
-
-**Verified against ground truth**, not inspection: the five system transactions of the test chain's
-genesis were archived by `midnight-indexer 4.3.2`; the rebuilt binding recomputes all five hashes
-from the same archived bytes, matching exactly. That also settled a version question — the clone
-builds 8.1.0 while UmbraDB pins 8.0.3, and the hashes are identical across that gap.
-
-**How UmbraDB consumes it:** via the `MIDNIGHT_LEDGER_WASM` environment override, not a `file:`
-dependency, so `package.json` stays portable. The hash is **feature-detected** — against a stock
-published ledger the method is absent, and ingest then **refuses** rather than omitting system
-transactions, because all inserts are `ON CONFLICT DO NOTHING` and an archive written without them
-cannot be repaired by re-ingesting. Both paths are covered by the real-node gate.
-
-**Packaging note:** the published package is ESM with an `imports["#self"]` map and a hand-rolled
-`midnight_ledger_wasm_fs.js` Node loader. A `--target nodejs` build is *not* drop-in — it produces
-CJS that breaks under vitest with an ESM cycle. The build must use `--target bundler` plus that
-loader.
+Node-only ingest is **correct where it completes, and refuses where it cannot**. On a chain whose
+system transactions are all extrinsic-borne (a fresh devnet) it produces an archive identical to
+the indexer's. On a reward-minting chain it will refuse at the first runtime-generated system
+transaction. It is not yet a general replacement.
 
 ## 6. Required actions
 
-Ordered. Items 1–2 are prerequisites for proving anything about 3–5.
+1. **Block-scoped metadata decoding** — the single remaining engineering task. Resolves §5.1, §5.2
+   and §5.3 together. Metadata must be resolved for the block being ingested, never the chain tip,
+   or a block spanning a runtime upgrade decodes against the wrong layout. Follow the indexer's
+   own mechanism: capture per node version offline, dispatch on the header's protocol version.
+2. **Capture indexer ground truth for a reward-bearing chain — time-critical.** Network, genesis
+   hash, range, indexer version, queries, checksums. The test chain cannot exercise §5.1 or §5.2,
+   and this oracle **disappears when the indexer is retired**. Every other item here is
+   recoverable; this one is not.
+3. **Upstream the ledger export.** `/home/eddie/midnight-ledger-fork`, 2 commits, unpushed. Until
+   it ships, archiving system transactions requires the local build via `MIDNIGHT_LEDGER_WASM`.
+4. **Open the PR**, which unblocks the three mandatory Codex persona audits (`AGENTS.md` requires
+   them recorded on a PR after integration with main) and `graphify --update`, currently stale.
+5. **Define combination rules** for a system transaction appearing in *both* sources (successful
+   root-dispatched calls do). Reproducing the indexer's answer requires observing it, not
+   reasoning about it — so this depends on item 2.
 
-1. **Upstream the WASM export.** `/home/eddie/midnight-ledger-fork`, branch
-   `feat/expose-system-transaction-hash`. Until it ships, node-only ingest of any chain with system
-   transactions requires the local build. *Owner action.*
-2. **Capture indexer ground truth for a reward-bearing chain, now**, while the indexer still runs:
-   network, genesis hash, range, indexer version, queries, checksums. Every remaining parity claim
-   depends on an oracle that is being switched off, and the test chain cannot exercise §4.1 or
-   §4.2.
-3. **Decode all extrinsic framings** (§4.2), so signed Midnight calls are archived. Classification
-   must stay driven by the dispatched `(pallet, call)`, never payload content.
-4. **Decode events** for `SystemTransactionApplied` (§4.1), with metadata resolved for the block
-   being ingested — never the chain tip, or a block spanning a runtime upgrade decodes against the
-   wrong layout. Implement the §4.1 combination table.
-5. **Replace pinned indices with captured metadata** (§4.3), following the indexer's own mechanism.
-   This subsumes item 3's decoding needs and removes the 0.22 exclusion.
-6. **Re-prove parity on a chain exercising all of it**, per §7.
-
-Deliberately NOT on this list: `transactions.result`, projections, feeds, contract state. None is a
-regression from the source substitution — `transactions.result` has been NULL in indexer mode too
-since before this work — and adding them is not replacing the indexer.
+**Deliberately not on this list:** `transactions.result` (NULL in indexer mode too, since before
+this work — not a regression), projections, feeds, contract state.
 
 ## 7. Acceptance
 
-One criterion: **ingesting a range both ways on one chain must produce identical persisted
+**One criterion: ingesting a range both ways on one chain must produce identical persisted
 transaction sequences** — an exact ordered per-block comparison of `block_height, block_hash,
 position, tx_hash, kind, protocol_version, raw bytes`. Set equality is insufficient; ordering is
 part of the contract.
 
-Currently met on the test chain. To be meaningful in general the range must contain, and each be
-asserted:
-
-- genesis system transactions ✅ *(covered today)*
-- non-genesis, event-generated system transactions ❌
-- system and regular transactions mixed in one block ❌
-- signed or general regular calls ❌
-- a failed root-dispatched system call ❌
-- a runtime-upgrade boundary, if the pinned chain has one ❌
-
-Plus: the gate must not self-skip; restart and indexer↔node source switching must be exercised; and
-an archive partially written by an earlier, less complete implementation must be detected rather
-than silently extended.
-
-## 8. Testing, at minimum
-
-The suites must stay green throughout. Today: 31 focused tests plus the real-node gate, which runs
-against a live node with **no indexer service present** and asserts both the full-ingest path (with
-the WASM export) and the refusal path (without it).
-
-The one addition needed for the remaining work is a parity gate that runs the §7 comparison
-automatically against a pinned reward-bearing chain, rather than the manual comparison used to
-establish today's result.
-
-## 9. Open questions
-
-1. **Is `MIDNIGHT_LEDGER_WASM` acceptable as an interim**, or should the patched build be vendored
-   or published under a scoped name until upstream ships? The override keeps `package.json`
-   portable but means the capability depends on operator configuration.
-2. **Which chain becomes the parity oracle** for §4.1/§4.2? The devnet cannot exercise them, and
-   the window to capture ground truth closes when the indexer is retired.
-3. **For a root-dispatched system transaction appearing in both sources** — which supplies the
-   archived bytes and position? Reproducing the indexer's answer requires observing it, not
-   reasoning about it.
-4. **Is metadata capture (§4.3 / item 5) in scope for this substitution**, or acceptable as
-   follow-up given the pinned indices are fail-closed and gated to verified versions?
-
-## 10. Changes from revision 2
-
-| Revision 2 | Revision 3 |
+| Population | Covered |
 |---|---|
-| Parity failing 26 vs 21 | **Exact parity on the test chain**: 26 vs 26, identical every field in order |
-| System-tx hash blocked on a missing export | Export written, built and verified (5/5 against indexer ground truth); second repo documented in §2/§5 |
-| Single repository | Two: the UmbraDB fork and the ledger fork, with paths and branches |
-| Indexer mechanisms described in prose | §3 maps each concern to its indexer file:line and our status |
-| "Three gaps" | Same three, now with the test chain's inability to exercise two of them stated explicitly |
+| genesis system transactions | ✅ |
+| regular transactions, bare framing | ✅ |
+| non-genesis, event-generated system transactions | ❌ needs §6.2 |
+| system and regular mixed in one block | ❌ |
+| signed or general regular calls | ❌ |
+| a failed root-dispatched system call | ❌ |
+| a runtime-upgrade boundary | ❌ |
+
+Plus: gates must not self-skip (each ingest path is a separately required test, gated on the ledger
+capability, so an absent export produces a visible SKIP rather than a substituted pass); restart and
+source-switching exercised; an archive partially written by an earlier implementation detected
+rather than silently extended.
+
+## 8. Questions for the reviewer
+
+1. **Is the refuse-rather-than-omit posture the right interim**, or should node-only mode be
+   disabled outright until §6.1 lands? It currently produces a correct archive on simple chains and
+   stops cleanly elsewhere — usable, but not a general replacement.
+2. **Which chain becomes the parity oracle**, and how soon can ground truth be captured? This is
+   the only irreversible item; the window closes when the indexer is switched off.
+3. **Is `MIDNIGHT_LEDGER_WASM` acceptable as an interim**, or should the patched build be vendored
+   or published under a scoped name? It keeps `package.json` portable but makes the capability
+   depend on operator configuration, and it replaces the whole ledger rather than one method.
+4. **Should metadata be captured per node version at build time** (the indexer's approach, pinned
+   artifacts) **or fetched from the node at ingest and cached per runtime version?** The former
+   matches the reference and is reproducible; the latter needs no capture step but makes ingest
+   depend on `state_getMetadata` availability for historical blocks.
+5. **For a system transaction appearing in both sources** — which supplies the archived bytes and
+   position? Needed for §6.5 and unanswerable without item 2.
+
+## 9. Changes from revision 3
+
+| Revision 3 | Revision 4 |
+|---|---|
+| Event-borne system transactions silently omitted | **Detected and refused** (§5.1) |
+| Signed/general framings silently dropped | **Detected and refused** (§5.2) |
+| Parity established by a manual one-off diff | **Automated acceptance gate**, verified to fail on sabotage |
+| Real-node gate could pass without testing ingest | Each path a **separately required** test, gated on capability |
+| `MIDNIGHT_LEDGER_WASM` fell back silently when missing | **Fails** — the two builds differ in behaviour |
+| Spec/design/store interface still declared system transactions excluded | **Reconciled** with what the code does |
+| Authored ledger `.d.ts` template lacked the method | Added |
