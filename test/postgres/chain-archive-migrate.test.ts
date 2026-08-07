@@ -37,7 +37,11 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
       const firstRun = await sql<{ name: string }[]>`
         select name from ${sql(schema)}._migrations order by name
       `;
-      expect(firstRun.map((r) => r.name)).toEqual(["000_schema", "001_chain_archive_core"]);
+      expect(firstRun.map((r) => r.name)).toEqual([
+        "000_schema",
+        "001_chain_archive_core",
+        "002_zswap_root",
+      ]);
 
       // --- idempotent re-run: applies zero additional migrations ---
       await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
@@ -381,6 +385,119 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
           (vk_hash, net, scope, tag, first_seen_height)
           values (${vkHash}, ${net}, 'protocol', 'entry_point_a', 100)`,
       ).rejects.toMatchObject({ code: "23505" }); // unique_violation
+    } finally {
+      await sql.end({ timeout: 5 });
+    }
+  }, 60_000);
+
+  /**
+   * `002_zswap_root`'s feed views -- the read contract effectstream's `Midnight:ZswapRoot`
+   * primitive consumes in place of the indexer's GraphQL.
+   *
+   * The multi-transaction case below is the reason this test exists at all. A live probe against
+   * the 1.0.0 devnet matched the node's `midnight_zswapStateRoot` to the indexer's
+   * `zswapMerkleTreeRoot` on 17/17 rooted blocks, but every one of those blocks had exactly ONE
+   * rooted regular transaction -- so the "attribute the post-block root to the LAST regular
+   * transaction" rule (which is what effectstream's fetcher does, `fetcher.ts:324`) was never
+   * actually discriminated by real data. Constructing the case here makes it deterministic
+   * rather than waiting for a chain to happen to produce it.
+   */
+  it("002: feed_zswap_roots_v1 attributes the root to the last regular tx, and omits uncaptured/non-canonical/system-only blocks", async () => {
+    const schema = "chain_archive_zswap_feed_test";
+    const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    try {
+      await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
+      const h = (n: number): string => n.toString(16).padStart(64, "0");
+      const net = "zswap_feed_net";
+
+      const registerBlob = async (hashHex: string, role: string): Promise<Buffer> => {
+        const hash = Buffer.from(hashHex, "hex");
+        await sql`insert into ${sql(schema)}.chain_blobs (hash, data) values (${hash}, ${Buffer.from("p-" + hashHex)})`;
+        await sql`insert into ${sql(schema)}.chain_blob_roles (blob_hash, role) values (${hash}, ${role})`;
+        return hash;
+      };
+      const txRaw = await registerBlob(h(700), "tx_raw");
+
+      // 33-byte roots, matching the live shape (1-byte version tag + 32-byte digest).
+      const root = (n: number): Buffer => Buffer.from("73" + n.toString(16).padStart(64, "0"), "hex");
+
+      let blobSeq = 800;
+      const addBlock = async (opts: {
+        height: number;
+        blockHash: string;
+        canonical: boolean;
+        zswapRoot: Buffer | null;
+        timestampMs: number | null;
+      }): Promise<Buffer> => {
+        const hdr = await registerBlob(h(blobSeq++), "block_header");
+        const bh = Buffer.from(opts.blockHash, "hex");
+        await sql`insert into ${sql(schema)}.blocks
+          (net, block_hash, height, parent_hash, state_root, extrinsics_root, header_blob_hash,
+           is_canonical, status, zswap_state_root, timestamp_ms)
+          values (${net}, ${bh}, ${opts.height}, ${Buffer.from(h(1), "hex")},
+                  ${Buffer.from(h(2), "hex")}, ${Buffer.from(h(3), "hex")}, ${hdr},
+                  ${opts.canonical}, ${opts.canonical ? "canonical" : "seen"},
+                  ${opts.zswapRoot}, ${opts.timestampMs})`;
+        return bh;
+      };
+      const addTx = async (
+        height: number, blockHash: Buffer, position: number, txHash: string,
+        kind: "regular" | "system",
+      ): Promise<void> => {
+        await sql`insert into ${sql(schema)}.transactions
+          (net, tx_hash, block_height, block_hash, position, kind, protocol_version, raw_blob_hash)
+          values (${net}, ${Buffer.from(txHash, "hex")}, ${height}, ${blockHash}, ${position},
+                  ${kind}, 1000000, ${txRaw})`;
+      };
+
+      // h=10: THE DISCRIMINATING CASE -- three regular transactions. The post-block root must be
+      // attributed to position 2, never to position 0 or 1.
+      const b10 = await addBlock({ height: 10, blockHash: h(10), canonical: true, zswapRoot: root(0xaa), timestampMs: 1_786_000_000_000 });
+      await addTx(10, b10, 0, h(0x100), "regular");
+      await addTx(10, b10, 1, h(0x101), "regular");
+      await addTx(10, b10, 2, h(0x102), "regular");
+
+      // h=11: a single regular transaction -- the ordinary case the live chain did produce.
+      const b11 = await addBlock({ height: 11, blockHash: h(11), canonical: true, zswapRoot: root(0xbb), timestampMs: 1_786_000_006_000 });
+      await addTx(11, b11, 0, h(0x110), "regular");
+
+      // h=12: a root was captured, but the block holds only a SYSTEM transaction. The
+      // indexer-backed path emits nothing here (zswapMerkleTreeRoot lives on RegularTransaction),
+      // so the feed must not invent a row.
+      const b12 = await addBlock({ height: 12, blockHash: h(12), canonical: true, zswapRoot: root(0xcc), timestampMs: 1_786_000_012_000 });
+      await addTx(12, b12, 0, h(0x120), "system");
+
+      // h=13: regular transactions but NO captured root (ingested with captureZswapRoot off).
+      // Absence must read as absence, never as a zero or a stale carry-forward.
+      const b13 = await addBlock({ height: 13, blockHash: h(13), canonical: true, zswapRoot: null, timestampMs: 1_786_000_018_000 });
+      await addTx(13, b13, 0, h(0x130), "regular");
+
+      // h=14: a NON-canonical competing block, fully populated. A state machine must never see it.
+      const b14 = await addBlock({ height: 14, blockHash: h(14), canonical: false, zswapRoot: root(0xdd), timestampMs: 1_786_000_024_000 });
+      await addTx(14, b14, 0, h(0x140), "regular");
+
+      const rows = await sql<{ block_height: string; root: string; tx_hash: string; tx_position: number }[]>`
+        select block_height, root, tx_hash, tx_position
+        from ${sql(schema)}.feed_zswap_roots_v1
+        where net = ${net} order by block_height
+      `;
+      expect(rows.map((r) => Number(r.block_height))).toEqual([10, 11]);
+
+      // The discriminating assertion: last regular transaction, not the first.
+      expect(rows[0]!.tx_position).toBe(2);
+      expect(rows[0]!.tx_hash).toBe(h(0x102));
+      expect(rows[0]!.root).toBe(root(0xaa).toString("hex"));
+      expect(rows[1]!.root).toBe(root(0xbb).toString("hex"));
+      expect(rows[1]!.tx_hash).toBe(h(0x110));
+
+      // feed_blocks_v1: canonical only, and the timestamp survives the bigint round trip intact.
+      const blocks = await sql<{ height: string; timestamp_ms: string; zswap_state_root: string | null }[]>`
+        select height, timestamp_ms, zswap_state_root
+        from ${sql(schema)}.feed_blocks_v1 where net = ${net} order by height
+      `;
+      expect(blocks.map((b) => Number(b.height))).toEqual([10, 11, 12, 13]);
+      expect(Number(blocks[0]!.timestamp_ms)).toBe(1_786_000_000_000);
+      expect(blocks[3]!.zswap_state_root).toBeNull();
     } finally {
       await sql.end({ timeout: 5 });
     }

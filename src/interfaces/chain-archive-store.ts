@@ -42,6 +42,14 @@ export interface BlockRecord {
   author?: Hex32;
   headerBytes: Uint8Array;
   bodyBytes?: Uint8Array;
+  /** The node-reported zswap state root at this block (`midnight_zswapStateRoot`), lowercase hex.
+   *  Ledger-serialized, so NOT a fixed 32 bytes -- observed live at 33 (1-byte version tag +
+   *  32-byte digest); the schema CHECK allows 32..64. Optional: absent on rows ingested before
+   *  migration `002_zswap_root`, or by an ingest configured without root capture. */
+  zswapStateRoot?: string;
+  /** Milliseconds since the Unix epoch, decoded from this block's own `Timestamp::set` inherent.
+   *  Optional for the same reason as `zswapStateRoot`. */
+  timestampMs?: number;
   isCanonical: boolean;
   status: BlockStatus;
   finalized: boolean;
@@ -60,6 +68,10 @@ export interface BlockMeta {
   author?: Hex32;
   headerBlobHash: Hex32;
   bodyBlobHash?: Hex32;
+  /** See {@link BlockRecord.zswapStateRoot} -- lowercase hex, absent when not captured. */
+  zswapStateRoot?: string;
+  /** See {@link BlockRecord.timestampMs} -- absent when not captured. */
+  timestampMs?: number;
   isCanonical: boolean;
   status: BlockStatus;
   finalized: boolean;

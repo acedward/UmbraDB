@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertSupportedProtocolVersion,
   callIndicesForProtocolVersion,
+  decodeBlockTimestampMs,
   decodeCompactU32,
   decodeMidnightExtrinsic,
   decodeProtocolVersionFromDigest,
@@ -180,6 +181,59 @@ describe("decodeProtocolVersionFromDigest", () => {
       decodeProtocolVersionFromDigest(["0x066175726120b225be1100000000"]),
     ).toBeUndefined();
     expect(decodeProtocolVersionFromDigest([])).toBeUndefined();
+  });
+});
+
+describe("decodeBlockTimestampMs", () => {
+  // The real block-45 inherent: bare v5, pallet 1 (Timestamp), call 0 (set), one Compact<u64>
+  // moment in big-integer mode (`0x0b` -> six little-endian bytes `e0 7b 93 d8 9f 01`).
+  it("decodes the moment from the real Timestamp::set inherent", () => {
+    expect(decodeBlockTimestampMs([TIMESTAMP_INHERENT], V1)).toBe(1_786_044_972_000);
+  });
+
+  it("finds the inherent among a real block's other extrinsics, in any position", () => {
+    expect(
+      decodeBlockTimestampMs(
+        [OTHER_PALLET_INHERENT, TIMESTAMP_INHERENT, GENESIS_REGULAR_TX_EXTRINSIC],
+        V1,
+      ),
+    ).toBe(1_786_044_972_000);
+  });
+
+  it("returns undefined when the block carries no Timestamp::set", () => {
+    expect(decodeBlockTimestampMs([OTHER_PALLET_INHERENT], V1)).toBeUndefined();
+    expect(decodeBlockTimestampMs([], V1)).toBeUndefined();
+  });
+
+  it("classifies by dispatched call, not by argument shape", () => {
+    // Same envelope and same well-formed Compact<u64> argument, but pallet 9 instead of pallet 1.
+    // A decoder keying off "looks like a plausible moment" would accept this; a block timestamp
+    // sourced from the wrong pallet's call would then be persisted as fact.
+    const foreign = "0x28" + "05" + "09" + "00" + "0be07b93d89f01";
+    expect(decodeBlockTimestampMs([foreign], V1)).toBeUndefined();
+    // Right pallet, wrong call index -- same reasoning.
+    const wrongCall = "0x28" + "05" + "01" + "07" + "0be07b93d89f01";
+    expect(decodeBlockTimestampMs([wrongCall], V1)).toBeUndefined();
+  });
+
+  it("skips a malformed inherent rather than throwing", () => {
+    // A block whose timestamp cannot be decoded must degrade to a NULL column, never halt ingest.
+    // Truncated argument: the declared big-integer compact runs past the end of the extrinsic.
+    expect(decodeBlockTimestampMs(["0x1005010" + "00be07b"], V1)).toBeUndefined();
+    // Length prefix disagreeing with the body -- `classifyExtrinsic` throws on this shape; here
+    // it must be skipped, because one corrupt extrinsic must not cost the whole block's ingest.
+    expect(decodeBlockTimestampMs([TIMESTAMP_INHERENT.slice(0, -4)], V1)).toBeUndefined();
+    // Non-hex garbage.
+    expect(decodeBlockTimestampMs(["0xzz"], V1)).toBeUndefined();
+    // A malformed extrinsic must not mask a valid inherent later in the same block.
+    expect(decodeBlockTimestampMs(["0xzz", TIMESTAMP_INHERENT], V1)).toBe(1_786_044_972_000);
+  });
+
+  it("rejects a multi-argument call whose first argument merely looks like a moment", () => {
+    // Same pallet/call and a valid leading compact, but trailing bytes follow it: the argument
+    // does not span to the end of the extrinsic, so this is not `set(Compact<u64>)`.
+    const trailing = "0x30" + "05" + "01" + "00" + "0be07b93d89f01" + "ff";
+    expect(decodeBlockTimestampMs([trailing], V1)).toBeUndefined();
   });
 });
 

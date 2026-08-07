@@ -1,5 +1,6 @@
 import * as migration000 from "../000_schema.js";
 import * as chainArchiveCore from "./001_chain_archive_core.js";
+import * as zswapRoot from "./002_zswap_root.js";
 import type { Migration } from "../../migrate.js";
 
 /**
@@ -29,7 +30,7 @@ import type { Migration } from "../../migrate.js";
  * lineage, design-stage only, gated on design-council ratification before any real wiring or
  * live apply.
  */
-export const chainArchiveMigrations: Migration[] = [migration000, chainArchiveCore];
+export const chainArchiveMigrations: Migration[] = [migration000, chainArchiveCore, zswapRoot];
 
 // v3 note: `chainArchiveCore` now also creates `chain_archive_assert_blob_role` (a shared
 // plpgsql helper) and one thin `BEFORE INSERT OR UPDATE` trigger per blob-referencing table
@@ -37,6 +38,12 @@ export const chainArchiveMigrations: Migration[] = [migration000, chainArchiveCo
 // `chain_blob_roles` completeness, and `verifier_keys` was replaced by
 // `verifier_key_observations` — see `001_chain_archive_core.ts`'s own header comment and the
 // design doc's "Revision history — v3" note for the full reasoning.
+//
+// Phase-1 note: `002_zswap_root` adds `blocks.zswap_state_root` / `blocks.timestamp_ms` and the
+// first two versioned read views (`feed_blocks_v1`, `feed_zswap_roots_v1`) -- the read contract
+// effectstream's `Midnight:ZswapRoot` primitive consumes in place of the indexer's GraphQL. It is
+// deliberately narrow: everything else that primitive migration needs is an output of stateful
+// ledger replay and gets its own migration when that engine lands.
 //
 // v4 note: `chainArchiveCore` additionally now creates `chain_blob_roles_guard_removal_trigger`
 // (closes the delete/update-side blob-role gap), `blocks_finalized_monotonic_trigger` (rejects
