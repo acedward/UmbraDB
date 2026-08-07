@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
 /**
@@ -252,7 +253,12 @@ export function decodeArchivedTransaction(ledger: any, rawBytes: Uint8Array): De
 
 /** Candidate roots for a BUILT sibling `midnight-wallet` checkout, in precedence order --
  *  `MIDNIGHT_WALLET_REPO` first (same override the wallet-sdk loader honors), then the two
- *  layouts real environments have used. */
+ *  layouts real environments have used.
+ *
+ *  These are now a FALLBACK. The ledger is a declared devDependency of this repo (see
+ *  `ledgerV8EntryPath`), so a fresh clone works with no sibling checkout at all; the candidates
+ *  below are kept so existing developer setups and the pre-existing live-fixture convention
+ *  continue to work unchanged. */
 function midnightWalletRepoCandidates(): string[] {
   const home = process.env.HOME ?? homedir();
   const fromEnv = process.env.MIDNIGHT_WALLET_REPO;
@@ -268,6 +274,22 @@ function midnightWalletRepoCandidates(): string[] {
  *  availability probe tests use to `describe.skipIf` honestly (reported as SKIPPED, never as a
  *  silent vacuous pass) in environments without the sibling checkout, e.g. CI. */
 export function ledgerV8EntryPath(): string | undefined {
+  // This repo's OWN dependency first. Node-only ingest hard-depends on the ledger to classify and
+  // hash transactions, so resolving it from an out-of-band sibling checkout meant the headline
+  // feature could not run in CI or from a fresh clone -- which is why its regression tests could
+  // only ever be skipped there (audit finding F6). Pinned to an exact version deliberately: this
+  // is a decode-critical component, and every verification result recorded for this sprint was
+  // produced against that exact build.
+  try {
+    // Resolve the BARE specifier: the package's `exports` map exposes only the root, and its
+    // `node` condition already points at `midnight_ledger_wasm_fs.js`. Asking for that subpath
+    // directly is refused with ERR_PACKAGE_PATH_NOT_EXPORTED.
+    const own = createRequire(import.meta.url).resolve("@midnight-ntwrk/ledger-v8");
+    if (existsSync(own)) return own;
+  } catch {
+    // Not installed (e.g. a consumer of the published package, which does not ship this
+    // directory at all) -- fall through to the sibling-checkout convention below.
+  }
   for (const root of midnightWalletRepoCandidates()) {
     const entry = path.join(root, "node_modules", "@midnight-ntwrk", "ledger-v8", "midnight_ledger_wasm_fs.js");
     if (existsSync(entry)) return entry;

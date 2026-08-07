@@ -52,6 +52,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@midnight-ntwrk/ledger-v8": "8.0.3",
     "@midnightntwrk/wallet-sdk-abstractions": "3.0.0-canary.20260716150734-e744d99",
     "@stryker-mutator/core": "^9.6.1",
     "@stryker-mutator/vitest-runner": "^9.6.1",
