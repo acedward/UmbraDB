@@ -201,8 +201,38 @@ export class ChainArchiveSyncService {
    * `setCanonical`'s reorg-flip support, which the storage layer already provides; that
    * extension is out of this sprint's scope (see the final report's judgment-calls section).
    */
+  /**
+   * Audit finding (HIGH): `net` is an operator-supplied label with no binding to the chain the
+   * node actually serves, so pointing NODE_URL at a different network and reusing the same `net`
+   * silently comingles two chains in one archive -- the exact failure the `net` column was added
+   * to prevent, reintroduced through configuration.
+   *
+   * Genesis hash is the chain's identity: it is stable for the life of a network, differs across
+   * networks by construction, and costs one `chain_getBlockHash(0)` per batch. First sync for a
+   * `net` records it; every later sync must match. Stored in the archive's own watermarks table
+   * (arbitrary key/JSON value), so this needs no migration.
+   */
+  private async assertChainIdentity(): Promise<void> {
+    const genesisHash = hexNoPrefix(await this.node.getBlockHash(0));
+    const key = `chain_identity:${this.net}`;
+    const stored = (await this.store.getWatermark(key)) as { genesisHash?: string } | undefined;
+    if (stored?.genesisHash === undefined) {
+      await this.store.setWatermark(key, { genesisHash });
+      return;
+    }
+    if (stored.genesisHash !== genesisHash) {
+      throw new Error(
+        `chain identity mismatch for net=${this.net}: this archive was built from genesis ` +
+          `${stored.genesisHash}, but the configured node serves genesis ${genesisHash}. Refusing ` +
+          "to splice a different chain into an existing archive -- use a different NET, or point " +
+          "at the original chain.",
+      );
+    }
+  }
+
   async syncOnce(opts?: { maxBlocks?: number }): Promise<SyncOnceResult> {
     const maxBlocks = opts?.maxBlocks ?? 100;
+    await this.assertChainIdentity();
     const finalizedHash = await this.node.getFinalizedHead();
     const targetTipHeight = await this.node.getHeightOf(finalizedHash);
 
@@ -244,10 +274,51 @@ export class ChainArchiveSyncService {
    * method returning and `syncOnce`'s `setWatermark` call) fully committed, is always a safe
    * no-op rather than a wedge.
    */
+  /**
+   * Audit finding (HIGH): blocks were resolved independently by height and the cursor advanced
+   * without ever checking that a block's parent is the block already archived beneath it. That
+   * makes two silent corruptions possible -- a reorg between the height lookup and the fetch, and
+   * an operator repointing NODE_URL at a different chain mid-archive, which would splice foreign
+   * history into an existing `net` with no error anywhere.
+   *
+   * The reference indexer verifies exactly this (`subxt_node.rs`, `ParentHashMismatch`).
+   *
+   * The previous hash is kept in memory across a run and only read from the store on the first
+   * block after a restart, so the common path costs nothing. A missing predecessor at height > 0
+   * is itself an error: `syncOnce` only ever ingests `watermark + 1`, so contiguity is its own
+   * invariant and a hole means something outside this service moved the cursor.
+   */
+  private lastArchived: { height: number; blockHash: Hex32 } | undefined;
+
+  private async assertParentContinuity(height: number, header: SubstrateHeader): Promise<void> {
+    if (height === 0) return; // genesis parent is all-zero by construction
+    const parentHash = hexNoPrefix(header.parentHash);
+    const expected =
+      this.lastArchived?.height === height - 1
+        ? this.lastArchived.blockHash
+        : (await this.store.getCanonicalBlockAtHeight(this.net, height - 1))?.blockHash;
+    if (expected === undefined) {
+      throw new Error(
+        `chain continuity: no archived block at height ${height - 1} to attach height ${height} ` +
+          `to (net=${this.net}). Ingest is contiguous by construction, so this indicates the ` +
+          "sync cursor was moved externally or the archive was partially deleted.",
+      );
+    }
+    if (parentHash !== expected) {
+      throw new Error(
+        `chain continuity BROKEN at height ${height} (net=${this.net}): this block's parent is ` +
+          `${parentHash} but the archived block at height ${height - 1} is ${expected}. Either a ` +
+          "reorg occurred below the finalized head, or the node endpoint now serves a different " +
+          "chain than the one already archived under this net.",
+      );
+    }
+  }
+
   private async ingestOneBlock(height: number): Promise<void> {
     const blockHash = hexNoPrefix(await this.node.getBlockHash(height));
     const { block } = await this.node.getBlock(`0x${blockHash}`);
     const header = block.header;
+    await this.assertParentContinuity(height, header);
 
     // Sprint 9: the node-derived view is ALWAYS computed -- it is the source of truth in
     // node-only mode and the oracle comparand in indexer mode. `decodeMidnightExtrinsic`
@@ -326,6 +397,11 @@ export class ChainArchiveSyncService {
       transactions,
       bridgeObservations: bridge.records,
     });
+
+    // Only remember this block as the continuity anchor once it is durably written -- same
+    // discipline as the D-parameter cursor below. Advancing it earlier would let a failed write
+    // still satisfy the next block's parent check against a block that isn't in the archive.
+    this.lastArchived = { height, blockHash };
 
     // Fix 2 (sprint-fix round, HIGH): only advance the in-memory D-parameter dedup cursor AFTER
     // the durable write above has succeeded -- see `buildBridgeObservationRecords`'s own doc for

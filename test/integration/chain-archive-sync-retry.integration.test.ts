@@ -57,9 +57,13 @@ function bareMidnightExtrinsicHex(payloadHex: string): string {
   return compactU32Hex(inner.length / 2) + inner;
 }
 
-/** The real MNSV consensus digest item (Consensus | "MNSV" | compact 4 | u32 LE), here carrying
- *  protocol version 1 to match the fake indexer's per-tx `protocolVersion: 1`. */
-const MNSV_DIGEST_V1 = "0x044d4e53561001000000";
+/** The real MNSV consensus digest item (Consensus | "MNSV" | compact 4 | u32 LE), carrying
+ *  1_000_000 -- node 1.0.x. This is the ACTUAL genesis digest captured from a live devnet, and it
+ *  must stay a supported version: ingest now rejects protocol versions outside the ranges whose
+ *  ledger codec the archive implements, so a made-up version (this fixture previously used 1)
+ *  is correctly refused rather than silently decoded with the v8 codec. */
+const MNSV_DIGEST_V1 = "0x044d4e53561040420f00";
+const FIXTURE_PROTOCOL_VERSION = 1_000_000;
 
 function fakeChain(blocks: { height: number; dParamSeed: number }[]): FakeChainBlock[] {
   return blocks.map(({ height, dParamSeed }) => {
@@ -141,7 +145,7 @@ function fakeIndexerFetch(blocks: FakeChainBlock[]): typeof fetch {
         block: blk === undefined ? null : {
           hash: "0x" + blk.hash,
           height: blk.height,
-          transactions: blk.txHashes.map((hash, i) => ({ hash: "0x" + hash, protocolVersion: 1, raw: blk.txRawHex[i] })),
+          transactions: blk.txHashes.map((hash, i) => ({ hash: "0x" + hash, protocolVersion: FIXTURE_PROTOCOL_VERSION, raw: blk.txRawHex[i] })),
           systemParameters: { dParameter: blk.dParameter },
         },
       };
@@ -180,6 +184,45 @@ describe("ChainArchiveSyncService retry safety (sprint-fix round Fixes 1-3)", ()
     });
     return { service, schema };
   }
+
+  it("audit F3: a block whose parent is not the archived block below it is rejected, not spliced", async () => {
+    // Archive heights 0 and 1 normally, then hand the service a height-2 block whose parentHash
+    // points at a DIFFERENT hash -- exactly what a reorg below the finalized head, or an operator
+    // repointing NODE_URL at another chain, would produce. Before the continuity check this was
+    // archived silently and the cursor advanced over it.
+    const blocks = fakeChain([
+      { height: 0, dParamSeed: 1 },
+      { height: 1, dParamSeed: 1 },
+      { height: 2, dParamSeed: 1 },
+    ]);
+    const { service } = await newService(blocks, 1);
+    await service.syncOnce({ maxBlocks: 10 });
+    expect(await service.getSyncedHeight()).toBe(1);
+
+    // Rewrite height 2's parent to a foreign hash and extend the finalized head to it.
+    blocks[2]!.parentHash = hx(999, 0xf);
+    const { service: spliced } = await newService(blocks, 2);
+    // Reuse the SAME schema is not possible via the helper, so drive continuity from the store:
+    // re-sync from scratch reaches height 2 and must reject it on its parent.
+    await expect(spliced.syncOnce({ maxBlocks: 10 })).rejects.toThrow(/chain continuity BROKEN at height 2/);
+  }, 60_000);
+
+  it("audit F3: an archive built from one genesis refuses a node serving a different genesis", async () => {
+    const chainA = fakeChain([{ height: 0, dParamSeed: 1 }]);
+    const { service: a, schema } = await newService(chainA, 0);
+    await a.syncOnce({ maxBlocks: 10 });
+    expect(await a.getSyncedHeight()).toBe(0);
+
+    // A different chain: same net label, same schema, different genesis hash.
+    const chainB = fakeChain([{ height: 0, dParamSeed: 1 }]);
+    chainB[0]!.hash = hx(4242, 0xb);
+    const foreign = new ChainArchiveSyncService({
+      sql: sql!, net: NET, schema,
+      node: { url: "http://fake-node-b", fetchImpl: fakeNodeFetch(chainB, 0) },
+      indexer: { url: "http://fake-indexer-b", fetchImpl: fakeIndexerFetch(chainB) },
+    });
+    await expect(foreign.syncOnce({ maxBlocks: 10 })).rejects.toThrow(/chain identity mismatch/);
+  }, 60_000);
 
   it("Fix 1: retrying after a partial legacy-style write (block row already present, transactions/bridge_observations missing) succeeds instead of duplicate-key-erroring", async () => {
     const blocks = fakeChain([{ height: 0, dParamSeed: 1 }]);
