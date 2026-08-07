@@ -60,6 +60,17 @@ export interface DecodedZswapInput {
   contractAddress: string | undefined;
 }
 
+/**
+ * **These are OFFERED outputs, not APPLIED ones.** They are read out of the transaction's own
+ * intents, which describe what the transaction proposed to do -- not what the ledger did with it.
+ * A transaction that failed, or whose fallible segment did not apply, still carries these.
+ *
+ * Any projection that persists created UTXOs must therefore derive them from the runtime's
+ * `UnshieldedTokens` event (`midnight-node/pallets/midnight/src/lib.rs`), which the node emits
+ * from the APPLICATION outcome, exactly as the reference indexer does. Using this field for that
+ * purpose would persist outputs that never existed on chain. It is safe for what it is used for
+ * today: describing a transaction's contents.
+ */
 export interface DecodedUnshieldedOutput {
   /** The intent segment that created this output. */
   segmentId: number;

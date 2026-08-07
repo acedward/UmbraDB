@@ -3,8 +3,11 @@
 This file is the sprint's only checkbox/status authority. Every phase closes only after its
 specified persona review passes or all findings are fixed and re-reviewed (`AGENTS.md`).
 
-**Status:** Planning artifacts written; no implementation started. Every box below is unchecked and
-none has been rubber-stamped.
+**Status (2026-08-07):** Phases 6.1/6.2 and 6d are implemented and checked below; every other box
+is genuinely unchecked. Two independent audits have returned BLOCK on the implementation branch,
+and their findings are being worked through -- see `security-classification.md` for the
+classification issue and its correction. Nothing here has been rubber-stamped; a checked box means
+the acceptance criterion beneath it was met and the evidence recorded alongside it.
 
 **Ordering note.** Phase 1 (ground-truth capture) comes before any build work, deliberately: it is
 time-boxed by an external event we do not control, and every parity claim in this sprint depends on
