@@ -204,7 +204,7 @@ describe("ChainArchiveSyncService retry safety (sprint-fix round Fixes 1-3)", ()
   // where it is absent -- never as a vacuous pass. This test is the reason F6 matters: the DoS
   // regression cannot be enforced in CI until the dependency is packaged.
   it.skipIf(ledgerV8EntryPath() === undefined)(
-    "audit F2: a forged midnight-tagged System::remark cannot wedge node-only ingest", async () => {
+    "audit F2: a forged midnight-tagged System::remark is neither archived nor able to wedge ingest", async () => {
     // The denial of service this closes: the envelope decoder classifies by the payload's
     // `midnight:` self-tag, which anyone can forge. A bare System::remark(Vec<u8>) whose bytes
     // merely START with that tag was accepted, then failed to deserialize as a transaction, and
@@ -241,8 +241,11 @@ describe("ChainArchiveSyncService retry safety (sprint-fix round Fixes 1-3)", ()
     const result = await service.syncOnce({ maxBlocks: 10 });
     expect(result.ingestedBlocks).toBe(1);
     expect(await service.getSyncedHeight()).toBe(0);
-    // The skip is REPORTED, not silent.
-    expect(result.skippedUndecodablePayloads).toBe(1);
+    // The forgery is now rejected at CLASSIFICATION -- it is not carried by the Midnight call, so
+    // it never reaches the decoder at all and is not counted as an undecodable payload. The skip
+    // counter defends the remaining case: a payload inside a GENUINE Midnight call that fails to
+    // deserialize. Both layers are needed; this asserts the outer one caught it first.
+    expect(result.skippedUndecodablePayloads).toBe(0);
 
     const rows = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM ${sql(schema)}.transactions WHERE net = ${NET}

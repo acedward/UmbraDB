@@ -34,6 +34,91 @@ import { SYSTEM_TX_TAG_PREFIX, STANDARD_TX_TAG_PREFIX } from "./tx-replay-decode
  * tag check and returns `null`; a midnight extrinsic on a renumbered runtime still decodes.
  */
 
+/**
+ * Which `(pallet, call)` pairs actually carry Midnight transaction payloads on a given runtime.
+ *
+ * This is the security boundary. `apply_transaction` is reached from exactly ONE call --
+ * `pallet_midnight::send_mn_transaction`, call_index 0 (`midnight-node/pallets/midnight/src/
+ * lib.rs`) -- and the reference indexer selects transactions by matching that call variant
+ * exactly, discarding everything else (`runtimes/v1_0_0.rs`, `_ => None`). Bytes carried by any
+ * other call were never applied to the ledger, no matter what they look like.
+ *
+ * Classifying by the payload's `midnight:` self-tag instead, as this decoder originally did,
+ * classifies by ATTACKER-CONTROLLED CONTENT: `System::remark(Vec<u8>)` is a real, fee-paying,
+ * no-op call that puts arbitrary bytes on chain, so anyone could wrap a real transaction's bytes
+ * in a remark and have them archived as a transaction that the Midnight pallet never executed.
+ */
+export interface RuntimeCallIndices {
+  /** Runtime index of `pallet_midnight`. */
+  midnightPallet: number;
+  /** Runtime index of `pallet_midnight_system`. */
+  midnightSystemPallet: number;
+  /** `send_mn_transaction`'s call index within `pallet_midnight`. */
+  sendTransactionCall: number;
+  /** `send_mn_system_transaction`'s call index within `pallet_midnight_system`. */
+  sendSystemTransactionCall: number;
+}
+
+/**
+ * Call indices per protocol-version range, and ONLY for ranges whose indices have actually been
+ * observed on a real node of that version. A supported ledger version with no entry here is
+ * refused rather than guessed at -- see `callIndicesForProtocolVersion`.
+ *
+ * Pinning constants is sound precisely because ingest is already gated to known protocol
+ * versions: within a version, the runtime's pallet numbering is fixed. It is deliberately
+ * fail-closed -- if a runtime renumbers pallets inside a supported range, genuine transactions
+ * stop being recognized (visible, fixable) rather than forged ones starting to be accepted
+ * (silent, permanent). Resolving indices from runtime metadata removes the pinning entirely and
+ * is the intended successor; this is the version that needs no new dependency.
+ */
+const CALL_INDICES_BY_PROTOCOL: readonly {
+  readonly range: readonly [number, number];
+  readonly indices: RuntimeCallIndices;
+  readonly verifiedAgainst: string;
+}[] = [
+  {
+    // node 1.0.x. Verified against a live 1.0.0 devnet: genesis extrinsic 0 is pallet 6 / call 0
+    // carrying a `midnight:system-transaction[v6]` payload, and genesis extrinsic 4 is pallet 5 /
+    // call 0 carrying a `midnight:transaction[v9]` payload. Both are fixtures in this decoder's
+    // own test file, so the constants below are checked, not asserted.
+    range: [1_000_000, 1_001_000],
+    indices: {
+      midnightPallet: 5,
+      midnightSystemPallet: 6,
+      sendTransactionCall: 0,
+      sendSystemTransactionCall: 0,
+    },
+    verifiedAgainst: "midnightntwrk/midnight-node:1.0.0",
+  },
+  // node 0.22.x is INTENTIONALLY ABSENT. Its ledger codec is v8 and therefore decodable, but its
+  // pallet indices have never been observed here, and guessing them would either silently
+  // misclassify or silently reject. Add an entry once verified against a real 0.22 node.
+];
+
+/** The call indices for `version`, or `undefined` if this build has no verified mapping. */
+export function callIndicesForProtocolVersion(version: number): RuntimeCallIndices | undefined {
+  return CALL_INDICES_BY_PROTOCOL.find(
+    ({ range: [lo, hi] }) => version >= lo && version < hi,
+  )?.indices;
+}
+
+/**
+ * Resolves call indices or throws. Separate from `isSupportedProtocolVersion` on purpose: whether
+ * this archive can DECODE a ledger version and whether it knows that runtime's call NUMBERING are
+ * two different questions, and conflating them is how 0.22 would end up silently misclassified.
+ */
+export function requireCallIndices(version: number, height: number): RuntimeCallIndices {
+  const indices = callIndicesForProtocolVersion(version);
+  if (indices !== undefined) return indices;
+  throw new Error(
+    `no verified runtime call indices for protocol version ${version} (height ${height}). The ` +
+      "ledger codec for this version may be supported, but classifying transactions requires " +
+      "knowing which pallet/call carries them, and guessing would either drop real transactions " +
+      "or archive forged ones. Verify the indices against a node of this version and add them to " +
+      "CALL_INDICES_BY_PROTOCOL.",
+  );
+}
+
 export interface DecodedMidnightExtrinsic {
   /** Extrinsic format version (observed live: 4 from wallet submissions, 5 from node-authored). */
   version: number;
@@ -100,7 +185,10 @@ function tagKindOf(payload: Uint8Array): "regular" | "system" | undefined {
  * actual byte count), which indicates a corrupted input rather than a benign non-midnight
  * extrinsic.
  */
-export function decodeMidnightExtrinsic(extrinsicHex: string): DecodedMidnightExtrinsic | null {
+export function decodeMidnightExtrinsic(
+  extrinsicHex: string,
+  indices: RuntimeCallIndices,
+): DecodedMidnightExtrinsic | null {
   const bytes = hexToBytes(extrinsicHex);
   const { value: bodyLen, size: lenSize } = decodeCompactU32(bytes, 0);
   if (lenSize + bodyLen !== bytes.length) {
@@ -136,8 +224,24 @@ export function decodeMidnightExtrinsic(extrinsicHex: string): DecodedMidnightEx
   if (payloadStart + arg.value !== bytes.length) return null;
 
   const payload = bytes.subarray(payloadStart);
-  const kind = tagKindOf(payload);
+
+  // THE classification decision, and it is made by WHICH CALL carried the bytes -- never by the
+  // bytes themselves. Any other (pallet, call) is not a Midnight transaction, however the payload
+  // is shaped: a `System::remark` full of real transaction bytes is a no-op that the ledger never
+  // saw, and archiving it would assert a transaction that did not happen.
+  const kind: "regular" | "system" | undefined =
+    palletIndex === indices.midnightPallet && callIndex === indices.sendTransactionCall
+      ? "regular"
+      : palletIndex === indices.midnightSystemPallet && callIndex === indices.sendSystemTransactionCall
+        ? "system"
+        : undefined;
   if (kind === undefined) return null;
+
+  // The self-tag is now a corroborating check, not the classifier. A genuine Midnight call always
+  // carries the matching tag, so a disagreement means the payload is not what the call says it is
+  // -- reject rather than archive it. Fail-closed, and without throwing: a hostile payload must
+  // never be able to halt ingest (see sync-service's skip path for that lesson).
+  if (tagKindOf(payload) !== kind) return null;
 
   return { version: formatVersion, palletIndex, callIndex, payload, kind };
 }

@@ -13,6 +13,7 @@ import {
   assertSupportedProtocolVersion,
   decodeMidnightExtrinsic,
   decodeProtocolVersionFromDigest,
+  requireCallIndices,
 } from "./extrinsic-decoder.js";
 import { decodeArchivedTransaction, loadLedgerV8 } from "./tx-replay-decoder.js";
 
@@ -339,9 +340,10 @@ export class ChainArchiveSyncService {
     // node-only mode and the oracle comparand in indexer mode. `decodeMidnightExtrinsic`
     // throws (rather than skipping) on a corrupted envelope, so a malformed node response
     // aborts the block before any write, same as every other pre-write failure here.
-    const nodePayloads = block.extrinsics
-      .map((e) => decodeMidnightExtrinsic(e))
-      .filter((d): d is NonNullable<typeof d> => d !== null);
+    // Order matters: the protocol version decides which runtime call indices are authoritative,
+    // and those indices are what classify an extrinsic as a Midnight transaction. Classifying
+    // first and resolving the version afterwards would mean deciding what the bytes are before
+    // knowing which runtime produced them.
     const nodeProtocolVersion = decodeProtocolVersionFromDigest(header.digest.logs);
     // Gate the version BEFORE any payload reaches the ledger WASM, in BOTH modes. The archive
     // wires exactly one ledger codec (v8); a protocol upgrade outside the known ranges must halt
@@ -352,6 +354,14 @@ export class ChainArchiveSyncService {
     if (nodeProtocolVersion !== undefined) {
       assertSupportedProtocolVersion(nodeProtocolVersion, height);
     }
+    // Classification is driven by the runtime's own call numbering for this protocol version.
+    // A supported ledger version with no verified index mapping halts here rather than guessing.
+    const nodePayloads =
+      nodeProtocolVersion === undefined
+        ? []
+        : block.extrinsics
+            .map((e) => decodeMidnightExtrinsic(e, requireCallIndices(nodeProtocolVersion, height)))
+            .filter((d): d is NonNullable<typeof d> => d !== null);
 
     let transactions: TransactionRecord[];
     let bridge: { records: BridgeObservationRecord[]; newDParameterJson: string | undefined };

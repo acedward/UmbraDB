@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   assertSupportedProtocolVersion,
+  callIndicesForProtocolVersion,
   decodeCompactU32,
   decodeMidnightExtrinsic,
   decodeProtocolVersionFromDigest,
   isSupportedProtocolVersion,
+  requireCallIndices,
 } from "../../chain-archive-sync/extrinsic-decoder.js";
+
+/** The verified node-1.0.x call indices every fixture in this file was captured from. */
+const V1 = callIndicesForProtocolVersion(1_000_000)!;
 
 /**
  * Fixtures are REAL bytes captured live from the sprint-9 compose devnet
@@ -71,7 +76,7 @@ describe("decodeCompactU32", () => {
 
 describe("decodeMidnightExtrinsic", () => {
   it("extracts the system-tx payload from the real genesis MidnightSystem extrinsic", () => {
-    const d = decodeMidnightExtrinsic(GENESIS_SYSTEM_TX_EXTRINSIC);
+    const d = decodeMidnightExtrinsic(GENESIS_SYSTEM_TX_EXTRINSIC, V1);
     expect(d).not.toBeNull();
     expect(d!.kind).toBe("system");
     expect(d!.version).toBe(5);
@@ -88,7 +93,7 @@ describe("decodeMidnightExtrinsic", () => {
   });
 
   it("extracts the regular-tx payload from the real genesis Midnight extrinsic", () => {
-    const d = decodeMidnightExtrinsic(GENESIS_REGULAR_TX_EXTRINSIC);
+    const d = decodeMidnightExtrinsic(GENESIS_REGULAR_TX_EXTRINSIC, V1);
     expect(d).not.toBeNull();
     expect(d!.kind).toBe("regular");
     expect(d!.version).toBe(5);
@@ -101,7 +106,7 @@ describe("decodeMidnightExtrinsic", () => {
   });
 
   it("decodes a bare-v4 wallet-submitted extrinsic (height-45 envelope shape)", () => {
-    const d = decodeMidnightExtrinsic(height45WalletExtrinsic());
+    const d = decodeMidnightExtrinsic(height45WalletExtrinsic(), V1);
     expect(d).not.toBeNull();
     expect(d!.kind).toBe("regular");
     expect(d!.version).toBe(4);
@@ -110,16 +115,16 @@ describe("decodeMidnightExtrinsic", () => {
   });
 
   it("returns null for real non-midnight inherents", () => {
-    expect(decodeMidnightExtrinsic(TIMESTAMP_INHERENT)).toBeNull();
-    expect(decodeMidnightExtrinsic(OTHER_PALLET_INHERENT)).toBeNull();
+    expect(decodeMidnightExtrinsic(TIMESTAMP_INHERENT, V1)).toBeNull();
+    expect(decodeMidnightExtrinsic(OTHER_PALLET_INHERENT, V1)).toBeNull();
   });
 
   it("returns null for signed and 'general' extrinsic types", () => {
     // Same body as the genesis regular tx but with the signed bit (0x80) set on the version byte.
     const signed = "0x8103" + "85" + GENESIS_REGULAR_TX_EXTRINSIC.slice(2 + 3 * 2);
-    expect(decodeMidnightExtrinsic(signed)).toBeNull();
+    expect(decodeMidnightExtrinsic(signed, V1)).toBeNull();
     const general = "0x8103" + "45" + GENESIS_REGULAR_TX_EXTRINSIC.slice(2 + 3 * 2);
-    expect(decodeMidnightExtrinsic(general)).toBeNull();
+    expect(decodeMidnightExtrinsic(general, V1)).toBeNull();
   });
 
   it("returns null when the Vec<u8> argument does not span to the extrinsic's end", () => {
@@ -129,13 +134,13 @@ describe("decodeMidnightExtrinsic", () => {
     const shortened = whole.slice(0, whole.length - 2);
     // outer compact was 224 (0x8103); 223 two-byte compact = (223 << 2) | 0b01 = 0x037d -> LE 7d03
     const relen = "7d03" + shortened.slice(4);
-    expect(decodeMidnightExtrinsic("0x" + relen)).toBeNull();
+    expect(decodeMidnightExtrinsic("0x" + relen, V1)).toBeNull();
   });
 
   it("throws on a corrupted envelope (length prefix vs actual bytes)", () => {
     // Chop bytes off the end WITHOUT fixing the outer length prefix.
     const corrupted = GENESIS_REGULAR_TX_EXTRINSIC.slice(0, -10);
-    expect(() => decodeMidnightExtrinsic(corrupted)).toThrow(/length prefix/);
+    expect(() => decodeMidnightExtrinsic(corrupted, V1)).toThrow(/length prefix/);
   });
 });
 
@@ -202,5 +207,55 @@ describe("protocol-version gate", () => {
     expect(() => assertSupportedProtocolVersion(2_000_000, 4242)).toThrow(/2000000/);
     expect(() => assertSupportedProtocolVersion(2_000_000, 4242)).toThrow(/4242/);
     expect(() => assertSupportedProtocolVersion(1_000_000, 4242)).not.toThrow();
+  });
+});
+
+describe("classification is by call, not by payload content (security)", () => {
+  // A `System::remark(Vec<u8>)` is a real, fee-paying, NO-OP call whose whole purpose is putting
+  // arbitrary bytes on chain. The Midnight pallet never sees them; `apply_transaction` is reached
+  // only from `pallet_midnight::send_mn_transaction`. So bytes in a remark were never executed,
+  // whatever they look like -- and the node accepting the EXTRINSIC is not the node accepting a
+  // TRANSACTION.
+  const remarkWrapping = (payloadHex: string): string => {
+    const compact = (n: number): string =>
+      n < 64
+        ? ((n << 2) >>> 0).toString(16).padStart(2, "0")
+        : Buffer.from([((n << 2) | 1) & 0xff, (((n << 2) | 1) >> 8) & 0xff]).toString("hex");
+    const inner = "05" + "00" + "01" + compact(payloadHex.length / 2) + payloadHex; // pallet 0, call 1
+    return "0x" + compact(inner.length / 2) + inner;
+  };
+
+  it("rejects a REAL transaction's bytes smuggled through System::remark", () => {
+    // The severe case: the payload is a genuine, deserializable Midnight transaction (these are
+    // the real captured genesis bytes), so no amount of decoding the CONTENT can detect the
+    // forgery. Only the carrying call distinguishes them. Archiving this would assert that a
+    // transaction occurred in a block where the ledger never applied it.
+    const realTxPayload = GENESIS_REGULAR_TX_EXTRINSIC.slice(2 + 7 * 2);
+    expect(decodeMidnightExtrinsic(remarkWrapping(realTxPayload), V1)).toBeNull();
+  });
+
+  it("rejects junk bytes wearing the midnight self-tag", () => {
+    const forged = Buffer.from("midnight:transaction[v9]:NOT-A-TRANSACTION", "latin1").toString("hex");
+    expect(decodeMidnightExtrinsic(remarkWrapping(forged), V1)).toBeNull();
+  });
+
+  it("still accepts the genuine calls, so the check is not merely rejecting everything", () => {
+    expect(decodeMidnightExtrinsic(GENESIS_REGULAR_TX_EXTRINSIC, V1)?.kind).toBe("regular");
+    expect(decodeMidnightExtrinsic(GENESIS_SYSTEM_TX_EXTRINSIC, V1)?.kind).toBe("system");
+  });
+
+  it("derives kind from the call, and rejects a payload whose tag contradicts it", () => {
+    // Midnight pallet (regular) carrying a SYSTEM-tagged payload: the call and the content
+    // disagree, so the bytes are not what the call says they are. Fail closed.
+    const systemPayload = GENESIS_SYSTEM_TX_EXTRINSIC.slice(2 + 5 * 2);
+    const compact = (n: number): string => ((n << 2) >>> 0).toString(16).padStart(2, "0");
+    const inner = "05" + "05" + "00" + compact(systemPayload.length / 2) + systemPayload;
+    expect(decodeMidnightExtrinsic("0x" + compact(inner.length / 2) + inner, V1)).toBeNull();
+  });
+
+  it("refuses to guess call indices for a version it has never verified", () => {
+    expect(callIndicesForProtocolVersion(22_500)).toBeUndefined(); // 0.22.x: decodable, unverified
+    expect(() => requireCallIndices(22_500, 7)).toThrow(/no verified runtime call indices/);
+    expect(requireCallIndices(1_000_000, 7).midnightPallet).toBe(5);
   });
 });
