@@ -24,15 +24,22 @@ import { pathToFileURL } from "node:url";
  * found the built `@midnight-ntwrk/ledger-v8` WASM package in the sibling `midnight-wallet`
  * checkout and decoded real transactions with it), and this module is the correction.
  *
- * **Dependency posture** (same convention as `test/integration/live-fixtures/
- * midnight-wallet-sdk-loader.ts`, this repo's established pattern for exactly this): the
- * `@midnight-ntwrk/ledger-v8` WASM bindings are deliberately NOT a devDependency of this repo --
- * `loadLedgerV8` below resolves them from a sibling, already-built `midnight-wallet` checkout's
- * own `node_modules` at runtime, via a COMPUTED (non-literal) `import(...)` specifier, so `tsc`
- * types the call `Promise<any>` and this repo still typechecks cleanly in an environment where
- * that checkout does not exist. `decodeArchivedTransaction` itself takes the loaded module as a
- * parameter (never imports it), so everything in this file is typecheckable, unit-testable, and
- * side-effect-free without the sibling checkout present.
+ * **Dependency posture.** `@midnight-ntwrk/ledger-v8` IS a devDependency of this repo, pinned to
+ * an exact version: node-only ingest hard-depends on it to classify and hash transactions, so
+ * resolving it from an out-of-band checkout meant the feature could not run in CI or from a fresh
+ * clone. (An earlier revision of this comment said it was deliberately not a dependency; that
+ * described the pre-sprint-9 arrangement, when this module was only a test helper.)
+ *
+ * `loadLedgerV8` resolves it in three steps, in order: the `MIDNIGHT_LEDGER_WASM` override, then
+ * this repo's own dependency, then the historical sibling-`midnight-wallet` checkout convention.
+ * The override exists because no PUBLISHED build yet exposes
+ * `SystemTransaction.transactionHash()`, which node-only ingest needs to archive system
+ * transactions; it is deleted once that ships upstream.
+ *
+ * Loading still goes through a COMPUTED (non-literal) `import(...)` specifier, so `tsc` types the
+ * call `Promise<any>` and this file typechecks without the WASM present.
+ * `decodeArchivedTransaction` takes the loaded module as a parameter (never imports it), so
+ * everything here stays unit-testable and side-effect-free.
  */
 
 /** ASCII tag prefixes the on-wire payload is domain-separated with (design doc §3.2 -- the raw

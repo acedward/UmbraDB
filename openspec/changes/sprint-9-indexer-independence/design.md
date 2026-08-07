@@ -37,10 +37,23 @@ lives in `chain_archive`.
 
 ---
 
-## 6. System transactions: excluded by decision
+## 6. System transactions: SUPERSEDED — they are archived
 
-**Owner decision (binding): system transactions are out of scope. The feed is regular-transaction
-only.**
+**This section's original decision no longer holds, and is kept for the reasoning trail rather
+than as guidance.** It read: "Owner decision (binding): system transactions are out of scope."
+
+That decision was taken on a premise that turned out to be false. It rested partly on the claim
+that the ledger WASM exposed no `SystemTransaction` hash, so the `tx_hash` primary key could not be
+computed — true of the binding, but the hash exists on the Rust ledger and the node also hands it
+over directly in the `SystemTransactionApplied` event. Nothing needed computing.
+
+**Current position:** extrinsic-borne system transactions ARE archived, keyed by the ledger's own
+hash (§6a, and `system-transactions-plan.md`). Node-only ingest refuses rather than omitting one it
+cannot hash. Event-borne system transactions are not yet decoded — that gap is open, and ingest
+does not yet detect it.
+
+The exclusion below therefore describes history. Where it says the feed is regular-transaction
+only, read `system-transactions-plan.md` instead.
 
 The underlying asymmetry is real and was found during scoping. Effectstream's existing
 indexer-backed fetcher iterates `unshieldedCreatedOutputs` for **every** transaction in a block, and

@@ -265,12 +265,18 @@ export interface ChainArchiveStore {
    *  `position` ascending.
    *
    *  **Completeness is relative to how the block was ingested, and callers must not read more
-   *  into it.** Indexer-sourced ingest archives regular AND system transactions. Node-only ingest
-   *  (sprint 9) archives REGULAR transactions only: runtime-generated system transactions are not
-   *  in `chain_getBlock.extrinsics` at all — they surface via the `SystemTransactionApplied`
-   *  event, whose decode needs runtime metadata. A block ingested node-only therefore enumerates
-   *  fewer rows here than the same block ingested with an indexer, and neither is "wrong"; they
-   *  are different, declared scopes. Empty array if the block has no transactions or does not exist. Added in the
+   *  into it.** Indexer-sourced ingest archives regular and system transactions. Node-only ingest
+   *  archives both as well — including system transactions carried as extrinsics, keyed by the
+   *  ledger's own hash — and REFUSES a block whose system transactions it cannot key, rather than
+   *  writing it without them.
+   *
+   *  One category is still missing from node-only ingest: system transactions that the runtime
+   *  GENERATES rather than receiving as extrinsics. Those surface only in the
+   *  `SystemTransactionApplied` event, which is not yet decoded, and ingest does not currently
+   *  detect their presence — so on a chain that produces them (any that mints block rewards) a
+   *  node-only archive can be short of an indexer-sourced one without saying so. Until that is
+   *  closed, treat node-only ingest as complete only for chains whose system transactions are
+   *  extrinsic-borne. Empty array if the block has no transactions or does not exist. Added in the
    *  Sol-audit fix round (Finding 5): AC-1's spec text requires each fork's "full transaction
    *  set [to] be retrievable scoped to" its block, and no public method could enumerate a
    *  block's transactions to verify completeness -- read paths (replay/AC-8 cross-validation)

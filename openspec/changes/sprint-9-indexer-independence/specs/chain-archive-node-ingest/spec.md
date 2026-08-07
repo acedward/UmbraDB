@@ -87,18 +87,28 @@ to any indexer endpoint.
 - **WHEN** the node-only gate runs
 - **THEN** it SHALL be able to run in an environment where no indexer service exists at all
 
-### Requirement: system transactions are excluded from the feed and from both sides of the comparison
+### Requirement: system transactions are archived, or ingest refuses
 
-The system SHALL scope the feed to outputs created by regular transactions only, and SHALL apply the
-same exclusion to the indexer-sourced side of every comparison, so the two sides are compared over
-the same population (`design.md` §6, owner decision).
+The system SHALL archive a block's system transactions under the ledger's own transaction hash, and
+SHALL refuse to write a block whose system transactions it cannot so key, rather than writing that
+block without them.
 
-#### Scenario: The indexer side is filtered to match
+Refusal rather than omission is required because every terminal insert is `ON CONFLICT DO NOTHING`:
+an archive written without them cannot be repaired by re-ingesting the range later, so a silent
+omission is permanent.
 
-- **WHEN** a comparison range contains a system transaction that created unshielded outputs
-- **THEN** those outputs SHALL be excluded from the indexer-sourced side before comparison
-- **AND** the comparison SHALL NOT fail on their absence from the UmbraDB side
+#### Scenario: an extrinsic-borne system transaction is archived
 
+- **WHEN** a block carries a system transaction as an extrinsic
+- **THEN** it SHALL be archived with `kind = 'system'` and the ledger's transaction hash
+- **AND** its `position` SHALL be assigned from the same counter as regular transactions, in
+  extrinsic order, so both ingest sources agree on ordering
+
+#### Scenario: an unhashable system transaction stops the block
+
+- **WHEN** the loaded ledger build cannot produce a system transaction's hash
+- **THEN** ingest SHALL refuse the block, naming the missing capability
+- **AND** SHALL NOT write the block without it
 
 ### Requirement: only node-sourced ingest evidence gates cutover
 
