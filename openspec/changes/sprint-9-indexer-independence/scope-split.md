@@ -52,10 +52,11 @@ Resolved by ownership rather than by picking a winner:
 
 ## Branch contents after the split
 
-**Part A — 16 commits.** Extrinsic-envelope decoding, `state_call`, the indexer-optional switch,
-and the correctness work on that path: call-based classification, the protocol-version gate,
-parent continuity, chain identity, the packaged ledger dependency, and the in-compose test stack.
-Adds no migrations.
+**Part A — 16 commits at the time of the split, 32 now.** Extrinsic-envelope decoding,
+`state_call`, the indexer-optional switch, and the correctness work on that path: call-based
+classification, the protocol-version gate, parent continuity, chain identity, the packaged ledger
+dependency, and the in-compose test stack. The 16 commits added since are the system-transaction
+work described below plus its test gates. Adds no migrations.
 
 **Part B — 6 commits on top of A.** In dependency order: `002_zswap_root` (block-level readings)
 → protocol-version column → contract-action decoding → `003_contract_state` → contract-state
@@ -94,12 +95,19 @@ must derive them from the runtime's outcome events, not from a transaction's off
 gate THAT work. It should not gate a source substitution whose own parity is demonstrable, which
 is what conflating the two was doing.
 
-## Genuinely unresolved
+## Since resolved: system transactions are in scope and archived
 
-The system-transaction scope decision rests on a premise that turned out to be false. It was made
-partly on the claim that the ledger WASM exposes no `SystemTransaction` hash accessor, so the
-`tx_hash` primary key could not be computed. The node emits `SystemTransactionApplied` carrying
-BOTH the authoritative hash and the serialized transaction
-(`midnight-node/pallets/midnight-system/src/lib.rs`) — nothing needed computing. Whether to
-recover them, and match the reference indexer's ordering, is an open decision rather than a
-settled exclusion.
+This section previously recorded the system-transaction exclusion as resting on a false premise.
+It did, and that has now been acted on rather than left open.
+
+The exclusion was justified partly by the claim that the ledger WASM exposes no `SystemTransaction`
+hash accessor, so the `tx_hash` primary key could not be computed. The accessor exists on the Rust
+ledger and the indexer calls it directly; only the `wasm-bindgen` wrapper omitted it. A 16-line
+export closes that (`/home/eddie/midnight-ledger-fork`), verified by recomputing the five hashes
+`midnight-indexer 4.3.2` recorded for the devnet's genesis — 5/5 match.
+
+System transactions are therefore **archived, not excluded**, and Part A now reaches exact parity
+with the indexer-sourced archive on the test chain. What remains is the event-borne variety, which
+is detected and refused rather than silently omitted. See
+`system-transactions-plan.md` §4 and §5.1 — that document, not this one, is the current statement
+of scope.
