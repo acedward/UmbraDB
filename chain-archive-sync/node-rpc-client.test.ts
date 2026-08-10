@@ -100,4 +100,24 @@ describe("NodeRpcClient -- Fix 3", () => {
     expect(JSON.stringify(error)).not.toContain("secret");
     expect(JSON.stringify(error)).not.toContain("token");
   });
+
+  it("sanitizes custom-fetch causes and RPC errors that echo a normalized private URL", async () => {
+    const privateUrl = "https://alice:secret@node.example/rpc?apiKey=token#private";
+    const networkClient = new NodeRpcClient({
+      url: privateUrl,
+      fetchImpl: async () => { throw new Error("fetch https://alice:secret@node.example/rpc?apiKey=token failed"); },
+    });
+    const networkError = await networkClient.getFinalizedHead().catch((caught: unknown) => caught) as Error & { cause: Error };
+    expect(networkError.cause.message).toBe("fetch https://node.example/rpc failed");
+
+    const protocolClient = new NodeRpcClient({
+      url: privateUrl,
+      fetchImpl: async () => new Response(JSON.stringify({
+        error: { code: -1, message: "peer echoed https://alice:secret@node.example/rpc?apiKey=token" },
+      }), { status: 200 }),
+    });
+    await expect(protocolClient.getFinalizedHead()).rejects.toThrow(
+      "chain_getFinalizedHead: RPC error -1: peer echoed https://node.example/rpc",
+    );
+  });
 });

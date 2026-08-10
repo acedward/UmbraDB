@@ -1,4 +1,4 @@
-import { publicEndpoint } from "../wallet-monitor/log.js";
+import { publicEndpoint, publicErrorCause, publicErrorMessage } from "../wallet-monitor/log.js";
 
 /**
  * Minimal Midnight indexer GraphQL client -- plain `fetch`, no SDK dependency. Grounded against
@@ -77,7 +77,9 @@ export class IndexerClient {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {
-      throw new IndexerClientError(`GraphQL request to ${this.publicUrl} failed`, err);
+      throw new IndexerClientError(
+        `GraphQL request to ${this.publicUrl} failed`, publicErrorCause(err, [this.url]),
+      );
     }
     if (!res.ok) {
       throw new IndexerClientError(`GraphQL HTTP ${res.status} from ${this.publicUrl}`);
@@ -87,11 +89,15 @@ export class IndexerClient {
       body = (await res.json()) as { data?: T; errors?: { message: string }[] };
     } catch (err) {
       throw new IndexerClientParseError(
-        `response body from ${this.publicUrl} was not valid JSON`, this.publicUrl, err,
+        `response body from ${this.publicUrl} was not valid JSON`,
+        this.publicUrl,
+        publicErrorCause(err, [this.url]),
       );
     }
     if (body.errors !== undefined && body.errors.length > 0) {
-      throw new IndexerClientError(`GraphQL error: ${body.errors.map((e) => e.message).join("; ")}`);
+      throw new IndexerClientError(
+        `GraphQL error: ${body.errors.map((e) => publicErrorMessage(e.message, [this.url])).join("; ")}`,
+      );
     }
     return body.data as T;
   }

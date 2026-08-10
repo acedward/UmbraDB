@@ -1,4 +1,4 @@
-import { publicEndpoint } from "../wallet-monitor/log.js";
+import { publicEndpoint, publicErrorCause, publicErrorMessage } from "../wallet-monitor/log.js";
 
 /**
  * Minimal Substrate JSON-RPC client for a Midnight node -- plain `fetch`, no SDK dependency
@@ -100,7 +100,9 @@ export class NodeRpcClient {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {
-      throw new NodeRpcError(`${method}: request to ${this.publicUrl} failed`, err);
+      throw new NodeRpcError(
+        `${method}: request to ${this.publicUrl} failed`, publicErrorCause(err, [this.url]),
+      );
     }
     if (!res.ok) {
       throw new NodeRpcError(`${method}: HTTP ${res.status} from ${this.publicUrl}`);
@@ -110,11 +112,16 @@ export class NodeRpcClient {
       body = (await res.json()) as { result?: T; error?: { code: number; message: string } };
     } catch (err) {
       throw new NodeRpcParseError(
-        `${method}: response body from ${this.publicUrl} was not valid JSON`, this.publicUrl, method, err,
+        `${method}: response body from ${this.publicUrl} was not valid JSON`,
+        this.publicUrl,
+        method,
+        publicErrorCause(err, [this.url]),
       );
     }
     if (body.error !== undefined) {
-      throw new NodeRpcError(`${method}: RPC error ${body.error.code}: ${body.error.message}`);
+      throw new NodeRpcError(
+        `${method}: RPC error ${body.error.code}: ${publicErrorMessage(body.error.message, [this.url])}`,
+      );
     }
     return body.result as T;
   }

@@ -66,4 +66,24 @@ describe("IndexerClient -- Fix 3", () => {
     expect(JSON.stringify(error)).not.toContain("secret");
     expect(JSON.stringify(error)).not.toContain("token");
   });
+
+  it("sanitizes custom-fetch causes and GraphQL errors that echo a normalized private URL", async () => {
+    const privateUrl = "https://alice:secret@indexer.example/graphql?apiKey=token#private";
+    const networkClient = new IndexerClient({
+      url: privateUrl,
+      fetchImpl: async () => { throw new Error("fetch https://alice:secret@indexer.example/graphql?apiKey=token failed"); },
+    });
+    const networkError = await networkClient.getTipHeight().catch((caught: unknown) => caught) as Error & { cause: Error };
+    expect(networkError.cause.message).toBe("fetch https://indexer.example/graphql failed");
+
+    const protocolClient = new IndexerClient({
+      url: privateUrl,
+      fetchImpl: async () => new Response(JSON.stringify({
+        errors: [{ message: "peer echoed https://alice:secret@indexer.example/graphql?apiKey=token" }],
+      }), { status: 200 }),
+    });
+    await expect(protocolClient.getTipHeight()).rejects.toThrow(
+      "GraphQL error: peer echoed https://indexer.example/graphql",
+    );
+  });
 });

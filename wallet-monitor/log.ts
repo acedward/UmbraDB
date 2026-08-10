@@ -26,5 +26,15 @@ export function publicErrorMessage(error: unknown, endpoints: readonly string[] 
   for (const endpoint of endpoints) {
     message = message.split(endpoint).join(publicEndpoint(endpoint));
   }
-  return message;
+  // Errors may normalize a configured URL (notably dropping its fragment) before echoing it, so
+  // exact-string replacement alone is insufficient. Sanitize every HTTP/WS URL-shaped token at
+  // the log boundary; public paths remain useful while userinfo, query, and fragments are removed.
+  return message.replace(/\b(?:https?|wss?):\/\/[^\s"'<>]+/giu, (candidate) => publicEndpoint(candidate));
+}
+
+/** Returns a diagnostic cause whose own fields cannot retain a fetch implementation's private
+ * URL. Do not attach the original error: `Error.cause` is directly inspectable even when the
+ * outer operational message is safe. */
+export function publicErrorCause(error: unknown, endpoints: readonly string[] = []): Error {
+  return new Error(publicErrorMessage(error, endpoints));
 }
