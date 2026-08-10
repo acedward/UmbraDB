@@ -12,16 +12,21 @@ import type { ISql } from "postgres";
  * rewritten history.
  *
  * ── Why `address_map` is created `IF NOT EXISTS` ───────────────────────────────────────────────
- * `logs.address_id` references `address_map`, which A1/A2 owns (its contract doc,
- * `umbradb-sync/wallet-monitor/SCHEMA.md`, does not exist yet either). Two requirements collide:
- * this migration must be applicable STANDALONE in this clone (so C's tests are real), and it must
- * not fight A1/A2's own definition after the merge. `CREATE TABLE IF NOT EXISTS` satisfies both —
- * standalone it provides the table, merged it is a no-op because A1/A2's earlier-numbered migration
- * already created it. The columns below are therefore a MINIMUM viable shape, deliberately narrow:
- * the identity bytes, the derived 20-byte EVM address, and the `kind` discriminator the plan names.
- * Every read/write of this table in Part C goes through `evm-rpc/logs/address-map.ts`, so if A1/A2's
- * shape differs the merge reconciles ONE module rather than a scattering of inline SQL. Tracked as
- * plan Open question Q1.
+ * `logs.address_id` references `address_map`, which **A1/A2 owns**. Two requirements collide: this
+ * migration must be applicable STANDALONE in this clone (so C's tests exercise real DDL), and it
+ * must not fight A1/A2's own definition after the merge. `CREATE TABLE IF NOT EXISTS` satisfies
+ * both — standalone it provides the table, merged it is a no-op because A1/A2's earlier-numbered
+ * `001_evm_rpc_core` already created it.
+ *
+ * The definition below is a BYTE-FOR-BYTE MIRROR of that migration's `address_map`, verified
+ * against the running Part A stack's live schema (`postgres://…:10010/umbradb`), not guessed: same
+ * `evm_addr` / `kind` / `mn_address` / `meta` / `first_seen_block` columns, same checks, same unique
+ * keys. Mirroring rather than inventing a narrower shape is what makes Part C's queries work
+ * unchanged against the merged schema. If A1/A2 revise it, the single place Part C has to follow is
+ * `evm-rpc/logs/address-map.ts`, which owns every read and write of this table.
+ *
+ * `mn_address` is TEXT (unprefixed hex), not bytea, and is UNIQUE GLOBALLY rather than per-`kind` —
+ * both are A1/A2's choices, and Part C's upsert conflict target follows from them.
  *
  * ── Deliberately NOT `bytea(32)` ───────────────────────────────────────────────────────────────
  * Postgres has no length-parameterised `bytea`; `bytea(32)` is a syntax error, not a 32-byte
@@ -34,19 +39,19 @@ export async function up(sql: ISql, schema: string): Promise<void> {
   // ---- address_map (A1/A2-owned; see the header note) ----------------------------------------
   await sql`
     CREATE TABLE IF NOT EXISTS ${sql(schema)}.address_map (
-      id           bigserial PRIMARY KEY,
-      -- 'midnight' = a user accountId (persistentHash(sk), 32 bytes); 'contract' = a Midnight
-      -- contract address; 'ethereum' = a Part E native identity that arrives already 20 bytes.
-      kind         text   NOT NULL CHECK (kind IN ('midnight', 'contract', 'ethereum')),
-      -- The source identity bytes, exactly as the indexer served them.
-      identity     bytea  NOT NULL,
-      -- keccak256(identity)[12:32], or the identity itself when it is already 20 bytes.
-      evm_address  bytea  NOT NULL CHECK (octet_length(evm_address) = 20),
-      first_seen_block bigint,
-      -- One row per identity, and no two identities may claim the same EVM address: a collision
-      -- here would silently merge two accounts' balances, so it must be a hard error.
-      UNIQUE (kind, identity),
-      UNIQUE (evm_address)
+      id               bigserial PRIMARY KEY,
+      -- keccak256(identity)[12:32], or the identity itself when it is already 20 bytes. UNIQUE
+      -- because two identities claiming one EVM address would silently pool two accounts'
+      -- balances: it must be a hard error, not a merge.
+      evm_addr         bytea NOT NULL UNIQUE CHECK (octet_length(evm_addr) = 20),
+      -- 'midnight' = a user accountId (persistentHash(sk)); 'contract' = a Midnight contract
+      -- address; 'ethereum' = a Part E native identity that arrives already 20 bytes.
+      kind             text NOT NULL CHECK (kind IN ('midnight', 'ethereum', 'contract')),
+      -- The source identity as unprefixed hex TEXT. NULL for an 'ethereum' identity, which has no
+      -- Midnight-side preimage.
+      mn_address       text UNIQUE,
+      meta             jsonb,
+      first_seen_block bigint
     )
   `;
 

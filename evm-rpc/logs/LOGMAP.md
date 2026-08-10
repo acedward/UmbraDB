@@ -41,16 +41,23 @@ contractEvents(filter: ContractEventFilter!, id: Int): ContractEvent!           
 Midnight identities are 32 bytes; EVM addresses are 20.
 
 ```
-evm_address = keccak256(identity_bytes)[12:32]
+evm_addr = keccak256(identity_bytes)[12:32]
 ```
 
 An identity that is **already 20 bytes passes through unchanged** — that is how Part E's
 Ethereum-native identities use the same mapper. Every mapping is registered in
 `evm_rpc.address_map` at first sighting with `kind` ∈ `midnight` (a user accountId) /
-`contract` (a Midnight contract address) / `ethereum` (Part E, pre-sized).
+`contract` (a Midnight contract address) / `ethereum` (Part E, pre-sized), and the source identity
+in `mn_address` as unprefixed hex text.
 
-`address_map` has `UNIQUE (evm_address)`. Two identities colliding onto one address is a **hard
-error**, never a silent merge — merging would silently pool two accounts' balances.
+> `address_map` is **owned by Part A1/A2** (`umbradb-sync/.../001_evm_rpc_core.ts`). Part C mirrors
+> that definition in its own migration with `CREATE TABLE IF NOT EXISTS` so it can also run
+> standalone, and confines every read and write to `evm-rpc/logs/address-map.ts`. Its columns are
+> `evm_addr` / `kind` / `mn_address` / `meta` / `first_seen_block`.
+
+`address_map` has `UNIQUE (evm_addr)`. Two identities colliding onto one address is a **hard
+error**, never a silent merge — merging would silently pool two accounts' balances. `mn_address` is
+also UNIQUE, which is the upsert's conflict target.
 
 > For Part D's contract the `AddressOrContract` **USER** branch carries the OZ witness accountId
 > (`persistentHash(sk)`) — an identity, **not** a spendable key.

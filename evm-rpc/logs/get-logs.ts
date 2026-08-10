@@ -15,9 +15,16 @@
  */
 
 import type { ISql } from "postgres";
-import { JSON_RPC_INVALID_PARAMS, JSON_RPC_LIMIT_EXCEEDED, JsonRpcError, registerMethod } from "../registry-shim.js";
-import { fromHex, toHex } from "./event-map.js";
+import { JSON_RPC_LIMIT_EXCEEDED, JsonRpcError, registerMethod } from "../registry-shim.js";
+import { toHex } from "./event-map.js";
 import { lookupAddressIds, type SqlLike } from "./address-map.js";
+import {
+  invalidParams,
+  parseAddressList,
+  parseHexBytes,
+  parseTopicPositions,
+  type TopicPosition,
+} from "./log-filter.js";
 
 export const MAX_RESULTS = 10_000;
 
@@ -49,9 +56,7 @@ export interface GetLogsOptions {
 // Parameter parsing
 // ===========================================================================================
 
-function invalid(message: string): JsonRpcError {
-  return new JsonRpcError(JSON_RPC_INVALID_PARAMS, message);
-}
+const invalid = invalidParams;
 
 /** Parses a `0x`-prefixed quantity. Rejects a bare decimal, which geth also rejects. */
 function parseQuantity(value: string, field: string): number {
@@ -60,24 +65,6 @@ function parseQuantity(value: string, field: string): number {
   }
   return Number.parseInt(value.slice(2), 16);
 }
-
-function parseHexBytes(value: unknown, field: string, expectedBytes: number): Uint8Array {
-  if (typeof value !== "string") throw invalid(`${field} must be a hex string`);
-  if (!/^0x[0-9a-fA-F]*$/.test(value)) throw invalid(`${field} must be 0x-prefixed hex: "${value}"`);
-  let bytes: Uint8Array;
-  try {
-    bytes = fromHex(value);
-  } catch (error) {
-    throw invalid(`${field} is malformed: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  if (bytes.length !== expectedBytes) {
-    throw invalid(`${field} must be ${expectedBytes} bytes, got ${bytes.length}`);
-  }
-  return bytes;
-}
-
-/** A parsed topic position: `null` = wildcard, otherwise a non-empty OR-set. */
-type TopicPosition = Uint8Array[] | null;
 
 export interface ParsedFilter {
   addresses: Uint8Array[] | null;
@@ -119,36 +106,10 @@ export function parseFilter(rawParams: readonly unknown[]): ParsedFilter {
     throw invalid("blockHash is mutually exclusive with fromBlock/toBlock");
   }
 
-  // --- address ---
-  let addresses: Uint8Array[] | null = null;
-  const rawAddress = filter.address;
-  if (rawAddress !== undefined && rawAddress !== null) {
-    const list = Array.isArray(rawAddress) ? rawAddress : [rawAddress];
-    // An explicitly EMPTY array is a filter that can match nothing. Kept distinct from `absent`
-    // (which means "every watched contract") rather than collapsing the two.
-    addresses = list.map((entry) => parseHexBytes(entry, "address", 20));
-  }
-
-  // --- topics ---
-  const topics: TopicPosition[] = [];
-  const rawTopics = filter.topics;
-  if (rawTopics !== undefined && rawTopics !== null) {
-    if (!Array.isArray(rawTopics)) throw invalid("topics must be an array");
-    if (rawTopics.length > 4) throw invalid("topics may have at most 4 positions");
-    for (const [index, position] of rawTopics.entries()) {
-      if (position === null || position === undefined) {
-        topics.push(null);
-        continue;
-      }
-      const options = Array.isArray(position) ? position : [position];
-      if (options.length === 0) {
-        // geth treats `[]` at a position as a wildcard.
-        topics.push(null);
-        continue;
-      }
-      topics.push(options.map((entry) => parseHexBytes(entry, `topics[${index}]`, 32)));
-    }
-  }
+  // `address` and `topics` are parsed by the SHARED primitives in `log-filter.ts`, so the SQL path
+  // here and `subscribe.ts`'s in-memory matcher cannot drift apart on what a filter means.
+  const addresses = parseAddressList(filter.address);
+  const topics: TopicPosition[] = parseTopicPositions(filter.topics);
 
   return {
     addresses,
@@ -165,7 +126,7 @@ export function parseFilter(rawParams: readonly unknown[]): ParsedFilter {
 
 interface LogRecord {
   address_id: bigint;
-  evm_address: Buffer;
+  evm_addr: Buffer;
   block_number: bigint;
   block_hash: Buffer;
   tx_hash: Buffer;
@@ -246,7 +207,7 @@ export async function getLogs(options: GetLogsOptions, params: readonly unknown[
 
   // LIMIT is MAX_RESULTS + 1 so "too many" is detected without counting the whole table.
   const rows = await sql<LogRecord[]>`
-    SELECT l.address_id, a.evm_address, l.block_number, l.block_hash, l.tx_hash, l.tx_index,
+    SELECT l.address_id, a.evm_addr, l.block_number, l.block_hash, l.tx_hash, l.tx_index,
            l.log_index, l.topic0, l.topic1, l.topic2, l.topic3, l.data, l.removed
     FROM ${sql(schema)}.logs l
     JOIN ${sql(schema)}.address_map a ON a.id = l.address_id
@@ -270,7 +231,7 @@ export async function getLogs(options: GetLogsOptions, params: readonly unknown[
       topics.push(`0x${toHex(value)}`);
     }
     return {
-      address: `0x${toHex(row.evm_address)}`,
+      address: `0x${toHex(row.evm_addr)}`,
       topics,
       data: `0x${toHex(row.data)}`,
       blockNumber: quantity(row.block_number),

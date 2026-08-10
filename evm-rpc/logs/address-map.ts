@@ -1,11 +1,14 @@
 /**
  * The single place Part C reads or writes `evm_rpc.address_map`.
  *
- * Concentrated into one module ON PURPOSE: that table is owned by Part A1/A2, whose own migration
- * and contract doc (`umbradb-sync/wallet-monitor/SCHEMA.md`) are not in this clone. If A1/A2's
- * committed column shape turns out to differ from the minimum shape `010_logs.ts` creates with
- * `IF NOT EXISTS`, the Part F merge has exactly ONE file to reconcile instead of inline SQL spread
- * across the ingester, the backfiller and `eth_getLogs`. Tracked as plan Open question Q1.
+ * Concentrated into one module ON PURPOSE: that table is owned by Part A1/A2, so if their column
+ * shape changes, the Part F merge has exactly ONE file to reconcile instead of inline SQL spread
+ * across the ingester, the backfiller, `eth_getLogs` and the live tail.
+ *
+ * The column names here (`evm_addr`, `mn_address`, `meta`) are A1/A2's, taken from
+ * `umbradb-sync/src/postgres/migrations/evm_rpc/001_evm_rpc_core.ts` and verified against the
+ * running Part A stack's live schema — not a shape Part C invented. `010_logs.ts` mirrors the same
+ * definition for the standalone case, so this module's SQL is identical in both worlds.
  */
 
 import type { ISql } from "postgres";
@@ -46,13 +49,18 @@ export class AddressIdCache {
 /**
  * Registers `identity` at first sighting and returns its `address_map.id`.
  *
- * The upsert is `ON CONFLICT (kind, identity) DO UPDATE` with a no-op SET rather than
- * `DO NOTHING`: `DO NOTHING` returns zero rows on conflict, which would force a second SELECT
- * round trip per already-known identity. The no-op update always yields the row.
+ * The upsert is `ON CONFLICT (mn_address) DO UPDATE` with a no-op SET rather than `DO NOTHING`:
+ * `DO NOTHING` returns zero rows on conflict, which would force a second SELECT round trip for
+ * every already-known identity. The no-op update always yields the row, and preserves the ORIGINAL
+ * `first_seen_block` rather than overwriting it with a later sighting.
  *
- * A `unique_violation` on `evm_address` is NOT caught here. Two distinct identities colliding onto
- * one 20-byte address would silently merge two accounts' balances, so it must surface as an error
- * and abort the batch.
+ * `mn_address` is the conflict target because that is the unique key A1/A2 put on the Midnight-side
+ * identity. It is UNIQUE globally rather than per-`kind`, so one hex identity cannot be registered
+ * as both `midnight` and `contract` — correct, since an identity is one or the other.
+ *
+ * A `unique_violation` on `evm_addr` is deliberately NOT caught: two distinct identities colliding
+ * onto one 20-byte address would silently pool two accounts' balances, so it must surface as an
+ * error and abort the batch.
  */
 export async function resolveAddressId(
   sql: SqlLike,
@@ -65,17 +73,18 @@ export async function resolveAddressId(
 
   const mapper = options.addressMapper ?? defaultAddressMapper;
   const evmAddress = mapper(identity);
-  const identityBytes = Buffer.from(identity.hex.replace(/^0x/, ""), "hex");
+  // Stored as unprefixed lowercase hex text, matching how the indexer serves it.
+  const mnAddress = identity.hex.replace(/^0x/, "").toLowerCase();
 
   const rows = await sql<{ id: bigint }[]>`
-    INSERT INTO ${sql(schema)}.address_map (kind, identity, evm_address, first_seen_block)
+    INSERT INTO ${sql(schema)}.address_map (evm_addr, kind, mn_address, first_seen_block)
     VALUES (
-      ${identity.kind},
-      ${identityBytes},
       ${Buffer.from(evmAddress)},
+      ${identity.kind},
+      ${mnAddress},
       ${options.firstSeenBlock ?? null}
     )
-    ON CONFLICT (kind, identity) DO UPDATE
+    ON CONFLICT (mn_address) DO UPDATE
       SET first_seen_block = ${sql(schema)}.address_map.first_seen_block
     RETURNING id
   `;
@@ -97,11 +106,11 @@ export async function lookupAddressIds(
   evmAddresses: readonly Uint8Array[],
 ): Promise<Map<string, bigint>> {
   if (evmAddresses.length === 0) return new Map();
-  const rows = await sql<{ id: bigint; evm_address: Buffer }[]>`
-    SELECT id, evm_address FROM ${sql(schema)}.address_map
-    WHERE evm_address IN ${sql(evmAddresses.map((a) => Buffer.from(a)))}
+  const rows = await sql<{ id: bigint; evm_addr: Buffer }[]>`
+    SELECT id, evm_addr FROM ${sql(schema)}.address_map
+    WHERE evm_addr IN ${sql(evmAddresses.map((a) => Buffer.from(a)))}
   `;
-  return new Map(rows.map((row) => [toHex(row.evm_address), row.id]));
+  return new Map(rows.map((row) => [toHex(row.evm_addr), row.id]));
 }
 
 /** Reverse direction: `address_map.id` -> 20-byte EVM address, for rendering log results. */
@@ -111,8 +120,8 @@ export async function lookupAddressesByIds(
   ids: readonly bigint[],
 ): Promise<Map<string, Uint8Array>> {
   if (ids.length === 0) return new Map();
-  const rows = await sql<{ id: bigint; evm_address: Buffer }[]>`
-    SELECT id, evm_address FROM ${sql(schema)}.address_map WHERE id IN ${sql(ids as bigint[])}
+  const rows = await sql<{ id: bigint; evm_addr: Buffer }[]>`
+    SELECT id, evm_addr FROM ${sql(schema)}.address_map WHERE id IN ${sql(ids as bigint[])}
   `;
-  return new Map(rows.map((row) => [row.id.toString(), new Uint8Array(row.evm_address)]));
+  return new Map(rows.map((row) => [row.id.toString(), new Uint8Array(row.evm_addr)]));
 }

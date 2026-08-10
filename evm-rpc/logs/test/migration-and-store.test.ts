@@ -92,7 +92,7 @@ describe("evm_rpc logs migration + store (C-G1)", () => {
 
     const rows = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM ${sql(schema)}.address_map
-      WHERE kind = 'contract' AND identity = ${Buffer.from("11".repeat(32), "hex")}
+      WHERE kind = 'contract' AND mn_address = ${"11".repeat(32)}
     `;
     expect(rows[0]!.n).toBe(1);
     // first_seen_block is preserved by the no-op update, not overwritten by the later sighting.
@@ -102,25 +102,40 @@ describe("evm_rpc logs migration + store (C-G1)", () => {
     expect(Number(seen[0]!.first_seen_block)).toBe(12);
   });
 
-  it("derives the stored evm_address as keccak256(identity)[12:32]", async () => {
+  it("derives the stored evm_addr as keccak256(identity)[12:32]", async () => {
     const id = await resolveAddressId(sql, schema, CONTRACT);
-    const rows = await sql<{ evm_address: Buffer }[]>`
-      SELECT evm_address FROM ${sql(schema)}.address_map WHERE id = ${id}
+    const rows = await sql<{ evm_addr: Buffer }[]>`
+      SELECT evm_addr FROM ${sql(schema)}.address_map WHERE id = ${id}
     `;
-    expect(toHex(rows[0]!.evm_address)).toBe(toHex(defaultAddressMapper(CONTRACT)));
-    expect(rows[0]!.evm_address.length).toBe(20);
+    expect(toHex(rows[0]!.evm_addr)).toBe(toHex(defaultAddressMapper(CONTRACT)));
+    expect(rows[0]!.evm_addr.length).toBe(20);
   });
 
-  it("rejects two identities colliding onto one evm_address instead of merging balances", async () => {
-    // Force the collision by asserting the unique index exists and firing it directly: a second
-    // row claiming an already-taken evm_address must be a hard error.
-    const taken = await sql<{ evm_address: Buffer }[]>`
-      SELECT evm_address FROM ${sql(schema)}.address_map LIMIT 1
+  it("rejects two identities colliding onto one evm_addr instead of merging balances", async () => {
+    // Fire the unique index directly: a second row claiming an already-taken evm_addr must be a
+    // hard error, because silently merging would pool two accounts' balances.
+    const taken = await sql<{ evm_addr: Buffer }[]>`
+      SELECT evm_addr FROM ${sql(schema)}.address_map LIMIT 1
     `;
     await expect(
-      sql`INSERT INTO ${sql(schema)}.address_map (kind, identity, evm_address)
-          VALUES ('midnight', ${Buffer.from("fe".repeat(32), "hex")}, ${taken[0]!.evm_address})`,
+      sql`INSERT INTO ${sql(schema)}.address_map (evm_addr, kind, mn_address)
+          VALUES (${taken[0]!.evm_addr}, 'midnight', ${"fe".repeat(32)})`,
     ).rejects.toThrow(/unique|duplicate key/i);
+  });
+
+  it("matches Part A1/A2's committed address_map shape, so the merge is a no-op", async () => {
+    // Guards the reason `010_logs.ts` creates this table with IF NOT EXISTS: the columns must be
+    // A1/A2's (umbradb-sync/.../001_evm_rpc_core.ts), verified against the live Part A stack.
+    const columns = await sql<{ column_name: string; data_type: string }[]>`
+      SELECT column_name, data_type FROM information_schema.columns
+      WHERE table_schema = ${schema} AND table_name = 'address_map'
+      ORDER BY ordinal_position
+    `;
+    expect(columns.map((c) => c.column_name)).toEqual([
+      "id", "evm_addr", "kind", "mn_address", "meta", "first_seen_block",
+    ]);
+    expect(columns.find((c) => c.column_name === "mn_address")?.data_type).toBe("text");
+    expect(columns.find((c) => c.column_name === "meta")?.data_type).toBe("jsonb");
   });
 
   it("writes rows and the cursor in one transaction", async () => {
