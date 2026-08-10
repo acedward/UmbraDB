@@ -107,10 +107,11 @@ describe("ingest refuses when the ledger cannot hash a system transaction", () =
   let previousOverride: string | undefined;
 
   beforeAll(async () => {
-    // Resolve through the alias's own file path rather than the bare specifier: this package is
-    // deliberately NOT the one `@midnight-ntwrk/ledger-v8` resolves to, and its exports map does
-    // not expose the manifest.
-    stockEntry = require_.resolve("ledger-v8-stock/midnight_ledger_wasm_fs.js");
+    // Resolve the BARE specifier, exactly as `ledgerV8EntryPath()` does for the real dependency:
+    // the package's `exports` map exposes only the root, whose `node` condition already points at
+    // `midnight_ledger_wasm_fs.js`. Asking for that subpath directly is refused with
+    // ERR_PACKAGE_PATH_NOT_EXPORTED.
+    stockEntry = require_.resolve("ledger-v8-stock");
     container = await new PostgreSqlContainer("postgres:17-alpine").start();
   }, 180_000);
 
