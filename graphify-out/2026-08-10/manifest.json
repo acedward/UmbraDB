@@ -685,18 +685,18 @@
     "semantic_hash": ""
   },
   "chain-archive-sync/sync-cli.ts": {
-    "mtime": 1786402625.8140035,
-    "ast_hash": "6c3f514f931b736bae25fd49d6167db2",
+    "mtime": 1786404922.2223716,
+    "ast_hash": "8d5540ce71b8b2fe844fd18a2f7d985e",
     "semantic_hash": ""
   },
   "chain-archive-sync/sync-service.ts": {
-    "mtime": 1786402257.4780042,
-    "ast_hash": "82bfba0e794b5977ba5419b33c9407b5",
+    "mtime": 1786404985.8392897,
+    "ast_hash": "7a7fcd5191b671a1dc12208929b3823f",
     "semantic_hash": ""
   },
   "chain-archive-sync/tx-replay-decoder.ts": {
-    "mtime": 1786402297.6473575,
-    "ast_hash": "3fd3280f1c6a321a8b47e3ad4dcc47fd",
+    "mtime": 1786404796.3594785,
+    "ast_hash": "0ce46058019cfe28d0357d31384926ff",
     "semantic_hash": ""
   },
   "nix/midnight-env/config/db-sync-config.json": {
@@ -1490,8 +1490,8 @@
     "semantic_hash": ""
   },
   "chain-archive-sync/tx-replay-decoder.test.ts": {
-    "mtime": 1786403201.332977,
-    "ast_hash": "2837c0049d742ebcaf6551f0ae5f103d",
+    "mtime": 1786404796.3610306,
+    "ast_hash": "f97c2464e937fb41c7a13f038929c48c",
     "semantic_hash": ""
   },
   "nix/midnight-env/test-wallets/generate-test-wallet.sh": {
@@ -1535,8 +1535,8 @@
     "semantic_hash": ""
   },
   "wallet-monitor/log.ts": {
-    "mtime": 1786402625.8144152,
-    "ast_hash": "c1dcb4a3797e302b1599b1bb33b64b6e",
+    "mtime": 1786404922.2219727,
+    "ast_hash": "2d66787a34d33492ae06d6f07f155b6f",
     "semantic_hash": ""
   },
   "wallet-monitor/monitor-cli.ts": {
@@ -1545,8 +1545,8 @@
     "semantic_hash": ""
   },
   "wallet-monitor/monitor.ts": {
-    "mtime": 1786402771.6479225,
-    "ast_hash": "4b20cdffb0ed269ff4b6a747c8de7f92",
+    "mtime": 1786404922.2226396,
+    "ast_hash": "6141a9c5f05adf2e562efdb3f1f27e22",
     "semantic_hash": ""
   },
   "wallet-monitor/scripts/transfer.ts": {
@@ -1555,18 +1555,18 @@
     "semantic_hash": ""
   },
   "wallet-monitor/store.test.ts": {
-    "mtime": 1786403662.623133,
-    "ast_hash": "c1280899475a554438ba9d5dd29c6b60",
+    "mtime": 1786405011.2899017,
+    "ast_hash": "20db6dd6206ecf7628a036906e873dfb",
     "semantic_hash": ""
   },
   "wallet-monitor/store.ts": {
-    "mtime": 1786403480.6235044,
-    "ast_hash": "de5b9aedeba80a96cc3b9e2f34492ff7",
+    "mtime": 1786404922.2234879,
+    "ast_hash": "baa43f2d266cd0f5352796626d60ed25",
     "semantic_hash": ""
   },
   "wallet-monitor/subscription.ts": {
-    "mtime": 1786402506.312479,
-    "ast_hash": "ccda4f75bba11ee6cfd3143117cf21c2",
+    "mtime": 1786404922.2231343,
+    "ast_hash": "e8950c042e969ebbc64fa5df0f938af7",
     "semantic_hash": ""
   },
   ".github/workflows/supply-chain.yml": {
@@ -1677,6 +1677,11 @@
   "docs/assets/penumbra.png": {
     "mtime": 1786400445.8179858,
     "ast_hash": "dd4b989c6ad30305ee57072fbfed0533",
+    "semantic_hash": ""
+  },
+  "wallet-monitor/log.test.ts": {
+    "mtime": 1786404952.5192666,
+    "ast_hash": "fbabff495dc0d41df1d06e4d34f042cc",
     "semantic_hash": ""
   }
 }
