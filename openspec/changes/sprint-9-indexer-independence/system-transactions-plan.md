@@ -709,6 +709,24 @@ section does not wait on Part A's merge — it can proceed any time.
   bare `string`; the merge candidate follows that convention.
 - 2026-08-08 — 8.0.3 → 8.1.0 does not affect transaction hashing (proven by the 5/5 match against
   indexer 4.3.2's recorded hashes). No equivalent statement exists yet for 8.2.0-rc.1 (step 2).
+- 2026-08-08 — **The ledger WASM build is NOT bit-reproducible.** Rebuilding commit `1a561ac` with
+  the same `wasm-pack 0.15.0` and `rustc 1.93.0` on the same machine produced a different `.wasm`
+  (`46b80140…` then `9c7fc5f0…`); both pass the 5/5 known vectors. The snippet directory name
+  *is* stable. Three consequences, all acted on in Stage 0:
+  (a) §0's "CI rebuild-and-compare" gate is **impossible as specified** — a byte comparison against
+  a rebuild would fail every run while saying nothing about correctness. It is replaced by
+  checksum-pinning the committed bytes plus the known-vector behavioural check, which is the
+  stronger gate anyway since it compares against an independent implementation.
+  (b) It *strengthens* the vendoring decision rather than weakening it: the exact verified bytes
+  cannot be regenerated, so committing them is the only way to preserve what was actually verified.
+  (c) The §8 recipe reproduces **behaviour, not bytes** — worth stating wherever it is cited as a
+  reproduction, and now stated in `vendor/ledger-v8-syshash/PROVENANCE.md`.
+- 2026-08-08 — Vendoring silently removed coverage of the refusal path, because it was reached by
+  the capability being *absent* (`it.skipIf(haveSystemHash)`) and the vendored build makes it
+  always present. No test turned red. Fixed by constructing the condition instead of waiting for
+  it: `ledger-v8-stock` (published 8.0.3, pinned exactly) plus `MIDNIGHT_LEDGER_WASM`, in
+  `test/integration/chain-archive-ledger-refusal.integration.test.ts`. A general lesson for the
+  remaining stages: **a capability gate that becomes permanently true is a silent coverage loss.**
 - *(append future findings here, dated)*
 
 ## 11. Staged execution plan (owner, 2026-08-08)

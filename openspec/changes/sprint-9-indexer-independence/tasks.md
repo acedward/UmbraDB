@@ -245,6 +245,34 @@ Layer `docker-compose.hostports.yml` when host access is actually wanted.
   - **Acceptance:** the roadmap states which primitive was migrated, whether Run B passed, and what
     the remaining five require.
 
+## 8. Staged execution (plan §11) — Part A
+
+The plan's §11 supersedes any reading of §6/§7 as one monolithic gate. Each stage is mergeable on
+its own. Ordered; close-out steps apply per stage.
+
+- [x] **8.0 Stage 0 — Reproducible foundation.** *(completed 2026-08-08)*
+  - **Acceptance:** a fresh clone runs every current suite with no manual build steps and no env
+    vars. **Met and verified by clone-and-run**, not by inspection: `git clone` → `npm ci` →
+    typecheck, build, 27 unit tests, 10 fake-service integration tests, and the real-node node-only
+    ingest test all pass with `MIDNIGHT_LEDGER_WASM` explicitly unset.
+  - The verified 8.1.0 ledger build is committed at `vendor/ledger-v8-syshash` with `PROVENANCE.md`
+    and `SHA256SUMS`; `package.json` depends on it by path; `MIDNIGHT_LEDGER_WASM` is demoted to a
+    test-only escape hatch.
+  - The anticipated "CI rebuild-and-compare" gate proved impossible — the build is not
+    bit-reproducible (plan §10.3). Replaced by checksum pinning plus a known-vector behavioural
+    check against `midnight-indexer 4.3.2`'s recorded hashes, in
+    `.github/workflows/vendored-ledger.yml` and `test/chain-archive-sync/vendored-ledger-vectors.test.ts`.
+  - Refusal-path coverage, which vendoring silently removed, is restored by constructing the
+    condition rather than waiting for it (`test/integration/chain-archive-ledger-refusal.integration.test.ts`).
+- [ ] **8.1 Stage 1 — Fail-closed on the current slice.**
+- [ ] **8.2 Stage 2 — Block-scoped metadata decoding.**
+- [ ] **8.3 Stage 3 — Parity gates required.**
+- [ ] **8.4 Stage 4 — Apply-rule parity (replay).**
+- [ ] **8.5 Stage 5 — Optional-source GA.** Blocked on one owner decision (plan §11.2).
+
+Per-stage close-out, every stage: update this file, re-run `graphify update .` and commit
+`graphify-out/`, and append any ledger findings to the plan's §10.3 log, dated.
+
 ## Deferred to a later change
 
 Recorded here so they are not silently absorbed:
