@@ -412,34 +412,60 @@ export class ChainArchiveSyncService {
    * SAYING SO. That silence is the problem: `ON CONFLICT DO NOTHING` means such an archive cannot
    * be repaired by re-ingesting later.
    *
-   * The check counts occurrences of the system-transaction self-tag in the raw events blob and
-   * compares against how many system transactions this block actually archived. Counting, not
-   * decoding: delimiting an event payload needs runtime metadata, which is exactly what this
-   * build lacks. It is deliberately a DETECTION, not a classification -- the tag is never used to
-   * decide what something IS, only to notice that something is there that we did not account for.
+   * The check locates each occurrence of the system-transaction self-tag in the raw events blob
+   * and asks whether an ARCHIVED system transaction's bytes begin at that exact offset. Byte
+   * matching, not decoding: delimiting an event payload needs runtime metadata, which is exactly
+   * what this build lacks. It is deliberately a DETECTION, not a classification -- the tag is
+   * never used to decide what something IS, only to notice something we did not account for.
    *
-   * Directional by design. More tagged payloads in events than archived means at least one is
-   * missing, so refuse. Fewer is fine and expected: a root-dispatched system call that FAILED is
-   * archived from its extrinsic and emits no event. Genesis emits no events at all, so the case
-   * that works today is unaffected.
+   * This used to COUNT tagged payloads and refuse when the count exceeded the archived count.
+   * That had a false negative, and it is worth spelling out because it is not obvious. Let
+   * `S` = successful direct system extrinsics (archived, and also present as events),
+   * `F` = valid direct system calls rejected before ledger execution (archived, but emitting no
+   * event), and `R` = runtime-generated event-only system transactions. Counting compared
+   * `S + R > S + F`, which detects an omission only when `R > F` -- so one failed direct call
+   * plus one runtime-generated event produced EQUAL counts, the guard passed, the runtime
+   * transaction was omitted, and the watermark advanced.
+   *
+   * Matching bytes instead separates the two populations that counting conflated: `F` contributes
+   * an archived transaction with no event occurrence (nothing to flag, correctly), while `R`
+   * contributes an event occurrence matching nothing archived (flagged, correctly). The masking
+   * disappears rather than being made less likely.
+   *
+   * Residual limits, stated rather than implied. This assumes the event's
+   * `serialized_system_transaction` bytes are identical to the bytes archived from the
+   * corresponding extrinsic, which is what the reference indexer's own handling implies but has
+   * not been observed on a chain that actually produces both -- if they ever differ, this
+   * over-refuses. Over-refusal is the direction this archive deliberately errs in: a refusal is
+   * visible and fixable, whereas the omission it replaces is silent and, under
+   * `ON CONFLICT DO NOTHING`, unrepairable. It also still cannot tell WHAT an unmatched payload
+   * is, only that it exists; that needs block-scoped metadata decoding.
+   *
+   * Genesis emits no events at all, so the case that works today is unaffected.
    */
   private async assertNoUnarchivedEventSystemTransactions(
     height: number,
     blockHash: Hex32,
-    archivedSystemCount: number,
+    archivedSystemRaw: readonly Uint8Array[],
   ): Promise<void> {
     const raw = await this.node.storageAt(ChainArchiveSyncService.SYSTEM_EVENTS_KEY, `0x${blockHash}`);
     if (raw === undefined) return; // no events recorded for this block (genesis, notably)
     const events = Buffer.from(hexNoPrefix(raw), "hex");
     const tag = Buffer.from(SYSTEM_TX_TAG, "latin1");
-    let tagged = 0;
-    for (let i = events.indexOf(tag); i !== -1; i = events.indexOf(tag, i + 1)) tagged++;
-    if (tagged > archivedSystemCount) {
+    const archived = archivedSystemRaw.map((b) => Buffer.from(b));
+    let unaccounted = 0;
+    for (let i = events.indexOf(tag); i !== -1; i = events.indexOf(tag, i + 1)) {
+      const accountedFor = archived.some(
+        (b) => i + b.length <= events.length && events.subarray(i, i + b.length).equals(b),
+      );
+      if (!accountedFor) unaccounted++;
+    }
+    if (unaccounted > 0) {
       throw new Error(
-        `height ${height}: the block's events carry ${tagged} system-transaction payload(s) but ` +
-          `only ${archivedSystemCount} were archived from extrinsics. Runtime-generated system ` +
-          "transactions exist only in the SystemTransactionApplied event, which this build does " +
-          "not decode, so archiving this block would silently omit them -- and inserts are ON " +
+        `height ${height}: the block's events carry ${unaccounted} system-transaction payload(s) ` +
+          `matching none of the ${archived.length} archived from extrinsics. Runtime-generated ` +
+          "system transactions exist only in the SystemTransactionApplied event, which this build " +
+          "does not decode, so archiving this block would silently omit them -- and inserts are ON " +
           "CONFLICT DO NOTHING, so re-ingesting later would not repair it. Use indexer-sourced " +
           "ingest for this range until event decoding lands.",
       );
@@ -562,7 +588,7 @@ export class ChainArchiveSyncService {
       // build could not archive. Node-only mode only -- indexer-sourced ingest gets them from the
       // indexer, which does decode events.
       await this.assertNoUnarchivedEventSystemTransactions(
-        height, blockHash, transactions.filter((t) => t.kind === "system").length,
+        height, blockHash, transactions.filter((t) => t.kind === "system").map((t) => t.rawBytes),
       );
       bridge = this.buildBridgeObservationRecords(
         height, blockHash, await this.fetchDParameterFromNode(blockHash),
