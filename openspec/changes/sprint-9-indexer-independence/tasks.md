@@ -264,7 +264,26 @@ its own. Ordered; close-out steps apply per stage.
     `.github/workflows/vendored-ledger.yml` and `test/chain-archive-sync/vendored-ledger-vectors.test.ts`.
   - Refusal-path coverage, which vendoring silently removed, is restored by constructing the
     condition rather than waiting for it (`test/integration/chain-archive-ledger-refusal.integration.test.ts`).
-- [ ] **8.1 Stage 1 — Fail-closed on the current slice.**
+- [x] **8.1 Stage 1 — Fail-closed on the current slice.** *(completed 2026-08-08)*
+  - **Acceptance:** no known input reaches silent omission; every gap refuses loudly. Verified in a
+    fresh clone with `MIDNIGHT_LEDGER_WASM` unset: 49 passed, 1 skipped, including the real-node
+    node-only ingest test.
+  - Signed/general **system** calls were classified `not_midnight` and dropped silently, because
+    the guard searched for `midnight:transaction` alone and the two tags diverge at their tenth
+    byte. Both tags are searched now (`extrinsic-decoder.ts`), with a regression test verified to
+    fail against the old check and a companion test that near-misses must NOT trigger refusal.
+  - The event guard's §5.1 false negative is closed. Counting compared `S+R > S+F`, detecting an
+    omission only when `R > F`, so one failed direct call masked one runtime-generated event
+    exactly. It now matches archived bytes against the events blob, which separates the two
+    populations counting conflated — still with no runtime metadata. Its residual limits (assumes
+    event bytes equal extrinsic bytes; cannot say WHAT an unmatched payload is) are stated in the
+    code rather than implied.
+  - Dual-source key collisions refuse rather than losing a row to `ON CONFLICT DO NOTHING`.
+    Reachable today in **indexer-sourced** mode, not node-only: the indexer keeps both copies.
+  - Node-only mode announces itself as experimental at every start, before connecting to Postgres.
+  - **Not covered by this stage, and still a silent-omission path:** extending an archive written
+    by an older incomplete implementation (§5.5). That belongs to §6.6 / Stage 3–4 work and is not
+    claimed closed here.
 - [ ] **8.2 Stage 2 — Block-scoped metadata decoding.**
 - [ ] **8.3 Stage 3 — Parity gates required.**
 - [ ] **8.4 Stage 4 — Apply-rule parity (replay).**
