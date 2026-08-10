@@ -48,6 +48,7 @@
     "bench:smoke": "tsx bench/smoke.ts"
   },
   "dependencies": {
+    "@polkadot/types": "^16.5.6",
     "postgres": "^3.4.9",
     "zod": "^4.0.0"
   },

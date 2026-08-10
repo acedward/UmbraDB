@@ -156,6 +156,43 @@ export class NodeRpcClient {
     return this.call<string>("state_call", params);
   }
 
+  /**
+   * SCALE-encoded runtime metadata AT a block, or `undefined` if the node cannot serve it.
+   *
+   * The `at` parameter is what makes block-scoped decoding possible: metadata must describe the
+   * runtime that produced the block being decoded, not the chain tip. Resolving at the tip means a
+   * block from before a runtime upgrade is decoded against the wrong pallet indices, and the
+   * failure is SILENT -- genuine transactions are simply classified as something else.
+   *
+   * `undefined` where a pruned node has discarded the historical state this is derived from; the
+   * caller must refuse rather than fall back to tip metadata.
+   */
+  async metadataAt(at: string): Promise<string | undefined> {
+    const value = await this.call<string | null>("state_getMetadata", [at]);
+    return value ?? undefined;
+  }
+
+  /**
+   * The runtime's own identity at a block: `specName` and `specVersion`.
+   *
+   * This is the cache key for metadata. `specVersion` is exactly what a runtime upgrade bumps, so
+   * keying on it means the metadata cache invalidates precisely at upgrade boundaries -- whereas
+   * keying on anything coarser (protocol-version range, node version) would serve one runtime's
+   * layout for another runtime's blocks.
+   */
+  async runtimeVersionAt(at: string): Promise<{ specName: string; specVersion: number }> {
+    const v = await this.call<{ specName: string; specVersion: number }>(
+      "state_getRuntimeVersion", [at],
+    );
+    if (typeof v?.specName !== "string" || typeof v?.specVersion !== "number") {
+      throw new Error(
+        `state_getRuntimeVersion at ${at} returned no usable specName/specVersion. Without the ` +
+          "runtime's identity, metadata cannot be cached safely across a runtime upgrade.",
+      );
+    }
+    return { specName: v.specName, specVersion: v.specVersion };
+  }
+
   /** Convenience: resolves a hash to its height via `getHeader` -- the RPC surface has no
    *  direct "height of this hash" call, so this is the standard two-hop lookup.
    *
