@@ -26,6 +26,8 @@ must not enter this PR.
 | Is `MIDNIGHT_LEDGER_WASM` a release dependency? | **No.** It is acceptable only for local verification. The release path must use an upstreamed, published, vendored, or otherwise exact and reproducible artifact. |
 | Is test-chain parity sufficient? | **No.** It proves only part of the genesis/bare-extrinsic slice: the committed comparison omits `block_hash` and all D-parameter observations. An event-bearing oracle range and required non-skipping gates are still needed. |
 | May this PR add new archive data? | **No.** It substitutes the ingest source. It does not add stored business data, projections, feeds, or contract state. |
+| May an archive start at an arbitrary height? *(owner, 2026-08-08)* | **No — genesis-start only.** Not because mid-start needs the indexer (it does not; it needs an un-pruned archive node — a freshly started indexer is equally blind to pruned history). Genesis-start is chosen because it keeps completeness self-evident under `ON CONFLICT DO NOTHING` (§5.5), it matches the existing identity anchor (the archived genesis block, `sync-service.ts`), and apply-rule parity requires ledger state that can only be built from genesis. Backfilling old history via the existing indexer-sourced mode and then switching sources remains the supported path for history the node no longer serves. |
+| Is byte-parity with the indexer negotiable? *(owner, 2026-08-08)* | **No — reaffirmed.** Every dapp consumes the indexer today; a "correct per the node, with documented deviations" relaxation would make the swap permanently hard. Consequence: the indexer's *apply*-validity rule is in scope eventually, which means umbra maintaining ledger state via the WASM's `LedgerState.apply` — a replay engine. That is a real, deliberate cost accepted by this decision, not an accident of the acceptance matrix (see §8a.1, now a sequencing question only). |
 
 The remaining owner coordination choices are narrower still, now that the ledger fork has a
 publication destination (`git@github.com:acedward/midnight-ledger.git`, both branches pushed —
@@ -547,6 +549,15 @@ row:
 **Recommendation:** split the row. Keep deserialization-failure parity as a merge gate. Move
 apply-failure parity out of Part A, or make it an explicit, separately-approved decision to build
 replay — not a line item a reader would price as one more test.
+
+**Partially overruled by the owner (2026-08-08, §0):** byte-parity is reaffirmed as
+non-negotiable, so apply-rule parity — and therefore replay — is a matter of *when*, not
+*whether*. The WASM ledger exposes `LedgerState.apply`, so it is implementable without leaving
+JS. What survives of this concern is sequencing only: the rows should still be split by cost
+(deserialize-failure parity is nearly free and can gate the merge; apply parity is its own
+milestone, after block-scoped metadata decoding), and the replay engine should be planned as the
+deliberate, sized piece of work it is. Note it also hard-couples to genesis-start (§0): ledger
+state can only be built by replaying from block 0.
 
 ### 8a.2 Several merge-blocking rows have no stated fallback if the population cannot be found
 
