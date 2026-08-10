@@ -273,6 +273,17 @@ its own. Ordered; close-out steps apply per stage.
 Per-stage close-out, every stage: update this file, re-run `graphify update .` and commit
 `graphify-out/`, and append any ledger findings to the plan's §10.3 log, dated.
 
+> **Outstanding — the graph is stale and cannot be refreshed on this machine.**
+> `graphify-out/graph.json`'s `built_at_commit` is `afe5c11`; Stage 0 advanced HEAD past it, so
+> per CLAUDE.md's freshness gate any review manifest computed from it is **void** until refreshed.
+> The pinned command `uvx --from graphifyy==0.9.24 graphify update .` cannot run here: `uv`,
+> `uvx`, `pipx` and `pip3` are all absent, and `python3 -m venv` fails because `ensurepip` is not
+> installed (`apt install python3.12-venv`, which needs sudo). Not worked around, because a
+> different graphify version would produce outputs inconsistent with the pinned pipeline.
+> **Needs one of:** installing `uv`, or `apt install python3.12-venv`, or running the refresh from
+> a machine that already has the toolchain. Plan §11.1's prerequisite list omits this dependency
+> and should gain it.
+
 ## Deferred to a later change
 
 Recorded here so they are not silently absorbed:

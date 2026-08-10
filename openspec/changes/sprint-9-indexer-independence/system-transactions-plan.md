@@ -758,6 +758,11 @@ first needs to *archive* (not merely refuse) a dual-source block — Stage 2 at 
   `wasm-pack 0.15.0`, **rustc 1.93.0 exactly**, then the loader/`#self` adaptation. After Stage 0:
   nothing.
 - **Toolchains:** rustc 1.93.0; rustc ≥ 1.95 only for `ledger-8` work (§10); Node 20+, `tsx`, `jq`.
+- **`uv`/`uvx`**, for the pinned `graphify` and OpenSpec close-out commands in §8. Added
+  2026-08-08 after Stage 0 hit its absence: this machine has no `uv`, `uvx`, `pipx` or `pip3`, and
+  `python3 -m venv` fails without `ensurepip` (`apt install python3.12-venv`, needs sudo). The
+  close-out graph refresh cannot run without one of these, and substituting an unpinned graphify
+  would produce outputs inconsistent with the rest of the pipeline.
 - **Access:** push to `acedward/UmbraDB` and `acedward/midnight-ledger`; pull for midnight images.
 - **Open decisions: none for Stages 0–4.** Stage 5: one, deferrable until reached.
 
