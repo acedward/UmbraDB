@@ -91,6 +91,35 @@ function hexNoPrefix(hex: string): string {
 
 const SYSTEM_TX_TAG = "midnight:system-transaction";
 
+/**
+ * Refuse a block whose transactions would collide on the archive's transaction key.
+ *
+ * Split out as a free function so it can be unit-tested without standing up a service, a schema
+ * and a fake chain: the property is purely about a list of records, and the case that produces it
+ * in the wild (a system transaction present in both an extrinsic and an event) cannot be produced
+ * on any reachable devnet.
+ */
+export function assertNoDuplicateTransactionKeys(
+  height: number,
+  transactions: readonly { txHash: string; position: number; kind: string }[],
+): void {
+  const seen = new Map<string, number>();
+  for (const t of transactions) {
+    const previous = seen.get(t.txHash);
+    if (previous !== undefined) {
+      throw new Error(
+        `height ${height}: transactions at positions ${previous} and ${t.position} share the ` +
+          `hash ${t.txHash} (kind ${t.kind}). The archive keys transactions by ` +
+          "(net, block_height, block_hash, tx_hash), so only one of them could be stored, and " +
+          "because inserts are ON CONFLICT DO NOTHING the other would be dropped silently rather " +
+          "than reported. The reference indexer stores both. Refusing until the key is widened " +
+          "with `position` so both copies can be archived the way the indexer archives them.",
+      );
+    }
+    seen.set(t.txHash, t.position);
+  }
+}
+
 export interface ChainArchiveSyncServiceOptions {
   sql: UmbraDBSql;
   net: string;
@@ -594,6 +623,21 @@ export class ChainArchiveSyncService {
         height, blockHash, await this.fetchDParameterFromNode(blockHash),
       );
     }
+
+    // The archive's transaction key is (net, block_height, block_hash, tx_hash), so two rows
+    // sharing a hash inside one block cannot BOTH be stored -- and every terminal insert is
+    // `ON CONFLICT DO NOTHING`, so the second is dropped in silence rather than erroring.
+    // Applies to BOTH modes, and is reachable today in indexer-sourced mode: the reference
+    // indexer does not deduplicate (`runtimes/v1_0_0.rs:160-163` prepends event-borne system
+    // transactions and plain-`extend`s the extrinsic list), and its own `transactions` table has
+    // no unique constraint on `hash`, so a successful direct system call legitimately appears
+    // TWICE. Storing one of the two would look like a complete block while silently disagreeing
+    // with the source we are defined against.
+    //
+    // Refusing is the interim. The approved fix is widening the key with `position` (plan §3(c),
+    // owner-approved), which lets both copies be stored the way the indexer stores them; until
+    // that migration lands, a collision must stop the block rather than quietly lose a row.
+    assertNoDuplicateTransactionKeys(height, transactions);
 
     const blockRecord: BlockRecord = {
       net: this.net,
