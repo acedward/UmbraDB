@@ -259,9 +259,19 @@ export function classifyExtrinsic(
   //
   // As elsewhere, the tag is a DETECTION signal only -- it decides nothing about what the bytes
   // are, just that something is here this build cannot account for.
+  //
+  // BOTH tags are searched. This previously looked for `midnight:transaction` alone, which missed
+  // signed/general direct SYSTEM calls entirely: the two prefixes diverge at their tenth byte
+  // (`midnight:t...` vs `midnight:s...`), so a system payload does not contain the standard tag as
+  // a substring, and such an extrinsic was classified `not_midnight` and dropped in silence --
+  // exactly the omission this branch exists to prevent. The reference indexer decodes the call
+  // from metadata regardless of framing, so it would have archived it.
   if ((version & 0b1100_0000) !== 0) {
     const body = Buffer.from(bytes.subarray(lenSize));
-    return body.includes(Buffer.from(STANDARD_TX_TAG_PREFIX, "latin1"))
+    const carriesMidnightTag =
+      body.includes(Buffer.from(STANDARD_TX_TAG_PREFIX, "latin1")) ||
+      body.includes(Buffer.from(SYSTEM_TX_TAG_PREFIX, "latin1"));
+    return carriesMidnightTag
       ? { outcome: "midnight_tagged_undecodable_framing", version }
       : { outcome: "not_midnight" };
   }

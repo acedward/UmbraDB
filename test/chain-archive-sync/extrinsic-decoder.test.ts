@@ -286,11 +286,31 @@ describe("signed and general framings (which this build cannot decode)", () => {
     expect(c.outcome).toBe("midnight_tagged_undecodable_framing");
   });
 
+  it("reports a signed extrinsic carrying a midnight SYSTEM transaction payload", () => {
+    // The regression this pins: the guard used to search for `midnight:transaction` alone. The two
+    // tags diverge at their tenth byte (`midnight:t...` vs `midnight:s...`), so a system payload
+    // does not contain the standard tag as a substring -- a signed direct system call was
+    // therefore classified `not_midnight` and dropped in SILENCE, which is precisely the omission
+    // this branch exists to prevent. The reference indexer decodes the call from metadata
+    // regardless of framing, so it would have archived it.
+    const payload = Buffer.from("midnight:system-transaction[v6]:", "latin1").toString("hex") + "deadbeef";
+    const c = classifyExtrinsic(signedWrapping(payload), V1);
+    expect(c.outcome).toBe("midnight_tagged_undecodable_framing");
+  });
+
   it("stays silent on an ordinary signed extrinsic", () => {
     // No midnight self-tag: the payload of a Midnight transaction is always self-tagged, so its
     // absence means this cannot be one. Reporting these would refuse on ordinary chain traffic.
     const c = classifyExtrinsic(signedWrapping(Buffer.from("ordinary payload").toString("hex")), V1);
     expect(c.outcome).toBe("not_midnight");
+  });
+
+  it("stays silent on a signed extrinsic whose payload merely mentions midnight", () => {
+    // The widened search must not become trigger-happy: `midnight` alone, or a near-miss like
+    // `midnight:sys`, is not a self-tag. Refusing on those would halt ingest on ordinary traffic,
+    // trading a silent omission for a permanent stall -- no better.
+    const nearMiss = Buffer.from("midnight:sys and midnight:tx", "latin1").toString("hex");
+    expect(classifyExtrinsic(signedWrapping(nearMiss), V1).outcome).toBe("not_midnight");
   });
 
   it("still rejects bare non-Midnight calls as before", () => {
