@@ -196,9 +196,15 @@ are contiguous in that order, so:
 - the **trailing** transaction is held back, and the cursor is not advanced past it.
 
 Holding back alone would stall at the tip (a contract whose only activity is one transfer has one
-transaction, so nothing would ever flush). The ingester therefore also flushes the held tail when
-`id == maxId` — the indexer knows of no newer event — or after a bounded idle interval, either of
-which proves the transaction closed, since a block's events are indexed together.
+transaction, so nothing would ever flush). The ingester therefore also flushes the held tail after a
+bounded **idle interval** (default 1500ms, comfortably under one block): a block's events are
+indexed together, so an idle gap that long proves the transaction closed.
+
+`id == maxId` is **deliberately not** a flush trigger. It looks like a cheaper tip signal, but it is
+unsafe for precisely the case the buffer exists to protect: while a transfer's Spend is the newest
+indexed event, `id == maxId` holds, so flushing there emits a bogus burn — and then a bogus mint when
+the Receive lands. `maxId` can only ever mean "nothing newer *yet*", never "this transaction is
+closed".
 
 ### Reorgs
 

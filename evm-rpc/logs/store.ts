@@ -17,6 +17,9 @@ import type { LogRow, MidnightIdentity } from "./event-map.js";
 import { AddressIdCache, resolveAddressId, type SqlLike } from "./address-map.js";
 import type { AddressMapper } from "./event-map.js";
 
+/** Rows per INSERT statement. 13 columns x 4000 = 52 000 bound parameters, under Postgres' 65535. */
+const INSERT_CHUNK_ROWS = 4_000;
+
 export interface CursorUpdate {
   /** The watched Midnight contract address bytes — `log_cursors`' primary key. */
   contractAddress: Uint8Array;
@@ -93,18 +96,27 @@ export async function writeLogs(
       source_event_id: BigInt(row.sourceEventId),
     }));
 
-    // Columns are inferred from the object keys, which every element of `values` builds
-    // identically above — an explicit column list adds nothing here and fights the driver's types.
-    const inserted = await tx<{ id: bigint }[]>`
-      INSERT INTO ${tx(schema)}.logs ${tx(values)}
-      ON CONFLICT (source_event_id) DO NOTHING
-      RETURNING id
-    `;
+    // Chunked because Postgres caps a statement at 65535 bound parameters: at 13 columns per row a
+    // single statement tops out just over 5000 rows, and C-G5's genesis backfill can legitimately
+    // exceed that for a large holder set. Every chunk runs inside the SAME transaction, so
+    // atomicity is unchanged — this is a statement-size limit, not a durability boundary.
+    let insertedCount = 0;
+    for (let offset = 0; offset < values.length; offset += INSERT_CHUNK_ROWS) {
+      const chunk = values.slice(offset, offset + INSERT_CHUNK_ROWS);
+      // Columns are inferred from the object keys, which every element of `values` builds
+      // identically above — an explicit column list adds nothing and fights the driver's types.
+      const inserted = await tx<{ id: bigint }[]>`
+        INSERT INTO ${tx(schema)}.logs ${tx(chunk)}
+        ON CONFLICT (source_event_id) DO NOTHING
+        RETURNING id
+      `;
+      insertedCount += inserted.length;
+    }
 
     if (options.cursor !== undefined) {
       await upsertCursor(tx, schema, options.cursor);
     }
-    return { inserted: inserted.length, skipped: rows.length - inserted.length };
+    return { inserted: insertedCount, skipped: rows.length - insertedCount };
   });
 
   for (const [identity, id] of staged) options.cache?.set(identity, id);

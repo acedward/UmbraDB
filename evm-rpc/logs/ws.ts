@@ -220,7 +220,10 @@ export function createWebSocketServer(options: WsServerOptions): WsServer {
     };
 
     socket.on("data", (chunk: Buffer) => {
-      buffered = buffered.length === 0 ? chunk : Buffer.concat([buffered, chunk]);
+      // `Buffer.concat` unconditionally (rather than aliasing `chunk` when the buffer is empty):
+      // the incoming chunk is typed over `ArrayBufferLike`, and concat also gives us a buffer we
+      // own, so the later `subarray` slicing cannot alias a stream-internal buffer.
+      buffered = Buffer.concat([buffered, chunk]);
       for (;;) {
         let frame: DecodedFrame | null;
         try {
