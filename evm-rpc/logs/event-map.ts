@@ -517,7 +517,7 @@ function mapTransaction(
     );
   }
 
-  for (const event of singles) logs.push(standardLog(event, addressMapper));
+  for (const event of singles) logs.push(standardLog(event));
   return logs;
 }
 
@@ -565,9 +565,10 @@ function transferLog(
  * `keccak256("Midnight<TypeName>()")` topic0 with the per-type topic/data layout LOGMAP.md
  * tabulates. Address-typed fields keep their RAW Midnight bytes here rather than being squeezed
  * to 20 bytes: these events exist for completeness, no ERC20 tooling reads them, and the
- * 12-byte truncation would be lossy for no benefit.
+ * 12-byte truncation would be lossy for no benefit — which is why, unlike `transferLog`, this
+ * helper takes no `AddressMapper` at all.
  */
-function standardLog(event: MidnightEvent, addressMapper: AddressMapper): PendingLog {
+function standardLog(event: MidnightEvent): PendingLog {
   const type = event.__typename;
 
   if (type === "MiscContractEvent") {
@@ -638,9 +639,6 @@ function standardLog(event: MidnightEvent, addressMapper: AddressMapper): Pendin
       throw new EventMapError(`no mapping rule for known type "${type}"`, type, event.id);
   }
 
-  // `addressMapper` is intentionally unused for these types (see the doc comment above); the
-  // parameter is kept so every log-producing helper has one uniform signature.
-  void addressMapper;
   return { primaryId: event.id, topics, data: concatBytes(data) };
 }
 

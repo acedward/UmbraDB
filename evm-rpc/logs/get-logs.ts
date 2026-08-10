@@ -14,7 +14,6 @@
  *   - more than 10 000 results: `-32005 "query returned more than 10000 results"`.
  */
 
-import type { ISql } from "postgres";
 import { JSON_RPC_LIMIT_EXCEEDED, JsonRpcError, registerMethod } from "../registry-shim.js";
 import { toHex } from "./event-map.js";
 import { lookupAddressIds, type SqlLike } from "./address-map.js";
@@ -248,6 +247,3 @@ export async function getLogs(options: GetLogsOptions, params: readonly unknown[
 export function registerGetLogs(options: GetLogsOptions): void {
   registerMethod("eth_getLogs", (params) => getLogs(options, params));
 }
-
-/** Re-exported so a caller can type its own `sql` without importing from `postgres` directly. */
-export type { ISql };
