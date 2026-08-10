@@ -779,3 +779,34 @@ made; Stages 0–4 run without owner input. The three future actions, each with 
 
 Nothing else. Reviews of stage deliverables are welcome but are not gates the plan waits on —
 each stage's done-condition is checked by its own required tests.
+
+## 12. Blockers and unknowns
+
+Live register. **Blockers** stop specific work; **unknowns** are unverified assumptions that could
+invalidate work already done. Both are updated as stages proceed.
+
+### 12.1 Blockers
+
+| # | Blocker | Blocks | Status |
+|---|---|---|---|
+| **B1** | **No reachable chain emits runtime-generated system transactions.** The reviewed v1.0.0 runtime's block reward is zero and its reward pallet is disabled. | Live validation of the event guard; the §7 rows for event-borne systems, mixed blocks, and dual-source transactions | Open. §0's mechanism-equivalence fallback applies: implement the reference mechanism, prove with synthesized fixtures. CNight observation is the one identified real source |
+| **B2** | **Block-scoped metadata decoding not implemented.** | Signed/general framings, `SystemTransactionApplied` decode, retiring pinned `CALL_INDICES_BY_PROTOCOL` — i.e. converting three refusals into support | Stage 2, next |
+| **B3** | **The `transactions` primary key cannot hold two rows sharing a hash** — `(net, block_height, block_hash, tx_hash)`. | *Archiving* (as opposed to refusing) a dual-source system transaction, which the indexer stores as two rows | Migration approved (§0); lands Stage 2 at the earliest. Blocks refuse meanwhile |
+| **B4** | **The ledger export is neither upstreamed nor published.** | Closing §5.4's release-artifact objection | Vendored interim in place (`vendor/ledger-v8-syshash`) and no longer blocking day-to-day work. §10 tracks it |
+| **B5** | **Node 0.22.x has no verified call indices.** Its ledger codec is supported; the indices were never observed. | Ingesting any 0.22.x range | Open. Fail-closed today. Resolved by B2 or by observing a 0.22.x chain |
+
+### 12.2 Unknowns
+
+| # | Unknown | Why it matters | How it gets settled |
+|---|---|---|---|
+| **U1** | **Are the event's `serialized_system_transaction` bytes byte-identical to the same transaction's extrinsic-borne bytes?** | The event guard now matches by bytes. If they differ, it **over-refuses valid blocks** — trading a silent omission for a stall. The reference indexer's handling implies they are identical; nothing has observed it | One block containing a successful direct system call on a chain that emits events. Gated on B1 |
+| **U2** | **The ledger WASM build is not bit-reproducible.** Same commit, `wasm-pack` and `rustc` produce different `.wasm` bytes | The vendored artifact can never be re-attested by rebuilding it; provenance rests entirely on behavioural vectors | Settled as far as it can be: accepted, with the known-vector gate as the substitute attestation. Do not add a byte-comparison CI gate — it cannot pass |
+| **U3** | **Does an 8.2.0-rc.1 build reproduce the five genesis hashes?** | The upstream merge candidate is compile-checked only; it is *unverified against ground truth* while the 8.1.0 tree is what Part A consumes | Build the candidate and run the vectors (§10.2 step 2) |
+| **U4** | **Can a signed Midnight call be produced at all?** `send_mn_transaction` ignores its origin, so one is valid — but nobody may ever have submitted one | §7 requires the row. If unproducible, that gate can only ever stay red | Attempt submission on the devnet; failing that, mechanism-equivalence per §0 |
+| **U5** | **Does the indexer archive a valid call rejected *before* ledger execution (`BadOrigin`)?** | Decides row-versus-refusal parity for the whole §7 failure family, and therefore how much of Stage 4 is real | Observation on an oracle range. Not derivable from the adapter source, which stops before dispatch outcome |
+| **U6** | **Is the reference's event-first ordering stable across runtimes?** Read from `runtimes/v1_0_0.rs:160-163`, which is version-specific by construction | Position is part of the archive's contract; a different order in another runtime silently breaks parity | Re-read the adapter for each supported runtime as B2 lands |
+
+**Settled by code reading, previously listed as needing observation:** whether the indexer
+deduplicates a system transaction present in both sources. It does not — no hash comparison on the
+path, and no unique constraint on `hash` in its schema, so it stores two rows (§3(c)). This is what
+produced B3.
