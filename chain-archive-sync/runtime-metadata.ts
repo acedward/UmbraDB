@@ -129,6 +129,105 @@ export function resolveMetadata(bytes: Uint8Array, identity: RuntimeIdentity): R
   return { identity, registry, metadata, callIndices, systemTransactionAppliedEvent };
 }
 
+/** One runtime-generated system transaction, recovered from a `SystemTransactionApplied` event. */
+export interface EventSystemTransaction {
+  /** The authoritative ledger hash, hex, no `0x`, lowercase -- as the RUNTIME reported it. */
+  txHash: string;
+  /** The serialized system transaction, exactly as archived. */
+  payload: Uint8Array;
+}
+
+/** The `System::Events` storage item's own type, read from metadata rather than assumed.
+ *  Its shape (`Vec<FrameSystemEventRecord>`) is a runtime detail, so it is looked up, not named. */
+function eventsTypeId(resolved: ResolvedRuntimeMetadata): number {
+  const system = findPallet(resolved.metadata, "System");
+  if (system.storage.isNone) throw new Error("runtime metadata: System pallet declares no storage");
+  const events = system.storage.unwrap().items.find((i) => i.name.toString() === "Events");
+  if (events === undefined) throw new Error("runtime metadata: System pallet declares no Events storage item");
+  return events.type.asPlain.toNumber();
+}
+
+/**
+ * Decode the block's `System::Events` blob and return every system transaction the RUNTIME
+ * generated.
+ *
+ * This is the capability whose absence forced ingest to refuse (sprint plan §5.1). Runtime-
+ * generated system transactions are not in `chain_getBlock.extrinsics` at all -- the
+ * `SystemTransactionApplied` event is the only place they exist.
+ *
+ * Note what the event carries: BOTH the payload and the authoritative hash. So these transactions
+ * need no ledger hashing -- unlike extrinsic-borne ones, which must be hashed with the ledger
+ * because the extrinsic carries only bytes. The hash here is the runtime's own answer, which is
+ * also what the reference indexer keys on
+ * (`midnight-node/pallets/midnight-system/src/lib.rs`, and `subxt_node.rs` consuming it).
+ *
+ * Throws rather than returning partial results if the blob cannot be decoded: an events blob that
+ * does not match its own runtime's metadata means the metadata is wrong for this block, and
+ * continuing would silently under-report what the block contained.
+ */
+export function decodeEventSystemTransactions(
+  resolved: ResolvedRuntimeMetadata,
+  eventsBlob: Uint8Array,
+): EventSystemTransaction[] {
+  const target = resolved.systemTransactionAppliedEvent;
+  // A runtime with no such event cannot have event-borne system transactions. Not an error.
+  if (target === undefined) return [];
+
+  const { registry } = resolved;
+  const records = registry.createType(
+    registry.createLookupType(eventsTypeId(resolved)) as never,
+    eventsBlob,
+  ) as unknown as { toArray?: () => unknown[] } & Iterable<unknown>;
+
+  const out: EventSystemTransaction[] = [];
+  for (const record of records as Iterable<any>) {
+    const event = record?.event;
+    if (event === undefined) continue;
+    // Match by INDEX, from metadata -- never by decoded name string. Names are stable in practice
+    // but the index pair is what the encoding actually carries, and metadata is what maps one to
+    // the other for this specific runtime.
+    //
+    // `event.index` is a codec (a 2-byte U8aFixed), NOT an array: indexing it positionally yields
+    // undefined, so a naive `index[0] === palletIndex` check silently matches nothing and every
+    // event-borne system transaction is reported as absent. Read the encoded bytes instead.
+    const idx = event.index?.toU8a?.();
+    if (idx === undefined || idx.length < 2) continue;
+    if (idx[0] !== target.palletIndex || idx[1] !== target.variantIndex) continue;
+
+    // This runtime declares the event's two fields as ONE named composite, so the decoded `data`
+    // is a single-element array holding a struct -- not two positional items. Both shapes are
+    // accepted because that is a runtime's choice, not a protocol rule, and a future runtime
+    // could declare them positionally.
+    const data = event.data;
+    const composite = data?.length === 1 ? data[0] : undefined;
+    // Read named fields through the Struct accessor, NEVER as plain properties.
+    //
+    // `codec.hash` is a BUILT-IN on every polkadot codec -- the blake2 hash of the encoded value --
+    // so `composite.hash` silently returns that instead of the event's `hash_` field. It is a
+    // 32-byte hex either way, so nothing looks wrong: every event-borne system transaction would
+    // have been archived under a fabricated key, and `ON CONFLICT DO NOTHING` would have made it
+    // permanent. Caught only by comparing against a known input.
+    const field = (name: string): any =>
+      typeof composite?.get === "function" ? composite.get(name) : undefined;
+    const hashRaw = field("hash_") ?? field("hash") ?? data?.[0];
+    const payloadRaw = field("serializedSystemTransaction") ?? data?.[1];
+    if (hashRaw === undefined || payloadRaw === undefined) {
+      throw new Error(
+        "runtime metadata: SystemTransactionApplied decoded without the expected hash and " +
+          "serialized-transaction fields. The event's shape changed; refusing rather than " +
+          "archiving a system transaction under a key that may not be its identity.",
+      );
+    }
+    out.push({
+      txHash: Buffer.from(hashRaw.toU8a ? hashRaw.toU8a() : hashRaw).toString("hex").toLowerCase(),
+      // `toU8a(true)` -- bare encoding. The payload is `Bytes`, whose default encoding re-prepends
+      // the SCALE length prefix; archiving that would store bytes that are not the transaction.
+      payload: new Uint8Array(payloadRaw.toU8a ? payloadRaw.toU8a(true) : payloadRaw),
+    });
+  }
+  return out;
+}
+
 /**
  * Resolves metadata for one block, caching per runtime identity.
  *
