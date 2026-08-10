@@ -793,7 +793,8 @@ invalidate work already done. Both are updated as stages proceed.
 | **B2** | **Block-scoped metadata decoding not implemented.** | Signed/general framings, `SystemTransactionApplied` decode, retiring pinned `CALL_INDICES_BY_PROTOCOL` — i.e. converting three refusals into support | Stage 2, next |
 | **B3** | **The `transactions` primary key cannot hold two rows sharing a hash** — `(net, block_height, block_hash, tx_hash)`. | *Archiving* (as opposed to refusing) a dual-source system transaction, which the indexer stores as two rows | Migration approved (§0); lands Stage 2 at the earliest. Blocks refuse meanwhile |
 | **B4** | **The ledger export is neither upstreamed nor published.** | Closing §5.4's release-artifact objection | Vendored interim in place (`vendor/ledger-v8-syshash`) and no longer blocking day-to-day work. §10 tracks it |
-| **B5** | **Node 0.22.x has no verified call indices.** Its ledger codec is supported; the indices were never observed. | Ingesting any 0.22.x range | Open. Fail-closed today. Resolved by B2 or by observing a 0.22.x chain |
+| **B5** | **Node 0.22.x has no verified call indices.** Its ledger codec is supported; the indices were never observed. | Ingesting any 0.22.x range | Open. Fail-closed today. Resolved by B2 or by observing a 0.22.x chain. Note the reference's own captured metadata for 0.22.0 exists at `/home/eddie/midnight-reference-mainnet/v1.0.0/midnight-indexer/.node/0.22.0/metadata.scale` and would settle it without a running 0.22.x node |
+| **B6** | **No decision on how to decode SCALE metadata in TypeScript.** Decoding events and signed framings needs a full type registry, which is a decode-critical component. `@polkadot/types` is the standard answer and costs **19 scoped packages / 46 MB** against a deliberately lean 17-dependency repo; hand-rolling a V14 registry is the alternative. | All of Stage 2 | **Owner decision needed.** Evidence gathered (§12.3); recommendation is `@polkadot/types` |
 
 ### 12.2 Unknowns
 
@@ -810,3 +811,23 @@ invalidate work already done. Both are updated as stages proceed.
 deduplicates a system transaction present in both sources. It does not — no hash comparison on the
 path, and no unique constraint on `hash` in its schema, so it stores two rows (§3(c)). This is what
 produced B3.
+
+### 12.3 Stage 2 reconnaissance — measured, not yet implemented
+
+Findings from probing the live devnet node and the reference's captured metadata. They narrow
+Stage 2 considerably and are recorded because several *retire* risks the plan currently carries.
+
+| Finding | Consequence |
+|---|---|
+| **`state_getMetadata` accepts a historical block hash** and returns metadata **V14**, 102,234 bytes (devnet `undeployed1`). | §5.3's "must prove the metadata belongs to the block being decoded" is mechanically satisfiable **without** a build-time capture step. Fetch-at-ingest, cached by runtime identity, is viable |
+| **Metadata is byte-identical at genesis and at the finalized tip** on this devnet. | No runtime upgrade to exercise. **U6 and the §7 runtime-boundary row cannot be tested here** — this chain cannot produce the case, same shape of problem as B1 |
+| **Metadata-derived indices exactly match the pinned constants**: `System=0`, `Timestamp=1`/`set=0`, `Midnight=5`/`send_mn_transaction=0`, `MidnightSystem=6`/`send_mn_system_transaction=0`. | Independent confirmation that `CALL_INDICES_BY_PROTOCOL` is correct for 1.0.x, and that metadata can replace it rather than merely cross-check it |
+| **`SystemTransactionApplied(hash_: [u8;32], serializedSystemTransaction: Bytes)`** — the event carries the authoritative hash **and** the payload. | Event-borne system transactions need **no ledger hashing at all**: the hash is in the event. This shrinks the §5.1 fix and makes it independent of the vendored ledger export |
+| **The chain advertises extrinsic version `4` only** (`versions: 0x04`). | The decoder currently accepts format versions 4 and 5; 5 is unreachable on this runtime |
+| **Midnight defines three custom transaction extensions** — `AuthorizeCall`, `CheckCallFilter`, `CheckThrottle` — which `@polkadot/types` does not recognise and warns it is "treating as no-effect". | Sounds alarming, and is **benign for decoding**: all three have `payload=Null`, so they contribute zero bytes to the extrinsic body. Only `CheckMortality` (`Era`) and `CheckNonce` (`Compact<u32>`) carry payload bytes. The unknown-extension warning must **not** be taken as a reason to distrust signed-framing decode — but it must be re-checked per runtime, since a future version could give them a payload |
+
+**Recommendation for B6:** adopt `@polkadot/types`. It decodes this exact metadata correctly today
+(all of the above was produced with it), the custom-extension warning is benign per the row above,
+and the alternative is hand-writing a V14 type registry in the single most decode-critical path in
+the system — where a subtle bug produces a wrong archive rather than a crash. The cost is real and
+should be taken with open eyes: 19 scoped packages and 46 MB against a 17-dependency repo.
