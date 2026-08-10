@@ -61,16 +61,16 @@ export interface DecodedZswapInput {
 }
 
 export interface DecodedUnshieldedOutput {
-  /** The intent segment that created this output. */
-  segmentId: number;
-  /** `Intent.intentHash(segmentId)` (hex) -- matches the indexer's
-   *  `unshielded_utxos.intent_hash`. */
-  intentHash: string;
+  /** The intent segment that created this output; reward claims have no segment. */
+  segmentId: number | undefined;
+  /** `Intent.intentHash(segmentId)` (hex) for intent outputs. Ledger-v9 does not expose the
+   *  reward claim's synthesized output-instruction hash, so reward claims leave this undefined. */
+  intentHash: string | undefined;
   /** Position within the intent's (guaranteed ++ fallible) output list -- matches the indexer's
    *  `unshielded_utxos.output_index` (confirmed empirically: the indexer numbers outputs across
    *  the whole intent, guaranteed section first). */
   outputIndex: number;
-  section: "guaranteed" | "fallible";
+  section: "guaranteed" | "fallible" | "reward";
   /** Owner address (hex) -- `UserAddress`. */
   owner: string;
   /** Raw token type (hex, 32 bytes). */
@@ -190,6 +190,20 @@ export function decodeArchivedTransaction(ledger: any, rawBytes: Uint8Array): De
   const unshieldedOutputs: DecodedUnshieldedOutput[] = [];
   const dustSpends: DecodedDustSpend[] = [];
   const dustRegistrations: DecodedDustRegistration[] = [];
+  // A ClaimRewards transaction is a distinct v9 transaction variant: it has no intents, but
+  // applying it creates one native unshielded UTXO. Treating only tx.intents as the output
+  // source silently loses every genesis/reward allocation during semantic replay.
+  if (tx.rewards !== undefined && tx.rewards !== null) {
+    unshieldedOutputs.push({
+      segmentId: undefined,
+      intentHash: undefined,
+      outputIndex: 0,
+      section: "reward",
+      owner: String(ledger.addressFromKey(tx.rewards.owner)),
+      tokenType: String(ledger.nativeToken().raw),
+      value: BigInt(tx.rewards.value),
+    });
+  }
   if (tx.intents !== undefined && tx.intents !== null) {
     for (const [segmentIdRaw, intent] of tx.intents) {
       const segmentId = Number(segmentIdRaw);

@@ -3,3 +3,13 @@ export function jsonLog(module: string, event: string, fields: Record<string, un
   // without multiline framing rules.
   console.log(JSON.stringify({ ts: new Date().toISOString(), module, event, ...fields }));
 }
+
+/** Removes userinfo, query parameters, and fragments before an endpoint enters operational logs. */
+export function publicEndpoint(value: string): string {
+  const url = new URL(value);
+  url.username = "";
+  url.password = "";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}

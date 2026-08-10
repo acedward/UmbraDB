@@ -34,4 +34,21 @@ describe("rc.4 ledger-v9 replay decoder", () => {
       }),
     ]));
   });
+
+  it("decodes a ledger-v9 genesis reward claim even though it has no intents", async () => {
+    const fixture = JSON.parse(readFileSync(
+      new URL("./fixtures/rc4-genesis-reward.raw.json", import.meta.url),
+      "utf8",
+    )) as { transaction: { raw: string }; expected: { owner: string; tokenType: string; value: string } };
+    const decoded = decodeArchivedTransaction(
+      await loadLedgerV9(),
+      Buffer.from(fixture.transaction.raw, "hex"),
+    );
+    expect(decoded.unshieldedOutputs).toEqual([expect.objectContaining({
+      section: "reward",
+      owner: fixture.expected.owner,
+      tokenType: fixture.expected.tokenType,
+      value: BigInt(fixture.expected.value),
+    })]);
+  });
 });

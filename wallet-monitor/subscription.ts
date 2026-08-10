@@ -62,6 +62,7 @@ interface SubscribeOptions {
   onEvent: (event: UnshieldedSubscriptionEvent) => Promise<void>;
   signal: AbortSignal;
   onReconnect?: (error: unknown, delayMs: number) => void;
+  connectionTimeoutMs?: number;
 }
 
 function delay(ms: number, signal: AbortSignal): Promise<void> {
@@ -85,14 +86,24 @@ async function runConnection(opts: SubscribeOptions, cursor: number | undefined)
     let settled = false;
     let subscribed = false;
     let processing = Promise.resolve();
+    const handshakeTimer = setTimeout(
+      () => finish(new Error("indexer websocket open/ack timeout")),
+      opts.connectionTimeoutMs ?? 10_000,
+    );
     const finish = (error?: unknown): void => {
       if (settled) return;
       settled = true;
+      clearTimeout(handshakeTimer);
       opts.signal.removeEventListener("abort", abort);
       try { socket.close(1000, "monitor stopping"); } catch { /* already closed */ }
       if (error === undefined) resolve(); else reject(error);
     };
-    const abort = (): void => finish();
+    const abort = (): void => {
+      try { socket.close(1000, "monitor stopping"); } catch { /* already closed */ }
+      // Drain the event chain before resolving, so the caller never closes Postgres under an
+      // in-flight co-transactional UTXO/balance/cursor write.
+      void processing.then(() => finish(), finish);
+    };
     opts.signal.addEventListener("abort", abort, { once: true });
 
     socket.addEventListener("open", () => {
@@ -107,6 +118,7 @@ async function runConnection(opts: SubscribeOptions, cursor: number | undefined)
         return;
       }
       if (message.type === "connection_ack" && !subscribed) {
+        clearTimeout(handshakeTimer);
         subscribed = true;
         socket.send(JSON.stringify({
           id: "watch",
@@ -128,7 +140,7 @@ async function runConnection(opts: SubscribeOptions, cursor: number | undefined)
           return;
         }
         const event = payload.data?.unshieldedTransactions;
-        if (event !== undefined) {
+        if (event !== undefined && !opts.signal.aborted) {
           processing = processing.then(() => opts.onEvent(event));
           void processing.catch(finish);
         }

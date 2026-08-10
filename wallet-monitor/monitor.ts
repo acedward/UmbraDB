@@ -2,7 +2,7 @@ import { createClient } from "../src/postgres/client.js";
 import { pathToFileURL } from "node:url";
 import { watchedAddressesFromEnv } from "./address.js";
 import { bootstrapEvmRpcSchema } from "./bootstrap.js";
-import { jsonLog } from "./log.js";
+import { jsonLog, publicEndpoint } from "./log.js";
 import { WalletMonitorStore } from "./store.js";
 import { subscribeUnshieldedTransactions } from "./subscription.js";
 
@@ -25,7 +25,7 @@ export async function runWalletMonitor(signal: AbortSignal): Promise<void> {
   try {
     await bootstrapEvmRpcSchema(sql, schema);
     const store = new WalletMonitorStore(sql, schema);
-    jsonLog("wallet-monitor", "start", { schema, indexerWs, addresses });
+    jsonLog("wallet-monitor", "start", { schema, indexerWs: publicEndpoint(indexerWs), addresses });
     await Promise.all(addresses.map(async (address) => {
       await subscribeUnshieldedTransactions({
         url: indexerWs,

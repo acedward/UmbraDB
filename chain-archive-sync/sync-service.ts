@@ -110,6 +110,8 @@ export class ChainArchiveSyncService {
   private readonly node: NodeRpcClient;
   private readonly indexer: IndexerClient;
   private readonly net: string;
+  private readonly sql: UmbraDBSql;
+  private readonly schema: string;
   /** Last-seen D-parameter, in-memory, this instance's lifetime only -- used to dedupe
    *  `bridge_observations` inserts (§"stub/initial pass") so a healthy chain with an unchanging
    *  D-parameter doesn't get one near-duplicate row per block. Deliberately not persisted: a
@@ -120,7 +122,9 @@ export class ChainArchiveSyncService {
   private lastDParameterJson: string | undefined;
 
   constructor(opts: ChainArchiveSyncServiceOptions) {
-    this.store = new PgChainArchiveStore(opts.sql, opts.schema ?? "chain_archive");
+    this.sql = opts.sql;
+    this.schema = opts.schema ?? "chain_archive";
+    this.store = new PgChainArchiveStore(opts.sql, this.schema);
     this.node = new NodeRpcClient(opts.node);
     this.indexer = new IndexerClient(opts.indexer);
     this.net = opts.net;
@@ -169,6 +173,16 @@ export class ChainArchiveSyncService {
     const synced = await this.getSyncedHeight();
     const startHeight = synced === undefined ? 0 : synced + 1;
     if (startHeight > targetTipHeight) {
+      // `updated_at` doubles as the dashboard liveness heartbeat. A same-height call to the
+      // store's monotonic setWatermark is intentionally a no-op, so refresh it explicitly only
+      // after both node and indexer probes above succeeded.
+      if (synced !== undefined) {
+        await this.sql`
+          UPDATE ${this.sql(this.schema)}.watermarks
+          SET updated_at = now()
+          WHERE kind = 'chain_archive' AND key = ${this.watermarkKey()}
+        `;
+      }
       return { ingestedBlocks: 0, fromHeight: undefined, toHeight: undefined, targetTipHeight };
     }
     const endHeight = Math.min(targetTipHeight, startHeight + maxBlocks - 1);

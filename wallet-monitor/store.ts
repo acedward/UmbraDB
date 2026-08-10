@@ -40,14 +40,18 @@ export class WalletMonitorStore {
     const rows = await tx<IdRow[]>`
       INSERT INTO ${tx(this.schema)}.address_map (evm_addr, kind, mn_address, first_seen_block)
       VALUES (${evmAddressBytes(mnAddress)}, 'midnight', ${mnAddress}, ${blockHeight})
-      ON CONFLICT (mn_address) DO UPDATE SET
+      ON CONFLICT (evm_addr) DO UPDATE SET
+        mn_address = EXCLUDED.mn_address,
         first_seen_block = LEAST(
           COALESCE(${tx(this.schema)}.address_map.first_seen_block, EXCLUDED.first_seen_block),
           EXCLUDED.first_seen_block
         )
+      WHERE ${tx(this.schema)}.address_map.mn_address IS NULL
+         OR ${tx(this.schema)}.address_map.mn_address = EXCLUDED.mn_address
       RETURNING id
     `;
-    return rows[0]!.id;
+    if (rows[0] === undefined) throw new Error(`EVM address is already mapped to a different Midnight address: ${mnAddress}`);
+    return rows[0].id;
   }
 
   private async advanceCursor(tx: MonitorTx, address: string, transactionId: number): Promise<void> {
@@ -165,6 +169,19 @@ export class WalletMonitorStore {
             -- A sender subscription only exposes that sender's change output, while the
             -- receiver subscription exposes the actual recipient. Keep whichever candidate
             -- differs from the merged sender regardless of delivery order.
+            WHEN ${tx(this.schema)}.tx_index.to_id IS NOT NULL
+              AND ${tx(this.schema)}.tx_index.to_id IS DISTINCT FROM
+                COALESCE(EXCLUDED.from_id, ${tx(this.schema)}.tx_index.from_id)
+              AND EXCLUDED.to_id IS NOT NULL
+              AND EXCLUDED.to_id IS DISTINCT FROM
+                COALESCE(EXCLUDED.from_id, ${tx(this.schema)}.tx_index.from_id)
+              THEN CASE WHEN
+                (SELECT evm_addr FROM ${tx(this.schema)}.address_map
+                 WHERE id = ${tx(this.schema)}.tx_index.to_id)
+                <=
+                (SELECT evm_addr FROM ${tx(this.schema)}.address_map
+                 WHERE id = EXCLUDED.to_id)
+                THEN ${tx(this.schema)}.tx_index.to_id ELSE EXCLUDED.to_id END
             WHEN ${tx(this.schema)}.tx_index.to_id IS NOT NULL
               AND ${tx(this.schema)}.tx_index.to_id IS DISTINCT FROM
                 COALESCE(EXCLUDED.from_id, ${tx(this.schema)}.tx_index.from_id)
