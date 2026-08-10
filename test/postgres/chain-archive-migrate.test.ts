@@ -37,7 +37,9 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
       const firstRun = await sql<{ name: string }[]>`
         select name from ${sql(schema)}._migrations order by name
       `;
-      expect(firstRun.map((r) => r.name)).toEqual(["000_schema", "001_chain_archive_core"]);
+      expect(firstRun.map((r) => r.name)).toEqual([
+        "000_schema", "001_chain_archive_core", "002_transaction_position_key",
+      ]);
 
       // --- idempotent re-run: applies zero additional migrations ---
       await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
@@ -381,6 +383,67 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
           (vk_hash, net, scope, tag, first_seen_height)
           values (${vkHash}, ${net}, 'protocol', 'entry_point_a', 100)`,
       ).rejects.toMatchObject({ code: "23505" }); // unique_violation
+    } finally {
+      await sql.end({ timeout: 5 });
+    }
+  }, 60_000);
+
+  /**
+   * `002_transaction_position_key`: one block must be able to hold TWO rows carrying the same
+   * transaction hash.
+   *
+   * The reference indexer does not deduplicate a system transaction that arrives both as an
+   * extrinsic and as a `SystemTransactionApplied` event -- it prepends the event-borne list and
+   * extends with the extrinsic-derived one, and its own schema has no unique constraint on `hash`.
+   * Byte-parity therefore requires this archive to store both copies. Under the original key it
+   * could not, and `ON CONFLICT DO NOTHING` meant the second was dropped in SILENCE.
+   */
+  it("002: one block holds two rows with the same tx hash, keyed by position", async () => {
+    const schema = "chain_archive_dup_hash_test";
+    const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    try {
+      await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
+
+      const net = "dup_hash";
+      const blockHash = Buffer.alloc(32, 0x21);
+      const txHash = Buffer.alloc(32, 0x22);
+      const blobHash = Buffer.alloc(32, 0x23);
+      const headerBlob = Buffer.alloc(32, 0x24);
+      const bodyBlob = Buffer.alloc(32, 0x25);
+
+      for (const [h, role] of [[blobHash, "tx_raw"], [headerBlob, "block_header"], [bodyBlob, "block_body"]] as const) {
+        await sql`insert into ${sql(schema)}.chain_blobs (hash, data) values (${h}, ${Buffer.from([1])})`;
+        await sql`insert into ${sql(schema)}.chain_blob_roles (blob_hash, role) values (${h}, ${role})`;
+      }
+      await sql`
+        insert into ${sql(schema)}.blocks
+          (net, height, block_hash, parent_hash, state_root, extrinsics_root,
+           header_blob_hash, body_blob_hash, is_canonical, status, finalized)
+        values (${net}, 0, ${blockHash}, ${Buffer.alloc(32)}, ${Buffer.alloc(32, 0x26)},
+                ${Buffer.alloc(32, 0x27)}, ${headerBlob}, ${bodyBlob}, true, 'canonical', true)
+      `;
+
+      const insertTx = (position: number) => sql`
+        insert into ${sql(schema)}.transactions
+          (net, tx_hash, block_height, block_hash, position, kind, protocol_version, raw_blob_hash)
+        values (${net}, ${txHash}, 0, ${blockHash}, ${position}, 'system', 1000000, ${blobHash})
+      `;
+
+      // The dual-source case: same hash, different positions. Event-borne copy first, as the
+      // reference orders them.
+      await insertTx(0);
+      await insertTx(1);
+
+      const rows = await sql<{ position: number }[]>`
+        select position from ${sql(schema)}.transactions
+        where net = ${net} order by position
+      `;
+      expect(rows.map((r) => r.position)).toEqual([0, 1]);
+
+      // The uniqueness that MUST survive: position is still unique within a block, now as the
+      // primary key rather than a separate constraint. Losing it would let ingest write two
+      // different transactions at the same position, which silently reorders the archive.
+      await expect(insertTx(0)).rejects.toMatchObject({ code: "23505" });
     } finally {
       await sql.end({ timeout: 5 });
     }
