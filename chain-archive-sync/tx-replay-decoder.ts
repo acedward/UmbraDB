@@ -63,9 +63,9 @@ export interface DecodedZswapInput {
 export interface DecodedUnshieldedOutput {
   /** The intent segment that created this output; reward claims have no segment. */
   segmentId: number | undefined;
-  /** `Intent.intentHash(segmentId)` (hex) for intent outputs. Ledger-v9 does not expose the
-   *  reward claim's synthesized output-instruction hash, so reward claims leave this undefined. */
-  intentHash: string | undefined;
+  /** `Intent.intentHash(segmentId)` (hex) for intent outputs. Reward claims expose the same
+   *  synthesized output-instruction hash through their `01 || hash` transaction identifier. */
+  intentHash: string;
   /** Position within the intent's (guaranteed ++ fallible) output list -- matches the indexer's
    *  `unshielded_utxos.output_index` (confirmed empirically: the indexer numbers outputs across
    *  the whole intent, guaranteed section first). */
@@ -194,9 +194,14 @@ export function decodeArchivedTransaction(ledger: any, rawBytes: Uint8Array): De
   // applying it creates one native unshielded UTXO. Treating only tx.intents as the output
   // source silently loses every genesis/reward allocation during semantic replay.
   if (tx.rewards !== undefined && tx.rewards !== null) {
+    const rewardIdentifier = Array.from(tx.identifiers(), String)
+      .find((identifier) => /^01[0-9a-f]{64}$/i.test(identifier));
+    if (rewardIdentifier === undefined) {
+      throw new Error("ClaimRewards transaction did not expose its 01-prefixed output identifier");
+    }
     unshieldedOutputs.push({
       segmentId: undefined,
-      intentHash: undefined,
+      intentHash: rewardIdentifier.slice(2),
       outputIndex: 0,
       section: "reward",
       owner: String(ledger.addressFromKey(tx.rewards.owner)),

@@ -45,7 +45,7 @@ describe("IndexerClient -- Fix 3", () => {
       caught = err;
     }
     expect(caught).toBeInstanceOf(IndexerClientParseError);
-    expect((caught as IndexerClientParseError).url).toBe("http://fake-indexer.example");
+    expect((caught as IndexerClientParseError).url).toBe("http://fake-indexer.example/");
   });
 
   it("a well-formed response still round-trips correctly (no false positives from the new error handling)", async () => {
@@ -53,5 +53,17 @@ describe("IndexerClient -- Fix 3", () => {
       new Response(JSON.stringify({ data: { block: { height: 123 } } }), { status: 200 });
     const client = new IndexerClient({ url: "http://fake-indexer", fetchImpl: wellFormedFetch });
     await expect(client.getTipHeight()).resolves.toBe(123);
+  });
+
+  it("does not expose endpoint credentials or tokens through failure messages or typed fields", async () => {
+    const client = new IndexerClient({
+      url: "https://alice:secret@indexer.example/graphql?apiKey=token#private",
+      fetchImpl: async () => new Response("not json", { status: 200 }),
+    });
+    const error = await client.getTipHeight().catch((caught: unknown) => caught) as IndexerClientParseError;
+    expect(error.message).toBe("response body from https://indexer.example/graphql was not valid JSON");
+    expect(error.url).toBe("https://indexer.example/graphql");
+    expect(JSON.stringify(error)).not.toContain("secret");
+    expect(JSON.stringify(error)).not.toContain("token");
   });
 });

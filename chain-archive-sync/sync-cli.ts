@@ -1,7 +1,7 @@
 /** Resumable chain archive CLI and reusable loop for the combined monitor entry point. */
 import { pathToFileURL } from "node:url";
 import { createClient } from "../src/postgres/client.js";
-import { jsonLog, publicEndpoint } from "../wallet-monitor/log.js";
+import { jsonLog, publicEndpoint, publicErrorMessage } from "../wallet-monitor/log.js";
 import { bootstrapChainArchiveSchema } from "./bootstrap.js";
 import { ChainArchiveSyncService } from "./sync-service.js";
 
@@ -47,7 +47,10 @@ export async function runArchiveSync(signal: AbortSignal): Promise<void> {
         if (result.ingestedBlocks === 0) await delay(10_000, signal);
       } catch (error) {
         if (signal.aborted) break;
-        jsonLog("archive-sync", "error", { message: (error as Error).message, retryMs: 15_000 });
+        jsonLog("archive-sync", "error", {
+          message: publicErrorMessage(error, [nodeUrl, indexerUrl]),
+          retryMs: 15_000,
+        });
         await delay(15_000, signal);
       }
     }

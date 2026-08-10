@@ -39,13 +39,16 @@ describe("rc.4 ledger-v9 replay decoder", () => {
     const fixture = JSON.parse(readFileSync(
       new URL("./fixtures/rc4-genesis-reward.raw.json", import.meta.url),
       "utf8",
-    )) as { transaction: { raw: string }; expected: { owner: string; tokenType: string; value: string } };
+    )) as { transaction: { raw: string }; expected: {
+      intentHash: string; owner: string; tokenType: string; value: string;
+    } };
     const decoded = decodeArchivedTransaction(
       await loadLedgerV9(),
       Buffer.from(fixture.transaction.raw, "hex"),
     );
     expect(decoded.unshieldedOutputs).toEqual([expect.objectContaining({
       section: "reward",
+      intentHash: fixture.expected.intentHash,
       owner: fixture.expected.owner,
       tokenType: fixture.expected.tokenType,
       value: BigInt(fixture.expected.value),

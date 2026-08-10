@@ -51,7 +51,7 @@ describe("NodeRpcClient -- Fix 3", () => {
     }
     expect(caught).toBeInstanceOf(NodeRpcParseError);
     const parseErr = caught as NodeRpcParseError;
-    expect(parseErr.url).toBe("http://fake-node.example");
+    expect(parseErr.url).toBe("http://fake-node.example/");
     expect(parseErr.method).toBe("chain_getFinalizedHead");
   });
 
@@ -85,5 +85,19 @@ describe("NodeRpcClient -- Fix 3", () => {
       new Response(JSON.stringify({ result: { parentHash: "0x00", number: "0x2a", stateRoot: "0x00", extrinsicsRoot: "0x00", digest: { logs: [] } } }), { status: 200 });
     const client = new NodeRpcClient({ url: "http://fake-node", fetchImpl: wellFormedFetch });
     await expect(client.getHeightOf("0xdeadbeef")).resolves.toBe(42);
+  });
+
+  it("does not expose endpoint credentials or tokens through failure messages or typed fields", async () => {
+    const client = new NodeRpcClient({
+      url: "https://alice:secret@node.example/rpc?apiKey=token#private",
+      fetchImpl: async () => new Response("not json", { status: 200 }),
+    });
+    const error = await client.getFinalizedHead().catch((caught: unknown) => caught) as NodeRpcParseError;
+    expect(error.message).toBe(
+      "chain_getFinalizedHead: response body from https://node.example/rpc was not valid JSON",
+    );
+    expect(error.url).toBe("https://node.example/rpc");
+    expect(JSON.stringify(error)).not.toContain("secret");
+    expect(JSON.stringify(error)).not.toContain("token");
   });
 });
