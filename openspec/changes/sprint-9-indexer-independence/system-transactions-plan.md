@@ -31,6 +31,7 @@ must not enter this PR.
 | What is the final shape of the work? *(owner, 2026-08-08)* | **Node as an *optional* source, transparent in its results** — not a forced cutover. Both sources stay first-class while the indexer exists. Executed in the stages of §11. |
 | When is "unsupported + refuse" an acceptable terminal status? *(owner, 2026-08-08)* | **Only where the indexer itself would fail.** The indexer's mechanism is uniform metadata-driven decoding with no special cases, so almost nothing qualifies. For populations with no producible live fixture, the fallback is **mechanism-equivalence**: implement the indexer's mechanism and prove it with synthesized unit fixtures — the missing specimen changes the evidence type, not the support status (resolves §8a.2). |
 | Which ledger artifact ships? *(owner, 2026-08-08)* | **Our own verified 8.1.0 build, vendored** with provenance: ledger commit `1a561ac`, the §8 recipe, SHA-256 checksums, and a CI rebuild-and-compare job. `MIDNIGHT_LEDGER_WASM` demotes to a test-only escape hatch. Swapped for the upstream package when §10 completes. Resolves §5.4's distribution objection. |
+| How is a dual-source system transaction archived? *(owner, 2026-08-08)* | **Option (a) of §3(c): match the indexer — archive both rows.** The PK-widening migration (add `position` to `chain_archive.transactions`' key) is hereby **approved** as §1's reserved safety migration; it lands at Stage 2 the earliest, bundled with the metadata-decoding work that first makes dual-source blocks archivable. Refuse-on-collision remains the Stage 1 interim. |
 
 The remaining owner coordination choices are narrower still, now that the ledger fork has a
 publication destination (`git@github.com:acedward/midnight-ledger.git`, both branches pushed —
@@ -727,9 +728,9 @@ done-condition, and earlier stages are mergeable without later ones.
 | **4 — Apply-rule parity (replay)** | Ledger state advanced from genesis via WASM `LedgerState.apply`; row-versus-refusal parity for deserialize- and apply-failures | The last two §7 refusal-parity rows close | None — decided in §0 (parity ⇒ replay ⇒ genesis-start) |
 | **5 — Optional-source GA** | Node mode leaves experimental; mode + coverage visibly reported in results; the source/version transparency record (may use §1's reserved safety-migration slot, alongside the §3(c) PK widening) | An operator can choose either source and see exactly what their archive covers | One: the shape of the transparency record, when reached |
 
-**The PK-widening migration** (§3(c)) is the single currently-known schema change; it belongs to
-whichever stage first needs to *archive* (not merely refuse) a dual-source block — Stage 2 at the
-earliest, bundled with the §1 scope-decision note it already has.
+**The PK-widening migration** (§3(c)) is the single currently-known schema change, and is now
+**approved by the owner** (§0) as §1's reserved safety migration. It belongs to whichever stage
+first needs to *archive* (not merely refuse) a dual-source block — Stage 2 at the earliest.
 
 ### 11.1 Execution prerequisites (what an agent needs; nothing else)
 
@@ -740,6 +741,18 @@ earliest, bundled with the §1 scope-decision note it already has.
   nothing.
 - **Toolchains:** rustc 1.93.0; rustc ≥ 1.95 only for `ledger-8` work (§10); Node 20+, `tsx`, `jq`.
 - **Access:** push to `acedward/UmbraDB` and `acedward/midnight-ledger`; pull for midnight images.
-- **Open decisions: none for Stages 0–3.** Stage 4: none. Stage 5: one, deferrable until reached.
-  Owner-only actions that remain are outside the stages: opening the upstream ledger PR (§10.2.3)
-  and making CI jobs *required* in repo settings.
+- **Open decisions: none for Stages 0–4.** Stage 5: one, deferrable until reached.
+
+### 11.2 The owner's complete action list
+
+Everything the owner personally must do, in one place. **Right now: nothing.** Every decision is
+made; Stages 0–4 run without owner input. The three future actions, each with its trigger:
+
+| When | Action | Effort |
+|---|---|---|
+| Stage 3 CI lands | Flip the new parity/refusal jobs to **required** in the GitHub repo settings of `acedward/UmbraDB` (agents cannot change branch-protection rules) | ~2 minutes |
+| §10 step 2 passes (hashes recomputed on an 8.2.0-rc.1 build) | Open — or say the word and the PR text is drafted from §10.2.3 — the upstream PR from `acedward/midnight-ledger` `feat/expose-system-transaction-hash-ledger8` against `midnightntwrk/midnight-ledger` `ledger-8`. Kept as an owner action because it is outward-facing on the upstream org | ~10 minutes with the drafted text |
+| Stage 5 is reached | Approve the proposed shape of the source/coverage transparency record (a concrete proposal will be presented then; no thinking required before that) | One yes/no |
+
+Nothing else. Reviews of stage deliverables are welcome but are not gates the plan waits on —
+each stage's done-condition is checked by its own required tests.
