@@ -15,6 +15,7 @@
     "test",
     "bench",
     "chain-archive-sync",
+    "wallet-monitor",
     "src/**/*.test.ts"
   ]
 }

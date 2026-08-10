@@ -100,7 +100,7 @@ function fakeNodeFetch(blocks: FakeChainBlock[], finalizedHeight: number, badHea
   };
 }
 
-function fakeIndexerFetch(blocks: FakeChainBlock[]): typeof fetch {
+function fakeIndexerFetch(blocks: FakeChainBlock[], tipHeight?: number): typeof fetch {
   return async (_url, init) => {
     const body = JSON.parse((init as RequestInit).body as string) as { variables?: { height?: number } };
     const height = body.variables?.height;
@@ -116,7 +116,7 @@ function fakeIndexerFetch(blocks: FakeChainBlock[]): typeof fetch {
       };
       return new Response(JSON.stringify({ data }), { status: 200 });
     }
-    const maxHeight = Math.max(...blocks.map((b) => b.height));
+    const maxHeight = tipHeight ?? Math.max(...blocks.map((b) => b.height));
     return new Response(JSON.stringify({ data: { block: { height: maxHeight } } }), { status: 200 });
   };
 }
@@ -138,17 +138,33 @@ describe("ChainArchiveSyncService retry safety (sprint-fix round Fixes 1-3)", ()
     await sql?.end({ timeout: 5 });
   });
 
-  async function newService(blocks: FakeChainBlock[], finalizedHeight: number, opts?: { badHeaderNumberForHash?: Hex32 }) {
+  async function newService(
+    blocks: FakeChainBlock[], finalizedHeight: number,
+    opts?: { badHeaderNumberForHash?: Hex32; indexerTipHeight?: number },
+  ) {
     const schema = `retry_test_${schemaCounter++}`;
     sql = createClient({ connectionString: container.getConnectionUri(), schema });
     await bootstrapChainArchiveSchema(sql, schema);
     const service = new ChainArchiveSyncService({
       sql, net: NET, schema,
       node: { url: "http://fake-node", fetchImpl: fakeNodeFetch(blocks, finalizedHeight, opts?.badHeaderNumberForHash) },
-      indexer: { url: "http://fake-indexer", fetchImpl: fakeIndexerFetch(blocks) },
+      indexer: { url: "http://fake-indexer", fetchImpl: fakeIndexerFetch(blocks, opts?.indexerTipHeight) },
     });
     return { service, schema };
   }
+
+  it("bounds the target at the indexer tip when the finalized node is ahead, without probing an unavailable block", async () => {
+    const blocks = fakeChain([
+      { height: 0, dParamSeed: 1 },
+      { height: 1, dParamSeed: 1 },
+      { height: 2, dParamSeed: 1 },
+    ]);
+    const { service } = await newService(blocks, 2, { indexerTipHeight: 1 });
+
+    const result = await service.syncOnce({ maxBlocks: 10 });
+    expect(result).toMatchObject({ ingestedBlocks: 2, fromHeight: 0, toHeight: 1, targetTipHeight: 1 });
+    expect(await service.getSyncedHeight()).toBe(1);
+  }, 60_000);
 
   it("Fix 1: retrying after a partial legacy-style write (block row already present, transactions/bridge_observations missing) succeeds instead of duplicate-key-erroring", async () => {
     const blocks = fakeChain([{ height: 0, dParamSeed: 1 }]);

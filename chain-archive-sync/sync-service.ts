@@ -142,8 +142,9 @@ export class ChainArchiveSyncService {
 
   /**
    * Ingests one contiguous batch of blocks, starting right after the last watermark (or from
-   * genesis on first run), up to `min(finalized head, watermark + maxBlocks)`. Only ever
-   * ingests up to the FINALIZED head (`chain_getFinalizedHead`) -- deliberately conservative for
+   * genesis on first run), up to `min(finalized head, indexer tip, watermark + maxBlocks)`. Only
+   * ever ingests up to the FINALIZED head (`chain_getFinalizedHead`) and the indexer's current
+   * tip -- deliberately conservative for
    * this first pass: every block this service archives is marked `is_canonical: true,
    * finalized: true` (GRANDPA-finalized blocks are canonical by construction, matching
    * `blocks`'s own `CHECK (NOT finalized OR is_canonical)` invariant), so this service does not
@@ -155,7 +156,15 @@ export class ChainArchiveSyncService {
   async syncOnce(opts?: { maxBlocks?: number }): Promise<SyncOnceResult> {
     const maxBlocks = opts?.maxBlocks ?? 100;
     const finalizedHash = await this.node.getFinalizedHead();
-    const targetTipHeight = await this.node.getHeightOf(finalizedHash);
+    const [nodeFinalizedHeight, indexerTipHeight] = await Promise.all([
+      this.node.getHeightOf(finalizedHash),
+      this.indexer.getTipHeight(),
+    ]);
+    // The indexer supplies transaction metadata/raw payloads for every block. Bounding the batch
+    // here prevents the normal "node is ahead of indexer" state from entering ingestOneBlock,
+    // throwing, and forcing the CLI through a 15-second error retry cycle. The lower tip is the
+    // highest height both independent sources can currently serve.
+    const targetTipHeight = Math.min(nodeFinalizedHeight, indexerTipHeight);
 
     const synced = await this.getSyncedHeight();
     const startHeight = synced === undefined ? 0 : synced + 1;
