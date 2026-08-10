@@ -48,10 +48,13 @@ jobs:
       # The vendored package must be what actually resolves. If a future change reintroduces a
       # published version, system transactions would stop being archivable with no other signal
       # than distant test failures.
+      # Read the manifest through the filesystem, not `require(...)`: the package's `exports` map
+      # intentionally exposes only the module entries, so requesting './package.json' through the
+      # specifier fails with ERR_PACKAGE_PATH_NOT_EXPORTED.
       - name: Verify the vendored build is what resolves
         run: |
           set -euo pipefail
-          version="$(node -p "require('@midnight-ntwrk/ledger-v8/package.json').version")"
+          version="$(node -e "console.log(JSON.parse(require('fs').readFileSync('node_modules/@midnight-ntwrk/ledger-v8/package.json','utf8')).version)")"
           echo "resolved ledger version: $version"
           test "$version" = "8.1.0-syshash.1"
 
