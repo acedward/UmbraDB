@@ -119,8 +119,8 @@
       "source_location": "L28",
       "_origin": "ast",
       "id": "bench_environment_benchenv",
-      "community": 205,
-      "community_name": "harness.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "benchenv"
     },
     {
@@ -416,8 +416,8 @@
       "source_location": "L17",
       "_origin": "ast",
       "id": "bench_workloads_checkpoint_store_countchunks",
-      "community": 116,
-      "community_name": "postgres/checkpoint-store.ts",
+      "community": 205,
+      "community_name": "harness.ts",
       "norm_label": "countchunks()"
     },
     {
@@ -427,8 +427,8 @@
       "source_location": "L32",
       "_origin": "ast",
       "id": "bench_workloads_checkpoint_store_runcheckpointworkloads",
-      "community": 116,
-      "community_name": "postgres/checkpoint-store.ts",
+      "community": 205,
+      "community_name": "harness.ts",
       "norm_label": "runcheckpointworkloads()"
     },
     {
@@ -438,8 +438,8 @@
       "source_location": "L114",
       "_origin": "ast",
       "id": "bench_workloads_checkpoint_store_measurededup",
-      "community": 116,
-      "community_name": "postgres/checkpoint-store.ts",
+      "community": 205,
+      "community_name": "harness.ts",
       "norm_label": "measurededup()"
     },
     {
@@ -548,8 +548,8 @@
       "source_location": "L38",
       "_origin": "ast",
       "id": "bench_workloads_lease_contendonce",
-      "community": 194,
-      "community_name": "Test wallets",
+      "community": 205,
+      "community_name": "harness.ts",
       "norm_label": "contendonce()"
     },
     {
@@ -988,8 +988,8 @@
       "source_location": "L45",
       "_origin": "ast",
       "id": "chain_archive_sync_indexer_client_indexerclientoptions",
-      "community": 98,
-      "community_name": "sync-service.ts",
+      "community": 120,
+      "community_name": "chain-archive-rollover.ts",
       "norm_label": "indexerclientoptions"
     },
     {
@@ -1164,8 +1164,8 @@
       "source_location": "L63",
       "_origin": "ast",
       "id": "chain_archive_sync_node_rpc_client_noderpcclientoptions",
-      "community": 98,
-      "community_name": "sync-service.ts",
+      "community": 120,
+      "community_name": "chain-archive-rollover.ts",
       "norm_label": "noderpcclientoptions"
     },
     {
@@ -1175,8 +1175,8 @@
       "source_location": "L77",
       "_origin": "ast",
       "id": "chain_archive_sync_node_rpc_client_noderpcclient",
-      "community": 120,
-      "community_name": "chain-archive-rollover.ts",
+      "community": 183,
+      "community_name": "watermarks.test.ts",
       "norm_label": "noderpcclient"
     },
     {
@@ -1186,8 +1186,8 @@
       "source_location": "L82",
       "_origin": "ast",
       "id": "chain_archive_sync_node_rpc_client_noderpcclient_constructor",
-      "community": 120,
-      "community_name": "chain-archive-rollover.ts",
+      "community": 183,
+      "community_name": "watermarks.test.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -1197,8 +1197,8 @@
       "source_location": "L88",
       "_origin": "ast",
       "id": "chain_archive_sync_node_rpc_client_noderpcclient_call",
-      "community": 120,
-      "community_name": "chain-archive-rollover.ts",
+      "community": 183,
+      "community_name": "watermarks.test.ts",
       "norm_label": ".call()"
     },
     {
@@ -1208,8 +1208,8 @@
       "source_location": "L119",
       "_origin": "ast",
       "id": "chain_archive_sync_node_rpc_client_noderpcclient_getblockhash",
-      "community": 120,
-      "community_name": "chain-archive-rollover.ts",
+      "community": 183,
+      "community_name": "watermarks.test.ts",
       "norm_label": ".getblockhash()"
     },
     {
@@ -1219,8 +1219,8 @@
       "source_location": "L123",
       "_origin": "ast",
       "id": "chain_archive_sync_node_rpc_client_noderpcclient_getheader",
-      "community": 120,
-      "community_name": "chain-archive-rollover.ts",
+      "community": 183,
+      "community_name": "watermarks.test.ts",
       "norm_label": ".getheader()"
     },
     {
@@ -1230,8 +1230,8 @@
       "source_location": "L127",
       "_origin": "ast",
       "id": "chain_archive_sync_node_rpc_client_noderpcclient_getblock",
-      "community": 120,
-      "community_name": "chain-archive-rollover.ts",
+      "community": 183,
+      "community_name": "watermarks.test.ts",
       "norm_label": ".getblock()"
     },
     {
@@ -1241,8 +1241,8 @@
       "source_location": "L131",
       "_origin": "ast",
       "id": "chain_archive_sync_node_rpc_client_noderpcclient_getfinalizedhead",
-      "community": 120,
-      "community_name": "chain-archive-rollover.ts",
+      "community": 183,
+      "community_name": "watermarks.test.ts",
       "norm_label": ".getfinalizedhead()"
     },
     {
@@ -1252,8 +1252,8 @@
       "source_location": "L142",
       "_origin": "ast",
       "id": "chain_archive_sync_node_rpc_client_noderpcclient_storageat",
-      "community": 120,
-      "community_name": "chain-archive-rollover.ts",
+      "community": 183,
+      "community_name": "watermarks.test.ts",
       "norm_label": ".storageat()"
     },
     {
@@ -1263,8 +1263,8 @@
       "source_location": "L154",
       "_origin": "ast",
       "id": "chain_archive_sync_node_rpc_client_noderpcclient_statecall",
-      "community": 120,
-      "community_name": "chain-archive-rollover.ts",
+      "community": 183,
+      "community_name": "watermarks.test.ts",
       "norm_label": ".statecall()"
     },
     {
@@ -1274,8 +1274,8 @@
       "source_location": "L167",
       "_origin": "ast",
       "id": "chain_archive_sync_node_rpc_client_noderpcclient_getheightof",
-      "community": 120,
-      "community_name": "chain-archive-rollover.ts",
+      "community": 183,
+      "community_name": "watermarks.test.ts",
       "norm_label": ".getheightof()"
     },
     {
@@ -1293,7 +1293,7 @@
       "label": "MAX_BLOCKS",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-cli.ts",
-      "source_location": "L48",
+      "source_location": "L47",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_cli_max_blocks",
       "community": 112,
@@ -1304,7 +1304,7 @@
       "label": "sql",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-cli.ts",
-      "source_location": "L50",
+      "source_location": "L69",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_cli_sql",
       "community": 112,
@@ -1315,7 +1315,7 @@
       "label": "service",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-cli.ts",
-      "source_location": "L52",
+      "source_location": "L71",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_cli_service",
       "community": 112,
@@ -1326,7 +1326,7 @@
       "label": "requestStop()",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-cli.ts",
-      "source_location": "L65",
+      "source_location": "L84",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_cli_requeststop",
       "community": 112,
@@ -1340,8 +1340,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service",
-      "community": 98,
-      "community_name": "sync-service.ts",
+      "community": 120,
+      "community_name": "chain-archive-rollover.ts",
       "norm_label": "sync-service.ts"
     },
     {
@@ -1351,8 +1351,8 @@
       "source_location": "L71",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_stablestringify",
-      "community": 98,
-      "community_name": "sync-service.ts",
+      "community": 120,
+      "community_name": "chain-archive-rollover.ts",
       "norm_label": "stablestringify()"
     },
     {
@@ -1362,8 +1362,8 @@
       "source_location": "L80",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_headerbytes",
-      "community": 98,
-      "community_name": "sync-service.ts",
+      "community": 120,
+      "community_name": "chain-archive-rollover.ts",
       "norm_label": "headerbytes()"
     },
     {
@@ -1373,8 +1373,8 @@
       "source_location": "L84",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_extrinsicsbytes",
-      "community": 98,
-      "community_name": "sync-service.ts",
+      "community": 120,
+      "community_name": "chain-archive-rollover.ts",
       "norm_label": "extrinsicsbytes()"
     },
     {
@@ -1389,32 +1389,43 @@
       "norm_label": "hexnoprefix()"
     },
     {
+      "label": "assertNoDuplicateTransactionKeys()",
+      "file_type": "code",
+      "source_file": "chain-archive-sync/sync-service.ts",
+      "source_location": "L102",
+      "_origin": "ast",
+      "id": "chain_archive_sync_sync_service_assertnoduplicatetransactionkeys",
+      "community": 120,
+      "community_name": "chain-archive-rollover.ts",
+      "norm_label": "assertnoduplicatetransactionkeys()"
+    },
+    {
       "label": "ChainArchiveSyncServiceOptions",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L94",
+      "source_location": "L123",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_chainarchivesyncserviceoptions",
-      "community": 98,
-      "community_name": "sync-service.ts",
+      "community": 120,
+      "community_name": "chain-archive-rollover.ts",
       "norm_label": "chainarchivesyncserviceoptions"
     },
     {
       "label": "SyncOnceResult",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L138",
+      "source_location": "L167",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_synconceresult",
-      "community": 98,
-      "community_name": "sync-service.ts",
+      "community": 120,
+      "community_name": "chain-archive-rollover.ts",
       "norm_label": "synconceresult"
     },
     {
       "label": "ChainArchiveSyncService",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L153",
+      "source_location": "L182",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_chainarchivesyncservice",
       "community": 137,
@@ -1425,7 +1436,7 @@
       "label": ".constructor()",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L190",
+      "source_location": "L219",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_chainarchivesyncservice_constructor",
       "community": 137,
@@ -1436,7 +1447,7 @@
       "label": ".ledger()",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L205",
+      "source_location": "L234",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_chainarchivesyncservice_ledger",
       "community": 137,
@@ -1447,7 +1458,7 @@
       "label": ".watermarkKey()",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L210",
+      "source_location": "L239",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_chainarchivesyncservice_watermarkkey",
       "community": 137,
@@ -1458,7 +1469,7 @@
       "label": ".getSyncedHeight()",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L217",
+      "source_location": "L246",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_chainarchivesyncservice_getsyncedheight",
       "community": 137,
@@ -1469,7 +1480,7 @@
       "label": ".assertChainIdentity()",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L263",
+      "source_location": "L292",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_chainarchivesyncservice_assertchainidentity",
       "community": 137,
@@ -1480,7 +1491,7 @@
       "label": ".syncOnce()",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L284",
+      "source_location": "L313",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_chainarchivesyncservice_synconce",
       "community": 137,
@@ -1491,7 +1502,7 @@
       "label": ".assertParentContinuity()",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L354",
+      "source_location": "L383",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_chainarchivesyncservice_assertparentcontinuity",
       "community": 137,
@@ -1502,7 +1513,7 @@
       "label": ".assertNoUnarchivedEventSystemTransactions()",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L426",
+      "source_location": "L475",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_chainarchivesyncservice_assertnounarchivedeventsystemtransactions",
       "community": 137,
@@ -1513,7 +1524,7 @@
       "label": ".ingestOneBlock()",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L449",
+      "source_location": "L504",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_chainarchivesyncservice_ingestoneblock",
       "community": 137,
@@ -1524,7 +1535,7 @@
       "label": ".oracleCrossCheck()",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L625",
+      "source_location": "L695",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_chainarchivesyncservice_oraclecrosscheck",
       "community": 137,
@@ -1535,7 +1546,7 @@
       "label": ".buildNodeOnlyTransactionRecords()",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L680",
+      "source_location": "L750",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_chainarchivesyncservice_buildnodeonlytransactionrecords",
       "community": 137,
@@ -1546,7 +1557,7 @@
       "label": ".fetchDParameterFromNode()",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L747",
+      "source_location": "L817",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_chainarchivesyncservice_fetchdparameterfromnode",
       "community": 137,
@@ -1557,7 +1568,7 @@
       "label": ".buildTransactionRecords()",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L805",
+      "source_location": "L875",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_chainarchivesyncservice_buildtransactionrecords",
       "community": 137,
@@ -1568,7 +1579,7 @@
       "label": ".buildBridgeObservationRecords()",
       "file_type": "code",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L875",
+      "source_location": "L945",
       "_origin": "ast",
       "id": "chain_archive_sync_sync_service_chainarchivesyncservice_buildbridgeobservationrecords",
       "community": 137,
@@ -1714,8 +1725,8 @@
       "source_location": "L292",
       "_origin": "ast",
       "id": "chain_archive_sync_tx_replay_decoder_ledgersupportssystemtransactionhash",
-      "community": 118,
-      "community_name": "tx-replay-decoder.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "ledgersupportssystemtransactionhash()"
     },
     {
@@ -3097,8 +3108,8 @@
       "source_location": "L24",
       "_origin": "ast",
       "id": "src_interfaces_chain_archive_store_hex32",
-      "community": 85,
-      "community_name": "UmbraDBSql",
+      "community": 137,
+      "community_name": "ChainArchiveSyncService",
       "norm_label": "hex32"
     },
     {
@@ -3141,8 +3152,8 @@
       "source_location": "L35",
       "_origin": "ast",
       "id": "src_interfaces_chain_archive_store_blockrecord",
-      "community": 85,
-      "community_name": "UmbraDBSql",
+      "community": 113,
+      "community_name": "interfaces/chain-archive-store.ts",
       "norm_label": "blockrecord"
     },
     {
@@ -3218,8 +3229,8 @@
       "source_location": "L98",
       "_origin": "ast",
       "id": "src_interfaces_chain_archive_store_bridgeobservationrecord",
-      "community": 85,
-      "community_name": "UmbraDBSql",
+      "community": 113,
+      "community_name": "interfaces/chain-archive-store.ts",
       "norm_label": "bridgeobservationrecord"
     },
     {
@@ -3515,8 +3526,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_interfaces_checkpoint_store",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 107,
+      "community_name": "src/index.ts",
       "norm_label": "interfaces/checkpoint-store.ts"
     },
     {
@@ -3526,8 +3537,8 @@
       "source_location": "L7",
       "_origin": "ast",
       "id": "src_interfaces_checkpoint_store_checkpointsequence",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 107,
+      "community_name": "src/index.ts",
       "norm_label": "checkpointsequence"
     },
     {
@@ -3581,8 +3592,8 @@
       "source_location": "L49",
       "_origin": "ast",
       "id": "src_interfaces_checkpoint_store_savecheckpointoptions",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 107,
+      "community_name": "src/index.ts",
       "norm_label": "savecheckpointoptions"
     },
     {
@@ -3614,8 +3625,8 @@
       "source_location": "L72",
       "_origin": "ast",
       "id": "src_interfaces_checkpoint_store_checkpointsummary",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 107,
+      "community_name": "src/index.ts",
       "norm_label": "checkpointsummary"
     },
     {
@@ -3625,8 +3636,8 @@
       "source_location": "L90",
       "_origin": "ast",
       "id": "src_interfaces_checkpoint_store_checkpointrecord",
-      "community": 116,
-      "community_name": "postgres/checkpoint-store.ts",
+      "community": 107,
+      "community_name": "src/index.ts",
       "norm_label": "checkpointrecord"
     },
     {
@@ -3636,8 +3647,8 @@
       "source_location": "L94",
       "_origin": "ast",
       "id": "src_interfaces_checkpoint_store_pruneresult",
-      "community": 116,
-      "community_name": "postgres/checkpoint-store.ts",
+      "community": 107,
+      "community_name": "src/index.ts",
       "norm_label": "pruneresult"
     },
     {
@@ -3812,8 +3823,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_interfaces_storage_errors",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "storage-errors.ts"
     },
     {
@@ -3867,8 +3878,8 @@
       "source_location": "L51",
       "_origin": "ast",
       "id": "src_interfaces_storage_errors_validationerror",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "validationerror"
     },
     {
@@ -3878,8 +3889,8 @@
       "source_location": "L54",
       "_origin": "ast",
       "id": "src_interfaces_storage_errors_validationerror_constructor",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -3889,8 +3900,8 @@
       "source_location": "L61",
       "_origin": "ast",
       "id": "src_interfaces_storage_errors_validationerror_fromzod",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 233,
+      "community_name": ".fromZod",
       "norm_label": ".fromzod()"
     },
     {
@@ -3955,8 +3966,8 @@
       "source_location": "L35",
       "_origin": "ast",
       "id": "src_interfaces_temporal_kv_haspostgresunsafetext",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 228,
+      "community_name": "@midnight-ntwrk/ledger-v8",
       "norm_label": "haspostgresunsafetext()"
     },
     {
@@ -3966,8 +3977,8 @@
       "source_location": "L44",
       "_origin": "ast",
       "id": "src_interfaces_temporal_kv_jsonvaluehasunsafetext",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 228,
+      "community_name": "@midnight-ntwrk/ledger-v8",
       "norm_label": "jsonvaluehasunsafetext()"
     },
     {
@@ -3977,8 +3988,8 @@
       "source_location": "L65",
       "_origin": "ast",
       "id": "src_interfaces_temporal_kv_exceedsmaxdepth",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 180,
+      "community_name": "interfaces/transaction-history-storage.ts",
       "norm_label": "exceedsmaxdepth()"
     },
     {
@@ -4010,8 +4021,8 @@
       "source_location": "L107",
       "_origin": "ast",
       "id": "src_interfaces_temporal_kv_jsonvalue",
-      "community": 102,
-      "community_name": "cursor-durability.crash.test.ts",
+      "community": 234,
+      "community_name": "JsonValue",
       "norm_label": "jsonvalue"
     },
     {
@@ -4021,8 +4032,8 @@
       "source_location": "L109",
       "_origin": "ast",
       "id": "src_interfaces_temporal_kv_namespaceschema",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 233,
+      "community_name": ".fromZod",
       "norm_label": "namespaceschema"
     },
     {
@@ -4032,8 +4043,8 @@
       "source_location": "L111",
       "_origin": "ast",
       "id": "src_interfaces_temporal_kv_scopeschema",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 233,
+      "community_name": ".fromZod",
       "norm_label": "scopeschema"
     },
     {
@@ -4043,8 +4054,8 @@
       "source_location": "L113",
       "_origin": "ast",
       "id": "src_interfaces_temporal_kv_keyschema",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 233,
+      "community_name": ".fromZod",
       "norm_label": "keyschema"
     },
     {
@@ -4054,8 +4065,8 @@
       "source_location": "L115",
       "_origin": "ast",
       "id": "src_interfaces_temporal_kv_namespace",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 178,
+      "community_name": "midnight-wallet-sdk-loader.ts",
       "norm_label": "namespace"
     },
     {
@@ -4065,8 +4076,8 @@
       "source_location": "L116",
       "_origin": "ast",
       "id": "src_interfaces_temporal_kv_scope",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 178,
+      "community_name": "midnight-wallet-sdk-loader.ts",
       "norm_label": "scope"
     },
     {
@@ -4076,8 +4087,8 @@
       "source_location": "L117",
       "_origin": "ast",
       "id": "src_interfaces_temporal_kv_key",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 178,
+      "community_name": "midnight-wallet-sdk-loader.ts",
       "norm_label": "key"
     },
     {
@@ -4087,8 +4098,8 @@
       "source_location": "L129",
       "_origin": "ast",
       "id": "src_interfaces_temporal_kv_version",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 178,
+      "community_name": "midnight-wallet-sdk-loader.ts",
       "norm_label": "version"
     },
     {
@@ -4131,8 +4142,8 @@
       "source_location": "L147",
       "_origin": "ast",
       "id": "src_interfaces_temporal_kv_versionedentry",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 178,
+      "community_name": "midnight-wallet-sdk-loader.ts",
       "norm_label": "versionedentry"
     },
     {
@@ -4164,8 +4175,8 @@
       "source_location": "L179",
       "_origin": "ast",
       "id": "src_interfaces_temporal_kv_asof",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 178,
+      "community_name": "midnight-wallet-sdk-loader.ts",
       "norm_label": "asof"
     },
     {
@@ -4186,8 +4197,8 @@
       "source_location": "L190",
       "_origin": "ast",
       "id": "src_interfaces_temporal_kv_temporalkverror",
-      "community": 119,
-      "community_name": "perf-batching.test.ts",
+      "community": 2,
+      "community_name": "interfaces/temporal-kv.ts",
       "norm_label": "temporalkverror"
     },
     {
@@ -4197,8 +4208,8 @@
       "source_location": "L198",
       "_origin": "ast",
       "id": "src_interfaces_temporal_kv_versionconflicterror",
-      "community": 119,
-      "community_name": "perf-batching.test.ts",
+      "community": 2,
+      "community_name": "interfaces/temporal-kv.ts",
       "norm_label": "versionconflicterror"
     },
     {
@@ -4208,8 +4219,8 @@
       "source_location": "L201",
       "_origin": "ast",
       "id": "src_interfaces_temporal_kv_versionconflicterror_constructor",
-      "community": 119,
-      "community_name": "perf-batching.test.ts",
+      "community": 2,
+      "community_name": "interfaces/temporal-kv.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -4219,8 +4230,8 @@
       "source_location": "L219",
       "_origin": "ast",
       "id": "src_interfaces_temporal_kv_historyunavailableerror",
-      "community": 119,
-      "community_name": "perf-batching.test.ts",
+      "community": 2,
+      "community_name": "interfaces/temporal-kv.ts",
       "norm_label": "historyunavailableerror"
     },
     {
@@ -4230,8 +4241,8 @@
       "source_location": "L222",
       "_origin": "ast",
       "id": "src_interfaces_temporal_kv_historyunavailableerror_constructor",
-      "community": 119,
-      "community_name": "perf-batching.test.ts",
+      "community": 2,
+      "community_name": "interfaces/temporal-kv.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -4318,8 +4329,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_interfaces_transaction_history_storage",
-      "community": 107,
-      "community_name": "src/index.ts",
+      "community": 180,
+      "community_name": "interfaces/transaction-history-storage.ts",
       "norm_label": "interfaces/transaction-history-storage.ts"
     },
     {
@@ -4329,8 +4340,8 @@
       "source_location": "L39",
       "_origin": "ast",
       "id": "src_interfaces_transaction_history_storage_safestringschema",
-      "community": 107,
-      "community_name": "src/index.ts",
+      "community": 180,
+      "community_name": "interfaces/transaction-history-storage.ts",
       "norm_label": "safestringschema"
     },
     {
@@ -4340,8 +4351,8 @@
       "source_location": "L66",
       "_origin": "ast",
       "id": "src_interfaces_transaction_history_storage_safeobjectkeyschema",
-      "community": 107,
-      "community_name": "src/index.ts",
+      "community": 180,
+      "community_name": "interfaces/transaction-history-storage.ts",
       "norm_label": "safeobjectkeyschema"
     },
     {
@@ -4351,8 +4362,8 @@
       "source_location": "L92",
       "_origin": "ast",
       "id": "src_interfaces_transaction_history_storage_entrycontent",
-      "community": 107,
-      "community_name": "src/index.ts",
+      "community": 79,
+      "community_name": "transaction-history-storage.property.test.ts",
       "norm_label": "entrycontent"
     },
     {
@@ -4362,8 +4373,8 @@
       "source_location": "L97",
       "_origin": "ast",
       "id": "src_interfaces_transaction_history_storage_entrycontentschema",
-      "community": 107,
-      "community_name": "src/index.ts",
+      "community": 180,
+      "community_name": "interfaces/transaction-history-storage.ts",
       "norm_label": "entrycontentschema"
     },
     {
@@ -4373,8 +4384,8 @@
       "source_location": "L136",
       "_origin": "ast",
       "id": "src_interfaces_transaction_history_storage_entrysectionsschema",
-      "community": 107,
-      "community_name": "src/index.ts",
+      "community": 180,
+      "community_name": "interfaces/transaction-history-storage.ts",
       "norm_label": "entrysectionsschema"
     },
     {
@@ -4417,8 +4428,8 @@
       "source_location": "L163",
       "_origin": "ast",
       "id": "src_interfaces_transaction_history_storage_entrylifecycle",
-      "community": 107,
-      "community_name": "src/index.ts",
+      "community": 84,
+      "community_name": "postgres/transaction-history-storage.ts",
       "norm_label": "entrylifecycle"
     },
     {
@@ -4439,8 +4450,8 @@
       "source_location": "L166",
       "_origin": "ast",
       "id": "src_interfaces_transaction_history_storage_pendinglifecycleschema",
-      "community": 107,
-      "community_name": "src/index.ts",
+      "community": 180,
+      "community_name": "interfaces/transaction-history-storage.ts",
       "norm_label": "pendinglifecycleschema"
     },
     {
@@ -4450,8 +4461,8 @@
       "source_location": "L167",
       "_origin": "ast",
       "id": "src_interfaces_transaction_history_storage_finalizedlifecycleschema",
-      "community": 107,
-      "community_name": "src/index.ts",
+      "community": 180,
+      "community_name": "interfaces/transaction-history-storage.ts",
       "norm_label": "finalizedlifecycleschema"
     },
     {
@@ -4461,8 +4472,8 @@
       "source_location": "L168",
       "_origin": "ast",
       "id": "src_interfaces_transaction_history_storage_rejectedlifecycleschema",
-      "community": 107,
-      "community_name": "src/index.ts",
+      "community": 180,
+      "community_name": "interfaces/transaction-history-storage.ts",
       "norm_label": "rejectedlifecycleschema"
     },
     {
@@ -4472,8 +4483,8 @@
       "source_location": "L169",
       "_origin": "ast",
       "id": "src_interfaces_transaction_history_storage_entrylifecycleschema",
-      "community": 107,
-      "community_name": "src/index.ts",
+      "community": 180,
+      "community_name": "interfaces/transaction-history-storage.ts",
       "norm_label": "entrylifecycleschema"
     },
     {
@@ -4494,8 +4505,8 @@
       "source_location": "L181",
       "_origin": "ast",
       "id": "src_interfaces_transaction_history_storage_transactionhistorystatusschema",
-      "community": 107,
-      "community_name": "src/index.ts",
+      "community": 180,
+      "community_name": "interfaces/transaction-history-storage.ts",
       "norm_label": "transactionhistorystatusschema"
     },
     {
@@ -4505,8 +4516,8 @@
       "source_location": "L187",
       "_origin": "ast",
       "id": "src_interfaces_transaction_history_storage_hashschema",
-      "community": 107,
-      "community_name": "src/index.ts",
+      "community": 180,
+      "community_name": "interfaces/transaction-history-storage.ts",
       "norm_label": "hashschema"
     },
     {
@@ -4516,8 +4527,8 @@
       "source_location": "L190",
       "_origin": "ast",
       "id": "src_interfaces_transaction_history_storage_identifierschema",
-      "community": 107,
-      "community_name": "src/index.ts",
+      "community": 180,
+      "community_name": "interfaces/transaction-history-storage.ts",
       "norm_label": "identifierschema"
     },
     {
@@ -4549,8 +4560,8 @@
       "source_location": "L256",
       "_origin": "ast",
       "id": "src_interfaces_transaction_history_storage_mergeentriesfn",
-      "community": 107,
-      "community_name": "src/index.ts",
+      "community": 196,
+      "community_name": "watermarks.property.test.ts",
       "norm_label": "mergeentriesfn"
     },
     {
@@ -4560,8 +4571,8 @@
       "source_location": "L265",
       "_origin": "ast",
       "id": "src_interfaces_transaction_history_storage_transactionhistoryreader",
-      "community": 107,
-      "community_name": "src/index.ts",
+      "community": 69,
+      "community_name": "pg-tx-history-adapter.ts",
       "norm_label": "transactionhistoryreader"
     },
     {
@@ -4604,8 +4615,8 @@
       "source_location": "L279",
       "_origin": "ast",
       "id": "src_interfaces_transaction_history_storage_transactionhistorywriter",
-      "community": 107,
-      "community_name": "src/index.ts",
+      "community": 69,
+      "community_name": "pg-tx-history-adapter.ts",
       "norm_label": "transactionhistorywriter"
     },
     {
@@ -4648,8 +4659,8 @@
       "source_location": "L299",
       "_origin": "ast",
       "id": "src_interfaces_transaction_history_storage_transactionhistorystorage",
-      "community": 107,
-      "community_name": "src/index.ts",
+      "community": 69,
+      "community_name": "pg-tx-history-adapter.ts",
       "norm_label": "transactionhistorystorage"
     },
     {
@@ -4659,8 +4670,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease",
-      "community": 1,
-      "community_name": "interfaces/transaction-lease.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": "interfaces/transaction-lease.ts"
     },
     {
@@ -4703,8 +4714,8 @@
       "source_location": "L55",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_transactionleaseerror",
-      "community": 1,
-      "community_name": "interfaces/transaction-lease.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": "transactionleaseerror"
     },
     {
@@ -4714,8 +4725,8 @@
       "source_location": "L61",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_transactionrolledbackerror",
-      "community": 1,
-      "community_name": "interfaces/transaction-lease.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": "transactionrolledbackerror"
     },
     {
@@ -4725,8 +4736,8 @@
       "source_location": "L64",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_transactionrolledbackerror_constructor",
-      "community": 1,
-      "community_name": "interfaces/transaction-lease.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -4736,8 +4747,8 @@
       "source_location": "L71",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_transactionfaulterror",
-      "community": 1,
-      "community_name": "interfaces/transaction-lease.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": "transactionfaulterror"
     },
     {
@@ -4747,8 +4758,8 @@
       "source_location": "L74",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_transactionfaulterror_constructor",
-      "community": 1,
-      "community_name": "interfaces/transaction-lease.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -4758,8 +4769,8 @@
       "source_location": "L87",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_leasetimeouterror",
-      "community": 1,
-      "community_name": "interfaces/transaction-lease.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": "leasetimeouterror"
     },
     {
@@ -4769,8 +4780,8 @@
       "source_location": "L90",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_leasetimeouterror_constructor",
-      "community": 1,
-      "community_name": "interfaces/transaction-lease.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -4780,8 +4791,8 @@
       "source_location": "L103",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_leasenothelderror",
-      "community": 1,
-      "community_name": "interfaces/transaction-lease.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": "leasenothelderror"
     },
     {
@@ -4791,8 +4802,8 @@
       "source_location": "L106",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_leasenothelderror_constructor",
-      "community": 1,
-      "community_name": "interfaces/transaction-lease.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -4802,8 +4813,8 @@
       "source_location": "L112",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_leasefaulterror",
-      "community": 1,
-      "community_name": "interfaces/transaction-lease.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": "leasefaulterror"
     },
     {
@@ -4813,8 +4824,8 @@
       "source_location": "L115",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_leasefaulterror_constructor",
-      "community": 1,
-      "community_name": "interfaces/transaction-lease.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -4824,8 +4835,8 @@
       "source_location": "L126",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_transactionhandleinvaliderror",
-      "community": 1,
-      "community_name": "interfaces/transaction-lease.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": "transactionhandleinvaliderror"
     },
     {
@@ -4835,8 +4846,8 @@
       "source_location": "L129",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_transactionhandleinvaliderror_constructor",
-      "community": 1,
-      "community_name": "interfaces/transaction-lease.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -4846,8 +4857,8 @@
       "source_location": "L140",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_rollback",
-      "community": 75,
-      "community_name": "client.ts",
+      "community": 107,
+      "community_name": "src/index.ts",
       "norm_label": "rollback"
     },
     {
@@ -4857,8 +4868,8 @@
       "source_location": "L141",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_rollback_constructor",
-      "community": 75,
-      "community_name": "client.ts",
+      "community": 107,
+      "community_name": "src/index.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -4923,8 +4934,8 @@
       "source_location": "L204",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_transactionleaselayer",
-      "community": 194,
-      "community_name": "Test wallets",
+      "community": 116,
+      "community_name": "postgres/checkpoint-store.ts",
       "norm_label": "transactionleaselayer"
     },
     {
@@ -4945,8 +4956,8 @@
       "source_location": "L248",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_transactionleaselayer_acquirelease",
-      "community": 194,
-      "community_name": "Test wallets",
+      "community": 205,
+      "community_name": "harness.ts",
       "norm_label": ".acquirelease()"
     },
     {
@@ -4956,8 +4967,8 @@
       "source_location": "L261",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_transactionleaselayer_tryacquirelease",
-      "community": 194,
-      "community_name": "Test wallets",
+      "community": 116,
+      "community_name": "postgres/checkpoint-store.ts",
       "norm_label": ".tryacquirelease()"
     },
     {
@@ -4967,8 +4978,8 @@
       "source_location": "L269",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_transactionleaselayer_releaselease",
-      "community": 194,
-      "community_name": "Test wallets",
+      "community": 205,
+      "community_name": "harness.ts",
       "norm_label": ".releaselease()"
     },
     {
@@ -4978,8 +4989,8 @@
       "source_location": "L286",
       "_origin": "ast",
       "id": "src_interfaces_transaction_lease_transactionleaselayer_withlease",
-      "community": 194,
-      "community_name": "Test wallets",
+      "community": 116,
+      "community_name": "postgres/checkpoint-store.ts",
       "norm_label": ".withlease()"
     },
     {
@@ -4989,8 +5000,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_interfaces_wallet_state_envelope",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "interfaces/wallet-state-envelope.ts"
     },
     {
@@ -5000,8 +5011,8 @@
       "source_location": "L35",
       "_origin": "ast",
       "id": "src_interfaces_wallet_state_envelope_subwalletstringschema",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "subwalletstringschema"
     },
     {
@@ -5011,8 +5022,8 @@
       "source_location": "L43",
       "_origin": "ast",
       "id": "src_interfaces_wallet_state_envelope_subwalletslotschema",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "subwalletslotschema"
     },
     {
@@ -5022,8 +5033,8 @@
       "source_location": "L50",
       "_origin": "ast",
       "id": "src_interfaces_wallet_state_envelope_envelope_version",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "envelope_version"
     },
     {
@@ -5033,8 +5044,8 @@
       "source_location": "L52",
       "_origin": "ast",
       "id": "src_interfaces_wallet_state_envelope_walletstateenvelope",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "walletstateenvelope"
     },
     {
@@ -5044,8 +5055,8 @@
       "source_location": "L79",
       "_origin": "ast",
       "id": "src_interfaces_wallet_state_envelope_walletstateenvelopeshapeschema",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "walletstateenvelopeshapeschema"
     },
     {
@@ -5066,8 +5077,8 @@
       "source_location": "L98",
       "_origin": "ast",
       "id": "src_interfaces_wallet_state_envelope_walletstateenvelopeerror",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "walletstateenvelopeerror"
     },
     {
@@ -5077,8 +5088,8 @@
       "source_location": "L105",
       "_origin": "ast",
       "id": "src_interfaces_wallet_state_envelope_envelopeversionunsupportederror",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "envelopeversionunsupportederror"
     },
     {
@@ -5088,8 +5099,8 @@
       "source_location": "L108",
       "_origin": "ast",
       "id": "src_interfaces_wallet_state_envelope_envelopeversionunsupportederror_constructor",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -5099,8 +5110,8 @@
       "source_location": "L117",
       "_origin": "ast",
       "id": "src_interfaces_wallet_state_envelope_envelopecorrupterror",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "envelopecorrupterror"
     },
     {
@@ -5110,8 +5121,8 @@
       "source_location": "L120",
       "_origin": "ast",
       "id": "src_interfaces_wallet_state_envelope_envelopecorrupterror_constructor",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -5121,8 +5132,8 @@
       "source_location": "L133",
       "_origin": "ast",
       "id": "src_interfaces_wallet_state_envelope_encode",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "encode()"
     },
     {
@@ -5132,8 +5143,8 @@
       "source_location": "L162",
       "_origin": "ast",
       "id": "src_interfaces_wallet_state_envelope_decode",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "decode()"
     },
     {
@@ -5231,8 +5242,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_postgres_abort",
-      "community": 116,
-      "community_name": "postgres/checkpoint-store.ts",
+      "community": 105,
+      "community_name": "checkpoint-store-cotx.test.ts",
       "norm_label": "abort.ts"
     },
     {
@@ -5253,8 +5264,8 @@
       "source_location": "L38",
       "_origin": "ast",
       "id": "src_postgres_abort_withabort",
-      "community": 116,
-      "community_name": "postgres/checkpoint-store.ts",
+      "community": 105,
+      "community_name": "checkpoint-store-cotx.test.ts",
       "norm_label": "withabort()"
     },
     {
@@ -5407,8 +5418,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_postgres_chain_archive_store",
-      "community": 85,
-      "community_name": "UmbraDBSql",
+      "community": 113,
+      "community_name": "interfaces/chain-archive-store.ts",
       "norm_label": "postgres/chain-archive-store.ts"
     },
     {
@@ -5418,8 +5429,8 @@
       "source_location": "L26",
       "_origin": "ast",
       "id": "src_postgres_chain_archive_store_chainarchivetx",
-      "community": 85,
-      "community_name": "UmbraDBSql",
+      "community": 113,
+      "community_name": "interfaces/chain-archive-store.ts",
       "norm_label": "chainarchivetx"
     },
     {
@@ -5473,8 +5484,8 @@
       "source_location": "L45",
       "_origin": "ast",
       "id": "src_postgres_chain_archive_store_blockrow",
-      "community": 85,
-      "community_name": "UmbraDBSql",
+      "community": 113,
+      "community_name": "interfaces/chain-archive-store.ts",
       "norm_label": "blockrow"
     },
     {
@@ -5484,8 +5495,8 @@
       "source_location": "L60",
       "_origin": "ast",
       "id": "src_postgres_chain_archive_store_txrow",
-      "community": 85,
-      "community_name": "UmbraDBSql",
+      "community": 113,
+      "community_name": "interfaces/chain-archive-store.ts",
       "norm_label": "txrow"
     },
     {
@@ -5528,8 +5539,8 @@
       "source_location": "L120",
       "_origin": "ast",
       "id": "src_postgres_chain_archive_store_pgchainarchivestore_constructor",
-      "community": 85,
-      "community_name": "UmbraDBSql",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -5715,8 +5726,8 @@
       "source_location": "L498",
       "_origin": "ast",
       "id": "src_postgres_chain_archive_store_pgchainarchivestore_getwatermark",
-      "community": 115,
-      "community_name": "TransactionHistoryEntry",
+      "community": 85,
+      "community_name": "UmbraDBSql",
       "norm_label": ".getwatermark()"
     },
     {
@@ -5858,8 +5869,8 @@
       "source_location": "L164",
       "_origin": "ast",
       "id": "src_postgres_checkpoint_store_pgcheckpointstore",
-      "community": 105,
-      "community_name": "checkpoint-store-cotx.test.ts",
+      "community": 116,
+      "community_name": "postgres/checkpoint-store.ts",
       "norm_label": "pgcheckpointstore"
     },
     {
@@ -5869,8 +5880,8 @@
       "source_location": "L165",
       "_origin": "ast",
       "id": "src_postgres_checkpoint_store_pgcheckpointstore_constructor",
-      "community": 194,
-      "community_name": "Test wallets",
+      "community": 116,
+      "community_name": "postgres/checkpoint-store.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -5902,8 +5913,8 @@
       "source_location": "L309",
       "_origin": "ast",
       "id": "src_postgres_checkpoint_store_pgcheckpointstore_load",
-      "community": 116,
-      "community_name": "postgres/checkpoint-store.ts",
+      "community": 107,
+      "community_name": "src/index.ts",
       "norm_label": ".load()"
     },
     {
@@ -5968,8 +5979,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_postgres_client",
-      "community": 178,
-      "community_name": "midnight-wallet-sdk-loader.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "client.ts"
     },
     {
@@ -5979,8 +5990,8 @@
       "source_location": "L10",
       "_origin": "ast",
       "id": "src_postgres_client_umbradbsql",
-      "community": 85,
-      "community_name": "UmbraDBSql",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "umbradbsql"
     },
     {
@@ -6012,8 +6023,8 @@
       "source_location": "L113",
       "_origin": "ast",
       "id": "src_postgres_client_assertnoconflictingsearchpath",
-      "community": 178,
-      "community_name": "midnight-wallet-sdk-loader.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "assertnoconflictingsearchpath()"
     },
     {
@@ -6023,8 +6034,8 @@
       "source_location": "L147",
       "_origin": "ast",
       "id": "src_postgres_client_createclient",
-      "community": 178,
-      "community_name": "midnight-wallet-sdk-loader.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "createclient()"
     },
     {
@@ -6221,8 +6232,8 @@
       "source_location": "L33",
       "_origin": "ast",
       "id": "src_postgres_errors_clockregressionerror",
-      "community": 180,
-      "community_name": "interfaces/transaction-history-storage.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "clockregressionerror"
     },
     {
@@ -6232,8 +6243,8 @@
       "source_location": "L36",
       "_origin": "ast",
       "id": "src_postgres_errors_clockregressionerror_constructor",
-      "community": 180,
-      "community_name": "interfaces/transaction-history-storage.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -6243,8 +6254,8 @@
       "source_location": "L69",
       "_origin": "ast",
       "id": "src_postgres_errors_chainarchiveinvarianterror",
-      "community": 180,
-      "community_name": "interfaces/transaction-history-storage.ts",
+      "community": 115,
+      "community_name": "TransactionHistoryEntry",
       "norm_label": "chainarchiveinvarianterror"
     },
     {
@@ -6254,8 +6265,8 @@
       "source_location": "L72",
       "_origin": "ast",
       "id": "src_postgres_errors_chainarchiveinvarianterror_constructor",
-      "community": 180,
-      "community_name": "interfaces/transaction-history-storage.ts",
+      "community": 115,
+      "community_name": "TransactionHistoryEntry",
       "norm_label": ".constructor()"
     },
     {
@@ -6265,8 +6276,8 @@
       "source_location": "L82",
       "_origin": "ast",
       "id": "src_postgres_errors_chainarchivecheckviolationerror",
-      "community": 180,
-      "community_name": "interfaces/transaction-history-storage.ts",
+      "community": 115,
+      "community_name": "TransactionHistoryEntry",
       "norm_label": "chainarchivecheckviolationerror"
     },
     {
@@ -6276,8 +6287,8 @@
       "source_location": "L85",
       "_origin": "ast",
       "id": "src_postgres_errors_chainarchivecheckviolationerror_constructor",
-      "community": 180,
-      "community_name": "interfaces/transaction-history-storage.ts",
+      "community": 115,
+      "community_name": "TransactionHistoryEntry",
       "norm_label": ".constructor()"
     },
     {
@@ -6408,8 +6419,8 @@
       "source_location": "L250",
       "_origin": "ast",
       "id": "src_postgres_errors_translatepostgreserror",
-      "community": 115,
-      "community_name": "TransactionHistoryEntry",
+      "community": 85,
+      "community_name": "UmbraDBSql",
       "norm_label": "translatepostgreserror()"
     },
     {
@@ -6474,8 +6485,8 @@
       "source_location": "L57",
       "_origin": "ast",
       "id": "src_postgres_migrate_withreservedtransaction",
-      "community": 115,
-      "community_name": "TransactionHistoryEntry",
+      "community": 199,
+      "community_name": "migrate.ts",
       "norm_label": "withreservedtransaction()"
     },
     {
@@ -6518,8 +6529,8 @@
       "source_location": "L181",
       "_origin": "ast",
       "id": "src_postgres_migrate_runmigrationsimpl",
-      "community": 115,
-      "community_name": "TransactionHistoryEntry",
+      "community": 199,
+      "community_name": "migrate.ts",
       "norm_label": "runmigrationsimpl()"
     },
     {
@@ -6683,8 +6694,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_postgres_migrations_chain_archive_001_chain_archive_core",
-      "community": 238,
-      "community_name": "bootstrap.ts",
+      "community": 199,
+      "community_name": "migrate.ts",
       "norm_label": "001_chain_archive_core.ts"
     },
     {
@@ -6694,8 +6705,8 @@
       "source_location": "L94",
       "_origin": "ast",
       "id": "src_postgres_migrations_chain_archive_001_chain_archive_core_up",
-      "community": 238,
-      "community_name": "bootstrap.ts",
+      "community": 199,
+      "community_name": "migrate.ts",
       "norm_label": "up()"
     },
     {
@@ -6705,8 +6716,8 @@
       "source_location": "L762",
       "_origin": "ast",
       "id": "src_postgres_migrations_chain_archive_001_chain_archive_core_createheightpartitions",
-      "community": 238,
-      "community_name": "bootstrap.ts",
+      "community": 199,
+      "community_name": "migrate.ts",
       "norm_label": "createheightpartitions()"
     },
     {
@@ -6716,8 +6727,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_postgres_migrations_chain_archive_index",
-      "community": 112,
-      "community_name": "chain-archive-sync-retry.integration.test.ts",
+      "community": 199,
+      "community_name": "migrate.ts",
       "norm_label": "chain_archive/index.ts"
     },
     {
@@ -6727,8 +6738,8 @@
       "source_location": "L32",
       "_origin": "ast",
       "id": "src_postgres_migrations_chain_archive_index_chainarchivemigrations",
-      "community": 112,
-      "community_name": "chain-archive-sync-retry.integration.test.ts",
+      "community": 199,
+      "community_name": "migrate.ts",
       "norm_label": "chainarchivemigrations"
     },
     {
@@ -6738,8 +6749,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_postgres_migrations_chain_archive_partition_config",
-      "community": 238,
-      "community_name": "bootstrap.ts",
+      "community": 199,
+      "community_name": "migrate.ts",
       "norm_label": "partition-config.ts"
     },
     {
@@ -6782,8 +6793,8 @@
       "source_location": "L58",
       "_origin": "ast",
       "id": "src_postgres_save_and_advance_saveandadvance",
-      "community": 230,
-      "community_name": "typescript",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "saveandadvance()"
     },
     {
@@ -6815,8 +6826,8 @@
       "source_location": "L29",
       "_origin": "ast",
       "id": "src_postgres_temporal_kv_kvrow",
-      "community": 102,
-      "community_name": "cursor-durability.crash.test.ts",
+      "community": 234,
+      "community_name": "JsonValue",
       "norm_label": "kvrow"
     },
     {
@@ -6848,8 +6859,8 @@
       "source_location": "L72",
       "_origin": "ast",
       "id": "src_postgres_temporal_kv_pgtemporalkv",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 178,
+      "community_name": "midnight-wallet-sdk-loader.ts",
       "norm_label": "pgtemporalkv"
     },
     {
@@ -6859,8 +6870,8 @@
       "source_location": "L73",
       "_origin": "ast",
       "id": "src_postgres_temporal_kv_pgtemporalkv_constructor",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -6870,8 +6881,8 @@
       "source_location": "L78",
       "_origin": "ast",
       "id": "src_postgres_temporal_kv_pgtemporalkv_validatenamespacescope",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 233,
+      "community_name": ".fromZod",
       "norm_label": ".validatenamespacescope()"
     },
     {
@@ -6881,8 +6892,8 @@
       "source_location": "L85",
       "_origin": "ast",
       "id": "src_postgres_temporal_kv_pgtemporalkv_validatekey",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 233,
+      "community_name": ".fromZod",
       "norm_label": ".validatekey()"
     },
     {
@@ -6892,8 +6903,8 @@
       "source_location": "L91",
       "_origin": "ast",
       "id": "src_postgres_temporal_kv_pgtemporalkv_put",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 178,
+      "community_name": "midnight-wallet-sdk-loader.ts",
       "norm_label": ".put()"
     },
     {
@@ -6903,8 +6914,8 @@
       "source_location": "L107",
       "_origin": "ast",
       "id": "src_postgres_temporal_kv_pgtemporalkv_putimpl",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 178,
+      "community_name": "midnight-wallet-sdk-loader.ts",
       "norm_label": ".putimpl()"
     },
     {
@@ -6914,8 +6925,8 @@
       "source_location": "L170",
       "_origin": "ast",
       "id": "src_postgres_temporal_kv_pgtemporalkv_get",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 178,
+      "community_name": "midnight-wallet-sdk-loader.ts",
       "norm_label": ".get()"
     },
     {
@@ -6925,8 +6936,8 @@
       "source_location": "L179",
       "_origin": "ast",
       "id": "src_postgres_temporal_kv_pgtemporalkv_getimpl",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 178,
+      "community_name": "midnight-wallet-sdk-loader.ts",
       "norm_label": ".getimpl()"
     },
     {
@@ -6936,8 +6947,8 @@
       "source_location": "L193",
       "_origin": "ast",
       "id": "src_postgres_temporal_kv_pgtemporalkv_getat",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 178,
+      "community_name": "midnight-wallet-sdk-loader.ts",
       "norm_label": ".getat()"
     },
     {
@@ -6947,8 +6958,8 @@
       "source_location": "L221",
       "_origin": "ast",
       "id": "src_postgres_temporal_kv_pgtemporalkv_getatimpl",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 178,
+      "community_name": "midnight-wallet-sdk-loader.ts",
       "norm_label": ".getatimpl()"
     },
     {
@@ -6958,8 +6969,8 @@
       "source_location": "L300",
       "_origin": "ast",
       "id": "src_postgres_temporal_kv_pgtemporalkv_listkeys",
-      "community": 2,
-      "community_name": "interfaces/temporal-kv.ts",
+      "community": 178,
+      "community_name": "midnight-wallet-sdk-loader.ts",
       "norm_label": ".listkeys()"
     },
     {
@@ -7156,8 +7167,8 @@
       "source_location": "L307",
       "_origin": "ast",
       "id": "src_postgres_transaction_history_storage_pgtransactionhistorystorage_constructor",
-      "community": 69,
-      "community_name": "pg-tx-history-adapter.ts",
+      "community": 196,
+      "community_name": "watermarks.property.test.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -7310,8 +7321,8 @@
       "source_location": "L38",
       "_origin": "ast",
       "id": "src_postgres_transaction_lease_registertransaction",
-      "community": 115,
-      "community_name": "TransactionHistoryEntry",
+      "community": 105,
+      "community_name": "checkpoint-store-cotx.test.ts",
       "norm_label": "registertransaction()"
     },
     {
@@ -7321,8 +7332,8 @@
       "source_location": "L44",
       "_origin": "ast",
       "id": "src_postgres_transaction_lease_unregistertransaction",
-      "community": 115,
-      "community_name": "TransactionHistoryEntry",
+      "community": 105,
+      "community_name": "checkpoint-store-cotx.test.ts",
       "norm_label": "unregistertransaction()"
     },
     {
@@ -7332,8 +7343,8 @@
       "source_location": "L57",
       "_origin": "ast",
       "id": "src_postgres_transaction_lease_resolvetransaction",
-      "community": 228,
-      "community_name": "@midnight-ntwrk/ledger-v8",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "resolvetransaction()"
     },
     {
@@ -7431,8 +7442,8 @@
       "source_location": "L205",
       "_origin": "ast",
       "id": "src_postgres_transaction_lease_pgtransactionleaselayer_constructor",
-      "community": 105,
-      "community_name": "checkpoint-store-cotx.test.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -7442,8 +7453,8 @@
       "source_location": "L207",
       "_origin": "ast",
       "id": "src_postgres_transaction_lease_pgtransactionleaselayer_withtransaction",
-      "community": 115,
-      "community_name": "TransactionHistoryEntry",
+      "community": 105,
+      "community_name": "checkpoint-store-cotx.test.ts",
       "norm_label": ".withtransaction()"
     },
     {
@@ -7497,8 +7508,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_postgres_wallet_state_envelope",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "postgres/wallet-state-envelope.ts"
     },
     {
@@ -7508,8 +7519,8 @@
       "source_location": "L19",
       "_origin": "ast",
       "id": "src_postgres_wallet_state_envelope_pgwalletstateenvelopestore",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "pgwalletstateenvelopestore"
     },
     {
@@ -7530,8 +7541,8 @@
       "source_location": "L38",
       "_origin": "ast",
       "id": "src_postgres_wallet_state_envelope_pgwalletstateenvelopestore_save",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": ".save()"
     },
     {
@@ -7541,8 +7552,8 @@
       "source_location": "L68",
       "_origin": "ast",
       "id": "src_postgres_wallet_state_envelope_pgwalletstateenvelopestore_load",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": ".load()"
     },
     {
@@ -7574,8 +7585,8 @@
       "source_location": "L35",
       "_origin": "ast",
       "id": "src_postgres_watermarks_pgwatermarks",
-      "community": 228,
-      "community_name": "@midnight-ntwrk/ledger-v8",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "pgwatermarks"
     },
     {
@@ -7585,8 +7596,8 @@
       "source_location": "L36",
       "_origin": "ast",
       "id": "src_postgres_watermarks_pgwatermarks_constructor",
-      "community": 228,
-      "community_name": "@midnight-ntwrk/ledger-v8",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -7596,8 +7607,8 @@
       "source_location": "L41",
       "_origin": "ast",
       "id": "src_postgres_watermarks_pgwatermarks_set",
-      "community": 228,
-      "community_name": "@midnight-ntwrk/ledger-v8",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": ".set()"
     },
     {
@@ -7607,8 +7618,8 @@
       "source_location": "L67",
       "_origin": "ast",
       "id": "src_postgres_watermarks_pgwatermarks_setimpl",
-      "community": 228,
-      "community_name": "@midnight-ntwrk/ledger-v8",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": ".setimpl()"
     },
     {
@@ -7618,8 +7629,8 @@
       "source_location": "L88",
       "_origin": "ast",
       "id": "src_postgres_watermarks_pgwatermarks_get",
-      "community": 228,
-      "community_name": "@midnight-ntwrk/ledger-v8",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": ".get()"
     },
     {
@@ -7629,8 +7640,8 @@
       "source_location": "L96",
       "_origin": "ast",
       "id": "src_postgres_watermarks_pgwatermarks_getimpl",
-      "community": 228,
-      "community_name": "@midnight-ntwrk/ledger-v8",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": ".getimpl()"
     },
     {
@@ -7937,8 +7948,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_api_surface_chain_archive_routing_test",
-      "community": 180,
-      "community_name": "interfaces/transaction-history-storage.ts",
+      "community": 115,
+      "community_name": "TransactionHistoryEntry",
       "norm_label": "chain-archive-routing.test.ts"
     },
     {
@@ -7948,8 +7959,8 @@
       "source_location": "L16",
       "_origin": "ast",
       "id": "test_api_surface_chain_archive_routing_test_fakedrivererror",
-      "community": 180,
-      "community_name": "interfaces/transaction-history-storage.ts",
+      "community": 115,
+      "community_name": "TransactionHistoryEntry",
       "norm_label": "fakedrivererror()"
     },
     {
@@ -8124,9 +8135,53 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_api_surface_withtx_methods_test",
-      "community": 105,
-      "community_name": "checkpoint-store-cotx.test.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "withtx-methods.test.ts"
+    },
+    {
+      "label": "duplicate-transaction-keys.test.ts",
+      "file_type": "code",
+      "source_file": "test/chain-archive-sync/duplicate-transaction-keys.test.ts",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "test_chain_archive_sync_duplicate_transaction_keys_test",
+      "community": 120,
+      "community_name": "chain-archive-rollover.ts",
+      "norm_label": "duplicate-transaction-keys.test.ts"
+    },
+    {
+      "label": "tx()",
+      "file_type": "code",
+      "source_file": "test/chain-archive-sync/duplicate-transaction-keys.test.ts",
+      "source_location": "L24",
+      "_origin": "ast",
+      "id": "test_chain_archive_sync_duplicate_transaction_keys_test_tx",
+      "community": 116,
+      "community_name": "postgres/checkpoint-store.ts",
+      "norm_label": "tx()"
+    },
+    {
+      "label": "HASH_A",
+      "file_type": "code",
+      "source_file": "test/chain-archive-sync/duplicate-transaction-keys.test.ts",
+      "source_location": "L25",
+      "_origin": "ast",
+      "id": "test_chain_archive_sync_duplicate_transaction_keys_test_hash_a",
+      "community": 120,
+      "community_name": "chain-archive-rollover.ts",
+      "norm_label": "hash_a"
+    },
+    {
+      "label": "HASH_B",
+      "file_type": "code",
+      "source_file": "test/chain-archive-sync/duplicate-transaction-keys.test.ts",
+      "source_location": "L26",
+      "_origin": "ast",
+      "id": "test_chain_archive_sync_duplicate_transaction_keys_test_hash_b",
+      "community": 120,
+      "community_name": "chain-archive-rollover.ts",
+      "norm_label": "hash_b"
     },
     {
       "label": "extrinsic-decoder.test.ts",
@@ -8182,6 +8237,83 @@
       "community": 118,
       "community_name": "tx-replay-decoder.ts",
       "norm_label": "vectors"
+    },
+    {
+      "label": "chain-archive-event-guard.integration.test.ts",
+      "file_type": "code",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "test_integration_chain_archive_event_guard_integration_test",
+      "community": 230,
+      "community_name": "typescript",
+      "norm_label": "chain-archive-event-guard.integration.test.ts"
+    },
+    {
+      "label": "compactU32Hex()",
+      "file_type": "code",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L31",
+      "_origin": "ast",
+      "id": "test_integration_chain_archive_event_guard_integration_test_compactu32hex",
+      "community": 230,
+      "community_name": "typescript",
+      "norm_label": "compactu32hex()"
+    },
+    {
+      "label": "bareSystemExtrinsicHex()",
+      "file_type": "code",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L42",
+      "_origin": "ast",
+      "id": "test_integration_chain_archive_event_guard_integration_test_baresystemextrinsichex",
+      "community": 230,
+      "community_name": "typescript",
+      "norm_label": "baresystemextrinsichex()"
+    },
+    {
+      "label": "FIXTURE",
+      "file_type": "code",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L48",
+      "_origin": "ast",
+      "id": "test_integration_chain_archive_event_guard_integration_test_fixture",
+      "community": 230,
+      "community_name": "typescript",
+      "norm_label": "fixture"
+    },
+    {
+      "label": "eventsBlobHex()",
+      "file_type": "code",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L64",
+      "_origin": "ast",
+      "id": "test_integration_chain_archive_event_guard_integration_test_eventsblobhex",
+      "community": 230,
+      "community_name": "typescript",
+      "norm_label": "eventsblobhex()"
+    },
+    {
+      "label": "fakeNodeFetch()",
+      "file_type": "code",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L68",
+      "_origin": "ast",
+      "id": "test_integration_chain_archive_event_guard_integration_test_fakenodefetch",
+      "community": 230,
+      "community_name": "typescript",
+      "norm_label": "fakenodefetch()"
+    },
+    {
+      "label": "syncWith()",
+      "file_type": "code",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L118",
+      "_origin": "ast",
+      "id": "test_integration_chain_archive_event_guard_integration_test_syncwith",
+      "community": 230,
+      "community_name": "typescript",
+      "norm_label": "syncwith()"
     },
     {
       "label": "chain-archive-ledger-refusal.integration.test.ts",
@@ -8245,8 +8377,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_integration_chain_archive_node_only_integration_test",
-      "community": 118,
-      "community_name": "tx-replay-decoder.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "chain-archive-node-only.integration.test.ts"
     },
     {
@@ -8256,8 +8388,8 @@
       "source_location": "L40",
       "_origin": "ast",
       "id": "test_integration_chain_archive_node_only_integration_test_nodeisup",
-      "community": 118,
-      "community_name": "tx-replay-decoder.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "nodeisup()"
     },
     {
@@ -8267,8 +8399,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_integration_chain_archive_preprod_cloud_crossval_integration_test",
-      "community": 98,
-      "community_name": "sync-service.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "chain-archive-preprod-cloud-crossval.integration.test.ts"
     },
     {
@@ -8278,8 +8410,8 @@
       "source_location": "L30",
       "_origin": "ast",
       "id": "test_integration_chain_archive_preprod_cloud_crossval_integration_test_max",
-      "community": 98,
-      "community_name": "sync-service.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "max"
     },
     {
@@ -8289,8 +8421,8 @@
       "source_location": "L35",
       "_origin": "ast",
       "id": "test_integration_chain_archive_preprod_cloud_crossval_integration_test_strip0x",
-      "community": 98,
-      "community_name": "sync-service.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "strip0x()"
     },
     {
@@ -8300,8 +8432,8 @@
       "source_location": "L36",
       "_origin": "ast",
       "id": "test_integration_chain_archive_preprod_cloud_crossval_integration_test_tohex",
-      "community": 98,
-      "community_name": "sync-service.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "tohex()"
     },
     {
@@ -8377,8 +8509,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_integration_chain_archive_source_parity_integration_test",
-      "community": 118,
-      "community_name": "tx-replay-decoder.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "chain-archive-source-parity.integration.test.ts"
     },
     {
@@ -8388,8 +8520,8 @@
       "source_location": "L36",
       "_origin": "ast",
       "id": "test_integration_chain_archive_source_parity_integration_test_blocks",
-      "community": 118,
-      "community_name": "tx-replay-decoder.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "blocks"
     },
     {
@@ -8399,8 +8531,8 @@
       "source_location": "L38",
       "_origin": "ast",
       "id": "test_integration_chain_archive_source_parity_integration_test_reachable",
-      "community": 118,
-      "community_name": "tx-replay-decoder.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "reachable()"
     },
     {
@@ -8410,8 +8542,8 @@
       "source_location": "L63",
       "_origin": "ast",
       "id": "test_integration_chain_archive_source_parity_integration_test_row",
-      "community": 118,
-      "community_name": "tx-replay-decoder.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "row"
     },
     {
@@ -8421,8 +8553,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_integration_chain_archive_sync_retry_integration_test",
-      "community": 112,
-      "community_name": "chain-archive-sync-retry.integration.test.ts",
+      "community": 194,
+      "community_name": "Test wallets",
       "norm_label": "chain-archive-sync-retry.integration.test.ts"
     },
     {
@@ -8432,8 +8564,8 @@
       "source_location": "L20",
       "_origin": "ast",
       "id": "test_integration_chain_archive_sync_retry_integration_test_hx",
-      "community": 112,
-      "community_name": "chain-archive-sync-retry.integration.test.ts",
+      "community": 194,
+      "community_name": "Test wallets",
       "norm_label": "hx()"
     },
     {
@@ -8443,8 +8575,8 @@
       "source_location": "L24",
       "_origin": "ast",
       "id": "test_integration_chain_archive_sync_retry_integration_test_fakechainblock",
-      "community": 112,
-      "community_name": "chain-archive-sync-retry.integration.test.ts",
+      "community": 194,
+      "community_name": "Test wallets",
       "norm_label": "fakechainblock"
     },
     {
@@ -8454,8 +8586,8 @@
       "source_location": "L42",
       "_origin": "ast",
       "id": "test_integration_chain_archive_sync_retry_integration_test_compactu32hex",
-      "community": 112,
-      "community_name": "chain-archive-sync-retry.integration.test.ts",
+      "community": 194,
+      "community_name": "Test wallets",
       "norm_label": "compactu32hex()"
     },
     {
@@ -8465,8 +8597,8 @@
       "source_location": "L55",
       "_origin": "ast",
       "id": "test_integration_chain_archive_sync_retry_integration_test_baremidnightextrinsichex",
-      "community": 112,
-      "community_name": "chain-archive-sync-retry.integration.test.ts",
+      "community": 194,
+      "community_name": "Test wallets",
       "norm_label": "baremidnightextrinsichex()"
     },
     {
@@ -8476,8 +8608,8 @@
       "source_location": "L69",
       "_origin": "ast",
       "id": "test_integration_chain_archive_sync_retry_integration_test_fakechain",
-      "community": 112,
-      "community_name": "chain-archive-sync-retry.integration.test.ts",
+      "community": 194,
+      "community_name": "Test wallets",
       "norm_label": "fakechain()"
     },
     {
@@ -8487,8 +8619,8 @@
       "source_location": "L90",
       "_origin": "ast",
       "id": "test_integration_chain_archive_sync_retry_integration_test_fakenodefetch",
-      "community": 112,
-      "community_name": "chain-archive-sync-retry.integration.test.ts",
+      "community": 194,
+      "community_name": "Test wallets",
       "norm_label": "fakenodefetch()"
     },
     {
@@ -8498,8 +8630,8 @@
       "source_location": "L152",
       "_origin": "ast",
       "id": "test_integration_chain_archive_sync_retry_integration_test_fakeindexerfetch",
-      "community": 112,
-      "community_name": "chain-archive-sync-retry.integration.test.ts",
+      "community": 194,
+      "community_name": "Test wallets",
       "norm_label": "fakeindexerfetch()"
     },
     {
@@ -8509,8 +8641,8 @@
       "source_location": "L190",
       "_origin": "ast",
       "id": "test_integration_chain_archive_sync_retry_integration_test_newservice",
-      "community": 112,
-      "community_name": "chain-archive-sync-retry.integration.test.ts",
+      "community": 194,
+      "community_name": "Test wallets",
       "norm_label": "newservice()"
     },
     {
@@ -8520,8 +8652,8 @@
       "source_location": "L407",
       "_origin": "ast",
       "id": "test_integration_chain_archive_sync_retry_integration_test_ingestoneblock",
-      "community": 112,
-      "community_name": "chain-archive-sync-retry.integration.test.ts",
+      "community": 194,
+      "community_name": "Test wallets",
       "norm_label": "ingestoneblock()"
     },
     {
@@ -8531,8 +8663,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_integration_chain_archive_sync_integration_test",
-      "community": 178,
-      "community_name": "midnight-wallet-sdk-loader.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "chain-archive-sync.integration.test.ts"
     },
     {
@@ -8542,8 +8674,8 @@
       "source_location": "L29",
       "_origin": "ast",
       "id": "test_integration_chain_archive_sync_integration_test_devnetisup",
-      "community": 178,
-      "community_name": "midnight-wallet-sdk-loader.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "devnetisup()"
     },
     {
@@ -8839,8 +8971,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_integration_cold_boot_recovery_integration_test",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "cold-boot-recovery.integration.test.ts"
     },
     {
@@ -8850,8 +8982,8 @@
       "source_location": "L65",
       "_origin": "ast",
       "id": "test_integration_cold_boot_recovery_integration_test_phasea_syncandpersistenvelope",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "phasea_syncandpersistenvelope()"
     },
     {
@@ -8861,8 +8993,8 @@
       "source_location": "L114",
       "_origin": "ast",
       "id": "test_integration_cold_boot_recovery_integration_test_phaseb_freshprocessrestoreandverify",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "phaseb_freshprocessrestoreandverify()"
     },
     {
@@ -8927,8 +9059,8 @@
       "source_location": "L39",
       "_origin": "ast",
       "id": "test_integration_crash_crash_harness_smoke_test_worker",
-      "community": 171,
-      "community_name": "lease-nonwedge.crash.test.ts",
+      "community": 149,
+      "community_name": "setup.ts",
       "norm_label": "worker()"
     },
     {
@@ -8971,8 +9103,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_integration_crash_crash_worker",
-      "community": 152,
-      "community_name": "TransactionHandle",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "crash-worker.ts"
     },
     {
@@ -8982,8 +9114,8 @@
       "source_location": "L56",
       "_origin": "ast",
       "id": "test_integration_crash_crash_worker_crashhook",
-      "community": 152,
-      "community_name": "TransactionHandle",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "crashhook"
     },
     {
@@ -8993,8 +9125,8 @@
       "source_location": "L62",
       "_origin": "ast",
       "id": "test_integration_crash_crash_worker_all_hooks",
-      "community": 152,
-      "community_name": "TransactionHandle",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "all_hooks"
     },
     {
@@ -9004,8 +9136,8 @@
       "source_location": "L75",
       "_origin": "ast",
       "id": "test_integration_crash_crash_worker_requireenv",
-      "community": 152,
-      "community_name": "TransactionHandle",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "requireenv()"
     },
     {
@@ -9015,8 +9147,8 @@
       "source_location": "L81",
       "_origin": "ast",
       "id": "test_integration_crash_crash_worker_signalready",
-      "community": 152,
-      "community_name": "TransactionHandle",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "signalready()"
     },
     {
@@ -9026,8 +9158,8 @@
       "source_location": "L89",
       "_origin": "ast",
       "id": "test_integration_crash_crash_worker_pauseuntilkilled",
-      "community": 152,
-      "community_name": "TransactionHandle",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "pauseuntilkilled()"
     },
     {
@@ -9037,8 +9169,8 @@
       "source_location": "L107",
       "_origin": "ast",
       "id": "test_integration_crash_crash_worker_pausethenresume",
-      "community": 152,
-      "community_name": "TransactionHandle",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "pausethenresume()"
     },
     {
@@ -9048,8 +9180,8 @@
       "source_location": "L118",
       "_origin": "ast",
       "id": "test_integration_crash_crash_worker_waitforproceed",
-      "community": 152,
-      "community_name": "TransactionHandle",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "waitforproceed()"
     },
     {
@@ -9059,8 +9191,8 @@
       "source_location": "L139",
       "_origin": "ast",
       "id": "test_integration_crash_crash_worker_signalresult",
-      "community": 152,
-      "community_name": "TransactionHandle",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "signalresult()"
     },
     {
@@ -9070,8 +9202,8 @@
       "source_location": "L148",
       "_origin": "ast",
       "id": "test_integration_crash_crash_worker_describecaughterror",
-      "community": 152,
-      "community_name": "TransactionHandle",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "describecaughterror()"
     },
     {
@@ -9081,8 +9213,8 @@
       "source_location": "L178",
       "_origin": "ast",
       "id": "test_integration_crash_crash_worker_t5deterministicpayload",
-      "community": 152,
-      "community_name": "TransactionHandle",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "t5deterministicpayload()"
     },
     {
@@ -9092,8 +9224,8 @@
       "source_location": "L192",
       "_origin": "ast",
       "id": "test_integration_crash_crash_worker_cotxcallable",
-      "community": 152,
-      "community_name": "TransactionHandle",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "cotxcallable"
     },
     {
@@ -9103,8 +9235,8 @@
       "source_location": "L197",
       "_origin": "ast",
       "id": "test_integration_crash_crash_worker_cotxpauseinfo",
-      "community": 152,
-      "community_name": "TransactionHandle",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "cotxpauseinfo"
     },
     {
@@ -9114,8 +9246,8 @@
       "source_location": "L199",
       "_origin": "ast",
       "id": "test_integration_crash_crash_worker_wraptxpausebeforecursor",
-      "community": 152,
-      "community_name": "TransactionHandle",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "wraptxpausebeforecursor()"
     },
     {
@@ -9125,8 +9257,8 @@
       "source_location": "L259",
       "_origin": "ast",
       "id": "test_integration_crash_crash_worker_observeclientpausebeforecursor",
-      "community": 152,
-      "community_name": "TransactionHandle",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "observeclientpausebeforecursor()"
     },
     {
@@ -9136,8 +9268,8 @@
       "source_location": "L286",
       "_origin": "ast",
       "id": "test_integration_crash_crash_worker_main",
-      "community": 152,
-      "community_name": "TransactionHandle",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "main()"
     },
     {
@@ -9235,8 +9367,8 @@
       "source_location": "L80",
       "_origin": "ast",
       "id": "test_integration_crash_cursor_durability_crash_test_adapters",
-      "community": 105,
-      "community_name": "checkpoint-store-cotx.test.ts",
+      "community": 116,
+      "community_name": "postgres/checkpoint-store.ts",
       "norm_label": "adapters"
     },
     {
@@ -9400,8 +9532,8 @@
       "source_location": "L255",
       "_origin": "ast",
       "id": "test_integration_crash_cursor_durability_crash_test_batchspec",
-      "community": 102,
-      "community_name": "cursor-durability.crash.test.ts",
+      "community": 234,
+      "community_name": "JsonValue",
       "norm_label": "batchspec"
     },
     {
@@ -9455,8 +9587,8 @@
       "source_location": "L334",
       "_origin": "ast",
       "id": "test_integration_crash_cursor_durability_crash_test_currentstate",
-      "community": 102,
-      "community_name": "cursor-durability.crash.test.ts",
+      "community": 234,
+      "community_name": "JsonValue",
       "norm_label": "currentstate"
     },
     {
@@ -9917,8 +10049,8 @@
       "source_location": "L44",
       "_origin": "ast",
       "id": "test_integration_crash_process_kill_save_crash_test_pool",
-      "community": 178,
-      "community_name": "midnight-wallet-sdk-loader.ts",
+      "community": 71,
+      "community_name": "transaction-history-storage.test.ts",
       "norm_label": "pool()"
     },
     {
@@ -10071,8 +10203,8 @@
       "source_location": "L68",
       "_origin": "ast",
       "id": "test_integration_crash_saveandadvance_cotx_crash_test_worker",
-      "community": 171,
-      "community_name": "lease-nonwedge.crash.test.ts",
+      "community": 71,
+      "community_name": "transaction-history-storage.test.ts",
       "norm_label": "worker()"
     },
     {
@@ -10126,8 +10258,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_integration_live_fixtures_facade_merge_loader",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "facade-merge-loader.ts"
     },
     {
@@ -10137,8 +10269,8 @@
       "source_location": "L32",
       "_origin": "ast",
       "id": "test_integration_live_fixtures_facade_merge_loader_facadedistindexpath",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "facadedistindexpath()"
     },
     {
@@ -10148,8 +10280,8 @@
       "source_location": "L36",
       "_origin": "ast",
       "id": "test_integration_live_fixtures_facade_merge_loader_unshieldedwalletdistindexpath",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "unshieldedwalletdistindexpath()"
     },
     {
@@ -10159,8 +10291,8 @@
       "source_location": "L43",
       "_origin": "ast",
       "id": "test_integration_live_fixtures_facade_merge_loader_facademergeavailable",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "facademergeavailable()"
     },
     {
@@ -10170,8 +10302,8 @@
       "source_location": "L51",
       "_origin": "ast",
       "id": "test_integration_live_fixtures_facade_merge_loader_loadfacademerge",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "loadfacademerge()"
     },
     {
@@ -10181,8 +10313,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_integration_live_fixtures_midnight_wallet_sdk_loader",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "midnight-wallet-sdk-loader.ts"
     },
     {
@@ -10192,8 +10324,8 @@
       "source_location": "L33",
       "_origin": "ast",
       "id": "test_integration_live_fixtures_midnight_wallet_sdk_loader_midnightwalletreporoot",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "midnightwalletreporoot()"
     },
     {
@@ -10203,8 +10335,8 @@
       "source_location": "L37",
       "_origin": "ast",
       "id": "test_integration_live_fixtures_midnight_wallet_sdk_loader_packagedistfile",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "packagedistfile()"
     },
     {
@@ -10214,8 +10346,8 @@
       "source_location": "L41",
       "_origin": "ast",
       "id": "test_integration_live_fixtures_midnight_wallet_sdk_loader_ledgerv8nodeentry",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "ledgerv8nodeentry()"
     },
     {
@@ -10225,8 +10357,8 @@
       "source_location": "L52",
       "_origin": "ast",
       "id": "test_integration_live_fixtures_midnight_wallet_sdk_loader_loadmidnightwalletsdk",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "loadmidnightwalletsdk()"
     },
     {
@@ -10236,8 +10368,8 @@
       "source_location": "L66",
       "_origin": "ast",
       "id": "test_integration_live_fixtures_midnight_wallet_sdk_loader_deriveunshieldedseed",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "deriveunshieldedseed()"
     },
     {
@@ -10247,8 +10379,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_integration_live_fixtures_preprod_fixtures",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "preprod-fixtures.ts"
     },
     {
@@ -10258,8 +10390,8 @@
       "source_location": "L38",
       "_origin": "ast",
       "id": "test_integration_live_fixtures_preprod_fixtures_firststatewhere",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "firststatewhere()"
     },
     {
@@ -10269,8 +10401,8 @@
       "source_location": "L60",
       "_origin": "ast",
       "id": "test_integration_live_fixtures_preprod_fixtures_buildunshieldedconfig",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "buildunshieldedconfig()"
     },
     {
@@ -10577,8 +10709,8 @@
       "source_location": "L395",
       "_origin": "ast",
       "id": "test_integration_pg_tx_history_adapter_pgwalletsdktransactionhistoryadapter_constructor",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 196,
+      "community_name": "watermarks.property.test.ts",
       "norm_label": ".constructor()"
     },
     {
@@ -10654,8 +10786,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_integration_preprod_db_sync_integration_test",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "preprod-db-sync.integration.test.ts"
     },
     {
@@ -10841,8 +10973,8 @@
       "source_location": "L335",
       "_origin": "ast",
       "id": "test_integration_soak_full_sync_soak_integration_test_adapters",
-      "community": 105,
-      "community_name": "checkpoint-store-cotx.test.ts",
+      "community": 116,
+      "community_name": "postgres/checkpoint-store.ts",
       "norm_label": "adapters"
     },
     {
@@ -10896,8 +11028,8 @@
       "source_location": "L386",
       "_origin": "ast",
       "id": "test_integration_soak_full_sync_soak_integration_test_currentstate",
-      "community": 102,
-      "community_name": "cursor-durability.crash.test.ts",
+      "community": 234,
+      "community_name": "JsonValue",
       "norm_label": "currentstate"
     },
     {
@@ -11127,8 +11259,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_postgres_chain_archive_migrate_test",
-      "community": 112,
-      "community_name": "chain-archive-sync-retry.integration.test.ts",
+      "community": 199,
+      "community_name": "migrate.ts",
       "norm_label": "chain-archive-migrate.test.ts"
     },
     {
@@ -11138,8 +11270,8 @@
       "source_location": "L390",
       "_origin": "ast",
       "id": "test_postgres_chain_archive_migrate_test_tick",
-      "community": 112,
-      "community_name": "chain-archive-sync-retry.integration.test.ts",
+      "community": 199,
+      "community_name": "migrate.ts",
       "norm_label": "tick()"
     },
     {
@@ -11149,8 +11281,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_postgres_chain_archive_rollover_test",
-      "community": 112,
-      "community_name": "chain-archive-sync-retry.integration.test.ts",
+      "community": 244,
+      "community_name": "chain-archive-rollover.ts",
       "norm_label": "chain-archive-rollover.test.ts"
     },
     {
@@ -11160,8 +11292,8 @@
       "source_location": "L211",
       "_origin": "ast",
       "id": "test_postgres_chain_archive_rollover_test_get",
-      "community": 112,
-      "community_name": "chain-archive-sync-retry.integration.test.ts",
+      "community": 244,
+      "community_name": "chain-archive-rollover.ts",
       "norm_label": "get()"
     },
     {
@@ -11171,8 +11303,8 @@
       "source_location": "L212",
       "_origin": "ast",
       "id": "test_postgres_chain_archive_rollover_test_apply",
-      "community": 112,
-      "community_name": "chain-archive-sync-retry.integration.test.ts",
+      "community": 244,
+      "community_name": "chain-archive-rollover.ts",
       "norm_label": "apply()"
     },
     {
@@ -11182,8 +11314,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_postgres_chain_archive_store_test",
-      "community": 113,
-      "community_name": "interfaces/chain-archive-store.ts",
+      "community": 199,
+      "community_name": "migrate.ts",
       "norm_label": "chain-archive-store.test.ts"
     },
     {
@@ -11193,8 +11325,8 @@
       "source_location": "L47",
       "_origin": "ast",
       "id": "test_postgres_chain_archive_store_test_makeblock",
-      "community": 113,
-      "community_name": "interfaces/chain-archive-store.ts",
+      "community": 199,
+      "community_name": "migrate.ts",
       "norm_label": "makeblock()"
     },
     {
@@ -11204,8 +11336,8 @@
       "source_location": "L346",
       "_origin": "ast",
       "id": "test_postgres_chain_archive_store_test_bundlefixture",
-      "community": 113,
-      "community_name": "interfaces/chain-archive-store.ts",
+      "community": 199,
+      "community_name": "migrate.ts",
       "norm_label": "bundlefixture()"
     },
     {
@@ -11215,8 +11347,8 @@
       "source_location": "L426",
       "_origin": "ast",
       "id": "test_postgres_chain_archive_store_test_blockrow",
-      "community": 113,
-      "community_name": "interfaces/chain-archive-store.ts",
+      "community": 199,
+      "community_name": "migrate.ts",
       "norm_label": "blockrow"
     },
     {
@@ -11226,8 +11358,8 @@
       "source_location": "L453",
       "_origin": "ast",
       "id": "test_postgres_chain_archive_store_test_txrow",
-      "community": 113,
-      "community_name": "interfaces/chain-archive-store.ts",
+      "community": 199,
+      "community_name": "migrate.ts",
       "norm_label": "txrow"
     },
     {
@@ -11237,8 +11369,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_postgres_checkpoint_id_validation_test",
-      "community": 105,
-      "community_name": "checkpoint-store-cotx.test.ts",
+      "community": 116,
+      "community_name": "postgres/checkpoint-store.ts",
       "norm_label": "checkpoint-id-validation.test.ts"
     },
     {
@@ -11248,8 +11380,8 @@
       "source_location": "L11",
       "_origin": "ast",
       "id": "test_postgres_checkpoint_id_validation_test_sql_getsql",
-      "community": 105,
-      "community_name": "checkpoint-store-cotx.test.ts",
+      "community": 116,
+      "community_name": "postgres/checkpoint-store.ts",
       "norm_label": "{ sql: getsql }"
     },
     {
@@ -11259,8 +11391,8 @@
       "source_location": "L13",
       "_origin": "ast",
       "id": "test_postgres_checkpoint_id_validation_test_makestore",
-      "community": 105,
-      "community_name": "checkpoint-store-cotx.test.ts",
+      "community": 116,
+      "community_name": "postgres/checkpoint-store.ts",
       "norm_label": "makestore()"
     },
     {
@@ -11270,8 +11402,8 @@
       "source_location": "L23",
       "_origin": "ast",
       "id": "test_postgres_checkpoint_id_validation_test_overlong_id",
-      "community": 105,
-      "community_name": "checkpoint-store-cotx.test.ts",
+      "community": 116,
+      "community_name": "postgres/checkpoint-store.ts",
       "norm_label": "overlong_id"
     },
     {
@@ -11281,8 +11413,8 @@
       "source_location": "L26",
       "_origin": "ast",
       "id": "test_postgres_checkpoint_id_validation_test_method",
-      "community": 105,
-      "community_name": "checkpoint-store-cotx.test.ts",
+      "community": 116,
+      "community_name": "postgres/checkpoint-store.ts",
       "norm_label": "method"
     },
     {
@@ -11303,8 +11435,8 @@
       "source_location": "L45",
       "_origin": "ast",
       "id": "test_postgres_checkpoint_id_validation_test_methods",
-      "community": 105,
-      "community_name": "checkpoint-store-cotx.test.ts",
+      "community": 116,
+      "community_name": "postgres/checkpoint-store.ts",
       "norm_label": "methods"
     },
     {
@@ -11490,8 +11622,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_postgres_checkpoint_store_test",
-      "community": 105,
-      "community_name": "checkpoint-store-cotx.test.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "checkpoint-store.test.ts"
     },
     {
@@ -11501,8 +11633,8 @@
       "source_location": "L16",
       "_origin": "ast",
       "id": "test_postgres_checkpoint_store_test_sql_getsql_connectionuri",
-      "community": 105,
-      "community_name": "checkpoint-store-cotx.test.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "{ sql: getsql, connectionuri }"
     },
     {
@@ -11512,8 +11644,8 @@
       "source_location": "L18",
       "_origin": "ast",
       "id": "test_postgres_checkpoint_store_test_store",
-      "community": 105,
-      "community_name": "checkpoint-store-cotx.test.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "store()"
     },
     {
@@ -11523,8 +11655,8 @@
       "source_location": "L23",
       "_origin": "ast",
       "id": "test_postgres_checkpoint_store_test_truncateall",
-      "community": 105,
-      "community_name": "checkpoint-store-cotx.test.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "truncateall()"
     },
     {
@@ -11534,8 +11666,8 @@
       "source_location": "L27",
       "_origin": "ast",
       "id": "test_postgres_checkpoint_store_test_sha256",
-      "community": 105,
-      "community_name": "checkpoint-store-cotx.test.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "sha256()"
     },
     {
@@ -11545,8 +11677,8 @@
       "source_location": "L33",
       "_origin": "ast",
       "id": "test_postgres_checkpoint_store_test_rawconnection",
-      "community": 105,
-      "community_name": "checkpoint-store-cotx.test.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "rawconnection()"
     },
     {
@@ -11556,8 +11688,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_postgres_client_test",
-      "community": 178,
-      "community_name": "midnight-wallet-sdk-loader.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "client.test.ts"
     },
     {
@@ -11688,8 +11820,8 @@
       "source_location": "L143",
       "_origin": "ast",
       "id": "test_postgres_differential_equivalence_test_adapters",
-      "community": 105,
-      "community_name": "checkpoint-store-cotx.test.ts",
+      "community": 116,
+      "community_name": "postgres/checkpoint-store.ts",
       "norm_label": "adapters"
     },
     {
@@ -11831,8 +11963,8 @@
       "source_location": "L335",
       "_origin": "ast",
       "id": "test_postgres_differential_equivalence_test_currentstate",
-      "community": 102,
-      "community_name": "cursor-durability.crash.test.ts",
+      "community": 234,
+      "community_name": "JsonValue",
       "norm_label": "currentstate"
     },
     {
@@ -11952,8 +12084,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_postgres_errors_test",
-      "community": 180,
-      "community_name": "interfaces/transaction-history-storage.ts",
+      "community": 199,
+      "community_name": "migrate.ts",
       "norm_label": "errors.test.ts"
     },
     {
@@ -11963,8 +12095,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_postgres_in_memory_transaction_history_storage",
-      "community": 107,
-      "community_name": "src/index.ts",
+      "community": 196,
+      "community_name": "watermarks.property.test.ts",
       "norm_label": "in-memory-transaction-history-storage.ts"
     },
     {
@@ -12150,8 +12282,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_postgres_migration_lock_timeout_test",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "migration-lock-timeout.test.ts"
     },
     {
@@ -12326,8 +12458,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_postgres_reference_merge_parity_test",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "reference-merge-parity.test.ts"
     },
     {
@@ -12337,8 +12469,8 @@
       "source_location": "L57",
       "_origin": "ast",
       "id": "test_postgres_reference_merge_parity_test_umbraentry",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "umbraentry()"
     },
     {
@@ -12348,8 +12480,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_postgres_reference_merge",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "reference-merge.ts"
     },
     {
@@ -12359,8 +12491,8 @@
       "source_location": "L3",
       "_origin": "ast",
       "id": "test_postgres_reference_merge_isplainobject",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "isplainobject()"
     },
     {
@@ -12370,8 +12502,8 @@
       "source_location": "L13",
       "_origin": "ast",
       "id": "test_postgres_reference_merge_mergesections",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "mergesections()"
     },
     {
@@ -12381,8 +12513,8 @@
       "source_location": "L52",
       "_origin": "ast",
       "id": "test_postgres_reference_merge_referencemergeentries",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "referencemergeentries()"
     },
     {
@@ -12414,8 +12546,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_postgres_save_and_advance_property_test",
-      "community": 230,
-      "community_name": "typescript",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "save-and-advance.property.test.ts"
     },
     {
@@ -12425,8 +12557,8 @@
       "source_location": "L28",
       "_origin": "ast",
       "id": "test_postgres_save_and_advance_property_test_sql_getsql",
-      "community": 230,
-      "community_name": "typescript",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "{ sql: getsql }"
     },
     {
@@ -12436,8 +12568,8 @@
       "source_location": "L36",
       "_origin": "ast",
       "id": "test_postgres_save_and_advance_property_test_store",
-      "community": 230,
-      "community_name": "typescript",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "store()"
     },
     {
@@ -12447,8 +12579,8 @@
       "source_location": "L42",
       "_origin": "ast",
       "id": "test_postgres_save_and_advance_property_test_freshwallet",
-      "community": 230,
-      "community_name": "typescript",
+      "community": 161,
+      "community_name": "crash-worker.ts",
       "norm_label": "freshwallet()"
     },
     {
@@ -12524,8 +12656,8 @@
       "source_location": "L25",
       "_origin": "ast",
       "id": "test_postgres_setup_starttestdatabase",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "starttestdatabase()"
     },
     {
@@ -12535,8 +12667,8 @@
       "source_location": "L32",
       "_origin": "ast",
       "id": "test_postgres_setup_stoptestdatabase",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "stoptestdatabase()"
     },
     {
@@ -12546,8 +12678,8 @@
       "source_location": "L37",
       "_origin": "ast",
       "id": "test_postgres_setup_registersuitelifecycle",
-      "community": 157,
-      "community_name": "registerSuiteLifecycle",
+      "community": 152,
+      "community_name": "TransactionHandle",
       "norm_label": "registersuitelifecycle()"
     },
     {
@@ -12843,8 +12975,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_postgres_temporal_kv_property_test",
-      "community": 119,
-      "community_name": "perf-batching.test.ts",
+      "community": 2,
+      "community_name": "interfaces/temporal-kv.ts",
       "norm_label": "temporal-kv.property.test.ts"
     },
     {
@@ -12854,8 +12986,8 @@
       "source_location": "L7",
       "_origin": "ast",
       "id": "test_postgres_temporal_kv_property_test_sql_getsql",
-      "community": 119,
-      "community_name": "perf-batching.test.ts",
+      "community": 2,
+      "community_name": "interfaces/temporal-kv.ts",
       "norm_label": "{ sql: getsql }"
     },
     {
@@ -12865,8 +12997,8 @@
       "source_location": "L9",
       "_origin": "ast",
       "id": "test_postgres_temporal_kv_property_test_kv",
-      "community": 119,
-      "community_name": "perf-batching.test.ts",
+      "community": 2,
+      "community_name": "interfaces/temporal-kv.ts",
       "norm_label": "kv()"
     },
     {
@@ -12876,8 +13008,8 @@
       "source_location": "L14",
       "_origin": "ast",
       "id": "test_postgres_temporal_kv_property_test_freshkey",
-      "community": 119,
-      "community_name": "perf-batching.test.ts",
+      "community": 2,
+      "community_name": "interfaces/temporal-kv.ts",
       "norm_label": "freshkey()"
     },
     {
@@ -12964,8 +13096,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_postgres_timeouts_test",
-      "community": 178,
-      "community_name": "midnight-wallet-sdk-loader.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "timeouts.test.ts"
     },
     {
@@ -13305,8 +13437,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_postgres_transaction_lease_property_test",
-      "community": 178,
-      "community_name": "midnight-wallet-sdk-loader.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "transaction-lease.property.test.ts"
     },
     {
@@ -13316,8 +13448,8 @@
       "source_location": "L6",
       "_origin": "ast",
       "id": "test_postgres_transaction_lease_property_test_connectionuri",
-      "community": 178,
-      "community_name": "midnight-wallet-sdk-loader.ts",
+      "community": 112,
+      "community_name": "chain-archive-sync-retry.integration.test.ts",
       "norm_label": "{ connectionuri }"
     },
     {
@@ -13415,8 +13547,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_postgres_wallet_state_envelope_property_test",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 228,
+      "community_name": "@midnight-ntwrk/ledger-v8",
       "norm_label": "wallet-state-envelope.property.test.ts"
     },
     {
@@ -13426,8 +13558,8 @@
       "source_location": "L6",
       "_origin": "ast",
       "id": "test_postgres_wallet_state_envelope_property_test_safestring",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 228,
+      "community_name": "@midnight-ntwrk/ledger-v8",
       "norm_label": "safestring()"
     },
     {
@@ -13437,8 +13569,8 @@
       "source_location": "L8",
       "_origin": "ast",
       "id": "test_postgres_wallet_state_envelope_property_test_safenonemptystring",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 228,
+      "community_name": "@midnight-ntwrk/ledger-v8",
       "norm_label": "safenonemptystring()"
     },
     {
@@ -13448,8 +13580,8 @@
       "source_location": "L13",
       "_origin": "ast",
       "id": "test_postgres_wallet_state_envelope_property_test_subwalletslot",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 228,
+      "community_name": "@midnight-ntwrk/ledger-v8",
       "norm_label": "subwalletslot"
     },
     {
@@ -13459,8 +13591,8 @@
       "source_location": "L15",
       "_origin": "ast",
       "id": "test_postgres_wallet_state_envelope_property_test_arbitraryenvelope",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 228,
+      "community_name": "@midnight-ntwrk/ledger-v8",
       "norm_label": "arbitraryenvelope"
     },
     {
@@ -13470,8 +13602,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_postgres_wallet_state_envelope_test",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "wallet-state-envelope.test.ts"
     },
     {
@@ -13481,8 +13613,8 @@
       "source_location": "L16",
       "_origin": "ast",
       "id": "test_postgres_wallet_state_envelope_test_sql_getsql",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "{ sql: getsql }"
     },
     {
@@ -13492,8 +13624,8 @@
       "source_location": "L18",
       "_origin": "ast",
       "id": "test_postgres_wallet_state_envelope_test_checkpointstore",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "checkpointstore()"
     },
     {
@@ -13503,8 +13635,8 @@
       "source_location": "L23",
       "_origin": "ast",
       "id": "test_postgres_wallet_state_envelope_test_envelopestore",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "envelopestore()"
     },
     {
@@ -13514,8 +13646,8 @@
       "source_location": "L27",
       "_origin": "ast",
       "id": "test_postgres_wallet_state_envelope_test_envelope",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "envelope()"
     },
     {
@@ -13525,8 +13657,8 @@
       "source_location": "L37",
       "_origin": "ast",
       "id": "test_postgres_wallet_state_envelope_test_truncateall",
-      "community": 78,
-      "community_name": "storage-errors.ts",
+      "community": 1,
+      "community_name": "interfaces/transaction-lease.ts",
       "norm_label": "truncateall()"
     },
     {
@@ -13591,8 +13723,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_postgres_watermarks_test",
-      "community": 183,
-      "community_name": "watermarks.test.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": "watermarks.test.ts"
     },
     {
@@ -13602,8 +13734,8 @@
       "source_location": "L10",
       "_origin": "ast",
       "id": "test_postgres_watermarks_test_sql_getsql_connectionuri",
-      "community": 183,
-      "community_name": "watermarks.test.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": "{ sql: getsql, connectionuri }"
     },
     {
@@ -13613,8 +13745,8 @@
       "source_location": "L12",
       "_origin": "ast",
       "id": "test_postgres_watermarks_test_store",
-      "community": 183,
-      "community_name": "watermarks.test.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": "store()"
     },
     {
@@ -13624,8 +13756,8 @@
       "source_location": "L16",
       "_origin": "ast",
       "id": "test_postgres_watermarks_test_txlayer",
-      "community": 183,
-      "community_name": "watermarks.test.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": "txlayer()"
     },
     {
@@ -13635,8 +13767,8 @@
       "source_location": "L20",
       "_origin": "ast",
       "id": "test_postgres_watermarks_test_truncateall",
-      "community": 183,
-      "community_name": "watermarks.test.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": "truncateall()"
     },
     {
@@ -13646,8 +13778,8 @@
       "source_location": "L24",
       "_origin": "ast",
       "id": "test_postgres_watermarks_test_rawconnection",
-      "community": 183,
-      "community_name": "watermarks.test.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": "rawconnection()"
     },
     {
@@ -13657,8 +13789,8 @@
       "source_location": "L35",
       "_origin": "ast",
       "id": "test_postgres_watermarks_test_watermarkswriteactivity",
-      "community": 183,
-      "community_name": "watermarks.test.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": "watermarkswriteactivity()"
     },
     {
@@ -13668,8 +13800,8 @@
       "source_location": "L44",
       "_origin": "ast",
       "id": "test_postgres_watermarks_test_fake_tx",
-      "community": 183,
-      "community_name": "watermarks.test.ts",
+      "community": 75,
+      "community_name": "client.ts",
       "norm_label": "fake_tx"
     },
     {
@@ -23378,7 +23510,7 @@
       "label": "Deferred to a later change",
       "file_type": "document",
       "source_file": "openspec/changes/sprint-9-indexer-independence/tasks.md",
-      "source_location": "L287",
+      "source_location": "L306",
       "_origin": "ast",
       "id": "openspec_changes_sprint_9_indexer_independence_tasks_deferred_to_a_later_change",
       "community": 198,
@@ -34282,10 +34414,22 @@
       "context": "import",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-cli.ts",
-      "source_location": "L31",
+      "source_location": "L30",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_cli",
+      "target": "chain_archive_sync_bootstrap",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test",
       "target": "chain_archive_sync_bootstrap",
       "confidence_score": 1.0
     },
@@ -34390,12 +34534,36 @@
       "context": "import",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-cli.ts",
-      "source_location": "L31",
+      "source_location": "L30",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_cli",
       "target": "chain_archive_sync_bootstrap_bootstrapchainarchiveschema",
       "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test",
+      "target": "chain_archive_sync_bootstrap_bootstrapchainarchiveschema",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L121",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test_syncwith",
+      "target": "chain_archive_sync_bootstrap_bootstrapchainarchiveschema"
     },
     {
       "relation": "imports",
@@ -34748,7 +34916,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L492",
+      "source_location": "L547",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_ingestoneblock",
@@ -34880,7 +35048,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L496",
+      "source_location": "L551",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_ingestoneblock",
@@ -34952,7 +35120,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L471",
+      "source_location": "L526",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_ingestoneblock",
@@ -34988,7 +35156,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L463",
+      "source_location": "L518",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_ingestoneblock",
@@ -35183,7 +35351,7 @@
       "context": "parameter_type",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L805",
+      "source_location": "L875",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_buildtransactionrecords",
@@ -35195,7 +35363,7 @@
       "context": "parameter_type",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L625",
+      "source_location": "L695",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_oraclecrosscheck",
@@ -35219,7 +35387,7 @@
       "context": "field",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L117",
+      "source_location": "L146",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncserviceoptions",
@@ -35287,7 +35455,7 @@
       "context": "field",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L171",
+      "source_location": "L200",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice",
@@ -35508,7 +35676,7 @@
       "context": "parameter_type",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L354",
+      "source_location": "L383",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_assertparentcontinuity",
@@ -35577,7 +35745,7 @@
       "context": "field",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L98",
+      "source_location": "L127",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncserviceoptions",
@@ -35700,7 +35868,7 @@
       "context": "field",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L168",
+      "source_location": "L197",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice",
@@ -35795,7 +35963,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-cli.ts",
-      "source_location": "L48",
+      "source_location": "L47",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_cli",
@@ -35806,7 +35974,7 @@
       "relation": "indirect_call",
       "confidence": "INFERRED",
       "source_file": "chain-archive-sync/sync-cli.ts",
-      "source_location": "L68",
+      "source_location": "L87",
       "weight": 1.0,
       "_origin": "ast",
       "context": "argument",
@@ -35818,7 +35986,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-cli.ts",
-      "source_location": "L52",
+      "source_location": "L71",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_cli",
@@ -35829,7 +35997,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-cli.ts",
-      "source_location": "L50",
+      "source_location": "L69",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_cli",
@@ -35841,7 +36009,7 @@
       "context": "import",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-cli.ts",
-      "source_location": "L32",
+      "source_location": "L31",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_cli",
@@ -35853,7 +36021,7 @@
       "context": "import",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-cli.ts",
-      "source_location": "L32",
+      "source_location": "L31",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_cli",
@@ -35865,7 +36033,7 @@
       "context": "import",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-cli.ts",
-      "source_location": "L30",
+      "source_location": "L29",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_cli",
@@ -35877,7 +36045,7 @@
       "context": "import",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-cli.ts",
-      "source_location": "L30",
+      "source_location": "L29",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_cli",
@@ -35888,7 +36056,18 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L153",
+      "source_location": "L102",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "chain_archive_sync_sync_service",
+      "target": "chain_archive_sync_sync_service_assertnoduplicatetransactionkeys",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "chain-archive-sync/sync-service.ts",
+      "source_location": "L182",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service",
@@ -35899,7 +36078,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L94",
+      "source_location": "L123",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service",
@@ -35954,7 +36133,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L138",
+      "source_location": "L167",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service",
@@ -36121,6 +36300,30 @@
       "relation": "imports_from",
       "context": "import",
       "confidence": "EXTRACTED",
+      "source_file": "test/chain-archive-sync/duplicate-transaction-keys.test.ts",
+      "source_location": "L2",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_chain_archive_sync_duplicate_transaction_keys_test",
+      "target": "chain_archive_sync_sync_service",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L6",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test",
+      "target": "chain_archive_sync_sync_service",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
       "source_file": "test/integration/chain-archive-ledger-refusal.integration.test.ts",
       "source_location": "L7",
       "weight": 1.0,
@@ -36218,7 +36421,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L582",
+      "source_location": "L652",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_ingestoneblock",
@@ -36230,7 +36433,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L583",
+      "source_location": "L653",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_ingestoneblock",
@@ -36242,7 +36445,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L264",
+      "source_location": "L293",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_assertchainidentity",
@@ -36254,7 +36457,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L433",
+      "source_location": "L482",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_assertnounarchivedeventsystemtransactions",
@@ -36266,7 +36469,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L375",
+      "source_location": "L404",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_assertparentcontinuity",
@@ -36278,7 +36481,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L730",
+      "source_location": "L800",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_buildnodeonlytransactionrecords",
@@ -36290,7 +36493,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L808",
+      "source_location": "L878",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_buildtransactionrecords",
@@ -36302,7 +36505,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L196",
+      "source_location": "L225",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_constructor",
@@ -36314,7 +36517,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L750",
+      "source_location": "L820",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_fetchdparameterfromnode",
@@ -36326,7 +36529,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L450",
+      "source_location": "L505",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_ingestoneblock",
@@ -36338,7 +36541,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L638",
+      "source_location": "L708",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_oraclecrosscheck",
@@ -36346,11 +36549,35 @@
       "confidence_score": 1.0
     },
     {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "chain-archive-sync/sync-service.ts",
+      "source_location": "L640",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "chain_archive_sync_sync_service_chainarchivesyncservice_ingestoneblock",
+      "target": "chain_archive_sync_sync_service_assertnoduplicatetransactionkeys",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "test/chain-archive-sync/duplicate-transaction-keys.test.ts",
+      "source_location": "L2",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_chain_archive_sync_duplicate_transaction_keys_test",
+      "target": "chain_archive_sync_sync_service_assertnoduplicatetransactionkeys",
+      "confidence_score": 1.0
+    },
+    {
       "relation": "references",
       "context": "field",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L95",
+      "source_location": "L124",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncserviceoptions",
@@ -36361,7 +36588,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L263",
+      "source_location": "L292",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice",
@@ -36372,7 +36599,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L426",
+      "source_location": "L475",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice",
@@ -36383,7 +36610,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L354",
+      "source_location": "L383",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice",
@@ -36394,7 +36621,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L875",
+      "source_location": "L945",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice",
@@ -36405,7 +36632,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L680",
+      "source_location": "L750",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice",
@@ -36416,7 +36643,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L805",
+      "source_location": "L875",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice",
@@ -36427,7 +36654,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L190",
+      "source_location": "L219",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice",
@@ -36438,7 +36665,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L747",
+      "source_location": "L817",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice",
@@ -36449,7 +36676,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L217",
+      "source_location": "L246",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice",
@@ -36460,7 +36687,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L449",
+      "source_location": "L504",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice",
@@ -36471,7 +36698,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L205",
+      "source_location": "L234",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice",
@@ -36482,7 +36709,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L625",
+      "source_location": "L695",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice",
@@ -36493,7 +36720,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L284",
+      "source_location": "L313",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice",
@@ -36504,7 +36731,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L210",
+      "source_location": "L239",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice",
@@ -36516,7 +36743,7 @@
       "context": "field",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L167",
+      "source_location": "L196",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice",
@@ -36528,11 +36755,23 @@
       "context": "field",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L349",
+      "source_location": "L378",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice",
       "target": "src_interfaces_chain_archive_store_hex32",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L6",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test",
+      "target": "chain_archive_sync_sync_service_chainarchivesyncservice",
       "confidence_score": 1.0
     },
     {
@@ -36612,7 +36851,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L686",
+      "source_location": "L756",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_buildnodeonlytransactionrecords",
@@ -36625,7 +36864,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L206",
+      "source_location": "L235",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_ledger",
@@ -36648,7 +36887,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L218",
+      "source_location": "L247",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_getsyncedheight",
@@ -36660,7 +36899,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L304",
+      "source_location": "L333",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_synconce",
@@ -36672,7 +36911,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L291",
+      "source_location": "L320",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_synconce",
@@ -36684,7 +36923,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L287",
+      "source_location": "L316",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_synconce",
@@ -36696,7 +36935,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L303",
+      "source_location": "L332",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_synconce",
@@ -36704,11 +36943,23 @@
       "confidence_score": 1.0
     },
     {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L126",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test_syncwith",
+      "target": "chain_archive_sync_sync_service_chainarchivesyncservice_synconce"
+    },
+    {
       "relation": "references",
       "context": "parameter_type",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L354",
+      "source_location": "L383",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_assertparentcontinuity",
@@ -36720,7 +36971,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L453",
+      "source_location": "L508",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_ingestoneblock",
@@ -36732,7 +36983,7 @@
       "context": "parameter_type",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L426",
+      "source_location": "L475",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_assertnounarchivedeventsystemtransactions",
@@ -36744,7 +36995,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L564",
+      "source_location": "L619",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_ingestoneblock",
@@ -36756,7 +37007,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L547",
+      "source_location": "L602",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_ingestoneblock",
@@ -36768,7 +37019,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L558",
+      "source_location": "L613",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_ingestoneblock",
@@ -36780,7 +37031,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L546",
+      "source_location": "L601",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_ingestoneblock",
@@ -36792,7 +37043,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L568",
+      "source_location": "L623",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_ingestoneblock",
@@ -36804,7 +37055,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L544",
+      "source_location": "L599",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_ingestoneblock",
@@ -36817,7 +37068,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L694",
+      "source_location": "L764",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_buildnodeonlytransactionrecords",
@@ -36828,7 +37079,7 @@
       "context": "parameter_type",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L680",
+      "source_location": "L750",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_buildnodeonlytransactionrecords",
@@ -36840,7 +37091,7 @@
       "context": "generic_arg",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L680",
+      "source_location": "L750",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_buildnodeonlytransactionrecords",
@@ -36852,7 +37103,7 @@
       "context": "parameter_type",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L747",
+      "source_location": "L817",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_fetchdparameterfromnode",
@@ -36864,7 +37115,7 @@
       "context": "parameter_type",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L805",
+      "source_location": "L875",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_buildtransactionrecords",
@@ -36876,7 +37127,7 @@
       "context": "return_type",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L805",
+      "source_location": "L875",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_buildtransactionrecords",
@@ -36888,7 +37139,7 @@
       "context": "return_type",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L875",
+      "source_location": "L945",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_buildbridgeobservationrecords",
@@ -36900,7 +37151,7 @@
       "context": "parameter_type",
       "confidence": "EXTRACTED",
       "source_file": "chain-archive-sync/sync-service.ts",
-      "source_location": "L875",
+      "source_location": "L945",
       "weight": 1.0,
       "_origin": "ast",
       "source": "chain_archive_sync_sync_service_chainarchivesyncservice_buildbridgeobservationrecords",
@@ -51833,6 +52084,18 @@
       "target": "src_postgres_errors_translatepostgreserror"
     },
     {
+      "relation": "indirect_call",
+      "context": "argument",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "src/postgres/chain-archive-store.ts",
+      "source_location": "L272",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_postgres_chain_archive_store_pgchainarchivestore_putblock",
+      "target": "test_chain_archive_sync_duplicate_transaction_keys_test_tx"
+    },
+    {
       "relation": "references",
       "context": "call",
       "confidence": "EXTRACTED",
@@ -51855,6 +52118,18 @@
       "_origin": "ast",
       "source": "src_postgres_chain_archive_store_pgchainarchivestore_puttransactions",
       "target": "src_postgres_errors_translatepostgreserror"
+    },
+    {
+      "relation": "indirect_call",
+      "context": "argument",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "src/postgres/chain-archive-store.ts",
+      "source_location": "L285",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_postgres_chain_archive_store_pgchainarchivestore_puttransactions",
+      "target": "test_chain_archive_sync_duplicate_transaction_keys_test_tx"
     },
     {
       "relation": "references",
@@ -51881,6 +52156,18 @@
       "target": "src_postgres_errors_translatepostgreserror"
     },
     {
+      "relation": "indirect_call",
+      "context": "argument",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "src/postgres/chain-archive-store.ts",
+      "source_location": "L294",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_postgres_chain_archive_store_pgchainarchivestore_putbridgeobservations",
+      "target": "test_chain_archive_sync_duplicate_transaction_keys_test_tx"
+    },
+    {
       "relation": "references",
       "context": "call",
       "confidence": "EXTRACTED",
@@ -51903,6 +52190,18 @@
       "_origin": "ast",
       "source": "src_postgres_chain_archive_store_pgchainarchivestore_putblockbundle",
       "target": "src_postgres_errors_translatepostgreserror"
+    },
+    {
+      "relation": "indirect_call",
+      "context": "argument",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "src/postgres/chain-archive-store.ts",
+      "source_location": "L318",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_postgres_chain_archive_store_pgchainarchivestore_putblockbundle",
+      "target": "test_chain_archive_sync_duplicate_transaction_keys_test_tx"
     },
     {
       "relation": "references",
@@ -53073,6 +53372,18 @@
       "target": "src_postgres_transaction_lease_resolvetransaction"
     },
     {
+      "relation": "indirect_call",
+      "context": "argument",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "src/postgres/checkpoint-store.ts",
+      "source_location": "L303",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_postgres_checkpoint_store_pgcheckpointstore_saveimpl",
+      "target": "test_chain_archive_sync_duplicate_transaction_keys_test_tx"
+    },
+    {
       "relation": "calls",
       "context": "call",
       "confidence": "EXTRACTED",
@@ -53119,6 +53430,18 @@
       "_origin": "ast",
       "source": "src_postgres_checkpoint_store_pgcheckpointstore_loadimpl",
       "target": "src_postgres_transaction_lease_resolvetransaction"
+    },
+    {
+      "relation": "indirect_call",
+      "context": "argument",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "src/postgres/checkpoint-store.ts",
+      "source_location": "L326",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_postgres_checkpoint_store_pgcheckpointstore_loadimpl",
+      "target": "test_chain_archive_sync_duplicate_transaction_keys_test_tx"
     },
     {
       "relation": "calls",
@@ -53181,6 +53504,18 @@
       "target": "src_postgres_transaction_lease_resolvetransaction"
     },
     {
+      "relation": "indirect_call",
+      "context": "argument",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "src/postgres/checkpoint-store.ts",
+      "source_location": "L417",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_postgres_checkpoint_store_pgcheckpointstore_historyimpl",
+      "target": "test_chain_archive_sync_duplicate_transaction_keys_test_tx"
+    },
+    {
       "relation": "calls",
       "context": "call",
       "confidence": "EXTRACTED",
@@ -53239,6 +53574,18 @@
       "_origin": "ast",
       "source": "src_postgres_checkpoint_store_pgcheckpointstore_pruneimpl",
       "target": "src_postgres_transaction_lease_resolvetransaction"
+    },
+    {
+      "relation": "indirect_call",
+      "context": "argument",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "src/postgres/checkpoint-store.ts",
+      "source_location": "L489",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_postgres_checkpoint_store_pgcheckpointstore_pruneimpl",
+      "target": "test_chain_archive_sync_duplicate_transaction_keys_test_tx"
     },
     {
       "relation": "contains",
@@ -53364,6 +53711,18 @@
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_postgres_watermarks",
+      "target": "src_postgres_client",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test",
       "target": "src_postgres_client",
       "confidence_score": 1.0
     },
@@ -54079,6 +54438,18 @@
       "relation": "imports",
       "context": "import",
       "confidence": "EXTRACTED",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test",
+      "target": "src_postgres_client_umbradbsql",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
       "source_file": "test/integration/chain-archive-ledger-refusal.integration.test.ts",
       "source_location": "L5",
       "weight": 1.0,
@@ -54710,6 +55081,30 @@
       "source": "test_api_surface_frozen_types_test",
       "target": "src_postgres_client_createclient",
       "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test",
+      "target": "src_postgres_client_createclient",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L120",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test_syncwith",
+      "target": "src_postgres_client_createclient"
     },
     {
       "relation": "imports",
@@ -57728,6 +58123,18 @@
       "confidence_score": 1.0
     },
     {
+      "relation": "indirect_call",
+      "context": "collection",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "src/postgres/save-and-advance.ts",
+      "source_location": "L67",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_postgres_save_and_advance_saveandadvance",
+      "target": "test_chain_archive_sync_duplicate_transaction_keys_test_tx"
+    },
+    {
       "relation": "imports",
       "context": "import",
       "confidence": "EXTRACTED",
@@ -59342,6 +59749,18 @@
       "confidence_score": 1.0
     },
     {
+      "relation": "indirect_call",
+      "context": "argument",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "src/postgres/transaction-history-storage.ts",
+      "source_location": "L425",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_postgres_transaction_history_storage_pgtransactionhistorystorage_writeowntransaction",
+      "target": "test_chain_archive_sync_duplicate_transaction_keys_test_tx"
+    },
+    {
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/postgres/transaction-lease.ts",
@@ -60476,6 +60895,18 @@
       "confidence_score": 1.0
     },
     {
+      "relation": "indirect_call",
+      "context": "argument",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "src/postgres/transaction-lease.ts",
+      "source_location": "L223",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_postgres_transaction_lease_pgtransactionleaselayer_withtransaction",
+      "target": "test_chain_archive_sync_duplicate_transaction_keys_test_tx"
+    },
+    {
       "relation": "calls",
       "context": "call",
       "confidence": "EXTRACTED",
@@ -61531,6 +61962,51 @@
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
+      "source_file": "test/chain-archive-sync/duplicate-transaction-keys.test.ts",
+      "source_location": "L25",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_chain_archive_sync_duplicate_transaction_keys_test",
+      "target": "test_chain_archive_sync_duplicate_transaction_keys_test_hash_a",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "test/chain-archive-sync/duplicate-transaction-keys.test.ts",
+      "source_location": "L26",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_chain_archive_sync_duplicate_transaction_keys_test",
+      "target": "test_chain_archive_sync_duplicate_transaction_keys_test_hash_b",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "test/chain-archive-sync/duplicate-transaction-keys.test.ts",
+      "source_location": "L24",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_chain_archive_sync_duplicate_transaction_keys_test",
+      "target": "test_chain_archive_sync_duplicate_transaction_keys_test_tx",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "indirect_call",
+      "context": "collection",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "test/integration/crash/crash-worker.ts",
+      "source_location": "L427",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_crash_crash_worker_main",
+      "target": "test_chain_archive_sync_duplicate_transaction_keys_test_tx"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
       "source_file": "test/chain-archive-sync/extrinsic-decoder.test.ts",
       "source_location": "L44",
       "weight": 1.0,
@@ -61559,6 +62035,120 @@
       "_origin": "ast",
       "source": "test_chain_archive_sync_vendored_ledger_vectors_test",
       "target": "test_chain_archive_sync_vendored_ledger_vectors_test_vectors",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L42",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test",
+      "target": "test_integration_chain_archive_event_guard_integration_test_baresystemextrinsichex",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L31",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test",
+      "target": "test_integration_chain_archive_event_guard_integration_test_compactu32hex",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L64",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test",
+      "target": "test_integration_chain_archive_event_guard_integration_test_eventsblobhex",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L68",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test",
+      "target": "test_integration_chain_archive_event_guard_integration_test_fakenodefetch",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L48",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test",
+      "target": "test_integration_chain_archive_event_guard_integration_test_fixture",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L118",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test",
+      "target": "test_integration_chain_archive_event_guard_integration_test_syncwith",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L43",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test_baresystemextrinsichex",
+      "target": "test_integration_chain_archive_event_guard_integration_test_compactu32hex",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L90",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test_fakenodefetch",
+      "target": "test_integration_chain_archive_event_guard_integration_test_baresystemextrinsichex",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L95",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test_fakenodefetch",
+      "target": "test_integration_chain_archive_event_guard_integration_test_eventsblobhex",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "test/integration/chain-archive-event-guard.integration.test.ts",
+      "source_location": "L124",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_integration_chain_archive_event_guard_integration_test_syncwith",
+      "target": "test_integration_chain_archive_event_guard_integration_test_fakenodefetch",
       "confidence_score": 1.0
     },
     {
@@ -79813,7 +80403,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "openspec/changes/sprint-9-indexer-independence/tasks.md",
-      "source_location": "L287",
+      "source_location": "L306",
       "weight": 1.0,
       "_origin": "ast",
       "source": "openspec_changes_sprint_9_indexer_independence_tasks_tasks_sprint_9_indexer_independence",
@@ -86483,5 +87073,5 @@
       "source_file": "openspec/changes/sprint-3-checkpoint-store/design.md"
     }
   ],
-  "built_at_commit": "9ee13c8f0069fca3138bd6cc786115a8086cbdf0"
+  "built_at_commit": "21a4b6cb8ace047a0cecb3ddd009d15a77c0c33f"
 }

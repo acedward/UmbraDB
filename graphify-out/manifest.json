@@ -685,13 +685,13 @@
     "semantic_hash": ""
   },
   "chain-archive-sync/sync-cli.ts": {
-    "mtime": 1786144645.0565648,
-    "ast_hash": "ea214c3e4584b62537d7560e3f452a0f",
+    "mtime": 1786378541.5182252,
+    "ast_hash": "826bc3d60c43cd88128984c8c295175f",
     "semantic_hash": ""
   },
   "chain-archive-sync/sync-service.ts": {
-    "mtime": 1786144645.0565648,
-    "ast_hash": "0a74d09a40c863929ca94f9e78bdedb8",
+    "mtime": 1786378341.9248462,
+    "ast_hash": "8b392cab2d291f88c023b024b2009bcf",
     "semantic_hash": ""
   },
   "chain-archive-sync/tx-replay-decoder.ts": {
@@ -1490,7 +1490,7 @@
     "semantic_hash": ""
   },
   "chain-archive-sync/extrinsic-decoder.ts": {
-    "mtime": 1786377772.0148587,
+    "mtime": 1786377924.1557887,
     "ast_hash": "191c45eea47c61f40711ad6ac3e7c924",
     "semantic_hash": ""
   },
@@ -1505,8 +1505,8 @@
     "semantic_hash": ""
   },
   "test/chain-archive-sync/extrinsic-decoder.test.ts": {
-    "mtime": 1786144645.058676,
-    "ast_hash": "27f7fdf502fecec2c3cff05baca33627",
+    "mtime": 1786377878.1526718,
+    "ast_hash": "85337042a69b998244b04aac4bb890ce",
     "semantic_hash": ""
   },
   "test/integration/chain-archive-node-only.integration.test.ts": {
@@ -1595,8 +1595,8 @@
     "semantic_hash": ""
   },
   "openspec/changes/sprint-9-indexer-independence/tasks.md": {
-    "mtime": 1786376914.6443405,
-    "ast_hash": "679d5b53de14c6503d4da15e0de0a143",
+    "mtime": 1786378700.1735647,
+    "ast_hash": "0217ead70bf00cbc30ab4f34e4b1d4f8",
     "semantic_hash": ""
   },
   "openspec/changes/v1.1.0-formal-completion/acceptance.md": {
@@ -1687,6 +1687,16 @@
   "test/fixtures/ledger-vectors/genesis-system-tx-hashes.txt": {
     "mtime": 1786376280.4686847,
     "ast_hash": "cce2352f261effe0eb41a394308636b6",
+    "semantic_hash": ""
+  },
+  "test/chain-archive-sync/duplicate-transaction-keys.test.ts": {
+    "mtime": 1786378370.050003,
+    "ast_hash": "e13c528d115c9e225777a49196c9f185",
+    "semantic_hash": ""
+  },
+  "test/integration/chain-archive-event-guard.integration.test.ts": {
+    "mtime": 1786378248.6917918,
+    "ast_hash": "500f69e54c9dd07704a9829872b1f313",
     "semantic_hash": ""
   }
 }
