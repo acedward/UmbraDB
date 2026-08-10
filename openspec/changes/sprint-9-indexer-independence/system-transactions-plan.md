@@ -575,6 +575,24 @@ is close to today's behaviour once §5.1/§5.2 are fixed; or (b) an owner commit
 indexer instance alive for parity capture past the decommission date. Both are decisions someone
 has to make; neither is made here.
 
+**Correction (owner question, 2026-08-08), which softens this concern.** "The oracle disappears
+with the hosted indexer" overstates the loss. The indexer derives everything from the node — that
+is Part A's own premise — so the oracle's *inputs* never disappear while an archive node retains
+full history, and the oracle itself is deterministic software this project already has
+(`/home/eddie/midnight-reference-mainnet/v1.0.0/midnight-indexer`, plus the published
+`indexer-standalone` images). Reference answers for any range can therefore be **regenerated at
+will** by pointing a self-hosted indexer at an archive node. What is genuinely at risk is only:
+
+- an **archive node with un-pruned history** for the chain of interest — if every node prunes,
+  the inputs really are gone, and *that* is the irreversible loss;
+- a **runnable, protocol-compatible indexer build** — software rot, slow but real, mitigated by
+  pinning the image/sources now.
+
+So contingency (b) above becomes much cheaper than "keep the hosted indexer alive": ensure one
+archive node exists and pin the indexer image. §6.7's capture-before-the-deadline framing should
+be read with this correction; capturing early is still prudent (it is cheap now and archival
+guarantees are someone else's promise), but it is not the cliff-edge revisions 6–7 describe.
+
 ### 8a.4 The plan should separate "safe to merge" from "safe to cut over"
 
 Revisions 6 and 7 grew this from a lean source substitution into a nine-item program: block-scoped
@@ -612,3 +630,53 @@ edit; it needs an owner's go-ahead to touch the decoder.
 | Listed nonexistent-path fallback as open | Records the existing fail-closed override behavior while retaining provenance and distribution blockers |
 | Used unpinned validation commands and stale Graphify status | Pins OpenSpec/Graphify versions, records actual corpus results, and refreshes Graphify |
 | Gave a verbatim stock-loader copy as a reproduction recipe | Records the deterministic snippet-directory rewrite and required `#self` Node import mapping; the clean recipe reproduces 5/5 |
+
+## 10. Parallel track — upstream the ledger WASM export (not a goal of this plan)
+
+**This section is a tracking log, not a Part A requirement.** Owner decision (2026-08-08): the
+binding **will** be committed upstream, but only after this working version has proven itself —
+so that when the upstream PR opens, we know with certainty the 16-line export is the only change
+needed, and can say so with evidence. Recorded here so it is not forgotten, and so findings from
+the parallel work accumulate in one place instead of in chat history.
+
+Part A's merge does **not** wait on this section. Part A consumes the verified 8.1.0 build via
+`MIDNIGHT_LEDGER_WASM` (§5.4 governs what *is* release-blocking about that). Conversely, this
+section does not wait on Part A's merge — it can proceed any time.
+
+### 10.1 State
+
+| | |
+|---|---|
+| The change | `SystemTransaction::transactionHash` on the WASM binding + the template `.d.ts` declaration. 25 lines total, no behaviour change to anything existing |
+| Verified branch | `feat/expose-system-transaction-hash` @ `1a561ac` (base 8.1.0) on `git@github.com:acedward/midnight-ledger.git` — 5/5 ground-truth hash match, proof committed in `ledger-wasm/verification/` |
+| Merge candidate | `feat/expose-system-transaction-hash-ledger8` @ `97a6c9dd` (base `ledger-8` = 8.2.0-rc.1) on the same fork — compile-checked only |
+| Upstream target | `midnightntwrk/midnight-ledger`, branch `ledger-8`. Gap confirmed still open there at `272c25fc` |
+
+### 10.2 Remaining steps, in order
+
+1. **Let Part A exercise the 8.1.0 build in anger** — parity gate, node-only gate, and (when
+   captured) the event-bearing fixtures. Every archive row keyed by the export is further evidence
+   the export is complete and sufficient. Record anything that forces a second ledger change here;
+   the goal of this soak is precisely to discover whether the export is the *only* change.
+2. **Recompute the five ground-truth hashes from an 8.2.0-rc.1 build** of the merge-candidate
+   branch (`wasm-pack build --target bundler` + the §8 loader adaptation). This is the missing
+   verification on the candidate; until it passes, only the 8.1.0 branch is evidence-backed.
+3. **Open the upstream PR** from the merge-candidate branch against `midnightntwrk/midnight-ledger`
+   `ledger-8` — an owner action. The PR body should carry: the indexer-parity motivation (JS can
+   read a system transaction's bytes but not its identity, while the indexer keys on exactly this
+   hash), the 5/5 verification result and how to rerun it, and the note that the binding mirrors
+   the sibling `Transaction::transactionHash` convention.
+4. **When upstream publishes**, repoint UmbraDB's `package.json` at the published version, delete
+   the `MIDNIGHT_LEDGER_WASM` interim (or demote it to a test-only escape hatch), and close §5.4.
+
+### 10.3 Findings log
+
+- 2026-08-08 — Gap confirmed open at `ledger-8` `272c25fc`: `impl SystemTransaction` still exposes
+  only `new`/`serialize`/`deserialize`/`toString`.
+- 2026-08-08 — Building `ledger-8` requires **rustc ≥ 1.95** (`sysinfo@0.39.1`); no toolchain file
+  is pinned in the repo, so a 1.93 default fails during dependency resolution.
+- 2026-08-08 — Upstream's template typings now use `TransactionHash` (a `string` alias) rather than
+  bare `string`; the merge candidate follows that convention.
+- 2026-08-08 — 8.0.3 → 8.1.0 does not affect transaction hashing (proven by the 5/5 match against
+  indexer 4.3.2's recorded hashes). No equivalent statement exists yet for 8.2.0-rc.1 (step 2).
+- *(append future findings here, dated)*
