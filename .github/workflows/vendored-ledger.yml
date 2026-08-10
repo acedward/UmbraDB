@@ -1,0 +1,76 @@
+name: Vendored ledger integrity
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: vendored-ledger-${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+# `vendor/ledger-v8-syshash` is a committed binary build of the Midnight ledger WASM, carrying the
+# `SystemTransaction.transactionHash()` export the published package lacks. Node-only ingest cannot
+# archive system transactions without it, so its correctness is load-bearing for the whole archive.
+#
+# This gate deliberately does NOT rebuild and compare bytes. The build is not bit-reproducible:
+# the same commit, `wasm-pack 0.15.0` and `rustc 1.93.0` produce a different `.wasm` hash on each
+# run (measured 2026-08-08). A byte comparison against a rebuild would fail every time while saying
+# nothing about correctness.
+#
+# What it checks instead is what actually matters, in two layers: that the committed bytes are the
+# ones that were reviewed, and that they still behave like the reference implementation.
+jobs:
+  integrity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4
+        with:
+          node-version: 24
+
+      # Layer 1: the committed bytes are unmodified since review. Catches a corrupted or
+      # tampered-with artifact, which a diff on a 19 MB binary would not make obvious.
+      - name: Verify vendored checksums
+        working-directory: vendor/ledger-v8-syshash
+        run: sha256sum -c SHA256SUMS
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The vendored package must be what actually resolves. If a future change reintroduces a
+      # published version, system transactions would stop being archivable with no other signal
+      # than distant test failures.
+      - name: Verify the vendored build is what resolves
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('@midnight-ntwrk/ledger-v8/package.json').version")"
+          echo "resolved ledger version: $version"
+          test "$version" = "8.1.0-syshash.1"
+
+      # Layer 2, the meaningful one: behavioural equivalence with an INDEPENDENT implementation.
+      # The five system transactions of a 1.0.0 devnet genesis block, as archived by
+      # midnight-indexer 4.3.2, must have their hashes reproduced from the indexer's own recorded
+      # bytes. Comparing against the indexer rather than against our own output is what makes this
+      # evidence rather than a tautology.
+      - name: Verify the export against the indexer's ground truth
+        run: npx vitest run test/chain-archive-sync/vendored-ledger-vectors.test.ts --maxWorkers=1
+
+      # The export is the entire reason this artifact is vendored; assert it exists explicitly so a
+      # build silently missing it fails here rather than in ingest.
+      - name: Verify the system-transaction hash export is present
+        run: |
+          set -euo pipefail
+          node --input-type=module -e "
+            const m = await import('@midnight-ntwrk/ledger-v8');
+            const ok = typeof m.SystemTransaction?.prototype?.transactionHash === 'function';
+            console.log('SystemTransaction.transactionHash present:', ok);
+            process.exit(ok ? 0 : 1);
+          "

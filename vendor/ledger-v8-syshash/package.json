@@ -1,0 +1,32 @@
+{
+  "name": "@midnight-ntwrk/ledger-v8",
+  "type": "module",
+  "version": "8.1.0-syshash.1",
+  "license": "Apache-2.0",
+  "files": [
+    "midnight_ledger_wasm.d.ts",
+    "midnight_ledger_wasm.js",
+    "midnight_ledger_wasm_bg.js",
+    "midnight_ledger_wasm_bg.wasm",
+    "midnight_ledger_wasm_fs.js",
+    "snippets"
+  ],
+  "main": "midnight_ledger_wasm.js",
+  "types": "./midnight_ledger_wasm.d.ts",
+  "sideEffects": [
+    "./midnight_ledger_wasm.js",
+    "./midnight_ledger_wasm_fs.js",
+    "./snippets/*"
+  ],
+  "imports": {
+    "#self": {
+      "browser": "./midnight_ledger_wasm.js",
+      "node": "./midnight_ledger_wasm_fs.js"
+    }
+  },
+  "exports": {
+    "types": "./midnight_ledger_wasm.d.ts",
+    "browser": "./midnight_ledger_wasm.js",
+    "node": "./midnight_ledger_wasm_fs.js"
+  }
+}

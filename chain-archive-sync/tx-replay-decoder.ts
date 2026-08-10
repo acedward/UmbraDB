@@ -322,15 +322,18 @@ function midnightWalletRepoCandidates(): string[] {
  *  availability probe tests use to `describe.skipIf` honestly (reported as SKIPPED, never as a
  *  silent vacuous pass) in environments without the sibling checkout, e.g. CI. */
 export function ledgerV8EntryPath(): string | undefined {
-  // Explicit override, checked first. `SystemTransaction.transactionHash()` does not exist in any
-  // published `@midnight-ntwrk/ledger-v8` yet -- the Rust ledger has it, but the wasm-bindgen
-  // wrapper does not export it -- and without it a system transaction cannot be archived under
-  // the key every other consumer uses. Point this at a build of `ledger-wasm` carrying that
-  // export to archive system transactions; leave it unset and ingest behaves exactly as it does
-  // with the published package, refusing rather than omitting them.
+  // Explicit override, checked first. This is now a TEST-ONLY escape hatch, not the route to the
+  // system-transaction hash export: the repo's own dependency is a vendored build that already
+  // carries it (`vendor/ledger-v8-syshash`, see its PROVENANCE.md), so a fresh clone archives
+  // system transactions with no configuration at all.
   //
-  // Deliberately an env var rather than a `file:` dependency: package.json stays portable, and
-  // when the export ships upstream this override is deleted and the version bumped instead.
+  // It stays for two uses that are genuinely worth keeping: pointing tests at a DIFFERENT ledger
+  // build (e.g. the stock published package, to exercise the refusal path that the vendored build
+  // no longer triggers), and letting someone try a candidate build without reinstalling. Both are
+  // deliberate acts; neither should be needed to run the suite normally.
+  //
+  // When the export ships upstream, the vendored directory is deleted, `package.json` moves back
+  // to a published version, and this override keeps its remaining test-only role.
   const override = process.env.MIDNIGHT_LEDGER_WASM;
   if (override !== undefined && override !== "") {
     if (!existsSync(override)) {
@@ -345,12 +348,17 @@ export function ledgerV8EntryPath(): string | undefined {
     return override;
   }
 
-  // This repo's OWN dependency first. Node-only ingest hard-depends on the ledger to classify and
-  // hash transactions, so resolving it from an out-of-band sibling checkout meant the headline
-  // feature could not run in CI or from a fresh clone -- which is why its regression tests could
-  // only ever be skipped there (audit finding F6). Pinned to an exact version deliberately: this
-  // is a decode-critical component, and every verification result recorded for this sprint was
-  // produced against that exact build.
+  // This repo's OWN dependency. Node-only ingest hard-depends on the ledger to classify and hash
+  // transactions, so resolving it from an out-of-band sibling checkout meant the headline feature
+  // could not run in CI or from a fresh clone -- which is why its regression tests could only ever
+  // be skipped there (audit finding F6).
+  //
+  // That dependency is `file:vendor/ledger-v8-syshash`: a committed build carrying the
+  // `SystemTransaction.transactionHash()` export the published package lacks. Vendored rather than
+  // rebuilt on demand because the build is NOT bit-reproducible -- the same commit, `wasm-pack` and
+  // `rustc` produce a different `.wasm` hash each time -- so these exact verified bytes cannot be
+  // regenerated. What attests them is behavioural: they reproduce the five genesis system
+  // transaction hashes `midnight-indexer 4.3.2` recorded. See vendor/ledger-v8-syshash/PROVENANCE.md.
   try {
     // Resolve the BARE specifier: the package's `exports` map exposes only the root, and its
     // `node` condition already points at `midnight_ledger_wasm_fs.js`. Asking for that subpath
