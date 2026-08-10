@@ -18,9 +18,8 @@
  *                   to the literal "none" (or leave the default and set NODE_ONLY=1) for
  *                   NODE-ONLY ingest with no indexer involvement at all. The historical default
  *                   (hosted Preprod indexer) is kept so existing invocations behave unchanged.
- *   NODE_ONLY       "1" forces node-only mode regardless of INDEXER_URL
- *   ORACLE_CROSS_CHECK  "1" additionally validates each block's node-derived view against the
- *                   indexer's, throwing on disagreement (validation mode; off by default)
+ *   NODE_ONLY       "1" forces node-only mode regardless of INDEXER_URL. **EXPERIMENTAL** -- see
+ *                   the warning below; not yet a general indexer replacement.
  *   ORACLE_CROSS_CHECK  "1" additionally validates every block's node-derived view against the
  *                   indexer's, throwing on disagreement (validation mode; off by default)
  *   MAX_BLOCKS      blocks ingested per syncOnce call (default 200)
@@ -46,6 +45,26 @@ const NODE_ONLY = process.env.NODE_ONLY === "1" || process.env.INDEXER_URL === "
 // default, so indexer-sourced ingest behaves exactly as it did before node reading existed.
 const ORACLE_CROSS_CHECK = process.env.ORACLE_CROSS_CHECK === "1";
 const MAX_BLOCKS = Number(process.env.MAX_BLOCKS ?? "200");
+
+if (NODE_ONLY) {
+  // Announced BEFORE connecting to Postgres, deliberately. Mode is known from the environment
+  // alone, and an operator whose database is unreachable would otherwise hit a connection error
+  // having never been told which ingest source they selected.
+  //
+  // Said at every start rather than once in a doc: node-only ingest is correct where it completes
+  // and refuses where it cannot, but it is NOT yet a general replacement for the indexer, and the
+  // difference is invisible on a chain that happens not to exercise the gaps -- a devnet can look
+  // like a clean cutover for weeks.
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[archive-sync] WARNING node-only mode is EXPERIMENTAL and not yet a general indexer " +
+      "replacement. It archives extrinsic-borne transactions and system transactions, and REFUSES " +
+      "(rather than silently omitting) runtime-generated event-borne system transactions, signed " +
+      "or general framings, and runtimes whose call indices it has not been verified against. " +
+      "Expect it to stop on a chain that produces any of those. Byte-parity with the indexer is " +
+      "demonstrated only on the genesis/bare-extrinsic slice so far.",
+  );
+}
 
 const sql = createClient({ connectionString: CONN, schema: SCHEMA });
 await bootstrapChainArchiveSchema(sql, SCHEMA);
