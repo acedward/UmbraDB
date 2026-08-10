@@ -1,0 +1,317 @@
+{
+  "description": "The completeness types that exist so nothing is silently dropped: Shielded spend/receive/mint/burn, Unshielded mint/burn, Paused/Unpaused. Each takes a keccak256(\"Midnight<Type>()\") topic0 with the per-type layout LOGMAP.md tabulates.",
+  "profile": "erc20",
+  "events": [
+    {
+      "__typename": "ShieldedSpendEvent",
+      "id": 900,
+      "contractAddress": "1111111111111111111111111111111111111111111111111111111111111111",
+      "transactionId": 9,
+      "transaction": {
+        "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+        "block": {
+          "height": 12,
+          "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "transactions": [
+            {
+              "hash": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+            },
+            {
+              "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+            }
+          ]
+        }
+      },
+      "nullifier": "3131313131313131313131313131313131313131313131313131313131313131"
+    },
+    {
+      "__typename": "ShieldedReceiveEvent",
+      "id": 901,
+      "contractAddress": "1111111111111111111111111111111111111111111111111111111111111111",
+      "transactionId": 9,
+      "transaction": {
+        "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+        "block": {
+          "height": 12,
+          "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "transactions": [
+            {
+              "hash": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+            },
+            {
+              "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+            }
+          ]
+        }
+      },
+      "commitment": "3232323232323232323232323232323232323232323232323232323232323232",
+      "ciphertext": "aabbcc",
+      "receivingContractAddress": "0707070707070707070707070707070707070707070707070707070707070707"
+    },
+    {
+      "__typename": "ShieldedMintEvent",
+      "id": 902,
+      "contractAddress": "1111111111111111111111111111111111111111111111111111111111111111",
+      "transactionId": 9,
+      "transaction": {
+        "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+        "block": {
+          "height": 12,
+          "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "transactions": [
+            {
+              "hash": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+            },
+            {
+              "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+            }
+          ]
+        }
+      },
+      "commitment": "3333333333333333333333333333333333333333333333333333333333333333",
+      "domainSep": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+      "amount": "42"
+    },
+    {
+      "__typename": "ShieldedBurnEvent",
+      "id": 903,
+      "contractAddress": "1111111111111111111111111111111111111111111111111111111111111111",
+      "transactionId": 9,
+      "transaction": {
+        "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+        "block": {
+          "height": 12,
+          "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "transactions": [
+            {
+              "hash": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+            },
+            {
+              "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+            }
+          ]
+        }
+      },
+      "nullifier": "3434343434343434343434343434343434343434343434343434343434343434",
+      "amount": null
+    },
+    {
+      "__typename": "UnshieldedMintEvent",
+      "id": 904,
+      "contractAddress": "1111111111111111111111111111111111111111111111111111111111111111",
+      "transactionId": 9,
+      "transaction": {
+        "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+        "block": {
+          "height": 12,
+          "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "transactions": [
+            {
+              "hash": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+            },
+            {
+              "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+            }
+          ]
+        }
+      },
+      "domainSep": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+      "tokenType": "7777777777777777777777777777777777777777777777777777777777777777",
+      "amount": "77"
+    },
+    {
+      "__typename": "UnshieldedBurnEvent",
+      "id": 905,
+      "contractAddress": "1111111111111111111111111111111111111111111111111111111111111111",
+      "transactionId": 9,
+      "transaction": {
+        "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+        "block": {
+          "height": 12,
+          "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "transactions": [
+            {
+              "hash": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+            },
+            {
+              "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+            }
+          ]
+        }
+      },
+      "sender": {
+        "kind": "CONTRACT",
+        "userAddress": null,
+        "contractAddress": "0707070707070707070707070707070707070707070707070707070707070707"
+      },
+      "tokenType": "7777777777777777777777777777777777777777777777777777777777777777",
+      "amount": "8"
+    },
+    {
+      "__typename": "PausedEvent",
+      "id": 906,
+      "contractAddress": "1111111111111111111111111111111111111111111111111111111111111111",
+      "transactionId": 9,
+      "transaction": {
+        "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+        "block": {
+          "height": 12,
+          "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "transactions": [
+            {
+              "hash": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+            },
+            {
+              "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "__typename": "UnpausedEvent",
+      "id": 907,
+      "contractAddress": "1111111111111111111111111111111111111111111111111111111111111111",
+      "transactionId": 9,
+      "transaction": {
+        "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+        "block": {
+          "height": 12,
+          "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "transactions": [
+            {
+              "hash": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+            },
+            {
+              "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "expected": [
+    {
+      "address": "484de3fc9343f31600ae1f3e13d633cb48cbf816",
+      "blockNumber": 12,
+      "blockHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "txHash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+      "txIndex": 1,
+      "logIndex": 0,
+      "topics": [
+        "684848ddbac844dd2ced94df27a576ca0c74f8be0bdf4af5af2b76b8d9a8eace",
+        "3131313131313131313131313131313131313131313131313131313131313131"
+      ],
+      "data": "",
+      "sourceEventId": 900,
+      "removed": false
+    },
+    {
+      "address": "484de3fc9343f31600ae1f3e13d633cb48cbf816",
+      "blockNumber": 12,
+      "blockHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "txHash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+      "txIndex": 1,
+      "logIndex": 1,
+      "topics": [
+        "c64c2433fd557db61b3f11bb6d3ecefe1bd86311a78a16f36b2bc7bd81a9f384",
+        "3232323232323232323232323232323232323232323232323232323232323232"
+      ],
+      "data": "0707070707070707070707070707070707070707070707070707070707070707aabbcc",
+      "sourceEventId": 901,
+      "removed": false
+    },
+    {
+      "address": "484de3fc9343f31600ae1f3e13d633cb48cbf816",
+      "blockNumber": 12,
+      "blockHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "txHash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+      "txIndex": 1,
+      "logIndex": 2,
+      "topics": [
+        "913e549f23a3945de721e1843738988e119be54d9a8dec1e4d387b2a932b8a9f",
+        "3333333333333333333333333333333333333333333333333333333333333333",
+        "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5"
+      ],
+      "data": "000000000000000000000000000000000000000000000000000000000000002a",
+      "sourceEventId": 902,
+      "removed": false
+    },
+    {
+      "address": "484de3fc9343f31600ae1f3e13d633cb48cbf816",
+      "blockNumber": 12,
+      "blockHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "txHash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+      "txIndex": 1,
+      "logIndex": 3,
+      "topics": [
+        "cc18eaf7bebda9f406ba45eba6ac29b0814ec5cf0156874b0d83c6d30d6ff211",
+        "3434343434343434343434343434343434343434343434343434343434343434"
+      ],
+      "data": "0000000000000000000000000000000000000000000000000000000000000000",
+      "sourceEventId": 903,
+      "removed": false
+    },
+    {
+      "address": "484de3fc9343f31600ae1f3e13d633cb48cbf816",
+      "blockNumber": 12,
+      "blockHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "txHash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+      "txIndex": 1,
+      "logIndex": 4,
+      "topics": [
+        "d48f98f43f12b9212cc91f34a11cb2c4b3b07a7adad71c2b115d7ee4b8554c62",
+        "7777777777777777777777777777777777777777777777777777777777777777",
+        "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5"
+      ],
+      "data": "000000000000000000000000000000000000000000000000000000000000004d",
+      "sourceEventId": 904,
+      "removed": false
+    },
+    {
+      "address": "484de3fc9343f31600ae1f3e13d633cb48cbf816",
+      "blockNumber": 12,
+      "blockHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "txHash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+      "txIndex": 1,
+      "logIndex": 5,
+      "topics": [
+        "a5b628edb85a977c53ca0a21506994fcc8107cf0a3d229895aecf4dd10741d54",
+        "7777777777777777777777777777777777777777777777777777777777777777",
+        "0707070707070707070707070707070707070707070707070707070707070707"
+      ],
+      "data": "00000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000008",
+      "sourceEventId": 905,
+      "removed": false
+    },
+    {
+      "address": "484de3fc9343f31600ae1f3e13d633cb48cbf816",
+      "blockNumber": 12,
+      "blockHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "txHash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+      "txIndex": 1,
+      "logIndex": 6,
+      "topics": [
+        "44aed5108617013c06369ede48dfc3d3178d49e017e5a40d8ebfeaffa33885ce"
+      ],
+      "data": "",
+      "sourceEventId": 906,
+      "removed": false
+    },
+    {
+      "address": "484de3fc9343f31600ae1f3e13d633cb48cbf816",
+      "blockNumber": 12,
+      "blockHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "txHash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+      "txIndex": 1,
+      "logIndex": 7,
+      "topics": [
+        "e3efa616838a58a9120c6c950e7364e4eb1577bce7cb02b7eaaf407818ce0248"
+      ],
+      "data": "",
+      "sourceEventId": 907,
+      "removed": false
+    }
+  ],
+  "expectedWarnings": []
+}

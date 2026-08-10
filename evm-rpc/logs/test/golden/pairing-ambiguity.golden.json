@@ -1,0 +1,133 @@
+{
+  "description": "ONE spend and TWO receives with identical (domainSep, tokenType, amount): the spend pairs FIFO with the LOWER-id receive (id 601) and a `pair-ambiguous` warning is raised; the leftover receive (602) becomes a mint. Deterministic, never a coin flip.",
+  "profile": "erc20",
+  "events": [
+    {
+      "__typename": "UnshieldedSpendEvent",
+      "id": 600,
+      "maxId": 600,
+      "contractAddress": "1111111111111111111111111111111111111111111111111111111111111111",
+      "transactionId": 7,
+      "transaction": {
+        "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+        "block": {
+          "height": 12,
+          "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "transactions": [
+            {
+              "hash": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+            },
+            {
+              "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+            }
+          ]
+        }
+      },
+      "sender": {
+        "kind": "USER",
+        "userAddress": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "contractAddress": null
+      },
+      "domainSep": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+      "tokenType": "7777777777777777777777777777777777777777777777777777777777777777",
+      "amount": "70"
+    },
+    {
+      "__typename": "UnshieldedReceiveEvent",
+      "id": 601,
+      "maxId": 601,
+      "contractAddress": "1111111111111111111111111111111111111111111111111111111111111111",
+      "transactionId": 7,
+      "transaction": {
+        "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+        "block": {
+          "height": 12,
+          "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "transactions": [
+            {
+              "hash": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+            },
+            {
+              "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+            }
+          ]
+        }
+      },
+      "recipient": {
+        "kind": "USER",
+        "userAddress": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "contractAddress": null
+      },
+      "domainSep": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+      "tokenType": "7777777777777777777777777777777777777777777777777777777777777777",
+      "amount": "70"
+    },
+    {
+      "__typename": "UnshieldedReceiveEvent",
+      "id": 602,
+      "maxId": 602,
+      "contractAddress": "1111111111111111111111111111111111111111111111111111111111111111",
+      "transactionId": 7,
+      "transaction": {
+        "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+        "block": {
+          "height": 12,
+          "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "transactions": [
+            {
+              "hash": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+            },
+            {
+              "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+            }
+          ]
+        }
+      },
+      "recipient": {
+        "kind": "USER",
+        "userAddress": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+        "contractAddress": null
+      },
+      "domainSep": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+      "tokenType": "7777777777777777777777777777777777777777777777777777777777777777",
+      "amount": "70"
+    }
+  ],
+  "expected": [
+    {
+      "address": "484de3fc9343f31600ae1f3e13d633cb48cbf816",
+      "blockNumber": 12,
+      "blockHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "txHash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+      "txIndex": 1,
+      "logIndex": 0,
+      "topics": [
+        "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0000000000000000000000002b8343da4ea5edce41413938eae6cf2256464526",
+        "000000000000000000000000116d7e130195056538b29bab8c782686aa07281f"
+      ],
+      "data": "0000000000000000000000000000000000000000000000000000000000000046",
+      "sourceEventId": 600,
+      "removed": false
+    },
+    {
+      "address": "484de3fc9343f31600ae1f3e13d633cb48cbf816",
+      "blockNumber": 12,
+      "blockHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "txHash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+      "txIndex": 1,
+      "logIndex": 1,
+      "topics": [
+        "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "0000000000000000000000006924dd8f5575bf8bfc393268885f8f1fdac90023"
+      ],
+      "data": "0000000000000000000000000000000000000000000000000000000000000046",
+      "sourceEventId": 602,
+      "removed": false
+    }
+  ],
+  "expectedWarnings": [
+    "pair-ambiguous"
+  ]
+}
