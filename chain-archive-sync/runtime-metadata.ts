@@ -129,6 +129,67 @@ export function resolveMetadata(bytes: Uint8Array, identity: RuntimeIdentity): R
   return { identity, registry, metadata, callIndices, systemTransactionAppliedEvent };
 }
 
+/** One extrinsic's dispatched call, read through the runtime's own metadata. */
+export interface MetadataDecodedExtrinsic {
+  /** Whether the extrinsic carried a signature. Recorded, not acted on: `send_mn_transaction`
+   *  ignores its origin, so a signed Midnight transaction is exactly as valid as a bare one. */
+  isSigned: boolean;
+  palletIndex: number;
+  callIndex: number;
+  /** The call's first argument as BARE bytes, when it has one -- the serialized transaction for
+   *  Midnight calls. `undefined` for calls taking no arguments. */
+  payload: Uint8Array | undefined;
+}
+
+/**
+ * Decode one extrinsic's call using metadata, for EVERY framing.
+ *
+ * This is what §5.2 was waiting for. The hand-rolled envelope decoder can only read a bare
+ * extrinsic: in a signed or "general" framing the call sits behind an address, a signature and the
+ * transaction extensions, whose layouts are chain configuration rather than protocol constants.
+ * Because `send_mn_transaction` ignores its origin, a SIGNED Midnight transaction is valid and the
+ * reference indexer archives it -- so being unable to read one meant either dropping a real
+ * transaction or refusing the block.
+ *
+ * Metadata removes the distinction entirely: the same call is read out of either framing, which is
+ * precisely how the reference adapter treats them (`decode_call_data_as::<Call>()`, applied
+ * without regard to framing).
+ *
+ * Throws on anything it cannot decode. A caller must not be able to mistake "this extrinsic is not
+ * a Midnight call" for "this extrinsic could not be read", because the first is a routine skip and
+ * the second means the archive would be missing something.
+ */
+export function decodeExtrinsicWithMetadata(
+  resolved: ResolvedRuntimeMetadata,
+  extrinsicHex: string,
+): MetadataDecodedExtrinsic {
+  const { registry } = resolved;
+  let xt: any;
+  try {
+    xt = registry.createType("Extrinsic" as never, extrinsicHex);
+  } catch (cause) {
+    throw new Error(
+      `could not decode extrinsic against this block's runtime metadata: ${(cause as Error).message}. ` +
+        "Refusing rather than skipping it -- an unreadable extrinsic may be a Midnight transaction, " +
+        "and skipping would omit it from the archive without a word.",
+      { cause },
+    );
+  }
+  const idx = xt.method?.callIndex;
+  if (idx === undefined || idx.length < 2) {
+    throw new Error("decoded extrinsic carries no call index; refusing rather than guessing");
+  }
+  const arg0 = xt.method.args?.[0];
+  return {
+    isSigned: Boolean(xt.isSigned),
+    palletIndex: idx[0],
+    callIndex: idx[1],
+    // `toU8a(true)` -- bare, without the SCALE length prefix a `Bytes` argument would re-add. The
+    // archived payload must be the transaction itself, not the transaction inside an envelope.
+    payload: arg0?.toU8a ? new Uint8Array(arg0.toU8a(true)) : undefined,
+  };
+}
+
 /** One runtime-generated system transaction, recovered from a `SystemTransactionApplied` event. */
 export interface EventSystemTransaction {
   /** The authoritative ledger hash, hex, no `0x`, lowercase -- as the RUNTIME reported it. */

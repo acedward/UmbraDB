@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   decodeEventSystemTransactions,
+  decodeExtrinsicWithMetadata,
   resolveMetadata,
 } from "../../chain-archive-sync/runtime-metadata.js";
 import { requireCallIndices } from "../../chain-archive-sync/extrinsic-decoder.js";
@@ -153,12 +154,77 @@ describe("event-borne system transactions", () => {
     expect(decodeEventSystemTransactions(resolved, new Uint8Array(compact(0)))).toEqual([]);
   });
 
-  it("refuses an events blob that does not match its runtime's metadata", () => {
+  it("refuses an events blob whose record count exceeds its bytes", () => {
     // A blob claiming more records than it carries is corrupt. Returning the records it managed to
     // read would under-report what the block contained -- and under-reporting is the exact failure
     // this whole decoding path exists to eliminate.
     const resolved = resolveMetadata(METADATA, IDENTITY);
     const truncated = eventsBlobWithSystemTransaction(HASH, PAYLOAD).slice(0, 12);
     expect(() => decodeEventSystemTransactions(resolved, truncated)).toThrow();
+  });
+});
+
+/**
+ * Reading the dispatched call out of EVERY framing -- the capability §5.2 was missing.
+ *
+ * The hand-rolled envelope decoder can only read a bare extrinsic. In a signed or "general"
+ * framing the call sits behind an address, a signature and the transaction extensions, whose
+ * layouts are chain configuration. Since `send_mn_transaction` ignores its origin, a signed
+ * Midnight transaction is valid and the reference indexer archives it, so being unable to read one
+ * meant dropping a real transaction or refusing the block.
+ */
+describe("decoding a call out of any extrinsic framing", () => {
+  const resolved = resolveMetadata(METADATA, IDENTITY);
+
+  // Real extrinsics captured from a live 1.0.0 devnet genesis, identical to the fixtures the
+  // hand-rolled decoder's own suite uses -- so the two decoders are checked against the same bytes.
+  const GENESIS_SYSTEM_TX =
+    "0xb4050600a46d69646e696768743a73797374656d2d7472616e73616374696f6e5b76365d3a050f0080c6a47e8d03";
+  const TIMESTAMP_INHERENT = "0x280501000be07b93d89f01";
+
+  it("reads a bare system-transaction call, matching the hand-rolled decoder", () => {
+    const d = decodeExtrinsicWithMetadata(resolved, GENESIS_SYSTEM_TX);
+    expect(d.isSigned).toBe(false);
+    expect({ pallet: d.palletIndex, call: d.callIndex }).toEqual({ pallet: 6, call: 0 });
+    expect(Buffer.from(d.payload!).toString("latin1")).toMatch(/^midnight:system-transaction/);
+  });
+
+  it("reads a non-Midnight inherent without special-casing it", () => {
+    // Timestamp::set. Classification is the caller's job; this must simply report what was
+    // dispatched rather than deciding the extrinsic is uninteresting.
+    const d = decodeExtrinsicWithMetadata(resolved, TIMESTAMP_INHERENT);
+    expect({ pallet: d.palletIndex, call: d.callIndex }).toEqual({ pallet: 1, call: 0 });
+  });
+
+  it("reads a SIGNED Midnight call -- the case that used to force a refusal", () => {
+    // Hand-built from the layout metadata itself describes: MultiAddress::Id, a Sr25519 signature,
+    // then the only two extensions carrying payload bytes (Era, Compact nonce). Everything else in
+    // this runtime's extension list has a Null payload and contributes nothing.
+    const payload = Buffer.from("midnight:transaction[v9]:PRETEND", "latin1");
+    const call = Buffer.concat([Buffer.from([5, 0]), compact(payload.length), payload]);
+    const inner = Buffer.concat([
+      Buffer.from([0x84]),                         // signed, v4
+      Buffer.from([0x00]), Buffer.alloc(32, 0x11), // MultiAddress::Id
+      Buffer.from([0x01]), Buffer.alloc(64, 0x22), // MultiSignature::Sr25519
+      Buffer.from([0x00]),                         // CheckMortality: Era::Immortal
+      compact(7),                                  // CheckNonce
+      call,
+    ]);
+    const hex = "0x" + Buffer.concat([compact(inner.length), inner]).toString("hex");
+
+    const d = decodeExtrinsicWithMetadata(resolved, hex);
+    expect(d.isSigned).toBe(true);
+    expect({ pallet: d.palletIndex, call: d.callIndex }).toEqual({ pallet: 5, call: 0 });
+    // The payload must survive the framing byte-for-byte: it is what gets archived.
+    expect(Buffer.from(d.payload!).equals(payload)).toBe(true);
+  });
+
+  it("throws rather than reporting 'not Midnight' when an extrinsic cannot be read", () => {
+    // The distinction is load-bearing. "Not a Midnight call" is a routine skip; "could not be
+    // read" means the archive may be missing a transaction. A caller that cannot tell them apart
+    // will treat corruption as absence.
+    expect(() => decodeExtrinsicWithMetadata(resolved, "0xff00ff00")).toThrow(
+      /could not decode extrinsic/,
+    );
   });
 });
