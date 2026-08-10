@@ -11,6 +11,10 @@ graphify-out/.graphify_python
 graphify-out/.graphify_root
 graphify-out/.graphify_labels.json
 graphify-out/cache/
+# Dated backups graphify writes of the previous graph before overwriting it (5+ MB each). Local
+# undo, not history: the committed graph.json already IS the current state, and git already holds
+# every earlier one.
+graphify-out/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
 
 # v1.0.0-recovery-testing soak: per-run GC-pass duration artifact (runtime output, not source)
 test/integration/soak/artifacts/
