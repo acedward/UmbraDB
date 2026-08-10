@@ -28,6 +28,9 @@ must not enter this PR.
 | May this PR add new archive data? | **No.** It substitutes the ingest source. It does not add stored business data, projections, feeds, or contract state. |
 | May an archive start at an arbitrary height? *(owner, 2026-08-08)* | **No — genesis-start only.** Not because mid-start needs the indexer (it does not; it needs an un-pruned archive node — a freshly started indexer is equally blind to pruned history). Genesis-start is chosen because it keeps completeness self-evident under `ON CONFLICT DO NOTHING` (§5.5), it matches the existing identity anchor (the archived genesis block, `sync-service.ts`), and apply-rule parity requires ledger state that can only be built from genesis. Backfilling old history via the existing indexer-sourced mode and then switching sources remains the supported path for history the node no longer serves. |
 | Is byte-parity with the indexer negotiable? *(owner, 2026-08-08)* | **No — reaffirmed.** Every dapp consumes the indexer today; a "correct per the node, with documented deviations" relaxation would make the swap permanently hard. Consequence: the indexer's *apply*-validity rule is in scope eventually, which means umbra maintaining ledger state via the WASM's `LedgerState.apply` — a replay engine. That is a real, deliberate cost accepted by this decision, not an accident of the acceptance matrix (see §8a.1, now a sequencing question only). |
+| What is the final shape of the work? *(owner, 2026-08-08)* | **Node as an *optional* source, transparent in its results** — not a forced cutover. Both sources stay first-class while the indexer exists. Executed in the stages of §11. |
+| When is "unsupported + refuse" an acceptable terminal status? *(owner, 2026-08-08)* | **Only where the indexer itself would fail.** The indexer's mechanism is uniform metadata-driven decoding with no special cases, so almost nothing qualifies. For populations with no producible live fixture, the fallback is **mechanism-equivalence**: implement the indexer's mechanism and prove it with synthesized unit fixtures — the missing specimen changes the evidence type, not the support status (resolves §8a.2). |
+| Which ledger artifact ships? *(owner, 2026-08-08)* | **Our own verified 8.1.0 build, vendored** with provenance: ledger commit `1a561ac`, the §8 recipe, SHA-256 checksums, and a CI rebuild-and-compare job. `MIDNIGHT_LEDGER_WASM` demotes to a test-only escape hatch. Swapped for the upstream package when §10 completes. Resolves §5.4's distribution objection. |
 
 The remaining owner coordination choices are narrower still, now that the ledger fork has a
 publication destination (`git@github.com:acedward/midnight-ledger.git`, both branches pushed —
@@ -133,6 +136,21 @@ payloads persist. Ground-truth capture is still needed for (a) a valid direct ca
 ledger execution, (b) deserialization and ledger-apply failures, and (c) how the database/GraphQL
 surface exposes a successful direct system transaction that is also present as an event, including
 any hash-based deduplication and resulting position.
+
+**(c) is now resolved by code reading (2026-08-08): the indexer does not deduplicate.**
+`v1_0_0.rs:160-163` prepends event-borne system transactions and plain-`extend`s the extrinsic
+list — no hash comparison anywhere on the path — and the indexer's own `transactions` table
+(`indexer-common/migrations/postgres/001_initial.sql`) has **no unique constraint on `hash`**
+(`id BIGSERIAL` primary key, plain index on `hash`). A successful direct system call therefore
+persists as **two rows**, the event-borne copy first. Byte-parity means umbra must do the same —
+and currently cannot: `chain_archive.transactions`' primary key is
+`(net, block_height, block_hash, tx_hash)`
+(`src/postgres/migrations/chain_archive/001_chain_archive_core.ts:392`), so the second copy
+collides and `ON CONFLICT DO NOTHING` silently drops it. This is the one place a safety migration
+(§1's reserved scope decision) is affirmatively justified: widen the PK to include `position`.
+Until that lands, the correct interim is to **refuse** any block containing the collision
+(Stage 1, §11). Live observation of the case remains worthwhile as end-to-end confirmation, but
+the combination rule itself no longer waits on it.
 
 ## 4. What is genuinely demonstrated
 
@@ -691,3 +709,37 @@ section does not wait on Part A's merge — it can proceed any time.
 - 2026-08-08 — 8.0.3 → 8.1.0 does not affect transaction hashing (proven by the 5/5 match against
   indexer 4.3.2's recorded hashes). No equivalent statement exists yet for 8.2.0-rc.1 (step 2).
 - *(append future findings here, dated)*
+
+## 11. Staged execution plan (owner, 2026-08-08)
+
+**Final goal, restated by the owner:** umbra can use the node, **optionally**, instead of the
+indexer — and is **transparent in its results** about what each mode covers. Not a forced cutover;
+both sources remain first-class while the indexer exists. This supersedes any reading of §6/§7 as
+a single monolithic gate and resolves §8a.4 (merge/cutover tiering): each stage below has its own
+done-condition, and earlier stages are mergeable without later ones.
+
+| Stage | Contents | Done when | Decisions needed |
+|---|---|---|---|
+| **0 — Reproducible foundation** | Vendor the verified 8.1.0 ledger build with provenance (commit `1a561ac`, §8 recipe, SHA-256 sums, CI rebuild-and-compare); demote `MIDNIGHT_LEDGER_WASM` to test-only; pin toolchains; compose stack is the canonical environment | A fresh clone runs every current suite with no manual build steps and no env vars | None — decided in §0 |
+| **1 — Fail-closed on the current slice** | The one-line signed-system-tag fix (§8a.5); harden the §5.1 event guard's stated scope; refuse dual-source-collision blocks (§3(c)); label node-only experimental in docs and CLI (§6.1) | No known input reaches silent omission; every gap refuses loudly; **mergeable** as strictly-better | None |
+| **2 — Block-scoped metadata decoding** | §6.2 in full: every extrinsic framing and `SystemTransactionApplied` decode via the runtime schema for the exact block, per-node-version capture like the reference | The §5.1/§5.2 refusals convert to support; pinned `CALL_INDICES_BY_PROTOCOL` retired to a cross-check | None — §0 settles the capture approach |
+| **3 — Parity gates required** | Synthesize devnet fixtures where producible (signed call, direct system call via root, mixed block); mechanism-equivalence unit fixtures where not (§0 fallback rule); ordered-comparison gates including `block_hash` and D-parameter observations; CI jobs that fail rather than skip | The §7 matrix rows are green, red-with-fallback-evidence, or refused-matching-the-indexer — none silently skipped | None |
+| **4 — Apply-rule parity (replay)** | Ledger state advanced from genesis via WASM `LedgerState.apply`; row-versus-refusal parity for deserialize- and apply-failures | The last two §7 refusal-parity rows close | None — decided in §0 (parity ⇒ replay ⇒ genesis-start) |
+| **5 — Optional-source GA** | Node mode leaves experimental; mode + coverage visibly reported in results; the source/version transparency record (may use §1's reserved safety-migration slot, alongside the §3(c) PK widening) | An operator can choose either source and see exactly what their archive covers | One: the shape of the transparency record, when reached |
+
+**The PK-widening migration** (§3(c)) is the single currently-known schema change; it belongs to
+whichever stage first needs to *archive* (not merely refuse) a dual-source block — Stage 2 at the
+earliest, bundled with the §1 scope-decision note it already has.
+
+### 11.1 Execution prerequisites (what an agent needs; nothing else)
+
+- **Services:** `test/compose/docker-compose.yml` (node 1.0.0, indexer-standalone 4.3.2, proof
+  server, postgres); Docker + testcontainers for the integration suites.
+- **Ledger build (until Stage 0 lands):** the §8 recipe verbatim — ledger `1a561ac`,
+  `wasm-pack 0.15.0`, **rustc 1.93.0 exactly**, then the loader/`#self` adaptation. After Stage 0:
+  nothing.
+- **Toolchains:** rustc 1.93.0; rustc ≥ 1.95 only for `ledger-8` work (§10); Node 20+, `tsx`, `jq`.
+- **Access:** push to `acedward/UmbraDB` and `acedward/midnight-ledger`; pull for midnight images.
+- **Open decisions: none for Stages 0–3.** Stage 4: none. Stage 5: one, deferrable until reached.
+  Owner-only actions that remain are outside the stages: opening the upstream ledger PR (§10.2.3)
+  and making CI jobs *required* in repo settings.
