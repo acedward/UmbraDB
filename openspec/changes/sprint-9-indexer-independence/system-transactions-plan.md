@@ -744,6 +744,10 @@ both sources remain first-class while the indexer exists. This supersedes any re
 a single monolithic gate and resolves §8a.4 (merge/cutover tiering): each stage below has its own
 done-condition, and earlier stages are mergeable without later ones.
 
+**Execution status (2026-08-11): Stages 0, 1, 2, 2b and 3 are COMPLETE** — each closed out in
+`tasks.md` §8 with its evidence and commits. Stage 4 is next; Stage 5 waits on its one decision.
+Stage 2b (§13) was inserted after this table was written and sits between 2 and 3.
+
 | Stage | Contents | Done when | Decisions needed |
 |---|---|---|---|
 | **0 — Reproducible foundation** | Vendor the verified 8.1.0 ledger build with provenance (commit `1a561ac`, §8 recipe, SHA-256 sums, CI rebuild-and-compare); demote `MIDNIGHT_LEDGER_WASM` to test-only; pin toolchains; compose stack is the canonical environment | A fresh clone runs every current suite with no manual build steps and no env vars | None — decided in §0 |
@@ -780,7 +784,7 @@ made; Stages 0–4 run without owner input. The three future actions, each with 
 
 | When | Action | Effort |
 |---|---|---|
-| Stage 3 CI lands | Flip the new parity/refusal jobs to **required** in the GitHub repo settings of `acedward/UmbraDB` (agents cannot change branch-protection rules) | ~2 minutes |
+| **NOW — Stage 3 has landed** | Flip two jobs to **required** in `acedward/UmbraDB` branch protection: `parity` (workflow *Chain archive parity gates*) and `integrity` (workflow *Vendored ledger integrity*). Each must have run once on a PR/push before it appears in the search box. Until flipped, the gates run but do not block | ~2 minutes |
 | §10 step 2 passes (hashes recomputed on an 8.2.0-rc.1 build) | Open — or say the word and the PR text is drafted from §10.2.3 — the upstream PR from `acedward/midnight-ledger` `feat/expose-system-transaction-hash-ledger8` against `midnightntwrk/midnight-ledger` `ledger-8`. Kept as an owner action because it is outward-facing on the upstream org | ~10 minutes with the drafted text |
 | Stage 5 is reached | Approve the proposed shape of the source/coverage transparency record (a concrete proposal will be presented then; no thinking required before that) | One yes/no |
 
@@ -808,7 +812,7 @@ invalidate work already done. Both are updated as stages proceed.
 
 | # | Unknown | Why it matters | How it gets settled |
 |---|---|---|---|
-| **U1** | **Are the event's `serialized_system_transaction` bytes byte-identical to the same transaction's extrinsic-borne bytes?** | The event guard now matches by bytes. If they differ, it **over-refuses valid blocks** — trading a silent omission for a stall. The reference indexer's handling implies they are identical; nothing has observed it | One block containing a successful direct system call on a chain that emits events. Gated on B1 |
+| **U1** | ~~Are the event's bytes identical to the extrinsic's?~~ **Downgraded to non-blocking** (Stage 2 wiring): each dual-source copy is archived under its OWN bytes — event payload for the event-borne row, extrinsic payload for the extrinsic row — exactly as the indexer stores them. If the two streams ever differ, we mirror the reference either way. The byte-match guard this governed was replaced by real event decoding | Curiosity, not risk. Settles itself the first time B1's population is observed live |
 | **U2** | **The ledger WASM build is not bit-reproducible.** Same commit, `wasm-pack` and `rustc` produce different `.wasm` bytes | The vendored artifact can never be re-attested by rebuilding it; provenance rests entirely on behavioural vectors | Settled as far as it can be: accepted, with the known-vector gate as the substitute attestation. Do not add a byte-comparison CI gate — it cannot pass |
 | **U3** | **Does an 8.2.0-rc.1 build reproduce the five genesis hashes?** | The upstream merge candidate is compile-checked only; it is *unverified against ground truth* while the 8.1.0 tree is what Part A consumes | Build the candidate and run the vectors (§10.2 step 2) |
 | **U4** | **Can a signed Midnight call be produced at all?** `send_mn_transaction` ignores its origin, so one is valid — but nobody may ever have submitted one | §7 requires the row. If unproducible, that gate can only ever stay red | Attempt submission on the devnet; failing that, mechanism-equivalence per §0 |
@@ -840,6 +844,37 @@ and the alternative is hand-writing a V14 type registry in the single most decod
 the system — where a subtle bug produces a wrong archive rather than a crash. The cost is real and
 should be taken with open eyes: 19 scoped packages and 46 MB against a 17-dependency repo.
 *(Adopted by the owner 2026-08-10 — see B6.)*
+
+### 12.5 Status snapshot after Stage 3 (2026-08-11) — answered, and still open
+
+**Answered since the register was created** (each recorded in place; collected here so the current
+state is readable in one pass):
+
+| Question | Answer |
+|---|---|
+| How to decode SCALE metadata in TS? (B6) | `@polkadot/types`, owner-approved, in `package.json` |
+| Can the PK hold dual-source rows? (B3) | Yes — re-keyed on `position` (migration 002), both copies stored |
+| 0.22.x call indices? (B5) | Identical to 1.0.x, derived from the reference's own captured metadata (V16) |
+| Can ingest read signed framings / events / renumbered runtimes? (B2) | Yes — wired, three refusals became archiving |
+| Does parity survive all of Stage 2's changes? | **Yes — live-verified**: 60 blocks, 38 tx (5 system), 1 D-param observation, identical incl. `block_hash` |
+| Do event bytes equal extrinsic bytes? (U1) | Moot for parity — each copy archived under its own bytes, as the reference does |
+| Can pruned nodes ingest history? (B7/§13) | **No, inherently** — per-block state (`System::Events`, D-param) has no capture substitute. The archive is self-describing for re-decode/replay instead |
+| Metadata across node versions? | V14 (1.0.0) and V16 (0.22.0) both decode; version drift is handled |
+
+**Open, with owners:**
+
+| Item | Waiting on |
+|---|---|
+| B1 — no reachable chain emits runtime-generated system transactions | The root blocker for every "live" upgrade of a mechanism-equivalence row. CNight observation is the identified real source |
+| U5 — does the indexer archive a `BadOrigin`-rejected call? | Live observation on an oracle range; sizes Stage 4's row-vs-refusal work |
+| U6 / runtime-upgrade boundary | **Impossible on reachable chains** (no upgrade ever happened); needs a second runtime from any source |
+| §7: ledger-replay refusal parity | Stage 4 |
+| Branch protection: `parity` + `integrity` jobs not yet required | **Owner, ~2 min** (§11.2 — trigger has fired) |
+| B4 / §10 — ledger export upstream PR | §10.2 step 2 (recompute hashes on 8.2.0-rc.1), then owner opens the PR |
+| Stage 5's transparency-record shape | Deferred until Stage 5 |
+
+Local-only, not plan-level: the main repo's `node_modules` has 3,135 root-owned entries, so local
+installs silently no-op; development runs in a scratch clone. Fresh clones and CI are unaffected.
 
 ### 12.4 Stage 2 mid-stage review (2026-08-10) — built, missing, and two library hazards
 
