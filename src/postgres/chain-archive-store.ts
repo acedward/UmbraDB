@@ -8,6 +8,7 @@ import {
   type BlockMeta,
   type BlockRecord,
   type BridgeObservationRecord,
+  type RuntimeMetadataRecord,
   type ChainArchiveStore,
   type Hex32,
   type TransactionMeta,
@@ -535,6 +536,55 @@ export class PgChainArchiveStore implements ChainArchiveStore {
            OR jsonb_typeof(EXCLUDED.value -> 'height') IS DISTINCT FROM 'number'
            OR (EXCLUDED.value ->> 'height')::numeric > (w.value ->> 'height')::numeric
       `;
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /** @inheritdoc */
+  async getRuntimeMetadata(
+    net: string, specName: string, specVersion: number,
+  ): Promise<Uint8Array | undefined> {
+    try {
+      const [row] = await this.sql<{ hash: Buffer }[]>`
+        SELECT metadata_blob_hash AS hash FROM ${this.sql(this.schema)}.runtime_metadata
+        WHERE net = ${net} AND spec_name = ${specName} AND spec_version = ${specVersion}
+      `;
+      if (row === undefined) return undefined;
+      // Through getBlob, so the capture is rehashed before use like every other archived blob.
+      // Metadata that silently rotted would misdecode every block of its runtime.
+      return await this.getBlob(bufToHex(row.hash) as Hex32);
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /** @inheritdoc */
+  async putRuntimeMetadata(record: RuntimeMetadataRecord): Promise<void> {
+    try {
+      const hashHex = sha256Hex(record.metadataBytes);
+      const hash = hexToBuf(hashHex);
+      await this.sql.begin(async (tx) => {
+        await tx`
+          INSERT INTO ${tx(this.schema)}.chain_blobs (hash, data)
+          VALUES (${hash}, ${Buffer.from(record.metadataBytes)})
+          ON CONFLICT (hash) DO NOTHING
+        `;
+        await tx`
+          INSERT INTO ${tx(this.schema)}.chain_blob_roles (blob_hash, role)
+          VALUES (${hash}, 'runtime_metadata')
+          ON CONFLICT (blob_hash, role) DO NOTHING
+        `;
+        // DO NOTHING, not DO UPDATE: the first capture wins, so `first_seen_height` keeps naming
+        // the block that genuinely introduced the runtime rather than the most recent re-sync.
+        await tx`
+          INSERT INTO ${tx(this.schema)}.runtime_metadata
+            (net, spec_name, spec_version, first_seen_height, metadata_blob_hash)
+          VALUES (${record.net}, ${record.specName}, ${record.specVersion},
+                  ${record.firstSeenHeight}, ${hash})
+          ON CONFLICT (net, spec_name, spec_version) DO NOTHING
+        `;
+      });
     } catch (err) {
       throw translatePostgresError(err);
     }

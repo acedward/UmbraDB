@@ -1,6 +1,7 @@
 import * as migration000 from "../000_schema.js";
 import * as chainArchiveCore from "./001_chain_archive_core.js";
 import * as transactionPositionKey from "./002_transaction_position_key.js";
+import * as runtimeMetadata from "./003_runtime_metadata.js";
 import type { Migration } from "../../migrate.js";
 
 /**
@@ -34,6 +35,7 @@ export const chainArchiveMigrations: Migration[] = [
   migration000,
   chainArchiveCore,
   transactionPositionKey,
+  runtimeMetadata,
 ];
 
 // v3 note: `chainArchiveCore` now also creates `chain_archive_assert_blob_role` (a shared

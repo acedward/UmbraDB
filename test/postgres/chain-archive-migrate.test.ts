@@ -39,6 +39,7 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
       `;
       expect(firstRun.map((r) => r.name)).toEqual([
         "000_schema", "001_chain_archive_core", "002_transaction_position_key",
+        "003_runtime_metadata",
       ]);
 
       // --- idempotent re-run: applies zero additional migrations ---

@@ -242,10 +242,28 @@ export class ChainArchiveSyncService {
    *  metadata request at all and keeps working against a pruned node. */
   private readonly metadata: BlockScopedMetadata;
 
+  /** The height currently being ingested, so a metadata capture records the block that actually
+   *  introduced the runtime rather than whatever height a later re-sync happened to reach. */
+  private currentIngestHeight: number | undefined;
+
   constructor(opts: ChainArchiveSyncServiceOptions) {
     this.store = new PgChainArchiveStore(opts.sql, opts.schema ?? "chain_archive");
     this.node = new NodeRpcClient(opts.node);
-    this.metadata = new BlockScopedMetadata(this.node);
+    // The archive is the resolver's first-choice metadata source and the destination for anything
+    // it fetches, so a runtime is retrieved from the node exactly once per net and the archive
+    // becomes self-describing from then on.
+    this.metadata = new BlockScopedMetadata(this.node, {
+      load: (identity) =>
+        this.store.getRuntimeMetadata(this.net, identity.specName, identity.specVersion),
+      save: (identity, bytes) =>
+        this.store.putRuntimeMetadata({
+          net: this.net,
+          specName: identity.specName,
+          specVersion: identity.specVersion,
+          firstSeenHeight: this.currentIngestHeight ?? 0,
+          metadataBytes: bytes,
+        }),
+    });
     this.indexer = opts.indexer === undefined ? undefined : new IndexerClient(opts.indexer);
     this.oracleCrossCheckEnabled = opts.oracleCrossCheck ?? false;
     this.expectedGenesisHash =
@@ -805,7 +823,11 @@ export class ChainArchiveSyncService {
     extrinsics: readonly string[],
     protocolVersion: number,
   ): Promise<TransactionRecord[]> {
-    const resolved = await this.metadata.forBlock(`0x${blockHash}`);
+    this.currentIngestHeight = height;
+    // The protocol version comes from the block HEADER, so it stays available even where the
+    // historical state behind `state_getRuntimeVersion` has been pruned -- which is precisely when
+    // the committed capture registry is the only remaining source.
+    const resolved = await this.metadata.forBlock(`0x${blockHash}`, protocolVersion);
     this.assertPinnedIndicesAgree(height, protocolVersion, resolved);
     const { callIndices } = resolved;
 

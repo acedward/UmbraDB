@@ -29,11 +29,24 @@
 import { Metadata, TypeRegistry } from "@polkadot/types";
 import type { NodeRpcClient } from "./node-rpc-client.js";
 import type { RuntimeCallIndices } from "./extrinsic-decoder.js";
+import { captureForProtocolVersion } from "./metadata-captures/index.js";
 
 /** A runtime's own identity, as the runtime reports it. The cache key. */
 export interface RuntimeIdentity {
   specName: string;
   specVersion: number;
+}
+
+/**
+ * Where this archive keeps its own metadata captures.
+ *
+ * Narrower than the store interface on purpose: metadata resolution needs exactly "load these
+ * bytes" and "keep these bytes", and depending on the whole archive store would make this module
+ * untestable without a database.
+ */
+export interface MetadataPersistence {
+  load(identity: RuntimeIdentity): Promise<Uint8Array | undefined>;
+  save(identity: RuntimeIdentity, bytes: Uint8Array): Promise<void>;
 }
 
 /** Everything ingest reads out of one runtime's metadata, resolved once per runtime. */
@@ -303,32 +316,95 @@ export function decodeEventSystemTransactions(
 export class BlockScopedMetadata {
   private readonly cache = new Map<string, ResolvedRuntimeMetadata>();
 
-  constructor(private readonly node: NodeRpcClient) {}
+  constructor(
+    private readonly node: NodeRpcClient,
+    /** Where this archive keeps (and looks for) its own captures. Optional so the class stays
+     *  usable in tests and tools that have no store; without it, only the node and the committed
+     *  registry are available. */
+    private readonly persistence?: MetadataPersistence,
+  ) {}
 
-  /** Resolve metadata for the runtime that produced `blockHash`. */
-  async forBlock(blockHash: string): Promise<ResolvedRuntimeMetadata> {
+  /**
+   * Resolve metadata for the runtime that produced `blockHash`, in this order:
+   *
+   *   1. **this archive's own capture** -- exact, self-contained, no node involved;
+   *   2. **the node**, at the block's hash -- and persist the answer, so step 2 retires itself
+   *      for that runtime and later re-syncs or replays need no node at all;
+   *   3. **the committed registry**, keyed by the header's MNSV version -- the pruned-node
+   *      bootstrap, where `state_getRuntimeVersion` itself is unanswerable;
+   *   4. **refuse**, naming which sources were tried.
+   *
+   * Never guesses a layout. Metadata from the wrong runtime decodes a block against layouts that
+   * are not its own, and that failure is silent: pallet indices simply mean something else, so
+   * genuine transactions are classified as foreign calls and vanish.
+   *
+   * `protocolVersion` (the header's MNSV value) is what makes step 3 possible; it is optional
+   * because steps 1-2 do not need it.
+   */
+  async forBlock(blockHash: string, protocolVersion?: number): Promise<ResolvedRuntimeMetadata> {
     const at = blockHash.startsWith("0x") ? blockHash : `0x${blockHash}`;
-    const version = await this.node.runtimeVersionAt(at);
-    const identity: RuntimeIdentity = {
-      specName: version.specName,
-      specVersion: version.specVersion,
-    };
-    const key = `${identity.specName}@${identity.specVersion}`;
 
-    const cached = this.cache.get(key);
-    if (cached !== undefined) return cached;
-
-    const raw = await this.node.metadataAt(at);
-    if (raw === undefined) {
-      throw new Error(
-        `no runtime metadata available at block ${at}. Historical metadata is required to decode ` +
-          "this block's extrinsics and events; a pruned node cannot serve it. Use an archive node " +
-          "for this range.",
-      );
+    // The runtime's identity needs the same historical state the metadata does, so on a pruned
+    // node this is where resolution fails -- which is exactly when the registry is the only path
+    // left. Failure here is therefore not fatal on its own.
+    let identity: RuntimeIdentity | undefined;
+    try {
+      const version = await this.node.runtimeVersionAt(at);
+      identity = { specName: version.specName, specVersion: version.specVersion };
+    } catch {
+      identity = undefined;
     }
-    const resolved = resolveMetadata(hexToBytes(raw), identity);
-    this.cache.set(key, resolved);
-    return resolved;
+
+    if (identity !== undefined) {
+      const key = `${identity.specName}@${identity.specVersion}`;
+      const cached = this.cache.get(key);
+      if (cached !== undefined) return cached;
+
+      // (1) this archive's own capture
+      const stored = await this.persistence?.load(identity);
+      if (stored !== undefined) {
+        const resolved = resolveMetadata(stored, identity);
+        this.cache.set(key, resolved);
+        return resolved;
+      }
+
+      // (2) the node -- and keep what it gives us
+      const raw = await this.node.metadataAt(at).catch(() => undefined);
+      if (raw !== undefined) {
+        const bytes = hexToBytes(raw);
+        const resolved = resolveMetadata(bytes, identity);
+        this.cache.set(key, resolved);
+        await this.persistence?.save(identity, bytes);
+        return resolved;
+      }
+    }
+
+    // (3) the committed registry -- last resort, coarse key, from the block HEADER
+    if (protocolVersion !== undefined) {
+      const found = captureForProtocolVersion(protocolVersion);
+      if (found !== undefined) {
+        // Identity is unknown on this path by construction, so the capture's own node version
+        // stands in as the cache key. It must not be written back to the archive: a capture is
+        // evidence about a node RELEASE, not an observation of this chain's runtime identity.
+        const fallbackIdentity: RuntimeIdentity = {
+          specName: `capture:${found.capture.nodeVersion}`,
+          specVersion: protocolVersion,
+        };
+        const resolved = resolveMetadata(found.bytes, fallbackIdentity);
+        this.cache.set(`${fallbackIdentity.specName}@${protocolVersion}`, resolved);
+        return resolved;
+      }
+    }
+
+    throw new Error(
+      `no runtime metadata available for block ${at}` +
+        (protocolVersion === undefined ? "" : ` (protocol ${protocolVersion})`) +
+        ". Tried: this archive's own runtime_metadata captures, the node's state_getMetadata at " +
+        "that block, and the committed capture registry. Historical metadata derives from " +
+        "historical state, so a pruned node cannot serve it; either ingest this range through an " +
+        "archive node once, or add a capture for this runtime to chain-archive-sync/" +
+        "metadata-captures/. Refusing rather than decoding against another runtime's layout.",
+    );
   }
 
   /** Runtimes resolved so far, for tests and diagnostics. */

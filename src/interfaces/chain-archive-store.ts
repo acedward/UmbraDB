@@ -25,7 +25,10 @@ export type Hex32 = string;
 export const Hex32Schema = z.string().regex(/^[0-9a-f]{64}$/, "expected 64 lowercase hex chars (32 bytes)");
 
 export type BlobRole =
-  | "block_header" | "block_body" | "tx_raw" | "proof" | "verifier_key" | "bridge_observation";
+  | "block_header" | "block_body" | "tx_raw" | "proof" | "verifier_key" | "bridge_observation"
+  /** SCALE-encoded runtime metadata, kept so the archive can decode its own history without the
+   *  node still serving it -- see `runtime_metadata` (migration 003). */
+  | "runtime_metadata";
 
 export type BlockStatus = "seen" | "canonical" | "orphaned" | "pruned";
 
@@ -301,4 +304,35 @@ export interface ChainArchiveStore {
    *  (e.g. `canonical_tip:<net>`). */
   getWatermark(key: string): Promise<unknown | undefined>;
   setWatermark(key: string, value: unknown): Promise<void>;
+
+  /**
+   * The archive's own copy of a runtime's SCALE metadata, or `undefined` if this runtime has not
+   * been captured for this net.
+   *
+   * Decoding a block requires the metadata of the runtime that produced it, and that metadata is
+   * derived from historical state -- a pruned node cannot serve it. Keeping a copy makes the
+   * archive self-describing, so re-syncs and replay never depend on the node's state retention.
+   */
+  getRuntimeMetadata(
+    net: string, specName: string, specVersion: number,
+  ): Promise<Uint8Array | undefined>;
+
+  /**
+   * Persist a runtime's metadata the first time that runtime is seen. Idempotent: a second call
+   * for the same `(net, specName, specVersion)` leaves the existing capture untouched, so the
+   * recorded `first_seen_height` remains the height that genuinely introduced the runtime.
+   */
+  putRuntimeMetadata(record: RuntimeMetadataRecord): Promise<void>;
+}
+
+/** One runtime's metadata, as captured by this archive. */
+export interface RuntimeMetadataRecord {
+  net: string;
+  specName: string;
+  specVersion: number;
+  /** The height at which this runtime was first observed -- diagnostic, and the answer to "which
+   *  block introduced this runtime" when a decode goes wrong at an upgrade boundary. */
+  firstSeenHeight: number;
+  /** Raw SCALE-encoded metadata, exactly as the node served it. */
+  metadataBytes: Uint8Array;
 }
