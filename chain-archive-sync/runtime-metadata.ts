@@ -165,8 +165,12 @@ export function decodeExtrinsicWithMetadata(
 ): MetadataDecodedExtrinsic {
   const { registry } = resolved;
   let xt: any;
+  // Normalize the `0x` prefix. `chain_getBlock` always includes it, but without it the codec takes
+  // the value for a plain string rather than hex and fails with a message about expecting "an
+  // input object, map or array" -- which points nowhere near the actual problem.
+  const hex = extrinsicHex.startsWith("0x") ? extrinsicHex : `0x${extrinsicHex}`;
   try {
-    xt = registry.createType("Extrinsic" as never, extrinsicHex);
+    xt = registry.createType("Extrinsic" as never, hex);
   } catch (cause) {
     throw new Error(
       `could not decode extrinsic against this block's runtime metadata: ${(cause as Error).message}. ` +

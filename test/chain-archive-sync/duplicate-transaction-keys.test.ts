@@ -2,31 +2,29 @@ import { describe, expect, it } from "vitest";
 import { assertNoDuplicateTransactionKeys } from "../../chain-archive-sync/sync-service.js";
 
 /**
- * The archive keys transactions by `(net, block_height, block_hash, tx_hash)`, so two rows sharing
- * a hash within one block cannot both be stored -- and since every terminal insert is
- * `ON CONFLICT DO NOTHING`, the loser is dropped in SILENCE rather than raising.
+ * Since `002_transaction_position_key`, the archive keys transactions by
+ * `(net, block_height, block_hash, position)`. This guard enforces what that key forbids, and --
+ * just as importantly -- permits what it now allows.
  *
- * This is not hypothetical. The reference indexer does not deduplicate: `runtimes/v1_0_0.rs:160`
- * prepends event-borne system transactions and plain-`extend`s the extrinsic-derived list, with no
- * hash comparison anywhere on the path, and its own `transactions` table has no unique constraint
- * on `hash` (`indexer-common/migrations/postgres/001_initial.sql` -- `id BIGSERIAL` primary key,
- * plain index on `hash`). A successful direct system call is therefore present in BOTH sources and
- * legitimately becomes two rows there. Byte-parity means it must become two rows here too.
+ * The inversion is the point. This suite previously asserted that two rows sharing a HASH were
+ * refused. That shape is now legal and required: the reference indexer does not deduplicate a
+ * system transaction that arrives both as an extrinsic and as a `SystemTransactionApplied` event
+ * (`runtimes/v1_0_0.rs:160-163`, and no unique constraint on `hash` in its own schema), so a
+ * successful direct system call legitimately becomes two rows there. Byte-parity means two rows
+ * here. Had this guard been left alone, it would have refused exactly the blocks Stage 2 exists to
+ * archive.
  *
- * The approved fix is widening the key with `position` (plan §3(c)). Until that migration lands,
- * refusing is the honest interim: storing one of the two copies would look like a complete block
- * while silently disagreeing with the source this archive is defined against.
- *
- * Tested as a free function because the situation cannot be produced on any reachable devnet -- no
- * chain in reach emits runtime-generated system transactions -- so waiting for a live specimen
- * would leave the guard permanently unverified.
+ * What remains forbidden is two transactions at one position: an unstorable row, and a sign the
+ * block's ordering is wrong. Ordering is part of what this archive guarantees -- two archives
+ * holding the same transactions in a different order are not interchangeable for anything reading
+ * by position.
  */
 const tx = (txHash: string, position: number, kind = "system") => ({ txHash, position, kind });
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 
 describe("assertNoDuplicateTransactionKeys", () => {
-  it("permits distinct hashes", () => {
+  it("permits distinct positions", () => {
     expect(() =>
       assertNoDuplicateTransactionKeys(7, [tx(HASH_A, 0), tx(HASH_B, 1, "regular")]),
     ).not.toThrow();
@@ -36,27 +34,34 @@ describe("assertNoDuplicateTransactionKeys", () => {
     expect(() => assertNoDuplicateTransactionKeys(7, [])).not.toThrow();
   });
 
-  it("refuses the dual-source case: one hash at two positions", () => {
-    // The shape the indexer produces for a successful direct system call: the event-borne copy
-    // first (position 0), the extrinsic-derived copy after.
-    expect(() => assertNoDuplicateTransactionKeys(42, [tx(HASH_A, 0), tx(HASH_A, 1)])).toThrow(
-      /positions 0 and 1 share the hash/,
+  it("PERMITS the dual-source case: one hash at two positions", () => {
+    // The shape the reference produces for a successful direct system call -- the event-borne copy
+    // first, the extrinsic-derived copy after. Refusing this was correct only while the key made
+    // it unstorable; now it is the behaviour parity requires.
+    expect(() =>
+      assertNoDuplicateTransactionKeys(42, [tx(HASH_A, 0), tx(HASH_A, 1)]),
+    ).not.toThrow();
+  });
+
+  it("refuses two different transactions at one position", () => {
+    expect(() => assertNoDuplicateTransactionKeys(42, [tx(HASH_A, 3), tx(HASH_B, 3)])).toThrow(
+      /both claim position 3/,
     );
   });
 
-  it("names the height and both positions, so the failure is actionable", () => {
+  it("names the height and both hashes, so the failure is actionable", () => {
     // A refusal that does not say WHICH block and WHICH rows leaves an operator with a stalled
     // sync and nowhere to start; the message is part of the contract here, not decoration.
-    expect(() => assertNoDuplicateTransactionKeys(42, [tx(HASH_A, 3), tx(HASH_A, 9)])).toThrow(
-      /height 42: transactions at positions 3 and 9/,
+    expect(() => assertNoDuplicateTransactionKeys(42, [tx(HASH_A, 3), tx(HASH_B, 3)])).toThrow(
+      /height 42: two transactions both claim position 3/,
     );
   });
 
-  it("refuses a duplicate that is not adjacent", () => {
-    // Guards against an implementation that only compares neighbours -- event-borne copies are
-    // prepended as a group, so the two copies of one transaction need not end up side by side.
+  it("refuses a position clash that is not adjacent", () => {
+    // Guards against an implementation that only compares neighbours. Event-borne copies are
+    // prepended as a group, so a mis-numbering need not put the clashing pair side by side.
     expect(() =>
-      assertNoDuplicateTransactionKeys(42, [tx(HASH_A, 0), tx(HASH_B, 1), tx(HASH_A, 2)]),
-    ).toThrow(/positions 0 and 2 share the hash/);
+      assertNoDuplicateTransactionKeys(42, [tx(HASH_A, 0), tx(HASH_B, 1), tx("c".repeat(64), 0)]),
+    ).toThrow(/both claim position 0/);
   });
 });

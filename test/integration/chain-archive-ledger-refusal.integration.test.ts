@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
+import { metadataRpcResult } from "./fake-node-metadata.js";
 
 /**
  * The archive must REFUSE, not silently omit, when the loaded ledger cannot hash a system
@@ -79,6 +80,10 @@ function fakeNodeFetch(): typeof fetch {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
+    // Node-only ingest resolves the block's runtime metadata before it can classify anything, so
+    // a fake node must answer these or the service refuses for the wrong reason entirely.
+    const meta = metadataRpcResult(body.method);
+    if (meta !== undefined) return reply(meta);
     switch (body.method) {
       case "chain_getBlockHash":
         return reply(GENESIS_HASH);
@@ -88,7 +93,7 @@ function fakeNodeFetch(): typeof fetch {
         return reply(header);
       case "chain_getBlock":
         return reply({ block: { header, extrinsics: [bareSystemExtrinsicHex(REAL_SYSTEM_TX_HEX)] } });
-      case "state_getStorage":
+      case "state_getStorageAt":
         // No events: this chain's only system transaction is extrinsic-borne, which is the case
         // under test. An empty event list keeps the event-borne guard out of the picture.
         return reply("0x00");

@@ -11,11 +11,18 @@ import { IndexerClient, type IndexerBlock, type IndexerClientOptions } from "./i
 import { NodeRpcClient, type NodeRpcClientOptions, type SubstrateHeader } from "./node-rpc-client.js";
 import {
   assertSupportedProtocolVersion,
+  callIndicesForProtocolVersion,
   classifyExtrinsic,
   decodeProtocolVersionFromDigest,
   requireCallIndices,
 } from "./extrinsic-decoder.js";
 import { decodeArchivedTransaction, loadLedgerV8 } from "./tx-replay-decoder.js";
+import {
+  BlockScopedMetadata,
+  decodeEventSystemTransactions,
+  decodeExtrinsicWithMetadata,
+  type ResolvedRuntimeMetadata,
+} from "./runtime-metadata.js";
 
 /**
  * The real ingestion/sync service that populates the `chain_archive` schema from a live Midnight
@@ -91,8 +98,23 @@ function hexNoPrefix(hex: string): string {
 
 const SYSTEM_TX_TAG = "midnight:system-transaction";
 
+function hexToBytes(hex: string): Uint8Array {
+  return new Uint8Array(Buffer.from(hexNoPrefix(hex), "hex"));
+}
+
 /**
- * Refuse a block whose transactions would collide on the archive's transaction key.
+ * Refuse a block whose transactions would collide on the archive's transaction key -- which, since
+ * `002_transaction_position_key`, is `position` rather than `tx_hash`.
+ *
+ * This guard used to reject two rows sharing a HASH. That is now the legal, required shape: the
+ * reference indexer stores a dual-source system transaction twice, so byte-parity means this
+ * archive must too, and the migration re-keyed the table precisely to allow it. Left unchanged,
+ * this function would have refused exactly the blocks Stage 2 exists to archive.
+ *
+ * What it checks instead is what the new key actually forbids: two transactions at one position.
+ * That is both an unstorable row and a sign the block's ordering is wrong -- and ordering is part
+ * of what this archive guarantees, since two archives holding the same transactions in different
+ * order are not interchangeable for anything reading by position.
  *
  * Split out as a free function so it can be unit-tested without standing up a service, a schema
  * and a fake chain: the property is purely about a list of records, and the case that produces it
@@ -103,20 +125,19 @@ export function assertNoDuplicateTransactionKeys(
   height: number,
   transactions: readonly { txHash: string; position: number; kind: string }[],
 ): void {
-  const seen = new Map<string, number>();
+  const seen = new Map<number, string>();
   for (const t of transactions) {
-    const previous = seen.get(t.txHash);
+    const previous = seen.get(t.position);
     if (previous !== undefined) {
       throw new Error(
-        `height ${height}: transactions at positions ${previous} and ${t.position} share the ` +
-          `hash ${t.txHash} (kind ${t.kind}). The archive keys transactions by ` +
-          "(net, block_height, block_hash, tx_hash), so only one of them could be stored, and " +
-          "because inserts are ON CONFLICT DO NOTHING the other would be dropped silently rather " +
-          "than reported. The reference indexer stores both. Refusing until the key is widened " +
-          "with `position` so both copies can be archived the way the indexer archives them.",
+        `height ${height}: two transactions both claim position ${t.position} (${previous} and ` +
+          `${t.txHash}). Position is the archive's primary key within a block, so only one could ` +
+          "be stored, and because inserts are ON CONFLICT DO NOTHING the other would be dropped " +
+          "in silence. Two different transactions at one position also means the block's ordering " +
+          "is wrong, and ordering is part of what this archive guarantees.",
       );
     }
-    seen.set(t.txHash, t.position);
+    seen.set(t.position, t.txHash);
   }
 }
 
@@ -216,9 +237,15 @@ export class ChainArchiveSyncService {
    *  observation_index)`, so this can never produce a duplicate-key error either way). */
   private lastDParameterJson: string | undefined;
 
+  /** Block-scoped runtime metadata, used by node-only ingest to classify calls and decode events.
+   *  Constructed always but only exercised in node-only mode, so indexer-sourced ingest issues no
+   *  metadata request at all and keeps working against a pruned node. */
+  private readonly metadata: BlockScopedMetadata;
+
   constructor(opts: ChainArchiveSyncServiceOptions) {
     this.store = new PgChainArchiveStore(opts.sql, opts.schema ?? "chain_archive");
     this.node = new NodeRpcClient(opts.node);
+    this.metadata = new BlockScopedMetadata(this.node);
     this.indexer = opts.indexer === undefined ? undefined : new IndexerClient(opts.indexer);
     this.oracleCrossCheckEnabled = opts.oracleCrossCheck ?? false;
     this.expectedGenesisHash =
@@ -610,14 +637,15 @@ export class ChainArchiveSyncService {
         // and guessing one would poison every downstream decode-version decision.
         throw new Error(`no MNSV protocol-version digest item in header at height ${height}`);
       }
-      transactions = await this.buildNodeOnlyTransactionRecords(
-        height, blockHash, classifyBlock(), nodeProtocolVersion,
-      );
-      // Before anything is written: confirm the block's events hold no system transaction this
-      // build could not archive. Node-only mode only -- indexer-sourced ingest gets them from the
-      // indexer, which does decode events.
-      await this.assertNoUnarchivedEventSystemTransactions(
-        height, blockHash, transactions.filter((t) => t.kind === "system").map((t) => t.rawBytes),
+      // Stage 2: the block's own runtime metadata drives classification and event decoding.
+      //
+      // This replaces `buildNodeOnlyTransactionRecords` + `assertNoUnarchivedEventSystemTransactions`
+      // -- a pinned-index classifier that could not read signed framings, plus a byte-counting
+      // guard that could only NOTICE an event-borne system transaction and refuse. Both were
+      // interim measures whose whole purpose was to avoid silently omitting what they could not
+      // decode; decoding it removes the need for either.
+      transactions = await this.buildNodeOnlyRecordsFromMetadata(
+        height, blockHash, block.extrinsics, nodeProtocolVersion,
       );
       bridge = this.buildBridgeObservationRecords(
         height, blockHash, await this.fetchDParameterFromNode(blockHash),
@@ -747,6 +775,140 @@ export class ChainArchiveSyncService {
    * value) the indexer's `hash` field comes from
    * (`chain-indexer/src/infra/subxt_node.rs:675`, `make_regular_transaction`).
    */
+  /**
+   * Build a block's transaction records from the node alone, using the block's own runtime
+   * metadata. This is the Stage-2 path that replaces three refusals with actual ingest.
+   *
+   * WHAT CHANGES relative to the pinned-constant path it supersedes:
+   *
+   *   - every extrinsic FRAMING is decodable, so a signed Midnight call is archived rather than
+   *     refused (§5.2). `send_mn_transaction` ignores its origin, so such a transaction is valid
+   *     and the reference archives it;
+   *   - runtime-GENERATED system transactions are recovered from `SystemTransactionApplied`
+   *     events, which is the only place they exist (§5.1);
+   *   - classification uses the runtime's own pallet/call indices, so a renumbered runtime is
+   *     followed rather than refused (§5.3).
+   *
+   * ORDERING. Event-borne system transactions are PREPENDED, before the extrinsic-derived list,
+   * matching `midnight-indexer/chain-indexer/src/infra/subxt_node/runtimes/v1_0_0.rs:160-163`
+   * exactly. Substrate applies inherents before regular transactions, so this is execution order,
+   * and `position` is part of this archive's contract -- getting it wrong makes two archives that
+   * hold the same transactions non-interchangeable for anything reading by position.
+   *
+   * HASHES come from different places by necessity, and that is not a shortcut: an event carries
+   * the runtime's OWN authoritative hash alongside the payload, so event-borne transactions need
+   * no ledger at all, while an extrinsic carries only bytes and must be hashed with the ledger.
+   */
+  private async buildNodeOnlyRecordsFromMetadata(
+    height: number,
+    blockHash: Hex32,
+    extrinsics: readonly string[],
+    protocolVersion: number,
+  ): Promise<TransactionRecord[]> {
+    const resolved = await this.metadata.forBlock(`0x${blockHash}`);
+    this.assertPinnedIndicesAgree(height, protocolVersion, resolved);
+    const { callIndices } = resolved;
+
+    // ── event-borne system transactions, which come FIRST ──
+    const eventsRaw = await this.node.storageAt(
+      ChainArchiveSyncService.SYSTEM_EVENTS_KEY, `0x${blockHash}`,
+    );
+    const eventBorne = eventsRaw === undefined
+      ? []
+      : decodeEventSystemTransactions(resolved, hexToBytes(eventsRaw));
+
+    const records: TransactionRecord[] = [];
+    let position = 0;
+    for (const ev of eventBorne) {
+      records.push({
+        net: this.net,
+        // The runtime's own hash, not a recomputed one. This is what the reference keys on.
+        txHash: ev.txHash.toLowerCase(),
+        blockHeight: height,
+        blockHash,
+        position: position++,
+        kind: "system",
+        protocolVersion,
+        rawBytes: ev.payload,
+      });
+    }
+
+    // ── extrinsic-derived transactions, in extrinsic order, after the event-borne ones ──
+    const ledger = await this.ledger();
+    for (const e of extrinsics) {
+      // Throws on anything undecodable rather than skipping: "not a Midnight call" and "could not
+      // be read" must not collapse into one outcome, or corruption reads as absence.
+      const call = decodeExtrinsicWithMetadata(resolved, e);
+      const isRegular =
+        call.palletIndex === callIndices.midnightPallet &&
+        call.callIndex === callIndices.sendTransactionCall;
+      const isSystem =
+        call.palletIndex === callIndices.midnightSystemPallet &&
+        call.callIndex === callIndices.sendSystemTransactionCall;
+      if (!isRegular && !isSystem) continue;
+      if (call.payload === undefined) {
+        throw new Error(
+          `height ${height}: a Midnight call carried no payload argument. Refusing rather than ` +
+            "archiving a transaction with no bytes.",
+        );
+      }
+
+      const decoded = decodeArchivedTransaction(ledger, call.payload);
+      if (decoded.transactionHash === undefined) {
+        throw new Error(
+          `height ${height}: an extrinsic-borne ${isSystem ? "system " : ""}transaction did not ` +
+            "decode to a hash. Refusing to archive the block incomplete. For system transactions " +
+            "this usually means the ledger build exposes no SystemTransaction.transactionHash().",
+        );
+      }
+      records.push({
+        net: this.net,
+        txHash: hexNoPrefix(decoded.transactionHash).toLowerCase(),
+        blockHeight: height,
+        blockHash,
+        position: position++,
+        kind: isSystem ? "system" : "regular",
+        protocolVersion,
+        rawBytes: call.payload,
+      });
+    }
+    return records;
+  }
+
+  /**
+   * Cross-check the runtime's own indices against the pinned table, where the table has an entry.
+   *
+   * The pinned constants are no longer authoritative -- metadata is -- but they were verified by
+   * live observation, so a disagreement means one of two independent sources is wrong about how to
+   * classify a Midnight transaction. Refusing is the only safe response: classifying wrongly makes
+   * genuine transactions vanish, and `ON CONFLICT DO NOTHING` makes that permanent.
+   *
+   * Silent where the table has no entry (0.22.x deliberately has none): metadata is sufficient on
+   * its own, which is exactly why it replaces the table rather than supplementing it.
+   */
+  private assertPinnedIndicesAgree(
+    height: number,
+    protocolVersion: number,
+    resolved: ResolvedRuntimeMetadata,
+  ): void {
+    const pinned = callIndicesForProtocolVersion(protocolVersion);
+    if (pinned === undefined) return;
+    const m = resolved.callIndices;
+    const same =
+      pinned.midnightPallet === m.midnightPallet &&
+      pinned.midnightSystemPallet === m.midnightSystemPallet &&
+      pinned.sendTransactionCall === m.sendTransactionCall &&
+      pinned.sendSystemTransactionCall === m.sendSystemTransactionCall;
+    if (!same) {
+      throw new Error(
+        `height ${height}: this block's runtime metadata reports call indices ` +
+          `${JSON.stringify(m)} but the pinned table for protocol ${protocolVersion} says ` +
+          `${JSON.stringify(pinned)}. Two independent sources disagree about how to classify a ` +
+          "Midnight transaction, so one of them would make genuine transactions vanish. Refusing.",
+      );
+    }
+  }
+
   private async buildNodeOnlyTransactionRecords(
     height: number,
     blockHash: Hex32,

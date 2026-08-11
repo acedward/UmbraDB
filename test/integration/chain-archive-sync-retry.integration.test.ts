@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
+import { metadataRpcResult } from "./fake-node-metadata.js";
 import { NodeRpcInvalidHeightError } from "../../chain-archive-sync/node-rpc-client.js";
 import { ledgerV8EntryPath } from "../../chain-archive-sync/tx-replay-decoder.js";
 import type { BlockBundle, Hex32 } from "../../src/interfaces/chain-archive-store.js";
@@ -92,6 +93,23 @@ function fakeNodeFetch(blocks: FakeChainBlock[], finalizedHeight: number, badHea
     const body = JSON.parse((init as RequestInit).body as string) as { id: number; method: string; params: unknown[] };
     const { id, method, params } = body;
     let result: unknown;
+    // Node-only ingest resolves the block's runtime metadata before it can classify a call, so a
+    // fake node must answer these two or every node-only test fails on metadata rather than on
+    // whatever it meant to exercise.
+    // This fake chain's blocks carry no events. Answering null (rather than leaving the method
+    // unhandled) is what a real node returns for an unset storage key, and node-only ingest now
+    // reads System::Events on every block to recover runtime-generated system transactions.
+    if (method === "state_getStorageAt") {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: null }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    }
+    const metaResult = metadataRpcResult(method);
+    if (metaResult !== undefined) {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: metaResult }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    }
     switch (method) {
       case "chain_getFinalizedHead":
         result = "0x" + blocks[finalizedHeight]!.hash;
@@ -204,7 +222,7 @@ describe("ChainArchiveSyncService retry safety (sprint-fix round Fixes 1-3)", ()
   // where it is absent -- never as a vacuous pass. This test is the reason F6 matters: the DoS
   // regression cannot be enforced in CI until the dependency is packaged.
   it.skipIf(ledgerV8EntryPath() === undefined)(
-    "audit F2/F3: midnight-tagged bytes under an unrecognized call REFUSE the block", async () => {
+    "audit F2/F3: forged midnight-tagged bytes under a foreign call are IGNORED, not fatal", async () => {
     // The denial of service this closes: the envelope decoder classifies by the payload's
     // `midnight:` self-tag, which anyone can forge. A bare System::remark(Vec<u8>) whose bytes
     // merely START with that tag was accepted, then failed to deserialize as a transaction, and
@@ -250,15 +268,31 @@ describe("ChainArchiveSyncService retry safety (sprint-fix round Fixes 1-3)", ()
     // cannot produce this shape: pallet_midnight holds the only ValidateUnsigned and admits only
     // its own call, so a bare foreign call is refused by the node and a signed one is refused by
     // the decoder before classification.
-    await expect(service.syncOnce({ maxBlocks: 10 })).rejects.toThrow(
-      /does not recognize as a Midnight call/,
-    );
-    // Nothing was written, and the cursor did not move past the refused block.
-    expect(await service.getSyncedHeight()).toBeUndefined();
-    const rows = await sql<{ n: number }[]>`
-      SELECT count(*)::int AS n FROM ${sql(schema)}.transactions WHERE net = ${NET}
+    // Metadata decoding changed the right answer here, and for the better.
+    //
+    // The refusal this test used to assert existed because classification keyed off the payload's
+    // forgeable `midnight:` tag plus PINNED pallet indices: tagged bytes under an unrecognized
+    // call were indistinguishable from a runtime that had renumbered its pallets, i.e. from
+    // genuine transactions about to vanish, so failing closed was the only safe response.
+    //
+    // Classifying by the runtime's OWN indices removes that ambiguity. Renumbering is now followed
+    // rather than detected, and a System::remark carrying forged tag bytes is simply not a
+    // Midnight call -- exactly what the reference indexer concludes, since it extracts only
+    // send_mn_transaction and send_mn_system_transaction from the decoded call and ignores
+    // everything else regardless of payload content.
+    //
+    // The denial of service in the test's name is closed more thoroughly than before: the forged
+    // remark is skipped without ever being handed to the ledger, so there is no deserialization
+    // failure to abort the block and no permanent stall -- and, unlike a refusal, the genuine
+    // transaction sharing the block is still archived.
+    await service.syncOnce({ maxBlocks: 10 });
+    expect(await service.getSyncedHeight()).toBe(0);
+    const rows = await sql<{ n: number; kind: string }[]>`
+      SELECT count(*)::int AS n, min(kind) AS kind FROM ${sql(schema)}.transactions WHERE net = ${NET}
     `;
-    expect(rows[0]!.n).toBe(0);
+    // Exactly one: the genuine transaction. The forged remark contributed nothing.
+    expect(rows[0]!.n).toBe(1);
+    expect(rows[0]!.kind).toBe("regular");
   }, 60_000);
 
   it("audit F3: a block whose parent is not the archived block below it is rejected, not spliced", async () => {
