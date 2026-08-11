@@ -1510,13 +1510,13 @@
     "semantic_hash": ""
   },
   "test/integration/chain-archive-node-only.integration.test.ts": {
-    "mtime": 1786144564.241611,
-    "ast_hash": "d6051c728d8c30a951e3c1a928ba08be",
+    "mtime": 1786479693.4093041,
+    "ast_hash": "2cfd3fff5b9f187bbcde6fa3c49a35ba",
     "semantic_hash": ""
   },
   "test/integration/chain-archive-source-parity.integration.test.ts": {
-    "mtime": 1786144564.2417023,
-    "ast_hash": "8f39e269eb9c035bee8f10cc821db614",
+    "mtime": 1786479614.645701,
+    "ast_hash": "f642fa86726b5e248a0d2a9176ba79f0",
     "semantic_hash": ""
   },
   ".github/workflows/supply-chain.yml": {
@@ -1590,13 +1590,13 @@
     "semantic_hash": ""
   },
   "openspec/changes/sprint-9-indexer-independence/system-transactions-plan.md": {
-    "mtime": 1786478806.9101932,
-    "ast_hash": "0e2018b15eccdc4583cdb5964a7d5916",
+    "mtime": 1786479980.4072459,
+    "ast_hash": "4da33298afe31373422479c3d6bdd02e",
     "semantic_hash": ""
   },
   "openspec/changes/sprint-9-indexer-independence/tasks.md": {
-    "mtime": 1786478806.9263868,
-    "ast_hash": "979377cb05fb65772bb49a4779f80603",
+    "mtime": 1786479980.4221017,
+    "ast_hash": "e15bcb21497ff181c1f73827a1dd53fd",
     "semantic_hash": ""
   },
   "openspec/changes/v1.1.0-formal-completion/acceptance.md": {
@@ -1695,8 +1695,8 @@
     "semantic_hash": ""
   },
   "test/integration/chain-archive-event-guard.integration.test.ts": {
-    "mtime": 1786467937.7101421,
-    "ast_hash": "69e92abe186595e7ae6ffb962250e61e",
+    "mtime": 1786479942.9369018,
+    "ast_hash": "19e2cfde555e70e81407be81c6871e21",
     "semantic_hash": ""
   },
   "chain-archive-sync/runtime-metadata.ts": {
@@ -1737,6 +1737,16 @@
   "test/integration/chain-archive-metadata-availability.integration.test.ts": {
     "mtime": 1786478581.0922322,
     "ast_hash": "a7523545f65a241d420e221ae4eb4d1a",
+    "semantic_hash": ""
+  },
+  "test/integration/required-services.ts": {
+    "mtime": 1786479599.4849217,
+    "ast_hash": "ba1bc982072720ed7f82eb2db8119678",
+    "semantic_hash": ""
+  },
+  ".github/workflows/chain-archive-parity.yml": {
+    "mtime": 1786479781.1591566,
+    "ast_hash": "2cde1da91eabb1ad0013b6763bdb08bf",
     "semantic_hash": ""
   }
 }
