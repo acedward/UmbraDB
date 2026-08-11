@@ -62,10 +62,20 @@ const haveSystemHash = await ledgerSupportsSystemTransactionHash();
 
 interface Row {
   height: string;
+  block_hash: string;
   position: number;
   tx_hash: string;
   kind: string;
   protocol_version: number;
+  raw: string;
+}
+
+/** One archived D-parameter observation, compared with the same rigour as a transaction. */
+interface ObservationRow {
+  height: string;
+  block_hash: string;
+  observation_index: number;
+  kind: string;
   raw: string;
 }
 
@@ -106,7 +116,8 @@ describe.skipIf(!nodeUp || !indexerUp || !haveSystemHash)(
 
       const read = async (schema: string): Promise<Row[]> =>
         sql<Row[]>`
-          SELECT t.block_height::text AS height, t.position, encode(t.tx_hash,'hex') AS tx_hash,
+          SELECT t.block_height::text AS height, encode(t.block_hash,'hex') AS block_hash,
+                 t.position, encode(t.tx_hash,'hex') AS tx_hash,
                  t.kind, t.protocol_version, encode(b.data,'hex') AS raw
           FROM ${sql(schema)}.transactions t
           JOIN ${sql(schema)}.chain_blobs b ON b.hash = t.raw_blob_hash
@@ -133,6 +144,57 @@ describe.skipIf(!nodeUp || !indexerUp || !haveSystemHash)(
         const b = fromNode[i]!;
         expect(b, `row ${i} (height ${a.height}, position ${a.position})`).toEqual(a);
       }
+    }, 600_000);
+
+    /**
+     * The D-parameter half of the acceptance invariant, which this gate did not check at all.
+     *
+     * §1 states TWO invariants: identical transaction rows, and identical ordered
+     * `system_parameters_d` bridge observations including the exact heights at which values
+     * change. Only the first was enforced. Bridge observations come from a different source in
+     * each mode -- the indexer's GraphQL `systemParameters` versus the node's
+     * `SystemParametersApi_get_d_parameter` runtime call -- so agreement on transactions implies
+     * nothing whatsoever about agreement here.
+     *
+     * Change boundaries are the part that matters and the part a set comparison would miss: an
+     * observation is recorded when the value CHANGES, so a mode that recorded the right values at
+     * the wrong heights, or recorded a spurious extra change, would still hold the right set.
+     */
+    it("produces identical D-parameter observations from either source", async () => {
+      const readObservations = async (schema: string): Promise<ObservationRow[]> =>
+        sql<ObservationRow[]>`
+          SELECT o.block_height::text AS height, encode(o.block_hash,'hex') AS block_hash,
+                 o.observation_index, o.kind, encode(b.data,'hex') AS raw
+          FROM ${sql(schema)}.bridge_observations o
+          JOIN ${sql(schema)}.chain_blobs b ON b.hash = o.raw_blob_hash
+          WHERE o.net = ${NET} AND o.kind = 'system_parameters_d'
+          ORDER BY o.block_height, o.observation_index
+        `;
+
+      // Reuses the two schemas the previous test ingested, so this compares the same range rather
+      // than a second, differently-timed sync of a moving chain.
+      const fromIndexer = await readObservations("parity_indexer");
+      const fromNode = await readObservations("parity_node");
+
+      // Without at least one observation every assertion below is vacuous -- and an empty result
+      // is exactly what a silently broken D-parameter path produces.
+      expect(
+        fromIndexer.length,
+        "the compared range must contain a D-parameter observation",
+      ).toBeGreaterThan(0);
+
+      expect(fromNode.length, "observation count").toBe(fromIndexer.length);
+      for (let i = 0; i < fromIndexer.length; i++) {
+        const a = fromIndexer[i]!;
+        const b = fromNode[i]!;
+        expect(b, `observation ${i} (height ${a.height}, index ${a.observation_index})`).toEqual(a);
+      }
+
+      // The change boundaries themselves, asserted separately from the row equality above so a
+      // failure says WHICH property broke: same values in the same order is not the same claim as
+      // recorded at the same heights.
+      const heights = (rows: ObservationRow[]) => rows.map((r) => `${r.height}:${r.observation_index}`);
+      expect(heights(fromNode), "change heights").toEqual(heights(fromIndexer));
     }, 600_000);
   },
 );
