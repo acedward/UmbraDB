@@ -10,5 +10,10 @@
     "profile": "erc721",
     "fromBlock": 1478,
     "deploymentFile": "../compact-end-2-end/dapps/evm-erc721/out/deployment.json"
+  },
+  {
+    "address": "708cdc92e50eaa9be809d807b5f34be2d48694421208b559eb9bc39798b44012",
+    "profile": "erc20",
+    "fromBlock": 0
   }
 ]

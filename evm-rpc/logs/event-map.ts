@@ -181,6 +181,14 @@ export type AddressMapper = (identity: MidnightIdentity) => Uint8Array;
 export const defaultAddressMapper: AddressMapper = ({ hex }) => {
   const bytes = fromHex(hex);
   if (bytes.length === 20) return bytes;
+  // Ethereum-native identities (Part E's eth-keyed circuits) travel through events as the
+  // 20-byte address zero-LEFT-padded into the 32-byte Either user branch. Pass them through
+  // verbatim instead of hashing, so logs carry the signer's real address. A genuine OZ
+  // accountId (persistentHash output) starts with 12 zero bytes with probability 2^-96 —
+  // treated as negligible; LOGMAP.md documents the rule.
+  if (bytes.length === 32 && bytes.subarray(0, 12).every((b) => b === 0)) {
+    return bytes.subarray(12, 32);
+  }
   return keccak256(bytes).slice(12, 32);
 };
 
