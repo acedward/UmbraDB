@@ -284,7 +284,26 @@ its own. Ordered; close-out steps apply per stage.
   - **Not covered by this stage, and still a silent-omission path:** extending an archive written
     by an older incomplete implementation (§5.5). That belongs to §6.6 / Stage 3–4 work and is not
     claimed closed here.
-- [ ] **8.2 Stage 2 — Block-scoped metadata decoding.**
+- [x] **8.2 Stage 2 — Block-scoped metadata decoding.** *(completed 2026-08-10)*
+  - **Acceptance:** the §5.1/§5.2 refusals convert to support; pinned `CALL_INDICES_BY_PROTOCOL`
+    retired to a cross-check. **Met**: node-only ingest resolves the block's own runtime metadata
+    (cached by `(specName, specVersion)`), archives signed/general framings, recovers
+    runtime-generated system transactions from `SystemTransactionApplied` (event-first ordering per
+    `v1_0_0.rs:160-163`), and follows a renumbered runtime instead of refusing it. The pinned table
+    now only cross-checks and refuses on disagreement; 0.22.x ingests (its indices were also
+    settled from the reference's captured metadata — plan B5).
+  - Migration `002_transaction_position_key` landed (owner-approved); the dual-source case stores
+    both rows and the collision guard now enforces position-uniqueness instead.
+  - 71 tests green in the dev clone (unit + fake-node integration + migration suites), typecheck
+    clean. Three suites whose premise was refusal were rewritten to assert the archiving behaviour
+    that replaced it — documented in commit 2b2443e.
+  - **Open, deliberately not absorbed by this close-out:** node-only ingest requires the node to
+    serve historical metadata, so pruned nodes refuse for old ranges. The fix is planned as
+    **Stage 2b** (plan §13) — the indexer-style captured-metadata registry plus a
+    `runtime_metadata` table — and is not claimed done here.
+- [ ] **8.2b Stage 2b — Metadata availability (plan §13).** Captured-artifact registry +
+  `runtime_metadata` table so pruned nodes and future replay never depend on live historical
+  state.
 - [ ] **8.3 Stage 3 — Parity gates required.**
 - [ ] **8.4 Stage 4 — Apply-rule parity (replay).**
 - [ ] **8.5 Stage 5 — Optional-source GA.** Blocked on one owner decision (plan §11.2).

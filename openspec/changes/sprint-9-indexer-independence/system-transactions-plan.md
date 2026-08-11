@@ -790,7 +790,8 @@ invalidate work already done. Both are updated as stages proceed.
 | # | Blocker | Blocks | Status |
 |---|---|---|---|
 | **B1** | **No reachable chain emits runtime-generated system transactions.** The reviewed v1.0.0 runtime's block reward is zero and its reward pallet is disabled. | Live validation of the event guard; the §7 rows for event-borne systems, mixed blocks, and dual-source transactions | Open. §0's mechanism-equivalence fallback applies: implement the reference mechanism, prove with synthesized fixtures. CNight observation is the one identified real source |
-| **B2** | **Block-scoped metadata decoding: decoders built, ingest not yet wired.** The three capabilities exist and are tested against committed fixtures — metadata resolution cached by runtime identity (`runtime-metadata.ts`), `SystemTransactionApplied` decode, and any-framing call decode. `sync-service.ts` does not use any of them yet: §5.1/§5.2 still refuse in practice. | Converting the refusals into ingest; event-first ordering; retiring the pinned indices to a cross-check | **Wiring is the remaining Stage 2 work** — see §12.4 |
+| **B2** | ~~Block-scoped metadata decoding.~~ **Closed** (commit `2b2443e`): node-only ingest classifies via the block's own metadata, archives every framing, recovers event-borne system transactions event-first, and follows renumbered runtimes. The pinned table is a cross-check only. 71 tests green. | — | **Successor blocker: B7** — the metadata itself must be obtainable for pruned ranges (§13) |
+| **B7** | **Historical metadata depends on an un-pruned node.** `state_getMetadata` / `state_getRuntimeVersion` at old hashes need historical state; on a pruned node, node-only ingest of old ranges refuses (clearly, but still refuses). | Ingesting history through a pruned node; Stage 4 replay, which will re-read metadata long after capture windows close | **Fix planned and owner-approved: §13** — follow the indexer (captured artifacts per version) plus a `runtime_metadata` table so each archive carries its own copies |
 | **B3** | ~~The `transactions` primary key cannot hold two rows sharing a hash.~~ **Resolved:** migration `002_transaction_position_key` re-keys on `position` (already unique per block, so the rule was merely re-labelled). Verified fresh **and** incremental onto an existing 000/001 archive. | — | **Landed.** Follow-through pending: `assertNoDuplicateTransactionKeys` still refuses the now-legal dual-source rows and must be re-scoped to position-uniqueness when the wiring lands (§12.4) |
 | **B4** | **The ledger export is neither upstreamed nor published.** | Closing §5.4's release-artifact objection | Vendored interim in place (`vendor/ledger-v8-syshash`) and no longer blocking day-to-day work. §10 tracks it |
 | **B5** | ~~Node 0.22.x has no verified call indices.~~ **Settled** by resolving the reference's own captured 0.22.0 metadata (`midnight-indexer/.node/0.22.0/metadata.scale`) with the new resolver: **identical to 1.0.x** — Midnight=5, MidnightSystem=6, both calls 0, `SystemTransactionApplied` at (6,0). Notable: that metadata is **V16** (1.0.0's is V14) and `@polkadot/types` handles both, so metadata-version drift across node versions is covered. | — | Evidence is derived-from-captured-metadata, not live-chain observation; sufficient to add the 0.22 entry fail-open, and moot once metadata decoding replaces the pinned table entirely |
@@ -883,3 +884,82 @@ crash, and both were caught only by known-answer tests:**
 them): the parity gate still omits `block_hash` and all D-parameter observations from its
 comparison (revision 7's §5.6 finding — confirmed still true today), required-not-skipping CI, and
 every §7 population that needs fixtures.
+
+## 13. Stage 2b — metadata availability (owner-approved, 2026-08-10)
+
+**The problem (B7).** Stage 2 made ingest depend on the block's runtime metadata, fetched from the
+node at the block's hash. That is correct and fine-grained, but historical metadata is derived from
+historical *state*: a pruned node cannot serve it, so node-only ingest of old ranges refuses. The
+refusal is clear and safe — and still a refusal. Stage 4 replay makes this worse: it will re-read
+metadata for every historical runtime long after any capture window has closed.
+
+**The owner's direction: follow the indexer, and add the table.** The indexer never has this
+problem because it never fetches at ingest — it captures `metadata.scale` per node version offline
+(`get_node_metadata.sh`, `NODE_VERSIONS`, `.node/<version>/`) and compiles decoders from the
+captured artifacts. For a chain whose history is pruned everywhere, a prior capture **is the only
+possible source** — the bytes no longer exist anywhere else — so this is not one option among
+several; it is the fallback every path bottoms out in.
+
+Umbra's equivalent has two halves, because umbra is a library archiving arbitrary nets rather than
+a binary shipped per chain:
+
+### 13.1 The `runtime_metadata` table — each archive carries its own captures
+
+New migration `003_runtime_metadata` (the second approved schema change, using §1's reserved
+scope-decision mechanism as the owner has now exercised it):
+
+```
+runtime_metadata (
+  net                text   NOT NULL,
+  spec_name          text   NOT NULL,
+  spec_version       bigint NOT NULL,
+  first_seen_height  bigint NOT NULL,
+  metadata_blob_hash bytea  NOT NULL REFERENCES chain_blobs (hash),
+  PRIMARY KEY (net, spec_name, spec_version)
+)
+```
+
+The bytes go through the existing content-addressed `chain_blobs` under a new
+`runtime_metadata` role (the role CHECK and blob-role triggers extend accordingly). Ingest
+persists metadata **the first time each runtime identity is seen** — one ~100 KB row per runtime
+version per net, ever. From then on the archive is *self-describing*: re-syncs, re-decodes, and
+Stage 4 replay read metadata from the archive itself and never depend on the node's state
+retention again. First contact with a runtime still needs a serving node — that is unavoidable —
+but it needs it exactly once per runtime version rather than forever.
+
+### 13.2 The committed capture registry — the indexer's `.node/` directory, ported
+
+`chain-archive-sync/metadata/` gains the known captures as committed artifacts with a manifest —
+exactly the shape of the indexer's `NODE_VERSIONS` + `.node/<version>/metadata.scale`:
+
+| Capture | Source | Status |
+|---|---|---|
+| `midnight-node-1.0.0` (V14, 102,234 bytes) | our own live capture, already committed as a test fixture | promote to the registry |
+| `midnight-node-0.22.0` (V16) | the reference's `.node/0.22.0/metadata.scale`, already proven to resolve with our resolver (B5) | copy in, with provenance |
+
+The manifest maps an **MNSV protocol-version range** to a capture — the same coarse key the
+indexer dispatches on. Coarseness is deliberate here and only here: this registry is the
+bootstrap for blocks where even `state_getRuntimeVersion` is unanswerable (pruned state), and the
+MNSV digest lives in the block *header*, which is always available. Where the fine-grained path
+works, it wins (below); where it cannot, matching the reference's own granularity **is** parity.
+
+### 13.3 Resolution order in `BlockScopedMetadata`
+
+1. **The archive's own `runtime_metadata` table** — self-contained, exact.
+2. **The node**, at the block's hash, keyed by `(specName, specVersion)` — and persist the result
+   into the table, so this path retires itself per runtime.
+3. **The committed registry**, keyed by the header's MNSV version — the pruned-node bootstrap,
+   with the provenance of the capture recorded in what it decodes.
+4. **Refuse**, naming which of the three sources were tried. Never guess a layout.
+
+A cross-check mirrors the pinned-indices rule: when both a table/registry capture and a live node
+answer exist, they must agree byte-for-byte or ingest refuses — two sources disagreeing about the
+runtime's own description means one of them decodes the block wrongly.
+
+### 13.4 Sequencing and what it does NOT change
+
+Stage 2b sits before Stage 3 (whose parity gates should exercise the table path), sized at one
+migration + registry module + resolution-order change + tests. It does not alter what Stage 2
+decodes or in what order — only where the metadata bytes come from. The §7 acceptance matrix is
+untouched; the archive-node requirement recorded in §12.4 item 5 is superseded by this section
+once landed (it then applies only to first contact with a runtime version).
