@@ -1,0 +1,55 @@
+{
+  "description": "An UNPAIRED UnshieldedReceiveEvent is a mint: Transfer(from = address(0), to = recipient). The recipient here is a CONTRACT branch, exercising the other side of AddressOrContract.",
+  "profile": "erc20",
+  "events": [
+    {
+      "__typename": "UnshieldedReceiveEvent",
+      "id": 300,
+      "maxId": 300,
+      "contractAddress": "1111111111111111111111111111111111111111111111111111111111111111",
+      "transactionId": 7,
+      "transaction": {
+        "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+        "block": {
+          "height": 12,
+          "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "transactions": [
+            {
+              "hash": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+            },
+            {
+              "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+            }
+          ]
+        }
+      },
+      "recipient": {
+        "kind": "CONTRACT",
+        "userAddress": null,
+        "contractAddress": "0707070707070707070707070707070707070707070707070707070707070707"
+      },
+      "domainSep": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+      "tokenType": "7777777777777777777777777777777777777777777777777777777777777777",
+      "amount": "5000"
+    }
+  ],
+  "expected": [
+    {
+      "address": "484de3fc9343f31600ae1f3e13d633cb48cbf816",
+      "blockNumber": 12,
+      "blockHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "txHash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+      "txIndex": 1,
+      "logIndex": 0,
+      "topics": [
+        "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000035dd321f48f102ebc87a8ca16dd4b4c5fc6c4da8"
+      ],
+      "data": "0000000000000000000000000000000000000000000000000000000000001388",
+      "sourceEventId": 300,
+      "removed": false
+    }
+  ],
+  "expectedWarnings": []
+}

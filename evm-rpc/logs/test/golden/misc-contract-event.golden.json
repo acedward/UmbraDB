@@ -1,0 +1,47 @@
+{
+  "description": "MiscContractEvent: topic0 = keccak256(name_bytes32) — the hash of the NAME BYTES, not of a signature string — data = payload verbatim, and no topic1-3.",
+  "profile": "erc20",
+  "events": [
+    {
+      "__typename": "MiscContractEvent",
+      "id": 500,
+      "maxId": 500,
+      "contractAddress": "1111111111111111111111111111111111111111111111111111111111111111",
+      "transactionId": 7,
+      "transaction": {
+        "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+        "block": {
+          "height": 12,
+          "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "transactions": [
+            {
+              "hash": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+            },
+            {
+              "hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+            }
+          ]
+        }
+      },
+      "name": "0000000000000000000000000000000000000000000000004170707200766564",
+      "payload": "deadbeef"
+    }
+  ],
+  "expected": [
+    {
+      "address": "484de3fc9343f31600ae1f3e13d633cb48cbf816",
+      "blockNumber": 12,
+      "blockHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "txHash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+      "txIndex": 1,
+      "logIndex": 0,
+      "topics": [
+        "ff1354fe58e2600daa988fd272d6556b3acc96017f446f10fb7b6f6f2c53e6be"
+      ],
+      "data": "deadbeef",
+      "sourceEventId": 500,
+      "removed": false
+    }
+  ],
+  "expectedWarnings": []
+}
