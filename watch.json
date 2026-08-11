@@ -1,1 +1,14 @@
-[]
+[
+  {
+    "address": "d93e33114aaf78c57144d3410772cd35371db5deec6bd9c30acc755fa1a36157",
+    "profile": "erc20",
+    "fromBlock": 1509,
+    "deploymentFile": "../compact-end-2-end/dapps/evm-erc20/out/deployment.json"
+  },
+  {
+    "address": "7e3e9ace6a227f74c5aaef1b4ff5c5da158384392804e7ec1d6bd9f011103578",
+    "profile": "erc721",
+    "fromBlock": 1478,
+    "deploymentFile": "../compact-end-2-end/dapps/evm-erc721/out/deployment.json"
+  }
+]

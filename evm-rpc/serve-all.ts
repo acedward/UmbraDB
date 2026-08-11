@@ -22,7 +22,7 @@ import { registerAccountMethods } from "./methods/accounts.js";
 import { registerBlockMethods } from "./methods/blocks.js";
 import { registerStaticMethods } from "./methods/static.js";
 import { registerTransactionMethods } from "./methods/transactions.js";
-import { defaultRegistry } from "./registry.js";
+import { defaultRegistry, RpcError } from "./registry.js";
 import { createRpcServer } from "./server.js";
 import { loadEnv } from "./logs/config.js";
 import { registerGetLogs } from "./logs/get-logs.js";
@@ -64,6 +64,30 @@ registerStaticMethods(defaultRegistry);
 registerBlockMethods(defaultRegistry);
 registerAccountMethods(defaultRegistry);
 registerTransactionMethods(defaultRegistry);
+
+// --- Part E: eth_sendRawTransaction (write path) ---
+// The relayer (evm-relayer repo) runs as its own process — separate dependency tree (midnight-js
+// providers, Compact managed contract) that we deliberately don't import here. It exposes
+// POST /eth_sendRawTransaction {rawTx}. Wired only when RELAY_URL is set, so the read-path
+// service still runs standalone.
+const relayUrl = process.env.RELAY_URL;
+if (relayUrl !== undefined) {
+  defaultRegistry.registerMethod("eth_sendRawTransaction", async (params) => {
+    const list = Array.isArray(params) ? params : params === undefined ? [] : [params];
+    if (typeof list[0] !== "string") throw new Error("expected [rawTxHex]");
+    const resp = await fetch(`${relayUrl}/eth_sendRawTransaction`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ rawTx: list[0] }),
+    });
+    const body = (await resp.json()) as { result?: string; error?: string; code?: number };
+    if (!resp.ok || body.error !== undefined) {
+      throw new RpcError(body.code ?? -32000, body.error ?? `relayer HTTP ${resp.status}`);
+    }
+    return body.result;
+  });
+  log("relay-wired", { relayUrl });
+}
 
 // --- Part C: eth_getLogs, backfill, ingest, WS ---
 registerGetLogs({
