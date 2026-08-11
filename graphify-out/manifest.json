@@ -690,8 +690,8 @@
     "semantic_hash": ""
   },
   "chain-archive-sync/sync-service.ts": {
-    "mtime": 1786467626.3973343,
-    "ast_hash": "aef77b08a798f31652682edaebb546cc",
+    "mtime": 1786478443.6863961,
+    "ast_hash": "ed72fd2540d8f9e2b4e9e438a3fcdddb",
     "semantic_hash": ""
   },
   "chain-archive-sync/tx-replay-decoder.ts": {
@@ -845,8 +845,8 @@
     "semantic_hash": ""
   },
   "src/interfaces/chain-archive-store.ts": {
-    "mtime": 1786144645.0575647,
-    "ast_hash": "c59714c5896c28f9991e36f20ad7e76e",
+    "mtime": 1786478311.556071,
+    "ast_hash": "da003928a3aa30fbd24dae90d5a2b97d",
     "semantic_hash": ""
   },
   "src/postgres/chain-archive-rollover.ts": {
@@ -855,8 +855,8 @@
     "semantic_hash": ""
   },
   "src/postgres/chain-archive-store.ts": {
-    "mtime": 1786144645.0575647,
-    "ast_hash": "4870c8b73a748510685340d515b8cc37",
+    "mtime": 1786478336.9860246,
+    "ast_hash": "fabc2df86ad1c124c8359820ff70ed78",
     "semantic_hash": ""
   },
   "src/postgres/migrations/chain_archive/001_chain_archive_core.ts": {
@@ -865,8 +865,8 @@
     "semantic_hash": ""
   },
   "src/postgres/migrations/chain_archive/index.ts": {
-    "mtime": 1786405270.0709243,
-    "ast_hash": "eceb2fbc799ab67cf79028c864ee79b9",
+    "mtime": 1786478291.1853085,
+    "ast_hash": "392a6694cb87bc74b5a096795897a853",
     "semantic_hash": ""
   },
   "src/postgres/migrations/chain_archive/partition-config.ts": {
@@ -895,8 +895,8 @@
     "semantic_hash": ""
   },
   "test/postgres/chain-archive-migrate.test.ts": {
-    "mtime": 1786405313.118399,
-    "ast_hash": "841a9138eebef0f1cc1fd0631571cf54",
+    "mtime": 1786478689.6824603,
+    "ast_hash": "003bb246e8f7be66b8b41399096f44bc",
     "semantic_hash": ""
   },
   "test/postgres/chain-archive-rollover.test.ts": {
@@ -1590,13 +1590,13 @@
     "semantic_hash": ""
   },
   "openspec/changes/sprint-9-indexer-independence/system-transactions-plan.md": {
-    "mtime": 1786475233.547103,
-    "ast_hash": "1d6be9af1e447c463b1cae79ffb15423",
+    "mtime": 1786478806.9101932,
+    "ast_hash": "0e2018b15eccdc4583cdb5964a7d5916",
     "semantic_hash": ""
   },
   "openspec/changes/sprint-9-indexer-independence/tasks.md": {
-    "mtime": 1786475188.755316,
-    "ast_hash": "3a90561add6529c17c420fed79b22cf3",
+    "mtime": 1786478806.9263868,
+    "ast_hash": "979377cb05fb65772bb49a4779f80603",
     "semantic_hash": ""
   },
   "openspec/changes/v1.1.0-formal-completion/acceptance.md": {
@@ -1700,8 +1700,8 @@
     "semantic_hash": ""
   },
   "chain-archive-sync/runtime-metadata.ts": {
-    "mtime": 1786467976.3897696,
-    "ast_hash": "42fb9f9d7e0047ac425de2cb6a2c2a33",
+    "mtime": 1786478414.1456313,
+    "ast_hash": "19c02268648f90495272c4dc0cc0aeb2",
     "semantic_hash": ""
   },
   "src/postgres/migrations/chain_archive/002_transaction_position_key.ts": {
@@ -1722,6 +1722,21 @@
   "test/fixtures/runtime-metadata/README.md": {
     "mtime": 1786401369.0502572,
     "ast_hash": "eae3ef32f2ac8a8d6199d82881e830ba",
+    "semantic_hash": ""
+  },
+  "chain-archive-sync/metadata-captures/index.ts": {
+    "mtime": 1786478370.7050426,
+    "ast_hash": "063f6f6d1d6a53b0ac7d890a8be167ea",
+    "semantic_hash": ""
+  },
+  "src/postgres/migrations/chain_archive/003_runtime_metadata.ts": {
+    "mtime": 1786478282.0180764,
+    "ast_hash": "096b04142153717a57f2e2d1da790e0f",
+    "semantic_hash": ""
+  },
+  "test/integration/chain-archive-metadata-availability.integration.test.ts": {
+    "mtime": 1786478581.0922322,
+    "ast_hash": "a7523545f65a241d420e221ae4eb4d1a",
     "semantic_hash": ""
   }
 }
