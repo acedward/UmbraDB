@@ -791,7 +791,7 @@ invalidate work already done. Both are updated as stages proceed.
 |---|---|---|---|
 | **B1** | **No reachable chain emits runtime-generated system transactions.** The reviewed v1.0.0 runtime's block reward is zero and its reward pallet is disabled. | Live validation of the event guard; the §7 rows for event-borne systems, mixed blocks, and dual-source transactions | Open. §0's mechanism-equivalence fallback applies: implement the reference mechanism, prove with synthesized fixtures. CNight observation is the one identified real source |
 | **B2** | ~~Block-scoped metadata decoding.~~ **Closed** (commit `2b2443e`): node-only ingest classifies via the block's own metadata, archives every framing, recovers event-borne system transactions event-first, and follows renumbered runtimes. The pinned table is a cross-check only. 71 tests green. | — | **Successor blocker: B7** — the metadata itself must be obtainable for pruned ranges (§13) |
-| **B7** | **Historical metadata depends on an un-pruned node.** `state_getMetadata` / `state_getRuntimeVersion` at old hashes need historical state; on a pruned node, node-only ingest of old ranges refuses (clearly, but still refuses). | Ingesting history through a pruned node; Stage 4 replay, which will re-read metadata long after capture windows close | **Fix planned and owner-approved: §13** — follow the indexer (captured artifacts per version) plus a `runtime_metadata` table so each archive carries its own copies |
+| **B7** | ~~Historical metadata depends on an un-pruned node.~~ **Narrowed, not closed** (commit `7f4d2a3`, §13.5). Metadata availability is solved: the archive keeps its own captures, a runtime is fetched once per net ever, and re-decode/replay need no node. **Ingesting pruned history remains impossible** — `System::Events` and the D-parameter are per-block state that no per-runtime capture can substitute for. | Stage 4 replay: **unblocked**. Fresh ingest of pruned ranges: still requires an archive node, which is a property of the chain rather than of this archive | Residual is inherent, not a defect. Archive-node requirement applies to *first* ingest of a range |
 | **B3** | ~~The `transactions` primary key cannot hold two rows sharing a hash.~~ **Resolved:** migration `002_transaction_position_key` re-keys on `position` (already unique per block, so the rule was merely re-labelled). Verified fresh **and** incremental onto an existing 000/001 archive. | — | **Landed.** Follow-through pending: `assertNoDuplicateTransactionKeys` still refuses the now-legal dual-source rows and must be re-scoped to position-uniqueness when the wiring lands (§12.4) |
 | **B4** | **The ledger export is neither upstreamed nor published.** | Closing §5.4's release-artifact objection | Vendored interim in place (`vendor/ledger-v8-syshash`) and no longer blocking day-to-day work. §10 tracks it |
 | **B5** | ~~Node 0.22.x has no verified call indices.~~ **Settled** by resolving the reference's own captured 0.22.0 metadata (`midnight-indexer/.node/0.22.0/metadata.scale`) with the new resolver: **identical to 1.0.x** — Midnight=5, MidnightSystem=6, both calls 0, `SystemTransactionApplied` at (6,0). Notable: that metadata is **V16** (1.0.0's is V14) and `@polkadot/types` handles both, so metadata-version drift across node versions is covered. | — | Evidence is derived-from-captured-metadata, not live-chain observation; sufficient to add the 0.22 entry fail-open, and moot once metadata decoding replaces the pinned table entirely |
@@ -955,6 +955,35 @@ works, it wins (below); where it cannot, matching the reference's own granularit
 A cross-check mirrors the pinned-indices rule: when both a table/registry capture and a live node
 answer exist, they must agree byte-for-byte or ingest refuses — two sources disagreeing about the
 runtime's own description means one of them decodes the block wrongly.
+
+### 13.5 Correction after implementing (2026-08-11): pruned-node INGEST is not solvable
+
+This section, as written above, implied that captured metadata would let a pruned node ingest
+history. **It does not, and cannot** — established by building it and running it, not by review.
+
+Metadata is a *per-runtime* fact, so a capture substitutes for it perfectly. But node-only ingest
+also reads two *per-block* facts that are equally historical state:
+
+- **`System::Events`** (`state_getStorageAt`) — where runtime-generated system transactions live;
+- **the D-parameter** (`state_call`) — the bridge observations.
+
+No per-runtime capture can stand in for per-block facts. A pruned node therefore still cannot
+serve a complete archive of history it has pruned, from any source, and ingest correctly fails on
+the state that is genuinely gone rather than on metadata.
+
+**What Stage 2b actually buys, stated accurately:**
+
+1. **The archive is self-describing.** Re-decoding bytes it already holds needs no node at all.
+   This is the property **Stage 4 replay** depends on, since replay re-reads metadata for every
+   historical runtime long after any capture window has closed. Pinned by the
+   "decodes from the stored capture with the node's metadata gone" test.
+2. **A runtime is fetched once per net, ever** — not once per re-sync.
+3. **Metadata stops being the first thing that fails** on a degraded node, so failures name the
+   state that is actually missing.
+
+B7 is therefore **narrowed, not closed**: metadata availability is solved; ingesting pruned
+history remains impossible and is a property of the chain, not of this archive. The archive-node
+requirement stands for *first* ingest of a range — which is where it always belonged.
 
 ### 13.4 Sequencing and what it does NOT change
 

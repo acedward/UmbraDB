@@ -301,9 +301,15 @@ its own. Ordered; close-out steps apply per stage.
     serve historical metadata, so pruned nodes refuse for old ranges. The fix is planned as
     **Stage 2b** (plan §13) — the indexer-style captured-metadata registry plus a
     `runtime_metadata` table — and is not claimed done here.
-- [ ] **8.2b Stage 2b — Metadata availability (plan §13).** Captured-artifact registry +
-  `runtime_metadata` table so pruned nodes and future replay never depend on live historical
-  state.
+- [x] **8.2b Stage 2b — Metadata availability (plan §13).** *(completed 2026-08-11)*
+  - Migration `003_runtime_metadata` (+ `runtime_metadata` blob role) and
+    `chain-archive-sync/metadata-captures/` (the reference's `.node/` ported: 1.0.0 and 0.22.0).
+    Resolution order: archive capture → node (persisting) → committed registry → refuse naming all
+    three. 75 tests green, typecheck clean.
+  - **Scope corrected by implementing it** (plan §13.5): pruned-node *ingest* is NOT solvable —
+    `System::Events` and the D-parameter are per-block state that no per-runtime capture replaces.
+    What this buys is a self-describing archive: re-decode and Stage 4 replay need no node, and a
+    runtime is fetched once per net ever. B7 is narrowed, not closed.
 - [ ] **8.3 Stage 3 — Parity gates required.**
 - [ ] **8.4 Stage 4 — Apply-rule parity (replay).**
 - [ ] **8.5 Stage 5 — Optional-source GA.** Blocked on one owner decision (plan §11.2).
