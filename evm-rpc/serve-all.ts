@@ -76,19 +76,22 @@ registerGetLogs({
   },
 });
 await backfillWatched(sql, logsEnv.schema, logsEnv.watchContracts);
-const ingest = startIngest({
-  sql,
-  schema: logsEnv.schema,
-  indexerWs: logsEnv.indexerWs,
-  contracts: logsEnv.watchContracts,
-  onError: (error, entry) => log("ingest-error", { message: error.message, contract: entry.address }),
-});
 const wsServer = createSubscribeServer({
   port: logsEnv.evmRpcWsPort,
   sql,
   schema: logsEnv.schema,
   onError: (error: Error) => log("ws-error", { message: error.message }),
 });
+const ingest = startIngest({
+  sql,
+  schema: logsEnv.schema,
+  indexerWs: logsEnv.indexerWs,
+  contracts: logsEnv.watchContracts,
+  // Post-commit rows feed live eth_subscribe("logs") tails — see IngestEvents.onCommitted.
+  onCommitted: (rows) => wsServer.publishLogs(rows),
+  onError: (error, entry) => log("ingest-error", { message: error.message, contract: entry.address }),
+});
+await wsServer.listen();
 
 const server = createRpcServer({
   registry: defaultRegistry,
