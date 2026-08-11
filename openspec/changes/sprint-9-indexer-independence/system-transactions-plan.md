@@ -407,8 +407,8 @@ fallback rule). A row's evidence type is part of its status, not a footnote — 
 | Signed and general regular calls | ✅ **Mechanism-equivalence** — decoded via metadata, payload byte-exact | Required |
 | Signed/general direct system call with a governance-allowed, ledger-valid payload | ⚠️ **Partial** — the decode path is covered by the same metadata mechanism; end-to-end ingest of one is not | Required |
 | Valid regular/system call rejected before ledger execution (including bad origin) | ❌ Not demonstrated — depends on **U5**, which needs live observation | Required exact row parity |
-| Malformed regular/system payload rejected during indexer deserialization | ⚠️ **Partial** — undecodable extrinsics throw rather than being skipped; refusal parity with the indexer unconfirmed | Required exact refusal parity; no write |
-| Deserializable regular/system payload rejected by indexer ledger replay | ❌ Not demonstrated — **Stage 4** (needs ledger state) | Required exact refusal parity; no write |
+| Malformed regular/system payload rejected during indexer deserialization | ✅ **Mechanism-equivalence** (Stage 4): same ledger, garbage bytes refuse at `deserialize` exactly as the reference aborts | Required exact refusal parity; no write |
+| Deserializable regular/system payload rejected by indexer ledger replay | ✅ **Mechanism-equivalence** (Stage 4): a one-byte proof corruption deserializes and refuses at `well_formed`; and the load-bearing counterpart is pinned — an apply-`Failure` is an **archived row**, not a refusal, read from the reference source | Required exact refusal parity; no write |
 | Runtime-upgrade boundary | ❌ Not demonstrated — **cannot be**: the only reachable chains never upgraded, so their metadata is byte-identical at genesis and tip (§12.3). Needs a second runtime from any source | Required when the supported range contains one |
 
 For every case, compare the exact ordered persisted sequence of `block_height, block_hash,
@@ -734,6 +734,11 @@ section does not wait on Part A's merge — it can proceed any time.
   it: `ledger-v8-stock` (published 8.0.3, pinned exactly) plus `MIDNIGHT_LEDGER_WASM`, in
   `test/integration/chain-archive-ledger-refusal.integration.test.ts`. A general lesson for the
   remaining stages: **a capability gate that becomes permanently true is a silent coverage loss.**
+- 2026-08-11 — **Second missing WASM export found: `LedgerParameters` exposes no block limits.**
+  The reference normalizes accumulated block fullness against `parameters.limits.block_limits`;
+  the WASM has no accessor, so replay's `postBlockUpdate` receives zero fullness. Nil difference on
+  near-empty blocks; divergent fee-market parameter updates on blocks approaching capacity. A
+  candidate second upstream export, same shape as the `transactionHash` gap.
 - *(append future findings here, dated)*
 
 ## 11. Staged execution plan (owner, 2026-08-08)

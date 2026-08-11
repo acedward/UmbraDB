@@ -325,7 +325,19 @@ its own. Ordered; close-out steps apply per stage.
     Three rows remain open and are named with their blockers (U5, Stage 4, and the
     runtime-upgrade boundary, which **cannot** be demonstrated on any reachable chain).
   - **Owner action when this merges:** flip the new job to required in branch protection.
-- [ ] **8.4 Stage 4 — Apply-rule parity (replay).**
+- [x] **8.4 Stage 4 — Apply-rule parity (replay).** *(completed 2026-08-11)*
+  - **Acceptance ("the last two §7 refusal-parity rows close"): met by mechanism-equivalence.**
+    `ledger-replay.ts` advances real ledger state through the reference's exact pipeline (same
+    strictness, same BlockContext, same classification), verified against real bytes: genesis
+    applies clean; garbage refuses at `deserialize`; a one-byte proof corruption refuses at
+    `well_formed`; and — the finding at the centre — an apply-`Failure` is an **archived row**,
+    not a refusal, exactly as the reference records it.
+  - Documented deviation: block fullness is zeroed in `postBlockUpdate` because the WASM exposes
+    no block-limits accessor (second missing export, plan §10.3). Nil on near-empty blocks.
+  - **Deliberately out:** wiring replay into live ingest. It needs a restart/checkpoint story
+    (`LedgerState.serialize()` exists for exactly this; a checkpoint table is a schema decision),
+    so it is its own follow-up rather than a rider. U5 (does the indexer archive a `BadOrigin`
+    rejection?) remains the one live-observation dependency in this area.
 - [ ] **8.5 Stage 5 — Optional-source GA.** Blocked on one owner decision (plan §11.2).
 
 Per-stage close-out, every stage: update this file, re-run `graphify update .` and commit
