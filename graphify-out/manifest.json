@@ -10,8 +10,8 @@
     "semantic_hash": ""
   },
   "package.json": {
-    "mtime": 1786376473.7051265,
-    "ast_hash": "7d0a9d5a4b7c280a84ea84e8850218ea",
+    "mtime": 1786401341.8441973,
+    "ast_hash": "9ba2c1932d00ca78c6deb26fb992569c",
     "semantic_hash": ""
   },
   "src/interfaces/checkpoint-store.ts": {
@@ -680,8 +680,8 @@
     "semantic_hash": ""
   },
   "chain-archive-sync/node-rpc-client.ts": {
-    "mtime": 1786144645.0565648,
-    "ast_hash": "bf65ebbce721bf2d5cf3fca7d8c2de1b",
+    "mtime": 1786401519.9665372,
+    "ast_hash": "7575e4ac7b0e043a7a688460f135c20c",
     "semantic_hash": ""
   },
   "chain-archive-sync/sync-cli.ts": {
@@ -690,8 +690,8 @@
     "semantic_hash": ""
   },
   "chain-archive-sync/sync-service.ts": {
-    "mtime": 1786378341.9248462,
-    "ast_hash": "8b392cab2d291f88c023b024b2009bcf",
+    "mtime": 1786467626.3973343,
+    "ast_hash": "aef77b08a798f31652682edaebb546cc",
     "semantic_hash": ""
   },
   "chain-archive-sync/tx-replay-decoder.ts": {
@@ -865,8 +865,8 @@
     "semantic_hash": ""
   },
   "src/postgres/migrations/chain_archive/index.ts": {
-    "mtime": 1786144645.0575647,
-    "ast_hash": "a154948981d02333b63982acd650f77a",
+    "mtime": 1786405270.0709243,
+    "ast_hash": "eceb2fbc799ab67cf79028c864ee79b9",
     "semantic_hash": ""
   },
   "src/postgres/migrations/chain_archive/partition-config.ts": {
@@ -885,8 +885,8 @@
     "semantic_hash": ""
   },
   "test/integration/chain-archive-sync-retry.integration.test.ts": {
-    "mtime": 1786128119.264993,
-    "ast_hash": "897f36015ec589c617d5bfd9745cd48e",
+    "mtime": 1786468341.0195673,
+    "ast_hash": "8d9f1f67b3a831a1642ca1e75fdce3ca",
     "semantic_hash": ""
   },
   "test/integration/chain-archive-sync.integration.test.ts": {
@@ -895,8 +895,8 @@
     "semantic_hash": ""
   },
   "test/postgres/chain-archive-migrate.test.ts": {
-    "mtime": 1786144645.0588348,
-    "ast_hash": "ac594511314683939ee3355c5e261a6e",
+    "mtime": 1786405313.118399,
+    "ast_hash": "841a9138eebef0f1cc1fd0631571cf54",
     "semantic_hash": ""
   },
   "test/postgres/chain-archive-rollover.test.ts": {
@@ -1590,13 +1590,13 @@
     "semantic_hash": ""
   },
   "openspec/changes/sprint-9-indexer-independence/system-transactions-plan.md": {
-    "mtime": 1786376922.494218,
-    "ast_hash": "9595beb18340184d73cc1fdda380f997",
+    "mtime": 1786475233.547103,
+    "ast_hash": "1d6be9af1e447c463b1cae79ffb15423",
     "semantic_hash": ""
   },
   "openspec/changes/sprint-9-indexer-independence/tasks.md": {
-    "mtime": 1786378700.1735647,
-    "ast_hash": "0217ead70bf00cbc30ab4f34e4b1d4f8",
+    "mtime": 1786475188.755316,
+    "ast_hash": "3a90561add6529c17c420fed79b22cf3",
     "semantic_hash": ""
   },
   "openspec/changes/v1.1.0-formal-completion/acceptance.md": {
@@ -1675,8 +1675,8 @@
     "semantic_hash": ""
   },
   "test/integration/chain-archive-ledger-refusal.integration.test.ts": {
-    "mtime": 1786376572.0695574,
-    "ast_hash": "e883bff6f1846aac5239bbd6557cb54f",
+    "mtime": 1786468107.722576,
+    "ast_hash": "1f9e60082e448cba4d70afb5cb1e0cee",
     "semantic_hash": ""
   },
   ".github/workflows/vendored-ledger.yml": {
@@ -1690,13 +1690,38 @@
     "semantic_hash": ""
   },
   "test/chain-archive-sync/duplicate-transaction-keys.test.ts": {
-    "mtime": 1786378370.050003,
-    "ast_hash": "e13c528d115c9e225777a49196c9f185",
+    "mtime": 1786467674.1542583,
+    "ast_hash": "6736657c3177ae34dd590b795ac96224",
     "semantic_hash": ""
   },
   "test/integration/chain-archive-event-guard.integration.test.ts": {
-    "mtime": 1786378248.6917918,
-    "ast_hash": "500f69e54c9dd07704a9829872b1f313",
+    "mtime": 1786467937.7101421,
+    "ast_hash": "69e92abe186595e7ae6ffb962250e61e",
+    "semantic_hash": ""
+  },
+  "chain-archive-sync/runtime-metadata.ts": {
+    "mtime": 1786467976.3897696,
+    "ast_hash": "42fb9f9d7e0047ac425de2cb6a2c2a33",
+    "semantic_hash": ""
+  },
+  "src/postgres/migrations/chain_archive/002_transaction_position_key.ts": {
+    "mtime": 1786405369.320145,
+    "ast_hash": "4af15b6b69d6648aea0bf257a6060d75",
+    "semantic_hash": ""
+  },
+  "test/chain-archive-sync/runtime-metadata.test.ts": {
+    "mtime": 1786405162.1309514,
+    "ast_hash": "3223607bd325b8f911c8e43ba43172b2",
+    "semantic_hash": ""
+  },
+  "test/integration/fake-node-metadata.ts": {
+    "mtime": 1786467859.5064516,
+    "ast_hash": "d777c562c0872d52a1a459dda3d2d2d2",
+    "semantic_hash": ""
+  },
+  "test/fixtures/runtime-metadata/README.md": {
+    "mtime": 1786401369.0502572,
+    "ast_hash": "eae3ef32f2ac8a8d6199d82881e830ba",
     "semantic_hash": ""
   }
 }
