@@ -1590,13 +1590,13 @@
     "semantic_hash": ""
   },
   "openspec/changes/sprint-9-indexer-independence/system-transactions-plan.md": {
-    "mtime": 1786479980.4072459,
-    "ast_hash": "4da33298afe31373422479c3d6bdd02e",
+    "mtime": 1786490403.4612012,
+    "ast_hash": "238147c8167c395fe78fb799d4d447e7",
     "semantic_hash": ""
   },
   "openspec/changes/sprint-9-indexer-independence/tasks.md": {
-    "mtime": 1786479980.4221017,
-    "ast_hash": "e15bcb21497ff181c1f73827a1dd53fd",
+    "mtime": 1786490403.4749777,
+    "ast_hash": "aee025609235ff42571ef9d38049c213",
     "semantic_hash": ""
   },
   "openspec/changes/v1.1.0-formal-completion/acceptance.md": {
@@ -1747,6 +1747,16 @@
   ".github/workflows/chain-archive-parity.yml": {
     "mtime": 1786479781.1591566,
     "ast_hash": "2cde1da91eabb1ad0013b6763bdb08bf",
+    "semantic_hash": ""
+  },
+  "chain-archive-sync/ledger-replay.ts": {
+    "mtime": 1786490283.254134,
+    "ast_hash": "513d1496f4fcd9f4caa2e451f6745475",
+    "semantic_hash": ""
+  },
+  "test/chain-archive-sync/ledger-replay.test.ts": {
+    "mtime": 1786490348.6559012,
+    "ast_hash": "d0866f13073a9f96c3f9f976fb377284",
     "semantic_hash": ""
   }
 }

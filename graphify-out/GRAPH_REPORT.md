@@ -1,16 +1,16 @@
 # Graph Report - umbradb-fork  (2026-08-11)
 
 ## Corpus Check
-- 335 files · ~614,658 words
+- 337 files · ~616,883 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 2900 nodes · 4983 edges · 251 communities (182 shown, 69 thin omitted)
+- 2918 nodes · 5007 edges · 238 communities (173 shown, 65 thin omitted)
 - Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 36 edges (avg confidence: 0.74)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `e89480fa`
+- Built from commit: `d2705b74`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -128,11 +128,7 @@
 - chain-archive-sync-retry.integration.test.ts
 - interfaces/chain-archive-store.ts
 - Design — v1.0.0 API Surface & Release Contract
-- TransactionHistoryEntry
-- postgres/checkpoint-store.ts
-- ChainArchiveStore
 - tx-replay-decoder.ts
-- perf-batching.test.ts
 - chain-archive-rollover.ts
 - UmbraDB v1.0.0 — Resume-From-Home Checkpoint (2026-07-23)
 - Tasks — v1.0.0: Recovery, Crash-Injection & Soak Testing (`recovery-testing`)
@@ -195,7 +191,6 @@
 - interfaces/transaction-history-storage.ts
 - conformance-gate.mjs
 - CrashWorkerHandle
-- watermarks.test.ts
 - UmbraDB Frozen Error-Code Catalog
 - ASSESSMENT — `midnight-node-archive` Peer Flapping (Midnight Preprod, WSL2 Docker Host)
 - package.json
@@ -208,7 +203,6 @@
 - stop-stack.sh
 - Test wallets
 - dependencies
-- watermarks.property.test.ts
 - Gate notes — Task 6: differential state-equivalence gate (G11)
 - Tasks — Sprint 9: Indexer Independence
 - migrate.ts
@@ -242,7 +236,6 @@
 - vitest
 - Transaction
 - .fromZod
-- JsonValue
 - 13. Stage 2b — metadata availability (owner-approved, 2026-08-10)
 - 8a. Dissent: concerns with revision 7, from the implementing author
 - sync-cli.ts
@@ -251,13 +244,7 @@
 - 10. Parallel track — upstream the ledger WASM export (not a goal of this plan)
 - 11. Staged execution plan (owner, 2026-08-08)
 - 1. Goal and scope
-- UmbraDBSql
-- chain-archive-rollover.ts
-- chain-archive-event-guard.integration.test.ts
-- TransactionLeaseLayer
-- watermarks.property.test.ts
 - liveServicesRequired
-- effect
 - tsx
 
 ## God Nodes (most connected - your core abstractions)
@@ -281,8 +268,8 @@
   test/integration/chain-archive-sync-retry.integration.test.ts → src/interfaces/chain-archive-store.ts
 - `assertSaveNotAutoRetriedUnderRetriableFault()` --indirect_call--> `TransactionFaultError`  [INFERRED]
   test/integration/crash/pg-kill-save.crash.test.ts → src/interfaces/transaction-lease.ts
-- `spyPool()` --references--> `UmbraDBSql`  [EXTRACTED]
-  test/postgres/checkpoint-store-cotx.test.ts → src/postgres/client.ts
+- `insertRawRow()` --references--> `UmbraDBSql`  [EXTRACTED]
+  test/postgres/transaction-history-storage.test.ts → src/postgres/client.ts
 
 ## Import Cycles
 - None detected.
@@ -293,19 +280,19 @@
 - **Modules composing the Sprint 2 transaction-handle registry** — sprint2_design_transaction_handle_registry, sprint1_design_pgtemporalkv_put, sprint3_design_torn_read_fix, sprint4_design_composing_txlease [EXTRACTED 1.00]
 - **Pre-check-only withAbort cancellation pattern across sprints** — sprint1_design_listkeys_cursor, sprint2_design_withtransaction, sprint3_design_cancellation_scope_decision, sprint4_design_cancellation [INFERRED 0.85]
 
-## Communities (251 total, 69 thin omitted)
+## Communities (238 total, 65 thin omitted)
 
 ### Community 0 - "ADDED Requirements"
 Cohesion: 0.04
 Nodes (45): ADDED Requirements, release-contract, Requirement: A cancellation contract states the abort guarantee as public behavior, Requirement: A CHANGELOG records the 1.0.0 surface, Requirement: A durability contract states the ordering guarantee and its binding precondition, Requirement: A format-headroom note reserves keyed/encrypted chunk modes for 1.1, Requirement: A forward-only migration contract states there is no supported downgrade, Requirement: A lease-limitation contract states the single-process boundary (+37 more)
 
 ### Community 1 - "interfaces/transaction-lease.ts"
-Cohesion: 0.05
-Nodes (44): CheckpointNotFoundError, CheckpointStoreError, ChunkIntegrityError, ChunkMissingError, ManifestCorruptError, ConnectionError, Retryability, SerializationFailedError (+36 more)
+Cohesion: 0.04
+Nodes (50): CheckpointNotFoundError, CheckpointStoreError, ChunkIntegrityError, ChunkMissingError, ManifestCorruptError, ConnectionError, Retryability, SerializationFailedError (+42 more)
 
 ### Community 2 - "interfaces/temporal-kv.ts"
-Cohesion: 0.15
-Nodes (23): AsOf, AssertExact, ExpectedVersionSchema, hasPostgresUnsafeText(), jsonValueHasUnsafeText(), JsonValueInnerSchema, JsonValueSchema, Key (+15 more)
+Cohesion: 0.07
+Nodes (51): RFC-8259, CheckpointStoreErrorCode, ContentHash, SharedStorageErrorCode, AsOf, AssertExact, ExpectedVersionSchema, jsonValueHasUnsafeText() (+43 more)
 
 ### Community 3 - "ADDED Requirements"
 Cohesion: 0.08
@@ -321,7 +308,7 @@ Nodes (44): 10. Sprint 2 transaction/lease proposal, 11.1 Repository evidence, 1
 
 ### Community 6 - "devDependencies"
 Cohesion: 0.08
-Nodes (25): fast-check, ledger-v8-stock, @midnight-ntwrk/ledger-v8, @midnightntwrk/wallet-sdk-abstractions, devDependencies, fast-check, ledger-v8-stock, @midnight-ntwrk/ledger-v8 (+17 more)
+Nodes (25): effect, fast-check, ledger-v8-stock, @midnight-ntwrk/ledger-v8, @midnightntwrk/wallet-sdk-abstractions, devDependencies, effect, fast-check (+17 more)
 
 ### Community 8 - "openspec-explore/SKILL.md"
 Cohesion: 0.12
@@ -372,8 +359,8 @@ Cohesion: 0.29
 Nodes (6): Impact, Non-goals, Proposal — Sprint 7: Transaction History Storage (Wallet Integration Surface), What changes, Why, Why this sprint is numbered 7, not 5
 
 ### Community 69 - "pg-tx-history-adapter.ts"
-Cohesion: 0.33
-Nodes (4): TransactionHistoryEntry, encodeStoredEntry(), PgTransactionHistoryStorage, rowToEntry()
+Cohesion: 0.18
+Nodes (8): TransactionHistoryEntry, TransactionHistoryEntrySchema, TransactionHistoryStorage, PgTransactionHistoryStorage, rowToEntry(), abortErrorLike(), capitalize(), InMemoryTransactionHistoryStorage
 
 ### Community 70 - "CheckpointStore cancellation scope decision (pre-check only)"
 Cohesion: 0.06
@@ -391,6 +378,10 @@ Nodes (18): ADDED Requirements, formal-watermarks, Requirement: Command traces c
 Cohesion: 0.50
 Nodes (3): Change summary, Mandatory Codex audit, Validation
 
+### Community 75 - "client.ts"
+Cohesion: 0.15
+Nodes (10): LedgerReplay, ReplayBlockInput, ReplayOutcome, ReplayRefusalError, CORRUPTED_REGULAR_HEX, FIXTURE, GENESIS_PARENT, genesisReplay() (+2 more)
+
 ### Community 76 - "ADDED Requirements"
 Cohesion: 0.05
 Nodes (36): ADDED Requirements, Requirement: a cold boot resumes without a full resync and preserves tx-history continuity, Requirement: a corrupt or non-JSON envelope payload is rejected with a typed error, Requirement: a live-synced transaction materializes as a Postgres row observable via getAll, Requirement: a sub-wallet absent from the envelope is skipped on restore, Requirement: an unrecognized envelopeVersion is rejected, never best-effort restored, Requirement: each sub-wallet resumes from its own last-known point; the envelope bundles for atomicity only, Requirement: encode and decode are lossless inverses (+28 more)
@@ -400,8 +391,8 @@ Cohesion: 0.04
 Nodes (45): ADDED Requirements, durable-composition (implementation), Requirement: a conforming composition keeps the durable cursor from ever being ahead of durable checkpoint data, Requirement: a durability probe asserts the server's crash-safety settings at client bootstrap, Requirement: a transaction-pooling proxy is detected and refused, Requirement: JsonValueSchema rejects values exceeding the maximum nesting depth, Requirement: migration advisory-lock acquisition is bounded and fails fast, Requirement: PgCheckpointStore validates walletId and networkId at every entry point (+37 more)
 
 ### Community 78 - "storage-errors.ts"
-Cohesion: 0.14
-Nodes (19): RuntimeCallIndices, captureForProtocolVersion(), METADATA_CAPTURES, MetadataCapture, callIndex(), decodeEventSystemTransactions(), decodeExtrinsicWithMetadata(), eventsTypeId() (+11 more)
+Cohesion: 0.08
+Nodes (23): RuntimeCallIndices, captureForProtocolVersion(), METADATA_CAPTURES, MetadataCapture, NodeRpcClient, BlockScopedMetadata, callIndex(), decodeEventSystemTransactions() (+15 more)
 
 ### Community 79 - "transaction-history-storage.property.test.ts"
 Cohesion: 0.12
@@ -425,11 +416,7 @@ Nodes (43): ADDED Requirements, Requirement: A real VerifyFull/--ca path is prov
 
 ### Community 84 - "postgres/transaction-history-storage.ts"
 Cohesion: 0.23
-Nodes (15): EntryLifecycle, TransactionHistoryEntrySchema, assertStoredEntryShape(), capitalize(), decodeContent(), decodeRow(), decodeSections(), encodeContent() (+7 more)
-
-### Community 85 - "UmbraDBSql"
-Cohesion: 0.29
-Nodes (8): BlockRecord, Hex32, TransactionMeta, TransactionRecord, assertHex32(), hexToBuf(), PgChainArchiveStore, toTxMeta()
+Nodes (15): EntryLifecycle, assertStoredEntryShape(), capitalize(), decodeContent(), decodeRow(), decodeSections(), encodeContent(), encodeSections() (+7 more)
 
 ### Community 86 - "ADDED Requirements"
 Cohesion: 0.08
@@ -472,8 +459,8 @@ Cohesion: 0.33
 Nodes (5): Faucet (get tNIGHT), Our preprod wallet, Preprod connection — endpoints, wallet, faucet, Public preprod endpoints (all verified live), Sync cost (CORRECTED — no block-height "birthday" for the unshielded wallet)
 
 ### Community 98 - "sync-service.ts"
-Cohesion: 0.12
-Nodes (6): IndexerClient, IndexerClientError, IndexerClientParseError, IndexerTransaction, debugClient(), { sql: getSql, connectionUri }
+Cohesion: 0.09
+Nodes (14): debugClient(), { sql: getSql, connectionUri }, Cancellable, CrashHook, CrashWorkerReady, CrashWorkerResult, getTestContainer(), REPO_ROOT (+6 more)
 
 ### Community 99 - "UmbraDB third-party component inventory (SBOM)"
 Cohesion: 0.06
@@ -488,8 +475,8 @@ Cohesion: 0.33
 Nodes (5): 0. Specification freeze, 1. Executable Watermarks model, 2. W1 theorem tranche, 3. Close-out, Tasks — Sprint 5: Lean M3a Watermarks W1
 
 ### Community 102 - "cursor-durability.crash.test.ts"
-Cohesion: 0.07
-Nodes (33): JsonValue, KvRow, adaptersFor(), adaptersOf(), ALL_BATCH_SPECS, ALL_BATCHES, BatchSpec, completeManifestCount() (+25 more)
+Cohesion: 0.09
+Nodes (27): adaptersFor(), adaptersOf(), ALL_BATCH_SPECS, ALL_BATCHES, completeManifestCount(), driveFullBatch(), durableCompleteSeqs(), durableKvValues() (+19 more)
 
 ### Community 103 - "ADDED Requirements"
 Cohesion: 0.06
@@ -500,16 +487,16 @@ Cohesion: 0.06
 Nodes (31): 10. Residual limitations and open questions for the design council, 11. Phasing table, 1. Problem and core principle, 2. Source grounding, 3.1 Block header, 3.2 Raw transaction blob (opaque SCALE-wrapped ledger tx), 3.3 Transactions / regular_transactions (queryable metadata split), 3.4 Unshielded UTXOs (+23 more)
 
 ### Community 105 - "checkpoint-store-cotx.test.ts"
-Cohesion: 0.11
-Nodes (19): Lease, LeaseAcquireOptions, LeaseAcquireOptionsSchema, TransactionOptionsSchema, abortError(), isStatementTimeout(), activeTransactions, HeldLease (+11 more)
+Cohesion: 0.31
+Nodes (8): Lease, LeaseAcquireOptions, abortError(), raceAgainstAbort(), reserveBounded(), resetStatementTimeout(), validateLeaseAcquireOptions(), InjectedReleaseFaultLayer
 
 ### Community 106 - "Design — v1.0.0-durable-checkpoint-cursor"
 Cohesion: 0.07
 Nodes (26): 0. Package layout, 1.1 The gap, confirmed in source, 1.2 Change `save` to accept a caller transaction, 1.3 The `saveAndAdvance` combinator, 1.4 The ordering contract (for callers composing manually), 1. G5 — Co-transactional watermark + checkpoint data, 2.1 Where the probe runs (the one real design decision), 2.2 The three durability settings (+18 more)
 
 ### Community 107 - "src/index.ts"
-Cohesion: 0.07
-Nodes (47): CheckpointRecord, CheckpointSequence, CheckpointStore, CheckpointStoreErrorCode, CheckpointSummary, ContentHash, HistoryOptions, HistoryOptionsSchema (+39 more)
+Cohesion: 0.10
+Nodes (24): CheckpointSequence, CheckpointStore, CheckpointSummary, SaveCheckpointOptions, ValidationError, hasPostgresUnsafeText(), decode(), encode() (+16 more)
 
 ### Community 108 - "Plan: finish replacing the indexer with the node as the archive ingest source"
 Cohesion: 0.22
@@ -528,36 +515,24 @@ Cohesion: 0.11
 Nodes (18): 0. Test-infrastructure layout, 1.1 Skip-enforcement mechanism — the anti-self-skip guarantee, made a named check, 1. Crash harness — deterministic faults, not timing races (`council/B` §3 tooling ruling), 2.1 Process-kill mid-save (T1) — `02` §"Fault-injection test plan" T1; `council/B` §3 item 1, 2.2 Postgres-kill mid-save + retry-duplication contract (T2) — `02`-T2; `council/B` §3 item 2, 2.3 Crash between data and cursor — the keystone (T5) — `02`-T5; `council/B` §3 item 3; §5 item 1, 2.4 Lease non-wedge cold start (T3) — `02`-T3; `council/B` §3 item 4, 2. G9 — the four crash tests (+10 more)
 
 ### Community 112 - "chain-archive-sync-retry.integration.test.ts"
-Cohesion: 0.12
-Nodes (12): MAX_BLOCKS, service, sql, assertNoConflictingSearchPath(), assertValidSchemaName(), createClient(), createHeightPartitions(), up() (+4 more)
+Cohesion: 0.09
+Nodes (21): bootstrapChainArchiveSchema(), MAX_BLOCKS, service, sql, ledgerSupportsSystemTransactionHash(), assertNoConflictingSearchPath(), assertValidSchemaName(), createClient() (+13 more)
 
 ### Community 113 - "interfaces/chain-archive-store.ts"
-Cohesion: 0.13
-Nodes (16): BlobIntegrityError, BlobMissingError, BlobRole, BlockBundle, BlockNotFoundError, BlockStatus, BridgeObservationKind, ChainArchiveError (+8 more)
+Cohesion: 0.05
+Nodes (30): BlobIntegrityError, BlobMissingError, BlobRole, BlockBundle, BlockMeta, BlockNotFoundError, BlockRecord, BlockStatus (+22 more)
 
 ### Community 114 - "Design — v1.0.0 API Surface & Release Contract"
 Cohesion: 0.12
 Nodes (15): 0. Ordering constraint (why this change is Phase 2, not Phase 1), 1.1 The barrel: `src/index.ts`, 1.2 `package.json` — make it publishable with a strict `exports`, 1.3 Packed-tarball install smoke test, 1. G1 — Public API surface, 2. G2 — SemVer stability policy + CHANGELOG, 3.1 The frozen catalog (the machine-facing API), 3.2 Promote retryability to a machine-readable field (+7 more)
 
-### Community 115 - "TransactionHistoryEntry"
-Cohesion: 0.11
-Nodes (6): TemporalKV, TransactionHistoryReader, TransactionHistoryWriter, TransactionHandle, FAKE_TX, { sql: getSql, connectionUri }
-
-### Community 116 - "postgres/checkpoint-store.ts"
-Cohesion: 0.35
-Nodes (6): coerceToSafeNumber(), sha256(), splitChunks(), toHex(), toSummary(), tx()
-
 ### Community 118 - "tx-replay-decoder.ts"
-Cohesion: 0.11
-Nodes (25): decodeArchivedTransaction(), DecodedArchivedTransaction, DecodedDustRegistration, DecodedDustSpend, DecodedUnshieldedOutput, DecodedZswapInput, DecodedZswapOutput, hexNoPrefixLower() (+17 more)
-
-### Community 119 - "perf-batching.test.ts"
-Cohesion: 0.35
-Nodes (8): assertNoTransactionPooler(), classifyFsync(), classifyFullPageWrites(), classifySynchronousCommit(), DurabilityViolation, DurabilityWarning, probeAdvisoryLockVisibility(), probeDurability()
+Cohesion: 0.15
+Nodes (20): decodeArchivedTransaction(), DecodedArchivedTransaction, DecodedDustRegistration, DecodedDustSpend, DecodedUnshieldedOutput, DecodedZswapInput, DecodedZswapOutput, hexNoPrefixLower() (+12 more)
 
 ### Community 120 - "chain-archive-rollover.ts"
-Cohesion: 0.24
-Nodes (10): IndexerClientOptions, NodeRpcClientOptions, assertNoDuplicateTransactionKeys(), ChainArchiveSyncServiceOptions, extrinsicsBytes(), headerBytes(), stableStringify(), SyncOnceResult (+2 more)
+Cohesion: 0.11
+Nodes (15): IndexerBlock, IndexerClient, IndexerClientError, IndexerClientOptions, IndexerClientParseError, IndexerTransaction, NodeRpcClientOptions, assertNoDuplicateTransactionKeys() (+7 more)
 
 ### Community 121 - "UmbraDB v1.0.0 — Resume-From-Home Checkpoint (2026-07-23)"
 Cohesion: 0.20
@@ -624,8 +599,8 @@ Cohesion: 0.22
 Nodes (9): 1. Durability contract, 2. Forward-only / no-downgrade migration contract, 3. Cancellation semantics, 4. Save-retry caveat, 5. Lease limitation, 6. Backup/restore guidance, 7. Threat-model pointer, 8. Format headroom (reserved for 1.1) (+1 more)
 
 ### Community 137 - "ChainArchiveSyncService"
-Cohesion: 0.23
-Nodes (4): IndexerBlock, ChainArchiveSyncService, hexNoPrefix(), hexToBytes()
+Cohesion: 0.25
+Nodes (5): ChainArchiveSyncService, hexNoPrefix(), hexToBytes(), Hex32, TransactionRecord
 
 ### Community 138 - "Design — v1.0.0-infosec-signoff"
 Cohesion: 0.20
@@ -640,8 +615,8 @@ Cohesion: 0.22
 Nodes (8): 1. Driver — why this is now mandatory, 2. What the Cardano side does (and does not) provide, 3. Feasibility — demonstrated, 4. Security postures, 5. Folding into `nix/midnight-env`, 6. Risks / open items, 7. Verdict, Feasibility: TLS for the Cardano db-sync database (Midnight partner-chain follower)
 
 ### Community 142 - "full-sync-soak.integration.test.ts"
-Cohesion: 0.09
-Nodes (11): { connectionUri }, DECLARED_ENVELOPE, GcPass, HistGroup, kvMapKey(), LIVE_ENVELOPE, newPool(), openPools (+3 more)
+Cohesion: 0.07
+Nodes (17): JsonValue, KvRow, BatchSpec, CurrentState, { connectionUri }, CurrentState, DECLARED_ENVELOPE, GcPass (+9 more)
 
 ### Community 143 - "Acceptance — v1.0.0 API Surface & Release Contract"
 Cohesion: 0.22
@@ -664,8 +639,8 @@ Cohesion: 0.08
 Nodes (24): clear-text, html, json, src/postgres/checkpoint-store.ts, src/postgres/save-and-advance.ts, src/postgres/temporal-kv.ts, src/postgres/transaction-lease.ts, src/postgres/watermarks.ts (+16 more)
 
 ### Community 149 - "setup.ts"
-Cohesion: 0.10
-Nodes (21): class2AdvisoryLockCountForHash(), liveWorkers, manifestCount(), openPools, pool(), { sql: getSql, connectionUri }, watermarkCount(), backendPid() (+13 more)
+Cohesion: 0.15
+Nodes (11): class2AdvisoryLockCountForHash(), liveWorkers, manifestCount(), openPools, pool(), { sql: getSql, connectionUri }, watermarkCount(), backendPid() (+3 more)
 
 ### Community 150 - "Acceptance criteria — v1.0.0-infosec-signoff"
 Cohesion: 0.25
@@ -704,16 +679,16 @@ Cohesion: 0.11
 Nodes (18): assertSaveNotAutoRetriedUnderRetriableFault(), assertSaveNotInAnyAutoRetryAllowlist(), C5AnyFn, completeManifestCount(), completeManifestCountAtSeq(), danglingChunkCount(), IDEMPOTENCY_KEY_FEATURE, listSrcTsFiles() (+10 more)
 
 ### Community 159 - "withSuiteWatchdog"
-Cohesion: 0.18
-Nodes (12): assertValidCheckpointIds(), CheckpointIdSchema, withAbort(), PgCheckpointStore, Adapters, Adapters, invoke(), Method (+4 more)
+Cohesion: 0.05
+Nodes (35): assertValidCheckpointIds(), CheckpointIdSchema, CheckpointRecord, HistoryOptions, HistoryOptionsSchema, PruneResult, SaveCheckpointOptionsSchema, TransactionLeaseLayer (+27 more)
 
 ### Community 160 - "UmbraDB 0.9.5 "Penumbra""
 Cohesion: 0.15
 Nodes (12): Benchmarks, Compatibility, and what 1.0.0 needs, Durability, Errors, If you build from source, Installing, Security, The fix this release exists for (+4 more)
 
 ### Community 161 - "crash-worker.ts"
-Cohesion: 0.10
-Nodes (29): RFC-8259, WatermarkKey, WatermarkKind, Watermarks, WatermarkValue, WatermarkValueSchema, NOTE: as of the api-surface change (G1), this primitive IS part of the frozen 1., saveAndAdvance() (+21 more)
+Cohesion: 0.19
+Nodes (16): saveAndAdvance(), tx(), ALL_HOOKS, CoTxCallable, CoTxPauseInfo, CrashHook, describeCaughtError(), main() (+8 more)
 
 ### Community 162 - "mutation-per-adapter.mjs"
 Cohesion: 0.17
@@ -772,8 +747,8 @@ Cohesion: 0.15
 Nodes (12): 0. Scaffolding + Trust reach, 1. C2a — GC-safety (release-blocking; start now), 2. C2b — eventual collection (DEFERRED), 3. L1 — lease mutual exclusion (release-blocking; start now), 4. Multi-key TemporalKV lift — FRAMING ONLY (DEFERRED), 5. Ordered chunk reconstruction (DEFERRED), 6. C1 collision hygiene (release-blocking rider), 7. Transaction-envelope composition (DEFERRED) (+4 more)
 
 ### Community 176 - "postgres/transaction-lease.ts"
-Cohesion: 0.20
-Nodes (5): decodeSerializedContent(), decodeSerializedEntry(), FAKE_TX, insertRawRow(), { sql: getSql }
+Cohesion: 0.14
+Nodes (6): MergeEntriesFn, decodeSerializedContent(), decodeSerializedEntry(), FAKE_TX, insertRawRow(), { sql: getSql }
 
 ### Community 177 - "README.md"
 Cohesion: 0.19
@@ -790,10 +765,6 @@ Nodes (12): exceedsMaxDepth(), EntryContentSchema, EntryLifecycleSchema, EntrySe
 ### Community 181 - "conformance-gate.mjs"
 Cohesion: 0.25
 Nodes (7): check, checker, env, forwarded, repoRoot, reportPath, vitest
-
-### Community 183 - "watermarks.test.ts"
-Cohesion: 0.15
-Nodes (4): NodeRpcClient, BlockScopedMetadata, hexToBytes(), MetadataPersistence
 
 ### Community 184 - "UmbraDB Frozen Error-Code Catalog"
 Cohesion: 0.29
@@ -820,16 +791,12 @@ Cohesion: 0.29
 Nodes (7): [0.9.5] - 2026-07-25 — "Penumbra", [1.0.0] - unreleased — "Totality", Added, Changelog, Contract documents, Deferred to a 1.1 fast-follow (explicitly outside the frozen 1.0 surface), [Unreleased]
 
 ### Community 194 - "Test wallets"
-Cohesion: 0.24
-Nodes (5): NodeRpcError, NodeRpcInvalidHeightError, NodeRpcParseError, SubstrateBlock, SubstrateHeader
+Cohesion: 0.15
+Nodes (13): NodeRpcError, NodeRpcInvalidHeightError, NodeRpcParseError, SubstrateBlock, SubstrateHeader, bareMidnightExtrinsicHex(), compactU32Hex(), fakeChain() (+5 more)
 
 ### Community 195 - "dependencies"
 Cohesion: 0.29
 Nodes (7): dependencies, @polkadot/types, postgres, zod, @polkadot/types, postgres, zod
-
-### Community 196 - "watermarks.property.test.ts"
-Cohesion: 0.20
-Nodes (5): MergeEntriesFn, TransactionHistoryStorage, abortErrorLike(), capitalize(), InMemoryTransactionHistoryStorage
 
 ### Community 197 - "Gate notes — Task 6: differential state-equivalence gate (G11)"
 Cohesion: 0.50
@@ -840,8 +807,8 @@ Cohesion: 0.15
 Nodes (12): 0. Specification freeze, 1. Ground-truth capture — TIME-CRITICAL, do first, 2. System-transaction exclusion (owner decision — no investigation needed), 3. UmbraDB: projection, cursor, read contract, 4. Effectstream: sync protocol and fetcher, 5. The harness and Run A, 6. Node-only ingest and Run B — the cutover gate, 6d. Test stack (`test/compose/`) (+4 more)
 
 ### Community 199 - "migrate.ts"
-Cohesion: 0.09
-Nodes (13): DurabilityProbeOptions, isLockTimeout(), Migration, runMigrations(), runMigrationsImpl(), RunMigrationsOptions, tier1WalletMigrations, withReservedTransaction() (+5 more)
+Cohesion: 0.06
+Nodes (33): AnySql, assertDefaultSpanFitsOneBucket(), assertValidBucketBounds(), assertValidPartitionSuffix(), attachedPartitionBound(), getFkConstraintName(), quoteIdent(), ROLLOVER_TABLES (+25 more)
 
 ### Community 200 - "Checkpoint-store composition contract — cursor ordering and replay"
 Cohesion: 0.25
@@ -864,8 +831,8 @@ Cohesion: 0.20
 Nodes (9): 1. Scope and honesty, 2. Faithfulness to the algebra, 3. C2a — GC reachability safety, 4. C2b — eventual collection (liveness), 5. L1 — lease mutual exclusion, 6. T1 cross-writer, 7. CI integration, 8. Documentation (+1 more)
 
 ### Community 205 - "harness.ts"
-Cohesion: 0.11
-Nodes (42): BenchEnv, PG_SETTINGS, startBenchEnv(), fmtRatio(), main(), parseNums(), printSummary(), BaselineLoad (+34 more)
+Cohesion: 0.10
+Nodes (43): BenchEnv, PG_SETTINGS, startBenchEnv(), fmtRatio(), main(), parseNums(), printSummary(), BaselineLoad (+35 more)
 
 ### Community 206 - "Tasks — v1.1.0: Quint model checking"
 Cohesion: 0.20
@@ -937,7 +904,7 @@ Nodes (3): repository, type, url
 
 ### Community 230 - "typescript"
 Cohesion: 0.15
-Nodes (19): bootstrapChainArchiveSchema(), bareSystemExtrinsicHex(), compactU32Hex(), fakeNodeFetch(), require_, bareSystemExtrinsicHex(), compactU32Hex(), fakeNode() (+11 more)
+Nodes (17): bareSystemExtrinsicHex(), compactU32Hex(), EVENT_TX_HASH, eventsBlobHex(), EXTRINSIC_TX_HASH, fakeNodeFetch(), FIXTURE, ingest() (+9 more)
 
 ### Community 231 - "vitest"
 Cohesion: 0.22
@@ -946,10 +913,6 @@ Nodes (9): 5.1 Raw event-tag counting has a false-negative combination, 5.2 Sign
 ### Community 232 - "Transaction"
 Cohesion: 0.50
 Nodes (3): Generate your local wallet, Test wallets, Why this is not just a committed key anymore
-
-### Community 234 - "JsonValue"
-Cohesion: 0.25
-Nodes (3): FAKE_TX, spyPool(), { sql: getSql, connectionUri }
 
 ### Community 235 - "13. Stage 2b — metadata availability (owner-approved, 2026-08-10)"
 Cohesion: 0.33
@@ -960,12 +923,12 @@ Cohesion: 0.33
 Nodes (6): 8a.1 One §7 row silently requires a ledger replay engine, 8a.2 Several merge-blocking rows have no stated fallback if the population cannot be found, 8a.3 There is no position on the indexer disappearing first, 8a.4 The plan should separate "safe to merge" from "safe to cut over", 8a.5 One fix is available now and is being deferred, 8a. Dissent: concerns with revision 7, from the implementing author
 
 ### Community 237 - "sync-cli.ts"
-Cohesion: 0.19
-Nodes (10): BlockMeta, bufToHex(), toBlockMeta(), CHAIN_ARCHIVE_INVARIANT_CONSTRAINT_NAMES, CONNECTION_FAILURE_CODES, isConnectionFailure(), isPgDriverError(), translatePostgresError() (+2 more)
+Cohesion: 0.17
+Nodes (14): CHAIN_ARCHIVE_CHECK_TABLE_PREFIXES, CHAIN_ARCHIVE_INVARIANT_CONSTRAINT_NAMES, ChainArchiveCheckViolationError, ChainArchiveInvariantError, ClockRegressionError, CONNECTION_FAILURE_CODES, isChainArchiveCheckConstraintName(), isConnectionFailure() (+6 more)
 
 ### Community 238 - "12. Blockers and unknowns"
-Cohesion: 0.40
-Nodes (5): 12.1 Blockers, 12.2 Unknowns, 12.3 Stage 2 reconnaissance — measured, not yet implemented, 12.4 Stage 2 mid-stage review (2026-08-10) — built, missing, and two library hazards, 12. Blockers and unknowns
+Cohesion: 0.33
+Nodes (6): 12.1 Blockers, 12.2 Unknowns, 12.3 Stage 2 reconnaissance — measured, not yet implemented, 12.4 Stage 2 mid-stage review (2026-08-10) — built, missing, and two library hazards, 12.5 Status snapshot after Stage 3 (2026-08-11) — answered, and still open, 12. Blockers and unknowns
 
 ### Community 239 - "4. What is genuinely demonstrated"
 Cohesion: 0.40
@@ -983,37 +946,25 @@ Nodes (3): 11.1 Execution prerequisites (what an agent needs; nothing else), 11.
 Cohesion: 0.67
 Nodes (3): 1. Goal and scope, In scope — the minimum source substitution, Out of scope
 
-### Community 243 - "UmbraDBSql"
-Cohesion: 0.18
-Nodes (5): BridgeObservationRecord, RuntimeMetadataRecord, VerifierKeyObservationRecord, sha256Hex(), UmbraDBSql
-
-### Community 244 - "chain-archive-rollover.ts"
-Cohesion: 0.24
-Nodes (12): AnySql, assertDefaultSpanFitsOneBucket(), assertValidBucketBounds(), assertValidPartitionSuffix(), attachedPartitionBound(), getFkConstraintName(), quoteIdent(), ROLLOVER_TABLES (+4 more)
-
-### Community 245 - "chain-archive-event-guard.integration.test.ts"
-Cohesion: 0.31
-Nodes (8): bareSystemExtrinsicHex(), compactU32Hex(), EVENT_TX_HASH, eventsBlobHex(), EXTRINSIC_TX_HASH, fakeNodeFetch(), FIXTURE, ingest()
-
 ## Knowledge Gaps
-- **1374 isolated node(s):** `BaselineLoad`, `TinybenchOpts`, `EnvironmentBlock`, `GcScaleOpts`, `DecodedMidnightExtrinsic` (+1369 more)
+- **1381 isolated node(s):** `BaselineLoad`, `TinybenchOpts`, `EnvironmentBlock`, `GcScaleOpts`, `DecodedMidnightExtrinsic` (+1376 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **69 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **65 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `UmbraDBSql` connect `UmbraDBSql` to `interfaces/transaction-lease.ts`, `interfaces/temporal-kv.ts`, `full-sync-soak.integration.test.ts`, `differential-equivalence.test.ts`, `setup.ts`, `TransactionHandle`, `registerSuiteLifecycle`, `pg-kill-save.crash.test.ts`, `withSuiteWatchdog`, `crash-worker.ts`, `load-under-prune.integration.test.ts`, `lease-nonwedge.crash.test.ts`, `postgres/transaction-lease.ts`, `watermarks.property.test.ts`, `pg-tx-history-adapter.ts`, `migrate.ts`, `transaction-history-storage.test.ts`, `client.ts`, `harness.ts`, `postgres/transaction-history-storage.ts`, `UmbraDBSql`, `perf-batching.test.ts`, `sync-service.ts`, `typescript`, `cursor-durability.crash.test.ts`, `checkpoint-store-cotx.test.ts`, `JsonValue`, `src/index.ts`, `sync-cli.ts`, `chain-archive-sync-retry.integration.test.ts`, `interfaces/chain-archive-store.ts`, `TransactionHistoryEntry`, `chain-archive-rollover.ts`, `postgres/checkpoint-store.ts`, `TransactionLeaseLayer`, `chain-archive-event-guard.integration.test.ts`, `chain-archive-rollover.ts`, `tx-replay-decoder.ts`?**
-  _High betweenness centrality (0.037) - this node is a cross-community bridge._
+- **Why does `UmbraDBSql` connect `chain-archive-sync-retry.integration.test.ts` to `interfaces/transaction-lease.ts`, `interfaces/temporal-kv.ts`, `full-sync-soak.integration.test.ts`, `differential-equivalence.test.ts`, `setup.ts`, `TransactionHandle`, `registerSuiteLifecycle`, `pg-kill-save.crash.test.ts`, `withSuiteWatchdog`, `crash-worker.ts`, `load-under-prune.integration.test.ts`, `lease-nonwedge.crash.test.ts`, `postgres/transaction-lease.ts`, `Test wallets`, `pg-tx-history-adapter.ts`, `migrate.ts`, `transaction-history-storage.test.ts`, `harness.ts`, `postgres/transaction-history-storage.ts`, `sync-service.ts`, `typescript`, `cursor-durability.crash.test.ts`, `checkpoint-store-cotx.test.ts`, `src/index.ts`, `sync-cli.ts`, `interfaces/chain-archive-store.ts`, `tx-replay-decoder.ts`, `chain-archive-rollover.ts`?**
+  _High betweenness centrality (0.039) - this node is a cross-community bridge._
 - **Why does `tinybenchSamples()` connect `harness.ts` to `scripts`?**
   _High betweenness centrality (0.015) - this node is a cross-community bridge._
 - **Why does `scripts` connect `scripts` to `package.json`?**
   _High betweenness centrality (0.015) - this node is a cross-community bridge._
 - **What connects `BaselineLoad`, `TinybenchOpts`, `EnvironmentBlock` to the rest of the system?**
-  _1374 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _1381 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `ADDED Requirements` be split into smaller, more focused modules?**
   _Cohesion score 0.043478260869565216 - nodes in this community are weakly interconnected._
 - **Should `interfaces/transaction-lease.ts` be split into smaller, more focused modules?**
-  _Cohesion score 0.052393857271906055 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.04438343628460307 - nodes in this community are weakly interconnected._
 - **Should `interfaces/temporal-kv.ts` be split into smaller, more focused modules?**
-  _Cohesion score 0.14615384615384616 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.0673992673992674 - nodes in this community are weakly interconnected._
