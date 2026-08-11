@@ -790,11 +790,11 @@ invalidate work already done. Both are updated as stages proceed.
 | # | Blocker | Blocks | Status |
 |---|---|---|---|
 | **B1** | **No reachable chain emits runtime-generated system transactions.** The reviewed v1.0.0 runtime's block reward is zero and its reward pallet is disabled. | Live validation of the event guard; the §7 rows for event-borne systems, mixed blocks, and dual-source transactions | Open. §0's mechanism-equivalence fallback applies: implement the reference mechanism, prove with synthesized fixtures. CNight observation is the one identified real source |
-| **B2** | **Block-scoped metadata decoding not implemented.** | Signed/general framings, `SystemTransactionApplied` decode, retiring pinned `CALL_INDICES_BY_PROTOCOL` — i.e. converting three refusals into support | Stage 2, next |
-| **B3** | **The `transactions` primary key cannot hold two rows sharing a hash** — `(net, block_height, block_hash, tx_hash)`. | *Archiving* (as opposed to refusing) a dual-source system transaction, which the indexer stores as two rows | Migration approved (§0); lands Stage 2 at the earliest. Blocks refuse meanwhile |
+| **B2** | **Block-scoped metadata decoding: decoders built, ingest not yet wired.** The three capabilities exist and are tested against committed fixtures — metadata resolution cached by runtime identity (`runtime-metadata.ts`), `SystemTransactionApplied` decode, and any-framing call decode. `sync-service.ts` does not use any of them yet: §5.1/§5.2 still refuse in practice. | Converting the refusals into ingest; event-first ordering; retiring the pinned indices to a cross-check | **Wiring is the remaining Stage 2 work** — see §12.4 |
+| **B3** | ~~The `transactions` primary key cannot hold two rows sharing a hash.~~ **Resolved:** migration `002_transaction_position_key` re-keys on `position` (already unique per block, so the rule was merely re-labelled). Verified fresh **and** incremental onto an existing 000/001 archive. | — | **Landed.** Follow-through pending: `assertNoDuplicateTransactionKeys` still refuses the now-legal dual-source rows and must be re-scoped to position-uniqueness when the wiring lands (§12.4) |
 | **B4** | **The ledger export is neither upstreamed nor published.** | Closing §5.4's release-artifact objection | Vendored interim in place (`vendor/ledger-v8-syshash`) and no longer blocking day-to-day work. §10 tracks it |
-| **B5** | **Node 0.22.x has no verified call indices.** Its ledger codec is supported; the indices were never observed. | Ingesting any 0.22.x range | Open. Fail-closed today. Resolved by B2 or by observing a 0.22.x chain. Note the reference's own captured metadata for 0.22.0 exists at `/home/eddie/midnight-reference-mainnet/v1.0.0/midnight-indexer/.node/0.22.0/metadata.scale` and would settle it without a running 0.22.x node |
-| **B6** | **No decision on how to decode SCALE metadata in TypeScript.** Decoding events and signed framings needs a full type registry, which is a decode-critical component. `@polkadot/types` is the standard answer and costs **19 scoped packages / 46 MB** against a deliberately lean 17-dependency repo; hand-rolling a V14 registry is the alternative. | All of Stage 2 | **Owner decision needed.** Evidence gathered (§12.3); recommendation is `@polkadot/types` |
+| **B5** | ~~Node 0.22.x has no verified call indices.~~ **Settled** by resolving the reference's own captured 0.22.0 metadata (`midnight-indexer/.node/0.22.0/metadata.scale`) with the new resolver: **identical to 1.0.x** — Midnight=5, MidnightSystem=6, both calls 0, `SystemTransactionApplied` at (6,0). Notable: that metadata is **V16** (1.0.0's is V14) and `@polkadot/types` handles both, so metadata-version drift across node versions is covered. | — | Evidence is derived-from-captured-metadata, not live-chain observation; sufficient to add the 0.22 entry fail-open, and moot once metadata decoding replaces the pinned table entirely |
+| **B6** | ~~No decision on how to decode SCALE metadata.~~ **Decided (owner, 2026-08-10): `@polkadot/types`**, at its measured cost (19 scoped packages / 46 MB). In `package.json` + lockfile. Local caveat: the main repo's root-owned `node_modules` cannot be relinked without sudo, so local runs use a dev clone; fresh clones and CI are unaffected | — | **Closed** |
 
 ### 12.2 Unknowns
 
@@ -831,3 +831,55 @@ Stage 2 considerably and are recorded because several *retire* risks the plan cu
 and the alternative is hand-writing a V14 type registry in the single most decode-critical path in
 the system — where a subtle bug produces a wrong archive rather than a crash. The cost is real and
 should be taken with open eyes: 19 scoped packages and 46 MB against a 17-dependency repo.
+*(Adopted by the owner 2026-08-10 — see B6.)*
+
+### 12.4 Stage 2 mid-stage review (2026-08-10) — built, missing, and two library hazards
+
+**Built and verified** (commits `3147cde`, `814a326`, `6133a5f`, `f05d0a4`): metadata resolution
+at the block's hash cached by `(specName, specVersion)`; event-borne system-transaction decode
+recovering the runtime's own hash and bare payload; call decode for every framing including
+signed (verified against the same real genesis bytes as the hand-rolled decoder, plus a signed
+extrinsic built from the layout metadata itself describes); and the `position` re-key migration,
+fresh and incremental. 14 metadata tests + 6 migration tests green; fixtures are committed
+real-node captures, so none of it needs a running chain.
+
+**Two `@polkadot/types` hazards, recorded because both produce a wrong archive rather than a
+crash, and both were caught only by known-answer tests:**
+
+1. `event.index` is a codec, not an array — positional indexing yields `undefined`, so a naive
+   pallet/variant match silently matches *nothing* and every event-borne system transaction reads
+   as absent. Read via `toU8a()`.
+2. **`codec.hash` is a built-in on every codec** (blake2 of the encoded value). Reading the
+   event's `hash_` field as `.hash` returns a plausible 32-byte hex that is *not* the field —
+   every event-borne system transaction would have been archived under a fabricated key,
+   permanently, under `ON CONFLICT DO NOTHING`. Named fields are read only through the Struct
+   accessor, and the test compares against a known hash because nothing else catches this class.
+
+**Missing — what closes Stage 2 (all in `sync-service.ts` unless noted):**
+
+1. **Wire the decoders into node-only ingest.** Metadata-derived indices classify (pinned table
+   demoted to a cross-check that logs/aborts on disagreement); event-borne system transactions
+   become archived rows rather than a refusal.
+2. **Event-first ordering.** The reference prepends event-borne transactions, so every position in
+   a block that carries one shifts by the prepended count. This is the behaviour-changing step:
+   archives of such blocks differ from what the pre-wiring code would have written (it refused
+   them, so no existing archive changes retroactively — but the ordering rule must match
+   `v1_0_0.rs:160-163` exactly).
+3. **Store each copy's own bytes** for a dual-source transaction — event payload for the
+   event-borne row, extrinsic payload for the extrinsic row, exactly as the indexer does. Note
+   this makes **U1 non-blocking for parity**: if the two byte-streams ever differ we mirror the
+   reference either way; U1 only governs the Stage-1 byte-match guard, which the wiring replaces.
+4. **Re-scope the Stage-1 interim guards.** `assertNoDuplicateTransactionKeys` currently refuses
+   the dual-source rows that are now legal — it must check position-uniqueness instead. The
+   byte-match event guard is superseded by actual decode and becomes a cross-check or is removed.
+5. **Operational consequence to document:** node-only ingest now calls `state_getMetadata` at
+   historical hashes, so pruned nodes fail for old ranges — an archive-node requirement, already
+   thrown as a clear error by `BlockScopedMetadata.forBlock`.
+6. **End-to-end tests:** fake-node ingest of a block whose events carry a system transaction
+   (archived, event-first positions); dual-source block stores two rows; indexer-mode unchanged.
+7. Stage close-out: `tasks.md` 8.2, graphify, §10.3 findings.
+
+**Known-open items that Stage 2 does NOT close** (Stage 3, restated so the close-out cannot absorb
+them): the parity gate still omits `block_hash` and all D-parameter observations from its
+comparison (revision 7's §5.6 finding — confirmed still true today), required-not-skipping CI, and
+every §7 population that needs fixtures.
