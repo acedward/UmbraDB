@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Synthesized Ethereum block",
+  "type": "object",
+  "required": [
+    "number", "hash", "parentHash", "nonce", "sha3Uncles", "logsBloom",
+    "transactionsRoot", "stateRoot", "receiptsRoot", "miner", "difficulty",
+    "totalDifficulty", "extraData", "size", "gasLimit", "gasUsed", "timestamp",
+    "transactions", "uncles", "mixHash"
+  ],
+  "properties": {
+    "number": { "$ref": "#/$defs/quantity" },
+    "hash": { "$ref": "#/$defs/hash" },
+    "parentHash": { "$ref": "#/$defs/hash" },
+    "nonce": { "type": "string", "pattern": "^0x[0-9a-f]{16}$" },
+    "sha3Uncles": { "$ref": "#/$defs/hash" },
+    "logsBloom": { "type": "string", "pattern": "^0x[0-9a-f]{512}$" },
+    "transactionsRoot": { "$ref": "#/$defs/hash" },
+    "stateRoot": { "$ref": "#/$defs/hash" },
+    "receiptsRoot": { "$ref": "#/$defs/hash" },
+    "miner": { "type": "string", "pattern": "^0x[0-9a-f]{40}$" },
+    "difficulty": { "$ref": "#/$defs/quantity" },
+    "totalDifficulty": { "$ref": "#/$defs/quantity" },
+    "extraData": { "type": "string", "pattern": "^0x(?:[0-9a-f]{2})*$" },
+    "size": { "$ref": "#/$defs/quantity" },
+    "gasLimit": { "$ref": "#/$defs/quantity" },
+    "gasUsed": { "$ref": "#/$defs/quantity" },
+    "timestamp": { "$ref": "#/$defs/quantity" },
+    "transactions": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          { "$ref": "#/$defs/hash" },
+          { "type": "object", "required": ["hash", "from", "to", "nonce", "gas", "gasPrice", "value", "input"] }
+        ]
+      }
+    },
+    "uncles": { "type": "array", "maxItems": 0 },
+    "mixHash": { "$ref": "#/$defs/hash" }
+  },
+  "$defs": {
+    "quantity": { "type": "string", "pattern": "^0x(?:0|[1-9a-f][0-9a-f]*)$" },
+    "hash": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" }
+  }
+}

@@ -47,6 +47,8 @@
     "monitor": "tsx wallet-monitor/monitor-cli.ts",
     "monitor:wallet": "tsx wallet-monitor/monitor.ts",
     "wallet:transfer": "tsx wallet-monitor/scripts/transfer.ts",
+    "evm-rpc": "tsx evm-rpc/rpc-cli.ts",
+    "evm-rpc:live-smoke": "tsx evm-rpc/live-smoke.ts",
     "bench": "tsx bench/harness.ts",
     "bench:smoke": "tsx bench/smoke.ts"
   },
