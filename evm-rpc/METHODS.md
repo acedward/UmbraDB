@@ -33,7 +33,7 @@ still absent.
 
 | Method | Stub behavior |
 |---|---|
-| `eth_call` | Returns `0x`; contract execution arrives in Parts C/D. |
+| `eth_call` | **ERC20 views implemented** (`evm-rpc/methods/erc20-call.ts`, registered with `replace: true`): `balanceOf(address)`, `decimals()`, `symbol()`, `name()`, `totalSupply()` for any watched token, answered by folding Transfer logs — the same computation an EVM explorer performs. Any other target or selector still returns `0x`. There is no EVM execution: Midnight contract state is a ledger blob, not EVM storage. **`decimals()` is 0 by default** — the Compact contracts store `Uint<128>` whole units and emit them verbatim, so a `deployment.json` nominally declaring `decimals: 18` is ignored unless a watch entry sets `evmDecimals`. This is what lets MetaMask import a token and produce `transfer(address,uint256)` calldata, the only shape Part E's relayer accepts. |
 | `eth_feeHistory` | Returns correctly-sized zero base-fee, gas-ratio, and reward arrays. Blocks deliberately omit `baseFeePerGas`, so transactions remain legacy type 0. |
 | `eth_maxPriorityFeePerGas` | Returns `0x0` for the legacy-fee chain. |
 | Receipt logs | `logs: []` and a zero 256-byte bloom; Part C replaces this through `registerMethod(..., { replace: true })`. |

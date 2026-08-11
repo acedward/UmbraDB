@@ -22,6 +22,7 @@ import { registerAccountMethods } from "./methods/accounts.js";
 import { registerBlockMethods } from "./methods/blocks.js";
 import { registerStaticMethods } from "./methods/static.js";
 import { registerTransactionMethods } from "./methods/transactions.js";
+import { loadTokenMeta, registerErc20Call } from "./methods/erc20-call.js";
 import { defaultRegistry, RpcError } from "./registry.js";
 import { createRpcServer } from "./server.js";
 import { loadEnv } from "./logs/config.js";
@@ -130,6 +131,13 @@ if (process.env.DEMO_TOKEN_AS_NIGHT === "1") {
   );
   log("demo-token-as-night", { enabled: true });
 }
+
+// --- eth_call for ERC20 views (lets MetaMask import/display/send the watched tokens) ---
+const tokens = loadTokenMeta(process.env.WATCH_CONTRACTS_FILE ?? "./watch.json");
+registerErc20Call({ registry: defaultRegistry, sql, schema: logsEnv.schema, tokens });
+log("erc20-call-registered", {
+  tokens: tokens.map((t) => ({ symbol: t.symbol, evmAddr: `0x${t.evmAddr}`, decimals: t.decimals })),
+});
 
 // --- Part C: eth_getLogs, backfill, ingest, WS ---
 registerGetLogs({
