@@ -6,6 +6,7 @@ import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.j
 import {
   ledgerSupportsSystemTransactionHash,
 } from "../../chain-archive-sync/tx-replay-decoder.js";
+import { skipUnlessRequired } from "./required-services.js";
 
 /**
  * THE acceptance gate for replacing the indexer with the node.
@@ -79,7 +80,18 @@ interface ObservationRow {
   raw: string;
 }
 
-describe.skipIf(!nodeUp || !indexerUp || !haveSystemHash)(
+// In CI (REQUIRE_LIVE_SERVICES=1) a missing service FAILS here rather than skipping: this is the
+// archive's only source-parity gate, and a skipped gate reports success for a comparison that
+// never ran. Locally, absent services still skip.
+const skip =
+  skipUnlessRequired("a Midnight node", nodeUp, `Set MIDNIGHT_TEST_NODE_URL (tried ${NODE_URL}).`) ||
+  skipUnlessRequired("a Midnight indexer", indexerUp, `Set MIDNIGHT_TEST_INDEXER_URL (tried ${INDEXER_URL}).`) ||
+  skipUnlessRequired(
+    "a ledger build exposing SystemTransaction.transactionHash()", haveSystemHash,
+    "The repo's vendored build has it; check that @midnight-ntwrk/ledger-v8 resolves to vendor/ledger-v8-syshash.",
+  );
+
+describe.skipIf(skip)(
   "archive parity: node-sourced ingest equals indexer-sourced ingest",
   () => {
     let container: StartedPostgreSqlContainer;

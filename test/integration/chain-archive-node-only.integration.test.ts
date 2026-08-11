@@ -7,6 +7,7 @@ import {
   ledgerSupportsSystemTransactionHash,
   ledgerV8EntryPath,
 } from "../../chain-archive-sync/tx-replay-decoder.js";
+import { skipUnlessRequired } from "./required-services.js";
 
 /**
  * The node-only regression gate: ingest from a REAL Midnight node with no indexer involved, and
@@ -59,7 +60,20 @@ const haveLedger = ledgerV8EntryPath() !== undefined;
 // what an earlier version of this file did.
 const haveSystemHash = haveLedger && (await ledgerSupportsSystemTransactionHash());
 
-describe.skipIf(!up || !haveLedger)("node-only ingest against a real node (no indexer)", () => {
+// Strict in CI, lenient locally -- see required-services.ts. The success path below is this
+// branch's headline claim, so a CI run that skipped it would be asserting nothing.
+const skip =
+  skipUnlessRequired("a Midnight node", up, `Set MIDNIGHT_TEST_NODE_URL (tried ${NODE_URL}).`) ||
+  skipUnlessRequired(
+    "the ledger WASM", haveLedger,
+    "The repo vendors one at vendor/ledger-v8-syshash; check that @midnight-ntwrk/ledger-v8 resolves.",
+  ) ||
+  skipUnlessRequired(
+    "a ledger build exposing SystemTransaction.transactionHash()", haveSystemHash,
+    "Without it the ingest path below cannot run at all.",
+  );
+
+describe.skipIf(skip)("node-only ingest against a real node (no indexer)", () => {
   let container: StartedPostgreSqlContainer;
   let sql: UmbraDBSql;
 
@@ -120,26 +134,13 @@ describe.skipIf(!up || !haveLedger)("node-only ingest against a real node (no in
     180_000,
   );
 
-  it.skipIf(haveSystemHash)(
-    "refuses, rather than omitting, when the ledger cannot hash a system transaction",
-    async () => {
-      // The stock published ledger has no SystemTransaction.transactionHash(). Refusing is correct
-      // there: inserts are ON CONFLICT DO NOTHING, so an archive written without system
-      // transactions could not be repaired by re-ingesting later.
-      const schema = "node_only_refusal";
-      sql = createClient({ connectionString: container.getConnectionUri(), schema });
-      await bootstrapChainArchiveSchema(sql, schema);
-      const service = new ChainArchiveSyncService({
-        sql, net: NET, schema, node: { url: NODE_URL, timeoutMs: 30_000 },
-      });
-      await expect(service.syncOnce({ maxBlocks: 40 })).rejects.toThrow(
-        /exposes no SystemTransaction\.transactionHash/,
-      );
-      const blocks = await sql<{ n: number }[]>`
-        SELECT count(*)::int AS n FROM ${sql(schema)}.blocks WHERE net = ${NET}
-      `;
-      expect(blocks[0]!.n).toBe(0);
-    },
-    180_000,
-  );
+  // The refusal counterpart of the test above -- "the ledger cannot hash a system transaction, so
+  // ingest must refuse" -- deliberately does NOT live here any more.
+  //
+  // It was `it.skipIf(haveSystemHash)`, reached by the capability being ABSENT. Since the patched
+  // ledger became the repo's own dependency, that condition can never hold from a fresh clone, so
+  // the test could only ever skip: coverage that reports as present while never running. It now
+  // lives in chain-archive-ledger-refusal.integration.test.ts, which CONSTRUCTS the condition by
+  // pointing MIDNIGHT_LEDGER_WASM at the published 8.0.3, and therefore actually executes.
+
 });
