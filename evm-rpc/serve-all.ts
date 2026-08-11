@@ -89,6 +89,48 @@ if (relayUrl !== undefined) {
   log("relay-wired", { relayUrl });
 }
 
+// --- Demo bridge: token balance shown as NIGHT (env DEMO_TOKEN_AS_NIGHT=1) ---
+// MetaMask's account number is eth_getBalance = NATIVE NIGHT, which an eth-keyed demo user
+// never holds (the relayer pays all fees). With this flag, eth_getBalance ADDS the address's
+// token balance folded from Transfer logs (received − sent, ×10^18) on top of the native value,
+// so minted/transferred tokens are visible as the account balance in MetaMask. DEMO semantics —
+// it deliberately conflates native and token value; never enable outside a demo stack.
+if (process.env.DEMO_TOKEN_AS_NIGHT === "1") {
+  const native = defaultRegistry.getMethod("eth_getBalance");
+  if (native === undefined) throw new Error("eth_getBalance not registered yet");
+  defaultRegistry.registerMethod(
+    "eth_getBalance",
+    async (params, ctx) => {
+      const nativeHex = (await native(params, ctx)) as string;
+      const first = Array.isArray(params) ? params[0] : undefined;
+      if (typeof first !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(first)) return nativeHex;
+      const addrHex = first.slice(2).toLowerCase();
+      const rows = await sql<{ dir: string; amount_hex: string }[]>`
+        SELECT CASE WHEN topic1 = decode(${"0".repeat(24) + addrHex}, 'hex')
+                     AND topic2 = decode(${"0".repeat(24) + addrHex}, 'hex') THEN 'self'
+                    WHEN topic2 = decode(${"0".repeat(24) + addrHex}, 'hex') THEN 'in'
+                    ELSE 'out' END AS dir,
+               encode(data, 'hex') AS amount_hex
+        FROM ${sql(logsEnv.schema)}.logs
+        WHERE topic0 = decode(${"ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"}, 'hex')
+          AND (topic1 = decode(${"0".repeat(24) + addrHex}, 'hex')
+               OR topic2 = decode(${"0".repeat(24) + addrHex}, 'hex'))
+      `;
+      let token = 0n;
+      for (const r of rows) {
+        if (r.dir === "self") continue; // self-transfer nets zero
+        const v = r.amount_hex.length === 0 ? 0n : BigInt(`0x${r.amount_hex}`);
+        token += r.dir === "in" ? v : -v;
+      }
+      if (token < 0n) token = 0n; // defensive floor
+      const total = BigInt(nativeHex) + token * 10n ** 18n;
+      return `0x${total.toString(16)}`;
+    },
+    { replace: true },
+  );
+  log("demo-token-as-night", { enabled: true });
+}
+
 // --- Part C: eth_getLogs, backfill, ingest, WS ---
 registerGetLogs({
   sql,
