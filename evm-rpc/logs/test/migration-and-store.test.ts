@@ -54,7 +54,8 @@ describe("evm_rpc logs migration + store (C-G1)", () => {
     const applied = await sql<{ name: string }[]>`
       SELECT name FROM ${sql(schema)}._migrations ORDER BY name
     `;
-    expect(applied.map((r) => r.name)).toEqual(["000_schema", "010_logs"]);
+    // Post-merge lineage: A1/A2's 001_evm_rpc_core sorts between the schema bootstrap and C's logs.
+    expect(applied.map((r) => r.name)).toEqual(["000_schema", "001_evm_rpc_core", "010_logs"]);
 
     await runMigrations(sql, { schema, migrations: evmRpcMigrations });
     const again = await sql<{ name: string }[]>`
@@ -70,7 +71,9 @@ describe("evm_rpc logs migration + store (C-G1)", () => {
       ORDER BY table_name
     `;
     expect(tables.map((t) => t.table_name)).toEqual([
-      "_migrations", "address_map", "log_cursors", "logs",
+      // Post-merge union: A1/A2's core tables (balances, tx_index, utxos, watermarks if present)
+      // plus C's logs tables. Keep sorted.
+      "_migrations", "address_map", "balances", "log_cursors", "logs", "tx_index", "utxos", "watermarks",
     ]);
 
     const indexes = await sql<{ indexname: string }[]>`
