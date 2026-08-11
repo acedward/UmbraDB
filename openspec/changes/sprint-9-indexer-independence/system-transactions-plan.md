@@ -784,7 +784,7 @@ made; Stages 0–4 run without owner input. The three future actions, each with 
 
 | When | Action | Effort |
 |---|---|---|
-| **NOW — Stage 3 has landed** | Flip two jobs to **required** in `acedward/UmbraDB` branch protection: `parity` (workflow *Chain archive parity gates*) and `integrity` (workflow *Vendored ledger integrity*). Each must have run once on a PR/push before it appears in the search box. Until flipped, the gates run but do not block | ~2 minutes |
+| ~~Stage 3 lands~~ | ~~Flip `parity` and `integrity` to required~~ **DONE (owner, 2026-08-11):** PR #1 opened, both jobs ran green on it (`parity` 2m36s on a fresh runner, `integrity` 21s), and the `main` ruleset now targets the default branch requiring both. `main` cannot advance without the parity gates | — |
 | §10 step 2 passes (hashes recomputed on an 8.2.0-rc.1 build) | Open — or say the word and the PR text is drafted from §10.2.3 — the upstream PR from `acedward/midnight-ledger` `feat/expose-system-transaction-hash-ledger8` against `midnightntwrk/midnight-ledger` `ledger-8`. Kept as an owner action because it is outward-facing on the upstream org | ~10 minutes with the drafted text |
 | Stage 5 is reached | Approve the proposed shape of the source/coverage transparency record (a concrete proposal will be presented then; no thinking required before that) | One yes/no |
 
@@ -869,7 +869,7 @@ state is readable in one pass):
 | U5 — does the indexer archive a `BadOrigin`-rejected call? | Live observation on an oracle range; sizes Stage 4's row-vs-refusal work |
 | U6 / runtime-upgrade boundary | **Impossible on reachable chains** (no upgrade ever happened); needs a second runtime from any source |
 | §7: ledger-replay refusal parity | Stage 4 |
-| Branch protection: `parity` + `integrity` jobs not yet required | **Owner, ~2 min** (§11.2 — trigger has fired) |
+| ~~Branch protection~~ | **Done 2026-08-11** — PR #1 open, both gates green on it, ruleset active on `main` |
 | B4 / §10 — ledger export upstream PR | §10.2 step 2 (recompute hashes on 8.2.0-rc.1), then owner opens the PR |
 | Stage 5's transparency-record shape | Deferred until Stage 5 |
 
