@@ -14,6 +14,7 @@
     "src/**/*.ts",
     "test/**/*.ts",
     "chain-archive-sync/**/*.ts",
+    "evm-rpc/**/*.ts",
     "bench/**/*.ts"
   ]
 }

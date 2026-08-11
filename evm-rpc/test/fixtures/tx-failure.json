@@ -1,0 +1,16 @@
+{
+  "__typename": "RegularTransaction",
+  "hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "raw": "0304",
+  "fee": "99",
+  "identifiers": [],
+  "transactionResult": {
+    "status": "FAILURE",
+    "segments": null
+  },
+  "block": {
+    "height": 42,
+    "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "timestamp": 1786400000
+  }
+}

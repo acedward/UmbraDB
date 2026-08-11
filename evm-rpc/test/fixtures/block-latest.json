@@ -1,0 +1,13 @@
+{
+  "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "height": 42,
+  "timestamp": 1786400000123,
+  "author": "1111111111111111111111111111111111111111",
+  "parent": {
+    "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "transactions": [
+    { "hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+    { "hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" }
+  ]
+}
