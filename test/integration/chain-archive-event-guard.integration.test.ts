@@ -56,6 +56,11 @@ const EVENT_TX_HEX = FIXTURE[1]![3]!;
 const EVENT_TX_HASH = FIXTURE[1]![2]!.toLowerCase();
 const EXTRINSIC_TX_HASH = FIXTURE[0]![2]!.toLowerCase();
 
+/** The real genesis regular-transaction extrinsic from a 1.0.0 devnet -- the same bytes the
+ *  decoder suite uses, so both decoders are exercised against one fixture. */
+const GENESIS_REGULAR_TX_EXTRINSIC =
+  "0x81030505006d036d69646e696768743a7472616e73616374696f6e5b76395d287369676e61747572655b76315d2c70726f6f662c706564657273656e2d7363686e6f72725b76315d293a040051020128756e6465706c6f7965640b00203d88792d86f71b8a7a21bfe16a2bb2eab74475073fa5b773854f151ed548dba77a2c58157815f0843fc0701ec174828174fbc4e03d122b40fe97741dd131c92658f533496e48e284ce47644a1d68449ce51b8e20a4c624566827c2f437120e31ec4e628b94c4bcb7dec5a1dbd186677de26fdcacb19130f4126359efe37f471bb9c2496900";
+
 const MNSV_DIGEST_V1 = "0x044d4e53561040420f00";
 const BLOCK_HASH = `0x${"e0".repeat(32)}`;
 
@@ -174,6 +179,24 @@ describe("event-borne system transactions are archived, event-first", () => {
     expect(rows).toHaveLength(2);
     expect(rows.map((r) => r.tx_hash)).toEqual([EXTRINSIC_TX_HASH, EXTRINSIC_TX_HASH]);
     expect(rows.map((r) => r.position)).toEqual([0, 1]);
+  }, 180_000);
+
+  it("archives a block mixing REGULAR and SYSTEM transactions in one position sequence", async () => {
+    // §7's "regular and system transactions mixed in one block" row. The archive numbers
+    // positions across BOTH kinds in one sequence -- not one counter per kind -- so a block
+    // holding both is where a per-kind counter would silently disagree with the indexer on every
+    // position after the first system transaction.
+    //
+    // Ordering here is the composed rule: event-borne system first, then the extrinsics in their
+    // own order, regardless of kind.
+    const rows = await ingest({
+      events: eventsBlobHex(EVENT_TX_HASH, EVENT_TX_HEX),
+      extrinsics: [GENESIS_REGULAR_TX_EXTRINSIC, bareSystemExtrinsicHex(EXTRINSIC_TX_HEX)],
+    });
+    expect(rows.map((r) => r.position)).toEqual([0, 1, 2]);
+    expect(rows.map((r) => r.kind)).toEqual(["system", "regular", "system"]);
+    expect(rows[0]!.tx_hash).toBe(EVENT_TX_HASH);
+    expect(rows[2]!.tx_hash).toBe(EXTRINSIC_TX_HASH);
   }, 180_000);
 
   it("archives an ordinary block with no events unchanged", async () => {

@@ -310,7 +310,21 @@ its own. Ordered; close-out steps apply per stage.
     `System::Events` and the D-parameter are per-block state that no per-runtime capture replaces.
     What this buys is a self-describing archive: re-decode and Stage 4 replay need no node, and a
     runtime is fetched once per net ever. B7 is narrowed, not closed.
-- [ ] **8.3 Stage 3 — Parity gates required.**
+- [x] **8.3 Stage 3 — Parity gates required.** *(completed 2026-08-11)*
+  - Parity gate now compares `block_hash` and the ordered `system_parameters_d` observations,
+    closing revision 7's §5.6 finding. Run live against a matched node/indexer pair: 60 blocks,
+    38 transactions (5 system), 1 D-parameter observation — identical from both sources. First
+    evidence that Stage 2's behaviour changes did not break parity.
+  - `REQUIRE_LIVE_SERVICES=1` turns service-absence skips into failures; verified in both
+    directions. New workflow `.github/workflows/chain-archive-parity.yml` provisions the stack
+    (with the hostports overlay, which is mandatory there) and waits for the indexer to reach
+    height 10 so the comparison cannot be vacuous. Whole sequence simulated locally end-to-end.
+  - Removed a test that could never run again (`skipIf(haveSystemHash)` in the node-only suite);
+    its coverage lives in the refusal suite that actually executes. That suite now has no skips.
+  - §7 gains an evidence-type column: live parity vs mechanism-equivalence vs not-demonstrated.
+    Three rows remain open and are named with their blockers (U5, Stage 4, and the
+    runtime-upgrade boundary, which **cannot** be demonstrated on any reachable chain).
+  - **Owner action when this merges:** flip the new job to required in branch protection.
 - [ ] **8.4 Stage 4 — Apply-rule parity (replay).**
 - [ ] **8.5 Stage 5 — Optional-source GA.** Blocked on one owner decision (plan §11.2).
 

@@ -390,19 +390,26 @@ All items below are Part A prerequisites unless explicitly described as release 
 
 The required parity range must contain and assert every row for:
 
+**Evidence types.** *Live parity* = compared against the indexer on a running chain, the strongest
+form. *Mechanism-equivalence* = the reference's mechanism implemented and exercised against real
+captured bytes through a fake node, used where **no reachable chain emits the population** (§0's
+fallback rule). A row's evidence type is part of its status, not a footnote — reading
+"demonstrated" without it would overstate several of these.
+
 | Population | Current evidence | Merge requirement |
 |---|---|---|
-| Genesis extrinsic-borne system transactions | Demonstrated on devnet | Required exact parity gate |
-| Bare regular transactions | Demonstrated on devnet | Required exact parity gate |
-| Non-genesis runtime-generated system transactions | Not demonstrated | Required |
-| Regular and system transactions mixed in one block | Not demonstrated | Required |
-| Signed and general regular calls | Not demonstrated | Required |
-| Signed/general direct system call with a governance-allowed, ledger-valid payload (dispatch is expected to fail `BadOrigin`) | Not demonstrated | Required |
-| Valid regular/system call rejected before ledger execution (including bad origin) | Not demonstrated | Required exact row parity |
-| Malformed regular/system payload rejected during indexer deserialization | Not demonstrated | Required exact refusal parity; no write |
-| Deserializable regular/system payload rejected by indexer ledger replay | Not demonstrated | Required exact refusal parity; no write |
-| Successful direct system call also represented by an event | Not demonstrated | Required |
-| Runtime-upgrade boundary | Not demonstrated | Required when the supported range contains one |
+| Genesis extrinsic-borne system transactions | ✅ **Live parity** (60 blocks, 5 system tx, identical) | Required exact parity gate |
+| Bare regular transactions | ✅ **Live parity** (38 transactions, identical incl. `block_hash`) | Required exact parity gate |
+| D-parameter observations and change heights | ✅ **Live parity** (added 2026-08-11; the two modes read different sources, so this was previously unchecked) | Required exact observation parity |
+| Non-genesis runtime-generated system transactions | ✅ **Mechanism-equivalence** — archived under the runtime's own hash, event-first. No reachable chain emits these (v1.0.0 rewards are zero, reward pallet disabled) | Required |
+| Regular and system transactions mixed in one block | ✅ **Mechanism-equivalence** — one position sequence across both kinds | Required |
+| Successful direct system call also represented by an event | ✅ **Mechanism-equivalence** — both copies stored, event-borne first, per the reference's non-deduplication | Required |
+| Signed and general regular calls | ✅ **Mechanism-equivalence** — decoded via metadata, payload byte-exact | Required |
+| Signed/general direct system call with a governance-allowed, ledger-valid payload | ⚠️ **Partial** — the decode path is covered by the same metadata mechanism; end-to-end ingest of one is not | Required |
+| Valid regular/system call rejected before ledger execution (including bad origin) | ❌ Not demonstrated — depends on **U5**, which needs live observation | Required exact row parity |
+| Malformed regular/system payload rejected during indexer deserialization | ⚠️ **Partial** — undecodable extrinsics throw rather than being skipped; refusal parity with the indexer unconfirmed | Required exact refusal parity; no write |
+| Deserializable regular/system payload rejected by indexer ledger replay | ❌ Not demonstrated — **Stage 4** (needs ledger state) | Required exact refusal parity; no write |
+| Runtime-upgrade boundary | ❌ Not demonstrated — **cannot be**: the only reachable chains never upgraded, so their metadata is byte-identical at genesis and tip (§12.3). Needs a second runtime from any source | Required when the supported range contains one |
 
 For every case, compare the exact ordered persisted sequence of `block_height, block_hash,
 position, tx_hash, kind, protocol_version, raw bytes`—not set equality and not counts.
