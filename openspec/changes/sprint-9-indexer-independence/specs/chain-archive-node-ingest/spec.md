@@ -16,31 +16,55 @@ or Optional-feature ("WHERE \<feature>, the system SHALL...") form.
 
 ## ADDED Requirements
 
-### Requirement: an archived transaction is classified by the call that dispatched it
+### Requirement: an archived transaction is selected by its dispatched call, and typed by its payload
 
-The system SHALL determine whether an extrinsic carries a Midnight transaction from the
-`(pallet, call)` it dispatches to, resolved for the block's protocol version, and SHALL NOT
-determine it from the payload's contents.
+The system SHALL determine WHETHER an extrinsic carries a Midnight transaction from the
+`(pallet, call)` it dispatches to, resolved from the runtime metadata of the block being decoded.
+It SHALL determine WHICH KIND of transaction it is from the payload's own self-description, and
+SHALL refuse the block when the two disagree.
 
-#### Scenario: bytes shaped like a transaction under another call are refused
+*Revised 2026-08-11 (audit A1). The earlier form said kind SHALL NOT be determined from the
+payload. That was wrong in a way tests did not catch: taking kind from the call alone means a
+payload reaching the "wrong" call is archived under a kind its own bytes contradict, and every
+consumer filtering on `kind` then reads it as something it is not. The reference derives type from
+the payload it deserializes, so the two sources must agree — ingest does not get to pick a winner
+between the runtime's dispatch and the transaction's self-description.*
 
-- **WHEN** an extrinsic carries a payload bearing a Midnight self-tag, but dispatches to a call
-  that is not the Midnight transaction call
-- **THEN** the system SHALL NOT archive it as a transaction
-- **AND** SHALL refuse the block rather than complete it, because the same signal is produced by a
-  runtime that renumbered its pallets, in which case the unrecognized payloads are genuine
-  transactions that would otherwise be dropped silently
+#### Scenario: the dispatched call and the payload disagree about kind
 
-#### Scenario: the self-tag corroborates but does not decide
+- **WHEN** an extrinsic dispatches to the regular Midnight call but its payload decodes as a system
+  transaction, or the reverse
+- **THEN** the system SHALL refuse the block rather than archive a row whose recorded kind its own
+  bytes contradict
 
-- **WHEN** the dispatched call and the payload's self-tag disagree about the transaction kind
-- **THEN** the system SHALL refuse the extrinsic
+#### Scenario: tagged bytes under a call that is not a Midnight call are ignored
 
-### Requirement: ingest halts on a protocol version it cannot decode
+- **WHEN** an extrinsic carries a payload bearing a Midnight self-tag but dispatches to a call that
+  is not one of the Midnight transaction calls
+- **THEN** the system SHALL ignore it, exactly as the reference does — it extracts only
+  `send_mn_transaction` and `send_mn_system_transaction` from the decoded call, regardless of
+  payload content
 
-The system SHALL accept only protocol versions whose ledger codec it implements AND whose runtime
-call numbering it has verified, and SHALL halt naming the offending version rather than decode an
-unknown runtime with assumed constants.
+*Revised 2026-08-11 (Stage 2). The earlier form required REFUSING the block here. That refusal
+existed only because classification keyed off a forgeable payload tag plus PINNED pallet indices,
+which made a forgery indistinguishable from a runtime that had renumbered its pallets. Reading the
+indices from the runtime's own metadata removes the ambiguity: renumbering is followed, and forged
+tag bytes under some other pallet's call are simply not a Midnight call. Ignoring them is parity;
+refusing would also have discarded any genuine transaction sharing that block.*
+
+### Requirement: ingest halts on a runtime it cannot decode
+
+The system SHALL accept only protocol versions whose ledger codec it implements, and SHALL resolve
+call numbering from the metadata of the block being decoded rather than from assumed constants. It
+SHALL halt, naming the offending version, when the ledger codec is unsupported, when that metadata
+cannot be obtained from any source, or when metadata-derived numbering disagrees with a pinned
+entry that exists for the same version.
+
+*Revised 2026-08-11 (Stage 2). The earlier form required verified call numbering as a precondition,
+which made an otherwise-decodable runtime unusable until someone observed and pinned its indices.
+The runtime describes its own numbering, so that precondition is gone; the pinned table survives
+only as a cross-check, and a disagreement between two independent sources still halts, because one
+of them would make genuine transactions vanish.*
 
 #### Scenario: a supported ledger version with unverified call numbering is still refused
 

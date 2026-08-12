@@ -47,10 +47,17 @@ that the ledger WASM exposed no `SystemTransaction` hash, so the `tx_hash` prima
 computed — true of the binding, but the hash exists on the Rust ledger and the node also hands it
 over directly in the `SystemTransactionApplied` event. Nothing needed computing.
 
-**Current position:** extrinsic-borne system transactions ARE archived, keyed by the ledger's own
-hash (§6a, and `system-transactions-plan.md`). Node-only ingest refuses rather than omitting one it
-cannot hash. Event-borne system transactions are not yet decoded — that gap is open, and ingest
-does not yet detect it.
+**Current position (2026-08-11):** ALL system transactions are archived. Extrinsic-borne ones are
+keyed by the ledger's own hash (§6a). Event-borne ones — the runtime-generated kind, which exist
+only in the `SystemTransactionApplied` event — are decoded from the block's own runtime metadata
+and archived too, **prepended** before the extrinsic-derived list exactly as the reference orders
+them (`runtimes/v1_0_0.rs:160-163`). Their hash is recomputed from the archived bytes rather than
+taken from the event's claim, so the key is derived from what is stored.
+
+The paragraph this replaces said event-borne transactions were "not yet decoded" and that "ingest
+does not yet detect it" — true when written, false since the Stage 2 metadata work. It is corrected
+here rather than annotated, because a reader checking whether this archive is complete needs the
+answer, not its history.
 
 The exclusion below therefore describes history. Where it says the feed is regular-transaction
 only, read `system-transactions-plan.md` instead.

@@ -1077,6 +1077,32 @@ its replay position. The upgrade risk that usually motivates a no-migrations rul
 UmbraDB is deployed anywhere), and the runner is forward-only with no `down()`, which is why
 `002`/`003` were proven against a populated database rather than empty tables (§9.3).
 
+**The indexer's role, settled (owner, 2026-08-11).** For this PR the indexer stays **optional at
+runtime and required for the parity gate**. UmbraDB itself depends on no oracle — node-only mode
+constructs no `IndexerClient`, and the node-only suite wraps `globalThis.fetch` to assert *zero*
+indexer-shaped requests, so the guarantee is enforced rather than asserted. The compose stack is
+test infrastructure (`test/compose/`, shipped in nothing), and the indexer appears in it for one
+reason: proving "produces the same archive as X" requires running X.
+
+That gate therefore has a **shelf life**. When the indexer is decommissioned the parity comparison
+becomes unrunnable, and this sprint's parity evidence becomes a dated snapshot rather than a
+standing check. That is accepted: the indexer's code remains available, so the stack can be kept
+running as long as it is useful and dropped later. What replaces it is already being built — ledger
+replay (§Stage 4) validates against the *ledger's own rules* rather than another implementation's
+output, which is the only class of correctness check that survives the oracle's removal. The
+mechanism-equivalence fixtures and the captured ground truth serve the same purpose: converting a
+decaying external oracle into permanent internal evidence.
+
+**A5's scanning half is declined**, with the reason recorded rather than left as an unticked box.
+The pins are in and CI enforces them, which is the part that protects the parity gate's integrity —
+a mutable tag means the comparison target can change with no commit. Scanning would report CVEs in
+upstream Midnight *release images* this repo neither builds nor patches; the finding would be
+actionable only by whoever bumps a pin, and a non-blocking job nobody owns is noise that trains
+people to ignore the workflow. (A first attempt at this shipped a step named "scan the pinned
+images" that actually ran `scan-type: config` against the compose *file* — it would have gone green
+while never looking at an image, which is precisely the kind of check this audit round exists to
+eliminate. Removed rather than left misleading.)
+
 | **A5** | Release items: authoritative-doc reconciliation; immutable image pins (compose uses mutable tags) + scanning; an incremental migration test against a **populated** database (ours ran on empty tables); regenerate graphify | All mechanical and legitimate. The populated-migration gap is the sharpest: 002's PK swap was never proven against rows that exist |
 
 **Remediation order:** A1 and A3's fallback fix first (small, semantic, test-backed); A5's
