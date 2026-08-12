@@ -3,6 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient } from "../../src/postgres/client.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_archive/index.js";
+import * as migration000 from "../../src/postgres/migrations/000_schema.js";
+import * as chainArchiveCore from "../../src/postgres/migrations/chain_archive/001_chain_archive_core.js";
 
 /**
  * Closes the v3 audit's "no committed automated test for the new lineage" gap
@@ -449,6 +451,128 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
       await sql.end({ timeout: 5 });
     }
   }, 60_000);
+  /**
+   * Audit A5a: 002 and 003 applied onto a database that ALREADY HOLDS ROWS.
+   *
+   * Every migration test here ran against empty tables, so the riskiest thing these migrations do
+   * had never been exercised: 002 drops the primary key and rebuilds it on a different column set,
+   * and 003 drops and re-creates a CHECK constraint. On an empty table those are metadata edits
+   * that cannot fail; on a populated one they must revalidate every existing row, and a row that
+   * violates the new shape aborts the migration -- in production, mid-upgrade.
+   *
+   * The scenario is a real pre-migration archive: two blocks with transactions and bridge
+   * observations, written under the OLD key, then migrated forward.
+   */
+  it("A5a: 002 and 003 apply onto a database that already holds rows, preserving them", async () => {
+    const schema = "chain_archive_populated_test";
+    const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    try {
+      // A database provisioned before either migration existed.
+      await runMigrations(sql, { schema, migrations: [migration000, chainArchiveCore] as never });
+
+      const net = "populated";
+      const blobs: Buffer[] = [];
+      const mkBlob = async (tag: number, role: string) => {
+        const h = Buffer.alloc(32, tag);
+        await sql`insert into ${sql(schema)}.chain_blobs (hash, data) values (${h}, ${Buffer.from([tag])})
+                  on conflict (hash) do nothing`;
+        await sql`insert into ${sql(schema)}.chain_blob_roles (blob_hash, role) values (${h}, ${role})
+                  on conflict (blob_hash, role) do nothing`;
+        blobs.push(h);
+        return h;
+      };
+
+      for (const height of [0, 1]) {
+        const blockHash = Buffer.alloc(32, 0x40 + height);
+        const header = await mkBlob(0x50 + height, "block_header");
+        const body = await mkBlob(0x60 + height, "block_body");
+        await sql`
+          insert into ${sql(schema)}.blocks
+            (net, height, block_hash, parent_hash, state_root, extrinsics_root,
+             header_blob_hash, body_blob_hash, is_canonical, status, finalized)
+          values (${net}, ${height}, ${blockHash},
+                  ${Buffer.alloc(32, height === 0 ? 0 : 0x40)}, ${Buffer.alloc(32, 0x70)},
+                  ${Buffer.alloc(32, 0x71)}, ${header}, ${body}, true, 'canonical', true)
+        `;
+        // Two transactions per block, distinct hashes -- legal under the OLD key, and they must
+        // survive re-keying onto (net, height, block_hash, position).
+        for (const position of [0, 1]) {
+          const raw = await mkBlob(0x80 + height * 2 + position, "tx_raw");
+          await sql`
+            insert into ${sql(schema)}.transactions
+              (net, tx_hash, block_height, block_hash, position, kind, protocol_version, raw_blob_hash)
+            values (${net}, ${Buffer.alloc(32, 0x90 + height * 2 + position)}, ${height},
+                    ${blockHash}, ${position}, ${position === 0 ? "system" : "regular"},
+                    1000000, ${raw})
+          `;
+        }
+        const obs = await mkBlob(0xa0 + height, "bridge_observation");
+        await sql`
+          insert into ${sql(schema)}.bridge_observations
+            (net, block_height, block_hash, observation_index, kind, raw_blob_hash)
+          values (${net}, ${height}, ${blockHash}, 0, 'system_parameters_d', ${obs})
+        `;
+      }
+
+      const before = await sql<{ n: number }[]>`
+        select count(*)::int as n from ${sql(schema)}.transactions where net = ${net}
+      `;
+      expect(before[0]!.n).toBe(4);
+
+      // --- the migrations under test, applied to a populated database ---
+      await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
+
+      // Every row survived, unchanged, in order.
+      const after = await sql<{ h: string; position: number; kind: string; tx: string }[]>`
+        select block_height::text as h, position, kind, encode(tx_hash, 'hex') as tx
+        from ${sql(schema)}.transactions where net = ${net}
+        order by block_height, position
+      `;
+      expect(after.map((r) => `${r.h}:${r.position}:${r.kind}`)).toEqual([
+        "0:0:system", "0:1:regular", "1:0:system", "1:1:regular",
+      ]);
+      const obsAfter = await sql<{ n: number }[]>`
+        select count(*)::int as n from ${sql(schema)}.bridge_observations where net = ${net}
+      `;
+      expect(obsAfter[0]!.n).toBe(2);
+
+      // 002's new key is in force ON THE POPULATED TABLE: the dual-source shape (one hash at two
+      // positions) is now storable...
+      const dupHash = Buffer.alloc(32, 0xb0);
+      const dupRaw = await mkBlob(0xb1, "tx_raw");
+      const dupBlock = Buffer.alloc(32, 0x40);
+      for (const position of [2, 3]) {
+        await sql`
+          insert into ${sql(schema)}.transactions
+            (net, tx_hash, block_height, block_hash, position, kind, protocol_version, raw_blob_hash)
+          values (${net}, ${dupHash}, 0, ${dupBlock}, ${position}, 'system', 1000000, ${dupRaw})
+        `;
+      }
+      // ...while a position clash is still rejected.
+      await expect(
+        sql`insert into ${sql(schema)}.transactions
+              (net, tx_hash, block_height, block_hash, position, kind, protocol_version, raw_blob_hash)
+            values (${net}, ${Buffer.alloc(32, 0xb2)}, 0, ${dupBlock}, 2, 'system', 1000000, ${dupRaw})`,
+      ).rejects.toMatchObject({ code: "23505" });
+
+      // 003's widened role CHECK accepts the new role on the populated database.
+      const metaBlob = Buffer.alloc(32, 0xc0);
+      await sql`insert into ${sql(schema)}.chain_blobs (hash, data) values (${metaBlob}, ${Buffer.from([1])})`;
+      await sql`insert into ${sql(schema)}.chain_blob_roles (blob_hash, role) values (${metaBlob}, 'runtime_metadata')`;
+      await sql`
+        insert into ${sql(schema)}.runtime_metadata
+          (net, spec_name, spec_version, first_seen_height, metadata_blob_hash)
+        values (${net}, 'midnight', 1000000, 0, ${metaBlob})
+      `;
+      const meta = await sql<{ n: number }[]>`
+        select count(*)::int as n from ${sql(schema)}.runtime_metadata where net = ${net}
+      `;
+      expect(meta[0]!.n).toBe(1);
+    } finally {
+      await sql.end({ timeout: 5 });
+    }
+  }, 120_000);
+
 });
 
 async function tick(ms = 20): Promise<void> {
