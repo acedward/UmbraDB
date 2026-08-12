@@ -28,7 +28,10 @@ export type BlobRole =
   | "block_header" | "block_body" | "tx_raw" | "proof" | "verifier_key" | "bridge_observation"
   /** SCALE-encoded runtime metadata, kept so the archive can decode its own history without the
    *  node still serving it -- see `runtime_metadata` (migration 003). */
-  | "runtime_metadata";
+  | "runtime_metadata"
+  /** Serialized ledger state at a checkpoint height, so replay resumes without re-applying the
+   *  whole chain -- see `replay_checkpoints` (migration 004). */
+  | "ledger_state";
 
 export type BlockStatus = "seen" | "canonical" | "orphaned" | "pruned";
 
@@ -323,6 +326,32 @@ export interface ChainArchiveStore {
    * recorded `first_seen_height` remains the height that genuinely introduced the runtime.
    */
   putRuntimeMetadata(record: RuntimeMetadataRecord): Promise<void>;
+
+  /**
+   * The newest replay checkpoint at or below `maxHeight`, or `undefined` if none exists.
+   *
+   * Replay resumes from here rather than from genesis, which is what keeps restart cost
+   * proportional to the checkpoint interval instead of to the whole chain.
+   */
+  getLatestReplayCheckpoint(
+    net: string, maxHeight: number,
+  ): Promise<ReplayCheckpointRecord | undefined>;
+
+  /** Record ledger state at a checkpoint height. Idempotent for the same block. */
+  putReplayCheckpoint(record: ReplayCheckpointRecord): Promise<void>;
+}
+
+/** Serialized ledger state as of after `blockHeight`'s post-block update. */
+export interface ReplayCheckpointRecord {
+  net: string;
+  blockHeight: number;
+  blockHash: Hex32;
+  /** Serialized `LedgerState`. A ledger-INTERNAL encoding, hence `ledgerVersion`. */
+  stateBytes: Uint8Array;
+  /** The ledger build that produced `stateBytes`. Resuming under a different build must refuse:
+   *  the encoding is not guaranteed stable across builds, and a silently mis-resumed state
+   *  produces wrong replay outcomes rather than an error. */
+  ledgerVersion: string;
 }
 
 /** One runtime's metadata, as captured by this archive. */

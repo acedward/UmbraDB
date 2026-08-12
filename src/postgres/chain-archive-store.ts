@@ -8,6 +8,7 @@ import {
   type BlockMeta,
   type BlockRecord,
   type BridgeObservationRecord,
+  type ReplayCheckpointRecord,
   type RuntimeMetadataRecord,
   type ChainArchiveStore,
   type Hex32,
@@ -554,6 +555,64 @@ export class PgChainArchiveStore implements ChainArchiveStore {
       // Through getBlob, so the capture is rehashed before use like every other archived blob.
       // Metadata that silently rotted would misdecode every block of its runtime.
       return await this.getBlob(bufToHex(row.hash) as Hex32);
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /** @inheritdoc */
+  async getLatestReplayCheckpoint(
+    net: string, maxHeight: number,
+  ): Promise<ReplayCheckpointRecord | undefined> {
+    try {
+      const [row] = await this.sql<
+        { height: string; block_hash: Buffer; hash: Buffer; ledger_version: string }[]
+      >`
+        SELECT block_height::text AS height, block_hash, state_blob_hash AS hash, ledger_version
+        FROM ${this.sql(this.schema)}.replay_checkpoints
+        WHERE net = ${net} AND block_height <= ${maxHeight}
+        ORDER BY block_height DESC
+        LIMIT 1
+      `;
+      if (row === undefined) return undefined;
+      return {
+        net,
+        blockHeight: Number(row.height),
+        blockHash: bufToHex(row.block_hash),
+        // Through getBlob, so the state is rehashed before a replay trusts it. Silently corrupted
+        // state would produce wrong replay outcomes rather than an error.
+        stateBytes: await this.getBlob(bufToHex(row.hash)),
+        ledgerVersion: row.ledger_version,
+      };
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /** @inheritdoc */
+  async putReplayCheckpoint(record: ReplayCheckpointRecord): Promise<void> {
+    try {
+      const hashHex = sha256Hex(record.stateBytes);
+      const hash = hexToBuf(hashHex);
+      await this.sql.begin(async (tx) => {
+        await tx`
+          INSERT INTO ${tx(this.schema)}.chain_blobs (hash, data)
+          VALUES (${hash}, ${Buffer.from(record.stateBytes)})
+          ON CONFLICT (hash) DO NOTHING
+        `;
+        await tx`
+          INSERT INTO ${tx(this.schema)}.chain_blob_roles (blob_hash, role)
+          VALUES (${hash}, 'ledger_state')
+          ON CONFLICT (blob_hash, role) DO NOTHING
+        `;
+        await tx`
+          INSERT INTO ${tx(this.schema)}.replay_checkpoints
+            (net, block_height, block_hash, state_blob_hash, ledger_version)
+          VALUES (${record.net}, ${record.blockHeight}, ${hexToBuf(record.blockHash)},
+                  ${hash}, ${record.ledgerVersion})
+          ON CONFLICT (net, block_height, block_hash) DO NOTHING
+        `;
+      });
     } catch (err) {
       throw translatePostgresError(err);
     }

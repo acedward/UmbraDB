@@ -17,6 +17,7 @@ import {
   requireCallIndices,
 } from "./extrinsic-decoder.js";
 import { decodeArchivedTransaction, loadLedgerV8 } from "./tx-replay-decoder.js";
+import { LedgerReplay } from "./ledger-replay.js";
 import {
   BlockScopedMetadata,
   decodeEventSystemTransactions,
@@ -98,6 +99,11 @@ function hexNoPrefix(hex: string): string {
 
 const SYSTEM_TX_TAG = "midnight:system-transaction";
 
+/** Identifies the ledger build whose encoding a checkpoint's bytes are in. Bumping the vendored
+ *  ledger MUST bump this: serialized state is a ledger-internal encoding, and resuming it under a
+ *  build that reads it differently produces wrong replay outcomes rather than an error. */
+const LEDGER_STATE_VERSION = "ledger-v8@8.1.0-syshash.1";
+
 function hexToBytes(hex: string): Uint8Array {
   return new Uint8Array(Buffer.from(hexNoPrefix(hex), "hex"));
 }
@@ -176,6 +182,19 @@ export interface ChainArchiveSyncServiceOptions {
    */
   oracleCrossCheck?: boolean;
   /**
+   * Apply each block's transactions to real ledger state as it is ingested, and refuse a block
+   * the reference would refuse (audit A2). Off by default: it makes ingest strictly slower and
+   * requires an unbroken run from genesis, so it is a deliberate choice rather than a surprise.
+   *
+   * When on, restart resumes from the newest `replay_checkpoints` row at or below the watermark;
+   * a checkpoint written by a different ledger build is refused rather than resumed.
+   */
+  replayValidation?: boolean;
+  /** Blocks between replay checkpoints. Serialized state is unbounded in size (~37 KB after
+   *  genesis alone), so this trades restart time against storage; per-block would dwarf the
+   *  archive. */
+  replayCheckpointInterval?: number;
+  /**
    * The genesis hash this archive is expected to be built from. Optional, and only load-bearing
    * on the FIRST sync of an empty archive -- after that the archived genesis block is the anchor.
    * Set it when an archive is being created against an endpoint that could be misconfigured, so
@@ -246,6 +265,16 @@ export class ChainArchiveSyncService {
    *  introduced the runtime rather than whatever height a later re-sync happened to reach. */
   private currentIngestHeight: number | undefined;
 
+  private readonly replayValidation: boolean;
+  private readonly replayCheckpointInterval: number;
+  /** Live replay state, built lazily on first use so plain ingest pays nothing for it. */
+  private replay: LedgerReplay | undefined;
+  /** Height of the last block replay has applied, so a gap is detected rather than skipped. */
+  private replayHeight: number | undefined;
+  /** This block's and its parent's timestamps, in ms, as the replay BlockContext needs them. */
+  private blockTimestampMs: number | undefined;
+  private parentBlockTimestampMs: number | undefined;
+
   constructor(opts: ChainArchiveSyncServiceOptions) {
     this.store = new PgChainArchiveStore(opts.sql, opts.schema ?? "chain_archive");
     this.node = new NodeRpcClient(opts.node);
@@ -266,6 +295,8 @@ export class ChainArchiveSyncService {
     });
     this.indexer = opts.indexer === undefined ? undefined : new IndexerClient(opts.indexer);
     this.oracleCrossCheckEnabled = opts.oracleCrossCheck ?? false;
+    this.replayValidation = opts.replayValidation ?? false;
+    this.replayCheckpointInterval = opts.replayCheckpointInterval ?? 1000;
     this.expectedGenesisHash =
       opts.expectedGenesisHash === undefined ? undefined : hexNoPrefix(opts.expectedGenesisHash);
     this.net = opts.net;
@@ -685,6 +716,10 @@ export class ChainArchiveSyncService {
     // that migration lands, a collision must stop the block rather than quietly lose a row.
     assertNoDuplicateTransactionKeys(height, transactions);
     await this.assertNoConflictingExistingRows(height, blockHash, transactions);
+    // Audit A2: replay gates the write. A block the reference would refuse must not be archived,
+    // and that verdict comes from actually applying the transactions -- so this runs BEFORE
+    // putBlockBundle, like every other refusal condition here.
+    await this.replayBlockIfEnabled(height, blockHash, header, transactions);
 
     const blockRecord: BlockRecord = {
       net: this.net,
@@ -708,6 +743,9 @@ export class ChainArchiveSyncService {
       transactions,
       bridgeObservations: bridge.records,
     });
+
+    // After the write, because a checkpoint references the block it describes.
+    await this.checkpointReplayIfDue(height, blockHash);
 
     // Only remember this block as the continuity anchor once it is durably written -- same
     // discipline as the D-parameter cursor below. Advancing it earlier would let a failed write
@@ -818,6 +856,106 @@ export class ChainArchiveSyncService {
    * the runtime's OWN authoritative hash alongside the payload, so event-borne transactions need
    * no ledger at all, while an extrinsic carries only bytes and must be hashed with the ledger.
    */
+  /**
+   * Apply this block through real ledger state, refusing what the reference would refuse.
+   *
+   * The reference does not merely extract transactions: it deserializes and applies each one, and
+   * that outcome decides row-versus-refusal. Until this ran during ingest, the engine existed but
+   * nothing consulted it, so an archive could contain blocks the reference would have aborted on
+   * (audit A2).
+   *
+   * RESUME, not restart-from-genesis. Replay state is built from the newest checkpoint at or below
+   * the last archived height; only if there is none does it start blank at genesis. A checkpoint
+   * written by a different ledger build is refused rather than resumed -- serialized state is a
+   * ledger-internal encoding, and a mis-resumed state yields wrong outcomes instead of an error.
+   *
+   * GAPS ARE FATAL. Replay is a fold over consecutive blocks, so applying block N+2 to a state
+   * that stopped at N silently computes against the wrong state. If the block being ingested is
+   * not the immediate successor of what replay last applied, this refuses.
+   */
+  private async replayBlockIfEnabled(
+    height: number,
+    blockHash: Hex32,
+    header: SubstrateHeader,
+    transactions: readonly TransactionRecord[],
+  ): Promise<void> {
+    if (!this.replayValidation) return;
+    const ledger = await this.ledger();
+
+    if (this.replay === undefined) {
+      const resumeFrom = height > 0
+        ? await this.store.getLatestReplayCheckpoint(this.net, height - 1)
+        : undefined;
+      if (resumeFrom !== undefined) {
+        if (resumeFrom.ledgerVersion !== LEDGER_STATE_VERSION) {
+          throw new Error(
+            `replay checkpoint at height ${resumeFrom.blockHeight} was written by ledger build ` +
+              `"${resumeFrom.ledgerVersion}" but this process uses "${LEDGER_STATE_VERSION}". ` +
+              "Serialized ledger state is a ledger-internal encoding, so resuming it under a " +
+              "different build would compute against a state this ledger may not read the same " +
+              "way. Re-run replay from genesis into a fresh schema, or use the matching build.",
+          );
+        }
+        this.replay = LedgerReplay.fromSerialized(ledger, resumeFrom.stateBytes);
+        this.replayHeight = resumeFrom.blockHeight;
+      } else {
+        if (height !== 0) {
+          throw new Error(
+            `replay validation was asked to start at height ${height} with no checkpoint at or ` +
+              "below it. Ledger state is a fold from genesis -- starting mid-chain would apply " +
+              "this block to a blank state and compute against the wrong one. Sync this net from " +
+              "genesis with replay enabled, or provide a checkpoint.",
+          );
+        }
+        this.replay = LedgerReplay.fromGenesis(ledger, this.net);
+        this.replayHeight = undefined;
+      }
+    }
+
+    const expected = this.replayHeight === undefined ? 0 : this.replayHeight + 1;
+    if (height !== expected) {
+      throw new Error(
+        `replay validation is at height ${this.replayHeight ?? "genesis"} but this block is ` +
+          `${height}; expected ${expected}. Replay is a fold over consecutive blocks, so applying ` +
+          "out of order would compute against a state that never existed. Refusing.",
+      );
+    }
+
+    // Throws ReplayRefusalError where the reference aborts -- and this is before any write, so a
+    // refused block leaves nothing behind, same as every other refusal condition.
+    this.replay.applyBlock({
+      transactions: transactions.map((t) => ({
+        kind: t.kind === "system" ? "system" : "regular",
+        rawBytes: t.rawBytes,
+      })),
+      blockTimestampMs: this.blockTimestampMs ?? 0,
+      parentBlockHashHex: hexNoPrefix(header.parentHash),
+      parentBlockTimestampMs: this.parentBlockTimestampMs ?? 0,
+    });
+    this.replayHeight = height;
+  }
+
+  /**
+   * Persist replay state, AFTER the block is durably written.
+   *
+   * Deliberately not part of the gating step above. `replay_checkpoints` has a foreign key to
+   * `blocks` -- a checkpoint describes a block, so it must not outlive one -- and gating runs
+   * before the block row exists. Writing the checkpoint there violates the FK, which is exactly
+   * what the first run of this suite discovered. Splitting the two also gets the ordering right on
+   * its own terms: a checkpoint may only record state for a block that was actually archived.
+   */
+  private async checkpointReplayIfDue(height: number, blockHash: Hex32): Promise<void> {
+    if (!this.replayValidation || this.replay === undefined) return;
+    if (height % this.replayCheckpointInterval !== 0) return;
+    await this.store.putReplayCheckpoint({
+      net: this.net,
+      blockHeight: height,
+      blockHash,
+      stateBytes: this.replay.serialize(),
+      ledgerVersion: LEDGER_STATE_VERSION,
+    });
+  }
+
   /**
    * Refuse when this block is already archived with DIFFERENT contents (audit A4).
    *

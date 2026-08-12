@@ -71,10 +71,25 @@ export class LedgerReplay {
     this.strictness.enforceBalancing = false;
   }
 
-  /** A replay starting from a blank genesis state -- the only valid starting point, which is why
-   *  the archive's genesis-start-only policy is a prerequisite of replay, not a coincidence. */
+  /** A replay starting from a blank genesis state -- the only valid starting point when no
+   *  checkpoint exists, which is why the archive's genesis-start-only policy is a prerequisite of
+   *  replay rather than a coincidence. */
   static fromGenesis(ledger: any, networkId: string): LedgerReplay {
     return new LedgerReplay(ledger, networkId);
+  }
+
+  /**
+   * A replay resuming from checkpointed state, so restart cost is proportional to the checkpoint
+   * interval rather than to the whole chain.
+   *
+   * The caller must have verified the checkpoint's ledger build matches this one: serialized state
+   * is a ledger-internal encoding, and this constructor cannot tell a foreign encoding from a
+   * corrupt one.
+   */
+  static fromSerialized(ledger: any, stateBytes: Uint8Array): LedgerReplay {
+    const replay = new LedgerReplay(ledger, "unused");
+    replay.state = ledger.LedgerState.deserialize(stateBytes);
+    return replay;
   }
 
   /**
