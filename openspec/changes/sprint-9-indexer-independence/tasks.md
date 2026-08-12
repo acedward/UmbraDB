@@ -377,9 +377,19 @@ needs fresh PASS×3 on the final head rebased onto current `main`.
   distinguish "historical state discarded" (fall through to the registry) from "request failed"
   (propagate); decide and document whether `runtime_metadata` persistence may survive a refused
   block, or move it inside the block's atomic boundary.
-- [ ] **9.3 (A5a) Populated-database migration test.** Apply 002+003 onto a database already
+- [x] **9.3 (A5a) Populated-database migration test.** *(done 2026-08-11, `3577b1f`)*
+  Two blocks, four transactions and bridge observations written under the OLD key, then migrated.
+  Rows survive in order; the dual-source shape becomes storable on the populated table; a position
+  clash is still rejected; 003's widened role CHECK accepts `runtime_metadata`. Non-vacuity proven
+  by sabotage — re-pointing 002's key back at `tx_hash` fails this test and the empty-table one.
+  ~~Original:~~ Apply 002+003 onto a database already
   holding blocks/transactions rows and prove the PK swap and role-CHECK extension preserve them.
-- [ ] **9.4 (A4) Restart and retry consistency.** Detect an archive written by an older
+- [x] **9.4 (A4) Restart and retry consistency.** *(done 2026-08-11, `c0b684e`)*
+  A re-ingest producing different rows at the same keys now refuses instead of being silently
+  discarded — which also *is* the older-implementation detector, since a pre-metadata range
+  re-ingests to genuinely different rows. Identical contents still pass, so idempotent retries are
+  unaffected (existing retry suite green). Verified to fail with the check removed.
+  ~~Original:~~ Detect an archive written by an older
   implementation before extending it; a retry whose bytes CONFLICT with an existing row must
   refuse, not be `ON CONFLICT DO NOTHING`-skipped.
 - [ ] **9.5 (A2) Wire replay into node-only ingest.** Blocked on the owner's checkpoint decision:
