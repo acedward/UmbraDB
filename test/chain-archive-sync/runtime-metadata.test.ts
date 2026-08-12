@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  decodeBlockTimestampMs,
   decodeEventSystemTransactions,
   decodeExtrinsicWithMetadata,
   resolveMetadata,
@@ -226,5 +227,41 @@ describe("decoding a call out of any extrinsic framing", () => {
     expect(() => decodeExtrinsicWithMetadata(resolved, "0xff00ff00")).toThrow(
       /could not decode extrinsic/,
     );
+  });
+});
+
+/**
+ * The block's own time, read from its `Timestamp::set` inherent.
+ *
+ * This exists because of a bug that shipped and passed its tests: replay read a field that was
+ * never assigned, so every block replayed at time 0. Genesis genuinely IS time 0, and genesis was
+ * the only block the replay tests exercised -- so the single case incapable of detecting the bug
+ * was the one covered. The lesson generalises past this fix: a test whose fixture cannot express
+ * the failure proves nothing about it.
+ */
+describe("block timestamp decoding", () => {
+  const resolved = resolveMetadata(METADATA, IDENTITY);
+
+  /** The real height-45 `Timestamp::set` inherent from a 1.0.0 devnet. */
+  const TIMESTAMP_INHERENT = "0x280501000be07b93d89f01";
+
+  it("locates Timestamp::set in this runtime", () => {
+    expect(resolved.timestampSetCall).toEqual({ palletIndex: 1, callIndex: 0 });
+  });
+
+  it("decodes a real inherent to a plausible wall-clock time", () => {
+    const ms = decodeBlockTimestampMs(resolved, [TIMESTAMP_INHERENT]);
+    expect(ms).toBeDefined();
+    // Milliseconds, not seconds: a seconds value would land in 1970. Asserting the ORDER OF
+    // MAGNITUDE is the point -- a unit error here shifts every replayed block by 54 years and
+    // still "works".
+    expect(ms!).toBeGreaterThan(1_600_000_000_000); // after Sept 2020
+    expect(ms!).toBeLessThan(4_000_000_000_000);    // before 2096
+  });
+
+  it("returns undefined for a block with no timestamp inherent (genesis)", () => {
+    // The caller must distinguish this from zero: genesis legitimately has no time, every other
+    // block having none is a decode failure.
+    expect(decodeBlockTimestampMs(resolved, [])).toBeUndefined();
   });
 });

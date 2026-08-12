@@ -22,6 +22,13 @@
  *                   the warning below; not yet a general indexer replacement.
  *   ORACLE_CROSS_CHECK  "1" additionally validates every block's node-derived view against the
  *                   indexer's, throwing on disagreement (validation mode; off by default)
+ *   REPLAY_VALIDATION   "1" applies every block to real ledger state as it is ingested and REFUSES
+ *                   a block the reference indexer would refuse. Requires LEDGER_NETWORK_ID, an
+ *                   unbroken run from genesis, and the patched ledger build. Off by default: it is
+ *                   strictly slower and cannot start mid-chain without a checkpoint.
+ *   LEDGER_NETWORK_ID   the LEDGER's network id (e.g. "undeployed"). Required by REPLAY_VALIDATION.
+ *                   NOT the same as NET, which is this archive's row-scope label.
+ *   REPLAY_CHECKPOINT_INTERVAL  blocks between replay checkpoints (default 1000)
  *   MAX_BLOCKS      blocks ingested per syncOnce call (default 200)
  *
  * Run:  ARCHIVE_PG=postgres://user:pass@host:5432/db npx tsx chain-archive-sync/sync-cli.ts
@@ -45,6 +52,9 @@ const NODE_ONLY = process.env.NODE_ONLY === "1" || process.env.INDEXER_URL === "
 // default, so indexer-sourced ingest behaves exactly as it did before node reading existed.
 const ORACLE_CROSS_CHECK = process.env.ORACLE_CROSS_CHECK === "1";
 const MAX_BLOCKS = Number(process.env.MAX_BLOCKS ?? "200");
+const REPLAY_VALIDATION = process.env.REPLAY_VALIDATION === "1";
+const LEDGER_NETWORK_ID = process.env.LEDGER_NETWORK_ID;
+const REPLAY_CHECKPOINT_INTERVAL = Number(process.env.REPLAY_CHECKPOINT_INTERVAL ?? "1000");
 
 if (NODE_ONLY) {
   // Announced BEFORE connecting to Postgres, deliberately. Mode is known from the environment
@@ -66,6 +76,23 @@ if (NODE_ONLY) {
   );
 }
 
+if (REPLAY_VALIDATION && LEDGER_NETWORK_ID === undefined) {
+  // Checked here rather than left to the service constructor, which would print the banner below
+  // with "undefined" in it and then throw from deeper in the stack. An operator misconfiguring
+  // this should be told what to set, immediately.
+  // eslint-disable-next-line no-console
+  console.error(
+    "REPLAY_VALIDATION=1 requires LEDGER_NETWORK_ID (the LEDGER's network id, e.g. \"undeployed\"). " +
+      "It is NOT the same as NET, which is this archive's row-scope label -- initialising ledger " +
+      "state against the wrong network invalidates every well-formedness check.",
+  );
+  process.exit(1);
+}
+
+// eslint-disable-next-line no-console
+console.log(`[archive-sync] replay validation ${REPLAY_VALIDATION ? "ON" : "off"}` +
+  (REPLAY_VALIDATION ? ` (ledger network ${LEDGER_NETWORK_ID}, checkpoint every ${REPLAY_CHECKPOINT_INTERVAL})` : ""));
+
 const sql = createClient({ connectionString: CONN, schema: SCHEMA });
 await bootstrapChainArchiveSchema(sql, SCHEMA);
 const service = new ChainArchiveSyncService({
@@ -78,6 +105,12 @@ const service = new ChainArchiveSyncService({
   // construction, not by configuration discipline.
   ...(NODE_ONLY ? {} : { indexer: { url: INDEXER_URL, timeoutMs: 30_000 } }),
   oracleCrossCheck: ORACLE_CROSS_CHECK,
+  // Audit round 3: replay gated ingest in tests but was unreachable from this CLI, so the
+  // DEPLOYABLE path was never replay-gated -- the guarantee existed only where it was already
+  // being asserted. Exposed here so an operator can actually turn it on.
+  replayValidation: REPLAY_VALIDATION,
+  ...(LEDGER_NETWORK_ID === undefined ? {} : { ledgerNetworkId: LEDGER_NETWORK_ID }),
+  replayCheckpointInterval: REPLAY_CHECKPOINT_INTERVAL,
 });
 
 let stop = false;

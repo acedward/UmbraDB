@@ -112,6 +112,7 @@ describe("replay validation gates ingest", () => {
       sql, net: NET, schema,
       node: { url: "http://fake-node", fetchImpl: fakeNodeFetch(extrinsics) },
       replayValidation: true,
+      ledgerNetworkId: "undeployed", // the LEDGER's network id, not this archive's `net` label
       replayCheckpointInterval: 1, // checkpoint every block, so one block exercises the path
       ...opts,
     });
@@ -179,6 +180,7 @@ describe("replay validation gates ingest", () => {
       sql, net: NET, schema,
       node: { url: "http://fake-node", fetchImpl: fakeNodeFetch(GENESIS_SYSTEM_EXTRINSICS) },
       replayValidation: true,
+      ledgerNetworkId: "undeployed",
     });
     await expect(
       (resumed as unknown as {

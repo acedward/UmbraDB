@@ -59,6 +59,10 @@ export interface ResolvedRuntimeMetadata {
   /** `(palletIndex, variantIndex)` of `MidnightSystem::SystemTransactionApplied`, or `undefined`
    *  if this runtime has no such event. */
   systemTransactionAppliedEvent: { palletIndex: number; variantIndex: number } | undefined;
+  /** `(palletIndex, callIndex)` of `Timestamp::set`. The block's time lives in this inherent and
+   *  nowhere else, and ledger replay needs it -- `wellFormed`, `apply` and `postBlockUpdate` are
+   *  all time-dependent. `undefined` if the runtime has no Timestamp pallet. */
+  timestampSetCall: { palletIndex: number; callIndex: number } | undefined;
 }
 
 /** Pallet names as the Midnight runtime declares them. Matched by NAME, never by index -- the
@@ -68,6 +72,8 @@ const PALLET_MIDNIGHT_SYSTEM = "MidnightSystem";
 const CALL_SEND_TRANSACTION = "send_mn_transaction";
 const CALL_SEND_SYSTEM_TRANSACTION = "send_mn_system_transaction";
 const EVENT_SYSTEM_TRANSACTION_APPLIED = "SystemTransactionApplied";
+const PALLET_TIMESTAMP = "Timestamp";
+const CALL_TIMESTAMP_SET = "set";
 
 function findPallet(metadata: Metadata, name: string) {
   const pallet = metadata.asLatest.pallets.find((p) => p.name.toString() === name);
@@ -139,7 +145,22 @@ export function resolveMetadata(bytes: Uint8Array, identity: RuntimeIdentity): R
     }
   }
 
-  return { identity, registry, metadata, callIndices, systemTransactionAppliedEvent };
+  let timestampSetCall: { palletIndex: number; callIndex: number } | undefined;
+  try {
+    const timestamp = findPallet(metadata, PALLET_TIMESTAMP);
+    timestampSetCall = {
+      palletIndex: timestamp.index.toNumber(),
+      callIndex: callIndex(registry, metadata, PALLET_TIMESTAMP, CALL_TIMESTAMP_SET),
+    };
+  } catch {
+    // A runtime with no Timestamp pallet has no block time to read; the caller decides whether
+    // that is fatal (it is, for replay).
+    timestampSetCall = undefined;
+  }
+
+  return {
+    identity, registry, metadata, callIndices, systemTransactionAppliedEvent, timestampSetCall,
+  };
 }
 
 /** One extrinsic's dispatched call, read through the runtime's own metadata. */
@@ -152,6 +173,11 @@ export interface MetadataDecodedExtrinsic {
   /** The call's first argument as BARE bytes, when it has one -- the serialized transaction for
    *  Midnight calls. `undefined` for calls taking no arguments. */
   payload: Uint8Array | undefined;
+  /** The first argument as its decoded codec, for calls whose argument is a value rather than a
+   *  byte string (`Timestamp::set`'s `now`). Bytes are the right view for a transaction payload;
+   *  a Compact<u64> needs the value. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  firstArg: any | undefined;
 }
 
 /**
@@ -204,7 +230,37 @@ export function decodeExtrinsicWithMetadata(
     // `toU8a(true)` -- bare, without the SCALE length prefix a `Bytes` argument would re-add. The
     // archived payload must be the transaction itself, not the transaction inside an envelope.
     payload: arg0?.toU8a ? new Uint8Array(arg0.toU8a(true)) : undefined,
+    firstArg: arg0,
   };
+}
+
+/**
+ * The block's timestamp in milliseconds, read from its `Timestamp::set` inherent.
+ *
+ * Ledger replay is time-dependent at three separate points -- `wellFormed`, `apply` and
+ * `postBlockUpdate` -- so a wrong or absent time silently produces a different fold. Substrate puts
+ * the block's time in this inherent and nowhere else, which is why replay cannot simply be handed
+ * the header.
+ *
+ * Returns `undefined` when the block carries no such inherent (genesis, notably, which has no
+ * time). Callers must distinguish that from "zero".
+ */
+export function decodeBlockTimestampMs(
+  resolved: ResolvedRuntimeMetadata,
+  extrinsics: readonly string[],
+): number | undefined {
+  const target = resolved.timestampSetCall;
+  if (target === undefined) return undefined;
+  for (const e of extrinsics) {
+    const call = decodeExtrinsicWithMetadata(resolved, e);
+    if (call.palletIndex !== target.palletIndex || call.callIndex !== target.callIndex) continue;
+    const raw = call.firstArg;
+    if (raw === undefined) continue;
+    // `now` is a Compact<u64> of MILLISECONDS since the epoch.
+    const value = typeof raw.toBigInt === "function" ? raw.toBigInt() : BigInt(String(raw));
+    return Number(value);
+  }
+  return undefined;
 }
 
 /** One runtime-generated system transaction, recovered from a `SystemTransactionApplied` event. */
@@ -390,7 +446,18 @@ export class BlockScopedMetadata {
       // The one visible consequence: `first_seen_height` can name a block that was never archived.
       // It is diagnostic ("which block introduced this runtime"), not structural, and the honest
       // answer to that question is the height where the runtime was first OBSERVED.
-      const raw = await this.node.metadataAt(at).catch(() => undefined);
+      // Same rule as `runtimeVersionAt` above, and this call site was MISSED when that one was
+      // fixed -- the audit found a `.catch(() => undefined)` still here, twelve lines from its
+      // twin. A transport failure would silently fall through to the coarse registry exactly as
+      // before, and the test written for the first site could not see it. Only "the node answered,
+      // and the state is gone" may fall back.
+      let raw: string | undefined;
+      try {
+        raw = await this.node.metadataAt(at);
+      } catch (error) {
+        if (!isHistoricalStateUnavailable(error)) throw error;
+        raw = undefined;
+      }
       if (raw !== undefined) {
         const bytes = hexToBytes(raw);
         const resolved = resolveMetadata(bytes, identity);

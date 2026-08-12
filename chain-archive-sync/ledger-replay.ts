@@ -33,7 +33,7 @@
 export class ReplayRefusalError extends Error {
   constructor(
     readonly position: number,
-    readonly stage: "deserialize" | "well_formed" | "system_apply",
+    readonly stage: "deserialize" | "well_formed" | "system_apply" | "cost",
     cause: unknown,
   ) {
     super(
@@ -64,8 +64,9 @@ export class LedgerReplay {
   private state: any;
   private readonly strictness: any;
 
-  private constructor(private readonly ledger: any, networkId: string) {
-    this.state = ledger.LedgerState.blank(networkId);
+  private constructor(private readonly ledger: any, networkId: string | undefined) {
+    // `undefined` only from `fromSerialized`, which replaces `state` immediately.
+    this.state = networkId === undefined ? undefined : ledger.LedgerState.blank(networkId);
     // The reference's STRICTNESS_V8: defaults with balancing enforcement off.
     this.strictness = new ledger.WellFormedStrictness();
     this.strictness.enforceBalancing = false;
@@ -87,7 +88,11 @@ export class LedgerReplay {
    * corrupt one.
    */
   static fromSerialized(ledger: any, stateBytes: Uint8Array): LedgerReplay {
-    const replay = new LedgerReplay(ledger, "unused");
+    // The deserialized state carries its own network id, so the constructor's `blank()` call is
+    // pure waste here -- and passing a placeholder through it (this previously passed the literal
+    // "unused") builds a throwaway state against a network that does not exist. Construct with the
+    // deserialized state directly.
+    const replay = new LedgerReplay(ledger, undefined);
     replay.state = ledger.LedgerState.deserialize(stateBytes);
     return replay;
   }
@@ -105,6 +110,14 @@ export class LedgerReplay {
     const tblock = new Date(Math.floor(input.blockTimestampMs / 1000) * 1000);
     const outcomes: ReplayOutcome[] = [];
 
+    // ATOMIC (audit round 3). This used to assign `this.state` after every transaction, so a block
+    // that refused at transaction 3 left the first two already applied -- and since a refusal is
+    // retried, the next attempt folded those two on TOP of themselves. Ledger state is a fold, so
+    // that is silent divergence, not a visible error. All work happens on a local, and `this.state`
+    // is replaced only once the whole block has succeeded; a throw leaves the engine exactly as the
+    // block found it.
+    let state = this.state;
+
     for (const [position, tx] of input.transactions.entries()) {
       if (tx.kind === "system") {
         let sysTx: any;
@@ -114,8 +127,8 @@ export class LedgerReplay {
           throw new ReplayRefusalError(position, "deserialize", cause);
         }
         try {
-          const [newState] = this.state.applySystemTx(sysTx, tblock);
-          this.state = newState;
+          const [newState] = state.applySystemTx(sysTx, tblock);
+          state = newState;
         } catch (cause) {
           // The reference treats a system-transaction apply error as fatal to the block
           // (`Error::SystemTransaction` propagates), unlike a regular transaction's Failure.
@@ -133,18 +146,27 @@ export class LedgerReplay {
       }
       let verified: any;
       try {
-        verified = parsed.wellFormed(this.state, this.strictness, tblock);
+        verified = parsed.wellFormed(state, this.strictness, tblock);
       } catch (cause) {
         throw new ReplayRefusalError(position, "well_formed", cause);
       }
-      const cx = new this.ledger.TransactionContext(this.state, {
+      const cx = new this.ledger.TransactionContext(state, {
         secondsSinceEpoch: Math.floor(input.blockTimestampMs / 1000),
         secondsSinceEpochErr: 30,
         parentBlockHash: input.parentBlockHashHex.replace(/^0x/, ""),
         lastBlockTime: Math.floor(input.parentBlockTimestampMs / 1000),
       }, undefined);
-      const [newState, result] = this.state.apply(verified, cx);
-      this.state = newState;
+      // Cost and fees are computed as the reference does before applying. They are not merely
+      // informational: `cost` throwing is how the reference rejects a transaction whose cost cannot
+      // be modelled, and computing them here keeps that failure mode reachable rather than skipped.
+      try {
+        parsed.cost(state.parameters, true);
+        parsed.fees(state.parameters, true);
+      } catch (cause) {
+        throw new ReplayRefusalError(position, "cost", cause);
+      }
+      const [newState, result] = state.apply(verified, cx);
+      state = newState;
       const kind = String(result?.type ?? result);
       outcomes.push(
         /partial/i.test(kind) ? "partial_success" : /fail/i.test(kind) ? "failure" : "success",
@@ -154,7 +176,9 @@ export class LedgerReplay {
     // Zero fullness -- the documented deviation (module doc). The reference normalizes real
     // accumulated cost against block limits the WASM does not expose.
     const zero = { readTime: 0, computeTime: 0, blockUsage: 0, bytesWritten: 0, bytesChurned: 0 };
-    this.state = this.state.postBlockUpdate(tblock, zero, 0);
+    state = state.postBlockUpdate(tblock, zero, 0);
+    // Commit point: everything above either completed or threw, leaving `this.state` untouched.
+    this.state = state;
     return outcomes;
   }
 

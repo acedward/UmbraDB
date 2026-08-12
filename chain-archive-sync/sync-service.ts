@@ -20,6 +20,7 @@ import { decodeArchivedTransaction, loadLedgerV8 } from "./tx-replay-decoder.js"
 import { LedgerReplay } from "./ledger-replay.js";
 import {
   BlockScopedMetadata,
+  decodeBlockTimestampMs,
   decodeEventSystemTransactions,
   decodeExtrinsicWithMetadata,
   type ResolvedRuntimeMetadata,
@@ -190,6 +191,16 @@ export interface ChainArchiveSyncServiceOptions {
    * a checkpoint written by a different ledger build is refused rather than resumed.
    */
   replayValidation?: boolean;
+  /**
+   * The LEDGER's network id, e.g. `"undeployed"`. Required when `replayValidation` is on.
+   *
+   * Not derivable from anything this service already knows. `net` is this archive's own row-scope
+   * label ("preprod", "devnet-3") and has no relationship to the ledger's network id, which the
+   * reference takes from configuration (`network_id: "undeployed"`) and which transactions embed
+   * in their own bytes. Initialising ledger state with the wrong one makes every `wellFormed`
+   * check evaluate against a network the transactions were not built for.
+   */
+  ledgerNetworkId?: string;
   /** Blocks between replay checkpoints. Serialized state is unbounded in size (~37 KB after
    *  genesis alone), so this trades restart time against storage; per-block would dwarf the
    *  archive. */
@@ -266,13 +277,16 @@ export class ChainArchiveSyncService {
   private currentIngestHeight: number | undefined;
 
   private readonly replayValidation: boolean;
+  private readonly ledgerNetworkId: string | undefined;
   private readonly replayCheckpointInterval: number;
   /** Live replay state, built lazily on first use so plain ingest pays nothing for it. */
   private replay: LedgerReplay | undefined;
   /** Height of the last block replay has applied, so a gap is detected rather than skipped. */
   private replayHeight: number | undefined;
-  /** This block's and its parent's timestamps, in ms, as the replay BlockContext needs them. */
-  private blockTimestampMs: number | undefined;
+  /** Set on resume when the newest checkpoint is behind the resume point; drives catch-up. */
+  private replayCatchUpFrom: number | undefined;
+  /** The previous replayed block's timestamp, which the reference passes as `last_block_time`.
+   *  Carried in memory across blocks; on a checkpoint resume it comes from the checkpoint. */
   private parentBlockTimestampMs: number | undefined;
 
   constructor(opts: ChainArchiveSyncServiceOptions) {
@@ -296,6 +310,15 @@ export class ChainArchiveSyncService {
     this.indexer = opts.indexer === undefined ? undefined : new IndexerClient(opts.indexer);
     this.oracleCrossCheckEnabled = opts.oracleCrossCheck ?? false;
     this.replayValidation = opts.replayValidation ?? false;
+    this.ledgerNetworkId = opts.ledgerNetworkId;
+    if (this.replayValidation && this.ledgerNetworkId === undefined) {
+      throw new Error(
+        "replayValidation requires ledgerNetworkId (e.g. \"undeployed\"). It cannot be inferred " +
+          "from `net`, which is this archive's row-scope label rather than the ledger's network " +
+          "id, and initialising ledger state against the wrong network silently invalidates every " +
+          "well-formedness check.",
+      );
+    }
     this.replayCheckpointInterval = opts.replayCheckpointInterval ?? 1000;
     this.expectedGenesisHash =
       opts.expectedGenesisHash === undefined ? undefined : hexNoPrefix(opts.expectedGenesisHash);
@@ -719,7 +742,9 @@ export class ChainArchiveSyncService {
     // Audit A2: replay gates the write. A block the reference would refuse must not be archived,
     // and that verdict comes from actually applying the transactions -- so this runs BEFORE
     // putBlockBundle, like every other refusal condition here.
-    await this.replayBlockIfEnabled(height, blockHash, header, transactions);
+    await this.replayBlockIfEnabled(
+      height, blockHash, header, transactions, block.extrinsics, nodeProtocolVersion ?? 0,
+    );
 
     const blockRecord: BlockRecord = {
       net: this.net,
@@ -878,6 +903,8 @@ export class ChainArchiveSyncService {
     blockHash: Hex32,
     header: SubstrateHeader,
     transactions: readonly TransactionRecord[],
+    extrinsics: readonly string[],
+    protocolVersion: number,
   ): Promise<void> {
     if (!this.replayValidation) return;
     const ledger = await this.ledger();
@@ -886,6 +913,17 @@ export class ChainArchiveSyncService {
       const resumeFrom = height > 0
         ? await this.store.getLatestReplayCheckpoint(this.net, height - 1)
         : undefined;
+      // Audit round 3: sparse checkpoints and a per-block watermark are not aligned. Crash at 1500
+      // with a 1000-block interval and the archive resumes ingest at 1501 while the newest
+      // checkpoint is 1000 -- a 500-block hole that the gap check below would (correctly) refuse,
+      // making replay unusable with any interval above 1. Requiring interval 1 would defeat sparse
+      // checkpointing, whose whole justification is that ledger state is unbounded.
+      //
+      // The blocks in that hole are already archived, so replay CATCHES UP over them rather than
+      // failing: their transactions are read back from the archive in position order, and their
+      // timestamps re-decoded from the node. Catch-up is bounded by the checkpoint interval and
+      // happens once per process start.
+      this.replayCatchUpFrom = resumeFrom === undefined ? undefined : resumeFrom.blockHeight;
       if (resumeFrom !== undefined) {
         if (resumeFrom.ledgerVersion !== LEDGER_STATE_VERSION) {
           throw new Error(
@@ -907,8 +945,16 @@ export class ChainArchiveSyncService {
               "genesis with replay enabled, or provide a checkpoint.",
           );
         }
-        this.replay = LedgerReplay.fromGenesis(ledger, this.net);
+        this.replay = LedgerReplay.fromGenesis(ledger, this.ledgerNetworkId!);
         this.replayHeight = undefined;
+      }
+    }
+
+    if (this.replayCatchUpFrom !== undefined) {
+      const from = this.replayCatchUpFrom;
+      this.replayCatchUpFrom = undefined;
+      for (let h = from + 1; h < height; h++) {
+        await this.replayArchivedBlock(h);
       }
     }
 
@@ -921,6 +967,21 @@ export class ChainArchiveSyncService {
       );
     }
 
+    // The block's OWN time, decoded from its Timestamp::set inherent. Replay is time-dependent at
+    // three points (wellFormed, apply, postBlockUpdate), and an earlier revision of this method
+    // read a field that was never assigned -- so every block replayed at time 0. Genesis really is
+    // time 0, which is why the tests did not catch it: the one block that cannot detect the bug was
+    // the only one exercised.
+    const resolved = await this.metadata.forBlock(`0x${blockHash}`, protocolVersion);
+    const blockTimestampMs = decodeBlockTimestampMs(resolved, extrinsics);
+    if (blockTimestampMs === undefined && height > 0) {
+      throw new Error(
+        `height ${height}: no Timestamp::set inherent, so this block's time is unknown. Ledger ` +
+          "replay is time-dependent, and substituting zero would silently produce a different " +
+          "fold. Refusing rather than guessing.",
+      );
+    }
+
     // Throws ReplayRefusalError where the reference aborts -- and this is before any write, so a
     // refused block leaves nothing behind, same as every other refusal condition.
     this.replay.applyBlock({
@@ -928,11 +989,53 @@ export class ChainArchiveSyncService {
         kind: t.kind === "system" ? "system" : "regular",
         rawBytes: t.rawBytes,
       })),
-      blockTimestampMs: this.blockTimestampMs ?? 0,
+      blockTimestampMs: blockTimestampMs ?? 0,
       parentBlockHashHex: hexNoPrefix(header.parentHash),
       parentBlockTimestampMs: this.parentBlockTimestampMs ?? 0,
     });
     this.replayHeight = height;
+    this.parentBlockTimestampMs = blockTimestampMs ?? 0;
+  }
+
+  /**
+   * Re-apply one ALREADY-ARCHIVED block to replay state, to close a checkpoint/watermark gap.
+   *
+   * Reads the transactions back from the archive in position order -- so the fold sees exactly what
+   * was stored, not a fresh decode that might differ -- and re-decodes the block's timestamp from
+   * the node, since the archive does not store it. A refusal here is a genuine finding: it means
+   * the archived block does not replay, which is precisely the inconsistency this validation
+   * exists to surface.
+   */
+  private async replayArchivedBlock(height: number): Promise<void> {
+    const block = await this.store.getCanonicalBlockAtHeight(this.net, height);
+    if (block === undefined) {
+      throw new Error(
+        `replay catch-up: height ${height} lies between the last checkpoint and the resume point, ` +
+          "but no canonical block is archived there. The archive has a hole, so replay cannot " +
+          "reconstruct the state the next block must be applied to.",
+      );
+    }
+    const stored = await this.store.getTransactionsForBlock(this.net, block.blockHash);
+    const ordered = [...stored].sort((a, b) => a.position - b.position);
+    const withBytes = await Promise.all(
+      ordered.map(async (t) => ({
+        kind: t.kind === "system" ? ("system" as const) : ("regular" as const),
+        rawBytes: await this.store.getBlob(t.rawBlobHash),
+      })),
+    );
+
+    const { block: nodeBlock } = await this.node.getBlock(`0x${block.blockHash}`);
+    const resolved = await this.metadata.forBlock(`0x${block.blockHash}`);
+    const ts = decodeBlockTimestampMs(resolved, nodeBlock.extrinsics);
+
+    this.replay!.applyBlock({
+      transactions: withBytes,
+      blockTimestampMs: ts ?? 0,
+      parentBlockHashHex: hexNoPrefix(nodeBlock.header.parentHash),
+      parentBlockTimestampMs: this.parentBlockTimestampMs ?? 0,
+    });
+    this.replayHeight = height;
+    this.parentBlockTimestampMs = ts ?? 0;
   }
 
   /**

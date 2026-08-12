@@ -83,6 +83,50 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       ON ${sql(schema)}.replay_checkpoints (net, block_height DESC)
   `;
 
+
+  // Audit round 3 (A5): 001's removal guard enumerates the tables that reference `chain_blobs` by
+  // NAME, so a table added later is invisible to it -- the role row for a blob this table depends
+  // on could be deleted, orphaning the reference and defeating the integrity trigger on the insert
+  // side. The function is replaced here to include the new table. Every future migration adding a
+  // blob-referencing table must do the same; the enumeration is the price of the guard being able
+  // to name what is still using a blob.
+  await sql`
+    CREATE OR REPLACE FUNCTION ${sql(schema)}.chain_archive_assert_role_removable(
+      p_blob_hash bytea, p_role text
+    ) RETURNS void LANGUAGE plpgsql AS $fn$
+    DECLARE
+      v_in_use boolean;
+    BEGIN
+      PERFORM 1 FROM ${sql(schema)}.chain_blob_roles
+        WHERE blob_hash = p_blob_hash AND role = p_role FOR UPDATE;
+
+      v_in_use := CASE p_role
+        WHEN 'block_header' THEN
+          EXISTS (SELECT 1 FROM ${sql(schema)}.blocks WHERE header_blob_hash = p_blob_hash)
+        WHEN 'block_body' THEN
+          EXISTS (SELECT 1 FROM ${sql(schema)}.blocks WHERE body_blob_hash = p_blob_hash)
+        WHEN 'tx_raw' THEN
+          EXISTS (SELECT 1 FROM ${sql(schema)}.transactions WHERE raw_blob_hash = p_blob_hash)
+        WHEN 'bridge_observation' THEN
+          EXISTS (SELECT 1 FROM ${sql(schema)}.bridge_observations WHERE raw_blob_hash = p_blob_hash)
+        WHEN 'verifier_key' THEN
+          EXISTS (SELECT 1 FROM ${sql(schema)}.verifier_key_observations WHERE vk_hash = p_blob_hash)
+        WHEN 'runtime_metadata' THEN
+          EXISTS (SELECT 1 FROM ${sql(schema)}.runtime_metadata WHERE metadata_blob_hash = p_blob_hash)
+        WHEN 'ledger_state' THEN
+          EXISTS (SELECT 1 FROM ${sql(schema)}.replay_checkpoints WHERE state_blob_hash = p_blob_hash)
+        ELSE false
+      END;
+
+      IF v_in_use THEN
+        RAISE EXCEPTION
+          'cannot remove/change chain_blob_roles row (blob %, role %): still referenced by a live row'
+          , encode(p_blob_hash, 'hex'), p_role
+          USING ERRCODE = '23514', CONSTRAINT = 'chain_blob_roles_removal_guard';
+      END IF;
+    END;
+    $fn$
+  `;
   await sql`
     CREATE FUNCTION ${sql(schema)}.replay_checkpoints_check_blob_roles() RETURNS trigger LANGUAGE plpgsql AS $fn$
     BEGIN
