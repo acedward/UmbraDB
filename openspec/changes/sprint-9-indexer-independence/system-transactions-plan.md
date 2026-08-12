@@ -749,9 +749,12 @@ both sources remain first-class while the indexer exists. This supersedes any re
 a single monolithic gate and resolves §8a.4 (merge/cutover tiering): each stage below has its own
 done-condition, and earlier stages are mergeable without later ones.
 
-**Execution status (2026-08-11): Stages 0, 1, 2, 2b and 3 are COMPLETE** — each closed out in
-`tasks.md` §8 with its evidence and commits. Stage 4 is next; Stage 5 waits on its one decision.
-Stage 2b (§13) was inserted after this table was written and sits between 2 and 3.
+**Execution status (2026-08-11): Stages 0–4 are ALL COMPLETE** — each closed out in `tasks.md` §8
+with its evidence and commits. PR #1 is open with `parity` and `integrity` green and **required on
+`main`**. Only Stage 5 remains, waiting on its one owner decision. Stage 2b (§13) was inserted
+after this table was written and sits between 2 and 3. Stage 4's ingest wiring (replay during live
+sync) is a named follow-up, not part of the stage's done-condition: it needs a checkpoint/restart
+design, which is a schema decision.
 
 | Stage | Contents | Done when | Decisions needed |
 |---|---|---|---|
@@ -873,7 +876,9 @@ state is readable in one pass):
 | B1 — no reachable chain emits runtime-generated system transactions | The root blocker for every "live" upgrade of a mechanism-equivalence row. CNight observation is the identified real source |
 | U5 — does the indexer archive a `BadOrigin`-rejected call? | Live observation on an oracle range; sizes Stage 4's row-vs-refusal work |
 | U6 / runtime-upgrade boundary | **Impossible on reachable chains** (no upgrade ever happened); needs a second runtime from any source |
-| §7: ledger-replay refusal parity | Stage 4 |
+| ~~§7: ledger-replay refusal parity~~ | **Done (Stage 4)** — mechanism-equivalence; apply-`Failure` confirmed to be a ROW, not a refusal |
+| Replay wired into live ingest | A checkpoint/restart design (schema decision — `LedgerState.serialize()` exists for it) |
+| Second upstream WASM export: block limits on `LedgerParameters` | §10 track, alongside the `transactionHash` export |
 | ~~Branch protection~~ | **Done 2026-08-11** — PR #1 open, both gates green on it, ruleset active on `main` |
 | B4 / §10 — ledger export upstream PR | §10.2 step 2 (recompute hashes on 8.2.0-rc.1), then owner opens the PR |
 | Stage 5's transparency-record shape | Deferred until Stage 5 |
