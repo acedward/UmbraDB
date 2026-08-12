@@ -841,11 +841,40 @@ export class ChainArchiveSyncService {
 
     const records: TransactionRecord[] = [];
     let position = 0;
+    const ledgerForEvents = eventBorne.length > 0 ? await this.ledger() : undefined;
     for (const ev of eventBorne) {
+      // Audit A1. The event states a hash AND carries the bytes; those are two claims that can
+      // disagree, and an archive keyed by the wrong hash is wrong in the one field everything else
+      // joins on. `SystemTransaction.transactionHash()` -- the export vendored precisely so this is
+      // possible -- recomputes it from the bytes we are about to store, so what we key on is
+      // derived from what we archive rather than asserted alongside it.
+      const decoded = decodeArchivedTransaction(ledgerForEvents, ev.payload);
+      if (decoded.kind !== "system") {
+        throw new Error(
+          `height ${height}: a SystemTransactionApplied event carried a payload that is not a ` +
+            `system transaction (decoded as ${decoded.kind}). Refusing rather than archiving it ` +
+            "under a kind the bytes contradict.",
+        );
+      }
+      if (decoded.transactionHash === undefined) {
+        throw new Error(
+          `height ${height}: cannot recompute the hash of an event-borne system transaction -- ` +
+            "this ledger build exposes no SystemTransaction.transactionHash(). Refusing rather " +
+            "than trusting the hash the event claims, which nothing here can check.",
+        );
+      }
+      const recomputed = hexNoPrefix(decoded.transactionHash).toLowerCase();
+      const claimed = hexNoPrefix(ev.txHash).toLowerCase();
+      if (recomputed !== claimed) {
+        throw new Error(
+          `height ${height}: a SystemTransactionApplied event claims hash ${claimed}, but the ` +
+            `payload it carries hashes to ${recomputed}. The event's two halves disagree, so one ` +
+            "of them is not what the runtime applied. Refusing rather than choosing.",
+        );
+      }
       records.push({
         net: this.net,
-        // The runtime's own hash, not a recomputed one. This is what the reference keys on.
-        txHash: ev.txHash.toLowerCase(),
+        txHash: recomputed,
         blockHeight: height,
         blockHash,
         position: position++,
@@ -883,13 +912,29 @@ export class ChainArchiveSyncService {
             "this usually means the ledger build exposes no SystemTransaction.transactionHash().",
         );
       }
+      // Audit A1. `kind` was taken from the dispatched CALL alone, so a payload reaching the wrong
+      // call -- `send_mn_transaction` carrying system-tagged bytes, or the reverse -- would be
+      // archived under a kind its own bytes contradict, and every consumer filtering on `kind`
+      // would then read it as something it is not. The reference derives type from the payload it
+      // deserializes, so the two sources must agree here or the block is refused; ingest must not
+      // pick a winner between the runtime's dispatch and the transaction's own self-description.
+      const payloadKind = decoded.kind === "system" ? "system" : "regular";
+      const callKind = isSystem ? "system" : "regular";
+      if (payloadKind !== callKind) {
+        throw new Error(
+          `height ${height}: an extrinsic dispatched to the ${callKind} Midnight call carries a ` +
+            `payload that decodes as a ${payloadKind} transaction. Call and payload disagree ` +
+            "about what this transaction is, so archiving it would record a kind its own bytes " +
+            "contradict. Refusing.",
+        );
+      }
       records.push({
         net: this.net,
         txHash: hexNoPrefix(decoded.transactionHash).toLowerCase(),
         blockHeight: height,
         blockHash,
         position: position++,
-        kind: isSystem ? "system" : "regular",
+        kind: payloadKind,
         protocolVersion,
         rawBytes: call.payload,
       });

@@ -199,6 +199,39 @@ describe("event-borne system transactions are archived, event-first", () => {
     expect(rows[2]!.tx_hash).toBe(EXTRINSIC_TX_HASH);
   }, 180_000);
 
+  it("REFUSES an event whose claimed hash does not match its payload (audit A1)", async () => {
+    // The event states a hash AND carries the bytes -- two claims that can disagree. Ingest used
+    // to key the archived row on the CLAIM without ever checking it, so a wrong (or forged) hash
+    // became the archive's primary key for that transaction, and `ON CONFLICT DO NOTHING` made it
+    // permanent. The vendored `SystemTransaction.transactionHash()` export exists precisely so
+    // this is checkable; not checking it was the gap.
+    const wrongHash = "b".repeat(64);
+    await expect(
+      ingest({ events: eventsBlobHex(wrongHash, EVENT_TX_HEX), extrinsics: [] }),
+    ).rejects.toThrow(/claims hash .* but the payload it carries hashes to/);
+  }, 180_000);
+
+  it("REFUSES an event payload that is not a system transaction (audit A1)", async () => {
+    // A SystemTransactionApplied carrying regular-transaction bytes. Archiving it as `kind`
+    // system -- which the event's identity alone would imply -- would record a kind the bytes
+    // themselves contradict.
+    const regularPayload = GENESIS_REGULAR_TX_EXTRINSIC.slice(2 + 7 * 2); // strip envelope
+    await expect(
+      ingest({ events: eventsBlobHex("c".repeat(64), regularPayload), extrinsics: [] }),
+    ).rejects.toThrow(/not a system transaction|hashes to/);
+  }, 180_000);
+
+  it("REFUSES an extrinsic whose call and payload disagree about kind (audit A1)", async () => {
+    // System-tagged bytes dispatched to `send_mn_transaction` (the REGULAR call, pallet 5). Kind
+    // came from the call alone, so this would have been archived as `regular` while its own bytes
+    // say system -- and every consumer filtering on kind would read it as the wrong thing.
+    const inner = "05" + "05" + "00" + compactU32Hex(EXTRINSIC_TX_HEX.length / 2) + EXTRINSIC_TX_HEX;
+    const mismatched = compactU32Hex(inner.length / 2) + inner;
+    await expect(ingest({ extrinsics: [mismatched] })).rejects.toThrow(
+      /call and payload disagree|payload that decodes as a system transaction/i,
+    );
+  }, 180_000);
+
   it("archives an ordinary block with no events unchanged", async () => {
     const rows = await ingest({ extrinsics: [bareSystemExtrinsicHex(EXTRINSIC_TX_HEX)] });
     expect(rows).toHaveLength(1);
