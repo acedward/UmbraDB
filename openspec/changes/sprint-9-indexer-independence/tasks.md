@@ -361,10 +361,19 @@ Three personas returned BLOCK on head `2cfef2a`
 without a test that fails on the pre-fix behaviour; each fix gets a targeted re-audit, and merge
 needs fresh PASS×3 on the final head rebased onto current `main`.
 
-- [ ] **9.1 (A1) Kind from the payload, hashes never trusted.** Refuse when the dispatched call's
+- [x] **9.1 (A1) Kind from the payload, hashes never trusted.** *(done 2026-08-11, `1ade369`)*
+  Event hashes are recomputed from the bytes being archived and the block refuses if the event's
+  two halves disagree; `kind` must agree between the dispatched call and the payload's self-tag.
+  Three tests, each verified to fail on the pre-fix code with no other test moving.
+  ~~Original:~~ Refuse when the dispatched call's
   type disagrees with the payload's self-tag; recompute every event-borne system-transaction hash
   via `SystemTransaction.transactionHash()` and refuse on mismatch with the event's claim.
-- [ ] **9.2 (A3) Metadata resolution failure semantics.** The `runtimeVersionAt` catch must
+- [x] **9.2 (A3) Metadata resolution failure semantics.** *(done 2026-08-11, `9f74db5`)*
+  Only a node that answered "state is gone" falls back to the registry; transport failures
+  propagate. Persistence-boundary question answered in code: a capture is a fact about a RUNTIME,
+  not a block, so it may outlive a refused block — with the `first_seen_height` consequence stated.
+  Test verified against the swallow-everything version.
+  ~~Original:~~ The `runtimeVersionAt` catch must
   distinguish "historical state discarded" (fall through to the registry) from "request failed"
   (propagate); decide and document whether `runtime_metadata` persistence may survive a refused
   block, or move it inside the block's atomic boundary.
