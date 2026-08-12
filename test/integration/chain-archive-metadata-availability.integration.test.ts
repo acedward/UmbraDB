@@ -189,6 +189,37 @@ describe("metadata availability", () => {
     expect(blocks!.n).toBe(0);
   }, 180_000);
 
+  it("propagates a TRANSPORT failure instead of silently using the registry (audit A3)", async () => {
+    // The bug this pins: the runtimeVersionAt catch swallowed every error, so a connection reset
+    // or timeout degraded resolution to the coarse committed registry -- keyed by protocol range,
+    // not by the runtime's own identity -- and ingest carried on as if nothing had happened. A
+    // network blip must not quietly change which metadata decodes a block, because nothing in the
+    // resulting archive shows that it did. Only a node that ANSWERED "state is gone" earns the
+    // fallback.
+    const schema = await newSchema();
+    // Healthy for everything except the one call the fallback hinges on, which fails the way a
+    // network does -- not the way a pruned node does. If this were treated as "state is gone",
+    // the block would decode against registry metadata and nothing afterwards would show it.
+    const served: string[] = [];
+    const base = fakeNode({ pruned: false, served });
+    const flaky = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      if (body.method === "state_getRuntimeVersion") throw new Error("fetch failed: ECONNRESET");
+      return base(input, init);
+    }) as typeof fetch;
+    const service = new ChainArchiveSyncService({
+      sql, net: NET, schema, node: { url: "http://fake-node", fetchImpl: flaky },
+    });
+    // The RPC client wraps transport failures with the method name, so match on that rather than
+    // the inner text -- what matters is that it SURFACES at all instead of being swallowed.
+    await expect(service.syncOnce({ maxBlocks: 1 })).rejects.toThrow(/state_getRuntimeVersion/);
+    // And nothing durable from the refused block.
+    const [blocks] = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM ${sql(schema)}.blocks WHERE net = ${NET}
+    `;
+    expect(blocks!.n).toBe(0);
+  }, 180_000);
+
   it("decodes from the stored capture with the node's metadata gone -- the replay guarantee", async () => {
     // What the table is actually for. Ingest once against a healthy node, then come back when the
     // node has pruned its state: metadata resolution must succeed from the archive's own copy,

@@ -346,12 +346,20 @@ export class BlockScopedMetadata {
 
     // The runtime's identity needs the same historical state the metadata does, so on a pruned
     // node this is where resolution fails -- which is exactly when the registry is the only path
-    // left. Failure here is therefore not fatal on its own.
+    // left. But ONLY that kind of failure may fall through.
+    //
+    // Audit A3: this catch previously swallowed every error, so a transient connection reset or a
+    // timeout silently degraded resolution to the coarse committed registry -- keyed by protocol
+    // range rather than by the runtime's own identity -- and ingest carried on as though nothing
+    // had happened. A network blip must not quietly change which metadata decodes a block; the
+    // difference is invisible in the archive afterwards. Only a node that ANSWERED and said the
+    // state is gone earns the fallback. Anything else propagates.
     let identity: RuntimeIdentity | undefined;
     try {
       const version = await this.node.runtimeVersionAt(at);
       identity = { specName: version.specName, specVersion: version.specVersion };
-    } catch {
+    } catch (error) {
+      if (!isHistoricalStateUnavailable(error)) throw error;
       identity = undefined;
     }
 
@@ -368,7 +376,20 @@ export class BlockScopedMetadata {
         return resolved;
       }
 
-      // (2) the node -- and keep what it gives us
+      // (2) the node -- and keep what it gives us.
+      //
+      // Audit A3 asked whether persisting here is safe, since it commits BEFORE the block that
+      // triggered it is known to be archivable: a block that later refuses leaves the capture
+      // behind. It is safe, and deliberately so. A capture is a fact about a RUNTIME, not about a
+      // block -- the node served this metadata for this runtime identity, and that stays true
+      // whether or not the block goes on to refuse for unrelated reasons. Keeping it is also what
+      // makes a retry cheaper rather than poisoned: the retry reads the same bytes from the
+      // archive instead of re-fetching. What must never leak past a refusal is block-derived data,
+      // and none of this is that.
+      //
+      // The one visible consequence: `first_seen_height` can name a block that was never archived.
+      // It is diagnostic ("which block introduced this runtime"), not structural, and the honest
+      // answer to that question is the height where the runtime was first OBSERVED.
       const raw = await this.node.metadataAt(at).catch(() => undefined);
       if (raw !== undefined) {
         const bytes = hexToBytes(raw);
@@ -416,4 +437,24 @@ export class BlockScopedMetadata {
 function hexToBytes(hex: string): Uint8Array {
   const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
   return new Uint8Array(Buffer.from(clean, "hex"));
+}
+
+/**
+ * Whether a failure means "the node answered, and the historical state is gone" -- the only
+ * condition that may fall back to the coarse committed registry.
+ *
+ * Deliberately a MESSAGE match, and deliberately narrow. Substrate reports pruned state as an
+ * application-level JSON-RPC error rather than a distinct type, so the text is the only signal
+ * available; matching too broadly would restore the bug this replaces, where any failure quietly
+ * changed which metadata decoded a block. A connection reset, a timeout, a 500 -- none of these
+ * say anything about state retention, and all of them now propagate.
+ */
+function isHistoricalStateUnavailable(error: unknown): boolean {
+  const message = String((error as Error)?.message ?? error);
+  return (
+    /state already discarded/i.test(message) ||
+    /unknown block/i.test(message) ||
+    /state not available/i.test(message) ||
+    /has been pruned/i.test(message)
+  );
 }
