@@ -232,6 +232,49 @@ describe("event-borne system transactions are archived, event-first", () => {
     );
   }, 180_000);
 
+  it("REFUSES to extend a block already archived with DIFFERENT contents (audit A4)", async () => {
+    // The silent case ON CONFLICT DO NOTHING creates. Ingest the block WITHOUT its event-borne
+    // system transaction -- which is exactly what the pre-metadata implementation produced -- then
+    // re-ingest the same block with the event present. The second run writes different rows at
+    // the same keys, they are all discarded, and the run reports success while the archive keeps
+    // a version the current code disagrees with.
+    const schema = `event_ingest_${schemaCounter++}`;
+    sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    await bootstrapChainArchiveSchema(sql, schema);
+
+    const mkService = (opts: { events?: string; extrinsics: string[] }) =>
+      new ChainArchiveSyncService({
+        sql, net: NET, schema,
+        node: { url: "http://fake-node", fetchImpl: fakeNodeFetch(opts) },
+      });
+
+    // First run: no events, so one extrinsic-borne transaction at position 0.
+    await mkService({ extrinsics: [bareSystemExtrinsicHex(EXTRINSIC_TX_HEX)] }).syncOnce({ maxBlocks: 1 });
+    const first = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM ${sql(schema)}.transactions WHERE net = ${NET}
+    `;
+    expect(first[0]!.n).toBe(1);
+
+    // Re-ingest the SAME block, now with an event-borne system transaction. That shifts the
+    // extrinsic-borne one to position 1 and adds a row at 0 -- genuinely different contents.
+    const service = mkService({
+      events: eventsBlobHex(EVENT_TX_HASH, EVENT_TX_HEX),
+      extrinsics: [bareSystemExtrinsicHex(EXTRINSIC_TX_HEX)],
+    });
+    // Re-ingest reaches this block only if the watermark is behind it; syncOnce from a fresh
+    // service starts after the stored watermark, so drive the same height directly by resetting it.
+    await sql`DELETE FROM ${sql(schema)}.watermarks WHERE kind = 'chain_archive'`;
+    await expect(service.syncOnce({ maxBlocks: 1 })).rejects.toThrow(
+      /already archived with different contents/,
+    );
+
+    // The stored version is untouched -- refusing must not half-apply the new one.
+    const after = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM ${sql(schema)}.transactions WHERE net = ${NET}
+    `;
+    expect(after[0]!.n).toBe(1);
+  }, 180_000);
+
   it("archives an ordinary block with no events unchanged", async () => {
     const rows = await ingest({ extrinsics: [bareSystemExtrinsicHex(EXTRINSIC_TX_HEX)] });
     expect(rows).toHaveLength(1);

@@ -684,6 +684,7 @@ export class ChainArchiveSyncService {
     // owner-approved), which lets both copies be stored the way the indexer stores them; until
     // that migration lands, a collision must stop the block rather than quietly lose a row.
     assertNoDuplicateTransactionKeys(height, transactions);
+    await this.assertNoConflictingExistingRows(height, blockHash, transactions);
 
     const blockRecord: BlockRecord = {
       net: this.net,
@@ -817,6 +818,52 @@ export class ChainArchiveSyncService {
    * the runtime's OWN authoritative hash alongside the payload, so event-borne transactions need
    * no ledger at all, while an extrinsic carries only bytes and must be hashed with the ledger.
    */
+  /**
+   * Refuse when this block is already archived with DIFFERENT contents (audit A4).
+   *
+   * Every terminal insert is `ON CONFLICT DO NOTHING`, which is exactly right for an idempotent
+   * retry -- re-ingesting a byte-identical block must be a no-op. But it is silent about the case
+   * that matters: a re-ingest producing DIFFERENT rows at the same keys. The new rows are
+   * discarded, the run reports success, and the archive keeps contents that whatever produced them
+   * now disagrees with. Nothing anywhere records that two answers existed.
+   *
+   * That is not hypothetical after this sprint. Blocks archived by the pre-metadata implementation
+   * lack event-borne system transactions and number positions differently, so re-ingesting such a
+   * range with the current code produces genuinely different rows -- which is precisely the
+   * "history written by an older implementation" A4 asks to detect. Comparing what is there
+   * against what we would write catches that without needing a version marker to be trusted: the
+   * rows themselves are the evidence.
+   *
+   * Comparison is by `(position, tx_hash, kind)`, the fields that define the archive's contract.
+   */
+  private async assertNoConflictingExistingRows(
+    height: number,
+    blockHash: Hex32,
+    incoming: readonly TransactionRecord[],
+  ): Promise<void> {
+    const existing = await this.store.getTransactionsForBlock(this.net, blockHash);
+    if (existing.length === 0) return; // nothing archived here yet -- the ordinary path
+
+    const shape = (rows: readonly { position: number; txHash: string; kind: string }[]) =>
+      [...rows]
+        .sort((a, b) => a.position - b.position)
+        .map((r) => `${r.position}:${r.txHash.toLowerCase()}:${r.kind}`)
+        .join(" ");
+    const before = shape(existing);
+    const after = shape(incoming);
+    if (before === after) return; // a genuine idempotent retry
+
+    throw new Error(
+      `height ${height}: this block is already archived with different contents. Stored: ` +
+        `[${before}]. Re-ingest would write: [${after}]. Inserts are ON CONFLICT DO NOTHING, so ` +
+        "continuing would silently keep the stored rows and report success while the two versions " +
+        "disagree. This is what an archive written by an older implementation looks like -- one " +
+        "that predates event-borne system transactions or numbered positions differently. Re-sync " +
+        "this net into a fresh schema rather than extending a history whose completeness cannot " +
+        "be established.",
+    );
+  }
+
   private async buildNodeOnlyRecordsFromMetadata(
     height: number,
     blockHash: Hex32,
