@@ -354,6 +354,32 @@ Per-stage close-out, every stage: update this file, re-run `graphify update .` a
 > a machine that already has the toolchain. Plan §11.1's prerequisite list omits this dependency
 > and should gain it.
 
+## 9. Audit round 2 remediation (plan §14) — gates PR #1
+
+Three personas returned BLOCK on head `2cfef2a`
+(<https://github.com/acedward/UmbraDB/pull/1#issuecomment-5269573241>). No box below closes
+without a test that fails on the pre-fix behaviour; each fix gets a targeted re-audit, and merge
+needs fresh PASS×3 on the final head rebased onto current `main`.
+
+- [ ] **9.1 (A1) Kind from the payload, hashes never trusted.** Refuse when the dispatched call's
+  type disagrees with the payload's self-tag; recompute every event-borne system-transaction hash
+  via `SystemTransaction.transactionHash()` and refuse on mismatch with the event's claim.
+- [ ] **9.2 (A3) Metadata resolution failure semantics.** The `runtimeVersionAt` catch must
+  distinguish "historical state discarded" (fall through to the registry) from "request failed"
+  (propagate); decide and document whether `runtime_metadata` persistence may survive a refused
+  block, or move it inside the block's atomic boundary.
+- [ ] **9.3 (A5a) Populated-database migration test.** Apply 002+003 onto a database already
+  holding blocks/transactions rows and prove the PK swap and role-CHECK extension preserve them.
+- [ ] **9.4 (A4) Restart and retry consistency.** Detect an archive written by an older
+  implementation before extending it; a retry whose bytes CONFLICT with an existing row must
+  refuse, not be `ON CONFLICT DO NOTHING`-skipped.
+- [ ] **9.5 (A2) Wire replay into node-only ingest.** Blocked on the owner's checkpoint decision:
+  a `replay_checkpoints` table (schema change) versus rebuild-from-archive on every restart.
+- [ ] **9.6 (A5b) Release close-out.** Reconcile authoritative docs; pin compose images by digest
+  and add scanning; regenerate graphify on the final head.
+- [ ] **9.7 Re-audits.** Targeted re-audit per blocker, then fresh PASS/PASS/PASS on the final
+  integrated head, recorded on PR #1.
+
 ## Deferred to a later change
 
 Recorded here so they are not silently absorbed:
