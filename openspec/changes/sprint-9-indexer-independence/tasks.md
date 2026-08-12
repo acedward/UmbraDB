@@ -392,9 +392,23 @@ needs fresh PASS×3 on the final head rebased onto current `main`.
   ~~Original:~~ Detect an archive written by an older
   implementation before extending it; a retry whose bytes CONFLICT with an existing row must
   refuse, not be `ON CONFLICT DO NOTHING`-skipped.
-- [ ] **9.5 (A2) Wire replay into node-only ingest.** Blocked on the owner's checkpoint decision:
+- [x] **9.5 (A2) Wire replay into node-only ingest.** *(done 2026-08-11, `a3b06f7`)*
+  Replay runs before `putBlockBundle`; migration `004_replay_checkpoints` (owner: Option A) makes
+  restart cost proportional to the checkpoint interval, with `ledger_version` checked so a
+  checkpoint from another build refuses instead of computing against state that build reads
+  differently. Off by default. Two bugs caught by the tests: the checkpoint violated its own FK
+  (gating necessarily precedes the block row, so checkpointing moved after the write), and the
+  refusal test used undeserializable bytes that never reach replay — the case only replay catches
+  is a structurally VALID transaction failing validation.
+  ~~Original:~~ Blocked on the owner's checkpoint decision:
   a `replay_checkpoints` table (schema change) versus rebuild-from-archive on every restart.
-- [ ] **9.6 (A5b) Release close-out.** Reconcile authoritative docs; pin compose images by digest
+- [x] **9.6 (A5b) Release close-out.** *(done 2026-08-11, `26673ac`, `ca68f8e`)*
+  Compose images digest-pinned with CI enforcing the pins (verified both ways: passes now, detects
+  an unpinned image). Normative corpus reconciled — `design.md`'s current position and two spec
+  requirements the code contradicted, each revision recording why the earlier form was wrong;
+  strict OpenSpec validation passes. Graphify regenerated at the close-out head, no vendor
+  pollution. **A5's scanning half declined**, reasoning recorded in the plan.
+  ~~Original:~~ Reconcile authoritative docs; pin compose images by digest
   and add scanning; regenerate graphify on the final head.
 - [ ] **9.7 Re-audits.** Targeted re-audit per blocker, then fresh PASS/PASS/PASS on the final
   integrated head, recorded on PR #1.
