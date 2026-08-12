@@ -63,6 +63,32 @@ jobs:
       # overlay the runner cannot reach the node or indexer at all and every gate below would
       # fail on connectivity rather than on parity. Its defaults (19944/19088) are off the
       # canonical numbers on purpose.
+      # A5: the pins are only worth something if they are checked. A tag silently repointed at new
+      # bytes would otherwise make this job compare against something other than what it claims,
+      # and report success either way.
+      - name: Verify compose images are digest-pinned
+        run: |
+          set -euo pipefail
+          unpinned=$(grep -E "^\s*image: '" test/compose/docker-compose.yml | grep -v "sha256:" || true)
+          if [ -n "$unpinned" ]; then
+            echo "these compose images are not digest-pinned:" >&2
+            echo "$unpinned" >&2
+            exit 1
+          fi
+          echo "all compose images are digest-pinned"
+
+      - name: Scan the pinned images for known vulnerabilities
+        uses: aquasecurity/trivy-action@6c175e9c4083a92bbca2f9724c8a5e33bc2d97a5 # v0.30.0
+        with:
+          scan-type: config
+          scan-ref: test/compose
+          # Non-blocking on purpose: this stack is a TEST fixture built from upstream Midnight
+          # release images we do not control, so a CVE in one is information for whoever bumps the
+          # pin, not a reason to block a change to this repo's archive code. Blocking here would
+          # train people to bypass the job rather than act on it.
+          exit-code: '0'
+          severity: 'CRITICAL,HIGH'
+
       - name: Start the Midnight stack
         working-directory: test/compose
         run: |

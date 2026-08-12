@@ -1063,6 +1063,20 @@ PASS/PASS/PASS on the final head rebased onto current `main` (`3c0c68b` at audit
 | **A2** | Live replay does not yet gate ingest — acceptance/refusal behaviour is engine-only | True and was a *named* follow-up, but the auditors are right that parity is not delivered until wired. Needs the checkpoint/restart design (schema decision) + wiring |
 | **A3** | `runtime_metadata` persists outside the block's atomic refusal boundary; resolution has an unsafe fallback | Both real. `putRuntimeMetadata` commits before the block can still refuse (capture survives a refused block — defensible for a runtime-level fact, but must be argued or moved, not implicit). Worse: `forBlock` swallows **every** `runtimeVersionAt` error, so a transient network blip silently falls through to the coarse registry instead of failing the fetch path — that catch must distinguish "state discarded" from "request failed" |
 | **A4** | Restart continuity / conflicting-retry handling can silently produce inconsistent archives | §5.5, which Stage 1's close-out explicitly declined to claim. Now due: detect a history written by an older implementation; make conflicting-bytes retries refuse rather than `DO NOTHING`-skip |
+**Migration-number ownership (owner, 2026-08-11).** Part A now owns `002`–`004` in the
+`chain_archive` lineage, which collides by number with Part B's parked `002_zswap_root` /
+`003_contract_state`. Not resolved by renumbering: **Part B will be redesigned and reimplemented**,
+so its current migrations are disposable and the collision has no cost to pay. Recorded so a later
+reader does not mistake the overlap for an unnoticed conflict.
+
+Also worth stating once, since the A/B boundary was originally "Part A stores no new data": that
+test no longer holds — three migrations landed, each individually approved. What survives is the
+narrower and still-true version: none of them stores new **business** data (no contract state, no
+projections, no feeds). They store the archive's own machinery — its key shape, its decoder inputs,
+its replay position. The upgrade risk that usually motivates a no-migrations rule is nil here (no
+UmbraDB is deployed anywhere), and the runner is forward-only with no `down()`, which is why
+`002`/`003` were proven against a populated database rather than empty tables (§9.3).
+
 | **A5** | Release items: authoritative-doc reconciliation; immutable image pins (compose uses mutable tags) + scanning; an incremental migration test against a **populated** database (ours ran on empty tables); regenerate graphify | All mechanical and legitimate. The populated-migration gap is the sharpest: 002's PK swap was never proven against rows that exist |
 
 **Remediation order:** A1 and A3's fallback fix first (small, semantic, test-backed); A5's

@@ -1,3 +1,15 @@
+# Midnight test stack for the chain-archive suites.
+#
+# IMAGE PINNING (audit A5). Every image is pinned by DIGEST, not only by tag. A tag is mutable:
+# `midnight-node:1.0.0` can be repointed at different bytes at any time, and this stack is the
+# oracle for the archive's source-parity gate -- if the node or indexer silently changed underneath
+# it, the gate would compare against something other than what it claims and report success either
+# way. The digest makes the comparison reproducible.
+#
+# The `${VAR:-default}` form is kept so a developer can still override a whole reference
+# (`NODE_TAG=1.1.0` overrides tag AND digest together, which is the correct granularity -- a tag
+# without its digest would silently unpin). Refresh a pin by pulling the tag and reading
+# `docker image inspect <image> --format '{{index .RepoDigests 0}}'`.
 # A self-contained Midnight stack (node + indexer + proof server) plus Postgres, for running
 # this repo's live-devnet integration tests and for driving real transactions against a real
 # chain during development.
@@ -37,7 +49,7 @@ name: umbradb-test
 services:
   node:
     restart: unless-stopped
-    image: 'midnightntwrk/midnight-node:${NODE_TAG:-1.0.0}'
+    image: 'midnightntwrk/midnight-node:${NODE_TAG:-1.0.0@sha256:ede01da35e982b6a4b85461ad8492ae2753ef14246fba33c8039b782aa8e39fb}'
     environment:
       CFG_PRESET: 'dev'
       SIDECHAIN_BLOCK_BENEFICIARY: '04bcf7ad3be7a5c790460be82a713af570f22e0f801f6659ab8e84a52be6969e'
@@ -55,7 +67,7 @@ services:
 
   indexer:
     restart: unless-stopped
-    image: 'midnightntwrk/indexer-standalone:${INDEXER_TAG:-4.3.2}'
+    image: 'midnightntwrk/indexer-standalone:${INDEXER_TAG:-4.3.2@sha256:a769f7f2eaf34ba7ecaea19e878112d9a4686c5aa9a1d3dce86a42086a9a6444}'
     environment:
       RUST_LOG: 'indexer=info,chain_indexer=info,indexer_api=info,wallet_indexer=info,indexer_common=info,fastrace_opentelemetry=off,info'
       APP__APPLICATION__NETWORK_ID: 'undeployed'
@@ -79,7 +91,7 @@ services:
 
   proof-server:
     restart: unless-stopped
-    image: 'midnightntwrk/proof-server:${PROOF_TAG:-8.1.0}'
+    image: 'midnightntwrk/proof-server:${PROOF_TAG:-8.1.0@sha256:801bbc0340e9e96f16735f77b523f23c7459e3359842f7c79c2c53f4e994d531}'
     environment:
       RUST_BACKTRACE: 'full'
       EXTRA_ARGS: '-v'
@@ -91,7 +103,7 @@ services:
   # each suite gets a pristine database and they cannot interfere with one another.
   postgres:
     restart: unless-stopped
-    image: 'postgres:17'
+    image: 'postgres:17@sha256:0027bef26712baaee437a4ea48fdf3d2d2e2bc5f0d81615374408ca320f3c7e3'
     environment:
       POSTGRES_USER: 'umbra'
       POSTGRES_PASSWORD: 'umbra'
@@ -122,7 +134,7 @@ services:
   # so their mapped ports are host ports -- TESTCONTAINERS_HOST_OVERRIDE + the host-gateway
   # alias are what let this container reach them.
   tests:
-    image: 'node:${NODE_IMAGE_TAG:-24-bookworm}'
+    image: 'node:${NODE_IMAGE_TAG:-24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584}'
     working_dir: /repo
     volumes:
       - '../..:/repo'
