@@ -749,6 +749,12 @@ both sources remain first-class while the indexer exists. This supersedes any re
 a single monolithic gate and resolves §8a.4 (merge/cutover tiering): each stage below has its own
 done-condition, and earlier stages are mergeable without later ones.
 
+> **AUDIT ROUND 2 (2026-08-11): three personas, three BLOCKs — PR #1 must not merge.** Findings
+> and evidence: <https://github.com/acedward/UmbraDB/pull/1#issuecomment-5269573241>. §14 is the
+> remediation register. Validation (typecheck, build, vendor integrity, strict OpenSpec, 81 tests)
+> passed and does not clear the semantic/release blockers. Re-audit per blocker after remediation,
+> then fresh PASS×3 on the final head integrated with current `main`.
+
 **Execution status (2026-08-11): Stages 0–4 are ALL COMPLETE** — each closed out in `tasks.md` §8
 with its evidence and commits. PR #1 is open with `parity` and `integrity` green and **required on
 `main`**. Only Stage 5 remains, waiting on its one owner decision. Stage 2b (§13) was inserted
@@ -1044,3 +1050,23 @@ migration + registry module + resolution-order change + tests. It does not alter
 decodes or in what order — only where the metadata bytes come from. The §7 acceptance matrix is
 untouched; the archive-node requirement recorded in §12.4 item 5 is superseded by this section
 once landed (it then applies only to first contact with a runtime version).
+
+
+## 14. Audit round 2 — remediation register (owner-reported, 2026-08-11)
+
+Reviewed head `2cfef2a`. Each blocker gets a targeted re-audit after its fix; merge needs fresh
+PASS/PASS/PASS on the final head rebased onto current `main` (`3c0c68b` at audit time).
+
+| # | Blocker | First assessment (to verify, not trust) |
+|---|---|---|
+| **A1** | Transaction `kind` comes from the dispatched CALL and can disagree with the payload's own type; event-borne system-tx hashes are trusted from the event, never recomputed | Both halves look genuine. A `send_mn_transaction` carrying a system-tagged payload would archive as `regular`; the reference derives type from the payload it deserializes. And the `transactionHash` export exists precisely so the event's claimed hash can be **cross-checked** — trusting it was lazier than the tools we built. Fix: assert call-type ≡ payload-tag (refuse on disagreement), and recompute event hashes via the ledger, refusing on mismatch |
+| **A2** | Live replay does not yet gate ingest — acceptance/refusal behaviour is engine-only | True and was a *named* follow-up, but the auditors are right that parity is not delivered until wired. Needs the checkpoint/restart design (schema decision) + wiring |
+| **A3** | `runtime_metadata` persists outside the block's atomic refusal boundary; resolution has an unsafe fallback | Both real. `putRuntimeMetadata` commits before the block can still refuse (capture survives a refused block — defensible for a runtime-level fact, but must be argued or moved, not implicit). Worse: `forBlock` swallows **every** `runtimeVersionAt` error, so a transient network blip silently falls through to the coarse registry instead of failing the fetch path — that catch must distinguish "state discarded" from "request failed" |
+| **A4** | Restart continuity / conflicting-retry handling can silently produce inconsistent archives | §5.5, which Stage 1's close-out explicitly declined to claim. Now due: detect a history written by an older implementation; make conflicting-bytes retries refuse rather than `DO NOTHING`-skip |
+| **A5** | Release items: authoritative-doc reconciliation; immutable image pins (compose uses mutable tags) + scanning; an incremental migration test against a **populated** database (ours ran on empty tables); regenerate graphify | All mechanical and legitimate. The populated-migration gap is the sharpest: 002's PK swap was never proven against rows that exist |
+
+**Remediation order:** A1 and A3's fallback fix first (small, semantic, test-backed); A5's
+populated-migration test next (cheap, de-risks the schema changes); A4; then A2, which is the
+largest and depends on the checkpoint schema decision. A5's doc/pin/graphify items ride the final
+close-out. Each fix cites its finding; no finding closes without a test that fails on the old
+behaviour.
