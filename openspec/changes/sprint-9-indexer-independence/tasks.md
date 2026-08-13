@@ -410,6 +410,33 @@ needs fresh PASS×3 on the final head rebased onto current `main`.
   pollution. **A5's scanning half declined**, reasoning recorded in the plan.
   ~~Original:~~ Reconcile authoritative docs; pin compose images by digest
   and add scanning; regenerate graphify on the final head.
+## 10. Audit round 3 remediation (plan §15) — gates PR #1
+
+Round 2's remediation was re-audited and returned BLOCK×3 on head `c7493c9`. §9 below is that
+round's record and is now history; A1 held, A2/A3/A5 did not.
+
+- [x] **10.1 Replay reference-equivalence** *(done 2026-08-13, `1d4bb36`)* — real timestamps from
+  `Timestamp::set`, `ledgerNetworkId` as required config, block-atomic state, cost/fees computed.
+- [x] **10.2 Metadata fallback, second call site** *(done, `1d4bb36`)* — `metadataAt` now matches
+  `runtimeVersionAt`; remaining catches in the directory swept and each judged.
+- [x] **10.3 Checkpoint/watermark gap** *(done, `1d4bb36`)* — replay catches up over archived
+  blocks, so sparse intervals are usable.
+- [x] **10.4 Blob-role deletion guards in 003/004** *(done, `1d4bb36`)*.
+- [x] **10.5 Replay reachable from the CLI** *(done, `1d4bb36`)* — `REPLAY_VALIDATION` +
+  `LEDGER_NETWORK_ID`, validated before the banner prints.
+- [x] **10.6 PR artifacts state round 3 honestly** *(done 2026-08-13)* — round-2 brief marked
+  SUPERSEDED, round-3 brief added, plan §15 register, this section.
+- [ ] **10.7 D-parameter continuity across restarts.**
+- [ ] **10.8 Historical conflict detection — complete and non-racy.**
+- [ ] **10.9 State-root checks in replay.**
+- [ ] **10.10 Pin check hardened** so an unquoted or differently-indented `image:` line cannot pass.
+- [ ] **10.11 Docs, dependency inventory and Graphify current at the final head.**
+- [ ] **10.12 Targeted re-audit of 10.1–10.5**, then final PASS/PASS/PASS.
+
+**Same acceptance rule as §9, strengthened:** no box closes without a test that fails on the
+pre-fix code AND a stated answer to "what wrong implementation would still pass this test?" Round 3
+exists because reverting-the-fix alone let two bugs through.
+
 - [ ] **9.7 Re-audits.** Targeted re-audit per blocker, then fresh PASS/PASS/PASS on the final
   integrated head, recorded on PR #1.
 

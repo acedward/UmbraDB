@@ -1,5 +1,14 @@
 # Re-audit brief — audit round 2 remediation
 
+> **SUPERSEDED (2026-08-13).** Round 2's remediation was re-audited and returned
+> **BLOCK/BLOCK/BLOCK** — see `audit-round-3-remediation-brief.md`, which is the current document.
+> Round 3 found that several fixes below were incomplete or introduced new bugs, so **do not read
+> this file as a statement of current state**. It is retained because its blocker-to-commit mapping
+> for A1–A5 is still accurate history, and because round 3's findings only make sense against it.
+>
+> Specifically contradicted below: the claim that "all five blocker groups are remediated". A1 held
+> up under all three reviews; A2, A3 and A5 did not.
+
 **Reviewed head:** `a1f521d` · **Base:** `origin/main` `3c0c68b` (unchanged since branching, so the
 branch is a direct descendant — no rebase required, and `merge-base == main`) · **87 commits**
 

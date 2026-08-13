@@ -749,11 +749,21 @@ both sources remain first-class while the indexer exists. This supersedes any re
 a single monolithic gate and resolves §8a.4 (merge/cutover tiering): each stage below has its own
 done-condition, and earlier stages are mergeable without later ones.
 
-> **AUDIT ROUND 2 (2026-08-11): three personas, three BLOCKs — PR #1 must not merge.** Findings
-> and evidence: <https://github.com/acedward/UmbraDB/pull/1#issuecomment-5269573241>. §14 is the
-> remediation register. Validation (typecheck, build, vendor integrity, strict OpenSpec, 81 tests)
-> passed and does not clear the semantic/release blockers. Re-audit per blocker after remediation,
-> then fresh PASS×3 on the final head integrated with current `main`.
+> **AUDIT ROUND 3 (2026-08-13): three personas, three BLOCKs — PR #1 must not merge.** Findings:
+> <https://github.com/acedward/UmbraDB/pull/1#issuecomment-5273905932>. Current brief:
+> `audit-round-3-remediation-brief.md`. **A1 from round 2 held under all three reviews; A2, A3 and
+> A5 did not.** Eight findings fixed in `1d4bb36`; five open (§15).
+>
+> **The PR is mechanically MERGEABLE** — every required check is green, nothing enforces this
+> verdict. "Blocked" here is process discipline, not a lock. That distinction matters because every
+> round-3 finding was invisible to the green suite: replay defaulted off so CI never ran it, the
+> timestamp bug hid behind genesis being genuinely time 0, and a swallowed error had no test at all.
+>
+> **Round 2's register (§14) is history**, not current state.
+
+> **AUDIT ROUND 2 (2026-08-11): three personas, three BLOCKs.** Findings and evidence:
+> <https://github.com/acedward/UmbraDB/pull/1#issuecomment-5269573241>. §14 is that round's
+> remediation register. Superseded by round 3 above.
 
 **Execution status (2026-08-11): Stages 0–4 are ALL COMPLETE** — each closed out in `tasks.md` §8
 with its evidence and commits. PR #1 is open with `parity` and `integrity` green and **required on
@@ -1110,3 +1120,43 @@ populated-migration test next (cheap, de-risks the schema changes); A4; then A2,
 largest and depends on the checkpoint schema decision. A5's doc/pin/graphify items ride the final
 close-out. Each fix cites its finding; no finding closes without a test that fails on the old
 behaviour.
+
+
+## 15. Audit round 3 — register (2026-08-13)
+
+Reviewed head `c7493c9`. Full detail in `audit-round-3-remediation-brief.md`; this is the register
+the plan carries.
+
+**Why round 2's remediation failed**, since it shapes what to distrust: every round-2 blocker was
+closed with a test verified to fail when the fix was reverted. That proves a test is *connected* to
+a change, not that the change is right or complete. Replay's timestamp field was declared, read and
+never assigned — invisible because genesis genuinely is time 0 and genesis was the only block
+tested. A3's fix corrected one `.catch(() => undefined)` and left its twin twelve lines away —
+invisible because the test exercised only the first site. **A test whose fixture cannot express the
+failure proves nothing about it.**
+
+### Fixed in `1d4bb36`
+
+| # | Finding |
+|---|---|
+| R1 | Replay ran every block at timestamp 0 (field declared, read, never assigned) — now decoded from `Timestamp::set` |
+| R2 | Ledger state initialised with the archive's `net` label instead of the ledger's network id — now required config, validated in service and CLI |
+| R3 | Replay not failure-atomic — a refusing block left earlier transactions applied, and retries re-folded them |
+| R4 | Cost/fees not computed as the reference does |
+| R5 | `metadataAt` still swallowed transport failures — the twin of the catch round 2 fixed |
+| R6 | Sparse-checkpoint restart unusable above interval 1 — replay now catches up over archived blocks |
+| R7 | Migrations 003/004 invisible to 001's blob-role deletion guard |
+| R8 | Replay unreachable from the CLI, so the deployable path was never replay-gated |
+
+### Open
+
+| # | Finding |
+|---|---|
+| O1 | D-parameter continuity breaks across restarts |
+| O2 | Historical conflict detection incomplete and racy — no locking, so two ingesters racing one height both pass |
+| O3 | No state-root checks in replay |
+| O4 | Image-pin CI check bypassable (matches quoted `image:` lines only) |
+| O5 | Status docs, dependency inventory and Graphify stale |
+
+**Exit:** targeted re-audit of R1–R8 (requested now), then O1–O5, then fresh PASS/PASS/PASS on the
+final head. Merge is gated by that verdict alone — not by any mechanism.
