@@ -285,9 +285,11 @@ export class ChainArchiveSyncService {
   private replayHeight: number | undefined;
   /** Set on resume when the newest checkpoint is behind the resume point; drives catch-up. */
   private replayCatchUpFrom: number | undefined;
-  /** The previous replayed block's timestamp, which the reference passes as `last_block_time`.
-   *  Carried in memory across blocks; on a checkpoint resume it comes from the checkpoint. */
-  private parentBlockTimestampMs: number | undefined;
+  /** The timestamp of the block replay applied most recently -- the `last_block_time` the
+   *  reference passes when applying the NEXT one. Carried in memory across blocks within a run,
+   *  and restored from the checkpoint on resume, which is what stops the first block after a
+   *  restart from being folded against a parent dated 1970 (T1). */
+  private lastReplayedBlockTimestampMs: number | undefined;
 
   constructor(opts: ChainArchiveSyncServiceOptions) {
     this.store = new PgChainArchiveStore(opts.sql, opts.schema ?? "chain_archive");
@@ -936,6 +938,10 @@ export class ChainArchiveSyncService {
         }
         this.replay = LedgerReplay.fromSerialized(ledger, resumeFrom.stateBytes);
         this.replayHeight = resumeFrom.blockHeight;
+        // The checkpointed block's own time becomes the parent time for the block after it (T1).
+        // Without this the first block of every resumed run was folded with lastBlockTime=0 --
+        // invisible in a single-run test, and wrong on every restart.
+        this.lastReplayedBlockTimestampMs = resumeFrom.blockTimestampMs;
       } else {
         if (height !== 0) {
           throw new Error(
@@ -969,16 +975,23 @@ export class ChainArchiveSyncService {
 
     // The block's OWN time, decoded from its Timestamp::set inherent. Replay is time-dependent at
     // three points (wellFormed, apply, postBlockUpdate), and an earlier revision of this method
-    // read a field that was never assigned -- so every block replayed at time 0. Genesis really is
-    // time 0, which is why the tests did not catch it: the one block that cannot detect the bug was
-    // the only one exercised.
+    // read a field that was never assigned -- so every block replayed at time 0.
+    //
+    // GENESIS IS NOT EXEMPT (T1). This used to skip the check for height 0, on the belief that
+    // genesis has no time. That is wrong for the target node: 1.0 always emits `Timestamp::set`
+    // in genesis, and the committed devnet genesis decodes to 1754395200000 ms. The belief
+    // survived because the SYNTHETIC test fixtures omitted the inherent while the real chain
+    // includes it -- so the fixtures agreed with the bug. Exempting genesis means replaying the
+    // one block that seeds every later state at time 0, roughly 55 years early.
     const resolved = await this.metadata.forBlock(`0x${blockHash}`, protocolVersion);
     const blockTimestampMs = decodeBlockTimestampMs(resolved, extrinsics);
-    if (blockTimestampMs === undefined && height > 0) {
+    if (blockTimestampMs === undefined) {
       throw new Error(
         `height ${height}: no Timestamp::set inherent, so this block's time is unknown. Ledger ` +
           "replay is time-dependent, and substituting zero would silently produce a different " +
-          "fold. Refusing rather than guessing.",
+          "fold. Refusing rather than guessing. This applies to genesis too: the target node " +
+          "emits Timestamp::set in genesis, so its absence there is a decode failure, not a " +
+          "property of genesis.",
       );
     }
 
@@ -989,12 +1002,34 @@ export class ChainArchiveSyncService {
         kind: t.kind === "system" ? "system" : "regular",
         rawBytes: t.rawBytes,
       })),
-      blockTimestampMs: blockTimestampMs ?? 0,
+      blockTimestampMs,
       parentBlockHashHex: hexNoPrefix(header.parentHash),
-      parentBlockTimestampMs: this.parentBlockTimestampMs ?? 0,
+      parentBlockTimestampMs: this.parentTimestampFor(height),
     });
     this.replayHeight = height;
-    this.parentBlockTimestampMs = blockTimestampMs ?? 0;
+    this.lastReplayedBlockTimestampMs = blockTimestampMs;
+  }
+
+  /**
+   * The `lastBlockTime` to replay `height` under: the timestamp of the block replay applied
+   * immediately before it.
+   *
+   * Genesis is the one block with no parent, so zero there is the absence of a parent rather than
+   * a guess about one. At any other height an unknown parent time is a bug -- it means either a
+   * resume that did not restore it (checkpoints now carry it) or a gap in the fold -- and
+   * substituting zero would move the parent 55 years into the past while still "working".
+   */
+  private parentTimestampFor(height: number): number {
+    if (height === 0) return 0;
+    if (this.lastReplayedBlockTimestampMs === undefined) {
+      throw new Error(
+        `height ${height}: replay has no timestamp for the parent block. Replay is time-dependent ` +
+          "-- `lastBlockTime` feeds the ledger's own validity rules -- and substituting zero " +
+          "would silently fold this block against a parent dated 1970. Refusing rather than " +
+          "guessing.",
+      );
+    }
+    return this.lastReplayedBlockTimestampMs;
   }
 
   /**
@@ -1027,15 +1062,25 @@ export class ChainArchiveSyncService {
     const { block: nodeBlock } = await this.node.getBlock(`0x${block.blockHash}`);
     const resolved = await this.metadata.forBlock(`0x${block.blockHash}`);
     const ts = decodeBlockTimestampMs(resolved, nodeBlock.extrinsics);
+    // The same refusal as the ingest path (T1). Catch-up used to substitute zero here -- the exact
+    // guess the ingest path refuses to make -- so a block whose timestamp failed to decode was
+    // folded at 1970 instead of failing, and only on the restart path, where nothing looks.
+    if (ts === undefined) {
+      throw new Error(
+        `replay catch-up at height ${height}: no Timestamp::set inherent, so this block's time is ` +
+          "unknown. Ledger replay is time-dependent and substituting zero would silently produce " +
+          "a different fold than the ingest path would have. Refusing rather than guessing.",
+      );
+    }
 
     this.replay!.applyBlock({
       transactions: withBytes,
-      blockTimestampMs: ts ?? 0,
+      blockTimestampMs: ts,
       parentBlockHashHex: hexNoPrefix(nodeBlock.header.parentHash),
-      parentBlockTimestampMs: this.parentBlockTimestampMs ?? 0,
+      parentBlockTimestampMs: this.parentTimestampFor(height),
     });
     this.replayHeight = height;
-    this.parentBlockTimestampMs = ts ?? 0;
+    this.lastReplayedBlockTimestampMs = ts;
   }
 
   /**
@@ -1050,12 +1095,21 @@ export class ChainArchiveSyncService {
   private async checkpointReplayIfDue(height: number, blockHash: Hex32): Promise<void> {
     if (!this.replayValidation || this.replay === undefined) return;
     if (height % this.replayCheckpointInterval !== 0) return;
+    // Set by the replay of this very block, immediately before this runs.
+    const blockTimestampMs = this.lastReplayedBlockTimestampMs;
+    if (blockTimestampMs === undefined) {
+      throw new Error(
+        `refusing to checkpoint height ${height} with no recorded block timestamp: a checkpoint ` +
+          "without one cannot supply `lastBlockTime` to the block that resumes after it.",
+      );
+    }
     await this.store.putReplayCheckpoint({
       net: this.net,
       blockHeight: height,
       blockHash,
       stateBytes: this.replay.serialize(),
       ledgerVersion: LEDGER_STATE_VERSION,
+      blockTimestampMs,
     });
   }
 

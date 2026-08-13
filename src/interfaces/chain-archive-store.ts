@@ -352,6 +352,13 @@ export interface ReplayCheckpointRecord {
    *  the encoding is not guaranteed stable across builds, and a silently mis-resumed state
    *  produces wrong replay outcomes rather than an error. */
   ledgerVersion: string;
+  /** This block's own `Timestamp::set` value, in ms.
+   *
+   *  Not decoration either: the block resuming from this checkpoint is applied with it as
+   *  `lastBlockTime`, which feeds the ledger's own validity rules. Without it stored, every
+   *  resumed run folded its first block against a parent dated 1970 -- a defect invisible to any
+   *  single-run test, because the value is only wrong across a restart (T1). */
+  blockTimestampMs: number;
 }
 
 /** One runtime's metadata, as captured by this archive. */

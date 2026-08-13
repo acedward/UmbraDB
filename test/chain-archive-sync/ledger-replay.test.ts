@@ -128,6 +128,28 @@ describe("ledger replay: the reference's row-versus-refusal classification", () 
   });
 });
 
+describe("ledger replay: block time is load-bearing (T1)", () => {
+  it("folds a different state for a different block timestamp", async () => {
+    // The premise of T1's refusal-rather-than-guess rule, stated as a fact rather than assumed.
+    // If the block's own time did not reach the fold, exempting genesis from needing one would be
+    // harmless and the whole finding would be moot -- so this is the assertion that makes the
+    // refusal worth having. Genesis really does carry 1754395200000 on the target node, and
+    // folding it at 0 instead produces a demonstrably different ledger state.
+    const ledger = await loadLedgerV8();
+    const fold = (blockTimestampMs: number) => {
+      const replay = LedgerReplay.fromGenesis(ledger, "undeployed");
+      replay.applyBlock({
+        transactions: [...SYSTEM_TXS, regular(GOOD_REGULAR_HEX)],
+        blockTimestampMs,
+        parentBlockHashHex: GENESIS_PARENT,
+        parentBlockTimestampMs: 0,
+      });
+      return Buffer.from(replay.serialize());
+    };
+    expect(fold(0).equals(fold(1754395200000))).toBe(false);
+  });
+});
+
 /**
  * T4: real block fullness.
  *

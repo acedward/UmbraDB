@@ -566,9 +566,13 @@ export class PgChainArchiveStore implements ChainArchiveStore {
   ): Promise<ReplayCheckpointRecord | undefined> {
     try {
       const [row] = await this.sql<
-        { height: string; block_hash: Buffer; hash: Buffer; ledger_version: string }[]
+        {
+          height: string; block_hash: Buffer; hash: Buffer; ledger_version: string;
+          block_timestamp_ms: string;
+        }[]
       >`
-        SELECT block_height::text AS height, block_hash, state_blob_hash AS hash, ledger_version
+        SELECT block_height::text AS height, block_hash, state_blob_hash AS hash, ledger_version,
+               block_timestamp_ms::text AS block_timestamp_ms
         FROM ${this.sql(this.schema)}.replay_checkpoints
         WHERE net = ${net} AND block_height <= ${maxHeight}
         ORDER BY block_height DESC
@@ -583,6 +587,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
         // state would produce wrong replay outcomes rather than an error.
         stateBytes: await this.getBlob(bufToHex(row.hash)),
         ledgerVersion: row.ledger_version,
+        blockTimestampMs: Number(row.block_timestamp_ms),
       };
     } catch (err) {
       throw translatePostgresError(err);
@@ -607,9 +612,9 @@ export class PgChainArchiveStore implements ChainArchiveStore {
         `;
         await tx`
           INSERT INTO ${tx(this.schema)}.replay_checkpoints
-            (net, block_height, block_hash, state_blob_hash, ledger_version)
+            (net, block_height, block_hash, state_blob_hash, ledger_version, block_timestamp_ms)
           VALUES (${record.net}, ${record.blockHeight}, ${hexToBuf(record.blockHash)},
-                  ${hash}, ${record.ledgerVersion})
+                  ${hash}, ${record.ledgerVersion}, ${record.blockTimestampMs})
           ON CONFLICT (net, block_height, block_hash) DO NOTHING
         `;
       });

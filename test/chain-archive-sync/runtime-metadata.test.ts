@@ -259,9 +259,21 @@ describe("block timestamp decoding", () => {
     expect(ms!).toBeLessThan(4_000_000_000_000);    // before 2096
   });
 
-  it("returns undefined for a block with no timestamp inherent (genesis)", () => {
-    // The caller must distinguish this from zero: genesis legitimately has no time, every other
-    // block having none is a decode failure.
+  it("returns undefined for a block with no timestamp inherent", () => {
+    // The caller must distinguish this from zero -- a block with no decodable time is a decode
+    // FAILURE, and the caller refuses rather than substituting a value.
+    //
+    // The parenthetical here used to read "(genesis)", asserting that genesis legitimately has no
+    // time. That was wrong for the target node and is the belief T1 removed: 1.0 emits
+    // Timestamp::set in genesis too. Nothing about this decoder changed -- but the comment was
+    // load-bearing, because it is what justified the caller's genesis exemption.
     expect(decodeBlockTimestampMs(resolved, [])).toBeUndefined();
+  });
+
+  it("decodes the genesis inherent the target node actually emits", () => {
+    // The fixture the integration suite now uses, checked here against the real decoder so that a
+    // hand-built inherent cannot drift into being merely plausible.
+    const ms = decodeBlockTimestampMs(resolved, ["0x280501000b004a1a7a9801"]);
+    expect(ms).toBe(1754395200000);
   });
 });

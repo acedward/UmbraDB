@@ -35,8 +35,27 @@ const FIXTURE = readFileSync(
   new URL("../fixtures/ledger-vectors/genesis-system-tx-hashes.txt", import.meta.url),
   "utf8",
 ).trim().split("\n").map((l) => l.trim().split(/\s+/));
-/** All five genesis system transactions -- the real block, which must replay cleanly. */
-const GENESIS_SYSTEM_EXTRINSICS = FIXTURE.map((f) => bareSystemExtrinsicHex(f[3]!));
+/**
+ * Genesis's `Timestamp::set` inherent (T1).
+ *
+ * The target 1.0 node ALWAYS emits this in genesis; the committed devnet genesis decodes to
+ * 1754395200000 ms (2025-08-05T12:00:00Z). Leaving it out of this fixture is what hid the genesis
+ * timestamp bug through two audit rounds: the code exempted genesis from the timestamp
+ * requirement, the fixture omitted the inherent, and the two agreed with each other. The suite was
+ * green because it was testing a chain that does not exist.
+ *
+ * Byte layout is identical to the real height-45 inherent (`0x280501000be07b93d89f01` in
+ * `runtime-metadata.test.ts`) -- same compact length, same pallet 1 / call 0, same Compact<u64>
+ * big-integer mode -- differing only in the encoded value.
+ */
+const GENESIS_TIMESTAMP_MS = 1754395200000;
+const GENESIS_TIMESTAMP_INHERENT = "0x280501000b004a1a7a9801";
+
+/** All five genesis system transactions plus the timestamp inherent every real genesis carries. */
+const GENESIS_SYSTEM_EXTRINSICS = [
+  GENESIS_TIMESTAMP_INHERENT,
+  ...FIXTURE.map((f) => bareSystemExtrinsicHex(f[3]!)),
+];
 
 /** The real genesis regular transaction, payload only. Corrupting one byte of its proof leaves it
  *  deserializable but not well-formed -- the case only replay catches. */
@@ -76,6 +95,68 @@ function fakeNodeFetch(extrinsics: string[]): typeof fetch {
         return reply(header);
       case "chain_getBlock":
         return reply({ block: { header, extrinsics } });
+      case "state_getStorageAt":
+        return reply(null);
+      case "state_call":
+        return reply("0x0a000000");
+      default:
+        return reply(null);
+    }
+  }) as typeof fetch;
+}
+
+/**
+ * A fake node serving a two-block chain, which single-block fixtures cannot express.
+ *
+ * Needed for T1: a checkpoint's stored parent timestamp is only consulted when a LATER block is
+ * replayed by a DIFFERENT process instance. One block, or one process, cannot show it.
+ */
+const HEIGHT_1_HASH = `0x${"d1".repeat(32)}`;
+/** Genesis + 6 seconds, encoded the same way. Verified in `runtime-metadata.test.ts`. */
+const HEIGHT_1_TIMESTAMP_MS = 1754395206000;
+const HEIGHT_1_TIMESTAMP_INHERENT = "0x280501000b70611a7a9801";
+
+function twoBlockNodeFetch(genesisExtrinsics: string[]): typeof fetch {
+  const headers: Record<string, Record<string, unknown>> = {
+    [BLOCK_HASH]: {
+      parentHash: `0x${"00".repeat(32)}`, number: "0x0",
+      stateRoot: `0x${"b0".repeat(32)}`, extrinsicsRoot: `0x${"c0".repeat(32)}`,
+      digest: { logs: [MNSV_DIGEST_V1] },
+    },
+    [HEIGHT_1_HASH]: {
+      parentHash: BLOCK_HASH, number: "0x1",
+      stateRoot: `0x${"b1".repeat(32)}`, extrinsicsRoot: `0x${"c1".repeat(32)}`,
+      digest: { logs: [MNSV_DIGEST_V1] },
+    },
+  };
+  // Height 1 carries only its timestamp inherent: an empty block still exercises the fold, and
+  // there is no second real regular transaction that applies cleanly to the advanced state.
+  const extrinsics: Record<string, string[]> = {
+    [BLOCK_HASH]: genesisExtrinsics,
+    [HEIGHT_1_HASH]: [HEIGHT_1_TIMESTAMP_INHERENT],
+  };
+  return (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    const reply = (result: unknown) =>
+      new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    const meta = metadataRpcResult(body.method);
+    if (meta !== undefined) return reply(meta);
+    switch (body.method) {
+      case "chain_getBlockHash": {
+        const n = body.params?.[0];
+        if (n === undefined || n === null) return reply(HEIGHT_1_HASH);
+        return reply(Number(n) === 0 ? BLOCK_HASH : Number(n) === 1 ? HEIGHT_1_HASH : null);
+      }
+      case "chain_getFinalizedHead":
+        return reply(HEIGHT_1_HASH);
+      case "chain_getHeader":
+        return reply(headers[String(body.params?.[0] ?? HEIGHT_1_HASH)] ?? headers[HEIGHT_1_HASH]);
+      case "chain_getBlock": {
+        const h = String(body.params?.[0] ?? HEIGHT_1_HASH);
+        return reply({ block: { header: headers[h], extrinsics: extrinsics[h] ?? [] } });
+      }
       case "state_getStorageAt":
         return reply(null);
       case "state_call":
@@ -134,8 +215,12 @@ describe("replay validation gates ingest", () => {
     // validation, here the real genesis regular transaction with one byte flipped inside its proof.
     const schema = await newSchema();
     const corrupted = REGULAR_TX_HEX.replace("126359", "126959");
+    // The timestamp inherent is present because a real genesis has one -- otherwise this block is
+    // refused for the missing timestamp instead, and the assertion below would pass while never
+    // reaching replay at all.
     await expect(
-      service(schema, [bareRegularExtrinsicHex(corrupted)]).syncOnce({ maxBlocks: 1 }),
+      service(schema, [GENESIS_TIMESTAMP_INHERENT, bareRegularExtrinsicHex(corrupted)])
+        .syncOnce({ maxBlocks: 1 }),
     ).rejects.toThrow(/ledger replay refuses this block/);
 
     const [blocks] = await sql<{ n: number }[]>`
@@ -147,6 +232,83 @@ describe("replay validation gates ingest", () => {
     expect(blocks!.n, "no block row").toBe(0);
     expect(txs!.n, "no transaction row").toBe(0);
   }, 180_000);
+
+  /**
+   * T1: block time is decoded, never guessed -- including at genesis, and including across a
+   * restart.
+   *
+   * The bug this covers survived two audit rounds because the synthetic fixtures agreed with it:
+   * the code exempted genesis from needing a `Timestamp::set`, and the fixtures omitted one, so
+   * the suite was green about a chain that does not exist. The fixtures now carry the inherent the
+   * target node actually emits.
+   */
+  describe("block time (T1)", () => {
+    it("REFUSES genesis with no Timestamp::set -- genesis is not exempt", async () => {
+      // The whole finding in one assertion. The target 1.0 node always emits this inherent at
+      // genesis, so its absence is a decode failure, not a property of genesis. Before the fix
+      // this block was accepted and folded at time 0 -- roughly 55 years early -- seeding every
+      // later state from a genesis that never existed.
+      const schema = await newSchema();
+      const withoutTimestamp = FIXTURE.map((f) => bareSystemExtrinsicHex(f[3]!));
+      await expect(
+        service(schema, withoutTimestamp).syncOnce({ maxBlocks: 1 }),
+      ).rejects.toThrow(/height 0: no Timestamp::set inherent/);
+
+      const [blocks] = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM ${sql(schema)}.blocks WHERE net = ${NET}
+      `;
+      expect(blocks!.n, "a refused block writes nothing").toBe(0);
+    }, 180_000);
+
+    it("stores the checkpointed block's own timestamp", async () => {
+      const schema = await newSchema();
+      await service(schema, GENESIS_SYSTEM_EXTRINSICS).syncOnce({ maxBlocks: 1 });
+      const [row] = await sql<{ ts: string }[]>`
+        SELECT block_timestamp_ms::text AS ts
+        FROM ${sql(schema)}.replay_checkpoints WHERE net = ${NET} AND block_height = 0
+      `;
+      // The exact decoded value, not merely "not null": a checkpoint carrying a plausible-looking
+      // wrong time is the failure mode, and it is the one nothing else would notice.
+      expect(row?.ts).toBe(String(GENESIS_TIMESTAMP_MS));
+    }, 180_000);
+
+    it("resumes with the checkpointed parent time, in a SEPARATE service instance", async () => {
+      // The restart bug proper. `lastBlockTime` lives in memory during a run, so a single process
+      // always has it and no single-run test can miss it. What was broken is the value a NEW
+      // process starts with: the checkpoint stored no timestamp, so the first block after a
+      // restart was folded against a parent dated 1970.
+      //
+      // This is observable only because the missing case now THROWS rather than defaulting to
+      // zero. If the checkpoint did not restore the timestamp, replaying height 1 raises "replay
+      // has no timestamp for the parent block" -- so height 1 completing at all is the evidence.
+      const schema = await newSchema();
+      const node = { url: "http://fake-node", fetchImpl: twoBlockNodeFetch(GENESIS_SYSTEM_EXTRINSICS) };
+      const common = {
+        sql, net: NET, schema, node,
+        replayValidation: true,
+        ledgerNetworkId: "undeployed",
+        replayCheckpointInterval: 1,
+      };
+
+      // Process 1: genesis only, then exit. Its in-memory parent time dies with it.
+      await new ChainArchiveSyncService(common).syncOnce({ maxBlocks: 1 });
+      const [cp] = await sql<{ h: string; ts: string }[]>`
+        SELECT block_height::text AS h, block_timestamp_ms::text AS ts
+        FROM ${sql(schema)}.replay_checkpoints WHERE net = ${NET} ORDER BY block_height DESC LIMIT 1
+      `;
+      expect(cp?.h).toBe("0");
+
+      // Process 2: a genuinely fresh instance, which must recover the parent time from storage.
+      await new ChainArchiveSyncService(common).syncOnce({ maxBlocks: 1 });
+
+      const [after] = await sql<{ h: string; ts: string }[]>`
+        SELECT block_height::text AS h, block_timestamp_ms::text AS ts
+        FROM ${sql(schema)}.replay_checkpoints WHERE net = ${NET} ORDER BY block_height DESC LIMIT 1
+      `;
+      expect(after?.h, "the resumed run must have replayed and checkpointed height 1").toBe("1");
+      expect(after?.ts).toBe(String(HEIGHT_1_TIMESTAMP_MS));
+    }, 180_000);
+  });
 
   it("writes a checkpoint whose state is real and re-readable", async () => {
     const schema = await newSchema();

@@ -3,6 +3,7 @@ import * as chainArchiveCore from "./001_chain_archive_core.js";
 import * as transactionPositionKey from "./002_transaction_position_key.js";
 import * as runtimeMetadata from "./003_runtime_metadata.js";
 import * as replayCheckpoints from "./004_replay_checkpoints.js";
+import * as replayCheckpointBlockTime from "./005_replay_checkpoint_block_time.js";
 import type { Migration } from "../../migrate.js";
 
 /**
@@ -38,6 +39,7 @@ export const chainArchiveMigrations: Migration[] = [
   transactionPositionKey,
   runtimeMetadata,
   replayCheckpoints,
+  replayCheckpointBlockTime,
 ];
 
 // v3 note: `chainArchiveCore` now also creates `chain_archive_assert_blob_role` (a shared
