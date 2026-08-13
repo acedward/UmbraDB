@@ -442,6 +442,35 @@ round's record and is now history; A1 held, A2/A3/A5 did not.
 pre-fix code AND a stated answer to "what wrong implementation would still pass this test?" Round 3
 exists because reverting-the-fix alone let two bugs through.
 
+### 10.13 Targeted re-audit findings T1–T8 (plan §16) — the open merge-gating work
+
+Each box requires the strengthened rule above **and** exercise of the real production path, since
+T3 and T6 were found exactly there. The stated blind spot goes in the commit message.
+
+- [x] **Part 0 — vendored ledger rebuild** *(done 2026-08-13, `2b88f99`)*. `ledger-v8@8.1.0-syshash.2`
+  adds `SystemTransaction.cost`, `LedgerParameters.clampAndNormalizeFullness` and `blockLimits`
+  (ledger fork `eb380b3`, proof `280905e`). Known vectors 5/5 against the vendored artifact, not the
+  build tree. `LEDGER_STATE_VERSION` bumped, invalidating `…syshash.1` checkpoints. Prerequisite
+  for T4.
+- [x] **T4 — real block fullness** *(done 2026-08-13, `51bd264`)*. Regular cost on
+  Success/PartialSuccess and not on Failure; system cost always, against pre-apply parameters;
+  clamped and normalized against the limits of the state the block ends at; overall = max of five
+  dimensions; both arguments passed explicitly. Cost/fees moved before `wellFormed` to match the
+  reference's order. Genesis closes at 0.37696.
+  *Blind spot:* nine mutations run, eight caught. "Cost the system transaction against post-apply
+  parameters" is NOT caught and cannot be with any genesis fixture — all five genesis system
+  transactions were measured to cost identically before and after their own apply, because the two
+  `OverwriteParameters` change the limits but not the cost-model terms they touch. Two earlier
+  versions of the fullness test were themselves found inadequate by mutation and replaced; see the
+  commit message.
+- [ ] **T1 — genesis timestamp exemption and missing-timestamp guessing.**
+- [ ] **T2 — checkpoint bound to its configured ledger network.**
+- [ ] **T3 — replay advance atomic across the whole ingest block.**
+- [ ] **T5 — fork-aware checkpoint selection.**
+- [ ] **T6 — CLI in the release artifact; checkpoint-interval validation.**
+- [ ] **T7 — R5 transport test and pruning classification.**
+- [ ] **T8 — R7 deletion regressions and the 003/004 upgrade path.**
+
 - [ ] **9.7 Re-audits.** Targeted re-audit per blocker, then fresh PASS/PASS/PASS on the final
   integrated head, recorded on PR #1.
 
