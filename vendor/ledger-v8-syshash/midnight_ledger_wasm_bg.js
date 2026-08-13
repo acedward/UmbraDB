@@ -231,16 +231,16 @@ function makeMutClosure(arg0, arg1, dtor, f) {
     return real;
 }
 
-function takeFromExternrefTable0(idx) {
-    const value = wasm.__wbindgen_export_2.get(idx);
-    wasm.__externref_table_dealloc(idx);
-    return value;
-}
-
 function _assertClass(instance, klass) {
     if (!(instance instanceof klass)) {
         throw new Error(`expected instance of ${klass.name}`);
     }
+}
+
+function takeFromExternrefTable0(idx) {
+    const value = wasm.__wbindgen_export_2.get(idx);
+    wasm.__externref_table_dealloc(idx);
+    return value;
 }
 
 function passArrayJsValueToWasm0(array, malloc) {
@@ -252,6 +252,67 @@ function passArrayJsValueToWasm0(array, malloc) {
     WASM_VECTOR_LEN = array.length;
     return ptr;
 }
+/**
+ * @param {any[]} calls
+ * @param {LedgerParameters} params
+ * @returns {Array<any>}
+ */
+export function partitionTranscripts(calls, params) {
+    const ptr0 = passArrayJsValueToWasm0(calls, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    _assertClass(params, LedgerParameters);
+    const ret = wasm.partitionTranscripts(ptr0, len0, params.__wbg_ptr);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+function passArray8ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 1, 1) >>> 0;
+    getUint8ArrayMemory0().set(arg, ptr / 1);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+/**
+ * @param {string} type_
+ * @param {any} value
+ * @returns {any}
+ */
+export function createCoinInfo(type_, value) {
+    const ptr0 = passStringToWasm0(type_, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.createCoinInfo(ptr0, len0, value);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
+ * @returns {DustSecretKey}
+ */
+export function sampleDustSecretKey() {
+    const ret = wasm.sampleDustSecretKey();
+    return DustSecretKey.__wrap(ret);
+}
+
+/**
+ * @param {Date} ctime
+ * @param {bigint} initial_value
+ * @param {any} gen_info
+ * @param {Date} now
+ * @param {any} params
+ * @returns {bigint}
+ */
+export function updatedValue(ctime, initial_value, gen_info, now, params) {
+    const ret = wasm.updatedValue(ctime, initial_value, gen_info, now, params);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
 /**
  * @returns {string}
  */
@@ -573,67 +634,6 @@ export function coinNullifier(coin_info, coin_secret_key) {
     } finally {
         wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
-}
-
-/**
- * @param {any[]} calls
- * @param {LedgerParameters} params
- * @returns {Array<any>}
- */
-export function partitionTranscripts(calls, params) {
-    const ptr0 = passArrayJsValueToWasm0(calls, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    _assertClass(params, LedgerParameters);
-    const ret = wasm.partitionTranscripts(ptr0, len0, params.__wbg_ptr);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
-    }
-    return takeFromExternrefTable0(ret[0]);
-}
-
-function passArray8ToWasm0(arg, malloc) {
-    const ptr = malloc(arg.length * 1, 1) >>> 0;
-    getUint8ArrayMemory0().set(arg, ptr / 1);
-    WASM_VECTOR_LEN = arg.length;
-    return ptr;
-}
-/**
- * @param {string} type_
- * @param {any} value
- * @returns {any}
- */
-export function createCoinInfo(type_, value) {
-    const ptr0 = passStringToWasm0(type_, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.createCoinInfo(ptr0, len0, value);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
-    }
-    return takeFromExternrefTable0(ret[0]);
-}
-
-/**
- * @returns {DustSecretKey}
- */
-export function sampleDustSecretKey() {
-    const ret = wasm.sampleDustSecretKey();
-    return DustSecretKey.__wrap(ret);
-}
-
-/**
- * @param {Date} ctime
- * @param {bigint} initial_value
- * @param {any} gen_info
- * @param {Date} now
- * @param {any} params
- * @returns {bigint}
- */
-export function updatedValue(ctime, initial_value, gen_info, now, params) {
-    const ret = wasm.updatedValue(ctime, initial_value, gen_info, now, params);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
-    }
-    return takeFromExternrefTable0(ret[0]);
 }
 
 /**
@@ -1415,16 +1415,16 @@ export function runProgram(initial, ops, cost_model, gas_limit) {
     return VmResults.__wrap(ret[0]);
 }
 
-function __wbg_adapter_6(arg0, arg1, arg2) {
-    wasm.closure3845_externref_shim(arg0, arg1, arg2);
+function __wbg_adapter_12(arg0, arg1, arg2) {
+    wasm.closure3856_externref_shim(arg0, arg1, arg2);
 }
 
-function __wbg_adapter_807(arg0, arg1, arg2, arg3) {
-    wasm.closure3889_externref_shim(arg0, arg1, arg2, arg3);
+function __wbg_adapter_810(arg0, arg1, arg2, arg3) {
+    wasm.closure3900_externref_shim(arg0, arg1, arg2, arg3);
 }
 
-function __wbg_adapter_902(arg0, arg1, arg2, arg3, arg4) {
-    wasm.closure3887_externref_shim(arg0, arg1, arg2, arg3, arg4);
+function __wbg_adapter_905(arg0, arg1, arg2, arg3, arg4) {
+    wasm.closure3898_externref_shim(arg0, arg1, arg2, arg3, arg4);
 }
 
 const __wbindgen_enum_ReadableStreamType = ["bytes"];
@@ -4981,6 +4981,21 @@ export class LedgerParameters {
         return LedgerParameters.__wrap(ret[0]);
     }
     /**
+     * The per-block limit for each cost dimension.
+     *
+     * This is the denominator `normalizeFullness` divides by. Exposing it lets a consumer see
+     * how close a block came to each limit, and lets a clamping normalizer be checked against
+     * the same numbers the ledger used.
+     * @returns {any}
+     */
+    get blockLimits() {
+        const ret = wasm.ledgerparameters_blockLimits(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * @returns {LedgerParameters}
      */
     static initialParameters() {
@@ -5011,6 +5026,30 @@ export class LedgerParameters {
     get transactionCostModel() {
         const ret = wasm.ledgerparameters_transactionCostModel(this.__wbg_ptr);
         return TransactionCostModel.__wrap(ret);
+    }
+    /**
+     * Normalize a block's fullness, clamping each dimension to its limit first.
+     *
+     * `normalizeFullness` returns `None` -- and so throws here -- when any dimension exceeds its
+     * limit. That is not what the node does. The node clamps to the limits and then normalizes,
+     * reporting an overfull block as exactly full rather than failing the block; see
+     * `clamp_and_normalize` in the node's ledger helpers, which `post_block_update` calls on
+     * every block. A consumer replaying blocks must match that behaviour or it will throw where
+     * the chain proceeded, and diverge from the chain's own recorded state.
+     *
+     * Blocks should never exceed the limits -- validation is supposed to prevent it -- so this
+     * differs from `normalizeFullness` only in the case that ought to be impossible. It is the
+     * one to use when reproducing the chain; `normalizeFullness` is the one to use when you
+     * want to be told that an input was over the limits.
+     * @param {any} fullness
+     * @returns {any}
+     */
+    clampAndNormalizeFullness(fullness) {
+        const ret = wasm.ledgerparameters_clampAndNormalizeFullness(this.__wbg_ptr, fullness);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     constructor() {
         const ret = wasm.ledgerparameters_new();
@@ -7086,6 +7125,33 @@ export class SystemTransaction {
         this.__wbg_ptr = ret[0] >>> 0;
         SystemTransactionFinalization.register(this, this.__wbg_ptr, this);
         return this;
+    }
+    /**
+     * The synthetic cost of applying this system transaction under `params`.
+     *
+     * Mirrors `Transaction::cost` above, and delegates to the same ledger method
+     * (`ledger::structure::SystemTransaction::cost`) the node calls while folding a block:
+     * `apply_system_tx` adds this to the running block fullness exactly as the regular path
+     * adds a transaction's cost.
+     *
+     * Unlike the regular `Transaction` sibling there is no `enforceTimeToDismiss` argument and
+     * no error case -- the Rust method is infallible. A system transaction is authored by the
+     * chain itself, so the time-to-dismiss check that can reject a user transaction does not
+     * apply to it.
+     *
+     * Without this, a JavaScript consumer replaying a block can cost that block's regular
+     * transactions but not its system transactions, so it cannot reconstruct block fullness --
+     * and genesis, which is *only* system transactions, would always appear empty.
+     * @param {LedgerParameters} params
+     * @returns {any}
+     */
+    cost(params) {
+        _assertClass(params, LedgerParameters);
+        const ret = wasm.systemtransaction_cost(this.__wbg_ptr, params.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * @returns {Uint8Array}
@@ -9913,7 +9979,7 @@ export function __wbg_forEach_48feffedd75c5b94(arg0, arg1, arg2) {
             const a = state0.a;
             state0.a = 0;
             try {
-                return __wbg_adapter_902(a, state0.b, arg0, arg1, arg2);
+                return __wbg_adapter_905(a, state0.b, arg0, arg1, arg2);
             } finally {
                 state0.a = a;
             }
@@ -9931,7 +9997,7 @@ export function __wbg_forEach_859dfd887a0f866c(arg0, arg1, arg2) {
             const a = state0.a;
             state0.a = 0;
             try {
-                return __wbg_adapter_807(a, state0.b, arg0, arg1);
+                return __wbg_adapter_810(a, state0.b, arg0, arg1);
             } finally {
                 state0.a = a;
             }
@@ -10129,7 +10195,7 @@ export function __wbg_new_2e3c58a15f39f5f9(arg0, arg1) {
             const a = state0.a;
             state0.a = 0;
             try {
-                return __wbg_adapter_807(a, state0.b, arg0, arg1);
+                return __wbg_adapter_810(a, state0.b, arg0, arg1);
             } finally {
                 state0.a = a;
             }
@@ -10558,12 +10624,6 @@ export function __wbindgen_cast_9ae0607507abb057(arg0) {
     return ret;
 };
 
-export function __wbindgen_cast_9f244f1912361677(arg0, arg1) {
-    // Cast intrinsic for `Closure(Closure { dtor_idx: 3844, function: Function { arguments: [Externref], shim_idx: 3845, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-    const ret = makeMutClosure(arg0, arg1, 3844, __wbg_adapter_6);
-    return ret;
-};
-
 export function __wbindgen_cast_cb9088102bce6b30(arg0, arg1) {
     // Cast intrinsic for `Ref(Slice(U8)) -> NamedExternref("Uint8Array")`.
     const ret = getArrayU8FromWasm0(arg0, arg1);
@@ -10579,6 +10639,12 @@ export function __wbindgen_cast_d6cd19b81560fd6e(arg0) {
 export function __wbindgen_cast_e7b45dd881f38ce3(arg0, arg1) {
     // Cast intrinsic for `U128 -> Externref`.
     const ret = (BigInt.asUintN(64, arg0) | (BigInt.asUintN(64, arg1) << BigInt(64)));
+    return ret;
+};
+
+export function __wbindgen_cast_ebdc0a010724de78(arg0, arg1) {
+    // Cast intrinsic for `Closure(Closure { dtor_idx: 3855, function: Function { arguments: [Externref], shim_idx: 3856, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+    const ret = makeMutClosure(arg0, arg1, 3855, __wbg_adapter_12);
     return ret;
 };
 

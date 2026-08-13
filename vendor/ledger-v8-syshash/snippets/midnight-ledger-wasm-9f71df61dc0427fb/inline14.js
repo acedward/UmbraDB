@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function PreTranscript_() { return wasm.PreTranscript; }
+import * as wasm from '#self'; export function DustSpend_() { return wasm.DustSpend; }

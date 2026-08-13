@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function SignatureErased_() { return wasm.SignatureErased; }
+import * as wasm from '#self'; export function Proof_() { return wasm.Proof; }

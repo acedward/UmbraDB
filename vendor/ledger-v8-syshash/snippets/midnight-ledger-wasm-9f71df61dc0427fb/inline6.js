@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function Binding_() { return wasm.Binding; }
+import * as wasm from '#self'; export function NoBinding_() { return wasm.NoBinding; }

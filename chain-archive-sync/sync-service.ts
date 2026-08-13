@@ -103,7 +103,7 @@ const SYSTEM_TX_TAG = "midnight:system-transaction";
 /** Identifies the ledger build whose encoding a checkpoint's bytes are in. Bumping the vendored
  *  ledger MUST bump this: serialized state is a ledger-internal encoding, and resuming it under a
  *  build that reads it differently produces wrong replay outcomes rather than an error. */
-const LEDGER_STATE_VERSION = "ledger-v8@8.1.0-syshash.1";
+const LEDGER_STATE_VERSION = "ledger-v8@8.1.0-syshash.2";
 
 function hexToBytes(hex: string): Uint8Array {
   return new Uint8Array(Buffer.from(hexNoPrefix(hex), "hex"));

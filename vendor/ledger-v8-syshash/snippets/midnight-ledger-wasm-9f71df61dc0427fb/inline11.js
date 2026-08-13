@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function VerifierKeyInsert_() { return wasm.VerifierKeyInsert; }
+import * as wasm from '#self'; export function ZswapTransient_() { return wasm.ZswapTransient; }

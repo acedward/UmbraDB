@@ -1,6 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { loadLedgerV8, ledgerSupportsSystemTransactionHash } from "../../chain-archive-sync/tx-replay-decoder.js";
+import {
+  loadLedgerV8,
+  ledgerSupportsBlockFullness,
+  ledgerSupportsSystemTransactionHash,
+} from "../../chain-archive-sync/tx-replay-decoder.js";
 
 /**
  * The acceptance gate for the vendored ledger build (`vendor/ledger-v8-syshash`).
@@ -74,5 +78,72 @@ describe("vendored ledger build reproduces the indexer's system-transaction hash
         v.expectedHash.toLowerCase(),
       );
     }
+  });
+
+  it("exposes SystemTransaction.cost and clampAndNormalizeFullness", async () => {
+    // Stated separately from the hash export above because they arrived in a different build:
+    // `…syshash.1` could hash a system transaction but not cost one. A build with only the older
+    // export must fail HERE, naming the missing capability, rather than in the arithmetic below.
+    await expect(ledgerSupportsBlockFullness()).resolves.toBe(true);
+  });
+
+  /**
+   * The fullness half of the gate.
+   *
+   * There is no external ground truth for these the way the indexer's records are ground truth for
+   * the hashes -- the indexer stores hashes, not costs. So this pins them against the NODE's
+   * definition instead, in the one place where being wrong is silent rather than loud: genesis.
+   *
+   * Genesis is nothing but system transactions. Before `cost` was exported there was no way to
+   * account for any of it, so a consumer recorded its fullness as zero -- a plausible-looking
+   * number that no assertion caught. Asserting the real value is what makes zero a detectable
+   * regression rather than an unverified guess.
+   */
+  const DIMENSIONS = ["readTime", "computeTime", "blockUsage", "bytesWritten", "bytesChurned"] as const;
+
+  it("folds genesis's system transactions into a non-zero fullness", async () => {
+    const ledger = await loadLedgerV8();
+    const params = ledger.LedgerParameters.initialParameters();
+
+    // The node's `apply_system_tx` adds each transaction's cost to the running block fullness.
+    const accumulated: Record<string, bigint> = Object.fromEntries(DIMENSIONS.map((d) => [d, 0n]));
+    for (const v of vectors) {
+      const tx = ledger.SystemTransaction.deserialize(new Uint8Array(Buffer.from(v.rawHex, "hex")));
+      const cost = tx.cost(params);
+      for (const d of DIMENSIONS) accumulated[d]! += BigInt(cost[d]);
+    }
+    expect(
+      DIMENSIONS.some((d) => accumulated[d]! > 0n),
+      "genesis's system transactions must cost something",
+    ).toBe(true);
+
+    // Overall fullness is the max across dimensions, per the node's `compute_overall_fullness`.
+    const normalized = params.clampAndNormalizeFullness(accumulated);
+    const overall = Math.max(...DIMENSIONS.map((d) => Number(normalized[d])));
+    expect(overall, "genesis's overall fullness -- the value zero was standing in for").toBeCloseTo(
+      0.903322,
+      6,
+    );
+  });
+
+  it("clamps to the limits where the node clamps, instead of throwing", async () => {
+    const ledger = await loadLedgerV8();
+    const params = ledger.LedgerParameters.initialParameters();
+    const limits = params.blockLimits;
+
+    // Within the limits the clamping variant must be the SAME normalization, not merely a close
+    // one -- otherwise it would quietly change every ordinary block, not just overfull ones.
+    const half = Object.fromEntries(DIMENSIONS.map((d) => [d, BigInt(limits[d]) / 2n]));
+    const plain = params.normalizeFullness(half);
+    const clamped = params.clampAndNormalizeFullness(half);
+    for (const d of DIMENSIONS) expect(clamped[d], `dimension ${d}`).toBe(plain[d]);
+
+    // Over the limits they must diverge, and the clamping one is what `post_block_update` does:
+    // report the block as exactly full. `normalizeFullness` throwing here is the bug it exists to
+    // avoid -- a consumer would fail on a block the chain itself accepted.
+    const over = Object.fromEntries(DIMENSIONS.map((d) => [d, BigInt(limits[d]) * 2n + 1n]));
+    expect(() => params.normalizeFullness(over)).toThrow();
+    const overClamped = params.clampAndNormalizeFullness(over);
+    for (const d of DIMENSIONS) expect(Number(overClamped[d]), `dimension ${d}`).toBe(1);
   });
 });

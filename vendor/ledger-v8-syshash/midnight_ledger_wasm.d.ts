@@ -1,5 +1,9 @@
 /* tslint:disable */
 /* eslint-disable */
+export function partitionTranscripts(calls: any[], params: LedgerParameters): Array<any>;
+export function createCoinInfo(type_: string, value: any): any;
+export function sampleDustSecretKey(): DustSecretKey;
+export function updatedValue(ctime: Date, initial_value: bigint, gen_info: any, now: Date, params: any): bigint;
 export function sampleEncryptionPublicKey(): string;
 export function createCheckPayload(serialized_preimage: Uint8Array, ir?: Uint8Array | null): Uint8Array;
 export function feeToken(): any;
@@ -19,10 +23,6 @@ export function createProvingTransactionPayload(tx: Transaction, proving_data: M
 export function nativeToken(): any;
 export function sampleIntentHash(): string;
 export function coinNullifier(coin_info: any, coin_secret_key: CoinSecretKey): string;
-export function partitionTranscripts(calls: any[], params: LedgerParameters): Array<any>;
-export function createCoinInfo(type_: string, value: any): any;
-export function sampleDustSecretKey(): DustSecretKey;
-export function updatedValue(ctime: Date, initial_value: bigint, gen_info: any, now: Date, params: any): bigint;
 export function encodeUserAddress(addr: string): Uint8Array;
 export function encodeContractAddress(addr: string): Uint8Array;
 export function decodeRawTokenType(tt: Uint8Array): string;
@@ -434,10 +434,34 @@ export class LedgerParameters {
   static initialParameters(): LedgerParameters;
   normalizeFullness(fullness: any): any;
   maxPriceAdjustment(): number;
+  /**
+   * Normalize a block's fullness, clamping each dimension to its limit first.
+   *
+   * `normalizeFullness` returns `None` -- and so throws here -- when any dimension exceeds its
+   * limit. That is not what the node does. The node clamps to the limits and then normalizes,
+   * reporting an overfull block as exactly full rather than failing the block; see
+   * `clamp_and_normalize` in the node's ledger helpers, which `post_block_update` calls on
+   * every block. A consumer replaying blocks must match that behaviour or it will throw where
+   * the chain proceeded, and diverge from the chain's own recorded state.
+   *
+   * Blocks should never exceed the limits -- validation is supposed to prevent it -- so this
+   * differs from `normalizeFullness` only in the case that ought to be impossible. It is the
+   * one to use when reproducing the chain; `normalizeFullness` is the one to use when you
+   * want to be told that an input was over the limits.
+   */
+  clampAndNormalizeFullness(fullness: any): any;
   constructor();
   serialize(): Uint8Array;
   toString(compact?: boolean | null): string;
   readonly feePrices: any;
+  /**
+   * The per-block limit for each cost dimension.
+   *
+   * This is the denominator `normalizeFullness` divides by. Exposing it lets a consumer see
+   * how close a block came to each limit, and lets a clamping normalizer be checked against
+   * the same numbers the ledger used.
+   */
+  readonly blockLimits: any;
   readonly transactionCostModel: TransactionCostModel;
   readonly dust: DustParameters;
 }
@@ -651,6 +675,24 @@ export class SystemTransaction {
    */
   transactionHash(): string;
   constructor();
+  /**
+   * The synthetic cost of applying this system transaction under `params`.
+   *
+   * Mirrors `Transaction::cost` above, and delegates to the same ledger method
+   * (`ledger::structure::SystemTransaction::cost`) the node calls while folding a block:
+   * `apply_system_tx` adds this to the running block fullness exactly as the regular path
+   * adds a transaction's cost.
+   *
+   * Unlike the regular `Transaction` sibling there is no `enforceTimeToDismiss` argument and
+   * no error case -- the Rust method is infallible. A system transaction is authored by the
+   * chain itself, so the time-to-dismiss check that can reject a user transaction does not
+   * apply to it.
+   *
+   * Without this, a JavaScript consumer replaying a block can cost that block's regular
+   * transactions but not its system transactions, so it cannot reconstruct block fullness --
+   * and genesis, which is *only* system transactions, would always appear empty.
+   */
+  cost(params: LedgerParameters): any;
   serialize(): Uint8Array;
   toString(compact?: boolean | null): string;
 }

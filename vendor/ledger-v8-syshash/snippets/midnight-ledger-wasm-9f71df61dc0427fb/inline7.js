@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function UnshieldedOffer_() { return wasm.UnshieldedOffer; }
+import * as wasm from '#self'; export function PreBinding_() { return wasm.PreBinding; }

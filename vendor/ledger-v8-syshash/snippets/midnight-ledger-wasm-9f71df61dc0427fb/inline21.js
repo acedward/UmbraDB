@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function DustSpend_() { return wasm.DustSpend; }
+import * as wasm from '#self'; export function VerifierKeyInsert_() { return wasm.VerifierKeyInsert; }

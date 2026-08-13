@@ -159,7 +159,7 @@ describe("replay validation gates ingest", () => {
     `;
     expect(rows).toHaveLength(1);
     expect(rows[0]!.h).toBe("0");
-    expect(rows[0]!.ledger_version).toContain("8.1.0-syshash.1");
+    expect(rows[0]!.ledger_version).toContain("8.1.0-syshash.2");
     // Real state, not an empty placeholder: a blank state is ~816 bytes, and genesis's five system
     // transactions take it to tens of kilobytes.
     expect(rows[0]!.n).toBeGreaterThan(1000);

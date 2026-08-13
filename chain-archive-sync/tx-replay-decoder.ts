@@ -299,6 +299,35 @@ export async function ledgerSupportsSystemTransactionHash(): Promise<boolean> {
   }
 }
 
+/**
+ * Whether the ledger build that will actually be loaded can reproduce a block's fullness.
+ *
+ * Separate from `ledgerSupportsSystemTransactionHash` because it is a separate capability with a
+ * separate consequence, and the two were added by different builds: a build can hash system
+ * transactions (`…syshash.1`) without being able to cost them. Folding them into one probe would
+ * mean a build with only the older export reported the newer capability as present.
+ *
+ * Both halves are required and neither is sufficient. `SystemTransaction.cost` is what lets
+ * genesis be costed at all -- it is nothing but system transactions, so without it genesis's
+ * fullness is unavoidably zero. `clampAndNormalizeFullness` is what makes an overfull block
+ * report as full instead of throwing, matching the node's `post_block_update`; with only
+ * `normalizeFullness` a consumer would throw on a block the chain accepted.
+ *
+ * Probes the loaded module rather than inspecting configuration, because configuration can point
+ * at a build that does not have it.
+ */
+export async function ledgerSupportsBlockFullness(): Promise<boolean> {
+  try {
+    const ledger = await loadLedgerV8();
+    return (
+      typeof ledger?.SystemTransaction?.prototype?.cost === "function" &&
+      typeof ledger?.LedgerParameters?.prototype?.clampAndNormalizeFullness === "function"
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Candidate roots for a BUILT sibling `midnight-wallet` checkout, in precedence order --
  *  `MIDNIGHT_WALLET_REPO` first (same override the wallet-sdk loader honors), then the two
  *  layouts real environments have used.

@@ -14,9 +14,13 @@ concurrency:
   group: vendored-ledger-${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
-# `vendor/ledger-v8-syshash` is a committed binary build of the Midnight ledger WASM, carrying the
-# `SystemTransaction.transactionHash()` export the published package lacks. Node-only ingest cannot
-# archive system transactions without it, so its correctness is load-bearing for the whole archive.
+# `vendor/ledger-v8-syshash` is a committed binary build of the Midnight ledger WASM, carrying three
+# exports the published package lacks: `SystemTransaction.transactionHash()`, without which
+# node-only ingest cannot archive system transactions at all; `SystemTransaction.cost()`, without
+# which it cannot cost them, and so records genesis -- which is nothing but system transactions --
+# as having zero fullness; and `LedgerParameters.clampAndNormalizeFullness()`, without which an
+# overfull block throws where the node reports it as full. Its correctness is load-bearing for the
+# whole archive.
 #
 # This gate deliberately does NOT rebuild and compare bytes. The build is not bit-reproducible:
 # the same commit, `wasm-pack 0.15.0` and `rustc 1.93.0` produce a different `.wasm` hash on each
@@ -56,7 +60,7 @@ jobs:
           set -euo pipefail
           version="$(node -e "console.log(JSON.parse(require('fs').readFileSync('node_modules/@midnight-ntwrk/ledger-v8/package.json','utf8')).version)")"
           echo "resolved ledger version: $version"
-          test "$version" = "8.1.0-syshash.1"
+          test "$version" = "8.1.0-syshash.2"
 
       # Layer 2, the meaningful one: behavioural equivalence with an INDEPENDENT implementation.
       # The five system transactions of a 1.0.0 devnet genesis block, as archived by
@@ -66,14 +70,24 @@ jobs:
       - name: Verify the export against the indexer's ground truth
         run: npx vitest run test/chain-archive-sync/vendored-ledger-vectors.test.ts --maxWorkers=1
 
-      # The export is the entire reason this artifact is vendored; assert it exists explicitly so a
-      # build silently missing it fails here rather than in ingest.
-      - name: Verify the system-transaction hash export is present
+      # These exports are the entire reason this artifact is vendored; assert each exists explicitly
+      # so a build silently missing one fails here, naming it, rather than in ingest. Checked
+      # individually rather than as a conjunction so the failure says WHICH one is absent -- they
+      # were added by different builds, and `…syshash.1` has the first but not the other two.
+      - name: Verify the vendored exports are present
         run: |
           set -euo pipefail
           node --input-type=module -e "
             const m = await import('@midnight-ntwrk/ledger-v8');
-            const ok = typeof m.SystemTransaction?.prototype?.transactionHash === 'function';
-            console.log('SystemTransaction.transactionHash present:', ok);
+            const checks = {
+              'SystemTransaction.transactionHash': typeof m.SystemTransaction?.prototype?.transactionHash === 'function',
+              'SystemTransaction.cost': typeof m.SystemTransaction?.prototype?.cost === 'function',
+              'LedgerParameters.clampAndNormalizeFullness': typeof m.LedgerParameters?.prototype?.clampAndNormalizeFullness === 'function',
+            };
+            let ok = true;
+            for (const [name, present] of Object.entries(checks)) {
+              console.log((present ? 'present: ' : 'MISSING: ') + name);
+              if (!present) ok = false;
+            }
             process.exit(ok ? 0 : 1);
           "

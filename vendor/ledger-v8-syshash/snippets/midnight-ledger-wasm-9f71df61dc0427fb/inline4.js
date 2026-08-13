@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function PreBinding_() { return wasm.PreBinding; }
+import * as wasm from '#self'; export function PreProof_() { return wasm.PreProof; }

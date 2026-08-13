@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function ContractCall_() { return wasm.ContractCall; }
+import * as wasm from '#self'; export function Binding_() { return wasm.Binding; }

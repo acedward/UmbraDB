@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function VerifierKeyRemove_() { return wasm.VerifierKeyRemove; }
+import * as wasm from '#self'; export function ZswapOffer_() { return wasm.ZswapOffer; }

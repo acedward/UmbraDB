@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function ZswapInput_() { return wasm.ZswapInput; }
+import * as wasm from '#self'; export function ContractCall_() { return wasm.ContractCall; }

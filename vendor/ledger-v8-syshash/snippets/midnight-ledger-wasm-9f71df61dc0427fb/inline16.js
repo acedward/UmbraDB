@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function Intent_() { return wasm.Intent; }
+import * as wasm from '#self'; export function DustRegistration_() { return wasm.DustRegistration; }

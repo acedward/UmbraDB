@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function ZswapOffer_() { return wasm.ZswapOffer; }
+import * as wasm from '#self'; export function ContractDeploy_() { return wasm.ContractDeploy; }
