@@ -1,6 +1,11 @@
 # Re-audit brief — audit round 3
 
-**Current document.** Supersedes `audit-round-2-remediation-brief.md`, which is retained as history
+> **RE-AUDITED (2026-08-13): BLOCK/BLOCK/BLOCK at head `5b6a0b6`.** The targeted re-audit found
+> every fix below except R7's fresh-schema half **incomplete or wrong in production paths** — see
+> the sprint plan §16 for the verified findings register. The "Fixed in `1d4bb36`" table is a
+> statement of what was attempted, not of current state.
+
+**Current document for the round-3 attempt; §16 of the sprint plan is the current register.** Supersedes `audit-round-2-remediation-brief.md`, which is retained as history
 and marked accordingly.
 
 **Head:** `1d4bb36` · **Base:** `origin/main` `3c0c68b` (still a direct ancestor — no rebase needed)

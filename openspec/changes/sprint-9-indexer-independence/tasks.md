@@ -412,6 +412,11 @@ needs fresh PASS×3 on the final head rebased onto current `main`.
   and add scanning; regenerate graphify on the final head.
 ## 10. Audit round 3 remediation (plan §15) — gates PR #1
 
+> **Targeted re-audit (2026-08-13): BLOCK×3.** Boxes 10.1–10.5 below were checked in good faith
+> and are now known to be incomplete in production paths — see plan §16 (T1–T8) for the verified
+> findings register, which supersedes these check-marks. They are left checked as a record of what
+> was attempted; §16's items are the open work.
+
 Round 2's remediation was re-audited and returned BLOCK×3 on head `c7493c9`. §9 below is that
 round's record and is now history; A1 held, A2/A3/A5 did not.
 

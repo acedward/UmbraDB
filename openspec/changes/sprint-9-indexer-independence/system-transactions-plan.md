@@ -749,6 +749,10 @@ both sources remain first-class while the indexer exists. This supersedes any re
 a single monolithic gate and resolves §8a.4 (merge/cutover tiering): each stage below has its own
 done-condition, and earlier stages are mergeable without later ones.
 
+> **TARGETED RE-AUDIT (2026-08-13): BLOCK×3 at head `5b6a0b6`** — the round-3 fixes themselves
+> failed re-audit; §16 is the current register. The banner below is the round-3 verdict it
+> attempted to remediate.
+>
 > **AUDIT ROUND 3 (2026-08-13): three personas, three BLOCKs — PR #1 must not merge.** Findings:
 > <https://github.com/acedward/UmbraDB/pull/1#issuecomment-5273905932>. Current brief:
 > `audit-round-3-remediation-brief.md`. **A1 from round 2 held under all three reviews; A2, A3 and
@@ -1160,3 +1164,30 @@ failure proves nothing about it.**
 
 **Exit:** targeted re-audit of R1–R8 (requested now), then O1–O5, then fresh PASS/PASS/PASS on the
 final head. Merge is gated by that verdict alone — not by any mechanism.
+
+
+## 16. Targeted re-audit of the round-3 fixes — register (2026-08-13)
+
+Audited head `5b6a0b6` (implementation `1d4bb36`). Verdict BLOCK×3. The five declared-open items
+(§15 O1–O5) were correctly excluded and remain open. Verified findings, each checked against the
+code before being recorded:
+
+| # | Severity | Finding |
+|---|---|---|
+| T1 | HIGH | **The genesis timestamp exemption is wrong for the target node.** 1.0 always adds `Timestamp::set` to genesis; the committed devnet genesis decodes to `1754395200000` ms, not 0. Also: checkpoints store no parent timestamp, so the first resumed block gets `lastBlockTime=0`; and catch-up substitutes 0 for missing non-genesis timestamps — the exact "guessing zero" the R1 fix claimed to refuse |
+| T2 | HIGH | **Resume never compares the checkpoint's embedded network with `ledgerNetworkId`** — pre-fix wrong-network/zero-time checkpoints carry the same `ledger_version` marker and are accepted |
+| T3 | HIGH | **Replay atomic within the engine, not across the ingest block**: replay advances before bundle/checkpoint/watermark persistence, so a one-shot durable-write failure leaves replay ahead and the CLI then refuses that height forever. Reproduced by the auditor with an injected first-write failure |
+| T4 | HIGH | **Zero fullness was avoidable all along**: `LedgerParameters.normalizeFullness(fullness)` exists in the vendored build (`midnight_ledger_wasm.d.ts:435`). My recorded claim that normalization was impossible (§10.3 finding, module doc) is **wrong** — verified 2026-08-13. `cost()`/`fees()` returns are discarded; a ten-cost probe produced overall fullness 0.10272 and a *different serialized state* than zero-fullness |
+| T5 | HIGH | **Checkpoint selection ignores fork ancestry** — filters `(net, height)` only, though 004 permits fork-distinct checkpoints; an orphan checkpoint can be combined with canonical successors. Partial catch-up failures also poison the in-memory retry state |
+| T6 | HIGH | **R8 is absent from the release artifact**: `package.json` advertises `archive:sync` but `npm pack` ships only `dist` + docs — no CLI, and `tsx`/ledger are devDependencies. Checkpoint interval `0`/`NaN` silently disables checkpointing |
+| T7 | MED | **R5 untested and partly fail-open**: the transport test faults `runtimeVersionAt` only (restoring the missed catch still passes), and `/unknown block/i` classifies an unknown hash as pruning — silently selecting the committed capture |
+| T8 | MED | **R7 lacks regressions** (removing both new guard branches stays green — deletion coverage only exercises `tx_raw`) and databases that recorded the old 003/004 names skip the edited bodies — a forward migration is needed if those draft schemas are supported |
+
+**Corrections to this plan's own record, forced by T1 and T4:** the §10.3 claim that block-limits
+normalization is unavailable in the WASM is withdrawn; and every statement that "genesis has no
+timestamp" is wrong for the target node — the *synthetic test fixtures* omit `Timestamp::set`,
+which is precisely why the suite could not see T1.
+
+**Exit unchanged:** fix T1–T8, then O1–O5, then fresh PASS×3. Acceptance per finding now requires
+the §10 strengthened rule AND exercising the actual production path (packed artifact, real fork,
+injected write failure), since T3/T6 were found exactly there.
