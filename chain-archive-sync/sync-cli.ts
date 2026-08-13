@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * chain-archive-sync CLI -- runs {@link ChainArchiveSyncService} in a resumable loop against a
  * live Midnight node (JSON-RPC) + indexer (GraphQL), populating the `chain_archive` schema. This
@@ -51,10 +52,36 @@ const NODE_ONLY = process.env.NODE_ONLY === "1" || process.env.INDEXER_URL === "
 // Validation mode: compare the node-derived view against the indexer's on every block. Off by
 // default, so indexer-sourced ingest behaves exactly as it did before node reading existed.
 const ORACLE_CROSS_CHECK = process.env.ORACLE_CROSS_CHECK === "1";
-const MAX_BLOCKS = Number(process.env.MAX_BLOCKS ?? "200");
 const REPLAY_VALIDATION = process.env.REPLAY_VALIDATION === "1";
 const LEDGER_NETWORK_ID = process.env.LEDGER_NETWORK_ID;
-const REPLAY_CHECKPOINT_INTERVAL = Number(process.env.REPLAY_CHECKPOINT_INTERVAL ?? "1000");
+
+/**
+ * Read a positive-whole-number setting, or exit with a message naming what was wrong.
+ *
+ * Audit T6: `REPLAY_CHECKPOINT_INTERVAL=0` (and `NaN`, and fractional values) SILENTLY DISABLED
+ * checkpointing. The service tests `height % interval === 0`; with `0` that is `NaN`, with `2.5`
+ * it is almost never true -- so no checkpoint was ever written, no error was raised, and the only
+ * symptom appeared much later as a restart replaying the entire chain. A misconfiguration that
+ * turns a durability feature off must not look like a working configuration.
+ */
+function positiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `${name} must be a whole number >= 1; got "${raw}". Zero, fractional, negative and ` +
+        "non-numeric values do not merely misconfigure this setting -- they disable the behaviour " +
+        "it controls without any error, which is why they are rejected here rather than tolerated.",
+    );
+    process.exit(1);
+  }
+  return value;
+}
+
+const MAX_BLOCKS = positiveIntEnv("MAX_BLOCKS", 200);
+const REPLAY_CHECKPOINT_INTERVAL = positiveIntEnv("REPLAY_CHECKPOINT_INTERVAL", 1000);
 
 if (NODE_ONLY) {
   // Announced BEFORE connecting to Postgres, deliberately. Mode is known from the environment
@@ -76,7 +103,7 @@ if (NODE_ONLY) {
   );
 }
 
-if (REPLAY_VALIDATION && LEDGER_NETWORK_ID === undefined) {
+if (REPLAY_VALIDATION && (LEDGER_NETWORK_ID === undefined || LEDGER_NETWORK_ID.trim() === "")) {
   // Checked here rather than left to the service constructor, which would print the banner below
   // with "undefined" in it and then throw from deeper in the stack. An operator misconfiguring
   // this should be told what to set, immediately.

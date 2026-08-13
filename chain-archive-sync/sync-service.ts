@@ -322,6 +322,22 @@ export class ChainArchiveSyncService {
       );
     }
     this.replayCheckpointInterval = opts.replayCheckpointInterval ?? 1000;
+    // T6. `checkpointReplayIfDue` tests `height % interval === 0`. With `0` that is NaN, with a
+    // fractional interval it is almost never true, and with a negative one it is meaningless --
+    // in every case checkpointing is silently OFF while the service reports normal operation. The
+    // only symptom surfaces much later, as a restart that has to replay the entire chain. Checked
+    // in the constructor as well as in the CLI because this is the reusable API: a caller that
+    // never goes through the CLI must not be able to configure the feature into doing nothing.
+    if (
+      !Number.isInteger(this.replayCheckpointInterval) || this.replayCheckpointInterval < 1
+    ) {
+      throw new Error(
+        `replayCheckpointInterval must be a whole number >= 1; got ` +
+          `${this.replayCheckpointInterval}. Zero, fractional, negative and non-finite values ` +
+          "disable checkpointing entirely rather than adjusting it, so they are rejected instead " +
+          "of being treated as configuration.",
+      );
+    }
     this.expectedGenesisHash =
       opts.expectedGenesisHash === undefined ? undefined : hexNoPrefix(opts.expectedGenesisHash);
     this.net = opts.net;

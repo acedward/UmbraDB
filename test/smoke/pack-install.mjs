@@ -157,6 +157,89 @@ async function dockerIndependentOracles() {
     fail(`packed-.d.ts consumer compile surfaced an implicit-any / missing-declaration diagnostic (A5):\n${tscOut}`);
   }
   console.log("pack-install smoke: scratch TS consumer compiled against the installed umbradb .d.ts under --strict/noImplicitAny with zero errors (A5).");
+
+  // ---- 6. the chain-archive-sync CLI is actually DEPLOYABLE from the tarball (audit T6) --------
+  //
+  // `package.json` advertised an `archive:sync` script while `npm pack` shipped `dist` and docs
+  // only -- no CLI, and `tsx` and the ledger were devDependencies. So the documented operational
+  // entry point did not exist in the release artifact at all, and nothing noticed because every
+  // test ran it from the repo. These oracles run it from the INSTALLED package, which is the only
+  // place the claim can be checked.
+  const shipsCli = shippedPaths.includes("dist-cli/chain-archive-sync/sync-cli.js");
+  if (!shipsCli) fail("dist-cli/chain-archive-sync/sync-cli.js is NOT in the packed tarball (T6).");
+
+  // The runtime-metadata captures are read with `new URL("./<file>", import.meta.url)`, i.e. next
+  // to the module -- `tsc` does not copy them, so they must be copied into the build explicitly.
+  // Without them the CLI throws ENOENT only for runtimes whose metadata it cannot fetch live,
+  // which is exactly the situation the captures exist for.
+  const shippedCaptures = shippedPaths.filter((p) => p.endsWith(".scale"));
+  if (shippedCaptures.length === 0) {
+    fail("no .scale runtime-metadata captures in the packed tarball -- the CLI cannot fall back (T6).");
+  }
+
+  const binPath = join(scratch, "node_modules", ".bin", "umbradb-archive-sync");
+  if (!existsSync(binPath)) fail("installed package did not link the umbradb-archive-sync bin (T6).");
+
+  // The vendored ledger must be a real runtime dependency of the INSTALLED package, not a
+  // devDependency that happens to exist in the repo. Both exports replay needs are checked, so a
+  // tarball carrying a stale vendored build fails here rather than during ingest.
+  writeFileSync(
+    join(scratch, "cli-ledger.mjs"),
+    [
+      "const m = await import('@midnight-ntwrk/ledger-v8');",
+      "const ok = typeof m.SystemTransaction?.prototype?.transactionHash === 'function'",
+      "  && typeof m.SystemTransaction?.prototype?.cost === 'function'",
+      "  && typeof m.LedgerParameters?.prototype?.clampAndNormalizeFullness === 'function';",
+      "console.log(ok ? 'LEDGER_OK' : 'LEDGER_MISSING_EXPORTS');",
+      "process.exit(ok ? 0 : 6);",
+      "",
+    ].join("\n"),
+  );
+  const ledgerCheck = run(process.execPath, ["cli-ledger.mjs"], { cwd: scratch });
+  if (ledgerCheck.status !== 0 || !ledgerCheck.stdout.includes("LEDGER_OK")) {
+    fail(`the installed package cannot resolve the vendored ledger with the replay exports (T6):\n${ledgerCheck.stdout}\n${ledgerCheck.stderr}`);
+  }
+
+  // Invoke the CLI for real. A config that DISABLES checkpointing must be rejected, not accepted:
+  // `height % 0` is NaN, so interval 0 silently wrote no checkpoints at all, and the only symptom
+  // was a much later restart replaying the whole chain. `ARCHIVE_PG` points nowhere on purpose --
+  // these must fail on configuration, before any database access.
+  const unreachablePg = "postgres://u:p@127.0.0.1:1/none";
+  for (const bad of ["0", "2.5", "-1", "abc"]) {
+    const r = run(binPath, [], {
+      cwd: scratch,
+      env: { ...process.env, ARCHIVE_PG: unreachablePg, REPLAY_CHECKPOINT_INTERVAL: bad },
+    });
+    const out = `${r.stdout}\n${r.stderr}`;
+    if (r.status === 0 || !/REPLAY_CHECKPOINT_INTERVAL must be a whole number/.test(out)) {
+      fail(`packed CLI accepted REPLAY_CHECKPOINT_INTERVAL=${bad} (T6). exit=${r.status}\n${out}`);
+    }
+  }
+
+  // Replay validation without a ledger network must also be refused -- including for an EMPTY
+  // string, which the previous `=== undefined` check let through.
+  const noNetwork = run(binPath, [], {
+    cwd: scratch,
+    env: { ...process.env, ARCHIVE_PG: unreachablePg, REPLAY_VALIDATION: "1", LEDGER_NETWORK_ID: "" },
+  });
+  if (noNetwork.status === 0 || !/requires LEDGER_NETWORK_ID/.test(`${noNetwork.stdout}\n${noNetwork.stderr}`)) {
+    fail(`packed CLI accepted REPLAY_VALIDATION=1 with an empty LEDGER_NETWORK_ID (T6). exit=${noNetwork.status}`);
+  }
+
+  // And a VALID configuration must get PAST validation -- otherwise the four rejections above
+  // would also pass on a CLI that refuses everything.
+  const good = run(binPath, [], {
+    cwd: scratch,
+    env: { ...process.env, ARCHIVE_PG: unreachablePg, REPLAY_CHECKPOINT_INTERVAL: "500" },
+  });
+  const goodOut = `${good.stdout}\n${good.stderr}`;
+  if (/REPLAY_CHECKPOINT_INTERVAL must be/.test(goodOut)) {
+    fail(`packed CLI rejected a VALID checkpoint interval (T6):\n${goodOut}`);
+  }
+  if (!/\[archive-sync\]/.test(goodOut)) {
+    fail(`packed CLI did not reach its startup banner with a valid config (T6):\n${goodOut}`);
+  }
+  console.log("pack-install smoke: packed chain-archive-sync CLI runs, resolves the vendored ledger, and validates its configuration (T6).");
 }
 
 /** Docker-DEPENDENT oracle (5): migrate + put/get round-trip against a Testcontainers Postgres. */
