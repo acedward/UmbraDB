@@ -27,11 +27,11 @@
  * `indexer-common/src/domain/ledger/ledger_state.rs` exactly:
  *
  *   - regular transactions: cost counted on Success and PartialSuccess, NOT on Failure
- *     (`should_count_cost` at :265-273, commented there as matching node behaviour);
- *   - system transactions: cost always counted (:320), computed against the parameters as they
+ *     (`should_count_cost` at :252-273, commented there as matching node behaviour);
+ *   - system transactions: cost always counted (:316), computed against the parameters as they
  *     stand BEFORE the transaction is applied -- which matters, because `OverwriteParameters` is
  *     itself a system transaction and would otherwise be costed against the parameters it installs;
- *   - at block close (:493-512): clamp the accumulated cost to `parameters.limits.block_limits`,
+ *   - at block close (:493-513): clamp the accumulated cost to `parameters.limits.block_limits`,
  *     normalize, take overall fullness as the MAX of the five normalized dimensions, and pass BOTH
  *     to `postBlockUpdate`. The limits come from the state AFTER all transactions, as there.
  *
@@ -202,7 +202,7 @@ export class LedgerReplay {
         throw new ReplayRefusalError(position, "deserialize", cause);
       }
       // Cost and fees come BEFORE `wellFormed`, matching the reference's order
-      // (`ledger_state.rs:239-248`: cost, fees, then `well_formed`). They are not merely
+      // (`ledger_state.rs:240-247`: cost, fees, then `well_formed`). They are not merely
       // informational: `cost` throwing is how the reference rejects a transaction whose cost cannot
       // be modelled. The order is observable -- a transaction that would fail both checks is
       // refused at the `cost` stage there, so refusing it at `well_formed` here would misreport
@@ -241,7 +241,7 @@ export class LedgerReplay {
       outcomes.push(outcome);
     }
 
-    // Block close, mirroring the reference's `post_block_update` (`ledger_state.rs:493-512`):
+    // Block close, mirroring the reference's `post_block_update` (`ledger_state.rs:493-513`):
     // clamp the accumulated cost to the block limits, normalize, and take overall fullness as the
     // max across the five normalized dimensions. The limits are read from the state AFTER all
     // transactions, as there -- a block whose system transactions changed the parameters is closed
