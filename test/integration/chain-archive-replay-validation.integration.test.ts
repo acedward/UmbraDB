@@ -1,10 +1,16 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
+import { PgChainArchiveStore } from "../../src/postgres/chain-archive-store.js";
 import { metadataRpcResult } from "./fake-node-metadata.js";
+
+/** Must match `LEDGER_STATE_VERSION` in the sync service -- a checkpoint row written by hand has
+ *  to look valid in every respect except the one under test. */
+const LEDGER_VERSION = "ledger-v8@8.1.0-syshash.2";
 
 /**
  * Audit A2: ledger replay GATES ingest.
@@ -116,7 +122,20 @@ const HEIGHT_1_HASH = `0x${"d1".repeat(32)}`;
 const HEIGHT_1_TIMESTAMP_MS = 1754395206000;
 const HEIGHT_1_TIMESTAMP_INHERENT = "0x280501000b70611a7a9801";
 
-function twoBlockNodeFetch(genesisExtrinsics: string[]): typeof fetch {
+const HEIGHT_2_HASH = `0x${"d2".repeat(32)}`;
+const HEIGHT_2_TIMESTAMP_MS = 1754395212000;
+const HEIGHT_2_TIMESTAMP_INHERENT = "0x280501000be0781a7a9801";
+
+/** Lets a test fault `chain_getBlock` for one specific hash, to inject a failure during replay
+ *  catch-up -- which reads archived blocks back from the node. */
+interface NodeFault { failGetBlockFor?: string }
+
+function chainNodeFetch(
+  genesisExtrinsics: string[],
+  opts: { head?: string; fault?: NodeFault } = {},
+): typeof fetch {
+  const head = opts.head ?? HEIGHT_1_HASH;
+  const fault = opts.fault ?? {};
   const headers: Record<string, Record<string, unknown>> = {
     [BLOCK_HASH]: {
       parentHash: `0x${"00".repeat(32)}`, number: "0x0",
@@ -128,13 +147,20 @@ function twoBlockNodeFetch(genesisExtrinsics: string[]): typeof fetch {
       stateRoot: `0x${"b1".repeat(32)}`, extrinsicsRoot: `0x${"c1".repeat(32)}`,
       digest: { logs: [MNSV_DIGEST_V1] },
     },
+    [HEIGHT_2_HASH]: {
+      parentHash: HEIGHT_1_HASH, number: "0x2",
+      stateRoot: `0x${"b2".repeat(32)}`, extrinsicsRoot: `0x${"c2".repeat(32)}`,
+      digest: { logs: [MNSV_DIGEST_V1] },
+    },
   };
-  // Height 1 carries only its timestamp inherent: an empty block still exercises the fold, and
-  // there is no second real regular transaction that applies cleanly to the advanced state.
+  // Heights 1 and 2 carry only their timestamp inherent: an empty block still exercises the fold,
+  // and there is no second real regular transaction that applies cleanly to the advanced state.
   const extrinsics: Record<string, string[]> = {
     [BLOCK_HASH]: genesisExtrinsics,
     [HEIGHT_1_HASH]: [HEIGHT_1_TIMESTAMP_INHERENT],
+    [HEIGHT_2_HASH]: [HEIGHT_2_TIMESTAMP_INHERENT],
   };
+  const byNumber = [BLOCK_HASH, HEIGHT_1_HASH, HEIGHT_2_HASH];
   return (async (_input: RequestInfo | URL, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body ?? "{}"));
     const reply = (result: unknown) =>
@@ -146,15 +172,18 @@ function twoBlockNodeFetch(genesisExtrinsics: string[]): typeof fetch {
     switch (body.method) {
       case "chain_getBlockHash": {
         const n = body.params?.[0];
-        if (n === undefined || n === null) return reply(HEIGHT_1_HASH);
-        return reply(Number(n) === 0 ? BLOCK_HASH : Number(n) === 1 ? HEIGHT_1_HASH : null);
+        if (n === undefined || n === null) return reply(head);
+        return reply(byNumber[Number(n)] ?? null);
       }
       case "chain_getFinalizedHead":
-        return reply(HEIGHT_1_HASH);
+        return reply(head);
       case "chain_getHeader":
-        return reply(headers[String(body.params?.[0] ?? HEIGHT_1_HASH)] ?? headers[HEIGHT_1_HASH]);
+        return reply(headers[String(body.params?.[0] ?? head)] ?? headers[head]);
       case "chain_getBlock": {
-        const h = String(body.params?.[0] ?? HEIGHT_1_HASH);
+        const h = String(body.params?.[0] ?? head);
+        if (fault.failGetBlockFor !== undefined && h === fault.failGetBlockFor) {
+          return new Response("injected node failure", { status: 503 });
+        }
         return reply({ block: { header: headers[h], extrinsics: extrinsics[h] ?? [] } });
       }
       case "state_getStorageAt":
@@ -166,6 +195,9 @@ function twoBlockNodeFetch(genesisExtrinsics: string[]): typeof fetch {
     }
   }) as typeof fetch;
 }
+
+/** Back-compat alias for the two-block cases written before height 2 existed. */
+const twoBlockNodeFetch = (genesisExtrinsics: string[]) => chainNodeFetch(genesisExtrinsics);
 
 describe("replay validation gates ingest", () => {
   let container: StartedPostgreSqlContainer;
@@ -309,6 +341,192 @@ describe("replay validation gates ingest", () => {
       expect(after?.ts).toBe(String(HEIGHT_1_TIMESTAMP_MS));
     }, 180_000);
   });
+
+  /**
+   * T2: a checkpoint is bound to the LEDGER NETWORK it was folded under.
+   *
+   * The pre-existing guard compared `ledger_version` only. Every checkpoint ever written carries
+   * the same marker for a given build regardless of network, so that check cannot distinguish a
+   * checkpoint from another chain -- and the network embedded in the serialized state was trusted
+   * implicitly while the configured `ledgerNetworkId` was never consulted at all.
+   */
+  it("REFUSES a checkpoint written for a different ledger network (T2)", async () => {
+    const schema = await newSchema();
+    await service(schema, GENESIS_SYSTEM_EXTRINSICS).syncOnce({ maxBlocks: 1 });
+
+    // Rewrite the stored checkpoint as if another network had produced it. Everything else --
+    // ledger_version included -- stays exactly as a valid checkpoint, which is the point: the
+    // build marker cannot tell these apart, so only an explicit network check can.
+    await sql`
+      UPDATE ${sql(schema)}.replay_checkpoints
+      SET ledger_network_id = 'devnet' WHERE net = ${NET} AND block_height = 0
+    `;
+
+    const node = { url: "http://fake-node", fetchImpl: twoBlockNodeFetch(GENESIS_SYSTEM_EXTRINSICS) };
+    await expect(
+      new ChainArchiveSyncService({
+        sql, net: NET, schema, node,
+        replayValidation: true,
+        ledgerNetworkId: "undeployed",
+        replayCheckpointInterval: 1,
+      }).syncOnce({ maxBlocks: 1 }),
+    ).rejects.toThrow(/written for ledger network "devnet".*configured for "undeployed"/s);
+  }, 180_000);
+
+  /**
+   * T5: checkpoint selection follows the CANONICAL chain.
+   *
+   * Migration 004 keys checkpoints by `(net, height, block_hash)` specifically so competing forks
+   * are distinguishable, but selection filtered on `(net, height)` alone -- so the newest row won
+   * even when its block had been orphaned, and replay would fold canonical successors onto a state
+   * that forked away from them.
+   */
+  it("selects the canonical checkpoint, not a higher orphaned one (T5)", async () => {
+    const schema = await newSchema();
+    await service(schema, GENESIS_SYSTEM_EXTRINSICS).syncOnce({ maxBlocks: 1 });
+
+    // An orphaned block at height 1 carrying its own checkpoint. It is HIGHER than the canonical
+    // genesis checkpoint, so a height-only selection prefers it -- which is the bug.
+    const orphanHash = Buffer.from("ee".repeat(32), "hex");
+    const orphanState = Buffer.from("orphan-ledger-state-bytes");
+    const orphanBlobHash = createHash("sha256").update(orphanState).digest();
+    await sql`
+      INSERT INTO ${sql(schema)}.blocks
+        (net, block_hash, height, parent_hash, state_root, extrinsics_root,
+         header_blob_hash, body_blob_hash, is_canonical, status, finalized)
+      SELECT ${NET}, ${orphanHash}, 1, b.block_hash, ${Buffer.alloc(32, 0xb2)},
+             ${Buffer.alloc(32, 0xc2)}, b.header_blob_hash, b.body_blob_hash, false, 'orphaned', false
+      FROM ${sql(schema)}.blocks b WHERE b.net = ${NET} AND b.height = 0
+    `;
+    await sql`
+      INSERT INTO ${sql(schema)}.chain_blobs (hash, data) VALUES (${orphanBlobHash}, ${orphanState})
+      ON CONFLICT (hash) DO NOTHING
+    `;
+    await sql`
+      INSERT INTO ${sql(schema)}.chain_blob_roles (blob_hash, role)
+      VALUES (${orphanBlobHash}, 'ledger_state') ON CONFLICT (blob_hash, role) DO NOTHING
+    `;
+    await sql`
+      INSERT INTO ${sql(schema)}.replay_checkpoints
+        (net, block_height, block_hash, state_blob_hash, ledger_version, block_timestamp_ms,
+         ledger_network_id)
+      VALUES (${NET}, 1, ${orphanHash}, ${orphanBlobHash}, ${LEDGER_VERSION},
+              ${HEIGHT_1_TIMESTAMP_MS}, 'undeployed')
+    `;
+
+    const store = new PgChainArchiveStore(sql, schema);
+    const chosen = await store.getLatestReplayCheckpoint(NET, 10);
+    // Height 0, not 1: the orphan is newer and would win on height alone.
+    expect(chosen?.blockHeight, "must not select the orphaned checkpoint").toBe(0);
+    expect(Buffer.from(chosen!.stateBytes).equals(orphanState)).toBe(false);
+  }, 180_000);
+
+  /**
+   * T3: replay must not be left ahead of what is durable.
+   *
+   * The auditor reproduced this with an injected first-write failure, so the test does the same
+   * rather than mocking the store: a trigger makes the real `putBlockBundle` fail inside Postgres,
+   * which is the production write path, not a stand-in for it.
+   */
+  it("recovers from a durable-write failure instead of wedging on the height (T3)", async () => {
+    const schema = await newSchema();
+    // Genesis first, so there is a checkpoint to fall back to and the failure lands on height 1 --
+    // the case where replay has genuinely advanced past what is stored.
+    const node = { url: "http://fake-node", fetchImpl: twoBlockNodeFetch(GENESIS_SYSTEM_EXTRINSICS) };
+    const common = {
+      sql, net: NET, schema, node,
+      replayValidation: true,
+      ledgerNetworkId: "undeployed",
+      replayCheckpointInterval: 1,
+    };
+    const svc = new ChainArchiveSyncService(common);
+    await svc.syncOnce({ maxBlocks: 1 });
+
+    // Inject the failure at the database, on the real insert path.
+    await sql`
+      CREATE FUNCTION ${sql(schema)}.fail_block_insert() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        RAISE EXCEPTION 'injected durable-write failure' USING ERRCODE = 'serialization_failure';
+      END;
+      $fn$
+    `;
+    await sql`
+      CREATE TRIGGER fail_block_insert_trigger BEFORE INSERT ON ${sql(schema)}.blocks
+      FOR EACH ROW EXECUTE FUNCTION ${sql(schema)}.fail_block_insert()
+    `;
+
+    // THE SAME service instance, because the wedge was an in-memory condition: replay advanced to
+    // height 1 while nothing about height 1 was written.
+    await expect(svc.syncOnce({ maxBlocks: 1 })).rejects.toThrow(/injected durable-write failure/);
+
+    await sql`DROP TRIGGER fail_block_insert_trigger ON ${sql(schema)}.blocks`;
+
+    // Before the fix this threw "replay validation is at height 1 but this block is 1", forever:
+    // the engine sat one block ahead of the archive and nothing could move the archive to match.
+    await svc.syncOnce({ maxBlocks: 1 });
+
+    const [row] = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM ${sql(schema)}.blocks WHERE net = ${NET} AND height = 1
+    `;
+    expect(row!.n, "height 1 must be archived after the retry").toBe(1);
+    const [cp] = await sql<{ h: string }[]>`
+      SELECT block_height::text AS h FROM ${sql(schema)}.replay_checkpoints
+      WHERE net = ${NET} ORDER BY block_height DESC LIMIT 1
+    `;
+    expect(cp?.h, "replay must have advanced with the archive").toBe("1");
+  }, 180_000);
+
+  it("recovers from a failure PARTWAY THROUGH replay catch-up (T5)", async () => {
+    // The other half of T5. `replayCatchUpFrom` is cleared before the catch-up loop runs, so a
+    // failure inside the loop left the engine resumed-but-not-caught-up with catch-up already
+    // marked done. Every later attempt skipped catch-up and refused on the height gap -- the same
+    // permanent wedge as T3, reached by a different route.
+    //
+    // Catch-up only happens when the newest checkpoint is BELOW the resume point, so the interval
+    // here is large enough that only genesis is checkpointed, leaving height 1 archived but not
+    // checkpointed and height 2 needing catch-up over it.
+    const schema = await newSchema();
+    const fault: NodeFault = {};
+    const common = {
+      sql, net: NET, schema,
+      replayValidation: true,
+      ledgerNetworkId: "undeployed",
+      replayCheckpointInterval: 1000, // only height 0 satisfies height % interval === 0
+    };
+
+    // Process 1: archive heights 0 and 1. Checkpoint exists at 0 only.
+    await new ChainArchiveSyncService({
+      ...common,
+      node: { url: "http://fake-node", fetchImpl: chainNodeFetch(GENESIS_SYSTEM_EXTRINSICS) },
+    }).syncOnce({ maxBlocks: 2 });
+    const [before] = await sql<{ h: string }[]>`
+      SELECT block_height::text AS h FROM ${sql(schema)}.replay_checkpoints
+      WHERE net = ${NET} ORDER BY block_height DESC LIMIT 1
+    `;
+    expect(before?.h, "only genesis should be checkpointed").toBe("0");
+
+    // Process 2: fresh instance, head at height 2, so ingesting it must first catch up over
+    // height 1 -- which is exactly the read this fault breaks.
+    const svc = new ChainArchiveSyncService({
+      ...common,
+      node: {
+        url: "http://fake-node",
+        fetchImpl: chainNodeFetch(GENESIS_SYSTEM_EXTRINSICS, { head: HEIGHT_2_HASH, fault }),
+      },
+    });
+    fault.failGetBlockFor = HEIGHT_1_HASH;
+    await expect(svc.syncOnce({ maxBlocks: 1 })).rejects.toThrow();
+
+    // Fault cleared: the retry must rebuild from the checkpoint and catch up properly. Before the
+    // fix it threw "replay validation is at height 0 but this block is 2" on every attempt.
+    delete fault.failGetBlockFor;
+    await svc.syncOnce({ maxBlocks: 1 });
+
+    const [row] = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM ${sql(schema)}.blocks WHERE net = ${NET} AND height = 2
+    `;
+    expect(row!.n, "height 2 must be archived after the retry").toBe(1);
+  }, 180_000);
 
   it("writes a checkpoint whose state is real and re-readable", async () => {
     const schema = await newSchema();

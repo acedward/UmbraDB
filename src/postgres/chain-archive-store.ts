@@ -565,17 +565,23 @@ export class PgChainArchiveStore implements ChainArchiveStore {
     net: string, maxHeight: number,
   ): Promise<ReplayCheckpointRecord | undefined> {
     try {
+      // The join to `blocks` on the FULL key -- including `block_hash` -- plus `is_canonical` is
+      // what makes this fork-safe (T5). Without it the newest row at a height wins even when it
+      // belongs to an orphaned block, and replay folds canonical successors onto a forked state.
       const [row] = await this.sql<
         {
           height: string; block_hash: Buffer; hash: Buffer; ledger_version: string;
-          block_timestamp_ms: string;
+          block_timestamp_ms: string; ledger_network_id: string;
         }[]
       >`
-        SELECT block_height::text AS height, block_hash, state_blob_hash AS hash, ledger_version,
-               block_timestamp_ms::text AS block_timestamp_ms
-        FROM ${this.sql(this.schema)}.replay_checkpoints
-        WHERE net = ${net} AND block_height <= ${maxHeight}
-        ORDER BY block_height DESC
+        SELECT c.block_height::text AS height, c.block_hash, c.state_blob_hash AS hash,
+               c.ledger_version, c.block_timestamp_ms::text AS block_timestamp_ms,
+               c.ledger_network_id
+        FROM ${this.sql(this.schema)}.replay_checkpoints c
+        JOIN ${this.sql(this.schema)}.blocks b
+          ON b.net = c.net AND b.height = c.block_height AND b.block_hash = c.block_hash
+        WHERE c.net = ${net} AND c.block_height <= ${maxHeight} AND b.is_canonical
+        ORDER BY c.block_height DESC
         LIMIT 1
       `;
       if (row === undefined) return undefined;
@@ -588,6 +594,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
         stateBytes: await this.getBlob(bufToHex(row.hash)),
         ledgerVersion: row.ledger_version,
         blockTimestampMs: Number(row.block_timestamp_ms),
+        ledgerNetworkId: row.ledger_network_id,
       };
     } catch (err) {
       throw translatePostgresError(err);
@@ -612,9 +619,11 @@ export class PgChainArchiveStore implements ChainArchiveStore {
         `;
         await tx`
           INSERT INTO ${tx(this.schema)}.replay_checkpoints
-            (net, block_height, block_hash, state_blob_hash, ledger_version, block_timestamp_ms)
+            (net, block_height, block_hash, state_blob_hash, ledger_version, block_timestamp_ms,
+             ledger_network_id)
           VALUES (${record.net}, ${record.blockHeight}, ${hexToBuf(record.blockHash)},
-                  ${hash}, ${record.ledgerVersion}, ${record.blockTimestampMs})
+                  ${hash}, ${record.ledgerVersion}, ${record.blockTimestampMs},
+                  ${record.ledgerNetworkId})
           ON CONFLICT (net, block_height, block_hash) DO NOTHING
         `;
       });

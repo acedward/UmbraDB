@@ -328,10 +328,18 @@ export interface ChainArchiveStore {
   putRuntimeMetadata(record: RuntimeMetadataRecord): Promise<void>;
 
   /**
-   * The newest replay checkpoint at or below `maxHeight`, or `undefined` if none exists.
+   * The newest replay checkpoint at or below `maxHeight` **on the canonical chain**, or
+   * `undefined` if none exists.
    *
    * Replay resumes from here rather than from genesis, which is what keeps restart cost
    * proportional to the checkpoint interval instead of to the whole chain.
+   *
+   * CANONICAL IS PART OF THE CONTRACT, not an optimisation (T5). Migration 004 keys checkpoints by
+   * `(net, block_height, block_hash)` precisely so a fork's checkpoints are distinguishable, and
+   * selecting on `(net, height)` alone can therefore return a checkpoint belonging to an ORPHANED
+   * block. Replay would then fold canonical successors onto a state that forked away from them --
+   * a state no chain ever had, arrived at without any error. Ledger state is a fold, so the
+   * damage is silent and permanent.
    */
   getLatestReplayCheckpoint(
     net: string, maxHeight: number,
@@ -359,6 +367,13 @@ export interface ReplayCheckpointRecord {
    *  resumed run folded its first block against a parent dated 1970 -- a defect invisible to any
    *  single-run test, because the value is only wrong across a restart (T1). */
   blockTimestampMs: number;
+  /** The LEDGER network this state was folded under (`undeployed`, `devnet`, ...).
+   *
+   *  Recorded explicitly rather than read back from the serialized state, which embeds it but
+   *  exposes no accessor. Resume must compare this against its own configured `ledgerNetworkId`
+   *  and refuse a mismatch: a checkpoint from another network has the same `ledgerVersion` marker
+   *  as a valid one, so the build check alone cannot tell them apart (T2). */
+  ledgerNetworkId: string;
 }
 
 /** One runtime's metadata, as captured by this archive. */

@@ -747,6 +747,9 @@ export class ChainArchiveSyncService {
     await this.replayBlockIfEnabled(
       height, blockHash, header, transactions, block.extrinsics, nodeProtocolVersion ?? 0,
     );
+    // From here on, replay has ADVANCED in memory but nothing about this block is durable yet.
+    // See `commitOrDiscardReplay` below for why every exit from this window must go through it.
+    const replayAdvanced = this.replayValidation && this.replay !== undefined;
 
     const blockRecord: BlockRecord = {
       net: this.net,
@@ -765,14 +768,29 @@ export class ChainArchiveSyncService {
       finalized: true,
     };
 
-    await this.store.putBlockBundle({
-      block: blockRecord,
-      transactions,
-      bridgeObservations: bridge.records,
-    });
+    try {
+      await this.store.putBlockBundle({
+        block: blockRecord,
+        transactions,
+        bridgeObservations: bridge.records,
+      });
 
-    // After the write, because a checkpoint references the block it describes.
-    await this.checkpointReplayIfDue(height, blockHash);
+      // After the write, because a checkpoint references the block it describes.
+      await this.checkpointReplayIfDue(height, blockHash);
+    } catch (err) {
+      // T3. Replay is atomic INSIDE the engine but was not atomic across the ingest block: the
+      // fold advanced above, and if any durable write here failed, the in-memory replay sat one
+      // block ahead of everything persisted. The next attempt at this same height then hit the
+      // consecutive-height guard -- "replay is at N but this block is N" -- and refused, forever,
+      // because nothing ever moved the archive forward to match. A long-lived CLI wedged on that
+      // height permanently, from a single transient write failure.
+      //
+      // Discarding the in-memory state converts that into a retry: the next attempt rebuilds from
+      // the newest canonical checkpoint and catches up over the archived blocks, which is exactly
+      // the cold-start path and is already exercised. Bounded by the checkpoint interval.
+      if (replayAdvanced) this.discardReplayState();
+      throw err;
+    }
 
     // Only remember this block as the continuity anchor once it is durably written -- same
     // discipline as the D-parameter cursor below. Advancing it earlier would let a failed write
@@ -936,6 +954,21 @@ export class ChainArchiveSyncService {
               "way. Re-run replay from genesis into a fresh schema, or use the matching build.",
           );
         }
+        // T2: the ledger BUILD matching is not enough. Every checkpoint written for any network
+        // carries the same `ledger_version` marker, so the check above cannot tell a wrong-network
+        // checkpoint from a right one -- and the network embedded in the serialized state was
+        // being trusted implicitly while the configured `ledgerNetworkId` was ignored entirely.
+        // Resuming across networks folds this chain's blocks onto another chain's state.
+        if (resumeFrom.ledgerNetworkId !== this.ledgerNetworkId) {
+          throw new Error(
+            `replay checkpoint at height ${resumeFrom.blockHeight} was written for ledger network ` +
+              `"${resumeFrom.ledgerNetworkId}" but this process is configured for ` +
+              `"${this.ledgerNetworkId}". Ledger state is network-specific -- resuming across ` +
+              "networks would fold this chain's blocks onto another chain's state, which produces " +
+              "wrong outcomes rather than an error. Re-run replay from genesis into a fresh " +
+              "schema, or correct LEDGER_NETWORK_ID.",
+          );
+        }
         this.replay = LedgerReplay.fromSerialized(ledger, resumeFrom.stateBytes);
         this.replayHeight = resumeFrom.blockHeight;
         // The checkpointed block's own time becomes the parent time for the block after it (T1).
@@ -959,8 +992,17 @@ export class ChainArchiveSyncService {
     if (this.replayCatchUpFrom !== undefined) {
       const from = this.replayCatchUpFrom;
       this.replayCatchUpFrom = undefined;
-      for (let h = from + 1; h < height; h++) {
-        await this.replayArchivedBlock(h);
+      try {
+        for (let h = from + 1; h < height; h++) {
+          await this.replayArchivedBlock(h);
+        }
+      } catch (err) {
+        // T5's second half. `replayCatchUpFrom` is cleared before the loop, so a failure partway
+        // through used to leave the engine advanced to some intermediate height with catch-up
+        // already marked done -- the next attempt skipped catch-up entirely and refused on the
+        // height gap, permanently. Discarding makes the retry start over from the checkpoint.
+        this.discardReplayState();
+        throw err;
       }
     }
 
@@ -1008,6 +1050,24 @@ export class ChainArchiveSyncService {
     });
     this.replayHeight = height;
     this.lastReplayedBlockTimestampMs = blockTimestampMs;
+  }
+
+  /**
+   * Throw away the in-memory replay engine so the next attempt rebuilds it from storage.
+   *
+   * The recovery move for every case where in-memory replay progress has run ahead of what is
+   * durable (T3) or stopped partway through catch-up (T5). Nothing is lost: the engine's entire
+   * content is reconstructible from the newest canonical checkpoint plus the archived blocks
+   * above it, which is precisely what a cold start already does.
+   *
+   * All four fields must go together. Leaving any one behind is what made these bugs permanent
+   * rather than transient -- a stale `replayHeight` alone is enough to wedge the height guard.
+   */
+  private discardReplayState(): void {
+    this.replay = undefined;
+    this.replayHeight = undefined;
+    this.replayCatchUpFrom = undefined;
+    this.lastReplayedBlockTimestampMs = undefined;
   }
 
   /**
@@ -1110,6 +1170,7 @@ export class ChainArchiveSyncService {
       stateBytes: this.replay.serialize(),
       ledgerVersion: LEDGER_STATE_VERSION,
       blockTimestampMs,
+      ledgerNetworkId: this.ledgerNetworkId!,
     });
   }
 
