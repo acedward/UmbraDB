@@ -220,6 +220,108 @@ describe("metadata availability", () => {
     expect(blocks!.n).toBe(0);
   }, 180_000);
 
+  it("propagates a TRANSPORT failure at the SECOND call site too (T7)", async () => {
+    // The test above faults `state_getRuntimeVersion`, the FIRST of the two calls that can fall
+    // back. Because it fails before the second is ever reached, restoring the bug at
+    // `state_getMetadata` -- twelve lines away in the same method -- left that test green. That is
+    // exactly how the missed call site survived the round that claimed to fix it.
+    //
+    // So this one lets `state_getRuntimeVersion` SUCCEED and faults `state_getMetadata`, which is
+    // the only arrangement that reaches the second catch at all.
+    const schema = await newSchema();
+    const served: string[] = [];
+    const base = fakeNode({ pruned: false, served });
+    const flaky = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      if (body.method === "state_getMetadata") throw new Error("fetch failed: ECONNRESET");
+      return base(input, init);
+    }) as typeof fetch;
+    const service = new ChainArchiveSyncService({
+      sql, net: NET, schema, node: { url: "http://fake-node", fetchImpl: flaky },
+    });
+    await expect(service.syncOnce({ maxBlocks: 1 })).rejects.toThrow(/state_getMetadata/);
+    // Proof the first call really did succeed -- otherwise this test would be a duplicate of the
+    // one above, passing for the wrong reason.
+    expect(served).toContain("state_getRuntimeVersion");
+
+    const [blocks] = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM ${sql(schema)}.blocks WHERE net = ${NET}
+    `;
+    expect(blocks!.n, "a transport failure must archive nothing").toBe(0);
+  }, 180_000);
+
+  /**
+   * The pruning classifier, tested where it actually decides.
+   *
+   * An earlier version of this asserted through `syncOnce` that no block was archived. That was
+   * VACUOUS: ingest on a pruned node also fails for an unrelated reason (`System::Events` needs
+   * the same historical state), so the block count was zero either way. Verified by mutation --
+   * restoring `/unknown block/i` left the whole file green. These call the resolver directly, so
+   * the only thing deciding the outcome is the classification under test.
+   */
+  describe("historical-state classification (T7)", () => {
+    const AMBIGUOUS = "Client error: UnknownBlock: Unknown block: State unavailable";
+    const UNAMBIGUOUS = "State already discarded for this block";
+
+    const resolverFor = async (message: string) => {
+      const { BlockScopedMetadata } = await import("../../chain-archive-sync/runtime-metadata.js");
+      const node = {
+        runtimeVersionAt: async () => { throw new Error(message); },
+        metadataAt: async () => { throw new Error(message); },
+      };
+      return new BlockScopedMetadata(node as never);
+    };
+
+    it("REFUSES on an ambiguous 'Unknown block' instead of falling back", async () => {
+      // A node says "Unknown block" both for state it has pruned AND for a hash it has never seen
+      // -- a block from another chain, a fork it did not follow, a typo. Accepting it as pruning
+      // meant an unrecognised hash silently selected the committed capture for the header's
+      // protocol version and decoded the block against it: the precise failure this resolution
+      // chain exists to prevent, reached by claiming to have detected pruning.
+      //
+      // Protocol version 1_000_000 is deliberately one the registry DOES cover, so the fallback
+      // would succeed if it were taken. A version with no capture would refuse anyway and prove
+      // nothing.
+      //
+      // The node's own error PROPAGATES -- resolution does not reach its final "tried everything"
+      // refusal, because an unclassified failure is not a reason to keep looking. That is the
+      // distinguishing outcome: were "unknown block" still accepted as pruning, this call would
+      // RESOLVE successfully from the registry rather than throw at all.
+      const resolver = await resolverFor(AMBIGUOUS);
+      await expect(resolver.forBlock(BLOCK_HASH, 1_000_000)).rejects.toThrow(/Unknown block/);
+    }, 60_000);
+
+    it("still falls back for an UNAMBIGUOUS pruning signal", async () => {
+      // The counterweight, on the same protocol version. Without it, the assertion above would
+      // also pass on a resolver that never falls back at all -- which would make the committed
+      // capture registry, and the pruned-node bootstrap it exists for, dead code.
+      const resolver = await resolverFor(UNAMBIGUOUS);
+      const resolved = await resolver.forBlock(BLOCK_HASH, 1_000_000);
+      expect(resolved.callIndices.midnightPallet).toBe(5);
+    }, 60_000);
+  });
+
+  it("REJECTS a JSON-RPC response carrying neither result nor error (T7)", async () => {
+    // `return body.result as T` handed the caller `undefined` with no error, so a malformed or
+    // truncated response looked like a successful empty answer and surfaced far away, if at all.
+    const { NodeRpcClient } = await import("../../chain-archive-sync/node-rpc-client.js");
+    const malformed = (async () =>
+      new Response(JSON.stringify({ jsonrpc: "2.0", id: 1 }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      })) as typeof fetch;
+    const client = new NodeRpcClient({ url: "http://fake-node", fetchImpl: malformed });
+    await expect(client.getFinalizedHead()).rejects.toThrow(/neither "result" nor "error"/);
+
+    // `result: null` is a LEGITIMATE answer -- `chain_getBlockHash` for a height the node does not
+    // have returns exactly that -- so it must still come back as null rather than throwing.
+    const nullResult = (async () =>
+      new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: null }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      })) as typeof fetch;
+    const nullClient = new NodeRpcClient({ url: "http://fake-node", fetchImpl: nullResult });
+    await expect(nullClient.getBlockHash(999_999)).resolves.toBeNull();
+  }, 60_000);
+
   it("decodes from the stored capture with the node's metadata gone -- the replay guarantee", async () => {
     // What the table is actually for. Ingest once against a healthy node, then come back when the
     // node has pruned its state: metadata resolution must succeed from the archive's own copy,

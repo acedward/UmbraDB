@@ -112,6 +112,22 @@ export class NodeRpcClient {
     if (body.error !== undefined) {
       throw new NodeRpcError(`${method}: RPC error ${body.error.code}: ${body.error.message}`);
     }
+    // A JSON-RPC response carries `result` OR `error`. One with neither is malformed, and this
+    // used to return `undefined` cast to `T` -- so a caller expecting a header, a block or a hex
+    // payload received `undefined` with no error, and the failure surfaced far away as a property
+    // read on undefined, or not at all (audit T7).
+    //
+    // `in` rather than a truthiness or `!== undefined` check, deliberately: `result: null` is a
+    // LEGITIMATE answer for several of these calls -- `chain_getBlockHash` for a height the node
+    // does not have, `state_getStorageAt` for an empty key -- and callers handle it. What is not
+    // legitimate is the key being absent altogether.
+    if (!("result" in body)) {
+      throw new NodeRpcError(
+        `${method}: malformed JSON-RPC response from ${this.url} -- it carried neither "result" ` +
+          "nor \"error\". Treating this as a successful empty answer would hand the caller " +
+          "undefined in place of data it requires.",
+      );
+    }
     return body.result as T;
   }
 

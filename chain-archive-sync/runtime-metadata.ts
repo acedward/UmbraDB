@@ -515,12 +515,23 @@ function hexToBytes(hex: string): Uint8Array {
  * available; matching too broadly would restore the bug this replaces, where any failure quietly
  * changed which metadata decoded a block. A connection reset, a timeout, a 500 -- none of these
  * say anything about state retention, and all of them now propagate.
+ *
+ * `unknown block` USED TO BE ON THIS LIST AND IS NOT ANY MORE (audit T7). It is ambiguous: a node
+ * says it both for state it has pruned AND for a hash it has simply never seen -- a block from
+ * another chain, a fork it did not follow, a typo in a manual invocation. Accepting it meant an
+ * unrecognised hash silently selected the committed capture for the header's protocol version and
+ * decoded the block against it. That is the failure this whole chain exists to prevent, arrived at
+ * by claiming to have detected pruning.
+ *
+ * Dropping it is fail-CLOSED: a genuinely pruned node whose only signal is "unknown block" now
+ * refuses, naming what it tried, instead of quietly decoding against a capture that may not be its
+ * runtime. Refusing a block that could have been archived is recoverable; archiving a block
+ * decoded against the wrong layout is not -- the transactions do not come back.
  */
 function isHistoricalStateUnavailable(error: unknown): boolean {
   const message = String((error as Error)?.message ?? error);
   return (
     /state already discarded/i.test(message) ||
-    /unknown block/i.test(message) ||
     /state not available/i.test(message) ||
     /has been pruned/i.test(message)
   );
