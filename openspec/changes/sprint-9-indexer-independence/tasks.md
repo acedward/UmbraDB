@@ -528,3 +528,23 @@ Recorded here so they are not silently absorbed:
 - The `eventId` redefine-or-drop decision for `NullifierAndCommitment`.
 - Any GraphQL shim for non-effectstream consumers (wallet, dapp-connector), which have the same
   shutdown exposure but are out of this sprint's scope.
+
+## 11. Formal T1–T8 audit outcome (plan §17) — gates PR #1
+
+> Formal audit at `1c46ba2` (2026-08-13): **BLOCK**. §10's T-boxes record the attempt and its
+> evidence; §17 records what survived. T8 passed; T2/T6 are code-correct with evidence gaps;
+> T1/T3/T4/T5/T7 have substantive residuals.
+
+- [ ] 11.1 T4a: atomic clamp+max+close vendor export — `FixedPoint` never crosses JS as a number;
+      bump `LEDGER_STATE_VERSION`; update the parity workflow's version assertion (red at head)
+- [ ] 11.2 T4b: `PartialSuccess` cost-accumulation regression
+- [ ] 11.3 T3a: watermark write inside the replay-recovery boundary; regression faults the
+      `watermarks` insert
+- [ ] 11.4 T1a: owner decision (indexer sentinel vs node parent-time), then a discriminating vector
+- [ ] 11.5 T5a: owner decision (finalized-only writer vs full `setCanonical` reorg support); then
+      ancestry binding or an explicit contract narrowing
+- [ ] 11.6 T7a: `Unknown block` early-refusal precedence + overlap regressions; `metadataAt`
+      `result: null` refuses
+- [ ] 11.7 T2a: non-`undeployed` network regression; populated 004/005→006 upgrade test
+- [ ] 11.8 T6a: service-level interval validation test bypassing the CLI
+- [ ] 11.9 Re-audit §17 scope; then O1–O5; then final PASS×3

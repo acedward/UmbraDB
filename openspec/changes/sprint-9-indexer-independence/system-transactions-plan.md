@@ -1191,3 +1191,35 @@ which is precisely why the suite could not see T1.
 **Exit unchanged:** fix T1–T8, then O1–O5, then fresh PASS×3. Acceptance per finding now requires
 the §10 strengthened rule AND exercising the actual production path (packed artifact, real fork,
 injected write failure), since T3/T6 were found exactly there.
+
+## 17. Formal T1–T8 remediation audit — register (2026-08-13, head `1c46ba2`)
+
+**Verdict: BLOCK.** Full request/evidence/findings:
+`/home/eddie/todo/Umbra/audits/00002-indexer-independent-ingest-t1-t8-remediation.md` (workspace,
+not this repo). The `2b88f99..ab3ee81` tranche was audited by independent domain-correctness,
+adversarial, and release personas; O1–O5 stayed excluded and still gate merge separately.
+
+| Item | Disposition | Finding |
+|---|---|---|
+| T1 | **BLOCK** | Timestamps/conversions fixed; but the pinned indexer seeds parent time as **zero at every process start** and substitutes the current block's timestamp — Umbra restores the checkpointed block's real timestamp. Closer to the node, but not the declared authority. Needs an owner decision + a discriminating vector |
+| T2 | INCOMPLETE (evidence) | Code correct. A writer hard-coded to `undeployed` passes the only network test; no populated 004/005→006 upgrade regression |
+| T3 | **BLOCK** | `setWatermark` (sync-service.ts:450) is outside the replay-recovery catch. Reproduced: one-shot watermark insert failure → `blocks=1, checkpoints=1, watermarks=0`, in-memory replay ahead, same-process retry refuses forever. The committed regression faults only the `blocks` insert — exactly a wrong implementation that passes it |
+| T4 | **BLOCK** | **Q64 `FixedPoint` crosses JavaScript `f64`** (WASM serde → JS `Math.max` → WASM reconstruct). Independent oracle: native Rust close `412811927ead…`, WASM/JS roundtrip `c41b7298b8b6…` — different serialized ledger state; raw deltas up to 318 Q64 units. The serialized-state test builds its expectation through the same rounded path, so it cannot see this. Fix shape: an atomic vendor export that clamps + maxes + closes without exposing `FixedPoint` as a JS number. Also: no `PartialSuccess` regression — success-only accumulation stays green |
+| T5 | **BLOCK** under "fork-safe" | Canonical *flag* checked; *ancestry* not. `setCanonical` flips one height per transaction, so a mid-reorg crash yields individually-canonical but disconnected rows — checkpoint A@H splices onto B@H+1. Acceptable only if the contract is narrowed to the finalized-only writer; owner call |
+| T6 | INCOMPLETE (evidence) | Installed tarball genuinely works. But every invalid-interval oracle runs through CLI parsing; removing only the service-constructor validation (sync-service.ts:324) stays green |
+| T7 | **BLOCK** | `Unknown block` removed from positive patterns, but overlap strings (`Unknown block: state not available` etc.) still match the accepted phrases — probed at head, all three fall back. The regression uses a string matching none. Also fail-open: `metadataAt` JSON-RPC `result: null` → `undefined` → registry fallback, untested |
+| T8 | **PASS** | Both guard branches + forward repair correct with non-vacuous regressions |
+
+**Release regression from this tranche:** the parity workflow still asserts
+`ledger-v8@8.1.0-syshash.1` (chain-archive-parity.yml:59) against the shipped `.2` — the PR's
+required `parity` check is **red at `1c46ba2`**. Verified live 2026-08-13.
+
+**The lesson this round adds** (the §16 rule was necessary but not sufficient): stating a test's
+blind spot is only useful if the blind spot is then *closed or escalated*. T4's blind spot was
+stated accurately — and the f64 divergence sat exactly inside it. T1's likewise. A stated-but-open
+blind spot on a HIGH finding is an owner-decision item or a missing-vector item, never a footnote.
+
+**Round-5 exit:** T4a (exact-arithmetic vendor export + parity-pin update), T3a (watermark inside
+the recovery boundary), T7a (`Unknown block` precedence + `null` refusal), T2a/T6a/T4b evidence
+closure, and owner decisions on T1 parent-time authority and T5's catch-up contract — then O1–O5,
+then fresh PASS×3.
