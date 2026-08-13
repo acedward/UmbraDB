@@ -17,9 +17,16 @@ ingest cannot archive system transactions without it.
 running block fullness exactly as the regular path folds a transaction's cost, but only the
 regular path was exported. Genesis is *nothing but* system transactions — five on a 1.0.0 devnet —
 so without this a consumer could not account for any of genesis's cost and had to record its
-fullness as zero. It is not zero: those five accumulate to an overall fullness of **0.903322**.
-Unlike the regular sibling the Rust method takes no `enforce_time_to_dismiss` flag and cannot
-fail, and the binding mirrors that rather than inventing an argument or an error case.
+fullness as zero. It is not zero: under the initial parameters those five normalize to an overall
+fullness of **0.903322**. Unlike the regular sibling the Rust method takes no
+`enforce_time_to_dismiss` flag and cannot fail, and the binding mirrors that rather than inventing
+an argument or an error case.
+
+> That 0.903322 is a property of these five transactions **under the initial parameters**, which is
+> what the acceptance proof below exercises. It is *not* the fullness genesis actually closes at:
+> two of the five are `OverwriteParameters`, and the block is closed against the limits the state
+> ends with, so real replay closes genesis at **0.37696**. Both numbers are correct about different
+> things; see `chain-archive-sync/ledger-replay.ts` for the fold that produces the latter.
 
 **`LedgerParameters.clampAndNormalizeFullness()`** (with `blockLimits` alongside it). The existing
 `normalizeFullness` throws when any dimension exceeds its limit, because `SyntheticCost::normalize`
