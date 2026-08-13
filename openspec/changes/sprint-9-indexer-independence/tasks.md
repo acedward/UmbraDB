@@ -463,13 +463,57 @@ T3 and T6 were found exactly there. The stated blind spot goes in the commit mes
   `OverwriteParameters` change the limits but not the cost-model terms they touch. Two earlier
   versions of the fullness test were themselves found inadequate by mutation and replaced; see the
   commit message.
-- [ ] **T1 — genesis timestamp exemption and missing-timestamp guessing.**
-- [ ] **T2 — checkpoint bound to its configured ledger network.**
-- [ ] **T3 — replay advance atomic across the whole ingest block.**
-- [ ] **T5 — fork-aware checkpoint selection.**
-- [ ] **T6 — CLI in the release artifact; checkpoint-interval validation.**
-- [ ] **T7 — R5 transport test and pruning classification.**
-- [ ] **T8 — R7 deletion regressions and the 003/004 upgrade path.**
+- [x] **T1 — genesis timestamp exemption and missing-timestamp guessing** *(done 2026-08-13,
+  `93aa4dc`)*. Genesis is no longer exempt (the target node emits `Timestamp::set`; the committed
+  devnet genesis decodes to 1754395200000 ms); catch-up applies the same refusal; migration 005
+  stores the checkpointed block's timestamp so a resumed run has a real `lastBlockTime`. An unknown
+  parent time is now an error, which is what makes the restart path testable.
+  *Blind spot:* four mutations, three caught. The fixtures were the bug — the synthetic genesis
+  omitted the inherent while the real node emits it, so code and fixture agreed. Measured: the
+  block's OWN timestamp changes the serialized fold (pinned by a test), but the PARENT timestamp
+  does not under any available fixture — `lastBlockTime` feeds dust generation, which the genesis
+  regular transaction does not exercise. So the checkpoint round-trip is verified at the plumbing
+  level but not at the fold level: a parent timestamp that is present and WRONG would go unnoticed.
+- [x] **T2 — checkpoint bound to its configured ledger network** *(done, `11e6979`)*. Migration 006
+  records `ledger_network_id`; resume refuses a mismatch. Recorded explicitly because the WASM
+  exposes no accessor for a `LedgerState`'s network.
+- [x] **T3 — replay advance atomic across the whole ingest block** *(done, `11e6979`)*. The
+  in-memory engine is discarded when a durable write fails, turning a permanent wedge into a retry
+  from the newest canonical checkpoint. Reproduced first with a Postgres trigger faulting the real
+  `blocks` insert, per the audit's own method.
+- [x] **T5 — fork-aware checkpoint selection** *(done, `11e6979`)*. Selection joins `blocks` on the
+  full key and requires `is_canonical`. The retry-poisoning half (a failure partway through
+  catch-up) is fixed by the same discard.
+  *Note:* the catch-up mutation initially appeared caught, but the sed had silently failed to
+  apply; re-run properly it exposed an untested path, and that test was written afterwards.
+- [x] **T6 — CLI in the release artifact; checkpoint-interval validation** *(done, `aa4db54`)*.
+  `dist-cli` + `bin` + `vendor` ship; the ledger moved to `dependencies` (a `file:` dep does
+  resolve from a tarball when its target ships inside it — verified empirically). Intervals of
+  `0`/`NaN`/fractional/negative are rejected in both the CLI and the service constructor. Oracles
+  run against the INSTALLED tarball, never the repo.
+- [x] **T7 — R5 transport test and pruning classification** *(done, `885b6ca`)*. Ambiguous
+  `Unknown block` no longer counts as pruning (fail-closed); the second call site is faulted after
+  a SUCCESSFUL first call, the only arrangement that reaches it; a JSON-RPC response with neither
+  `result` nor `error` is rejected, with `result: null` still legitimate.
+  *Note:* the first version of the classification test was vacuous — ingest on a pruned node fails
+  for an unrelated reason, so the block count was zero either way. Found by mutation and rewritten
+  to call the resolver directly.
+- [x] **T8 — R7 deletion regressions and the 003/004 upgrade path** *(done, `ab3ee81`)*. One
+  assertion per added guard branch (`runtime_metadata`, `ledger_state`), each failing when its own
+  branch is dropped, plus a counterweight that unreferenced roles stay deletable. Migration 007
+  re-installs the complete enumeration, so a database that recorded 003/004 before they were edited
+  is repaired; the test reproduces that stale schema rather than assuming it cannot arise.
+  **Decision recorded:** 007 does not depend on whether pre-fix schemas are supported. None is
+  known to exist, but the costs are asymmetric and `CREATE OR REPLACE` is a no-op on a correct
+  database. General rule: a migration applied anywhere is immutable; fixing one means adding
+  another.
+
+**Exit gate at `ab3ee81`:** typecheck clean, build clean, 628 passed / 20 skipped / 0 failed
+(skips are pre-existing `describe.skipIf` live-service and sibling-checkout gates), strict OpenSpec
+validation of this change passes, vendored `sha256sum -c` OK, known vectors 5/5, cost/clamp proof
+all-pass, pack-install smoke PASS. `openspec validate --all --strict` reports 2 failures in
+`v1.1.0-quint-model-checking` and `v1.1.0-formal-completion` — both predate this work and neither
+was touched by it.
 
 - [ ] **9.7 Re-audits.** Targeted re-audit per blocker, then fresh PASS/PASS/PASS on the final
   integrated head, recorded on PR #1.
