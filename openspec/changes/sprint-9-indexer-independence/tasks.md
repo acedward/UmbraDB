@@ -540,9 +540,11 @@ Recorded here so they are not silently absorbed:
 - [ ] 11.2 T4b: `PartialSuccess` cost-accumulation regression
 - [ ] 11.3 T3a: watermark write inside the replay-recovery boundary; regression faults the
       `watermarks` insert
-- [ ] 11.4 T1a: owner decision (indexer sentinel vs node parent-time), then a discriminating vector
-- [ ] 11.5 T5a: owner decision (finalized-only writer vs full `setCanonical` reorg support); then
-      ancestry binding or an explicit contract narrowing
+- [ ] 11.4 T1a: **owner decided 2026-08-13 — node parent-time semantics (option a).** Document the
+      authority exception in the spec; add a discriminating dust-bearing vector
+- [ ] 11.5 T5a: **owner decided 2026-08-13 — narrow + guard (a+c).** Contract narrowed to the
+      finalized-only writer (documented, folded into O2); parent-hash refusal guard added in
+      catch-up. Full ancestry binding recorded as explicit future work, NOT implemented now
 - [ ] 11.6 T7a: `Unknown block` early-refusal precedence + overlap regressions; `metadataAt`
       `result: null` refuses
 - [ ] 11.7 T2a: non-`undeployed` network regression; populated 004/005→006 upgrade test
