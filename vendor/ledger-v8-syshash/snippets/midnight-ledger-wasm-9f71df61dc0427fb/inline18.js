@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function ReplaceAuthority_() { return wasm.ReplaceAuthority; }
+import * as wasm from '#self'; export function VerifierKeyInsert_() { return wasm.VerifierKeyInsert; }

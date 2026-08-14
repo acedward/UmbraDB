@@ -1157,7 +1157,7 @@ failure proves nothing about it.**
 | # | Finding |
 |---|---|
 | O1 | D-parameter continuity breaks across restarts |
-| O2 | Historical conflict detection incomplete and racy — no locking, so two ingesters racing one height both pass |
+| O2 | Historical conflict detection incomplete and racy — no locking, so two ingesters racing one height both pass. Full ancestry-bound checkpoint selection for arbitrary height-at-a-time `setCanonical` reorg states is also deferred: round 5 deliberately narrows replay/catch-up to the finalized-only writer and adds a parent-hash refusal guard, but does not claim general reorg-safe replay |
 | O3 | No state-root checks in replay |
 | O4 | Image-pin CI check bypassable (matches quoted `image:` lines only) |
 | O5 | Status docs, dependency inventory and Graphify stale |
@@ -1223,3 +1223,25 @@ blind spot on a HIGH finding is an owner-decision item or a missing-vector item,
 the recovery boundary), T7a (`Unknown block` precedence + `null` refusal), T2a/T6a/T4b evidence
 closure, and owner decisions on T1 parent-time authority and T5's catch-up contract — then O1–O5,
 then fresh PASS×3.
+
+### Round-5 §17 remediation register (2026-08-14; re-audit pending)
+
+This table records implementation disposition, not an audit verdict. The BLOCK above remains the
+last formal verdict until the workspace audit is completed against the new pinned head.
+
+| Item | Round-5 disposition | Blind spot and closure |
+|---|---|---|
+| T1a | REMEDIATED | Owner-selected node semantics is an explicit spec authority exception. A native-Rust fixture gates a signed dust registration on `QueryContext[7]`: real parent → Success; indexer restart substitution → Failure; dust and full-state hashes differ. A real PostgreSQL checkpoint-resume regression then drives that fixture through the production service and requires its persisted next state to equal the native node hash, not the sentinel hash, closing the replay-only/plumbing split. The structural proof isolates the cited node function's post-admission `VerifiedTransaction` fold; generator and committed native hashes are pinned at ledger-fork `7213c050fd1f2ddb5c6d99f40dd4f118ecb8076a` |
+| T2a | EVIDENCE CLOSED | Direct writer test persists `devnet`, defeating a hard-coded `undeployed` writer. The 004→005→006 test populates a legacy row before each deletion, defeating a vacuous fresh-lineage test |
+| T3a | REMEDIATED | Real PostgreSQL faults the `watermarks` INSERT after block/checkpoint durability; the same service instance retries successfully, so cold-start reconstruction cannot hide the stale-engine wedge |
+| T4a | REMEDIATED | `LedgerState.closeBlock(tblock, accumulatedCost)` keeps exact Q64 clamp → normalize → max-five → close in Rust. Native state hashes and required-different rounded counterweights close the same-code expected-value trap; vendored artifact passes 2/2 plus external indexer hashes 5/5 |
+| T4b | EVIDENCE CLOSED | A binding-shaped `partialSuccess` result with non-zero cost makes success-only accumulation fail; real serialized transactions separately cover the integration boundary |
+| T5a | REMEDIATED UNDER NARROW CONTRACT | Read contract is finalized-only; catch-up compares each stored parent with the hash actually replayed and names both on refusal. The test constructs individually canonical but disconnected rows with `setCanonical`. Full ancestry-bound selection is not claimed and remains O2 |
+| T6a | EVIDENCE CLOSED | Direct constructor table rejects `0`, `-1`, `2.5`, `NaN`, and `Infinity`; valid integer counterweights bypass CLI parsing entirely |
+| T7a | REMEDIATED | `Unknown block` wins before all accepted pruning phrases; each audited overlap refuses. `metadataAt result:null` refuses while the separate `getBlockHash result:null` counterweight remains accepted |
+| T8 | UNCHANGED PASS | No round-5 change required |
+
+Release wiring moves the vendored package, checkpoint marker, parity workflow, and vendored-ledger
+workflow together to `8.1.0-syshash.3`; the latter also runs the native-close regression. Focused
+Docker evidence is green. Full suite, strict validation, packed install, fresh-clone execution, and
+GitHub required checks are still pending at this intermediate checkpoint.

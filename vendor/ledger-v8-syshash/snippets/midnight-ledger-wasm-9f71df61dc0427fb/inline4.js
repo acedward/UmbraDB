@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function PreProof_() { return wasm.PreProof; }
+import * as wasm from '#self'; export function SignatureEnabled_() { return wasm.SignatureEnabled; }

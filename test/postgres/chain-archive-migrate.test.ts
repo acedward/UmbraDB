@@ -122,6 +122,72 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
     }
   }, 60_000);
 
+  it("invalidates populated legacy checkpoints across the 004 -> 005 -> 006 upgrade", async () => {
+    // A fresh full-lineage test starts with an empty replay_checkpoints table, so both migration
+    // DELETEs are vacuous. Populate the exact schema each migration inherits: 005 must discard a
+    // 004 row whose timestamp is unknowable, then 006 must discard a newly written 005 row whose
+    // ledger network is unknowable. Merely checking the final columns would miss both failures.
+    const schema = "chain_archive_checkpoint_upgrade_test";
+    const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    try {
+      await runMigrations(sql, { schema, migrations: chainArchiveMigrations.slice(0, 5) });
+      const hash = (byte: number) => Buffer.alloc(32, byte);
+      const headerHash = hash(0x41);
+      const stateHash = hash(0x42);
+      const blockHash = hash(0x43);
+      await sql`
+        INSERT INTO ${sql(schema)}.chain_blobs (hash, data)
+        VALUES (${headerHash}, ${Buffer.from("header")}), (${stateHash}, ${Buffer.from("state")})
+      `;
+      await sql`
+        INSERT INTO ${sql(schema)}.chain_blob_roles (blob_hash, role)
+        VALUES (${headerHash}, 'block_header'), (${stateHash}, 'ledger_state')
+      `;
+      await sql`
+        INSERT INTO ${sql(schema)}.blocks
+          (net, block_hash, height, parent_hash, state_root, extrinsics_root, header_blob_hash,
+           is_canonical, status, finalized)
+        VALUES ('upgrade-net', ${blockHash}, 0, ${hash(0)}, ${hash(0x44)}, ${hash(0x45)},
+                ${headerHash}, true, 'canonical', true)
+      `;
+      await sql`
+        INSERT INTO ${sql(schema)}.replay_checkpoints
+          (net, block_height, block_hash, state_blob_hash, ledger_version)
+        VALUES ('upgrade-net', 0, ${blockHash}, ${stateHash}, 'legacy-004')
+      `;
+
+      await runMigrations(sql, { schema, migrations: chainArchiveMigrations.slice(0, 6) });
+      const [after005] = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM ${sql(schema)}.replay_checkpoints
+      `;
+      expect(after005?.n, "005 must delete populated 004 checkpoints").toBe(0);
+
+      await sql`
+        INSERT INTO ${sql(schema)}.replay_checkpoints
+          (net, block_height, block_hash, state_blob_hash, ledger_version, block_timestamp_ms)
+        VALUES ('upgrade-net', 0, ${blockHash}, ${stateHash}, 'legacy-005', 1754395200000)
+      `;
+      await runMigrations(sql, { schema, migrations: chainArchiveMigrations.slice(0, 7) });
+      const [after006] = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM ${sql(schema)}.replay_checkpoints
+      `;
+      expect(after006?.n, "006 must delete populated 005 checkpoints").toBe(0);
+
+      const columns = await sql<{ column_name: string; is_nullable: string }[]>`
+        SELECT column_name, is_nullable FROM information_schema.columns
+        WHERE table_schema = ${schema} AND table_name = 'replay_checkpoints'
+          AND column_name IN ('block_timestamp_ms', 'ledger_network_id')
+        ORDER BY column_name
+      `;
+      expect(columns).toEqual([
+        { column_name: "block_timestamp_ms", is_nullable: "NO" },
+        { column_name: "ledger_network_id", is_nullable: "NO" },
+      ]);
+    } finally {
+      await sql.end({ timeout: 5 });
+    }
+  }, 120_000);
+
   /**
    * v4 audit fix (round-3 design-council re-audit, Fable 5 / GPT-5.6 Sol) — the v3 test above
    * only ever exercised the blob-role-missing rejection through `transactions`, and only ever

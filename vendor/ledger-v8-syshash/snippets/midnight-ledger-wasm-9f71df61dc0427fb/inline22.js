@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function MaintenanceUpdate_() { return wasm.MaintenanceUpdate; }
+import * as wasm from '#self'; export function DustActions_() { return wasm.DustActions; }

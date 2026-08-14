@@ -56,7 +56,7 @@ jobs:
           set -euo pipefail
           version="$(node -e "console.log(JSON.parse(require('fs').readFileSync('node_modules/@midnight-ntwrk/ledger-v8/package.json','utf8')).version)")"
           echo "resolved ledger: $version"
-          test "$version" = "8.1.0-syshash.1"
+          test "$version" = "8.1.0-syshash.3"
 
       # The hostports overlay is REQUIRED here, not optional. The base compose file deliberately
       # publishes nothing so several stacks can share a machine, which means that without the
@@ -152,4 +152,4 @@ jobs:
       - name: Tear down
         if: always()
         working-directory: test/compose
-        run: docker compose -f docker-compose.yml -f docker-compose.hostports.yml down -v
+        run: docker compose -f docker-compose.yml -f docker-compose.hostports.yml down -v --remove-orphans

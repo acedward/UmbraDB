@@ -173,19 +173,27 @@ export class NodeRpcClient {
   }
 
   /**
-   * SCALE-encoded runtime metadata AT a block, or `undefined` if the node cannot serve it.
+   * SCALE-encoded runtime metadata AT a block.
    *
    * The `at` parameter is what makes block-scoped decoding possible: metadata must describe the
    * runtime that produced the block being decoded, not the chain tip. Resolving at the tip means a
    * block from before a runtime upgrade is decoded against the wrong pallet indices, and the
    * failure is SILENT -- genuine transactions are simply classified as something else.
    *
-   * `undefined` where a pruned node has discarded the historical state this is derived from; the
-   * caller must refuse rather than fall back to tip metadata.
+   * Pruning is reported as a JSON-RPC error and classified by the caller. A successful response
+   * with `result: null` is not pruning evidence and is refused here; returning `undefined` would
+   * let it silently enter the committed-registry fallback.
    */
-  async metadataAt(at: string): Promise<string | undefined> {
-    const value = await this.call<string | null>("state_getMetadata", [at]);
-    return value ?? undefined;
+  async metadataAt(at: string): Promise<string> {
+    const value = await this.call<unknown>("state_getMetadata", [at]);
+    if (typeof value !== "string") {
+      throw new Error(
+        `state_getMetadata at ${at} returned ${value === null ? "null" : typeof value} instead ` +
+          "of SCALE metadata. A missing historical response is not proof of pruning, so registry " +
+          "fallback is refused.",
+      );
+    }
+    return value;
   }
 
   /**

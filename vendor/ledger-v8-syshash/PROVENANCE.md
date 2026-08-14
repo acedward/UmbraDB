@@ -1,11 +1,11 @@
-# `@midnight-ntwrk/ledger-v8` @ 8.1.0-syshash.2 — vendored build
+# `@midnight-ntwrk/ledger-v8` @ 8.1.0-syshash.3 — vendored build
 
 This directory is a **built** `ledger-wasm` package, committed as binary. It is the ledger UmbraDB
 loads at runtime, replacing the published `@midnight-ntwrk/ledger-v8@8.0.3`.
 
 ## Why it exists
 
-The published package is missing three things a node-only consumer needs to reproduce a block.
+The published package is missing four things a node-only consumer needs to reproduce a block.
 
 **`SystemTransaction.transactionHash()`.** The method exists on the Rust ledger and the reference
 indexer calls it directly to key the system transactions it archives, but the `wasm-bindgen`
@@ -36,6 +36,13 @@ exactly full rather than failing. A consumer using `normalizeFullness` would thr
 chain accepted. `normalizeFullness` is left alone for callers who *want* over-limit input reported
 as an error.
 
+**`LedgerState.closeBlock(tblock, accumulatedCost)`.** Q64 `FixedPoint` values are serialized to
+JavaScript as `f64`. Splitting the node's block-close fold across the WASM boundary therefore
+rounds the normalized cost before it is passed back to `postBlockUpdate`, changing serialized
+ledger state by as much as 318 raw Q64 units in the audited vector. This atomic export performs
+clamp, normalization, max-of-five-dimensions, and `post_block_update` entirely in Rust. Only the
+raw integer `SyntheticCost` enters from JavaScript; no `FixedPoint` value leaves Rust.
+
 These are being upstreamed separately (see the sprint plan's §10); when they ship in a published
 release, **this directory is deleted** and `package.json` points at the published version again.
 
@@ -45,18 +52,13 @@ release, **this directory is deleted** and `package.json` points at the publishe
 |---|---|
 | Repository | `git@github.com:acedward/midnight-ledger.git` |
 | Branch | `feat/expose-system-transaction-hash` |
-| Commit | `280905e` — `.wasm` built from `eb380b3` |
+| Commit | `6aa21d1b637c8307a1e83a887160b4bd28c05e22` |
 | Base | ledger 8.1.0 (`d89e0b6`, the reference `midnight-reference-mainnet/v1.0.0` checkout) |
 | Built with | `wasm-pack 0.15.0`, `rustc 1.93.0 (254b59607 2026-01-19)`, `--target bundler` |
 | Post-build | snippet-directory rewrite + `#self` Node import mapping (see the sprint plan's §8) |
 
-The two commits are interchangeable as build inputs: `280905e` adds only
-`ledger-wasm/verification/verify-system-tx-cost.mts`, which is not part of the crate's compiled
-source. `eb380b3` is recorded because it is the tree the committed bytes were actually produced
-from.
-
-The only source differences from the 8.1.0 base are the added exports and their `.d.ts`
-declarations.
+The only source differences from the 8.1.0 base are the added exports, their `.d.ts`
+declarations, and native-oracle verification fixtures.
 
 ## What guarantees this artifact is correct
 
@@ -66,8 +68,9 @@ declarations.
 rebuild can attest these exact bytes, and these exact bytes cannot be regenerated. That is
 precisely why the artifact is committed rather than rebuilt on demand.
 
-(The current bytes hash `7ac3fc7a…`. That differs from the 2026-08-08 pair because the source
-differs — it is not a further reproducibility measurement.)
+(The current bytes hash `4dbab3c953225eccc7ed856505ca0099bf1c92a3d24007238322e8a5aded194f`.
+That differs from the 2026-08-08 pair because the source differs — it is not a further
+reproducibility measurement.)
 
 What *is* checked, and is the meaningful property, is **behavioural equivalence against an
 independent implementation**: the five system transactions of a 1.0.0 devnet's genesis block, as
@@ -84,6 +87,12 @@ with `normalizeFullness` dimension-for-dimension whenever the input is within li
 over the limits the two diverge in exactly the way the node's `clamp_and_normalize` specifies.
 Asserting the agreement matters as much as the divergence: it shows the clamping variant is the
 same normalization, not a second one that happens to be close.
+
+The atomic close export is checked against SHA-256 state hashes precomputed by native Rust, not by
+the WASM code under test. Both committed vectors also pin the old rounded-f64 result as a
+counterweight and require it to differ: genesis closes to `412811927ead…` natively but
+`c41b7298b8b6…` through the lossy path. This directly closes the committed-oracle trap in which
+both actual and expected state were previously assembled through the same rounded binding.
 
 ## Verifying this directory
 
@@ -105,10 +114,18 @@ Behaviour of the cost and clamping exports, against the node's definition:
 ./node_modules/.bin/tsx /home/eddie/midnight-ledger-fork/ledger-wasm/verification/verify-system-tx-cost.mts "$PWD/vendor/ledger-v8-syshash/midnight_ledger_wasm_fs.js"
 ```
 
-Both take an **absolute** path: the argument is passed to `import()`, which resolves a relative
+Atomic close behaviour, against committed native-Rust state hashes:
+
+```bash
+./node_modules/.bin/tsx /home/eddie/midnight-ledger-fork/ledger-wasm/verification/verify-close-block.mts "$PWD/vendor/ledger-v8-syshash/midnight_ledger_wasm_fs.js"
+```
+
+All three take an **absolute** path: the argument is passed to `import()`, which resolves a relative
 specifier against the script's own location rather than the working directory.
 
-Both run in CI. The ground-truth fixture and scripts live in the ledger fork alongside the source.
+Equivalent assertions for all three behaviours run in CI against the installed vendored package.
+The standalone ground-truth scripts live in the ledger fork alongside the source; the independent
+close hashes are also copied into UmbraDB's test fixtures.
 
 ## Rebuilding from source
 
@@ -118,4 +135,5 @@ known-vector check above, not with `sha256sum` against this directory.
 Bumping this directory **must** bump `LEDGER_STATE_VERSION` in `chain-archive-sync/sync-service.ts`.
 Checkpoints store serialized ledger state, which is a ledger-internal encoding; resuming one under
 a build that reads it differently produces wrong replay outcomes rather than an error. This build
-is `ledger-v8@8.1.0-syshash.2`, which invalidates checkpoints written by `…syshash.1`.
+is `ledger-v8@8.1.0-syshash.3`, which invalidates checkpoints written by `…syshash.1` and
+`…syshash.2`.

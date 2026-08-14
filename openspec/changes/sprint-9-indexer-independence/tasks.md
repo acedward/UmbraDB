@@ -535,18 +535,41 @@ Recorded here so they are not silently absorbed:
 > evidence; §17 records what survived. T8 passed; T2/T6 are code-correct with evidence gaps;
 > T1/T3/T4/T5/T7 have substantive residuals.
 
-- [ ] 11.1 T4a: atomic clamp+max+close vendor export — `FixedPoint` never crosses JS as a number;
-      bump `LEDGER_STATE_VERSION`; update the parity workflow's version assertion (red at head)
-- [ ] 11.2 T4b: `PartialSuccess` cost-accumulation regression
-- [ ] 11.3 T3a: watermark write inside the replay-recovery boundary; regression faults the
-      `watermarks` insert
-- [ ] 11.4 T1a: **owner decided 2026-08-13 — node parent-time semantics (option a).** Document the
-      authority exception in the spec; add a discriminating dust-bearing vector
-- [ ] 11.5 T5a: **owner decided 2026-08-13 — narrow + guard (a+c).** Contract narrowed to the
-      finalized-only writer (documented, folded into O2); parent-hash refusal guard added in
-      catch-up. Full ancestry binding recorded as explicit future work, NOT implemented now
-- [ ] 11.6 T7a: `Unknown block` early-refusal precedence + overlap regressions; `metadataAt`
-      `result: null` refuses
-- [ ] 11.7 T2a: non-`undeployed` network regression; populated 004/005→006 upgrade test
-- [ ] 11.8 T6a: service-level interval validation test bypassing the CLI
+- [x] 11.1 T4a: atomic clamp+max+close vendor export — `FixedPoint` never crosses JS as a number;
+      `LEDGER_STATE_VERSION` and both workflow assertions now require `8.1.0-syshash.3`.
+      **Blind spot closed:** expected state hashes are native-Rust fixtures, not values assembled
+      through `closeBlock`; each pins the old rounded-f64 result as a required-different
+      counterweight. Vendored bytes pass both exact vectors and indexer hashes 5/5.
+- [x] 11.2 T4b: `PartialSuccess` cost-accumulation regression. **Blind spot closed:** the focused
+      fake uses the binding's actual `partialSuccess` discriminator and non-zero cost, so changing
+      production accumulation to success-only makes it red; separate real-byte tests cover
+      deserialize/well-formed/apply integration.
+- [x] 11.3 T3a: watermark write is inside the replay-recovery boundary. **Blind spot closed:** a
+      real PostgreSQL trigger faults the `watermarks` INSERT after bundle/checkpoint persistence,
+      asserts the cursor is behind, removes the one-shot fault, and proves the SAME service instance
+      recovers. A new instance cannot hide stale in-memory replay.
+- [x] 11.4 T1a: **owner decided 2026-08-13 — node parent-time semantics (option a).** The spec
+      records the indexer authority exception. **Blind spot closed:** a committed native-Rust
+      fixture reads `QueryContext[7]` and gates a signed dust registration; real-parent semantics
+      succeeds, restart-sentinel substitution fails, and both dust/full-state hashes differ. The
+      production service regression resumes that prestate from a real PostgreSQL checkpoint and
+      requires the next persisted checkpoint to equal the native node hash, not the sentinel hash;
+      this binds the discriminator to timestamp restoration rather than testing replay in
+      isolation. The structural proof deliberately isolates the node authority's post-admission
+      `VerifiedTransaction` fold; generator and native hashes: ledger fork
+      `7213c050fd1f2ddb5c6d99f40dd4f118ecb8076a`.
+- [x] 11.5 T5a: **owner decided 2026-08-13 — narrow + guard (a+c).** Contract narrowed to the
+      finalized-only writer (documented, folded into O2); catch-up refuses when the selected row's
+      parent is not the hash just replayed and names both hashes. **Blind spot closed by scope:** the
+      regression creates individually canonical but disconnected rows through `setCanonical`;
+      general reorg-safe ancestry binding is explicitly NOT claimed and remains future O2 work.
+- [x] 11.6 T7a: `Unknown block` has early-refusal precedence for all three audited overlap strings;
+      `metadataAt` `result: null` refuses. **Blind spot closed:** a separate `getBlockHash`-null
+      counterweight remains accepted, proving this is method-specific rather than a blanket RPC
+      null rejection.
+- [x] 11.7 T2a: a direct writer regression persists a non-`undeployed` (`devnet`) network, so a
+      hard-coded writer fails; the 004→005→006 upgrade test inserts a row before each migration, so
+      both legacy-checkpoint deletions are non-vacuous.
+- [x] 11.8 T6a: direct service construction (no CLI parser) rejects `0`, `-1`, `2.5`, `NaN`, and
+      `Infinity`; positive integer counterweights prove the constructor does not reject all values.
 - [ ] 11.9 Re-audit §17 scope; then O1–O5; then final PASS×3

@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function SignatureEnabled_() { return wasm.SignatureEnabled; }
+import * as wasm from '#self'; export function ZswapOffer_() { return wasm.ZswapOffer; }

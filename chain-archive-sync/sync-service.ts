@@ -103,7 +103,7 @@ const SYSTEM_TX_TAG = "midnight:system-transaction";
 /** Identifies the ledger build whose encoding a checkpoint's bytes are in. Bumping the vendored
  *  ledger MUST bump this: serialized state is a ledger-internal encoding, and resuming it under a
  *  build that reads it differently produces wrong replay outcomes rather than an error. */
-const LEDGER_STATE_VERSION = "ledger-v8@8.1.0-syshash.2";
+const LEDGER_STATE_VERSION = "ledger-v8@8.1.0-syshash.3";
 
 function hexToBytes(hex: string): Uint8Array {
   return new Uint8Array(Buffer.from(hexNoPrefix(hex), "hex"));
@@ -285,6 +285,9 @@ export class ChainArchiveSyncService {
   private replayHeight: number | undefined;
   /** Set on resume when the newest checkpoint is behind the resume point; drives catch-up. */
   private replayCatchUpFrom: number | undefined;
+  /** Hash of the block replay applied most recently. During catch-up this binds each independently
+   *  selected canonical height to the state actually being folded, preventing fork splices. */
+  private lastReplayedBlockHash: Hex32 | undefined;
   /** The timestamp of the block replay applied most recently -- the `last_block_time` the
    *  reference passes when applying the NEXT one. Carried in memory across blocks within a run,
    *  and restored from the checkpoint on resume, which is what stops the first block after a
@@ -447,7 +450,6 @@ export class ChainArchiveSyncService {
     let ingested = 0;
     for (let height = startHeight; height <= endHeight; height++) {
       await this.ingestOneBlock(height);
-      await this.store.setWatermark(this.watermarkKey(), { height });
       ingested++;
     }
     return {
@@ -793,6 +795,12 @@ export class ChainArchiveSyncService {
 
       // After the write, because a checkpoint references the block it describes.
       await this.checkpointReplayIfDue(height, blockHash);
+
+      // The watermark is the final durable step for this height and therefore belongs inside the
+      // same replay-recovery boundary. A failure here leaves the block (and possibly checkpoint)
+      // durable while the cursor stays behind; discarding the in-memory engine makes retry rebuild
+      // from those durable records instead of trying to apply this height twice to stale state.
+      await this.store.setWatermark(this.watermarkKey(), { height });
     } catch (err) {
       // T3. Replay is atomic INSIDE the engine but was not atomic across the ingest block: the
       // fold advanced above, and if any durable write here failed, the in-memory replay sat one
@@ -987,6 +995,7 @@ export class ChainArchiveSyncService {
         }
         this.replay = LedgerReplay.fromSerialized(ledger, resumeFrom.stateBytes);
         this.replayHeight = resumeFrom.blockHeight;
+        this.lastReplayedBlockHash = resumeFrom.blockHash;
         // The checkpointed block's own time becomes the parent time for the block after it (T1).
         // Without this the first block of every resumed run was folded with lastBlockTime=0 --
         // invisible in a single-run test, and wrong on every restart.
@@ -1002,6 +1011,7 @@ export class ChainArchiveSyncService {
         }
         this.replay = LedgerReplay.fromGenesis(ledger, this.ledgerNetworkId!);
         this.replayHeight = undefined;
+        this.lastReplayedBlockHash = undefined;
       }
     }
 
@@ -1065,6 +1075,7 @@ export class ChainArchiveSyncService {
       parentBlockTimestampMs: this.parentTimestampFor(height),
     });
     this.replayHeight = height;
+    this.lastReplayedBlockHash = blockHash;
     this.lastReplayedBlockTimestampMs = blockTimestampMs;
   }
 
@@ -1076,13 +1087,14 @@ export class ChainArchiveSyncService {
    * content is reconstructible from the newest canonical checkpoint plus the archived blocks
    * above it, which is precisely what a cold start already does.
    *
-   * All four fields must go together. Leaving any one behind is what made these bugs permanent
+   * All five fields must go together. Leaving any one behind is what made these bugs permanent
    * rather than transient -- a stale `replayHeight` alone is enough to wedge the height guard.
    */
   private discardReplayState(): void {
     this.replay = undefined;
     this.replayHeight = undefined;
     this.replayCatchUpFrom = undefined;
+    this.lastReplayedBlockHash = undefined;
     this.lastReplayedBlockTimestampMs = undefined;
   }
 
@@ -1126,6 +1138,21 @@ export class ChainArchiveSyncService {
           "reconstruct the state the next block must be applied to.",
       );
     }
+    const replayedParent = this.lastReplayedBlockHash;
+    if (replayedParent === undefined) {
+      throw new Error(
+        `replay catch-up at height ${height} has no hash for the block just replayed. ` +
+          "Without that ancestry anchor, independently canonical rows could be spliced across " +
+          "forks. Refusing.",
+      );
+    }
+    if (block.parentHash !== replayedParent) {
+      throw new Error(
+        `replay catch-up ancestry mismatch at height ${height}: canonical block ` +
+          `${block.blockHash} names parent ${block.parentHash}, but the block just replayed was ` +
+          `${replayedParent}. Refusing to splice disconnected canonical rows.`,
+      );
+    }
     const stored = await this.store.getTransactionsForBlock(this.net, block.blockHash);
     const ordered = [...stored].sort((a, b) => a.position - b.position);
     const withBytes = await Promise.all(
@@ -1156,6 +1183,7 @@ export class ChainArchiveSyncService {
       parentBlockTimestampMs: this.parentTimestampFor(height),
     });
     this.replayHeight = height;
+    this.lastReplayedBlockHash = block.blockHash;
     this.lastReplayedBlockTimestampMs = ts;
   }
 

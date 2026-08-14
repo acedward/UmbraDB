@@ -1,7 +1,7 @@
 {
   "name": "@midnight-ntwrk/ledger-v8",
   "type": "module",
-  "version": "8.1.0-syshash.2",
+  "version": "8.1.0-syshash.3",
   "license": "Apache-2.0",
   "files": [
     "midnight_ledger_wasm.d.ts",

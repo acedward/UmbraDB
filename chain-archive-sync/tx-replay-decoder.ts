@@ -307,11 +307,13 @@ export async function ledgerSupportsSystemTransactionHash(): Promise<boolean> {
  * transactions (`…syshash.1`) without being able to cost them. Folding them into one probe would
  * mean a build with only the older export reported the newer capability as present.
  *
- * Both halves are required and neither is sufficient. `SystemTransaction.cost` is what lets
+ * All three exports are required and none is sufficient alone. `SystemTransaction.cost` is what lets
  * genesis be costed at all -- it is nothing but system transactions, so without it genesis's
  * fullness is unavoidably zero. `clampAndNormalizeFullness` is what makes an overfull block
  * report as full instead of throwing, matching the node's `post_block_update`; with only
- * `normalizeFullness` a consumer would throw on a block the chain accepted.
+ * `normalizeFullness` a consumer would throw on a block the chain accepted. `closeBlock` keeps
+ * the normalized Q64 values inside Rust; without it, a JavaScript fold either cannot close the
+ * block or silently rounds the state-changing values through `f64`.
  *
  * Probes the loaded module rather than inspecting configuration, because configuration can point
  * at a build that does not have it.
@@ -321,7 +323,8 @@ export async function ledgerSupportsBlockFullness(): Promise<boolean> {
     const ledger = await loadLedgerV8();
     return (
       typeof ledger?.SystemTransaction?.prototype?.cost === "function" &&
-      typeof ledger?.LedgerParameters?.prototype?.clampAndNormalizeFullness === "function"
+      typeof ledger?.LedgerParameters?.prototype?.clampAndNormalizeFullness === "function" &&
+      typeof ledger?.LedgerState?.prototype?.closeBlock === "function"
     );
   } catch {
     return false;

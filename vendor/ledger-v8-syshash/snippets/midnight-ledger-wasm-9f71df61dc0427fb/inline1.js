@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function PrePartitionContractCall_() { return wasm.PrePartitionContractCall; }
+import * as wasm from '#self'; export function ZswapTransient_() { return wasm.ZswapTransient; }

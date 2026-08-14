@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function Proof_() { return wasm.Proof; }
+import * as wasm from '#self'; export function PreProof_() { return wasm.PreProof; }

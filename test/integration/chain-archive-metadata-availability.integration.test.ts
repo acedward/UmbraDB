@@ -260,7 +260,11 @@ describe("metadata availability", () => {
    * the only thing deciding the outcome is the classification under test.
    */
   describe("historical-state classification (T7)", () => {
-    const AMBIGUOUS = "Client error: UnknownBlock: Unknown block: State unavailable";
+    const AMBIGUOUS = [
+      "Unknown block: state not available",
+      "Unknown block: state already discarded for this block",
+      "Unknown block: block has been pruned",
+    ];
     const UNAMBIGUOUS = "State already discarded for this block";
 
     const resolverFor = async (message: string) => {
@@ -272,7 +276,7 @@ describe("metadata availability", () => {
       return new BlockScopedMetadata(node as never);
     };
 
-    it("REFUSES on an ambiguous 'Unknown block' instead of falling back", async () => {
+    it.each(AMBIGUOUS)("REFUSES on overlapping historical-state text: %s", async (message) => {
       // A node says "Unknown block" both for state it has pruned AND for a hash it has never seen
       // -- a block from another chain, a fork it did not follow, a typo. Accepting it as pruning
       // meant an unrecognised hash silently selected the committed capture for the header's
@@ -287,7 +291,7 @@ describe("metadata availability", () => {
       // refusal, because an unclassified failure is not a reason to keep looking. That is the
       // distinguishing outcome: were "unknown block" still accepted as pruning, this call would
       // RESOLVE successfully from the registry rather than throw at all.
-      const resolver = await resolverFor(AMBIGUOUS);
+      const resolver = await resolverFor(message);
       await expect(resolver.forBlock(BLOCK_HASH, 1_000_000)).rejects.toThrow(/Unknown block/);
     }, 60_000);
 
@@ -320,6 +324,22 @@ describe("metadata availability", () => {
       })) as typeof fetch;
     const nullClient = new NodeRpcClient({ url: "http://fake-node", fetchImpl: nullResult });
     await expect(nullClient.getBlockHash(999_999)).resolves.toBeNull();
+  }, 60_000);
+
+  it("REFUSES state_getMetadata result:null instead of entering registry fallback (T7a)", async () => {
+    // `result: null` is legitimate for chain_getBlockHash (counterweight above), but not for
+    // state_getMetadata. Mapping it to `undefined` let the resolver consume a committed capture
+    // without any pruning evidence. Calling metadataAt directly isolates that method-specific
+    // contract; a generic JSON-RPC null check would wrongly break getBlockHash.
+    const { NodeRpcClient } = await import("../../chain-archive-sync/node-rpc-client.js");
+    const nullResult = (async () =>
+      new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: null }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      })) as typeof fetch;
+    const client = new NodeRpcClient({ url: "http://fake-node", fetchImpl: nullResult });
+    await expect(client.metadataAt(BLOCK_HASH)).rejects.toThrow(
+      /state_getMetadata.*returned null.*fallback is refused/s,
+    );
   }, 60_000);
 
   it("decodes from the stored capture with the node's metadata gone -- the replay guarantee", async () => {

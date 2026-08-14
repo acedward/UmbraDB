@@ -231,16 +231,16 @@ function makeMutClosure(arg0, arg1, dtor, f) {
     return real;
 }
 
-function _assertClass(instance, klass) {
-    if (!(instance instanceof klass)) {
-        throw new Error(`expected instance of ${klass.name}`);
-    }
-}
-
 function takeFromExternrefTable0(idx) {
     const value = wasm.__wbindgen_export_2.get(idx);
     wasm.__externref_table_dealloc(idx);
     return value;
+}
+
+function _assertClass(instance, klass) {
+    if (!(instance instanceof klass)) {
+        throw new Error(`expected instance of ${klass.name}`);
+    }
 }
 
 function passArrayJsValueToWasm0(array, malloc) {
@@ -251,21 +251,6 @@ function passArrayJsValueToWasm0(array, malloc) {
     }
     WASM_VECTOR_LEN = array.length;
     return ptr;
-}
-/**
- * @param {any[]} calls
- * @param {LedgerParameters} params
- * @returns {Array<any>}
- */
-export function partitionTranscripts(calls, params) {
-    const ptr0 = passArrayJsValueToWasm0(calls, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    _assertClass(params, LedgerParameters);
-    const ret = wasm.partitionTranscripts(ptr0, len0, params.__wbg_ptr);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
-    }
-    return takeFromExternrefTable0(ret[0]);
 }
 
 function passArray8ToWasm0(arg, malloc) {
@@ -290,23 +275,15 @@ export function createCoinInfo(type_, value) {
 }
 
 /**
- * @returns {DustSecretKey}
+ * @param {any[]} calls
+ * @param {LedgerParameters} params
+ * @returns {Array<any>}
  */
-export function sampleDustSecretKey() {
-    const ret = wasm.sampleDustSecretKey();
-    return DustSecretKey.__wrap(ret);
-}
-
-/**
- * @param {Date} ctime
- * @param {bigint} initial_value
- * @param {any} gen_info
- * @param {Date} now
- * @param {any} params
- * @returns {bigint}
- */
-export function updatedValue(ctime, initial_value, gen_info, now, params) {
-    const ret = wasm.updatedValue(ctime, initial_value, gen_info, now, params);
+export function partitionTranscripts(calls, params) {
+    const ptr0 = passArrayJsValueToWasm0(calls, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    _assertClass(params, LedgerParameters);
+    const ret = wasm.partitionTranscripts(ptr0, len0, params.__wbg_ptr);
     if (ret[2]) {
         throw takeFromExternrefTable0(ret[1]);
     }
@@ -634,6 +611,30 @@ export function coinNullifier(coin_info, coin_secret_key) {
     } finally {
         wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
+}
+
+/**
+ * @returns {DustSecretKey}
+ */
+export function sampleDustSecretKey() {
+    const ret = wasm.sampleDustSecretKey();
+    return DustSecretKey.__wrap(ret);
+}
+
+/**
+ * @param {Date} ctime
+ * @param {bigint} initial_value
+ * @param {any} gen_info
+ * @param {Date} now
+ * @param {any} params
+ * @returns {bigint}
+ */
+export function updatedValue(ctime, initial_value, gen_info, now, params) {
+    const ret = wasm.updatedValue(ctime, initial_value, gen_info, now, params);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
 }
 
 /**
@@ -1415,15 +1416,15 @@ export function runProgram(initial, ops, cost_model, gas_limit) {
     return VmResults.__wrap(ret[0]);
 }
 
-function __wbg_adapter_12(arg0, arg1, arg2) {
+function __wbg_adapter_8(arg0, arg1, arg2) {
     wasm.closure3856_externref_shim(arg0, arg1, arg2);
 }
 
-function __wbg_adapter_810(arg0, arg1, arg2, arg3) {
+function __wbg_adapter_811(arg0, arg1, arg2, arg3) {
     wasm.closure3900_externref_shim(arg0, arg1, arg2, arg3);
 }
 
-function __wbg_adapter_905(arg0, arg1, arg2, arg3, arg4) {
+function __wbg_adapter_906(arg0, arg1, arg2, arg3, arg4) {
     wasm.closure3898_externref_shim(arg0, arg1, arg2, arg3, arg4);
 }
 
@@ -5130,6 +5131,24 @@ export class LedgerState {
     get parameters() {
         const ret = wasm.ledgerstate_parameters(this.__wbg_ptr);
         return LedgerParameters.__wrap(ret);
+    }
+    /**
+     * Closes a block from its accumulated raw synthetic cost without exposing normalized Q64
+     * fixed-point values to JavaScript.
+     *
+     * The active block limits come from this state, after all transactions in the block have
+     * applied. Clamping, normalization, max-of-five selection, and `post_block_update` all run in
+     * Rust so no fullness value crosses the lossy JavaScript `f64` boundary.
+     * @param {Date} tblock
+     * @param {any} accumulated_cost
+     * @returns {LedgerState}
+     */
+    closeBlock(tblock, accumulated_cost) {
+        const ret = wasm.ledgerstate_closeBlock(this.__wbg_ptr, tblock, accumulated_cost);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return LedgerState.__wrap(ret[0]);
     }
     /**
      * @param {Uint8Array} raw
@@ -9979,7 +9998,7 @@ export function __wbg_forEach_48feffedd75c5b94(arg0, arg1, arg2) {
             const a = state0.a;
             state0.a = 0;
             try {
-                return __wbg_adapter_905(a, state0.b, arg0, arg1, arg2);
+                return __wbg_adapter_906(a, state0.b, arg0, arg1, arg2);
             } finally {
                 state0.a = a;
             }
@@ -9997,7 +10016,7 @@ export function __wbg_forEach_859dfd887a0f866c(arg0, arg1, arg2) {
             const a = state0.a;
             state0.a = 0;
             try {
-                return __wbg_adapter_810(a, state0.b, arg0, arg1);
+                return __wbg_adapter_811(a, state0.b, arg0, arg1);
             } finally {
                 state0.a = a;
             }
@@ -10195,7 +10214,7 @@ export function __wbg_new_2e3c58a15f39f5f9(arg0, arg1) {
             const a = state0.a;
             state0.a = 0;
             try {
-                return __wbg_adapter_810(a, state0.b, arg0, arg1);
+                return __wbg_adapter_811(a, state0.b, arg0, arg1);
             } finally {
                 state0.a = a;
             }
@@ -10644,7 +10663,7 @@ export function __wbindgen_cast_e7b45dd881f38ce3(arg0, arg1) {
 
 export function __wbindgen_cast_ebdc0a010724de78(arg0, arg1) {
     // Cast intrinsic for `Closure(Closure { dtor_idx: 3855, function: Function { arguments: [Externref], shim_idx: 3856, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-    const ret = makeMutClosure(arg0, arg1, 3855, __wbg_adapter_12);
+    const ret = makeMutClosure(arg0, arg1, 3855, __wbg_adapter_8);
     return ret;
 };
 

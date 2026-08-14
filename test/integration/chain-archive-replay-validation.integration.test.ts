@@ -10,7 +10,7 @@ import { metadataRpcResult } from "./fake-node-metadata.js";
 
 /** Must match `LEDGER_STATE_VERSION` in the sync service -- a checkpoint row written by hand has
  *  to look valid in every respect except the one under test. */
-const LEDGER_VERSION = "ledger-v8@8.1.0-syshash.2";
+const LEDGER_VERSION = "ledger-v8@8.1.0-syshash.3";
 
 /**
  * Audit A2: ledger replay GATES ingest.
@@ -41,6 +41,21 @@ const FIXTURE = readFileSync(
   new URL("../fixtures/ledger-vectors/genesis-system-tx-hashes.txt", import.meta.url),
   "utf8",
 ).trim().split("\n").map((l) => l.trim().split(/\s+/));
+
+type ParentTimeOracle = {
+  networkId: string;
+  prestateHex: string;
+  transactionHex: string;
+  parentHash: string;
+  blockTimestampMs: number;
+  nodeParentTimestampMs: number;
+  nodeStateHash: string;
+  sentinelStateHash: string;
+};
+const PARENT_TIME_ORACLE = JSON.parse(readFileSync(
+  new URL("../fixtures/ledger-vectors/parent-time-dust-oracle.json", import.meta.url),
+  "utf8",
+)) as ParentTimeOracle;
 /**
  * Genesis's `Timestamp::set` inherent (T1).
  *
@@ -72,6 +87,12 @@ const REGULAR_TX_HEX =
 function bareRegularExtrinsicHex(payloadHex: string): string {
   const inner = "05" + "05" + "00" + compactU32Hex(payloadHex.length / 2) + payloadHex;
   return compactU32Hex(inner.length / 2) + inner;
+}
+
+function timestampInherentHex(timestampMs: number): string {
+  const littleEndian = Buffer.alloc(6);
+  littleEndian.writeUIntLE(timestampMs, 0, 6);
+  return `0x280501000b${littleEndian.toString("hex")}`;
 }
 
 const MNSV_DIGEST_V1 = "0x044d4e53561040420f00";
@@ -126,6 +147,10 @@ const HEIGHT_2_HASH = `0x${"d2".repeat(32)}`;
 const HEIGHT_2_TIMESTAMP_MS = 1754395212000;
 const HEIGHT_2_TIMESTAMP_INHERENT = "0x280501000be0781a7a9801";
 
+const HEIGHT_3_HASH = `0x${"d3".repeat(32)}`;
+const HEIGHT_3_TIMESTAMP_INHERENT = "0x280501000b50901a7a9801";
+const ALT_HEIGHT_1_HASH = `0x${"e1".repeat(32)}`;
+
 /** Lets a test fault `chain_getBlock` for one specific hash, to inject a failure during replay
  *  catch-up -- which reads archived blocks back from the node. */
 interface NodeFault { failGetBlockFor?: string }
@@ -152,6 +177,16 @@ function chainNodeFetch(
       stateRoot: `0x${"b2".repeat(32)}`, extrinsicsRoot: `0x${"c2".repeat(32)}`,
       digest: { logs: [MNSV_DIGEST_V1] },
     },
+    [HEIGHT_3_HASH]: {
+      parentHash: HEIGHT_2_HASH, number: "0x3",
+      stateRoot: `0x${"b3".repeat(32)}`, extrinsicsRoot: `0x${"c3".repeat(32)}`,
+      digest: { logs: [MNSV_DIGEST_V1] },
+    },
+    [ALT_HEIGHT_1_HASH]: {
+      parentHash: BLOCK_HASH, number: "0x1",
+      stateRoot: `0x${"f1".repeat(32)}`, extrinsicsRoot: `0x${"a1".repeat(32)}`,
+      digest: { logs: [MNSV_DIGEST_V1] },
+    },
   };
   // Heights 1 and 2 carry only their timestamp inherent: an empty block still exercises the fold,
   // and there is no second real regular transaction that applies cleanly to the advanced state.
@@ -159,8 +194,10 @@ function chainNodeFetch(
     [BLOCK_HASH]: genesisExtrinsics,
     [HEIGHT_1_HASH]: [HEIGHT_1_TIMESTAMP_INHERENT],
     [HEIGHT_2_HASH]: [HEIGHT_2_TIMESTAMP_INHERENT],
+    [HEIGHT_3_HASH]: [HEIGHT_3_TIMESTAMP_INHERENT],
+    [ALT_HEIGHT_1_HASH]: [HEIGHT_1_TIMESTAMP_INHERENT],
   };
-  const byNumber = [BLOCK_HASH, HEIGHT_1_HASH, HEIGHT_2_HASH];
+  const byNumber = [BLOCK_HASH, HEIGHT_1_HASH, HEIGHT_2_HASH, HEIGHT_3_HASH];
   return (async (_input: RequestInfo | URL, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body ?? "{}"));
     const reply = (result: unknown) =>
@@ -198,6 +235,63 @@ function chainNodeFetch(
 
 /** Back-compat alias for the two-block cases written before height 2 existed. */
 const twoBlockNodeFetch = (genesisExtrinsics: string[]) => chainNodeFetch(genesisExtrinsics);
+
+const PARENT_TIME_ORACLE_BLOCK_HASH = `0x${"e2".repeat(32)}`;
+const PARENT_TIME_ORACLE_TIMESTAMP_INHERENT = timestampInherentHex(
+  PARENT_TIME_ORACLE.blockTimestampMs,
+);
+
+/** One post-checkpoint block carrying the native fixture's dust-affecting transaction. */
+function parentTimeOracleNodeFetch(): typeof fetch {
+  const parentHash = `0x${PARENT_TIME_ORACLE.parentHash}`;
+  const parentHeader = {
+    parentHash: `0x${"00".repeat(32)}`, number: "0x0",
+    stateRoot: `0x${"a0".repeat(32)}`, extrinsicsRoot: `0x${"c0".repeat(32)}`,
+    digest: { logs: [MNSV_DIGEST_V1] },
+  };
+  const header = {
+    parentHash, number: "0x1",
+    stateRoot: `0x${"a1".repeat(32)}`, extrinsicsRoot: `0x${"c1".repeat(32)}`,
+    digest: { logs: [MNSV_DIGEST_V1] },
+  };
+  const extrinsics = [
+    PARENT_TIME_ORACLE_TIMESTAMP_INHERENT,
+    bareRegularExtrinsicHex(PARENT_TIME_ORACLE.transactionHex),
+  ];
+  return (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    const reply = (result: unknown) =>
+      new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    const meta = metadataRpcResult(body.method);
+    if (meta !== undefined) return reply(meta);
+    const requestedHash = String(body.params?.[0] ?? PARENT_TIME_ORACLE_BLOCK_HASH);
+    switch (body.method) {
+      case "chain_getBlockHash": {
+        const height = body.params?.[0];
+        if (height === 0) return reply(parentHash);
+        return reply(PARENT_TIME_ORACLE_BLOCK_HASH);
+      }
+      case "chain_getFinalizedHead":
+        return reply(PARENT_TIME_ORACLE_BLOCK_HASH);
+      case "chain_getHeader":
+        return reply(requestedHash === parentHash ? parentHeader : header);
+      case "chain_getBlock":
+        return reply({
+          block: requestedHash === parentHash
+            ? { header: parentHeader, extrinsics: [] }
+            : { header, extrinsics },
+        });
+      case "state_getStorageAt":
+        return reply(null);
+      case "state_call":
+        return reply("0x0a000000");
+      default:
+        return reply(null);
+    }
+  }) as typeof fetch;
+}
 
 describe("replay validation gates ingest", () => {
   let container: StartedPostgreSqlContainer;
@@ -340,6 +434,61 @@ describe("replay validation gates ingest", () => {
       expect(after?.h, "the resumed run must have replayed and checkpointed height 1").toBe("1");
       expect(after?.ts).toBe(String(HEIGHT_1_TIMESTAMP_MS));
     }, 180_000);
+
+    it("feeds the persisted real parent time into a dust-affecting resumed fold (T1a)", async () => {
+      // The plumbing test above proves a timestamp is persisted and restored, but an integration
+      // bug could still substitute the current block's time when calling LedgerReplay and pass it.
+      // Start from the native fixture's prestate at a real checkpoint, then drive the production
+      // sync service through the next block. The guaranteed transcript reads `last_block_time`:
+      // node semantics succeeds and changes dust, while the indexer restart sentinel fails.
+      const schema = await newSchema();
+      const store = new PgChainArchiveStore(sql, schema);
+      await store.putBlock({
+        net: NET,
+        blockHash: PARENT_TIME_ORACLE.parentHash,
+        height: 0,
+        parentHash: "00".repeat(32),
+        stateRoot: "a0".repeat(32),
+        extrinsicsRoot: "c0".repeat(32),
+        headerBytes: new Uint8Array([0]),
+        bodyBytes: new Uint8Array([0]),
+        isCanonical: true,
+        status: "canonical",
+        finalized: true,
+      });
+      await store.putReplayCheckpoint({
+        net: NET,
+        blockHeight: 0,
+        blockHash: PARENT_TIME_ORACLE.parentHash,
+        stateBytes: new Uint8Array(Buffer.from(PARENT_TIME_ORACLE.prestateHex, "hex")),
+        ledgerVersion: LEDGER_VERSION,
+        blockTimestampMs: PARENT_TIME_ORACLE.nodeParentTimestampMs,
+        ledgerNetworkId: PARENT_TIME_ORACLE.networkId,
+      });
+      await store.setWatermark(`sync_cursor:${NET}`, { height: 0 });
+
+      const svc = new ChainArchiveSyncService({
+        sql, net: NET, schema,
+        node: { url: "http://fake-node", fetchImpl: parentTimeOracleNodeFetch() },
+        replayValidation: true,
+        ledgerNetworkId: PARENT_TIME_ORACLE.networkId,
+        replayCheckpointInterval: 1,
+      });
+      await svc.syncOnce({ maxBlocks: 1 });
+
+      const checkpoint = await store.getLatestReplayCheckpoint(NET, 1);
+      expect(checkpoint?.blockHeight).toBe(1);
+      const got = createHash("sha256")
+        .update(Buffer.from(checkpoint!.stateBytes))
+        .digest("hex");
+      expect(got).toBe(PARENT_TIME_ORACLE.nodeStateHash);
+      expect(got).not.toBe(PARENT_TIME_ORACLE.sentinelStateHash);
+
+      // The expected bytes came from native Rust, while this path exercises checkpoint lookup,
+      // timestamp restoration, RPC decoding, archive transaction construction, replay, atomic
+      // close, and checkpoint persistence. Replacing the service's parent time with the current
+      // block time now selects the committed sentinel hash and makes this test red.
+    }, 180_000);
   });
 
   /**
@@ -350,6 +499,21 @@ describe("replay validation gates ingest", () => {
    * checkpoint from another chain -- and the network embedded in the serialized state was trusted
    * implicitly while the configured `ledgerNetworkId` was never consulted at all.
    */
+  it("writes the configured non-undeployed ledger network into the checkpoint (T2a)", async () => {
+    // The mismatch test below starts with an `undeployed` writer and mutates the row afterwards.
+    // A writer hard-coded to `undeployed` therefore passes it. Drive the production writer with a
+    // genuinely different id and inspect what it persisted; hard-coding now fails before any
+    // reader-side mutation is involved.
+    const schema = await newSchema();
+    await service(schema, GENESIS_SYSTEM_EXTRINSICS, { ledgerNetworkId: "devnet" })
+      .syncOnce({ maxBlocks: 1 });
+    const [row] = await sql<{ ledger_network_id: string }[]>`
+      SELECT ledger_network_id FROM ${sql(schema)}.replay_checkpoints
+      WHERE net = ${NET} AND block_height = 0
+    `;
+    expect(row?.ledger_network_id).toBe("devnet");
+  }, 180_000);
+
   it("REFUSES a checkpoint written for a different ledger network (T2)", async () => {
     const schema = await newSchema();
     await service(schema, GENESIS_SYSTEM_EXTRINSICS).syncOnce({ maxBlocks: 1 });
@@ -421,6 +585,69 @@ describe("replay validation gates ingest", () => {
     expect(Buffer.from(chosen!.stateBytes).equals(orphanState)).toBe(false);
   }, 180_000);
 
+  it("REFUSES disconnected rows made individually canonical by setCanonical (T5a)", async () => {
+    // Seed only the finalized genesis through the supported writer, leaving its valid replay
+    // checkpoint as the catch-up anchor. The rows above it model an in-progress, unfinalized reorg
+    // managed through the public store API: flip height 1 to branch B, but leave height 2 on branch
+    // A. Every height has exactly one canonical row, yet B1 -> A2 is disconnected.
+    const schema = await newSchema();
+    await service(schema, GENESIS_SYSTEM_EXTRINSICS, { replayCheckpointInterval: 1000 })
+      .syncOnce({ maxBlocks: 1 });
+    const store = new PgChainArchiveStore(sql, schema);
+    const block = (
+      blockHash: string, height: number, parentHash: string, canonical: boolean,
+    ) => ({
+      net: NET,
+      blockHash: blockHash.slice(2),
+      height,
+      parentHash: parentHash.slice(2),
+      stateRoot: (canonical ? "b" : "f").repeat(64),
+      extrinsicsRoot: (canonical ? "c" : "a").repeat(64),
+      headerBytes: new Uint8Array([height, canonical ? 1 : 0]),
+      bodyBytes: new Uint8Array([height]),
+      isCanonical: canonical,
+      status: canonical ? ("canonical" as const) : ("orphaned" as const),
+      finalized: false,
+    });
+    await store.putBlock(block(HEIGHT_1_HASH, 1, BLOCK_HASH, true));
+    await store.putBlock(block(HEIGHT_2_HASH, 2, HEIGHT_1_HASH, true));
+    await store.putBlock(block(ALT_HEIGHT_1_HASH, 1, BLOCK_HASH, false));
+    await store.setCanonical(NET, 1, ALT_HEIGHT_1_HASH.slice(2));
+    await store.setWatermark(`sync_cursor:${NET}`, { height: 2 });
+
+    const [shape] = await sql<{ canonical: number; parent: string }[]>`
+      SELECT
+        count(*) FILTER (WHERE is_canonical)::int AS canonical,
+        encode((SELECT parent_hash FROM ${sql(schema)}.blocks
+          WHERE net = ${NET} AND height = 2 AND is_canonical), 'hex') AS parent
+      FROM ${sql(schema)}.blocks WHERE net = ${NET} AND height IN (1, 2)
+    `;
+    expect(shape).toEqual({ canonical: 2, parent: HEIGHT_1_HASH.slice(2) });
+
+    const resumed = new ChainArchiveSyncService({
+      sql, net: NET, schema,
+      node: {
+        url: "http://fake-node",
+        fetchImpl: chainNodeFetch(GENESIS_SYSTEM_EXTRINSICS, { head: HEIGHT_3_HASH }),
+      },
+      replayValidation: true,
+      ledgerNetworkId: "undeployed",
+      replayCheckpointInterval: 1000,
+    });
+
+    await expect(resumed.syncOnce({ maxBlocks: 1 })).rejects.toThrow(
+      new RegExp(
+        `replay catch-up ancestry mismatch.*${HEIGHT_1_HASH.slice(2)}.*` +
+        `${ALT_HEIGHT_1_HASH.slice(2)}.*Refusing`,
+        "s",
+      ),
+    );
+
+    // Checking only canonical flags would accept this shape. Naming both hashes proves the guard
+    // compared A2's stored parent to the B1 hash actually replayed, rather than rejecting later
+    // for missing node data or some unrelated replay error.
+  }, 180_000);
+
   /**
    * T3: replay must not be left ahead of what is durable.
    *
@@ -474,6 +701,56 @@ describe("replay validation gates ingest", () => {
       WHERE net = ${NET} ORDER BY block_height DESC LIMIT 1
     `;
     expect(cp?.h, "replay must have advanced with the archive").toBe("1");
+  }, 180_000);
+
+  it("recovers on the SAME service after the watermark insert fails (T3a)", async () => {
+    // The earlier T3 regression faults `blocks`, which is inside the original catch. It therefore
+    // remains green if `setWatermark` sits outside that recovery boundary -- exactly the audited
+    // wedge. Fault the real watermarks INSERT after bundle/checkpoint persistence, then retry the
+    // same long-lived service so constructing a fresh engine cannot hide stale in-memory replay.
+    const schema = await newSchema();
+    const node = { url: "http://fake-node", fetchImpl: twoBlockNodeFetch(GENESIS_SYSTEM_EXTRINSICS) };
+    const svc = new ChainArchiveSyncService({
+      sql, net: NET, schema, node,
+      replayValidation: true,
+      ledgerNetworkId: "undeployed",
+      replayCheckpointInterval: 1,
+    });
+    await svc.syncOnce({ maxBlocks: 1 });
+
+    await sql`
+      CREATE FUNCTION ${sql(schema)}.fail_watermark_insert() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        RAISE EXCEPTION 'injected watermark-write failure' USING ERRCODE = 'serialization_failure';
+      END;
+      $fn$
+    `;
+    await sql`
+      CREATE TRIGGER fail_watermark_insert_trigger
+      BEFORE INSERT ON ${sql(schema)}.watermarks
+      FOR EACH ROW EXECUTE FUNCTION ${sql(schema)}.fail_watermark_insert()
+    `;
+
+    await expect(svc.syncOnce({ maxBlocks: 1 })).rejects.toThrow(
+      /injected watermark-write failure/,
+    );
+
+    const [failed] = await sql<{ blocks: number; checkpoints: number; watermark: number }[]>`
+      SELECT
+        (SELECT count(*)::int FROM ${sql(schema)}.blocks WHERE net = ${NET}) AS blocks,
+        (SELECT count(*)::int FROM ${sql(schema)}.replay_checkpoints WHERE net = ${NET})
+          AS checkpoints,
+        (SELECT ((value->>'height')::int) FROM ${sql(schema)}.watermarks
+          WHERE kind = 'chain_archive' AND key = ${`sync_cursor:${NET}`}) AS watermark
+    `;
+    expect(failed).toEqual({ blocks: 2, checkpoints: 2, watermark: 0 });
+
+    await sql`DROP TRIGGER fail_watermark_insert_trigger ON ${sql(schema)}.watermarks`;
+
+    // Before T3a this throws "replay validation is at height 1 but this block is 1". A new
+    // service would pass and would test cold-start recovery instead of the bug.
+    await svc.syncOnce({ maxBlocks: 1 });
+    await expect(svc.getSyncedHeight()).resolves.toBe(1);
   }, 180_000);
 
   it("recovers from a failure PARTWAY THROUGH replay catch-up (T5)", async () => {
@@ -539,7 +816,7 @@ describe("replay validation gates ingest", () => {
     `;
     expect(rows).toHaveLength(1);
     expect(rows[0]!.h).toBe("0");
-    expect(rows[0]!.ledger_version).toContain("8.1.0-syshash.2");
+    expect(rows[0]!.ledger_version).toContain("8.1.0-syshash.3");
     // Real state, not an empty placeholder: a blank state is ~816 bytes, and genesis's five system
     // transactions take it to tens of kilobytes.
     expect(rows[0]!.n).toBeGreaterThan(1000);

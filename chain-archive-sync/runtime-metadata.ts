@@ -530,6 +530,11 @@ function hexToBytes(hex: string): Uint8Array {
  */
 function isHistoricalStateUnavailable(error: unknown): boolean {
   const message = String((error as Error)?.message ?? error);
+  // `Unknown block` is ambiguous and must win even when the rest of the message contains a
+  // phrase normally accepted as pruning. A foreign/forked/typo hash can be both "unknown" and
+  // described as having no state; treating the trailing phrase first would silently decode that
+  // unrecognised block against the committed registry.
+  if (/unknown block/i.test(message)) return false;
   return (
     /state already discarded/i.test(message) ||
     /state not available/i.test(message) ||

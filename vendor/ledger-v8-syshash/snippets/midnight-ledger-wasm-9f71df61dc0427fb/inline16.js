@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function DustRegistration_() { return wasm.DustRegistration; }
+import * as wasm from '#self'; export function ContractCall_() { return wasm.ContractCall; }

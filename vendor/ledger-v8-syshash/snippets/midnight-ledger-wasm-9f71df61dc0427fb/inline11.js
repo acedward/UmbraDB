@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function ZswapTransient_() { return wasm.ZswapTransient; }
+import * as wasm from '#self'; export function PreTranscript_() { return wasm.PreTranscript; }

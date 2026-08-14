@@ -80,10 +80,12 @@ describe("vendored ledger build reproduces the indexer's system-transaction hash
     }
   });
 
-  it("exposes SystemTransaction.cost and clampAndNormalizeFullness", async () => {
+  it("exposes SystemTransaction.cost, clampAndNormalizeFullness, and closeBlock", async () => {
     // Stated separately from the hash export above because they arrived in a different build:
     // `…syshash.1` could hash a system transaction but not cost one. A build with only the older
     // export must fail HERE, naming the missing capability, rather than in the arithmetic below.
+    // `closeBlock` is part of the same capability: splitting close across JS recreates the Q64
+    // rounding divergence even when the older two exports are present.
     await expect(ledgerSupportsBlockFullness()).resolves.toBe(true);
   });
 

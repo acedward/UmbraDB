@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { LedgerReplay, ReplayRefusalError } from "../../chain-archive-sync/ledger-replay.js";
@@ -31,6 +32,13 @@ const SYSTEM_TXS = FIXTURE.map((f) => ({
   kind: "system" as const,
   rawBytes: new Uint8Array(Buffer.from(f[3]!, "hex")),
 }));
+const [, NATIVE_GENESIS_CLOSE_HASH, ROUNDED_GENESIS_CLOSE_HASH] = readFileSync(
+  new URL("../fixtures/ledger-vectors/native-close-block-oracles.txt", import.meta.url),
+  "utf8",
+).split("\n").find((line) => line.startsWith("genesis-system-transactions "))!
+  .split(/\s+/);
+const stateHash = (bytes: Uint8Array): string =>
+  createHash("sha256").update(Buffer.from(bytes)).digest("hex");
 
 /** The real genesis regular transaction (hex without envelope), and a copy with ONE byte flipped
  *  inside the proof region — deserializable, but not well-formed. */
@@ -148,6 +156,75 @@ describe("ledger replay: block time is load-bearing (T1)", () => {
     };
     expect(fold(0).equals(fold(1754395200000))).toBe(false);
   });
+
+  it("matches node parent-time semantics on a dust-affecting fold, not the indexer restart sentinel", async () => {
+    type ParentTimeOracle = {
+      networkId: string;
+      prestateHex: string;
+      transactionHex: string;
+      parentHash: string;
+      blockTimestampMs: number;
+      nodeParentTimestampMs: number;
+      sentinelParentTimestampMs: number;
+      nodeOutcome: string;
+      sentinelOutcome: string;
+      nodeDustHash: string;
+      sentinelDustHash: string;
+      nodeStateHash: string;
+      sentinelStateHash: string;
+    };
+    const oracle = JSON.parse(readFileSync(
+      new URL("../fixtures/ledger-vectors/parent-time-dust-oracle.json", import.meta.url),
+      "utf8",
+    )) as ParentTimeOracle;
+    const ledger = await loadLedgerV8();
+    const fold = (parentBlockTimestampMs: number) => {
+      const replay = LedgerReplay.fromSerialized(
+        ledger,
+        new Uint8Array(Buffer.from(oracle.prestateHex, "hex")),
+      );
+      const outcomes = replay.applyBlock({
+        transactions: [regular(oracle.transactionHex)],
+        blockTimestampMs: oracle.blockTimestampMs,
+        parentBlockHashHex: oracle.parentHash,
+        parentBlockTimestampMs,
+      });
+      const stateBytes = replay.serialize();
+      const dustBytes = ledger.LedgerState.deserialize(stateBytes).dust.serialize();
+      return {
+        outcome: outcomes[0],
+        stateHash: stateHash(stateBytes),
+        dustHash: stateHash(dustBytes),
+      };
+    };
+
+    const node = fold(oracle.nodeParentTimestampMs);
+    const sentinel = fold(oracle.sentinelParentTimestampMs);
+
+    expect(node).toEqual({
+      outcome: oracle.nodeOutcome,
+      stateHash: oracle.nodeStateHash,
+      dustHash: oracle.nodeDustHash,
+    });
+    expect(sentinel).toEqual({
+      outcome: oracle.sentinelOutcome,
+      stateHash: oracle.sentinelStateHash,
+      dustHash: oracle.sentinelDustHash,
+    });
+    expect(node.dustHash).not.toBe(sentinel.dustHash);
+
+    // This fixture was assembled and folded by native Rust. Its guaranteed transcript reads
+    // QueryContext[7] (`last_block_time`) and gates a signed dust registration: with the real
+    // parent it succeeds and changes dust; after an indexer process restart, the zero cursor makes
+    // that implementation substitute the CURRENT block time, the guaranteed segment fails, and
+    // dust stays unchanged. The expected hashes never pass through LedgerReplay or WASM.
+    //
+    // The proof marker is structural because this is the post-validation fold boundary: the node
+    // function used as authority consumes a VerifiedTransaction, and the vendored WASM replay is
+    // compiled without proof verification. Signature, binding, transcript, result classification,
+    // dust effects, and block close are all real ledger paths; cryptographic admission is
+    // deliberately orthogonal to the parent-time semantic being discriminated.
+  });
 });
 
 /**
@@ -170,7 +247,7 @@ describe("ledger replay: block time is load-bearing (T1)", () => {
  * Both wrong implementations are ones a reasonable person would write, and both are caught here.
  */
 describe("ledger replay: block fullness (T4)", () => {
-  it("folds genesis to the reference's exact fullness", async () => {
+  it("accumulates genesis's exact raw cost", async () => {
     const replay = LedgerReplay.fromGenesis(await loadLedgerV8(), "undeployed");
     replay.applyBlock({
       transactions: [...SYSTEM_TXS, regular(GOOD_REGULAR_HEX)],
@@ -187,17 +264,25 @@ describe("ledger replay: block fullness (T4)", () => {
       bytesWritten: 18848n,
       bytesChurned: 913594n,
     });
-    expect(fullness.normalized).toEqual({
-      readTime: 0.058225,
-      computeTime: 0.133204074528,
-      blockUsage: 0,
-      bytesWritten: 0.37696,
-      bytesChurned: 0.01827188,
+    // Normalized Q64 values are deliberately absent here. Returning them to JS was the T4a bug:
+    // serde converted them to f64 and changed the state when they crossed back into Rust.
+    expect(Object.keys(fullness)).toEqual(["accumulated"]);
+  });
+
+  it("matches the committed native-Rust close oracle, not the rounded JS counterweight", async () => {
+    // The expectation was precomputed by an independently assembled native Rust fold in the
+    // ledger fork. It is not derived through closeBlock or through the old normalization binding,
+    // which closes the committed-oracle trap that let both sides share the same f64 rounding bug.
+    const replay = LedgerReplay.fromGenesis(await loadLedgerV8(), "undeployed");
+    replay.applyBlock({
+      transactions: SYSTEM_TXS,
+      blockTimestampMs: 0,
+      parentBlockHashHex: GENESIS_PARENT,
+      parentBlockTimestampMs: 0,
     });
-    // Overall is the MAX across dimensions, not a sum or an average -- both of which would be
-    // wrong here and both of which produce a plausible number.
-    expect(fullness.overall).toBe(0.37696);
-    expect(fullness.overall).toBe(Math.max(...Object.values(fullness.normalized)));
+    const got = stateHash(replay.serialize());
+    expect(got).toBe(NATIVE_GENESIS_CLOSE_HASH);
+    expect(got).not.toBe(ROUNDED_GENESIS_CLOSE_HASH);
   });
 
   it("counts the regular transaction's cost, not only the system transactions'", async () => {
@@ -256,7 +341,49 @@ describe("ledger replay: block fullness (T4)", () => {
       bytesWritten: 0n,
       bytesChurned: 0n,
     });
-    expect(replay.lastBlockFullness!.overall).toBe(0);
+  });
+
+  it("counts cost when the binding returns PartialSuccess (T4b)", () => {
+    const partialCost = {
+      readTime: 11n,
+      computeTime: 22n,
+      blockUsage: 33n,
+      bytesWritten: 44n,
+      bytesChurned: 55n,
+    };
+    const state = {
+      parameters: {},
+      apply: () => [state, { type: "partialSuccess" }],
+      closeBlock: () => state,
+      serialize: () => new Uint8Array([1]),
+    };
+    const fakeLedger = {
+      LedgerState: { blank: () => state },
+      WellFormedStrictness: class { enforceBalancing = true; },
+      Transaction: {
+        deserialize: () => ({
+          cost: () => partialCost,
+          fees: () => 0n,
+          wellFormed: () => ({}),
+        }),
+      },
+      TransactionContext: class {},
+    };
+    const replay = LedgerReplay.fromGenesis(fakeLedger, "partial-success-fixture");
+    const outcomes = replay.applyBlock({
+      transactions: [regular("00")],
+      blockTimestampMs: 6000,
+      parentBlockHashHex: GENESIS_PARENT,
+      parentBlockTimestampMs: 0,
+    });
+
+    expect(outcomes).toEqual(["partial_success"]);
+    expect(replay.lastBlockFullness!.accumulated).toEqual(partialCost);
+
+    // This is a production-branch test, not a cryptographic transaction-construction test: the
+    // fake returns the binding's actual public discriminator (`partialSuccess`) and non-zero cost.
+    // Changing accumulation to `outcome === "success"` makes this exact assertion red, while the
+    // real genesis/Failure fixtures above keep their independent integration coverage.
   });
 
   it("resets fullness per block rather than accumulating across the chain", async () => {
@@ -274,115 +401,5 @@ describe("ledger replay: block fullness (T4)", () => {
       parentBlockTimestampMs: 0,
     });
     expect(replay.lastBlockFullness!.accumulated.bytesChurned).toBe(0n);
-    expect(replay.lastBlockFullness!.overall).toBe(0);
-  });
-
-  it("closes a block with exactly the fullness it reports, not the binding's 0.5 default", async () => {
-    // Two assertions, in the order that makes the second one mean something.
-    //
-    // First: omitting the overall fullness is observably different from passing zero. The binding
-    // substitutes 0.5 for an absent value (`ledger-wasm/src/state.rs:74-75`) rather than
-    // defaulting to empty, so an omission silently invents a half-full block.
-    //
-    // Second -- and this is the one that guards `applyBlock` rather than the binding -- the state
-    // `applyBlock` actually produces must equal a state closed with the reported values by hand.
-    // Asserting only the first would leave `applyBlock` free to omit the argument: an earlier
-    // version of this test did exactly that, and a mutation that passed `undefined` from
-    // `applyBlock` went green through all ten tests. `lastBlockFullness` cannot catch it either,
-    // since it reports what was COMPUTED, not what was PASSED. Only the resulting state can.
-    const ledger = await loadLedgerV8();
-    const tblock = new Date(6000);
-    const zero = { readTime: 0, computeTime: 0, blockUsage: 0, bytesWritten: 0, bytesChurned: 0 };
-
-    const baseline = await genesisReplay();
-    const base = ledger.LedgerState.deserialize(baseline.serialize());
-    const explicit = base.postBlockUpdate(tblock, zero, 0).serialize();
-    const omitted = base.postBlockUpdate(tblock, zero, undefined).serialize();
-    expect(
-      Buffer.from(omitted).equals(Buffer.from(explicit)),
-      "an absent overall fullness must not be equivalent to zero, or this test proves nothing",
-    ).toBe(false);
-
-    const replay = await genesisReplay();
-    replay.applyBlock({
-      transactions: [],
-      blockTimestampMs: 6000,
-      parentBlockHashHex: "aa".repeat(32),
-      parentBlockTimestampMs: 0,
-    });
-    expect(replay.lastBlockFullness!.overall).toBe(0);
-    expect(
-      Buffer.from(replay.serialize()).equals(Buffer.from(explicit)),
-      "applyBlock must pass the fullness it reports",
-    ).toBe(true);
-  });
-
-  it("closes genesis with BOTH fullness arguments, on a block whose fullness is non-zero", async () => {
-    // The empty-block test above cannot catch an omitted DETAILED fullness, because an empty
-    // block's detailed fullness really is zero and the binding's substitute is `NormalizedCost::
-    // ZERO` -- omitting it is genuinely equivalent there. Verified: a mutation passing `undefined`
-    // for the detailed argument went green through that test.
-    //
-    // So this repeats the comparison on genesis, where the detailed fullness is non-zero in four
-    // of five dimensions. The expected state is built by folding genesis's transactions
-    // independently and closing with the constants pinned at the top of this describe -- so the
-    // close arguments are checked against numbers, not against whatever the implementation chose.
-    const ledger = await loadLedgerV8();
-    const tblock = new Date(0);
-
-    let state = ledger.LedgerState.blank("undeployed");
-    for (const tx of SYSTEM_TXS) {
-      const sysTx = ledger.SystemTransaction.deserialize(tx.rawBytes);
-      const [next] = state.applySystemTx(sysTx, tblock);
-      state = next;
-    }
-    const strictness = new ledger.WellFormedStrictness();
-    strictness.enforceBalancing = false;
-    const parsed = ledger.Transaction.deserialize(
-      "signature", "proof", "binding", regular(GOOD_REGULAR_HEX).rawBytes,
-    );
-    const verified = parsed.wellFormed(state, strictness, tblock);
-    const cx = new ledger.TransactionContext(state, {
-      secondsSinceEpoch: 0,
-      secondsSinceEpochErr: 30,
-      parentBlockHash: GENESIS_PARENT,
-      lastBlockTime: 0,
-    }, undefined);
-    const [applied] = state.apply(verified, cx);
-    state = applied;
-
-    const NORMALIZED = {
-      readTime: 0.058225,
-      computeTime: 0.133204074528,
-      blockUsage: 0,
-      bytesWritten: 0.37696,
-      bytesChurned: 0.01827188,
-    };
-    const OVERALL = 0.37696;
-    const expected = state.postBlockUpdate(tblock, NORMALIZED, OVERALL).serialize();
-
-    const replay = LedgerReplay.fromGenesis(ledger, "undeployed");
-    replay.applyBlock({
-      transactions: [...SYSTEM_TXS, regular(GOOD_REGULAR_HEX)],
-      blockTimestampMs: 0,
-      parentBlockHashHex: GENESIS_PARENT,
-      parentBlockTimestampMs: 0,
-    });
-    expect(
-      Buffer.from(replay.serialize()).equals(Buffer.from(expected)),
-      "applyBlock's closed state must match a close with the pinned fullness values",
-    ).toBe(true);
-
-    // Both substitutions must be observably different here, or the comparison above is vacuous.
-    expect(
-      Buffer.from(state.postBlockUpdate(tblock, undefined, OVERALL).serialize())
-        .equals(Buffer.from(expected)),
-      "omitting the detailed fullness must change the state",
-    ).toBe(false);
-    expect(
-      Buffer.from(state.postBlockUpdate(tblock, NORMALIZED, undefined).serialize())
-        .equals(Buffer.from(expected)),
-      "omitting the overall fullness must change the state",
-    ).toBe(false);
   });
 });

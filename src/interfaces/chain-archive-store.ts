@@ -340,6 +340,14 @@ export interface ChainArchiveStore {
    * block. Replay would then fold canonical successors onto a state that forked away from them --
    * a state no chain ever had, arrived at without any error. Ledger state is a fold, so the
    * damage is silent and permanent.
+   *
+   * The supported replay/catch-up read contract is deliberately narrower than every state the
+   * public `setCanonical` primitive can construct: its writer is finalized-only and never performs
+   * height-by-height reorg flips. A partially flipped `setCanonical` history is outside this
+   * contract. Catch-up nevertheless validates that each selected row's `parentHash` is the hash it
+   * just replayed and refuses a disconnected range, naming both hashes. Binding checkpoint lookup
+   * to a complete ancestry proof remains explicit future work under O2; callers must not describe
+   * this narrower contract as general reorg-safe replay.
    */
   getLatestReplayCheckpoint(
     net: string, maxHeight: number,

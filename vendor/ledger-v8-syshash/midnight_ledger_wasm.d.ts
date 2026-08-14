@@ -1,9 +1,7 @@
 /* tslint:disable */
 /* eslint-disable */
-export function partitionTranscripts(calls: any[], params: LedgerParameters): Array<any>;
 export function createCoinInfo(type_: string, value: any): any;
-export function sampleDustSecretKey(): DustSecretKey;
-export function updatedValue(ctime: Date, initial_value: bigint, gen_info: any, now: Date, params: any): bigint;
+export function partitionTranscripts(calls: any[], params: LedgerParameters): Array<any>;
 export function sampleEncryptionPublicKey(): string;
 export function createCheckPayload(serialized_preimage: Uint8Array, ir?: Uint8Array | null): Uint8Array;
 export function feeToken(): any;
@@ -23,6 +21,8 @@ export function createProvingTransactionPayload(tx: Transaction, proving_data: M
 export function nativeToken(): any;
 export function sampleIntentHash(): string;
 export function coinNullifier(coin_info: any, coin_secret_key: CoinSecretKey): string;
+export function sampleDustSecretKey(): DustSecretKey;
+export function updatedValue(ctime: Date, initial_value: bigint, gen_info: any, now: Date, params: any): bigint;
 export function encodeUserAddress(addr: string): Uint8Array;
 export function encodeContractAddress(addr: string): Uint8Array;
 export function decodeRawTokenType(tt: Uint8Array): string;
@@ -468,6 +468,15 @@ export class LedgerParameters {
 export class LedgerState {
   free(): void;
   [Symbol.dispose](): void;
+  /**
+   * Closes a block from its accumulated raw synthetic cost without exposing normalized Q64
+   * fixed-point values to JavaScript.
+   *
+   * The active block limits come from this state, after all transactions in the block have
+   * applied. Clamping, normalization, max-of-five selection, and `post_block_update` all run in
+   * Rust so no fullness value crosses the lossy JavaScript `f64` boundary.
+   */
+  closeBlock(tblock: Date, accumulated_cost: any): LedgerState;
   static deserialize(raw: Uint8Array): LedgerState;
   updateIndex(address: string, state: ChargedState, balances_map: Map<any, any>): LedgerState;
   applySystemTx(tx: SystemTransaction, tblock: Date): Array<any>;

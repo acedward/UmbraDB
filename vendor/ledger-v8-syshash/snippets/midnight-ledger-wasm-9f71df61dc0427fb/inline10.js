@@ -1,1 +1,1 @@
-import * as wasm from '#self'; export function ZswapOutput_() { return wasm.ZswapOutput; }
+import * as wasm from '#self'; export function Binding_() { return wasm.Binding; }

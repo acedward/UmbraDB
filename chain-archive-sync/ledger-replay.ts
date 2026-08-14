@@ -19,11 +19,11 @@
  * compiled to WASM: `blank(networkId)` state, `wellFormed` with the reference's exact strictness
  * (defaults + `enforceBalancing=false`, `STRICTNESS_V8`), `apply` with the reference's exact
  * `BlockContext` (camelCase serde shape, `secondsSinceEpochErr: 30`), `applySystemTx`,
- * `postBlockUpdate`.
+ * the ledger's atomic `closeBlock` export.
  *
  * BLOCK FULLNESS. This used to post ZERO fullness, because the vendored WASM could not cost a
  * system transaction and `normalizeFullness` throws where the reference clamps. Both gaps are
- * closed as of `ledger-v8@8.1.0-syshash.2`, and the fold now mirrors
+ * closed as of `ledger-v8@8.1.0-syshash.3`, and the fold now mirrors
  * `indexer-common/src/domain/ledger/ledger_state.rs` exactly:
  *
  *   - regular transactions: cost counted on Success and PartialSuccess, NOT on Failure
@@ -31,14 +31,13 @@
  *   - system transactions: cost always counted (:316), computed against the parameters as they
  *     stand BEFORE the transaction is applied -- which matters, because `OverwriteParameters` is
  *     itself a system transaction and would otherwise be costed against the parameters it installs;
- *   - at block close (:493-513): clamp the accumulated cost to `parameters.limits.block_limits`,
- *     normalize, take overall fullness as the MAX of the five normalized dimensions, and pass BOTH
- *     to `postBlockUpdate`. The limits come from the state AFTER all transactions, as there.
+ *   - at block close (:493-513): pass the accumulated raw `SyntheticCost` to `closeBlock`, whose
+ *     Rust implementation reads the limits from the state AFTER all transactions, clamps,
+ *     normalizes, takes the max across all five Q64 dimensions, and calls `post_block_update`.
  *
- * Both arguments are always passed explicitly. Omitting them is not a smaller version of the same
- * thing: the WASM binding substitutes `NormalizedCost::ZERO` for an absent detailed fullness and
- * **0.5** for an absent overall fullness (`ledger-wasm/src/state.rs:69-82`), so a missing argument
- * silently invents a half-full block rather than failing.
+ * The atomic close is load-bearing: `NormalizedCost` contains Q64 `FixedPoint` values whose serde
+ * binding is an `f64`. Returning them to JavaScript and passing them back changes raw Q64 units and
+ * therefore serialized ledger state. No normalized fullness value crosses JavaScript in this fold.
  */
 
 /** Why a block cannot be archived: replay could not validate one of its transactions. Mirrors the
@@ -91,20 +90,16 @@ function addCost(into: AccumulatedCost, cost: Record<string, unknown>): void {
 export interface ReplayBlockInput {
   /** In archive position order -- event-borne system transactions first, then extrinsic order. */
   transactions: readonly { kind: "regular" | "system"; rawBytes: Uint8Array }[];
-  /** Block timestamp in ms (from `Timestamp::set`); 0 for genesis, which has no timestamp. */
+  /** Block timestamp in ms (from `Timestamp::set`), including genesis on the target 1.0 node. */
   blockTimestampMs: number;
   parentBlockHashHex: string;
   parentBlockTimestampMs: number;
 }
 
-/** The fullness a block was closed with -- the two values handed to `postBlockUpdate`. */
+/** The raw fullness a block was closed from. Exact normalized Q64 values deliberately stay in Rust. */
 export interface BlockFullness {
   /** Accumulated cost per dimension, before normalization. BigInt: these are `u64` in Rust. */
   readonly accumulated: Readonly<AccumulatedCost>;
-  /** Each dimension clamped to its block limit and divided by it, in [0, 1]. */
-  readonly normalized: Readonly<Record<CostDimension, number>>;
-  /** The max across `normalized` -- the block's most congested dimension. */
-  readonly overall: number;
 }
 
 export class LedgerReplay {
@@ -241,36 +236,22 @@ export class LedgerReplay {
       outcomes.push(outcome);
     }
 
-    // Block close, mirroring the reference's `post_block_update` (`ledger_state.rs:493-513`):
-    // clamp the accumulated cost to the block limits, normalize, and take overall fullness as the
-    // max across the five normalized dimensions. The limits are read from the state AFTER all
-    // transactions, as there -- a block whose system transactions changed the parameters is closed
-    // against the parameters it ends with.
-    //
-    // Clamping rather than plain normalization is required: `normalizeFullness` THROWS when a
-    // dimension exceeds its limit, which would refuse a block the chain itself accepted.
-    const normalized = state.parameters.clampAndNormalizeFullness(blockFullness);
-    const overall = Math.max(...COST_DIMENSIONS.map((d) => Number(normalized[d])));
-    // Both arguments explicit, always. An omitted overall fullness is not treated as zero by the
-    // binding -- it is replaced with 0.5 (`ledger-wasm/src/state.rs:74-75`).
-    state = state.postBlockUpdate(tblock, normalized, overall);
+    // Atomic Rust close, mirroring the reference's `post_block_update` (`ledger_state.rs:493-513`).
+    // Passing only raw integer cost is intentional: clamp -> normalize -> max-of-five ->
+    // post_block_update stays inside Rust, so exact Q64 FixedPoint values never become JS numbers.
+    // The export reads limits from `state`, which is the state AFTER all transactions.
+    state = state.closeBlock(tblock, blockFullness);
     // Commit point: everything above either completed or threw, leaving `this.state` untouched.
     this.state = state;
     this.lastFullness = {
       accumulated: { ...blockFullness },
-      normalized: Object.fromEntries(
-        COST_DIMENSIONS.map((d) => [d, Number(normalized[d])]),
-      ) as Record<CostDimension, number>,
-      overall,
     };
     return outcomes;
   }
 
-  /** The fullness the last successfully applied block was closed with, or `undefined` before any.
-   *
-   *  Exposed so the values fed to `postBlockUpdate` can be asserted directly. Their only other
-   *  trace is the serialized state, where a wrong fullness is a diff in an opaque blob -- which is
-   *  how zero fullness survived two audit rounds. */
+  /** The raw accumulated cost the last successfully applied block was closed from, or `undefined`
+   *  before any. Normalized/overall Q64 values are intentionally not exposed: observing them in
+   *  JavaScript would recreate the precision boundary the atomic export exists to remove. */
   get lastBlockFullness(): BlockFullness | undefined {
     return this.lastFullness;
   }

@@ -95,6 +95,38 @@ it, and that the node serves the same chain the archive already holds, before wr
 - **AND** an archive holding no blocks SHALL NOT be able to record an identity that later prevents
   ingesting the correct chain
 
+### Requirement: replay uses the node's real parent timestamp
+
+The system SHALL persist each replayed block's real `Timestamp::set` value and SHALL use that value
+as the next block's `lastBlockTime`, matching the target node's ledger fold.
+
+This is a deliberate authority exception to the pinned reference indexer. The indexer seeds parent
+time with zero when its process starts (`chain-indexer/src/application.rs:150`), substitutes the
+current block's timestamp for that sentinel (`:328`), and only then carries the observed timestamp
+forward (`:386`). Its result therefore depends on whether a process restarted between two blocks,
+which cannot be reproduced from an archive. The target node's fold
+(`midnight-node/ledger/src/versions/common/api/ledger.rs:125-205`) has no such restart-dependent
+sentinel, so node semantics are authoritative for replay parent time.
+
+#### Scenario: parent time changes a dust-affecting fold
+
+- **WHEN** a committed transaction fixture makes node parent-time semantics and the indexer's
+  zero-sentinel semantics produce different dust-affecting ledger states
+- **THEN** replay SHALL match the native node-semantics state
+- **AND** SHALL differ from the committed indexer-sentinel counterweight
+
+### Requirement: catch-up is finalized-only and refuses disconnected canonical rows
+
+Replay/catch-up SHALL support the finalized-only writer used by node ingest. Arbitrary historical
+canonical states produced by height-at-a-time `setCanonical` reorg flips are outside this read
+contract; full ancestry-bound checkpoint selection is deferred under O2.
+
+#### Scenario: individually canonical rows do not form one chain
+
+- **WHEN** catch-up selects a canonical row whose parent hash differs from the block just replayed
+- **THEN** it SHALL refuse rather than splice the two branches
+- **AND** the refusal SHALL name both the stored parent hash and the just-replayed hash
+
 ### Requirement: node-only ingest is provably free of the indexer
 
 The system SHALL support ingest with no indexer configured, and that mode SHALL issue no request
