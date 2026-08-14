@@ -181,7 +181,7 @@ async function dockerIndependentOracles() {
   if (!existsSync(binPath)) fail("installed package did not link the umbradb-archive-sync bin (T6).");
 
   // The vendored ledger must be a real runtime dependency of the INSTALLED package, not a
-  // devDependency that happens to exist in the repo. Both exports replay needs are checked, so a
+  // devDependency that happens to exist in the repo. All four exports replay needs are checked, so a
   // tarball carrying a stale vendored build fails here rather than during ingest.
   writeFileSync(
     join(scratch, "cli-ledger.mjs"),

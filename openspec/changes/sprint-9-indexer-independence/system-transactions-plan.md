@@ -1242,6 +1242,10 @@ last formal verdict until the workspace audit is completed against the new pinne
 | T8 | UNCHANGED PASS | No round-5 change required |
 
 Release wiring moves the vendored package, checkpoint marker, parity workflow, and vendored-ledger
-workflow together to `8.1.0-syshash.3`; the latter also runs the native-close regression. Focused
-Docker evidence is green. Full suite, strict validation, packed install, fresh-clone execution, and
-GitHub required checks are still pending at this intermediate checkpoint.
+workflow together to `8.1.0-syshash.3`; the latter also runs the native-close regression. Docker
+evidence at the pre-commit tree is green: focused remediation 64/64; latest replay-validation
+17/17; aggregate suite 651 passed / 12 environment-gated skips / zero failed; typecheck; build;
+strict Sprint-9 OpenSpec validation; all 31 vendored checksums; indexer vectors 5/5; cost/clamp;
+native close 2/2; installed-tarball smoke with a real PostgreSQL round trip. The full-corpus strict
+OpenSpec command still reports only the two already-recorded unrelated v1.1 changes. Fresh-clone
+execution and GitHub required checks remain pending at this checkpoint.

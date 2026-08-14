@@ -572,4 +572,9 @@ Recorded here so they are not silently absorbed:
       both legacy-checkpoint deletions are non-vacuous.
 - [x] 11.8 T6a: direct service construction (no CLI parser) rejects `0`, `-1`, `2.5`, `NaN`, and
       `Infinity`; positive integer counterweights prove the constructor does not reject all values.
+- [x] 11.8a Local release evidence: focused remediation 64/64; latest replay-validation 17/17;
+      aggregate suite 651 passed / 12 environment-gated skips / zero failed; typecheck; build;
+      strict Sprint-9 validation; 31/31 checksums; indexer vectors 5/5; cost/clamp; native close
+      2/2; and installed-tarball PostgreSQL smoke. Fresh-clone and GitHub evidence are recorded
+      only after the commit is pushed, so this box does not imply 11.9.
 - [ ] 11.9 Re-audit §17 scope; then O1–O5; then final PASS×3
