@@ -600,4 +600,16 @@ Recorded here so they are not silently absorbed:
       `ebe6aa53271c7465a67bae0150f7ac4d85200de9`: native 7/7, vendored 7/7, and the exact R5-1
       scratch mutant passes only `read_time` while `compute_time`, `block_usage`, `bytes_written`,
       and `bytes_churned` each fail. The scratch mutant was reverted and removed
-- [ ] 12.2 Re-audit R5-1 closure; then O1–O5; then final PASS×3
+- [x] 12.2 R5-1 re-audit: **PASS** (2026-08-15). Remaining: O1–O5 (§13 below), then final PASS×3
+
+## 13. O1–O5 — the last merge gate before final PASS×3
+
+- [ ] 13.1 O1: D-parameter continuity across restarts (stop/restart across a change boundary; the
+      observation sequence must be unchanged)
+- [ ] 13.2 O2: historical conflict detection — add locking/serialization so two ingesters racing
+      one height cannot both pass; also carries T5a's contract note (finalized-only writer)
+- [ ] 13.3 O3: state-root checks in replay — compare replayed ledger state against the per-block
+      root the node commits (see pallet_midnight's post_block_update state_root)
+- [ ] 13.4 O4: image-pin grep hardening (must fail on unquoted/indented unpinned `image:` lines)
+- [ ] 13.5 O5: status docs + dependency inventory current at final head; graphify regenerated
+- [ ] 13.6 Final PASS×3 on the head integrated with current `main`; merge PR #1

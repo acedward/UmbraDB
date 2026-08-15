@@ -1295,3 +1295,11 @@ counterweights. The exact scratch mutant from R5-1 passes `read_time` and fails 
 `compute_time`, `block_usage`, `bytes_written`, and `bytes_churned`; it was then reverted and the
 scratch worktree removed. No production code or vendored artifact changed. Task 12.1 is complete;
 12.2 remains open for the independent R5-1-only verdict.
+
+**§18 outcome (2026-08-15): R5-1 PASS — T4a closed.** The five per-dimension vectors landed
+(`ledger-fork ebe6aa53`, UmbraDB `19d527d`); the auditor verified the construction from the
+committed arithmetic (every non-target `limit/5`, target `limit+1`), reproduced the exact R5-1
+mutant kill (read_time definitionally blind, other four fail independently), and killed a mutant
+of its own choosing (compute_time dropped from the max → the compute vector fails). Artifact
+bytes unchanged from `a6e8772`; genesis vectors 5/5. **T1–T8 are now fully settled. Only O1–O5
+gate merge, then final PASS×3.**
