@@ -1260,3 +1260,27 @@ The clean-clone run closes checkout-local dependency, ignored-artifact, and envi
 blind spots; the remote parity run independently closes the stale-workflow-pin failure. The
 formal §17 remediation re-audit remains the next gate; O1–O5 remain separately out of this round's
 scope and continue to gate merge.
+
+## 18. Round-5 re-audit — register (2026-08-14, head `a6e8772`)
+
+**Verdict: BLOCK stands, on one INCOMPLETE.** Nine of ten items PASS: T1a (native dust oracle
+discriminates parent-time choices), T2a, T3a (real watermark fault, same-instance recovery), T4b,
+T5a, T6a, T7a, T8, Release (`.3` pins, 31/31 checksums, 5/5 vectors, 2/2 close, tarball smoke).
+Full findings: workspace `audits/00002-indexer-independent-ingest-t1-t8-remediation.md` §"Round-5
+findings".
+
+**R5-1 (T4a, INCOMPLETE — the only open item).** The atomic close and its oracles passed the
+decisive independence check: clamp/normalize/max/update are native and atomic, no `FixedPoint`
+crosses JS in the production fold, and the expected hashes are native-Rust, not binding-generated.
+But a concrete wrong implementation still passes both committed vectors: **clamp only `read_time`
+and compute overall as `max(read_time, bytes_written)`** — observationally identical because the
+genesis vector is dominated by `bytesWritten` with no over-limit dimension, and the synthetic
+vector is dominated and solely over-limit on `readTime`. Deterministic input-equivalence, verified
+by the auditor from the exact vector inputs.
+
+**Closure (round 5.1):** five atomic-close vectors, each making **one dimension uniquely dominant
+AND individually over-limit** — so any dropped clamp or narrowed max fails at least one vector.
+Native-Rust oracle lineage as established (`native-close-block-oracles.txt` grows from 2 to 7
+rows); re-verify 2→7 both natively and against the vendored artifact. No production code change is
+expected — this is test coverage; if a vector *does* fail, that is a new finding, not a fixture
+problem.

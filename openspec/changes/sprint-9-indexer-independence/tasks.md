@@ -588,3 +588,13 @@ Recorded here so they are not silently absorbed:
       GitHub parity independently exercises the committed workflow/version pin rather than the
       local command path. This evidence supports—but does not pre-judge—the independent 11.9 audit.
 - [ ] 11.9 Re-audit §17 scope; then O1–O5; then final PASS×3
+
+## 12. Round-5 re-audit outcome (plan §18)
+
+> Re-audit at `a6e8772` (2026-08-14): **BLOCK stands on T4a INCOMPLETE only** — all other §11
+> items PASS with the wrong-implementation question answered by the auditor.
+
+- [ ] 12.1 Five atomic-close vectors, one per cost dimension, each uniquely dominant and
+      individually over-limit; native oracle rows 2→7; verify natively and against the vendored
+      artifact (kills the surviving clamp/max mutant)
+- [ ] 12.2 Re-audit R5-1 closure; then O1–O5; then final PASS×3
