@@ -38,12 +38,11 @@ import {
  * plus dust actions, and a regular transaction carrying three unshielded outputs plus a dust
  * spend.
  *
- * **Skip conditions (honest SKIP, never a silent vacuous pass -- same policy as the devnet
- * suite post-Finding-4)**: requires (a) a built sibling `midnight-wallet` checkout providing the
- * ledger-v8 WASM bindings (see `tx-replay-decoder.ts`'s loader), and (b) the captured indexer
- * SQLite database (`MIDNIGHT_INDEXER_SQLITE`, default `~/midnight-testnet/indexer-data/
- * indexer.sqlite`). CI provisions neither, so this suite reports SKIPPED there
- * (`.github/workflows/conformance.yml`); it runs for real in the development environment.
+   * **Skip conditions (honest SKIP, never a silent vacuous pass -- same policy as the devnet
+   * suite post-Finding-4)**: requires (a) the installed vendored ledger-v8 WASM bindings and
+   * (b) the captured indexer SQLite database (`MIDNIGHT_INDEXER_SQLITE`, default
+   * `~/midnight-testnet/indexer-data/indexer.sqlite`). A fresh clone supplies (a); CI does not
+   * provision the external captured database, so this corpus suite reports SKIPPED there.
  */
 
 const INDEXER_SQLITE_PATH =
@@ -313,7 +312,7 @@ describe.skipIf(!LEDGER_AVAILABLE || !GROUND_TRUTH_AVAILABLE)(
 );
 
 /**
- * When the sibling checkout / captured indexer DB are absent (e.g. CI), the suite above is
+ * When the ledger artifact or captured indexer DB is absent, the suite above is
  * SKIPPED -- this always-running companion asserts the decoder module itself still loads and
  * classifies correctly with zero external dependencies, so the file is never entirely inert.
  */

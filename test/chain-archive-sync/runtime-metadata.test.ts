@@ -129,6 +129,7 @@ describe("event-borne system transactions", () => {
     // under a fabricated key, permanently, since inserts are ON CONFLICT DO NOTHING. Only a
     // comparison against a KNOWN hash catches it.
     expect(found[0]!.txHash).toBe(HASH.toString("hex"));
+    expect(found[0]!.phase).toEqual({ kind: "apply_extrinsic", extrinsicIndex: 3 });
   });
 
   it("ignores a real block's ordinary events", () => {
@@ -234,10 +235,10 @@ describe("decoding a call out of any extrinsic framing", () => {
  * The block's own time, read from its `Timestamp::set` inherent.
  *
  * This exists because of a bug that shipped and passed its tests: replay read a field that was
- * never assigned, so every block replayed at time 0. Genesis genuinely IS time 0, and genesis was
- * the only block the replay tests exercised -- so the single case incapable of detecting the bug
- * was the one covered. The lesson generalises past this fix: a test whose fixture cannot express
- * the failure proves nothing about it.
+ * never assigned, so every block replayed at time 0. The original synthetic genesis fixture also
+ * omitted the `Timestamp::set` that the target node really emits, so code and fixture agreed on a
+ * chain that does not exist. The lesson generalises past this fix: a test whose fixture cannot
+ * express the failure proves nothing about it.
  */
 describe("block timestamp decoding", () => {
   const resolved = resolveMetadata(METADATA, IDENTITY);

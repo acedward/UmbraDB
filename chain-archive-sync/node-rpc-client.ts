@@ -149,6 +149,103 @@ export class NodeRpcClient {
   }
 
   /**
+   * Midnight's committed post-block ledger root at one historical block.
+   *
+   * This is the custom pallet RPC (`midnight_ledgerStateRoot`), not the Substrate header's
+   * `stateRoot`. Node 1.0 returns the untagged serialized typed arena key as a JSON byte array.
+   * Refuse malformed values here so replay cannot compare coerced/truncated data and call that a
+   * state-root check.
+   */
+  async ledgerStateRoot(at: string): Promise<Uint8Array> {
+    const value = await this.call<unknown>("midnight_ledgerStateRoot", [at]);
+    if (
+      !Array.isArray(value) || value.length === 0 ||
+      value.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)
+    ) {
+      throw new NodeRpcError(
+        `midnight_ledgerStateRoot at ${at} returned ${JSON.stringify(value)} instead of a ` +
+          "non-empty serialized typed arena key. Replay cannot verify the chain commitment without the " +
+          "exact root, so this block is refused.",
+      );
+    }
+    return Uint8Array.from(value as number[]);
+  }
+
+  /**
+   * Ledger state embedded in the chain specification and installed directly at genesis.
+   *
+   * Midnight's custom genesis block builder puts `genesis_extrinsics` in block 0 without
+   * executing them. The actual ledger state is the serialized snapshot in
+   * `system_properties.genesis_state`, which is also what the node toolkit's historical fetcher
+   * returns for block 0. Reconstructing it from the block body therefore double-applies data that
+   * the runtime never executed.
+   */
+  async genesisLedgerState(): Promise<Uint8Array> {
+    const properties = await this.call<unknown>("system_properties", []);
+    if (properties === null || typeof properties !== "object" || Array.isArray(properties)) {
+      throw new NodeRpcError(
+        "system_properties returned no object; replay cannot initialize the authoritative " +
+          "Midnight genesis ledger state",
+      );
+    }
+    const raw = (properties as Record<string, unknown>).genesis_state;
+    if (typeof raw !== "string") {
+      throw new NodeRpcError(
+        "system_properties.genesis_state is missing or is not a string; replay cannot " +
+          "reconstruct the ledger state installed by the genesis builder",
+      );
+    }
+    const hex = raw.startsWith("0x") ? raw.slice(2) : raw;
+    if (hex.length === 0 || hex.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(hex)) {
+      throw new NodeRpcError(
+        "system_properties.genesis_state is not non-empty, even-length hexadecimal; replay " +
+          "refuses to guess the genesis ledger state",
+      );
+    }
+    return new Uint8Array(Buffer.from(hex, "hex"));
+  }
+
+  /** Runtime ledger network id at a historical block, decoded from SCALE `String`. */
+  async ledgerNetworkId(at: string): Promise<string> {
+    const encoded = await this.stateCall("MidnightRuntimeApi_get_network_id", "0x", at);
+    if (typeof encoded !== "string" || !/^0x[0-9a-fA-F]+$/.test(encoded)) {
+      throw new NodeRpcError(
+        `MidnightRuntimeApi_get_network_id at ${at} returned malformed SCALE bytes`,
+      );
+    }
+    const bytes = Buffer.from(encoded.slice(2), "hex");
+    if (bytes.length === 0) {
+      throw new NodeRpcError(`MidnightRuntimeApi_get_network_id at ${at} returned an empty value`);
+    }
+    const mode = bytes[0]! & 0b11;
+    let prefixBytes: number;
+    let length: number;
+    if (mode === 0) {
+      prefixBytes = 1;
+      length = bytes[0]! >>> 2;
+    } else if (mode === 1 && bytes.length >= 2) {
+      prefixBytes = 2;
+      length = (bytes.readUInt16LE(0) >>> 2);
+    } else {
+      throw new NodeRpcError(
+        `MidnightRuntimeApi_get_network_id at ${at} used an invalid SCALE string length prefix`,
+      );
+    }
+    if (length === 0 || length > 64 || bytes.length !== prefixBytes + length) {
+      throw new NodeRpcError(
+        `MidnightRuntimeApi_get_network_id at ${at} returned an invalid ${length}-byte SCALE string`,
+      );
+    }
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(prefixBytes));
+    } catch (cause) {
+      throw new NodeRpcError(
+        `MidnightRuntimeApi_get_network_id at ${at} was not valid UTF-8`, cause,
+      );
+    }
+  }
+
+  /**
    * Raw value of a storage key at a block, or `undefined` when the key is unset.
    *
    * Used to read `System::Events`, which is where the runtime records what it DID -- including

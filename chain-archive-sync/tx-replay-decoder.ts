@@ -20,15 +20,13 @@ import { pathToFileURL } from "node:url";
  * independently reports -- `test/integration/chain-archive-replay-decode.integration.test.ts`
  * is that proof, running this exact module against real archived testnet transactions and real
  * indexer-recorded ground truth. An earlier implementation round claimed this decode was
- * "genuinely blocked -- no JS/WASM decoder available"; that claim was WRONG (independent review
- * found the built `@midnight-ntwrk/ledger-v8` WASM package in the sibling `midnight-wallet`
- * checkout and decoded real transactions with it), and this module is the correction.
+ * "genuinely blocked -- no JS/WASM decoder available"; that claim was wrong. The official ledger
+ * WASM decoded the captured transactions, and this module is the correction.
  *
- * **Dependency posture.** `@midnight-ntwrk/ledger-v8` IS a devDependency of this repo, pinned to
- * an exact version: node-only ingest hard-depends on it to classify and hash transactions, so
- * resolving it from an out-of-band checkout meant the feature could not run in CI or from a fresh
- * clone. (An earlier revision of this comment said it was deliberately not a dependency; that
- * described the pre-sprint-9 arrangement, when this module was only a test helper.)
+ * **Dependency posture.** `@midnight-ntwrk/ledger-v8` is a runtime dependency of this repo,
+ * content-pinned under `vendor/ledger-v8-syshash`. Node-only ingest hard-depends on it to hash
+ * transactions and replay validation also needs its state-root export, so a fresh clone and CI
+ * cannot depend on an out-of-band checkout.
  *
  * `loadLedgerV8` resolves it in three steps, in order: the `MIDNIGHT_LEDGER_WASM` override, then
  * this repo's own dependency, then the historical sibling-`midnight-wallet` checkout convention.
@@ -335,7 +333,7 @@ export async function ledgerSupportsBlockFullness(): Promise<boolean> {
  *  `MIDNIGHT_WALLET_REPO` first (same override the wallet-sdk loader honors), then the two
  *  layouts real environments have used.
  *
- *  These are now a FALLBACK. The ledger is a declared devDependency of this repo (see
+ *  These are only a compatibility FALLBACK. The ledger is a vendored runtime dependency (see
  *  `ledgerV8EntryPath`), so a fresh clone works with no sibling checkout at all; the candidates
  *  below are kept so existing developer setups and the pre-existing live-fixture convention
  *  continue to work unchanged. */
@@ -349,10 +347,9 @@ function midnightWalletRepoCandidates(): string[] {
   ];
 }
 
-/** Absolute path of the ledger-v8 Node entry (`midnight_ledger_wasm_fs.js`) in the first
- *  candidate checkout that actually has it, or `undefined` if none does -- the synchronous
- *  availability probe tests use to `describe.skipIf` honestly (reported as SKIPPED, never as a
- *  silent vacuous pass) in environments without the sibling checkout, e.g. CI. */
+/** Absolute path of the selected ledger-v8 Node entry (`midnight_ledger_wasm_fs.js`), or
+ *  `undefined` only when neither the installed vendored dependency nor a compatibility fallback
+ *  exists. Tests use this synchronous probe to report a genuine missing-artifact skip. */
 export function ledgerV8EntryPath(): string | undefined {
   // Explicit override, checked first. This is now a TEST-ONLY escape hatch, not the route to the
   // system-transaction hash export: the repo's own dependency is a vendored build that already
@@ -409,16 +406,16 @@ export function ledgerV8EntryPath(): string | undefined {
 }
 
 /**
- * Loads the `@midnight-ntwrk/ledger-v8` WASM module from the sibling checkout, via a computed
- * `import(...)` specifier (typed `Promise<any>` by design -- module doc above).
+ * Loads the selected `@midnight-ntwrk/ledger-v8` WASM module via a computed `import(...)`
+ * specifier (typed `Promise<any>` by design -- module doc above).
  */
 export async function loadLedgerV8(): Promise<any> {
   const entry = ledgerV8EntryPath();
   if (entry === undefined) {
     throw new Error(
-      "loadLedgerV8: no built midnight-wallet checkout found (looked for node_modules/" +
-      "@midnight-ntwrk/ledger-v8/midnight_ledger_wasm_fs.js under: " +
-      midnightWalletRepoCandidates().join(", ") + "); set MIDNIGHT_WALLET_REPO to a built checkout",
+      "loadLedgerV8: the installed vendored @midnight-ntwrk/ledger-v8 artifact was not found, " +
+      "and no compatibility midnight-wallet checkout contained it (looked under: " +
+      midnightWalletRepoCandidates().join(", ") + ")",
     );
   }
   return import(pathToFileURL(entry).href);

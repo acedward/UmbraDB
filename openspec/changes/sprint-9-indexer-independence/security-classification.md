@@ -1,5 +1,11 @@
 # Why "the node accepted it" is not the same as "it is a transaction"
 
+> **Current-status note (2026-08-15):** this document preserves the security argument that drove
+> the early call-classification fix. The current node-only path uses block-scoped runtime metadata
+> for all extrinsic framings and event-borne system transactions, and optional replay validates the
+> resulting per-block ledger root. See `tasks.md` §13 and `system-transactions-plan.md` §19 for the
+> delivery status; statements below about work still needed are historical unless restated there.
+
 The natural objection to this whole class of bug is: *the archive only reads data the Midnight
 node already accepted into a finalized block — how can that be unsafe?*
 
@@ -140,11 +146,10 @@ npm run archive:sync                 # into another, same chain
 
 ## What this does not fix
 
-Classification answers *"is this a Midnight transaction?"*. It does not answer *"did it
-execute?"* — the archive still records submissions, and a transaction that reverted or partially
-applied is archived indistinguishably from one that succeeded. Closing that requires decoding the
-runtime's own outcome events (`TxApplied` / `TxPartialSuccess`, and `UnshieldedTokens` for created
-outputs), which is the audit's finding F1 and needs a runtime-metadata dependency.
-
-Until then the archive is trustworthy about **what was submitted**, not about **what happened**,
-and should not be cut over from the indexer on the strength of this fix alone.
+Classification answers *"is this a Midnight transaction?"*. It does not by itself answer *"did it
+execute?"*. The current implementation subsequently added the runtime-metadata dependency and a
+ledger replay fold: malformed/not-well-formed inputs refuse, apply `Failure` remains an archived row
+as in the reference, and the final state is checked against the chain commitment. Persisting a
+transaction-level outcome projection (`TxApplied` / `TxPartialSuccess`, and `UnshieldedTokens` for
+created outputs) is still outside this PR's source-substitution scope, so archive rows remain a
+record of the ordered transaction population rather than a new outcome API.

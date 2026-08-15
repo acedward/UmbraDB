@@ -2,7 +2,9 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { PgChainArchiveStore } from "../../src/postgres/chain-archive-store.js";
-import { BlobIntegrityError, BlobMissingError } from "../../src/interfaces/chain-archive-store.js";
+import {
+  BlobIntegrityError, BlobMissingError, type BlockBundle,
+} from "../../src/interfaces/chain-archive-store.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_archive/index.js";
 
@@ -409,6 +411,84 @@ describe("PgChainArchiveStore", () => {
         WHERE net = ${net} AND block_height = ${height}
       `;
       expect(obsRows[0]!.n).toBe(1); // the previously-missing bridge observation is now present
+    });
+
+    it("O2: putBlockBundle holds a PostgreSQL advisory xact lock for (net,height), not merely an in-process mutex", async () => {
+      // The two-service race regression proves the behavior, but a JavaScript-global mutex would
+      // also pass it while failing across processes. This companion uses three independent database
+      // sessions and observes the actual advisory lock while the writer is paused inside its
+      // transaction, closing that blind spot.
+      const net = "o2_database_lock_net";
+      const height = 902;
+      const blockHash = h(height, 0xa);
+      const bundle = bundleFixture(net, height, blockHash, h(0), 0xa) as BlockBundle;
+      const lockName = JSON.stringify([net, height]);
+      const barrierKey = 7_104_202_608_150_902n;
+      const barrier = createClient({ connectionString: container.getConnectionUri(), schema });
+      const observer = createClient({ connectionString: container.getConnectionUri(), schema });
+      let writer: Promise<unknown> | undefined;
+      let observerAcquiredApplicationLock = false;
+
+      try {
+        await barrier`SELECT pg_advisory_lock(${barrierKey}::bigint)`;
+        await sql`
+          CREATE FUNCTION ${sql(schema)}.o2_pause_block_insert() RETURNS trigger LANGUAGE plpgsql AS $fn$
+          BEGIN
+            PERFORM pg_advisory_xact_lock(7104202608150902::bigint);
+            RETURN NEW;
+          END;
+          $fn$
+        `;
+        await sql`
+          CREATE TRIGGER o2_pause_block_insert_trigger
+          BEFORE INSERT ON ${sql(schema)}.blocks
+          FOR EACH ROW EXECUTE FUNCTION ${sql(schema)}.o2_pause_block_insert()
+        `;
+
+        writer = store.putBlockBundle(bundle);
+
+        // Wait until the writer is blocked in the trigger. At that point production has already
+        // taken the application `(net,height)` lock; polling before this point could race ahead and
+        // accidentally acquire that lock ourselves.
+        let writerReachedBarrier = false;
+        for (let attempt = 0; attempt < 100 && !writerReachedBarrier; attempt++) {
+          const [row] = await observer<{ waiting: boolean }[]>`
+            WITH expected AS (SELECT ${barrierKey}::bigint AS key)
+            SELECT EXISTS (
+              SELECT 1 FROM pg_locks l, expected e
+              WHERE l.locktype = 'advisory' AND NOT l.granted AND l.objsubid = 1
+                AND l.classid::bigint = ((e.key >> 32) & 4294967295::bigint)
+                AND l.objid::bigint = (e.key & 4294967295::bigint)
+            ) AS waiting
+          `;
+          writerReachedBarrier = row?.waiting ?? false;
+          if (!writerReachedBarrier) await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(writerReachedBarrier, "writer must reach the deterministic DB barrier").toBe(true);
+
+        const [attempt] = await observer<{ acquired: boolean }[]>`
+          SELECT pg_try_advisory_lock(
+            hashtextextended(${lockName}, ${0}::bigint)
+          ) AS acquired
+        `;
+        observerAcquiredApplicationLock = attempt!.acquired;
+        expect(
+          attempt!.acquired,
+          "an independent session must see the (net,height) advisory lock already held",
+        ).toBe(false);
+      } finally {
+        if (observerAcquiredApplicationLock) {
+          await observer`
+            SELECT pg_advisory_unlock(hashtextextended(${lockName}, ${0}::bigint))
+          `;
+        }
+        await barrier`SELECT pg_advisory_unlock(${barrierKey}::bigint)`;
+        await writer;
+        await sql`DROP TRIGGER IF EXISTS o2_pause_block_insert_trigger ON ${sql(schema)}.blocks`;
+        await sql`DROP FUNCTION IF EXISTS ${sql(schema)}.o2_pause_block_insert()`;
+        await observer.end({ timeout: 5 });
+        await barrier.end({ timeout: 5 });
+      }
     });
   });
 

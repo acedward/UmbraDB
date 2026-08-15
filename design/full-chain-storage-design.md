@@ -1,5 +1,13 @@
 # Full-Chain Storage — Design
 
+> **Current-status note (2026-08-15):** this file is the original schema design and its historical
+> revision log. Statements below that the migration is inert, that transaction identity is keyed by
+> `tx_hash`, or that ingestion depends on an indexer describe earlier revisions. The implemented
+> lineage is now 001–007, migration 002 keys transactions by position, and node-only finalized
+> ingest (including runtime-generated system transactions, durable D-parameter continuity and
+> optional state-root-checked replay) is on `feat/indexer-independent-ingest`. Use
+> `docs/features/full-chain-storage.md` and the Sprint 9 §§15–19 registers for the current contract.
+
 **Branch:** `fix/full-chain-storage-schema-v2` (originally drafted on `feature/full-chain-storage`) · **Date:** 2026-07-22 · **Status:** Revised per 3-reviewer design-council audit, re-audited by a second independent 3-reviewer round and revised (v3), then re-audited by a third independent round — two of three reviewers reproduced real failures against real Postgres — and revised again (v4); schema-stage artifact, migration remains unregistered/inert, not yet applied to any live application DB.
 **Author role:** synthesizing three completed research passes (industry archival prior art, Midnight source/schema audit, UmbraDB's live schema) plus a direct live-devnet confirmation pass, plus the v2/v3/v4 revisions' own direct empirical Postgres testing (real local `postgres:17-alpine`, not asserted from memory) and, for v3's verifier-key finding, direct reading of the Midnight ledger source.
 

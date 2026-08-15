@@ -483,6 +483,11 @@ export class LedgerState {
   bridgeReceiving(recipient: string): bigint;
   testingDistributeNight(user_address: string, amount: bigint, tblock: Date): LedgerState;
   treasuryBalance(token_type: any): bigint;
+  /**
+   * Returns the same untagged typed arena key that the node exposes through
+   * `midnight_ledgerStateRoot` for the post-block ledger state.
+   */
+  ledgerStateRoot(): Uint8Array;
   postBlockUpdate(tblock: Date, detailed_fullness: any, overall_fullness: any): LedgerState;
   unclaimedBlockRewards(recipient: string): bigint;
   constructor(network_id: string, zswap: ZswapChainState);

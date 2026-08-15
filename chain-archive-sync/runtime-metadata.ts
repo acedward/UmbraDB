@@ -242,8 +242,9 @@ export function decodeExtrinsicWithMetadata(
  * the block's time in this inherent and nowhere else, which is why replay cannot simply be handed
  * the header.
  *
- * Returns `undefined` when the block carries no such inherent (genesis, notably, which has no
- * time). Callers must distinguish that from "zero".
+ * Returns `undefined` when the block carries no such inherent. The target 1.0 chain includes
+ * `Timestamp::set` at genesis too; absence there is therefore a decode/input failure, not a
+ * special genesis value. Callers must distinguish absence from a real timestamp of zero.
  */
 export function decodeBlockTimestampMs(
   resolved: ResolvedRuntimeMetadata,
@@ -258,7 +259,14 @@ export function decodeBlockTimestampMs(
     if (raw === undefined) continue;
     // `now` is a Compact<u64> of MILLISECONDS since the epoch.
     const value = typeof raw.toBigInt === "function" ? raw.toBigInt() : BigInt(String(raw));
-    return Number(value);
+    const timestampMs = Number(value);
+    if (!Number.isSafeInteger(timestampMs) || timestampMs < 0) {
+      throw new Error(
+        `Timestamp::set decoded to an unsafe millisecond value (${String(value)}); refusing ` +
+          "rather than rounding the ledger's execution time",
+      );
+    }
+    return timestampMs;
   }
   return undefined;
 }
@@ -269,6 +277,13 @@ export interface EventSystemTransaction {
   txHash: string;
   /** The serialized system transaction, exactly as archived. */
   payload: Uint8Array;
+  /** Where Substrate executed the transaction. Archive rows intentionally use the reference
+   * indexer's event-first order, but ledger replay must use this execution phase to reproduce the
+   * node state. */
+  phase:
+    | { kind: "initialization" }
+    | { kind: "apply_extrinsic"; extrinsicIndex: number }
+    | { kind: "finalization" };
 }
 
 /** The `System::Events` storage item's own type, read from metadata rather than assumed.
@@ -289,10 +304,10 @@ function eventsTypeId(resolved: ResolvedRuntimeMetadata): number {
  * generated system transactions are not in `chain_getBlock.extrinsics` at all -- the
  * `SystemTransactionApplied` event is the only place they exist.
  *
- * Note what the event carries: BOTH the payload and the authoritative hash. So these transactions
- * need no ledger hashing -- unlike extrinsic-borne ones, which must be hashed with the ledger
- * because the extrinsic carries only bytes. The hash here is the runtime's own answer, which is
- * also what the reference indexer keys on
+ * Note what the event carries: BOTH the payload and the runtime's claimed hash. The decoder
+ * preserves both; the ingest service recomputes the payload hash with the vendored ledger and
+ * refuses a disagreement before using the runtime claim as the archive identity. That independent
+ * comparison is what makes the two-field event self-checking rather than merely trusted
  * (`midnight-node/pallets/midnight-system/src/lib.rs`, and `subxt_node.rs` consuming it).
  *
  * Throws rather than returning partial results if the blob cannot be decoded: an events blob that
@@ -352,11 +367,33 @@ export function decodeEventSystemTransactions(
           "archiving a system transaction under a key that may not be its identity.",
       );
     }
+    const phaseCodec = record?.phase;
+    let phase: EventSystemTransaction["phase"];
+    if (phaseCodec?.isApplyExtrinsic === true) {
+      const index = Number(phaseCodec.asApplyExtrinsic?.toString?.());
+      if (!Number.isSafeInteger(index) || index < 0) {
+        throw new Error(
+          "runtime metadata: SystemTransactionApplied carried an invalid ApplyExtrinsic phase; " +
+            "ledger replay cannot place it in execution order",
+        );
+      }
+      phase = { kind: "apply_extrinsic", extrinsicIndex: index };
+    } else if (phaseCodec?.isInitialization === true) {
+      phase = { kind: "initialization" };
+    } else if (phaseCodec?.isFinalization === true) {
+      phase = { kind: "finalization" };
+    } else {
+      throw new Error(
+        "runtime metadata: SystemTransactionApplied carried an unknown System::Phase; ledger " +
+          "replay cannot guess where it belongs in execution order",
+      );
+    }
     out.push({
       txHash: Buffer.from(hashRaw.toU8a ? hashRaw.toU8a() : hashRaw).toString("hex").toLowerCase(),
       // `toU8a(true)` -- bare encoding. The payload is `Bytes`, whose default encoding re-prepends
       // the SCALE length prefix; archiving that would store bytes that are not the transaction.
       payload: new Uint8Array(payloadRaw.toU8a ? payloadRaw.toU8a(true) : payloadRaw),
+      phase,
     });
   }
   return out;

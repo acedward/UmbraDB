@@ -33,13 +33,12 @@ import {
  * implementation sprint's task.
  *
  * **Sprint 9 (indexer independence):** the indexer is no longer a required dependency. With no
- * `indexer` option the service runs NODE-ONLY -- regular-transaction ingest derived entirely
- * from the node (extrinsic-envelope decode via `extrinsic-decoder.ts`, tx hashes recomputed
- * locally via the ledger WASM, protocol version from the header's MNSV consensus digest,
- * D-parameter via `state_call`). With the `indexer` option present, behavior is the pre-sprint-9
- * ingest plus a hard ORACLE CROSS-CHECK of the node-derived view against the indexer's on every
- * block. See `ChainArchiveSyncServiceOptions`'s field docs for the full
- * mode table and scope boundaries (system transactions stay out of node-only scope).
+ * `indexer` option the service runs NODE-ONLY: block-scoped runtime metadata decodes every
+ * extrinsic framing and `SystemTransactionApplied` event; the ledger WASM hashes and optionally
+ * replays transactions; the header MNSV digest supplies the protocol version; and runtime APIs
+ * supply the D-parameter, network id, genesis state and committed ledger state root. With an
+ * `indexer` option, the historical indexer-sourced write path remains available and an explicit
+ * ORACLE CROSS-CHECK can compare its regular-transaction view with the node-derived view.
  *
  * **Dependency shape, stated precisely (Sol-audit fix round, Finding 7 -- an earlier version of
  * this comment overclaimed "interface injection")**: this module directly imports and constructs
@@ -103,7 +102,7 @@ const SYSTEM_TX_TAG = "midnight:system-transaction";
 /** Identifies the ledger build whose encoding a checkpoint's bytes are in. Bumping the vendored
  *  ledger MUST bump this: serialized state is a ledger-internal encoding, and resuming it under a
  *  build that reads it differently produces wrong replay outcomes rather than an error. */
-const LEDGER_STATE_VERSION = "ledger-v8@8.1.0-syshash.3";
+const LEDGER_STATE_VERSION = "ledger-v8@8.1.0-syshash.4";
 
 function hexToBytes(hex: string): Uint8Array {
   return new Uint8Array(Buffer.from(hexNoPrefix(hex), "hex"));
@@ -156,14 +155,10 @@ export interface ChainArchiveSyncServiceOptions {
   /**
    * OPTIONAL as of sprint 9 (indexer independence). Three modes fall out of this one option:
    *
-   *   - **absent** -> NODE-ONLY ingest: every archived field is derived from the node alone
-   *     (extrinsic-envelope decode + ledger-WASM `transactionHash()` + MNSV header digest +
-   *     `state_call`). Scope: REGULAR transactions only -- runtime-generated system
-   *     transactions are not in `chain_getBlock.extrinsics` (they surface via the
-   *     `SystemTransactionApplied` event, whose decode needs runtime metadata -- a recorded
-   *     deferral, not a structural impossibility), and extrinsic-borne system payloads
-   *     (genesis) are skipped too because the ledger WASM exposes no
-   *     `SystemTransaction.hash()` accessor to compute their `tx_hash` PK with.
+   *   - **absent** -> NODE-ONLY ingest: every archived transaction/observation field is derived
+   *     from the node alone. Block-scoped metadata handles signed/general extrinsic framing,
+   *     runtime call-index changes and event-borne system transactions; the vendored ledger
+   *     hashes both regular and system transactions; and runtime APIs provide state values.
    *   - **present** -> the pre-sprint-9 indexer-sourced ingest, UNCHANGED in what it writes,
    *     plus the ORACLE CROSS-CHECK: node-derived records are computed anyway and any
    *     disagreement with the indexer's (tx hash, raw bytes, protocolVersion, per-regular-tx)
@@ -249,23 +244,21 @@ export class ChainArchiveSyncService {
   /** `undefined` -> node-only mode (sprint 9); present -> indexer-sourced ingest + oracle
    *  cross-check. See `ChainArchiveSyncServiceOptions.indexer`'s doc for the full mode table. */
   private readonly indexer: IndexerClient | undefined;
-  /** Lazily-loaded `@midnight-ntwrk/ledger-v8` WASM module (`loadLedgerV8`). Required in
-   *  node-only mode (transaction hashes); never loaded otherwise, so a plain indexer-sourced
-   *  deployment keeps working without the sibling wallet checkout. */
+  /** Lazily-loaded vendored `@midnight-ntwrk/ledger-v8` WASM module (`loadLedgerV8`). Required in
+   *  node-only mode for transaction hashes and in replay-validation mode for state execution. */
   private ledgerPromise: Promise<unknown> | undefined;
   /** See `ChainArchiveSyncServiceOptions.oracleCrossCheck`. */
   private readonly oracleCrossCheckEnabled: boolean;
   /** See `ChainArchiveSyncServiceOptions.expectedGenesisHash`. */
   private readonly expectedGenesisHash: string | undefined;
   private readonly net: string;
-  /** Last-seen D-parameter, in-memory, this instance's lifetime only -- used to dedupe
-   *  `bridge_observations` inserts (§"stub/initial pass") so a healthy chain with an unchanging
-   *  D-parameter doesn't get one near-duplicate row per block. Deliberately not persisted: a
-   *  fresh service instance re-inserting one observation on its first synced block after a
-   *  restart is a correct, harmless re-observation, not a bug (`bridge_observations` has no
-   *  uniqueness constraint on content, only on `(net, block_height, block_hash,
-   *  observation_index)`, so this can never produce a duplicate-key error either way). */
+  /** Last-seen D-parameter used to emit only real change points. It is carried in memory during a
+   *  run and restored once per service instance from the newest finalized/canonical durable
+   *  observation at or below the watermark. Without that restoration, restarting immediately
+   *  after a change emits the unchanged value again at the next height, so the observation stream
+   *  differs from an unbroken run even though every individual row looks plausible (O1). */
   private lastDParameterJson: string | undefined;
+  private dParameterCursorHydrated = false;
 
   /** Block-scoped runtime metadata, used by node-only ingest to classify calls and decode events.
    *  Constructed always but only exercised in node-only mode, so indexer-sourced ingest issues no
@@ -346,10 +339,9 @@ export class ChainArchiveSyncService {
     this.net = opts.net;
   }
 
-  /** Loads the ledger WASM exactly once, on first need. Throws `loadLedgerV8`'s own descriptive
-   *  error (which names the checkout candidates and the `MIDNIGHT_WALLET_REPO` override) if no
-   *  built wallet checkout exists -- a hard requirement of node-only mode,
-   *  deliberately NOT of plain indexer-sourced ingest. */
+  /** Loads the repo's content-pinned ledger WASM exactly once, on first need. A test/candidate
+   *  build may be selected explicitly with `MIDNIGHT_LEDGER_WASM`; historical sibling-wallet
+   *  resolution remains only as a compatibility fallback. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private ledger(): Promise<any> {
     this.ledgerPromise ??= loadLedgerV8();
@@ -368,6 +360,49 @@ export class ChainArchiveSyncService {
     if (wm === undefined) return undefined;
     const parsed = wm as { height: number };
     return parsed.height;
+  }
+
+  /** Restore D-parameter change-detection state from archive history before reading the first
+   * post-watermark block. The observation bytes, not a second ad-hoc cursor, are authoritative:
+   * bundle persistence and watermark persistence can be separated by a crash, while the archived
+   * row is already the exact byte sequence whose continuity must be preserved. */
+  private async hydrateDParameterCursor(syncedHeight: number | undefined): Promise<void> {
+    if (this.dParameterCursorHydrated) return;
+    if (syncedHeight !== undefined) {
+      const latest = await this.store.getLatestBridgeObservation(
+        this.net, "system_parameters_d", syncedHeight,
+      );
+      if (latest !== undefined) {
+        const raw = await this.store.getBlob(latest.rawBlobHash);
+        let decoded: unknown;
+        try {
+          decoded = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
+        } catch (err) {
+          throw new Error(
+            `cannot restore the D-parameter cursor from the durable observation at height ` +
+              `${latest.blockHeight}: its archived bytes are not valid UTF-8 JSON`,
+            { cause: err },
+          );
+        }
+        const d = decoded as {
+          numPermissionedCandidates?: unknown; numRegisteredCandidates?: unknown;
+        };
+        if (
+          !Number.isSafeInteger(d?.numPermissionedCandidates) ||
+          !Number.isSafeInteger(d?.numRegisteredCandidates)
+        ) {
+          throw new Error(
+            `cannot restore the D-parameter cursor from the durable observation at height ` +
+              `${latest.blockHeight}: expected two safe-integer candidate counts`,
+          );
+        }
+        this.lastDParameterJson = JSON.stringify({
+          numPermissionedCandidates: d.numPermissionedCandidates,
+          numRegisteredCandidates: d.numRegisteredCandidates,
+        });
+      }
+    }
+    this.dParameterCursorHydrated = true;
   }
 
   /**
@@ -438,6 +473,7 @@ export class ChainArchiveSyncService {
     const targetTipHeight = await this.node.getHeightOf(finalizedHash);
 
     const synced = await this.getSyncedHeight();
+    await this.hydrateDParameterCursor(synced);
     const startHeight = synced === undefined ? 0 : synced + 1;
     if (startHeight > targetTipHeight) {
       return {
@@ -549,76 +585,6 @@ export class ChainArchiveSyncService {
    */
   private static readonly SYSTEM_EVENTS_KEY =
     "0x26aa394eea5630e07c48ae0c9558cef780d41e5e16056765bc8461851072c9d7";
-
-  /**
-   * Refuse a block whose events carry system transactions this build did not archive.
-   *
-   * The gap being guarded: system transactions reach the node two ways. Extrinsic-borne ones are
-   * archived (they are in `chain_getBlock.extrinsics`). Runtime-GENERATED ones exist only as
-   * `SystemTransactionApplied` events, which this build does not decode -- so on a chain that
-   * mints block rewards, a node-only archive would be short of an indexer-sourced one WITHOUT
-   * SAYING SO. That silence is the problem: `ON CONFLICT DO NOTHING` means such an archive cannot
-   * be repaired by re-ingesting later.
-   *
-   * The check locates each occurrence of the system-transaction self-tag in the raw events blob
-   * and asks whether an ARCHIVED system transaction's bytes begin at that exact offset. Byte
-   * matching, not decoding: delimiting an event payload needs runtime metadata, which is exactly
-   * what this build lacks. It is deliberately a DETECTION, not a classification -- the tag is
-   * never used to decide what something IS, only to notice something we did not account for.
-   *
-   * This used to COUNT tagged payloads and refuse when the count exceeded the archived count.
-   * That had a false negative, and it is worth spelling out because it is not obvious. Let
-   * `S` = successful direct system extrinsics (archived, and also present as events),
-   * `F` = valid direct system calls rejected before ledger execution (archived, but emitting no
-   * event), and `R` = runtime-generated event-only system transactions. Counting compared
-   * `S + R > S + F`, which detects an omission only when `R > F` -- so one failed direct call
-   * plus one runtime-generated event produced EQUAL counts, the guard passed, the runtime
-   * transaction was omitted, and the watermark advanced.
-   *
-   * Matching bytes instead separates the two populations that counting conflated: `F` contributes
-   * an archived transaction with no event occurrence (nothing to flag, correctly), while `R`
-   * contributes an event occurrence matching nothing archived (flagged, correctly). The masking
-   * disappears rather than being made less likely.
-   *
-   * Residual limits, stated rather than implied. This assumes the event's
-   * `serialized_system_transaction` bytes are identical to the bytes archived from the
-   * corresponding extrinsic, which is what the reference indexer's own handling implies but has
-   * not been observed on a chain that actually produces both -- if they ever differ, this
-   * over-refuses. Over-refusal is the direction this archive deliberately errs in: a refusal is
-   * visible and fixable, whereas the omission it replaces is silent and, under
-   * `ON CONFLICT DO NOTHING`, unrepairable. It also still cannot tell WHAT an unmatched payload
-   * is, only that it exists; that needs block-scoped metadata decoding.
-   *
-   * Genesis emits no events at all, so the case that works today is unaffected.
-   */
-  private async assertNoUnarchivedEventSystemTransactions(
-    height: number,
-    blockHash: Hex32,
-    archivedSystemRaw: readonly Uint8Array[],
-  ): Promise<void> {
-    const raw = await this.node.storageAt(ChainArchiveSyncService.SYSTEM_EVENTS_KEY, `0x${blockHash}`);
-    if (raw === undefined) return; // no events recorded for this block (genesis, notably)
-    const events = Buffer.from(hexNoPrefix(raw), "hex");
-    const tag = Buffer.from(SYSTEM_TX_TAG, "latin1");
-    const archived = archivedSystemRaw.map((b) => Buffer.from(b));
-    let unaccounted = 0;
-    for (let i = events.indexOf(tag); i !== -1; i = events.indexOf(tag, i + 1)) {
-      const accountedFor = archived.some(
-        (b) => i + b.length <= events.length && events.subarray(i, i + b.length).equals(b),
-      );
-      if (!accountedFor) unaccounted++;
-    }
-    if (unaccounted > 0) {
-      throw new Error(
-        `height ${height}: the block's events carry ${unaccounted} system-transaction payload(s) ` +
-          `matching none of the ${archived.length} archived from extrinsics. Runtime-generated ` +
-          "system transactions exist only in the SystemTransactionApplied event, which this build " +
-          "does not decode, so archiving this block would silently omit them -- and inserts are ON " +
-          "CONFLICT DO NOTHING, so re-ingesting later would not repair it. Use indexer-sourced " +
-          "ingest for this range until event decoding lands.",
-      );
-    }
-  }
 
   private async ingestOneBlock(height: number): Promise<void> {
     const blockHash = hexNoPrefix(await this.node.getBlockHash(height));
@@ -744,19 +710,9 @@ export class ChainArchiveSyncService {
       );
     }
 
-    // The archive's transaction key is (net, block_height, block_hash, tx_hash), so two rows
-    // sharing a hash inside one block cannot BOTH be stored -- and every terminal insert is
-    // `ON CONFLICT DO NOTHING`, so the second is dropped in silence rather than erroring.
-    // Applies to BOTH modes, and is reachable today in indexer-sourced mode: the reference
-    // indexer does not deduplicate (`runtimes/v1_0_0.rs:160-163` prepends event-borne system
-    // transactions and plain-`extend`s the extrinsic list), and its own `transactions` table has
-    // no unique constraint on `hash`, so a successful direct system call legitimately appears
-    // TWICE. Storing one of the two would look like a complete block while silently disagreeing
-    // with the source we are defined against.
-    //
-    // Refusing is the interim. The approved fix is widening the key with `position` (plan §3(c),
-    // owner-approved), which lets both copies be stored the way the indexer stores them; until
-    // that migration lands, a collision must stop the block rather than quietly lose a row.
+    // Migration 002 keys transactions by position, so duplicate hashes from the reference
+    // indexer's legitimate dual-source representation can coexist. Two rows at one position are
+    // still neither storable nor order-preserving, and must be refused before the bundle write.
     assertNoDuplicateTransactionKeys(height, transactions);
     await this.assertNoConflictingExistingRows(height, blockHash, transactions);
     // Audit A2: replay gates the write. A block the reference would refuse must not be archived,
@@ -888,20 +844,6 @@ export class ChainArchiveSyncService {
   }
 
   /**
-   * Sprint 9 node-only transaction records. Scope: REGULAR transactions only (see
-   * `ChainArchiveSyncServiceOptions.indexer`'s mode table for why system payloads are excluded
-   * -- no WASM hash accessor for the `tx_hash` PK, and runtime-generated ones aren't in the
-   * block body at all). `position` therefore numbers the REGULAR transactions of the block
-   * 0..n-1; in blocks that also carry system transactions the indexer-sourced ingest assigns
-   * different absolute positions, so cross-mode comparison joins on `tx_hash`, never on
-   * `position` (recorded in the Run-B differ's own docs).
-   *
-   * `tx_hash` is the ledger's own transaction hash, recomputed locally from the payload bytes
-   * via the WASM `Transaction.transactionHash()` -- the SAME method (and therefore the same
-   * value) the indexer's `hash` field comes from
-   * (`chain-indexer/src/infra/subxt_node.rs:675`, `make_regular_transaction`).
-   */
-  /**
    * Build a block's transaction records from the node alone, using the block's own runtime
    * metadata. This is the Stage-2 path that replaces three refusals with actual ingest.
    *
@@ -917,9 +859,10 @@ export class ChainArchiveSyncService {
    *
    * ORDERING. Event-borne system transactions are PREPENDED, before the extrinsic-derived list,
    * matching `midnight-indexer/chain-indexer/src/infra/subxt_node/runtimes/v1_0_0.rs:160-163`
-   * exactly. Substrate applies inherents before regular transactions, so this is execution order,
-   * and `position` is part of this archive's contract -- getting it wrong makes two archives that
-   * hold the same transactions non-interchangeable for anything reading by position.
+   * exactly. This is the reference archive's ROW order, not necessarily runtime execution order;
+   * replay reconstructs the latter separately from event phases and block-body order. `position`
+   * is part of the archive contract -- getting it wrong makes two archives that hold the same
+   * transactions non-interchangeable for anything reading by position.
    *
    * HASHES come from different places by necessity, and that is not a shortcut: an event carries
    * the runtime's OWN authoritative hash alongside the payload, so event-borne transactions need
@@ -934,9 +877,10 @@ export class ChainArchiveSyncService {
    * (audit A2).
    *
    * RESUME, not restart-from-genesis. Replay state is built from the newest checkpoint at or below
-   * the last archived height; only if there is none does it start blank at genesis. A checkpoint
-   * written by a different ledger build is refused rather than resumed -- serialized state is a
-   * ledger-internal encoding, and a mis-resumed state yields wrong outcomes instead of an error.
+   * the last archived height; only if there is none does it start from the chain specification's
+   * serialized genesis ledger state. A checkpoint written by a different ledger build is refused
+   * rather than resumed -- serialized state is a ledger-internal encoding, and a mis-resumed state
+   * yields wrong outcomes instead of an error.
    *
    * GAPS ARE FATAL. Replay is a fold over consecutive blocks, so applying block N+2 to a state
    * that stopped at N silently computes against the wrong state. If the block being ingested is
@@ -946,12 +890,13 @@ export class ChainArchiveSyncService {
     height: number,
     blockHash: Hex32,
     header: SubstrateHeader,
-    transactions: readonly TransactionRecord[],
+    _transactions: readonly TransactionRecord[],
     extrinsics: readonly string[],
     protocolVersion: number,
   ): Promise<void> {
     if (!this.replayValidation) return;
     const ledger = await this.ledger();
+    let initializedFromGenesisSnapshot = false;
 
     if (this.replay === undefined) {
       const resumeFrom = height > 0
@@ -1009,9 +954,26 @@ export class ChainArchiveSyncService {
               "genesis with replay enabled, or provide a checkpoint.",
           );
         }
-        this.replay = LedgerReplay.fromGenesis(ledger, this.ledgerNetworkId!);
+        const at = `0x${blockHash}`;
+        const [genesisState, nodeLedgerNetworkId] = await Promise.all([
+          this.node.genesisLedgerState(),
+          this.node.ledgerNetworkId(at),
+        ]);
+        if (nodeLedgerNetworkId !== this.ledgerNetworkId) {
+          throw new Error(
+            `height 0: the node runtime reports ledger network "${nodeLedgerNetworkId}" but ` +
+              `replay is configured for "${this.ledgerNetworkId}". Checkpoints are ` +
+              "network-specific, so labelling this chain's genesis state with another network " +
+              "would make later resume validation meaningless. Refusing.",
+          );
+        }
+        // Midnight's GenesisBlockBuilder installs this already-constructed ledger state directly
+        // into pallet storage. It embeds `genesis_extrinsics` in block 0 but does NOT execute them.
+        // Starting blank and applying the body reconstructs a different transition than the node.
+        this.replay = LedgerReplay.fromSerialized(ledger, genesisState);
         this.replayHeight = undefined;
         this.lastReplayedBlockHash = undefined;
+        initializedFromGenesisSnapshot = true;
       }
     }
 
@@ -1064,19 +1026,169 @@ export class ChainArchiveSyncService {
     }
 
     // Throws ReplayRefusalError where the reference aborts -- and this is before any write, so a
-    // refused block leaves nothing behind, same as every other refusal condition.
-    this.replay.applyBlock({
-      transactions: transactions.map((t) => ({
-        kind: t.kind === "system" ? "system" : "regular",
-        rawBytes: t.rawBytes,
-      })),
-      blockTimestampMs,
-      parentBlockHashHex: hexNoPrefix(header.parentHash),
-      parentBlockTimestampMs: this.parentTimestampFor(height),
-    });
+    // refused block leaves nothing behind, same as every other refusal condition. O3 adds the
+    // other half of replay validation: applying without comparing the resulting state merely
+    // proves that the bytes were accepted. The custom pallet root is the chain's commitment to
+    // the resulting Midnight state and must agree at EVERY block, not only checkpoint heights.
+    try {
+      if (!initializedFromGenesisSnapshot) {
+        const parentBlockTimestampMs = this.parentTimestampFor(height);
+        this.replay.applyBlock({
+          transactions: await this.replayTransactionsInExecutionOrder(
+            blockHash, extrinsics, protocolVersion, parentBlockTimestampMs,
+          ),
+          blockTimestampMs,
+          parentBlockHashHex: hexNoPrefix(header.parentHash),
+          parentBlockTimestampMs,
+        });
+      }
+      await this.assertReplayedLedgerRoot(height, blockHash);
+    } catch (err) {
+      // `applyBlock` commits its in-memory state before the asynchronous RPC comparison. A root
+      // mismatch or RPC failure must therefore discard the advanced fold, or retrying this same
+      // height on the same service wedges on the consecutive-height guard (the T3 failure mode).
+      this.discardReplayState();
+      throw err;
+    }
     this.replayHeight = height;
     this.lastReplayedBlockHash = blockHash;
     this.lastReplayedBlockTimestampMs = blockTimestampMs;
+  }
+
+  /** Compare the replay engine with the root committed by the Midnight pallet at this exact
+   * historical block. The header's Substrate trie root is intentionally not consulted: it commits
+   * the whole runtime state and is a different value with a different encoding. */
+  private async assertReplayedLedgerRoot(height: number, blockHash: Hex32): Promise<void> {
+    const expected = await this.node.ledgerStateRoot(`0x${blockHash}`);
+    const actual = this.replay!.ledgerStateRoot();
+    if (!Buffer.from(actual).equals(Buffer.from(expected))) {
+      throw new Error(
+        `ledger state-root mismatch at height ${height} (${blockHash}): replay produced ` +
+          `${Buffer.from(actual).toString("hex")} but midnight_ledgerStateRoot committed ` +
+          `${Buffer.from(expected).toString("hex")}. Refusing this block before archive writes.`,
+      );
+    }
+  }
+
+  /**
+   * Ledger execution order is not the archive's row order.
+   *
+   * The reference indexer deliberately prepends every `SystemTransactionApplied` event before
+   * extrinsic-derived rows. Substrate instead executes by `System::Phase`: initialization, each
+   * extrinsic in body order, then finalization. Moreover, a direct Midnight-system extrinsic emits
+   * its own application event, so blindly replaying both archive rows applies that transaction
+   * twice. Persisted positions remain reference-compatible; only the validation fold uses this
+   * node execution sequence.
+   */
+  private async replayTransactionsInExecutionOrder(
+    blockHash: Hex32,
+    extrinsics: readonly string[],
+    protocolVersion: number,
+    parentBlockTimestampMs: number,
+  ): Promise<{
+    kind: "regular" | "system";
+    rawBytes: Uint8Array;
+    executionTimestampMs: number;
+  }[]> {
+    const resolved = await this.metadata.forBlock(`0x${blockHash}`, protocolVersion);
+    const eventsRaw = await this.node.storageAt(
+      ChainArchiveSyncService.SYSTEM_EVENTS_KEY, `0x${blockHash}`,
+    );
+    const events = eventsRaw === undefined
+      ? []
+      : decodeEventSystemTransactions(resolved, hexToBytes(eventsRaw));
+
+    const initial = events.filter((event) => event.phase.kind === "initialization");
+    const final = events.filter((event) => event.phase.kind === "finalization");
+    const byExtrinsic = new Map<number, typeof events>();
+    for (const event of events) {
+      if (event.phase.kind !== "apply_extrinsic") continue;
+      const at = event.phase.extrinsicIndex;
+      byExtrinsic.set(at, [...(byExtrinsic.get(at) ?? []), event]);
+    }
+    for (const index of byExtrinsic.keys()) {
+      if (index >= extrinsics.length) {
+        throw new Error(
+          `height replay for ${blockHash}: SystemTransactionApplied names extrinsic ${index}, ` +
+            `but the block body has only ${extrinsics.length}. Refusing an impossible execution ` +
+            "order rather than guessing where to apply it.",
+        );
+      }
+    }
+
+    const ordered: {
+      kind: "regular" | "system";
+      rawBytes: Uint8Array;
+      executionTimestampMs: number;
+    }[] = [];
+    let executionTimestampMs = parentBlockTimestampMs;
+    const appendEvent = (event: (typeof events)[number]) => {
+      ordered.push({ kind: "system", rawBytes: event.payload, executionTimestampMs });
+    };
+    initial.forEach(appendEvent);
+
+    for (const [index, encoded] of extrinsics.entries()) {
+      const call = decodeExtrinsicWithMetadata(resolved, encoded);
+      const timestampSet = resolved.timestampSetCall;
+      if (
+        timestampSet !== undefined && call.palletIndex === timestampSet.palletIndex &&
+        call.callIndex === timestampSet.callIndex
+      ) {
+        const raw = call.firstArg;
+        if (raw === undefined) {
+          throw new Error(
+            `height replay for ${blockHash}: Timestamp::set extrinsic ${index} has no value`,
+          );
+        }
+        const value = typeof raw.toBigInt === "function" ? raw.toBigInt() : BigInt(String(raw));
+        executionTimestampMs = Number(value);
+        if (!Number.isSafeInteger(executionTimestampMs) || executionTimestampMs < 0) {
+          throw new Error(
+            `height replay for ${blockHash}: Timestamp::set extrinsic ${index} decoded to an ` +
+              `unsafe millisecond value (${String(value)})`,
+          );
+        }
+      }
+      const isRegular =
+        call.palletIndex === resolved.callIndices.midnightPallet &&
+        call.callIndex === resolved.callIndices.sendTransactionCall;
+      const isSystem =
+        call.palletIndex === resolved.callIndices.midnightSystemPallet &&
+        call.callIndex === resolved.callIndices.sendSystemTransactionCall;
+      const phaseEvents = byExtrinsic.get(index) ?? [];
+
+      if (isRegular || isSystem) {
+        if (call.payload === undefined) {
+          throw new Error(
+            `height replay for ${blockHash}: Midnight extrinsic ${index} has no payload`,
+          );
+        }
+        ordered.push({
+          kind: isSystem ? "system" : "regular",
+          rawBytes: call.payload,
+          executionTimestampMs,
+        });
+      }
+
+      let skippedOwnApplicationEvent = false;
+      for (const event of phaseEvents) {
+        // The pallet emits SystemTransactionApplied after a direct system extrinsic applies. That
+        // event documents the same execution; it is not a second transaction. Skip exactly one
+        // byte-identical occurrence and retain every other event in phase order (those are
+        // runtime-generated system transactions executed inside this extrinsic's dispatch).
+        if (
+          isSystem && call.payload !== undefined && !skippedOwnApplicationEvent &&
+          Buffer.from(event.payload).equals(Buffer.from(call.payload))
+        ) {
+          skippedOwnApplicationEvent = true;
+          continue;
+        }
+        appendEvent(event);
+      }
+    }
+
+    final.forEach(appendEvent);
+    return ordered;
   }
 
   /**
@@ -1123,11 +1235,11 @@ export class ChainArchiveSyncService {
   /**
    * Re-apply one ALREADY-ARCHIVED block to replay state, to close a checkpoint/watermark gap.
    *
-   * Reads the transactions back from the archive in position order -- so the fold sees exactly what
-   * was stored, not a fresh decode that might differ -- and re-decodes the block's timestamp from
-   * the node, since the archive does not store it. A refusal here is a genuine finding: it means
-   * the archived block does not replay, which is precisely the inconsistency this validation
-   * exists to surface.
+   * Re-reads the node block and events to reconstruct runtime execution order, which deliberately
+   * differs from the reference-compatible archive position order. It also re-decodes the block's
+   * timestamp because the archive does not store it. A refusal here is a genuine finding: it means
+   * the archived block does not replay, precisely the inconsistency this validation exists to
+   * surface.
    */
   private async replayArchivedBlock(height: number): Promise<void> {
     const block = await this.store.getCanonicalBlockAtHeight(this.net, height);
@@ -1153,15 +1265,6 @@ export class ChainArchiveSyncService {
           `${replayedParent}. Refusing to splice disconnected canonical rows.`,
       );
     }
-    const stored = await this.store.getTransactionsForBlock(this.net, block.blockHash);
-    const ordered = [...stored].sort((a, b) => a.position - b.position);
-    const withBytes = await Promise.all(
-      ordered.map(async (t) => ({
-        kind: t.kind === "system" ? ("system" as const) : ("regular" as const),
-        rawBytes: await this.store.getBlob(t.rawBlobHash),
-      })),
-    );
-
     const { block: nodeBlock } = await this.node.getBlock(`0x${block.blockHash}`);
     const resolved = await this.metadata.forBlock(`0x${block.blockHash}`);
     const ts = decodeBlockTimestampMs(resolved, nodeBlock.extrinsics);
@@ -1176,12 +1279,22 @@ export class ChainArchiveSyncService {
       );
     }
 
+    const parentBlockTimestampMs = this.parentTimestampFor(height);
     this.replay!.applyBlock({
-      transactions: withBytes,
+      transactions: await this.replayTransactionsInExecutionOrder(
+        block.blockHash,
+        nodeBlock.extrinsics,
+        decodeProtocolVersionFromDigest(nodeBlock.header.digest.logs) ?? 0,
+        parentBlockTimestampMs,
+      ),
       blockTimestampMs: ts,
       parentBlockHashHex: hexNoPrefix(nodeBlock.header.parentHash),
-      parentBlockTimestampMs: this.parentTimestampFor(height),
+      parentBlockTimestampMs,
     });
+    // Catch-up is replay too. Checking only freshly ingested blocks lets a corrupted archived
+    // state slip through every restart between sparse checkpoints, precisely where validation is
+    // supposed to reconstruct trust. The caller's catch boundary discards the fold on failure.
+    await this.assertReplayedLedgerRoot(height, block.blockHash);
     this.replayHeight = height;
     this.lastReplayedBlockHash = block.blockHash;
     this.lastReplayedBlockTimestampMs = ts;
@@ -1421,68 +1534,6 @@ export class ChainArchiveSyncService {
           "Midnight transaction, so one of them would make genuine transactions vanish. Refusing.",
       );
     }
-  }
-
-  private async buildNodeOnlyTransactionRecords(
-    height: number,
-    blockHash: Hex32,
-    nodePayloads: readonly { kind: "regular" | "system"; payload: Uint8Array }[],
-    protocolVersion: number,
-  ): Promise<TransactionRecord[]> {
-    const ledger = await this.ledger();
-    const records: TransactionRecord[] = [];
-    let position = 0;
-    for (const p of nodePayloads) {
-      // Bytes reaching here have already passed the node's own validation, so a decode failure is
-      // a real defect -- a version mismatch, or a bug here -- not hostile input. Fail loud: an
-      // earlier revision skipped and advanced the watermark, which wrote a permanently incomplete
-      // block and recorded nothing about it.
-      const decoded = decodeArchivedTransaction(ledger, p.payload);
-
-      if (p.kind === "system") {
-        // System transactions are archived only when their AUTHORITATIVE hash is available.
-        // `SystemTransaction.transactionHash()` exists on the Rust ledger and is what the
-        // reference indexer keys them by, but the published wasm-bindgen wrapper does not export
-        // it (see MIDNIGHT_LEDGER_WASM in tx-replay-decoder.ts). Without it the row cannot be
-        // written under the key every other consumer uses.
-        //
-        // Refuse rather than omit. Every terminal insert is `ON CONFLICT DO NOTHING`, so an
-        // archive written without these could not be repaired by re-ingesting later -- the rows
-        // already present would be skipped and corrected positions would collide. An incomplete
-        // archive that looks complete is the worse failure.
-        if (decoded.transactionHash === undefined) {
-          throw new Error(
-            `height ${height}: node-only ingest found a system transaction but this ledger build ` +
-              "exposes no SystemTransaction.transactionHash(), so it cannot be archived under its " +
-              "real key. Refusing rather than writing an archive that silently omits it and cannot " +
-              "be repaired in place. Set MIDNIGHT_LEDGER_WASM to a build carrying that export, or " +
-              "use indexer-sourced ingest for this range.",
-          );
-        }
-      } else if (decoded.transactionHash === undefined) {
-        throw new Error(
-          `node-only ingest at height ${height}: a payload dispatched to the Midnight transaction ` +
-            "call did not decode to a transaction hash. Refusing to archive the block incomplete.",
-        );
-      }
-
-      // ONE counter across both kinds, advancing in extrinsic order. The indexer numbers a
-      // block's transactions across its whole list, so genesis -- whose system transactions are
-      // extrinsic-borne and whose blocks carry no events -- yields exactly the same positions
-      // this produces. Numbering only regular transactions, as an earlier revision did, made the
-      // two modes disagree on `position` for every block containing a system transaction.
-      records.push({
-        net: this.net,
-        txHash: hexNoPrefix(decoded.transactionHash!).toLowerCase(),
-        blockHeight: height,
-        blockHash,
-        position: position++,
-        kind: p.kind,
-        protocolVersion,
-        rawBytes: p.payload,
-      });
-    }
-    return records;
   }
 
   /** SCALE-decodes `SystemParametersApi_get_d_parameter` at `blockHash`:

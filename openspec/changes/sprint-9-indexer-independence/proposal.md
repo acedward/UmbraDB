@@ -1,7 +1,10 @@
 # Proposal — Sprint 9: Indexer Independence (differential-parity harness + first migrated primitive)
 
-> **Status:** Draft. Not yet reviewed by the design panel (`AGENTS.md`'s three-persona pattern) and
-> not yet audited. No implementation has started.
+> **Status update (2026-08-15): IMPLEMENTED, pending final independent PASS×3.** This is the
+> original scoping proposal. Owner decisions and audit remediation expanded Part A to include
+> system transactions, replay/checkpoints and the minimal safety migrations needed by the source
+> substitution. Do not interpret the historical non-goals below as current limitations; the
+> authoritative current registers are `tasks.md` §§13–18 and `system-transactions-plan.md` §§15–19.
 
 ## Why this sprint exists
 

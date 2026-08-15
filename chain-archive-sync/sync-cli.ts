@@ -2,8 +2,7 @@
 /**
  * chain-archive-sync CLI -- runs {@link ChainArchiveSyncService} in a resumable loop against a
  * live Midnight node (JSON-RPC) + indexer (GraphQL), populating the `chain_archive` schema. This
- * is the production/ops entry point the feature previously lacked
- * (`docs/features/full-chain-storage.md` §4 noted "no CLI entry point or npm script").
+ * is the production/ops entry point for finalized chain-archive ingest.
  *
  * Resumable: each `syncOnce` advances a persisted watermark, so restarts continue where they left
  * off. Points at Midnight's hosted public Preprod endpoints by default; override for a local
@@ -19,8 +18,8 @@
  *                   to the literal "none" (or leave the default and set NODE_ONLY=1) for
  *                   NODE-ONLY ingest with no indexer involvement at all. The historical default
  *                   (hosted Preprod indexer) is kept so existing invocations behave unchanged.
- *   NODE_ONLY       "1" forces node-only mode regardless of INDEXER_URL. **EXPERIMENTAL** -- see
- *                   the warning below; not yet a general indexer replacement.
+ *   NODE_ONLY       "1" forces node-only mode regardless of INDEXER_URL. Requires a historical
+ *                   archive node for every range being ingested.
  *   ORACLE_CROSS_CHECK  "1" additionally validates every block's node-derived view against the
  *                   indexer's, throwing on disagreement (validation mode; off by default)
  *   REPLAY_VALIDATION   "1" applies every block to real ledger state as it is ingested and REFUSES
@@ -88,18 +87,13 @@ if (NODE_ONLY) {
   // alone, and an operator whose database is unreachable would otherwise hit a connection error
   // having never been told which ingest source they selected.
   //
-  // Said at every start rather than once in a doc: node-only ingest is correct where it completes
-  // and refuses where it cannot, but it is NOT yet a general replacement for the indexer, and the
-  // difference is invisible on a chain that happens not to exercise the gaps -- a devnet can look
-  // like a clean cutover for weeks.
+  // Said at every start rather than once in a doc: first-time historical ingest reads per-block
+  // metadata, events and runtime state, so a pruned endpoint cannot supply an omitted range.
   // eslint-disable-next-line no-console
-  console.warn(
-    "[archive-sync] WARNING node-only mode is EXPERIMENTAL and not yet a general indexer " +
-      "replacement. It archives extrinsic-borne transactions and system transactions, and REFUSES " +
-      "(rather than silently omitting) runtime-generated event-borne system transactions, signed " +
-      "or general framings, and runtimes whose call indices it has not been verified against. " +
-      "Expect it to stop on a chain that produces any of those. Byte-parity with the indexer is " +
-      "demonstrated only on the genesis/bare-extrinsic slice so far.",
+  console.log(
+    "[archive-sync] node-only mode enabled. Historical ingest requires an archive node because " +
+      "System::Events and runtime state are read at each block; already-captured runtime metadata " +
+      "and replay checkpoints remain local to this archive.",
   );
 }
 

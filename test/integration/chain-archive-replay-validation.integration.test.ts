@@ -6,11 +6,13 @@ import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
 import { PgChainArchiveStore } from "../../src/postgres/chain-archive-store.js";
+import { LedgerReplay } from "../../chain-archive-sync/ledger-replay.js";
+import { loadLedgerV8 } from "../../chain-archive-sync/tx-replay-decoder.js";
 import { metadataRpcResult } from "./fake-node-metadata.js";
 
 /** Must match `LEDGER_STATE_VERSION` in the sync service -- a checkpoint row written by hand has
  *  to look valid in every respect except the one under test. */
-const LEDGER_VERSION = "ledger-v8@8.1.0-syshash.3";
+const LEDGER_VERSION = "ledger-v8@8.1.0-syshash.4";
 
 /**
  * Audit A2: ledger replay GATES ingest.
@@ -95,10 +97,20 @@ function timestampInherentHex(timestampMs: number): string {
   return `0x280501000b${littleEndian.toString("hex")}`;
 }
 
+function scaleStringHex(value: string): string {
+  const bytes = Buffer.from(value, "utf8");
+  return `0x${compactU32Hex(bytes.length)}${bytes.toString("hex")}`;
+}
+
 const MNSV_DIGEST_V1 = "0x044d4e53561040420f00";
 const BLOCK_HASH = `0x${"d0".repeat(32)}`;
 
-function fakeNodeFetch(extrinsics: string[]): typeof fetch {
+function fakeNodeFetch(
+  extrinsics: string[],
+  roots: LedgerRoots = SYNTHETIC_ROOTS_UNDEPLOYED,
+  genesisStateHex: string = SYNTHETIC_CHAIN_UNDEPLOYED.genesisStateHex,
+  ledgerNetworkId = "undeployed",
+): typeof fetch {
   const header = {
     parentHash: `0x${"00".repeat(32)}`,
     number: "0x0",
@@ -122,9 +134,16 @@ function fakeNodeFetch(extrinsics: string[]): typeof fetch {
         return reply(header);
       case "chain_getBlock":
         return reply({ block: { header, extrinsics } });
+      case "midnight_ledgerStateRoot":
+        return reply(roots[String(body.params?.[0] ?? BLOCK_HASH)] ?? roots[BLOCK_HASH]);
+      case "system_properties":
+        return reply({ genesis_state: genesisStateHex });
       case "state_getStorageAt":
         return reply(null);
       case "state_call":
+        if (body.params?.[0] === "MidnightRuntimeApi_get_network_id") {
+          return reply(scaleStringHex(ledgerNetworkId));
+        }
         return reply("0x0a000000");
       default:
         return reply(null);
@@ -151,16 +170,87 @@ const HEIGHT_3_HASH = `0x${"d3".repeat(32)}`;
 const HEIGHT_3_TIMESTAMP_INHERENT = "0x280501000b50901a7a9801";
 const ALT_HEIGHT_1_HASH = `0x${"e1".repeat(32)}`;
 
+type LedgerRoots = Record<string, number[]>;
+interface SyntheticChain {
+  roots: LedgerRoots;
+  genesisStateHex: string;
+  networkId: string;
+}
+const ledger = await loadLedgerV8();
+
+/** Produce roots for the synthetic chain with the same ledger code used by the service. The
+ * binding itself is independently checked against the node's Rust implementation in the vendored
+ * source test; these values keep unrelated replay fixtures focused on their own failure modes. */
+function syntheticChain(networkId: string): SyntheticChain {
+  const replay = LedgerReplay.fromGenesis(ledger, networkId);
+  const roots: LedgerRoots = {};
+  replay.applyBlock({
+    transactions: FIXTURE.map((f) => ({
+      kind: "system" as const,
+      rawBytes: new Uint8Array(Buffer.from(f[3]!, "hex")),
+    })),
+    blockTimestampMs: GENESIS_TIMESTAMP_MS,
+    parentBlockHashHex: "00".repeat(32),
+    parentBlockTimestampMs: 0,
+  });
+  roots[BLOCK_HASH] = [...replay.ledgerStateRoot()];
+  const genesisStateHex = Buffer.from(replay.serialize()).toString("hex");
+  replay.applyBlock({
+    transactions: [],
+    blockTimestampMs: HEIGHT_1_TIMESTAMP_MS,
+    parentBlockHashHex: BLOCK_HASH.slice(2),
+    parentBlockTimestampMs: GENESIS_TIMESTAMP_MS,
+  });
+  roots[HEIGHT_1_HASH] = [...replay.ledgerStateRoot()];
+  roots[ALT_HEIGHT_1_HASH] = [...roots[HEIGHT_1_HASH]!];
+  replay.applyBlock({
+    transactions: [],
+    blockTimestampMs: HEIGHT_2_TIMESTAMP_MS,
+    parentBlockHashHex: HEIGHT_1_HASH.slice(2),
+    parentBlockTimestampMs: HEIGHT_1_TIMESTAMP_MS,
+  });
+  roots[HEIGHT_2_HASH] = [...replay.ledgerStateRoot()];
+  replay.applyBlock({
+    transactions: [],
+    blockTimestampMs: 1754395218000,
+    parentBlockHashHex: HEIGHT_2_HASH.slice(2),
+    parentBlockTimestampMs: HEIGHT_2_TIMESTAMP_MS,
+  });
+  roots[HEIGHT_3_HASH] = [...replay.ledgerStateRoot()];
+  return { roots, genesisStateHex, networkId };
+}
+
+const SYNTHETIC_CHAIN_UNDEPLOYED = syntheticChain("undeployed");
+const SYNTHETIC_CHAIN_DEVNET = syntheticChain("devnet");
+const SYNTHETIC_ROOTS_UNDEPLOYED = SYNTHETIC_CHAIN_UNDEPLOYED.roots;
+const SYNTHETIC_ROOTS_DEVNET = SYNTHETIC_CHAIN_DEVNET.roots;
+
+function chainForNetwork(networkId: string): SyntheticChain {
+  if (networkId === "undeployed") return SYNTHETIC_CHAIN_UNDEPLOYED;
+  if (networkId === "devnet") return SYNTHETIC_CHAIN_DEVNET;
+  return syntheticChain(networkId);
+}
+
 /** Lets a test fault `chain_getBlock` for one specific hash, to inject a failure during replay
  *  catch-up -- which reads archived blocks back from the node. */
 interface NodeFault { failGetBlockFor?: string }
 
 function chainNodeFetch(
   genesisExtrinsics: string[],
-  opts: { head?: string; fault?: NodeFault } = {},
+  opts: {
+    head?: string;
+    fault?: NodeFault;
+    ledgerRoots?: LedgerRoots;
+    genesisStateHex?: string;
+    ledgerNetworkId?: string;
+    height1Extrinsics?: string[];
+  } = {},
 ): typeof fetch {
   const head = opts.head ?? HEIGHT_1_HASH;
   const fault = opts.fault ?? {};
+  const roots = opts.ledgerRoots ?? SYNTHETIC_ROOTS_UNDEPLOYED;
+  const genesisStateHex = opts.genesisStateHex ?? SYNTHETIC_CHAIN_UNDEPLOYED.genesisStateHex;
+  const ledgerNetworkId = opts.ledgerNetworkId ?? "undeployed";
   const headers: Record<string, Record<string, unknown>> = {
     [BLOCK_HASH]: {
       parentHash: `0x${"00".repeat(32)}`, number: "0x0",
@@ -192,7 +282,7 @@ function chainNodeFetch(
   // and there is no second real regular transaction that applies cleanly to the advanced state.
   const extrinsics: Record<string, string[]> = {
     [BLOCK_HASH]: genesisExtrinsics,
-    [HEIGHT_1_HASH]: [HEIGHT_1_TIMESTAMP_INHERENT],
+    [HEIGHT_1_HASH]: opts.height1Extrinsics ?? [HEIGHT_1_TIMESTAMP_INHERENT],
     [HEIGHT_2_HASH]: [HEIGHT_2_TIMESTAMP_INHERENT],
     [HEIGHT_3_HASH]: [HEIGHT_3_TIMESTAMP_INHERENT],
     [ALT_HEIGHT_1_HASH]: [HEIGHT_1_TIMESTAMP_INHERENT],
@@ -223,9 +313,18 @@ function chainNodeFetch(
         }
         return reply({ block: { header: headers[h], extrinsics: extrinsics[h] ?? [] } });
       }
+      case "midnight_ledgerStateRoot": {
+        const h = String(body.params?.[0] ?? head);
+        return reply(roots[h]);
+      }
+      case "system_properties":
+        return reply({ genesis_state: genesisStateHex });
       case "state_getStorageAt":
         return reply(null);
       case "state_call":
+        if (body.params?.[0] === "MidnightRuntimeApi_get_network_id") {
+          return reply(scaleStringHex(ledgerNetworkId));
+        }
         return reply("0x0a000000");
       default:
         return reply(null);
@@ -240,6 +339,25 @@ const PARENT_TIME_ORACLE_BLOCK_HASH = `0x${"e2".repeat(32)}`;
 const PARENT_TIME_ORACLE_TIMESTAMP_INHERENT = timestampInherentHex(
   PARENT_TIME_ORACLE.blockTimestampMs,
 );
+
+function parentTimeOracleRoot(): number[] {
+  const replay = LedgerReplay.fromSerialized(
+    ledger,
+    new Uint8Array(Buffer.from(PARENT_TIME_ORACLE.prestateHex, "hex")),
+  );
+  replay.applyBlock({
+    transactions: [{
+      kind: "regular",
+      rawBytes: new Uint8Array(Buffer.from(PARENT_TIME_ORACLE.transactionHex, "hex")),
+    }],
+    blockTimestampMs: PARENT_TIME_ORACLE.blockTimestampMs,
+    parentBlockHashHex: PARENT_TIME_ORACLE.parentHash,
+    parentBlockTimestampMs: PARENT_TIME_ORACLE.nodeParentTimestampMs,
+  });
+  return [...replay.ledgerStateRoot()];
+}
+
+const PARENT_TIME_ORACLE_ROOT = parentTimeOracleRoot();
 
 /** One post-checkpoint block carrying the native fixture's dust-affecting transaction. */
 function parentTimeOracleNodeFetch(): typeof fetch {
@@ -283,6 +401,8 @@ function parentTimeOracleNodeFetch(): typeof fetch {
             ? { header: parentHeader, extrinsics: [] }
             : { header, extrinsics },
         });
+      case "midnight_ledgerStateRoot":
+        return reply(PARENT_TIME_ORACLE_ROOT);
       case "state_getStorageAt":
         return reply(null);
       case "state_call":
@@ -314,15 +434,23 @@ describe("replay validation gates ingest", () => {
     return schema;
   }
 
-  const service = (schema: string, extrinsics: string[], opts: Record<string, unknown> = {}) =>
-    new ChainArchiveSyncService({
+  const service = (schema: string, extrinsics: string[], opts: Record<string, unknown> = {}) => {
+    const networkId = typeof opts.ledgerNetworkId === "string" ? opts.ledgerNetworkId : "undeployed";
+    const synthetic = chainForNetwork(networkId);
+    return new ChainArchiveSyncService({
       sql, net: NET, schema,
-      node: { url: "http://fake-node", fetchImpl: fakeNodeFetch(extrinsics) },
+      node: {
+        url: "http://fake-node",
+        fetchImpl: fakeNodeFetch(
+          extrinsics, synthetic.roots, synthetic.genesisStateHex, synthetic.networkId,
+        ),
+      },
       replayValidation: true,
       ledgerNetworkId: "undeployed", // the LEDGER's network id, not this archive's `net` label
       replayCheckpointInterval: 1, // checkpoint every block, so one block exercises the path
       ...opts,
     });
+  };
 
   it("archives the real genesis block, which replays cleanly", async () => {
     const schema = await newSchema();
@@ -333,30 +461,108 @@ describe("replay validation gates ingest", () => {
     expect(rows!.n).toBe(5);
   }, 180_000);
 
-  it("REFUSES a block replay rejects, and writes nothing", async () => {
+  it("initializes from genesis_state and does not execute block 0's embedded extrinsics", async () => {
+    const schema = await newSchema();
+
+    // The snapshot contains the five synthetic genesis updates, while this block body contains
+    // only Timestamp::set. Midnight's GenesisBlockBuilder installs the snapshot and merely embeds
+    // the body; it never executes the body. A blank-state reconstruction therefore produces a
+    // different root even though every RPC response and byte is otherwise valid.
+    await service(schema, [GENESIS_TIMESTAMP_INHERENT]).syncOnce({ maxBlocks: 1 });
+
+    const [row] = await sql<{ blocks: number; txs: number }[]>`
+      SELECT
+        (SELECT count(*)::int FROM ${sql(schema)}.blocks WHERE net = ${NET}) AS blocks,
+        (SELECT count(*)::int FROM ${sql(schema)}.transactions WHERE net = ${NET}) AS txs
+    `;
+    expect(row).toEqual({ blocks: 1, txs: 0 });
+
+    // Wrong implementations closed here: applying block-0 extrinsics to blank state, applying
+    // them on top of the snapshot, or ignoring the snapshot and checking only later blocks.
+  }, 180_000);
+
+  it("refuses a committed ledger-root mismatch at a non-checkpoint height and retries cleanly (O3)", async () => {
+    const schema = await newSchema();
+    const roots = Object.fromEntries(
+      Object.entries(SYNTHETIC_ROOTS_UNDEPLOYED).map(([hash, root]) => [hash, [...root]]),
+    ) as LedgerRoots;
+    const correctHeight1 = [...roots[HEIGHT_1_HASH]!];
+    const wrongHeight1 = [...correctHeight1];
+    const last = wrongHeight1.length - 1;
+    wrongHeight1[last] = wrongHeight1[last]! ^ 0xff;
+    roots[HEIGHT_1_HASH] = wrongHeight1;
+
+    const svc = new ChainArchiveSyncService({
+      sql, net: NET, schema,
+      node: {
+        url: "http://fake-node",
+        fetchImpl: chainNodeFetch(GENESIS_SYSTEM_EXTRINSICS, { ledgerRoots: roots }),
+      },
+      replayValidation: true,
+      ledgerNetworkId: "undeployed",
+      replayCheckpointInterval: 1000,
+    });
+
+    // Genesis is checkpointed (0 % 1000 === 0); height 1 is deliberately not. A checker that
+    // validates only checkpoints therefore passes genesis and must still fail this assertion.
+    await svc.syncOnce({ maxBlocks: 1 });
+    await expect(svc.syncOnce({ maxBlocks: 1 })).rejects.toThrow(
+      /ledger state-root mismatch at height 1.*midnight_ledgerStateRoot/s,
+    );
+    const [failed] = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM ${sql(schema)}.blocks WHERE net = ${NET} AND height = 1
+    `;
+    expect(failed!.n, "a mismatched state must be refused before archive writes").toBe(0);
+
+    // The header root is intentionally `b1…`, while the custom ledger root is a variable-length
+    // serialized typed arena key. Restoring it proves the implementation did not compare replay to
+    // `header.stateRoot`. Retrying the SAME service also proves mismatch recovery discarded the
+    // already-advanced in-memory fold.
+    expect(Buffer.from(correctHeight1).toString("hex")).not.toBe("b1".repeat(32));
+    roots[HEIGHT_1_HASH] = correctHeight1;
+    await svc.syncOnce({ maxBlocks: 1 });
+    const [recovered] = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM ${sql(schema)}.blocks WHERE net = ${NET} AND height = 1
+    `;
+    expect(recovered!.n).toBe(1);
+
+    // Wrong implementations closed by this fixture: no comparison, checkpoint-only comparison,
+    // header-root comparison, compare-after-write, and mismatch without replay-state rollback.
+  }, 180_000);
+
+  it("REFUSES a post-genesis block replay rejects, and writes nothing for that height", async () => {
     // The payload must DESERIALIZE and still be invalid -- that is the gap replay closes.
     // Undeserializable bytes never reach replay at all: the decode path that computes each
     // transaction's hash rejects them first, which the first run of this suite demonstrated. So
     // the case that only replay can catch is a structurally valid transaction that fails
-    // validation, here the real genesis regular transaction with one byte flipped inside its proof.
+    // validation, here the real regular transaction with one byte flipped inside its proof.
     const schema = await newSchema();
     const corrupted = REGULAR_TX_HEX.replace("126359", "126959");
-    // The timestamp inherent is present because a real genesis has one -- otherwise this block is
-    // refused for the missing timestamp instead, and the assertion below would pass while never
-    // reaching replay at all.
-    await expect(
-      service(schema, [GENESIS_TIMESTAMP_INHERENT, bareRegularExtrinsicHex(corrupted)])
-        .syncOnce({ maxBlocks: 1 }),
-    ).rejects.toThrow(/ledger replay refuses this block/);
+    const svc = new ChainArchiveSyncService({
+      sql, net: NET, schema,
+      node: {
+        url: "http://fake-node",
+        fetchImpl: chainNodeFetch(GENESIS_SYSTEM_EXTRINSICS, {
+          height1Extrinsics: [HEIGHT_1_TIMESTAMP_INHERENT, bareRegularExtrinsicHex(corrupted)],
+        }),
+      },
+      replayValidation: true,
+      ledgerNetworkId: "undeployed",
+      replayCheckpointInterval: 1,
+    });
+    await svc.syncOnce({ maxBlocks: 1 });
+    await expect(svc.syncOnce({ maxBlocks: 1 })).rejects.toThrow(/ledger replay refuses this block/);
 
     const [blocks] = await sql<{ n: number }[]>`
-      SELECT count(*)::int AS n FROM ${sql(schema)}.blocks WHERE net = ${NET}
+      SELECT count(*)::int AS n FROM ${sql(schema)}.blocks
+      WHERE net = ${NET} AND height = 1
     `;
     const [txs] = await sql<{ n: number }[]>`
-      SELECT count(*)::int AS n FROM ${sql(schema)}.transactions WHERE net = ${NET}
+      SELECT count(*)::int AS n FROM ${sql(schema)}.transactions
+      WHERE net = ${NET} AND block_height = 1
     `;
-    expect(blocks!.n, "no block row").toBe(0);
-    expect(txs!.n, "no transaction row").toBe(0);
+    expect(blocks!.n, "no height-1 block row").toBe(0);
+    expect(txs!.n, "no height-1 transaction row").toBe(0);
   }, 180_000);
 
   /**
@@ -816,7 +1022,7 @@ describe("replay validation gates ingest", () => {
     `;
     expect(rows).toHaveLength(1);
     expect(rows[0]!.h).toBe("0");
-    expect(rows[0]!.ledger_version).toContain("8.1.0-syshash.3");
+    expect(rows[0]!.ledger_version).toContain("8.1.0-syshash.4");
     // Real state, not an empty placeholder: a blank state is ~816 bytes, and genesis's five system
     // transactions take it to tens of kilobytes.
     expect(rows[0]!.n).toBeGreaterThan(1000);

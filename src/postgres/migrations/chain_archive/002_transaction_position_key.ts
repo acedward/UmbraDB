@@ -17,9 +17,10 @@ import { assertValidSchemaName } from "../../client.js";
  * This archive is defined by byte-parity with that output, so it must be able to hold two rows
  * too. Under the old key `(net, block_height, block_hash, tx_hash)` it could not: the second copy
  * collided, and since every terminal insert is `ON CONFLICT DO NOTHING`, it was dropped in silence
- * rather than raising. Ingest currently REFUSES such blocks (`assertNoDuplicateTransactionKeys`)
- * precisely because storing one of two copies would look complete while disagreeing with the
- * source.
+ * rather than raising. Before this migration, ingest refused such blocks because storing one of
+ * two copies would look complete while disagreeing with the source. Migration 002 removes that
+ * interim refusal by making both copies storable; the current
+ * `assertNoDuplicateTransactionKeys` guard checks duplicate positions, not duplicate hashes.
  *
  * `position` is the right key because it is already the archive's notion of transaction identity
  * within a block -- ordered, contiguous from zero across both kinds, and already carrying its own

@@ -217,10 +217,9 @@ describe("ChainArchiveSyncService retry safety (sprint-fix round Fixes 1-3)", ()
     return { service, schema };
   }
 
-  // Node-only mode needs the ledger WASM to classify payloads, and that dependency is resolved
-  // from a sibling checkout rather than package.json (audit finding F6). Reported as SKIPPED
-  // where it is absent -- never as a vacuous pass. This test is the reason F6 matters: the DoS
-  // regression cannot be enforced in CI until the dependency is packaged.
+  // Node-only mode needs the installed vendored ledger WASM to hash payloads. Report a genuinely
+  // missing package as SKIPPED rather than turning this into a vacuous pass; a fresh `npm ci`
+  // supplies it, so the regression is enforced in CI without an external checkout.
   it.skipIf(ledgerV8EntryPath() === undefined)(
     "audit F2/F3: forged midnight-tagged bytes under a foreign call are IGNORED, not fatal", async () => {
     // The denial of service this closes: the envelope decoder classifies by the payload's
@@ -519,6 +518,123 @@ describe("ChainArchiveSyncService retry safety (sprint-fix round Fixes 1-3)", ()
     expect(JSON.parse(Buffer.from(changed).toString("utf8"))).toEqual({
       numPermissionedCandidates: 42, numRegisteredCandidates: 43,
     });
+  }, 60_000);
+
+  it("O1: stopping exactly after a D-parameter change and restarting from the watermark preserves the byte-identical observation sequence", async () => {
+    // The boundary is height 2. Stopping at height 2 and resuming at height 3 is load-bearing:
+    // height 3 still carries the NEW value, so a process-local-only cursor emits a duplicate there.
+    // Stopping before height 2 would let both the broken and fixed implementations emit the change
+    // at height 2 and would therefore prove nothing about restart continuity.
+    const blocks = fakeChain([
+      { height: 0, dParamSeed: 7 }, { height: 1, dParamSeed: 7 },
+      { height: 2, dParamSeed: 42 }, { height: 3, dParamSeed: 42 },
+    ]);
+    const unbrokenSchema = `retry_test_${schemaCounter++}`;
+    const restartedSchema = `retry_test_${schemaCounter++}`;
+    sql = createClient({ connectionString: container.getConnectionUri(), schema: unbrokenSchema });
+    await bootstrapChainArchiveSchema(sql, unbrokenSchema);
+    await bootstrapChainArchiveSchema(sql, restartedSchema);
+
+    const make = (schema: string) => new ChainArchiveSyncService({
+      sql, net: NET, schema,
+      node: { url: "http://fake-node", fetchImpl: fakeNodeFetch(blocks, 3) },
+      indexer: { url: "http://fake-indexer", fetchImpl: fakeIndexerFetch(blocks) },
+    });
+
+    await make(unbrokenSchema).syncOnce({ maxBlocks: 4 });
+    await make(restartedSchema).syncOnce({ maxBlocks: 3 }); // includes the change at height 2
+    await make(restartedSchema).syncOnce({ maxBlocks: 1 }); // a genuinely fresh process instance
+
+    const sequenceBytes = async (schema: string): Promise<Buffer> => {
+      const rows = await sql<{
+        height: string; block_hash: Buffer; observation_index: number; kind: string; raw: Buffer;
+      }[]>`
+        SELECT o.block_height::text AS height, o.block_hash, o.observation_index, o.kind, b.data AS raw
+        FROM ${sql(schema)}.bridge_observations o
+        JOIN ${sql(schema)}.chain_blobs b ON b.hash = o.raw_blob_hash
+        WHERE o.net = ${NET} AND o.kind = 'system_parameters_d'
+        ORDER BY o.block_height, o.observation_index
+      `;
+      // Serialize every ordered identity field plus the raw archived bytes. Equal row counts alone
+      // would miss reordering or a duplicate whose content happened to match another observation.
+      return Buffer.from(JSON.stringify(rows.map((row) => ({
+        height: row.height,
+        blockHash: row.block_hash.toString("hex"),
+        observationIndex: row.observation_index,
+        kind: row.kind,
+        rawHex: row.raw.toString("hex"),
+      }))));
+    };
+
+    const unbroken = await sequenceBytes(unbrokenSchema);
+    const restarted = await sequenceBytes(restartedSchema);
+    expect(restarted.equals(unbroken), restarted.toString()).toBe(true);
+    expect(JSON.parse(restarted.toString()).map((row: { height: string }) => row.height))
+      .toEqual(["0", "2"]);
+  }, 60_000);
+
+  it("O2: two services racing one height cannot both report success for incompatible transaction histories", async () => {
+    const left = fakeChain([{ height: 0, dParamSeed: 7 }]);
+    const right = fakeChain([{ height: 0, dParamSeed: 7 }]);
+    const leftRaw = [0, 1].map((i) =>
+      Buffer.from(`midnight:transaction-o2-left-${i}`, "utf8").toString("hex"));
+    const rightRaw = [0, 1].map((i) =>
+      Buffer.from(`midnight:transaction-o2-right-${i}`, "utf8").toString("hex"));
+    // Both nodes expose the same block identity/body population; their indexer views disagree on
+    // which two transaction rows belong to it. This models two implementation generations racing
+    // to fill historical rows, without making containment fail before the conflict guard.
+    const allExtrinsics = [...leftRaw, ...rightRaw].map(bareMidnightExtrinsicHex);
+    left[0]!.extrinsics = allExtrinsics;
+    right[0]!.extrinsics = allExtrinsics;
+    left[0]!.txRawHex = leftRaw;
+    left[0]!.txHashes = [hx(10, 0xd), hx(11, 0xd)];
+    right[0]!.txRawHex = rightRaw;
+    right[0]!.txHashes = [hx(20, 0xd), hx(21, 0xd)];
+
+    const schema = `retry_test_${schemaCounter++}`;
+    sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    await bootstrapChainArchiveSchema(sql, schema);
+    const make = (blocks: FakeChainBlock[]) => new ChainArchiveSyncService({
+      sql, net: NET, schema,
+      node: { url: "http://fake-node", fetchImpl: fakeNodeFetch(blocks, 0) },
+      indexer: { url: "http://fake-indexer", fetchImpl: fakeIndexerFetch(blocks) },
+    });
+    const a = make(left);
+    const b = make(right);
+
+    // Force BOTH service-level preflight reads to see the same empty snapshot. Without the store's
+    // transaction-scoped re-check, both calls then resolve successfully: one history wins the
+    // unique constraints and the other is silently discarded by ON CONFLICT DO NOTHING.
+    let preflightReaders = 0;
+    let releasePreflights!: () => void;
+    const bothPreflights = new Promise<void>((resolve) => { releasePreflights = resolve; });
+    const originals = [a, b].map((svc) => svc.store.getTransactionsForBlock.bind(svc.store));
+    for (const [i, svc] of [a, b].entries()) {
+      svc.store.getTransactionsForBlock = async (...args) => {
+        const rows = await originals[i]!(...args);
+        preflightReaders++;
+        if (preflightReaders === 2) releasePreflights();
+        await bothPreflights;
+        return rows;
+      };
+    }
+
+    const outcomes = await Promise.allSettled([
+      a.syncOnce({ maxBlocks: 1 }), b.syncOnce({ maxBlocks: 1 }),
+    ]);
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    const rejected = outcomes.find((outcome) => outcome.status === "rejected") as
+      PromiseRejectedResult | undefined;
+    expect(String(rejected?.reason)).toMatch(/database ingest lock|different contents/);
+
+    // The surviving archive must be one COMPLETE candidate, never a position-by-position mixture.
+    const stored = await sql<{ position: number; tx_hash: Buffer }[]>`
+      SELECT position, tx_hash FROM ${sql(schema)}.transactions
+      WHERE net = ${NET} AND block_height = 0 ORDER BY position
+    `;
+    const got = stored.map((row) => row.tx_hash.toString("hex"));
+    expect([left[0]!.txHashes, right[0]!.txHashes]).toContainEqual(got);
+    expect(got).toHaveLength(2);
   }, 60_000);
 
   it("Fix 3 (syncOnce-level consequence): a malformed node-reported block number surfaces a typed error from syncOnce instead of silently no-oping with a reported success", async () => {

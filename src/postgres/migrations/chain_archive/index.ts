@@ -28,12 +28,8 @@ import type { Migration } from "../../migrate.js";
  * `RunMigrationsOptions.migrations` for the other half (letting a caller select this lineage
  * instead of the default one).
  *
- * **Not wired into any executing path.** Nothing in this repo's application code imports this
- * array and calls `runMigrations(sql, { schema: "chain_archive", migrations:
- * chainArchiveMigrations })` — it is exported for the same reason `005_chain_archive.ts` used
- * to sit unregistered in the migrations directory: a genuine, syntactically-correct migration
- * lineage, design-stage only, gated on design-council ratification before any real wiring or
- * live apply.
+ * `chain-archive-sync/bootstrap.ts` is the executing path: the packaged archive-sync CLI invokes
+ * it before ingest, and integration tests exercise the same bootstrap against real PostgreSQL.
  */
 export const chainArchiveMigrations: Migration[] = [
   migration000,
@@ -59,3 +55,7 @@ export const chainArchiveMigrations: Migration[] = [
 // now includes `tag` (and no longer includes `first_seen_height`) — see
 // `001_chain_archive_core.ts`'s own header comment and the design doc's "Revision history — v4"
 // note for the full reasoning.
+//
+// Sprint 9 notes: 002 re-keys transactions on position; 003 persists runtime metadata; 004-006
+// define replay checkpoints with time/network identity; and 007 forward-fixes the role-removal
+// guard for databases that already recorded the earlier draft migrations.

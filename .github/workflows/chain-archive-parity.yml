@@ -56,7 +56,7 @@ jobs:
           set -euo pipefail
           version="$(node -e "console.log(JSON.parse(require('fs').readFileSync('node_modules/@midnight-ntwrk/ledger-v8/package.json','utf8')).version)")"
           echo "resolved ledger: $version"
-          test "$version" = "8.1.0-syshash.3"
+          test "$version" = "8.1.0-syshash.4"
 
       # The hostports overlay is REQUIRED here, not optional. The base compose file deliberately
       # publishes nothing so several stacks can share a machine, which means that without the
@@ -67,15 +67,7 @@ jobs:
       # bytes would otherwise make this job compare against something other than what it claims,
       # and report success either way.
       - name: Verify compose images are digest-pinned
-        run: |
-          set -euo pipefail
-          unpinned=$(grep -E "^\s*image: '" test/compose/docker-compose.yml | grep -v "sha256:" || true)
-          if [ -n "$unpinned" ]; then
-            echo "these compose images are not digest-pinned:" >&2
-            echo "$unpinned" >&2
-            exit 1
-          fi
-          echo "all compose images are digest-pinned"
+        run: test/ci/compose-image-pins.sh
 
       - name: Start the Midnight stack
         working-directory: test/compose
@@ -102,22 +94,22 @@ jobs:
           docker compose -f test/compose/docker-compose.yml logs --tail 50 >&2 || true
           exit 1
 
-      # The indexer must have indexed something before it can be an oracle. An indexer at height 0
-      # would make the comparison vacuous rather than wrong, which is the failure this whole
-      # workflow exists to prevent.
-      - name: Wait for the indexer to index blocks
+      # Both live gates need a non-vacuous range. The node-only replay test requests exactly 40
+      # blocks, so height 10 is no longer a sufficient readiness signal: it launches the test on a
+      # healthy but too-young chain and fails on fixture age rather than archive behavior.
+      - name: Wait for the 40-block live range
         run: |
           set -euo pipefail
           for i in $(seq 1 60); do
             height=$(curl -s -m 5 -X POST http://127.0.0.1:19088/api/v3/graphql \
               -H 'Content-Type: application/json' \
               -d '{"query":"{ block { height } }"}' | sed -n 's/.*"height":\([0-9]*\).*/\1/p')
-            if [ -n "${height:-}" ] && [ "$height" -ge 10 ]; then
+            if [ -n "${height:-}" ] && [ "$height" -ge 40 ]; then
               echo "indexer at height $height"; exit 0
             fi
             sleep 5
           done
-          echo "indexer did not reach height 10" >&2
+          echo "indexer did not reach height 40" >&2
           exit 1
 
       - name: Source-parity and node-only gates (required, never skipped)

@@ -1,5 +1,11 @@
 # Design — Sprint 9: Indexer Independence
 
+> **Current-status note (2026-08-15):** this design records the source-substitution decisions and
+> their evolution. Audit-driven safety machinery now includes migrations 002–007, finalized-only
+> serialized writes, replay checkpoints and per-block committed ledger-root checks. Use the
+> task/plan §§15–19 registers for implementation disposition; historical intermediate refusals
+> below are not current capability limits.
+
 Companion to `proposal.md`. This document decides *how* an UmbraDB-sourced primitive feed is
 built, how it is proved equivalent to the indexer-sourced one, and what is deliberately left open.
 

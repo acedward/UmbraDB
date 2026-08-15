@@ -1,5 +1,10 @@
 # Scope split: Part A / Part B — plan update and commit changes
 
+> **SUPERSEDED scope snapshot (2026-08-15).** The owner subsequently approved the minimal Part-A
+> safety migrations: transaction re-keying, runtime metadata, replay checkpoints and forward role
+> guards (002–007). The “no migrations” mechanical test below is historical and must not be used
+> against the final branch. Current scope and evidence are in the task/plan §§15–19 registers.
+
 **For the reviewer.** History on both branches was rewritten on 2026-08-07 to enforce a scope
 boundary the owner set. Commit SHAs quoted in earlier reviews no longer resolve. This document
 maps old to new, states what moved and why, and records what each branch now contains.

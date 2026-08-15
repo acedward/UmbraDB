@@ -3,13 +3,19 @@
 This file is the sprint's only checkbox/status authority. Every phase closes only after its
 specified persona review passes or all findings are fixed and re-reviewed (`AGENTS.md`).
 
-**Scope boundary (owner, 2026-08-07):** Part A is ONLY reading from the node instead of the
+**Current status (2026-08-15):** the early phase checklists below are retained as chronological
+evidence. Their then-current BLOCK/open prose is superseded by §§11–13: T1–T8 are settled,
+O1–O5 are remediated, and §13.6 remains the independent final PASS×3 gate.
+
+**Initial scope boundary (owner, 2026-08-07; historical):** Part A is ONLY reading from the node instead of the
 indexer — it adds no migrations, columns or views. Everything that STORES new data is Part B, which
 is primarily the contract ledger state. Two commits were moved from A to B to enforce this, which
 also surfaced a duplicate-column collision between two parallel implementations; see
-`scope-split.md` for the old-to-new commit mapping and the resolution.
+`scope-split.md` for the old-to-new commit mapping and the resolution. Later owner decisions
+explicitly approved the narrow safety migrations 002–007; the current schema is summarized in
+`docs/SCHEMA.md` and the final implementation register.
 
-**Status (2026-08-07):** Phases 6.1/6.2 and 6d are implemented and checked below; every other box
+**Historical status (2026-08-07):** Phases 6.1/6.2 and 6d are implemented and checked below; every other box
 is genuinely unchecked. Two independent audits have returned BLOCK on the implementation branch,
 and their findings are being worked through -- see `security-classification.md` for the
 classification issue and its correction. Nothing here has been rubber-stamped; a checked box means
@@ -318,7 +324,8 @@ its own. Ordered; close-out steps apply per stage.
   - `REQUIRE_LIVE_SERVICES=1` turns service-absence skips into failures; verified in both
     directions. New workflow `.github/workflows/chain-archive-parity.yml` provisions the stack
     (with the hostports overlay, which is mandatory there) and waits for the indexer to reach
-    height 10 so the comparison cannot be vacuous. Whole sequence simulated locally end-to-end.
+  height 40 so the required 40-block replay comparison cannot be truncated by a young but healthy
+  stack. Whole sequence simulated locally end-to-end.
   - Removed a test that could never run again (`skipIf(haveSystemHash)` in the node-only suite);
     its coverage lives in the refusal suite that actually executes. That suite now has no skips.
   - §7 gains an evidence-type column: live parity vs mechanism-equivalence vs not-demonstrated.
@@ -343,16 +350,15 @@ its own. Ordered; close-out steps apply per stage.
 Per-stage close-out, every stage: update this file, re-run `graphify update .` and commit
 `graphify-out/`, and append any ledger findings to the plan's §10.3 log, dated.
 
-> **Outstanding — the graph is stale and cannot be refreshed on this machine.**
+> **Historical Stage-0 note — resolved for the final close-out.**
 > `graphify-out/graph.json`'s `built_at_commit` is `afe5c11`; Stage 0 advanced HEAD past it, so
 > per CLAUDE.md's freshness gate any review manifest computed from it is **void** until refreshed.
-> The pinned command `uvx --from graphifyy==0.9.24 graphify update .` cannot run here: `uv`,
+> At that stage the pinned command `uvx --from graphifyy==0.9.24 graphify update .` could not run here: `uv`,
 > `uvx`, `pipx` and `pip3` are all absent, and `python3 -m venv` fails because `ensurepip` is not
 > installed (`apt install python3.12-venv`, which needs sudo). Not worked around, because a
 > different graphify version would produce outputs inconsistent with the pinned pipeline.
-> **Needs one of:** installing `uv`, or `apt install python3.12-venv`, or running the refresh from
-> a machine that already has the toolchain. Plan §11.1's prerequisite list omits this dependency
-> and should gain it.
+> `uv`/`uvx` are now installed at `/home/eddie/.local/bin`; O5 uses the pinned 0.9.24 invocation
+> exactly once after all other repository edits. The final result is recorded in §13/plan §19.
 
 ## 9. Audit round 2 remediation (plan §14) — gates PR #1
 
@@ -587,7 +593,7 @@ Recorded here so they are not silently absorbed:
       excludes ignored build output, checkout-local dependencies, and environment overrides;
       GitHub parity independently exercises the committed workflow/version pin rather than the
       local command path. This evidence supports—but does not pre-judge—the independent 11.9 audit.
-- [ ] 11.9 Re-audit §17 scope; then O1–O5; then final PASS×3
+- [ ] 11.9 Final PASS×3 (the §17 re-audit and §13 O1–O5 remediation that precede it are complete)
 
 ## 12. Round-5 re-audit outcome (plan §18)
 
@@ -600,16 +606,31 @@ Recorded here so they are not silently absorbed:
       `ebe6aa53271c7465a67bae0150f7ac4d85200de9`: native 7/7, vendored 7/7, and the exact R5-1
       scratch mutant passes only `read_time` while `compute_time`, `block_usage`, `bytes_written`,
       and `bytes_churned` each fail. The scratch mutant was reverted and removed
-- [x] 12.2 R5-1 re-audit: **PASS** (2026-08-15). Remaining: O1–O5 (§13 below), then final PASS×3
+- [x] 12.2 R5-1 re-audit: **PASS** (2026-08-15). §13 O1–O5 are now remediated; only final
+      PASS×3 remains
 
 ## 13. O1–O5 — the last merge gate before final PASS×3
 
-- [ ] 13.1 O1: D-parameter continuity across restarts (stop/restart across a change boundary; the
-      observation sequence must be unchanged)
-- [ ] 13.2 O2: historical conflict detection — add locking/serialization so two ingesters racing
-      one height cannot both pass; also carries T5a's contract note (finalized-only writer)
-- [ ] 13.3 O3: state-root checks in replay — compare replayed ledger state against the per-block
-      root the node commits (see pallet_midnight's post_block_update state_root)
-- [ ] 13.4 O4: image-pin grep hardening (must fail on unquoted/indented unpinned `image:` lines)
-- [ ] 13.5 O5: status docs + dependency inventory current at final head; graphify regenerated
+- [x] 13.1 O1: D-parameter continuity across restarts. The regression stops exactly after a
+      changed observation, resumes from the watermark, and requires byte-identical ordered output
+      to an uninterrupted run. Removing durable cursor hydration duplicates the next observation;
+      placing the restart away from the boundary would not detect that mutant.
+- [x] 13.2 O2: historical conflict detection. `putBlockBundle` serializes `(net,height)` with a
+      transaction-scoped Postgres advisory lock and rechecks the stored history under the lock;
+      the T5a contract remains finalized-only. Two services racing incompatible histories yield
+      one complete winner and one refusal, and a separate DB session observes the lock. Removing
+      the lock/recheck, or replacing it with a process-local mutex, fails those controls.
+- [x] 13.3 O3: replay compares its serialized ledger typed key with historical
+      `midnight_ledgerStateRoot` before every block write, starting from the chain-spec genesis
+      snapshot and verified runtime network. A non-checkpoint mismatch refuses pre-write and
+      same-service retry succeeds; a deliberately different header trie root prevents a wrong-root
+      implementation from passing. A digest-pinned node agreed across exactly 40 blocks.
+- [x] 13.4 O4: image-pin verification parses `docker compose config --images`; an
+      unquoted/indented `image: alpine:latest` fixture fails while all five resolved production
+      images pass. The old quoted-line grep accepts the bad fixture; a reject-everything check fails
+      the production counterweight.
+- [x] 13.5 O5: current status/dependency/image/provenance docs are reconciled, and the close-out
+      stages the pinned `graphifyy==0.9.24` update as the one final content-generating operation.
+      Freshness requires `built_at_commit` to equal the immediately preceding authored-doc commit;
+      machine-local `.graphify_python`/`.graphify_root` files are excluded.
 - [ ] 13.6 Final PASS×3 on the head integrated with current `main`; merge PR #1

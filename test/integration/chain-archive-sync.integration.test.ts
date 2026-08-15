@@ -180,8 +180,8 @@ describe.skipIf(!up)("ChainArchiveSyncService against the live local devnet (rea
    * **Correction (Sol-audit fix round, Finding 1)**: an earlier version of this block claimed
    * the semantic decode of these bytes was "genuinely blocked -- no existing pure-JS/TS decoder
    * ... and no pre-built WASM bindings available in this environment." That claim was FALSE:
-   * the sibling `midnight-wallet` checkout ships a built `@midnight-ntwrk/ledger-v8` WASM
-   * package that decodes these exact payloads (independently proven by review: the design doc's
+   * the installed vendored `@midnight-ntwrk/ledger-v8` WASM decodes these exact payloads
+   * (independently proven by review: the design doc's
    * genesis sample decodes to `DistributeReserve(1000000000000000)`, and real regular
    * transactions expose their zswap outputs, unshielded outputs, and dust actions). The real
    * semantic decode -- reconstructed zswap/unshielded/dust events from archived bytes,

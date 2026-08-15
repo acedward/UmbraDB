@@ -170,6 +170,7 @@ export const ledgerstate_closeBlock: (a: number, b: any, c: any) => [number, num
 export const ledgerstate_deserialize: (a: any) => [number, number, number];
 export const ledgerstate_dust: (a: number) => number;
 export const ledgerstate_index: (a: number, b: number, c: number) => [number, number, number];
+export const ledgerstate_ledgerStateRoot: (a: number) => [number, number, number];
 export const ledgerstate_locked_pool: (a: number) => any;
 export const ledgerstate_new: (a: number, b: number, c: number) => number;
 export const ledgerstate_parameters: (a: number) => number;

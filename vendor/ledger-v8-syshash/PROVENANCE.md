@@ -1,11 +1,11 @@
-# `@midnight-ntwrk/ledger-v8` @ 8.1.0-syshash.3 — vendored build
+# `@midnight-ntwrk/ledger-v8` @ 8.1.0-syshash.4 — vendored build
 
 This directory is a **built** `ledger-wasm` package, committed as binary. It is the ledger UmbraDB
 loads at runtime, replacing the published `@midnight-ntwrk/ledger-v8@8.0.3`.
 
 ## Why it exists
 
-The published package is missing four things a node-only consumer needs to reproduce a block.
+The published package is missing five things a node-only consumer needs to reproduce a block.
 
 **`SystemTransaction.transactionHash()`.** The method exists on the Rust ledger and the reference
 indexer calls it directly to key the system transactions it archives, but the `wasm-bindgen`
@@ -43,6 +43,13 @@ ledger state by as much as 318 raw Q64 units in the audited vector. This atomic 
 clamp, normalization, max-of-five-dimensions, and `post_block_update` entirely in Rust. Only the
 raw integer `SyntheticCost` enters from JavaScript; no `FixedPoint` value leaves Rust.
 
+**`LedgerState.ledgerStateRoot()`.** Applying transactions without comparing the resulting state
+only proves that the ledger accepted the bytes; it does not prove replay reached the state the
+chain committed. Node 1.0 stores the untagged serialized typed arena key returned after
+`post_block_update` and exposes it historically through `midnight_ledgerStateRoot(at)`. This
+binding serializes the identical `Sp<LedgerState>::as_typed_key()` representation so ingest can
+refuse a mismatched block before writing it.
+
 These are being upstreamed separately (see the sprint plan's §10); when they ship in a published
 release, **this directory is deleted** and `package.json` points at the published version again.
 
@@ -52,13 +59,15 @@ release, **this directory is deleted** and `package.json` points at the publishe
 |---|---|
 | Repository | `git@github.com:acedward/midnight-ledger.git` |
 | Branch | `feat/expose-system-transaction-hash` |
-| Commit | `6aa21d1b637c8307a1e83a887160b4bd28c05e22` |
+| Source commit | `6aa21d1b637c8307a1e83a887160b4bd28c05e22` |
+| Applied source patch | `SOURCE-ledger-state-root.patch` (SHA-256 pinned in `SHA256SUMS`) |
 | Base | ledger 8.1.0 (`d89e0b6`, the reference `midnight-reference-mainnet/v1.0.0` checkout) |
 | Built with | `wasm-pack 0.15.0`, `rustc 1.93.0 (254b59607 2026-01-19)`, `--target bundler` |
 | Post-build | snippet-directory rewrite + `#self` Node import mapping (see the sprint plan's §8) |
 
-The only source differences from the 8.1.0 base are the added exports, their `.d.ts`
-declarations, and native-oracle verification fixtures.
+The source tree was checked out at the exact source commit above, then the committed root-export
+patch was applied before building. The only source differences from the 8.1.0 base are the five
+added exports, their generated declarations, and native-oracle verification fixtures.
 
 ## What guarantees this artifact is correct
 
@@ -68,7 +77,7 @@ declarations, and native-oracle verification fixtures.
 rebuild can attest these exact bytes, and these exact bytes cannot be regenerated. That is
 precisely why the artifact is committed rather than rebuilt on demand.
 
-(The current bytes hash `4dbab3c953225eccc7ed856505ca0099bf1c92a3d24007238322e8a5aded194f`.
+(The current bytes hash `2c3cec6c404ad25e6983e0a5f0287d8c1845b3b19341d53dcdf9f3d548032080`.
 That differs from the 2026-08-08 pair because the source differs — it is not a further
 reproducibility measurement.)
 
@@ -97,6 +106,13 @@ trap in which actual and expected state shared the rounded binding and the per-d
 coverage gap. The five test-only additions were assembled at ledger-fork
 `ebe6aa53271c7465a67bae0150f7ac4d85200de9`; they do not alter the artifact source commit or bytes.
 
+The ledger-root export has a structural native-Rust oracle in the committed patch: for an actual
+`LedgerState<InMemoryDB>`, it independently constructs `Sp::new(state.clone()).as_typed_key()`,
+serializes that key, and requires the helper to return byte-identical output. This rejects tagged
+state serialization, full-state bytes, and the unrelated Substrate header root. UmbraDB then
+checks the built WASM against a digest-pinned node 1.0.0: the node's historical custom roots agree
+for a 40-block live replay, while a synthetic non-checkpoint mismatch is refused before writes.
+
 ## Verifying this directory
 
 Integrity of the committed files:
@@ -123,10 +139,10 @@ Atomic close behaviour, against committed native-Rust state hashes:
 ./node_modules/.bin/tsx /home/eddie/midnight-ledger-fork/ledger-wasm/verification/verify-close-block.mts "$PWD/vendor/ledger-v8-syshash/midnight_ledger_wasm_fs.js"
 ```
 
-All three take an **absolute** path: the argument is passed to `import()`, which resolves a relative
+All three scripts take an **absolute** path: the argument is passed to `import()`, which resolves a relative
 specifier against the script's own location rather than the working directory.
 
-Equivalent assertions for all three behaviours run in CI against the installed vendored package.
+Equivalent assertions for all four behaviour groups run in CI against the installed vendored package.
 The standalone ground-truth scripts live in the ledger fork alongside the source; the independent
 close hashes are also copied into UmbraDB's test fixtures.
 
@@ -138,5 +154,5 @@ known-vector check above, not with `sha256sum` against this directory.
 Bumping this directory **must** bump `LEDGER_STATE_VERSION` in `chain-archive-sync/sync-service.ts`.
 Checkpoints store serialized ledger state, which is a ledger-internal encoding; resuming one under
 a build that reads it differently produces wrong replay outcomes rather than an error. This build
-is `ledger-v8@8.1.0-syshash.3`, which invalidates checkpoints written by `…syshash.1` and
-`…syshash.2`.
+is `ledger-v8@8.1.0-syshash.4`, which invalidates checkpoints written by `…syshash.1`,
+`…syshash.2`, and `…syshash.3`.

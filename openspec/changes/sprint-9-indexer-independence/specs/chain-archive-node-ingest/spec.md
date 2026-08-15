@@ -66,11 +66,12 @@ The runtime describes its own numbering, so that precondition is gone; the pinne
 only as a cross-check, and a disagreement between two independent sources still halts, because one
 of them would make genuine transactions vanish.*
 
-#### Scenario: a supported ledger version with unverified call numbering is still refused
+#### Scenario: a supported ledger version without a pinned call-number counterweight is decoded
 
 - **WHEN** a block's protocol version has a supported ledger codec but no verified call-index
   mapping
-- **THEN** the system SHALL halt with an error identifying what is missing
+- **THEN** the system SHALL use that block's runtime metadata rather than refuse solely because a
+  redundant pinned counterweight is absent
 
 #### Scenario: the gate does not affect indexer-sourced ingest
 
@@ -201,3 +202,68 @@ because every such claim becomes unfalsifiable once the indexer is retired (`pro
 
 - **WHEN** a fixture is captured
 - **THEN** it SHALL record the indexer version, the network, and the block range it came from
+
+### Requirement: D-parameter change observations are restart-stable
+
+The system SHALL derive the next D-parameter observation from durable finalized/canonical history
+at or below the sync watermark, so process lifetime does not change the ordered observation stream.
+
+#### Scenario: restart directly across a change boundary
+
+- **WHEN** one run stops immediately after persisting a D-parameter change and a new service
+  resumes from that watermark
+- **THEN** the complete ordered observation identities and raw bytes SHALL be byte-identical to an
+  uninterrupted run over the same blocks
+- **AND** the first unchanged value after restart SHALL NOT be emitted again
+
+### Requirement: finalized block bundles are serialized across writers
+
+The finalized-only sync writer SHALL serialize comparison and persistence for each `(net,height)`
+inside Postgres. It SHALL re-evaluate the finalized canonical hash and ordered
+`(position,tx_hash,kind)` history while holding that guard.
+
+#### Scenario: two services race incompatible histories at one height
+
+- **WHEN** two independent service instances both pass stale preflight reads for the same
+  `(net,height)` but propose incompatible transaction histories
+- **THEN** exactly one complete bundle SHALL persist
+- **AND** the other service SHALL refuse rather than interleave rows or report incompatible success
+
+#### Scenario: two services race an identical bundle
+
+- **WHEN** both services propose the same finalized canonical block and identical ordered history
+- **THEN** one write and the other's idempotent agreement SHALL be permitted
+
+### Requirement: replay is checked against the chain-committed ledger state root
+
+WHERE replay validation is enabled, the system SHALL initialize block 0 from the chain
+specification's serialized `genesis_state`, verify the configured ledger network against the
+runtime, and compare the replayed `LedgerState` typed arena key with historical
+`midnight_ledgerStateRoot(at)` after every block and during checkpoint catch-up. The Substrate
+header state trie root SHALL NOT be substituted for this ledger root.
+
+#### Scenario: a non-checkpoint block root mismatches
+
+- **WHEN** replay accepts and closes a non-checkpoint block but its ledger arena key differs from
+  the root committed by the node at that block hash
+- **THEN** ingest SHALL refuse before writing the block, checkpoint or watermark
+- **AND** the speculative replay state SHALL be discarded so the same service can retry
+
+#### Scenario: genesis body is not an execution log
+
+- **WHEN** the node's genesis builder installs chain-spec storage and embeds genesis extrinsics
+  without executing them
+- **THEN** replay SHALL deserialize `system_properties.genesis_state`
+- **AND** SHALL NOT apply block 0's embedded transactions a second time
+
+### Requirement: Compose image pin enforcement examines the resolved model
+
+The parity workflow SHALL reject every resolved Compose image reference that does not end in an
+immutable lowercase SHA-256 digest, independent of YAML quoting, indentation, anchors or
+interpolation.
+
+#### Scenario: unquoted and indented mutable image
+
+- **WHEN** a Compose fixture contains an unquoted, indented `image: alpine:latest` declaration
+- **THEN** the pin gate SHALL fail
+- **AND** the same gate SHALL pass the repository's fully digest-pinned Compose stack

@@ -1416,15 +1416,15 @@ export function runProgram(initial, ops, cost_model, gas_limit) {
     return VmResults.__wrap(ret[0]);
 }
 
-function __wbg_adapter_8(arg0, arg1, arg2) {
+function __wbg_adapter_18(arg0, arg1, arg2) {
     wasm.closure3856_externref_shim(arg0, arg1, arg2);
 }
 
-function __wbg_adapter_811(arg0, arg1, arg2, arg3) {
+function __wbg_adapter_812(arg0, arg1, arg2, arg3) {
     wasm.closure3900_externref_shim(arg0, arg1, arg2, arg3);
 }
 
-function __wbg_adapter_906(arg0, arg1, arg2, arg3, arg4) {
+function __wbg_adapter_907(arg0, arg1, arg2, arg3, arg4) {
     wasm.closure3898_externref_shim(arg0, arg1, arg2, arg3, arg4);
 }
 
@@ -5256,6 +5256,18 @@ export class LedgerState {
     get blockRewardPool() {
         const ret = wasm.ledgerstate_block_reward_pool(this.__wbg_ptr);
         return ret;
+    }
+    /**
+     * Returns the same untagged typed arena key that the node exposes through
+     * `midnight_ledgerStateRoot` for the post-block ledger state.
+     * @returns {Uint8Array}
+     */
+    ledgerStateRoot() {
+        const ret = wasm.ledgerstate_ledgerStateRoot(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * @param {Date} tblock
@@ -9998,7 +10010,7 @@ export function __wbg_forEach_48feffedd75c5b94(arg0, arg1, arg2) {
             const a = state0.a;
             state0.a = 0;
             try {
-                return __wbg_adapter_906(a, state0.b, arg0, arg1, arg2);
+                return __wbg_adapter_907(a, state0.b, arg0, arg1, arg2);
             } finally {
                 state0.a = a;
             }
@@ -10016,7 +10028,7 @@ export function __wbg_forEach_859dfd887a0f866c(arg0, arg1, arg2) {
             const a = state0.a;
             state0.a = 0;
             try {
-                return __wbg_adapter_811(a, state0.b, arg0, arg1);
+                return __wbg_adapter_812(a, state0.b, arg0, arg1);
             } finally {
                 state0.a = a;
             }
@@ -10214,7 +10226,7 @@ export function __wbg_new_2e3c58a15f39f5f9(arg0, arg1) {
             const a = state0.a;
             state0.a = 0;
             try {
-                return __wbg_adapter_811(a, state0.b, arg0, arg1);
+                return __wbg_adapter_812(a, state0.b, arg0, arg1);
             } finally {
                 state0.a = a;
             }
@@ -10663,7 +10675,7 @@ export function __wbindgen_cast_e7b45dd881f38ce3(arg0, arg1) {
 
 export function __wbindgen_cast_ebdc0a010724de78(arg0, arg1) {
     // Cast intrinsic for `Closure(Closure { dtor_idx: 3855, function: Function { arguments: [Externref], shim_idx: 3856, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-    const ret = makeMutClosure(arg0, arg1, 3855, __wbg_adapter_8);
+    const ret = makeMutClosure(arg0, arg1, 3855, __wbg_adapter_18);
     return ret;
 };
 

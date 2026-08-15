@@ -44,7 +44,7 @@ import { afterAll, describe, expect, it } from "vitest";
  * whole-program import-graph analysis), and fully runtime-constructed specifiers (env vars,
  * user input). Rule (c) still catches any of these the moment the imported class is referenced
  * by name. Note the legitimate computed import that DOES exist in this repo --
- * `chain-archive-sync/tx-replay-decoder.ts`'s sibling-checkout ledger loader -- lives outside
+   * `chain-archive-sync/tx-replay-decoder.ts`'s ledger loader -- lives outside
  * `src/` and imports the wallet checkout, not `chain-archive-sync`, so it is rightly out of
  * this guard's scope in both dimensions.
  */

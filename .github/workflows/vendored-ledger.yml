@@ -14,13 +14,14 @@ concurrency:
   group: vendored-ledger-${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
-# `vendor/ledger-v8-syshash` is a committed binary build of the Midnight ledger WASM, carrying four
+# `vendor/ledger-v8-syshash` is a committed binary build of the Midnight ledger WASM, carrying five
 # exports the published package lacks: `SystemTransaction.transactionHash()`, without which
 # node-only ingest cannot archive system transactions at all; `SystemTransaction.cost()`, without
 # which it cannot cost them, and so records genesis -- which is nothing but system transactions --
 # as having zero fullness; and `LedgerParameters.clampAndNormalizeFullness()`, without which an
 # overfull block throws where the node reports it as full; and `LedgerState.closeBlock()`, which
-# keeps exact Q64 block-close math inside Rust. Its correctness is load-bearing for the archive.
+# keeps exact Q64 block-close math inside Rust; and `LedgerState.ledgerStateRoot()`, which emits the
+# node-comparable committed ledger root. Its correctness is load-bearing for the archive.
 #
 # This gate deliberately does NOT rebuild and compare bytes. The build is not bit-reproducible:
 # the same commit, `wasm-pack 0.15.0` and `rustc 1.93.0` produce a different `.wasm` hash on each
@@ -60,7 +61,7 @@ jobs:
           set -euo pipefail
           version="$(node -e "console.log(JSON.parse(require('fs').readFileSync('node_modules/@midnight-ntwrk/ledger-v8/package.json','utf8')).version)")"
           echo "resolved ledger version: $version"
-          test "$version" = "8.1.0-syshash.3"
+          test "$version" = "8.1.0-syshash.4"
 
       # Layer 2, the meaningful one: behavioural equivalence with an INDEPENDENT implementation.
       # The five system transactions of a 1.0.0 devnet genesis block, as archived by
@@ -93,6 +94,7 @@ jobs:
               'SystemTransaction.cost': typeof m.SystemTransaction?.prototype?.cost === 'function',
               'LedgerParameters.clampAndNormalizeFullness': typeof m.LedgerParameters?.prototype?.clampAndNormalizeFullness === 'function',
               'LedgerState.closeBlock': typeof m.LedgerState?.prototype?.closeBlock === 'function',
+              'LedgerState.ledgerStateRoot': typeof m.LedgerState?.prototype?.ledgerStateRoot === 'function',
             };
             let ok = true;
             for (const [name, present] of Object.entries(checks)) {

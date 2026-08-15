@@ -11,10 +11,10 @@ import { StorageError } from "./storage-errors.js";
  * that talks to a Midnight node/indexer lives entirely outside `src/` (`chain-archive-sync/`,
  * AC-7) and depends on THIS interface, never on the Postgres implementation's internals.
  *
- * Deliberately narrower than the full `chain_archive` schema: `bridge_observations` and
- * `verifier_key_observations` get minimal write-only support (a "stub/initial pass" per the
- * implementation task) since this devnet's ingestion of those categories is genuinely a first
- * pass, not a fully round-tripped read/query surface yet.
+ * Deliberately narrower than the full `chain_archive` schema: `verifier_key_observations` keeps
+ * minimal write-only support (a "stub/initial pass" per the implementation task), while bridge
+ * observations expose only the one latest-by-kind read needed to restore change-detection state
+ * after a sync-service restart. This is not a general bridge query surface.
  */
 
 /** Lowercase 64-char hex encoding of a 32-byte hash -- every hash column in this schema
@@ -110,6 +110,17 @@ export interface BridgeObservationRecord {
   rawBytes: Uint8Array;
 }
 
+/** Metadata projection of a bridge observation. Raw bytes retain the archive's normal
+ * metadata/blob split and are read through {@link ChainArchiveStore.getBlob}. */
+export interface BridgeObservationMeta {
+  net: string;
+  blockHeight: number;
+  blockHash: Hex32;
+  observationIndex: number;
+  kind: BridgeObservationKind;
+  rawBlobHash: Hex32;
+}
+
 /** Everything one call to `putBlockBundle` needs to ingest a single block atomically: the block
  *  row itself plus every transaction/bridge-observation row that belongs to it. `transactions`/
  *  `bridgeObservations` may be empty (e.g. a block with no `pallet_midnight` transactions, or no
@@ -183,9 +194,11 @@ export class BlockNotFoundError extends ChainArchiveError {
  * aware where the schema itself is (blob puts are naturally idempotent by content address) AND,
  * as of the sprint-fix round below, `putBlock`/`putTransactions`/`putBridgeObservations`/
  * `putBlockBundle` are now ALSO idempotent against a byte-for-byte-identical re-ingest of the
- * SAME (net, height, blockHash) row: their terminal `INSERT`s use `ON CONFLICT ... DO NOTHING`
- * on the table's own primary key, so retrying an ingest that already durably committed is a
- * silent no-op rather than a duplicate-key error. This does NOT remove the need for a watermark
+ * SAME primary-keyed rows: their terminal `INSERT`s use `ON CONFLICT ... DO NOTHING`, so retrying
+ * an ingest that already durably committed is a silent no-op rather than a duplicate-key error.
+ * Only `putBlockBundle` additionally serializes and rejects incompatible history; standalone
+ * batch methods are low-level primitives and must not be used as a multi-writer ingest protocol.
+ * This does NOT remove the need for a watermark
  * (callers driving an at-least-once sync loop still must track "last successfully ingested
  * height," exactly like every other sync consumer in this codebase,
  * `src/interfaces/watermarks.ts`) -- it removes the failure mode where retrying the SAME height
@@ -207,13 +220,21 @@ export interface ChainArchiveStore {
   /** Writes each transaction's raw bytes into `chain_blobs`/`chain_blob_roles` (role `tx_raw`)
    *  plus its `transactions` row, one insert per element, inside one transaction covering the
    *  whole batch (so a partial block's transaction set never becomes visible on failure). Each
-   *  transaction's insert is `ON CONFLICT (net, block_height, block_hash, tx_hash) DO NOTHING` --
+   *  transaction's insert is `ON CONFLICT (net, block_height, block_hash, position) DO NOTHING` --
    *  re-`putTransactions`-ing an already-committed set (in full or in part) is a safe no-op. */
   putTransactions(txs: readonly TransactionRecord[]): Promise<void>;
 
   /** `ON CONFLICT (net, block_height, block_hash, observation_index) DO NOTHING` on the terminal
    *  insert -- same re-ingest-safety as `putTransactions`. */
   putBridgeObservations(obs: readonly BridgeObservationRecord[]): Promise<void>;
+
+  /** The newest observation of `kind` at or below `maxHeight` on the finalized canonical chain.
+   * Used to restore a change-detection cursor from durable history after process restart, so an
+   * unchanged value immediately after a change boundary is not emitted a second time. The
+   * finalized/canonical qualification matches the sync writer's deliberately narrow contract. */
+  getLatestBridgeObservation(
+    net: string, kind: BridgeObservationKind, maxHeight: number,
+  ): Promise<BridgeObservationMeta | undefined>;
 
   /**
    * Ingests one full block -- `bundle.block`, `bundle.transactions`, and
@@ -230,6 +251,14 @@ export interface ChainArchiveStore {
    * committed (e.g. a crash between this call returning and the caller durably recording its own
    * watermark) is also a safe no-op, not an error -- both the "partial prior attempt" and
    * "fully-committed prior attempt, watermark just hadn't caught up" retry cases are covered.
+   *
+   * Calls are serialized in PostgreSQL by `(net, height)` for the whole transaction. Under that
+   * guard the stored `(position, tx_hash, kind)` sequence is compared again immediately before
+   * writes: a concurrent identical bundle is an idempotent agreement, while a different sequence
+   * is refused. This is a database-level guard, not an in-process mutex, so independent service
+   * processes cannot both pass a stale preflight read and report success for incompatible history.
+   * The production sync writer supplies only finalized canonical blocks; arbitrary, partially
+   * flipped `setCanonical` histories remain outside replay's contract.
    * Returns the same header/body blob hashes `putBlock` would.
    */
   putBlockBundle(bundle: BlockBundle): Promise<{ headerBlobHash: Hex32; bodyBlobHash?: Hex32 }>;

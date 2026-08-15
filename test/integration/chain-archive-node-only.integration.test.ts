@@ -104,13 +104,19 @@ describe.skipIf(skip)("node-only ingest against a real node (no indexer)", () =>
       try {
         const service = new ChainArchiveSyncService({
           sql, net: NET, schema, node: { url: NODE_URL, timeoutMs: 30_000 },
+          replayValidation: true,
+          ledgerNetworkId: "undeployed",
+          replayCheckpointInterval: 1000,
         });
         ingested = (await service.syncOnce({ maxBlocks: 40 })).ingestedBlocks;
       } finally {
         globalThis.fetch = realFetch;
       }
 
-      expect(ingested).toBeGreaterThan(0);
+      // The long-lived oracle node is required to have at least 40 finalized blocks in the final
+      // gate. Requiring the exact requested count keeps a just-started node from turning this into
+      // a genesis-only check while the test name and comment claim a multi-block replay.
+      expect(ingested).toBe(40);
       const indexerCalls = requested.filter((u) => INDEXER_SHAPED.test(u));
       expect(indexerCalls, `unexpected indexer-shaped request(s): ${indexerCalls.join(", ")}`).toEqual([]);
       expect(requested.length).toBeGreaterThan(0);
@@ -130,6 +136,11 @@ describe.skipIf(skip)("node-only ingest against a real node (no indexer)", () =>
           positions.map((_, i) => i),
         );
       }
+
+      // Replay validation now compares every post-block ledger state with the live node's custom
+      // `midnight_ledgerStateRoot` at that historical hash. This 40-block run is the independent
+      // success oracle for the synthetic mismatch fixture: it cannot pass by generating both
+      // sides from the vendored WASM or by comparing the unrelated header state root.
     },
     180_000,
   );

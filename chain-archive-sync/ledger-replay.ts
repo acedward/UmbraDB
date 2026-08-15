@@ -88,8 +88,15 @@ function addCost(into: AccumulatedCost, cost: Record<string, unknown>): void {
 }
 
 export interface ReplayBlockInput {
-  /** In archive position order -- event-borne system transactions first, then extrinsic order. */
-  transactions: readonly { kind: "regular" | "system"; rawBytes: Uint8Array }[];
+  /** In ledger execution order. This may differ from archive position order, which follows the
+   * reference indexer's event-first row contract. */
+  transactions: readonly {
+    kind: "regular" | "system";
+    rawBytes: Uint8Array;
+    /** Timestamp visible in pallet storage when THIS transaction executed. Usually the block's
+     * own time; transactions before `Timestamp::set` (notably genesis) see the parent time. */
+    executionTimestampMs?: number;
+  }[];
   /** Block timestamp in ms (from `Timestamp::set`), including genesis on the target 1.0 node. */
   blockTimestampMs: number;
   parentBlockHashHex: string;
@@ -115,9 +122,9 @@ export class LedgerReplay {
     this.strictness.enforceBalancing = false;
   }
 
-  /** A replay starting from a blank genesis state -- the only valid starting point when no
-   *  checkpoint exists, which is why the archive's genesis-start-only policy is a prerequisite of
-   *  replay rather than a coincidence. */
+  /** Construct a blank state for isolated vectors and synthetic chain generation. Production
+   * replay does not reconstruct block 0 this way: Midnight's genesis builder installs the
+   * serialized `system_properties.genesis_state` snapshot without executing block-0 extrinsics. */
   static fromGenesis(ledger: any, networkId: string): LedgerReplay {
     return new LedgerReplay(ledger, networkId);
   }
@@ -141,7 +148,7 @@ export class LedgerReplay {
   }
 
   /**
-   * Apply one block's transactions in archive order and finalize, mutating the replay state.
+   * Apply one block's transactions in ledger execution order and finalize, mutating replay state.
    *
    * Throws `ReplayRefusalError` where the reference would abort the block; the caller must write
    * nothing durable in that case. Returns each transaction's outcome otherwise -- including
@@ -150,7 +157,7 @@ export class LedgerReplay {
   applyBlock(input: ReplayBlockInput): ReplayOutcome[] {
     // The reference converts ms to whole seconds (`Timestamp::from_secs(ms / 1000)`); flooring
     // before building the Date keeps sub-second parts from leaking into the WASM conversion.
-    const tblock = new Date(Math.floor(input.blockTimestampMs / 1000) * 1000);
+    const closeTime = new Date(Math.floor(input.blockTimestampMs / 1000) * 1000);
     const outcomes: ReplayOutcome[] = [];
 
     // ATOMIC (audit round 3). This used to assign `this.state` after every transaction, so a block
@@ -165,6 +172,8 @@ export class LedgerReplay {
     const blockFullness = zeroCost();
 
     for (const [position, tx] of input.transactions.entries()) {
+      const executionTimestampMs = tx.executionTimestampMs ?? input.blockTimestampMs;
+      const tblock = new Date(Math.floor(executionTimestampMs / 1000) * 1000);
       if (tx.kind === "system") {
         let sysTx: any;
         try {
@@ -216,7 +225,7 @@ export class LedgerReplay {
         throw new ReplayRefusalError(position, "well_formed", cause);
       }
       const cx = new this.ledger.TransactionContext(state, {
-        secondsSinceEpoch: Math.floor(input.blockTimestampMs / 1000),
+        secondsSinceEpoch: Math.floor(executionTimestampMs / 1000),
         secondsSinceEpochErr: 30,
         parentBlockHash: input.parentBlockHashHex.replace(/^0x/, ""),
         lastBlockTime: Math.floor(input.parentBlockTimestampMs / 1000),
@@ -240,7 +249,7 @@ export class LedgerReplay {
     // Passing only raw integer cost is intentional: clamp -> normalize -> max-of-five ->
     // post_block_update stays inside Rust, so exact Q64 FixedPoint values never become JS numbers.
     // The export reads limits from `state`, which is the state AFTER all transactions.
-    state = state.closeBlock(tblock, blockFullness);
+    state = state.closeBlock(closeTime, blockFullness);
     // Commit point: everything above either completed or threw, leaving `this.state` untouched.
     this.state = state;
     this.lastFullness = {
@@ -254,6 +263,18 @@ export class LedgerReplay {
    *  JavaScript would recreate the precision boundary the atomic export exists to remove. */
   get lastBlockFullness(): BlockFullness | undefined {
     return this.lastFullness;
+  }
+
+  /** The node-comparable post-block ledger root: the untagged serialized typed arena key exposed
+   * by `midnight_ledgerStateRoot`, deliberately distinct from the Substrate header state root. */
+  ledgerStateRoot(): Uint8Array {
+    if (typeof this.state?.ledgerStateRoot !== "function") {
+      throw new Error(
+        "the configured ledger build does not expose LedgerState.ledgerStateRoot(); replay can " +
+          "apply transactions but cannot verify the resulting state against the chain commitment",
+      );
+    }
+    return new Uint8Array(this.state.ledgerStateRoot());
   }
 
   /** Serialized state, so a caller can checkpoint replay progress. */

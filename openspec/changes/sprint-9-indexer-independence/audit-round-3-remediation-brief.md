@@ -5,6 +5,10 @@
 > the sprint plan §16 for the verified findings register. The "Fixed in `1d4bb36`" table is a
 > statement of what was attempted, not of current state.
 
+> **Final-round pointer (2026-08-15):** this remains the pinned round-3 audit artifact. T1–T8 are
+> settled in §§17–18 and O1–O5 implementation disposition is now in §19; the open table below is
+> historical and is not the current blocker list.
+
 **Current document for the round-3 attempt; §16 of the sprint plan is the current register.** Supersedes `audit-round-2-remediation-brief.md`, which is retained as history
 and marked accordingly.
 
@@ -26,7 +30,8 @@ Worth stating because it shapes what this re-audit should distrust. Round 2 clos
 with a test **verified to fail when the fix was reverted**. That check is weaker than it looks: it
 proves a test is *connected* to a change, not that the change is right or complete. Two findings
 survived it. Replay's timestamp field was declared, read, and never assigned — invisible because
-genesis genuinely is time 0 and genesis was the only block the replay tests exercised. A3's fix
+the code and synthetic fixture both incorrectly treated genesis as time 0, while the target node
+actually emits `Timestamp::set` there (the later T1 finding). A3's fix
 corrected one `.catch(() => undefined)` and left its twin twelve lines away — invisible because the
 test exercised only the first call site. **A test whose fixture cannot express the failure proves
 nothing about it.** A1 is the one blocker that held, and it is also the one where the failure modes
@@ -60,16 +65,17 @@ years and otherwise looks correct.
 
 ---
 
-## Still open — please treat as known, not as findings to re-report
+## Still open at the round-3 head — historical, not current status
 
 Listed so this re-audit spends its attention on whether R1–R8 are *actually* fixed, rather than
-rediscovering these.
+rediscovering these. This table is pinned to the round-3 head; §19 records the final-round
+disposition.
 
 | # | Open finding | Status |
 |---|---|---|
 | O1 | **D-parameter continuity breaks across restarts** | Not started |
 | O2 | **Historical conflict detection incomplete and racy** | Not started. The current check compares `(position, tx_hash, kind)` against stored rows with no locking, so two ingesters racing one height can both pass it |
-| O3 | **No state-root checks** in replay — replayed state is never compared against the block header's root | Not started |
+| O3 | **No state-root checks** in replay — replayed state is never compared against the chain-committed Midnight ledger root | Not started |
 | O4 | **Image-pin enforcement bypassable** — the CI grep matches quoted `image:` lines only | Not started |
 | O5 | **Status docs, dependency inventory and Graphify stale** | Partially: this brief and the round-2 brief's superseded marker are current as of `1d4bb36`; the sprint plan's §12 register, the dependency inventory and Graphify are not |
 

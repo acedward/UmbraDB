@@ -1,5 +1,10 @@
 # Plan: finish replacing the indexer with the node as the archive ingest source
 
+> **Current status (2026-08-15):** the revision-7 BLOCK statement and the staged/open tables below
+> are preserved as the decision history that produced the implementation; they are not the current
+> delivery verdict. T1–T8 are settled (§18), O1–O5 are remediated (§19), and the only remaining
+> gate is the independent final PASS×3 tracked by `tasks.md` 13.6.
+
 **Revision 7 (2026-08-08).** Revision 6 correctly retracted the claim that node-only ingest has no
 silent gaps. This follow-up incorporates its independent domain, adversarial, and release audit:
 it adds the missing D-parameter invariant, qualifies the current parity test, separates
@@ -7,7 +12,7 @@ dispatch-failed calls from ledger-invalid payloads, targets an actually event-be
 range, and corrects the ledger-override and generated-artifact status. The current branch proves
 only a narrow devnet slice; it is not yet a safe general replacement for the indexer.
 
-> **Current merge verdict: BLOCK.** Part A becomes mergeable only when the node-derived path
+> **Revision-7 merge verdict (historical): BLOCK.** Part A becomes mergeable only when the node-derived path
 > produces the same persisted archive as the indexer for every supported transaction source and
 > framing, or refuses *before any write* whenever that equivalence cannot be established.
 
@@ -17,7 +22,7 @@ must not enter this PR.
 
 ---
 
-## 0. Decisions made by this revision
+## 0. Decisions made by revision 7 (historical; later registers supersede status)
 
 | Question from revision 5 | Decision |
 |---|---|
@@ -1134,8 +1139,9 @@ the plan carries.
 **Why round 2's remediation failed**, since it shapes what to distrust: every round-2 blocker was
 closed with a test verified to fail when the fix was reverted. That proves a test is *connected* to
 a change, not that the change is right or complete. Replay's timestamp field was declared, read and
-never assigned — invisible because genesis genuinely is time 0 and genesis was the only block
-tested. A3's fix corrected one `.catch(() => undefined)` and left its twin twelve lines away —
+never assigned — invisible because the code and synthetic fixture both incorrectly treated
+genesis as time 0; T1 later proved the target node emits `Timestamp::set` there. A3's fix corrected
+one `.catch(() => undefined)` and left its twin twelve lines away —
 invisible because the test exercised only the first site. **A test whose fixture cannot express the
 failure proves nothing about it.**
 
@@ -1303,3 +1309,30 @@ mutant kill (read_time definitionally blind, other four fail independently), and
 of its own choosing (compute_time dropped from the max → the compute vector fails). Artifact
 bytes unchanged from `a6e8772`; genesis vectors 5/5. **T1–T8 are now fully settled. Only O1–O5
 gate merge, then final PASS×3.**
+
+## 19. O1–O5 implementation register (2026-08-15)
+
+This is the current register. §15 preserves each original finding; this section records the
+implementation and the required answer to “what wrong implementation would still pass?” Final
+PASS×3 remains independent task 13.6 and is not claimed here.
+
+| Item | Disposition | Implementation and discriminating evidence |
+|---|---|---|
+| O1 | **REMEDIATED** | A service instance hydrates its D-parameter cursor from the newest finalized/canonical durable observation at or below the watermark before resuming. The restart regression stops exactly after a change observation and compares the complete ordered observation identity plus raw bytes with an uninterrupted run. Restarting away from a boundary would let the bug pass; the fixture places different values on both sides. Removing hydration emitted an extra post-restart observation and failed. |
+| O2 | **REMEDIATED** | `putBlockBundle` takes a transaction-scoped Postgres advisory lock keyed by `(net,height)`, then rechecks the finalized canonical block and stored `(position,tx_hash,kind)` history under that lock before any write. The public contract remains the T5a finalized-only writer. Two real services are forced through stale preflight reads with incompatible two-row histories: one writes and one refuses, never a mixture. A database-session observer proves the application advisory lock is held, so a JS-global mutex would not pass. Removing the lock/recheck let both services fulfill and made the observer acquire the lock. |
+| O3 | **REMEDIATED** | Research found `pallet_midnight::StateKey` exposed historically by `midnight_ledgerStateRoot(at)`, plus `system_properties.genesis_state` and runtime network id. Replay starts from the chain-spec snapshot (node block 0 embeds but does not execute genesis extrinsics), reconstructs execution order, and compares `LedgerState.ledgerStateRoot()` with the committed root before every block write and during checkpoint catch-up. A non-checkpoint mismatch refuses before persistence and discards speculative state for same-service retry. The fixture makes the header trie root different, so comparing the wrong root cannot pass; removing the ledger-root comparison archives the bad height. A digest-pinned 1.0.0 node and a 40-block historical run agreed at every requested height. Vendor provenance pins the minimal root export and its independent native structural oracle. |
+| O4 | **REMEDIATED** | CI now parses `docker compose config --images` and requires every resolved reference to end in lowercase `@sha256:<64 hex>`. The committed negative fixture is indented and unquoted; it fails while the real compose passes. The old quoted-line grep accepts that negative fixture, proving the new test is sensitive to the bypass. |
+| O5 | **REMEDIATED** | Current feature/status docs, source comments, SLSA text, provenance, and the dependency/image inventory are reconciled. The inventory records 18 direct dependencies, 493 lock entries (491 registry entries with integrity plus two local ledger entries), five install-script packages, and five digest-pinned Compose images. The close-out stages pinned `graphifyy==0.9.24` as the one final content-generating operation after this authored state, commits `graphify-out/`, and excludes machine-local `.graphify_python`/`.graphify_root`. A copied/stale graph cannot pass: `built_at_commit` must equal the immediately preceding authored-doc commit. |
+
+No O3 owner escalation remains: the historical root is readable at every tested archive-node
+height, so a checkpoint-only approximation was unnecessary. The archive-node dependency itself is
+unchanged—first ingest of pruned history is impossible because events/runtime state are absent.
+
+**Local final-round gate before Graphify (2026-08-15): PASS.** A required live 1.0 Compose stack
+reached height 104 before the rerun. The complete suite passed 71 files / 658 tests, with 4 files /
+12 tests intentionally environment-gated and zero failures, using `--maxWorkers=2`; this includes
+the exact 40-block historical root comparison. Typecheck, build, warning-as-error TypeDoc, strict
+Sprint-9 OpenSpec validation, all 32 vendor checksums, 6/6 vendored vectors, and package smoke also
+passed. The uniquely named stack was torn down with volumes and orphans. The prior early run's sole
+28-vs-40 failure is retained in the workspace master plan because it found and fixed the CI
+readiness threshold rather than being concealed.
