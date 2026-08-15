@@ -1284,3 +1284,14 @@ Native-Rust oracle lineage as established (`native-close-block-oracles.txt` grow
 rows); re-verify 2→7 both natively and against the vendored artifact. No production code change is
 expected — this is test coverage; if a vector *does* fail, that is a new finding, not a fixture
 problem.
+
+**Round-5.1 implementation complete; R5-1 re-audit requested (2026-08-14).** Ledger-fork
+`ebe6aa53271c7465a67bae0150f7ac4d85200de9` adds the five required independently assembled native
+vectors. Each input has exactly one field at `limit + 1`; after the independent all-field clamp,
+that field is `1.0` and every other field is `0.2`, so it is strictly dominant. Native verification
+passes 7/7, the verifier passes 7/7 against UmbraDB's unchanged vendored artifact, and UmbraDB's
+fixture consumer now pins all seven native hashes plus all seven required-different rounded
+counterweights. The exact scratch mutant from R5-1 passes `read_time` and fails each of
+`compute_time`, `block_usage`, `bytes_written`, and `bytes_churned`; it was then reverted and the
+scratch worktree removed. No production code or vendored artifact changed. Task 12.1 is complete;
+12.2 remains open for the independent R5-1-only verdict.

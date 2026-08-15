@@ -594,7 +594,10 @@ Recorded here so they are not silently absorbed:
 > Re-audit at `a6e8772` (2026-08-14): **BLOCK stands on T4a INCOMPLETE only** — all other §11
 > items PASS with the wrong-implementation question answered by the auditor.
 
-- [ ] 12.1 Five atomic-close vectors, one per cost dimension, each uniquely dominant and
+- [x] 12.1 Five atomic-close vectors, one per cost dimension, each uniquely dominant and
       individually over-limit; native oracle rows 2→7; verify natively and against the vendored
-      artifact (kills the surviving clamp/max mutant)
+      artifact (kills the surviving clamp/max mutant). Closed at ledger-fork
+      `ebe6aa53271c7465a67bae0150f7ac4d85200de9`: native 7/7, vendored 7/7, and the exact R5-1
+      scratch mutant passes only `read_time` while `compute_time`, `block_usage`, `bytes_written`,
+      and `bytes_churned` each fail. The scratch mutant was reverted and removed
 - [ ] 12.2 Re-audit R5-1 closure; then O1–O5; then final PASS×3

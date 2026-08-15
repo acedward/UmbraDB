@@ -32,11 +32,19 @@ const SYSTEM_TXS = FIXTURE.map((f) => ({
   kind: "system" as const,
   rawBytes: new Uint8Array(Buffer.from(f[3]!, "hex")),
 }));
-const [, NATIVE_GENESIS_CLOSE_HASH, ROUNDED_GENESIS_CLOSE_HASH] = readFileSync(
+const CLOSE_ORACLE_ROWS = readFileSync(
   new URL("../fixtures/ledger-vectors/native-close-block-oracles.txt", import.meta.url),
   "utf8",
-).split("\n").find((line) => line.startsWith("genesis-system-transactions "))!
-  .split(/\s+/);
+).split("\n")
+  .map((line) => line.trim())
+  .filter((line) => line !== "" && !line.startsWith("#"));
+const CLOSE_ORACLES = new Map(
+  CLOSE_ORACLE_ROWS.map((line) => {
+    const [label, native, rounded] = line.split(/\s+/);
+    return [label!, { native: native!, rounded: rounded! }] as const;
+  }),
+);
+const GENESIS_CLOSE_ORACLE = CLOSE_ORACLES.get("genesis-system-transactions")!;
 const stateHash = (bytes: Uint8Array): string =>
   createHash("sha256").update(Buffer.from(bytes)).digest("hex");
 
@@ -269,7 +277,7 @@ describe("ledger replay: block fullness (T4)", () => {
     expect(Object.keys(fullness)).toEqual(["accumulated"]);
   });
 
-  it("matches the committed native-Rust close oracle, not the rounded JS counterweight", async () => {
+  it("matches the committed native-Rust genesis close oracle, not the rounded JS counterweight", async () => {
     // The expectation was precomputed by an independently assembled native Rust fold in the
     // ledger fork. It is not derived through closeBlock or through the old normalization binding,
     // which closes the committed-oracle trap that let both sides share the same f64 rounding bug.
@@ -281,8 +289,89 @@ describe("ledger replay: block fullness (T4)", () => {
       parentBlockTimestampMs: 0,
     });
     const got = stateHash(replay.serialize());
-    expect(got).toBe(NATIVE_GENESIS_CLOSE_HASH);
-    expect(got).not.toBe(ROUNDED_GENESIS_CLOSE_HASH);
+    expect(got).toBe(GENESIS_CLOSE_ORACLE.native);
+    expect(got).not.toBe(GENESIS_CLOSE_ORACLE.rounded);
+  });
+
+  it("matches all six synthetic native-Rust close oracles through the vendored artifact", async () => {
+    const dimensions = [
+      "readTime",
+      "computeTime",
+      "blockUsage",
+      "bytesWritten",
+      "bytesChurned",
+    ] as const;
+    type Dimension = (typeof dimensions)[number];
+    type Cost = Record<Dimension, bigint>;
+    const dimensionLabels: Record<Dimension, string> = {
+      readTime: "synthetic-dominant-read-time",
+      computeTime: "synthetic-dominant-compute-time",
+      blockUsage: "synthetic-dominant-block-usage",
+      bytesWritten: "synthetic-dominant-bytes-written",
+      bytesChurned: "synthetic-dominant-bytes-churned",
+    };
+    const expectedLabels = [
+      "genesis-system-transactions",
+      "synthetic-overlimit-q64",
+      ...dimensions.map((dimension) => dimensionLabels[dimension]),
+    ];
+    expect([...CLOSE_ORACLES.keys()]).toEqual(expectedLabels);
+
+    const ledger = await loadLedgerV8();
+    const state = ledger.LedgerState.blank("local-test");
+    const limits = state.parameters.blockLimits as Cost;
+    const roundedClose = (tblock: Date, accumulated: Cost) => {
+      const normalized = state.parameters.clampAndNormalizeFullness(accumulated);
+      const overall = Math.max(...dimensions.map((dimension) => Number(normalized[dimension])));
+      return state.postBlockUpdate(tblock, normalized, overall);
+    };
+    const verify = (label: string, tblock: Date, accumulated: Cost) => {
+      const expected = CLOSE_ORACLES.get(label)!;
+      const exactHash = stateHash(state.closeBlock(tblock, accumulated).serialize());
+      const roundedHash = stateHash(roundedClose(tblock, accumulated).serialize());
+      expect(exactHash, `${label}: native exact hash`).toBe(expected.native);
+      expect(roundedHash, `${label}: rounded counterweight`).toBe(expected.rounded);
+      expect(exactHash, `${label}: exact and rounded paths must diverge`).not.toBe(roundedHash);
+    };
+
+    verify(
+      "synthetic-overlimit-q64",
+      new Date(1_700_000_000_000),
+      {
+        readTime: BigInt(limits.readTime) + 1n,
+        computeTime: BigInt(limits.computeTime) / 5n,
+        blockUsage: BigInt(limits.blockUsage) / 3n,
+        bytesWritten: BigInt(limits.bytesWritten) / 11n,
+        bytesChurned: BigInt(limits.bytesChurned) / 13n,
+      },
+    );
+
+    const dimensionTime = new Date(1_700_000_100_000);
+    for (const dominantDimension of dimensions) {
+      const accumulated = Object.fromEntries(
+        dimensions.map((dimension) => [dimension, BigInt(limits[dimension]) / 5n]),
+      ) as Cost;
+      accumulated[dominantDimension] = BigInt(limits[dominantDimension]) + 1n;
+
+      const overLimit = dimensions.filter(
+        (dimension) => accumulated[dimension] > BigInt(limits[dimension]),
+      );
+      expect(overLimit, `${dominantDimension}: only over-limit dimension`).toEqual([
+        dominantDimension,
+      ]);
+      const normalized = state.parameters.clampAndNormalizeFullness(accumulated);
+      const dominantValue = Number(normalized[dominantDimension]);
+      for (const dimension of dimensions) {
+        if (dimension !== dominantDimension) {
+          expect(
+            Number(normalized[dimension]),
+            `${dominantDimension}: normalized value must be strictly dominant over ${dimension}`,
+          ).toBeLessThan(dominantValue);
+        }
+      }
+
+      verify(dimensionLabels[dominantDimension], dimensionTime, accumulated);
+    }
   });
 
   it("counts the regular transaction's cost, not only the system transactions'", async () => {

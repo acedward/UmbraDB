@@ -89,10 +89,13 @@ Asserting the agreement matters as much as the divergence: it shows the clamping
 same normalization, not a second one that happens to be close.
 
 The atomic close export is checked against SHA-256 state hashes precomputed by native Rust, not by
-the WASM code under test. Both committed vectors also pin the old rounded-f64 result as a
+the WASM code under test. All seven committed vectors also pin the old rounded-f64 result as a
 counterweight and require it to differ: genesis closes to `412811927ead…` natively but
-`c41b7298b8b6…` through the lossy path. This directly closes the committed-oracle trap in which
-both actual and expected state were previously assembled through the same rounded binding.
+`c41b7298b8b6…` through the lossy path, while five synthetic additions each make one cost
+dimension uniquely dominant and solely over-limit. This directly closes both the committed-oracle
+trap in which actual and expected state shared the rounded binding and the per-dimension clamp/max
+coverage gap. The five test-only additions were assembled at ledger-fork
+`ebe6aa53271c7465a67bae0150f7ac4d85200de9`; they do not alter the artifact source commit or bytes.
 
 ## Verifying this directory
 
