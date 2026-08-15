@@ -577,4 +577,14 @@ Recorded here so they are not silently absorbed:
       strict Sprint-9 validation; 31/31 checksums; indexer vectors 5/5; cost/clamp; native close
       2/2; and installed-tarball PostgreSQL smoke. Fresh-clone and GitHub evidence are recorded
       only after the commit is pushed, so this box does not imply 11.9.
+- [x] 11.8b Pushed-head release evidence: a clean clone of
+      `217458dd361a7677b8d9c638c98aace45036a170`, with no environment variables, passed typecheck,
+      build, strict Sprint-9 validation, 31/31 checksums, indexer vectors 5/5, cost/clamp, native
+      close 2/2, installed-tarball PostgreSQL smoke, and the complete Docker suite at
+      `--maxWorkers=2` (71 files passed / 4 environment-gated skips; 652 tests passed / 12 skipped;
+      zero failed). All required GitHub checks passed at that exact head, including `parity` and
+      `mutation`; PR #1 reported merge state `CLEAN`. **Blind spots closed:** the remote clone
+      excludes ignored build output, checkout-local dependencies, and environment overrides;
+      GitHub parity independently exercises the committed workflow/version pin rather than the
+      local command path. This evidence supports—but does not pre-judge—the independent 11.9 audit.
 - [ ] 11.9 Re-audit §17 scope; then O1–O5; then final PASS×3

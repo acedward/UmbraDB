@@ -1247,5 +1247,16 @@ evidence at the pre-commit tree is green: focused remediation 64/64; latest repl
 17/17; aggregate suite 651 passed / 12 environment-gated skips / zero failed; typecheck; build;
 strict Sprint-9 OpenSpec validation; all 31 vendored checksums; indexer vectors 5/5; cost/clamp;
 native close 2/2; installed-tarball smoke with a real PostgreSQL round trip. The full-corpus strict
-OpenSpec command still reports only the two already-recorded unrelated v1.1 changes. Fresh-clone
-execution and GitHub required checks remain pending at this checkpoint.
+OpenSpec command still reports only the two already-recorded unrelated v1.1 changes.
+
+Fresh-clone and remote evidence closed the remaining release-evidence gap at pushed head
+`217458dd361a7677b8d9c638c98aace45036a170`: with no environment variables, a clean clone passed
+typecheck, build, strict Sprint-9 validation, all 31 vendored checksums, indexer vectors 5/5,
+cost/clamp, native close 2/2, installed-tarball smoke against real PostgreSQL, and the complete
+Docker suite with `--maxWorkers=2` (71 files passed / 4 environment-gated skips; 652 tests passed /
+12 skipped; zero failed). Every required GitHub check passed on the same commit, including
+`parity` and the 26-minute `mutation` gate; GitHub reported PR #1's merge state as `CLEAN`.
+The clean-clone run closes checkout-local dependency, ignored-artifact, and environment-override
+blind spots; the remote parity run independently closes the stale-workflow-pin failure. The
+formal §17 remediation re-audit remains the next gate; O1–O5 remain separately out of this round's
+scope and continue to gate merge.
