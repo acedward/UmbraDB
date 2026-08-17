@@ -7,6 +7,7 @@ import {
   resolveMetadata,
 } from "../../chain-archive-sync/runtime-metadata.js";
 import { requireCallIndices } from "../../chain-archive-sync/extrinsic-decoder.js";
+import { captureForProtocolVersion } from "../../chain-archive-sync/metadata-captures/index.js";
 
 /**
  * Metadata decoding, against a committed fixture rather than a live chain.
@@ -76,6 +77,66 @@ describe("runtime metadata decoding", () => {
     // unusable input FAILS -- silently returning defaults here would put invented pallet indices
     // into the classifier, which is the one place a wrong answer rewrites the archive.
     expect(() => resolveMetadata(METADATA.subarray(0, 2048), IDENTITY)).toThrow();
+  });
+});
+
+/**
+ * F9 (final-review finding): every assertion above resolves ONE runtime, so nothing constrained
+ * version RESOLUTION -- a registry that ignored its argument and always returned the 1.0.0 capture
+ * would satisfy all of them.
+ *
+ * The registry carries a genuine second runtime already: `midnight-node-0.22.0.scale`, taken from
+ * the reference indexer's own committed artifact. It is not a variant of the 1.0.0 bytes -- it is
+ * metadata **V16** where 1.0.0's is **V14**, which is precisely why it is worth carrying rather
+ * than assuming 1.0.0's layout generalises.
+ *
+ * NOTE, and this is the load-bearing subtlety: the two runtimes derive IDENTICAL call indices
+ * (Midnight=5, MidnightSystem=6, both calls 0). So an indices-only assertion would pass against an
+ * always-returns-1.0.0 registry and prove nothing. The metadata VERSION and the capture's own node
+ * version are what actually discriminate, and that is what these assert.
+ *
+ * A second copy was deliberately NOT added under `test/fixtures/runtime-metadata/`: the bytes that
+ * matter are the ones production resolves from, and duplicating a 125KB binary would add a second
+ * checksum surface to keep in sync while testing strictly less.
+ */
+describe("F9: metadata version-resolution across two runtimes", () => {
+  it("resolves each protocol version to its OWN capture, not a single hard-wired one", () => {
+    const v022 = captureForProtocolVersion(22_000);
+    const v100 = captureForProtocolVersion(1_000_000);
+    expect(v022, "the 0.22 capture must be resolvable").toBeDefined();
+    expect(v100, "the 1.0.0 capture must be resolvable").toBeDefined();
+
+    expect(v022!.capture.nodeVersion).toBe("0.22.0");
+    expect(v100!.capture.nodeVersion).toBe("1.0.0");
+    // Different runtimes, different bytes -- an always-1.0.0 registry fails right here.
+    expect(Buffer.from(v022!.bytes).equals(Buffer.from(v100!.bytes))).toBe(false);
+  });
+
+  it("decodes both captures, and they disagree on metadata version (V16 vs V14)", () => {
+    const v022 = captureForProtocolVersion(22_000)!;
+    const v100 = captureForProtocolVersion(1_000_000)!;
+
+    const r022 = resolveMetadata(v022.bytes, { specName: "capture:0.22.0", specVersion: 22_000 });
+    const r100 = resolveMetadata(v100.bytes, { specName: "capture:1.0.0", specVersion: 1_000_000 });
+
+    expect(r022.metadata.version).toBe(16);
+    expect(r100.metadata.version).toBe(14);
+
+    // Both are genuinely decodable to the same classifier coordinates -- which is the parity claim
+    // that justified carrying the 0.22 capture at all (plan B5), stated here rather than assumed.
+    expect(r022.callIndices).toEqual(r100.callIndices);
+    expect(r022.callIndices).toEqual({
+      midnightPallet: 5, midnightSystemPallet: 6,
+      sendTransactionCall: 0, sendSystemTransactionCall: 0,
+    });
+  });
+
+  it("returns undefined for a protocol version no capture covers, rather than a neighbour", () => {
+    // The refusal that makes the coarse key safe: substituting a neighbouring capture decodes a
+    // block against layouts that are not its own, and the failure is silent.
+    expect(captureForProtocolVersion(500_000)).toBeUndefined();
+    expect(captureForProtocolVersion(23_000)).toBeUndefined(); // exclusive upper bound
+    expect(captureForProtocolVersion(1_001_000)).toBeUndefined();
   });
 });
 

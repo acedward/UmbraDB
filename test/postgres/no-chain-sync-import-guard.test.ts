@@ -37,6 +37,22 @@ import { afterAll, describe, expect, it } from "vitest";
  *       `IndexerClient`, `ChainArchiveSyncService`) anywhere in the file -- catches re-exports
  *       and copies under a different path.
  *
+ * **Documented residual gap: tsconfig path aliases (F9, final-review finding).** All three rules
+ * key off the literal text `chain-archive-sync`. A tsconfig `compilerOptions.paths` alias --
+ * `{"@sync/*": ["chain-archive-sync/*"]}` -- lets a file under `src/` write
+ * `import { NodeRpcClient } from "@sync/node-rpc-client.js"`, in which that segment never appears,
+ * so rules (a) and (b) both miss it. Rule (c) is the only backstop, and it fires ONLY when a
+ * guarded class name appears verbatim in the source. Note that renaming on import does NOT evade
+ * it -- `import { NodeRpcClient as C }` still contains `NodeRpcClient` (verified: that fixture is
+ * flagged). What DOES evade all three is an aliased import of a symbol that is not one of the
+ * three guarded classes -- a factory function, a type, or a default export. Both shapes are
+ * exercised as fixtures below -- including the uncovered one, asserted as NOT flagged so this
+ * limitation is executable documentation rather than a comment that can quietly go stale.
+ *
+ * This repo defines NO path aliases today (no `paths`/`baseUrl` in any tsconfig, no `resolve.alias`
+ * in `vitest.config.ts`), so the gap is latent, not live: closing it properly needs the resolver
+ * the guard deliberately does not run. Adding an alias to any tsconfig would silently widen it.
+ *
  * **Documented residual gaps (Finding 6, explicitly not closed -- statically undetectable
  * without a resolver/type-checker)**: a specifier assembled from SPLIT literals
  * (`"chain-archive-" + "sync"`), an import routed through an external barrel file that itself
@@ -187,6 +203,13 @@ describe("no module under src/ imports chain-archive-sync's node-RPC/indexer-Gra
         source: "// path hidden behind an external barrel, but the class is referenced by name\ndeclare const s: ChainArchiveSyncService;\nexport const svc = s;\n",
         expectedRules: ["class-name"],
       },
+      {
+        // F9: a tsconfig path alias hides the path segment entirely, so BOTH path-based rules
+        // miss. Only rule (c) fires, and only because the class name survives verbatim.
+        name: "path-alias-import.ts",
+        source: 'import { NodeRpcClient } from "@sync/node-rpc-client.js";\nexport const c = new NodeRpcClient();\n',
+        expectedRules: ["class-name"],
+      },
     ];
 
     for (const fixture of FIXTURES) {
@@ -200,6 +223,34 @@ describe("no module under src/ imports chain-archive-sync's node-RPC/indexer-Gra
         }
       });
     }
+
+    /**
+     * F9: the path-alias gap at its worst, asserted as a KNOWN MISS.
+     *
+     * An aliased specifier hides the path from rules (a) and (b); importing a symbol that is not
+     * one of the three guarded class names hides it from rule (c). Nothing fires. (Renaming on
+     * import is NOT sufficient -- `import { NodeRpcClient as C }` still spells the class name, and
+     * the `path-alias-import.ts` fixture above confirms rule (c) catches that shape.) This is
+     * deliberately written as an assertion rather than prose so the limitation cannot rot: if a
+     * future change closes the gap
+     * (a resolver-aware guard, or a lint rule banning aliases into `chain-archive-sync`), THIS
+     * TEST FAILS and whoever closed it updates the expectation and the doc block above.
+     *
+     * It is latent today -- this repo defines no path aliases -- so it is a statement about what
+     * the guard would and would not catch, not a live hole in the committed tree.
+     */
+    it("KNOWN GAP: an aliased import of a non-guarded symbol evades all three rules", () => {
+      writeFileSync(
+        path.join(fixtureDir, "path-alias-factory.ts"),
+        'import { createNodeRpc } from "@sync/node-rpc-client.js";\n' +
+        "export const c = createNodeRpc();\n",
+      );
+      const flagged = scanDirectory(fixtureDir);
+      expect(
+        flagged.has(path.join(fixtureDir, "path-alias-factory.ts")),
+        "if this now FAILS the alias gap has been closed -- update the doc block above and this test",
+      ).toBe(false);
+    });
 
     it("does NOT flag a clean file (the guard is not vacuously flagging everything), including one whose COMMENTS mention chain-archive-sync", () => {
       writeFileSync(
