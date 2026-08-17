@@ -121,26 +121,36 @@ Integrity of the committed files:
 cd vendor/ledger-v8-syshash && sha256sum -c SHA256SUMS
 ```
 
+The three behaviour checks below run **from the repo root**. They live in the ledger fork, which is a
+separate checkout and not part of this repo — point `LEDGER_FORK` at wherever you cloned it (see
+"Rebuilding from source" below for what that fork is):
+
+```bash
+LEDGER_FORK=/path/to/midnight-ledger-fork
+```
+
 Behaviour, against the indexer's ground truth (the gate that actually matters):
 
 ```bash
-./node_modules/.bin/tsx /home/eddie/midnight-ledger-fork/ledger-wasm/verification/verify-system-tx-hash.mts "$PWD/vendor/ledger-v8-syshash/midnight_ledger_wasm_fs.js"
+./node_modules/.bin/tsx "$LEDGER_FORK/ledger-wasm/verification/verify-system-tx-hash.mts" "$PWD/vendor/ledger-v8-syshash/midnight_ledger_wasm_fs.js"
 ```
 
 Behaviour of the cost and clamping exports, against the node's definition:
 
 ```bash
-./node_modules/.bin/tsx /home/eddie/midnight-ledger-fork/ledger-wasm/verification/verify-system-tx-cost.mts "$PWD/vendor/ledger-v8-syshash/midnight_ledger_wasm_fs.js"
+./node_modules/.bin/tsx "$LEDGER_FORK/ledger-wasm/verification/verify-system-tx-cost.mts" "$PWD/vendor/ledger-v8-syshash/midnight_ledger_wasm_fs.js"
 ```
 
 Atomic close behaviour, against committed native-Rust state hashes:
 
 ```bash
-./node_modules/.bin/tsx /home/eddie/midnight-ledger-fork/ledger-wasm/verification/verify-close-block.mts "$PWD/vendor/ledger-v8-syshash/midnight_ledger_wasm_fs.js"
+./node_modules/.bin/tsx "$LEDGER_FORK/ledger-wasm/verification/verify-close-block.mts" "$PWD/vendor/ledger-v8-syshash/midnight_ledger_wasm_fs.js"
 ```
 
-All three scripts take an **absolute** path: the argument is passed to `import()`, which resolves a relative
-specifier against the script's own location rather than the working directory.
+All three scripts take an **absolute** path for the artifact: the argument is passed to `import()`,
+which resolves a relative specifier against the script's own location rather than the working
+directory. `$PWD` supplies that absolute path when you run from the repo root, which is why these
+are written that way rather than as a bare `vendor/...` path.
 
 Equivalent assertions for all four behaviour groups run in CI against the installed vendored package.
 The standalone ground-truth scripts live in the ledger fork alongside the source; the independent

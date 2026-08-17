@@ -72,11 +72,18 @@ The governing rule differs by ecosystem, because the *security value* of each pi
 
 ## Security process — the CI gates
 
-Today the one merge gate is **`.github/workflows/conformance.yml`**: it already installs with
-`npm ci` (enforcing the lockfile + integrity hashes) and pins every GitHub Action by commit SHA,
-but it runs *tests only*. The **G18 supply-chain gate** (`.github/workflows/supply-chain.yml`,
-from `openspec/changes/v1.0.0-infosec-signoff/`) — **landed in this change** — adds six
-blocking/scheduled sub-gates:
+Seven workflows now run on `pull_request`, not one — `conformance.yml` (tests),
+`chain-archive-parity.yml` (live node-vs-indexer parity), `vendored-ledger.yml` (vendored-artifact
+integrity + export presence), `pack-smoke.yml` (packed-tarball consumability), `supply-chain.yml`
+(this gate), `bench-smoke.yml`, and `lean.yml`. Each installs with `npm ci` (enforcing the lockfile
++ integrity hashes) and pins every GitHub Action by commit SHA. Note that several are
+path-filtered, so a given PR runs a subset: "runs on `pull_request`" is not the same as "runs on
+every PR", and which of these are *required* to merge is branch-protection configuration, not
+something this file can assert.
+
+`conformance.yml` remains the broadest tests-only gate. The **G18 supply-chain gate**
+(`.github/workflows/supply-chain.yml`, from `openspec/changes/v1.0.0-infosec-signoff/`) —
+**landed in this change** — adds six blocking/scheduled sub-gates:
 
 1. **`npm ci` everywhere** (never `npm install`) — a tampered tarball fails the integrity check.
 2. **Blocking `npm audit --audit-level=high --omit=dev`** on the tiny runtime scope, plus a
