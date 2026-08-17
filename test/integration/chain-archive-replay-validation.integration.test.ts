@@ -178,9 +178,38 @@ interface SyntheticChain {
 }
 const ledger = await loadLedgerV8();
 
-/** Produce roots for the synthetic chain with the same ledger code used by the service. The
- * binding itself is independently checked against the node's Rust implementation in the vendored
- * source test; these values keep unrelated replay fixtures focused on their own failure modes. */
+/**
+ * Produce roots for the synthetic chain with the same ledger code used by the service.
+ *
+ * ── The circularity, stated plainly (F5, final-review finding) ───────────────────────────────
+ * The expected roots below are computed by the SAME vendored wasm that the code under test
+ * replays with. So this fixture proves the comparison EXISTS, fires per-block, targets the right
+ * RPC, and recovers -- but it cannot detect a deterministic `ledgerStateRoot()` regression in the
+ * wasm itself: both sides would shift together and still agree. That is a property of any
+ * self-generated oracle, and no amount of restructuring inside this service-free file fixes it.
+ *
+ * DO NOT try to make this fixture independent. It is deliberately service-free so it can never
+ * skip, and inventing hand-rolled "independent" expected roots here would mean reimplementing the
+ * ledger in TypeScript -- a second implementation to be wrong in a new way, and the exact
+ * committed-oracle trap earlier audit rounds already closed elsewhere.
+ *
+ * Independence is carried by two OTHER gates, named here so the next reader does not re-derive
+ * this analysis:
+ *
+ *   1. **The live 40-block gate.** `.github/workflows/chain-archive-parity.yml` waits for a real
+ *      chain to reach height 40, then runs `chain-archive-source-parity` and
+ *      `chain-archive-node-only` against it with `REQUIRE_LIVE_SERVICES=1`, so a container that
+ *      failed to start is a hard failure rather than a skip. Those roots come from a real node,
+ *      not from this file's wasm -- that is the comparison this fixture cannot make.
+ *   2. **The native-Rust oracles.** `test/fixtures/ledger-vectors/native-close-block-oracles.txt`,
+ *      `parent-time-dust-oracle.json`, and `genesis-system-tx-hashes.txt` are committed values
+ *      produced by the node's own Rust implementation, checked in `ledger-replay.test.ts`. They
+ *      pin the fold-state and close-block math against a source outside the wasm binding.
+ *
+ * If either of those two is ever weakened or removed, THIS file silently loses its independence
+ * backstop while continuing to pass -- which is the reason they are named here rather than
+ * assumed.
+ */
 function syntheticChain(networkId: string): SyntheticChain {
   const replay = LedgerReplay.fromGenesis(ledger, networkId);
   const roots: LedgerRoots = {};
