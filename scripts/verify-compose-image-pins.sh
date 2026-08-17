@@ -5,7 +5,11 @@ if (( $# == 0 )); then
   set -- test/compose/docker-compose.yml
 fi
 
-compose_args=()
+# `--profile '*'` activates every profile. Without it, `config --images` silently omits any
+# service under a `profiles:` key, so an unpinned image behind a profile would be invisible to
+# this check and report success -- verified against a scratch fixture, which passed unpinned.
+# Profiled services are still services: whoever activates that profile runs those bytes.
+compose_args=(--profile '*')
 for file in "$@"; do
   compose_args+=(--file "$file")
 done
