@@ -24,6 +24,34 @@ import { IndexerClient } from "../../chain-archive-sync/indexer-client.js";
  * -- block rewards -- are not carried as node extrinsics, so the CONTAINS check aborted. The
  * fix scopes that check to `regular` txs only; system txs are stored from the indexer's
  * authoritative raw. This test proves the fix by ingesting past block 1.)
+ *
+ * ── CI STATUS: DOCUMENTED-MANUAL, pending an owner decision (F7, final-review finding) ───────
+ * `UMBRADB_LIVE_PREPROD_CLOUD` is set by NO workflow in this repo, so this suite never executes
+ * in CI. Stated explicitly here because silence on that point is what the finding objected to:
+ * a reader could otherwise reasonably assume the gate runs somewhere.
+ *
+ * WHY IT IS NOT WIRED: this suite hits Midnight's real hosted Preprod endpoints. Putting it on a
+ * schedule spends live-network minutes on every run and couples this repo's CI signal to
+ * third-party uptime -- a red run would then mean "Preprod was down", not "the archive is
+ * wrong", which is the failure mode that trains people to ignore a gate. Whether that trade is
+ * worth making, and at what cadence, is a cost decision for the repo owner rather than something
+ * this test file can settle. Tracked as an open question in
+ * `plans/00002-02-audit-followups.md`; until it is answered, documented-manual is the end state,
+ * not a placeholder.
+ *
+ * HOW TO RUN IT (the manual path this status refers to):
+ *
+ *   UMBRADB_LIVE_PREPROD_CLOUD=1 \
+ *     npx vitest run test/integration/chain-archive-preprod-cloud-crossval.integration.test.ts
+ *
+ * Optional overrides: `UMBRADB_AC8_MAXBLOCKS` (default 30), `UMBRADB_PREPROD_NODE_URL`,
+ * `UMBRADB_PREPROD_INDEXER_URL`.
+ *
+ * WHAT COVERS THIS IN CI INSTEAD: the local-devnet parity gate in `chain-archive-parity.yml`
+ * runs the same block-and-transaction cross-validation shape against a real chain under
+ * `REQUIRE_LIVE_SERVICES=1`. It does NOT cover what AC-8 uniquely covers -- a real PUBLIC
+ * network, with its own history and its runtime-generated system transactions -- so this is a
+ * bound on the exposure, not a replacement.
  */
 const LIVE = process.env.UMBRADB_LIVE_PREPROD_CLOUD === "1";
 const NET = "preprod";
@@ -106,13 +134,25 @@ describe.skipIf(!LIVE)(
       // cross-validation across a real multi-block window.
       expect(txChecked, "expected to have cross-validated real txs across the range").toBeGreaterThan(25);
 
-      // --- AC-8 scenario 2: a mismatch is a HARD failure (non-vacuous) ---
-      const g = await service.store.getCanonicalBlockAtHeight(NET, 0);
-      const wrong = "deadbeef".repeat(8);
-      expect(g!.blockHash).not.toBe(wrong);
-      expect(() => {
-        if (g!.blockHash !== wrong) throw new Error("a real mismatch fails the run, not logs");
-      }).toThrow();
+      // --- AC-8 scenario 2: the cross-validation above is DISCRIMINATING, not vacuous ---
+      //
+      // F7: this previously constructed its own `throw` and asserted that it threw, which is
+      // true of any `throw` statement and said nothing about the archive, the live network, or
+      // the comparison. Rewritten to exercise the real thing: take the live-fetched genesis hash
+      // and the archived one, confirm they agree, then run the SAME assertion the scenario-1a
+      // loop runs against a value known to differ and require it to FAIL.
+      //
+      // What this rules out is a comparison that passes regardless of its inputs -- the only way
+      // scenario 1a could be green while the archive held wrong bytes.
+      const archivedGenesis = await service.store.getCanonicalBlockAtHeight(NET, 0);
+      const liveGenesisHash = strip0x(await node.getBlockHash(0));
+      expect(archivedGenesis!.blockHash).toBe(liveGenesisHash); // the real comparison agrees
+
+      const corrupted = "deadbeef".repeat(8);
+      expect(corrupted).not.toBe(liveGenesisHash); // sanity: the counterexample really is wrong
+      // The identical assertion, one wrong input, must fail. If this does NOT throw, every
+      // block-field check in scenario 1a is worthless and the suite must say so.
+      expect(() => expect(corrupted).toBe(liveGenesisHash)).toThrow();
 
       // eslint-disable-next-line no-console
       console.log(
