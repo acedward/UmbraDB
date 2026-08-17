@@ -41,6 +41,24 @@ if "$repo_root/scripts/verify-compose-image-pins.sh" "$fixture"; then
   exit 1
 fi
 
-# The real pinned stack must still pass.
+# (3) The parity workflow launches the base file WITH the hostports overlay layered on, so
+# checking the base alone leaves the overlay unverified: an `image:` override added there would
+# launch unchecked. Overlay keys win the merge, so this scratch overlay -- shaped exactly like a
+# real one, overriding a service the base pins -- must be caught.
+fixture="$fixture_dir/image-override-overlay.yml"
+printf '%s\n' \
+  'services:' \
+  '  node:' \
+  '    image: midnightntwrk/midnight-node:latest' > "$fixture"
+
+if "$repo_root/scripts/verify-compose-image-pins.sh" \
+  "$repo_root/test/compose/docker-compose.yml" "$fixture"; then
+  echo "image: override injected via an overlay unexpectedly passed" >&2
+  exit 1
+fi
+
+# The real check: the exact file combination `chain-archive-parity.yml` launches. Verifying only
+# the base file would leave the overlay that ships with it unchecked.
 "$repo_root/scripts/verify-compose-image-pins.sh" \
-  "$repo_root/test/compose/docker-compose.yml"
+  "$repo_root/test/compose/docker-compose.yml" \
+  "$repo_root/test/compose/docker-compose.hostports.yml"
