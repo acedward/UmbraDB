@@ -79,7 +79,9 @@ integrity + export presence), `pack-smoke.yml` (packed-tarball consumability), `
 + integrity hashes) and pins every GitHub Action by commit SHA. Note that several are
 path-filtered, so a given PR runs a subset: "runs on `pull_request`" is not the same as "runs on
 every PR", and which of these are *required* to merge is branch-protection configuration, not
-something this file can assert.
+something this file can assert. (`.github/workflows/` holds one more file than that —
+`ac8-preprod-crossval.yml` is `workflow_dispatch`-only and never runs on a PR by design, so it is
+not part of this count.)
 
 `conformance.yml` remains the broadest tests-only gate. The **G18 supply-chain gate**
 (`.github/workflows/supply-chain.yml`, from `openspec/changes/v1.0.0-infosec-signoff/`) —

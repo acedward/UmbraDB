@@ -25,27 +25,29 @@ import { IndexerClient } from "../../chain-archive-sync/indexer-client.js";
  * fix scopes that check to `regular` txs only; system txs are stored from the indexer's
  * authoritative raw. This test proves the fix by ingesting past block 1.)
  *
- * ── CI STATUS: DOCUMENTED-MANUAL, pending an owner decision (F7, final-review finding) ───────
- * `UMBRADB_LIVE_PREPROD_CLOUD` is set by NO workflow in this repo, so this suite never executes
- * in CI. Stated explicitly here because silence on that point is what the finding objected to:
- * a reader could otherwise reasonably assume the gate runs somewhere.
+ * ── CI STATUS: ON-DEMAND ONLY, by decision (F7, final-review finding; owner call 2026-08-17) ──
+ * `UMBRADB_LIVE_PREPROD_CLOUD` is set by exactly one workflow --
+ * `.github/workflows/ac8-preprod-crossval.yml` -- which is `workflow_dispatch`-only. So this
+ * suite runs when someone asks for it and at no other time. It is NOT on `pull_request` and NOT
+ * on a schedule, and being dispatch-only it can never become a required PR check.
  *
- * WHY IT IS NOT WIRED: this suite hits Midnight's real hosted Preprod endpoints. Putting it on a
- * schedule spends live-network minutes on every run and couples this repo's CI signal to
- * third-party uptime -- a red run would then mean "Preprod was down", not "the archive is
- * wrong", which is the failure mode that trains people to ignore a gate. Whether that trade is
- * worth making, and at what cadence, is a cost decision for the repo owner rather than something
- * this test file can settle. Tracked as an open question in
- * `plans/00002-02-audit-followups.md`; until it is answered, documented-manual is the end state,
- * not a placeholder.
+ * WHY NOT AUTOMATIC: this suite hits Midnight's real hosted Preprod endpoints. As a PR check it
+ * would couple every merge to third-party uptime -- a red run would usually mean "Preprod was
+ * down", not "the archive is wrong", which is the failure mode that trains people to ignore a
+ * gate. On a schedule it would spend live-network minutes continuously for a signal nobody is
+ * waiting on, and a periodically-red non-required job decays into noise just as fast. On-demand
+ * keeps the capability at zero standing cost.
  *
- * HOW TO RUN IT (the manual path this status refers to):
+ * WHEN TO DISPATCH IT: before a release, and after any change to ingest, transaction-record
+ * construction, or the node/indexer clients.
+ *
+ * HOW TO RUN IT LOCALLY (the same thing the workflow does):
  *
  *   UMBRADB_LIVE_PREPROD_CLOUD=1 \
  *     npx vitest run test/integration/chain-archive-preprod-cloud-crossval.integration.test.ts
  *
  * Optional overrides: `UMBRADB_AC8_MAXBLOCKS` (default 30), `UMBRADB_PREPROD_NODE_URL`,
- * `UMBRADB_PREPROD_INDEXER_URL`.
+ * `UMBRADB_PREPROD_INDEXER_URL` -- all three are exposed as workflow inputs too.
  *
  * WHAT COVERS THIS IN CI INSTEAD: the local-devnet parity gate in `chain-archive-parity.yml`
  * runs the same block-and-transaction cross-validation shape against a real chain under
