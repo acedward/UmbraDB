@@ -20,6 +20,7 @@ import { createPostgresEvmRpcReader } from "./db.js";
 import { IndexerGqlClient } from "./indexer-gql.js";
 import { registerAccountMethods } from "./methods/accounts.js";
 import { registerBlockMethods } from "./methods/blocks.js";
+import { registerNotImplementedMethods } from "./methods/not-implemented.js";
 import { registerStaticMethods } from "./methods/static.js";
 import { registerTransactionMethods } from "./methods/transactions.js";
 import { loadTokenMeta, registerErc20Call } from "./methods/erc20-call.js";
@@ -65,6 +66,10 @@ registerStaticMethods(defaultRegistry);
 registerBlockMethods(defaultRegistry);
 registerAccountMethods(defaultRegistry);
 registerTransactionMethods(defaultRegistry);
+// NYI policy: spec-defined methods this surface deliberately does not serve answer -32004
+// ("Method not supported"), so an unknown NAME stays distinguishable as -32601. None of these
+// names is registered by Part C/E/F below, so registering them here cannot shadow a real handler.
+registerNotImplementedMethods(defaultRegistry);
 
 // --- Part E: eth_sendRawTransaction (write path) ---
 // The relayer (evm-relayer repo) runs as its own process — separate dependency tree (midnight-js

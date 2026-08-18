@@ -5,6 +5,7 @@ import { createPostgresEvmRpcReader, emptyEvmRpcReader } from "./db.js";
 import { IndexerGqlClient } from "./indexer-gql.js";
 import { registerAccountMethods } from "./methods/accounts.js";
 import { registerBlockMethods } from "./methods/blocks.js";
+import { registerNotImplementedMethods } from "./methods/not-implemented.js";
 import { registerStaticMethods } from "./methods/static.js";
 import { registerTransactionMethods } from "./methods/transactions.js";
 import { defaultRegistry } from "./registry.js";
@@ -33,6 +34,8 @@ registerStaticMethods(defaultRegistry);
 registerBlockMethods(defaultRegistry);
 registerAccountMethods(defaultRegistry);
 registerTransactionMethods(defaultRegistry);
+// Last: spec-defined methods this surface deliberately does not serve answer -32004, not -32601.
+registerNotImplementedMethods(defaultRegistry);
 
 const server = createRpcServer({
   registry: defaultRegistry,
