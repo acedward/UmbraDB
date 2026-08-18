@@ -8,7 +8,25 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Added
+
+- Indexer-independent finalized chain-archive ingest from a historical Midnight 1.x node, including
+  block-scoped metadata/event decoding, runtime-generated system transactions, durable D-parameter
+  continuity, sparse ledger replay checkpoints, and per-block comparison with the chain-committed
+  `midnight_ledgerStateRoot`.
+- Packaged `umbradb-archive-sync` CLI and digest-pinned Docker parity/live-service gates.
+
+### Changed
+
+- **Breaking (`chain_archive` preview):** migration 002 re-keys `transactions` from
+  `(net, block_height, block_hash, tx_hash)` to `(net, block_height, block_hash, position)` so
+  duplicate-hash reference rows can coexist. Migrations 003–007 add runtime metadata, replay
+  checkpoint identity, and forward blob-role protection. This is forward-only; back up before
+  upgrade and coordinate readers that assumed the old key.
+- The finalized bundle writer now serializes competing `(net,height)` writes with a Postgres
+  advisory lock and refuses incompatible stored history rather than permitting interleaving.
+- The runtime ledger is a checksummed vendored `8.1.0-syshash.4` build; its provenance and minimal
+  source patches are committed under `vendor/ledger-v8-syshash/`.
 
 ## [1.0.0] - unreleased — "Totality"
 

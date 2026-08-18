@@ -14,19 +14,14 @@ its own `<schema>._migrations` bookkeeping table:
 | Lineage | Schema (conventional name) | Migrations | Status |
 |---|---|---|---|
 | **tier1_wallet** | `tier1_wallet` | `src/postgres/migrations/000_schema.ts` … `006_ckpt_chunks_size_bytes.ts` | `000`–`004` merged to `main`, in production use; `005_kv_current_fillfactor` + `006_ckpt_chunks_size_bytes` added by the `v1.0.0-perf-baseline` change |
-| **chain_archive** ("Tier-1.5") | `chain_archive` | `src/postgres/migrations/chain_archive/001_chain_archive_core.ts` | **Not yet on `main`** — see note below |
+| **chain_archive** ("Tier-1.5") | `chain_archive` | `src/postgres/migrations/chain_archive/001_chain_archive_core.ts` … `007_blob_role_guard_forward_fix.ts` | Implemented on `feat/indexer-independent-ingest` (PR #1), pending merge |
 
-> **Provenance note on `chain_archive`.** As of this writing, the `chain_archive` schema, its
-> `ChainArchiveStore` interface, and its Postgres implementation exist only on the
-> `feature/full-chain-storage-implementation` branch lineage (this document was written against
-> its most-fixed descendant, `feature/full-chain-storage-implementation-fable-fix2`, commit
-> `5bcbebe`) — they are not present on `origin/main` at the base commit this document was written
-> against (`b1ecc53`). The design went through four rounds of adversarial, cross-vendor
-> design-council audit (Fable 5 / Opus / GPT-5.6 Sol) before its current shape stabilized; this
-> document describes only the **current, final state** of that design, not the audit history
-> itself. Even once merged, the schema is a **design-stage artifact that nothing in this repo's
-> application code wires up yet** — `chainArchiveMigrations` is exported but no call site invokes
-> `runMigrations(sql, { schema: "chain_archive", migrations: chainArchiveMigrations })` today.
+> **Provenance note on `chain_archive` (updated 2026-08-15).** The original core schema came from
+> the audited `feature/full-chain-storage-implementation` lineage. The current shape is migrations
+> 001–007 on `feat/indexer-independent-ingest`: position-keyed transactions, persisted runtime
+> metadata, and replay checkpoints with block time/network identity. `bootstrapChainArchiveSchema`
+> invokes this lineage and the installed `umbradb-archive-sync` CLI calls it before ingest. PR #1
+> is still pending merge, so this describes the PR branch rather than `main`.
 
 Both lineages are designed to live in **one Postgres instance, two (or more) schemas** — not a
 merged schema, and specifically not merged into the official Midnight indexer's own forked
@@ -51,6 +46,8 @@ the Tier-2 indexer fork.
   - [`bridge_observations`](#bridge_observations)
   - [`verifier_key_observations`](#verifier_key_observations)
   - [`chain_archive.watermarks`](#chain_archivewatermarks)
+  - [`runtime_metadata`](#runtime_metadata)
+  - [`replay_checkpoints`](#replay_checkpoints)
   - [Partition rollover design](#partition-rollover-design)
 - [How the two lineages coexist](#how-the-two-lineages-coexist)
 - [Boundary enforcement](#boundary-enforcement)
@@ -407,17 +404,19 @@ while its embedded identity claims another.
 ## chain_archive lineage
 
 Source (see the [provenance note](#chain_archive-lineage) above for which branch this reflects):
-`src/postgres/migrations/chain_archive/001_chain_archive_core.ts` (core DDL),
+`src/postgres/migrations/chain_archive/001_chain_archive_core.ts` through
+`007_blob_role_guard_forward_fix.ts`,
 `src/postgres/migrations/chain_archive/index.ts` (the `chainArchiveMigrations` lineage array),
 `src/postgres/migrations/chain_archive/partition-config.ts` (partition sizing constants),
 `src/interfaces/chain-archive-store.ts` (the storage contract),
 `src/postgres/chain-archive-store.ts` (the Postgres implementation),
 `src/postgres/chain-archive-rollover.ts` (the partition-rollover runbook implementation).
 
-**Purpose of the lineage as a whole:** full-chain archival storage — blocks, transactions, bridge
-observations, and verifier-key sightings — independent of and resilient to an indexer wipe/rebuild,
-modeling the **full block tree** (not just the canonical chain) so competing forks at the same
-height are both representable until one is orphaned.
+**Purpose of the lineage as a whole:** full-chain archival storage — blocks, ordered transactions,
+bridge observations, verifier-key sightings, runtime metadata and ledger replay checkpoints —
+independent of and resilient to an indexer wipe/rebuild. The store models a full block tree. The
+production sync writer deliberately ingests only finalized canonical blocks; general best-tail
+reorg writing is outside that writer's contract.
 
 ### `chain_blobs` / `chain_blob_roles`
 
@@ -517,8 +516,8 @@ CREATE TABLE blocks (
 - **`net` in the primary key**: nothing before this design revision stopped two different
   networks' archive data from being silently comingled in one archive table; `net` was folded into
   the PK alongside `height` (the partition key) and `block_hash`.
-- **`body_blob_hash` is nullable** — body/extrinsics sync is not assumed to exist yet; this table
-  does not block on that dependency.
+- **`body_blob_hash` is nullable at the storage-contract level** for callers that only possess a
+  header. The production sync service always supplies the canonical JSON-encoded block body.
 - **`parent_hash` deliberately has no foreign key** back to another `blocks` row: a
   self-referencing FK across range partitions complicates out-of-order reorg backfill;
   parent-link integrity is treated as an application-level invariant instead.
@@ -563,26 +562,21 @@ CREATE TABLE transactions (
                                        OR result IS NULL),
   raw_blob_hash    bytea       NOT NULL REFERENCES chain_blobs(hash),
   synced_at        timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (net, block_height, block_hash, tx_hash),
-  UNIQUE (net, block_height, block_hash, position),
+  PRIMARY KEY (net, block_height, block_hash, position),
   FOREIGN KEY (net, block_height, block_hash) REFERENCES blocks (net, height, block_hash)
 ) PARTITION BY RANGE (block_height)
 ```
 
-- **Primary key includes `block_hash`.** An earlier design's primary key was
-  `(block_height, tx_hash)`, which omitted `block_hash` entirely — since `blocks` correctly models
-  the full block tree, two competing forks both containing the same transaction hash at the same
-  height would collide on that narrower key, making it impossible to store both forks' inclusion
-  records. The corrected PK, `(net, block_height, block_hash, tx_hash)`, includes every column a
-  transaction-inclusion record actually needs to stay unique per (network, fork, transaction).
-- `UNIQUE (net, block_height, block_hash, position)` separately prevents two transactions from
-  occupying the same slot within one block.
+- **Migration 002 promotes position to the primary key.** The final key is
+  `(net, block_height, block_hash, position)`, so two rows at one slot are impossible while two
+  legitimate reference-indexer rows sharing a transaction hash can coexist. `tx_hash` remains an
+  ordinary indexed lookup value, not a uniqueness claim.
 - A real foreign key back to `blocks (net, height, block_hash)` rejects both a reference to a
   nonexistent block and a reference whose `block_height`/`block_hash` don't jointly match a real
   `blocks` row — this works across two independently range-partitioned tables because both are
   partitioned on columns in the same domain (`block_height` here, `height` on `blocks`).
 - `transactions_by_hash (tx_hash)` is kept as a genuinely distinct index (not a left-prefix of the
-  PK). A `(net, block_height, block_hash)` index was deliberately **not** created — it would be a
+  PK). A `(net, block_height, block_hash)` index was deliberately **not** created — it is a
   strict left-prefix of the PK's own backing btree index, so it buys no distinct access pattern
   and only adds write amplification.
 - Partitioned by `RANGE (block_height)`.
@@ -691,6 +685,56 @@ last-write-wins). This closes a race where two overlapping sync-service runs cou
 slower, stale call overwrite the cursor backward, which would make the next sync attempt re-process
 already-ingested heights and hit a duplicate-key wedge.
 
+### `runtime_metadata`
+
+Migration 003 makes the archive self-describing for block-scoped decoding:
+
+```sql
+CREATE TABLE runtime_metadata (
+  net                text        NOT NULL,
+  spec_name          text        NOT NULL,
+  spec_version       bigint      NOT NULL CHECK (spec_version >= 0),
+  first_seen_height  bigint      NOT NULL CHECK (first_seen_height >= 0),
+  metadata_blob_hash bytea       NOT NULL REFERENCES chain_blobs(hash),
+  captured_at        timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (net, spec_name, spec_version)
+)
+```
+
+The SCALE bytes are content-addressed with role `runtime_metadata`. Ingest first consults this
+table, fetching historical `state_getMetadata` only for a runtime identity not yet captured.
+Re-decode and replay can therefore operate without retaining the node response forever. First-time
+ingest still needs an archive node for per-block events/state; metadata cannot replace values that
+were never captured.
+
+### `replay_checkpoints`
+
+Migrations 004–006 create and complete sparse ledger checkpoints:
+
+```sql
+CREATE TABLE replay_checkpoints (
+  net                text   NOT NULL,
+  block_height       bigint NOT NULL CHECK (block_height >= 0),
+  block_hash         bytea  NOT NULL CHECK (octet_length(block_hash) = 32),
+  state_blob_hash    bytea  NOT NULL REFERENCES chain_blobs(hash),
+  ledger_version     text   NOT NULL,
+  block_timestamp_ms bigint NOT NULL CHECK (block_timestamp_ms > 0),
+  ledger_network_id  text   NOT NULL CHECK (length(ledger_network_id) > 0),
+  created_at         timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (net, block_height, block_hash),
+  FOREIGN KEY (net, block_height, block_hash)
+    REFERENCES blocks (net, height, block_hash)
+)
+```
+
+`state_blob_hash` uses role `ledger_state`. The version refuses cross-build serialized-state
+resume; the network id refuses cross-network resume; and the checkpointed timestamp supplies the
+real parent time to the next block. Restart selects the newest finalized/canonical checkpoint at or
+below the watermark and catches up consecutively, checking parent hashes and the node's committed
+`midnight_ledgerStateRoot` at every block. Migrations 005/006 delete legacy derived checkpoints
+instead of inventing missing time/network values. Migration 007 forward-fixes role-removal guards
+for databases that already recorded the draft 003/004 bodies.
+
 ### Partition rollover design
 
 **Why partitioning exists:** block height grows without bound for the lifetime of the network, and
@@ -763,6 +807,11 @@ configuration.
   visible. Insert order within that transaction (block row first) matters: it makes the block
   visible to the later FK-checked inserts via ordinary same-transaction MVCC visibility, even
   though the block row hasn't committed yet.
+  Before comparison or insertion it takes a transaction-scoped Postgres advisory lock derived from
+  `(net,height)`, then refuses a different finalized canonical block and rechecks existing
+  `(position,tx_hash,kind)` triples under the lock. Identical retries agree idempotently; competing
+  histories refuse. The guard is database-wide across processes, not a JavaScript mutex. This
+  bundle path is the finalized-only production writer contract.
 - `getBlob` always **rehashes on read** and rejects (`BlobIntegrityError`) if the recomputed SHA-256
   disagrees with the lookup key — it never returns bytes it cannot verify, mirroring
   `CheckpointStore.load`'s proven chunk-integrity pattern in the tier1_wallet lineage.
@@ -795,7 +844,9 @@ export interface RunMigrationsOptions {
   module's unexported default) remains the implicit default.
 - A `chain_archive` caller passes `{ schema: "chain_archive", migrations: chainArchiveMigrations }`
   explicitly. `chainArchiveMigrations` (`migrations/chain_archive/index.ts`) is
-  `[migration000, chainArchiveCore]` — it **reuses `000_schema.ts` unchanged**: that migration's
+  `[migration000, chainArchiveCore, transactionPositionKey, runtimeMetadata, replayCheckpoints,
+  replayCheckpointBlockTime, replayCheckpointLedgerNetwork, blobRoleGuardForwardFix]` — it
+  **reuses `000_schema.ts` unchanged**: that migration's
   `up(sql, schema)` was already fully schema-parameterized (`CREATE SCHEMA IF NOT EXISTS <schema>`
   plus a `<schema>._migrations` table scoped to whatever `schema` string is passed in), so running
   it a second time against a *different* schema name bootstraps a second, independent
@@ -806,10 +857,9 @@ export interface RunMigrationsOptions {
   `migration000` reference, so a future third lineage that didn't happen to start with a
   schema-bootstrap migration would surface as a real bug (a missing `_migrations` table) instead of
   a mismatched hardcoded reference silently running the wrong thing.
-- **Nothing in this repo's application code calls `runMigrations` with the `chain_archive` lineage
-  today.** `chainArchiveMigrations` is exported and fully functional, but it is an inert,
-  unregistered, design-stage artifact — consistent with the [provenance note](#chain_archive-lineage)
-  that the whole `chain_archive` schema has not been merged/wired into `main` yet.
+- `chain-archive-sync/bootstrap.ts` is the production call site. The packaged archive-sync CLI
+  invokes it before constructing the service, so a fresh database reaches the complete lineage
+  before ingest begins.
 
 Both schemas can coexist in one Postgres instance because the migration runner's advisory lock
 (class `1`, keyed by `hashtext(schema)`) is per-schema — two different schemas' migrations run

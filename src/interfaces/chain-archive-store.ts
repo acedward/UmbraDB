@@ -11,10 +11,10 @@ import { StorageError } from "./storage-errors.js";
  * that talks to a Midnight node/indexer lives entirely outside `src/` (`chain-archive-sync/`,
  * AC-7) and depends on THIS interface, never on the Postgres implementation's internals.
  *
- * Deliberately narrower than the full `chain_archive` schema: `bridge_observations` and
- * `verifier_key_observations` get minimal write-only support (a "stub/initial pass" per the
- * implementation task) since this devnet's ingestion of those categories is genuinely a first
- * pass, not a fully round-tripped read/query surface yet.
+ * Deliberately narrower than the full `chain_archive` schema: `verifier_key_observations` keeps
+ * minimal write-only support (a "stub/initial pass" per the implementation task), while bridge
+ * observations expose only the one latest-by-kind read needed to restore change-detection state
+ * after a sync-service restart. This is not a general bridge query surface.
  */
 
 /** Lowercase 64-char hex encoding of a 32-byte hash -- every hash column in this schema
@@ -25,7 +25,13 @@ export type Hex32 = string;
 export const Hex32Schema = z.string().regex(/^[0-9a-f]{64}$/, "expected 64 lowercase hex chars (32 bytes)");
 
 export type BlobRole =
-  | "block_header" | "block_body" | "tx_raw" | "proof" | "verifier_key" | "bridge_observation";
+  | "block_header" | "block_body" | "tx_raw" | "proof" | "verifier_key" | "bridge_observation"
+  /** SCALE-encoded runtime metadata, kept so the archive can decode its own history without the
+   *  node still serving it -- see `runtime_metadata` (migration 003). */
+  | "runtime_metadata"
+  /** Serialized ledger state at a checkpoint height, so replay resumes without re-applying the
+   *  whole chain -- see `replay_checkpoints` (migration 004). */
+  | "ledger_state";
 
 export type BlockStatus = "seen" | "canonical" | "orphaned" | "pruned";
 
@@ -104,6 +110,17 @@ export interface BridgeObservationRecord {
   rawBytes: Uint8Array;
 }
 
+/** Metadata projection of a bridge observation. Raw bytes retain the archive's normal
+ * metadata/blob split and are read through {@link ChainArchiveStore.getBlob}. */
+export interface BridgeObservationMeta {
+  net: string;
+  blockHeight: number;
+  blockHash: Hex32;
+  observationIndex: number;
+  kind: BridgeObservationKind;
+  rawBlobHash: Hex32;
+}
+
 /** Everything one call to `putBlockBundle` needs to ingest a single block atomically: the block
  *  row itself plus every transaction/bridge-observation row that belongs to it. `transactions`/
  *  `bridgeObservations` may be empty (e.g. a block with no `pallet_midnight` transactions, or no
@@ -177,9 +194,11 @@ export class BlockNotFoundError extends ChainArchiveError {
  * aware where the schema itself is (blob puts are naturally idempotent by content address) AND,
  * as of the sprint-fix round below, `putBlock`/`putTransactions`/`putBridgeObservations`/
  * `putBlockBundle` are now ALSO idempotent against a byte-for-byte-identical re-ingest of the
- * SAME (net, height, blockHash) row: their terminal `INSERT`s use `ON CONFLICT ... DO NOTHING`
- * on the table's own primary key, so retrying an ingest that already durably committed is a
- * silent no-op rather than a duplicate-key error. This does NOT remove the need for a watermark
+ * SAME primary-keyed rows: their terminal `INSERT`s use `ON CONFLICT ... DO NOTHING`, so retrying
+ * an ingest that already durably committed is a silent no-op rather than a duplicate-key error.
+ * Only `putBlockBundle` additionally serializes and rejects incompatible history; standalone
+ * batch methods are low-level primitives and must not be used as a multi-writer ingest protocol.
+ * This does NOT remove the need for a watermark
  * (callers driving an at-least-once sync loop still must track "last successfully ingested
  * height," exactly like every other sync consumer in this codebase,
  * `src/interfaces/watermarks.ts`) -- it removes the failure mode where retrying the SAME height
@@ -201,13 +220,21 @@ export interface ChainArchiveStore {
   /** Writes each transaction's raw bytes into `chain_blobs`/`chain_blob_roles` (role `tx_raw`)
    *  plus its `transactions` row, one insert per element, inside one transaction covering the
    *  whole batch (so a partial block's transaction set never becomes visible on failure). Each
-   *  transaction's insert is `ON CONFLICT (net, block_height, block_hash, tx_hash) DO NOTHING` --
+   *  transaction's insert is `ON CONFLICT (net, block_height, block_hash, position) DO NOTHING` --
    *  re-`putTransactions`-ing an already-committed set (in full or in part) is a safe no-op. */
   putTransactions(txs: readonly TransactionRecord[]): Promise<void>;
 
   /** `ON CONFLICT (net, block_height, block_hash, observation_index) DO NOTHING` on the terminal
    *  insert -- same re-ingest-safety as `putTransactions`. */
   putBridgeObservations(obs: readonly BridgeObservationRecord[]): Promise<void>;
+
+  /** The newest observation of `kind` at or below `maxHeight` on the finalized canonical chain.
+   * Used to restore a change-detection cursor from durable history after process restart, so an
+   * unchanged value immediately after a change boundary is not emitted a second time. The
+   * finalized/canonical qualification matches the sync writer's deliberately narrow contract. */
+  getLatestBridgeObservation(
+    net: string, kind: BridgeObservationKind, maxHeight: number,
+  ): Promise<BridgeObservationMeta | undefined>;
 
   /**
    * Ingests one full block -- `bundle.block`, `bundle.transactions`, and
@@ -224,6 +251,14 @@ export interface ChainArchiveStore {
    * committed (e.g. a crash between this call returning and the caller durably recording its own
    * watermark) is also a safe no-op, not an error -- both the "partial prior attempt" and
    * "fully-committed prior attempt, watermark just hadn't caught up" retry cases are covered.
+   *
+   * Calls are serialized in PostgreSQL by `(net, height)` for the whole transaction. Under that
+   * guard the stored `(position, tx_hash, kind)` sequence is compared again immediately before
+   * writes: a concurrent identical bundle is an idempotent agreement, while a different sequence
+   * is refused. This is a database-level guard, not an in-process mutex, so independent service
+   * processes cannot both pass a stale preflight read and report success for incompatible history.
+   * The production sync writer supplies only finalized canonical blocks; arbitrary, partially
+   * flipped `setCanonical` histories remain outside replay's contract.
    * Returns the same header/body blob hashes `putBlock` would.
    */
   putBlockBundle(bundle: BlockBundle): Promise<{ headerBlobHash: Hex32; bodyBlobHash?: Hex32 }>;
@@ -260,9 +295,23 @@ export interface ChainArchiveStore {
    *  (AC-1: a shared tx hash across competing blocks at one height persists in full for both). */
   getTransactionsByHash(net: string, txHash: Hex32): Promise<TransactionMeta[]>;
 
-  /** The COMPLETE transaction set archived for one specific block (scoped by `blockHash`, so
-   *  competing forks at the same height each enumerate their own set), ordered by `position`
-   *  ascending. Empty array if the block has no transactions or does not exist. Added in the
+  /** The complete transaction set THIS ARCHIVE HOLDS for one specific block (scoped by
+   *  `blockHash`, so competing forks at the same height each enumerate their own set), ordered by
+   *  `position` ascending.
+   *
+   *  **Completeness is relative to how the block was ingested, and callers must not read more
+   *  into it.** Indexer-sourced ingest archives regular and system transactions. Node-only ingest
+   *  archives both as well — including system transactions carried as extrinsics, keyed by the
+   *  ledger's own hash — and REFUSES a block whose system transactions it cannot key, rather than
+   *  writing it without them.
+   *
+   *  One category is still missing from node-only ingest: system transactions that the runtime
+   *  GENERATES rather than receiving as extrinsics. Those surface only in the
+   *  `SystemTransactionApplied` event, which is not yet decoded, and ingest does not currently
+   *  detect their presence — so on a chain that produces them (any that mints block rewards) a
+   *  node-only archive can be short of an indexer-sourced one without saying so. Until that is
+   *  closed, treat node-only ingest as complete only for chains whose system transactions are
+   *  extrinsic-borne. Empty array if the block has no transactions or does not exist. Added in the
    *  Sol-audit fix round (Finding 5): AC-1's spec text requires each fork's "full transaction
    *  set [to] be retrievable scoped to" its block, and no public method could enumerate a
    *  block's transactions to verify completeness -- read paths (replay/AC-8 cross-validation)
@@ -287,4 +336,91 @@ export interface ChainArchiveStore {
    *  (e.g. `canonical_tip:<net>`). */
   getWatermark(key: string): Promise<unknown | undefined>;
   setWatermark(key: string, value: unknown): Promise<void>;
+
+  /**
+   * The archive's own copy of a runtime's SCALE metadata, or `undefined` if this runtime has not
+   * been captured for this net.
+   *
+   * Decoding a block requires the metadata of the runtime that produced it, and that metadata is
+   * derived from historical state -- a pruned node cannot serve it. Keeping a copy makes the
+   * archive self-describing, so re-syncs and replay never depend on the node's state retention.
+   */
+  getRuntimeMetadata(
+    net: string, specName: string, specVersion: number,
+  ): Promise<Uint8Array | undefined>;
+
+  /**
+   * Persist a runtime's metadata the first time that runtime is seen. Idempotent: a second call
+   * for the same `(net, specName, specVersion)` leaves the existing capture untouched, so the
+   * recorded `first_seen_height` remains the height that genuinely introduced the runtime.
+   */
+  putRuntimeMetadata(record: RuntimeMetadataRecord): Promise<void>;
+
+  /**
+   * The newest replay checkpoint at or below `maxHeight` **on the canonical chain**, or
+   * `undefined` if none exists.
+   *
+   * Replay resumes from here rather than from genesis, which is what keeps restart cost
+   * proportional to the checkpoint interval instead of to the whole chain.
+   *
+   * CANONICAL IS PART OF THE CONTRACT, not an optimisation (T5). Migration 004 keys checkpoints by
+   * `(net, block_height, block_hash)` precisely so a fork's checkpoints are distinguishable, and
+   * selecting on `(net, height)` alone can therefore return a checkpoint belonging to an ORPHANED
+   * block. Replay would then fold canonical successors onto a state that forked away from them --
+   * a state no chain ever had, arrived at without any error. Ledger state is a fold, so the
+   * damage is silent and permanent.
+   *
+   * The supported replay/catch-up read contract is deliberately narrower than every state the
+   * public `setCanonical` primitive can construct: its writer is finalized-only and never performs
+   * height-by-height reorg flips. A partially flipped `setCanonical` history is outside this
+   * contract. Catch-up nevertheless validates that each selected row's `parentHash` is the hash it
+   * just replayed and refuses a disconnected range, naming both hashes. Binding checkpoint lookup
+   * to a complete ancestry proof remains explicit future work under O2; callers must not describe
+   * this narrower contract as general reorg-safe replay.
+   */
+  getLatestReplayCheckpoint(
+    net: string, maxHeight: number,
+  ): Promise<ReplayCheckpointRecord | undefined>;
+
+  /** Record ledger state at a checkpoint height. Idempotent for the same block. */
+  putReplayCheckpoint(record: ReplayCheckpointRecord): Promise<void>;
+}
+
+/** Serialized ledger state as of after `blockHeight`'s post-block update. */
+export interface ReplayCheckpointRecord {
+  net: string;
+  blockHeight: number;
+  blockHash: Hex32;
+  /** Serialized `LedgerState`. A ledger-INTERNAL encoding, hence `ledgerVersion`. */
+  stateBytes: Uint8Array;
+  /** The ledger build that produced `stateBytes`. Resuming under a different build must refuse:
+   *  the encoding is not guaranteed stable across builds, and a silently mis-resumed state
+   *  produces wrong replay outcomes rather than an error. */
+  ledgerVersion: string;
+  /** This block's own `Timestamp::set` value, in ms.
+   *
+   *  Not decoration either: the block resuming from this checkpoint is applied with it as
+   *  `lastBlockTime`, which feeds the ledger's own validity rules. Without it stored, every
+   *  resumed run folded its first block against a parent dated 1970 -- a defect invisible to any
+   *  single-run test, because the value is only wrong across a restart (T1). */
+  blockTimestampMs: number;
+  /** The LEDGER network this state was folded under (`undeployed`, `devnet`, ...).
+   *
+   *  Recorded explicitly rather than read back from the serialized state, which embeds it but
+   *  exposes no accessor. Resume must compare this against its own configured `ledgerNetworkId`
+   *  and refuse a mismatch: a checkpoint from another network has the same `ledgerVersion` marker
+   *  as a valid one, so the build check alone cannot tell them apart (T2). */
+  ledgerNetworkId: string;
+}
+
+/** One runtime's metadata, as captured by this archive. */
+export interface RuntimeMetadataRecord {
+  net: string;
+  specName: string;
+  specVersion: number;
+  /** The height at which this runtime was first observed -- diagnostic, and the answer to "which
+   *  block introduced this runtime" when a decode goes wrong at an upgrade boundary. */
+  firstSeenHeight: number;
+  /** Raw SCALE-encoded metadata, exactly as the node served it. */
+  metadataBytes: Uint8Array;
 }

@@ -7,22 +7,28 @@ component is fixed — this is the security signal: `sha256` / image `@sha256:` 
 locked rev is the real pin behind a range).
 
 - **Project license:** Apache-2.0 (`LICENSE`, `NOTICE` — Copyright 2026 Charles Hoskinson).
-- **npm totals:** 11 direct (2 runtime + 9 dev) · **307 packages total** in `package-lock.json`
-  (lockfileVersion 3) · **307/307 resolved from `registry.npmjs.org` with a `sha512` integrity
-  hash** · 5 packages declare an install script (all dev/optional — see npm-dev note).
+- **npm totals:** 18 direct (4 runtime + 14 dev) · **493 package entries** in
+  `package-lock.json` (lockfileVersion 3) · **491/491 registry entries** carry a `sha512`
+  integrity hash; the remaining two entries are the local ledger link and its vendored target ·
+  5 packages declare an install script (all dev/optional — see npm-dev note).
 - **Nix:** 6 flake inputs (5 locked + 1 source-only) · 3 pinned release binaries (sha256) ·
-  2 Docker images (digest) · ~15 nixpkgs packages.
+  2 stack Docker images (digest) · ~15 nixpkgs packages.
+- **Compose test stack:** 5 image declarations, all digest-pinned (6 unique image references
+  across Nix + Compose because the proof-server digest is shared).
 - **Lean:** toolchain `v4.32.0` · 9 Lake packages (mathlib + 8 transitive), each an exact git rev.
 
 ---
 
 ## 1. npm — runtime dependencies
 
-Source: `package.json` (`dependencies`) + resolved from `package-lock.json`. Both are
-**zero-dependency** packages, so the entire *runtime* trust surface is these two nodes.
+Source: `package.json` (`dependencies`) + resolved from `package-lock.json`. The vendored ledger
+is pinned by the committed `vendor/ledger-v8-syshash/SHA256SUMS`; registry dependencies are pinned
+by the lockfile's version, tarball URL and integrity hash.
 
 | Component | Version/Pin | Pinning | Source | Integrity (sha512, truncated) | License | Purpose | Update-watch |
 |---|---|---|---|---|---|---|---|
+| `@midnight-ntwrk/ledger-v8` | `file:vendor/ledger-v8-syshash` → **8.1.0-syshash.4** | committed local artifact + 32 SHA-256 checksums | source commit + patches recorded in `vendor/ledger-v8-syshash/PROVENANCE.md` | `SHA256SUMS` (all shipped files and source patches) | Apache-2.0 | Node-only transaction hashing, semantic decode, replay, block close and committed ledger-state-root comparison | Upstream Ledger 8 exports; replace vendor only with equivalent verified release |
+| `@polkadot/types` | `^16.5.6` → **16.5.6** | range → locked | registry.npmjs.org | `sha512-X/sfMHJS…CbkdKw==` | Apache-2.0 | SCALE/runtime-metadata and event decoding at historical blocks | polkadot-js releases/advisories |
 | `postgres` | `^3.4.9` → **3.4.9** | range → locked | registry.npmjs.org | `sha512-GD3qdB0x…KDLnaw==` | Unlicense | The Postgres client driver — UmbraDB's sole database access library | GH advisories / `npm audit` on `postgres` |
 | `zod` | `^4.0.0` → **4.4.3** | range → locked | registry.npmjs.org | `sha512-ytENFjIJ…HJyTQ==` | MIT | Runtime schema validation of stored/loaded state | advisories / `npm audit` on `zod` |
 
@@ -35,6 +41,11 @@ tooling only — never shipped in the runtime path.
 
 | Component | Version/Pin | Pinning | Source | Integrity (truncated) | License | Purpose | Update-watch |
 |---|---|---|---|---|---|---|---|
+| `@stryker-mutator/core` | `^9.6.1` → **9.6.1** | range → locked | registry.npmjs.org | `sha512-WMgnvf+W…U5Q2cLQ==` | Apache-2.0 | Mutation-test orchestration and per-adapter adequacy gate | Stryker releases/advisories |
+| `@stryker-mutator/vitest-runner` | `^9.6.1` → **9.6.1** | range → locked | registry.npmjs.org | `sha512-eyUHTCf3…2SRN0ow==` | Apache-2.0 | Vitest integration for mutation testing | Stryker releases/advisories |
+| `@vitest/coverage-v8` | `^4.1.10` → **4.1.10** | range → locked | registry.npmjs.org | `sha512-IM49Hmth…EKDc8g==` | MIT | V8 coverage provider | Vitest releases/advisories |
+| `ledger-v8-stock` | npm alias → `@midnight-ntwrk/ledger-v8@`**8.0.3** | exact alias → locked | registry.npmjs.org | `sha512-2BLMfHnZ…8CGUcQ==` | upstream package omits metadata; upstream project Apache-2.0 | Negative/refusal oracle proving the stock build lacks patched exports | Midnight ledger releases |
+| `tinybench` | `^2.9.0` → **2.9.0** | range → locked | registry.npmjs.org | `sha512-0+DUvqWM…NllqGeg==` | MIT | Benchmark harness | tinybench releases |
 | `typescript` | `^5.9.0` → **5.9.3** | range → locked | registry.npmjs.org | `sha512-jl1vZzPD…5TgSw==` | Apache-2.0 | Typechecking (`tsc --noEmit`), `.d.ts` | TS releases / advisories |
 | `vitest` | `^4.1.10` → **4.1.10** | range → locked | registry.npmjs.org | `sha512-R9jUTe5S…GUPw==` | MIT | Test runner (conformance + live tiers) | vitest releases / advisories |
 | `tsx` | `^4.23.1` → **4.23.1** | range → locked | registry.npmjs.org | `sha512-GQHnkIfx…2wcWQ==` | MIT | TS execution for the `archive:sync` CLI | advisories (pulls `esbuild`) |
@@ -45,9 +56,9 @@ tooling only — never shipped in the runtime path.
 | `fast-check` | `^4.9.0` → **4.9.0** | range → locked | registry.npmjs.org | `sha512-7ms6T7Sy…PCllg==` | MIT | Property-based testing (P1–P10 properties) | fast-check releases |
 | `@midnightntwrk/wallet-sdk-abstractions` | **3.0.0-canary.20260716150734-e744d99** | exact canary build | registry.npmjs.org | `sha512-8oJ+0o09…7LDLw==` | Apache-2.0 | Wallet-state type/shape reference for test fixtures; test-only per the indexer-agnostic boundary | Midnight SDK — canary, watch closely |
 
-> **Install scripts.** 5 of the 307 packages declare an install/lifecycle script — all in the
-> **dev/optional** Testcontainers→dockerode→ssh2 toolchain, **none in the runtime (`postgres`,
-> `zod`) tree**: `esbuild@0.28.1`, `protobufjs@7.6.5`, `ssh2@1.17.0`, and the optional
+> **Install scripts.** 5 of the 493 package entries declare an install/lifecycle script — all in
+> **dev/optional tooling**, not the four direct runtime packages: `esbuild@0.28.1`,
+> `protobufjs@7.6.5`, `ssh2@1.17.0`, and the optional
 > `cpu-features@0.0.10` + `fsevents@2.3.3` (darwin-only). This corrects the "zero install scripts"
 > phrasing in `openspec/changes/v1.0.0-infosec-signoff/design.md §4`: the lockfile flags five.
 > The planned G18 `.npmrc` `ignore-scripts=true` neutralizes all of them (and any future one)
@@ -91,14 +102,26 @@ Source: `nix/midnight-env/flake.nix`. Pre-built upstream release tarballs, conte
 
 ## 5. Docker images (digest-pinned)
 
-Source: `nix/midnight-env/flake.nix` (`midnightDockerImages`) and `scripts/start-stack.sh`.
-Pinned by immutable `@sha256:` **content digest**. Digest pinning gives immutability, *not* CVE
-freedom — hence the scheduled Trivy scan (G18).
+Source: `nix/midnight-env/flake.nix`, `nix/midnight-env/scripts/start-stack.sh`, and
+`test/compose/docker-compose.yml`. Every live image reference ends in immutable
+`@sha256:<64 lowercase hex>`. Digest pinning gives immutability, *not* CVE freedom — hence the
+scheduled Trivy scan for the Nix stack images and the Compose parser gate for the test stack.
 
 | Image | Tag | Digest | Pinning | Purpose | Update-watch |
 |---|---|---|---|---|---|
 | `midnightntwrk/indexer-standalone` | 4.3.3 | `sha256:03afd079b00bcd229df29a24771439c5e7695c339cd89216d0763ce40731cc4b` | image digest | Standalone Midnight indexer (test infra) | G18 Trivy scan (weekly) + Midnight releases |
 | `midnightntwrk/proof-server` | 8.1.0 | `sha256:801bbc0340e9e96f16735f77b523f23c7459e3359842f7c79c2c53f4e994d531` | image digest | Midnight proof server | G18 Trivy scan + Midnight releases |
+| `node` | 24-bookworm | `sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` | image digest | Compose test runner | Node/Debian security releases; parity pin gate |
+| `midnightntwrk/midnight-node` | 1.0.0 | `sha256:ede01da35e982b6a4b85461ad8492ae2753ef14246fba33c8039b782aa8e39fb` | image digest | Digest-pinned Ledger 8 node for parity/live-service tests | Midnight node releases; parity pin gate |
+| `midnightntwrk/indexer-standalone` | 4.3.2 | `sha256:a769f7f2eaf34ba7ecaea19e878112d9a4686c5aa9a1d3dce86a42086a9a6444` | image digest | Reference indexer for Compose parity | Midnight indexer releases; parity pin gate |
+| `midnightntwrk/proof-server` | 8.1.0 | `sha256:801bbc0340e9e96f16735f77b523f23c7459e3359842f7c79c2c53f4e994d531` | image digest | Proof server shared by both stack definitions | G18 Trivy + parity pin gate |
+| `postgres` | 17 | `sha256:0027bef26712baaee437a4ea48fdf3d2d2e2bc5f0d81615374408ca320f3c7e3` | image digest | Compose archive/indexer database | PostgreSQL security releases; parity pin gate |
+
+The first two rows are the Nix Preprod stack; the final five are Compose declarations. The proof
+server reference is identical in both, yielding six unique references across seven declarations.
+`.github/workflows/chain-archive-parity.yml` runs `scripts/verify-compose-image-pins.sh`, which
+parses `docker compose config --images`; unquoted, indented and interpolated image declarations
+cannot bypass it.
 
 ---
 
@@ -155,19 +178,21 @@ Tools the build, test, and CI depend on that are not captured as package entries
 | `openspec` CLI | host | change-spec workflow (`openspec/`) | Manages change proposals/specs | openspec releases |
 | GitHub Actions (pinned by SHA) | `actions/checkout@11d5960…` (v4), `actions/setup-node@49933ea…` (v4) | `.github/workflows/conformance.yml` | CI runner actions, SHA-pinned | Dependabot / action releases |
 | `gitleaks` | CI-side (G18, this change) | `supply-chain.yml` | Full-history secret scan | gitleaks releases |
-| `trivy` | CI-side (G18, this change) | `supply-chain.yml` | HIGH/CRITICAL CVE scan of the two image digests | trivy releases |
+| `trivy` | CI-side (G18) | `supply-chain.yml` | HIGH/CRITICAL CVE scan of the two Nix-stack image digests | trivy releases |
 
 ---
 
 ## License summary
 
 - **UmbraDB:** Apache-2.0.
-- **npm direct deps:** Apache-2.0 (`typescript`, `typedoc`, `wallet-sdk-abstractions`),
-  MIT (`zod`, `vitest`, `tsx`, `@testcontainers/postgresql`, `@types/node`, `effect`,
-  `fast-check`), Unlicense (`postgres`).
-- **Full npm graph (307 pkgs) license spread:** MIT 224 · ISC 23 · Apache-2.0 22 · BSD-3-Clause 13 ·
-  MPL-2.0 12 · BlueOak-1.0.0 5 · BSD-2-Clause 1 · 0BSD 1 · Unlicense 2 · Python-2.0 1 ·
-  unspecified 3. All permissive; no copyleft beyond weak/file-scoped MPL-2.0. (Counts from
-  `package-lock.json`.)
+- **npm direct deps:** Apache-2.0 (`@midnight-ntwrk/ledger-v8`, `@polkadot/types`, TypeScript,
+  TypeDoc, Stryker, wallet-sdk abstractions), MIT (`zod`, Vitest/coverage, `tsx`, Testcontainers,
+  Node types, `effect`, `fast-check`, `tinybench`), Unlicense (`postgres`). The stock ledger alias
+  omits license metadata from its package manifest; the upstream project is Apache-2.0.
+- **Full npm graph (493 entries) license spread:** MIT 354 · Apache-2.0 58 · ISC 34 ·
+  BSD-3-Clause 19 · MPL-2.0 12 · BlueOak-1.0.0 5 · Unlicense 2 · BSD-2-Clause 1 · 0BSD 1 ·
+  Python-2.0 1 · CC-BY-4.0 1 · unspecified 5. Counts are derived directly from
+  `package-lock.json`; “unspecified” includes link/alias metadata gaps and must not be presented as
+  an affirmative license conclusion.
 - **Pinned binaries / images:** Cardano components Apache-2.0 (IntersectMBO); Midnight components
   Apache-2.0 (midnightntwrk). Lean/mathlib: Apache-2.0.

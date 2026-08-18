@@ -3,6 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient } from "../../src/postgres/client.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_archive/index.js";
+import * as migration000 from "../../src/postgres/migrations/000_schema.js";
+import * as chainArchiveCore from "../../src/postgres/migrations/chain_archive/001_chain_archive_core.js";
 
 /**
  * Closes the v3 audit's "no committed automated test for the new lineage" gap
@@ -37,7 +39,12 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
       const firstRun = await sql<{ name: string }[]>`
         select name from ${sql(schema)}._migrations order by name
       `;
-      expect(firstRun.map((r) => r.name)).toEqual(["000_schema", "001_chain_archive_core"]);
+      expect(firstRun.map((r) => r.name)).toEqual([
+        "000_schema", "001_chain_archive_core", "002_transaction_position_key",
+        "003_runtime_metadata", "004_replay_checkpoints",
+        "005_replay_checkpoint_block_time", "006_replay_checkpoint_ledger_network",
+        "007_blob_role_guard_forward_fix",
+      ]);
 
       // --- idempotent re-run: applies zero additional migrations ---
       await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
@@ -114,6 +121,72 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
       await sql.end({ timeout: 5 });
     }
   }, 60_000);
+
+  it("invalidates populated legacy checkpoints across the 004 -> 005 -> 006 upgrade", async () => {
+    // A fresh full-lineage test starts with an empty replay_checkpoints table, so both migration
+    // DELETEs are vacuous. Populate the exact schema each migration inherits: 005 must discard a
+    // 004 row whose timestamp is unknowable, then 006 must discard a newly written 005 row whose
+    // ledger network is unknowable. Merely checking the final columns would miss both failures.
+    const schema = "chain_archive_checkpoint_upgrade_test";
+    const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    try {
+      await runMigrations(sql, { schema, migrations: chainArchiveMigrations.slice(0, 5) });
+      const hash = (byte: number) => Buffer.alloc(32, byte);
+      const headerHash = hash(0x41);
+      const stateHash = hash(0x42);
+      const blockHash = hash(0x43);
+      await sql`
+        INSERT INTO ${sql(schema)}.chain_blobs (hash, data)
+        VALUES (${headerHash}, ${Buffer.from("header")}), (${stateHash}, ${Buffer.from("state")})
+      `;
+      await sql`
+        INSERT INTO ${sql(schema)}.chain_blob_roles (blob_hash, role)
+        VALUES (${headerHash}, 'block_header'), (${stateHash}, 'ledger_state')
+      `;
+      await sql`
+        INSERT INTO ${sql(schema)}.blocks
+          (net, block_hash, height, parent_hash, state_root, extrinsics_root, header_blob_hash,
+           is_canonical, status, finalized)
+        VALUES ('upgrade-net', ${blockHash}, 0, ${hash(0)}, ${hash(0x44)}, ${hash(0x45)},
+                ${headerHash}, true, 'canonical', true)
+      `;
+      await sql`
+        INSERT INTO ${sql(schema)}.replay_checkpoints
+          (net, block_height, block_hash, state_blob_hash, ledger_version)
+        VALUES ('upgrade-net', 0, ${blockHash}, ${stateHash}, 'legacy-004')
+      `;
+
+      await runMigrations(sql, { schema, migrations: chainArchiveMigrations.slice(0, 6) });
+      const [after005] = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM ${sql(schema)}.replay_checkpoints
+      `;
+      expect(after005?.n, "005 must delete populated 004 checkpoints").toBe(0);
+
+      await sql`
+        INSERT INTO ${sql(schema)}.replay_checkpoints
+          (net, block_height, block_hash, state_blob_hash, ledger_version, block_timestamp_ms)
+        VALUES ('upgrade-net', 0, ${blockHash}, ${stateHash}, 'legacy-005', 1754395200000)
+      `;
+      await runMigrations(sql, { schema, migrations: chainArchiveMigrations.slice(0, 7) });
+      const [after006] = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM ${sql(schema)}.replay_checkpoints
+      `;
+      expect(after006?.n, "006 must delete populated 005 checkpoints").toBe(0);
+
+      const columns = await sql<{ column_name: string; is_nullable: string }[]>`
+        SELECT column_name, is_nullable FROM information_schema.columns
+        WHERE table_schema = ${schema} AND table_name = 'replay_checkpoints'
+          AND column_name IN ('block_timestamp_ms', 'ledger_network_id')
+        ORDER BY column_name
+      `;
+      expect(columns).toEqual([
+        { column_name: "block_timestamp_ms", is_nullable: "NO" },
+        { column_name: "ledger_network_id", is_nullable: "NO" },
+      ]);
+    } finally {
+      await sql.end({ timeout: 5 });
+    }
+  }, 120_000);
 
   /**
    * v4 audit fix (round-3 design-council re-audit, Fable 5 / GPT-5.6 Sol) — the v3 test above
@@ -385,6 +458,330 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
       await sql.end({ timeout: 5 });
     }
   }, 60_000);
+
+  /**
+   * `002_transaction_position_key`: one block must be able to hold TWO rows carrying the same
+   * transaction hash.
+   *
+   * The reference indexer does not deduplicate a system transaction that arrives both as an
+   * extrinsic and as a `SystemTransactionApplied` event -- it prepends the event-borne list and
+   * extends with the extrinsic-derived one, and its own schema has no unique constraint on `hash`.
+   * Byte-parity therefore requires this archive to store both copies. Under the original key it
+   * could not, and `ON CONFLICT DO NOTHING` meant the second was dropped in SILENCE.
+   */
+  it("002: one block holds two rows with the same tx hash, keyed by position", async () => {
+    const schema = "chain_archive_dup_hash_test";
+    const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    try {
+      await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
+
+      const net = "dup_hash";
+      const blockHash = Buffer.alloc(32, 0x21);
+      const txHash = Buffer.alloc(32, 0x22);
+      const blobHash = Buffer.alloc(32, 0x23);
+      const headerBlob = Buffer.alloc(32, 0x24);
+      const bodyBlob = Buffer.alloc(32, 0x25);
+
+      for (const [h, role] of [[blobHash, "tx_raw"], [headerBlob, "block_header"], [bodyBlob, "block_body"]] as const) {
+        await sql`insert into ${sql(schema)}.chain_blobs (hash, data) values (${h}, ${Buffer.from([1])})`;
+        await sql`insert into ${sql(schema)}.chain_blob_roles (blob_hash, role) values (${h}, ${role})`;
+      }
+      await sql`
+        insert into ${sql(schema)}.blocks
+          (net, height, block_hash, parent_hash, state_root, extrinsics_root,
+           header_blob_hash, body_blob_hash, is_canonical, status, finalized)
+        values (${net}, 0, ${blockHash}, ${Buffer.alloc(32)}, ${Buffer.alloc(32, 0x26)},
+                ${Buffer.alloc(32, 0x27)}, ${headerBlob}, ${bodyBlob}, true, 'canonical', true)
+      `;
+
+      const insertTx = (position: number) => sql`
+        insert into ${sql(schema)}.transactions
+          (net, tx_hash, block_height, block_hash, position, kind, protocol_version, raw_blob_hash)
+        values (${net}, ${txHash}, 0, ${blockHash}, ${position}, 'system', 1000000, ${blobHash})
+      `;
+
+      // The dual-source case: same hash, different positions. Event-borne copy first, as the
+      // reference orders them.
+      await insertTx(0);
+      await insertTx(1);
+
+      const rows = await sql<{ position: number }[]>`
+        select position from ${sql(schema)}.transactions
+        where net = ${net} order by position
+      `;
+      expect(rows.map((r) => r.position)).toEqual([0, 1]);
+
+      // The uniqueness that MUST survive: position is still unique within a block, now as the
+      // primary key rather than a separate constraint. Losing it would let ingest write two
+      // different transactions at the same position, which silently reorders the archive.
+      await expect(insertTx(0)).rejects.toMatchObject({ code: "23505" });
+    } finally {
+      await sql.end({ timeout: 5 });
+    }
+  }, 60_000);
+  /**
+   * Audit A5a: 002 and 003 applied onto a database that ALREADY HOLDS ROWS.
+   *
+   * Every migration test here ran against empty tables, so the riskiest thing these migrations do
+   * had never been exercised: 002 drops the primary key and rebuilds it on a different column set,
+   * and 003 drops and re-creates a CHECK constraint. On an empty table those are metadata edits
+   * that cannot fail; on a populated one they must revalidate every existing row, and a row that
+   * violates the new shape aborts the migration -- in production, mid-upgrade.
+   *
+   * The scenario is a real pre-migration archive: two blocks with transactions and bridge
+   * observations, written under the OLD key, then migrated forward.
+   */
+  it("A5a: 002 and 003 apply onto a database that already holds rows, preserving them", async () => {
+    const schema = "chain_archive_populated_test";
+    const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    try {
+      // A database provisioned before either migration existed.
+      await runMigrations(sql, { schema, migrations: [migration000, chainArchiveCore] as never });
+
+      const net = "populated";
+      const blobs: Buffer[] = [];
+      const mkBlob = async (tag: number, role: string) => {
+        const h = Buffer.alloc(32, tag);
+        await sql`insert into ${sql(schema)}.chain_blobs (hash, data) values (${h}, ${Buffer.from([tag])})
+                  on conflict (hash) do nothing`;
+        await sql`insert into ${sql(schema)}.chain_blob_roles (blob_hash, role) values (${h}, ${role})
+                  on conflict (blob_hash, role) do nothing`;
+        blobs.push(h);
+        return h;
+      };
+
+      for (const height of [0, 1]) {
+        const blockHash = Buffer.alloc(32, 0x40 + height);
+        const header = await mkBlob(0x50 + height, "block_header");
+        const body = await mkBlob(0x60 + height, "block_body");
+        await sql`
+          insert into ${sql(schema)}.blocks
+            (net, height, block_hash, parent_hash, state_root, extrinsics_root,
+             header_blob_hash, body_blob_hash, is_canonical, status, finalized)
+          values (${net}, ${height}, ${blockHash},
+                  ${Buffer.alloc(32, height === 0 ? 0 : 0x40)}, ${Buffer.alloc(32, 0x70)},
+                  ${Buffer.alloc(32, 0x71)}, ${header}, ${body}, true, 'canonical', true)
+        `;
+        // Two transactions per block, distinct hashes -- legal under the OLD key, and they must
+        // survive re-keying onto (net, height, block_hash, position).
+        for (const position of [0, 1]) {
+          const raw = await mkBlob(0x80 + height * 2 + position, "tx_raw");
+          await sql`
+            insert into ${sql(schema)}.transactions
+              (net, tx_hash, block_height, block_hash, position, kind, protocol_version, raw_blob_hash)
+            values (${net}, ${Buffer.alloc(32, 0x90 + height * 2 + position)}, ${height},
+                    ${blockHash}, ${position}, ${position === 0 ? "system" : "regular"},
+                    1000000, ${raw})
+          `;
+        }
+        const obs = await mkBlob(0xa0 + height, "bridge_observation");
+        await sql`
+          insert into ${sql(schema)}.bridge_observations
+            (net, block_height, block_hash, observation_index, kind, raw_blob_hash)
+          values (${net}, ${height}, ${blockHash}, 0, 'system_parameters_d', ${obs})
+        `;
+      }
+
+      const before = await sql<{ n: number }[]>`
+        select count(*)::int as n from ${sql(schema)}.transactions where net = ${net}
+      `;
+      expect(before[0]!.n).toBe(4);
+
+      // --- the migrations under test, applied to a populated database ---
+      await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
+
+      // Every row survived, unchanged, in order.
+      const after = await sql<{ h: string; position: number; kind: string; tx: string }[]>`
+        select block_height::text as h, position, kind, encode(tx_hash, 'hex') as tx
+        from ${sql(schema)}.transactions where net = ${net}
+        order by block_height, position
+      `;
+      expect(after.map((r) => `${r.h}:${r.position}:${r.kind}`)).toEqual([
+        "0:0:system", "0:1:regular", "1:0:system", "1:1:regular",
+      ]);
+      const obsAfter = await sql<{ n: number }[]>`
+        select count(*)::int as n from ${sql(schema)}.bridge_observations where net = ${net}
+      `;
+      expect(obsAfter[0]!.n).toBe(2);
+
+      // 002's new key is in force ON THE POPULATED TABLE: the dual-source shape (one hash at two
+      // positions) is now storable...
+      const dupHash = Buffer.alloc(32, 0xb0);
+      const dupRaw = await mkBlob(0xb1, "tx_raw");
+      const dupBlock = Buffer.alloc(32, 0x40);
+      for (const position of [2, 3]) {
+        await sql`
+          insert into ${sql(schema)}.transactions
+            (net, tx_hash, block_height, block_hash, position, kind, protocol_version, raw_blob_hash)
+          values (${net}, ${dupHash}, 0, ${dupBlock}, ${position}, 'system', 1000000, ${dupRaw})
+        `;
+      }
+      // ...while a position clash is still rejected.
+      await expect(
+        sql`insert into ${sql(schema)}.transactions
+              (net, tx_hash, block_height, block_hash, position, kind, protocol_version, raw_blob_hash)
+            values (${net}, ${Buffer.alloc(32, 0xb2)}, 0, ${dupBlock}, 2, 'system', 1000000, ${dupRaw})`,
+      ).rejects.toMatchObject({ code: "23505" });
+
+      // 003's widened role CHECK accepts the new role on the populated database.
+      const metaBlob = Buffer.alloc(32, 0xc0);
+      await sql`insert into ${sql(schema)}.chain_blobs (hash, data) values (${metaBlob}, ${Buffer.from([1])})`;
+      await sql`insert into ${sql(schema)}.chain_blob_roles (blob_hash, role) values (${metaBlob}, 'runtime_metadata')`;
+      await sql`
+        insert into ${sql(schema)}.runtime_metadata
+          (net, spec_name, spec_version, first_seen_height, metadata_blob_hash)
+        values (${net}, 'midnight', 1000000, 0, ${metaBlob})
+      `;
+      const meta = await sql<{ n: number }[]>`
+        select count(*)::int as n from ${sql(schema)}.runtime_metadata where net = ${net}
+      `;
+      expect(meta[0]!.n).toBe(1);
+    } finally {
+      await sql.end({ timeout: 5 });
+    }
+  }, 120_000);
+
+  /**
+   * T8: the blob-role removal guard covers the tables 003 and 004 ADDED.
+   *
+   * 001's guard enumerates referencing tables by name, so tables added later are invisible to it
+   * and their blobs' role rows can be deleted -- orphaning a live reference and defeating the
+   * insert-side trigger. Round 3 extended the function from inside 003 and 004, and reported it
+   * closed; but the only deletion coverage exercised `tx_raw` and `block_header`, both of which
+   * 001 already handled. Removing BOTH new branches left the suite green.
+   *
+   * So this covers exactly the two roles that were added: one assertion per branch, each of which
+   * fails if its own branch is removed.
+   */
+  it("T8: rejects deleting a runtime_metadata or ledger_state role still referenced", async () => {
+    const schema = "chain_archive_t8_role_guard_test";
+    const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    try {
+      await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
+      const h = (n: number): string => n.toString(16).padStart(64, "0");
+      const net = "t8_guard_net";
+      const registerBlob = async (hashHex: string, role: string): Promise<Buffer> => {
+        const hash = Buffer.from(hashHex, "hex");
+        await sql`insert into ${sql(schema)}.chain_blobs (hash, data) values (${hash}, ${Buffer.from("payload-" + hashHex)})`;
+        await sql`insert into ${sql(schema)}.chain_blob_roles (blob_hash, role) values (${hash}, ${role})`;
+        return hash;
+      };
+
+      // --- runtime_metadata (added by 003) ---
+      const metaBlob = await registerBlob(h(400), "runtime_metadata");
+      await sql`insert into ${sql(schema)}.runtime_metadata
+        (net, spec_name, spec_version, first_seen_height, metadata_blob_hash)
+        values (${net}, 'midnight', 1000000, 0, ${metaBlob})`;
+      await expect(
+        sql`delete from ${sql(schema)}.chain_blob_roles where blob_hash = ${metaBlob} and role = 'runtime_metadata'`,
+        "a referenced runtime_metadata role must not be removable",
+      ).rejects.toMatchObject({ code: "23514" });
+
+      // --- ledger_state (added by 004) ---
+      const headerBlob = await registerBlob(h(401), "block_header");
+      const stateBlob = await registerBlob(h(402), "ledger_state");
+      const blockHash = Buffer.from(h(403), "hex");
+      await sql`insert into ${sql(schema)}.blocks
+        (net, block_hash, height, parent_hash, state_root, extrinsics_root, header_blob_hash)
+        values (${net}, ${blockHash}, 11, ${Buffer.from(h(0), "hex")},
+                ${Buffer.from(h(2), "hex")}, ${Buffer.from(h(3), "hex")}, ${headerBlob})`;
+      await sql`insert into ${sql(schema)}.replay_checkpoints
+        (net, block_height, block_hash, state_blob_hash, ledger_version, block_timestamp_ms,
+         ledger_network_id)
+        values (${net}, 11, ${blockHash}, ${stateBlob}, 'ledger-v8@test', 1754395200000,
+                'undeployed')`;
+      await expect(
+        sql`delete from ${sql(schema)}.chain_blob_roles where blob_hash = ${stateBlob} and role = 'ledger_state'`,
+        "a referenced ledger_state role must not be removable",
+      ).rejects.toMatchObject({ code: "23514" });
+
+      // --- and an UNREFERENCED role of each kind is still freely removable, so the assertions
+      //     above cannot be satisfied by a guard that simply refuses every deletion ---
+      const looseMeta = await registerBlob(h(404), "runtime_metadata");
+      const looseState = await registerBlob(h(405), "ledger_state");
+      await sql`delete from ${sql(schema)}.chain_blob_roles where blob_hash = ${looseMeta} and role = 'runtime_metadata'`;
+      await sql`delete from ${sql(schema)}.chain_blob_roles where blob_hash = ${looseState} and role = 'ledger_state'`;
+      const [left] = await sql<{ n: number }[]>`
+        select count(*)::int as n from ${sql(schema)}.chain_blob_roles
+        where blob_hash in (${looseMeta}, ${looseState})
+      `;
+      expect(left!.n, "unreferenced roles must still be deletable").toBe(0);
+    } finally {
+      await sql.end({ timeout: 5 });
+    }
+  }, 120_000);
+
+  /**
+   * T8: the forward migration repairs a database that recorded 003/004 BEFORE they were edited.
+   *
+   * Round 3 fixed the guard by editing two already-applied migrations. The runner records
+   * migrations by name, so such a database skips them forever: it ends up with the new TABLES and
+   * the OLD guard, and its migration ledger says everything ran. 007 exists to close that, and
+   * this reproduces the situation rather than assuming it cannot arise -- the guard is reverted to
+   * 001's enumeration to stand in for the pre-edit definition, and 007 must restore it.
+   */
+  it("T8: 007 repairs a stale removal guard that skipped 003/004's extensions", async () => {
+    const schema = "chain_archive_t8_forward_fix_test";
+    const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    try {
+      await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
+
+      // Stand in for the pre-edit guard: 001's enumeration, which knows nothing of the tables 003
+      // and 004 added. This is what such a database's function body actually looks like.
+      await sql.unsafe(`
+        CREATE OR REPLACE FUNCTION ${schema}.chain_archive_assert_role_removable(
+          p_blob_hash bytea, p_role text
+        ) RETURNS void LANGUAGE plpgsql AS $fn$
+        DECLARE v_in_use boolean;
+        BEGIN
+          PERFORM 1 FROM ${schema}.chain_blob_roles
+            WHERE blob_hash = p_blob_hash AND role = p_role FOR UPDATE;
+          v_in_use := CASE p_role
+            WHEN 'block_header' THEN
+              EXISTS (SELECT 1 FROM ${schema}.blocks WHERE header_blob_hash = p_blob_hash)
+            ELSE false
+          END;
+          IF v_in_use THEN
+            RAISE EXCEPTION 'cannot remove/change chain_blob_roles row (blob %, role %)'
+              , encode(p_blob_hash, 'hex'), p_role
+              USING ERRCODE = '23514', CONSTRAINT = 'chain_blob_roles_removal_guard';
+          END IF;
+        END;
+        $fn$
+      `);
+
+      const h = (n: number): string => n.toString(16).padStart(64, "0");
+      const metaHash = Buffer.from(h(500), "hex");
+      await sql`insert into ${sql(schema)}.chain_blobs (hash, data) values (${metaHash}, ${Buffer.from("m")})`;
+      await sql`insert into ${sql(schema)}.chain_blob_roles (blob_hash, role) values (${metaHash}, 'runtime_metadata')`;
+      await sql`insert into ${sql(schema)}.runtime_metadata
+        (net, spec_name, spec_version, first_seen_height, metadata_blob_hash)
+        values ('stale', 'midnight', 1000000, 0, ${metaHash})`;
+
+      // The hole is real: with the stale guard the referenced role deletes cleanly.
+      await sql`delete from ${sql(schema)}.chain_blob_roles where blob_hash = ${metaHash} and role = 'runtime_metadata'`;
+      const [orphaned] = await sql<{ n: number }[]>`
+        select count(*)::int as n from ${sql(schema)}.chain_blob_roles where blob_hash = ${metaHash}
+      `;
+      expect(orphaned!.n, "the stale guard must actually be permissive, or this proves nothing").toBe(0);
+
+      // 007 re-installs the complete enumeration. Applied directly, because the runner would skip
+      // it -- this schema already recorded every migration name.
+      const { up: forwardFix } = await import(
+        "../../src/postgres/migrations/chain_archive/007_blob_role_guard_forward_fix.js"
+      );
+      await forwardFix(sql as never, schema);
+
+      await sql`insert into ${sql(schema)}.chain_blob_roles (blob_hash, role) values (${metaHash}, 'runtime_metadata')`;
+      await expect(
+        sql`delete from ${sql(schema)}.chain_blob_roles where blob_hash = ${metaHash} and role = 'runtime_metadata'`,
+        "after 007 the guard must cover runtime_metadata again",
+      ).rejects.toMatchObject({ code: "23514" });
+    } finally {
+      await sql.end({ timeout: 5 });
+    }
+  }, 120_000);
+
 });
 
 async function tick(ms = 20): Promise<void> {

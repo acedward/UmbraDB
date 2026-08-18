@@ -38,12 +38,34 @@ import {
  * plus dust actions, and a regular transaction carrying three unshielded outputs plus a dust
  * spend.
  *
- * **Skip conditions (honest SKIP, never a silent vacuous pass -- same policy as the devnet
- * suite post-Finding-4)**: requires (a) a built sibling `midnight-wallet` checkout providing the
- * ledger-v8 WASM bindings (see `tx-replay-decoder.ts`'s loader), and (b) the captured indexer
- * SQLite database (`MIDNIGHT_INDEXER_SQLITE`, default `~/midnight-testnet/indexer-data/
- * indexer.sqlite`). CI provisions neither, so this suite reports SKIPPED there
- * (`.github/workflows/conformance.yml`); it runs for real in the development environment.
+   * **Skip conditions (honest SKIP, never a silent vacuous pass -- same policy as the devnet
+   * suite post-Finding-4)**: requires (a) the installed vendored ledger-v8 WASM bindings and
+   * (b) the captured indexer SQLite database (`MIDNIGHT_INDEXER_SQLITE`, default
+   * `~/midnight-testnet/indexer-data/indexer.sqlite`). A fresh clone supplies (a); CI does not
+   * provision the external captured database, so this corpus suite reports SKIPPED there.
+ *
+ * ── CI STATUS: DOCUMENTED-MANUAL, deliberately (F7, final-review finding) ────────────────────
+ * No workflow runs this suite, and none is expected to. That is a decision, not an oversight,
+ * and it is recorded here so the next auditor does not have to re-derive it from the skip
+ * conditions above.
+ *
+ * WHY NO CI PATH: the ground truth is a real Midnight indexer's own SQLite database captured
+ * from a synced public testnet. It is multi-gigabyte, third-party, and not redistributable
+ * through this repo; committing it is not an option, and re-syncing a public testnet indexer
+ * inside a CI job to regenerate it would cost hours per run for a corpus that changes only when
+ * the ledger codec does. The suite is therefore gated on the capture EXISTING, and reports
+ * SKIPPED rather than passing vacuously when it does not.
+ *
+ * HOW TO RUN IT (the manual path this status refers to):
+ *
+ *   MIDNIGHT_INDEXER_SQLITE=/path/to/indexer.sqlite \
+ *     npx vitest run test/integration/chain-archive-replay-decode.integration.test.ts
+ *
+ * WHAT COVERS THIS IN CI INSTEAD: nothing reconstructs zswap/unshielded/dust events from
+ * archived bytes in CI -- that is the honest answer. The adjacent guarantees that DO run there
+ * are the live 40-block parity gate (`chain-archive-parity.yml`) and the native-Rust ledger
+ * oracles in `ledger-replay.test.ts`. Neither is a substitute for this suite's specific claim;
+ * they bound the exposure rather than close it.
  */
 
 const INDEXER_SQLITE_PATH =
@@ -313,7 +335,7 @@ describe.skipIf(!LEDGER_AVAILABLE || !GROUND_TRUTH_AVAILABLE)(
 );
 
 /**
- * When the sibling checkout / captured indexer DB are absent (e.g. CI), the suite above is
+ * When the ledger artifact or captured indexer DB is absent, the suite above is
  * SKIPPED -- this always-running companion asserts the decoder module itself still loads and
  * classifies correctly with zero external dependencies, so the file is never entirely inert.
  */

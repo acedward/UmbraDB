@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": true,
+    "outDir": "dist-cli",
+    "rootDir": "."
+  },
+  "include": ["chain-archive-sync/**/*.ts", "src/**/*.ts"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "dist-cli",
+    "test",
+    "bench",
+    "**/*.test.ts"
+  ]
+}

@@ -15,6 +15,8 @@
   },
   "files": [
     "dist",
+    "dist-cli",
+    "vendor",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
@@ -33,7 +35,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && npm run build:cli",
     "docs:storage": "typedoc",
     "docs:storage:check": "typedoc --emit none --treatWarningsAsErrors",
     "test": "vitest run",
@@ -45,9 +47,12 @@
     "test:smoke": "npm run build && node test/smoke/pack-install.mjs",
     "archive:sync": "tsx chain-archive-sync/sync-cli.ts",
     "bench": "tsx bench/harness.ts",
-    "bench:smoke": "tsx bench/smoke.ts"
+    "bench:smoke": "tsx bench/smoke.ts",
+    "build:cli": "tsc -p tsconfig.cli.json && node scripts/copy-cli-assets.mjs"
   },
   "dependencies": {
+    "@midnight-ntwrk/ledger-v8": "file:vendor/ledger-v8-syshash",
+    "@polkadot/types": "^16.5.6",
     "postgres": "^3.4.9",
     "zod": "^4.0.0"
   },
@@ -60,10 +65,14 @@
     "@vitest/coverage-v8": "^4.1.10",
     "effect": "3.22.0",
     "fast-check": "^4.9.0",
+    "ledger-v8-stock": "npm:@midnight-ntwrk/ledger-v8@8.0.3",
     "tinybench": "^2.9.0",
     "tsx": "^4.23.1",
     "typedoc": "^0.28.0",
     "typescript": "^5.9.0",
     "vitest": "^4.1.10"
+  },
+  "bin": {
+    "umbradb-archive-sync": "dist-cli/chain-archive-sync/sync-cli.js"
   }
 }

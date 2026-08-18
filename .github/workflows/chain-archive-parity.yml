@@ -1,0 +1,152 @@
+name: Chain archive parity gates
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - 'chain-archive-sync/**'
+      - 'src/postgres/migrations/chain_archive/**'
+      - 'src/interfaces/chain-archive-store.ts'
+      - 'src/postgres/chain-archive-store.ts'
+      - 'test/integration/**'
+      - 'test/compose/**'
+      - '.github/workflows/chain-archive-parity.yml'
+      # The pin check is only a gate if a PR that weakens it runs the gate. Without these two
+      # entries a PR touching nothing but the verifier skips this workflow entirely and lands
+      # unchecked -- it runs unfiltered on main pushes, i.e. after the merge that broke it.
+      - 'scripts/verify-compose-image-pins.sh'
+      - 'test/ci/compose-image-pins.sh'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: chain-archive-parity-${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+# The gates that decide whether node-sourced ingest may replace the indexer.
+#
+# These suites gate themselves on whether a node, an indexer and the patched ledger are reachable,
+# and skip otherwise -- correct locally, catastrophic here. A container that failed to start would
+# otherwise produce a GREEN run in which the archive's only source-parity comparison never
+# executed. REQUIRE_LIVE_SERVICES=1 converts every such skip into a hard failure naming what was
+# missing, so this job can only pass by actually comparing the two sources.
+#
+# Not a substitute for the §7 acceptance matrix: this proves parity on the populations a devnet
+# genuinely produces (genesis system transactions, bare regular transactions, D-parameter
+# observations). The populations no reachable chain emits are covered by mechanism-equivalence
+# fixtures in the unit suites instead, and the plan says so rather than implying this job is
+# broader than it is.
+jobs:
+  parity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The vendored ledger must be the build that resolves, or the system-transaction paths below
+      # cannot run at all. Asserted before spending twenty minutes on containers.
+      - name: Verify the vendored ledger resolves
+        run: |
+          set -euo pipefail
+          version="$(node -e "console.log(JSON.parse(require('fs').readFileSync('node_modules/@midnight-ntwrk/ledger-v8/package.json','utf8')).version)")"
+          echo "resolved ledger: $version"
+          test "$version" = "8.1.0-syshash.4"
+
+      # The hostports overlay is REQUIRED here, not optional. The base compose file deliberately
+      # publishes nothing so several stacks can share a machine, which means that without the
+      # overlay the runner cannot reach the node or indexer at all and every gate below would
+      # fail on connectivity rather than on parity. Its defaults (19944/19088) are off the
+      # canonical numbers on purpose.
+      # A5: the pins are only worth something if they are checked. A tag silently repointed at new
+      # bytes would otherwise make this job compare against something other than what it claims,
+      # and report success either way.
+      - name: Verify compose images are digest-pinned
+        run: test/ci/compose-image-pins.sh
+
+      - name: Start the Midnight stack
+        working-directory: test/compose
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.hostports.yml \
+            up -d node indexer proof-server
+
+      # Both services, not just the node: the parity gate needs the indexer as its oracle, and a
+      # half-started stack should fail here with a clear cause rather than inside a test.
+      - name: Wait for the node and indexer
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            node_ok=$(curl -s -m 3 -X POST http://127.0.0.1:19944 \
+              -H 'Content-Type: application/json' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"system_chain","params":[]}' >/dev/null 2>&1 && echo yes || echo no)
+            idx_ok=$(curl -s -m 3 -X POST http://127.0.0.1:19088/api/v3/graphql \
+              -H 'Content-Type: application/json' \
+              -d '{"query":"{ block { height } }"}' >/dev/null 2>&1 && echo yes || echo no)
+            if [ "$node_ok" = yes ] && [ "$idx_ok" = yes ]; then echo "stack ready"; exit 0; fi
+            sleep 5
+          done
+          echo "node or indexer never became ready" >&2
+          docker compose -f test/compose/docker-compose.yml logs --tail 50 >&2 || true
+          exit 1
+
+      # Both live gates need a non-vacuous range. The node-only replay test requests exactly 40
+      # blocks, so height 10 is no longer a sufficient readiness signal: it launches the test on a
+      # healthy but too-young chain and fails on fixture age rather than archive behavior.
+      - name: Wait for the 40-block live range
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            height=$(curl -s -m 5 -X POST http://127.0.0.1:19088/api/v3/graphql \
+              -H 'Content-Type: application/json' \
+              -d '{"query":"{ block { height } }"}' | sed -n 's/.*"height":\([0-9]*\).*/\1/p')
+            if [ -n "${height:-}" ] && [ "$height" -ge 40 ]; then
+              echo "indexer at height $height"; exit 0
+            fi
+            sleep 5
+          done
+          echo "indexer did not reach height 40" >&2
+          exit 1
+
+      - name: Source-parity and node-only gates (required, never skipped)
+        env:
+          REQUIRE_LIVE_SERVICES: '1'
+          MIDNIGHT_TEST_NODE_URL: 'http://127.0.0.1:19944'
+          MIDNIGHT_TEST_INDEXER_URL: 'http://127.0.0.1:19088/api/v3/graphql'
+        run: |
+          npx vitest run \
+            test/integration/chain-archive-source-parity.integration.test.ts \
+            test/integration/chain-archive-node-only.integration.test.ts \
+            --maxWorkers=1
+
+      # Service-free gates, run in the same job so a change that breaks decoding is caught even if
+      # the stack is flaky. These must never skip under any circumstances.
+      - name: Decoder, metadata and refusal gates (no services required)
+        run: |
+          npx vitest run \
+            test/chain-archive-sync/ \
+            test/integration/chain-archive-sync-retry.integration.test.ts \
+            test/integration/chain-archive-event-guard.integration.test.ts \
+            test/integration/chain-archive-ledger-refusal.integration.test.ts \
+            test/integration/chain-archive-metadata-availability.integration.test.ts \
+            test/postgres/chain-archive-migrate.test.ts \
+            --maxWorkers=2
+
+      - name: Stack logs on failure
+        if: failure()
+        working-directory: test/compose
+        run: docker compose -f docker-compose.yml -f docker-compose.hostports.yml logs --tail 200
+
+      - name: Tear down
+        if: always()
+        working-directory: test/compose
+        run: docker compose -f docker-compose.yml -f docker-compose.hostports.yml down -v --remove-orphans

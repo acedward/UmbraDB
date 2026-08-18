@@ -2,7 +2,9 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { PgChainArchiveStore } from "../../src/postgres/chain-archive-store.js";
-import { BlobIntegrityError, BlobMissingError } from "../../src/interfaces/chain-archive-store.js";
+import {
+  BlobIntegrityError, BlobMissingError, type BlockBundle,
+} from "../../src/interfaces/chain-archive-store.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_archive/index.js";
 
@@ -409,6 +411,192 @@ describe("PgChainArchiveStore", () => {
         WHERE net = ${net} AND block_height = ${height}
       `;
       expect(obsRows[0]!.n).toBe(1); // the previously-missing bridge observation is now present
+    });
+
+    it("O2: putBlockBundle holds a PostgreSQL advisory xact lock for (net,height), not merely an in-process mutex", async () => {
+      // The two-service race regression proves the behavior, but a JavaScript-global mutex would
+      // also pass it while failing across processes. This companion uses three independent database
+      // sessions and observes the actual advisory lock while the writer is paused inside its
+      // transaction, closing that blind spot.
+      const net = "o2_database_lock_net";
+      const height = 902;
+      const blockHash = h(height, 0xa);
+      const bundle = bundleFixture(net, height, blockHash, h(0), 0xa) as BlockBundle;
+      const lockName = JSON.stringify([net, height]);
+      const barrierKey = 7_104_202_608_150_902n;
+      const barrier = createClient({ connectionString: container.getConnectionUri(), schema });
+      const observer = createClient({ connectionString: container.getConnectionUri(), schema });
+      let writer: Promise<unknown> | undefined;
+      let observerAcquiredApplicationLock = false;
+
+      try {
+        await barrier`SELECT pg_advisory_lock(${barrierKey}::bigint)`;
+        await sql`
+          CREATE FUNCTION ${sql(schema)}.o2_pause_block_insert() RETURNS trigger LANGUAGE plpgsql AS $fn$
+          BEGIN
+            PERFORM pg_advisory_xact_lock(7104202608150902::bigint);
+            RETURN NEW;
+          END;
+          $fn$
+        `;
+        await sql`
+          CREATE TRIGGER o2_pause_block_insert_trigger
+          BEFORE INSERT ON ${sql(schema)}.blocks
+          FOR EACH ROW EXECUTE FUNCTION ${sql(schema)}.o2_pause_block_insert()
+        `;
+
+        writer = store.putBlockBundle(bundle);
+
+        // Wait until the writer is blocked in the trigger. At that point production has already
+        // taken the application `(net,height)` lock; polling before this point could race ahead and
+        // accidentally acquire that lock ourselves.
+        let writerReachedBarrier = false;
+        for (let attempt = 0; attempt < 100 && !writerReachedBarrier; attempt++) {
+          const [row] = await observer<{ waiting: boolean }[]>`
+            WITH expected AS (SELECT ${barrierKey}::bigint AS key)
+            SELECT EXISTS (
+              SELECT 1 FROM pg_locks l, expected e
+              WHERE l.locktype = 'advisory' AND NOT l.granted AND l.objsubid = 1
+                AND l.classid::bigint = ((e.key >> 32) & 4294967295::bigint)
+                AND l.objid::bigint = (e.key & 4294967295::bigint)
+            ) AS waiting
+          `;
+          writerReachedBarrier = row?.waiting ?? false;
+          if (!writerReachedBarrier) await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(writerReachedBarrier, "writer must reach the deterministic DB barrier").toBe(true);
+
+        const [attempt] = await observer<{ acquired: boolean }[]>`
+          SELECT pg_try_advisory_lock(
+            hashtextextended(${lockName}, ${0}::bigint)
+          ) AS acquired
+        `;
+        observerAcquiredApplicationLock = attempt!.acquired;
+        expect(
+          attempt!.acquired,
+          "an independent session must see the (net,height) advisory lock already held",
+        ).toBe(false);
+      } finally {
+        if (observerAcquiredApplicationLock) {
+          await observer`
+            SELECT pg_advisory_unlock(hashtextextended(${lockName}, ${0}::bigint))
+          `;
+        }
+        await barrier`SELECT pg_advisory_unlock(${barrierKey}::bigint)`;
+        await writer;
+        await sql`DROP TRIGGER IF EXISTS o2_pause_block_insert_trigger ON ${sql(schema)}.blocks`;
+        await sql`DROP FUNCTION IF EXISTS ${sql(schema)}.o2_pause_block_insert()`;
+        await observer.end({ timeout: 5 });
+        await barrier.end({ timeout: 5 });
+      }
+    });
+
+    /**
+     * F8 (final-review finding), part 1 -- ORDER. The O2 observer above pauses the writer at
+     * `BEFORE INSERT ON blocks`, which is downstream of BOTH the canonical re-check and the
+     * transaction-history re-check. It therefore proves the lock is held by insert time, but says
+     * nothing about whether acquisition PRECEDES those re-checks -- and a re-check performed
+     * before the lock is taken is exactly the race the lock exists to close: two writers could
+     * both read agreeing history, then both proceed.
+     *
+     * Postgres has no SELECT trigger, so the re-check cannot be paused from the database side.
+     * Instead the store's own history re-check is wrapped, and at the moment it is entered an
+     * INDEPENDENT session attempts the production `(net,height)` key. Production takes the lock
+     * first, so that attempt must FAIL.
+     */
+    it("F8: putBlockBundle acquires the (net,height) advisory lock BEFORE the in-transaction history re-check, not merely before the insert", async () => {
+      const net = "f8_lock_order_net";
+      const height = 903;
+      const bundle = bundleFixture(net, height, h(height, 0xa), h(0), 0xa) as BlockBundle;
+      const lockName = JSON.stringify([net, height]);
+      const observer = createClient({ connectionString: container.getConnectionUri(), schema });
+
+      const storeInternal = store as unknown as {
+        assertBundleTransactionHistoryAgrees(tx: unknown, bundle: BlockBundle): Promise<void>;
+      };
+      const originalAssert = storeInternal.assertBundleTransactionHistoryAgrees.bind(store);
+      let observerAcquiredDuringHistoryCheck: boolean | undefined;
+
+      try {
+        storeInternal.assertBundleTransactionHistoryAgrees = async (tx, b) => {
+          // `pg_try_advisory_lock` never blocks, so this cannot deadlock against the writer's own
+          // transaction-scoped hold -- it reports, and returns immediately either way.
+          const [row] = await observer<{ acquired: boolean }[]>`
+            SELECT pg_try_advisory_lock(
+              hashtextextended(${lockName}, ${0}::bigint)
+            ) AS acquired
+          `;
+          observerAcquiredDuringHistoryCheck = row!.acquired;
+          if (row!.acquired) {
+            await observer`SELECT pg_advisory_unlock(hashtextextended(${lockName}, ${0}::bigint))`;
+          }
+          return originalAssert(tx, b);
+        };
+
+        await store.putBlockBundle(bundle);
+
+        expect(
+          observerAcquiredDuringHistoryCheck,
+          "the history re-check must actually have run -- otherwise this test proves nothing",
+        ).toBeDefined();
+        expect(
+          observerAcquiredDuringHistoryCheck,
+          "an independent session must NOT be able to take the (net,height) lock while the " +
+            "history re-check runs: production must already hold it",
+        ).toBe(false);
+      } finally {
+        storeInternal.assertBundleTransactionHistoryAgrees = originalAssert;
+        await observer.end({ timeout: 5 });
+      }
+    });
+
+    /**
+     * F8, part 2 -- RELEASE ON ROLLBACK. Production uses `pg_advisory_xact_lock`, which Postgres
+     * releases at transaction end on every path including error. Nothing pinned that choice: a
+     * session-scoped `pg_advisory_lock` would pass every other test in this file while leaking a
+     * lock on each failed write, permanently wedging that `(net,height)` for the pool connection's
+     * lifetime -- a wedge that would surface far from its cause.
+     *
+     * The failure is driven through a real production refusal path (the canonical-conflict guard,
+     * which sits AFTER acquisition), not a synthetic error, so the rollback under test is one
+     * ingest can actually take.
+     */
+    it("F8: a putBlockBundle that fails after acquiring the lock releases it on rollback -- the lock is transaction-scoped, not session-scoped", async () => {
+      const net = "f8_rollback_release_net";
+      const height = 904;
+      const lockName = JSON.stringify([net, height]);
+      const observer = createClient({ connectionString: container.getConnectionUri(), schema });
+
+      try {
+        // First writer succeeds and owns the height.
+        await store.putBlockBundle(
+          bundleFixture(net, height, h(height, 0xa), h(0), 0xa) as BlockBundle,
+        );
+
+        // Second writer, same height, DIFFERENT hash -> the canonical-conflict refusal fires
+        // inside the transaction, after the advisory lock has been taken.
+        await expect(
+          store.putBlockBundle(
+            bundleFixture(net, height, h(height, 0xb), h(0), 0xb) as BlockBundle,
+          ),
+        ).rejects.toThrow(/refusing the second writer/);
+
+        // The rolled-back transaction must have released the lock.
+        const [row] = await observer<{ acquired: boolean }[]>`
+          SELECT pg_try_advisory_lock(
+            hashtextextended(${lockName}, ${0}::bigint)
+          ) AS acquired
+        `;
+        if (row!.acquired) {
+          await observer`SELECT pg_advisory_unlock(hashtextextended(${lockName}, ${0}::bigint))`;
+        }
+        expect(
+          row!.acquired,
+          "after a failed write rolls back, the (net,height) advisory lock must be free",
+        ).toBe(true);
+      } finally {
+        await observer.end({ timeout: 5 });
+      }
     });
   });
 

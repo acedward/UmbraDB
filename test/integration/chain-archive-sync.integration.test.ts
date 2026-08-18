@@ -28,7 +28,7 @@ import { IndexerClient } from "../../chain-archive-sync/indexer-client.js";
  */
 async function devnetIsUp(): Promise<boolean> {
   try {
-    const res = await fetch("http://localhost:9944", {
+    const res = await fetch(NODE_URL, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "system_chain", params: [] }),
       signal: AbortSignal.timeout(3000),
@@ -40,8 +40,13 @@ async function devnetIsUp(): Promise<boolean> {
 }
 
 const NET = "undeployed1";
-const NODE_URL = "http://localhost:9944";
-const INDEXER_URL = "http://localhost:8088/api/v3/graphql";
+// Endpoint overrides (defaults unchanged, so an existing local-devnet workflow is unaffected).
+// `test/compose/docker-compose.yml` sets these to its own in-network services, which is what
+// lets this suite run against a KNOWN stack instead of whatever happens to answer on the
+// default host ports -- on a shared machine that could be an unrelated devnet, and the suite
+// would then fail on foreign data rather than skipping.
+const NODE_URL = process.env.MIDNIGHT_TEST_NODE_URL ?? "http://localhost:9944";
+const INDEXER_URL = process.env.MIDNIGHT_TEST_INDEXER_URL ?? "http://localhost:8088/api/v3/graphql";
 
 // Probed once at collection time (top-level await) so the whole suite can be genuinely
 // `describe.skipIf`-skipped -- shows up as SKIPPED, never as a vacuous PASS (Finding 4).
@@ -175,8 +180,8 @@ describe.skipIf(!up)("ChainArchiveSyncService against the live local devnet (rea
    * **Correction (Sol-audit fix round, Finding 1)**: an earlier version of this block claimed
    * the semantic decode of these bytes was "genuinely blocked -- no existing pure-JS/TS decoder
    * ... and no pre-built WASM bindings available in this environment." That claim was FALSE:
-   * the sibling `midnight-wallet` checkout ships a built `@midnight-ntwrk/ledger-v8` WASM
-   * package that decodes these exact payloads (independently proven by review: the design doc's
+   * the installed vendored `@midnight-ntwrk/ledger-v8` WASM decodes these exact payloads
+   * (independently proven by review: the design doc's
    * genesis sample decodes to `DistributeReserve(1000000000000000)`, and real regular
    * transactions expose their zswap outputs, unshielded outputs, and dust actions). The real
    * semantic decode -- reconstructed zswap/unshielded/dust events from archived bytes,

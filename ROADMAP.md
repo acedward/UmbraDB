@@ -456,20 +456,17 @@ equals the exported classes' `code` set with no hard-coded count; and the chain-
 constraint-name routing is deliberately left intact — routing preserved, surface not frozen. The
 track ships as the 1.1 headline.
 
-- **Full-chain archival storage** (`design/full-chain-storage-design.md` on
-  `feature/full-chain-storage-implementation`, branched from `main` after Sprint 8). A
-  content-addressed, indexer-independent archive for raw block/tx/blob payloads — a new
-  `chain_archive` schema and migration lineage (`blocks`, `transactions`, `bridge_observations`,
-  `chain_blobs`/`chain_blob_roles`, `verifier_key_observations`, height-range partitioning with a
-  documented rollover procedure) plus a `chain-archive-sync` ingestion service (node-RPC and
-  indexer-GraphQL sources, transaction replay decoding against the real ledger WASM package). The
-  design went through four audited revisions (v1–v4) before implementation; the implementation
-  itself has been through a 3-reviewer sprint-fix round and a Codex GPT-5.6 Sol audit-fix round
-  (most recently closing findings 1–7, with the full test suite passing locally and two
-  preprod-gated suites self-skipping outside that environment). **Merged to `main`** (`4d9da43`,
-  after 7 audit rounds / 346 tests) but deliberately **excluded from the frozen 1.0.0 surface** —
-  it is a scope extension, and freezing it would enlarge what SemVer must then protect. Its
-  remaining branch work must stay unmerged until after the tag (R4).
+- **Full-chain archival storage.** The audited 001 core landed on `main` at `4d9da43` and remains
+  deliberately outside the frozen 1.0.0 library surface. The current follow-up is
+  `feat/indexer-independent-ingest` (PR #1): migrations 002–007, position-keyed ordered
+  transactions, persisted runtime metadata, sparse replay checkpoints, and a packaged finalized
+  writer that can ingest directly from a historical Midnight 1.x node. Metadata decodes all
+  extrinsic framings and event-borne system transactions; D-parameter observations survive exact
+  boundary restarts; concurrent writers serialize in Postgres; replay starts from the chain-spec
+  genesis snapshot and compares its ledger arena key with `midnight_ledgerStateRoot` before every
+  write. The optional indexer source remains as a parity oracle, not a runtime requirement.
+  Current evidence and blind-spot closures live in the Sprint 9 task/plan §§15–19 registers; final
+  independent PASS×3 remains the merge gate, so no copied test count is maintained here.
 - **Verifiable wallet-state snapshot root-of-trust** (`design/verifiable-snapshot-design.md`, on
   `fix/verifiable-snapshot-v2`, previously `feature/verifiable-snapshot`). A design for
   authenticating wallet-state snapshots against on-chain data (liveness/anti-rollback beacons,

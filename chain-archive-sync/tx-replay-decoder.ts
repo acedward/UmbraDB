@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
 /**
@@ -19,19 +20,24 @@ import { pathToFileURL } from "node:url";
  * independently reports -- `test/integration/chain-archive-replay-decode.integration.test.ts`
  * is that proof, running this exact module against real archived testnet transactions and real
  * indexer-recorded ground truth. An earlier implementation round claimed this decode was
- * "genuinely blocked -- no JS/WASM decoder available"; that claim was WRONG (independent review
- * found the built `@midnight-ntwrk/ledger-v8` WASM package in the sibling `midnight-wallet`
- * checkout and decoded real transactions with it), and this module is the correction.
+ * "genuinely blocked -- no JS/WASM decoder available"; that claim was wrong. The official ledger
+ * WASM decoded the captured transactions, and this module is the correction.
  *
- * **Dependency posture** (same convention as `test/integration/live-fixtures/
- * midnight-wallet-sdk-loader.ts`, this repo's established pattern for exactly this): the
- * `@midnight-ntwrk/ledger-v8` WASM bindings are deliberately NOT a devDependency of this repo --
- * `loadLedgerV8` below resolves them from a sibling, already-built `midnight-wallet` checkout's
- * own `node_modules` at runtime, via a COMPUTED (non-literal) `import(...)` specifier, so `tsc`
- * types the call `Promise<any>` and this repo still typechecks cleanly in an environment where
- * that checkout does not exist. `decodeArchivedTransaction` itself takes the loaded module as a
- * parameter (never imports it), so everything in this file is typecheckable, unit-testable, and
- * side-effect-free without the sibling checkout present.
+ * **Dependency posture.** `@midnight-ntwrk/ledger-v8` is a runtime dependency of this repo,
+ * content-pinned under `vendor/ledger-v8-syshash`. Node-only ingest hard-depends on it to hash
+ * transactions and replay validation also needs its state-root export, so a fresh clone and CI
+ * cannot depend on an out-of-band checkout.
+ *
+ * `loadLedgerV8` resolves it in three steps, in order: the `MIDNIGHT_LEDGER_WASM` override, then
+ * this repo's own dependency, then the historical sibling-`midnight-wallet` checkout convention.
+ * The override exists because no PUBLISHED build yet exposes
+ * `SystemTransaction.transactionHash()`, which node-only ingest needs to archive system
+ * transactions; it is deleted once that ships upstream.
+ *
+ * Loading still goes through a COMPUTED (non-literal) `import(...)` specifier, so `tsc` types the
+ * call `Promise<any>` and this file typechecks without the WASM present.
+ * `decodeArchivedTransaction` takes the loaded module as a parameter (never imports it), so
+ * everything here stays unit-testable and side-effect-free.
  */
 
 /** ASCII tag prefixes the on-wire payload is domain-separated with (design doc §3.2 -- the raw
@@ -60,6 +66,17 @@ export interface DecodedZswapInput {
   contractAddress: string | undefined;
 }
 
+/**
+ * **These are OFFERED outputs, not APPLIED ones.** They are read out of the transaction's own
+ * intents, which describe what the transaction proposed to do -- not what the ledger did with it.
+ * A transaction that failed, or whose fallible segment did not apply, still carries these.
+ *
+ * Any projection that persists created UTXOs must therefore derive them from the runtime's
+ * `UnshieldedTokens` event (`midnight-node/pallets/midnight/src/lib.rs`), which the node emits
+ * from the APPLICATION outcome, exactly as the reference indexer does. Using this field for that
+ * purpose would persist outputs that never existed on chain. It is safe for what it is used for
+ * today: describing a transaction's contents.
+ */
 export interface DecodedUnshieldedOutput {
   /** The intent segment that created this output. */
   segmentId: number;
@@ -111,6 +128,11 @@ export interface DecodedArchivedTransaction {
   dustRegistrations: DecodedDustRegistration[];
 }
 
+/** Normalizes a WASM-returned hex string to the archive's lowercase, unprefixed form. */
+function hexNoPrefixLower(hex: string): string {
+  return (hex.startsWith("0x") ? hex.slice(2) : hex).toLowerCase();
+}
+
 function tagOf(rawBytes: Uint8Array): string {
   return Buffer.from(rawBytes.subarray(0, STANDARD_TX_TAG_PREFIX.length + 8)).toString("latin1");
 }
@@ -141,9 +163,22 @@ export function isStandardTransaction(rawBytes: Uint8Array): boolean {
 export function decodeArchivedTransaction(ledger: any, rawBytes: Uint8Array): DecodedArchivedTransaction {
   if (isSystemTransaction(rawBytes)) {
     const sysTx = ledger.SystemTransaction.deserialize(rawBytes);
+    // FEATURE-DETECTED, not assumed. `transactionHash` exists on the Rust ledger type and is what
+    // the reference indexer keys system transactions by, but the published wasm-bindgen wrapper
+    // does not export it. A build that does (see MIDNIGHT_LEDGER_WASM in `ledgerV8EntryPath`)
+    // yields the same hash the indexer records -- verified against five genesis system
+    // transactions archived by midnight-indexer 4.3.2, all five matching.
+    //
+    // Left `undefined` when absent rather than substituted or computed locally: the hash is a
+    // primary key other consumers join on, so a locally-invented one would produce rows that
+    // silently fail to match anything.
+    const systemHash =
+      typeof sysTx.transactionHash === "function"
+        ? hexNoPrefixLower(String(sysTx.transactionHash()))
+        : undefined;
     return {
       kind: "system",
-      transactionHash: undefined,
+      transactionHash: systemHash,
       systemDescription: String(sysTx.toString()),
       zswapOutputs: [], zswapInputs: [], unshieldedOutputs: [], dustSpends: [], dustRegistrations: [],
     };
@@ -239,9 +274,69 @@ export function decodeArchivedTransaction(ledger: any, rawBytes: Uint8Array): De
   };
 }
 
+/**
+ * Whether the ledger build that will actually be loaded exposes
+ * `SystemTransaction.transactionHash()`.
+ *
+ * One source of truth for a capability that changes BEHAVIOUR, not just performance: with it,
+ * node-only ingest archives system transactions; without it, ingest refuses rather than omitting
+ * them. Tests gate on this so that "the export is absent" produces a visible SKIP of the ingest
+ * path -- never a pass. A test that silently substitutes the refusal path for the ingest path can
+ * be green in CI while never once exercising successful ingest.
+ *
+ * Probes the loaded module rather than inspecting configuration, because configuration can point
+ * at a build that does not have it.
+ */
+export async function ledgerSupportsSystemTransactionHash(): Promise<boolean> {
+  try {
+    const ledger = await loadLedgerV8();
+    const proto = ledger?.SystemTransaction?.prototype;
+    return typeof proto?.transactionHash === "function";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the ledger build that will actually be loaded can reproduce a block's fullness.
+ *
+ * Separate from `ledgerSupportsSystemTransactionHash` because it is a separate capability with a
+ * separate consequence, and the two were added by different builds: a build can hash system
+ * transactions (`…syshash.1`) without being able to cost them. Folding them into one probe would
+ * mean a build with only the older export reported the newer capability as present.
+ *
+ * All three exports are required and none is sufficient alone. `SystemTransaction.cost` is what lets
+ * genesis be costed at all -- it is nothing but system transactions, so without it genesis's
+ * fullness is unavoidably zero. `clampAndNormalizeFullness` is what makes an overfull block
+ * report as full instead of throwing, matching the node's `post_block_update`; with only
+ * `normalizeFullness` a consumer would throw on a block the chain accepted. `closeBlock` keeps
+ * the normalized Q64 values inside Rust; without it, a JavaScript fold either cannot close the
+ * block or silently rounds the state-changing values through `f64`.
+ *
+ * Probes the loaded module rather than inspecting configuration, because configuration can point
+ * at a build that does not have it.
+ */
+export async function ledgerSupportsBlockFullness(): Promise<boolean> {
+  try {
+    const ledger = await loadLedgerV8();
+    return (
+      typeof ledger?.SystemTransaction?.prototype?.cost === "function" &&
+      typeof ledger?.LedgerParameters?.prototype?.clampAndNormalizeFullness === "function" &&
+      typeof ledger?.LedgerState?.prototype?.closeBlock === "function"
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Candidate roots for a BUILT sibling `midnight-wallet` checkout, in precedence order --
  *  `MIDNIGHT_WALLET_REPO` first (same override the wallet-sdk loader honors), then the two
- *  layouts real environments have used. */
+ *  layouts real environments have used.
+ *
+ *  These are only a compatibility FALLBACK. The ledger is a vendored runtime dependency (see
+ *  `ledgerV8EntryPath`), so a fresh clone works with no sibling checkout at all; the candidates
+ *  below are kept so existing developer setups and the pre-existing live-fixture convention
+ *  continue to work unchanged. */
 function midnightWalletRepoCandidates(): string[] {
   const home = process.env.HOME ?? homedir();
   const fromEnv = process.env.MIDNIGHT_WALLET_REPO;
@@ -252,11 +347,57 @@ function midnightWalletRepoCandidates(): string[] {
   ];
 }
 
-/** Absolute path of the ledger-v8 Node entry (`midnight_ledger_wasm_fs.js`) in the first
- *  candidate checkout that actually has it, or `undefined` if none does -- the synchronous
- *  availability probe tests use to `describe.skipIf` honestly (reported as SKIPPED, never as a
- *  silent vacuous pass) in environments without the sibling checkout, e.g. CI. */
+/** Absolute path of the selected ledger-v8 Node entry (`midnight_ledger_wasm_fs.js`), or
+ *  `undefined` only when neither the installed vendored dependency nor a compatibility fallback
+ *  exists. Tests use this synchronous probe to report a genuine missing-artifact skip. */
 export function ledgerV8EntryPath(): string | undefined {
+  // Explicit override, checked first. This is now a TEST-ONLY escape hatch, not the route to the
+  // system-transaction hash export: the repo's own dependency is a vendored build that already
+  // carries it (`vendor/ledger-v8-syshash`, see its PROVENANCE.md), so a fresh clone archives
+  // system transactions with no configuration at all.
+  //
+  // It stays for two uses that are genuinely worth keeping: pointing tests at a DIFFERENT ledger
+  // build (e.g. the stock published package, to exercise the refusal path that the vendored build
+  // no longer triggers), and letting someone try a candidate build without reinstalling. Both are
+  // deliberate acts; neither should be needed to run the suite normally.
+  //
+  // When the export ships upstream, the vendored directory is deleted, `package.json` moves back
+  // to a published version, and this override keeps its remaining test-only role.
+  const override = process.env.MIDNIGHT_LEDGER_WASM;
+  if (override !== undefined && override !== "") {
+    if (!existsSync(override)) {
+      // Fail rather than fall back. Falling through to the stock package would silently swap the
+      // ledger the operator selected for a different one, and since the two differ in whether
+      // system transactions can be archived at all, that changes ingest behaviour without a word.
+      throw new Error(
+        `MIDNIGHT_LEDGER_WASM points at ${override}, which does not exist. Refusing to fall back ` +
+          "to the published package, whose behaviour differs (it cannot hash system transactions).",
+      );
+    }
+    return override;
+  }
+
+  // This repo's OWN dependency. Node-only ingest hard-depends on the ledger to classify and hash
+  // transactions, so resolving it from an out-of-band sibling checkout meant the headline feature
+  // could not run in CI or from a fresh clone -- which is why its regression tests could only ever
+  // be skipped there (audit finding F6).
+  //
+  // That dependency is `file:vendor/ledger-v8-syshash`: a committed build carrying the
+  // `SystemTransaction.transactionHash()` export the published package lacks. Vendored rather than
+  // rebuilt on demand because the build is NOT bit-reproducible -- the same commit, `wasm-pack` and
+  // `rustc` produce a different `.wasm` hash each time -- so these exact verified bytes cannot be
+  // regenerated. What attests them is behavioural: they reproduce the five genesis system
+  // transaction hashes `midnight-indexer 4.3.2` recorded. See vendor/ledger-v8-syshash/PROVENANCE.md.
+  try {
+    // Resolve the BARE specifier: the package's `exports` map exposes only the root, and its
+    // `node` condition already points at `midnight_ledger_wasm_fs.js`. Asking for that subpath
+    // directly is refused with ERR_PACKAGE_PATH_NOT_EXPORTED.
+    const own = createRequire(import.meta.url).resolve("@midnight-ntwrk/ledger-v8");
+    if (existsSync(own)) return own;
+  } catch {
+    // Not installed (e.g. a consumer of the published package, which does not ship this
+    // directory at all) -- fall through to the sibling-checkout convention below.
+  }
   for (const root of midnightWalletRepoCandidates()) {
     const entry = path.join(root, "node_modules", "@midnight-ntwrk", "ledger-v8", "midnight_ledger_wasm_fs.js");
     if (existsSync(entry)) return entry;
@@ -265,16 +406,16 @@ export function ledgerV8EntryPath(): string | undefined {
 }
 
 /**
- * Loads the `@midnight-ntwrk/ledger-v8` WASM module from the sibling checkout, via a computed
- * `import(...)` specifier (typed `Promise<any>` by design -- module doc above).
+ * Loads the selected `@midnight-ntwrk/ledger-v8` WASM module via a computed `import(...)`
+ * specifier (typed `Promise<any>` by design -- module doc above).
  */
 export async function loadLedgerV8(): Promise<any> {
   const entry = ledgerV8EntryPath();
   if (entry === undefined) {
     throw new Error(
-      "loadLedgerV8: no built midnight-wallet checkout found (looked for node_modules/" +
-      "@midnight-ntwrk/ledger-v8/midnight_ledger_wasm_fs.js under: " +
-      midnightWalletRepoCandidates().join(", ") + "); set MIDNIGHT_WALLET_REPO to a built checkout",
+      "loadLedgerV8: the installed vendored @midnight-ntwrk/ledger-v8 artifact was not found, " +
+      "and no compatibility midnight-wallet checkout contained it (looked under: " +
+      midnightWalletRepoCandidates().join(", ") + ")",
     );
   }
   return import(pathToFileURL(entry).href);

@@ -56,11 +56,13 @@ generator). Sources:
 
 ## 2. UmbraDB's current posture
 
-### Build track — **current estimate: L0–L1**
+### Build track — **current level: L0 (L1 automation present, provenance absent)**
 
-UmbraDB is **not yet published as a build artifact** (`package.json` is `private: true`,
-version `0.1.0`), so no provenance is emitted today → strictly **L0** for a would-be published
-package. What already exists is the *foundation* for L1 and the inputs L2 will attest:
+The repository's current package manifest is version **0.9.5** and is not marked private, but no
+workflow under `.github/workflows/` publishes an artifact or emits provenance. Artifacts built by
+this repository's CI therefore have no SLSA attestation: strictly **L0**, with the automation needed
+for L1 already present. What exists is the foundation whose inputs an eventual L2 attestation can
+describe:
 
 - **Scripted, hosted build/test.** `.github/workflows/conformance.yml` runs on `ubuntu-latest`,
   installs with **`npm ci`** (enforcing `package-lock.json` + `sha512` integrity), typechecks, and
@@ -68,8 +70,9 @@ package. What already exists is the *foundation* for L1 and the inputs L2 will a
   (`actions/checkout@11d5960…`, `actions/setup-node@49933ea…`). That is an automated build on a
   hosted platform — the L1/L2 substrate — but it **emits no provenance**.
 - **Exceptional input hygiene** (what L2 provenance will attest to):
-  - **307/307 npm packages** resolved from `registry.npmjs.org`, each with a `sha512` integrity
-    hash; runtime scope is 2 zero-dependency packages (`postgres`, `zod`).
+  - **491/491 npm registry entries** carry a `sha512` integrity hash; the two non-registry lockfile
+    entries are the local link and target for a vendored ledger whose 32 shipped/source files have
+    committed SHA-256 checksums. Direct runtime scope is four packages.
   - **Nix** dev environment fully pinned: exact git revs for every Midnight/Cardano flake input,
     **sha256**-pinned release binaries (cardano-node 11.0.1, cardano-db-sync 13.7.1.0,
     midnight-node 1.0.1), and **`@sha256:` digest-pinned** Docker images (indexer-standalone 4.3.3,
@@ -77,7 +80,7 @@ package. What already exists is the *foundation* for L1 and the inputs L2 will a
   - **Lean/mathlib** locked to exact git revs at toolchain `v4.32.0`.
 
 This pinning is a genuine supply-chain strength — but SLSA levels are about **signed provenance of
-the build**, which pinning alone does not provide. So the *build level* is L0–L1 despite the strong
+the build**, which pinning alone does not provide. So the *build level* is L0 despite the strong
 inputs.
 
 ### Source track (later-version intent) — solid, unclaimed under v1.0
@@ -97,21 +100,21 @@ integrity-enforced install) already exist — the missing piece is **emitting si
 
 | # | Gap (why current level is capped) | Closes it → | Roadmap / spec item |
 |---|---|---|---|
-| G-a | **No provenance emitted** — nothing published, no attestation. Caps at L0/L1. | A release workflow (`publish.yml`) on GitHub Actions with `permissions: id-token: write` running **`npm publish --provenance`** (OIDC → Sigstore Fulcio/Rekor). Also un-`private` + set a matching `repository` URL. → **SLSA Build L2**. | **Planned "R7" provenance-publish workflow** (referenced as the intended release step; not yet a merged roadmap item). |
-| G-b | **Supply-chain merge gate landed (this change)** — `npm audit`, `ignore-scripts`, secret scan, image CVE scan, and flake-lock change-control are now enforced by `.github/workflows/supply-chain.yml` (+ `.npmrc`/`.gitleaks.toml`/`SECURITY.md`), committed in `v1.0.0-infosec-signoff` and pending merge to `main`. | Land the **six-part G18 gate**: blocking `npm ci` + `npm audit --omit=dev`, asserted `.npmrc ignore-scripts=true`, full-history gitleaks, scheduled Trivy on both image digests (targets asserted == `flake.nix`), and `flake.lock` change-control by PR label. | **G18 supply-chain CI gate** — `openspec/changes/v1.0.0-infosec-signoff/` (design §4, `specs/security-posture/spec.md`). |
-| G-c | **Build not hermetic/isolated to L3** — GitHub-hosted runner + `npm ci` from the public registry is L2-grade, not the L3 "isolated builder, signing key unreachable by build steps" bar; the Nix build is reproducible but not the artifact that gets published. | Publish via the **SLSA GitHub provenance generator** (isolated builder, non-forgeable provenance) and/or drive the release build through the pinned Nix flake for byte-reproducibility; keep signing off the build steps. → path to **L3**. | Flake reproducibility work (`nix/midnight-env/`, currently an unmerged feature branch) + a future L3 builder adoption. |
+| G-a | **No provenance emitted** — CI builds/tests but does not publish an attestation. Caps at L0. | A release workflow (`publish.yml`) on GitHub Actions with `permissions: id-token: write` running **`npm publish --provenance`** (OIDC → Sigstore Fulcio/Rekor), with the existing matching repository URL. → **SLSA Build L2**. | **Planned "R7" provenance-publish workflow** (referenced as the intended release step; not yet a merged roadmap item). |
+| G-b | **Supply-chain merge gate is present** — `npm audit`, `ignore-scripts`, secret scanning, Nix-image CVE scanning, and flake-lock change-control are enforced by `.github/workflows/supply-chain.yml` (+ `.npmrc`/`.gitleaks.toml`/`SECURITY.md`). | Keep the six-part G18 gate green and update its inventory/pins with dependency changes. Compose images have a separate resolved-config pin gate in `chain-archive-parity.yml`. | **G18 supply-chain CI gate** — `openspec/changes/v1.0.0-infosec-signoff/` (design §4, `specs/security-posture/spec.md`). |
+| G-c | **Build not hermetic/isolated to L3** — GitHub-hosted runner + `npm ci` from the public registry is L2-grade, not the L3 "isolated builder, signing key unreachable by build steps" bar; the Nix environment is reproducible but is not a provenance-emitting package builder. | Publish via the **SLSA GitHub provenance generator** (isolated builder, non-forgeable provenance) and/or drive the release build through the pinned Nix flake for byte-reproducibility; keep signing off the build steps. → path to **L3**. | Current `nix/midnight-env/` plus a future L3 builder adoption. |
 | G-d | **Floating `nixpkgs` ref** in `flake.nix` (`nixos-unstable`) could roll forward unreviewed even though `flake.lock` pins the rev. | G18 sub-gate 6: fail any `flake.lock` diff lacking a `flake-lock-update` label — makes every pin move a reviewed event. | **G18** flake-lock change-control (same spec). |
-| G-e | **No machine-readable SBOM** attached to releases; this markdown inventory is human-facing only. | Generate CycloneDX via `npm sbom` and/or `syft` (npm graph + built artifact + the two image digests), attach to releases, ideally as a signed attestation alongside provenance. | Recommended follow-up (see `README.md`). |
+| G-e | **No machine-readable SBOM** attached to releases; this markdown inventory is human-facing only. | Generate CycloneDX via `npm sbom` and/or `syft` (npm graph + built artifact + the six unique image references), attach to releases, ideally as a signed attestation alongside provenance. | Recommended follow-up (see `README.md`). |
 
 ### Level summary
 
 | Track | Current | Target | Blocker to target |
 |---|---|---|---|
-| Build | **L0–L1** (scripted hosted build, strong pinned inputs, **no provenance**) | **L2** | Emit OIDC `--provenance` at publish (G-a) |
+| Build | **L0** (scripted hosted build, strong pinned inputs, **no provenance**) | **L2** | Emit OIDC `--provenance` at publish (G-a) |
 | Build (stretch) | — | **L3** | Isolated/hermetic builder + key isolation (G-c) |
 | Source (later-version intent) | Reviewed, GitHub-hosted, unclaimed under v1.0 | formal review attestation | branch-protection / 2-person-review evidence |
 
-**Bottom line.** UmbraDB has L2-grade *inputs and hosted build* already; it sits at Build **L0–L1**
+**Bottom line.** UmbraDB has L2-grade *inputs and hosted build* already; it sits at Build **L0**
 only because it emits no signed provenance yet. The single highest-leverage step is a
 `--provenance` publish workflow (G-a), which lifts it to **Build L2**; the G18 gate (G-b/G-d) hardens
 the surrounding supply chain; hermetic/isolated builds (G-c) and a machine-readable SBOM (G-e) form

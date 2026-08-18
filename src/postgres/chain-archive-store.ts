@@ -7,7 +7,11 @@ import {
   type BlockBundle,
   type BlockMeta,
   type BlockRecord,
+  type BridgeObservationKind,
+  type BridgeObservationMeta,
   type BridgeObservationRecord,
+  type ReplayCheckpointRecord,
+  type RuntimeMetadataRecord,
   type ChainArchiveStore,
   type Hex32,
   type TransactionMeta,
@@ -69,6 +73,15 @@ interface TxRow {
   raw_blob_hash: Buffer;
 }
 
+interface BridgeObservationRow {
+  net: string;
+  block_height: bigint;
+  block_hash: Buffer;
+  observation_index: number;
+  kind: BridgeObservationKind;
+  raw_blob_hash: Buffer;
+}
+
 function toBlockMeta(row: BlockRow): BlockMeta {
   return {
     net: row.net,
@@ -96,6 +109,17 @@ function toTxMeta(row: TxRow): TransactionMeta {
     kind: row.kind as TransactionMeta["kind"],
     protocolVersion: row.protocol_version,
     result: (row.result ?? undefined) as TransactionMeta["result"],
+    rawBlobHash: bufToHex(row.raw_blob_hash),
+  };
+}
+
+function toBridgeObservationMeta(row: BridgeObservationRow): BridgeObservationMeta {
+  return {
+    net: row.net,
+    blockHeight: Number(row.block_height),
+    blockHash: bufToHex(row.block_hash),
+    observationIndex: row.observation_index,
+    kind: row.kind,
     rawBlobHash: bufToHex(row.raw_blob_hash),
   };
 }
@@ -297,10 +321,69 @@ export class PgChainArchiveStore implements ChainArchiveStore {
     }
   }
 
+  async getLatestBridgeObservation(
+    net: string, kind: BridgeObservationKind, maxHeight: number,
+  ): Promise<BridgeObservationMeta | undefined> {
+    try {
+      const [row] = await this.sql<BridgeObservationRow[]>`
+        SELECT o.net, o.block_height, o.block_hash, o.observation_index, o.kind, o.raw_blob_hash
+        FROM ${this.sql(this.schema)}.bridge_observations o
+        JOIN ${this.sql(this.schema)}.blocks b
+          ON b.net = o.net AND b.height = o.block_height AND b.block_hash = o.block_hash
+        WHERE o.net = ${net} AND o.kind = ${kind} AND o.block_height <= ${maxHeight}
+          AND b.is_canonical AND b.finalized
+        ORDER BY o.block_height DESC, o.observation_index DESC
+        LIMIT 1
+      `;
+      return row === undefined ? undefined : toBridgeObservationMeta(row);
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /** Compare the transaction-history shape while the caller holds this height's advisory lock.
+   * The service's earlier read is useful for a fast refusal, but cannot be authoritative: two
+   * processes can both read the old snapshot before either writes. */
+  private async assertBundleTransactionHistoryAgrees(
+    tx: ChainArchiveTx, bundle: BlockBundle,
+  ): Promise<void> {
+    const { block, transactions: incoming } = bundle;
+    const existing = await tx<TxRow[]>`
+      SELECT net, tx_hash, block_height, block_hash, position, kind, protocol_version, result,
+             raw_blob_hash
+      FROM ${tx(this.schema)}.transactions
+      WHERE net = ${block.net} AND block_height = ${block.height}
+        AND block_hash = ${hexToBuf(block.blockHash)}
+      ORDER BY position ASC
+    `;
+    if (existing.length === 0) return;
+
+    const shape = (rows: readonly { position: number; txHash: string; kind: string }[]) =>
+      [...rows]
+        .sort((a, b) => a.position - b.position)
+        .map((row) => `${row.position}:${row.txHash.toLowerCase()}:${row.kind}`)
+        .join(" ");
+    const before = shape(existing.map(toTxMeta));
+    const after = shape(incoming);
+    if (before === after) return;
+
+    throw new Error(
+      `height ${block.height}: this block is already archived with different contents under the ` +
+        `database ingest lock. Stored: [${before}]. Re-ingest would write: [${after}]. ` +
+        "Concurrent or historical writers must either agree byte-for-byte on the archive's " +
+        "(position, tx_hash, kind) contract or refuse; silently interleaving/keeping one side is " +
+        "not an idempotent retry.",
+    );
+  }
+
   /** Fix 1 (sprint-fix round, HIGH): collapses the block + transactions + bridge-observations
    *  writes for one block into ONE Postgres transaction, so a partial block can never be
    *  committed at all -- see this method's own doc on `ChainArchiveStore` for the full
-   *  before/after failure-mode writeup. */
+   *  before/after failure-mode writeup.
+   *
+   *  O2: the advisory xact lock and repeated history check belong INSIDE this transaction. A
+   *  service-layer `SELECT` followed by this call has a race window; a database transaction guard
+   *  serializes independent Node processes as well as independent service instances. */
   async putBlockBundle(bundle: BlockBundle): Promise<{ headerBlobHash: Hex32; bodyBlobHash?: Hex32 }> {
     const { block, transactions: txs, bridgeObservations: obs } = bundle;
     assertHex32(block.blockHash, "putBlockBundle.blockHash");
@@ -315,6 +398,32 @@ export class PgChainArchiveStore implements ChainArchiveStore {
 
     try {
       return await this.sql.begin(async (tx) => {
+        // One unambiguous text key is hashed to PostgreSQL's 64-bit advisory-lock namespace. JSON
+        // array encoding prevents concatenation ambiguities (`["a:1",2]` vs `["a",1:2]`). The
+        // lock is transaction-scoped, so commit/rollback releases it even on every error path.
+        await tx`
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${JSON.stringify([block.net, block.height])}, ${0}::bigint)
+          )
+        `;
+
+        // The production writer is finalized-only. If another finalized canonical block already
+        // owns this height, a different hash is not an idempotent agreement and must be named as a
+        // refusal rather than disappearing under the partial unique index's ON CONFLICT handling.
+        const [canonical] = await tx<{ block_hash: Buffer }[]>`
+          SELECT block_hash FROM ${tx(this.schema)}.blocks
+          WHERE net = ${block.net} AND height = ${block.height} AND is_canonical AND finalized
+          LIMIT 1
+        `;
+        if (canonical !== undefined && bufToHex(canonical.block_hash) !== block.blockHash) {
+          throw new Error(
+            `height ${block.height}: finalized-only ingest is racing/stitching two canonical ` +
+              `blocks for net=${block.net}. Stored hash ${bufToHex(canonical.block_hash)} differs ` +
+              `from incoming ${block.blockHash}; refusing the second writer.`,
+          );
+        }
+
+        await this.assertBundleTransactionHistoryAgrees(tx, bundle);
         const result = await this.insertBlockRow(tx, block);
         // FK-ordering note: `transactions`/`bridge_observations` both carry a real FK back to
         // `blocks (net, height, block_hash)` (001_chain_archive_core.ts) -- inserting the block
@@ -535,6 +644,128 @@ export class PgChainArchiveStore implements ChainArchiveStore {
            OR jsonb_typeof(EXCLUDED.value -> 'height') IS DISTINCT FROM 'number'
            OR (EXCLUDED.value ->> 'height')::numeric > (w.value ->> 'height')::numeric
       `;
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /** @inheritdoc */
+  async getRuntimeMetadata(
+    net: string, specName: string, specVersion: number,
+  ): Promise<Uint8Array | undefined> {
+    try {
+      const [row] = await this.sql<{ hash: Buffer }[]>`
+        SELECT metadata_blob_hash AS hash FROM ${this.sql(this.schema)}.runtime_metadata
+        WHERE net = ${net} AND spec_name = ${specName} AND spec_version = ${specVersion}
+      `;
+      if (row === undefined) return undefined;
+      // Through getBlob, so the capture is rehashed before use like every other archived blob.
+      // Metadata that silently rotted would misdecode every block of its runtime.
+      return await this.getBlob(bufToHex(row.hash) as Hex32);
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /** @inheritdoc */
+  async getLatestReplayCheckpoint(
+    net: string, maxHeight: number,
+  ): Promise<ReplayCheckpointRecord | undefined> {
+    try {
+      // The join to `blocks` on the FULL key -- including `block_hash` -- plus `is_canonical`
+      // excludes an already-orphaned checkpoint. Under the finalized-only writer, catch-up then
+      // verifies every successor's parent hash. This does NOT claim sound selection during an
+      // arbitrary partially-applied height-at-a-time `setCanonical` reorg (T5a's explicit scope).
+      const [row] = await this.sql<
+        {
+          height: string; block_hash: Buffer; hash: Buffer; ledger_version: string;
+          block_timestamp_ms: string; ledger_network_id: string;
+        }[]
+      >`
+        SELECT c.block_height::text AS height, c.block_hash, c.state_blob_hash AS hash,
+               c.ledger_version, c.block_timestamp_ms::text AS block_timestamp_ms,
+               c.ledger_network_id
+        FROM ${this.sql(this.schema)}.replay_checkpoints c
+        JOIN ${this.sql(this.schema)}.blocks b
+          ON b.net = c.net AND b.height = c.block_height AND b.block_hash = c.block_hash
+        WHERE c.net = ${net} AND c.block_height <= ${maxHeight} AND b.is_canonical
+        ORDER BY c.block_height DESC
+        LIMIT 1
+      `;
+      if (row === undefined) return undefined;
+      return {
+        net,
+        blockHeight: Number(row.height),
+        blockHash: bufToHex(row.block_hash),
+        // Through getBlob, so the state is rehashed before a replay trusts it. Silently corrupted
+        // state would produce wrong replay outcomes rather than an error.
+        stateBytes: await this.getBlob(bufToHex(row.hash)),
+        ledgerVersion: row.ledger_version,
+        blockTimestampMs: Number(row.block_timestamp_ms),
+        ledgerNetworkId: row.ledger_network_id,
+      };
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /** @inheritdoc */
+  async putReplayCheckpoint(record: ReplayCheckpointRecord): Promise<void> {
+    try {
+      const hashHex = sha256Hex(record.stateBytes);
+      const hash = hexToBuf(hashHex);
+      await this.sql.begin(async (tx) => {
+        await tx`
+          INSERT INTO ${tx(this.schema)}.chain_blobs (hash, data)
+          VALUES (${hash}, ${Buffer.from(record.stateBytes)})
+          ON CONFLICT (hash) DO NOTHING
+        `;
+        await tx`
+          INSERT INTO ${tx(this.schema)}.chain_blob_roles (blob_hash, role)
+          VALUES (${hash}, 'ledger_state')
+          ON CONFLICT (blob_hash, role) DO NOTHING
+        `;
+        await tx`
+          INSERT INTO ${tx(this.schema)}.replay_checkpoints
+            (net, block_height, block_hash, state_blob_hash, ledger_version, block_timestamp_ms,
+             ledger_network_id)
+          VALUES (${record.net}, ${record.blockHeight}, ${hexToBuf(record.blockHash)},
+                  ${hash}, ${record.ledgerVersion}, ${record.blockTimestampMs},
+                  ${record.ledgerNetworkId})
+          ON CONFLICT (net, block_height, block_hash) DO NOTHING
+        `;
+      });
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /** @inheritdoc */
+  async putRuntimeMetadata(record: RuntimeMetadataRecord): Promise<void> {
+    try {
+      const hashHex = sha256Hex(record.metadataBytes);
+      const hash = hexToBuf(hashHex);
+      await this.sql.begin(async (tx) => {
+        await tx`
+          INSERT INTO ${tx(this.schema)}.chain_blobs (hash, data)
+          VALUES (${hash}, ${Buffer.from(record.metadataBytes)})
+          ON CONFLICT (hash) DO NOTHING
+        `;
+        await tx`
+          INSERT INTO ${tx(this.schema)}.chain_blob_roles (blob_hash, role)
+          VALUES (${hash}, 'runtime_metadata')
+          ON CONFLICT (blob_hash, role) DO NOTHING
+        `;
+        // DO NOTHING, not DO UPDATE: the first capture wins, so `first_seen_height` keeps naming
+        // the block that genuinely introduced the runtime rather than the most recent re-sync.
+        await tx`
+          INSERT INTO ${tx(this.schema)}.runtime_metadata
+            (net, spec_name, spec_version, first_seen_height, metadata_blob_hash)
+          VALUES (${record.net}, ${record.specName}, ${record.specVersion},
+                  ${record.firstSeenHeight}, ${hash})
+          ON CONFLICT (net, spec_name, spec_version) DO NOTHING
+        `;
+      });
     } catch (err) {
       throw translatePostgresError(err);
     }

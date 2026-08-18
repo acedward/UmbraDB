@@ -320,7 +320,10 @@ Read [`SECURITY.md`](SECURITY.md) before deploying. The load-bearing points:
 - **Not an ORM or query builder.** Five narrow interfaces, not "do anything with Postgres".
 - **Not distributed or multi-node.** Single writer, single Postgres instance.
 - **Not multi-tenant.** See the schema/dedup caveats above.
-- **Not a chain indexer.** It stores what a client gives it and stays indexer-agnostic.
+- **Not a general-purpose chain query indexer.** The frozen wallet-storage surface stays
+  indexer-agnostic. The separate, unfrozen `umbradb-archive-sync` utility can ingest the finalized
+  Midnight chain directly from an archive node into `chain_archive`; it is an archival writer, not
+  an indexer-compatible query API.
 - **Not encrypted at rest.**
 
 ---
@@ -343,6 +346,11 @@ indexer we call. Progress and rationale: [`ROADMAP.md`](ROADMAP.md) § "What blo
 
 **Next:** [Quint model checking](openspec/changes/v1.1.0-quint-model-checking/) for C2a, C2b, L1 and
 cross-writer T1, the concurrency and liveness laws a sequential proof model handles badly.
+
+**Chain-archive preview:** `feat/indexer-independent-ingest` / PR #1 adds finalized node-only ingest,
+durable D-parameter change observations, runtime metadata capture, replay checkpoints with
+per-block committed ledger-state-root validation, and a packaged CLI. Its current contract and
+limitations are documented in [`docs/features/full-chain-storage.md`](docs/features/full-chain-storage.md).
 
 - Roadmap: [`ROADMAP.md`](ROADMAP.md) · Stability policy: [`docs/STABILITY.md`](docs/STABILITY.md)
 - Changelog: [`CHANGELOG.md`](CHANGELOG.md) · Release records: [`docs/releases/`](docs/releases/)

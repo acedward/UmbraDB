@@ -1,5 +1,11 @@
 import * as migration000 from "../000_schema.js";
 import * as chainArchiveCore from "./001_chain_archive_core.js";
+import * as transactionPositionKey from "./002_transaction_position_key.js";
+import * as runtimeMetadata from "./003_runtime_metadata.js";
+import * as replayCheckpoints from "./004_replay_checkpoints.js";
+import * as replayCheckpointBlockTime from "./005_replay_checkpoint_block_time.js";
+import * as replayCheckpointLedgerNetwork from "./006_replay_checkpoint_ledger_network.js";
+import * as blobRoleGuardForwardFix from "./007_blob_role_guard_forward_fix.js";
 import type { Migration } from "../../migrate.js";
 
 /**
@@ -22,14 +28,19 @@ import type { Migration } from "../../migrate.js";
  * `RunMigrationsOptions.migrations` for the other half (letting a caller select this lineage
  * instead of the default one).
  *
- * **Not wired into any executing path.** Nothing in this repo's application code imports this
- * array and calls `runMigrations(sql, { schema: "chain_archive", migrations:
- * chainArchiveMigrations })` — it is exported for the same reason `005_chain_archive.ts` used
- * to sit unregistered in the migrations directory: a genuine, syntactically-correct migration
- * lineage, design-stage only, gated on design-council ratification before any real wiring or
- * live apply.
+ * `chain-archive-sync/bootstrap.ts` is the executing path: the packaged archive-sync CLI invokes
+ * it before ingest, and integration tests exercise the same bootstrap against real PostgreSQL.
  */
-export const chainArchiveMigrations: Migration[] = [migration000, chainArchiveCore];
+export const chainArchiveMigrations: Migration[] = [
+  migration000,
+  chainArchiveCore,
+  transactionPositionKey,
+  runtimeMetadata,
+  replayCheckpoints,
+  replayCheckpointBlockTime,
+  replayCheckpointLedgerNetwork,
+  blobRoleGuardForwardFix,
+];
 
 // v3 note: `chainArchiveCore` now also creates `chain_archive_assert_blob_role` (a shared
 // plpgsql helper) and one thin `BEFORE INSERT OR UPDATE` trigger per blob-referencing table
@@ -44,3 +55,7 @@ export const chainArchiveMigrations: Migration[] = [migration000, chainArchiveCo
 // now includes `tag` (and no longer includes `first_seen_height`) — see
 // `001_chain_archive_core.ts`'s own header comment and the design doc's "Revision history — v4"
 // note for the full reasoning.
+//
+// Sprint 9 notes: 002 re-keys transactions on position; 003 persists runtime metadata; 004-006
+// define replay checkpoints with time/network identity; and 007 forward-fixes the role-removal
+// guard for databases that already recorded the earlier draft migrations.
