@@ -181,18 +181,30 @@ async function dockerIndependentOracles() {
   if (!existsSync(binPath)) fail("installed package did not link the umbradb-archive-sync bin (T6).");
 
   // The vendored ledger must be a real runtime dependency of the INSTALLED package, not a
-  // devDependency that happens to exist in the repo. All four exports replay needs are checked, so a
-  // tarball carrying a stale vendored build fails here rather than during ingest.
+  // devDependency that happens to exist in the repo. All FIVE exports replay needs are checked, so
+  // a tarball carrying a stale vendored build fails here rather than during ingest.
+  //
+  // Five, not four: `LedgerState.ledgerStateRoot` was checked by `vendored-ledger.yml` against the
+  // REPO TREE but not here against the packed tarball, so a pack that shipped a stale vendored
+  // build missing exactly that export passed this smoke. Same bytes in practice today (SHA256SUMS
+  // + `files: ["vendor"]`), which is why it never fired -- but "in practice" is what this smoke
+  // exists to stop assuming, and it is the export the whole replay-validation comparison reads.
+  // Each export is reported by name so a failure says WHICH one is missing rather than just that
+  // one is.
   writeFileSync(
     join(scratch, "cli-ledger.mjs"),
     [
       "const m = await import('@midnight-ntwrk/ledger-v8');",
-      "const ok = typeof m.SystemTransaction?.prototype?.transactionHash === 'function'",
-      "  && typeof m.SystemTransaction?.prototype?.cost === 'function'",
-      "  && typeof m.LedgerParameters?.prototype?.clampAndNormalizeFullness === 'function'",
-      "  && typeof m.LedgerState?.prototype?.closeBlock === 'function';",
-      "console.log(ok ? 'LEDGER_OK' : 'LEDGER_MISSING_EXPORTS');",
-      "process.exit(ok ? 0 : 6);",
+      "const required = {",
+      "  'SystemTransaction.transactionHash': typeof m.SystemTransaction?.prototype?.transactionHash === 'function',",
+      "  'SystemTransaction.cost': typeof m.SystemTransaction?.prototype?.cost === 'function',",
+      "  'LedgerParameters.clampAndNormalizeFullness': typeof m.LedgerParameters?.prototype?.clampAndNormalizeFullness === 'function',",
+      "  'LedgerState.closeBlock': typeof m.LedgerState?.prototype?.closeBlock === 'function',",
+      "  'LedgerState.ledgerStateRoot': typeof m.LedgerState?.prototype?.ledgerStateRoot === 'function',",
+      "};",
+      "const missing = Object.entries(required).filter(([, present]) => !present).map(([name]) => name);",
+      "console.log(missing.length === 0 ? 'LEDGER_OK' : 'LEDGER_MISSING_EXPORTS: ' + missing.join(', '));",
+      "process.exit(missing.length === 0 ? 0 : 6);",
       "",
     ].join("\n"),
   );

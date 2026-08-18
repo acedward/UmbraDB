@@ -13,6 +13,11 @@ on:
       - 'test/integration/**'
       - 'test/compose/**'
       - '.github/workflows/chain-archive-parity.yml'
+      # The pin check is only a gate if a PR that weakens it runs the gate. Without these two
+      # entries a PR touching nothing but the verifier skips this workflow entirely and lands
+      # unchecked -- it runs unfiltered on main pushes, i.e. after the merge that broke it.
+      - 'scripts/verify-compose-image-pins.sh'
+      - 'test/ci/compose-image-pins.sh'
   push:
     branches:
       - main
