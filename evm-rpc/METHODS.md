@@ -24,6 +24,11 @@ the `0x` prefix only at this boundary.
 | `eth_getCode` | `0x60006000` for `address_map.kind = 'contract'`; otherwise `0x`. |
 | `eth_getTransactionByHash` | `evm_rpc.tx_index` first, then indexer GraphQL. UTXO amounts are not attributable yet, so `value` is `0x0`. |
 | `eth_getTransactionReceipt` | `evm_rpc.tx_index` first, then indexer GraphQL. Success requires `SUCCESS` and every segment successful. Logs are empty pending Part C. |
+| `eth_getBlockTransactionCountByHash` | Length of the indexer GraphQL block's transaction list. Unknown block returns `null`. |
+| `eth_getBlockTransactionCountByNumber` | Same, addressed by block tag — `pending`/`safe`/`finalized` map to `latest`, `earliest` to height 0, as `eth_getBlockByNumber`. |
+| `eth_getTransactionByBlockHashAndIndex` | Transaction at that position of the indexer GraphQL block's transaction list, synthesized into the same shape as `eth_getTransactionByHash` and enriched from `evm_rpc.tx_index` when a row matches. Out-of-range index or unknown block returns `null`. |
+| `eth_getTransactionByBlockNumberAndIndex` | Same, addressed by block tag. |
+| `eth_getBlockReceipts` | One receipt per transaction of the indexer GraphQL block, in block order, using the same synthesis as `eth_getTransactionReceipt` (so `logs` is `[]` here too — logs are served by `eth_getLogs`). Accepts a block tag or a 32-byte block hash. Unknown block returns `null`. |
 | `web3_sha3` | Dependency-free Ethereum Keccak-256. |
 
 ## Compatibility stubs
@@ -46,6 +51,23 @@ still absent.
   reserved for Part C.
 - Mining, uncle, filter, tracing, debug, personal, admin, and tx-pool namespaces are not part of
   the compatibility layer.
+
+## Not implemented (-32004)
+
+Methods the official Ethereum JSON-RPC spec defines but this surface deliberately does not serve
+answer **`-32004 "Method not supported"`** (EIP-1474), not `-32601` — a client can therefore tell
+"this endpoint knows the method and declines to serve it" from "this endpoint has never heard of
+that name" and fall back accordingly. **Genuinely unknown method names still answer `-32601`.**
+Each error carries `data: { method, classification, reason, documentation }` — the per-method
+reason is in the code. The table below mirrors `evm-rpc/methods/not-implemented.ts`, which is the
+single source of truth; `evm-rpc/test/not-implemented.test.ts` asserts that no method of the
+official spec inventory is left answering `-32601`.
+
+| Classification | Meaning | Methods |
+|---|---|---|
+| `n/a-by-design` | Structurally impossible on Midnight: contract state is a ledger blob, and there is no EVM execution engine, storage trie or state proof. No future version can answer these. | `eth_getStorageAt`, `eth_getStorageValues`, `eth_getProof`, `eth_createAccessList`, `eth_getBlockAccessList`, `eth_simulateV1`, `eth_fillTransaction`, `eth_baseFee`, `eth_blobBaseFee` |
+| `intentionally-absent` | The capability lives elsewhere by design — signing is the wallet's (`eth_accounts` is `[]`, so wallets never call these), and there is no mining identity. | `eth_sendTransaction`, `eth_sign`, `eth_signTransaction`, `eth_coinbase` |
+| `backlog` | Implementable, deferred until a real consumer needs it. The polling-filter family is stateful; ethers v6 polls `eth_getLogs` instead, and `eth_subscribe` covers live tails. | `eth_newFilter`, `eth_newBlockFilter`, `eth_newPendingTransactionFilter`, `eth_getFilterChanges`, `eth_getFilterLogs`, `eth_uninstallFilter`, `eth_capabilities`, `eth_config` |
 
 ## Documented deviations
 
