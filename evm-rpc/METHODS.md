@@ -331,6 +331,13 @@ from that array in the same call, so the filter can never disagree with the logs
 `status` is `0x1` only when the transaction result is `SUCCESS` **and** every segment succeeded;
 anything else is `0x0`.
 
+⚠ **`receipt.transactionHash` and `receipt.logs[].transactionHash` can differ** (D29), which they
+never would on Ethereum. A relayer-written transaction has two identities — the eth-side hash the
+wallet computed and polls with, and the Midnight hash the chain and `evm_rpc.logs` know it by. The
+receipt echoes the identifier you asked about; its logs carry the one they were indexed under. A
+client that cross-checks the two will see a mismatch, and it is not a bug: the mapping between them
+is the `raw_ref` recorded with the row.
+
 ### `eth_getTransactionByHash`
 
 - **Params** 1 positional: 32-byte transaction hash. **Result** the synthesized transaction, or
@@ -544,6 +551,7 @@ EVM chain. "Known issue" = a defect or rough edge, detailed in the next section.
 | D26 | WebSocket surface | no envelope validation; notifications answered; Part B methods absent | **known issue** K7 |
 | D27 | `eth_sendRawTransaction` | `-32601` when `RELAY_URL` is unset (conditional registration) | **known issue** K8 |
 | D28 | transport | additive operational limits: 100-entry batch cap, 1 MiB request/response caps, HTTP 413/405 | benign — see [Transport](#transport-and-envelope) |
+| D29 | `eth_getTransactionReceipt` | for a **relayer-written** transaction, `receipt.transactionHash` (the eth-side hash you queried) and `receipt.logs[].transactionHash` (the Midnight hash) deliberately DIFFER | by design — K1/K2 |
 
 ---
 
