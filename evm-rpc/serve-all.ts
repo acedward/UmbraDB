@@ -24,7 +24,7 @@ import { registerNotImplementedMethods } from "./methods/not-implemented.js";
 import { registerStaticMethods } from "./methods/static.js";
 import { registerTransactionMethods } from "./methods/transactions.js";
 import { loadTokenMeta, registerErc20Call } from "./methods/erc20-call.js";
-import { defaultRegistry, RpcError } from "./registry.js";
+import { defaultRegistry, JSON_RPC_ERRORS, RpcError } from "./registry.js";
 import { createRpcServer } from "./server.js";
 import { loadEnv } from "./logs/config.js";
 import { registerGetLogs } from "./logs/get-logs.js";
@@ -80,7 +80,12 @@ const relayUrl = process.env.RELAY_URL;
 if (relayUrl !== undefined) {
   defaultRegistry.registerMethod("eth_sendRawTransaction", async (params) => {
     const list = Array.isArray(params) ? params : params === undefined ? [] : [params];
-    if (typeof list[0] !== "string") throw new Error("expected [rawTxHex]");
+    // A LOCAL parameter fault is `-32602`. A plain Error here would be sanitized into `-32603`,
+    // telling the caller this service broke when in fact their request did. Errors coming FROM the
+    // relayer keep their own codes below and are untouched.
+    if (typeof list[0] !== "string") {
+      throw new RpcError(JSON_RPC_ERRORS.INVALID_PARAMS, "eth_sendRawTransaction expects [rawTxHex]");
+    }
     const resp = await fetch(`${relayUrl}/eth_sendRawTransaction`, {
       method: "POST",
       headers: { "content-type": "application/json" },

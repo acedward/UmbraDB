@@ -140,16 +140,18 @@ presentation for wallets that refuse to build a transaction without fee data.
 
 - **Params** 2–3 positional: `blockCount` (hex quantity), `newestBlock` (string), optional
   `rewardPercentiles`.
-- **Result** `{ oldestBlock, baseFeePerGas: [0x0 × count+1], gasUsedRatio: [0 × count],
-  reward: [[0x0 × percentiles] × count] }` — shape-correct, all zero.
-- **Source** `const`.
-- **Deviation** `oldestBlock` echoes `newestBlock` when it was given as a hex quantity, and is
-  `0x0` when it was given as a tag. The spec wants the **lowest** block of the returned range in
-  both cases. A client computing a range from `oldestBlock` will therefore get the wrong window
-  (harmless here only because every value in it is zero).
+- **Result** `{ oldestBlock, baseFeePerGas: [0x0 × n+1], gasUsedRatio: [0 × n],
+  reward: [[0x0 × percentiles] × n] }` — shape-correct, all zero. `oldestBlock` is the **lowest**
+  block of the returned range (`newestBlock − blockCount + 1`), truncated at genesis; `n` shrinks
+  with it, so `oldestBlock + gasUsedRatio.length − 1 === newestBlock` always holds.
+- **Source** `const` for the values; `indexer` for the head **only when `newestBlock` is a tag** —
+  a hex `newestBlock` needs no call.
+- **Deviation** every fee value is zero (there is no gas market), so the range is the only
+  informative part of the answer.
 - **Errors** `-32602` for: wrong arity, non-canonical `blockCount`, `blockCount > 1024`,
-  non-string `newestBlock`, a percentile outside 0–100 or not a number, more than 100 percentiles,
-  and `blockCount × percentiles > 4096`.
+  non-string or unrecognised `newestBlock` (a garbage tag is now rejected rather than silently
+  answered), a percentile outside 0–100 or not a number, more than 100 percentiles, and
+  `blockCount × percentiles > 4096`.
 
 ### `eth_maxPriorityFeePerGas`
 
@@ -303,8 +305,10 @@ GraphQL `Int` cannot carry them.
   explorer performs. (b) `decimals()` is **0 unless a watch entry sets `evmDecimals`**: the Compact
   contracts store `Uint<128>` whole units and emit them verbatim, so a `deployment.json` that
   nominally declares `decimals: 18` is ignored on purpose — honouring it would divide every
-  displayed balance by 10¹⁸. (c) the arity guard is gone — see [Known issues](#known-issues), K3.
-- **Errors** none of its own; a malformed call currently yields `0x`, not `-32602`.
+  displayed balance by 10¹⁸.
+- **Errors** wrong arity or non-positional (by-name) parameters → `-32602`. A *well-formed* call this
+  surface cannot execute still returns `0x`, which is what an EVM node says for a call into
+  nothing — the distinction restored in K3.
 
 ---
 
@@ -465,7 +469,8 @@ section documents only the RPC contract.
 
 - **Registered only when `RELAY_URL` is set.** With no relayer configured the method name is not in
   the registry at all and the server answers `-32601 Method not found` (K8).
-- **Params** 1 positional: the raw, signed transaction hex. Additional parameters are ignored.
+- **Params** 1 positional: the raw, signed transaction hex. Additional parameters are ignored; a
+  missing or non-string first parameter is `-32602` (K5).
 - **Result** whatever the relayer returns as `result` — an eth-shaped 32-byte hash.
 - **Source** `relay`. The forward is literally
   `POST <RELAY_URL>/eth_sendRawTransaction {"rawTx": params[0]}` and nothing else; this service does
@@ -475,7 +480,7 @@ section documents only the RPC contract.
 - **Deviations** (a) legacy **type-0 transactions only** — this is why blocks carry no
   `baseFeePerGas`; (b) a `200 OK` means "the relayer accepted the job", **not** "the transaction is
   on chain": proving takes ~25–40 s afterwards and a failure at that point has no channel back to
-  the JSON-RPC caller; (c) local parameter validation surfaces as `-32603` (K5).
+  the JSON-RPC caller.
 - **Related** what the relayer receives, derives and verifies — including the trust model of this
   path and the questions a future relay specification must settle — is documented in the review
   report `Umbra/reports/00006-relay-interface.md` in the organizer workspace (not part of this repo).
@@ -532,10 +537,10 @@ EVM chain. "Known issue" = a defect or rough edge, detailed in the next section.
 | D19 | `eth_getBlockReceipts` | only the **string** forms of `BlockNumberOrTagOrHash`; object forms rejected | **known issue** K6 |
 | D20 | `eth_getTransactionByHash`, `eth_getTransactionReceipt` | a stored row the block query cannot place answers `null` (not an error); a relayer row echoes the eth-side hash it was queried by while being positioned by its Midnight hash | by design — K1 (fixed) |
 | D21 | `eth_getTransactionReceipt`, `eth_getBlockReceipts` | `logs` covers only WATCHED contracts (what `evm_rpc.logs` holds); an unwatched contract's transaction reports `logs: []` | by design — K2 (fixed) |
-| D22 | `eth_call` | no arity guard: `params: []` answers `0x` instead of `-32602` | **known issue** K3 |
-| D23 | `eth_estimateGas` | the transaction object is never validated; a bare string is accepted | **known issue** K4 |
-| D24 | `eth_feeHistory` | `oldestBlock` is the newest block (hex form) or `0x0` (tag form), never the range's lowest | **known issue** K4 |
-| D25 | `eth_sendRawTransaction` | local parameter errors surface as `-32603`, not `-32602` | **known issue** K5 |
+| D22 | `eth_call` | a *well-formed* call this surface cannot execute answers `0x`, never an error | by design — K3 (fixed) |
+| D23 | `eth_estimateGas` | the transaction object is never validated; a bare string is accepted | by design — K4b (kept) |
+| D24 | `eth_feeHistory` | resolving a `newestBlock` **tag** costs one indexer call; every fee value is still zero | by design — K4a (fixed) |
+| D25 | `eth_sendRawTransaction` | no client-side hex validation: a non-hex string is forwarded and the relayer rejects it | by design — K5 (fixed) |
 | D26 | WebSocket surface | no envelope validation; notifications answered; Part B methods absent | **known issue** K7 |
 | D27 | `eth_sendRawTransaction` | `-32601` when `RELAY_URL` is unset (conditional registration) | **known issue** K8 |
 | D28 | transport | additive operational limits: 100-entry batch cap, 1 MiB request/response caps, HTTP 413/405 | benign — see [Transport](#transport-and-envelope) |
@@ -545,7 +550,10 @@ EVM chain. "Known issue" = a defect or rough edge, detailed in the next section.
 ## Known issues
 
 Behaviour recorded here is **current and verified**, not aspirational. Each entry says what happens
-today, why, and whether a fix is scheduled.
+today, why, and whether a fix is scheduled. Entries marked **FIXED** are kept rather than deleted:
+they record what the surface used to do, which is what a reader chasing an old report or an older
+deployment needs — the fix is described in place, and every method entry above already reflects the
+current behaviour.
 
 ### K1 — `-32603` for `tx_index`-stored hashes — **FIXED**
 
@@ -617,29 +625,44 @@ surface — it is the whole log set this service knows — but it is not what an
 say. Per-transaction joining also means `eth_getBlockReceipts` issues one log query per transaction
 in the block.
 
-### K3 — `eth_call` lost its arity guard at the Part F merge
+### K3 — `eth_call` lost its arity guard at the Part F merge — **FIXED**
 
-`methods/static.ts` registered `eth_call` with `positionalParams(params, 1, 2)`. The ERC20-view
-handler re-registers it with `{ replace: true }` and performs no arity check, so a malformed
-`eth_call` with `params: []` answers **`0x` instead of `-32602`**. Every well-formed call is
-unaffected. Restoring the guard is a two-line change in `methods/erc20-call.ts`; it is recorded
-rather than fixed because this review is documentation-only.
+**Was:** `methods/static.ts` registered `eth_call` with `positionalParams(params, 1, 2)`; the
+ERC20-view handler re-registered it with `{ replace: true }` and no arity check, so `params: []`
+answered **`0x` instead of `-32602`** — a malformed request reported as an empty return value.
 
-### K4 — two constant-answer methods are laxer than the spec
+**Fix:** the guard is back in `methods/erc20-call.ts`. Wrong arity and by-name (object) parameters
+are `-32602`; a *well-formed* call this surface cannot execute still returns `0x`, which is what an
+EVM node says for a call into nothing. That distinction — malformed request versus unexecutable
+call — is the whole point of the guard.
 
-- **`eth_estimateGas`** validates only the parameter *count*: `["not-a-tx"]` is accepted and
-  answered `0x5208`. A client sending a malformed transaction object gets no signal.
-- **`eth_feeHistory`** returns `oldestBlock` = the `newestBlock` argument when it was hex, and `0x0`
-  when it was a tag. The spec defines it as the **lowest** block of the returned range. Since every
-  returned value is zero this misleads only a client that computes block numbers from the response.
+### K4 — constant-answer laxness (a: **FIXED**, b: **kept deliberately**)
 
-### K5 — `eth_sendRawTransaction` reports local parameter errors as `-32603`
+- **K4a `eth_feeHistory.oldestBlock` — FIXED.** It used to return the `newestBlock` argument when
+  that was hex and `0x0` when it was a tag; the spec defines it as the **lowest** block of the
+  returned range. It is now `newestBlock − blockCount + 1`, truncated at genesis with the arrays
+  shrinking to match, so `oldestBlock + gasUsedRatio.length − 1 === newestBlock` — the one identity
+  that lets a client map a returned value back to a block. A tag `newestBlock` is resolved against
+  the indexer head (one call; the hex form still costs none), and an unrecognised tag is now
+  `-32602` instead of being silently answered.
+- **K4b `eth_estimateGas` accepts a non-object transaction — KEPT AS-IS, deliberately.**
+  `["not-a-tx"]` is still answered `0x5208`; only the parameter *count* is checked. This is the one
+  item in K3/K4/K5 whose tightening could **break** a working caller — a wallet sending an odd but
+  harmless transaction object would start getting `-32602` where it now gets a usable estimate — and
+  the answer is a constant either way, so validating the input would buy nothing but risk.
 
-The forwarding handler throws a plain `Error("expected [rawTxHex]")` for a missing or non-string
-parameter, which the server sanitizes into `-32603 Internal error`. `params: []` and `[42]` both
-produce it, where `-32602` is correct. Errors coming *from the relayer* are propagated with their
-own codes and are unaffected. There is also no client-side hex validation: a non-hex string is
-forwarded to the relayer, which rejects it.
+### K5 — `eth_sendRawTransaction` reported local parameter errors as `-32603` — **FIXED**
+
+**Was:** the forwarding handler threw a plain `Error("expected [rawTxHex]")` for a missing or
+non-string parameter, which the server sanitized into `-32603 Internal error` — telling the caller
+this service had broken when in fact their request had. `params: []` and `[42]` both produced it.
+
+**Fix:** it throws an `RpcError(-32602)`. Errors coming *from the relayer* were always propagated
+with their own codes and are unchanged.
+
+**Unchanged (by design, D25):** there is still no client-side hex validation — a non-hex string is
+forwarded and the relayer, which owns RLP decoding, rejects it with its own message. Duplicating
+that check here would create a second opinion about what a valid raw transaction is.
 
 ### K6 — `eth_getBlockReceipts` accepts only string block references
 

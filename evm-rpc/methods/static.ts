@@ -1,5 +1,7 @@
-import { MethodRegistry } from "../registry.js";
-import { ESTIMATE_GAS, GAS_PRICE, invalidParams, parseQuantity, positionalParams, quantity } from "./common.js";
+import { MethodRegistry, type RpcContext } from "../registry.js";
+import {
+  ESTIMATE_GAS, GAS_PRICE, invalidParams, parseQuantity, positionalParams, quantity, resolveBlockTag,
+} from "./common.js";
 
 type KeccakLane = bigint;
 const MASK_64 = (1n << 64n) - 1n;
@@ -77,7 +79,21 @@ function noParams(params: unknown): void {
   positionalParams(params, 0);
 }
 
-async function feeHistory(params: unknown): Promise<unknown> {
+/**
+ * The height `newestBlock` names. A tag costs one indexer call — the price of being able to state
+ * the range at all; a hex quantity costs nothing. Garbage (`"yesterday"`, a non-canonical
+ * quantity) is `-32602`, which is what `BlockNumberOrTag` requires and what this method used to
+ * swallow.
+ */
+async function newestBlockHeight(ctx: RpcContext, value: string): Promise<number> {
+  const tag = resolveBlockTag(value);
+  if (tag.kind === "height") return tag.height;
+  const head = await ctx.indexer.getLatestBlock();
+  if (head === undefined) throw new Error("indexer returned no latest block");
+  return head.height;
+}
+
+async function feeHistory(params: unknown, ctx: RpcContext): Promise<unknown> {
   const values = positionalParams(params, 2, 3);
   const count = parseQuantity(values[0], "block count");
   if (count > 1_024n) invalidParams("block count must not exceed 1024");
@@ -91,13 +107,20 @@ async function feeHistory(params: unknown): Promise<unknown> {
   if (count * BigInt(percentiles.length) > 4_096n) {
     invalidParams("block count and reward percentiles must not exceed 4096 reward entries");
   }
-  const length = Number(count);
-  const rewards = Array.from({ length }, () => percentiles.map(() => "0x0"));
+
+  // `oldestBlock` is the LOWEST block of the returned range — `newest - count + 1` — not the newest
+  // one and not zero. A range that would reach below genesis is truncated there, and the arrays
+  // shrink with it, so `oldestBlock + gasUsedRatio.length - 1 === newest` always holds: that
+  // identity is the only thing a client can use to map a returned value back to a block.
+  const requested = Number(count);
+  const newestHeight = requested === 0 ? 0 : await newestBlockHeight(ctx, newest);
+  const oldest = requested === 0 ? 0 : Math.max(0, newestHeight - requested + 1);
+  const length = requested === 0 ? 0 : newestHeight - oldest + 1;
   return {
-    oldestBlock: newest.startsWith("0x") ? newest : "0x0",
+    oldestBlock: quantity(oldest),
     baseFeePerGas: Array.from({ length: length + 1 }, () => "0x0"),
     gasUsedRatio: Array.from({ length }, () => 0),
-    reward: rewards,
+    reward: Array.from({ length }, () => percentiles.map(() => "0x0")),
   };
 }
 

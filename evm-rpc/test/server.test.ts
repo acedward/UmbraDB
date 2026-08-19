@@ -4,7 +4,16 @@ import { emptyEvmRpcReader } from "../db.js";
 import { registerStaticMethods } from "../methods/static.js";
 import { JSON_RPC_ERRORS, MethodRegistry, RpcError } from "../registry.js";
 import { createRpcServer, dispatchPayload, dispatchRequest } from "../server.js";
-import { context } from "./helpers.js";
+import { context, fakeIndexer } from "./helpers.js";
+
+/** A context whose indexer head sits at `height` — what a `newestBlock` TAG has to resolve to. */
+function headContext(height: number) {
+  return context({ indexer: fakeIndexer({
+    async getLatestBlock() {
+      return { hash: "aa".repeat(32), height, timestamp: 0, author: null, parent: null, transactions: [] };
+    },
+  }) });
+}
 
 describe("JSON-RPC envelope", () => {
   it("echoes string and null ids", async () => {
@@ -155,8 +164,8 @@ describe("static methods", () => {
   }
 
   it("eth_feeHistory returns a MetaMask-compatible zero shape", async () => {
-    await expect(registry.getMethod("eth_feeHistory")!(["0x2", "latest", [10, 50]], context())).resolves.toEqual({
-      oldestBlock: "0x0",
+    await expect(registry.getMethod("eth_feeHistory")!(["0x2", "latest", [10, 50]], headContext(42))).resolves.toEqual({
+      oldestBlock: "0x29",
       baseFeePerGas: ["0x0", "0x0", "0x0"],
       gasUsedRatio: [0, 0],
       reward: [["0x0", "0x0"], ["0x0", "0x0"]],
@@ -168,5 +177,47 @@ describe("static methods", () => {
       .rejects.toMatchObject({ code: JSON_RPC_ERRORS.INVALID_PARAMS });
     await expect(registry.getMethod("eth_feeHistory")!(["0x400", "latest", Array(100).fill(0)], context()))
       .rejects.toMatchObject({ code: JSON_RPC_ERRORS.INVALID_PARAMS });
+  });
+
+  describe("eth_feeHistory.oldestBlock (plan 00006 K4a)", () => {
+    /** `oldestBlock + gasUsedRatio.length - 1 === newestBlock` — the one identity a client can use. */
+    function assertRangeIdentity(result: Record<string, unknown>, newest: number): void {
+      const ratio = result.gasUsedRatio as number[];
+      expect(Number(result.oldestBlock as string) + ratio.length - 1).toBe(newest);
+      expect((result.baseFeePerGas as string[]).length).toBe(ratio.length + 1);
+    }
+
+    it("is the range's LOWEST block in the tag form, not the head", async () => {
+      const result = await registry.getMethod("eth_feeHistory")!(["0x4", "latest", []], headContext(1000)) as Record<string, unknown>;
+      expect(result.oldestBlock).toBe("0x3e5"); // 997 = 1000 - 4 + 1
+      assertRangeIdentity(result, 1000);
+    });
+
+    it("is the range's LOWEST block in the hex form, not an echo of newestBlock", async () => {
+      const result = await registry.getMethod("eth_feeHistory")!(["0x3", "0xbaa", []], context()) as Record<string, unknown>;
+      expect(result.oldestBlock).toBe("0xba8"); // 2984 = 2986 - 3 + 1
+      assertRangeIdentity(result, 2986);
+    });
+
+    it("truncates at genesis instead of naming a negative block", async () => {
+      const result = await registry.getMethod("eth_feeHistory")!(["0x5", "0x2", []], context()) as Record<string, unknown>;
+      expect(result.oldestBlock).toBe("0x0");
+      expect(result.gasUsedRatio).toHaveLength(3); // blocks 0,1,2 — not the 5 requested
+      assertRangeIdentity(result, 2);
+    });
+
+    it("resolves every latest-family tag to the head and rejects a garbage one", async () => {
+      for (const tag of ["latest", "pending", "safe", "finalized"]) {
+        await expect(registry.getMethod("eth_feeHistory")!(["0x1", tag, []], headContext(7)))
+          .resolves.toMatchObject({ oldestBlock: "0x7" });
+      }
+      await expect(registry.getMethod("eth_feeHistory")!(["0x1", "earliest", []], context()))
+        .resolves.toMatchObject({ oldestBlock: "0x0" });
+      await expect(registry.getMethod("eth_feeHistory")!(["0x2", "yesterday", []], context()))
+        .rejects.toMatchObject({ code: JSON_RPC_ERRORS.INVALID_PARAMS });
+      // A hex form still costs no indexer call — the head is only consulted for a tag.
+      await expect(registry.getMethod("eth_feeHistory")!(["0x1", "0x5", []], context()))
+        .resolves.toMatchObject({ oldestBlock: "0x5" });
+    });
   });
 });
