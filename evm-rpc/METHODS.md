@@ -320,9 +320,12 @@ them and the zero address otherwise.
 Receipts share **one shape function** (`synthesizeReceipt`), used by both
 [`eth_getTransactionReceipt`](#eth_gettransactionreceipt) and
 [`eth_getBlockReceipts`](#eth_getblockreceipts), so the two surfaces cannot drift:
-`cumulativeGasUsed` = `gasUsed` = the recorded fee, `contractAddress null`, `logs []`,
-`logsBloom` = 256 zero bytes, `type 0x0`, `effectiveGasPrice 0x3b9aca00`. `status` is `0x1` only
-when the transaction result is `SUCCESS` **and** every segment succeeded; anything else is `0x0`.
+`cumulativeGasUsed` = `gasUsed` = the recorded fee, `contractAddress null`, `type 0x0`,
+`effectiveGasPrice 0x3b9aca00`. `logs` is the transaction's `evm_rpc.logs` rows in
+`(txIndex, logIndex)` order — the same objects `eth_getLogs` returns — and `logsBloom` is computed
+from that array in the same call, so the filter can never disagree with the logs beside it.
+`status` is `0x1` only when the transaction result is `SUCCESS` **and** every segment succeeded;
+anything else is `0x0`.
 
 ### `eth_getTransactionByHash`
 
@@ -345,9 +348,13 @@ when the transaction result is `SUCCESS` **and** every segment succeeded; anythi
 - **Params** 1 positional: 32-byte transaction hash. **Result** the synthesized receipt, or `null`.
 - **Source** `pg:tx_index` first, then `indexer`. `gasUsed` is the recorded Midnight fee (0 from the
   relayer path, which hardcodes it). Positioned exactly like `eth_getTransactionByHash` (K1).
-- **Deviations** `logs` is always `[]` with a zero bloom — see [Known issues](#known-issues), K2.
-  The all-segments-or-`0x0` status policy is stricter than Ethereum's binary status: a
-  `PARTIAL_SUCCESS` Midnight transaction reports `0x0`.
+- **Logs** the transaction's `pg:logs` rows, byte-identical to what `eth_getLogs` serves, with a
+  `logsBloom` computed from them (Bloom-9, `methods/bloom.ts`). The join key is the **Midnight**
+  hash, not necessarily the queried one — see [Known issues](#known-issues), K2.
+- **Deviations** the all-segments-or-`0x0` status policy is stricter than Ethereum's binary status:
+  a `PARTIAL_SUCCESS` Midnight transaction reports `0x0`. A transaction whose contract is not in
+  the watch list has no rows in `evm_rpc.logs`, so its receipt reports `logs: []` — accurately for
+  this surface, but not what an Ethereum node would say.
 - **Errors** as `eth_getTransactionByHash`.
 
 ### `eth_getTransactionByBlockHashAndIndex`
@@ -377,8 +384,9 @@ when the transaction result is `SUCCESS` **and** every segment succeeded; anythi
   `indexer` transaction lookup as fallback. Like the by-index methods, it never re-derives a
   position and was therefore never affected by K1.
 - **Deviations** (a) only the **string** forms of `BlockNumberOrTagOrHash` are accepted — the object
-  forms `{blockHash, requireCanonical}` and `{blockNumber}` are not; (b) `logs` is `[]` here too
-  (K2); (c) if the block query lists a transaction hash that the transaction lookup then cannot
+  forms `{blockHash, requireCanonical}` and `{blockNumber}` are not; (b) logs are joined per
+  transaction, so a block of *n* transactions costs *n* log queries (K2); (c) if the block query
+  lists a transaction hash that the transaction lookup then cannot
   resolve, a shape-correct placeholder receipt is emitted (`status 0x0`, `gasUsed 0x0`) so the array
   stays index-aligned with the block's transaction list rather than silently losing an entry. This
   is defensive; it has not been observed.
@@ -523,7 +531,7 @@ EVM chain. "Known issue" = a defect or rough edge, detailed in the next section.
 | D18 | `eth_sendRawTransaction` | legacy type-0 only; `200 OK` means "accepted for relaying", not "mined" | by design |
 | D19 | `eth_getBlockReceipts` | only the **string** forms of `BlockNumberOrTagOrHash`; object forms rejected | **known issue** K6 |
 | D20 | `eth_getTransactionByHash`, `eth_getTransactionReceipt` | a stored row the block query cannot place answers `null` (not an error); a relayer row echoes the eth-side hash it was queried by while being positioned by its Midnight hash | by design — K1 (fixed) |
-| D21 | `eth_getTransactionReceipt`, `eth_getBlockReceipts` | `logs: []` and a zero bloom even when `eth_getLogs` has matching rows | **known issue** K2 |
+| D21 | `eth_getTransactionReceipt`, `eth_getBlockReceipts` | `logs` covers only WATCHED contracts (what `evm_rpc.logs` holds); an unwatched contract's transaction reports `logs: []` | by design — K2 (fixed) |
 | D22 | `eth_call` | no arity guard: `params: []` answers `0x` instead of `-32602` | **known issue** K3 |
 | D23 | `eth_estimateGas` | the transaction object is never validated; a bare string is accepted | **known issue** K4 |
 | D24 | `eth_feeHistory` | `oldestBlock` is the newest block (hex form) or `0x0` (tag form), never the range's lowest | **known issue** K4 |
@@ -579,20 +587,35 @@ unknown provenance untouched. It is idempotent and re-runs until it has a clean 
 Never affected: `eth_getBlockReceipts` and the two by-index methods, which start from the block
 query and never re-derive a position.
 
-### K2 — receipts never carry logs
+### K2 — receipts never carried logs — **FIXED**
 
-`eth_getTransactionReceipt` and `eth_getBlockReceipts` both return `logs: []` with a zero
-`logsBloom`, **even for a transaction whose Transfer log `eth_getLogs` returns**. Verified on
-`0x7a8c0ba2…` at block `0xbaa`: `eth_getLogs` serves the row, the receipt reports none.
+**Was:** both receipt methods returned `logs: []` with a zero `logsBloom`, even for a transaction
+whose Transfer log `eth_getLogs` served (reproduced on `0x7a8c0ba2…` at block `0xbaa`). The cause
+was structural: receipts are synthesized on the Part B read path, which had an `EvmRpcReader` but no
+way to reach `evm_rpc.logs`, and fixing one of the two receipt surfaces alone would have made them
+disagree.
 
-The cause is structural rather than accidental: receipts are synthesized on the Part B read path,
-which has an `EvmRpcReader` but not the Part C `sql` client that owns `evm_rpc.logs`. Joining logs
-into one of the two receipt surfaces alone would make them disagree, so the shared
-`synthesizeReceipt()` returns `[]` on every path.
+**Fix:** `EvmRpcReader` gained `getLogsByTransactionHash()`, reading the same columns
+`eth_getLogs` reads (`logs_tx_hash_idx` already existed for exactly this access path) and returning
+the identical objects — a receipt and a log query can no longer describe the same row differently.
+The shared `synthesizeReceipt()` carries them, so `eth_getTransactionReceipt` and
+`eth_getBlockReceipts` are fixed together and cannot drift.
 
-A client that needs a transaction's logs must call `eth_getLogs` (a `blockHash` filter plus a
-`transactionHash` comparison, or a range of one block). Fixing this is queued behind K1 — the join
-key has to be the canonical Midnight hash, and it must fix **both** receipt methods together.
+`logsBloom` is computed from that array in the same call (`methods/bloom.ts`, go-ethereum's Bloom-9:
+three 11-bit positions per address/topic from `keccak256`, indexed from the end of the 256-byte
+array). A receipt that carried logs but a zero bloom would be worse than one carrying neither — it
+asserts, with the filter's full authority, that nothing matches.
+
+**The join key is the Midnight transaction hash**, which is why this became possible only with K1:
+`evm_rpc.logs.tx_hash` is written by the ingester from the indexer's transaction identity, so a
+relayer row keyed on an eth-side hash finds its logs through `canonicalHash`, not through the key it
+was queried by.
+
+**Remaining limit (by design, D21):** `evm_rpc.logs` only holds events from **watched** contracts,
+so a transaction touching an unwatched contract still reports `logs: []`. That is accurate for this
+surface — it is the whole log set this service knows — but it is not what an Ethereum node would
+say. Per-transaction joining also means `eth_getBlockReceipts` issues one log query per transaction
+in the block.
 
 ### K3 — `eth_call` lost its arity guard at the Part F merge
 

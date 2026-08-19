@@ -1,4 +1,7 @@
 import postgres, { type Sql } from "postgres";
+// TYPE-only: the receipt log shape is `eth_getLogs`' own, so the two surfaces cannot describe the
+// same row differently. Erased at compile time, so this adds no runtime dependency on Part C.
+import type { RpcLog } from "./logs/get-logs.js";
 
 export interface DbTransaction {
   readonly hash: Buffer;
@@ -48,6 +51,16 @@ export interface EvmRpcReader {
   getTransactionCount(address: Buffer): Promise<bigint>;
   getAddressKind(address: Buffer): Promise<string | undefined>;
   getTransactionByHash(hash: Buffer): Promise<DbTransaction | undefined>;
+  /**
+   * Every `evm_rpc.logs` row of one transaction, in `(txIndex, logIndex)` order — the receipts'
+   * `logs` array. `hash` must be the **Midnight** transaction hash (`logs.tx_hash` is written by
+   * the ingester from the indexer's own transaction identity), which is why receipts join on
+   * {@link DbTransaction.canonicalHash} rather than on the key they were queried by.
+   *
+   * Returns the identical objects `eth_getLogs` serves, from the identical columns: a receipt and
+   * a log query must never describe the same row differently.
+   */
+  getLogsByTransactionHash(hash: Buffer): Promise<RpcLog[]>;
 }
 
 export const emptyEvmRpcReader: EvmRpcReader = {
@@ -55,9 +68,30 @@ export const emptyEvmRpcReader: EvmRpcReader = {
   async getTransactionCount() { return 0n; },
   async getAddressKind() { return undefined; },
   async getTransactionByHash() { return undefined; },
+  async getLogsByTransactionHash() { return []; },
 };
 
 type RpcSql = Sql<{ bigint: bigint }>;
+
+interface DbLogRow {
+  readonly evm_addr: Buffer;
+  readonly block_number: bigint;
+  readonly block_hash: Buffer;
+  readonly tx_hash: Buffer;
+  readonly tx_index: number;
+  readonly log_index: number;
+  readonly topic0: Buffer;
+  readonly topic1: Buffer | null;
+  readonly topic2: Buffer | null;
+  readonly topic3: Buffer | null;
+  readonly data: Buffer;
+  readonly removed: boolean;
+}
+
+const TOPIC_COLUMNS = ["topic0", "topic1", "topic2", "topic3"] as const;
+
+const hex = (value: Buffer): string => `0x${value.toString("hex")}`;
+const quantity = (value: number | bigint): string => `0x${value.toString(16)}`;
 
 interface DbTransactionRow {
   readonly hash: Buffer;
@@ -134,6 +168,38 @@ export class PostgresEvmRpcReader implements EvmRpcReader {
       rawRef: row.raw_ref,
       canonicalHash: canonicalHashFromRawRef(row.raw_ref),
     };
+  }
+
+  async getLogsByTransactionHash(hash: Buffer): Promise<RpcLog[]> {
+    // `logs_tx_hash_idx (tx_hash, log_index)` exists for exactly this read (010_logs.ts).
+    const rows = await this.sql<DbLogRow[]>`
+      SELECT a.evm_addr, l.block_number, l.block_hash, l.tx_hash, l.tx_index, l.log_index,
+             l.topic0, l.topic1, l.topic2, l.topic3, l.data, l.removed
+      FROM evm_rpc.logs AS l
+      JOIN evm_rpc.address_map AS a ON a.id = l.address_id
+      WHERE l.tx_hash = ${hash}
+      ORDER BY l.tx_index, l.log_index
+    `;
+    return rows.map((row) => {
+      const topics: string[] = [];
+      for (const column of TOPIC_COLUMNS) {
+        const value = row[column];
+        // Contiguous by the `logs_topics_contiguous` DDL constraint, so the first gap ends them.
+        if (value === null || value === undefined) break;
+        topics.push(hex(value));
+      }
+      return {
+        address: hex(row.evm_addr),
+        topics,
+        data: hex(row.data),
+        blockNumber: quantity(row.block_number),
+        blockHash: hex(row.block_hash),
+        transactionHash: hex(row.tx_hash),
+        transactionIndex: quantity(row.tx_index),
+        logIndex: quantity(row.log_index),
+        removed: row.removed,
+      };
+    });
   }
 }
 

@@ -1,6 +1,8 @@
 import type { DbTransaction } from "../db.js";
 import type { IndexerBlock, IndexerTransaction, IndexerTransactionLookup } from "../indexer-gql.js";
+import type { RpcLog } from "../logs/get-logs.js";
 import { MethodRegistry, type RpcContext } from "../registry.js";
+import { logsBloom } from "./bloom.js";
 import {
   ESTIMATE_GAS, GAS_PRICE, ZERO_ADDRESS, ZERO_BLOOM, ZERO_HASH, blockByTag, dataHex, decimalBigInt,
   evmAddressFromBytes, fixedDataHex, parseQuantity, positionalParams, quantity, sourceFixedDataHex,
@@ -132,14 +134,18 @@ export interface ReceiptShapeInput {
   readonly gasUsed: bigint;
   /** `"0x1"` / `"0x0"` — already reduced by {@link receiptStatus}. */
   readonly status: string;
+  /** The transaction's `evm_rpc.logs` rows, exactly as `eth_getLogs` serves them. */
+  readonly logs?: readonly RpcLog[];
 }
 
 /**
  * The single receipt shape used by `eth_getTransactionReceipt` and `eth_getBlockReceipts`, so the
- * two can never drift. `logs` is `[]` with a zero bloom on every path: Part C serves logs from
- * `evm_rpc.logs` through `eth_getLogs`, which this read path does not join (documented deviation).
+ * two can never drift. `logs` comes from `evm_rpc.logs` — the same rows, from the same columns,
+ * that `eth_getLogs` serves — and `logsBloom` is computed from that array in this one place, so a
+ * receipt can never advertise a filter that disagrees with the logs beside it.
  */
 export function synthesizeReceipt(input: ReceiptShapeInput): Record<string, unknown> {
+  const logs = input.logs ?? [];
   return {
     transactionHash: input.hash,
     transactionIndex: input.transactionIndex,
@@ -150,12 +156,22 @@ export function synthesizeReceipt(input: ReceiptShapeInput): Record<string, unkn
     cumulativeGasUsed: quantity(input.gasUsed),
     gasUsed: quantity(input.gasUsed),
     contractAddress: null,
-    logs: [],
-    logsBloom: ZERO_BLOOM,
+    logs,
+    logsBloom: logs.length === 0 ? ZERO_BLOOM : logsBloom(logs),
     status: input.status,
     type: "0x0",
     effectiveGasPrice: GAS_PRICE,
   };
+}
+
+/**
+ * The transaction's stored logs, joined on the **Midnight** hash: `evm_rpc.logs.tx_hash` is written
+ * by the ingester from the indexer's transaction identity, so a relayer row keyed on an eth-side
+ * hash would find nothing under its own key (plan 00006 K1/K2 — this is why the logs join only
+ * became possible once the canonical hash was resolvable).
+ */
+async function logsFor(ctx: RpcContext, midnightHash: string): Promise<RpcLog[]> {
+  return ctx.db.getLogsByTransactionHash(Buffer.from(midnightHash.slice(2), "hex"));
 }
 
 /**
@@ -188,6 +204,7 @@ async function receiptFromDb(row: DbTransaction, ctx: RpcContext): Promise<Recor
     to: evmAddressFromBytes(row.toAddress),
     gasUsed: rowGasUsed(row),
     status: receiptStatus(row.status ?? "FAILURE", undefined),
+    logs: await logsFor(ctx, positionHashOf(row)),
   });
 }
 
@@ -203,6 +220,7 @@ async function receiptFromIndexer(tx: IndexerTransaction, ctx: RpcContext): Prom
     transactionIndex: index,
     gasUsed: decimalBigInt(tx.fee),
     status: receiptStatus(result?.status ?? "FAILURE", result?.segments),
+    logs: await logsFor(ctx, hash),
   });
 }
 
@@ -221,6 +239,8 @@ export async function synthesizeBlockReceipt(
 ): Promise<Record<string, unknown>> {
   const hash = sourceFixedDataHex(input.hash, 32, "transaction hash");
   const position = { hash, blockHash: input.blockHash, blockNumber: input.blockNumber, transactionIndex: input.transactionIndex };
+  // The hash came from the block query, so it IS the Midnight hash the logs are keyed on.
+  const logs = await logsFor(ctx, hash);
   const row = await ctx.db.getTransactionByHash(Buffer.from(hash.slice(2), "hex"));
   if (row !== undefined) {
     return synthesizeReceipt({
@@ -229,6 +249,7 @@ export async function synthesizeBlockReceipt(
       to: evmAddressFromBytes(row.toAddress),
       gasUsed: rowGasUsed(row),
       status: receiptStatus(row.status ?? "FAILURE", undefined),
+      logs,
     });
   }
   // A hash the block query itself listed should always resolve here; if the indexer disagrees with
@@ -240,6 +261,7 @@ export async function synthesizeBlockReceipt(
     ...position,
     gasUsed: transaction === undefined ? 0n : decimalBigInt(transaction.fee),
     status: transaction === undefined ? "0x0" : receiptStatus(result?.status ?? "FAILURE", result?.segments),
+    logs,
   });
 }
 
