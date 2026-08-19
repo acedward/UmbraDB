@@ -1,10 +1,12 @@
 import { createClient } from "../src/postgres/client.js";
 import { pathToFileURL } from "node:url";
+import { IndexerGqlClient } from "../evm-rpc/indexer-gql.js";
 import { watchedAddressesFromEnv } from "./address.js";
 import { bootstrapEvmRpcSchema } from "./bootstrap.js";
 import { jsonLog, publicEndpoint } from "./log.js";
 import { WalletMonitorStore } from "./store.js";
 import { subscribeUnshieldedTransactions } from "./subscription.js";
+import { backfillCanonicalTxHashes } from "./tx-hash-backfill.js";
 
 function defaultWsUrl(httpUrl: string): string {
   const url = new URL(httpUrl);
@@ -24,6 +26,17 @@ export async function runWalletMonitor(signal: AbortSignal): Promise<void> {
   const sql = createClient({ connectionString, schema });
   try {
     await bootstrapEvmRpcSchema(sql, schema);
+    // Repairs `tx_index` rows written before the canonical-hash invariant was enforced, and
+    // re-verifies the rest. Never fatal: a monitor that cannot reach the indexer's block query
+    // must still be able to ingest, and the pass simply runs again on the next start.
+    try {
+      const repaired = await backfillCanonicalTxHashes({
+        sql, schema, indexer: new IndexerGqlClient({ url: indexerUrl }),
+      });
+      jsonLog("wallet-monitor", "tx-hash-backfill", { ...repaired });
+    } catch (error) {
+      jsonLog("wallet-monitor", "tx-hash-backfill-failed", { message: String(error) });
+    }
     const store = new WalletMonitorStore(sql, schema);
     jsonLog("wallet-monitor", "start", { schema, indexerWs: publicEndpoint(indexerWs), addresses });
     await Promise.all(addresses.map(async (address) => {

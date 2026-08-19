@@ -10,6 +10,37 @@ export interface DbTransaction {
   readonly toAddress: Buffer | null;
   readonly nonce: bigint;
   readonly rawRef: string | null;
+  /**
+   * The MIDNIGHT transaction hash this row denotes, when that is NOT the row's own key —
+   * `null` when the key already IS the Midnight hash.
+   *
+   * `evm_rpc.tx_index.hash` is deliberately not a single namespace (plan 00006 F8.1):
+   *   - the wallet monitor keys a row on the Midnight transaction hash, which is exactly what
+   *     the indexer's block query reports for it;
+   *   - the relayer keys a row on the **eth-side** transaction hash — the hash MetaMask
+   *     computed, polls with, and is the only identifier it will ever ask about — and records
+   *     the Midnight hash it maps to in `raw_ref` as `relayer:midnight:<hash>`.
+   *
+   * Everything that has to POSITION the row inside its block (`transactionIndex`) or JOIN it
+   * against `evm_rpc.logs` must use the Midnight hash; everything that ECHOES an identifier
+   * back to the caller must use the key it was asked about. This field is what keeps those
+   * two apart instead of silently conflating them.
+   */
+  readonly canonicalHash: Buffer | null;
+}
+
+/** `relayer:midnight:<64 hex>` — the only `raw_ref` form that names a different Midnight hash. */
+const RELAYER_MIDNIGHT_REF = /^relayer:midnight:([0-9a-fA-F]{64})$/;
+
+/**
+ * The Midnight transaction hash a `tx_index` row's `raw_ref` names, or `null` when the row's own
+ * key is already that hash (the wallet-monitor's `indexer:transaction:<id>` rows, and any
+ * provenance this does not recognise — an unknown `raw_ref` must never be guessed at).
+ */
+export function canonicalHashFromRawRef(rawRef: string | null | undefined): Buffer | null {
+  if (rawRef === null || rawRef === undefined) return null;
+  const match = RELAYER_MIDNIGHT_REF.exec(rawRef);
+  return match === null ? null : Buffer.from(match[1]!.toLowerCase(), "hex");
 }
 
 export interface EvmRpcReader {
@@ -101,6 +132,7 @@ export class PostgresEvmRpcReader implements EvmRpcReader {
       toAddress: row.to_addr,
       nonce: row.nonce,
       rawRef: row.raw_ref,
+      canonicalHash: canonicalHashFromRawRef(row.raw_ref),
     };
   }
 }

@@ -48,6 +48,7 @@ describe("chain-view methods", () => {
             toAddress: Buffer.from("34".repeat(20), "hex"),
             nonce: 9n,
             rawRef: "internal-only",
+            canonicalHash: null,
           };
         },
       },

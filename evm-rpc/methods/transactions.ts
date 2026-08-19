@@ -39,34 +39,62 @@ export function synthesizeTransaction(input: TransactionShapeInput): Record<stri
   return transaction;
 }
 
-async function transactionFromDb(
-  row: DbTransaction,
-  ctx: RpcContext,
-  blockProjection?: Pick<TransactionShapeInput, "blockHash" | "blockNumber" | "transactionIndex">,
-): Promise<Record<string, unknown>> {
-  const hash = sourceFixedDataHex(row.hash.toString("hex"), 32, "transaction hash");
+type BlockProjection = Pick<TransactionShapeInput, "blockHash" | "blockNumber" | "transactionIndex">;
+
+/**
+ * The hash the INDEXER knows this row by — `canonicalHash` when the row is keyed on something
+ * else (a relayer row's eth-side hash), otherwise the row's own key. Every block-position and
+ * log lookup goes through here; every value echoed back to the caller does not.
+ */
+export function positionHashOf(row: DbTransaction): string {
+  const source = row.canonicalHash ?? row.hash;
+  return sourceFixedDataHex(source.toString("hex"), 32, "transaction hash");
+}
+
+/**
+ * Places a `tx_index` row inside the block it names, or `null` when the indexer's block query
+ * cannot place it. `null` is a real, expected answer rather than a fault:
+ *   - the row may name a block from a PREVIOUS chain incarnation (a local stack that was reset
+ *     while its `evm_rpc` data survived), so the height exists but that transaction does not;
+ *   - the row may have no height at all.
+ * Both used to raise `-32603` (plan 00006 Q2 / METHODS.md K1). The caller now falls through to
+ * the indexer lookup, which answers `null` — "this chain does not know that transaction", which
+ * is what the official `notFound` result union asks for.
+ */
+async function rowPosition(row: DbTransaction, ctx: RpcContext): Promise<BlockProjection | null> {
+  if (row.blockHeight === null) return null;
+  const index = await transactionIndexOf(ctx, row.blockHeight, positionHashOf(row));
+  if (index === undefined) return null;
+  return {
+    blockHash: row.blockHash === null ? ZERO_HASH : sourceFixedDataHex(row.blockHash.toString("hex"), 32, "block hash"),
+    blockNumber: quantity(row.blockHeight),
+    transactionIndex: index,
+  };
+}
+
+function transactionShapeFromRow(row: DbTransaction, position: BlockProjection): Record<string, unknown> {
   return synthesizeTransaction({
-    hash,
-    blockHash: blockProjection?.blockHash ?? (row.blockHash === null ? ZERO_HASH : sourceFixedDataHex(row.blockHash.toString("hex"), 32, "block hash")),
-    blockNumber: blockProjection?.blockNumber ?? quantity(row.blockHeight ?? 0n),
-    transactionIndex: blockProjection?.transactionIndex ?? (
-      row.blockHeight === null ? await missingTransactionPosition() : await transactionIndex(ctx, row.blockHeight, hash)
-    ),
+    // The KEY the caller asked about, never `canonicalHash`: a JSON-RPC result must echo the
+    // identifier it was queried by, and for a relayer row that is the eth-side hash MetaMask
+    // is polling with.
+    hash: sourceFixedDataHex(row.hash.toString("hex"), 32, "transaction hash"),
+    ...position,
     from: evmAddressFromBytes(row.fromAddress),
     to: evmAddressFromBytes(row.toAddress),
     nonce: quantity(row.nonce),
   });
 }
 
-async function missingTransactionPosition(): Promise<never> {
-  throw new Error("transaction row has no block height; position is unavailable");
+async function transactionFromDb(row: DbTransaction, ctx: RpcContext): Promise<Record<string, unknown> | null> {
+  const position = await rowPosition(row, ctx);
+  return position === null ? null : transactionShapeFromRow(row, position);
 }
 
 /** Enriches an already-positioned block transaction from tx_index when available. */
 export async function synthesizeBlockTransaction(input: TransactionShapeInput, ctx: RpcContext): Promise<Record<string, unknown>> {
   const hash = sourceFixedDataHex(input.hash, 32, "transaction hash");
   const row = await ctx.db.getTransactionByHash(Buffer.from(hash.slice(2), "hex"));
-  return row === undefined ? synthesizeTransaction(input) : transactionFromDb(row, ctx, input);
+  return row === undefined ? synthesizeTransaction(input) : transactionShapeFromRow(row, input);
 }
 
 async function transactionFromIndexer(lookup: IndexerTransactionLookup, ctx: RpcContext): Promise<Record<string, unknown> | null> {
@@ -75,11 +103,16 @@ async function transactionFromIndexer(lookup: IndexerTransactionLookup, ctx: Rpc
   const duplicateNote = lookup.matchCount > 1
     ? `indexer returned ${lookup.matchCount} transactions for this hash; using element 0`
     : null;
+  const hash = sourceFixedDataHex(tx.hash, 32, "transaction hash");
+  // The indexer disagreeing with itself (a transaction whose own block does not list it) is
+  // answered as "unknown" rather than as an internal error — see rowPosition().
+  const index = await transactionIndexOf(ctx, tx.block.height, hash);
+  if (index === undefined) return null;
   return synthesizeTransaction({
-    hash: sourceFixedDataHex(tx.hash, 32, "transaction hash"),
+    hash,
     blockHash: sourceFixedDataHex(tx.block.hash, 32, "block hash"),
     blockNumber: quantity(tx.block.height),
-    transactionIndex: await transactionIndex(ctx, tx.block.height, sourceFixedDataHex(tx.hash, 32, "transaction hash")),
+    transactionIndex: index,
     rawRef: duplicateNote,
   });
 }
@@ -125,30 +158,32 @@ export function synthesizeReceipt(input: ReceiptShapeInput): Record<string, unkn
   };
 }
 
-async function transactionIndex(ctx: RpcContext, height: bigint | number, hash: string): Promise<string> {
+/**
+ * The transaction's index inside the block at `height`, or `undefined` when the indexer's block
+ * query does not place it there (unknown block, or a hash the block does not list). A height the
+ * indexer's `Int` range cannot express is a corrupt row, not a miss, and still throws.
+ */
+async function transactionIndexOf(ctx: RpcContext, height: bigint | number, hash: string): Promise<string | undefined> {
   const numericHeight = typeof height === "bigint" ? Number(height) : height;
   if (!Number.isSafeInteger(numericHeight) || numericHeight < 0 || numericHeight > 2_147_483_647) {
     throw new Error("transaction block height is outside the indexer's supported range");
   }
   const block = await ctx.indexer.getBlockByHeight(numericHeight);
-  if (block === undefined) throw new Error("transaction block is unavailable from the indexer");
+  if (block === undefined) return undefined;
   const index = block.transactions.findIndex((candidate) => sourceFixedDataHex(candidate.hash, 32, "transaction hash") === hash);
-  if (index < 0) throw new Error("transaction is absent from its reported block");
-  return quantity(index);
+  return index < 0 ? undefined : quantity(index);
 }
 
 function rowGasUsed(row: DbTransaction): bigint {
   return row.fee !== null && row.fee >= 0n ? row.fee : 0n;
 }
 
-async function receiptFromDb(row: DbTransaction, ctx: RpcContext): Promise<Record<string, unknown>> {
-  const hash = sourceFixedDataHex(row.hash.toString("hex"), 32, "transaction hash");
-  const index = row.blockHeight === null ? await missingTransactionPosition() : await transactionIndex(ctx, row.blockHeight, hash);
+async function receiptFromDb(row: DbTransaction, ctx: RpcContext): Promise<Record<string, unknown> | null> {
+  const position = await rowPosition(row, ctx);
+  if (position === null) return null;
   return synthesizeReceipt({
-    hash,
-    blockHash: row.blockHash === null ? ZERO_HASH : sourceFixedDataHex(row.blockHash.toString("hex"), 32, "block hash"),
-    blockNumber: quantity(row.blockHeight ?? 0n),
-    transactionIndex: index,
+    hash: sourceFixedDataHex(row.hash.toString("hex"), 32, "transaction hash"),
+    ...position,
     from: evmAddressFromBytes(row.fromAddress),
     to: evmAddressFromBytes(row.toAddress),
     gasUsed: rowGasUsed(row),
@@ -156,14 +191,16 @@ async function receiptFromDb(row: DbTransaction, ctx: RpcContext): Promise<Recor
   });
 }
 
-async function receiptFromIndexer(tx: IndexerTransaction, ctx: RpcContext): Promise<Record<string, unknown>> {
+async function receiptFromIndexer(tx: IndexerTransaction, ctx: RpcContext): Promise<Record<string, unknown> | null> {
   const hash = sourceFixedDataHex(tx.hash, 32, "transaction hash");
   const result = tx.transactionResult;
+  const index = await transactionIndexOf(ctx, tx.block.height, hash);
+  if (index === undefined) return null;
   return synthesizeReceipt({
     hash,
     blockHash: sourceFixedDataHex(tx.block.hash, 32, "block hash"),
     blockNumber: quantity(tx.block.height),
-    transactionIndex: await transactionIndex(ctx, tx.block.height, hash),
+    transactionIndex: index,
     gasUsed: decimalBigInt(tx.fee),
     status: receiptStatus(result?.status ?? "FAILURE", result?.segments),
   });
@@ -230,7 +267,12 @@ export function registerTransactionMethods(registry: MethodRegistry): void {
     const [hashValue] = positionalParams(params, 1);
     const hash = fixedDataHex(hashValue, 32, "transaction hash");
     const row = await ctx.db.getTransactionByHash(Buffer.from(hash.slice(2), "hex"));
-    if (row !== undefined) return transactionFromDb(row, ctx);
+    // A row the block query cannot place falls THROUGH to the indexer rather than failing, so a
+    // stale `tx_index` row answers `null` instead of `-32603` (plan 00006 F8.2 / K1).
+    if (row !== undefined) {
+      const fromRow = await transactionFromDb(row, ctx);
+      if (fromRow !== null) return fromRow;
+    }
     return transactionFromIndexer(await ctx.indexer.getTransactionByHash(hash.slice(2)), ctx);
   });
 
@@ -238,7 +280,10 @@ export function registerTransactionMethods(registry: MethodRegistry): void {
     const [hashValue] = positionalParams(params, 1);
     const hash = fixedDataHex(hashValue, 32, "transaction hash");
     const row = await ctx.db.getTransactionByHash(Buffer.from(hash.slice(2), "hex"));
-    if (row !== undefined) return receiptFromDb(row, ctx);
+    if (row !== undefined) {
+      const fromRow = await receiptFromDb(row, ctx);
+      if (fromRow !== null) return fromRow;
+    }
     const lookup = await ctx.indexer.getTransactionByHash(hash.slice(2));
     return lookup.transaction === undefined ? null : receiptFromIndexer(lookup.transaction, ctx);
   });

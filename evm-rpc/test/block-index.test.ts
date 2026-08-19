@@ -38,6 +38,7 @@ const TX0_ROW: DbTransaction = {
   toAddress: Buffer.from("34".repeat(20), "hex"),
   nonce: 7n,
   rawRef: "wallet-monitor:7",
+  canonicalHash: null,
 };
 
 describe("by-index block and transaction reads", () => {

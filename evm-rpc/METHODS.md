@@ -330,23 +330,24 @@ when the transaction result is `SUCCESS` **and** every segment succeeded; anythi
   `null` when neither source knows the hash.
 - **Source** `pg:tx_index` **first**, falling back to `indexer` (`transactions(offset:{hash})`).
   The DB path supplies mapped `from`/`to` and a synthesized `nonce` (the count of the sender's
-  earlier `tx_index` rows). The indexer path positions the transaction by re-fetching its block.
+  earlier `tx_index` rows). Both paths position the transaction by re-fetching its block; the DB
+  path positions by the **Midnight** hash the row denotes (its own key, or the
+  `relayer:midnight:<hash>` mapping when the row is keyed on an eth-side hash) while still echoing
+  the queried hash back — see [Known issues](#known-issues), K1.
 - **Deviations** `value` is always `0x0` (above); when the indexer returns more than one
   transaction for a hash, element 0 is used and a **non-standard `raw_ref`** field records the
-  ambiguity.
-- **Known issue** every hash stored by the wallet monitor is currently unresolvable on the DB-first
-  path — see [Known issues](#known-issues), K1.
+  ambiguity. A stored row the block query cannot place (e.g. left over from a previous chain
+  incarnation) is answered `null`, not an error.
 - **Errors** hash not exactly 32 bytes → `-32602`; wrong arity → `-32602`.
 
 ### `eth_getTransactionReceipt`
 
 - **Params** 1 positional: 32-byte transaction hash. **Result** the synthesized receipt, or `null`.
 - **Source** `pg:tx_index` first, then `indexer`. `gasUsed` is the recorded Midnight fee (0 from the
-  relayer path, which hardcodes it).
+  relayer path, which hardcodes it). Positioned exactly like `eth_getTransactionByHash` (K1).
 - **Deviations** `logs` is always `[]` with a zero bloom — see [Known issues](#known-issues), K2.
   The all-segments-or-`0x0` status policy is stricter than Ethereum's binary status: a
   `PARTIAL_SUCCESS` Midnight transaction reports `0x0`.
-- **Known issue** same hash problem as above, K1.
 - **Errors** as `eth_getTransactionByHash`.
 
 ### `eth_getTransactionByBlockHashAndIndex`
@@ -356,7 +357,7 @@ when the transaction result is `SUCCESS` **and** every segment succeeded; anythi
   is out of range (`null`, never an error — the official `notFound` union).
 - **Source** `indexer` block query for the position, `pg:tx_index` purely as **enrichment** for
   `from`/`to`/`nonce`; a miss degrades to the constant fields instead of failing. This path never
-  re-derives a position, so it is immune to K1.
+  re-derives a position, so it was never affected by K1.
 - **Errors** malformed hash, non-canonical index (`0x01`, decimal, negative) or wrong arity →
   `-32602`.
 
@@ -374,7 +375,7 @@ when the transaction result is `SUCCESS` **and** every segment succeeded; anythi
   Unknown block → `null`; empty block → `[]`.
 - **Source** `indexer` for the transaction list and positions, `pg:tx_index` as enrichment with an
   `indexer` transaction lookup as fallback. Like the by-index methods, it never re-derives a
-  position and is therefore immune to K1.
+  position and was therefore never affected by K1.
 - **Deviations** (a) only the **string** forms of `BlockNumberOrTagOrHash` are accepted — the object
   forms `{blockHash, requireCanonical}` and `{blockNumber}` are not; (b) `logs` is `[]` here too
   (K2); (c) if the block query lists a transaction hash that the transaction lookup then cannot
@@ -521,7 +522,7 @@ EVM chain. "Known issue" = a defect or rough edge, detailed in the next section.
 | D17 | `eth_subscribe` | only `logs` and `newHeads`; ids are process-wide, not per-connection | by design |
 | D18 | `eth_sendRawTransaction` | legacy type-0 only; `200 OK` means "accepted for relaying", not "mined" | by design |
 | D19 | `eth_getBlockReceipts` | only the **string** forms of `BlockNumberOrTagOrHash`; object forms rejected | **known issue** K6 |
-| D20 | `eth_getTransactionByHash`, `eth_getTransactionReceipt` | `-32603` for any hash stored by the wallet monitor | **known issue** K1 |
+| D20 | `eth_getTransactionByHash`, `eth_getTransactionReceipt` | a stored row the block query cannot place answers `null` (not an error); a relayer row echoes the eth-side hash it was queried by while being positioned by its Midnight hash | by design — K1 (fixed) |
 | D21 | `eth_getTransactionReceipt`, `eth_getBlockReceipts` | `logs: []` and a zero bloom even when `eth_getLogs` has matching rows | **known issue** K2 |
 | D22 | `eth_call` | no arity guard: `params: []` answers `0x` instead of `-32602` | **known issue** K3 |
 | D23 | `eth_estimateGas` | the transaction object is never validated; a bare string is accepted | **known issue** K4 |
@@ -538,27 +539,45 @@ EVM chain. "Known issue" = a defect or rough edge, detailed in the next section.
 Behaviour recorded here is **current and verified**, not aspirational. Each entry says what happens
 today, why, and whether a fix is scheduled.
 
-### K1 — `eth_getTransactionByHash` / `eth_getTransactionReceipt` answer `-32603` for wallet-monitor hashes
+### K1 — `-32603` for `tx_index`-stored hashes — **FIXED**
 
-Both methods return **`-32603 Internal error`** for every transaction hash present in
-`evm_rpc.tx_index`. The DB-first branch positions the row with `transactionIndex()`, which
-re-fetches the block from the indexer and throws `"transaction is absent from its reported block"`
-when the hash is not in `block.transactions[]`. On this stack it never is: the wallet monitor stores
-the hash the indexer's **wallet subscription** reports, which differs from the hash the indexer's
-**block query** reports for the same transaction (verified across six rows; e.g. at height 2986,
-`0x8eb5a7e3…` in `tx_index` versus `0x7a8c0ba2…` from the block query — while both surfaces agree on
-`block_hash`).
+**Was:** both by-hash methods answered **`-32603 Internal error`** for a transaction hash stored in
+`evm_rpc.tx_index`. The DB-first branch positioned the row with `transactionIndex()`, which
+re-fetched the block from the indexer and threw `"transaction is absent from its reported block"`
+whenever the stored hash was not in `block.transactions[]`.
 
-Consequence: **only indexer-sourced hashes resolve.** A caller who takes a hash out of
-`eth_getBlockByNumber` gets a full transaction and a `status 0x1` receipt; a caller who takes one
-from the wallet monitor's own records gets `-32603`.
+**Why it happened** — the earlier diagnosis blamed the wallet monitor and was wrong; re-measured
+against the live indexer before the fix, the monitor's subscription hash equals the block query's
+hash for the same transaction (7 of 7 rows). `evm_rpc.tx_index.hash` is simply **not one
+namespace**:
 
-Not affected: `eth_getBlockReceipts` and the two by-index methods, which start from the block query
-and never re-derive a position.
+| Writer | `hash` is | `raw_ref` |
+|---|---|---|
+| wallet monitor | the Midnight transaction hash — identical to the block query's | `indexer:transaction:<id>` |
+| relayer | the **eth-side** transaction hash, deliberately: it is the identifier MetaMask computed and polls with | `relayer:midnight:<midnight hash>` |
 
-**Fix scheduled**, not applied here: make the wallet monitor store the canonical block-query hash
-and backfill existing `tx_index` rows (review plan 00006, Phase 7). This document will be updated
-when it lands.
+Searching a Midnight block for an eth-side hash can only ever fail. A second, unrelated source of
+the same symptom: a row naming a block from a **previous chain incarnation** (a local stack reset
+while its `evm_rpc` data survived), whose transaction no longer exists at that height.
+
+**Fix (both by-hash methods):**
+
+1. the row is positioned by the hash the indexer knows it by — `relayer:midnight:<hash>` when the
+   row carries one, otherwise its own key (`db.ts::canonicalHashFromRawRef`). The `hash` /
+   `transactionHash` fields still echo the identifier the caller asked about, so a wallet polling
+   with its own eth-side hash gets a real, positioned receipt;
+2. a row the block query cannot place is no longer an error. The read falls through to the indexer
+   lookup, and an unknown transaction answers **`null`** — the official `notFound` result — instead
+   of `-32603`. No `transactionIndex` is ever fabricated.
+
+A `tx_index` row whose stored hash genuinely disagrees with the block query is repaired at wallet-
+monitor startup by `wallet-monitor/tx-hash-backfill.ts`, which matches rows to block transactions by
+**indexer transaction id** (never by hash — that could only confirm the value under suspicion),
+rewrites the primary key on divergence, refreshes a stale `block_hash`, and leaves relayer rows and
+unknown provenance untouched. It is idempotent and re-runs until it has a clean pass.
+
+Never affected: `eth_getBlockReceipts` and the two by-index methods, which start from the block
+query and never re-derive a position.
 
 ### K2 — receipts never carry logs
 
@@ -572,8 +591,8 @@ into one of the two receipt surfaces alone would make them disagree, so the shar
 `synthesizeReceipt()` returns `[]` on every path.
 
 A client that needs a transaction's logs must call `eth_getLogs` (a `blockHash` filter plus a
-`transactionHash` comparison, or a range of one block). Fixing this is queued with K1 — it becomes
-straightforward only once the hash is canonical, and it must fix **both** receipt methods together.
+`transactionHash` comparison, or a range of one block). Fixing this is queued behind K1 — the join
+key has to be the canonical Midnight hash, and it must fix **both** receipt methods together.
 
 ### K3 — `eth_call` lost its arity guard at the Part F merge
 

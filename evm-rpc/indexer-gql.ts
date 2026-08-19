@@ -7,6 +7,13 @@ export class IndexerGqlError extends Error {
 
 export interface IndexerBlockTransaction {
   readonly hash: string;
+  /**
+   * The indexer's own transaction id. Optional because fixtures and older callers only ever
+   * needed the hash; the live query always selects it. It is the ONLY identifier that survives a
+   * hash disagreement between two indexer surfaces, which is what the `tx_index` canonical-hash
+   * repair pass (`wallet-monitor/tx-hash-backfill.ts`) matches on.
+   */
+  readonly id?: number;
 }
 
 export interface IndexerBlock {
@@ -57,7 +64,7 @@ interface GraphQlEnvelope<T> {
 const BLOCK_FIELDS = `
   hash height timestamp author
   parent { hash }
-  transactions { hash }
+  transactions { id hash }
 `;
 
 export class IndexerGqlClient implements IndexerReader {
