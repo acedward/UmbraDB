@@ -28,7 +28,10 @@ const OFFICIAL_METHODS = [
   // capabilities.yaml
   "eth_capabilities",
   // execute.yaml
-  "eth_call", "eth_estimateGas", "eth_createAccessList", "eth_simulateV1",
+  "eth_call",
+  "eth_estimateGas",
+  "eth_simulateV1",
+  "eth_createAccessList",
   // fee_market.yaml
   "eth_gasPrice", "eth_baseFee", "eth_blobBaseFee", "eth_maxPriorityFeePerGas", "eth_feeHistory",
   // filter.yaml
