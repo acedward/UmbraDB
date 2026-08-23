@@ -31,6 +31,9 @@ import { registerGetLogs } from "./logs/get-logs.js";
 import { startIngest } from "./logs/ingest.js";
 import { createSubscribeServer } from "./logs/subscribe.js";
 import { backfillWatched } from "./logs/backfill.js";
+// demo-infra: a real chain-head source for eth_subscribe("newHeads") — see
+// images/umbra-evm/patches/indexer-head-source.ts.
+import { createIndexerHeadBlockSource } from "./logs/indexer-head-source.js";
 
 function positivePort(raw: string, name: string): number {
   const value = Number(raw);
@@ -162,8 +165,16 @@ registerGetLogs({
 await backfillWatched(sql, logsEnv.schema, logsEnv.watchContracts);
 const wsServer = createSubscribeServer({
   port: logsEnv.evmRpcWsPort,
+  // demo-infra: without this, ws.ts's `host = "127.0.0.1"` default makes the WS server
+  // unreachable from outside the container. See images/umbra-evm/patches/apply.mjs.
+  host: process.env.EVM_RPC_WS_HOST ?? host,
   sql,
   schema: logsEnv.schema,
+  // demo-infra: a real chain head, instead of the logs-table fallback that can only ever
+  // announce blocks carrying a watched contract log.
+  blockSource: createIndexerHeadBlockSource(indexer, {
+    onError: (error: Error) => log("newheads-error", { message: error.message }),
+  }),
   onError: (error: Error) => log("ws-error", { message: error.message }),
 });
 const ingest = startIngest({
