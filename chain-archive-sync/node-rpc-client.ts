@@ -1,3 +1,5 @@
+import { publicEndpoint, publicErrorCause, publicErrorMessage } from "../wallet-monitor/log.js";
+
 /**
  * Minimal Substrate JSON-RPC client for a Midnight node -- plain `fetch`, no SDK dependency
  * (`@midnightntwrk/*` is not imported anywhere in this file or this directory). Grounded against
@@ -76,11 +78,13 @@ let nextId = 1;
  *  (a polling ingestion loop, §"reasonable ongoing-sync design," does not need either). */
 export class NodeRpcClient {
   private readonly url: string;
+  private readonly publicUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
 
   constructor(opts: NodeRpcClientOptions) {
     this.url = opts.url;
+    this.publicUrl = publicEndpoint(opts.url);
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
@@ -96,21 +100,28 @@ export class NodeRpcClient {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {
-      throw new NodeRpcError(`${method}: request to ${this.url} failed`, err);
+      throw new NodeRpcError(
+        `${method}: request to ${this.publicUrl} failed`, publicErrorCause(err, [this.url]),
+      );
     }
     if (!res.ok) {
-      throw new NodeRpcError(`${method}: HTTP ${res.status} from ${this.url}`);
+      throw new NodeRpcError(`${method}: HTTP ${res.status} from ${this.publicUrl}`);
     }
     let body: { result?: T; error?: { code: number; message: string } };
     try {
       body = (await res.json()) as { result?: T; error?: { code: number; message: string } };
     } catch (err) {
       throw new NodeRpcParseError(
-        `${method}: response body from ${this.url} was not valid JSON`, this.url, method, err,
+        `${method}: response body from ${this.publicUrl} was not valid JSON`,
+        this.publicUrl,
+        method,
+        publicErrorCause(err, [this.url]),
       );
     }
     if (body.error !== undefined) {
-      throw new NodeRpcError(`${method}: RPC error ${body.error.code}: ${body.error.message}`);
+      throw new NodeRpcError(
+        `${method}: RPC error ${body.error.code}: ${publicErrorMessage(body.error.message, [this.url])}`,
+      );
     }
     return body.result as T;
   }

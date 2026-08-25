@@ -23,9 +23,9 @@ import { pathToFileURL } from "node:url";
  * found the built `@midnight-ntwrk/ledger-v8` WASM package in the sibling `midnight-wallet`
  * checkout and decoded real transactions with it), and this module is the correction.
  *
- * **Dependency posture** (same convention as `test/integration/live-fixtures/
- * midnight-wallet-sdk-loader.ts`, this repo's established pattern for exactly this): the
- * `@midnight-ntwrk/ledger-v8` WASM bindings are deliberately NOT a devDependency of this repo --
+ * **Dependency posture**: rc.4 replay uses the pinned `@midnightntwrk/ledger-v9` devDependency
+ * from this repository's own `node_modules`. The legacy `@midnight-ntwrk/ledger-v8` WASM
+ * bindings remain an optional sibling-checkout fallback for older archived fixtures --
  * `loadLedgerV8` below resolves them from a sibling, already-built `midnight-wallet` checkout's
  * own `node_modules` at runtime, via a COMPUTED (non-literal) `import(...)` specifier, so `tsc`
  * types the call `Promise<any>` and this repo still typechecks cleanly in an environment where
@@ -61,16 +61,16 @@ export interface DecodedZswapInput {
 }
 
 export interface DecodedUnshieldedOutput {
-  /** The intent segment that created this output. */
-  segmentId: number;
-  /** `Intent.intentHash(segmentId)` (hex) -- matches the indexer's
-   *  `unshielded_utxos.intent_hash`. */
+  /** The intent segment that created this output; reward claims have no segment. */
+  segmentId: number | undefined;
+  /** `Intent.intentHash(segmentId)` (hex) for intent outputs. Reward claims expose the same
+   *  synthesized output-instruction hash through their `01 || hash` transaction identifier. */
   intentHash: string;
   /** Position within the intent's (guaranteed ++ fallible) output list -- matches the indexer's
    *  `unshielded_utxos.output_index` (confirmed empirically: the indexer numbers outputs across
    *  the whole intent, guaranteed section first). */
   outputIndex: number;
-  section: "guaranteed" | "fallible";
+  section: "guaranteed" | "fallible" | "reward";
   /** Owner address (hex) -- `UserAddress`. */
   owner: string;
   /** Raw token type (hex, 32 bytes). */
@@ -131,8 +131,9 @@ export function isStandardTransaction(rawBytes: Uint8Array): boolean {
 /**
  * Decodes one archived `tx_raw` payload into structured zswap/unshielded/dust fields.
  *
- * @param ledger the loaded `@midnight-ntwrk/ledger-v8` module (from {@link loadLedgerV8}, or any
- *   equivalent build of the same package) -- injected, never imported, see the module doc.
+ * @param ledger the loaded ledger module (normally `@midnightntwrk/ledger-v9` from
+ *   {@link loadLedgerV9}; `loadLedgerV8` remains supported for legacy fixtures) -- injected so
+ *   the semantic walk stays unit-testable.
  * @param rawBytes exactly the bytes the archive stores for the transaction (role `tx_raw`) --
  *   the self-tagged inner `send_mn_transaction` payload, NOT the outer Substrate extrinsic
  *   envelope (see `sync-service.ts`'s own byte-level finding on that distinction).
@@ -189,6 +190,25 @@ export function decodeArchivedTransaction(ledger: any, rawBytes: Uint8Array): De
   const unshieldedOutputs: DecodedUnshieldedOutput[] = [];
   const dustSpends: DecodedDustSpend[] = [];
   const dustRegistrations: DecodedDustRegistration[] = [];
+  // A ClaimRewards transaction is a distinct v9 transaction variant: it has no intents, but
+  // applying it creates one native unshielded UTXO. Treating only tx.intents as the output
+  // source silently loses every genesis/reward allocation during semantic replay.
+  if (tx.rewards !== undefined && tx.rewards !== null) {
+    const rewardIdentifier = Array.from(tx.identifiers(), String)
+      .find((identifier) => /^01[0-9a-f]{64}$/i.test(identifier));
+    if (rewardIdentifier === undefined) {
+      throw new Error("ClaimRewards transaction did not expose its 01-prefixed output identifier");
+    }
+    unshieldedOutputs.push({
+      segmentId: undefined,
+      intentHash: rewardIdentifier.slice(2),
+      outputIndex: 0,
+      section: "reward",
+      owner: String(ledger.addressFromKey(tx.rewards.owner)),
+      tokenType: String(ledger.nativeToken().raw),
+      value: BigInt(tx.rewards.value),
+    });
+  }
   if (tx.intents !== undefined && tx.intents !== null) {
     for (const [segmentIdRaw, intent] of tx.intents) {
       const segmentId = Number(segmentIdRaw);
@@ -278,4 +298,13 @@ export async function loadLedgerV8(): Promise<any> {
     );
   }
   return import(pathToFileURL(entry).href);
+}
+
+/**
+ * Loads the rc.4-compatible ledger bindings from this package's pinned devDependency. Node's
+ * conditional exports select `midnight_ledger_wasm_v9_fs.js`, so the WASM file is resolved
+ * relative to this repository's own installed package rather than a sibling checkout.
+ */
+export async function loadLedgerV9(): Promise<any> {
+  return import("@midnightntwrk/ledger-v9");
 }

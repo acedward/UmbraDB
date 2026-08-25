@@ -51,7 +51,7 @@ describe("NodeRpcClient -- Fix 3", () => {
     }
     expect(caught).toBeInstanceOf(NodeRpcParseError);
     const parseErr = caught as NodeRpcParseError;
-    expect(parseErr.url).toBe("http://fake-node.example");
+    expect(parseErr.url).toBe("http://fake-node.example/");
     expect(parseErr.method).toBe("chain_getFinalizedHead");
   });
 
@@ -85,5 +85,39 @@ describe("NodeRpcClient -- Fix 3", () => {
       new Response(JSON.stringify({ result: { parentHash: "0x00", number: "0x2a", stateRoot: "0x00", extrinsicsRoot: "0x00", digest: { logs: [] } } }), { status: 200 });
     const client = new NodeRpcClient({ url: "http://fake-node", fetchImpl: wellFormedFetch });
     await expect(client.getHeightOf("0xdeadbeef")).resolves.toBe(42);
+  });
+
+  it("does not expose endpoint credentials or tokens through failure messages or typed fields", async () => {
+    const client = new NodeRpcClient({
+      url: "https://alice:secret@node.example/rpc?apiKey=token#private",
+      fetchImpl: async () => new Response("not json", { status: 200 }),
+    });
+    const error = await client.getFinalizedHead().catch((caught: unknown) => caught) as NodeRpcParseError;
+    expect(error.message).toBe(
+      "chain_getFinalizedHead: response body from https://node.example/rpc was not valid JSON",
+    );
+    expect(error.url).toBe("https://node.example/rpc");
+    expect(JSON.stringify(error)).not.toContain("secret");
+    expect(JSON.stringify(error)).not.toContain("token");
+  });
+
+  it("sanitizes custom-fetch causes and RPC errors that echo a normalized private URL", async () => {
+    const privateUrl = "https://alice:secret@node.example/rpc?apiKey=token#private";
+    const networkClient = new NodeRpcClient({
+      url: privateUrl,
+      fetchImpl: async () => { throw new Error("fetch https://alice:secret@node.example/rpc?apiKey=token failed"); },
+    });
+    const networkError = await networkClient.getFinalizedHead().catch((caught: unknown) => caught) as Error & { cause: Error };
+    expect(networkError.cause.message).toBe("fetch https://node.example/rpc failed");
+
+    const protocolClient = new NodeRpcClient({
+      url: privateUrl,
+      fetchImpl: async () => new Response(JSON.stringify({
+        error: { code: -1, message: "peer echoed https://alice:secret@node.example/rpc?apiKey=token" },
+      }), { status: 200 }),
+    });
+    await expect(protocolClient.getFinalizedHead()).rejects.toThrow(
+      "chain_getFinalizedHead: RPC error -1: peer echoed https://node.example/rpc",
+    );
   });
 });

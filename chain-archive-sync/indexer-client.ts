@@ -1,3 +1,5 @@
+import { publicEndpoint, publicErrorCause, publicErrorMessage } from "../wallet-monitor/log.js";
+
 /**
  * Minimal Midnight indexer GraphQL client -- plain `fetch`, no SDK dependency. Grounded against
  * the real local devnet indexer (`http://localhost:8088/api/v3/graphql`) via live schema
@@ -54,11 +56,13 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 
 export class IndexerClient {
   private readonly url: string;
+  private readonly publicUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
 
   constructor(opts: IndexerClientOptions) {
     this.url = opts.url;
+    this.publicUrl = publicEndpoint(opts.url);
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
@@ -73,19 +77,27 @@ export class IndexerClient {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {
-      throw new IndexerClientError(`GraphQL request to ${this.url} failed`, err);
+      throw new IndexerClientError(
+        `GraphQL request to ${this.publicUrl} failed`, publicErrorCause(err, [this.url]),
+      );
     }
     if (!res.ok) {
-      throw new IndexerClientError(`GraphQL HTTP ${res.status} from ${this.url}`);
+      throw new IndexerClientError(`GraphQL HTTP ${res.status} from ${this.publicUrl}`);
     }
     let body: { data?: T; errors?: { message: string }[] };
     try {
       body = (await res.json()) as { data?: T; errors?: { message: string }[] };
     } catch (err) {
-      throw new IndexerClientParseError(`response body from ${this.url} was not valid JSON`, this.url, err);
+      throw new IndexerClientParseError(
+        `response body from ${this.publicUrl} was not valid JSON`,
+        this.publicUrl,
+        publicErrorCause(err, [this.url]),
+      );
     }
     if (body.errors !== undefined && body.errors.length > 0) {
-      throw new IndexerClientError(`GraphQL error: ${body.errors.map((e) => e.message).join("; ")}`);
+      throw new IndexerClientError(
+        `GraphQL error: ${body.errors.map((e) => publicErrorMessage(e.message, [this.url])).join("; ")}`,
+      );
     }
     return body.data as T;
   }

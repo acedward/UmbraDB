@@ -1,0 +1,19 @@
+{
+  "__typename": "RegularTransaction",
+  "hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "raw": "0506",
+  "fee": "1234",
+  "identifiers": ["02"],
+  "transactionResult": {
+    "status": "PARTIAL_SUCCESS",
+    "segments": [
+      { "id": 0, "success": true },
+      { "id": 1, "success": false }
+    ]
+  },
+  "block": {
+    "height": 42,
+    "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "timestamp": 1786400000
+  }
+}

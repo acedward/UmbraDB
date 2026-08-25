@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Synthesized Ethereum receipt",
+  "type": "object",
+  "required": [
+    "transactionHash", "transactionIndex", "blockHash", "blockNumber", "from", "to",
+    "cumulativeGasUsed", "gasUsed", "contractAddress", "logs", "logsBloom", "status"
+  ],
+  "properties": {
+    "transactionHash": { "$ref": "#/$defs/hash" },
+    "transactionIndex": { "$ref": "#/$defs/quantity" },
+    "blockHash": { "$ref": "#/$defs/hash" },
+    "blockNumber": { "$ref": "#/$defs/quantity" },
+    "from": { "$ref": "#/$defs/address" },
+    "to": { "$ref": "#/$defs/address" },
+    "cumulativeGasUsed": { "$ref": "#/$defs/quantity" },
+    "gasUsed": { "$ref": "#/$defs/quantity" },
+    "contractAddress": { "type": "null" },
+    "logs": { "type": "array" },
+    "logsBloom": { "type": "string", "pattern": "^0x[0-9a-f]{512}$" },
+    "status": { "enum": ["0x0", "0x1"] }
+  },
+  "$defs": {
+    "quantity": { "type": "string", "pattern": "^0x(?:0|[1-9a-f][0-9a-f]*)$" },
+    "hash": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" },
+    "address": { "type": "string", "pattern": "^0x[0-9a-f]{40}$" }
+  }
+}
