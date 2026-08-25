@@ -36,6 +36,7 @@ describe("chain-view methods", () => {
         async getNativeBalance() { return undefined; },
         async getTransactionCount() { return 0n; },
         async getAddressKind() { return undefined; },
+        async getLogsByTransactionHash() { return []; },
         async getTransactionByHash(hash) {
           if (hash.toString("hex") !== "cc".repeat(32)) return undefined;
           return {
@@ -48,6 +49,7 @@ describe("chain-view methods", () => {
             toAddress: Buffer.from("34".repeat(20), "hex"),
             nonce: 9n,
             rawRef: "internal-only",
+            canonicalHash: null,
           };
         },
       },

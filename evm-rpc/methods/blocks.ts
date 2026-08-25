@@ -1,10 +1,10 @@
 import type { IndexerBlock } from "../indexer-gql.js";
 import { MethodRegistry, type RpcContext } from "../registry.js";
 import {
-  EMPTY_UNCLES_HASH, ZERO_ADDRESS, ZERO_BLOOM, ZERO_HASH, dataHex, fixedDataHex,
-  invalidParams, positionalParams, quantity, resolveBlockTag, sourceFixedDataHex,
+  EMPTY_UNCLES_HASH, ZERO_ADDRESS, ZERO_BLOOM, ZERO_HASH, blockByRef, blockByTag, dataHex,
+  fixedDataHex, invalidParams, positionalParams, quantity, resolveBlockTag, sourceFixedDataHex,
 } from "./common.js";
-import { synthesizeBlockTransaction } from "./transactions.js";
+import { synthesizeBlockReceipt, synthesizeBlockTransaction } from "./transactions.js";
 
 export function evmTimestampSeconds(timestamp: number): number {
   if (!Number.isSafeInteger(timestamp) || timestamp < 0) throw new Error("indexer returned an invalid block timestamp");
@@ -78,5 +78,44 @@ export function registerBlockMethods(registry: MethodRegistry): void {
     if (typeof fullValue !== "boolean") invalidParams("full transactions must be boolean");
     const block = await ctx.indexer.getBlockByHash(hash.slice(2));
     return block === undefined ? null : synthesizeBlock(block, fullValue, ctx);
+  });
+
+  registry.registerMethod("eth_getBlockTransactionCountByHash", async (params, ctx) => {
+    const [hashValue] = positionalParams(params, 1);
+    const hash = fixedDataHex(hashValue, 32, "block hash");
+    const block = await ctx.indexer.getBlockByHash(hash.slice(2));
+    return block === undefined ? null : quantity(block.transactions.length);
+  });
+
+  registry.registerMethod("eth_getBlockTransactionCountByNumber", async (params, ctx) => {
+    const [tagValue] = positionalParams(params, 1);
+    const block = await blockByTag(ctx, tagValue);
+    return block === undefined ? null : quantity(block.transactions.length);
+  });
+
+  /**
+   * `eth_getBlockReceipts` — one receipt per transaction the INDEXER BLOCK QUERY lists, in block
+   * order. The hashes therefore come from the same surface as `eth_getBlockByNumber`'s, not from
+   * `evm_rpc.tx_index`, so this method is unaffected by the tx_index/block-query hash divergence
+   * that breaks the by-hash DB-first path (plan 00006 Q2).
+   */
+  registry.registerMethod("eth_getBlockReceipts", async (params, ctx) => {
+    const [refValue] = positionalParams(params, 1);
+    const block = await blockByRef(ctx, refValue);
+    if (block === undefined) return null;
+    const blockHash = sourceFixedDataHex(block.hash, 32, "block hash");
+    const blockNumber = quantity(block.height);
+    const receipts: unknown[] = [];
+    // Serial, like synthesizeBlock's hydrated path: one block request must not fan out across the
+    // small read-only Postgres pool or flood the indexer.
+    for (const [index, { hash }] of block.transactions.entries()) {
+      receipts.push(await synthesizeBlockReceipt({
+        hash: sourceFixedDataHex(hash, 32, "transaction hash"),
+        blockHash,
+        blockNumber,
+        transactionIndex: quantity(index),
+      }, ctx));
+    }
+    return receipts;
   });
 }

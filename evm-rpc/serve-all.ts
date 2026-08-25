@@ -20,16 +20,20 @@ import { createPostgresEvmRpcReader } from "./db.js";
 import { IndexerGqlClient } from "./indexer-gql.js";
 import { registerAccountMethods } from "./methods/accounts.js";
 import { registerBlockMethods } from "./methods/blocks.js";
+import { registerNotImplementedMethods } from "./methods/not-implemented.js";
 import { registerStaticMethods } from "./methods/static.js";
 import { registerTransactionMethods } from "./methods/transactions.js";
 import { loadTokenMeta, registerErc20Call } from "./methods/erc20-call.js";
-import { defaultRegistry, RpcError } from "./registry.js";
+import { defaultRegistry, JSON_RPC_ERRORS, RpcError } from "./registry.js";
 import { createRpcServer } from "./server.js";
 import { loadEnv } from "./logs/config.js";
 import { registerGetLogs } from "./logs/get-logs.js";
 import { startIngest } from "./logs/ingest.js";
 import { createSubscribeServer } from "./logs/subscribe.js";
 import { backfillWatched } from "./logs/backfill.js";
+// demo-infra: a real chain-head source for eth_subscribe("newHeads") — see
+// images/umbra-evm/patches/indexer-head-source.ts.
+import { createIndexerHeadBlockSource } from "./logs/indexer-head-source.js";
 
 function positivePort(raw: string, name: string): number {
   const value = Number(raw);
@@ -65,6 +69,10 @@ registerStaticMethods(defaultRegistry);
 registerBlockMethods(defaultRegistry);
 registerAccountMethods(defaultRegistry);
 registerTransactionMethods(defaultRegistry);
+// NYI policy: spec-defined methods this surface deliberately does not serve answer -32004
+// ("Method not supported"), so an unknown NAME stays distinguishable as -32601. None of these
+// names is registered by Part C/E/F below, so registering them here cannot shadow a real handler.
+registerNotImplementedMethods(defaultRegistry);
 
 // --- Part E: eth_sendRawTransaction (write path) ---
 // The relayer (evm-relayer repo) runs as its own process — separate dependency tree (midnight-js
@@ -75,7 +83,12 @@ const relayUrl = process.env.RELAY_URL;
 if (relayUrl !== undefined) {
   defaultRegistry.registerMethod("eth_sendRawTransaction", async (params) => {
     const list = Array.isArray(params) ? params : params === undefined ? [] : [params];
-    if (typeof list[0] !== "string") throw new Error("expected [rawTxHex]");
+    // A LOCAL parameter fault is `-32602`. A plain Error here would be sanitized into `-32603`,
+    // telling the caller this service broke when in fact their request did. Errors coming FROM the
+    // relayer keep their own codes below and are untouched.
+    if (typeof list[0] !== "string") {
+      throw new RpcError(JSON_RPC_ERRORS.INVALID_PARAMS, "eth_sendRawTransaction expects [rawTxHex]");
+    }
     const resp = await fetch(`${relayUrl}/eth_sendRawTransaction`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -152,8 +165,16 @@ registerGetLogs({
 await backfillWatched(sql, logsEnv.schema, logsEnv.watchContracts);
 const wsServer = createSubscribeServer({
   port: logsEnv.evmRpcWsPort,
+  // demo-infra: without this, ws.ts's `host = "127.0.0.1"` default makes the WS server
+  // unreachable from outside the container. See images/umbra-evm/patches/apply.mjs.
+  host: process.env.EVM_RPC_WS_HOST ?? host,
   sql,
   schema: logsEnv.schema,
+  // demo-infra: a real chain head, instead of the logs-table fallback that can only ever
+  // announce blocks carrying a watched contract log.
+  blockSource: createIndexerHeadBlockSource(indexer, {
+    onError: (error: Error) => log("newheads-error", { message: error.message }),
+  }),
   onError: (error: Error) => log("ws-error", { message: error.message }),
 });
 const ingest = startIngest({

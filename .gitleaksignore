@@ -16,3 +16,11 @@
 # planting a fresh hex value in EITHER field of the tracked .example template fails the gate.
 be646fcff58052a77e848914a79ccef2279cf78f:nix/midnight-env/test-wallets/preview-test-wallet.json:umbradb-wallet-seed-hex:4
 be646fcff58052a77e848914a79ccef2279cf78f:nix/midnight-env/test-wallets/preview-test-wallet.json:umbradb-wallet-seed-hex:5
+
+# Commit e5f53f5 put the official method names `eth_createAccessList` and `eth_simulateV1`
+# next to each other. The stock `generic-api-key` rule treated the `AccessList` name as key
+# context and the following method name as a high-entropy credential value. Both are public
+# Ethereum JSON-RPC method names, not credentials, so suppress only that historical fingerprint.
+# The current list separates the literals and leaves `eth_createAccessList` last in its group to
+# avoid creating the same adjacency when this test is next changed.
+e5f53f5122c973556531ce07c696a32e9f911b5f:evm-rpc/test/not-implemented.test.ts:generic-api-key:31

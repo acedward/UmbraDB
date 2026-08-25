@@ -1,5 +1,6 @@
 /**
- * Parity check: `eth_getLogs` output === `mapEvents(raw GraphQL contractEvents output)`.
+ * Parity check: `eth_getLogs` output === everything the pipeline is supposed to have written, i.e.
+ * `mapEvents(raw GraphQL contractEvents output)` **∪** `buildGenesisRows(deployment.json)`.
  *
  *   npx tsx evm-rpc/logs/test/verify-parity.ts
  *
@@ -9,13 +10,25 @@
  * assertion: any divergence means the ingester, the mapper and the RPC read path have stopped
  * agreeing — including a mapping change that was applied to live ingestion but never backfilled.
  *
+ * ── Why the genesis rows are part of the expected set ──────────────────────────────────────────
+ * Compact forbids `emit` in a constructor, so constructor-minted supply has NO source event and
+ * `mapEvents` can never produce it; `backfill.ts` synthesises those rows instead (negative
+ * `source_event_id`, LOGMAP.md). `eth_getLogs` serves them like any other row, so an expected set
+ * built from events alone reports every genesis holder as an EXTRA row — the checker being
+ * incomplete, not the pipeline being wrong. This script therefore rebuilds them from exactly the
+ * input the backfill consumes: the `deploymentFile` named on the watch entry, through the same
+ * `buildGenesisRows` the backfill calls. Entries without a `deploymentFile` contribute none, which
+ * mirrors `backfillWatched` skipping them.
+ *
  * Environment (see `config.ts`):
  *   INDEXER_HTTP           e.g. http://127.0.0.1:10001/api/v4/graphql
  *   PG_URL                 e.g. postgres://…:10010/umbradb
- *   WATCH_CONTRACTS_FILE   the watch config
+ *   WATCH_CONTRACTS_FILE   the watch config (its `deploymentFile` paths resolve relative to CWD)
  *   EVM_RPC_SCHEMA         optional, defaults to evm_rpc
  *
- * Exit code 0 = parity holds. Non-zero = a difference, printed as the first N mismatching rows.
+ * Exit code 0 = parity holds for every watched contract. **Non-zero = at least one contract
+ * diverged** (the differing rows are printed, first 5 of each direction), so this is usable as a
+ * gate rather than something whose stdout has to be read by a human.
  *
  * ── Requires a live indexer ────────────────────────────────────────────────────────────────────
  * This is the one Part C check that cannot run without the Part A stack, which is why it is a
@@ -24,6 +37,8 @@
  */
 
 import { createClient } from "../../../src/postgres/client.js";
+import type { SqlLike } from "../address-map.js";
+import { buildGenesisRows, loadDeploymentFile } from "../backfill.js";
 import { loadWatchConfigFile, type WatchEntry } from "../config.js";
 import { getLogs, type RpcLog } from "../get-logs.js";
 import {
@@ -109,6 +124,58 @@ async function fetchAllEvents(url: string, entry: WatchEntry, toBlock: number): 
   return events;
 }
 
+/**
+ * Read-only counterpart of `resolveAddressId`: a check that AUDITS the database must not write to
+ * it, and `resolveAddressId` is an upsert. A miss is not fatal — `address_map.id` feeds only
+ * `source_event_id`, which parity does not key on (see `logKey`) — so it degrades to a placeholder
+ * with a warning rather than failing a run whose comparison would be unaffected.
+ */
+async function lookupContractAddressId(
+  sql: SqlLike,
+  schema: string,
+  contractAddress: string,
+): Promise<bigint | undefined> {
+  const rows = await sql<{ id: bigint }[]>`
+    SELECT id FROM ${sql(schema)}.address_map
+    WHERE mn_address = ${contractAddress.replace(/^0x/, "").toLowerCase()}
+  `;
+  return rows[0]?.id;
+}
+
+/**
+ * The genesis-backfill half of the expected set for one watch entry, in `eth_getLogs` shape.
+ *
+ * Deliberately built by calling `buildGenesisRows` — the very function the backfill uses — on the
+ * very file the backfill reads. A parity check that re-derived the synthetic mints independently
+ * would agree with a wrong backfill just as happily as with a right one.
+ */
+async function expectedGenesisLogs(
+  sql: SqlLike,
+  schema: string,
+  entry: WatchEntry,
+  toBlock: number,
+): Promise<RpcLog[]> {
+  // No `deploymentFile` ⇒ `backfillWatched` skips the contract ⇒ there is nothing to expect.
+  if (entry.deploymentFile === undefined) return [];
+
+  let addressId = await lookupContractAddressId(sql, schema, entry.address);
+  if (addressId === undefined) {
+    console.warn(
+      `  warn address-map-miss: ${entry.address} has no address_map row — either the backfill ` +
+        `never ran or the schema is empty; comparing with a placeholder id`,
+    );
+    addressId = 0n;
+  }
+
+  return buildGenesisRows(entry, loadDeploymentFile(entry.deploymentFile), addressId, {
+    onWarning: (message) => console.warn(`  warn ${message}`),
+  })
+    // Same upper bound as the events: a genesis row above the ingested tip is outside the window
+    // `getLogs` is asked for, so comparing it would be a false MISSING.
+    .filter((row) => row.blockNumber <= toBlock)
+    .map(rowToRpcLog);
+}
+
 /** Canonical, order-independent key for one log. */
 const logKey = (log: RpcLog): string =>
   [log.address, log.blockNumber, log.transactionHash, log.logIndex, log.topics.join(","), log.data].join("|");
@@ -141,12 +208,18 @@ async function main(): Promise<void> {
       // transaction back on purpose, so including it here would be comparing against work that has
       // deliberately not happened yet.
       const { complete } = splitCompleteTransactions([...events, SENTINEL_TERMINATOR]);
-      const expected = mapEvents(
+      const eventLogs = mapEvents(
         complete.filter((event) => event !== SENTINEL_TERMINATOR),
         entry.profile,
         undefined,
         { onWarning: (warning) => console.warn(`  warn ${warning.code}: ${warning.message}`) },
       ).map(rowToRpcLog);
+
+      // The rows no event can account for (see the header): rebuilt from the backfill's own input
+      // and through the backfill's own builder, so a change to either side is caught here instead
+      // of being explained away as "that is just the genesis mint".
+      const genesisLogs = await expectedGenesisLogs(sql, schema, entry, toBlock);
+      const expected = [...eventLogs, ...genesisLogs];
 
       // Served from the database, filtered by the contract's EVM address — derived the same way the
       // mapper derives it, so the two sides are keyed on the same identity.
@@ -167,7 +240,9 @@ async function main(): Promise<void> {
       const status = missing.length === 0 && extra.length === 0 ? "OK" : "MISMATCH";
       console.log(
         `${entry.address.slice(0, 12)}… [${entry.profile}] ${status} — ` +
-          `${events.length} event(s) -> ${expected.length} expected log(s), ${contractLogs.length} served`,
+          `${events.length} event(s) -> ${eventLogs.length} mapped` +
+          (genesisLogs.length > 0 ? ` + ${genesisLogs.length} genesis` : "") +
+          ` = ${expected.length} expected log(s), ${contractLogs.length} served`,
       );
       for (const key of missing.slice(0, 5)) console.log(`  MISSING from eth_getLogs: ${key}`);
       for (const key of extra.slice(0, 5)) console.log(`  EXTRA in eth_getLogs:     ${key}`);

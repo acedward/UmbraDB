@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Synthesized Ethereum transaction",
+  "type": "object",
+  "required": [
+    "blockHash", "blockNumber", "from", "gas", "gasPrice", "hash", "input", "nonce",
+    "to", "transactionIndex", "value", "type", "v", "r", "s"
+  ],
+  "properties": {
+    "blockHash": { "$ref": "#/$defs/hash" },
+    "blockNumber": { "$ref": "#/$defs/quantity" },
+    "from": { "$ref": "#/$defs/address" },
+    "gas": { "$ref": "#/$defs/quantity" },
+    "gasPrice": { "$ref": "#/$defs/quantity" },
+    "hash": { "$ref": "#/$defs/hash" },
+    "input": { "type": "string", "pattern": "^0x(?:[0-9a-f]{2})*$" },
+    "nonce": { "$ref": "#/$defs/quantity" },
+    "to": { "$ref": "#/$defs/address" },
+    "transactionIndex": { "$ref": "#/$defs/quantity" },
+    "value": { "$ref": "#/$defs/quantity" },
+    "type": { "$ref": "#/$defs/quantity" },
+    "v": { "$ref": "#/$defs/quantity" },
+    "r": { "$ref": "#/$defs/hash" },
+    "s": { "$ref": "#/$defs/hash" }
+  },
+  "$defs": {
+    "quantity": { "type": "string", "pattern": "^0x(?:0|[1-9a-f][0-9a-f]*)$" },
+    "hash": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" },
+    "address": { "type": "string", "pattern": "^0x[0-9a-f]{40}$" }
+  }
+}

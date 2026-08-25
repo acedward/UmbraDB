@@ -1,4 +1,5 @@
-import { JSON_RPC_ERRORS, RpcError } from "../registry.js";
+import type { IndexerBlock } from "../indexer-gql.js";
+import { JSON_RPC_ERRORS, RpcError, type RpcContext } from "../registry.js";
 
 export const ZERO_ADDRESS = `0x${"00".repeat(20)}`;
 export const ZERO_HASH = `0x${"00".repeat(32)}`;
@@ -69,6 +70,30 @@ export function resolveBlockTag(value: unknown): ResolvedBlockTag {
   const parsed = parseQuantity(value, "block tag");
   if (parsed > 2_147_483_647n) invalidParams("block height exceeds the indexer's GraphQL Int range");
   return { kind: "height", height: Number(parsed) };
+}
+
+/**
+ * Fetches the block a `BlockNumberOrTag` parameter names, `undefined` when it is not (yet) on
+ * chain. One definition of the tag rules for every block-scoped method: `latest`/`pending`/`safe`/
+ * `finalized` are the indexer head (Midnight has no fork choice to distinguish them), `earliest`
+ * is height 0, anything else must be a canonical hex height.
+ */
+export async function blockByTag(ctx: RpcContext, value: unknown): Promise<IndexerBlock | undefined> {
+  const tag = resolveBlockTag(value);
+  return tag.kind === "latest" ? ctx.indexer.getLatestBlock() : ctx.indexer.getBlockByHeight(tag.height);
+}
+
+/**
+ * Fetches the block a `BlockNumberOrTagOrHash` parameter names (`eth_getBlockReceipts`). A
+ * 32-byte hex string is read as a block hash — the same disambiguation geth applies, and
+ * unambiguous here because a 32-byte value can never be a canonical hex quantity (it is either
+ * zero-padded or longer than any height this chain reaches).
+ */
+export async function blockByRef(ctx: RpcContext, value: unknown): Promise<IndexerBlock | undefined> {
+  if (typeof value === "string" && /^0x[0-9a-fA-F]{64}$/.test(value)) {
+    return ctx.indexer.getBlockByHash(value.slice(2).toLowerCase());
+  }
+  return blockByTag(ctx, value);
 }
 
 export function decimalBigInt(value: string | bigint | null | undefined, fallback = 0n): bigint {

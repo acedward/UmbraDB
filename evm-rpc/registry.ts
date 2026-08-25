@@ -7,6 +7,13 @@ export const JSON_RPC_ERRORS = {
   METHOD_NOT_FOUND: -32601,
   INVALID_PARAMS: -32602,
   INTERNAL_ERROR: -32603,
+  /**
+   * EIP-1474 "Method not supported": the method EXISTS in the Ethereum spec but this surface
+   * deliberately does not implement it (`methods/not-implemented.ts`). Distinct from
+   * `METHOD_NOT_FOUND`, which stays reserved for genuinely unknown method names. Sits in the same
+   * EIP-1474 non-standard block as the `-32005` limit code `registry-shim.ts` already produces.
+   */
+  METHOD_NOT_SUPPORTED: -32004,
 } as const;
 
 export class RpcError extends Error {

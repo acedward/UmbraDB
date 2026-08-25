@@ -8,8 +8,10 @@ describe("IndexerGqlClient", () => {
     const block = await fixture<IndexerBlock>("block-latest.json");
     const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const request = JSON.parse(init?.body as string) as { query: string; variables: Record<string, unknown> };
-      expect(request.query).toContain("transactions { hash }");
-      expect(request.query).not.toContain("transactions { hash block");
+      // `id` is selected alongside the hash: it is the only identifier that survives a hash
+      // disagreement between two indexer surfaces (see wallet-monitor/tx-hash-backfill.ts).
+      expect(request.query).toContain("transactions { id hash }");
+      expect(request.query).not.toContain("transactions { id hash block");
       expect(request.variables).toEqual({ hash: "aa".repeat(32) });
       return new Response(JSON.stringify({ data: { block } }), { status: 200 });
     });

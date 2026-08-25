@@ -11,6 +11,7 @@ function db(overrides: Partial<EvmRpcReader> = {}): EvmRpcReader {
     async getTransactionCount() { return 0n; },
     async getAddressKind() { return undefined; },
     async getTransactionByHash() { return undefined; },
+    async getLogsByTransactionHash() { return []; },
     ...overrides,
   };
 }

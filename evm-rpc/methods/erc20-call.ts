@@ -24,6 +24,7 @@ import { resolve, dirname } from "node:path";
 import { defaultAddressMapper, toHex } from "../logs/event-map.js";
 import type { MethodRegistry } from "../registry.js";
 import type { SqlLike } from "../logs/address-map.js";
+import { positionalParams } from "./common.js";
 
 const SELECTORS = {
   balanceOf: "70a08231",
@@ -141,7 +142,10 @@ export function registerErc20Call(options: Erc20CallOptions): void {
   registry.registerMethod(
     "eth_call",
     async (params) => {
-      const list = Array.isArray(params) ? params : params === undefined ? [] : [params];
+      // Same arity guard `methods/static.ts` registered before this handler replaced it: a
+      // malformed call is `-32602`, not a silent `0x` that reads like "the contract returned
+      // nothing". Only well-formed calls reach the selector switch below.
+      const list = positionalParams(params, 1, 2);
       const call = list[0] as { to?: string; data?: string } | undefined;
       const to = (call?.to ?? "").replace(/^0x/, "").toLowerCase();
       const data = (call?.data ?? "").replace(/^0x/, "").toLowerCase();
