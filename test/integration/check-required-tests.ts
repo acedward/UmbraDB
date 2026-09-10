@@ -104,7 +104,10 @@ export function statusesFromReport(report: JsonReport): Map<string, string[]> {
  *  set includes the suite's own negative control deliberately: a two-state result proven by
  *  assertions that cannot fail is worth nothing, so the control that shows the pre-fold shape
  *  DOES produce a partial height must not be skippable either. */
-export const EXPECTED_REQUIRED_COUNT = 29;
+ *  29 -> 32 (merge of 00009-01 + 00009-02): 00009-02 added three `shielded-monitor.*` ids (fencing,
+ *  schema isolation, restore) on its own branch (25 -> 28); the merged set is the UNION of both
+ *  branches, never one side. */
+export const EXPECTED_REQUIRED_COUNT = 32;
 
 /** The pinned count of `deferred` (WHERE-gated optional-feature) tests (BLOCK 6). Structurally PINS
  *  the deferred exemption set so deleting the sole deferred entry (a green "0 deferred" gate) fails the
