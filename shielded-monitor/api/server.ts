@@ -551,26 +551,36 @@ function parseLimit(raw: string | null, config: ApiConfig): number {
  *
  * Buffering first and checking after would make the cap a formality: the memory is already spent
  * by the time the check runs, which is precisely what an oversized-body cap exists to prevent.
- * The socket is destroyed on violation rather than merely responded to, because a client that is
- * still uploading a large body will otherwise keep writing into a connection whose response has
- * already been decided.
+ * Once the running total passes the limit the promise rejects immediately and every subsequent
+ * chunk is **discarded rather than accumulated**, so the peak retained bytes never exceed the
+ * cap by more than one chunk.
+ *
+ * What this deliberately does NOT do is destroy the socket on violation. That is the tempting
+ * move — the request is over, why keep reading? — and it loses the response: a client that is
+ * still uploading has not read anything yet, so tearing down its connection turns a clean
+ * `400 BODY_TOO_LARGE` into a transport error it cannot interpret. Node already handles the
+ * remainder correctly on its own: when a response finishes while its request is unconsumed, the
+ * server dumps the rest of that request rather than leaving it in the pipe.
  */
 async function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
   return await new Promise<Buffer>((resolve, reject) => {
-    const chunks: Buffer[] = [];
+    let chunks: Buffer[] = [];
     let total = 0;
     let settled = false;
-    const fail = (err: Error): void => {
+    const fail = (err: Error, destroy: boolean): void => {
       if (settled) return;
       settled = true;
-      req.destroy();
+      // Free what has been read: the handler is about to answer, and holding the partial body
+      // until the socket closes is exactly the memory the cap exists to bound.
+      chunks = [];
+      if (destroy) req.destroy();
       reject(err);
     };
     req.on("data", (chunk: Buffer) => {
-      if (settled) return;
+      if (settled) return; // over the limit already: drain and discard, do not accumulate
       total += chunk.byteLength;
       if (total > maxBytes) {
-        fail(new HttpError(400, "BODY_TOO_LARGE", `request body exceeds ${maxBytes} bytes`));
+        fail(new HttpError(400, "BODY_TOO_LARGE", `request body exceeds ${maxBytes} bytes`), false);
         return;
       }
       chunks.push(chunk);
@@ -580,8 +590,9 @@ async function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer>
       settled = true;
       resolve(Buffer.concat(chunks));
     });
-    req.on("error", (err) => fail(err instanceof Error ? err : new Error("request stream error")));
-    req.on("aborted", () => fail(new Error("request aborted")));
+    // A broken stream is different: there is no response to preserve, so the socket goes.
+    req.on("error", (err) => fail(err instanceof Error ? err : new Error("request stream error"), true));
+    req.on("aborted", () => fail(new Error("request aborted"), true));
   });
 }
 
