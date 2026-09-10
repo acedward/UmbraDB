@@ -488,6 +488,23 @@ describe("PgShieldedMonitorStore", () => {
       await expect(store.advance(id, record!.epoch, 1n, [])).rejects.toThrow(MonitorFencedError);
     });
 
+    it("markFailed and markStaleSource are fenceable by the worker's loaded epoch (FR-012)", async () => {
+      const { id, epoch } = await registerFixture(store, seedCounter);
+      await store.pause(id, "consumer"); // the epoch moves under the worker
+      await expect(
+        store.markFailed(id, "scanner", { code: "X", message: "y" }, epoch),
+      ).rejects.toThrow(MonitorFencedError);
+      await expect(
+        store.markStaleSource(id, "scanner", { code: "X", message: "y" }, epoch),
+      ).rejects.toThrow(MonitorFencedError);
+      expect((await store.getIncludingRevoked(id))!.state).toBe("paused");
+
+      // POSITIVE CONTROL: with the current epoch the same call is admitted.
+      const current = (await store.getIncludingRevoked(id))!;
+      expect((await store.markFailed(id, "scanner", { code: "X", message: "y" }, current.epoch)).state)
+        .toBe("failed");
+    });
+
     it("markStaleSource stops the monitor when the archive identity changed (FR-013)", async () => {
       const { id } = await registerFixture(store, seedCounter);
       const stale = await store.markStaleSource(id, "scanner", {

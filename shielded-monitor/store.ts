@@ -701,15 +701,27 @@ export class PgShieldedMonitorStore {
     return this.applyEvent(id, "resume", actor);
   }
 
-  /** Fail-closed stop with a typed, non-secret reason (organizer spec's unsupported-version and
-   *  undecodable-transaction edge cases). Idempotent. */
-  async markFailed(id: string, actor: string, error: MonitorLastError): Promise<MonitorRecord> {
-    return this.applyEvent(id, "fail", actor, undefined, error);
+  /**
+   * Fail-closed stop with a typed, non-secret reason (organizer spec's unsupported-version and
+   * undecodable-transaction edge cases). Idempotent.
+   *
+   * `expectedEpoch` is optional and exists for the scanner: organizer spec FR-012 fences *every*
+   * worker write on the loaded epoch, and marking a monitor failed is a worker write. Without
+   * the fence, a worker that has been paused mid-batch could still stop a monitor its consumer
+   * had just taken control of. An operator acting on the current state (the harness) omits it.
+   */
+  async markFailed(
+    id: string, actor: string, error: MonitorLastError, expectedEpoch?: bigint,
+  ): Promise<MonitorRecord> {
+    return this.applyEvent(id, "fail", actor, expectedEpoch, error);
   }
 
-  /** The archive this monitor was bound to was rebuilt (organizer spec FR-013). Idempotent. */
-  async markStaleSource(id: string, actor: string, error?: MonitorLastError): Promise<MonitorRecord> {
-    return this.applyEvent(id, "mark_stale_source", actor, undefined, error);
+  /** The archive this monitor was bound to was rebuilt (organizer spec FR-013). Idempotent.
+   *  `expectedEpoch` fences it for the same reason as {@link markFailed}. */
+  async markStaleSource(
+    id: string, actor: string, error?: MonitorLastError, expectedEpoch?: bigint,
+  ): Promise<MonitorRecord> {
+    return this.applyEvent(id, "mark_stale_source", actor, expectedEpoch, error);
   }
 
   /** Stops processing and refuses further reads (organizer spec FR-016). Idempotent. */
