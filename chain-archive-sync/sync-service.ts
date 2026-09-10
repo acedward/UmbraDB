@@ -7,7 +7,6 @@ import type {
   Hex32,
   ReplayCheckpointRecord,
   TransactionRecord,
-  TransactionResult,
 } from "../src/interfaces/chain-archive-store.js";
 import { IndexerClient, type IndexerBlock, type IndexerClientOptions } from "./indexer-client.js";
 import { NodeRpcClient, type NodeRpcClientOptions, type SubstrateHeader } from "./node-rpc-client.js";
@@ -19,7 +18,8 @@ import {
   requireCallIndices,
 } from "./extrinsic-decoder.js";
 import { decodeArchivedTransaction, loadLedgerV8 } from "./tx-replay-decoder.js";
-import { LedgerReplay, type ReplayOutcome } from "./ledger-replay.js";
+import { LedgerReplay } from "./ledger-replay.js";
+import { mapReplayOutcomes, type RegularReplayOutcome } from "./replay-outcome-mapping.js";
 import {
   BlockScopedMetadata,
   decodeBlockTimestampMs,
@@ -1273,68 +1273,32 @@ export class ChainArchiveSyncService {
    *  execution order (which for regular transactions is body order). `undefined` when replay
    *  validation is off, when the block was genesis (whose body the node does not execute), or
    *  when replay refused. Consumed by {@link attachReplayOutcomes} and never read afterwards. */
-  private lastBlockRegularOutcomes:
-    | { rawBytes: Uint8Array; outcome: ReplayOutcome | undefined }[]
-    | undefined;
+  private lastBlockRegularOutcomes: RegularReplayOutcome[] | undefined;
 
   /**
    * Return `transactions` with `result` filled in from this block's replay, or unchanged when the
    * mapping cannot be established (Q12).
    *
-   * WHY A MAPPING IS NEEDED AT ALL. The archive's row order is reference-compatible: event-borne
-   * system transactions first, then extrinsic-derived ones. Replay applies transactions in
-   * Substrate's execution order. The two sequences hold the same regular transactions in the same
-   * relative order -- both are "the block's Midnight regular calls, in body order" -- but they
-   * differ in where system transactions sit, and a direct system extrinsic even yields two
-   * archive rows (its event and its extrinsic) against one execution entry.
+   * The mapping RULE -- and the reason the archive's row order and the ledger's execution order
+   * can only be paired over the regular subsequence -- lives in `replay-outcome-mapping.ts`,
+   * pure and unit-tested. This method only supplies this block's outcomes and records a
+   * diagnosis when they could not be paired.
    *
-   * So the correspondence is taken over the REGULAR subsequence only, positionally, and then
-   * VERIFIED byte-for-byte. Verification is what makes this safe rather than merely plausible:
-   * if the two lists ever stop agreeing (a future ordering change, or indexer-sourced ingest
-   * whose transaction order was not cross-checked against the node's), the pairs disagree, and
-   * this returns the transactions untouched -- every `result` stays NULL, which is the archive's
-   * existing, valid state, rather than a confidently wrong outcome.
-   *
-   * `NULL` remains legal for every row (the column has always been nullable), so this is additive
-   * for every existing reader.
+   * `NULL` remains legal for every row (the column has always been nullable), so persisting the
+   * outcome is additive for every existing reader, and declining to persist it returns the rows
+   * to exactly the state they were always in.
    */
   private attachReplayOutcomes(
     height: number, transactions: readonly TransactionRecord[],
   ): TransactionRecord[] {
     const outcomes = this.lastBlockRegularOutcomes;
     if (outcomes === undefined) return [...transactions];
-    const unmapped = (reason: string): TransactionRecord[] => {
-      this.replayOutcomeMappingSkips.push({ height, reason });
+    const mapping = mapReplayOutcomes(transactions, outcomes);
+    if (!mapping.mapped) {
+      this.replayOutcomeMappingSkips.push({ height, reason: mapping.reason });
       return [...transactions];
-    };
-
-    const regularRows = transactions.filter((t) => t.kind === "regular");
-    if (regularRows.length !== outcomes.length) {
-      return unmapped(
-        `${regularRows.length} regular archive rows against ${outcomes.length} regular replay ` +
-          "outcomes",
-      );
     }
-    for (const [index, row] of regularRows.entries()) {
-      const paired = outcomes[index]!;
-      if (!Buffer.from(row.rawBytes).equals(Buffer.from(paired.rawBytes))) {
-        return unmapped(`regular transaction ${index} differs in bytes between the two orderings`);
-      }
-      // `system_applied` cannot occur here (regular transactions only) but is excluded
-      // explicitly rather than cast away: `transactions.result`'s CHECK admits exactly three
-      // values, and a fourth would fail the insert at the END of the bundle, discarding an
-      // otherwise valid block.
-      if (paired.outcome === undefined || paired.outcome === "system_applied") {
-        return unmapped(`regular transaction ${index} has outcome ${String(paired.outcome)}`);
-      }
-    }
-
-    let regularIndex = 0;
-    return transactions.map((t) =>
-      t.kind === "regular"
-        ? { ...t, result: outcomes[regularIndex++]!.outcome as TransactionResult }
-        : t
-    );
+    return mapping.transactions;
   }
 
   /** Heights whose replay outcomes could not be mapped onto archive rows, with why, so the rows
