@@ -4,14 +4,24 @@ import type {
   ArchivedTransaction,
 } from "../src/interfaces/archive-read-contract.js";
 import { MonitorFencedError, MonitorNotFoundError, MonitorRevokedError } from "./errors.js";
-import { deserializeEncryptionSecretKey, LEDGER_BUILD_ID, MATCHING_RULE_VERSION } from "./offers.js";
+import {
+  deserializeEncryptionSecretKey,
+  LEDGER_BUILD_ID,
+  MATCHING_RULE_VERSION,
+  type EncryptionSecretKeyHandle,
+} from "./offers.js";
 import { evaluateRelevance, isUnsupportedProtocolVersion } from "./relevance.js";
 import {
   NOOP_SCANNER_METRICS,
   type ScanBatchOutcomeLabel,
   type ScannerMetrics,
 } from "./scanner-metrics.js";
-import type { AssociationInput, MonitorRecord, PgShieldedMonitorStore } from "./store.js";
+import type {
+  AdvanceResult,
+  AssociationInput,
+  MonitorLastError,
+  MonitorRecord,
+} from "./store.js";
 
 /**
  * The relevance scanner: one batch of whole blocks, for one monitor, at a time
@@ -87,6 +97,42 @@ export type ScanBatchResult =
   /** The archive is not the one this monitor was bound to (FR-013). */
   | { readonly kind: "stale-source" };
 
+/**
+ * Exactly the store operations a scanner may perform — and therefore, by construction, exactly
+ * the writes it can make.
+ *
+ * `PgShieldedMonitorStore` satisfies this structurally; nothing needs to declare that it does.
+ * Writing the dependency as a NARROW interface rather than the concrete class is part of the
+ * Rule B argument: a reader checking "what can the scanner write" reads seven method names, not
+ * a 1000-line class, and a new write path added to the store does not silently become available
+ * to the scanner. It also lets the unit suite drive the scanner with an in-memory double and
+ * assert the call sequence (one `advance` per batch, one key deserialization per batch) without
+ * a database.
+ */
+export interface ScannerStore {
+  get(id: string): Promise<MonitorRecord>;
+  getKeyMaterial(id: string): Promise<Uint8Array>;
+  advance(
+    monitorId: string,
+    epoch: bigint,
+    throughHeight: bigint,
+    associations: readonly AssociationInput[],
+    opts?: { readonly fromHeight?: bigint },
+  ): Promise<AdvanceResult>;
+  goLive(id: string, expectedEpoch: bigint, actor: string): Promise<MonitorRecord>;
+  markFailed(
+    id: string, actor: string, error: MonitorLastError, expectedEpoch?: bigint,
+  ): Promise<MonitorRecord>;
+  markStaleSource(
+    id: string, actor: string, error?: MonitorLastError, expectedEpoch?: bigint,
+  ): Promise<MonitorRecord>;
+  bindArchiveSource(
+    id: string,
+    expectedEpoch: bigint,
+    source: { readonly genesisHash: string; readonly instanceId: string },
+  ): Promise<{ readonly applied: boolean; readonly monitor: MonitorRecord }>;
+}
+
 export interface ShieldedMonitorScannerOptions {
   /** The one network this scanner serves (Q7: one network per deployment). */
   readonly net: string;
@@ -102,6 +148,17 @@ export interface ShieldedMonitorScannerOptions {
   /** Injectable for tests. */
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
+  /**
+   * How a serialized viewing key becomes a testable handle. Defaults to the vendored ledger's
+   * `deserializeEncryptionSecretKey`.
+   *
+   * A seam rather than a hard call for two reasons that are not "so a test can mock it": a TEE
+   * deployment would supply a handle backed by key material the process never sees in the clear,
+   * and the unit suite uses it to ASSERT the key lifetime (exactly one deserialization per
+   * batch, `clear()` exactly once, even when the predicate throws) — which is otherwise a
+   * property no test can observe.
+   */
+  readonly deserializeKey?: (bytes: Uint8Array) => Promise<EncryptionSecretKeyHandle>;
 }
 
 const DEFAULT_BATCH_BLOCKS = 1;
@@ -162,10 +219,11 @@ export class ShieldedMonitorScanner {
   private readonly budgetTxPerSecond?: number;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly deserializeKey: (bytes: Uint8Array) => Promise<EncryptionSecretKeyHandle>;
 
   constructor(
     private readonly archive: ArchiveReadContract,
-    private readonly store: PgShieldedMonitorStore,
+    private readonly store: ScannerStore,
     options: ShieldedMonitorScannerOptions,
   ) {
     this.net = options.net;
@@ -178,6 +236,7 @@ export class ShieldedMonitorScanner {
     if (options.budgetTxPerSecond !== undefined) this.budgetTxPerSecond = options.budgetTxPerSecond;
     this.now = options.now ?? (() => Date.now());
     this.sleep = options.sleep ?? defaultSleep;
+    this.deserializeKey = options.deserializeKey ?? deserializeEncryptionSecretKey;
   }
 
   /**
@@ -401,7 +460,7 @@ export class ShieldedMonitorScanner {
     monitor: MonitorRecord, blocks: readonly ArchivedBlock[],
   ): Promise<AssociationInput[]> {
     const keyBytes = await this.store.getKeyMaterial(monitor.id);
-    const key = await deserializeEncryptionSecretKey(keyBytes);
+    const key = await this.deserializeKey(keyBytes);
     const associations: AssociationInput[] = [];
     try {
       for (const block of blocks) {

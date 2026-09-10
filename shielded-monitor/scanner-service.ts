@@ -1,5 +1,5 @@
 import type { UmbraDBSql } from "../src/postgres/client.js";
-import type { PgShieldedMonitorStore } from "./store.js";
+import type { MonitorRecord } from "./store.js";
 import type { ScanBatchResult, ShieldedMonitorScanner } from "./scanner.js";
 
 /**
@@ -51,6 +51,12 @@ export interface ScanCycleSummary {
   readonly outcomes: Partial<Record<ScanBatchResult["kind"], number>>;
 }
 
+/** The one store operation the SCHEDULER needs. Narrow for the same reason
+ *  {@link ScannerStore} is (`scanner.ts`): the scheduler must not be able to write anything. */
+export interface ScannerServiceStore {
+  listActive(limit?: number): Promise<MonitorRecord[]>;
+}
+
 export class ShieldedMonitorScannerService {
   private readonly net: string;
   private readonly concurrency: number;
@@ -69,7 +75,7 @@ export class ShieldedMonitorScannerService {
 
   constructor(
     private readonly scanner: ShieldedMonitorScanner,
-    private readonly store: PgShieldedMonitorStore,
+    private readonly store: ScannerServiceStore,
     /** B's OWN connection, used only to `LISTEN`. Rule B is not at risk: `LISTEN` is not a write
      *  and the channel is a name, not a table — but the wake-up is deliberately advisory, and
      *  every byte the scanner acts on still comes through the {@link ArchiveReadContract}. */
