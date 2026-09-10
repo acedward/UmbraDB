@@ -145,7 +145,9 @@ export function transition(from: MonitorState, event: LifecycleEvent): Transitio
 /** {@link transition}, throwing {@link IllegalLifecycleTransitionError} instead of returning
  *  `{kind: "illegal"}`. The store uses this so an illegal transition is a typed error at the
  *  boundary rather than a silently ignored request. */
-export function transitionOrThrow(from: MonitorState, event: LifecycleEvent): TransitionOutcome {
+export function transitionOrThrow(
+  from: MonitorState, event: LifecycleEvent,
+): Exclude<TransitionOutcome, { kind: "illegal" }> {
   const outcome = transition(from, event);
   if (outcome.kind === "illegal") throw new IllegalLifecycleTransitionError(from, event);
   return outcome;
