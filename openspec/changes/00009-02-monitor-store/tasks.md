@@ -18,7 +18,7 @@ Tables: `monitors`, `associations`, `lifecycle_events`, `audit_events` as specif
 **Acceptance criteria**
 
 - `vitest run test/shielded-monitor/migrations.integration.test.ts` passes: a fresh apply records
-  exactly `["000_schema", "001_shielded_monitor_core"]` in `<schema>._migrations`; a second
+  exactly `["000_schema", "001_core"]` in `<schema>._migrations`; a second
   `bootstrapShieldedMonitorSchema` call applies zero further migrations; the four tables exist in
   the target schema and in no other.
 - The same test asserts every CHECK constraint fires: a bad `state`, a negative height, a

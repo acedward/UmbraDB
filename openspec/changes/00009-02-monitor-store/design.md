@@ -137,6 +137,34 @@ that file, to keep the two PRs conflict-free.
 uses. `free()` is wasm-bindgen's deallocator; it is called afterwards inside a `try/finally` so the
 handle cannot leak if `clear()` throws.
 
+### 4.3.1 One step more than the reference: the payload must be the key's canonical encoding
+
+Measured against the vendored build while writing this change (`probe`, then pinned as test
+vectors), not assumed from the type signature: `EncryptionSecretKey.deserialize` reads a
+SCALE-style **compact length prefix** followed by exactly that many bytes, and **ignores every
+byte after them**. Three observations pin the behaviour down:
+
+| input | accepted | re-serializes to |
+|---|---|---|
+| the reference vector, 32 bytes (`0x6f …`; `0x6f >> 2 = 27`, `+4 = 31` value bytes) | yes | the same 32 bytes |
+| `ZswapSecretKeys.fromSeed(seed)`'s output, 33 bytes (`0x73 …` → 32 value bytes) | yes | the same 33 bytes |
+| that same 33-byte value truncated to 32 | **no** — "failed to fill whole buffer" | — |
+| 32 zero bytes | yes (parses as the zero key, 31 bytes ignored) | `0x00`, one byte |
+
+The consequence matters: `<key>` and `<key> ‖ 0xAA` name the *same* key while being *different*
+byte strings, so they produce different SHA-256 fingerprints. Registration identity is the
+fingerprint (spec FR-003/FR-004), so without a canonical-form rule one wallet could be registered
+arbitrarily many times, each registration a separate monitor doing the same scan — idempotency
+defeated by appending a byte.
+
+The rule this change applies: **the submitted payload must equal the ledger's own re-serialization
+of what it deserialized.** Both real-world vectors satisfy it unchanged. It is one step stricter
+than the reference indexer, which performs no such check; the strictness is recorded as question
+`Q13` with the alternatives and applied as the default. A degenerate-but-canonical key (the
+one-byte zero key) is still accepted: it is a valid `EncryptionSecretKey` by the ledger's own
+definition and it simply never matches anything, which is the caller's business, not a store
+integrity problem.
+
 ### 4.4 The key type redacts itself
 
 `ShieldedViewingKey` holds the serialized bytes in a `#private` field and overrides `toString()`,
