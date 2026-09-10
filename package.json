@@ -73,6 +73,7 @@
     "vitest": "^4.1.10"
   },
   "bin": {
-    "umbradb-archive-sync": "dist-cli/chain-archive-sync/sync-cli.js"
+    "umbradb-archive-sync": "dist-cli/chain-archive-sync/sync-cli.js",
+    "umbradb-archive-backfill-timestamps": "dist-cli/chain-archive-sync/backfill-timestamps-cli.js"
   }
 }

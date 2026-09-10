@@ -5,6 +5,7 @@ import type {
   BridgeObservationRecord,
   ChainArchiveStore,
   Hex32,
+  ReplayCheckpointRecord,
   TransactionRecord,
 } from "../src/interfaces/chain-archive-store.js";
 import { IndexerClient, type IndexerBlock, type IndexerClientOptions } from "./indexer-client.js";
@@ -18,6 +19,7 @@ import {
 } from "./extrinsic-decoder.js";
 import { decodeArchivedTransaction, loadLedgerV8 } from "./tx-replay-decoder.js";
 import { LedgerReplay } from "./ledger-replay.js";
+import { mapReplayOutcomes, type RegularReplayOutcome } from "./replay-outcome-mapping.js";
 import {
   BlockScopedMetadata,
   decodeBlockTimestampMs,
@@ -224,6 +226,17 @@ export interface SyncOnceResult {
 }
 
 const WATERMARK_KEY_PREFIX = "sync_cursor:";
+
+/**
+ * The `LISTEN/NOTIFY` channel a consumer can wait on instead of polling (spec/00009, US7's
+ * wake-up hook). The payload is `"<net>:<height>"`, emitted inside the height's own transaction
+ * so it is delivered if and only if the height committed.
+ *
+ * An OPTIMISATION, never a contract: notifications are not queued for a listener that is not
+ * connected, so a consumer that misses one simply finds the height on its next poll. Nothing in
+ * this repo depends on receiving it.
+ */
+export const CHAIN_ARCHIVE_PROGRESS_CHANNEL = "chain_archive_progress";
 
 export class ChainArchiveSyncService {
   /** Honest scope declaration (Sol-audit fix round, Finding 5): this service does NOT ingest
@@ -465,10 +478,28 @@ export class ChainArchiveSyncService {
     }
   }
 
+  /**
+   * Mint (once) and remember this archive's own instance identity for `net`
+   * (spec/00009 FR-028) -- the value a consumer binds to so it can tell a re-synced archive from
+   * the original, rather than reading its lower tip as the same archive going backwards.
+   *
+   * Memoized on the PROMISE, not on the value, so concurrent callers share one round-trip. The
+   * underlying store call is `INSERT ... ON CONFLICT DO NOTHING` + read-back, so even across
+   * processes the first writer's id is the one everybody sees.
+   */
+  private archiveInstanceIdPromise: Promise<string> | undefined;
+  private ensureArchiveIdentity(): Promise<string> {
+    this.archiveInstanceIdPromise ??= this.store.ensureArchiveInstanceId(this.net);
+    return this.archiveInstanceIdPromise;
+  }
+
   async syncOnce(opts?: { maxBlocks?: number }): Promise<SyncOnceResult> {
     const maxBlocks = opts?.maxBlocks ?? 100;
     this.midnightTaggedForeignCalls = 0;
     await this.assertChainIdentity();
+    // Before the first block of the first batch, so an archive that has ingested anything at all
+    // always has an identity a consumer can bind to. Once per process, not per block.
+    await this.ensureArchiveIdentity();
     const finalizedHash = await this.node.getFinalizedHead();
     const targetTipHeight = await this.node.getHeightOf(finalizedHash);
 
@@ -718,6 +749,15 @@ export class ChainArchiveSyncService {
     // Audit A2: replay gates the write. A block the reference would refuse must not be archived,
     // and that verdict comes from actually applying the transactions -- so this runs BEFORE
     // putBlockBundle, like every other refusal condition here.
+    // Decoded BEFORE replay advances, deliberately. Everything between `replayBlockIfEnabled`
+    // and the write below runs with the in-memory replay engine one block ahead of anything
+    // durable, and an exception thrown in that window that does NOT pass through the catch
+    // below leaves it there -- which is the T3 wedge ("replay is at N but this block is N",
+    // forever). A decode that can throw therefore belongs on this side of the line, where a
+    // failure costs the block and nothing else.
+    const blockTimestampMs = await this.decodeBlockTimestampIfMetadataIsAvailable(
+      blockHash, block.extrinsics, nodeProtocolVersion,
+    );
     await this.replayBlockIfEnabled(
       height, blockHash, header, transactions, block.extrinsics, nodeProtocolVersion ?? 0,
     );
@@ -729,6 +769,7 @@ export class ChainArchiveSyncService {
       net: this.net,
       blockHash,
       height,
+      timestampMs: blockTimestampMs,
       parentHash: hexNoPrefix(header.parentHash),
       // Substrate genesis's parentHash is all-zero (32 zero bytes) -- 000...0 (32 bytes = 64
       // hex chars), which already satisfies the schema's `CHECK (octet_length(parent_hash)
@@ -743,20 +784,26 @@ export class ChainArchiveSyncService {
     };
 
     try {
+      // ── Owner Rule A (spec/00009 US5, FR-029): ONE transaction for this whole height ──
+      //
+      // This used to be three separate durable steps -- bundle, then `checkpointReplayIfDue`,
+      // then `setWatermark` -- each its own transaction. Every gap between them was an
+      // observable post-crash state (height without its checkpoint; height without its
+      // watermark), and recovery had to be correct for all of them. They are now arguments to
+      // the single bundle write, so the observable states per height are exactly two: nothing of
+      // it, or all of it including the watermark.
+      //
+      // The FK ordering that forced the old split (a checkpoint references the block it
+      // describes, and the block row did not exist yet at gating time) is handled inside
+      // `putBlockBundle`, which inserts the block row first in the same transaction.
       await this.store.putBlockBundle({
         block: blockRecord,
-        transactions,
+        transactions: this.attachReplayOutcomes(height, transactions),
         bridgeObservations: bridge.records,
+        replayCheckpoint: this.replayCheckpointIfDue(height, blockHash),
+        watermark: { key: this.watermarkKey(), value: { height } },
+        notifyChannel: CHAIN_ARCHIVE_PROGRESS_CHANNEL,
       });
-
-      // After the write, because a checkpoint references the block it describes.
-      await this.checkpointReplayIfDue(height, blockHash);
-
-      // The watermark is the final durable step for this height and therefore belongs inside the
-      // same replay-recovery boundary. A failure here leaves the block (and possibly checkpoint)
-      // durable while the cursor stays behind; discarding the in-memory engine makes retry rebuild
-      // from those durable records instead of trying to apply this height twice to stale state.
-      await this.store.setWatermark(this.watermarkKey(), { height });
     } catch (err) {
       // T3. Replay is atomic INSIDE the engine but was not atomic across the ingest block: the
       // fold advanced above, and if any durable write here failed, the in-memory replay sat one
@@ -894,6 +941,9 @@ export class ChainArchiveSyncService {
     extrinsics: readonly string[],
     protocolVersion: number,
   ): Promise<void> {
+    // Cleared first: a block that refuses, or a genesis block whose body is never executed, must
+    // not leave the PREVIOUS block's outcomes attached to this height's rows.
+    this.lastBlockRegularOutcomes = undefined;
     if (!this.replayValidation) return;
     const ledger = await this.ledger();
     let initializedFromGenesisSnapshot = false;
@@ -1033,14 +1083,29 @@ export class ChainArchiveSyncService {
     try {
       if (!initializedFromGenesisSnapshot) {
         const parentBlockTimestampMs = this.parentTimestampFor(height);
-        this.replay.applyBlock({
-          transactions: await this.replayTransactionsInExecutionOrder(
-            blockHash, extrinsics, protocolVersion, parentBlockTimestampMs,
-          ),
+        const executionOrder = await this.replayTransactionsInExecutionOrder(
+          blockHash, extrinsics, protocolVersion, parentBlockTimestampMs,
+        );
+        const outcomes = this.replay.applyBlock({
+          transactions: executionOrder,
           blockTimestampMs,
           parentBlockHashHex: hexNoPrefix(header.parentHash),
           parentBlockTimestampMs,
         });
+        // Q12 / spec/00009 FR-009: keep the REGULAR transactions' outcomes so the bundle can
+        // persist them into `transactions.result`. Previously this return value was discarded
+        // and every archived row's `result` stayed NULL, in both ingest modes.
+        //
+        // Only the regular ones, and deliberately: the execution list interleaves event-borne
+        // system transactions in Substrate phase order while the archive lists them first in
+        // reference-compatible order, so the two orders agree only on the regular subsequence
+        // (both are "this block's Midnight regular calls, in body order"). A system
+        // transaction's `system_applied` verdict is not one of the three values
+        // `transactions.result` admits anyway.
+        this.lastBlockRegularOutcomes = executionOrder
+          .map((entry, index) => ({ entry, outcome: outcomes[index] }))
+          .filter((pair) => pair.entry.kind === "regular")
+          .map((pair) => ({ rawBytes: pair.entry.rawBytes, outcome: pair.outcome }));
       }
       await this.assertReplayedLedgerRoot(height, blockHash);
     } catch (err) {
@@ -1208,6 +1273,48 @@ export class ChainArchiveSyncService {
     this.replayCatchUpFrom = undefined;
     this.lastReplayedBlockHash = undefined;
     this.lastReplayedBlockTimestampMs = undefined;
+    this.lastBlockRegularOutcomes = undefined;
+  }
+
+  /** The regular transactions' replay outcomes for the block currently being ingested, in
+   *  execution order (which for regular transactions is body order). `undefined` when replay
+   *  validation is off, when the block was genesis (whose body the node does not execute), or
+   *  when replay refused. Consumed by {@link attachReplayOutcomes} and never read afterwards. */
+  private lastBlockRegularOutcomes: RegularReplayOutcome[] | undefined;
+
+  /**
+   * Return `transactions` with `result` filled in from this block's replay, or unchanged when the
+   * mapping cannot be established (Q12).
+   *
+   * The mapping RULE -- and the reason the archive's row order and the ledger's execution order
+   * can only be paired over the regular subsequence -- lives in `replay-outcome-mapping.ts`,
+   * pure and unit-tested. This method only supplies this block's outcomes and records a
+   * diagnosis when they could not be paired.
+   *
+   * `NULL` remains legal for every row (the column has always been nullable), so persisting the
+   * outcome is additive for every existing reader, and declining to persist it returns the rows
+   * to exactly the state they were always in.
+   */
+  private attachReplayOutcomes(
+    height: number, transactions: readonly TransactionRecord[],
+  ): TransactionRecord[] {
+    const outcomes = this.lastBlockRegularOutcomes;
+    if (outcomes === undefined) return [...transactions];
+    const mapping = mapReplayOutcomes(transactions, outcomes);
+    if (!mapping.mapped) {
+      this.replayOutcomeMappingSkips.push({ height, reason: mapping.reason });
+      return [...transactions];
+    }
+    return mapping.transactions;
+  }
+
+  /** Heights whose replay outcomes could not be mapped onto archive rows, with why, so the rows
+   *  were left `NULL`. Diagnostic only -- a non-empty list means the archive's row order and the
+   *  ledger's execution order disagreed about this block's regular transactions, which is worth
+   *  investigating but is not a reason to refuse a block whose replay itself succeeded. */
+  private readonly replayOutcomeMappingSkips: { height: number; reason: string }[] = [];
+  get unmappedReplayOutcomes(): readonly { height: number; reason: string }[] {
+    return this.replayOutcomeMappingSkips;
   }
 
   /**
@@ -1301,17 +1408,23 @@ export class ChainArchiveSyncService {
   }
 
   /**
-   * Persist replay state, AFTER the block is durably written.
+   * The replay checkpoint this height owes, or `undefined` when none is due.
    *
-   * Deliberately not part of the gating step above. `replay_checkpoints` has a foreign key to
-   * `blocks` -- a checkpoint describes a block, so it must not outlive one -- and gating runs
-   * before the block row exists. Writing the checkpoint there violates the FK, which is exactly
-   * what the first run of this suite discovered. Splitting the two also gets the ordering right on
-   * its own terms: a checkpoint may only record state for a block that was actually archived.
+   * BUILDS it; does not write it. Owner Rule A (spec/00009 FR-029) makes the checkpoint part of
+   * the height's single bundle transaction, so this returns a record for `putBlockBundle` to
+   * commit alongside the block instead of issuing a second transaction of its own.
+   *
+   * The FK from `replay_checkpoints` to `blocks` is what used to force a separate, later write:
+   * a checkpoint describes a block, and at gating time the block row did not exist. Inside the
+   * bundle transaction the block row is inserted first and is visible to the checkpoint insert's
+   * FK check, so the constraint that forced the split no longer does.
+   *
+   * `serialize()` is called here, before the write, over the state the replay of THIS block has
+   * already produced in memory -- the same state the old post-write call captured.
    */
-  private async checkpointReplayIfDue(height: number, blockHash: Hex32): Promise<void> {
-    if (!this.replayValidation || this.replay === undefined) return;
-    if (height % this.replayCheckpointInterval !== 0) return;
+  private replayCheckpointIfDue(height: number, blockHash: Hex32): ReplayCheckpointRecord | undefined {
+    if (!this.replayValidation || this.replay === undefined) return undefined;
+    if (height % this.replayCheckpointInterval !== 0) return undefined;
     // Set by the replay of this very block, immediately before this runs.
     const blockTimestampMs = this.lastReplayedBlockTimestampMs;
     if (blockTimestampMs === undefined) {
@@ -1320,7 +1433,7 @@ export class ChainArchiveSyncService {
           "without one cannot supply `lastBlockTime` to the block that resumes after it.",
       );
     }
-    await this.store.putReplayCheckpoint({
+    return {
       net: this.net,
       blockHeight: height,
       blockHash,
@@ -1328,7 +1441,32 @@ export class ChainArchiveSyncService {
       ledgerVersion: LEDGER_STATE_VERSION,
       blockTimestampMs,
       ledgerNetworkId: this.ledgerNetworkId!,
-    });
+    };
+  }
+
+  /**
+   * This block's `Timestamp::set` value for the `blocks.timestamp_ms` column (migration 008,
+   * spec/00009 FR-028), or `undefined` when this ingest mode cannot read it without changing what
+   * it talks to.
+   *
+   * NODE-ONLY and REPLAY-VALIDATION ingest already resolve the block's runtime metadata, so the
+   * decode is free and every newly archived block carries its time.
+   *
+   * INDEXER-SOURCED ingest without replay validation deliberately does NOT resolve metadata at
+   * all -- that is what lets it keep working against a pruned node (`BlockScopedMetadata`'s own
+   * contract). Fetching metadata here to fill in one column would silently change that mode's
+   * node requirements, so it stores `NULL` and the backfill
+   * (`backfill-block-timestamps.ts`) fills those rows in later from the archived body blob.
+   * `NULL` therefore means "not decoded", never "no time" -- see migration 008.
+   */
+  private async decodeBlockTimestampIfMetadataIsAvailable(
+    blockHash: Hex32, extrinsics: readonly string[], protocolVersion: number | undefined,
+  ): Promise<number | undefined> {
+    if (this.indexer !== undefined && !this.replayValidation) return undefined;
+    // Cached per runtime by `BlockScopedMetadata`, so this is a map lookup after the first block
+    // of each runtime rather than a node round-trip per block.
+    const resolved = await this.metadata.forBlock(`0x${blockHash}`, protocolVersion);
+    return decodeBlockTimestampMs(resolved, extrinsics);
   }
 
   /**
