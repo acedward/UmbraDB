@@ -260,14 +260,14 @@ describe("viewing-key intake", () => {
       const bytes = Uint8Array.from(decodeBech32m(REFERENCE_VECTOR).data);
       const key = new ShieldedViewingKey("undeployed", bytes);
       const before = Buffer.from(key.yesIKnowTheSecurityImplicationsOfThis_serialized());
-      bytes[0] ^= 0xff;
+      bytes[0] = bytes[0]! ^ 0xff;
       expect(Buffer.from(key.yesIKnowTheSecurityImplicationsOfThis_serialized())).toStrictEqual(before);
     });
 
     it("hands out a copy, so a caller cannot mutate the held key through the accessor", async () => {
       const key = await parseViewingKey(REFERENCE_VECTOR, "undeployed");
       const first = key.yesIKnowTheSecurityImplicationsOfThis_serialized();
-      first[0] ^= 0xff;
+      first[0] = first[0]! ^ 0xff;
       expect(key.yesIKnowTheSecurityImplicationsOfThis_serialized()[0]).not.toBe(first[0]);
     });
   });
