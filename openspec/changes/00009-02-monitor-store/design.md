@@ -324,6 +324,44 @@ section are unambiguous that the alpha never claims funds were received; the che
 un-writeable rather than merely undocumented. `source_outcome` is the separate, nullable column for
 the archive's own replay outcome, exactly as FR-009 separates them.
 
+### 7.1 Association order is fixed by the store, not by the caller
+
+`seq` is the cursor Phase 4 will hand consumers, and spec FR-019 requires matches in
+`(blockHeight, position)` order with a stable cursor. Those two facts only stay consistent if
+`seq` order *is* `(blockHeight, position)` order — otherwise a page boundary could skip or repeat
+a match for a caller whose batch happened to be unsorted.
+
+So `advance` sorts the validated batch by `(blockHeight, position)` **before** allocating sequence
+numbers. The ordering is then a property of the store rather than a convention the scanner has to
+remember, and Phase 3 cannot break Phase 4 by emitting a batch in decode order.
+
+### 7.2 Every worker write is fenceable, not just the coverage advance
+
+Spec FR-012 says *every* commit is fenced by the epoch. `markFailed` and `markStaleSource` are
+worker writes too — a scanner decides a monitor is unsupported or stale-sourced — so both take an
+optional `expectedEpoch`. Without it, a worker that was paused mid-batch could still stop a
+monitor its consumer had just taken control of. It is optional rather than required because the
+same two methods are reachable from the operator harness, where there is no loaded epoch to fence
+against, only the current state.
+
+### 7.3 A CHECK cannot hold a subquery, so one predicate is a function
+
+"Every element of this `smallint[]` is non-negative" has no subquery-free spelling, and PostgreSQL
+rejects a subquery in a CHECK constraint outright (`0A000`, confirmed against PostgreSQL 17 while
+writing the migration). The predicate therefore lives in an `IMMUTABLE` schema-local SQL function,
+`shielded_monitor_valid_segments`, which the constraint calls — the same shape the Tier-1.5 lineage
+already uses for `chain_archive_assert_blob_role`.
+
+Two things this costs, both closed by tests rather than assumed:
+
+- **Dump ordering.** PostgreSQL does not record a dependency from a CHECK to a function it calls,
+  so nothing in the catalog guarantees `pg_dump` emits the function first. It does (function
+  objects sort before tables), and the restore drill asserts it on the real dump text rather than
+  trusting it.
+- **`NULL` semantics.** `array_ndims` and `array_length` both return `NULL` for an empty array, and
+  a CHECK passes on `NULL` — so the first version of this predicate accepted `'{}'::smallint[]`.
+  Both are `COALESCE`d, and the migration test fires the constraint to prove it.
+
 ## 8. Delete semantics
 
 Spec US3 scenario 4: after a delete, "the key and association rows are gone, and the API answers as
@@ -346,13 +384,32 @@ because they are the record of what was done.
 - **Nulling the fingerprint is what makes re-registration behave "as if it never existed"**: the
   `UNIQUE (net, fingerprint)` index treats `NULL`s as distinct, so registering the same key again
   after a delete mints a *new* monitor id rather than colliding with the tombstone. It also removes
-  the last derived value from which the key could be tested by guessing.
+  the last derived value from which the key could be tested by guessing. (The index is `WHERE
+  fingerprint IS NOT NULL`, so tombstones are not merely permitted — they are out of the index
+  entirely.)
+
+The invariant "a deleted monitor has shed **both** key and fingerprint, every other monitor has
+**both**" is a database constraint, not a convention. It is written as a `CASE`, deliberately:
+the shorter `(state = 'deleted') = (key_serialized IS NULL AND fingerprint IS NULL)` accepts a
+*half-shredded* row — key gone, fingerprint kept — which is exactly the bug worth catching, a
+monitor that has silently stopped matching while still occupying its key's registration identity.
+The first version of this constraint was the equality form, and the migration test caught it.
 
 ## 9. Registration idempotency, and the one case that is not idempotent
 
 Spec FR-004: registration is idempotent per network/key. Looking up `(net, fingerprint)` gives that
 directly. The interesting case the spec does not name is a *revoked* monitor: a re-registration of
 a revoked key would otherwise silently resurrect it and defeat the revocation.
+
+**Two registrations racing each other.** `register` loads the existing row `FOR UPDATE`, but a row
+that does not exist yet cannot be locked, so two concurrent first-registrations of the same key
+would both reach the `INSERT` and one would fail on the unique index — making idempotency hold
+only when nobody registers twice at the same instant. The `INSERT` therefore carries
+`ON CONFLICT (net, fingerprint) WHERE fingerprint IS NOT NULL DO NOTHING`, and a conflict falls
+through to re-reading the winner. Under `READ COMMITTED` that re-read always finds it, because
+`DO NOTHING` returning no row means a committed row holds the key and each statement takes a fresh
+snapshot; the impossible branch throws loudly rather than returning `undefined`, in case a future
+isolation-level change invalidates the reasoning.
 
 This change **refuses** registration when the `(net, fingerprint)` match is `revoked`, with
 `MonitorRevokedError`; the operator deletes the monitor (which nulls the fingerprint) and may then
