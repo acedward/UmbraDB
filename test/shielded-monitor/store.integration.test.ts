@@ -153,6 +153,35 @@ describe("PgShieldedMonitorStore", () => {
       expect(monitor.sourceInstanceId).toBe("instance-7");
     });
 
+    /**
+     * Two registrations of the same key racing each other. The `SELECT … FOR UPDATE` in
+     * `register` cannot lock a row that does not exist yet, so without the `ON CONFLICT …
+     * DO NOTHING` + re-read path one of the two would fail on the unique index and idempotency
+     * (FR-004) would hold only when nobody registers twice at the same moment.
+     */
+    it("is idempotent even when two registrations race", async () => {
+      const key = await fixtureViewingKey(7);
+      const input = {
+        key,
+        net: "undeployed",
+        requestedStartHeight: 0n,
+        matchingRuleVersion: TEST_MATCHING_RULE,
+        ledgerBuild: TEST_LEDGER_BUILD,
+        actor: "test",
+      };
+      const results = await Promise.all([
+        store.register(input), store.register(input), store.register(input), store.register(input),
+      ]);
+      expect(new Set(results.map((m) => m.id)).size).toBe(1);
+
+      const rows = await sql<{ count: string }[]>`
+        SELECT count(*)::text AS count FROM ${sql(schema)}.monitors WHERE id = ${results[0]!.id}
+      `;
+      expect(rows[0]!.count).toBe("1");
+      // Exactly one `register` lifecycle event, not one per racing caller.
+      expect((await store.listLifecycleEvents(results[0]!.id)).map((e) => e.event)).toStrictEqual(["register"]);
+    });
+
     it("refuses re-registration of a revoked key (Q11) but allows it after a delete", async () => {
       const key = await fixtureViewingKey(6);
       const input = {
@@ -238,6 +267,31 @@ describe("PgShieldedMonitorStore", () => {
       await store.advance(id, epoch, 4n, [association(4n, 0)]);
       const rows = await store.readAssociations(id, 0n, 100);
       expect(rows.map((r) => r.seq)).toStrictEqual([1n, 2n, 3n, 4n]);
+    });
+
+    /**
+     * `seq` is the Phase-4 cursor, and organizer spec FR-019 requires matches in
+     * `(blockHeight, position)` order. The store sorts the batch before allocating sequence
+     * numbers so the two orders cannot diverge — if it trusted the caller's array order instead,
+     * an unsorted batch would produce a cursor whose page boundaries skip or repeat a match.
+     */
+    it("assigns sequence numbers in (blockHeight, position) order whatever order the caller passes", async () => {
+      const { id, epoch } = await registerFixture(store, seedCounter);
+      await store.advance(id, epoch, 9n, [
+        association(9n, 2),
+        association(7n, 5),
+        association(9n, 0),
+        association(7n, 1),
+        association(8n, 0),
+      ]);
+      const rows = await store.readAssociations(id, 0n, 100);
+      expect(rows.map((r) => [r.seq, r.blockHeight, r.position])).toStrictEqual([
+        [1n, 7n, 1],
+        [2n, 7n, 5],
+        [3n, 8n, 0],
+        [4n, 9n, 0],
+        [5n, 9n, 2],
+      ]);
     });
 
     it("pages by sequence and caps the page size", async () => {

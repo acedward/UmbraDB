@@ -357,6 +357,12 @@ export class PgShieldedMonitorStore {
         }
 
         const id = randomUUID();
+        // `ON CONFLICT … DO NOTHING … RETURNING` returns no row when a concurrent transaction
+        // inserted the same `(net, fingerprint)` between the SELECT above and this INSERT — the
+        // `FOR UPDATE` there cannot lock a row that does not exist yet, so the race is real
+        // however narrow. Treating it as an error would make idempotent registration (FR-004)
+        // hold only when nobody registers twice at once; instead the caller falls through to
+        // re-reading the winner below, which is what idempotency actually means.
         const inserted = await tx<MonitorRow[]>`
           INSERT INTO ${tx(this.schema)}.monitors (
             id, net, fingerprint, key_serialized, state, epoch, last_assoc_seq,
@@ -368,9 +374,28 @@ export class PgShieldedMonitorStore {
             ${validated.sourceInstanceId ?? null},
             ${validated.matchingRuleVersion}, ${validated.ledgerBuild}
           )
+          ON CONFLICT (net, fingerprint) WHERE fingerprint IS NOT NULL DO NOTHING
           RETURNING *
         `;
-        const row = inserted[0]!;
+        const row = inserted[0];
+        if (row === undefined) {
+          const winner = await tx<MonitorRow[]>`
+            SELECT * FROM ${tx(this.schema)}.monitors
+             WHERE net = ${validated.net} AND fingerprint = ${fingerprint}
+          `;
+          const raced = winner[0];
+          if (raced === undefined) {
+            // Unreachable under READ COMMITTED: `ON CONFLICT DO NOTHING` returning no row means
+            // a committed row holds that key, and each statement in this transaction takes a
+            // fresh snapshot, so the SELECT above sees it. Kept as a loud failure rather than a
+            // silent `undefined` in case a future isolation-level change invalidates that.
+            throw new Error(
+              "PgShieldedMonitorStore.register: the insert conflicted but no monitor holds that identity",
+            );
+          }
+          if (raced.state === "revoked") throw new MonitorRevokedError(raced.id);
+          return toRecord(raced);
+        }
         await this.appendLifecycleEvent(tx, id, "register", undefined, INITIAL_STATE, 0n, validated.actor);
         return toRecord(row);
       });
@@ -567,7 +592,16 @@ export class PgShieldedMonitorStore {
     parse(z.bigint().nonnegative(), epoch, "PgShieldedMonitorStore.advance");
     parse(HeightSchema, throughHeight, "PgShieldedMonitorStore.advance");
     if (opts.fromHeight !== undefined) parse(HeightSchema, opts.fromHeight, "PgShieldedMonitorStore.advance");
-    const rows = associations.map((a) => parse(AssociationInputSchema, a, "PgShieldedMonitorStore.advance"));
+    // Sorted by (blockHeight, position) before sequence numbers are allocated, so `seq` order and
+    // commit order ARE `(blockHeight, position)` order — structurally, not by trusting the caller
+    // to pass a sorted batch. Organizer spec FR-019 requires matches to be returned in that
+    // order with a stable cursor, and the cursor is `seq`; if the two could disagree, a page
+    // boundary could skip or repeat a match for a caller whose batch happened to be unsorted.
+    const rows = associations
+      .map((a) => parse(AssociationInputSchema, a, "PgShieldedMonitorStore.advance"))
+      .sort((a, b) => (a.blockHeight === b.blockHeight
+        ? a.position - b.position
+        : a.blockHeight < b.blockHeight ? -1 : 1));
     for (const a of rows) {
       if (a.blockHeight > throughHeight) {
         throw new ValidationError(
