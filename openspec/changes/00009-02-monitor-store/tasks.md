@@ -166,4 +166,12 @@ constant, mixed-case rejection, 512-character bound.
 - Re-run `graphify update .` and commit the refreshed `graphify-out/` (project `CLAUDE.md`
   close-out rule) — **if and only if** the `graphify` CLI is available in the execution
   environment; if it is not, record that in the PR description rather than committing a stale or
-  partially-regenerated graph.
+  partially-regenerated graph. **Status: NOT DONE — `graphify` is not installed in the environment
+  this branch was built in (`which graphify` → not found). Carried into the PR description as an
+  explicit outstanding item, not silently skipped.**
+- Two CI gates could not be reproduced locally and are therefore stated as unverified rather than
+  as passing: `gitleaks detect` (the binary is not installed here; the diff was hand-audited
+  against `.gitleaks.toml`'s `umbradb-wallet-seed-hex` rule and gitleaks' default
+  `generic-api-key` shape, and the one literal that read as a credential — a test role's password
+  — was replaced with a per-run `randomUUID()`), and the Compose-based
+  `chain-archive-parity` / live-service jobs (owner-gated, unrelated to this change's surface).
