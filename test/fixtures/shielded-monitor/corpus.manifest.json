@@ -1,0 +1,116 @@
+{
+  "$note": "SC-001's oracle. This file DECLARES what the fixture corpus contains and which viewing key each transaction is relevant to; test/fixtures/shielded-monitor/build-corpus.ts SYNTHESIZES the matching bytes with the vendored ledger v8 WASM, and the tests compare the scanner's output against the `expected` fields here. The manifest is the authority: a test that recomputed the expectation from the same code that produced the bytes would prove nothing.",
+  "$why-not-committed-bytes": "The transactions are built at test time rather than committed as blobs because the ledger's output ciphertexts carry fresh randomness on every construction (verified: two ZswapOffer.fromOutput calls over an identical CoinInfo serialize to different bytes). Committed bytes would therefore be one arbitrary sample presented as canonical, and a manifest keyed by their hashes would be unreproducible. The SHAPE is what is fixed here; the bytes are real ledger output built from it.",
+  "$seeds-are-test-only": "`seed` values below are inputs to ZswapSecretKeys.fromSeed inside the test process. They are not keys, nothing derived from them is used on any network, and they must never be reused as real key material.",
+  "net": "undeployed",
+  "ledgerNetworkId": "undeployed",
+  "protocolVersion": 1000000,
+  "keys": [
+    { "id": "K", "seed": 7, "role": "the registered monitor's key: every positive is encrypted to it" },
+    { "id": "Kprime", "seed": 9, "role": "the negative key: a second real wallet whose transactions must never match K" },
+    { "id": "Kthird", "seed": 11, "role": "a third party, so a zero-match block contains a REAL transaction rather than nothing" }
+  ],
+  "blocks": [
+    { "height": 0, "note": "genesis: empty, and the block getArchiveIdentity reads its genesisHash from" },
+    { "height": 1, "note": "one positive and one negative, side by side at two positions" },
+    { "height": 2, "note": "a zero-match block that still advances coverage (US2 scenario 1)" },
+    { "height": 3, "note": "fallible-segment cases (US1 scenario 3)" },
+    { "height": 4, "note": "multi-output, invisible-output, system and offer-less transactions" },
+    { "height": 5, "note": "an empty block: no transactions at all, coverage still advances" }
+  ],
+  "transactions": [
+    {
+      "id": "h1p0-guaranteed-to-K",
+      "blockHeight": 1,
+      "position": 0,
+      "kind": "regular",
+      "shape": "standard",
+      "outputs": [{ "section": "guaranteed", "segment": 0, "to": "K", "nonce": "01" }],
+      "expected": { "K": [0], "Kprime": [], "Kthird": [] }
+    },
+    {
+      "id": "h1p1-guaranteed-to-Kprime",
+      "blockHeight": 1,
+      "position": 1,
+      "kind": "regular",
+      "shape": "standard",
+      "outputs": [{ "section": "guaranteed", "segment": 0, "to": "Kprime", "nonce": "02" }],
+      "expected": { "K": [], "Kprime": [0], "Kthird": [] }
+    },
+    {
+      "id": "h2p0-guaranteed-to-Kthird",
+      "blockHeight": 2,
+      "position": 0,
+      "kind": "regular",
+      "shape": "standard",
+      "outputs": [{ "section": "guaranteed", "segment": 0, "to": "Kthird", "nonce": "03" }],
+      "expected": { "K": [], "Kprime": [], "Kthird": [0] }
+    },
+    {
+      "id": "h3p0-fallible-segment-2-only-to-K",
+      "note": "US1 scenario 3: the ONLY matching output sits in a fallible segment. The association must name segment 2 and appliedOutcome must still be unknown.",
+      "blockHeight": 3,
+      "position": 0,
+      "kind": "regular",
+      "shape": "standard",
+      "outputs": [{ "section": "fallible", "segment": 2, "to": "K", "nonce": "04" }],
+      "expected": { "K": [2], "Kprime": [], "Kthird": [] }
+    },
+    {
+      "id": "h3p1-guaranteed-Kprime-fallible-1-K",
+      "note": "Two wallets in one transaction: each must see only its own segment.",
+      "blockHeight": 3,
+      "position": 1,
+      "kind": "regular",
+      "shape": "standard",
+      "outputs": [
+        { "section": "guaranteed", "segment": 0, "to": "Kprime", "nonce": "05" },
+        { "section": "fallible", "segment": 1, "to": "K", "nonce": "06" }
+      ],
+      "expected": { "K": [1], "Kprime": [0], "Kthird": [] }
+    },
+    {
+      "id": "h4p0-two-matching-outputs-one-association",
+      "note": "FR-008: several matching outputs in one transaction yield ONE association, not one per output.",
+      "blockHeight": 4,
+      "position": 0,
+      "kind": "regular",
+      "shape": "standard",
+      "outputs": [
+        { "section": "guaranteed", "segment": 0, "to": "K", "nonce": "07" },
+        { "section": "guaranteed", "segment": 0, "to": "K", "nonce": "08" }
+      ],
+      "expected": { "K": [0], "Kprime": [], "Kthird": [] }
+    },
+    {
+      "id": "h4p1-contract-owned-output-invisible",
+      "note": "Documented false-negative class: a contract-owned output carries no ciphertext for a user key, so NO viewing key can match it.",
+      "blockHeight": 4,
+      "position": 1,
+      "kind": "regular",
+      "shape": "contract-owned",
+      "outputs": [],
+      "expected": { "K": [], "Kprime": [], "Kthird": [] }
+    },
+    {
+      "id": "h4p2-system-transaction",
+      "note": "Never relevant, and never even deserialized: the scanner skips on `kind` (FR-006).",
+      "blockHeight": 4,
+      "position": 2,
+      "kind": "system",
+      "shape": "system-opaque",
+      "outputs": [],
+      "expected": { "K": [], "Kprime": [], "Kthird": [] }
+    },
+    {
+      "id": "h4p3-standard-transaction-with-no-offers",
+      "note": "The archivable stand-in for a reward-claim: a standard transaction carrying no zswap offer at all. Nothing can be encrypted to a key in it, so the predicate is vacuously false. (A real ClaimRewards transaction cannot be synthesized in archived form here -- see the fixture builder's own note.)",
+      "blockHeight": 4,
+      "position": 3,
+      "kind": "regular",
+      "shape": "no-offers",
+      "outputs": [],
+      "expected": { "K": [], "Kprime": [], "Kthird": [] }
+    }
+  ]
+}
