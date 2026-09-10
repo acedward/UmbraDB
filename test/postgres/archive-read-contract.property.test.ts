@@ -311,6 +311,34 @@ describe("PgArchiveReadContract: whole-block paging equals the canonical read pa
     }
   }, 180_000);
 
+  it("P-ARC-10: a block with hundreds of transactions is one WHOLE page, never a split one (US7 scenario 4)", async () => {
+    // The scenario the spec calls out by name. The property test's generated blocks are small
+    // (they exist to explore SHAPES cheaply), so the "large block" case is pinned deterministically
+    // here rather than left to a generator that would rarely produce it.
+    const net = `p_arc_big_${netCounter++}`;
+    const big = 240;
+    await writeArchive(net, [
+      { txHashes: [1] },
+      // Hash seeds repeat every 40, so this block also carries six copies of each hash at
+      // different positions -- the position-keyed identity migration 002 exists for.
+      { txHashes: Array.from({ length: big }, (_, i) => (i % 40) + 1) },
+      { txHashes: [] },
+    ]);
+
+    // A page size of 10 BLOCKS must not become a page size of 10 transactions.
+    const first = await reader.readBlocksSince(net, -1, 10);
+    expect(first.blocks.map((b) => b.height)).toEqual([0, 1, 2]);
+    expect(first.blocks[1]!.transactions).toHaveLength(big);
+    expect(first.blocks[1]!.transactions.map((t) => t.position))
+      .toEqual(Array.from({ length: big }, (_, i) => i));
+
+    // And with a page size of ONE block, the big block still arrives whole in its own page.
+    const alone = await reader.readBlocksSince(net, 0, 1);
+    expect(alone.blocks).toHaveLength(1);
+    expect(alone.blocks[0]!.transactions).toHaveLength(big);
+    expect(normalize(alone.blocks)).toEqual(normalize([first.blocks[1]!]));
+  }, 180_000);
+
   it("P-ARC-9: a corrupted raw payload is refused on read rather than returned", async () => {
     const net = `p_arc_integrity_${netCounter++}`;
     await writeArchive(net, [{ txHashes: [7] }]);
