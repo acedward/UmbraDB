@@ -749,6 +749,15 @@ export class ChainArchiveSyncService {
     // Audit A2: replay gates the write. A block the reference would refuse must not be archived,
     // and that verdict comes from actually applying the transactions -- so this runs BEFORE
     // putBlockBundle, like every other refusal condition here.
+    // Decoded BEFORE replay advances, deliberately. Everything between `replayBlockIfEnabled`
+    // and the write below runs with the in-memory replay engine one block ahead of anything
+    // durable, and an exception thrown in that window that does NOT pass through the catch
+    // below leaves it there -- which is the T3 wedge ("replay is at N but this block is N",
+    // forever). A decode that can throw therefore belongs on this side of the line, where a
+    // failure costs the block and nothing else.
+    const blockTimestampMs = await this.decodeBlockTimestampIfMetadataIsAvailable(
+      blockHash, block.extrinsics, nodeProtocolVersion,
+    );
     await this.replayBlockIfEnabled(
       height, blockHash, header, transactions, block.extrinsics, nodeProtocolVersion ?? 0,
     );
@@ -760,9 +769,7 @@ export class ChainArchiveSyncService {
       net: this.net,
       blockHash,
       height,
-      timestampMs: await this.decodeBlockTimestampIfMetadataIsAvailable(
-        blockHash, block.extrinsics, nodeProtocolVersion,
-      ),
+      timestampMs: blockTimestampMs,
       parentHash: hexNoPrefix(header.parentHash),
       // Substrate genesis's parentHash is all-zero (32 zero bytes) -- 000...0 (32 bytes = 64
       // hex chars), which already satisfies the schema's `CHECK (octet_length(parent_hash)
