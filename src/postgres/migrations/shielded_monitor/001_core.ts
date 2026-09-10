@@ -84,11 +84,16 @@ export async function up(sql: ISql, schema: string): Promise<void> {
         scanned_through_height IS NULL
         OR (scanned_from_height IS NOT NULL AND scanned_from_height <= scanned_through_height)
       ),
-      -- Only a deleted monitor may have shed its key and fingerprint. Enforcing it here means a
-      -- bug that nulls a live monitor's key surfaces as a constraint violation rather than as a
-      -- monitor that silently stops matching.
+      -- A deleted monitor has shed BOTH its key and its fingerprint; every other monitor has
+      -- BOTH. Written as a CASE rather than an equality between two booleans: the equality form
+      -- accepts the half-shredded rows (key gone, fingerprint kept) that are exactly the bug
+      -- worth catching — a monitor that silently stops matching while still occupying its key's
+      -- registration identity.
       CONSTRAINT monitors_deleted_is_shredded CHECK (
-        (state = 'deleted') = (key_serialized IS NULL AND fingerprint IS NULL)
+        CASE WHEN state = 'deleted'
+             THEN key_serialized IS NULL AND fingerprint IS NULL
+             ELSE key_serialized IS NOT NULL AND fingerprint IS NOT NULL
+        END
       )
     )
   `;
@@ -125,6 +130,28 @@ export async function up(sql: ISql, schema: string): Promise<void> {
   // identity supplied by project A through the read contract, and B is not the place to encode an
   // assumption about A's hash width.
   // -----------------------------------------------------------------------------------------
+  // A CHECK constraint may not contain a subquery ("cannot use subquery in check constraint",
+  // SQLSTATE 0A000 — confirmed empirically against PostgreSQL 17 while writing this migration),
+  // and "every element of this array is non-negative" has no subquery-free spelling. An
+  // IMMUTABLE SQL helper is the standard way out and matches this repository's existing practice
+  // of putting constraint logic in a schema-local function (`chain_archive_assert_blob_role` in
+  // the Tier-1.5 lineage). `pg_dump` emits functions before tables, so a dump/restore of this
+  // schema reproduces the constraint — asserted, not assumed, by
+  // `test/shielded-monitor/restore-drill.integration.test.ts`, which performs a real
+  // `pg_dump`/`psql` round trip.
+  await sql`
+    CREATE FUNCTION ${sql(schema)}.shielded_monitor_valid_segments(segs smallint[])
+    RETURNS boolean LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $fn$
+      -- COALESCE matters: for an EMPTY array both array_ndims and array_length return NULL, so
+      -- the bare comparisons would evaluate to NULL, and a CHECK passes on NULL. Confirmed
+      -- empirically: without the COALESCE, '{}'::smallint[] was accepted.
+      SELECT COALESCE(array_ndims(segs), 0) = 1
+         AND COALESCE(array_length(segs, 1), 0) >= 1
+         AND array_position(segs, NULL) IS NULL
+         AND NOT EXISTS (SELECT 1 FROM unnest(segs) AS s(v) WHERE s.v < 0)
+    $fn$
+  `;
+
   await sql`
     CREATE TABLE ${sql(schema)}.associations (
       monitor_id            uuid        NOT NULL REFERENCES ${sql(schema)}.monitors (id) ON DELETE CASCADE,
@@ -136,10 +163,7 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       tx_hash               bytea       NOT NULL CHECK (octet_length(tx_hash) BETWEEN 1 AND 64),
       protocol_version      bigint      NOT NULL CHECK (protocol_version >= 0),
       matched_segments      smallint[]  NOT NULL CHECK (
-                                          array_ndims(matched_segments) = 1
-                                          AND array_length(matched_segments, 1) >= 1
-                                          AND array_position(matched_segments, NULL) IS NULL
-                                          AND (SELECT bool_and(s >= 0) FROM unnest(matched_segments) AS s)
+                                          ${sql(schema)}.shielded_monitor_valid_segments(matched_segments)
                                         ),
       applied_outcome       text        NOT NULL DEFAULT 'unknown' CHECK (applied_outcome = 'unknown'),
       source_outcome        text        CHECK (source_outcome IS NULL OR octet_length(source_outcome) BETWEEN 1 AND 64),
