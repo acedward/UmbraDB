@@ -103,7 +103,8 @@ export function statusesFromReport(report: JsonReport): Map<string, string[]> {
  *  manifest's own rule (every non-live crash test whose skipping must fail the gate), and the
  *  set includes the suite's own negative control deliberately: a two-state result proven by
  *  assertions that cannot fail is worth nothing, so the control that shows the pre-fold shape
- *  DOES produce a partial height must not be skippable either. */
+ *  DOES produce a partial height must not be skippable either.
+ *
  *  29 -> 32 (merge of 00009-01 + 00009-02): 00009-02 added three `shielded-monitor.*` ids (fencing,
  *  schema isolation, restore) on its own branch (25 -> 28); the merged set is the UNION of both
  *  branches, never one side. */
