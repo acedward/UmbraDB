@@ -150,6 +150,31 @@ function ledger(): Promise<LedgerKeyApi> {
 }
 
 /**
+ * Zeroises and deallocates a validation handle. Both calls are best effort and neither may
+ * escape.
+ *
+ * `clear()` is the ledger's own zeroising call and `free()` is wasm-bindgen's deallocator; a
+ * failure in either is a runtime fault, not a property of the submitted key, and letting it out
+ * raw would put a ledger error — one that is free to quote its input — on the one path organizer
+ * spec FR-001 requires to produce exactly one generic error. Swallowing a failed `clear()` means
+ * in-memory key bytes might survive un-zeroised; under this alpha's trust model that is the
+ * lesser exposure by a wide margin, since the same key is about to be written to the database in
+ * plaintext (see `SECURITY.md`).
+ */
+function disposeQuietly(handle: { clear?(): void; free?(): void }): void {
+  try {
+    handle.clear?.();
+  } catch {
+    // best effort
+  }
+  try {
+    handle.free?.();
+  } catch {
+    // best effort
+  }
+}
+
+/**
  * Decodes, network-checks and ledger-validates a submitted viewing key.
  *
  * On success the returned {@link ShieldedViewingKey} holds the serialized bytes and the ledger
@@ -207,13 +232,16 @@ export async function parseViewingKey(encoded: unknown, net: string): Promise<Sh
   let canonical: Uint8Array;
   try {
     canonical = handle.yesIKnowTheSecurityImplicationsOfThis_serialize();
-  } finally {
-    try {
-      handle.clear?.();
-    } finally {
-      handle.free?.();
-    }
+  } catch {
+    // Unreachable by construction — the handle was produced by `deserialize` two lines above —
+    // but it is caught anyway, because the one thing this function must never do is let a raw
+    // ledger error out: FR-001 requires exactly one generic error, and a ledger error is free
+    // to quote the input that produced it.
+    disposeQuietly(handle);
+    throw new InvalidViewingKeyError("ledger-rejected");
   }
+  disposeQuietly(handle);
+
   if (canonical.length !== data.length || !canonical.every((b, i) => b === data[i])) {
     throw new InvalidViewingKeyError("non-canonical");
   }
