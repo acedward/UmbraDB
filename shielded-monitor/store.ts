@@ -689,6 +689,75 @@ export class PgShieldedMonitorStore {
     return { applied: false, reason: "already-advanced", coverage: toRecord(row).coverage } as const;
   }
 
+  /**
+   * Binds a monitor to the archive identity it is being scanned against (organizer spec FR-013),
+   * first-write-wins.
+   *
+   * Registration may leave `(source_genesis_hash, source_instance_id)` unset — the API that
+   * accepts a viewing key has no reason to hold an archive handle, and Phase 2 deliberately kept
+   * the store free of any compile-time dependency on the read contract. The scanner, which does
+   * hold one, binds the monitor the first time it works on it, and every later batch compares.
+   *
+   * **First-write-wins, never overwrite.** The `WHERE` clause requires both columns to be NULL,
+   * so a monitor already bound to archive X can never be silently re-bound to archive Y: that is
+   * precisely the history-mixing FR-013 exists to prevent, and it must surface as
+   * {@link PgShieldedMonitorStore.markStaleSource}, not as a quiet update. A caller that finds
+   * `applied: false` must re-read and compare.
+   *
+   * Fenced on `expectedEpoch` like every other worker write (FR-012), and restricted to
+   * scannable states so a paused or revoked monitor cannot be bound underneath its consumer.
+   *
+   * NOT part of the Rule B per-height transaction, and deliberately so: an identity binding is
+   * not a block height's data. Rule B constrains what must commit TOGETHER (a height's
+   * associations and its coverage advance); it does not forbid B from making other writes to its
+   * own schema.
+   */
+  async bindArchiveSource(
+    id: string,
+    expectedEpoch: bigint,
+    source: { readonly genesisHash: string; readonly instanceId: string },
+  ): Promise<{ readonly applied: boolean; readonly monitor: MonitorRecord }> {
+    parse(UuidSchema, id, "PgShieldedMonitorStore.bindArchiveSource");
+    parse(z.bigint().nonnegative(), expectedEpoch, "PgShieldedMonitorStore.bindArchiveSource");
+    parse(OpaqueIdentitySchema, source.genesisHash, "PgShieldedMonitorStore.bindArchiveSource");
+    parse(OpaqueIdentitySchema, source.instanceId, "PgShieldedMonitorStore.bindArchiveSource");
+    try {
+      return await this.sql.begin(async (tx) => {
+        const updated = await tx<MonitorRow[]>`
+          UPDATE ${tx(this.schema)}.monitors
+             SET source_genesis_hash = ${source.genesisHash},
+                 source_instance_id  = ${source.instanceId},
+                 updated_at          = now()
+           WHERE id = ${id}
+             AND epoch = ${expectedEpoch}
+             AND state IN ${tx(SCANNABLE_STATES as string[])}
+             AND source_genesis_hash IS NULL
+             AND source_instance_id IS NULL
+          RETURNING *
+        `;
+        const row = updated[0];
+        if (row !== undefined) return { applied: true, monitor: toRecord(row) };
+
+        const current = await tx<MonitorRow[]>`
+          SELECT * FROM ${tx(this.schema)}.monitors WHERE id = ${id} FOR SHARE
+        `;
+        const existing = current[0];
+        if (existing === undefined) throw new MonitorNotFoundError(id);
+        if (!(SCANNABLE_STATES as string[]).includes(existing.state)) {
+          throw new MonitorFencedError(id, "state", { epoch: existing.epoch, state: existing.state });
+        }
+        if (existing.epoch !== expectedEpoch) {
+          throw new MonitorFencedError(id, "epoch", { epoch: existing.epoch, state: existing.state });
+        }
+        // Already bound. Not an error: the caller compares and decides (bind matched → carry on;
+        // bind differs → `markStaleSource`).
+        return { applied: false, monitor: toRecord(existing) };
+      });
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
   // ── Lifecycle ──────────────────────────────────────────────────────────────────────────────
 
   /** `backfilling → live`: coverage has reached the archive tip. Fenced, because promoting a

@@ -1,0 +1,503 @@
+import type {
+  ArchiveReadContract,
+  ArchivedBlock,
+  ArchivedTransaction,
+} from "../src/interfaces/archive-read-contract.js";
+import { MonitorFencedError, MonitorNotFoundError, MonitorRevokedError } from "./errors.js";
+import { deserializeEncryptionSecretKey, LEDGER_BUILD_ID, MATCHING_RULE_VERSION } from "./offers.js";
+import { evaluateRelevance, isUnsupportedProtocolVersion } from "./relevance.js";
+import {
+  NOOP_SCANNER_METRICS,
+  type ScanBatchOutcomeLabel,
+  type ScannerMetrics,
+} from "./scanner-metrics.js";
+import type { AssociationInput, MonitorRecord, PgShieldedMonitorStore } from "./store.js";
+
+/**
+ * The relevance scanner: one batch of whole blocks, for one monitor, at a time
+ * (organizer spec FR-006..FR-014, owner Rule B).
+ *
+ * **The whole point of this file is the shape of one batch**, so it is worth stating before the
+ * code:
+ *
+ * ```text
+ *   read the archive identity ──► compare with the monitor's binding ──► stale? stop.
+ *   read ONE PAGE of WHOLE BLOCKS through the ArchiveReadContract (never SQL)
+ *   deserialize the viewing key                       ┐
+ *     for every regular transaction of every block:   │ key lives exactly this long
+ *       guaranteed offer, then every fallible segment │
+ *   clear() the key                                   ┘
+ *   ONE store.advance(...) ──► this batch's associations AND the coverage advance,
+ *                              one BEGIN…COMMIT, in shielded_monitor.* only, epoch-fenced
+ * ```
+ *
+ * Four properties are load-bearing and each is enforced structurally rather than by convention:
+ *
+ * 1. **No SQL against the archive (Rule B, FR-025).** This module's only archive-shaped
+ *    dependency is the {@link ArchiveReadContract} interface; it holds no archive schema name,
+ *    no `postgres` handle for the archive, and could be handed an RPC implementation without a
+ *    line changing. The import list is the proof.
+ * 2. **Whole blocks, one commit (Rule B, FR-010).** A batch is `SCAN_BATCH_BLOCKS` WHOLE blocks
+ *    (`readBlocksSince` never splits one), and everything it produces goes into a single
+ *    {@link PgShieldedMonitorStore.advance} call, which is one transaction. A block with no
+ *    matches still advances coverage — an empty association list is the normal shape, not a
+ *    reason to skip the commit, because "scanned and empty" must be distinguishable from "not
+ *    scanned" (FR-011).
+ * 3. **Fail closed (FR-007).** An unsupported protocol version or an undecodable transaction
+ *    stops the monitor at that position with a typed failure. It never advances coverage past a
+ *    transaction it could not read: the difference between "no match" and "could not look" is
+ *    invisible afterwards, and a monitor that recorded the range as scanned would never revisit
+ *    it.
+ * 4. **Key lifetime is one batch (FR-002's alpha posture, and plain hygiene).** The key is
+ *    deserialized inside {@link ShieldedMonitorScanner.scanBatch} and `clear()`ed in a `finally`
+ *    before the function returns. No handle is stored on the instance, so no handle can be
+ *    shared between monitors — including by a future refactor that adds caching without
+ *    thinking about it.
+ */
+
+/** How a batch ended. Every field a caller might act on is on the variant, so no caller has to
+ *  re-read the monitor to find out what happened. */
+export type ScanBatchResult =
+  | {
+      readonly kind: "advanced";
+      /** Coverage now stands here. */
+      readonly throughHeight: bigint;
+      readonly blocks: number;
+      /** Transactions handed to the predicate (system transactions are not). */
+      readonly transactionsScanned: number;
+      readonly matches: number;
+      /** Coverage reached the tip in this batch and the monitor was promoted to `live`. */
+      readonly wentLive: boolean;
+      readonly sourceTip?: bigint;
+    }
+  /** The batch had already been committed (crash-retry path, US5 scenario 2). */
+  | { readonly kind: "already-advanced"; readonly throughHeight: bigint }
+  /** Nothing to do: the monitor's coverage is at the archive tip (or the archive is empty, or
+   *  the requested start is above the tip). */
+  | { readonly kind: "at-tip"; readonly sourceTip?: bigint; readonly wentLive: boolean }
+  /** A lifecycle transition landed under the worker; the commit was refused (FR-012). */
+  | { readonly kind: "fenced"; readonly rejection: "epoch" | "state" }
+  /** The monitor was stopped fail-closed at a named position (FR-007). */
+  | {
+      readonly kind: "failed";
+      readonly code: string;
+      readonly atHeight?: bigint;
+      readonly atPosition?: number;
+    }
+  /** The archive is not the one this monitor was bound to (FR-013). */
+  | { readonly kind: "stale-source" };
+
+export interface ShieldedMonitorScannerOptions {
+  /** The one network this scanner serves (Q7: one network per deployment). */
+  readonly net: string;
+  /** Whole blocks per batch, and therefore per commit. Default 1 — the smallest unit Rule B
+   *  admits, and the one that makes a crash lose the least work. */
+  readonly batchBlocks?: number;
+  /** Recorded in lifecycle events and audit rows. Never a key, never a monitor id. */
+  readonly actor?: string;
+  readonly metrics?: ScannerMetrics;
+  /** Optional per-monitor throughput ceiling. After a batch that scanned N transactions the
+   *  worker sleeps long enough that its average stays at or below this rate. Off by default. */
+  readonly budgetTxPerSecond?: number;
+  /** Injectable for tests. */
+  readonly now?: () => number;
+  readonly sleep?: (ms: number) => Promise<void>;
+}
+
+const DEFAULT_BATCH_BLOCKS = 1;
+
+/**
+ * A transaction could not be evaluated, with the position it sat at.
+ *
+ * Exists so the fail-closed stop (FR-007) can record `atHeight`/`atPosition` in the monitor's
+ * `last_error`. The underlying ledger error is kept as `cause` and its message is what an
+ * operator reads; nothing here is derived from a viewing key.
+ */
+export class TransactionScanError extends Error {
+  readonly code = "TRANSACTION_SCAN_FAILED" as const;
+  constructor(
+    readonly atHeight: bigint,
+    readonly atPosition: number,
+    override readonly cause: unknown,
+  ) {
+    super(
+      `failed to evaluate the transaction at height ${atHeight}, position ${atPosition}: ` +
+        (cause instanceof Error ? cause.message : String(cause)),
+    );
+  }
+}
+
+const defaultSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => { setTimeout(resolve, ms); });
+
+/** Maps a result variant onto its metric label. Exhaustive by construction. */
+function outcomeLabel(result: ScanBatchResult): ScanBatchOutcomeLabel {
+  switch (result.kind) {
+    case "advanced": return "advanced";
+    case "already-advanced": return "already-advanced";
+    case "at-tip": return "at-tip";
+    case "fenced": return "fenced";
+    case "failed": return "failed";
+    case "stale-source": return "stale-source";
+  }
+}
+
+/** 32 lowercase hex characters → bytes. The archive speaks hex at the contract boundary; the
+ *  store speaks bytes. One conversion, in one place, so a caller cannot store a hex STRING into
+ *  a `bytea` column and have it silently work with the wrong length. */
+export function hexToBytes(hex: string): Uint8Array {
+  if (hex.length % 2 !== 0 || !/^[0-9a-f]*$/.test(hex)) {
+    throw new Error(`expected an even-length lowercase hex string, got ${JSON.stringify(hex)}`);
+  }
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+export class ShieldedMonitorScanner {
+  private readonly net: string;
+  private readonly batchBlocks: number;
+  private readonly actor: string;
+  private readonly metrics: ScannerMetrics;
+  private readonly budgetTxPerSecond?: number;
+  private readonly now: () => number;
+  private readonly sleep: (ms: number) => Promise<void>;
+
+  constructor(
+    private readonly archive: ArchiveReadContract,
+    private readonly store: PgShieldedMonitorStore,
+    options: ShieldedMonitorScannerOptions,
+  ) {
+    this.net = options.net;
+    this.batchBlocks = options.batchBlocks ?? DEFAULT_BATCH_BLOCKS;
+    if (!Number.isSafeInteger(this.batchBlocks) || this.batchBlocks < 1) {
+      throw new Error(`batchBlocks must be a positive integer; got ${String(options.batchBlocks)}`);
+    }
+    this.actor = options.actor ?? "shielded-monitor-scanner";
+    this.metrics = options.metrics ?? NOOP_SCANNER_METRICS;
+    if (options.budgetTxPerSecond !== undefined) this.budgetTxPerSecond = options.budgetTxPerSecond;
+    this.now = options.now ?? (() => Date.now());
+    this.sleep = options.sleep ?? defaultSleep;
+  }
+
+  /**
+   * Scan and commit ONE batch for ONE monitor.
+   *
+   * `monitor` is the worker's loaded view. Its `epoch` is the fence: every write this method
+   * makes carries it, so a pause, revoke or delete that lands after the load and before the
+   * commit refuses the commit rather than partially applying it (FR-012, US3 scenario 1).
+   */
+  async scanBatch(monitor: MonitorRecord): Promise<ScanBatchResult> {
+    const started = this.now();
+    const result = await this.scanBatchInner(monitor);
+    this.metrics.observeBatchDuration({ net: this.net }, outcomeLabel(result), this.now() - started);
+    if (result.kind === "advanced" && this.budgetTxPerSecond !== undefined && result.transactionsScanned > 0) {
+      const elapsedMs = this.now() - started;
+      const requiredMs = (result.transactionsScanned * 1000) / this.budgetTxPerSecond;
+      if (requiredMs > elapsedMs) await this.sleep(requiredMs - elapsedMs);
+    }
+    return result;
+  }
+
+  private async scanBatchInner(monitor: MonitorRecord): Promise<ScanBatchResult> {
+    if (monitor.net !== this.net) {
+      throw new Error(
+        `this scanner serves net ${JSON.stringify(this.net)} but was handed a monitor for ` +
+          `${JSON.stringify(monitor.net)}. One network per deployment (organizer spec Q7); ` +
+          "scanning a monitor against the wrong chain's archive would produce provenance that lies.",
+      );
+    }
+
+    // ── 1. Archive identity (FR-013) ────────────────────────────────────────────────────────
+    const binding = await this.checkArchiveIdentity(monitor);
+    if (binding === "stale") return { kind: "stale-source" };
+    if (binding === "fenced-epoch") return { kind: "fenced", rejection: "epoch" };
+    if (binding === "fenced-state") return { kind: "fenced", rejection: "state" };
+    if (binding === "archive-silent") return { kind: "at-tip", wentLive: false };
+
+    // ── 2. One page of WHOLE blocks, through the contract only ──────────────────────────────
+    const afterHeight = this.afterHeightFor(monitor);
+    const page = await this.archive.readBlocksSince(this.net, afterHeight, this.batchBlocks);
+    const sourceTip = page.sourceTip === undefined ? undefined : BigInt(page.sourceTip.height);
+    if (sourceTip !== undefined && monitor.coverage.scannedThrough !== undefined) {
+      const lag = sourceTip - monitor.coverage.scannedThrough;
+      this.metrics.observeLag({ net: this.net }, lag > 0n ? Number(lag) : 0);
+    }
+    if (page.blocks.length === 0) {
+      const wentLive = await this.promoteIfCaughtUp(monitor, sourceTip);
+      return sourceTip === undefined ? { kind: "at-tip", wentLive } : { kind: "at-tip", sourceTip, wentLive };
+    }
+
+    // ── 3. The predicate, with the key alive for exactly this long ──────────────────────────
+    let associations: AssociationInput[];
+    try {
+      associations = await this.matchPage(monitor, page.blocks);
+    } catch (err) {
+      return await this.failMonitor(monitor, err);
+    }
+
+    // ── 4. ONE commit: this batch's associations AND the coverage advance (Rule B) ──────────
+    const lastBlock = page.blocks[page.blocks.length - 1]!;
+    const throughHeight = BigInt(lastBlock.height);
+    const firstHeight = BigInt(page.blocks[0]!.height);
+    const transactionsScanned = page.blocks.reduce(
+      (n, block) => n + block.transactions.filter((tx) => tx.kind !== "system").length,
+      0,
+    );
+
+    let advanced;
+    try {
+      advanced = await this.store.advance(monitor.id, monitor.epoch, throughHeight, associations, {
+        // Only consulted on the very first advance. The archive's earliest retained height can
+        // legitimately be above the requested start; recording where coverage actually began
+        // keeps the gap visible instead of implying the missing range was scanned and empty.
+        fromHeight: monitor.coverage.scannedThrough === undefined
+          ? (firstHeight < monitor.coverage.requestedStart ? firstHeight : monitor.coverage.requestedStart)
+          : firstHeight,
+      });
+    } catch (err) {
+      if (err instanceof MonitorFencedError) return { kind: "fenced", rejection: err.rejection };
+      throw err;
+    }
+
+    if (!advanced.applied) return { kind: "already-advanced", throughHeight };
+
+    this.metrics.observeTransactionsScanned({ net: this.net }, transactionsScanned);
+    this.metrics.observeMatches({ net: this.net }, associations.length);
+    this.metrics.observeBlocksScanned({ net: this.net }, page.blocks.length);
+
+    const wentLive = await this.promoteIfCaughtUp(
+      { ...monitor, coverage: advanced.coverage }, sourceTip,
+    );
+    return {
+      kind: "advanced",
+      throughHeight,
+      blocks: page.blocks.length,
+      transactionsScanned,
+      matches: associations.length,
+      wentLive,
+      ...(sourceTip === undefined ? {} : { sourceTip }),
+    };
+  }
+
+  /**
+   * Run batches for one monitor until it reaches the tip, fails, is fenced, or `maxBatches` is
+   * exhausted. Re-reads the monitor between batches, so a lifecycle change is noticed at a batch
+   * boundary rather than only at the fence.
+   *
+   * This is the ONE ordered worker per monitor: it is sequential by construction, and the
+   * scheduler (`scanner-service.ts`) guarantees at most one of these runs per monitor at a time.
+   */
+  async scanToTip(
+    monitorId: string,
+    opts: { readonly maxBatches?: number } = {},
+  ): Promise<{ readonly batches: number; readonly last: ScanBatchResult }> {
+    const maxBatches = opts.maxBatches ?? Number.POSITIVE_INFINITY;
+    let batches = 0;
+    let last: ScanBatchResult = { kind: "at-tip", wentLive: false };
+    while (batches < maxBatches) {
+      let monitor: MonitorRecord | undefined;
+      try {
+        monitor = await this.store.get(monitorId);
+      } catch (err) {
+        if (err instanceof MonitorNotFoundError || err instanceof MonitorRevokedError) {
+          return { batches, last: { kind: "fenced", rejection: "state" } };
+        }
+        throw err;
+      }
+      if (monitor.state !== "backfilling" && monitor.state !== "live") {
+        return { batches, last: { kind: "fenced", rejection: "state" } };
+      }
+      last = await this.scanBatch(monitor);
+      batches += 1;
+      if (last.kind !== "advanced" && last.kind !== "already-advanced") break;
+      if (last.kind === "advanced" && last.sourceTip !== undefined && last.throughHeight >= last.sourceTip) break;
+    }
+    return { batches, last };
+  }
+
+  // ── Internals ───────────────────────────────────────────────────────────────────────────
+
+  /** `readBlocksSince` takes an EXCLUSIVE lower bound. A monitor that has scanned nothing yet
+   *  starts one below its requested start; `-1` means "from genesis". */
+  private afterHeightFor(monitor: MonitorRecord): number {
+    const from = monitor.coverage.scannedThrough ?? (monitor.coverage.requestedStart - 1n);
+    return from < -1n ? -1 : Number(from);
+  }
+
+  /**
+   * Compare the archive's identity with the monitor's binding; bind it on first use.
+   *
+   * Read afresh every batch rather than memoized: a memo would let the scanner commit a batch
+   * read from a REBUILT archive against the old binding for as long as the memo lived, which is
+   * exactly the history-mixing FR-013 exists to prevent. The cost is one small read-only
+   * transaction per batch, and `SCAN_BATCH_BLOCKS` amortizes it.
+   */
+  private async checkArchiveIdentity(
+    monitor: MonitorRecord,
+  ): Promise<"ok" | "stale" | "archive-silent" | "fenced-epoch" | "fenced-state"> {
+    const identity = await this.archive.getArchiveIdentity(this.net);
+    if (identity === undefined) {
+      // The archive cannot answer yet (schema bootstrapped but no genesis block, or not
+      // bootstrapped at all). Not a mismatch and not an error: there is simply nothing to scan.
+      return "archive-silent";
+    }
+    const boundInstance = monitor.sourceInstanceId;
+    const boundGenesis = monitor.sourceGenesisHash;
+    if (boundInstance === undefined || boundGenesis === undefined) {
+      try {
+        const bound = await this.store.bindArchiveSource(monitor.id, monitor.epoch, {
+          genesisHash: identity.genesisHash,
+          instanceId: identity.archiveInstanceId,
+        });
+        if (bound.applied) return "ok";
+        // Someone bound it first (or it was half-bound at registration). Fall through to the
+        // comparison below against what is actually stored.
+        return bound.monitor.sourceInstanceId === identity.archiveInstanceId &&
+          bound.monitor.sourceGenesisHash === identity.genesisHash
+          ? "ok"
+          : await this.markStale(monitor, identity.archiveInstanceId);
+      } catch (err) {
+        if (err instanceof MonitorFencedError) {
+          return err.rejection === "epoch" ? "fenced-epoch" : "fenced-state";
+        }
+        throw err;
+      }
+    }
+    if (boundInstance === identity.archiveInstanceId && boundGenesis === identity.genesisHash) return "ok";
+    return await this.markStale(monitor, identity.archiveInstanceId);
+  }
+
+  private async markStale(monitor: MonitorRecord, observedInstanceId: string): Promise<"stale" | "fenced-epoch" | "fenced-state"> {
+    try {
+      await this.store.markStaleSource(
+        monitor.id,
+        this.actor,
+        {
+          code: "ARCHIVE_IDENTITY_CHANGED",
+          // Carries the two instance ids and nothing derived from the key. An instance id is a
+          // random 128-bit label for a DATABASE, not for a wallet.
+          message:
+            `the archive serving net ${this.net} reports instance ${observedInstanceId}, but this ` +
+            `monitor's coverage was accumulated against instance ${monitor.sourceInstanceId ?? "(unbound)"}. ` +
+            "Stopping rather than mixing two histories.",
+        },
+        monitor.epoch,
+      );
+      return "stale";
+    } catch (err) {
+      if (err instanceof MonitorFencedError) return err.rejection === "epoch" ? "fenced-epoch" : "fenced-state";
+      throw err;
+    }
+  }
+
+  /**
+   * The predicate over one page, with the key deserialized here and `clear()`ed here.
+   *
+   * The handle is a local, never an instance field: two monitors scanned concurrently by the
+   * scheduler each get their own, and neither can observe the other's.
+   */
+  private async matchPage(
+    monitor: MonitorRecord, blocks: readonly ArchivedBlock[],
+  ): Promise<AssociationInput[]> {
+    const keyBytes = await this.store.getKeyMaterial(monitor.id);
+    const key = await deserializeEncryptionSecretKey(keyBytes);
+    const associations: AssociationInput[] = [];
+    try {
+      for (const block of blocks) {
+        for (const tx of block.transactions) {
+          let outcome;
+          try {
+            outcome = await evaluateRelevance(tx, key);
+          } catch (err) {
+            // Re-thrown with the POSITION attached, because "this monitor failed" is useless to
+            // an operator without "at which transaction" — and because FR-007's typed failure is
+            // required to name the position the monitor stopped at.
+            throw new TransactionScanError(BigInt(block.height), tx.position, err);
+          }
+          if (outcome.kind !== "match") continue;
+          associations.push(this.associationFor(block, tx, outcome.segments));
+        }
+      }
+    } finally {
+      // In a `finally`, so a throw partway through a page does not leave key material in the
+      // WASM heap until the process exits.
+      key.clear();
+      keyBytes.fill(0);
+    }
+    return associations;
+  }
+
+  /** One association per (monitor, transaction observation), naming every matched segment
+   *  (FR-008) and carrying FR-009 provenance. */
+  private associationFor(
+    block: ArchivedBlock, tx: ArchivedTransaction, segments: readonly number[],
+  ): AssociationInput {
+    return {
+      net: this.net,
+      blockHeight: BigInt(block.height),
+      blockHash: hexToBytes(block.hash),
+      position: tx.position,
+      txHash: hexToBytes(tx.txHash),
+      protocolVersion: BigInt(tx.protocolVersion),
+      matchedSegments: segments,
+      // `appliedOutcome` is fixed at "unknown" by the store; the archive's replay outcome is
+      // surfaced only as `sourceOutcome`, and only when the archive actually recorded one
+      // (FR-009). `undefined` here means "this archive recorded no outcome", NEVER "it failed".
+      ...(tx.result === undefined ? {} : { sourceOutcome: tx.result }),
+      matchingRuleVersion: MATCHING_RULE_VERSION,
+      ledgerBuild: LEDGER_BUILD_ID,
+    };
+  }
+
+  /** Turns a decode failure into the fail-closed stop FR-007 requires, keeping the position. */
+  private async failMonitor(monitor: MonitorRecord, err: unknown): Promise<ScanBatchResult> {
+    const located = err as { atHeight?: bigint; atPosition?: number; cause?: unknown };
+    const cause = located.cause ?? err;
+    const code = isUnsupportedProtocolVersion(cause)
+      ? "UNSUPPORTED_PROTOCOL_VERSION"
+      : "UNDECODABLE_TRANSACTION";
+    const detail: {
+      code: string; message: string; atHeight?: string; atPosition?: number;
+    } = {
+      code,
+      // The ledger's own message, which describes BYTES, never a key. Truncated because a WASM
+      // error can be long and `last_error` is read by an operator, not parsed.
+      message: (cause instanceof Error ? cause.message : String(cause)).slice(0, 500),
+    };
+    if (located.atHeight !== undefined) detail.atHeight = located.atHeight.toString();
+    if (located.atPosition !== undefined) detail.atPosition = located.atPosition;
+    try {
+      await this.store.markFailed(monitor.id, this.actor, detail, monitor.epoch);
+    } catch (markErr) {
+      if (markErr instanceof MonitorFencedError) {
+        return { kind: "fenced", rejection: markErr.rejection };
+      }
+      throw markErr;
+    }
+    return {
+      kind: "failed",
+      code,
+      ...(located.atHeight === undefined ? {} : { atHeight: located.atHeight }),
+      ...(located.atPosition === undefined ? {} : { atPosition: located.atPosition }),
+    };
+  }
+
+  /** `backfilling → live` once coverage has reached the tip the archive reported in the SAME
+   *  read as the page (FR-011: the two are one observation, so the promotion can never claim a
+   *  tip the scanner did not actually reach). */
+  private async promoteIfCaughtUp(monitor: MonitorRecord, sourceTip: bigint | undefined): Promise<boolean> {
+    if (monitor.state !== "backfilling") return false;
+    if (sourceTip === undefined) return false;
+    const through = monitor.coverage.scannedThrough;
+    if (through === undefined || through < sourceTip) return false;
+    try {
+      await this.store.goLive(monitor.id, monitor.epoch, this.actor);
+      return true;
+    } catch (err) {
+      // A pause or revoke landing here is not an error for the batch that already committed.
+      if (err instanceof MonitorFencedError) return false;
+      throw err;
+    }
+  }
+}
