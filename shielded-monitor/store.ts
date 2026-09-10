@@ -167,8 +167,17 @@ export interface RegisterMonitorInput {
   readonly actor: string;
 }
 
-/** The outcome of {@link PgShieldedMonitorStore.advance}. `applied: false` is the crash-retry
- *  path, not a failure — see the class doc and the design doc §6. */
+/**
+ * The outcome of {@link PgShieldedMonitorStore.advance}.
+ *
+ * `applied: false` is the crash-retry path, not a failure — see the class doc and the design doc
+ * §6.
+ *
+ * On `applied: true`, `firstSeq`..`lastSeq` is the **inclusive** range of association sequence
+ * numbers this batch wrote. A batch with no matches — the normal shape for a run of empty blocks
+ * — still applies, and reports the empty range `firstSeq = lastSeq + 1`: `lastSeq` is the
+ * monitor's counter, unchanged, and `firstSeq` is the next number that would be handed out.
+ */
 export type AdvanceResult =
   | {
       readonly applied: true;

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
@@ -29,7 +29,10 @@ import { TEST_LEDGER_BUILD, TEST_MATCHING_RULE, association, fixtureViewingKey }
 const ARCHIVE_SCHEMA = "chain_archive";
 const MONITOR_SCHEMA = "shielded_monitor";
 const B_ROLE = "umbradb_b_writer";
-const B_PASSWORD = "b-writer-test-password";
+/** Generated per run rather than written as a literal: a committed string that reads as a
+ *  credential is exactly what the repository's `gitleaks` gate exists to refuse, and there is no
+ *  reason for this one to be a constant — the role lives and dies with the container. */
+const B_PASSWORD = randomUUID();
 
 describe("project B writes only its own schema (owner Rule B)", () => {
   let container: StartedPostgreSqlContainer;
