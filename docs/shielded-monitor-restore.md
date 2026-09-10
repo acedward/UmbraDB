@@ -198,9 +198,18 @@ SELECT monitor_id FROM shielded_monitor.associations
  GROUP BY monitor_id
 HAVING max(seq) <> count(*) OR min(seq) <> 1;
 
--- 4. No monitor is half-shredded. Expect zero rows.
+-- 4. No monitor is half-shredded: a deleted monitor has neither key nor fingerprint, every
+--    other monitor has both. Expect zero rows.
+--
+--    Written as a CASE for the same reason the schema constraint is: the shorter
+--    `(state = 'deleted') <> (key_serialized IS NULL AND fingerprint IS NULL)` MISSES the
+--    half-shredded row (key gone, fingerprint kept) that this check exists to find — both sides
+--    evaluate false and the row looks fine.
 SELECT id FROM shielded_monitor.monitors
- WHERE (state = 'deleted') <> (key_serialized IS NULL AND fingerprint IS NULL);
+ WHERE NOT (CASE WHEN state = 'deleted'
+                 THEN key_serialized IS NULL AND fingerprint IS NULL
+                 ELSE key_serialized IS NOT NULL AND fingerprint IS NOT NULL
+            END);
 ```
 
 Then confirm the fence is intact by checking that a revoked monitor refuses a read:
