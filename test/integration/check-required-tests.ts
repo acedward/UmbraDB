@@ -118,8 +118,17 @@ export function statusesFromReport(report: JsonReport): Map<string, string[]> {
  *  not be skippable either.
  *
  *  39 -> 42 (merge of all four 00009 branches: 01+02 -> 32, 03 -> 39, 04 adds three API/client ids
- *  on top of 02's 28): the pinned set is the UNION of every branch's ids, never one side. */
-export const EXPECTED_REQUIRED_COUNT = 42;
+ *  on top of 02's 28): the pinned set is the UNION of every branch's ids, never one side.
+ *
+ *  42 -> 45 (00009-06): three ids for the OPERATOR surface. `…api.list-includes-revoked-excludes-deleted`
+ *  pins the one deliberate asymmetry the list route introduces (a revoked monitor is listed even
+ *  though its own reads answer 410; a deleted one never is) — both halves fail silently if broken,
+ *  which is exactly what the required set is for. `…ui.self-contained-no-external-resources` turns
+ *  "the dashboard adds no runtime dependency and loads nothing from the network" from a review
+ *  habit into an assertion with a positive control. `…derive-key.matches-the-service-encoding`
+ *  pins the derive command's output to the repository's own key-encoding path, so the command and
+ *  the service's intake cannot drift apart without a red gate. */
+export const EXPECTED_REQUIRED_COUNT = 45;
 
 /** The pinned count of `deferred` (WHERE-gated optional-feature) tests (BLOCK 6). Structurally PINS
  *  the deferred exemption set so deleting the sole deferred entry (a green "0 deferred" gate) fails the

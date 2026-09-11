@@ -288,6 +288,146 @@ describe("shielded-monitor private API", () => {
     });
   });
 
+  // ── The list (00009-06) ────────────────────────────────────────────────────────────────────
+
+  describe("GET /v1/monitors", () => {
+    /** The list, as a map from id to item, so a case can assert about ITS OWN monitors without
+     *  caring which other suites' monitors share this container. */
+    async function listed(query = ""): Promise<{
+      status: number;
+      body: Record<string, unknown>;
+      byId: Map<string, Record<string, unknown>>;
+    }> {
+      const response = await call("GET", `/v1/monitors${query}`);
+      const items = (response.json.items ?? []) as Array<Record<string, unknown>>;
+      return {
+        status: response.status,
+        body: response.json,
+        byId: new Map(items.map((item) => [item.monitorId as string, item])),
+      };
+    }
+
+    it("returns every monitor in the same view shape as the single-monitor route", async () => {
+      const id = await register(150);
+      const list = await listed();
+      expect(list.status).toBe(200);
+
+      const fromList = list.byId.get(id);
+      expect(fromList, "the monitor just registered must be listed").toBeDefined();
+      const single = await call("GET", `/v1/monitors/${id}`);
+      // Byte-for-byte the same object. Not "the same fields" — the SAME builder, which is what
+      // keeps the dashboard's table and its detail view from drifting apart.
+      expect(fromList).toEqual(single.json);
+    });
+
+    it("carries the deployment's own sourceTip and net at the top level", async () => {
+      reportedTip = 4242n;
+      try {
+        const list = await listed();
+        expect(list.body.sourceTip).toBe("4242");
+        expect(list.body.net).toBe("undeployed");
+      } finally {
+        reportedTip = undefined;
+      }
+      // `null`, never 0, when the tip is unobservable (Q14) — so an operator watching an empty
+      // deployment cannot read "unknown" as "caught up".
+      expect((await listed()).body.sourceTip).toBeNull();
+    });
+
+    it("orders by creation time, oldest first", async () => {
+      // Registered in a known order, in one suite run; the assertion is on the relative positions
+      // of these three, not on the absolute list, because the container is shared.
+      const ids = [await register(151), await register(152), await register(153)];
+      // `limit=50` is this suite's configured cap (`API_MAX_PAGE: "50"`); asking for more is a
+      // 400 by design, which the page-size cases below assert.
+      const response = await call("GET", "/v1/monitors?limit=50");
+      expect(response.status, response.text).toBe(200);
+      const order = (response.json.items as Array<Record<string, unknown>>).map((i) => i.monitorId as string);
+      const positions = ids.map((id) => order.indexOf(id));
+      expect(positions.every((p) => p >= 0)).toBe(true);
+      expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    });
+
+    /**
+     * The list's membership contract, stated as one test because it is one decision with two
+     * halves (00009-06 design §2), and required because getting either half wrong is silent:
+     * hiding revoked monitors makes the dashboard's own revoke button orphan the delete that must
+     * follow it, and LISTING deleted ones breaks US3 scenario 4's "as if it never existed".
+     */
+    it("[[shielded-monitor.api.list-includes-revoked-excludes-deleted]] lists a revoked monitor whose own reads are refused, and never lists a deleted one", async () => {
+      const revoked = await register(154);
+      expect((await postJson(`/v1/monitors/${revoked}/revoke`, undefined)).status).toBe(200);
+
+      // 410 on the item routes: US3 scenario 3 — a revoked monitor's DATA is refused.
+      expect((await call("GET", `/v1/monitors/${revoked}`)).status).toBe(410);
+      expect((await call("GET", `/v1/monitors/${revoked}/matches`)).status).toBe(410);
+
+      // ...and yet it is listed, with its state, so an operator can see and then delete it.
+      const item = (await listed()).byId.get(revoked);
+      expect(item, "a revoked monitor must remain listed").toBeDefined();
+      expect(item!.state).toBe("revoked");
+
+      // The other half, which is not negotiable.
+      const deleted = await register(155);
+      expect((await listed()).byId.has(deleted), "non-vacuity: it was listed before the delete").toBe(true);
+      expect((await call("DELETE", `/v1/monitors/${deleted}`)).status).toBe(204);
+      expect(
+        (await listed()).byId.has(deleted),
+        "a deleted monitor must be indistinguishable from one that never existed",
+      ).toBe(false);
+
+      // And the revoked one is STILL there after the delete, so the two rules did not collapse
+      // into one another.
+      expect((await listed()).byId.has(revoked)).toBe(true);
+    });
+
+    it("shows paused and failed monitors, which is what an operator most needs to see", async () => {
+      const paused = await register(156);
+      await postJson(`/v1/monitors/${paused}/pause`, undefined);
+      const failed = await register(157);
+      await store.markFailed(failed, "test", { code: "UNSUPPORTED_PROTOCOL_VERSION", message: "test" });
+
+      const list = await listed();
+      expect(list.byId.get(paused)!.state).toBe("paused");
+      expect(list.byId.get(failed)!.state).toBe("failed");
+      expect((list.byId.get(failed)!.lastError as Record<string, unknown>).code).toBe("UNSUPPORTED_PROTOCOL_VERSION");
+    });
+
+    it("never carries a key or a fingerprint, over the raw response text", async () => {
+      const encoded = await fixtureViewingKeyEncoded(158);
+      await postJson("/v1/monitors", { viewingKey: encoded });
+      const response = await call("GET", "/v1/monitors?limit=50");
+      expect(response.status, response.text).toBe(200);
+      expect(response.text).not.toContain(encoded);
+      expect(response.text.toLowerCase()).not.toContain("fingerprint");
+      expect(response.text).not.toContain("viewingKey");
+    });
+
+    it.each([
+      ["zero", "?limit=0"],
+      ["above the cap", "?limit=51"],
+      ["not an integer", "?limit=ten"],
+    ])("refuses a page size that is %s", async (_name, query) => {
+      const refused = await call("GET", `/v1/monitors${query}`);
+      expect(refused.status).toBe(400);
+      expect((refused.json.error as Record<string, unknown>).code).toBe("VALIDATION_FAILED");
+    });
+
+    it("honours the page size it is given", async () => {
+      await register(159);
+      await register(160);
+      const page = await call("GET", "/v1/monitors?limit=1");
+      expect(page.status).toBe(200);
+      expect((page.json.items as unknown[]).length).toBe(1);
+    });
+
+    it("answers 405 for a verb the collection does not have", async () => {
+      const wrongVerb = await call("PUT", "/v1/monitors");
+      expect(wrongVerb.status).toBe(405);
+      expect(wrongVerb.headers.get("allow")?.split(", ").sort()).toEqual(["GET", "POST"]);
+    });
+  });
+
   // ── Coverage (FR-011, FR-020, US2 scenario 3) ──────────────────────────────────────────────
 
   describe("coverage", () => {
@@ -618,12 +758,27 @@ describe("shielded-monitor private API", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ viewingKey: encoded, unexpected: true }),
       }); // schema failure with the key present in the body
+
+      // 00009-06: the DASHBOARD's own request shape. The page adds an `accept` header and is the
+      // one caller a human drives, so the corpus must contain a registration issued exactly the
+      // way the page issues it — otherwise this gate would keep passing while the route a browser
+      // uses logged something the `curl` route does not.
+      await call("POST", "/v1/monitors", {
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ viewingKey: encoded, startHeight: "earliest" }),
+      });
+      await call("GET", "/v1/monitors?limit=50");      // the list the page polls every 3 s
+      await call("GET", "/ui");                        // and the page itself
       await postJson(`/v1/monitors/${id}/pause`, undefined);
       await postJson(`/v1/monitors/${id}/revoke`, undefined);
       await call("DELETE", `/v1/monitors/${id}`);
 
       const logText = logRecords.map((r) => JSON.stringify(r));
       expect(findLeaks(logText, needles)).toEqual([]);
+      // `responseBodies` already carries the served dashboard, because `call` records every
+      // response body including the HTML one. Named explicitly so the coverage is deliberate:
+      // a page that rendered a submitted key back into the document would be caught here.
+      expect(responseBodies.some((body) => body.includes("<!doctype html>"))).toBe(true);
       expect(findLeaks(responseBodies, needles)).toEqual([]);
 
       // POSITIVE CONTROL (SC-004 requires one): the same scan, over a haystack that really does

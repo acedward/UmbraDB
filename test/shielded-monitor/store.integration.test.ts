@@ -599,6 +599,88 @@ describe("PgShieldedMonitorStore", () => {
     });
   });
 
+  // ── listAll: the operator read (00009-06) ─────────────────────────────────────────────────
+
+  describe("listAll", () => {
+    /** Its own schema, so the ordering and membership assertions below are about exactly the
+     *  monitors this block registers and nothing another block left behind. */
+    async function ownSchema() {
+      const schemaName = uniqueSchema("sm_listall");
+      const { sql: ownSql, store: ownStore } = await freshStore(container, schemaName);
+      return { sql: ownSql, store: ownStore };
+    }
+
+    it("returns every non-deleted monitor, in creation order, whatever its state", async () => {
+      const { sql: ownSql, store: ownStore } = await ownSchema();
+      try {
+        const live = await registerFixture(ownStore, 9001);
+        const paused = await registerFixture(ownStore, 9002);
+        const failed = await registerFixture(ownStore, 9003);
+        const revoked = await registerFixture(ownStore, 9004);
+        const deleted = await registerFixture(ownStore, 9005);
+
+        await ownStore.goLive(live.id, live.epoch, "op");
+        await ownStore.pause(paused.id, "op");
+        await ownStore.markFailed(failed.id, "op", { code: "UNSUPPORTED_PROTOCOL_VERSION", message: "x" });
+        await ownStore.revoke(revoked.id, "op");
+        await ownStore.delete(deleted.id, "op");
+
+        const all = await ownStore.listAll();
+        // Order is registration order, which is what an operator's list must be: it does not
+        // reshuffle when a monitor changes state under them.
+        expect(all.map((m) => m.id)).toStrictEqual([live.id, paused.id, failed.id, revoked.id]);
+        expect(all.map((m) => m.state)).toStrictEqual(["live", "paused", "failed", "revoked"]);
+
+        // `listActive` answers a DIFFERENT question and still does: only the scannable two.
+        expect((await ownStore.listActive()).map((m) => m.id)).toStrictEqual([live.id]);
+      } finally {
+        await ownSql.end({ timeout: 5 });
+      }
+    }, 120_000);
+
+    it("excludes a deleted monitor, which is the one exclusion that is not negotiable", async () => {
+      const { sql: ownSql, store: ownStore } = await ownSchema();
+      try {
+        const { id } = await registerFixture(ownStore, 9010);
+        expect((await ownStore.listAll()).map((m) => m.id)).toStrictEqual([id]);
+        await ownStore.delete(id, "op");
+        // US3 scenario 4: a deleted monitor must be indistinguishable from one that never was.
+        expect(await ownStore.listAll()).toStrictEqual([]);
+      } finally {
+        await ownSql.end({ timeout: 5 });
+      }
+    }, 120_000);
+
+    it("carries no key and no fingerprint, exactly as every other record read does", async () => {
+      const { sql: ownSql, store: ownStore } = await ownSchema();
+      try {
+        await registerFixture(ownStore, 9020);
+        const [record] = await ownStore.listAll();
+        expect(record).toBeDefined();
+        const serialized = JSON.stringify(record, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
+        expect(serialized.toLowerCase()).not.toContain("fingerprint");
+        expect(serialized.toLowerCase()).not.toContain("key_serialized");
+      } finally {
+        await ownSql.end({ timeout: 5 });
+      }
+    }, 120_000);
+
+    it("bounds the result and refuses an unusable limit", async () => {
+      const { sql: ownSql, store: ownStore } = await ownSchema();
+      try {
+        for (const seed of [9030, 9031, 9032]) await registerFixture(ownStore, seed);
+        expect(await ownStore.listAll(2)).toHaveLength(2);
+        expect(await ownStore.listAll(100)).toHaveLength(3);
+        await expect(ownStore.listAll(0)).rejects.toThrow(ValidationError);
+        await expect(ownStore.listAll(-1)).rejects.toThrow(ValidationError);
+        await expect(ownStore.listAll(10_001)).rejects.toThrow(ValidationError);
+        await expect(ownStore.listAll(1.5)).rejects.toThrow(ValidationError);
+      } finally {
+        await ownSql.end({ timeout: 5 });
+      }
+    }, 120_000);
+  });
+
   // ── Idle behaviour (US6) ──────────────────────────────────────────────────────────────────
 
   describe("an empty schema is a healthy idle state (US6 scenario 2)", () => {
@@ -607,6 +689,7 @@ describe("PgShieldedMonitorStore", () => {
       try {
         expect(await store.listActive()).toStrictEqual([]);
         expect(await store.listRevocations()).toStrictEqual([]);
+        expect(await store.listAll()).toStrictEqual([]);
       } finally {
         await sql.end({ timeout: 5 });
       }

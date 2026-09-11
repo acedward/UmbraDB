@@ -1,6 +1,6 @@
 {
-  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 29 -- 25 from v1.0.0-recovery-testing plus the four 00009-01 archive per-height atomicity ids) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
-  "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` — those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early — that would re-open the exact self-skip hole this manifest closes.",
+  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md \u00a71.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 29 -- 25 from v1.0.0-recovery-testing plus the four 00009-01 archive per-height atomicity ids) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'. 42 -> 45 (00009-06): three ids for the operator surface \u2014 the list's revoked/deleted membership asymmetry, the dashboard's self-containment (no external resource, with a positive control), and the derive-key command agreeing byte-for-byte with the service's own key encoding.",
+  "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` \u2014 those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early \u2014 that would re-open the exact self-skip hole this manifest closes.",
   "required": [
     {
       "id": "crash-harness.smoke.spawn-sigkill-container-survives",
@@ -50,7 +50,7 @@
     {
       "id": "crash-harness.smoke.t5-full-flow-negative-control",
       "file": "test/integration/crash/crash-harness.smoke.test.ts",
-      "description": "0.2 (test-honesty): the SAME co-transactional data->cursor flow run to completion WITHOUT a kill lands BOTH data and cursor — the negative control proving the killed T5 runs' absences are caused by the crash, not by a missing op."
+      "description": "0.2 (test-honesty): the SAME co-transactional data->cursor flow run to completion WITHOUT a kill lands BOTH data and cursor \u2014 the negative control proving the killed T5 runs' absences are caused by the crash, not by a missing op."
     },
     {
       "id": "crash.process-kill-save.no-partial-checkpoint",
@@ -110,12 +110,12 @@
     {
       "id": "differential.fault-schedule.state-equivalent",
       "file": "test/postgres/differential-equivalence.test.ts",
-      "description": "Differential fault-schedule (Task 6.2, depends on G5): a SEEDED (reproducible, no Math.random) schedule mixing the G9 faults T1/T2/T5 across write batches, re-syncing from durable state after each fault, converges to a current state EQUAL (current-state predicate: full kv_current + full watermarks + latest complete checkpoint payload; excludes kv_history/version) to a fault-free in-repo reference run (a replay via UmbraDB's own adapters — NOT reference-merge.ts, which is transaction-history-merge only; no foreign consumer/indexer import, verified by an in-test import audit) of the same schedule. Mandatory negative control: a deliberately-broken variant that drops a committed range makes the equivalence assertion FIRE."
+      "description": "Differential fault-schedule (Task 6.2, depends on G5): a SEEDED (reproducible, no Math.random) schedule mixing the G9 faults T1/T2/T5 across write batches, re-syncing from durable state after each fault, converges to a current state EQUAL (current-state predicate: full kv_current + full watermarks + latest complete checkpoint payload; excludes kv_history/version) to a fault-free in-repo reference run (a replay via UmbraDB's own adapters \u2014 NOT reference-merge.ts, which is transaction-history-merge only; no foreign consumer/indexer import, verified by an in-test import audit) of the same schedule. Mandatory negative control: a deliberately-broken variant that drops a committed range makes the equivalence assertion FIRE."
     },
     {
       "id": "crash.saveAndAdvance.co-tx-atomic",
       "file": "test/integration/crash/saveandadvance-cotx.crash.test.ts",
-      "description": "Co-transactional G5 crash (change-level audit BLOCK 1): saveAndAdvance — the single-transaction save+cursor combinator — SIGKILLed BETWEEN its internal checkpoint-data write and its cursor write (both inside the ONE uncommitted tx, paused via a test-only query observer over saveAndAdvance's own sql, NO src change) leaves NEITHER the checkpoint NOR the watermark advance durable (all-or-nothing), and a fresh saveAndAdvance on the same key then lands seq 1 committing both; a no-kill co-tx-full-flow control lands BOTH. Crash-tests G5 atomicity DIRECTLY (the two-transaction T5 tests never crash saveAndAdvance itself)."
+      "description": "Co-transactional G5 crash (change-level audit BLOCK 1): saveAndAdvance \u2014 the single-transaction save+cursor combinator \u2014 SIGKILLed BETWEEN its internal checkpoint-data write and its cursor write (both inside the ONE uncommitted tx, paused via a test-only query observer over saveAndAdvance's own sql, NO src change) leaves NEITHER the checkpoint NOR the watermark advance durable (all-or-nothing), and a fresh saveAndAdvance on the same key then lands seq 1 committing both; a no-kill co-tx-full-flow control lands BOTH. Crash-tests G5 atomicity DIRECTLY (the two-transaction T5 tests never crash saveAndAdvance itself)."
     },
     {
       "id": "differential.fault-schedule.negative-control-fires",
@@ -211,6 +211,21 @@
       "id": "shielded-monitor.client.end-to-end-lifecycle",
       "file": "test/shielded-monitor/client-cli.integration.test.ts",
       "description": "00009-04 (organizer spec SC-008, US1-US3): the reference consumer CLI drives register -> status -> poll(empty) -> poll(matches) -> poll(idempotent resume) -> pause -> resume -> revoke -> delete against a REAL HTTP server on a loopback socket backed by Testcontainers PostgreSQL, asserting state, coverage and cursor-file stability at each step, and that no viewing key appears in anything the client printed. Matches are seeded through the store because Phase 3's scanner does not exist yet; the Compose run with a real shielded transaction is deferred to Phase 5."
+    },
+    {
+      "id": "shielded-monitor.api.list-includes-revoked-excludes-deleted",
+      "file": "test/shielded-monitor/api.integration.test.ts",
+      "description": "00009-06: GET /v1/monitors lists a revoked monitor (whose own reads answer 410) and never lists a deleted one (US3 scenario 4). The documented asymmetry of the operator list; both halves fail silently if broken."
+    },
+    {
+      "id": "shielded-monitor.ui.self-contained-no-external-resources",
+      "file": "test/shielded-monitor/api-ui.test.ts",
+      "description": "00009-06: the served dashboard references no absolute or protocol-relative URL and declares no subresource-loading attribute, with a positive control. The 'no new runtime dependency, no external resource' constraint as an assertion rather than a review habit."
+    },
+    {
+      "id": "shielded-monitor.derive-key.matches-the-service-encoding",
+      "file": "test/shielded-monitor/derive-key.test.ts",
+      "description": "00009-06: umbradb-shielded-monitor-derive-key produces, for a given seed, exactly the Bech32m string the repository's own fixture path produces \u2014 so the command and the service's key intake cannot diverge."
     }
   ],
   "deferred": [
@@ -218,7 +233,7 @@
       "id": "crash.pg-kill-save.no-duplicate-with-idempotency-key",
       "file": "test/integration/crash/pg-kill-save.crash.test.ts",
       "description": "T2 WHERE-gated optional-feature scenario (Task 2.2): with a caller idempotency key present, a naive retry produces NO duplicate. Skipped-pending-feature until the idempotency key ships (Sprint 9); wired to activate on that feature flag with no spec rewrite. Exempt from the must-execute check while unshipped.",
-      "pendingFeature": "caller idempotency key (save-idempotency, deferred to Sprint 9 per council/B §6 / ROADMAP §Deferred)"
+      "pendingFeature": "caller idempotency key (save-idempotency, deferred to Sprint 9 per council/B \u00a76 / ROADMAP \u00a7Deferred)"
     }
   ]
 }
