@@ -5,6 +5,7 @@ import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_archive/index.js";
 import * as associationDetailsMigration from "../../src/postgres/migrations/shielded_monitor/002_association_details.js";
+import * as monitorLeasesMigration from "../../src/postgres/migrations/shielded_monitor/003_monitor_leases.js";
 import { shieldedMonitorMigrations } from "../../src/postgres/migrations/shielded_monitor/index.js";
 import { bootstrapShieldedMonitorSchema } from "../../storage-api/bootstrap.js";
 
@@ -389,6 +390,60 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
         await expect(
           insertAssociation({ monitor_id: randomUUID(), matched_segments: sql`'{0}'::smallint[]` }),
         ).rejects.toThrow(/foreign key|violates/i);
+      });
+
+      describe("003_monitor_leases", () => {
+        it("refuses a schema whose `monitors` table 001_core never created — and a VIEW by that name is not a table", async () => {
+          // The same preflight 002 carries, for the same reason: `runMigrations` applies 001
+          // before 003, so only a caller invoking `up()` directly can arrive here — and without
+          // the check the CREATE TABLE would fail on a REFERENCES clause pointing at nothing,
+          // which is the wrong thing to hand an operator.
+          const bare = "shielded_monitor_no_monitors";
+          await sql`DROP SCHEMA IF EXISTS ${sql(bare)} CASCADE`;
+          await sql`CREATE SCHEMA ${sql(bare)}`;
+          try {
+            await expect(monitorLeasesMigration.up(sql as never, bare)).rejects.toThrow(
+              /monitors does not exist as an ordinary table/,
+            );
+            // Nothing was created on the way to the refusal: the preflight runs FIRST.
+            const empty = await sql<{ table_name: string }[]>`
+              SELECT table_name FROM information_schema.tables WHERE table_schema = ${bare}
+            `;
+            expect(empty).toHaveLength(0);
+
+            // `relkind = 'r'` is load-bearing here too: a VIEW called `monitors` would satisfy a
+            // laxer existence check and then fail on the foreign key.
+            await sql`CREATE TABLE ${sql(bare)}.real_monitors (id uuid PRIMARY KEY)`;
+            await sql`CREATE VIEW ${sql(bare)}.monitors AS SELECT id FROM ${sql(bare)}.real_monitors`;
+            await expect(monitorLeasesMigration.up(sql as never, bare)).rejects.toThrow(
+              /monitors does not exist as an ordinary table/,
+            );
+          } finally {
+            await sql`DROP SCHEMA IF EXISTS ${sql(bare)} CASCADE`;
+          }
+        });
+
+        it("refuses an invalid schema name before it reaches the database", async () => {
+          // `runMigrations` validates the schema, but `up()` is exported and a direct caller
+          // bypasses that gate — so the migration validates again rather than interpolating a
+          // caller-supplied identifier into DDL.
+          await expect(monitorLeasesMigration.up(sql as never, 'x"; DROP SCHEMA public; --')).rejects.toThrow();
+        });
+
+        it("is idempotent: re-running `up` against the migrated schema changes nothing", async () => {
+          const shape = async (): Promise<string[]> => {
+            const rows = await sql<{ column_name: string }[]>`
+              SELECT column_name FROM information_schema.columns
+               WHERE table_schema = ${schema} AND table_name = 'monitor_leases'
+               ORDER BY column_name
+            `;
+            return rows.map((r) => r.column_name);
+          };
+          const before = await shape();
+          expect(before).toStrictEqual(["claimed_at", "expires_at", "monitor_id", "owner"]);
+          await monitorLeasesMigration.up(sql as never, schema);
+          expect(await shape()).toStrictEqual(before);
+        });
       });
     });
   });
