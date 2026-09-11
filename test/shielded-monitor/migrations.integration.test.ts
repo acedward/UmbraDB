@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_archive/index.js";
+import * as associationDetailsMigration from "../../src/postgres/migrations/shielded_monitor/002_association_details.js";
 import { shieldedMonitorMigrations } from "../../src/postgres/migrations/shielded_monitor/index.js";
 import { bootstrapShieldedMonitorSchema } from "../../shielded-monitor/bootstrap.js";
 
@@ -40,7 +41,9 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
       const first = await sql<{ name: string }[]>`
         SELECT name FROM ${sql(schema)}._migrations ORDER BY name
       `;
-      expect(first.map((r) => r.name)).toStrictEqual(["000_schema", "001_core"]);
+      expect(first.map((r) => r.name)).toStrictEqual([
+        "000_schema", "001_core", "002_association_details",
+      ]);
 
       // Idempotent: the second bootstrap applies nothing.
       await bootstrapShieldedMonitorSchema(sql, schema);
@@ -59,7 +62,9 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
 
       // The lineage is selectable exactly like the Tier-1.5 one; `shieldedMonitorMigrations`
       // is the same array the bootstrap uses, and running it directly is equivalent.
-      expect(shieldedMonitorMigrations.map((m) => m.name)).toStrictEqual(["000_schema", "001_core"]);
+      expect(shieldedMonitorMigrations.map((m) => m.name)).toStrictEqual([
+        "000_schema", "001_core", "002_association_details",
+      ]);
     } finally {
       await sql.end({ timeout: 5 });
     }
@@ -279,6 +284,72 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
             matched_segments: sql`'{1}'::smallint[]`, block_height: 99n, position: 1, tx_hash: Buffer.alloc(32, 8),
           }),
         ).resolves.toBeUndefined();
+      });
+
+      // ── 002_association_details (00009-07) ─────────────────────────────────────────────────
+      describe("002_association_details", () => {
+        it("leaves both new columns NULL for a row written the pre-00009-07 way", async () => {
+          // The migration's whole claim: an existing writer keeps working and its rows keep NULL,
+          // which is what the API renders as "not recorded yet" and the backfill looks for.
+          const seq = 4001n;
+          await insertAssociation({ seq, matched_segments: sql`'{0}'::smallint[]`, block_height: 4001n });
+          const [row] = await sql<{ details: unknown; block_timestamp_ms: bigint | null }[]>`
+            SELECT details, block_timestamp_ms FROM ${sql(schema)}.associations
+             WHERE monitor_id = ${monitorId} AND seq = ${seq}
+          `;
+          expect(row!.details).toBeNull();
+          expect(row!.block_timestamp_ms).toBeNull();
+        });
+
+        it("stores a details document and a block time, and reads them back unchanged", async () => {
+          const seq = 4002n;
+          const details = { version: "v1", segments: [{ segment: 0, outputs: [{ index: 0, commitment: "ab", mine: true }] }] };
+          await insertAssociation({
+            seq,
+            matched_segments: sql`'{0}'::smallint[]`,
+            block_height: 4002n,
+            details: sql.json(details as never),
+            block_timestamp_ms: 1_754_395_200_000n,
+          });
+          const [row] = await sql<{ details: typeof details; block_timestamp_ms: bigint }[]>`
+            SELECT details, block_timestamp_ms FROM ${sql(schema)}.associations
+             WHERE monitor_id = ${monitorId} AND seq = ${seq}
+          `;
+          expect(row!.details).toStrictEqual(details);
+          expect(row!.block_timestamp_ms).toBe(1_754_395_200_000n);
+        });
+
+        it("rejects a negative block time", async () => {
+          await expect(
+            insertAssociation({
+              seq: 4003n, matched_segments: sql`'{0}'::smallint[]`, block_timestamp_ms: -1n,
+            }),
+          ).rejects.toThrow(/violates check/i);
+        });
+
+        it("creates the partial index the backfill works from", async () => {
+          const rows = await sql<{ indexdef: string }[]>`
+            SELECT indexdef FROM pg_indexes
+             WHERE schemaname = ${schema} AND indexname = 'associations_details_missing'
+          `;
+          expect(rows).toHaveLength(1);
+          // PARTIAL, not a full index: it must shrink to nothing as the backfill completes.
+          expect(rows[0]!.indexdef).toMatch(/WHERE \(details IS NULL\)/i);
+        });
+
+        it("is idempotent: re-running `up` against the migrated schema changes nothing", async () => {
+          const columns = async (): Promise<string[]> => {
+            const rows = await sql<{ column_name: string }[]>`
+              SELECT column_name FROM information_schema.columns
+               WHERE table_schema = ${schema} AND table_name = 'associations'
+               ORDER BY column_name
+            `;
+            return rows.map((r) => r.column_name);
+          };
+          const before = await columns();
+          await associationDetailsMigration.up(sql as never, schema);
+          expect(await columns()).toStrictEqual(before);
+        });
       });
 
       it("rejects an association for a monitor that does not exist", async () => {

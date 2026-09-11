@@ -10,7 +10,12 @@ import {
   MonitorRevokedError,
   IllegalLifecycleTransitionError,
 } from "../../shielded-monitor/errors.js";
-import { MAX_ASSOCIATION_PAGE, type PgShieldedMonitorStore } from "../../shielded-monitor/store.js";
+import type { MatchDetails } from "../../shielded-monitor/match-details.js";
+import {
+  MAX_ASSOCIATION_DETAILS_BYTES,
+  MAX_ASSOCIATION_PAGE,
+  type PgShieldedMonitorStore,
+} from "../../shielded-monitor/store.js";
 import {
   TEST_LEDGER_BUILD,
   TEST_MATCHING_RULE,
@@ -596,6 +601,165 @@ describe("PgShieldedMonitorStore", () => {
       const key = await fixtureViewingKey(seedCounter);
       expect(Buffer.from(await store.getKeyMaterial(id)))
         .toStrictEqual(Buffer.from(key.yesIKnowTheSecurityImplicationsOfThis_serialized()));
+    });
+  });
+
+  // ── Match details and the backfill write path (00009-07) ─────────────────────────────────
+
+  describe("association details (00009-07)", () => {
+    let sql: UmbraDBSql;
+    let store: PgShieldedMonitorStore;
+    const schema = uniqueSchema("sm_details");
+    let seedCounter = 7000;
+
+    beforeAll(async () => {
+      ({ sql, store } = await freshStore(container, schema));
+    }, 120_000);
+    afterAll(async () => {
+      await sql?.end({ timeout: 5 });
+    });
+    beforeEach(() => {
+      seedCounter += 1;
+    });
+
+    /** A minimal, well-shaped details document. Its exact content does not matter here — the
+     *  extractor has its own suite; what matters is that jsonb round-trips it unchanged. */
+    const detailsFor = (commitment: string): MatchDetails => ({
+      version: "shielded-monitor/match-details/v1",
+      ledgerBuild: TEST_LEDGER_BUILD,
+      segments: [{
+        segment: 0,
+        matched: true,
+        outputs: [{ index: 0, commitment, mine: true }],
+        inputs: [],
+        transients: [],
+        counts: { outputs: 1, inputs: 0, transients: 0 },
+      }],
+      totals: { outputs: 1, inputs: 0, transients: 0, mine: 1, unattributed: 0 },
+    });
+
+    it("commits details and the block time in the SAME advance as the coverage move, and reads them back", async () => {
+      const { id, epoch } = await registerFixture(store, seedCounter);
+      await store.advance(id, epoch, 10n, [
+        association(9n, 0, { details: detailsFor("aa11"), blockTimestampMs: 1_754_395_200_000n }),
+        association(10n, 1),
+      ]);
+      const rows = await store.readAssociations(id, 0n, 100);
+      expect(rows[0]!.details).toStrictEqual(detailsFor("aa11"));
+      expect(rows[0]!.blockTimestampMs).toBe(1_754_395_200_000n);
+      // The second association was written WITHOUT them: absent, not null, not an empty object.
+      expect(rows[1]!.details).toBeUndefined();
+      expect(rows[1]!.blockTimestampMs).toBeUndefined();
+      expect((await store.get(id)).coverage.scannedThrough).toBe(10n);
+    });
+
+    it("refuses a details document larger than the store's own bound", async () => {
+      const { id, epoch } = await registerFixture(store, seedCounter);
+      const huge = { blob: "x".repeat(MAX_ASSOCIATION_DETAILS_BYTES + 1) } as unknown as MatchDetails;
+      await expect(
+        store.advance(id, epoch, 1n, [association(1n, 0, { details: huge })]),
+      ).rejects.toThrow(ValidationError);
+      // And the whole batch is refused before anything is written: a bad detail must not be able
+      // to commit half a height.
+      expect(await store.readAssociations(id, 0n, 10)).toStrictEqual([]);
+      expect((await store.get(id)).coverage.scannedThrough).toBeUndefined();
+    });
+
+    it("[[shielded-monitor.backfill.fills-null-rows-once-and-is-idempotent]] fills only NULL rows, exactly once, and a second run changes nothing", async () => {
+      const { id, epoch } = await registerFixture(store, seedCounter);
+      // Three pre-00009-07 rows plus one already carrying details.
+      await store.advance(id, epoch, 4n, [
+        association(1n, 0),
+        association(2n, 0),
+        association(3n, 0),
+        association(4n, 0, { details: detailsFor("already"), blockTimestampMs: 1n }),
+      ]);
+
+      const missing = await store.readAssociationsMissingDetails(id, 0n, 100);
+      expect(missing.map((r) => r.seq)).toStrictEqual([1n, 2n, 3n]);
+
+      const first = await store.updateAssociationDetails(id, epoch, missing.map((r) => ({
+        seq: r.seq,
+        details: detailsFor(`filled-${r.seq}`),
+        blockTimestampMs: 1_000n + r.seq,
+      })));
+      expect(first.applied).toBe(3);
+
+      const afterFill = await store.readAssociations(id, 0n, 100);
+      expect(afterFill.map((r) => r.details?.segments[0]?.outputs[0]?.commitment)).toStrictEqual([
+        "filled-1", "filled-2", "filled-3", "already",
+      ]);
+      expect(afterFill.map((r) => r.blockTimestampMs)).toStrictEqual([1001n, 1002n, 1003n, 1n]);
+      expect(await store.readAssociationsMissingDetails(id, 0n, 100)).toStrictEqual([]);
+
+      // Idempotent BY PREDICATE: re-running the same updates fills nothing, and — the assertion
+      // that matters — cannot overwrite what is already there.
+      const second = await store.updateAssociationDetails(id, epoch, [
+        ...missing.map((r) => ({ seq: r.seq, details: detailsFor("second-run") })),
+        { seq: 4n, details: detailsFor("second-run") },
+      ]);
+      expect(second.applied).toBe(0);
+      const afterRerun = await store.readAssociations(id, 0n, 100);
+      expect(afterRerun.map((r) => r.details?.segments[0]?.outputs[0]?.commitment)).toStrictEqual([
+        "filled-1", "filled-2", "filled-3", "already",
+      ]);
+      expect(afterRerun.map((r) => r.blockTimestampMs)).toStrictEqual([1001n, 1002n, 1003n, 1n]);
+    });
+
+    it("pages the missing-details work list forward by seq, so an unfillable row cannot stall it", async () => {
+      const { id, epoch } = await registerFixture(store, seedCounter);
+      await store.advance(id, epoch, 3n, [association(1n, 0), association(2n, 0), association(3n, 0)]);
+      const page1 = await store.readAssociationsMissingDetails(id, 0n, 2);
+      expect(page1.map((r) => r.seq)).toStrictEqual([1n, 2n]);
+      // Nothing is filled, yet the next page moves on — the property a backfill needs when it
+      // legitimately cannot derive a row.
+      const page2 = await store.readAssociationsMissingDetails(id, page1[1]!.seq, 2);
+      expect(page2.map((r) => r.seq)).toStrictEqual([3n]);
+    });
+
+    it("rejects a stale epoch, and writes nothing when it does (FR-012)", async () => {
+      const { id, epoch } = await registerFixture(store, seedCounter);
+      await store.advance(id, epoch, 1n, [association(1n, 0)]);
+      // A lifecycle transition lands under the backfill.
+      await store.pause(id, "op");
+      await expect(
+        store.updateAssociationDetails(id, epoch, [{ seq: 1n, details: detailsFor("x") }]),
+      ).rejects.toThrow(MonitorFencedError);
+      expect((await store.readAssociations(id, 0n, 10))[0]!.details).toBeUndefined();
+
+      // With the CURRENT epoch it goes through — and a paused monitor is deliberately fillable:
+      // its matches are still readable, so leaving them detail-less would make the dashboard's
+      // "run the backfill" placeholder a lie.
+      const paused = await store.get(id);
+      const applied = await store.updateAssociationDetails(id, paused.epoch, [
+        { seq: 1n, details: detailsFor("x") },
+      ]);
+      expect(applied.applied).toBe(1);
+    });
+
+    it("refuses a revoked monitor and reports a deleted one as not found", async () => {
+      const revoked = await registerFixture(store, seedCounter);
+      await store.advance(revoked.id, revoked.epoch, 1n, [association(1n, 0)]);
+      const revokedNow = await store.revoke(revoked.id, "op");
+      await expect(store.readAssociationsMissingDetails(revoked.id, 0n, 10)).rejects.toThrow(MonitorRevokedError);
+      await expect(
+        store.updateAssociationDetails(revoked.id, revokedNow.epoch, [{ seq: 1n, details: detailsFor("x") }]),
+      ).rejects.toThrow(MonitorRevokedError);
+
+      const deletedNow = await store.delete(revoked.id, "op");
+      await expect(store.readAssociationsMissingDetails(revoked.id, 0n, 10)).rejects.toThrow(MonitorNotFoundError);
+      // The epoch is irrelevant here on purpose: a deleted monitor is "not found" BEFORE the
+      // fence is consulted, so no epoch can talk its way past US3 scenario 4.
+      await expect(
+        store.updateAssociationDetails(
+          revoked.id, deletedNow?.epoch ?? revokedNow.epoch, [{ seq: 1n, details: detailsFor("x") }],
+        ),
+      ).rejects.toThrow(MonitorNotFoundError);
+    });
+
+    it("an empty update list is a no-op that does not even open a transaction's worth of work", async () => {
+      const { id, epoch } = await registerFixture(store, seedCounter);
+      expect(await store.updateAssociationDetails(id, epoch, [])).toStrictEqual({ applied: 0 });
     });
   });
 
