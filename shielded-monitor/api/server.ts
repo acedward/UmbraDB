@@ -16,6 +16,7 @@ import { LEDGER_BUILD_ID, parseViewingKey } from "../viewing-key.js";
 import { loadApiConfig, type ApiConfig } from "./config.js";
 import { CursorError, decodeCursor, encodeCursor } from "./cursor.js";
 import { unknownSourceTip, type SourceTipProvider } from "./source-tip.js";
+import { DASHBOARD_CSP, DASHBOARD_HTML } from "./ui/page.js";
 import { coverageView, matchView, monitorView, type MatchPageView, type MonitorView } from "./views.js";
 
 /**
@@ -32,8 +33,10 @@ import { coverageView, matchView, monitorView, type MatchPageView, type MonitorV
  *
  * ── No HTTP framework ───────────────────────────────────────────────────────────────────────
  * `node:http` and `zod` (already a dependency). `design/design.md` §7's dependency-minimalism
- * rule applies to this surface as it does to the driver choice, and eight routes over four path
+ * rule applies to this surface as it does to the driver choice, and eleven routes over seven path
  * shapes do not earn a framework — see `openspec/changes/00009-04-private-api-cli/design.md` §1.
+ * The same rule decides the dashboard (`GET /ui`, 00009-06): one HTML string, no framework, no
+ * build step, no external resource — see `openspec/changes/00009-06-dashboard/design.md` §1.
  *
  * ── The viewing key exists in exactly one function ──────────────────────────────────────────
  * It is accepted only in the `POST /v1/monitors` body (FR-017), never in a query string, never
@@ -213,7 +216,16 @@ interface RequestContext {
 
 interface Reply {
   readonly status: number;
+  /** A JSON body. Serialized with {@link bigintSafe}. Mutually exclusive with {@link Reply.text}. */
   readonly body?: unknown;
+  /** A pre-rendered non-JSON payload — the dashboard's HTML, and nothing else today. Kept
+   *  separate from `body` so the JSON path stays the one that cannot accidentally serve a string
+   *  as a document. */
+  readonly text?: { readonly contentType: string; readonly payload: string };
+  /** Extra response headers (the dashboard's CSP, the redirect's `location`). The keys this
+   *  module sets itself — `content-type`, `content-length`, `x-request-id`, `allow` — are not
+   *  reachable through here. */
+  readonly headers?: Readonly<Record<string, string>>;
 }
 
 export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): ShieldedMonitorApi {
@@ -279,6 +291,35 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
       actor,
     });
     return { status: 201, body: await viewOf(monitor) };
+  }
+
+  /**
+   * The list (00009-06). Items are built with the SAME {@link monitorView} the single-monitor
+   * route uses — not a summary shape — so the two can never drift; `views.ts` names its fields
+   * explicitly, which is what keeps FR-003's "no fingerprint on the wire" true here for free.
+   *
+   * One tip read serves the whole page rather than one per item: `sourceTip` is a property of the
+   * deployment, not of a monitor, and asking the archive once per row would make a 50-monitor
+   * list 50 queries for 50 copies of the same number.
+   */
+  async function listMonitors(ctx: RequestContext): Promise<Reply> {
+    const limit = parseLimit(ctx.url.searchParams.get("limit"), config);
+    const records = await store.listAll(limit);
+    // The tip is read once even when the list is empty, so an operator watching an empty
+    // deployment still sees the archive advancing — which is the first thing they need to know
+    // before deciding whether a monitor that is not matching is broken or merely early.
+    const tip = await currentTip(config.net);
+    return {
+      status: 200,
+      body: {
+        items: records.map((record) => monitorView(record, record.net === config.net ? tip : undefined)),
+        // Also at the top level, because it belongs to the DEPLOYMENT and not to any monitor, and
+        // because an empty `items` would otherwise hide it entirely. `null`, never 0, when
+        // unobserved (organizer question Q14).
+        sourceTip: tip === undefined ? null : tip.toString(10),
+        net: config.net,
+      },
+    };
   }
 
   async function getMonitor(ctx: RequestContext): Promise<Reply> {
@@ -361,7 +402,42 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
 
   // ── Routing ────────────────────────────────────────────────────────────────────────────────
 
+  /**
+   * The dashboard (00009-06). Served by this process, from a string constant, with no build step
+   * and no external resource — see the change's design §1.
+   *
+   * The headers are the whole security story of this route, because the page is static:
+   * - `content-security-policy` admits the serving origin plus the SHA-256 hashes of this page's
+   *   own inline script and style, and forbids any form submission (`form-action 'none'`), so an
+   *   injected `<form>` could not exfiltrate the viewing-key field even if one existed.
+   * - `x-content-type-options: nosniff` — the payload is declared HTML and must be read as HTML.
+   * - `referrer-policy: no-referrer` — there is no external origin to leak a referrer to today,
+   *   and there must not be one tomorrow either.
+   * - `cache-control: no-store` — the page is one string in the binary; caching it buys nothing
+   *   and a stale dashboard after an upgrade is a support call.
+   */
+  async function dashboard(): Promise<Reply> {
+    return {
+      status: 200,
+      text: { contentType: "text/html; charset=utf-8", payload: DASHBOARD_HTML },
+      headers: {
+        "content-security-policy": DASHBOARD_CSP,
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+        "cache-control": "no-store",
+      },
+    };
+  }
+
+  /** `GET /` → the dashboard. An operator types the bare host and port; answering 404 there while
+   *  a page exists one segment away is a papercut with no upside. A redirect rather than serving
+   *  the page at `/` keeps exactly one URL for the page. */
+  async function rootRedirect(): Promise<Reply> {
+    return { status: 302, headers: { location: "/ui" } };
+  }
+
   const collectionRoutes: Record<string, Route> = {
+    GET: { pattern: "GET /v1/monitors", handle: listMonitors },
     POST: { pattern: "POST /v1/monitors", handle: createMonitor },
   };
   const itemRoutes: Record<string, Route> = {
@@ -381,6 +457,21 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
    *  monitor id too, because path validation belongs with path parsing. */
   function resolve(method: string, url: URL): { route: Route; monitorId: string } {
     const segments = url.pathname.split("/").filter((s) => s !== "");
+
+    // ── The operator surface (00009-06) ──────────────────────────────────────────────────────
+    // Checked before the `/v1` prefix test so the dashboard's two paths and the root redirect
+    // are decided in one place, and so `/` cannot fall through to the `no such resource` 404
+    // that every other unmatched path gets.
+    if (segments.length === 0) {
+      if (method !== "GET") throw methodNotAllowed(["GET"]);
+      return { route: { pattern: "GET /", handle: rootRedirect }, monitorId: "" };
+    }
+    // `/ui` and `/ui/` are the same page: the filter above already dropped the trailing empty
+    // segment, so both arrive here as a single segment.
+    if (segments.length === 1 && segments[0] === "ui") {
+      if (method !== "GET") throw methodNotAllowed(["GET"]);
+      return { route: { pattern: "GET /ui", handle: dashboard }, monitorId: "" };
+    }
 
     if (segments.length === 2 && segments[0] === "v1" && segments[1] === "health") {
       if (method !== "GET") throw methodNotAllowed(["GET"]);
@@ -431,6 +522,8 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
     interface FinishArgs {
       readonly status: number;
       readonly body?: unknown;
+      readonly text?: { readonly contentType: string; readonly payload: string };
+      readonly headers?: Readonly<Record<string, string>>;
       readonly errorCode?: string;
       readonly errorName?: string;
       readonly errorMessage?: string;
@@ -443,7 +536,11 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
       // worker instead of the 500 the caller should have got.
       if (sent) return;
       let payload: Buffer | undefined;
-      if (args.body !== undefined) {
+      let contentType = "application/json; charset=utf-8";
+      if (args.text !== undefined) {
+        payload = Buffer.from(args.text.payload, "utf8");
+        contentType = args.text.contentType;
+      } else if (args.body !== undefined) {
         // Serialization is the one step here that can throw, and it must not be able to turn a
         // correct response into a dropped connection. If it does throw, the caller gets the
         // same fixed 500 body as any other unmapped fault.
@@ -462,8 +559,11 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
       res.statusCode = args.status;
       res.setHeader("x-request-id", requestId);
       if (args.allow !== undefined) res.setHeader("allow", args.allow.join(", "));
+      // Set BEFORE the fixed headers below, so a handler cannot overwrite `content-type` or
+      // `content-length` by naming them here and serve a body that contradicts its own length.
+      for (const [name, value] of Object.entries(args.headers ?? {})) res.setHeader(name, value);
       if (payload !== undefined) {
-        res.setHeader("content-type", "application/json; charset=utf-8");
+        res.setHeader("content-type", contentType);
         res.setHeader("content-length", String(payload.byteLength));
       }
       res.end(payload);
@@ -499,7 +599,12 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
             }),
         };
         const reply = await resolved.route.handle(ctx);
-        finish({ status: reply.status, body: reply.body });
+        finish({
+          status: reply.status,
+          body: reply.body,
+          ...(reply.text !== undefined ? { text: reply.text } : {}),
+          ...(reply.headers !== undefined ? { headers: reply.headers } : {}),
+        });
       } catch (err) {
         // `route` is already the matched pattern when the failure happened inside a handler, and
         // "unmatched" when routing itself failed — either way it is one of this module's own

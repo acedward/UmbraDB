@@ -470,6 +470,42 @@ export class PgShieldedMonitorStore {
   }
 
   /**
+   * Every monitor this deployment holds, oldest first, for an OPERATOR view (organizer spec
+   * FR-017's list surface, 00009-06). Bounded by `limit`, exactly as {@link listActive} is.
+   *
+   * Two differences from {@link listActive}, both deliberate:
+   *
+   * - **Every state except `deleted`** — including `paused`, `failed`, `stale_source` and
+   *   `revoked`. `listActive` answers a scanner's question ("what may I work on?"); this answers
+   *   an operator's ("what exists?"), and a monitor that stopped is precisely the one they need
+   *   to see. A `revoked` monitor is listed even though {@link get} refuses it: the refusal
+   *   protects that monitor's *data*, and hiding the row instead would leave the operator with a
+   *   revoked monitor they can no longer name in order to delete it. See the change's design §2.
+   * - **`deleted` is excluded, and that is not negotiable.** Organizer spec US3 scenario 4
+   *   requires a deleted monitor to be indistinguishable from one that never existed; listing a
+   *   tombstone would break that literally.
+   *
+   * Ordered `created_at, id`: `created_at` is the order an operator registered them in and is
+   * stable as states change, and `id` is the tiebreak that keeps the order total when two rows
+   * share a timestamp (`Formal/STORAGE_ALGEBRA.md` §3 — a paged read needs a total order or a
+   * page boundary can repeat or drop a row).
+   */
+  async listAll(limit = 100): Promise<MonitorRecord[]> {
+    const bounded = parse(z.number().int().positive().max(10_000), limit, "PgShieldedMonitorStore.listAll");
+    try {
+      const rows = await this.sql<MonitorRow[]>`
+        SELECT * FROM ${this.sql(this.schema)}.monitors
+         WHERE state <> 'deleted'
+         ORDER BY created_at, id
+         LIMIT ${bounded}
+      `;
+      return rows.map(toRecord);
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /**
    * The serialized viewing key of a scannable monitor.
    *
    * The single choke point through which key material leaves the database — which is exactly why
