@@ -42,6 +42,8 @@ that role, and the crash suite's write-set audit checks the statements themselve
 | `SCAN_BUDGET_TX_PER_S` | unset | Optional per-monitor throughput ceiling. |
 | `SCAN_METRICS_LOG_S` | `30` | Seconds between the metrics log line; `0` disables it. |
 | `SCAN_ONCE` | unset | `1` runs a single cycle and exits (scripted backfills). |
+| `SCAN_BACKFILL_DETAILS` | unset | `1` (or the flag `--backfill-details`) runs the match-details backfill and exits, instead of scanning. |
+| `SCAN_BACKFILL_ROWS` | `100` | Associations filled per transaction during that backfill. |
 
 **Every numeric setting fails closed.** A zero, negative, fractional or non-numeric value stops
 the process with the variable named. It is never silently replaced by the default — a bound that
@@ -55,11 +57,47 @@ One batch, for one monitor, is:
 2. read `SCAN_BATCH_BLOCKS` **whole** blocks after the monitor's coverage;
 3. deserialize the viewing key, test the guaranteed offer and every fallible-segment offer of
    every regular transaction, clear the key;
-4. commit that batch's associations **and** the coverage advance in **one** transaction.
+4. for each match, record the transaction's **public zswap data** from the offers already in
+   hand — output commitments, spent nullifiers, transients, contract addresses and a three-valued
+   "is this one yours" — plus the block's timestamp;
+5. commit that batch's associations, their details **and** the coverage advance in **one**
+   transaction.
 
 A crash at any point therefore leaves either none of a height or all of it. Blocks with no
 matches still advance coverage, so "scanned and empty" is always distinguishable from
 "not scanned".
+
+## Backfilling match details for older matches
+
+Matches recorded before this service stored per-transaction zswap data have `details = NULL`; the
+API returns `null` and the dashboard says "details not recorded yet". One command fills them:
+
+```bash
+MONITOR_PG=postgres://… NET=undeployed umbradb-shielded-monitor --backfill-details
+```
+
+It walks every monitor on `NET`, reads each match's block back **through the archive read
+contract** (never SQL against the archive), recomputes the details with that monitor's key, writes
+them, and exits. What it is careful about:
+
+- **Idempotent.** Every write carries `AND details IS NULL`, so a second run fills nothing and can
+  never overwrite a recorded detail. Re-deriving details under a future
+  `MATCH_DETAILS_VERSION` is therefore *not* something a re-run does; it would need its own
+  deliberate step.
+- **It cannot rewrite a match.** The only columns it may set are `details` and
+  `block_timestamp_ms`. Height, position, transaction hash, matched segments, outcomes and
+  coverage are not in its `SET` list.
+- **It refuses what it cannot tie to the recorded match.** If the archive no longer holds that
+  height, or the block there carries a different hash (a re-synced archive), or no transaction
+  sits at the recorded position with the recorded hash, or re-evaluating it no longer reproduces
+  the same matched segments, the row is **skipped and counted** — never filled with a guess. The
+  summary line reports the counts by reason.
+- **Fenced like every other write.** A pause, resume, revoke or delete landing under a run refuses
+  the commit; a later run continues from the rows still `NULL`. Revoked and deleted monitors are
+  refused outright. Paused, failed and `stale_source` monitors ARE filled: their matches stay
+  readable, so leaving them detail-less would be a worse answer than filling them.
+- It prints counts only — never a monitor id, for the same reason the scanner's own log lines do
+  not.
 
 ## Tuning
 

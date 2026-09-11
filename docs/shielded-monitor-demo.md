@@ -194,8 +194,43 @@ The page shows, refreshing every 3 seconds:
 - **register a viewing key** — paste the `mn_shield-esk_undeployed1…` string from step 3 and press
   **register**. The field is a password field, is cleared the moment the request is issued, and the
   key travels only in the request body. It is never put in a URL and never written to a log.
-- **matches** — the selected monitor's matches, newest first, with the block height, position,
-  transaction hash (click to copy), matched segments and `appliedOutcome`, plus **load more**.
+- **matches** — the selected monitor's matches, newest first. Each row is **expandable**: the
+  collapsed line shows the block time, `height / pos`, the transaction hash (click to copy), the
+  matched segments and a one-line summary such as
+  `1 of 2 yours · 3 commitments · 1 nullifier · 1 transient`. Click the row (or its caret) to open
+  it. **Load more** pages further back.
+
+### What the expanded row shows
+
+- the block time in UTC plus a relative age, the `appliedOutcome` (always `unknown`), the
+  archive's `sourceOutcome` when it recorded one, and the protocol version;
+- one section **per zswap segment** — segment 0 is the guaranteed section, every other id is a
+  fallible segment — headed with whether that segment matched and, when it did but no single entry
+  could be pinned, *one of these N is yours*;
+- within a segment, up to three tables, each hash click-to-copy: **outputs** (index, commitment,
+  contract address if any, `mine`), **inputs** (index, spent nullifier, contract address) and
+  **transients** (index, commitment, nullifier, contract address, `mine`);
+- a legend: *commitment = a new shielded coin · nullifier = a coin this transaction spent · a
+  transient is created and spent in the same transaction · only outputs encrypted to your key are
+  yours*, followed by the ledger build and the details-rule version that produced the row.
+
+`mine` is three-valued on purpose. **yours** means the ledger entails it; a dash means it is
+provably not yours (its segment did not match at all, or it is delivered to a contract and carries
+no ciphertext for anyone); **?** means the ledger cannot attribute that entry from a viewing key
+alone, and the segment line says how many candidates it is one of. See
+[`shielded-monitor-api.md`](shielded-monitor-api.md#mine-is-three-valued-and-every-value-is-entailed-by-the-ledger).
+
+A match recorded before this data was stored shows **"Details not recorded yet — run the
+backfill"** instead. Fill them in with:
+
+```bash
+MONITOR_PG="$MONITOR_PG" NET=undeployed \
+  npx tsx shielded-monitor/scanner-cli.ts --backfill-details
+```
+
+It is idempotent — running it twice fills nothing the second time — and it only ever writes the
+two detail columns. Stop the tailing scanner first or run it alongside; either is safe, because
+every write is epoch-fenced and predicated on `details IS NULL`.
 
 Register from the command line instead if you prefer:
 

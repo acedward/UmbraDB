@@ -274,6 +274,87 @@ transaction — advisory provenance, not a statement about your wallet, and it n
 `matchedSegments` names every segment whose offer matched, including fallible segments. A match
 in a fallible segment is still just a match: the segment may have failed.
 
+## Match details (`blockTimestampMs`, `details`)
+
+Each item also carries the transaction's **public zswap data** and the time of the block it sat
+in. Both are `null` when the match was recorded before the service stored them — run the backfill
+(`umbradb-shielded-monitor --backfill-details`, see `docs/shielded-monitor-scanner.md`). `null`
+here means *not recorded yet*; it never means "this transaction had no outputs".
+
+```json
+{
+  "blockTimestampMs": "1754395200000",
+  "details": {
+    "version": "shielded-monitor/match-details/v1",
+    "ledgerBuild": "ledger-v8@8.1.0-syshash.4",
+    "segments": [
+      {
+        "segment": 0,
+        "matched": true,
+        "outputs": [
+          { "index": 0, "commitment": "854e92…", "mine": null },
+          { "index": 1, "commitment": "92e368…", "mine": null },
+          { "index": 2, "commitment": "f42b14…", "contractAddress": "cc8321…", "mine": false }
+        ],
+        "inputs": [{ "index": 0, "nullifier": "695481…" }],
+        "transients": [
+          { "index": 0, "commitment": "f42b14…", "nullifier": "695481…", "contractAddress": "cc8321…", "mine": false }
+        ],
+        "counts": { "outputs": 3, "inputs": 1, "transients": 1 },
+        "mineAmong": 2
+      }
+    ],
+    "totals": { "outputs": 3, "inputs": 1, "transients": 1, "mine": 0, "unattributed": 2 }
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `blockTimestampMs` | the block's own `Timestamp::set` value, milliseconds, as a decimal string (never a JSON number, for the reason heights are strings) |
+| `segments[].segment` | `0` is the guaranteed section — the ledger's own numbering; every other id is a fallible segment |
+| `segments[].matched` | the very `EncryptionSecretKey.test(offer)` result that decided the match |
+| `outputs[].commitment` | a **new shielded coin** created by this transaction |
+| `inputs[].nullifier` | a coin this transaction **spent** |
+| `transients[]` | a coin created *and* spent in the same transaction, so it has both |
+| `contractAddress` | present when the entry is delivered to a contract rather than encrypted to a user key |
+| `counts` | the TRUE list sizes, before truncation |
+| `segments[].truncated` / `truncated` | present when a list was capped at 256 entries; `counts` still reports the real size |
+| `totals.mine` / `totals.unattributed` | how many entries are provably yours, and how many could not be attributed |
+
+### `mine` is three-valued, and every value is entailed by the ledger
+
+| value | meaning |
+|---|---|
+| `true` | this entry **is** yours |
+| `false` | this entry is **not** yours |
+| `null` | **not attributable** with a viewing key alone |
+
+The ledger's relevance predicate, `EncryptionSecretKey.test(offer)`, answers "does *anything* in
+this offer decrypt under this key" — it is an `any()` over every output and transient ciphertext,
+and the vendored ledger v8 build exposes no per-entry variant. Isolating one output into its own
+offer (`ZswapOffer.fromOutput`) is refused for a value read out of an archived, proven
+transaction, and the only per-coin API needs the full `ZswapSecretKeys` a viewing-key monitor does
+not hold. So the service reports what it can prove:
+
+- a segment whose `matched` is `false` gives **`mine: false` for every entry in it** — `test`
+  returning false means *no* ciphertext decrypted;
+- an entry with a `contractAddress` is **`mine: false`** — it carries no user ciphertext at all;
+- in a matched segment, if exactly one candidate remains it is **`mine: true`** — something
+  decrypted and there is nothing else it could have been;
+- otherwise every candidate is **`null`**, and the segment carries `mineAmong: <n>`, i.e. *at
+  least one of these n is yours*.
+
+Amounts, balances and spend detection are **out of scope** (they need the full key pair);
+`appliedOutcome` stays `"unknown"` regardless of what `details` shows.
+
+### `?details=0`
+
+`GET /v1/monitors/:id/matches?details=0` omits **both** `blockTimestampMs` and `details`,
+reproducing the pre-00009-07 item exactly — for a consumer paging a long history that does not
+want the payload. Any other value, including an absent parameter, includes them: a typo fails
+towards more data, never towards a silently smaller page.
+
 ## The cursor contract
 
 - The cursor is **opaque**. Do not parse it, do not do arithmetic on it. Send back the

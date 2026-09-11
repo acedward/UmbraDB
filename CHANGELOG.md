@@ -92,6 +92,35 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
   `npm run demo:shielded-monitor` for its wallet-free half. Specified in
   `openspec/changes/00009-06-dashboard/`.
 
+- **Match details: what was actually in the transaction.** A match used to be a height, a position
+  and a hash. It now also carries the transaction's **public zswap data**, recorded by the scanner
+  from the offers it already had in hand when it decided relevance — output commitments, spent
+  nullifiers, transients, contract addresses on contract-owned entries — plus the block's
+  timestamp, and a three-valued `mine` per output/transient. **Additive throughout:**
+  - one migration, `src/postgres/migrations/shielded_monitor/002_association_details`, adding the
+    **nullable** `associations.details jsonb` and `associations.block_timestamp_ms bigint` plus a
+    partial index on the rows still missing details. Existing rows keep `NULL`, every pre-existing
+    writer and reader is unaffected, and `NULL` means *not recorded yet*, never "no outputs".
+  - the scanner writes them in the **same** `BEGIN…COMMIT` as the height's associations and its
+    coverage advance (owner Rule B); the Rule B crash gate is strengthened to require it.
+  - `GET /v1/monitors/:id/matches` items gain `blockTimestampMs` (decimal string or `null`) and
+    `details` (object or `null`); `?details=0` omits both and reproduces the previous item exactly.
+  - the dashboard's match rows expand into per-segment output / input / transient tables with
+    click-to-copy hashes and a legend, and show a "run the backfill" placeholder for older matches.
+  - `umbradb-shielded-monitor --backfill-details` (or `SCAN_BACKFILL_DETAILS=1`) fills older
+    matches, reading blocks only through the archive read contract and writing only the two new
+    columns. Idempotent by predicate (`AND details IS NULL`), epoch-fenced, and it skips rather
+    than guesses when a row cannot be tied to the block it names.
+
+  `mine` is `true | false | null` because the ledger permits nothing stronger:
+  `EncryptionSecretKey.test(offer)` is an `any()` over all of an offer's ciphertexts, and
+  isolating one proven output into its own offer is refused by the vendored ledger v8 build. Every
+  value the service reports is entailed — `false` for every entry of an unmatched segment and for
+  contract-owned entries, `true` when a matched segment has exactly one candidate left, `null`
+  otherwise with `mineAmong` saying how many. Amounts, balances and spend detection remain out of
+  scope, and `appliedOutcome` is still always `"unknown"`. Specified in
+  `openspec/changes/00009-07-match-details/`.
+
 ### Changed
 
 - `umbradb-shielded-monitor-api` now reports the archive's **real** `sourceTip` when the archive
