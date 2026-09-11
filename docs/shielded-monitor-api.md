@@ -59,6 +59,8 @@ umbradb-shielded-monitor-api
 | `SHIELDED_MONITOR_SCHEMA` | `shielded_monitor` | the schema project B owns |
 | `SHIELDED_MONITOR_NET` | `undeployed` | the one network this deployment serves; a key's Bech32m HRP must match it |
 | `SHIELDED_MONITOR_BOOTSTRAP` | unset | `1` applies the migration lineage at boot (opt-in on purpose) |
+| `ARCHIVE_SCHEMA` | `chain_archive` | the archive schema whose tip is reported as `sourceTip`; read-only, through the archive read contract |
+| `SOURCE_TIP` | unset | `off` disables the tip reader, so `sourceTip` is always `null` — for an API deployed with no archive access |
 | `API_HOST` | `127.0.0.1` | bind address |
 | `API_PORT` | `8787` | bind port; `0` asks the kernel for a free one |
 | `API_MAX_BODY_BYTES` | `65536` | request body cap; exceeding it is `400 BODY_TOO_LARGE` |
@@ -177,10 +179,13 @@ different in kind from an empty `items` array — that distinction is the whole 
 coverage object. A consumer that sees `items: []` with `scannedThrough: null` has learned "nobody
 has looked", not "there is nothing there".
 
-`sourceTip` is `null` on any deployment without an archive reader wired in, which today means
-every deployment: the tip belongs to the archive, and the seam that reads it lands with the
-scanner. It is reported as `null` rather than `0` precisely because `scannedThrough >= sourceTip`
-would otherwise read as *caught up*.
+`sourceTip` is the archive's real current tip wherever the API can reach the archive — which is
+the normal deployment, since both schemas live in one database. The tip is read through the
+archive read contract only (two `SELECT`s, no write method in reach), so project B still never
+writes to an archive table. On a deployment where the API has no archive access, set
+`SOURCE_TIP=off` and the field is always `null`; it is also `null` while the archive holds no
+block at all. It is reported as `null` rather than `0` precisely because `scannedThrough >=
+sourceTip` would otherwise read as *caught up*.
 
 ## The match item
 
