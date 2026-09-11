@@ -1,9 +1,12 @@
 #!/usr/bin/env node
+import { DEFAULT_ARCHIVE_SCHEMA } from "../../src/postgres/archive-conventions.js";
+import { PgArchiveReadContract } from "../../src/postgres/archive-read-contract.js";
 import { createClient } from "../../src/postgres/client.js";
 import { bootstrapShieldedMonitorSchema } from "../bootstrap.js";
 import { PgShieldedMonitorStore } from "../store.js";
 import { loadApiConfig } from "./config.js";
 import { createShieldedMonitorApi, stderrLogger } from "./server.js";
+import { archiveSourceTip, unknownSourceTip } from "./source-tip.js";
 
 /**
  * `umbradb-shielded-monitor-api` — the private API as a process (organizer spec FR-026).
@@ -18,6 +21,8 @@ import { createShieldedMonitorApi, stderrLogger } from "./server.js";
  * | `SHIELDED_MONITOR_SCHEMA` | `shielded_monitor` | schema project B owns |
  * | `SHIELDED_MONITOR_NET` | `undeployed` | the one network this deployment serves |
  * | `SHIELDED_MONITOR_BOOTSTRAP` | unset | `1` applies the migration lineage at boot |
+ * | `ARCHIVE_SCHEMA` | `chain_archive` | the archive schema whose tip is reported as `sourceTip` |
+ * | `SOURCE_TIP` | unset | `off` reports `sourceTip: null` (an API with no archive access) |
  * | `API_HOST` | `127.0.0.1` | bind address |
  * | `API_PORT` | `8787` | bind port (`0` asks the kernel for a free one) |
  * | `API_MAX_BODY_BYTES` | `65536` | request body cap |
@@ -42,9 +47,21 @@ export async function runApiServer(env: NodeJS.ProcessEnv = process.env): Promis
     await bootstrapShieldedMonitorSchema(sql, config.schema);
   }
 
+  // `sourceTip` (FR-011/FR-020): report the archive's real tip when this deployment can see the
+  // archive, and `null` when it cannot. Opt-OUT rather than opt-in, because on the merged stack
+  // the archive is in the same database and a permanent `sourceTip: null` would leave a consumer
+  // unable to tell "scanned and empty" from "not scanned yet" — the one distinction FR-020 is
+  // about. `SOURCE_TIP=off` restores the standalone behaviour for an API deployed without any
+  // archive access. Reached ONLY through the read contract's interface, so Rule B holds.
+  const sourceTipProvider =
+    env.SOURCE_TIP?.trim().toLowerCase() === "off"
+      ? unknownSourceTip()
+      : archiveSourceTip(new PgArchiveReadContract(sql, env.ARCHIVE_SCHEMA?.trim() || DEFAULT_ARCHIVE_SCHEMA));
+
   const api = createShieldedMonitorApi({
     store: new PgShieldedMonitorStore(sql, config.schema),
     config,
+    sourceTipProvider,
     logger: stderrLogger(),
   });
   const address = await api.listen();
