@@ -37,8 +37,10 @@ reading; per-request id; a structured logger that never sees a body.
 - Oversized body → 400 `BODY_TOO_LARGE`, asserted with a body one byte over `API_MAX_BODY_BYTES`.
 - `limit=0`, `limit=-1`, `limit=<API_MAX_PAGE + 1>` and `limit=abc` each → 400.
 - A malformed cursor and a cursor minted for another monitor each → 400.
-- Boot with `API_MAX_PAGE` above the store's `MAX_ASSOCIATION_PAGE` fails at configuration time,
-  not at request time.
+- `vitest run test/shielded-monitor/api-config.test.ts` passes (no Docker): boot with
+  `API_MAX_PAGE` above the store's `MAX_ASSOCIATION_PAGE`, with a default page above the cap, or
+  with any non-decimal / out-of-range numeric variable, fails at configuration time and names the
+  offending variable — not at request time.
 
 ## 3. Coverage in every response
 
@@ -77,12 +79,18 @@ decimal strings or `null`, from the store's `MonitorCoverage` plus the injectabl
 **Acceptance criteria**
 
 - Required id `shielded-monitor.api.key-never-logged` in `api.integration.test.ts`: after
-  exercising every endpoint including four failing registrations (malformed, wrong network,
-  non-canonical, oversized), the captured log records and every captured error body are scanned
-  for the Bech32m key, its serialized bytes as hex, and its raw payload as base64 — zero hits.
+  exercising every endpoint with one dedicated key, including four failing registrations (bad
+  checksum, mixed-case Bech32m, the SAME key bytes encoded for the WRONG network, and a schema
+  failure with the key present in the body), every captured log record and every captured
+  response body is scanned for the Bech32m string, its data part, and the serialized bytes in
+  hex, base64 and base64url — zero hits.
 - A **positive control** in the same test feeds the capture a line containing the key and asserts
   the scanner finds it, so a scanner that cannot detect a leak fails the gate.
-- The four failing registrations all produce the identical generic message.
+- Every intake failure class — malformed Bech32m, wrong-network HRP, junk payload, non-canonical
+  payload — produces the byte-identical generic message (a separate table-driven case).
+- The DEFAULT `stderrLogger` is exercised too, with the process's own stderr captured, so the
+  clean result is not an artefact of the capturing logger the rest of the suite injects.
+- The create route logs no error MESSAGE at all, while other routes do (asserted both ways).
 
 ## 6. Reference consumer CLI
 

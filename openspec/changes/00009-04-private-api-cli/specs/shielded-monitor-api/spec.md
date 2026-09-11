@@ -100,13 +100,15 @@ monitor differs from the one named in the path.
 ### Requirement: Every status and matches response carries coverage as block heights
 
 Status and matches responses SHALL include `requestedStart`, `scannedFrom`, `scannedThrough` and
-`sourceTip`. Heights SHALL be rendered as decimal strings so that a height above 2^53 cannot lose
-precision. A range that has not been scanned SHALL be reported as an absent height, never as a
-zero and never as an empty result.
+`sourceTip` — all four fields SHALL be present in every such response. Heights SHALL be rendered
+as decimal strings so that a height above 2^53 cannot lose precision. A height that is not known
+SHALL be rendered as `null`, never as a zero, and an unscanned range SHALL never be presented as
+an empty result.
 
 #### Scenario: Not-yet-scanned is distinguishable from scanned-and-empty
 - **WHEN** matches are read for a monitor whose coverage has not advanced
-- **THEN** the item list SHALL be empty **and** `scannedFrom` and `scannedThrough` SHALL be absent
+- **THEN** the item list SHALL be empty **and** `scannedFrom` and `scannedThrough` SHALL be `null`
+- **AND** neither SHALL be rendered as `"0"`
 
 #### Scenario: Scanned-and-empty advances coverage while the page stays empty
 - **WHEN** coverage advances over a range containing no matches
@@ -114,8 +116,8 @@ zero and never as an empty result.
 
 #### Scenario: An unobserved source tip is reported as unknown, never as zero
 - **WHEN** the deployment has no source-tip provider configured
-- **THEN** `sourceTip` SHALL be absent
-- **AND** it SHALL NOT be rendered as `"0"`
+- **THEN** `sourceTip` SHALL be present with the value `null`
+- **AND** it SHALL NOT be rendered as `"0"` and SHALL NOT be omitted from the response
 
 ### Requirement: The alpha API has no authentication and binds to loopback
 
