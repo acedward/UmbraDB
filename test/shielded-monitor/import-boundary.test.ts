@@ -4,33 +4,41 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 /**
- * **Owner Rule B as an import graph** (organizer spec FR-025; sub-plan 00009-08).
+ * **"Project B has no database" as an import graph** (organizer spec FR-025; sub-plan 00009-08 v2;
+ * owner questions Q24 and Q25).
  *
- * `schema-isolation.integration.test.ts` already proves Rule B at RUNTIME, with a PostgreSQL role
- * that cannot write to the archive, and with a literal scan that forbids the string
- * `chain_archive` in project B's source. Both stay. This suite adds the third thing 00009-08 needs
- * and neither of those gives: **no module under `shielded-monitor/` can reach project A's storage
- * adapter at all, by any chain of static imports.**
+ * `schema-isolation.integration.test.ts` proves Rule B at RUNTIME with a restricted PostgreSQL
+ * role, and with a literal scan that forbids the string `chain_archive` in project B's source.
+ * Both stay. This suite proves the structural half, and under v2 it proves the STRONGEST form of
+ * it: **no module under `shielded-monitor/` can reach `postgres`, or anything under
+ * `src/postgres/`, by any chain of imports — static or dynamic.**
  *
- * Why that is the property worth checking rather than "B does not import X directly": a one-line
- * re-export anywhere in between would satisfy a direct-import check while leaving the archive's
- * schema-shaped SQL — and its `postgres` connection — one `import` away from every B module. The
- * walk below follows relative imports transitively from every B file and fails on the first path
- * that reaches a banned module, printing the path.
+ * ── Why the rule got stricter ───────────────────────────────────────────────────────────────
+ * Q24 (v1) could only ban project A's *storage adapters*, because project B owned a PostgreSQL of
+ * its own and therefore legitimately imported `src/postgres/client` and `src/postgres/migrate`.
+ * The owner's Q25 decision removes B's database entirely: it reads and writes through
+ * `STORAGE_URL`, so there is nothing left for it to open a connection with, and the ban can be
+ * the simple, total one — no driver, no client, no migration runner, no archive adapter, no
+ * schema-shaped SQL anywhere in B's import closure.
  *
- * ── What this does NOT prove, stated plainly ────────────────────────────────────────────────
- * `shielded-monitor/archive-source.ts` reaches `PgArchiveReadContract` through a DYNAMIC
- * `await import(...)`, deliberately, so that the single-host deployment this repository already
- * ships keeps working (organizer question Q24). A dynamic import is invisible to a static walk, so
- * this suite does not show that module is unloadable — it shows that no B module *statically*
- * depends on A's storage, which is what makes the dependency exactly as conditional as the mode
- * that needs it. The complementary claim — that with `ARCHIVE_URL` set the loader is never called
- * at all — is proved by `archive-source.test.ts` with a spy loader. Neither test is sufficient
- * alone; the pair is the argument.
+ * Why a transitive walk rather than "B does not import X directly": a one-line re-export anywhere
+ * in between would satisfy a direct-import check while leaving a `postgres` connection one
+ * `import` away from every B module. The walk follows relative imports from every B file and
+ * fails on the first path that reaches a banned module, printing the path.
  *
- * `src/postgres/client.ts` and `src/postgres/migrate.ts` are NOT banned. They are how project B
- * talks to **its own** database, which Rule B requires it to own and to keep restorable by itself.
- * Banning them would forbid B from having storage at all (Q24 option B).
+ * ── Dynamic imports are covered too, now ────────────────────────────────────────────────────
+ * Under Q24 the one dynamic `await import("../src/postgres/archive-read-contract.js")` in
+ * `archive-source.ts` was the documented escape hatch for the single-host mode, and this suite
+ * had to say plainly that a static walk could not see it. That mode is gone, and with it the
+ * dynamic import: the last case below asserts that **no** B module carries a dynamic import into
+ * `src/postgres/` or `chain-archive-sync/` at all, so the static walk has no blind spot left.
+ *
+ * ── What it still does not prove ────────────────────────────────────────────────────────────
+ * That the code is absent from the IMAGE. `dist-cli/` ships `src/postgres/**` because the storage
+ * API needs it, and a TEE build that wanted B's image to contain none of it would build a
+ * separate image. What this proves is the property a deployment depends on: a B process loads no
+ * database code and holds no credential — and `no-database.ts` refuses to start if one is in its
+ * environment anyway.
  */
 
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -41,14 +49,27 @@ const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
  * Every one of these carries archive schema knowledge and a write path into `chain_archive`.
  * Reaching any of them from B is the thing FR-025 forbids.
  */
-const BANNED = [
-  "src/postgres/archive-read-contract.ts",
-  "src/postgres/chain-archive-store.ts",
-  "src/postgres/chain-archive-rollover.ts",
-  "src/postgres/migrations/chain_archive/index.ts",
-  "chain-archive-sync/sync-service.ts",
-  "chain-archive-sync/bootstrap.ts",
-] as const;
+const BANNED_PREFIXES = ["src/postgres/", "storage-api/"] as const;
+
+/**
+ * Individual A-side modules that are not under a banned prefix.
+ *
+ * `chain-archive-sync/` as a whole is NOT banned, and deliberately: two modules in it
+ * (`extrinsic-decoder.ts`, `tx-replay-decoder.ts`) are pure ledger decoders with no database in
+ * their import closure, and project B's `offers.ts` and `derive-key-cli.ts` legitimately use
+ * them. What is banned is the part of that directory that opens and writes a database.
+ */
+const BANNED_FILES = ["chain-archive-sync/sync-service.ts", "chain-archive-sync/bootstrap.ts"] as const;
+
+/** Package specifiers project B may not import, at any depth. `postgres` is the driver itself:
+ *  reaching it would mean B can open a connection, which is precisely what Q25 removes. */
+const BANNED_PACKAGES = ["postgres"] as const;
+
+function bannedReason(relative: string): string | undefined {
+  const prefix = BANNED_PREFIXES.find((p) => relative.startsWith(p));
+  if (prefix !== undefined) return `under ${prefix}`;
+  return (BANNED_FILES as readonly string[]).includes(relative) ? "an archive writer" : undefined;
+}
 
 /** Every `from "…"` / `import("…")` / `require("…")` specifier in a source file, comments stripped
  *  so a path named in prose is not mistaken for a dependency. */
@@ -108,11 +129,18 @@ export function reachStatically(
     if (reached.has(file)) continue;
     reached.add(file);
     const relative = path.relative(repoRoot, file);
-    if ((BANNED as readonly string[]).includes(relative) && !violations.has(relative)) {
+    if (bannedReason(relative) !== undefined && !violations.has(relative)) {
       violations.set(relative, trail.map((f) => path.relative(repoRoot, f)));
       continue;
     }
     for (const specifier of staticImportSpecifiers(readFile(file))) {
+      if ((BANNED_PACKAGES as readonly string[]).includes(specifier)) {
+        const key = `package:${specifier}`;
+        if (!violations.has(key)) {
+          violations.set(key, [...trail, file].map((f) => path.relative(repoRoot, f)));
+        }
+        continue;
+      }
       const target = resolveRelative(file, specifier);
       if (target !== undefined) queue.push({ file: target, path: [...trail, target] });
     }
@@ -123,18 +151,18 @@ export function reachStatically(
 const productionFiles = walkTsFiles(path.join(repoRoot, "shielded-monitor"));
 const realRead = (file: string): string => readFileSync(file, "utf8");
 
-describe("project B never statically reaches project A's storage (owner Rule B / FR-025)", () => {
+describe("project B reaches no database at all (owner Rule B / FR-025, question Q25)", () => {
   it("the walk is not vacuous: it visits every B module and follows imports out of the directory", () => {
     expect(productionFiles.length).toBeGreaterThan(15);
     const { reached } = reachStatically(productionFiles, realRead);
     // It really does leave `shielded-monitor/` — B legitimately imports the read-contract
-    // INTERFACE, its own database client and the ledger decoder.
+    // INTERFACE, the shared wire codecs and the ledger decoder. What it may not reach is storage.
     expect([...reached].some((f) => f.includes(path.join("src", "interfaces", "archive-read-contract")))).toBe(true);
-    expect([...reached].some((f) => f.includes(path.join("src", "postgres", "client")))).toBe(true);
+    expect([...reached].some((f) => f.includes(path.join("src", "interfaces", "archive-read-wire")))).toBe(true);
     expect(reached.size).toBeGreaterThan(productionFiles.length);
   });
 
-  it("no import path from shielded-monitor/** reaches an archive storage module", () => {
+  it("no import path from shielded-monitor/** reaches postgres, src/postgres/** or the storage API", () => {
     const { violations } = reachStatically(productionFiles, realRead);
     expect(
       [...violations.entries()].map(([banned, trail]) => `${banned} via ${trail.join(" -> ")}`),
@@ -151,29 +179,59 @@ describe("project B never statically reaches project A's storage (owner Rule B /
     expect(violations.has("src/postgres/archive-read-contract.ts")).toBe(true);
   });
 
+  it("POSITIVE CONTROL: a planted import of the DRIVER itself is caught (Q25's tightening)", () => {
+    // The v1 guard would have allowed this: `postgres` is not an archive storage module, and B
+    // owned a database of its own. Under Q25 it is the single most important thing to forbid.
+    const planted = path.join(repoRoot, "shielded-monitor", "scanner-service.ts");
+    const read = (file: string): string =>
+      file === planted ? `import postgres from "postgres";\n${realRead(file)}` : realRead(file);
+    const { violations } = reachStatically(productionFiles, read);
+    expect(violations.has("package:postgres")).toBe(true);
+  });
+
+  it("POSITIVE CONTROL: a planted import of B's own former client is caught (`src/postgres/client`)", () => {
+    // Also allowed under Q24 — it was how B opened its own database — and banned under Q25,
+    // because B has no database to open.
+    const planted = path.join(repoRoot, "shielded-monitor", "store.ts");
+    const read = (file: string): string =>
+      file === planted
+        ? `import { createClient } from "../src/postgres/client.js";\n${realRead(file)}`
+        : realRead(file);
+    const { violations } = reachStatically(productionFiles, read);
+    expect(violations.has("src/postgres/client.ts")).toBe(true);
+  });
+
+  it("POSITIVE CONTROL: a planted import of the A-side storage API is caught", () => {
+    const planted = path.join(repoRoot, "shielded-monitor", "api", "server.ts");
+    const read = (file: string): string =>
+      file === planted
+        ? `import { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";\n${realRead(file)}`
+        : realRead(file);
+    const { violations } = reachStatically(productionFiles, read);
+    expect(violations.has("storage-api/monitor-store-pg.ts")).toBe(true);
+  });
+
   it("POSITIVE CONTROL: a planted import hidden one module DEEP is caught (the direct-import check that would miss it)", () => {
-    // The whole reason the walk is transitive. `wake.ts` imports `archive-conventions.ts`, a
-    // dependency-free constants module; give THAT one an archive-storage import and no
-    // direct-import check over `shielded-monitor/**` would notice.
-    const hop = path.join(repoRoot, "src", "postgres", "archive-conventions.ts");
+    // The whole reason the walk is transitive. `wake.ts` imports
+    // `src/interfaces/archive-read-wire.ts`, a codec with no storage in it; give THAT one an
+    // archive-storage import and no direct-import check over `shielded-monitor/**` would notice.
+    const hop = path.join(repoRoot, "src", "interfaces", "archive-read-wire.ts");
     const read = (file: string): string =>
       file === hop
-        ? `import { PgChainArchiveStore } from "./chain-archive-store.js";\n${realRead(file)}`
+        ? `import { PgChainArchiveStore } from "../postgres/chain-archive-store.js";\n${realRead(file)}`
         : realRead(file);
     const { violations } = reachStatically(productionFiles, read);
     expect(violations.get("src/postgres/chain-archive-store.ts")).toBeDefined();
-    expect(violations.get("src/postgres/chain-archive-store.ts")!.join(" -> ")).toContain("archive-conventions.ts");
+    expect(violations.get("src/postgres/chain-archive-store.ts")!.join(" -> ")).toContain("archive-read-wire.ts");
   });
 
-  it("the ONE dynamic import into project A is in archive-source.ts, and nowhere else", () => {
-    // Stated as a pin rather than left implicit: the dynamic import is the documented escape
-    // hatch for the single-host mode (Q24), and a second one appearing elsewhere would be a new,
-    // undocumented path into A's storage that the static walk above is blind to by construction.
+  it("there is NO dynamic import into project A left — the static walk has no blind spot", () => {
+    // Under Q24 there was exactly one, in `archive-source.ts`, and it was the documented escape
+    // hatch for the single-host mode. Q25 removed that mode, so the exception is gone and the
+    // static walk above is now a complete argument rather than half of one.
     const dynamic = productionFiles
       .flatMap((file) => dynamicImportSpecifiers(realRead(file)).map((s) => ({ file: path.relative(repoRoot, file), s })))
-      .filter(({ s }) => s.includes("src/postgres/") || s.includes("chain-archive-sync/"));
-    expect(dynamic).toStrictEqual([
-      { file: "shielded-monitor/archive-source.ts", s: "../src/postgres/archive-read-contract.js" },
-    ]);
+      .filter(({ s }) => s.includes("src/postgres/") || s.includes("chain-archive-sync/") || s.includes("storage-api/") || s === "postgres");
+    expect(dynamic).toStrictEqual([]);
   });
 });

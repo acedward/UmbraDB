@@ -106,7 +106,7 @@ describe("shielded-monitor private API", () => {
       store,
       // Port 0: the kernel picks a free port. This is a shared host and a fixed port would
       // collide with a parallel suite or with something else on the box entirely.
-      config: { ...loadApiConfig({ API_PORT: "0", API_MAX_PAGE: "50" }), schema, maxBodyBytes: 1024 },
+      config: { ...loadApiConfig({ API_PORT: "0", API_MAX_PAGE: "50", STORAGE_URL: "http://storage-api:8788" }), maxBodyBytes: 1024 },
       sourceTipProvider: tipProvider,
       logger: { log: (record) => logRecords.push(record) },
     });

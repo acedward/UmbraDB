@@ -77,7 +77,7 @@ describe("reference consumer CLI end to end", () => {
     ({ sql, store } = await freshStore(container, schema));
     api = createShieldedMonitorApi({
       store,
-      config: { ...loadApiConfig({ API_PORT: "0" }), schema },
+      config: loadApiConfig({ API_PORT: "0", STORAGE_URL: "http://storage-api:8788" }),
       // A real tip so the client's coverage rendering is exercised in both directions.
       sourceTipProvider: staticSourceTip(500n),
       logger: silentLogger(),

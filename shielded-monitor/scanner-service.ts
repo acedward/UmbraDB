@@ -1,4 +1,3 @@
-import { ARCHIVE_PROGRESS_CHANNEL } from "../src/postgres/archive-conventions.js";
 import type { ArchiveWakeSource, ArchiveWakeSubscription } from "./wake.js";
 import type { MonitorRecord } from "./store.js";
 import type { ScanBatchResult, ShieldedMonitorScanner } from "./scanner.js";
@@ -13,31 +12,22 @@ import type { ScanBatchResult, ShieldedMonitorScanner } from "./scanner.js";
  *     anything — the epoch fence and the monotonic coverage guard see to that — but one of them
  *     would burn its whole batch and lose the race at the commit, which is waste, not safety.
  *     `inFlight` is that guarantee WITHIN a process; since 00009-08 a **monitor lease** is the
- *     same guarantee ACROSS processes, so several scanner instances can share one B database
+ *     same guarantee ACROSS processes, so several scanner instances can share one storage API
  *     (`src/postgres/migrations/shielded_monitor/003_monitor_leases.ts`). Both are optimisations:
  *     remove either and the associations are still exactly right, just computed twice.
  *  2. **`SCAN_CONCURRENCY` monitors in parallel.** Monitors are independent — different keys,
  *     different rows, different commits — so the bound exists to cap database connections and
  *     WASM memory, not for correctness.
  *  3. **Live tail via a wake-up source, with polling as the fallback, never instead of it.** The
- *     archive emits `NOTIFY chain_archive_progress, '<net>:<height>'` INSIDE the per-height
- *     transaction (00009-01), and 00009-08 republishes it as an SSE stream for a project B that
- *     has no connection to A's database at all. Either way an arrival means "this height is
- *     readable" and a rollback delivers nothing — but a wake-up can be MISSED (a listener
- *     connection drops, `LISTEN` has no replay, an SSE stream is cut), so `SCAN_POLL_MS` still
- *     fires. The wake-up makes the tail prompt; the poll makes it correct.
+ *     archive emits its progress notification INSIDE the per-height transaction (00009-01), and
+ *     the storage API republishes it as an SSE stream — which is the only form project B can
+ *     consume, because under owner question Q25 it has no database connection to `LISTEN` on.
+ *     An arrival means "this height is readable" and a rollback delivers nothing; but a wake-up
+ *     can be MISSED (an SSE stream is cut, a proxy buffers), so `SCAN_POLL_MS` still fires. The
+ *     wake-up makes the tail prompt; the poll makes it correct. The channel name itself lives on
+ *     A's side (`src/postgres/archive-conventions.ts`) and B no longer carries it at all.
  */
 
-/**
- * The channel 00009-01's `putBlockBundle` notifies inside the height transaction.
- *
- * Imported from the archive's own conventions module, never retyped here: B carries no archive
- * name of its own (owner Rule B / FR-025, enforced by
- * `test/shielded-monitor/schema-isolation.integration.test.ts`), and a second copy of the string
- * could drift from the writer's — leaving this scheduler listening on a channel nobody notifies
- * and silently falling back to `SCAN_POLL_MS` with nothing to show for it.
- */
-export { ARCHIVE_PROGRESS_CHANNEL };
 
 /** Rotates a list by a random offset, preserving relative order.
  *

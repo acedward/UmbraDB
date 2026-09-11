@@ -1,105 +1,85 @@
-import { describe, expect, it, vi } from "vitest";
-import type { ArchiveReadContract } from "../../src/interfaces/archive-read-contract.js";
+import { describe, expect, it } from "vitest";
 import { openArchiveSource } from "../../shielded-monitor/archive-source.js";
 import { HttpArchiveReadContract } from "../../shielded-monitor/archive-http-client.js";
 import { loadApiConfig } from "../../shielded-monitor/api/config.js";
+import { databaseVariablesIn } from "../../shielded-monitor/no-database.js";
 import { readScannerConfig } from "../../shielded-monitor/scanner-config.js";
 
 /**
- * The one decision that makes project B a distinct deployable: WHERE the archive comes from
- * (organizer sub-plan 00009-08; `spec/00009` FR-025).
+ * The decision that makes project B a distinct deployable: it reaches EVERYTHING over one base
+ * URL, and it refuses to run any other way (sub-plan 00009-08 v2; owner question Q25;
+ * `spec/00009` FR-025, FR-026).
  *
- * Two claims are under test, and only the second needs a spy:
+ * Three claims are under test:
  *
- *  1. `ARCHIVE_URL` selects the HTTP client and the SSE wake-up; its absence selects the
- *     in-process PostgreSQL reader and `LISTEN`.
- *  2. **On the HTTP path the PostgreSQL implementation is never loaded at all.** That is the
- *     deployment property `import-boundary.test.ts` cannot show — a dynamic import is invisible to
- *     a static walk — and it is the property a TEE profile actually depends on: the attested
- *     process holds no archive storage code and no archive credential (organizer question Q24).
+ *  1. the archive source is the HTTP client, always, and it is marked REMOTE (which is what turns
+ *     on the transaction-identity check, organizer question Q23);
+ *  2. `STORAGE_URL` is required, and `ARCHIVE_URL` merely overrides where `/v1/archive/*` is
+ *     served — it defaults to the storage API, which serves both route families;
+ *  3. **a database credential in the environment is a refusal, not a warning**, on BOTH entry
+ *     points. That is the property the split topology exists to establish: a leftover
+ *     `MONITOR_PG` is a live credential in a process that must not have one.
  */
 
-const FAKE_SQL = {
-  listen: async () => ({ unlisten: async () => undefined }),
-};
+const STORAGE = "http://storage-api:8788";
 
 describe("openArchiveSource", () => {
-  it("ARCHIVE_URL selects the HTTP client, marks the source REMOTE, and never loads A's storage", async () => {
-    const loader = vi.fn(async () => {
-      throw new Error("the PostgreSQL archive reader must not be loaded on the HTTP path");
-    });
-    const source = await openArchiveSource({
-      archiveUrl: "http://archive-read-api:8790/",
-      archiveSchema: "chain_archive",
-      sql: FAKE_SQL,
-      loadPgArchiveReadContract: loader as never,
-    });
-    expect(loader).not.toHaveBeenCalled();
+  it("builds the HTTP client, marks the source REMOTE, and subscribes to the SSE stream", () => {
+    const source = openArchiveSource({ archiveUrl: `${STORAGE}/` });
     expect(source.archive).toBeInstanceOf(HttpArchiveReadContract);
     expect(source.remote).toBe(true);
     expect(source.wake.describe).toContain("/v1/archive/events");
-    expect(source.describe).toContain("http://archive-read-api:8790");
+    expect(source.describe).toContain(STORAGE);
   });
 
-  it("without ARCHIVE_URL it loads the in-process reader, with B's own handle and the archive schema", async () => {
-    const constructed: { schema: string }[] = [];
-    class FakePg implements ArchiveReadContract {
-      constructor(_sql: never, schema: string) { constructed.push({ schema }); }
-      async readBlocksSince() { return { blocks: [] }; }
-      async getArchiveIdentity() { return undefined; }
-    }
-    const source = await openArchiveSource({
-      archiveSchema: "chain_archive",
-      sql: FAKE_SQL,
-      loadPgArchiveReadContract: async () => FakePg as never,
-    });
-    expect(constructed).toStrictEqual([{ schema: "chain_archive" }]);
-    expect(source.remote).toBe(false);
-    expect(source.wake.describe).toBe("LISTEN chain_archive_progress");
-  });
-
-  it("refuses to build a source with neither a URL nor a connection, rather than idling forever", async () => {
+  it("refuses an empty URL rather than idling forever", () => {
     // The failure this prevents is the quiet one: a scanner with no archive would report itself
     // healthy and permanently at the tip.
-    await expect(openArchiveSource({ archiveSchema: "chain_archive" })).rejects.toThrow(/no archive source/);
+    expect(() => openArchiveSource({ archiveUrl: "" })).toThrow(/no archive source/);
   });
 
-  it("`wake: false` leaves polling as the only trigger (what the API process asks for)", async () => {
-    const source = await openArchiveSource({
-      archiveUrl: "http://archive-read-api:8790",
-      archiveSchema: "chain_archive",
-      wake: false,
-    });
-    expect(source.wake.describe).toBe("polling only");
+  it("`wake: false` leaves polling as the only trigger (what the API process asks for)", () => {
+    expect(openArchiveSource({ archiveUrl: STORAGE, wake: false }).wake.describe).toBe("polling only");
   });
 });
 
-describe("the scanner refuses an ambiguous archive configuration", () => {
-  const base = { MONITOR_PG: "postgres://u:p@h:5432/db" };
+describe("the scanner's storage configuration", () => {
+  const base = { STORAGE_URL: STORAGE };
 
-  it("accepts ARCHIVE_URL alone and normalises it", () => {
+  it("requires STORAGE_URL", () => {
+    expect(() => readScannerConfig({}, [])).toThrow(/STORAGE_URL is required/);
+  });
+
+  it("normalises STORAGE_URL and defaults ARCHIVE_URL to it", () => {
+    const config = readScannerConfig({ STORAGE_URL: `${STORAGE}/` }, []);
+    expect(config.storageUrl).toBe(STORAGE);
+    expect(config.archiveUrl).toBe(STORAGE);
+  });
+
+  it("lets ARCHIVE_URL point the archive routes at a standalone read API", () => {
     const config = readScannerConfig({ ...base, ARCHIVE_URL: "http://archive-read-api:8790/" }, []);
+    expect(config.storageUrl).toBe(STORAGE);
     expect(config.archiveUrl).toBe("http://archive-read-api:8790");
   });
 
-  it("accepts an archive schema alone (the single-host mode this repository already shipped)", () => {
-    const config = readScannerConfig({ ...base, ARCHIVE_SCHEMA: "chain_archive" }, []);
-    expect(config.archiveUrl).toBeUndefined();
-    expect(config.archiveSchema).toBe("chain_archive");
+  it("refuses a URL that is not a bare base URL", () => {
+    expect(() => readScannerConfig({ STORAGE_URL: `${STORAGE}/?net=x` }, [])).toThrow(/bare base URL/);
+    expect(() => readScannerConfig({ STORAGE_URL: "not-a-url" }, [])).toThrow(/STORAGE_URL/);
   });
 
-  it.each(["ARCHIVE_SCHEMA", "ARCHIVE_PG"])(
-    "REFUSES ARCHIVE_URL together with %s, naming both",
+  it.each(["MONITOR_PG", "ARCHIVE_PG", "SHIELDED_MONITOR_PG", "ARCHIVE_SCHEMA", "MONITOR_SCHEMA"])(
+    "REFUSES to start with %s in the environment, naming it",
     (variable) => {
-      expect(() => readScannerConfig({ ...base, ARCHIVE_URL: "http://a:8790", [variable]: "x" }, []))
-        .toThrow(new RegExp(`ARCHIVE_URL is set[\\s\\S]*${variable}`));
+      expect(() => readScannerConfig({ ...base, [variable]: "x" }, []))
+        .toThrow(new RegExp(`database configuration in its environment[\\s\\S]*${variable}`));
     },
   );
 
-  it("refuses an ARCHIVE_URL that is not a usable base URL", () => {
-    expect(() => readScannerConfig({ ...base, ARCHIVE_URL: "http://a:8790/?net=x" }, []))
-      .toThrow(/bare base URL/);
-    expect(() => readScannerConfig({ ...base, ARCHIVE_URL: "not-a-url" }, [])).toThrow(/ARCHIVE_URL/);
+  it("does NOT refuse libpq's own PG* family, which is inert here", () => {
+    // B ships no driver to read them, they are commonly set in a developer's shell, and failing a
+    // scanner because someone has `psql` configured would be a refusal with no security value.
+    expect(databaseVariablesIn({ PGHOST: "localhost", PGUSER: "eddie" })).toStrictEqual([]);
+    expect(() => readScannerConfig({ ...base, PGHOST: "localhost" }, [])).not.toThrow();
   });
 
   it("gives every instance a distinct lease owner by default, and honours SCAN_INSTANCE_ID", () => {
@@ -114,20 +94,29 @@ describe("the scanner refuses an ambiguous archive configuration", () => {
   });
 });
 
-describe("the API refuses an ambiguous archive configuration", () => {
-  it("accepts ARCHIVE_URL alone", () => {
-    expect(loadApiConfig({ ARCHIVE_URL: "http://archive-read-api:8790" }).archiveUrl)
+describe("the private API's storage configuration", () => {
+  it("requires STORAGE_URL and defaults ARCHIVE_URL to it", () => {
+    expect(() => loadApiConfig({})).toThrow(/invalid STORAGE_URL/);
+    const config = loadApiConfig({ STORAGE_URL: STORAGE });
+    expect(config.storageUrl).toBe(STORAGE);
+    expect(config.archiveUrl).toBe(STORAGE);
+  });
+
+  it("lets ARCHIVE_URL override where /v1/archive/* is served", () => {
+    expect(loadApiConfig({ STORAGE_URL: STORAGE, ARCHIVE_URL: "http://archive-read-api:8790" }).archiveUrl)
       .toBe("http://archive-read-api:8790");
   });
 
-  it.each(["ARCHIVE_SCHEMA", "ARCHIVE_PG"])("REFUSES ARCHIVE_URL together with %s", (variable) => {
-    expect(() => loadApiConfig({ ARCHIVE_URL: "http://a:8790", [variable]: "x" }))
-      .toThrow(new RegExp(`invalid ARCHIVE_URL[\\s\\S]*${variable}`));
-  });
+  it.each(["SHIELDED_MONITOR_PG", "MONITOR_PG", "ARCHIVE_SCHEMA"])(
+    "REFUSES to start with %s in the environment",
+    (variable) => {
+      expect(() => loadApiConfig({ STORAGE_URL: STORAGE, [variable]: "x" }))
+        .toThrow(new RegExp(`database configuration in its environment[\\s\\S]*${variable}`));
+    },
+  );
 
-  it("keeps SOURCE_TIP=off as the opt-out for an API with no archive access at all", () => {
-    expect(loadApiConfig({ SOURCE_TIP: "off" }).sourceTipDisabled).toBe(true);
-    expect(loadApiConfig({}).sourceTipDisabled).toBe(false);
-    expect(loadApiConfig({}).archiveSchema).toBe("chain_archive");
+  it("keeps SOURCE_TIP=off as the opt-out for an API whose storage serves no archive routes", () => {
+    expect(loadApiConfig({ STORAGE_URL: STORAGE, SOURCE_TIP: "off" }).sourceTipDisabled).toBe(true);
+    expect(loadApiConfig({ STORAGE_URL: STORAGE }).sourceTipDisabled).toBe(false);
   });
 });

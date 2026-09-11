@@ -9,7 +9,7 @@ import { LEDGER_BUILD_ID, loadLedger, MATCHING_RULE_VERSION } from "../shielded-
 import { ShieldedMonitorScanner } from "../shielded-monitor/scanner.js";
 import { InMemoryScannerMetrics } from "../shielded-monitor/scanner-metrics.js";
 import { ShieldedMonitorScannerService } from "../shielded-monitor/scanner-service.js";
-import { pgListenWake } from "../shielded-monitor/wake.js";
+import { pgListenWake } from "../storage-api/pg-wake.js";
 import { PgShieldedMonitorStore } from "../storage-api/monitor-store-pg.js";
 import { encodeViewingKey, parseViewingKey } from "../shielded-monitor/viewing-key.js";
 import { buildCorpus } from "../test/fixtures/shielded-monitor/build-corpus.js";

@@ -4,7 +4,7 @@ import { LEDGER_BUILD_ID, MATCHING_RULE_VERSION } from "../../shielded-monitor/o
 import { ShieldedMonitorScanner } from "../../shielded-monitor/scanner.js";
 import { InMemoryScannerMetrics } from "../../shielded-monitor/scanner-metrics.js";
 import { ShieldedMonitorScannerService } from "../../shielded-monitor/scanner-service.js";
-import { pgListenWake } from "../../shielded-monitor/wake.js";
+import { pgListenWake } from "../../storage-api/pg-wake.js";
 import { createScannerWorld, destroyWorld, type ScannerWorld } from "./scanner-harness.js";
 
 /**

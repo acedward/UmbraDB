@@ -40,7 +40,7 @@ describe("shielded-monitor dashboard (GET /ui)", () => {
   beforeAll(async () => {
     api = createShieldedMonitorApi({
       store: stubStore,
-      config: { ...loadApiConfig({ API_PORT: "0" }), schema: "unused" },
+      config: loadApiConfig({ API_PORT: "0", STORAGE_URL: "http://storage-api:8788" }),
       logger: silentLogger(),
     });
     const address = await api.listen();

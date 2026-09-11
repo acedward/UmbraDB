@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { NO_WAKE, pgListenWake, readEventStream, sseWake } from "../../shielded-monitor/wake.js";
+import { NO_WAKE, readEventStream, sseWake } from "../../shielded-monitor/wake.js";
+import { pgListenWake } from "../../storage-api/pg-wake.js";
 
 /**
  * The wake-up sources (organizer sub-plan 00009-08).
