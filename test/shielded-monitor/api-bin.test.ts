@@ -26,6 +26,10 @@ describe("shielded-monitor CLI entry points (FR-026)", () => {
   ) as { compilerOptions: { outDir: string; rootDir: string }; include: string[] };
 
   const entries: ReadonlyArray<readonly [string, string]> = [
+    // 00009-05: the scanner bin joined the other two when Phase 3 merged with Phase 4. On
+    // Phase 4's branch there was no scanner module, so the entry could not be declared; here it
+    // is declared AND emitted, which is what the rule below actually asks for.
+    ["umbradb-shielded-monitor", "shielded-monitor/scanner-cli.ts"],
     ["umbradb-shielded-monitor-api", "shielded-monitor/api/server-cli.ts"],
     ["umbradb-shielded-monitor-client", "shielded-monitor/client/cli.ts"],
   ];
@@ -52,10 +56,29 @@ describe("shielded-monitor CLI entry points (FR-026)", () => {
     expect(contents.startsWith("#!/usr/bin/env node")).toBe(true);
   });
 
-  it("does not declare a scanner bin it cannot emit", () => {
-    // Phase 3 owns `umbradb-shielded-monitor` (the scanner). There is no scanner module on this
-    // branch, so declaring the entry now would publish a package whose command does not exist.
-    expect(pkg.bin["umbradb-shielded-monitor"]).toBeUndefined();
+  it("declares no bin it cannot emit — EVERY entry, not only the ones listed above", () => {
+    // The original form of this case (Phase 4) asserted the one bin that branch could not emit
+    // was absent. The merge of Phases 1-4 makes that assertion false for the right reason — the
+    // scanner exists now — so it is replaced by the GENERAL rule it was a special case of, which
+    // also covers the two archive bins and any bin a future phase adds: a declared `bin` must
+    // name `dist-cli/<source>.js` for a source file that exists, carries a shebang, and sits
+    // under an `include` pattern of `tsconfig.cli.json`. A bin that cannot be emitted still
+    // fails here; it simply no longer has to be named in advance.
+    const outDir = cliTsconfig.compilerOptions.outDir;
+    for (const [binName, target] of Object.entries(pkg.bin)) {
+      expect(target.startsWith(`${outDir}/`), `${binName} must be emitted into ${outDir}/`).toBe(true);
+      expect(target.endsWith(".js"), `${binName} must name a .js file`).toBe(true);
+      const source = `${target.slice(outDir.length + 1, -".js".length)}.ts`;
+      const directory = source.slice(0, source.indexOf("/"));
+      expect(
+        cliTsconfig.include.some((pattern) => pattern.startsWith(`${directory}/`)),
+        `tsconfig.cli.json must include ${directory}/** for ${binName} to be emitted`,
+      ).toBe(true);
+      const contents = readFileSync(fileURLToPath(new URL(source, repoRoot)), "utf8");
+      expect(contents.startsWith("#!/usr/bin/env node"), `${source} must be runnable`).toBe(true);
+    }
+    // Non-vacuity: the loop must actually have examined the five bins this package ships.
+    expect(Object.keys(pkg.bin).length).toBe(5);
   });
 
   it("leaves the published LIBRARY surface alone", () => {
