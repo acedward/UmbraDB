@@ -196,6 +196,21 @@
       "id": "shielded-monitor.scanner.fail-closed-on-undecodable-bytes",
       "file": "test/shielded-monitor/scanner.integration.test.ts",
       "description": "00009-03 / FR-007: an undecodable transaction stops the monitor at its (height, position) with state failed and coverage left BELOW that height -- the unreadable range is never recorded as scanned-and-empty."
+    },
+    {
+      "id": "shielded-monitor.api.cursor-pages-each-match-exactly-once",
+      "file": "test/shielded-monitor/api.integration.test.ts",
+      "description": "00009-04 (organizer spec FR-019, SC-006 analogue for the API): paging the private API's matches endpoint from an empty cursor with limit=5 over 37 associations seeded through the store -- deliberately handed to the store OUT of order -- visits every association exactly once, in (blockHeight, position) order, and the concatenation equals what the store holds. Guards the cursor's exactly-once property, which is what a consumer's whole polling loop rests on."
+    },
+    {
+      "id": "shielded-monitor.api.key-never-logged",
+      "file": "test/shielded-monitor/api.integration.test.ts",
+      "description": "00009-04 (organizer spec FR-023, SC-004): after every endpoint has been exercised with one dedicated key -- including four failing registrations, one of them the same key bytes encoded for the WRONG network -- every captured log record and every captured response body is scanned for the Bech32m string, its data part, and the serialized bytes in hex/base64/base64url, and finds zero. Carries the mandatory POSITIVE CONTROL: the same scan over a string that really contains the key must find it, so a scanner that looked at the wrong strings cannot pass."
+    },
+    {
+      "id": "shielded-monitor.client.end-to-end-lifecycle",
+      "file": "test/shielded-monitor/client-cli.integration.test.ts",
+      "description": "00009-04 (organizer spec SC-008, US1-US3): the reference consumer CLI drives register -> status -> poll(empty) -> poll(matches) -> poll(idempotent resume) -> pause -> resume -> revoke -> delete against a REAL HTTP server on a loopback socket backed by Testcontainers PostgreSQL, asserting state, coverage and cursor-file stability at each step, and that no viewing key appears in anything the client printed. Matches are seeded through the store because Phase 3's scanner does not exist yet; the Compose run with a real shielded transaction is deferred to Phase 5."
     }
   ],
   "deferred": [

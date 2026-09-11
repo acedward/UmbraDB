@@ -183,6 +183,28 @@ narrower than the rest of this document's, and the narrowness is an owner decisi
   running the whole flow under a PostgreSQL role holding only `USAGE`/`SELECT` on `chain_archive`
   (`test/shielded-monitor/schema-isolation.integration.test.ts`).
 
+**The private API (`umbradb-shielded-monitor-api`, 00009-04) is unauthenticated by design.**
+
+Added by the 00009-04 change (`openspec/changes/00009-04-private-api-cli/`), it serves the
+monitors above over HTTP/JSON with **no authentication, no authorization, no tenant scoping, no
+rate limiting and no quotas** (owner decision, 2026-09-10). Its only admission controls are a
+request-body size cap and a page-size cap.
+
+- **Anyone who can open a TCP connection to its port can register a viewing key, read every
+  monitor's matches, and revoke or delete any monitor.** It binds `127.0.0.1` by default, and a
+  deployment that binds anything else **must** restrict network access by other means. It speaks
+  plain HTTP; terminating TLS is the deployment's job.
+- The cursor is opaque but **unsigned** — a caller can forge one. With no authentication this
+  grants nothing extra: a forged cursor can only reposition a caller inside a monitor it can
+  already read in full. Signing is on the deferred list below.
+- What the API does enforce: a viewing key is accepted **only** in the body of
+  `POST /v1/monitors` and is never returned; request logging never sees a body, logs the matched
+  route pattern rather than the raw URL, and logs no error message at all on the create route; an
+  unmapped internal error never forwards its message to the client (a driver message can quote a
+  bound parameter, and on that route a bound parameter is a key). A test with a positive control
+  scans every captured log record and error body for the key in three encodings
+  (`test/shielded-monitor/api.integration.test.ts`).
+
 **Deferred hardening — required before any multi-tenant or hosted deployment.**
 
 | Deferred control | Consequence of its absence today |
@@ -192,6 +214,7 @@ narrower than the rest of this document's, and the narrowness is an owner decisi
 | Keyed (HMAC) fingerprints | A guessed key can be confirmed by recomputing its fingerprint |
 | Encrypted association content | The wallet↔transaction linkage is readable by anyone with database access |
 | Tenant isolation and non-oracular cross-tenant behaviour | There is no tenant concept; one consumer credential, one trust domain |
+| Authentication on the private API, and signed cursors | Anyone who can reach the port is fully authorized; a cursor can be forged |
 | Least-privilege database roles as a shipped script | The privilege split exists only as a test instrument, not as a deployment artefact |
 | The full redaction/leakage gate over logs, metrics and database dumps | Only the key-not-logged property is asserted today |
 

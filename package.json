@@ -77,6 +77,8 @@
   "bin": {
     "umbradb-archive-sync": "dist-cli/chain-archive-sync/sync-cli.js",
     "umbradb-archive-backfill-timestamps": "dist-cli/chain-archive-sync/backfill-timestamps-cli.js",
-    "umbradb-shielded-monitor": "dist-cli/shielded-monitor/scanner-cli.js"
+    "umbradb-shielded-monitor": "dist-cli/shielded-monitor/scanner-cli.js",
+    "umbradb-shielded-monitor-api": "dist-cli/shielded-monitor/api/server-cli.js",
+    "umbradb-shielded-monitor-client": "dist-cli/shielded-monitor/client/cli.js"
   }
 }

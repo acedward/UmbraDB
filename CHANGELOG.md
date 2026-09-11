@@ -49,6 +49,24 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
   interface or exported symbol changes, and a deployment that never runs the binary is
   unaffected. Documented in `docs/shielded-monitor-scanner.md`; specified in
   `openspec/changes/00009-03-relevance-scanner/`.
+- **Shielded monitor private API and reference consumer (project C, private half).** Two new
+  packaged CLI entry points, `umbradb-shielded-monitor-api` and
+  `umbradb-shielded-monitor-client`, over the `shielded_monitor` schema above. The service is
+  built on Node's own `http` plus the `zod` this package already depends on — **no new runtime
+  dependency** — and serves `POST /v1/monitors`, `GET /v1/monitors/:id`,
+  `GET /v1/monitors/:id/matches`, `POST /v1/monitors/:id/{pause,resume,revoke}`,
+  `DELETE /v1/monitors/:id` and `GET /v1/health`. Matches page by an opaque base64url cursor
+  bound to its monitor; every status and matches response carries the coverage object
+  (`requestedStart`, `scannedFrom`, `scannedThrough`, `sourceTip`) as decimal strings, so an
+  unscanned range is never presented as an empty result. The reference client registers a key
+  read from a file, polls with a cursor persisted atomically to a file, and drives the whole
+  lifecycle over HTTP alone — it imports nothing but Node built-ins. Documented in
+  `docs/shielded-monitor-api.md`; specified in `openspec/changes/00009-04-private-api-cli/`.
+  Additive: no migration, no change under `src/`, and the published library surface is unchanged.
+  **Unauthenticated by design:** this alpha has no authentication, authorization, tenant scoping,
+  rate limiting or quotas (only a body-size and a page-size cap). It binds `127.0.0.1` by default
+  and **the deployment must restrict network access** — anyone who can reach the port can
+  register, read and delete any monitor. See `README.md` and `SECURITY.md` before exposing it.
 
 ### Changed
 

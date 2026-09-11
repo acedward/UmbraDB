@@ -116,7 +116,9 @@ export function statusesFromReport(report: JsonReport): Map<string, string[]> {
  *  write-set audit deliberately: a two-state result proven by assertions that cannot fail is
  *  worth nothing, so the control that shows the UNFOLDED shape DOES produce a partial batch must
  *  not be skippable either. */
-export const EXPECTED_REQUIRED_COUNT = 39;
+ *  Merge of all four 00009 branches (01+02 → 32, 03 → 39, 04 → +3): the pinned set is the UNION of
+ *  every branch's ids, never one side. */
+export const EXPECTED_REQUIRED_COUNT = 42;
 
 /** The pinned count of `deferred` (WHERE-gated optional-feature) tests (BLOCK 6). Structurally PINS
  *  the deferred exemption set so deleting the sole deferred entry (a green "0 deferred" gate) fails the
