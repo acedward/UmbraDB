@@ -162,7 +162,7 @@ describe("project B reaches no database at all (owner Rule B / FR-025, question 
     expect(reached.size).toBeGreaterThan(productionFiles.length);
   });
 
-  it("no import path from shielded-monitor/** reaches postgres, src/postgres/** or the storage API", () => {
+  it("[[shielded-monitor.import-boundary.no-database-in-project-b]] no import path from shielded-monitor/** reaches postgres, src/postgres/** or the storage API", () => {
     const { violations } = reachStatically(productionFiles, realRead);
     expect(
       [...violations.entries()].map(([banned, trail]) => `${banned} via ${trail.join(" -> ")}`),

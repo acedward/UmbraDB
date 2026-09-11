@@ -242,7 +242,7 @@ describe("Rule B over HTTP: a lost response never duplicates a height, and never
     ).toBe("all-of-height");
   }, 120_000);
 
-  it("a LOST RESPONSE after a commit is resolved by re-reading — the height lands exactly once", async () => {
+  it("[[crash.shielded-monitor-http.lost-response-never-duplicates]] a LOST RESPONSE after a commit is resolved by re-reading — the height lands exactly once", async () => {
     // The one failure mode HTTP adds. The transaction committed; the client will never see the
     // answer. It must neither duplicate the height nor report a failure the scanner would treat
     // as "nothing was written".

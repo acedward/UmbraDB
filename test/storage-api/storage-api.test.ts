@@ -106,7 +106,7 @@ describe("the storage API's monitor-store routes", () => {
     });
   });
 
-  it("turns a stale epoch into 409 MONITOR_FENCED, and the client back into MonitorFencedError", async () => {
+  it("[[storage-api.fencing.stale-epoch-is-409-and-rethrown]] turns a stale epoch into 409 MONITOR_FENCED, and the client back into MonitorFencedError", async () => {
     const store = stubStore({
       advance: async () => {
         throw new MonitorFencedError(MONITOR.id, "epoch", { epoch: 9n, state: "paused" });

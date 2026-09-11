@@ -136,7 +136,7 @@ describe("the split topology: 2 scanners + 2 APIs + 1 balancer + 1 storage API, 
     expect(tip.sourceTip?.height).toBe(world.corpus.bundles.at(-1)!.block.height);
   }, 60_000);
 
-  it("two scanners over HTTP reproduce the fixture oracle exactly once, and both do work", async () => {
+  it("[[storage-api.split-topology.two-scanners-two-apis-one-balancer]] two scanners over HTTP reproduce the fixture oracle exactly once, and both do work", async () => {
     const seen: { instance: string; monitorId: string; height: string }[] = [];
     const makeInstance = (instance: string): ShieldedMonitorScannerService => {
       // Exactly what `scanner-cli.ts` builds from `STORAGE_URL`: an HTTP store and an HTTP

@@ -325,7 +325,7 @@ describe("HttpMonitorStore and PgShieldedMonitorStore are the same store (FR-025
     120_000,
   );
 
-  it("the global list surfaces agree once every sequence has run", async () => {
+  it("[[storage-api.parity.http-store-matches-pg-store]] the global list surfaces agree once every sequence has run", async () => {
     const strip = (rows: readonly { id: string }[]): unknown =>
       normalize(rows.map((r) => ({ ...r, id: undefined })));
     expect(show(strip(await served.client.listAll(500)))).toBe(show(strip(await direct.listAll(500))));

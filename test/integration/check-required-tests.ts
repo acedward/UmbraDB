@@ -144,7 +144,7 @@ export function statusesFromReport(report: JsonReport): Map<string, string[]> {
  *  UNION RULE, unchanged and still load-bearing: a branch that merges this one with any other
  *  00009 branch takes the UNION of the id sets and the count that follows from it, never one
  *  side's number. */
-export const EXPECTED_REQUIRED_COUNT = 50;
+export const EXPECTED_REQUIRED_COUNT = 56;
 
 /** The pinned count of `deferred` (WHERE-gated optional-feature) tests (BLOCK 6). Structurally PINS
  *  the deferred exemption set so deleting the sole deferred entry (a green "0 deferred" gate) fails the

@@ -120,7 +120,7 @@ describe("the private-API balancer", () => {
     await two?.stop();
   });
 
-  it("spreads 200 requests over both upstreams, near evenly, and names the one that answered", async () => {
+  it("[[shielded-monitor.balancer.random-selection-over-two-upstreams]] spreads 200 requests over both upstreams, near evenly, and names the one that answered", async () => {
     const counts = new Map<string, number>();
     for (let i = 0; i < 200; i++) {
       const response = await fetch(`${base}/v1/monitors`);
