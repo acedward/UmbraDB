@@ -27,6 +27,28 @@ import type { ScanBatchResult, ShieldedMonitorScanner } from "./scanner.js";
 /** The channel 00009-01's `putBlockBundle` notifies inside the height transaction. */
 export const ARCHIVE_PROGRESS_CHANNEL = "chain_archive_progress";
 
+/** Any UUID in a log line, which for this module means a monitor id. */
+const MONITOR_ID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+/**
+ * An error rendered for the log: its class, its stable `code` when it carries one, and its
+ * message with monitor ids redacted.
+ *
+ * The redaction is not theatre. Several of this project's own errors put the monitor id in the
+ * message (`MonitorFencedError`, `MonitorNotFoundError`), and a scanner log line naming which
+ * monitor failed and when is a per-wallet signal to anyone who can read the log — the same class
+ * of leak the audit named in the reference indexer's plaintext associations, arriving by a
+ * different route. Organizer spec FR-023 bans keys outright; ids are not keys, but there is no
+ * diagnostic reason to print one, so this prints the failure class instead and keeps the rest of
+ * the message, which is where the actual diagnosis lives.
+ */
+export function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err).replace(MONITOR_ID_PATTERN, "<monitor>");
+  const code = (err as { code?: unknown }).code;
+  const prefix = typeof code === "string" ? `${err.name}[${code}]` : err.name;
+  return `${prefix}: ${err.message.replace(MONITOR_ID_PATTERN, "<monitor>")}`;
+}
+
 export interface ScannerServiceOptions {
   readonly net: string;
   /** Monitors scanned in parallel. Default 4. */
@@ -147,10 +169,8 @@ export class ShieldedMonitorScannerService {
         } catch (err) {
           // One monitor's unexpected failure must not take the whole scanner down: the others
           // are independent, and a crash loop would stop every wallet in the deployment.
-          // Nothing about the monitor is logged but its failure class — no id, no key (FR-023).
           this.logger(
-            `[shielded-monitor-scanner] a monitor batch threw: ` +
-              `${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`,
+            `[shielded-monitor-scanner] a monitor batch threw: ${describeError(err)}`,
           );
           outcomes.failed = (outcomes.failed ?? 0) + 1;
         } finally {
@@ -174,10 +194,7 @@ export class ShieldedMonitorScannerService {
       try {
         await this.runCycle();
       } catch (err) {
-        this.logger(
-          `[shielded-monitor-scanner] cycle failed: ` +
-            `${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`,
-        );
+        this.logger(`[shielded-monitor-scanner] cycle failed: ${describeError(err)}`);
       }
       if (!this.running) return;
       await this.waitForWork();

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { readScannerConfig, SCANNER_ENV_DOC } from "../../shielded-monitor/scanner-config.js";
 import { InMemoryScannerMetrics, NOOP_SCANNER_METRICS } from "../../shielded-monitor/scanner-metrics.js";
+import { describeError } from "../../shielded-monitor/scanner-service.js";
+import { MonitorFencedError, MonitorNotFoundError } from "../../shielded-monitor/errors.js";
 
 /**
  * The scanner process's configuration and its metrics sink.
@@ -121,5 +123,28 @@ describe("scanner metrics", () => {
       NOOP_SCANNER_METRICS.observeBatchDuration({ net: "a" }, "error", 1);
       NOOP_SCANNER_METRICS.observeLag({ net: "a" }, 1);
     }).not.toThrow();
+  });
+});
+
+describe("scanner log rendering", () => {
+  const ID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+
+  it("keeps the failure class and the diagnosis but never prints a monitor id", () => {
+    // Both of these errors put the id in their own message, which is right for a caller
+    // handling them and wrong for a log line an operator or an aggregator can read.
+    const fenced = describeError(new MonitorFencedError(ID, "epoch", { epoch: 4n, state: "live" }));
+    expect(fenced).not.toContain(ID);
+    expect(fenced).toContain("<monitor>");
+    expect(fenced).toContain("SHIELDED_MONITOR_FENCED");
+    expect(fenced, "the diagnosis itself must survive").toContain("stored epoch 4");
+
+    const missing = describeError(new MonitorNotFoundError(ID));
+    expect(missing).not.toContain(ID);
+    expect(missing).toContain("SHIELDED_MONITOR_NOT_FOUND");
+  });
+
+  it("renders an error without a code, and a non-Error throw, without losing the redaction", () => {
+    expect(describeError(new Error(`boom for ${ID}`))).toBe("Error: boom for <monitor>");
+    expect(describeError(`raw string mentioning ${ID}`)).toBe("raw string mentioning <monitor>");
   });
 });
