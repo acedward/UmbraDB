@@ -229,6 +229,35 @@ request-body size cap and a page-size cap.
   "scanned and empty" from "not scanned yet" (FR-020). The database role the API runs as
   therefore needs `USAGE`/`SELECT` on the archive schema and nothing more; `SOURCE_TIP=off`
   removes the need entirely, at the cost of reporting `sourceTip: null` forever.
+- **The same process serves a dashboard at `/ui`** (00009-06). It changes the trust story in
+  exactly one way — it makes the unauthenticated surface reachable from a browser tab rather than
+  only from `curl` — and in no other: it adds no route that writes anything the API did not
+  already expose, no session, no cookie, and no credential of any kind. The page states its own
+  lack of authentication above the fold, so a reader cannot mistake "it has a UI" for "it has a
+  login".
+  - It is **one HTML string compiled into the binary**, with no framework, no bundler and no
+    external resource; `package.json`'s `dependencies` is unchanged by it. That is a supply-chain
+    property, not a style preference, and it is asserted by a required test that scans the served
+    document for any absolute URL or subresource-loading attribute, with a positive control
+    (`shielded-monitor.ui.self-contained-no-external-resources`).
+  - It is served under `Content-Security-Policy: default-src 'self'` naming the SHA-256 hashes of
+    its own inline script and style — not `'unsafe-inline'` — plus `form-action 'none'`,
+    `frame-ancestors 'none'`, `base-uri 'none'`, `img-src 'none'` and `object-src 'none'`, with
+    `x-content-type-options: nosniff` and `referrer-policy: no-referrer`.
+  - A viewing key typed into its registration field is sent only in the `POST /v1/monitors` body.
+    It is never placed in a URL, never written to `localStorage`/`sessionStorage`/a cookie, never
+    rendered back into the document, and the field is cleared before the request is issued. The
+    required key-not-logged test exercises the page's own request shape and scans the served HTML
+    alongside the logs and error bodies.
+  - The page builds its DOM with `textContent` only and contains no markup-assigning sink at all,
+    so no value a response carries can become HTML. A test asserts the absence by literal search.
+- **`umbradb-shielded-monitor-derive-key`** (00009-06) reads a seed **from a file only** — never
+  from `argv`, because an argument lands in the shell history and in every `ps` listing on a
+  shared host. It prints the viewing key (secret, and printing it is the command's purpose), the
+  coin public key and the encryption public key (public). It never prints the seed, the derived
+  role seed or the coin secret key, and it zeroes both the seed buffer and the derived role seed
+  before returning. A test asserts the absence of both in stdout and stderr, with a positive
+  control.
 
 **Deferred hardening — required before any multi-tenant or hosted deployment.**
 
@@ -239,7 +268,7 @@ request-body size cap and a page-size cap.
 | Keyed (HMAC) fingerprints | A guessed key can be confirmed by recomputing its fingerprint |
 | Encrypted association content | The wallet↔transaction linkage is readable by anyone with database access |
 | Tenant isolation and non-oracular cross-tenant behaviour | There is no tenant concept; one consumer credential, one trust domain |
-| Authentication on the private API, and signed cursors | Anyone who can reach the port is fully authorized; a cursor can be forged |
+| Authentication on the private API, and signed cursors | Anyone who can reach the port is fully authorized — through `curl` or through the `/ui` dashboard, which is the same surface; a cursor can be forged |
 | Least-privilege database roles as a shipped script | The privilege split exists only as a test instrument, not as a deployment artefact |
 | The full redaction/leakage gate over logs, metrics and database dumps | Only the key-not-logged property is asserted today |
 

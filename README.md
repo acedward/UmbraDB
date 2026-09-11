@@ -329,9 +329,16 @@ admission controls are a request-body size cap and a page-size cap.
   `shielded_monitor` schema; anyone with database access can read them.
 - The service never returns or logs a viewing key, and the key is accepted only in the body of
   `POST /v1/monitors`.
+- The same process also serves a **dashboard at `/ui`** (`GET /` redirects to it). It is one
+  self-contained HTML page with no framework, no build step and no external resource, served under
+  `Content-Security-Policy: default-src 'self'`. **It grants a browser exactly what `curl` already
+  had** — it does not add a login, and it says so on the page.
 
 Endpoint reference, coverage and cursor contracts, and every environment variable:
-[`docs/shielded-monitor-api.md`](docs/shielded-monitor-api.md). Backup/restore:
+[`docs/shielded-monitor-api.md`](docs/shielded-monitor-api.md). A start-to-finish walk-through on
+this repository's own Compose devnet, ending with the dashboard:
+[`docs/shielded-monitor-demo.md`](docs/shielded-monitor-demo.md) (`npm run demo:shielded-monitor`
+runs its wallet-free half). Backup/restore:
 [`docs/shielded-monitor-restore.md`](docs/shielded-monitor-restore.md).
 
 ## What UmbraDB is not

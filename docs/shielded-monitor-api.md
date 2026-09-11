@@ -100,6 +100,57 @@ error bodies.
   `DELETE` first, so a blind client retry cannot undo a revocation.
 - `415` — the content type was not `application/json`.
 
+### `GET /v1/monitors` — list monitors
+
+```json
+{
+  "items": [ { "monitorId": "…", "state": "live", "coverage": { … }, … } ],
+  "sourceTip": "1204",
+  "net": "undeployed"
+}
+```
+
+Every monitor this deployment holds, **in creation order**, each item in exactly the shape
+`GET /v1/monitors/:id` returns — the same builder, so the two cannot drift. `?limit=` is bounded by
+`API_MAX_PAGE` and defaults to `API_DEFAULT_PAGE`; `400 VALIDATION_FAILED` outside that range.
+`sourceTip` and `net` are repeated at the top level because they belong to the *deployment*, not to
+any monitor, and an empty `items` would otherwise hide them.
+
+**One asymmetry, chosen deliberately.** A **revoked** monitor IS listed, with `state: "revoked"`,
+even though `GET /v1/monitors/:id` answers `410` for it. The `410` protects that monitor's *data*;
+the list answers "what exists?". Hiding revoked monitors would mean revoking one makes it vanish
+from the only view an operator has — leaving them unable to name the id that `DELETE` needs. The
+list item carries nothing the `410` withholds: the id, the state, the coverage and the timestamps,
+no key and no fingerprint.
+
+A **deleted** monitor is never listed. That half is not negotiable: a deleted monitor must be
+indistinguishable from one that never existed, and a tombstone in the list would break that
+literally.
+
+### `GET /ui` — the dashboard
+
+A single self-contained HTML page, served by this same process. `GET /ui/` serves the same page;
+`GET /` answers `302` to `/ui`. It loads **nothing** from any other origin — no framework, no CDN,
+no font, no icon — and is served with `Content-Security-Policy: default-src 'self'` plus SHA-256
+hashes of its own inline script and style, `form-action 'none'`, `frame-ancestors 'none'`,
+`x-content-type-options: nosniff` and `referrer-policy: no-referrer`.
+
+It shows health and the archive tip, a monitor table with state badges and a coverage bar, a
+registration form, and the selected monitor's matches newest-first with cursor paging; it refreshes
+every 3 seconds and the refresh can be paused. Coverage that is unknown renders as *not scanned* or
+*unknown* — never as `0`.
+
+A viewing key typed into the registration form is sent only in the `POST /v1/monitors` body. It is
+never placed in a URL, never stored in the browser, never rendered back into the page, and never
+written to a server log — registering through the page produces the same log record as registering
+with `curl`, which the required test `shielded-monitor.api.key-never-logged` asserts over the page's
+own request shape.
+
+**The dashboard grants a browser exactly what `curl` already had.** It is the same unauthenticated
+surface; see the deployment warning at the top of this document.
+
+Walk-through: [`shielded-monitor-demo.md`](shielded-monitor-demo.md).
+
 ### `GET /v1/monitors/:id` — status
 
 `200` with the monitor view; `404` if the id names nothing **or names a deleted monitor**;
@@ -135,6 +186,15 @@ monitor is indistinguishable from one that never existed.
 
 `200 {"status":"ok","net":"…"}`. Touches no table, so it stays green on an empty deployment with
 zero monitors.
+
+### Deriving a key to register
+
+`umbradb-shielded-monitor-derive-key --seed-file <path> [--hd] [--net <id>] [--quiet]` turns a
+32-byte hex seed **held in a file** into the Bech32m `mn_shield-esk_<net>` string this API accepts,
+and prints the coin public key and encryption public key — the two public halves of the shielded
+address to fund. `--hd` applies the wallet's own derivation, BIP-0032 `m/44'/2400'/<account>'/3/<index>`
+over secp256k1, which is what `@midnightntwrk/wallet-sdk-hd` does. The seed is never read from the
+command line and never printed.
 
 ---
 

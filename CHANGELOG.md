@@ -68,6 +68,30 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
   and **the deployment must restrict network access** — anyone who can reach the port can
   register, read and delete any monitor. See `README.md` and `SECURITY.md` before exposing it.
 
+- **A way to watch the shielded monitor work.** Three additive pieces, no new runtime dependency:
+  - `GET /v1/monitors` — the list route. Every monitor except deleted ones, in creation order, each
+    item in the same shape `GET /v1/monitors/:id` returns, page-capped by the existing
+    `API_MAX_PAGE`, with the deployment's `sourceTip` and `net` at the top level. A **revoked**
+    monitor is listed (with `state: "revoked"`) although its own reads still answer `410`; a
+    **deleted** monitor never is. Backed by a new `PgShieldedMonitorStore.listAll(limit)`.
+  - `GET /ui` — a dashboard served by the API process itself (`GET /ui/` the same, `GET /` a `302`).
+    One self-contained HTML page: no framework, no bundler, no CDN, no font, no external resource
+    of any kind, under `Content-Security-Policy: default-src 'self'` with SHA-256 hashes of its own
+    inline script and style, `form-action 'none'` and `frame-ancestors 'none'`. It shows health and
+    the archive tip, the monitor table with state badges and a coverage bar, a registration form,
+    and the selected monitor's matches with cursor paging, refreshing every 3 s. A key typed into
+    the form travels only in the `POST /v1/monitors` body — never a URL, never browser storage,
+    never a log line. **It adds no authentication**: it is the same unauthenticated surface, and it
+    says so above the fold.
+  - `umbradb-shielded-monitor-derive-key` — derives the Bech32m viewing key and the shielded
+    address's two public halves from a 32-byte seed **read from a file, never from `argv`**.
+    `--hd` applies the wallet's own derivation, BIP-0032 `m/44'/2400'/<account>'/3/<index>` over
+    secp256k1 (`shielded-monitor/hd.ts`, Node built-ins only), verified against BIP-0032's official
+    test vector 1 and against three key vectors captured from `@midnightntwrk/wallet-sdk-hd@3.0.3`.
+  Plus `docs/shielded-monitor-demo.md` (a full runbook on this repository's own Compose devnet) and
+  `npm run demo:shielded-monitor` for its wallet-free half. Specified in
+  `openspec/changes/00009-06-dashboard/`.
+
 ### Changed
 
 - `umbradb-shielded-monitor-api` now reports the archive's **real** `sourceTip` when the archive
