@@ -333,6 +333,11 @@ admission controls are a request-body size cap and a page-size cap.
   self-contained HTML page with no framework, no build step and no external resource, served under
   `Content-Security-Policy: default-src 'self'`. **It grants a browser exactly what `curl` already
   had** — it does not add a login, and it says so on the page.
+- Each match carries the transaction's **public zswap data** — output commitments, spent
+  nullifiers, transients, contract addresses — and the block's time, expandable per match on the
+  dashboard. Whether a given output is *yours* is reported as `true`, `false` or `null`: a viewing
+  key answers "did anything here decrypt", not "which one", so the service never claims more than
+  the ledger entails. Balances, amounts and spend detection remain out of scope.
 
 Endpoint reference, coverage and cursor contracts, and every environment variable:
 [`docs/shielded-monitor-api.md`](docs/shielded-monitor-api.md). A start-to-finish walk-through on

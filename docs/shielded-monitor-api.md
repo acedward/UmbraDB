@@ -345,6 +345,12 @@ not hold. So the service reports what it can prove:
 - otherwise every candidate is **`null`**, and the segment carries `mineAmong: <n>`, i.e. *at
   least one of these n is yours*.
 
+Both of those last two deductions are about the **whole** segment, so both go silent when a list
+was truncated at the 256-entry cap: the entry that decrypted may sit past the cap, so nothing is
+pinned and no `mineAmong` is published. The two negatives are unaffected — `test` returning false
+is a fact about every ciphertext in the offer, seen or not, and a contract-owned entry carries
+none either way.
+
 Amounts, balances and spend detection are **out of scope** (they need the full key pair);
 `appliedOutcome` stays `"unknown"` regardless of what `details` shows.
 
