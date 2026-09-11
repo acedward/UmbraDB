@@ -161,6 +161,41 @@
       "id": "shielded-monitor.restore.revocation-survives-snapshot-restore",
       "file": "test/shielded-monitor/restore-drill.integration.test.ts",
       "description": "00009-02 (organizer spec FR-024): real pg_dump snapshot -> revoke -> DROP SCHEMA -> psql restore -> re-apply the exported revocation list; the monitor is refused again and an advance against it is fenced. Asserts mid-drill that the restore genuinely lost the revoke, so the drill cannot pass vacuously."
+    },
+    {
+      "id": "crash.shielded-monitor-batch.pg-kill-two-states",
+      "file": "test/integration/crash/shielded-monitor-batch-atomicity.crash.test.ts",
+      "description": "00009-03 / owner Rule B (spec/00009 FR-010, US5 scenario 2): 200 randomized PostgreSQL kills inside the scanner's per-batch transaction leave exactly {no association of H and coverage below H, all of H and coverage H}; both classes must occur, an interrupted height WITH matches and one WITHOUT must both occur (the latter is the case that turns entirely on coverage), and every interrupted batch must redo whole with no duplicate (height, position)."
+    },
+    {
+      "id": "crash.shielded-monitor-batch.sigkill-two-states",
+      "file": "test/integration/crash/shielded-monitor-batch-atomicity.crash.test.ts",
+      "description": "00009-03 / owner Rule B: a real child scanner process SIGKILLed at named statement indices inside its advance transaction leaves nothing of H; SIGKILLed immediately after the commit returned it leaves all of H including coverage. The worker's own pause signal is asserted, so a point that fell past the end of the transaction cannot masquerade as a crash point."
+    },
+    {
+      "id": "crash.shielded-monitor-batch.negative-control-unfolded-writes",
+      "file": "test/integration/crash/shielded-monitor-batch-atomicity.crash.test.ts",
+      "description": "00009-03 test-honesty control: the UNFOLDED shape (associations written, coverage advanced afterwards) DOES expose a partial batch, so the two-state result above is caused by the single transaction rather than by assertions that cannot fail."
+    },
+    {
+      "id": "crash.shielded-monitor-batch.write-set-is-shielded-monitor-only",
+      "file": "test/integration/crash/shielded-monitor-batch-atomicity.crash.test.ts",
+      "description": "00009-03 / owner Rule B, US5 scenario 4: every statement the scanner issues is captured and the ones whose LEADING verb writes are checked to name only shielded_monitor tables, in a run that demonstrably also read the archive. Two positive controls: an archive INSERT is classified and flagged, and a SELECT ... FOR UPDATE is NOT classified as a write (so the detector is precise, not merely permissive)."
+    },
+    {
+      "id": "shielded-monitor.relevance.matches-equal-the-fixture-manifest",
+      "file": "test/shielded-monitor/scanner.integration.test.ts",
+      "description": "00009-03 / SC-001: end to end over a real archive, every monitor's stored associations equal test/fixtures/shielded-monitor/corpus.manifest.json exactly -- every positive once (including the fallible-segment-only positive and the two-matching-output transaction, which yields ONE row), zero negatives, correct matched segments, appliedOutcome unknown, full FR-009 provenance, gapless seq in (blockHeight, position) order."
+    },
+    {
+      "id": "shielded-monitor.scanner.stale-source-stops-the-monitor",
+      "file": "test/shielded-monitor/scanner.integration.test.ts",
+      "description": "00009-03 / FR-013, US5 scenario 5: a re-bootstrapped archive (same chain, new archive instance id) moves the monitor to stale_source with its coverage frozen, instead of silently mixing two histories."
+    },
+    {
+      "id": "shielded-monitor.scanner.fail-closed-on-undecodable-bytes",
+      "file": "test/shielded-monitor/scanner.integration.test.ts",
+      "description": "00009-03 / FR-007: an undecodable transaction stops the monitor at its (height, position) with state failed and coverage left BELOW that height -- the unreadable range is never recorded as scanned-and-empty."
     }
   ],
   "deferred": [

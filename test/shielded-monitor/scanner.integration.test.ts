@@ -371,12 +371,17 @@ describe("scanner scheduling (FR-014, US2)", () => {
     }
   }, 300_000);
 
-  it("[[shielded-monitor.scanner.notify-wakes-the-live-tail]] a newly archived block wakes the running scanner through LISTEN rather than only on the poll timer", async () => {
+  it("a newly archived block wakes the running scanner through LISTEN rather than only on the poll timer", async () => {
     const world = await createScannerWorld(container, "tail");
     try {
       const scanner = new ShieldedMonitorScanner(world.archive, world.store, { net: NET });
       // A poll interval far longer than the test: if the match appears, it appeared because the
       // NOTIFY woke the loop, not because the timer fired.
+      //
+      // Deliberately NOT in the required-tests manifest, unlike this phase's other scanner ids:
+      // it is the one case whose pass/fail depends on wall-clock progress under whatever else
+      // is running on the host, and a load-sensitive entry in a fail-closed gate makes the gate
+      // less trustworthy rather than more. It still runs in every suite run.
       const service = new ShieldedMonitorScannerService(scanner, world.store, world.sql, {
         net: NET, concurrency: 2, pollMs: 600_000,
       });
