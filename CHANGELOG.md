@@ -70,6 +70,16 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
 
 ### Changed
 
+- `umbradb-shielded-monitor-api` now reports the archive's **real** `sourceTip` when the archive
+  is reachable from its database connection, instead of always `null`. The 00009-04 branch
+  shipped the `SourceTipProvider` seam with the "reports nothing" implementation because the
+  archive read contract lived on another branch; with the branches merged, leaving it unwired
+  would have left every deployment unable to answer "am I caught up?" — the one question the
+  coverage object exists for. The tip is read through the `ArchiveReadContract` interface only
+  (two `SELECT`s, no schema knowledge, no write method in reach), so owner Rule B is unchanged;
+  the wire shape is unchanged (the field was already always present and nullable). Set
+  `SOURCE_TIP=off` for an API deployed with no archive access. The API's database role now needs
+  `USAGE`/`SELECT` on the archive schema unless that switch is used.
 - **Breaking (`chain_archive` preview):** migration 002 re-keys `transactions` from
   `(net, block_height, block_hash, tx_hash)` to `(net, block_height, block_hash, position)` so
   duplicate-hash reference rows can coexist. Migrations 003–007 add runtime metadata, replay

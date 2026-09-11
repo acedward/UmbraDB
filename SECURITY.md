@@ -183,6 +183,25 @@ narrower than the rest of this document's, and the narrowness is an owner decisi
   running the whole flow under a PostgreSQL role holding only `USAGE`/`SELECT` on `chain_archive`
   (`test/shielded-monitor/schema-isolation.integration.test.ts`).
 
+**The scanner process (`umbradb-shielded-monitor`, 00009-03).**
+
+Added by the 00009-03 change (`openspec/changes/00009-03-relevance-scanner/`), it is the only
+process that holds a decoded viewing key in memory, and the only one that writes associations.
+
+- **Key lifetime is one batch.** A monitor's key is deserialized into the ledger WASM heap for the
+  batch that needs it and `clear()`ed in a `finally`, on the throwing path as well as the happy
+  one; two monitors never share a handle, and a page containing no regular transaction loads no
+  key at all. Asserted directly (`test/shielded-monitor/scanner.test.ts`), because "cleared in a
+  `finally`" is the kind of claim that rots silently.
+- **No monitor id reaches a log line or a metric label.** Metric labels are a closed union the
+  type system will not let a monitor id into, and the scheduler prints the failure class plus the
+  stable error code rather than the error's own message, which carried the id. A log naming which
+  monitor matched and when is a per-wallet signal to anyone who can read the log — the same
+  linkage `associations` exposes, arriving by a different route.
+- It reaches the archive **only** through `ArchiveReadContract`, an object whose whole surface is
+  two read methods, and its write set is audited at runtime against `shielded_monitor.*`
+  (`test/integration/crash/shielded-monitor-batch-atomicity.crash.test.ts`).
+
 **The private API (`umbradb-shielded-monitor-api`, 00009-04) is unauthenticated by design.**
 
 Added by the 00009-04 change (`openspec/changes/00009-04-private-api-cli/`), it serves the
@@ -204,6 +223,12 @@ request-body size cap and a page-size cap.
   bound parameter, and on that route a bound parameter is a key). A test with a positive control
   scans every captured log record and error body for the key in three encodings
   (`test/shielded-monitor/api.integration.test.ts`).
+- **It reads the archive, read-only, to report `sourceTip`** (00009-05). On a deployment where
+  the archive shares the database, the API process constructs a `PgArchiveReadContract` — two
+  `SELECT`s, no schema name of its own, no write method in reach — so a consumer can tell
+  "scanned and empty" from "not scanned yet" (FR-020). The database role the API runs as
+  therefore needs `USAGE`/`SELECT` on the archive schema and nothing more; `SOURCE_TIP=off`
+  removes the need entirely, at the cost of reporting `sourceTip: null` forever.
 
 **Deferred hardening — required before any multi-tenant or hosted deployment.**
 
