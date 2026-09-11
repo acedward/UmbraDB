@@ -186,21 +186,60 @@ describe("match-details backfill", () => {
     expect(await countMissing()).toBe(0);
   }, 300_000);
 
-  it("refuses a revoked monitor and passes over it without abandoning the others", async () => {
+  it("refuses a closed monitor — before the run and mid-page — and keeps going with the rest", async () => {
+    // Two refusal paths in one case, because what matters about both is the SAME thing: a closed
+    // monitor is that monitor's answer, never the run's.
+    //
+    //   Kthird — revoked BEFORE the run starts, so `runMonitor` refuses at its first read.
+    //   Kprime — revoked BETWEEN the page read and the key load, which is the narrow race the
+    //            backfill has to survive. Injected through the store seam rather than by timing,
+    //            so the case is deterministic.
+    //
+    // Monitors are visited in registration order (K, Kprime, Kthird), so `refused === 2` is what
+    // proves the run CONTINUED past Kprime's mid-page refusal and still reached Kthird.
     await clearAllDetails();
-    const revokedId = world.monitors.get("Kthird")!;
-    await world.store.revoke(revokedId, "backfill-test");
-    {
-      const summary = await backfill().runAll();
-      expect(summary.refused).toBe(1);
-      // The other monitors were still done.
-      for (const [keyId, monitorId] of world.monitors) {
-        if (monitorId === revokedId) continue;
-        const rows = await world.store.readAssociations(monitorId, 0n, 1000);
-        expect(rows.every((a) => a.details !== undefined), `${keyId} was left unfilled`).toBe(true);
-      }
+    const racedId = world.monitors.get("Kprime")!;
+    const preRevokedId = world.monitors.get("Kthird")!;
+    await world.store.revoke(preRevokedId, "backfill-test");
+
+    let raced = false;
+    const racingStore = {
+      listAll: (limit: number) => world.store.listAll(limit),
+      get: (id: string) => world.store.get(id),
+      readAssociationsMissingDetails: (id: string, afterSeq: bigint, limit: number) =>
+        world.store.readAssociationsMissingDetails(id, afterSeq, limit),
+      updateAssociationDetails: (id: string, epoch: bigint, updates: never) =>
+        world.store.updateAssociationDetails(id, epoch, updates),
+      getKeyMaterial: async (id: string) => {
+        if (id === racedId && !raced) {
+          raced = true;
+          await world.store.revoke(id, "backfill-race");
+        }
+        return world.store.getKeyMaterial(id);
+      },
+    };
+    const summary = await new ShieldedMonitorDetailsBackfill(
+      world.archive, racingStore as never, { net: NET, batchRows: 2 },
+    ).runAll();
+
+    expect(raced, "the race was never triggered, so this case proves nothing").toBe(true);
+    expect(summary.refused).toBe(2);
+
+    // The healthy monitor was filled.
+    const healthy = world.monitors.get("K")!;
+    const rows = await world.store.readAssociations(healthy, 0n, 1000);
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((a) => a.details !== undefined)).toBe(true);
+
+    // Neither refused monitor was left half-filled.
+    for (const closed of [racedId, preRevokedId]) {
+      const [row] = await world.sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM ${world.sql(world.monitorSchema)}.associations
+         WHERE monitor_id = ${closed} AND details IS NOT NULL
+      `;
+      expect(row!.n).toBe(0);
     }
-    // The monitor STAYS revoked: `revoked` is absorbing (US3 scenario 3) and the only way out is
+    // Both monitors STAY revoked: `revoked` is absorbing (US3 scenario 3) and the only way out is
     // `delete`. This case therefore runs last in the file, and nothing after it may assume the
     // whole schema is fillable.
   }, 300_000);

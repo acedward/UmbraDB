@@ -193,7 +193,19 @@ export class ShieldedMonitorDetailsBackfill {
       examined += page.length;
       afterSeq = page[page.length - 1]!.seq;
 
-      const { updates, skips } = await this.deriveForPage(monitorId, page);
+      let derived;
+      try {
+        derived = await this.deriveForPage(monitorId, page);
+      } catch (err) {
+        // `getKeyMaterial` refuses a monitor that was revoked or deleted between the page read
+        // and the derivation. That is this monitor's answer, not the run's: `runAll` must still
+        // finish the others.
+        if (err instanceof MonitorNotFoundError || err instanceof MonitorRevokedError) {
+          return { examined, filled, skipped, fenced: false, refused: true };
+        }
+        throw err;
+      }
+      const { updates, skips } = derived;
       for (const reason of skips) skipped[reason] += 1;
 
       if (updates.length > 0) {

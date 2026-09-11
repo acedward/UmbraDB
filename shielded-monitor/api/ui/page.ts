@@ -329,7 +329,10 @@ async function loadMoreMatches() {
 function copyable(text) {
   var span = node("span", text, "hash");
   span.title = "click to copy";
-  span.addEventListener("click", function () {
+  span.addEventListener("click", function (ev) {
+    // The match row itself toggles on click (00009-07), so copying a hash inside one must not
+    // bubble up and collapse the row the reader is copying from.
+    ev.stopPropagation();
     if (navigator.clipboard) navigator.clipboard.writeText(text).then(function () { say("ok", "copied"); }, function () {});
   });
   return span;

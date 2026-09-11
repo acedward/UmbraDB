@@ -254,6 +254,58 @@ describe("match details", () => {
     expect(details.totals.outputs).toBe(MAX_DETAIL_ENTRIES + 44);
   });
 
+  it("refuses to pin or to count candidates in a TRUNCATED segment, because the answer may not be among the entries listed", async () => {
+    // The whole-segment deductions — "exactly one candidate left, so it is the one" and "one of
+    // these n is yours" — are statements about a COMPLETE candidate set. A truncated list is not
+    // one: the entry that actually decrypted may sit past the cap, so a pin would be wrong and a
+    // count would name a set the answer is not in. Both must therefore go silent.
+    const oneVisibleCandidate = {
+      guaranteed: {
+        outputs: [
+          { commitment: "aa" },
+          ...Array.from({ length: MAX_DETAIL_ENTRIES }, (_, i) => ({
+            commitment: `c${i}`, contractAddress: "ca",
+          })),
+        ],
+        inputs: [],
+        transients: [],
+      },
+      fallible: new Map<number, unknown>(),
+    };
+    const key: EncryptionSecretKeyHandle = { test: () => true, clear: () => {} };
+    const details = await buildMatchDetails(oneVisibleCandidate, key, [0]);
+    const [segment] = details.segments;
+
+    expect(segment!.truncated).toBe(true);
+    expect(segment!.matched).toBe(true);
+    // Exactly one of the 256 listed entries is a candidate — the deduction WOULD have pinned it
+    // had the list been complete.
+    expect(segment!.outputs.filter((o) => o.contractAddress === undefined)).toHaveLength(1);
+    expect(segment!.outputs.filter((o) => o.mine === true)).toHaveLength(0);
+    expect(segment!.outputs[0]!.mine).toBeNull();
+    expect(segment!.mineAmong).toBeUndefined();
+    // The CERTAIN negatives survive truncation untouched: a contract-owned entry carries no user
+    // ciphertext whether or not the list was cut.
+    expect(segment!.outputs.slice(1).every((o) => o.mine === false)).toBe(true);
+    expect(details.totals.mine).toBe(0);
+  });
+
+  it("still marks every entry of an UNMATCHED segment `false` even when the list was truncated", async () => {
+    // `test` returning false is a fact about every ciphertext in the offer, seen or not, so this
+    // deduction is unaffected by the cap.
+    const big = {
+      guaranteed: {
+        outputs: Array.from({ length: MAX_DETAIL_ENTRIES + 10 }, (_, i) => ({ commitment: `c${i}` })),
+        inputs: [],
+        transients: [],
+      },
+      fallible: new Map<number, unknown>(),
+    };
+    const details = await buildMatchDetails(big, { test: () => false, clear: () => {} }, []);
+    expect(details.segments[0]!.truncated).toBe(true);
+    expect(details.segments[0]!.outputs.every((o) => o.mine === false)).toBe(true);
+  });
+
   it("leaves `truncated` absent when nothing was cut", async () => {
     const small = {
       guaranteed: { outputs: [{ commitment: "aa" }], inputs: [], transients: [] },

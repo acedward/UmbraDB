@@ -86,7 +86,12 @@ describe("no module under src/ imports project B (organizer spec FR-025)", () =>
   it("the migration lineage under src/ is scanned and is clean (the underscore/hyphen split works)", () => {
     const migrationDir = fileURLToPath(new URL("../../src/postgres/migrations/shielded_monitor", import.meta.url));
     const files = walkTsFiles(migrationDir);
-    expect(files.map((f) => path.basename(f)).sort()).toStrictEqual(["001_core.ts", "index.ts"]);
+    // The file list is PINNED, not globbed, so a migration added to this lineage cannot slip past
+    // the scan below by being written after this test was: adding one is a deliberate edit here.
+    // `002_association_details.ts` (00009-07) joined `001_core.ts` and `index.ts`.
+    expect(files.map((f) => path.basename(f)).sort()).toStrictEqual([
+      "001_core.ts", "002_association_details.ts", "index.ts",
+    ]);
     for (const file of files) {
       expect(findShieldedMonitorViolations(readFileSync(file, "utf8"))).toStrictEqual([]);
     }

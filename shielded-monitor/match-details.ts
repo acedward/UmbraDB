@@ -111,7 +111,11 @@ export interface MatchSegmentDetail {
   readonly truncated?: true;
   /** Present when the segment matched but no single entry could be pinned: the number of
    *  candidates (ciphertext-bearing outputs plus transients) among which AT LEAST ONE is yours.
-   *  Always `>= 2` when present — one candidate is attributed as `mine: true` instead. */
+   *  Always `>= 2` when present — one candidate is attributed as `mine: true` instead.
+   *
+   *  ABSENT when the segment was truncated, because the entry that decrypted may not be among the
+   *  ones listed, and a count that named a set the answer is not in would be a false statement
+   *  rather than a weaker one. */
   readonly mineAmong?: number;
 }
 
@@ -277,10 +281,18 @@ export async function buildMatchDetails(
     //   - segment not matched  → nothing in it decrypted → every entry is `false`, certainly;
     //   - segment matched      → a contract-owned entry is still `false`, certainly, and if the
     //                            candidates reduce to one, that one is `true`, certainly.
+    //
+    // BOTH deductions are about the WHOLE segment, so both are void when the lists were
+    // TRUNCATED: the candidate we can see may not be the one that decrypted, and "one of these n
+    // is yours" would then name a set the answer is not in. Under truncation every candidate is
+    // therefore `null` and no `mineAmong` is published. The two CERTAIN negatives survive
+    // truncation untouched — `test` returning false is a fact about every ciphertext in the
+    // offer, seen or not, and a contract-owned entry carries none either way.
     const isCandidate = (e: RawEntry): boolean => e.contractAddress === undefined;
     const candidates = isMatched
       ? [...outputEntries, ...transientEntries].filter(isCandidate)
       : [];
+    const complete = !truncated;
 
     const mineOf = new Map<RawEntry, MineAttribution>();
     if (!isMatched) {
@@ -289,12 +301,13 @@ export async function buildMatchDetails(
       for (const e of [...outputEntries, ...transientEntries]) {
         mineOf.set(e, isCandidate(e) ? null : false);
       }
-      if (candidates.length === 1) {
+      if (complete && candidates.length === 1) {
         mineOf.set(candidates[0]!, true);
-      } else if (candidates.length > 1) {
-        // Try the exact route before settling for `null`. On archived (proven) bytes every call
-        // here is refused and the map is left as it is; on unproven offers it resolves the
-        // segment completely.
+      } else if (candidates.length >= 1) {
+        // Try the exact route before settling for `null`. It is sound even under truncation,
+        // because it asks about the entry itself rather than about what is left in a list. On
+        // archived (proven) bytes every call here is refused and the map is left as it is; on
+        // unproven offers it resolves the segment completely.
         let resolvedAny = false;
         for (const e of candidates) {
           const exact = isolateAndTest(ledger, key, e);
@@ -352,7 +365,8 @@ export async function buildMatchDetails(
       transients,
       counts,
       ...(truncated ? { truncated: true as const } : {}),
-      ...(unattributed > 0 ? { mineAmong: candidates.length } : {}),
+      // Only when the candidate set is COMPLETE: see the attribution comment above.
+      ...(unattributed > 0 && complete ? { mineAmong: candidates.length } : {}),
     });
   }
 

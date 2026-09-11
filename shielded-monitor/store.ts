@@ -889,7 +889,12 @@ export class PgShieldedMonitorStore {
           const updated = await tx<{ seq: bigint }[]>`
             UPDATE ${tx(this.schema)}.associations
                SET details            = ${tx.json(update.details as never)},
-                   block_timestamp_ms = ${update.blockTimestampMs ?? null}
+                   -- COALESCE, not an assignment: when the archive has no timestamp for that
+                   -- height the update carries none, and overwriting an existing value with NULL
+                   -- would DELETE a recorded fact to record a different one. A backfill may add,
+                   -- never remove.
+                   block_timestamp_ms = COALESCE(${update.blockTimestampMs ?? null}::bigint,
+                                                 block_timestamp_ms)
              WHERE monitor_id = ${monitorId}
                AND seq = ${update.seq}
                AND details IS NULL
