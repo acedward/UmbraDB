@@ -28,12 +28,16 @@ that role, and the crash suite's write-set audit checks the statements themselve
 
 ## Configuration
 
+See [`shielded-monitor-deployment.md`](shielded-monitor-deployment.md) for the whole topology
+and the migration from the pre-00009-08 single-host mode.
+
 | Variable | Default | Meaning |
 |---|---|---|
-| `MONITOR_PG` | — (**required**) | PostgreSQL connection string. |
+| `STORAGE_URL` | — (**required**) | Base URL of the `umbradb-storage-api`. **This process has no database connection** (00009-08 v2, owner Q25): it reads the archive and persists every monitor record through this one URL, and refuses to start if any `*_PG` variable is in its environment. |
+| `ARCHIVE_URL` | `STORAGE_URL` | Where `/v1/archive/*` is served, if not by the storage API. |
 | `NET` | `undeployed` | Network id / row scope. One network per deployment. |
-| `ARCHIVE_SCHEMA` | `chain_archive` | The archive's schema. **Read only.** |
-| `MONITOR_SCHEMA` | `shielded_monitor` | The schema this process owns and writes. |
+| `SCAN_INSTANCE_ID` | a random UUID | This instance's monitor-lease owner name. |
+| `SCAN_LEASE_TTL_MS` | `30000` | How long a monitor lease survives without renewal. |
 | `SCAN_BATCH_BLOCKS` | `1` | Whole blocks per batch, and therefore per commit. |
 | `SCAN_CONCURRENCY` | `4` | Monitors scanned in parallel. |
 | `SCAN_POLL_MS` | `2000` | Fallback wake-up interval when no notification arrives. |
@@ -73,7 +77,7 @@ Matches recorded before this service stored per-transaction zswap data have `det
 API returns `null` and the dashboard says "details not recorded yet". One command fills them:
 
 ```bash
-MONITOR_PG=postgres://… NET=undeployed umbradb-shielded-monitor --backfill-details
+STORAGE_URL=http://storage-api:8788 NET=undeployed umbradb-shielded-monitor --backfill-details
 ```
 
 It walks every monitor on `NET`, reads each match's block back **through the archive read

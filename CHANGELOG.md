@@ -10,6 +10,25 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
 
 ### Added
 
+- **Project B as a distinct deployable, with no database of its own (00009-08).** A new A-side
+  process `umbradb-storage-api` owns the single main PostgreSQL and serves two route families on
+  one port: the archive read contract (`/v1/archive/*`, mounted from the same router
+  `umbradb-archive-read-api` uses) and a **command-shaped monitor store** (`/v1/monitor-store/*`)
+  in which one call is one database transaction — `POST …/advance` carries a height's
+  associations, its coverage advance and the scanner's lease renewal in one body and one
+  `BEGIN … COMMIT`, fenced by the monitor's epoch (409 on a stale one).
+  The scanner, the private API and its dashboard, the details backfill and the new balancer are
+  pure HTTP clients of it: they take `STORAGE_URL` and nothing else, hold no connection string,
+  no schema name and no driver, and **refuse to start if any `*_PG` variable is present in their
+  environment**. A transitive import guard fails the build if any module under
+  `shielded-monitor/**` can reach `postgres`, `src/postgres/**` or the storage API by any chain of
+  imports, static or dynamic.
+  Also new: `umbradb-shielded-monitor-balancer` (uniform random upstream per request, health
+  exclusion and reinstatement, one retry for GET only, never for POST, `X-Upstream` on every
+  response), one image with six commands (`Dockerfile.shielded-monitor`), a 2×2 Compose overlay
+  (2 scanners + 2 APIs + balancer + storage API over one database), `npm run
+  demo:shielded-monitor -- --split`, and `docs/shielded-monitor-deployment.md`.
+
 - Indexer-independent finalized chain-archive ingest from a historical Midnight 1.x node, including
   block-scoped metadata/event decoding, runtime-generated system transactions, durable D-parameter
   continuity, sparse ledger replay checkpoints, and per-block comparison with the chain-committed
@@ -122,6 +141,18 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
   `openspec/changes/00009-07-match-details/`.
 
 ### Changed
+
+- **BREAKING (alpha deployment shape): `umbradb-shielded-monitor` and
+  `umbradb-shielded-monitor-api` no longer take a database connection.** `MONITOR_PG`,
+  `SHIELDED_MONITOR_PG`, `SHIELDED_MONITOR_SCHEMA`, `ARCHIVE_SCHEMA` and
+  `SHIELDED_MONITOR_BOOTSTRAP` are gone from those two processes, which now require `STORAGE_URL`
+  and refuse to start while any `*_PG` variable is set. Nothing in the database changes — same
+  schema, same rows, same lineage; the migration is `docs/shielded-monitor-deployment.md`
+  ("Migrating from the single-host deployment"), and it is three environment edits plus one new
+  service. The in-process single-host mode this repository shipped before 00009-08 is removed
+  deliberately (owner decision Q25): project B must have no database connection at all, so that
+  the boundary it crosses is the one a TEE step can attest and encrypt.
+
 
 - `umbradb-shielded-monitor-api` now reports the archive's **real** `sourceTip` when the archive
   is reachable from its database connection, instead of always `null`. The 00009-04 branch

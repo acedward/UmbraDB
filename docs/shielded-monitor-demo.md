@@ -56,6 +56,7 @@ export INDEXER_HOST_PORT=$((10000 + RANDOM % 50000))
 export PROOF_HOST_PORT=$((10000 + RANDOM % 50000))
 export POSTGRES_HOST_PORT=$((10000 + RANDOM % 50000))
 export API_PORT=$((10000 + RANDOM % 50000))
+export STORAGE_PORT=$((10000 + RANDOM % 50000))
 
 export DEMO_DIR="$(mktemp -d)"          # seeds, keys, logs â€” outside the repository
 chmod 700 "$DEMO_DIR"
@@ -152,19 +153,30 @@ chmod 600 "$DEMO_DIR/viewing-key.txt"
 
 Once installed, the same command is `umbradb-shielded-monitor-derive-key`.
 
-## 4. Start the scanner and the API
+## 4. Start the storage API, then the scanner and the API
+
+Since 00009-08 v2 the scanner and the private API have **no database connection**: one A-side
+process owns the database and they reach it over HTTP (owner decision Q25). See
+[`shielded-monitor-deployment.md`](shielded-monitor-deployment.md).
 
 ```bash
-MONITOR_PG="$ARCHIVE_PG" \
+ARCHIVE_PG="$ARCHIVE_PG" \
+NET=undeployed \
+STORAGE_HOST=127.0.0.1 \
+STORAGE_PORT="$STORAGE_PORT" \
+STORAGE_BOOTSTRAP=1 \
+npx tsx storage-api/server-cli.ts > "$DEMO_DIR/storage-api.log" 2>&1 &
+echo $! > "$DEMO_DIR/storage-api.pid"
+
+STORAGE_URL="http://127.0.0.1:${STORAGE_PORT}" \
 NET=undeployed \
 SCAN_BATCH_BLOCKS=8 \
 SCAN_POLL_MS=2000 \
 npx tsx shielded-monitor/scanner-cli.ts > "$DEMO_DIR/scanner.log" 2>&1 &
 echo $! > "$DEMO_DIR/scanner.pid"
 
-SHIELDED_MONITOR_PG="$ARCHIVE_PG" \
+STORAGE_URL="http://127.0.0.1:${STORAGE_PORT}" \
 SHIELDED_MONITOR_NET=undeployed \
-SHIELDED_MONITOR_BOOTSTRAP=1 \
 API_HOST=127.0.0.1 \
 API_PORT="$API_PORT" \
 npx tsx shielded-monitor/api/server-cli.ts > "$DEMO_DIR/api.log" 2>&1 &
@@ -224,7 +236,7 @@ A match recorded before this data was stored shows **"Details not recorded yet â
 backfill"** instead. Fill them in with:
 
 ```bash
-MONITOR_PG="$MONITOR_PG" NET=undeployed \
+STORAGE_URL="http://127.0.0.1:${STORAGE_PORT}" NET=undeployed \
   npx tsx shielded-monitor/scanner-cli.ts --backfill-details
 ```
 

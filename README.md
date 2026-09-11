@@ -339,11 +339,21 @@ admission controls are a request-body size cap and a page-size cap.
   key answers "did anything here decrypt", not "which one", so the service never claims more than
   the ledger entails. Balances, amounts and spend detection remain out of scope.
 
+- Since 00009-08 the API, the scanner and the dashboard hold **no database connection at all**:
+  they take one `STORAGE_URL` and reach everything through `umbradb-storage-api`, the single
+  process that owns the main database — and they refuse to start if any `*_PG` variable is in
+  their environment. Several API instances run behind `umbradb-shielded-monitor-balancer`, which
+  picks one uniformly at random per request. That storage API is itself unauthenticated and
+  unencrypted in this alpha: a registration carries a viewing key over it in the clear, so it too
+  must be kept on loopback or a private network.
+
 Endpoint reference, coverage and cursor contracts, and every environment variable:
-[`docs/shielded-monitor-api.md`](docs/shielded-monitor-api.md). A start-to-finish walk-through on
-this repository's own Compose devnet, ending with the dashboard:
+[`docs/shielded-monitor-api.md`](docs/shielded-monitor-api.md). The deployment topology, the full
+environment matrix, how to scale scanners and API instances, and what the TEE step adds:
+[`docs/shielded-monitor-deployment.md`](docs/shielded-monitor-deployment.md). A start-to-finish
+walk-through on this repository's own Compose devnet, ending with the dashboard:
 [`docs/shielded-monitor-demo.md`](docs/shielded-monitor-demo.md) (`npm run demo:shielded-monitor`
-runs its wallet-free half). Backup/restore:
+runs its wallet-free half; `-- --split` runs the 2×2 topology). Backup/restore:
 [`docs/shielded-monitor-restore.md`](docs/shielded-monitor-restore.md).
 
 ## What UmbraDB is not

@@ -48,18 +48,16 @@ What the service **does** guarantee about key handling:
 ## Running it
 
 ```
-SHIELDED_MONITOR_PG=postgres://user:pass@localhost:5432/umbradb \
+STORAGE_URL=http://127.0.0.1:8788 \
 SHIELDED_MONITOR_NET=undeployed \
 umbradb-shielded-monitor-api
 ```
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SHIELDED_MONITOR_PG` | the `PG*` environment | PostgreSQL connection string |
-| `SHIELDED_MONITOR_SCHEMA` | `shielded_monitor` | the schema project B owns |
+| `STORAGE_URL` | — (**required**) | base URL of the `umbradb-storage-api`. **This process has no database connection** (00009-08 v2, owner Q25); it refuses to start if any `*_PG` variable is in its environment |
+| `ARCHIVE_URL` | `STORAGE_URL` | where `/v1/archive/*` is served, for `sourceTip` |
 | `SHIELDED_MONITOR_NET` | `undeployed` | the one network this deployment serves; a key's Bech32m HRP must match it |
-| `SHIELDED_MONITOR_BOOTSTRAP` | unset | `1` applies the migration lineage at boot (opt-in on purpose) |
-| `ARCHIVE_SCHEMA` | `chain_archive` | the archive schema whose tip is reported as `sourceTip`; read-only, through the archive read contract |
 | `SOURCE_TIP` | unset | `off` disables the tip reader, so `sourceTip` is always `null` — for an API deployed with no archive access |
 | `API_HOST` | `127.0.0.1` | bind address |
 | `API_PORT` | `8787` | bind port; `0` asks the kernel for a free one |

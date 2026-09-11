@@ -189,7 +189,7 @@ async function main() {
   requireDocker();
 
   const sha = spawnSync("git", ["rev-parse", "--short", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).stdout?.trim();
-  const project = projectFlag >= 0 ? argv[projectFlag + 1] : `umbradb-00009-06-${sha || Date.now().toString(36)}`;
+  const project = projectFlag >= 0 ? argv[projectFlag + 1] : `umbradb-00009-08-${sha || Date.now().toString(36)}`;
   const split = argv.includes("--split");
   const ports = {
     node: randomPort(),

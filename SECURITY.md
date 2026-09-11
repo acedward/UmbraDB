@@ -259,6 +259,40 @@ request-body size cap and a page-size cap.
   before returning. A test asserts the absence of both in stdout and stderr, with a positive
   control.
 
+**The storage boundary (`umbradb-storage-api`, 00009-08 v2) is the new security-relevant hop.**
+
+Owner decision Q25 removed project B's database connection entirely: the scanner, the private API,
+the dashboard, the details backfill and the balancer hold one base URL (`STORAGE_URL`) and no
+credential at all, and one A-side process — `umbradb-storage-api` — owns the single main database
+and executes each of B's operations as exactly one transaction. Two consequences, and they pull in
+opposite directions:
+
+- **Better**: there is now exactly ONE process in the deployment holding a database credential,
+  and a leftover credential in a B process's environment is a hard startup refusal rather than an
+  unnoticed privilege (`shielded-monitor/no-database.ts`; the import guard
+  `test/shielded-monitor/import-boundary.test.ts` additionally proves no B module can reach
+  `postgres` or `src/postgres/**` by any chain of imports, static or dynamic). This is the seam a
+  TEE profile attests and encrypts across, and it exists before the encryption does deliberately
+  (owner Q25: "first divide the process, then figure out the correct structure and add the
+  encryption").
+- **Worse, today**: the alpha has no transport security anywhere, so **a registration carries a
+  serialized viewing key in the clear over this hop**, and `GET /v1/monitor-store/monitors/<id>/
+  key-material` serves one to anything that can reach the port. The storage API is
+  **unauthenticated by design** (owner Q3) and binds loopback by default. Anyone who can open a
+  TCP connection to it can read every archived block, read and delete every monitor, and read
+  every registered viewing key. Run it on loopback or on a private network, and treat reaching it
+  as equivalent to reading the database.
+
+The access log records the route PATTERN, the status and a request id — never a body, never a raw
+URL, and never a monitor id — so key material cannot reach a log through it
+(`test/storage-api/storage-api.test.ts`).
+
+**The balancer (`umbradb-shielded-monitor-balancer`, 00009-08 v2)** terminates nothing and
+authenticates nothing; it is a request router in front of interchangeable API instances. It never
+retries a POST (a replayed registration would be a request the consumer never made), and it adds
+`X-Upstream` to every response, which names an internal instance — do not expose it to an
+untrusted network any more than the API it fronts.
+
 **Deferred hardening — required before any multi-tenant or hosted deployment.**
 
 | Deferred control | Consequence of its absence today |
@@ -271,6 +305,8 @@ request-body size cap and a page-size cap.
 | Authentication on the private API, and signed cursors | Anyone who can reach the port is fully authorized — through `curl` or through the `/ui` dashboard, which is the same surface; a cursor can be forged |
 | Least-privilege database roles as a shipped script | The privilege split exists only as a test instrument, not as a deployment artefact |
 | The full redaction/leakage gate over logs, metrics and database dumps | Only the key-not-logged property is asserted today |
+| Transport security and authentication on `STORAGE_URL` (mTLS + attestation) | A viewing key crosses the storage hop in plaintext, and anything that can reach the storage API can read every key and delete every monitor |
+| Encryption of B's records at the storage boundary (opaque payloads the host never parses) | The host stores B's fields as plaintext columns, so the storage API's own operator sees everything B does |
 
 **Deployment requirement.** Until the table above is closed, run this schema only in a
 single-tenant, operator-trusted deployment on an encrypted substrate, with the private API bound
