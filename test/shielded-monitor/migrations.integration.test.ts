@@ -337,6 +337,37 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
           expect(rows[0]!.indexdef).toMatch(/WHERE \(details IS NULL\)/i);
         });
 
+        it("refuses a schema whose `associations` table 001_core never created — and a VIEW by that name is not a table", async () => {
+          // The migration's preflight, which the full-lineage path never reaches: `runMigrations`
+          // applies 001 before 002, so only a caller invoking `up()` directly can arrive here.
+          // Without it the first ALTER would fail halfway through with a message about a column
+          // on a table that does not exist, which is the wrong thing to hand an operator.
+          const bare = "shielded_monitor_no_associations";
+          await sql`DROP SCHEMA IF EXISTS ${sql(bare)} CASCADE`;
+          await sql`CREATE SCHEMA ${sql(bare)}`;
+          try {
+            await expect(associationDetailsMigration.up(sql as never, bare)).rejects.toThrow(
+              /associations does not exist as an ordinary table/,
+            );
+            // Nothing was created on the way to the refusal: the preflight runs BEFORE the ALTERs.
+            const empty = await sql<{ table_name: string }[]>`
+              SELECT table_name FROM information_schema.tables WHERE table_schema = ${bare}
+            `;
+            expect(empty).toHaveLength(0);
+
+            // `relkind = 'r'` is load-bearing, not decoration: a VIEW called `associations` would
+            // satisfy a laxer existence check and then fail on the ALTER. It is refused by the
+            // same message, which is what "ordinary table" in that message means.
+            await sql`CREATE TABLE ${sql(bare)}.real_rows (seq bigint)`;
+            await sql`CREATE VIEW ${sql(bare)}.associations AS SELECT seq FROM ${sql(bare)}.real_rows`;
+            await expect(associationDetailsMigration.up(sql as never, bare)).rejects.toThrow(
+              /associations does not exist as an ordinary table/,
+            );
+          } finally {
+            await sql`DROP SCHEMA IF EXISTS ${sql(bare)} CASCADE`;
+          }
+        });
+
         it("is idempotent: re-running `up` against the migrated schema changes nothing", async () => {
           const columns = async (): Promise<string[]> => {
             const rows = await sql<{ column_name: string }[]>`
