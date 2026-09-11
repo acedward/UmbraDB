@@ -102,8 +102,27 @@ function blockHashFor(height: number): string {
   return createHash("sha256").update(`umbradb/shielded-monitor/fixture-block/${height}`).digest("hex");
 }
 
-function txHashFor(id: string): string {
+/**
+ * The transaction hash for a fixture whose bytes are NOT a real Midnight transaction — i.e. the
+ * `system-opaque` shape, whose payload is a labelled string the standard codec is never handed.
+ *
+ * Every other shape is keyed on the hash the LEDGER computes from the bytes (see
+ * `ledgerTxHash`), because that is what project A actually archives: `sync-service.ts` stores
+ * `hexNoPrefix(decoded.transactionHash()).toLowerCase()` and refuses a block whose claimed hash
+ * and payload disagree (audit A1). A corpus keyed on a synthetic digest modelled an archive this
+ * repository never produces, and 00009-08's page-integrity check — which compares a page's
+ * claimed `txHash` against the hash its bytes have — could not be exercised against it.
+ */
+function syntheticTxHashFor(id: string): string {
   return createHash("sha256").update(`umbradb/shielded-monitor/fixture-tx/${id}`).digest("hex");
+}
+
+/** The hash the vendored ledger computes for these bytes, lowercase hex with no `0x` — exactly
+ *  what `chain-archive-sync` archives. */
+function ledgerTxHash(l: any, rawBytes: Uint8Array): string {
+  const tx = l.Transaction.deserialize("signature", "proof", "binding", rawBytes);
+  const hash = String(tx.transactionHash());
+  return (hash.startsWith("0x") ? hash.slice(2) : hash).toLowerCase();
 }
 
 const GENESIS_PARENT_HASH = "0".repeat(64);
@@ -134,7 +153,12 @@ export async function buildCorpus(manifest: CorpusManifest = readCorpusManifest(
 
   const transactions: BuiltTransaction[] = [];
   for (const spec of manifest.transactions) {
-    transactions.push({ spec, txHash: txHashFor(spec.id), rawBytes: buildOne(ledger, spec) });
+    const rawBytes = buildOne(ledger, spec);
+    transactions.push({
+      spec,
+      txHash: spec.shape === "system-opaque" ? syntheticTxHashFor(spec.id) : ledgerTxHash(ledger, rawBytes),
+      rawBytes,
+    });
   }
 
   function buildOne(l: any, spec: CorpusTransactionSpec): Uint8Array {

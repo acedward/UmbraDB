@@ -45,8 +45,12 @@ export function parseProgressPayload(payload: string): ArchiveProgressEvent | un
   const separator = payload.lastIndexOf(":");
   if (separator <= 0) return undefined;
   const net = payload.slice(0, separator);
-  const height = Number(payload.slice(separator + 1));
-  if (!Number.isSafeInteger(height) || height < 0) return undefined;
+  const raw = payload.slice(separator + 1);
+  // `/^\d+$/` and not `Number(...)`: `Number("")` is 0, so a truncated `"undeployed:"` would
+  // otherwise parse as a perfectly plausible height 0.
+  if (!/^\d+$/.test(raw)) return undefined;
+  const height = Number(raw);
+  if (!Number.isSafeInteger(height)) return undefined;
   return { net, height };
 }
 
