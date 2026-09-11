@@ -278,8 +278,12 @@ export class ShieldedMonitorScanner {
     const afterHeight = this.afterHeightFor(monitor);
     const page = await this.archive.readBlocksSince(this.net, afterHeight, this.batchBlocks);
     const sourceTip = page.sourceTip === undefined ? undefined : BigInt(page.sourceTip.height);
-    if (sourceTip !== undefined && monitor.coverage.scannedThrough !== undefined) {
-      const lag = sourceTip - monitor.coverage.scannedThrough;
+    if (sourceTip !== undefined) {
+      // A monitor that has scanned nothing yet is not "zero behind": it has the whole range from
+      // its requested start to the tip still to do, and that is the number an operator watching
+      // a backfill needs. Measured from `requestedStart - 1` so the first block counts.
+      const from = monitor.coverage.scannedThrough ?? (monitor.coverage.requestedStart - 1n);
+      const lag = sourceTip - from;
       this.metrics.observeLag({ net: this.net }, lag > 0n ? Number(lag) : 0);
     }
     if (page.blocks.length === 0) {
@@ -307,12 +311,14 @@ export class ShieldedMonitorScanner {
     let advanced;
     try {
       advanced = await this.store.advance(monitor.id, monitor.epoch, throughHeight, associations, {
-        // Only consulted on the very first advance. The archive's earliest retained height can
-        // legitimately be above the requested start; recording where coverage actually began
-        // keeps the gap visible instead of implying the missing range was scanned and empty.
-        fromHeight: monitor.coverage.scannedThrough === undefined
-          ? (firstHeight < monitor.coverage.requestedStart ? firstHeight : monitor.coverage.requestedStart)
-          : firstHeight,
+        // Only consulted on the very first advance (the store COALESCEs it away afterwards).
+        //
+        // It is the FIRST HEIGHT THIS BATCH ACTUALLY READ, never the requested start. The
+        // archive's earliest retained height can legitimately be above the requested start, and
+        // recording the requested start as `scannedFrom` in that case would claim coverage over
+        // a range nothing ever read — exactly the gap FR-011 requires to stay visible. Where
+        // there is no gap the two are equal, so this is only ever more honest, never different.
+        fromHeight: firstHeight,
       });
     } catch (err) {
       if (err instanceof MonitorFencedError) return { kind: "fenced", rejection: err.rejection };
@@ -459,6 +465,12 @@ export class ShieldedMonitorScanner {
   private async matchPage(
     monitor: MonitorRecord, blocks: readonly ArchivedBlock[],
   ): Promise<AssociationInput[]> {
+    // No regular transaction in the whole page — a run of empty blocks, which is the NORMAL
+    // shape of a quiet live tail. Loading and deserializing the key to test nothing would put
+    // key material in the WASM heap once per block for no reason. The batch still commits its
+    // coverage advance: the caller does that, not this method.
+    if (!blocks.some((block) => block.transactions.some((tx) => tx.kind !== "system"))) return [];
+
     const keyBytes = await this.store.getKeyMaterial(monitor.id);
     const key = await this.deserializeKey(keyBytes);
     const associations: AssociationInput[] = [];

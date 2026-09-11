@@ -226,7 +226,7 @@ describe("scanner control flow (no database, no ledger)", () => {
   });
 
   it("never shares a key handle between monitors — each batch gets its own", async () => {
-    const archive = new FakeArchive([systemBlock(0, 0)]);
+    const archive = new FakeArchive([block(0, 1)]);
     const store = new FakeStore();
     const handles: EncryptionSecretKeyHandle[] = [];
     const scanner = new ShieldedMonitorScanner(archive, store, {
@@ -238,12 +238,31 @@ describe("scanner control flow (no database, no ledger)", () => {
       },
     });
 
+    // Both batches fail at the predicate (the placeholder bytes are not a transaction), which
+    // is irrelevant here: what matters is that each obtained its OWN handle.
     await scanner.scanBatch(monitorRecord({ id: "11111111-2222-4333-8444-555555555555" }));
     store.monitor = monitorRecord({ id: "22222222-2222-4333-8444-555555555555" });
     await scanner.scanBatch(store.monitor);
 
     expect(handles).toHaveLength(2);
     expect(handles[0]).not.toBe(handles[1]);
+  });
+
+  it("a page with no regular transaction never loads the key at all, and still advances", async () => {
+    const archive = new FakeArchive([systemBlock(0, 2), block(1, 0)]);
+    const store = new FakeStore();
+    const lifecycle = { deserialized: 0, cleared: 0 };
+    const scanner = new ShieldedMonitorScanner(archive, store, {
+      net: NET, batchBlocks: 2, deserializeKey: async () => fakeKey(lifecycle),
+    });
+
+    const result = await scanner.scanBatch(store.monitor);
+
+    expect(result).toMatchObject({ kind: "advanced", throughHeight: 1n, matches: 0 });
+    // The quiet live tail is the common case; putting key material in the WASM heap once per
+    // empty block to test nothing is both wasteful and a needless exposure.
+    expect(lifecycle.deserialized).toBe(0);
+    expect(store.keyReads).toHaveLength(0);
   });
 
   it("an unsupported protocol version stops the monitor with the typed code (FR-007)", async () => {
