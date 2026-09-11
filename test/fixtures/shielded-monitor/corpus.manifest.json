@@ -15,7 +15,7 @@
     { "height": 1, "note": "one positive and one negative, side by side at two positions" },
     { "height": 2, "note": "a zero-match block that still advances coverage (US2 scenario 1)" },
     { "height": 3, "note": "fallible-segment cases (US1 scenario 3)" },
-    { "height": 4, "note": "multi-output, invisible-output, system and offer-less transactions" },
+    { "height": 4, "note": "multi-output, invisible-output, system, offer-less and (00009-07) input/transient-carrying transactions" },
     { "height": 5, "note": "an empty block: no transactions at all, coverage still advances" }
   ],
   "transactions": [
@@ -101,6 +101,19 @@
       "shape": "system-opaque",
       "outputs": [],
       "expected": { "K": [], "Kprime": [], "Kthird": [] }
+    },
+    {
+      "id": "h4p4-input-transient-and-two-outputs",
+      "note": "00009-07: the only corpus transaction carrying a real spent INPUT (a nullifier) and a real TRANSIENT (a commitment/nullifier pair) alongside two outputs to two different keys. Both the input and the transient are CONTRACT-owned, because the ledger refuses to build either from a user-owned output without the coin secret key (measured: 'attempted to spend a user-owned output as contract owned'), so neither can ever be `mine`. For K the guaranteed segment matches and two ciphertext-bearing outputs remain, which is the ambiguous attribution case: both read `mine: null` with `mineAmong: 2`.",
+      "blockHeight": 4,
+      "position": 4,
+      "kind": "regular",
+      "shape": "rich",
+      "outputs": [
+        { "section": "guaranteed", "segment": 0, "to": "K", "nonce": "09" },
+        { "section": "guaranteed", "segment": 0, "to": "Kprime", "nonce": "0a" }
+      ],
+      "expected": { "K": [0], "Kprime": [0], "Kthird": [] }
     },
     {
       "id": "h4p3-standard-transaction-with-no-offers",

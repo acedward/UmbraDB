@@ -58,7 +58,7 @@ export interface CorpusTransactionSpec {
   blockHeight: number;
   position: number;
   kind: "regular" | "system";
-  shape: "standard" | "contract-owned" | "system-opaque" | "no-offers";
+  shape: "standard" | "contract-owned" | "system-opaque" | "no-offers" | "rich";
   outputs: { section: "guaranteed" | "fallible"; segment: number; to: string; nonce: string }[];
   /** Per key id, the segment ids that must match. `[]` means "must not match". */
   expected: Record<string, number[]>;
@@ -156,6 +156,49 @@ export async function buildCorpus(manifest: CorpusManifest = readCorpusManifest(
       const contract = createHash("sha256").update(`umbradb/fixture-contract/${spec.id}`).digest("hex");
       const coin = { type: TOKEN_TYPE, nonce: nonceFor(`${spec.id}/contract`), value: 1000n };
       const offer = offerOf(l.ZswapOutput.newContractOwned(coin, 0, contract));
+      return Uint8Array.from(
+        l.Transaction.fromParts(manifest.ledgerNetworkId, offer, undefined, undefined)
+          .mockProve().serialize(),
+      );
+    }
+
+    if (spec.shape === "rich") {
+      // 00009-07: a transaction that also carries a real spent INPUT and a real TRANSIENT, so the
+      // detail extractor has nullifiers and transient coins to read rather than outputs alone.
+      //
+      // Both are CONTRACT-owned, and that is forced by the ledger, not chosen: building a
+      // `ZswapInput` or a `ZswapTransient` from a user-owned output needs the coin secret key and
+      // the WASM refuses it outright ("attempted to spend a user-owned output as contract
+      // owned"). Two further measured facts are encoded here: an input needs a QUALIFIED coin
+      // (`mt_index`), and the chain state must be rehashed with `postBlockUpdate` before the
+      // spend, or the ledger answers "attempted to spend from a Merkle tree that was not
+      // rehashed".
+      const contract = createHash("sha256").update(`umbradb/fixture-contract/${spec.id}`).digest("hex");
+      const spent = { type: TOKEN_TYPE, nonce: nonceFor(`${spec.id}/spent`), value: 1000n };
+      const [chainState] = new l.ZswapChainState()
+        .tryApply(l.ZswapOffer.fromOutput(l.ZswapOutput.newContractOwned(spent, 0, contract), TOKEN_TYPE, 1000n), undefined);
+      const input = l.ZswapInput.newContractOwned(
+        { ...spent, mt_index: 0n }, 0, contract, chainState.postBlockUpdate(new Date()),
+      );
+      let offer = l.ZswapOffer.fromInput(input, TOKEN_TYPE, 1000n);
+      // The two outputs spend that input between them, so the offer's deltas balance and
+      // `mockProve()` accepts it.
+      const values = [600n, 400n];
+      spec.outputs.forEach((out, index) => {
+        const value = values[index] ?? 0n;
+        const coin = { type: TOKEN_TYPE, nonce: nonceFor(`${spec.id}/${out.nonce}`), value };
+        const secrets = keys.get(out.to);
+        if (secrets === undefined) throw new Error(`fixture manifest names an unknown key id: ${out.to}`);
+        const output = l.ZswapOutput.new(coin, 0, secrets.coinPublicKey, secrets.encryptionPublicKey);
+        offer = offer.merge(l.ZswapOffer.fromOutput(output, TOKEN_TYPE, value));
+      });
+      const transientCoin = { type: TOKEN_TYPE, nonce: nonceFor(`${spec.id}/transient`), value: 50n };
+      const transient = l.ZswapTransient.newFromContractOwnedOutput(
+        { ...transientCoin, mt_index: 0n }, 0, l.ZswapOutput.newContractOwned(transientCoin, 0, contract),
+      );
+      // A transient is created AND spent in the same transaction, so it balances on its own and
+      // needs no matching delta.
+      offer = offer.merge(l.ZswapOffer.fromTransient(transient));
       return Uint8Array.from(
         l.Transaction.fromParts(manifest.ledgerNetworkId, offer, undefined, undefined)
           .mockProve().serialize(),
