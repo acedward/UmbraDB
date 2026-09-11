@@ -33,7 +33,7 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
     return sql;
   }
 
-  it("applies cleanly, is idempotent, and creates exactly the four tables", async () => {
+  it("applies cleanly, is idempotent, and creates exactly the five tables", async () => {
     const schema = "shielded_monitor_apply";
     const sql = createClient({ connectionString: container.getConnectionUri(), schema });
     try {
@@ -57,7 +57,9 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
          WHERE table_schema = ${schema} ORDER BY table_name
       `;
       expect(tables.map((r) => r.table_name)).toStrictEqual([
-        "_migrations", "associations", "audit_events", "lifecycle_events", "monitors",
+        // `monitor_leases` joined the set in 00009-08 (migration 003). The list is pinned rather
+        // than counted, so a table appearing by accident fails here.
+        "_migrations", "associations", "audit_events", "lifecycle_events", "monitor_leases", "monitors",
       ]);
 
       // The lineage is selectable exactly like the Tier-1.5 one; `shieldedMonitorMigrations`
