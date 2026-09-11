@@ -315,6 +315,32 @@ Read [`SECURITY.md`](SECURITY.md) before deploying. The load-bearing points:
   whether an identical chunk already exists. Under the single-writer model both channels require
   already being the writer; per-wallet keyed chunking is a 1.1 item.
 
+### The shielded-monitor private API is unauthenticated by design (alpha)
+
+`umbradb-shielded-monitor-api` serves the shielded viewing-key monitors of the
+`shielded_monitor` schema. In this alpha it has **no authentication, no authorization, no tenant
+scoping, no rate limiting and no quotas** — a recorded decision, not an oversight. Its only
+admission controls are a request-body size cap and a page-size cap.
+
+- It binds **`127.0.0.1`** by default (`API_HOST`, `API_PORT`).
+- **A deployment MUST restrict network access to this port.** Anyone who can open a connection to
+  it can register a viewing key, read every monitor's matches, and revoke or delete any monitor.
+- Registered viewing keys and wallet↔transaction associations are stored **in plaintext** in the
+  `shielded_monitor` schema; anyone with database access can read them.
+- The service never returns or logs a viewing key, and the key is accepted only in the body of
+  `POST /v1/monitors`.
+- The same process also serves a **dashboard at `/ui`** (`GET /` redirects to it). It is one
+  self-contained HTML page with no framework, no build step and no external resource, served under
+  `Content-Security-Policy: default-src 'self'`. **It grants a browser exactly what `curl` already
+  had** — it does not add a login, and it says so on the page.
+
+Endpoint reference, coverage and cursor contracts, and every environment variable:
+[`docs/shielded-monitor-api.md`](docs/shielded-monitor-api.md). A start-to-finish walk-through on
+this repository's own Compose devnet, ending with the dashboard:
+[`docs/shielded-monitor-demo.md`](docs/shielded-monitor-demo.md) (`npm run demo:shielded-monitor`
+runs its wallet-free half). Backup/restore:
+[`docs/shielded-monitor-restore.md`](docs/shielded-monitor-restore.md).
+
 ## What UmbraDB is not
 
 - **Not an ORM or query builder.** Five narrow interfaces, not "do anything with Postgres".
