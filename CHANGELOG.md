@@ -15,9 +15,124 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
   continuity, sparse ledger replay checkpoints, and per-block comparison with the chain-committed
   `midnight_ledgerStateRoot`.
 - Packaged `umbradb-archive-sync` CLI and digest-pinned Docker parity/live-service gates.
+- **Shielded monitor store (`shielded_monitor` schema, project B core).** A new, **additive**
+  migration lineage — `src/postgres/migrations/shielded_monitor/{000_schema,001_core}` applied
+  through `bootstrapShieldedMonitorSchema()` — creating `monitors`, `associations`,
+  `lifecycle_events` and `audit_events` in a schema of its own. Nothing existing changes: no
+  current migration, table, interface or exported symbol is touched, and a deployment that never
+  calls the bootstrap is unaffected.
+  Alongside it, a new top-level `shielded-monitor/` module (outside `src/`, like
+  `chain-archive-sync/`, with a committed guard test enforcing that nothing under `src/` imports
+  it): BIP-350 Bech32m intake for Midnight shielded viewing keys with the network-bound HRP rule
+  and ledger-v8 validation, a domain-separated SHA-256 registration fingerprint, a total lifecycle
+  state machine with a monotone epoch, an epoch-fenced `advance()` that commits a block range's
+  associations and its coverage advance in one transaction, a revocation-list export/apply pair
+  for restores, and a trusted operator harness (`npm run shielded-monitor:harness`).
+  Documented in `docs/shielded-monitor-restore.md` and `SECURITY.md`; specified in
+  `openspec/changes/00009-02-monitor-store/`.
+  **Alpha trust model:** viewing keys and wallet↔transaction associations are stored in
+  **plaintext** in this schema — at-rest encryption, key rotation, keyed fingerprints and tenant
+  isolation are deferred. See `SECURITY.md` before deploying it.
+- **Shielded viewing-key relevance scanner (project B's worker).** A new process,
+  `umbradb-shielded-monitor`, that reads the archive's canonical finalized history **only**
+  through the `ArchiveReadContract` interface, evaluates the ledger's own
+  `EncryptionSecretKey.test(offer)` over each regular transaction's guaranteed offer and every
+  fallible-segment offer, and commits each batch of whole block heights — that batch's
+  associations **and** the coverage advance — in ONE transaction in `shielded_monitor`. Blocks
+  with no matches still advance coverage, so "scanned and empty" stays distinguishable from
+  "not scanned". An unsupported protocol version or an undecodable transaction stops the monitor
+  at that height and position **without** claiming coverage over it; an archive rebuilt under a
+  monitor moves it to `stale_source` rather than mixing histories. The tail follows
+  `LISTEN chain_archive_progress` with polling as the fallback. Every association carries
+  `appliedOutcome = "unknown"`; the archive's replay outcome, where it recorded one, is exposed
+  separately as `sourceOutcome` and is never promoted. Additive: no existing migration, table,
+  interface or exported symbol changes, and a deployment that never runs the binary is
+  unaffected. Documented in `docs/shielded-monitor-scanner.md`; specified in
+  `openspec/changes/00009-03-relevance-scanner/`.
+- **Shielded monitor private API and reference consumer (project C, private half).** Two new
+  packaged CLI entry points, `umbradb-shielded-monitor-api` and
+  `umbradb-shielded-monitor-client`, over the `shielded_monitor` schema above. The service is
+  built on Node's own `http` plus the `zod` this package already depends on — **no new runtime
+  dependency** — and serves `POST /v1/monitors`, `GET /v1/monitors/:id`,
+  `GET /v1/monitors/:id/matches`, `POST /v1/monitors/:id/{pause,resume,revoke}`,
+  `DELETE /v1/monitors/:id` and `GET /v1/health`. Matches page by an opaque base64url cursor
+  bound to its monitor; every status and matches response carries the coverage object
+  (`requestedStart`, `scannedFrom`, `scannedThrough`, `sourceTip`) as decimal strings, so an
+  unscanned range is never presented as an empty result. The reference client registers a key
+  read from a file, polls with a cursor persisted atomically to a file, and drives the whole
+  lifecycle over HTTP alone — it imports nothing but Node built-ins. Documented in
+  `docs/shielded-monitor-api.md`; specified in `openspec/changes/00009-04-private-api-cli/`.
+  Additive: no migration, no change under `src/`, and the published library surface is unchanged.
+  **Unauthenticated by design:** this alpha has no authentication, authorization, tenant scoping,
+  rate limiting or quotas (only a body-size and a page-size cap). It binds `127.0.0.1` by default
+  and **the deployment must restrict network access** — anyone who can reach the port can
+  register, read and delete any monitor. See `README.md` and `SECURITY.md` before exposing it.
+
+- **A way to watch the shielded monitor work.** Three additive pieces, no new runtime dependency:
+  - `GET /v1/monitors` — the list route. Every monitor except deleted ones, in creation order, each
+    item in the same shape `GET /v1/monitors/:id` returns, page-capped by the existing
+    `API_MAX_PAGE`, with the deployment's `sourceTip` and `net` at the top level. A **revoked**
+    monitor is listed (with `state: "revoked"`) although its own reads still answer `410`; a
+    **deleted** monitor never is. Backed by a new `PgShieldedMonitorStore.listAll(limit)`.
+  - `GET /ui` — a dashboard served by the API process itself (`GET /ui/` the same, `GET /` a `302`).
+    One self-contained HTML page: no framework, no bundler, no CDN, no font, no external resource
+    of any kind, under `Content-Security-Policy: default-src 'self'` with SHA-256 hashes of its own
+    inline script and style, `form-action 'none'` and `frame-ancestors 'none'`. It shows health and
+    the archive tip, the monitor table with state badges and a coverage bar, a registration form,
+    and the selected monitor's matches with cursor paging, refreshing every 3 s. A key typed into
+    the form travels only in the `POST /v1/monitors` body — never a URL, never browser storage,
+    never a log line. **It adds no authentication**: it is the same unauthenticated surface, and it
+    says so above the fold.
+  - `umbradb-shielded-monitor-derive-key` — derives the Bech32m viewing key and the shielded
+    address's two public halves from a 32-byte seed **read from a file, never from `argv`**.
+    `--hd` applies the wallet's own derivation, BIP-0032 `m/44'/2400'/<account>'/3/<index>` over
+    secp256k1 (`shielded-monitor/hd.ts`, Node built-ins only), verified against BIP-0032's official
+    test vector 1 and against three key vectors captured from `@midnightntwrk/wallet-sdk-hd@3.0.3`.
+  Plus `docs/shielded-monitor-demo.md` (a full runbook on this repository's own Compose devnet) and
+  `npm run demo:shielded-monitor` for its wallet-free half. Specified in
+  `openspec/changes/00009-06-dashboard/`.
+
+- **Match details: what was actually in the transaction.** A match used to be a height, a position
+  and a hash. It now also carries the transaction's **public zswap data**, recorded by the scanner
+  from the offers it already had in hand when it decided relevance — output commitments, spent
+  nullifiers, transients, contract addresses on contract-owned entries — plus the block's
+  timestamp, and a three-valued `mine` per output/transient. **Additive throughout:**
+  - one migration, `src/postgres/migrations/shielded_monitor/002_association_details`, adding the
+    **nullable** `associations.details jsonb` and `associations.block_timestamp_ms bigint` plus a
+    partial index on the rows still missing details. Existing rows keep `NULL`, every pre-existing
+    writer and reader is unaffected, and `NULL` means *not recorded yet*, never "no outputs".
+  - the scanner writes them in the **same** `BEGIN…COMMIT` as the height's associations and its
+    coverage advance (owner Rule B); the Rule B crash gate is strengthened to require it.
+  - `GET /v1/monitors/:id/matches` items gain `blockTimestampMs` (decimal string or `null`) and
+    `details` (object or `null`); `?details=0` omits both and reproduces the previous item exactly.
+  - the dashboard's match rows expand into per-segment output / input / transient tables with
+    click-to-copy hashes and a legend, and show a "run the backfill" placeholder for older matches.
+  - `umbradb-shielded-monitor --backfill-details` (or `SCAN_BACKFILL_DETAILS=1`) fills older
+    matches, reading blocks only through the archive read contract and writing only the two new
+    columns. Idempotent by predicate (`AND details IS NULL`), epoch-fenced, and it skips rather
+    than guesses when a row cannot be tied to the block it names.
+
+  `mine` is `true | false | null` because the ledger permits nothing stronger:
+  `EncryptionSecretKey.test(offer)` is an `any()` over all of an offer's ciphertexts, and
+  isolating one proven output into its own offer is refused by the vendored ledger v8 build. Every
+  value the service reports is entailed — `false` for every entry of an unmatched segment and for
+  contract-owned entries, `true` when a matched segment has exactly one candidate left, `null`
+  otherwise with `mineAmong` saying how many. Amounts, balances and spend detection remain out of
+  scope, and `appliedOutcome` is still always `"unknown"`. Specified in
+  `openspec/changes/00009-07-match-details/`.
 
 ### Changed
 
+- `umbradb-shielded-monitor-api` now reports the archive's **real** `sourceTip` when the archive
+  is reachable from its database connection, instead of always `null`. The 00009-04 branch
+  shipped the `SourceTipProvider` seam with the "reports nothing" implementation because the
+  archive read contract lived on another branch; with the branches merged, leaving it unwired
+  would have left every deployment unable to answer "am I caught up?" — the one question the
+  coverage object exists for. The tip is read through the `ArchiveReadContract` interface only
+  (two `SELECT`s, no schema knowledge, no write method in reach), so owner Rule B is unchanged;
+  the wire shape is unchanged (the field was already always present and nullable). Set
+  `SOURCE_TIP=off` for an API deployed with no archive access. The API's database role now needs
+  `USAGE`/`SELECT` on the archive schema unless that switch is used.
 - **Breaking (`chain_archive` preview):** migration 002 re-keys `transactions` from
   `(net, block_height, block_hash, tx_hash)` to `(net, block_height, block_hash, position)` so
   duplicate-hash reference rows can coexist. Migrations 003–007 add runtime metadata, replay

@@ -1,0 +1,32 @@
+{
+  "$note": "Ground-truth vectors captured from the REAL Midnight wallet SDK, out of tree, on 2026-09-11. They exist so `shielded-monitor/hd.ts` and `shielded-monitor/derive-key-cli.ts` can be proven to reproduce what a wallet does, rather than merely to implement BIP-0032 correctly (which `test/shielded-monitor/hd.test.ts` checks separately against BIP-0032's own official test vector 1).",
+  "$why-no-seeds-here": "This file records ONLY PUBLIC keys. The seeds are named by a recipe and constructed in the test; the derived Zswap role seed and the serialized encryption secret key are NOT recorded in any form. That is not cosmetic: this repository's own gitleaks rule `umbradb-wallet-seed-hex` exists to catch a 64-hex value in a seed- or secret-named field, and .gitleaks.toml records as an audit finding that a path allowlist is a permanent global exemption and was removed. Committing synthetic secret material and then suppressing the scanner would disarm that gate for everyone; committing no secret material keeps it armed. The public keys below are what the derivation is actually FOR — they are the shielded address a funder pays — and a wrong role seed cannot produce a right public key, so the vectors lose no strength.",
+  "source": {
+    "package": "@midnightntwrk/wallet-sdk-hd@3.0.3",
+    "underlying": "@scure/bip32@2.4.0",
+    "ledger": "@midnight-ntwrk/ledger-v8 (the same 8.1.0 build this repository vendors)",
+    "howCaptured": "one-off `docker run --rm` of the sibling image `midnight-1-offers/shielded-night-deploy:local`, which already carries a coherent pinned Midnight 1.0.0 SDK; the driver script lived in the scratchpad and no dependency was added to this repository (the same method 00009-05 used for the live shielded transfer)",
+    "call": "HDWallet.fromSeed(seed).selectAccount(0).selectRole(Roles.Zswap).deriveKeyAt(0) -> ZswapSecretKeys.fromSeed(roleSeed)"
+  },
+  "account": 0,
+  "role": 3,
+  "index": 0,
+  "path": "m/44'/2400'/0'/3/0",
+  "vectors": [
+    {
+      "seedRecipe": "zeros-with-last-byte-1",
+      "coinPublicKey": "1bd4f827be97ff013c4a702e4b08f30ec378728a54670cf7cc92cb9b1a14eff6",
+      "encryptionPublicKey": "b62e630a030171b5e11af2487f0103e650cc703f284d0a478b2a3abdf9715b70"
+    },
+    {
+      "seedRecipe": "ascending-0-to-31",
+      "coinPublicKey": "15c5bd5c86154974613a0bee21740ea846a64a83ec23971a871bcb4473fd1a70",
+      "encryptionPublicKey": "22896f9d63f57da469af6a4df0ce61c9ce121afeca6c8614f1b4e992f5a64d02"
+    },
+    {
+      "seedRecipe": "repeated-deadbeef",
+      "coinPublicKey": "2ae28c64798f76271295066479d6cb6ed722de27e69299be4840093ee34b5ae1",
+      "encryptionPublicKey": "0785ae8076a27064d5a8ac86497eb7bb0c914b3cc741c7a7cd2a13590108c3e2"
+    }
+  ]
+}
