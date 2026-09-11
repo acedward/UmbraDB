@@ -82,6 +82,31 @@ describe("relevance scanner against a real archive (SC-001, US1, US2)", () => {
     }
   }, 300_000);
 
+  it("every match carries its public zswap data and its block time, recorded at match time (00009-07)", async () => {
+    for (const key of world.corpus.manifest.keys) {
+      const monitorId = world.monitors.get(key.id)!;
+      const associations = await world.store.readAssociations(monitorId, 0n, 1000);
+      expect(associations.length, `${key.id} must have matches`).toBeGreaterThan(0);
+      for (const got of associations) {
+        const details = got.details;
+        expect(details, `${key.id} seq ${got.seq} has no details`).toBeDefined();
+        expect(details!.ledgerBuild).toBe(LEDGER_BUILD_ID);
+        // The segments the details report as matched are exactly the association's own — the two
+        // come from one evaluation, so they cannot disagree.
+        expect(details!.segments.filter((seg) => seg.matched).map((seg) => seg.segment))
+          .toStrictEqual([...got.matchedSegments]);
+        // Every matched segment holds at least one entry the key could own, or the match would
+        // have been impossible.
+        for (const segment of details!.segments.filter((seg) => seg.matched)) {
+          expect(segment.outputs.length + segment.transients.length).toBeGreaterThan(0);
+        }
+        // The block time is the archive's own value for that height, not a clock read.
+        const bundle = world.corpus.bundles.find((b) => BigInt(b.block.height) === got.blockHeight)!;
+        expect(got.blockTimestampMs).toBe(BigInt(bundle.block.timestampMs!));
+      }
+    }
+  }, 300_000);
+
   it("no association carries a sourceOutcome when the archive recorded none — 'unknown' is never dressed up", async () => {
     // The corpus is archived by node-only ingest, which records no replay outcome, so
     // `sourceOutcome` must be ABSENT rather than invented. (The archive DOES persist outcomes
