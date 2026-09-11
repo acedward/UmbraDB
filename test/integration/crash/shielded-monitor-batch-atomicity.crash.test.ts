@@ -348,6 +348,79 @@ describe("Rule B: one block height, one transaction — the only observable stat
   );
 
   it(
+    "[[crash.shielded-monitor-batch.details-commit-with-the-height]] a height's match DETAILS and block time commit in the same transaction as its associations and its coverage — and a detail-less row is refused by the classifier",
+    async () => {
+      // 00009-07. The 200-kill case above already classifies every observation with the
+      // strengthened predicate, but it can only ever show that the good state occurred. This case
+      // shows the two halves separately: the production scanner really does write details inside
+      // the batch, and the classifier really would refuse a state where it had not.
+      const scanner = new ShieldedMonitorScanner(archive, cleanStore, { net: CRASH_NET, batchBlocks: 1 });
+
+      // Advance until a height that actually CARRIES matches has been committed — a zero-match
+      // height would make every assertion below vacuously true.
+      let height = -1;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const next = Number((await cleanStore.get(monitorId)).coverage.scannedThrough ?? -1n) + 1;
+        if (next >= HEIGHTS) break;
+        const totalBefore = (await cleanStore.readAssociations(monitorId, 0n, 1000)).length;
+        await scanner.scanBatch(await cleanStore.get(monitorId));
+        const observed = await observeMonitorHeight(clean, monitorSchema, monitorId, next);
+        expect(
+          classifyRuleBState(observed, {
+            height: next, associationRows: heightShape(next).matchPositions.length, totalBefore,
+          }),
+        ).toBe("all-of-height");
+        if (observed.associationRows > 0) { height = next; break; }
+      }
+      expect(height, "no height with matches was committed, so this case would prove nothing")
+        .toBeGreaterThanOrEqual(0);
+
+      const observed = await observeMonitorHeight(clean, monitorSchema, monitorId, height);
+      expect(observed.associationRowsWithDetails).toBe(observed.associationRows);
+      expect(observed.associationRowsWithBlockTime).toBe(observed.associationRows);
+
+      // The details are real, not an empty placeholder: they name the segments the association
+      // names, and they were produced by the ledger build the association records.
+      const rows = await cleanStore.readAssociations(monitorId, 0n, 1000);
+      const atHeight = rows.filter((r) => r.blockHeight === BigInt(height));
+      expect(atHeight.length).toBe(observed.associationRows);
+      for (const row of atHeight) {
+        expect(row.details!.ledgerBuild).toBe(LEDGER_BUILD_ID);
+        expect(row.details!.segments.filter((seg) => seg.matched).map((seg) => seg.segment))
+          .toStrictEqual([...row.matchedSegments]);
+        expect(row.blockTimestampMs).toBe(BigInt(1_754_395_200_000 + height * 6_000));
+      }
+
+      // POSITIVE CONTROL. NULL one row's details — the state a scanner that wrote them AFTER the
+      // batch would briefly leave — and the classifier must refuse it. Without this, the
+      // strengthened predicate could be satisfied by a column nothing ever checks.
+      const victim = atHeight[0]!;
+      const totalNow = rows.length - observed.associationRows;
+      await clean`
+        UPDATE ${clean(monitorSchema)}.associations SET details = NULL
+         WHERE monitor_id = ${monitorId} AND seq = ${victim.seq}
+      `;
+      try {
+        const damaged = await observeMonitorHeight(clean, monitorSchema, monitorId, height);
+        expect(damaged.associationRowsWithDetails).toBe(observed.associationRows - 1);
+        expect(() => classifyRuleBState(damaged, {
+          height, associationRows: observed.associationRows, totalBefore: totalNow,
+        })).toThrow(/Rule B violation/);
+      } finally {
+        await clean`
+          UPDATE ${clean(monitorSchema)}.associations
+             SET details = ${clean.json(victim.details as never)}
+           WHERE monitor_id = ${monitorId} AND seq = ${victim.seq}
+        `;
+      }
+      // Restored, so anything running after this case sees a consistent height.
+      const restored = await observeMonitorHeight(clean, monitorSchema, monitorId, height);
+      expect(restored.associationRowsWithDetails).toBe(observed.associationRows);
+    },
+    600_000,
+  );
+
+  it(
     "[[crash.shielded-monitor-batch.write-set-is-shielded-monitor-only]] across the whole crash run, project B's statement log names only shielded_monitor tables as write targets — and a positive control shows an archive write WOULD be caught",
     async () => {
       // The audit instrument: every statement the scanner issues on its own handle, captured by

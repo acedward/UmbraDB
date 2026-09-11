@@ -117,14 +117,24 @@ export interface MonitorHeightObservation {
   epoch: bigint;
   /** Total associations across ALL heights, so a duplicate written somewhere else is visible. */
   totalAssociationRows: number;
+  /** Of the rows AT height `H`, how many carry the 00009-07 `details` document, and how many
+   *  carry the block time. Rule B says a height's data commits as ONE unit; details are part of
+   *  that height's data, so an "all-of-height" state in which a match exists WITHOUT its details
+   *  would mean the details were written outside the batch transaction — the exact shape the
+   *  classifier must refuse rather than tolerate. */
+  associationRowsWithDetails: number;
+  associationRowsWithBlockTime: number;
 }
 
 export async function observeMonitorHeight(
   sql: UmbraDBSql, schema: string, monitorId: string, height: number,
 ): Promise<MonitorHeightObservation> {
-  const [assoc] = await sql<{ n: number }[]>`
-    SELECT count(*)::int AS n FROM ${sql(schema)}.associations
-    WHERE monitor_id = ${monitorId} AND block_height = ${height}
+  const [assoc] = await sql<{ n: number; d: number; t: number }[]>`
+    SELECT count(*)::int AS n,
+           count(*) FILTER (WHERE details IS NOT NULL)::int AS d,
+           count(*) FILTER (WHERE block_timestamp_ms IS NOT NULL)::int AS t
+      FROM ${sql(schema)}.associations
+     WHERE monitor_id = ${monitorId} AND block_height = ${height}
   `;
   const [total] = await sql<{ n: number }[]>`
     SELECT count(*)::int AS n FROM ${sql(schema)}.associations WHERE monitor_id = ${monitorId}
@@ -136,6 +146,8 @@ export async function observeMonitorHeight(
   `;
   return {
     associationRows: assoc?.n ?? 0,
+    associationRowsWithDetails: assoc?.d ?? 0,
+    associationRowsWithBlockTime: assoc?.t ?? 0,
     totalAssociationRows: total?.n ?? 0,
     coverageThrough: monitor?.scanned_through_height == null
       ? undefined
@@ -173,7 +185,14 @@ export function classifyRuleBState(
   const all =
     observed.associationRows === expected.associationRows &&
     observed.totalAssociationRows === expected.totalBefore + expected.associationRows &&
-    observed.coverageThrough === expected.height;
+    observed.coverageThrough === expected.height &&
+    // 00009-07, a STRENGTHENING of this gate, never a relaxation: a height's associations, their
+    // details, their block time and the coverage advance are one commit unit. A run in which the
+    // matches survived a crash but their details did not would satisfy the three conditions above
+    // and is now refused — which is the only way to tell "details are written inside the batch"
+    // from "details are written soon afterwards and we got lucky".
+    observed.associationRowsWithDetails === expected.associationRows &&
+    observed.associationRowsWithBlockTime === expected.associationRows;
   if (all) return "all-of-height";
 
   throw new Error(
@@ -181,6 +200,8 @@ export function classifyRuleBState(
       `Observed ${JSON.stringify(observed, (_k, v) => (typeof v === "bigint" ? v.toString() : v))}; ` +
       `a complete batch would be ${JSON.stringify({
         associationRows: expected.associationRows,
+        associationRowsWithDetails: expected.associationRows,
+        associationRowsWithBlockTime: expected.associationRows,
         totalAssociationRows: expected.totalBefore + expected.associationRows,
         coverageThrough: expected.height,
       })} and an absent one would be zero associations with coverage below ${expected.height} ` +
