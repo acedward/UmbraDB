@@ -32,7 +32,7 @@ import { coverageView, matchView, monitorView, type MatchPageView, type MonitorV
  *
  * ── No HTTP framework ───────────────────────────────────────────────────────────────────────
  * `node:http` and `zod` (already a dependency). `design/design.md` §7's dependency-minimalism
- * rule applies to this surface as it does to the driver choice, and six routes over two path
+ * rule applies to this surface as it does to the driver choice, and eight routes over four path
  * shapes do not earn a framework — see `openspec/changes/00009-04-private-api-cli/design.md` §1.
  *
  * ── The viewing key exists in exactly one function ──────────────────────────────────────────

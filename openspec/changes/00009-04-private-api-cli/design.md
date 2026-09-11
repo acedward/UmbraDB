@@ -30,8 +30,8 @@ evidence for. `docs/supply-chain/` carries that evidence per dependency, and the
 sub-plan restates the rule ("no new HTTP framework unless the owner allows one; supply-chain gate
 applies").
 
-This surface does not earn an exception. It is six routes over two path shapes, JSON in and JSON
-out, with no middleware stack, no content negotiation, no templating, no static files, no cookies
+This surface does not earn an exception. It is eight routes over four path shapes, JSON in and
+JSON out, with no middleware stack, no content negotiation, no templating, no static files, no cookies
 and no sessions. What a framework would actually contribute here is a router (≈ 30 lines of
 `URL.pathname` matching), body accumulation with a cap (≈ 25 lines, and the cap is the part we
 must own anyway) and an error-to-status mapper (which must be written against *this* project's
@@ -99,8 +99,8 @@ consumer in ten will forget.
 
 **Stability.** The same cursor with the same `limit` returns the same page, because associations
 are append-only under a monotone `seq` and coverage only moves forward: no row can ever appear
-*below* a `seq` a caller has already seen. This is the read-side counterpart of §1's gapless law
-and is asserted directly (`api.integration.test.ts`).
+*below* a `seq` a caller has already seen. This is the read-side counterpart of `STORAGE_ALGEBRA.md` §1's
+gapless law, and is asserted directly (`api.integration.test.ts`).
 
 ## 4. Admission control: exactly two caps, and both fail with 400
 
@@ -118,10 +118,18 @@ with no authentication and no quotas there is no rate-limit story for a `413` to
 one client-error class for "your request was not acceptable" is simpler for the single reference
 consumer to handle than two.
 
-The body reader enforces the cap **while reading**, not after: it counts bytes as chunks arrive
-and destroys the socket the moment the running total exceeds the limit. Buffering first and
-checking after would make the cap a formality — the memory is already spent by the time the check
-runs. The page cap is additionally floored by the store's own `MAX_ASSOCIATION_PAGE` (1000), which
+The body reader enforces the cap **while reading**, not after: it counts bytes as chunks arrive,
+rejects the moment the running total exceeds the limit, and discards every chunk after that
+instead of accumulating it. Buffering first and checking after would make the cap a formality —
+the memory is already spent by the time the check runs.
+
+What it deliberately does *not* do is destroy the socket, which was the first implementation and
+was wrong: a client that is still uploading has not read anything yet, so tearing its connection
+down turns a clean `400 BODY_TOO_LARGE` into an uninterpretable transport error. Node already
+dumps the remainder of an unconsumed request once its response finishes, so the correct move is
+to answer and let it.
+
+The page cap is additionally floored by the store's own `MAX_ASSOCIATION_PAGE` (1000), which
 `00009-02` deliberately placed at the store so no in-process caller can ask for an unbounded page
 either; `API_MAX_PAGE` is validated to be ≤ that, so a misconfiguration is a boot failure rather
 than a runtime surprise.
