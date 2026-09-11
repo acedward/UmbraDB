@@ -32,6 +32,10 @@ describe("shielded-monitor CLI entry points (FR-026)", () => {
     ["umbradb-shielded-monitor", "shielded-monitor/scanner-cli.ts"],
     ["umbradb-shielded-monitor-api", "shielded-monitor/api/server-cli.ts"],
     ["umbradb-shielded-monitor-client", "shielded-monitor/client/cli.ts"],
+    // 00009-06: `derive-viewing-key` is its own bin rather than a subcommand of the reference
+    // client, because that client's import audit requires it to import nothing but Node built-ins
+    // and this command must load the ledger WASM (organizer question Q20).
+    ["umbradb-shielded-monitor-derive-key", "shielded-monitor/derive-key-cli.ts"],
   ];
 
   it.each(entries)("%s names the file tsc emits for %s", (binName, source) => {
@@ -77,8 +81,10 @@ describe("shielded-monitor CLI entry points (FR-026)", () => {
       const contents = readFileSync(fileURLToPath(new URL(source, repoRoot)), "utf8");
       expect(contents.startsWith("#!/usr/bin/env node"), `${source} must be runnable`).toBe(true);
     }
-    // Non-vacuity: the loop must actually have examined the five bins this package ships.
-    expect(Object.keys(pkg.bin).length).toBe(5);
+    // Non-vacuity: the loop must actually have examined the six bins this package ships.
+    // 5 -> 6 (00009-06): `umbradb-shielded-monitor-derive-key`. The pin is bumped deliberately,
+    // which is the whole point of having one — an accidental bin still fails here.
+    expect(Object.keys(pkg.bin).length).toBe(6);
   });
 
   it("leaves the published LIBRARY surface alone", () => {

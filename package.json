@@ -50,7 +50,9 @@
     "shielded-monitor:scan": "tsx shielded-monitor/scanner-cli.ts",
     "bench": "tsx bench/harness.ts",
     "bench:smoke": "tsx bench/smoke.ts",
-    "build:cli": "tsc -p tsconfig.cli.json && node scripts/copy-cli-assets.mjs"
+    "build:cli": "tsc -p tsconfig.cli.json && node scripts/copy-cli-assets.mjs",
+    "shielded-monitor:derive-key": "tsx shielded-monitor/derive-key-cli.ts",
+    "demo:shielded-monitor": "node scripts/demo-shielded-monitor.mjs"
   },
   "dependencies": {
     "@midnight-ntwrk/ledger-v8": "file:vendor/ledger-v8-syshash",
@@ -79,6 +81,7 @@
     "umbradb-archive-backfill-timestamps": "dist-cli/chain-archive-sync/backfill-timestamps-cli.js",
     "umbradb-shielded-monitor": "dist-cli/shielded-monitor/scanner-cli.js",
     "umbradb-shielded-monitor-api": "dist-cli/shielded-monitor/api/server-cli.js",
-    "umbradb-shielded-monitor-client": "dist-cli/shielded-monitor/client/cli.js"
+    "umbradb-shielded-monitor-client": "dist-cli/shielded-monitor/client/cli.js",
+    "umbradb-shielded-monitor-derive-key": "dist-cli/shielded-monitor/derive-key-cli.js"
   }
 }
