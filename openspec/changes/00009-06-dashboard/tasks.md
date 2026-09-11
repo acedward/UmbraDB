@@ -51,9 +51,13 @@ executed-and-passed.
 Node built-ins only: `createHmac("sha512")`, `createECDH("secp256k1")`, `BigInt`.
 
 **Acceptance**: `npx vitest run test/shielded-monitor/hd.test.ts` passes, covering (a) all six
-nodes of BIP-0032 official test vector 1 compared as serialized `xprv` strings, (b) the three
-`@midnightntwrk/wallet-sdk-hd@3.0.3` vectors reproduced exactly (role seed, coin public key,
-encryption public key), (c) a rejected seed length and a rejected out-of-range child index.
+nodes of BIP-0032 official test vector 1 — **private key and chain code** — decoded from the
+published `xprv` strings, (b) the path, the Zswap role and the hardening of exactly the first three
+components, (c) a rejected seed length and a rejected out-of-range child index. The
+`@midnightntwrk/wallet-sdk-hd@3.0.3` vectors are asserted in task 6's suite, against the SDK's
+**public** keys; no seed, role seed or serialized secret key is committed in any form, and
+`gitleaks` with the repository's own `.gitleaks.toml` reports no leak over this branch's commits
+(with a positive control).
 
 ## 6. `umbradb-shielded-monitor-derive-key`
 
@@ -61,7 +65,7 @@ encryption public key), (c) a rejected seed length and a rejected out-of-range c
 
 **Acceptance**: `npx vitest run test/shielded-monitor/derive-key.test.ts` passes, covering: the
 raw-seed output equals `fixtureViewingKeyEncoded(n)` for the same fixture seed; `--hd` reproduces
-the SDK vector's keys; the seed never appears in stdout or stderr; `--seed <hex>` on argv is a
+the SDK vectors' coin and encryption **public** keys exactly; the seed never appears in stdout or stderr; `--seed <hex>` on argv is a
 usage error (exit 2) naming `--seed-file`; a short/long/non-hex seed file is a usage error;
 `--net preview` changes the HRP. `npx vitest run test/shielded-monitor/api-bin.test.ts` passes
 with the non-vacuity pin at six bins, and `npm run build` emits `dist-cli/shielded-monitor/derive-key-cli.js`.

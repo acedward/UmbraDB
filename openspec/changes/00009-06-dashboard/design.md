@@ -140,10 +140,25 @@ tests:
    at the hardened/non-hardened boundary, or in the mod-n addition, fails there.
 2. **It is *Midnight's* BIP32.** Three vectors captured from
    `@midnightntwrk/wallet-sdk-hd@3.0.3` (which is `@scure/bip32@2.4.0`,
-   `m/44'/2400'/<account>'/<role>/<index>`, `Roles.Zswap = 3`) are committed as a fixture, and the
-   test asserts this repository reproduces the SDK's role seed, coin public key and encryption
-   public key for each. The SDK was read and run **out of tree**, in a one-off container, exactly
-   as `00009-05` did for the live transfer; `package.json` gains nothing.
+   `m/44'/2400'/<account>'/<role>/<index>`, `Roles.Zswap = 3`) are committed as a fixture, and
+   `test/shielded-monitor/derive-key.test.ts` asserts this repository reproduces the SDK's **coin
+   public key and encryption public key** for each. The SDK was read and run **out of tree**, in a
+   one-off container, exactly as `00009-05` did for the live transfer; `package.json` gains
+   nothing.
+
+   **The fixture records only public keys, and that is a deliberate constraint, not an omission.**
+   The seeds are named by a recipe and constructed in
+   `test/shielded-monitor/fixtures/wallet-sdk-hd-vectors.ts` (the shape `helpers.ts`'s
+   `fixtureSeed(n)` already uses); the derived Zswap role seed and the serialized encryption secret
+   key are committed in no form. This repository's own gitleaks rule `umbradb-wallet-seed-hex`
+   catches a 64-hex value in a seed- or secret-named field, and `.gitleaks.toml` records as a fixed
+   audit finding that a path allowlist is a permanent global exemption and must not exist — so
+   committing synthetic secret material and then suppressing the scanner would disarm that rule for
+   every future secret on that path. The vectors lose no strength: a wrong role seed cannot produce
+   a right public key, and the public keys are also the thing an operator actually uses. The
+   consequence for the test split is that the end-to-end "it derives what a wallet derives" claim
+   lives in `derive-key.test.ts` (which already loads the ledger), while `hd.test.ts` stays
+   ledger-free and covers BIP-0032 conformance plus the path and hardening structure.
 
 **Why print the two public keys.** The operator has to send funds to the wallet whose key they
 just registered, and `coinPublicKey` + `encryptionPublicKey` are the two halves of a Midnight

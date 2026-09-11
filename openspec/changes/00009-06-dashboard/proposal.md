@@ -75,11 +75,15 @@ Three concrete holes follow from that, and this change closes exactly those thre
   the cursor contract.** Nothing in this change can alter what counts as a match.
 - **No BIP39 wordlist and no mnemonic validation.** `--hd` takes a seed, not a mnemonic; see
   `design.md` §4 for why, and question Q20/Q21 in the organizer's questions file.
+- **No committed seed or secret-key material, synthetic or otherwise.** The wallet vectors record
+  public keys only; seeds are constructed from a recipe in code. See `design.md` §4.
 
 ## Impact
 
 - New files: `shielded-monitor/api/ui/page.ts` (the HTML), `shielded-monitor/derive-key-cli.ts`,
-  `shielded-monitor/hd.ts`, `docs/shielded-monitor-demo.md`, `scripts/demo-shielded-monitor.mjs`.
+  `shielded-monitor/hd.ts`, `docs/shielded-monitor-demo.md`, `scripts/demo-shielded-monitor.mjs`,
+  and the tests plus `test/shielded-monitor/fixtures/wallet-sdk-hd-vectors.{json,ts}` (public keys
+  only — see `design.md` §4).
 - Changed: `shielded-monitor/store.ts` (+`listAll`), `shielded-monitor/api/server.ts` (+3 routes),
   `package.json` (+1 bin, +1 script), `docs/shielded-monitor-api.md`, `README.md`, `CHANGELOG.md`,
   `test/shielded-monitor/api-bin.test.ts` (bin non-vacuity pin 5 → 6).
