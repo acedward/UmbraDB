@@ -10,6 +10,7 @@ import {
   MATCHING_RULE_VERSION,
   type EncryptionSecretKeyHandle,
 } from "./offers.js";
+import type { MatchDetails } from "./match-details.js";
 import { evaluateRelevance, isUnsupportedProtocolVersion } from "./relevance.js";
 import {
   NOOP_SCANNER_METRICS,
@@ -479,7 +480,11 @@ export class ShieldedMonitorScanner {
         for (const tx of block.transactions) {
           let outcome;
           try {
-            outcome = await evaluateRelevance(tx, key);
+            // `details: true` costs nothing for a transaction that does not match, and for one
+            // that does it reads the offers ALREADY extracted for the predicate — so a match's
+            // public zswap data is produced by the same pass, from the same bytes, as the
+            // decision to record it (00009-07).
+            outcome = await evaluateRelevance(tx, key, { details: true });
           } catch (err) {
             // Re-thrown with the POSITION attached, because "this monitor failed" is useless to
             // an operator without "at which transaction" — and because FR-007's typed failure is
@@ -487,7 +492,7 @@ export class ShieldedMonitorScanner {
             throw new TransactionScanError(BigInt(block.height), tx.position, err);
           }
           if (outcome.kind !== "match") continue;
-          associations.push(this.associationFor(block, tx, outcome.segments));
+          associations.push(this.associationFor(block, tx, outcome.segments, outcome.details));
         }
       }
     } finally {
@@ -502,7 +507,10 @@ export class ShieldedMonitorScanner {
   /** One association per (monitor, transaction observation), naming every matched segment
    *  (FR-008) and carrying FR-009 provenance. */
   private associationFor(
-    block: ArchivedBlock, tx: ArchivedTransaction, segments: readonly number[],
+    block: ArchivedBlock,
+    tx: ArchivedTransaction,
+    segments: readonly number[],
+    details?: MatchDetails,
   ): AssociationInput {
     return {
       net: this.net,
@@ -512,6 +520,13 @@ export class ShieldedMonitorScanner {
       txHash: hexToBytes(tx.txHash),
       protocolVersion: BigInt(tx.protocolVersion),
       matchedSegments: segments,
+      // 00009-07. Both optional and both travel in the SAME `store.advance` call as the coverage
+      // advance, so Rule B's commit unit is unchanged: a height's associations, its details and
+      // its coverage are one `BEGIN…COMMIT`. `timestampMs` is absent for a block the archive has
+      // no time for (migration 008's unbackfilled rows) and is then recorded as absent, never as
+      // a zero.
+      ...(details === undefined ? {} : { details }),
+      ...(block.timestampMs === undefined ? {} : { blockTimestampMs: BigInt(block.timestampMs) }),
       // `appliedOutcome` is fixed at "unknown" by the store; the archive's replay outcome is
       // surfaced only as `sourceOutcome`, and only when the archive actually recorded one
       // (FR-009). `undefined` here means "this archive recorded no outcome", NEVER "it failed".

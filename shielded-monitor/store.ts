@@ -641,12 +641,21 @@ export class PgShieldedMonitorStore {
    * re-scan: the partial index `associations_details_missing` shrinks to nothing as the backfill
    * completes.
    *
+   * `afterSeq` is an EXCLUSIVE lower bound on the sequence, exactly like
+   * {@link PgShieldedMonitorStore.readAssociations}. It exists so a backfill that legitimately
+   * cannot fill a row — a block the archive no longer holds, a re-evaluation that disagrees with
+   * the recorded match — walks PAST it instead of re-reading the same head page forever. Without
+   * it, one unfillable row would stall the whole monitor.
+   *
    * Refuses revoked monitors and reports deleted ones as not found, exactly like
    * {@link PgShieldedMonitorStore.readAssociations} — a backfill must not become a way to read a
    * monitor the lifecycle has closed.
    */
-  async readAssociationsMissingDetails(monitorId: string, limit: number): Promise<AssociationRecord[]> {
+  async readAssociationsMissingDetails(
+    monitorId: string, afterSeq: bigint, limit: number,
+  ): Promise<AssociationRecord[]> {
     parse(UuidSchema, monitorId, "PgShieldedMonitorStore.readAssociationsMissingDetails");
+    parse(z.bigint().nonnegative(), afterSeq, "PgShieldedMonitorStore.readAssociationsMissingDetails");
     const bounded = parse(
       z.number().int().positive().max(MAX_ASSOCIATION_PAGE),
       limit,
@@ -661,7 +670,7 @@ export class PgShieldedMonitorStore {
                matched_segments, applied_outcome, source_outcome, matching_rule_version,
                ledger_build, details, block_timestamp_ms, created_at
           FROM ${this.sql(this.schema)}.associations
-         WHERE monitor_id = ${monitorId} AND details IS NULL
+         WHERE monitor_id = ${monitorId} AND seq > ${afterSeq} AND details IS NULL
          ORDER BY seq
          LIMIT ${bounded}
       `;

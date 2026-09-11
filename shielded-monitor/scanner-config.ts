@@ -33,6 +33,17 @@ export interface ScannerEnvConfig {
   readonly metricsLogSeconds: number;
   /** Run one cycle and exit, instead of following the tip. For scripted backfills and tests. */
   readonly once: boolean;
+  /**
+   * Run the 00009-07 DETAILS backfill and exit, instead of scanning at all.
+   *
+   * A one-shot maintenance command, deliberately not a mode the tailing worker also runs: the
+   * normal worker already records details for every NEW match, so the only thing the backfill
+   * adds is filling rows written before migration 002 — work that finishes, and whose completion
+   * an operator wants to see rather than have folded into a process that never exits.
+   */
+  readonly backfillDetails: boolean;
+  /** Associations filled per store transaction during that backfill (default 100). */
+  readonly backfillBatchRows: number;
 }
 
 export const SCANNER_ENV_DOC = `
@@ -53,6 +64,10 @@ Environment (umbradb-shielded-monitor):
   SCAN_BUDGET_TX_PER_S  optional per-monitor throughput ceiling; unset means unlimited.
   SCAN_METRICS_LOG_S    seconds between the metrics log line; 0 disables (default 30).
   SCAN_ONCE             "1" runs a single cycle and exits.
+  SCAN_BACKFILL_DETAILS "1" (or the flag --backfill-details) runs the match-details backfill
+                        over existing associations and exits, instead of scanning. Idempotent:
+                        it only ever fills rows whose details are still NULL.
+  SCAN_BACKFILL_ROWS    associations filled per transaction during that backfill (default 100).
 `.trim();
 
 class ScannerConfigError extends Error {}
@@ -100,7 +115,10 @@ function optionalPositiveNumber(env: NodeJS.ProcessEnv, name: string): number | 
 }
 
 /** Parse and validate. Throws with a message naming the variable; the CLI prints it and exits. */
-export function readScannerConfig(env: NodeJS.ProcessEnv = process.env): ScannerEnvConfig {
+export function readScannerConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  argv: readonly string[] = process.argv,
+): ScannerEnvConfig {
   const budget = optionalPositiveNumber(env, "SCAN_BUDGET_TX_PER_S");
   return {
     connectionString: requireString(env, "MONITOR_PG"),
@@ -115,5 +133,9 @@ export function readScannerConfig(env: NodeJS.ProcessEnv = process.env): Scanner
     ...(budget === undefined ? {} : { budgetTxPerSecond: budget }),
     metricsLogSeconds: nonNegativeInt(env, "SCAN_METRICS_LOG_S", 30),
     once: env.SCAN_ONCE === "1",
+    // Accepted as a flag as well as an environment variable, because it is the one setting an
+    // operator types by hand, once, on a machine whose env is already configured for the worker.
+    backfillDetails: env.SCAN_BACKFILL_DETAILS === "1" || argv.includes("--backfill-details"),
+    backfillBatchRows: positiveInt(env, "SCAN_BACKFILL_ROWS", 100),
   };
 }

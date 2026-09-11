@@ -16,6 +16,7 @@
 import { createClient } from "../src/postgres/client.js";
 import { PgArchiveReadContract } from "../src/postgres/archive-read-contract.js";
 import { bootstrapShieldedMonitorSchema } from "./bootstrap.js";
+import { ShieldedMonitorDetailsBackfill } from "./details-backfill.js";
 import { readScannerConfig, SCANNER_ENV_DOC } from "./scanner-config.js";
 import { InMemoryScannerMetrics } from "./scanner-metrics.js";
 import { ShieldedMonitorScanner } from "./scanner.js";
@@ -67,6 +68,22 @@ async function main(): Promise<void> {
       `monitorSchema=${config.monitorSchema} batchBlocks=${config.batchBlocks} ` +
       `concurrency=${config.concurrency} pollMs=${config.pollMs}`,
   );
+
+  if (config.backfillDetails) {
+    // 00009-07. Reads blocks ONLY through the archive read contract and writes ONLY the two
+    // nullable `associations` columns migration 002 added (owner Rule B). Idempotent: a second
+    // run fills nothing, because every write carries `AND details IS NULL`.
+    const backfill = new ShieldedMonitorDetailsBackfill(archive, store, {
+      net: config.net,
+      batchRows: config.backfillBatchRows,
+    });
+    const summary = await backfill.runAll({ maxMonitors: config.maxMonitors });
+    // No monitor id is printed: which wallet had how many matches is a per-wallet signal, and the
+    // counts are what an operator acts on.
+    console.error(`[shielded-monitor-scanner] details backfill: ${JSON.stringify(summary)}`);
+    await sql.end({ timeout: 5 });
+    return;
+  }
 
   if (config.once) {
     const summary = await service.runCycle();

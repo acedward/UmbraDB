@@ -336,10 +336,17 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
     const afterSeq = rawCursor === null || rawCursor === "" ? 0n : decodeCursor(rawCursor, ctx.monitorId);
     const limit = parseLimit(ctx.url.searchParams.get("limit"), config);
 
+    // `?details=0` (00009-07) returns the pre-00009-07 item shape. It is an OPT-OUT, not an
+    // opt-in: the dashboard and every human reader want the data, and a consumer that pages a
+    // long history and does not is the one with a reason to say so. Any other value — including
+    // `details=1` and an absent parameter — means "include them"; a typo therefore fails safe
+    // towards MORE data rather than towards a silently smaller page.
+    const includeDetails = ctx.url.searchParams.get("details") !== "0";
+
     const associations = await store.readAssociations(ctx.monitorId, afterSeq, limit);
     const last = associations.at(-1);
     const page: MatchPageView = {
-      items: associations.map((a) => matchView(ctx.monitorId, a)),
+      items: associations.map((a) => matchView(ctx.monitorId, a, { details: includeDetails })),
       // An empty page returns the caller's OWN position, not a null and not a reset: a poller
       // that reaches the end of the stream must be able to write `nextCursor` back to its cursor
       // file unconditionally and resume from the same place on the next tick. A `null` here

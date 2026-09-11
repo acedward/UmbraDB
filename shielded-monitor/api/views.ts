@@ -1,3 +1,4 @@
+import type { MatchDetails } from "../match-details.js";
 import type { AssociationRecord, MonitorCoverage, MonitorRecord } from "../store.js";
 import { encodeCursor } from "./cursor.js";
 
@@ -64,6 +65,20 @@ export interface MatchView {
   readonly sourceOutcome?: string;
   readonly matchingRuleVersion: string;
   readonly ledgerBuild: string;
+  /** The time of the block this observation sits in, in milliseconds since the epoch, as a
+   *  decimal STRING for the same reason every height is one. `null` means the value is not
+   *  recorded — a match written before 00009-07 that the backfill has not visited, or a block the
+   *  archive itself has no timestamp for. Never a zero, and never "now".
+   *
+   *  Absent entirely (not `null`) when the caller asked for `?details=0`. */
+  readonly blockTimestampMs?: string | null;
+  /** The transaction's PUBLIC zswap data: output commitments, input nullifiers, transients,
+   *  contract addresses and a three-valued "is this one yours" per entry
+   *  (`shielded-monitor/match-details.ts`). `null` means "not recorded yet — run the backfill",
+   *  never "this transaction had no outputs".
+   *
+   *  Absent entirely (not `null`) when the caller asked for `?details=0`. */
+  readonly details?: MatchDetails | null;
 }
 
 /** A page of matches (organizer spec FR-019, FR-020). `coverage` travels with every page so a
@@ -111,7 +126,18 @@ export function monitorView(record: MonitorRecord, sourceTip: bigint | undefined
   };
 }
 
-export function matchView(monitorId: string, record: AssociationRecord): MatchView {
+/** Options for {@link matchView}. */
+export interface MatchViewOptions {
+  /** `false` reproduces the pre-00009-07 item exactly: no `blockTimestampMs`, no `details`. That
+   *  is what `?details=0` asks for — "give me the small shape" — so both fields go, not just the
+   *  large one; a consumer that wants one of them is asking for the feature. */
+  readonly details?: boolean;
+}
+
+export function matchView(
+  monitorId: string, record: AssociationRecord, options: MatchViewOptions = {},
+): MatchView {
+  const withDetails = options.details !== false;
   return {
     cursor: encodeCursor(monitorId, record.seq),
     blockHeight: record.blockHeight.toString(10),
@@ -124,5 +150,16 @@ export function matchView(monitorId: string, record: AssociationRecord): MatchVi
     ...(record.sourceOutcome !== undefined ? { sourceOutcome: record.sourceOutcome } : {}),
     matchingRuleVersion: record.matchingRuleVersion,
     ledgerBuild: record.ledgerBuild,
+    ...(withDetails
+      ? {
+          // `null`, explicitly, rather than an omitted field: a consumer must be able to tell
+          // "this deployment does not send details" from "this match has none recorded yet", and
+          // an absent key cannot express the second.
+          blockTimestampMs: record.blockTimestampMs === undefined
+            ? null
+            : record.blockTimestampMs.toString(10),
+          details: record.details ?? null,
+        }
+      : {}),
   };
 }
