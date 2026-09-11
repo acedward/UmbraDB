@@ -128,6 +128,13 @@ const AssociationDetailsUpdateSchema = z.object({
  *  in-process consumer cannot ask for an unbounded page either (organizer spec FR-021). */
 export const MAX_ASSOCIATION_PAGE = 1000;
 
+/** A lease owner is an operator-chosen label or a random UUID (`SCAN_INSTANCE_ID`). Bounded so a
+ *  caller cannot write an arbitrary blob into a column an operator reads. */
+const LeaseOwnerSchema = z.string().min(1).max(128);
+/** 1 s .. 1 h. A sub-second lease would expire inside a single batch on a slow block; an
+ *  hour-long one would make a crashed instance's monitors unreachable for an hour. */
+const LeaseTtlSchema = z.number().int().min(1_000).max(3_600_000);
+
 // ── Public record shapes ─────────────────────────────────────────────────────────────────────
 
 /** Coverage as block heights (organizer spec FR-011). `scannedFrom`/`scannedThrough` are absent
@@ -246,12 +253,32 @@ export type AdvanceResult =
       readonly firstSeq: bigint;
       readonly lastSeq: bigint;
       readonly coverage: MonitorCoverage;
+      /** Present only when the caller asked for a lease renewal (00009-08). `false` means the
+       *  lease had been taken by ANOTHER instance before this commit — the commit still happened
+       *  and is still correct (the epoch fence, not the lease, is what admits it), but this
+       *  instance should stop working on that monitor and let its new holder continue. */
+      readonly leaseHeld?: boolean;
     }
   | {
       readonly applied: false;
       readonly reason: "already-advanced";
       readonly coverage: MonitorCoverage;
+      readonly leaseHeld?: boolean;
     };
+
+/** Who holds a monitor's scan lease, and until when (00009-08). */
+export interface MonitorLeaseRecord {
+  readonly monitorId: string;
+  readonly owner: string;
+  readonly claimedAt: Date;
+  readonly expiresAt: Date;
+}
+
+/** What a caller asks for when it wants a batch commit to also renew its lease. */
+export interface LeaseRenewal {
+  readonly owner: string;
+  readonly ttlMs: number;
+}
 
 /** One entry of the lifecycle log. */
 export interface LifecycleEventRecord {
@@ -293,6 +320,22 @@ interface MonitorRow {
   last_error: MonitorLastError | null;
   created_at: Date;
   updated_at: Date;
+}
+
+interface LeaseRow {
+  monitor_id: string;
+  owner: string;
+  claimed_at: Date;
+  expires_at: Date;
+}
+
+function toLease(row: LeaseRow): MonitorLeaseRecord {
+  return {
+    monitorId: row.monitor_id,
+    owner: row.owner,
+    claimedAt: row.claimed_at,
+    expiresAt: row.expires_at,
+  };
 }
 
 interface AssociationRow {
@@ -748,7 +791,7 @@ export class PgShieldedMonitorStore {
     epoch: bigint,
     throughHeight: bigint,
     associations: readonly AssociationInput[],
-    opts: { readonly fromHeight?: bigint } = {},
+    opts: { readonly fromHeight?: bigint; readonly lease?: LeaseRenewal } = {},
   ): Promise<AdvanceResult> {
     parse(UuidSchema, monitorId, "PgShieldedMonitorStore.advance");
     parse(z.bigint().nonnegative(), epoch, "PgShieldedMonitorStore.advance");
@@ -816,11 +859,22 @@ export class PgShieldedMonitorStore {
           `;
         }
 
+        // 00009-08: the lease renewal rides in THIS transaction, with the associations and the
+        // coverage advance. Not "soon after" and not in a timer: if the renewal were a separate
+        // statement, a crash between the two would leave a height committed under a lease that
+        // had already lapsed, and the takeover would begin while the previous holder still
+        // believed it was mid-turn. One commit, one observable state — the same rule the height's
+        // own data follows (owner Rule B), extended to the claim that produced it.
+        const leaseHeld = opts.lease === undefined
+          ? undefined
+          : await this.renewLeaseInTx(tx, monitorId, opts.lease);
+
         return {
           applied: true,
           firstSeq: base + 1n,
           lastSeq: row.last_assoc_seq,
           coverage: toRecord(row).coverage,
+          ...(leaseHeld === undefined ? {} : { leaseHeld }),
         } as const;
       });
     } catch (err) {
@@ -1229,6 +1283,103 @@ export class PgShieldedMonitorStore {
     } catch (err) {
       throw translatePostgresError(err);
     }
+  }
+
+  // ── Monitor leases (00009-08) ──────────────────────────────────────────────────────────────
+
+  /**
+   * Claim a monitor for this scanner instance, or report that someone else holds it.
+   *
+   * ONE statement, so the read and the write cannot race: `INSERT … ON CONFLICT DO UPDATE`
+   * where the update is admitted only when the existing lease has EXPIRED or is already ours.
+   * `RETURNING` therefore yields a row exactly when the claim succeeded, and no rows when another
+   * instance's unexpired lease stood in the way — which is the whole answer, with no second query
+   * whose result could have changed in between.
+   *
+   * "…or is already ours" is not a convenience: a scanner re-claims the monitor it is already
+   * working on at the top of every cycle, and without that clause it would lose its own monitor
+   * to itself the moment the first TTL elapsed.
+   *
+   * **This is not a lock** (see `003_monitor_leases.ts`): a successful claim does not make a
+   * commit safe, and a failed one does not make it unsafe. It decides who does the WORK.
+   */
+  async claimMonitorLease(
+    monitorId: string, owner: string, ttlMs: number,
+  ): Promise<{ readonly acquired: boolean; readonly lease?: MonitorLeaseRecord }> {
+    parse(UuidSchema, monitorId, "PgShieldedMonitorStore.claimMonitorLease");
+    parse(LeaseOwnerSchema, owner, "PgShieldedMonitorStore.claimMonitorLease");
+    parse(LeaseTtlSchema, ttlMs, "PgShieldedMonitorStore.claimMonitorLease");
+    try {
+      const rows = await this.sql<LeaseRow[]>`
+        INSERT INTO ${this.sql(this.schema)}.monitor_leases (monitor_id, owner, claimed_at, expires_at)
+        VALUES (${monitorId}, ${owner}, now(), now() + make_interval(secs => ${ttlMs / 1000}))
+        ON CONFLICT (monitor_id) DO UPDATE
+           SET owner = EXCLUDED.owner, claimed_at = now(), expires_at = EXCLUDED.expires_at
+         WHERE ${this.sql(this.schema)}.monitor_leases.expires_at < now()
+            OR ${this.sql(this.schema)}.monitor_leases.owner = EXCLUDED.owner
+        RETURNING monitor_id, owner, claimed_at, expires_at
+      `;
+      const row = rows[0];
+      return row === undefined ? { acquired: false } : { acquired: true, lease: toLease(row) };
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /**
+   * Give a monitor back, so another instance need not wait out the TTL.
+   *
+   * Scoped to `owner`: releasing someone else's lease would be a way for a departing instance to
+   * hand a monitor to a third party mid-batch. A release that matches nothing is not an error —
+   * the lease may already have expired and been re-claimed, which is exactly the case where the
+   * caller must NOT be told something went wrong.
+   */
+  async releaseMonitorLease(monitorId: string, owner: string): Promise<{ readonly released: boolean }> {
+    parse(UuidSchema, monitorId, "PgShieldedMonitorStore.releaseMonitorLease");
+    parse(LeaseOwnerSchema, owner, "PgShieldedMonitorStore.releaseMonitorLease");
+    try {
+      const rows = await this.sql<{ monitor_id: string }[]>`
+        DELETE FROM ${this.sql(this.schema)}.monitor_leases
+         WHERE monitor_id = ${monitorId} AND owner = ${owner}
+        RETURNING monitor_id
+      `;
+      return { released: rows.length > 0 };
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /** The current lease, for an operator view and for the tests that assert takeover. Reads the
+   *  row as stored; an EXPIRED lease is still returned, because "expired but not yet reclaimed"
+   *  is a real and interesting state. */
+  async readMonitorLease(monitorId: string): Promise<MonitorLeaseRecord | undefined> {
+    parse(UuidSchema, monitorId, "PgShieldedMonitorStore.readMonitorLease");
+    try {
+      const rows = await this.sql<LeaseRow[]>`
+        SELECT monitor_id, owner, claimed_at, expires_at
+          FROM ${this.sql(this.schema)}.monitor_leases WHERE monitor_id = ${monitorId}
+      `;
+      const row = rows[0];
+      return row === undefined ? undefined : toLease(row);
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /** The renewal {@link advance} performs inside its own transaction. Scoped to `owner`, so a
+   *  lease another instance took over is NOT silently stolen back by the commit. */
+  private async renewLeaseInTx(
+    tx: MonitorTx, monitorId: string, lease: LeaseRenewal,
+  ): Promise<boolean> {
+    parse(LeaseOwnerSchema, lease.owner, "PgShieldedMonitorStore.advance");
+    parse(LeaseTtlSchema, lease.ttlMs, "PgShieldedMonitorStore.advance");
+    const rows = await tx<{ monitor_id: string }[]>`
+      UPDATE ${tx(this.schema)}.monitor_leases
+         SET expires_at = now() + make_interval(secs => ${lease.ttlMs / 1000})
+       WHERE monitor_id = ${monitorId} AND owner = ${lease.owner}
+      RETURNING monitor_id
+    `;
+    return rows.length > 0;
   }
 
   private async loadRow(id: string): Promise<MonitorRow | undefined> {

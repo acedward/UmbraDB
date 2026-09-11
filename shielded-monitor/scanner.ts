@@ -6,6 +6,7 @@ import type {
 import { MonitorFencedError, MonitorNotFoundError, MonitorRevokedError } from "./errors.js";
 import {
   deserializeEncryptionSecretKey,
+  isArchiveTransactionIdentityError,
   LEDGER_BUILD_ID,
   MATCHING_RULE_VERSION,
   type EncryptionSecretKeyHandle,
@@ -20,6 +21,7 @@ import {
 import type {
   AdvanceResult,
   AssociationInput,
+  LeaseRenewal,
   MonitorLastError,
   MonitorRecord,
 } from "./store.js";
@@ -80,6 +82,10 @@ export type ScanBatchResult =
       /** Coverage reached the tip in this batch and the monitor was promoted to `live`. */
       readonly wentLive: boolean;
       readonly sourceTip?: bigint;
+      /** 00009-08: `false` when another instance had taken this monitor's lease before the
+       *  commit. The commit still happened and is still correct — the epoch fence, never the
+       *  lease, is what admits it — but this instance should stop working on this monitor. */
+      readonly leaseHeld?: boolean;
     }
   /** The batch had already been committed (crash-retry path, US5 scenario 2). */
   | { readonly kind: "already-advanced"; readonly throughHeight: bigint }
@@ -118,7 +124,7 @@ export interface ScannerStore {
     epoch: bigint,
     throughHeight: bigint,
     associations: readonly AssociationInput[],
-    opts?: { readonly fromHeight?: bigint },
+    opts?: { readonly fromHeight?: bigint; readonly lease?: LeaseRenewal },
   ): Promise<AdvanceResult>;
   goLive(id: string, expectedEpoch: bigint, actor: string): Promise<MonitorRecord>;
   markFailed(
@@ -160,6 +166,30 @@ export interface ShieldedMonitorScannerOptions {
    * property no test can observe.
    */
   readonly deserializeKey?: (bytes: Uint8Array) => Promise<EncryptionSecretKeyHandle>;
+  /**
+   * Check every regular transaction's claimed `txHash` against the hash its bytes actually have
+   * (organizer sub-plan 00009-08). Default OFF, and the composition root turns it ON whenever the
+   * archive is reached over the network (`ARCHIVE_URL`).
+   *
+   * Why not always on: for the in-process implementation the claim and the bytes come out of the
+   * same row, written by an ingest that had already recomputed the hash FROM those bytes and
+   * refused the block if the two disagreed (`chain-archive-sync/sync-service.ts`, audit A1). The
+   * check would re-do work already done, on every transaction of every scan. Over HTTP that
+   * guarantee does not travel with the page, and there the check is the only thing binding a
+   * transaction's identity to its content — so it is on.
+   *
+   * Why not free either way: it costs nothing at all. `extractOffers` already deserialized the
+   * transaction and the ledger hands the hash back alongside the offers.
+   */
+  readonly verifyTxIdentity?: boolean;
+  /**
+   * Renew this instance's monitor lease inside every batch's own commit (00009-08).
+   *
+   * Set by the scheduler for the duration of one monitor's turn. The renewal travels in the SAME
+   * transaction as the associations and the coverage advance, so there is no window in which a
+   * height is durable under a lapsed claim.
+   */
+  readonly lease?: LeaseRenewal;
 }
 
 const DEFAULT_BATCH_BLOCKS = 1;
@@ -221,6 +251,8 @@ export class ShieldedMonitorScanner {
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly deserializeKey: (bytes: Uint8Array) => Promise<EncryptionSecretKeyHandle>;
+  private readonly verifyTxIdentity: boolean;
+  private readonly lease?: LeaseRenewal;
 
   constructor(
     private readonly archive: ArchiveReadContract,
@@ -238,6 +270,8 @@ export class ShieldedMonitorScanner {
     this.now = options.now ?? (() => Date.now());
     this.sleep = options.sleep ?? defaultSleep;
     this.deserializeKey = options.deserializeKey ?? deserializeEncryptionSecretKey;
+    this.verifyTxIdentity = options.verifyTxIdentity ?? false;
+    if (options.lease !== undefined) this.lease = options.lease;
   }
 
   /**
@@ -297,6 +331,16 @@ export class ShieldedMonitorScanner {
     try {
       associations = await this.matchPage(monitor, page.blocks);
     } catch (err) {
+      // A page whose claimed identity contradicts its own bytes is a TRANSPORT fault, not a
+      // property of this monitor or of the chain: it would refuse every monitor's page equally.
+      // Re-thrown rather than turned into a fail-closed monitor stop, so the batch simply does
+      // not advance and the scheduler reports it — `failMonitor` would mark ONE wallet terminally
+      // failed for a fault none of the others had yet noticed. See
+      // `ArchiveTransactionIdentityError`'s own doc.
+      if (isArchiveTransactionIdentityError(err) ||
+          isArchiveTransactionIdentityError((err as { cause?: unknown }).cause)) {
+        throw isArchiveTransactionIdentityError(err) ? err : (err as { cause: unknown }).cause;
+      }
       return await this.failMonitor(monitor, err);
     }
 
@@ -312,6 +356,9 @@ export class ShieldedMonitorScanner {
     let advanced;
     try {
       advanced = await this.store.advance(monitor.id, monitor.epoch, throughHeight, associations, {
+        // 00009-08. Absent in a single-instance deployment, and then `advance` behaves exactly as
+        // it did before leases existed.
+        ...(this.lease === undefined ? {} : { lease: this.lease }),
         // Only consulted on the very first advance (the store COALESCEs it away afterwards).
         //
         // It is the FIRST HEIGHT THIS BATCH ACTUALLY READ, never the requested start. The
@@ -343,6 +390,7 @@ export class ShieldedMonitorScanner {
       matches: associations.length,
       wentLive,
       ...(sourceTip === undefined ? {} : { sourceTip }),
+      ...(advanced.leaseHeld === undefined ? {} : { leaseHeld: advanced.leaseHeld }),
     };
   }
 
@@ -377,6 +425,10 @@ export class ShieldedMonitorScanner {
       last = await this.scanBatch(monitor);
       batches += 1;
       if (last.kind !== "advanced" && last.kind !== "already-advanced") break;
+      // 00009-08: the lease was taken over mid-turn (this instance stalled long enough for its
+      // TTL to lapse). Stop here and let the new holder continue rather than racing it for every
+      // subsequent batch — nothing is at risk either way, it is simply wasted ledger work.
+      if (last.kind === "advanced" && last.leaseHeld === false) break;
       if (last.kind === "advanced" && last.sourceTip !== undefined && last.throughHeight >= last.sourceTip) break;
     }
     return { batches, last };
@@ -484,7 +536,11 @@ export class ShieldedMonitorScanner {
             // that does it reads the offers ALREADY extracted for the predicate — so a match's
             // public zswap data is produced by the same pass, from the same bytes, as the
             // decision to record it (00009-07).
-            outcome = await evaluateRelevance(tx, key, { details: true });
+            outcome = await evaluateRelevance(tx, key, {
+              details: true,
+              // 00009-08: only when the archive is remote. See `verifyTxIdentity`.
+              ...(this.verifyTxIdentity ? { expectTxHash: tx.txHash } : {}),
+            });
           } catch (err) {
             // Re-thrown with the POSITION attached, because "this monitor failed" is useless to
             // an operator without "at which transaction" — and because FR-007's typed failure is

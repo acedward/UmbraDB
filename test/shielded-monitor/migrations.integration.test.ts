@@ -42,7 +42,7 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
         SELECT name FROM ${sql(schema)}._migrations ORDER BY name
       `;
       expect(first.map((r) => r.name)).toStrictEqual([
-        "000_schema", "001_core", "002_association_details",
+        "000_schema", "001_core", "002_association_details", "003_monitor_leases",
       ]);
 
       // Idempotent: the second bootstrap applies nothing.
@@ -63,7 +63,7 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
       // The lineage is selectable exactly like the Tier-1.5 one; `shieldedMonitorMigrations`
       // is the same array the bootstrap uses, and running it directly is equivalent.
       expect(shieldedMonitorMigrations.map((m) => m.name)).toStrictEqual([
-        "000_schema", "001_core", "002_association_details",
+        "000_schema", "001_core", "002_association_details", "003_monitor_leases",
       ]);
     } finally {
       await sql.end({ timeout: 5 });

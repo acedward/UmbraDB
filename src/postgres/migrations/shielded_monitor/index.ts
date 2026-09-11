@@ -1,6 +1,7 @@
 import * as migration000 from "../000_schema.js";
 import * as shieldedMonitorCore from "./001_core.js";
 import * as shieldedMonitorAssociationDetails from "./002_association_details.js";
+import * as shieldedMonitorLeases from "./003_monitor_leases.js";
 import type { Migration } from "../../migrate.js";
 
 /**
@@ -35,4 +36,7 @@ export const shieldedMonitorMigrations: Migration[] = [
   // applies this list in order and records each by name, so the order of already-applied entries
   // is part of the lineage's identity.
   shieldedMonitorAssociationDetails,
+  // 00009-08: additive `monitor_leases`, so several scanner instances can share one B database
+  // without duplicating work. Appended, never inserted, for the same reason 002 was.
+  shieldedMonitorLeases,
 ];

@@ -1,8 +1,10 @@
 import type { ArchivedTransaction } from "../src/interfaces/archive-read-contract.js";
 import { buildMatchDetails, type MatchDetails } from "./match-details.js";
 import {
+  ArchiveTransactionIdentityError,
   extractOffers,
   GUARANTEED_SEGMENT_ID,
+  normalizeTxHash,
   UnsupportedProtocolVersionError,
   type EncryptionSecretKeyHandle,
 } from "./offers.js";
@@ -75,6 +77,20 @@ export interface EvaluateRelevanceOptions {
    *  non-matching transaction costs nothing, so the scanner can ask for details on every
    *  transaction it evaluates without paying for the overwhelming majority that do not match. */
   readonly details?: boolean;
+  /**
+   * The transaction hash the PAGE claims for these bytes (organizer sub-plan 00009-08).
+   *
+   * When given, it is compared against the hash the deserialization just recomputed, and a
+   * disagreement throws {@link ArchiveTransactionIdentityError} BEFORE the key is used at all.
+   * The check costs nothing — the deserialization already happened, and the ledger hands the hash
+   * back with the offers — which is why it sits here rather than in a second pass over the page.
+   *
+   * The scanner turns it on for a REMOTE archive (`ARCHIVE_URL`), where a page is JSON assembled
+   * by another process and nothing else binds a claimed identity to the bytes under it. For an
+   * in-process read it is redundant: A's own ingest recomputed exactly this hash from exactly
+   * these bytes before archiving them, and refused the block otherwise.
+   */
+  readonly expectTxHash?: string;
 }
 
 /**
@@ -88,6 +104,9 @@ export interface EvaluateRelevanceOptions {
  *   the vendored ledger build's supported set. Fail-closed by contract: the caller must stop the
  *   monitor, never treat the transaction as irrelevant (FR-007).
  * @throws {Error} when the bytes do not deserialize. Same contract, same reason.
+ * @throws {ArchiveTransactionIdentityError} when {@link EvaluateRelevanceOptions.expectTxHash} is
+ *   given and the bytes hash to something else. Fail-closed, and NOT a monitor failure — see that
+ *   error's own doc.
  */
 export async function evaluateRelevance(
   tx: Pick<ArchivedTransaction, "kind" | "protocolVersion" | "rawBytes">,
@@ -97,6 +116,12 @@ export async function evaluateRelevance(
   if (tx.kind === "system") return { kind: "skipped", reason: "system-transaction" };
 
   const offers = await extractOffers(tx.rawBytes, tx.protocolVersion);
+  if (options.expectTxHash !== undefined) {
+    const claimed = normalizeTxHash(options.expectTxHash);
+    if (claimed !== offers.transactionHash) {
+      throw new ArchiveTransactionIdentityError(claimed, offers.transactionHash);
+    }
+  }
   const segments: number[] = [];
   if (offers.guaranteed !== undefined && key.test(offers.guaranteed)) {
     segments.push(GUARANTEED_SEGMENT_ID);

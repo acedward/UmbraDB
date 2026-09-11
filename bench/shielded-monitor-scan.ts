@@ -9,6 +9,7 @@ import { LEDGER_BUILD_ID, loadLedger, MATCHING_RULE_VERSION } from "../shielded-
 import { ShieldedMonitorScanner } from "../shielded-monitor/scanner.js";
 import { InMemoryScannerMetrics } from "../shielded-monitor/scanner-metrics.js";
 import { ShieldedMonitorScannerService } from "../shielded-monitor/scanner-service.js";
+import { pgListenWake } from "../shielded-monitor/wake.js";
 import { PgShieldedMonitorStore } from "../shielded-monitor/store.js";
 import { encodeViewingKey, parseViewingKey } from "../shielded-monitor/viewing-key.js";
 import { buildCorpus } from "../test/fixtures/shielded-monitor/build-corpus.js";
@@ -164,7 +165,7 @@ async function main(): Promise<void> {
       );
       const metrics = new InMemoryScannerMetrics();
       const scanner = new ShieldedMonitorScanner(archive, store, { net: NET, batchBlocks, metrics });
-      const service = new ShieldedMonitorScannerService(scanner, store, sql, {
+      const service = new ShieldedMonitorScannerService(scanner, store, pgListenWake(sql), {
         net: NET, concurrency: 4, pollMs: 1000, maxMonitors: keys,
         maxBatchesPerMonitorPerCycle: Math.ceil(blocksForRow / batchBlocks),
       });

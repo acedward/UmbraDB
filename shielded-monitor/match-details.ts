@@ -3,7 +3,7 @@ import {
   LEDGER_BUILD_ID,
   loadLedger,
   type EncryptionSecretKeyHandle,
-  type ExtractedOffers,
+  type OfferSet,
 } from "./offers.js";
 
 /**
@@ -220,7 +220,7 @@ function readArray(offer: any, name: "outputs" | "inputs" | "transients"): any[]
  * ambiguous segment.
  */
 export async function buildMatchDetails(
-  offers: ExtractedOffers,
+  offers: OfferSet,
   key: EncryptionSecretKeyHandle,
   matchedSegments: Iterable<number>,
 ): Promise<MatchDetails> {

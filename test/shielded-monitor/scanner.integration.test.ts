@@ -4,6 +4,7 @@ import { LEDGER_BUILD_ID, MATCHING_RULE_VERSION } from "../../shielded-monitor/o
 import { ShieldedMonitorScanner } from "../../shielded-monitor/scanner.js";
 import { InMemoryScannerMetrics } from "../../shielded-monitor/scanner-metrics.js";
 import { ShieldedMonitorScannerService } from "../../shielded-monitor/scanner-service.js";
+import { pgListenWake } from "../../shielded-monitor/wake.js";
 import { createScannerWorld, destroyWorld, type ScannerWorld } from "./scanner-harness.js";
 
 /**
@@ -382,7 +383,7 @@ describe("scanner scheduling (FR-014, US2)", () => {
     const world = await createScannerWorld(container, "sched");
     try {
       const scanner = new ShieldedMonitorScanner(world.archive, world.store, { net: NET });
-      const service = new ShieldedMonitorScannerService(scanner, world.store, world.sql, {
+      const service = new ShieldedMonitorScannerService(scanner, world.store, pgListenWake(world.sql), {
         net: NET, concurrency: 2, pollMs: 50,
       });
       const summary = await service.runCycle();
@@ -407,7 +408,7 @@ describe("scanner scheduling (FR-014, US2)", () => {
       // it is the one case whose pass/fail depends on wall-clock progress under whatever else
       // is running on the host, and a load-sensitive entry in a fail-closed gate makes the gate
       // less trustworthy rather than more. It still runs in every suite run.
-      const service = new ShieldedMonitorScannerService(scanner, world.store, world.sql, {
+      const service = new ShieldedMonitorScannerService(scanner, world.store, pgListenWake(world.sql), {
         net: NET, concurrency: 2, pollMs: 600_000,
       });
       const monitorId = world.monitors.get("K")!;

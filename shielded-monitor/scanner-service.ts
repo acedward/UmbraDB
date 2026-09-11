@@ -1,5 +1,5 @@
 import { ARCHIVE_PROGRESS_CHANNEL } from "../src/postgres/archive-conventions.js";
-import type { UmbraDBSql } from "../src/postgres/client.js";
+import type { ArchiveWakeSource, ArchiveWakeSubscription } from "./wake.js";
 import type { MonitorRecord } from "./store.js";
 import type { ScanBatchResult, ShieldedMonitorScanner } from "./scanner.js";
 
@@ -12,17 +12,20 @@ import type { ScanBatchResult, ShieldedMonitorScanner } from "./scanner.js";
  *     that task runs its batches in height order. Two workers on one monitor would not corrupt
  *     anything — the epoch fence and the monotonic coverage guard see to that — but one of them
  *     would burn its whole batch and lose the race at the commit, which is waste, not safety.
- *     `inFlight` is that guarantee, held in this process because this process is the only
- *     scanner (Q4: one consumer, one deployment).
+ *     `inFlight` is that guarantee WITHIN a process; since 00009-08 a **monitor lease** is the
+ *     same guarantee ACROSS processes, so several scanner instances can share one B database
+ *     (`src/postgres/migrations/shielded_monitor/003_monitor_leases.ts`). Both are optimisations:
+ *     remove either and the associations are still exactly right, just computed twice.
  *  2. **`SCAN_CONCURRENCY` monitors in parallel.** Monitors are independent — different keys,
  *     different rows, different commits — so the bound exists to cap database connections and
  *     WASM memory, not for correctness.
- *  3. **Live tail via `LISTEN`, with polling as the fallback, never instead of it.** The archive
- *     emits `NOTIFY chain_archive_progress, '<net>:<height>'` INSIDE the per-height transaction
- *     (00009-01), so an arrival means "this height is readable" and a rollback delivers nothing.
- *     But a notification can be missed — the listener connection can drop, and `LISTEN` has no
- *     replay — so `SCAN_POLL_MS` still fires. The notification makes the tail prompt; the poll
- *     makes it correct.
+ *  3. **Live tail via a wake-up source, with polling as the fallback, never instead of it.** The
+ *     archive emits `NOTIFY chain_archive_progress, '<net>:<height>'` INSIDE the per-height
+ *     transaction (00009-01), and 00009-08 republishes it as an SSE stream for a project B that
+ *     has no connection to A's database at all. Either way an arrival means "this height is
+ *     readable" and a rollback delivers nothing — but a wake-up can be MISSED (a listener
+ *     connection drops, `LISTEN` has no replay, an SSE stream is cut), so `SCAN_POLL_MS` still
+ *     fires. The wake-up makes the tail prompt; the poll makes it correct.
  */
 
 /**
@@ -35,6 +38,17 @@ import type { ScanBatchResult, ShieldedMonitorScanner } from "./scanner.js";
  * and silently falling back to `SCAN_POLL_MS` with nothing to show for it.
  */
 export { ARCHIVE_PROGRESS_CHANNEL };
+
+/** Rotates a list by a random offset, preserving relative order.
+ *
+ *  A rotation rather than a shuffle: `listActive` returns monitors oldest-first, and that order
+ *  is worth keeping within a cycle (the oldest monitor is usually the furthest behind). All this
+ *  needs to do is stop every instance from starting at the same element. */
+export function rotateRandomly<T>(items: readonly T[]): T[] {
+  if (items.length < 2) return [...items];
+  const offset = Math.floor(Math.random() * items.length);
+  return [...items.slice(offset), ...items.slice(0, offset)];
+}
 
 /** Any UUID in a log line, which for this module means a monitor id. */
 const MONITOR_ID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
@@ -73,6 +87,24 @@ export interface ScannerServiceOptions {
   /** Called after every cycle; used by tests and by the CLI's log line. */
   readonly onCycle?: (summary: ScanCycleSummary) => void;
   readonly logger?: (line: string) => void;
+  /**
+   * This instance's lease owner name (00009-08, `SCAN_INSTANCE_ID`). Required to claim leases;
+   * omit it, and this scheduler behaves exactly as it did before leases existed — which is the
+   * right behaviour for the single-instance deployments that are the majority.
+   */
+  readonly instanceId?: string;
+  /** How long a claim survives without renewal. Default 30 s. */
+  readonly leaseTtlMs?: number;
+  /**
+   * Shuffle the order monitors are attempted in (default: on when leases are in use).
+   *
+   * Without it, every instance walks `listActive`'s `created_at, id` order and races for the same
+   * monitor first, every cycle. The instance that wins tends to keep winning, and a second
+   * instance ends up doing the leftovers rather than half the work. A random rotation costs
+   * nothing and makes the split even; the ORDER WITHIN a monitor is untouched, which is the only
+   * ordering that matters for correctness.
+   */
+  readonly shuffleMonitors?: boolean;
 }
 
 export interface ScanCycleSummary {
@@ -80,12 +112,22 @@ export interface ScanCycleSummary {
   readonly monitorsScanned: number;
   readonly batches: number;
   readonly outcomes: Partial<Record<ScanBatchResult["kind"], number>>;
+  /** Monitors another instance held a live lease on, and this one therefore left alone
+   *  (00009-08). Zero in a single-instance deployment. */
+  readonly monitorsLeasedElsewhere?: number;
 }
 
-/** The one store operation the SCHEDULER needs. Narrow for the same reason
- *  {@link ScannerStore} is (`scanner.ts`): the scheduler must not be able to write anything. */
+/** Exactly what the SCHEDULER may do to the store. Narrow for the same reason
+ *  {@link ScannerStore} is (`scanner.ts`): the scheduler must not be able to touch a monitor's
+ *  coverage, associations or lifecycle. The two lease calls it gained in 00009-08 write only to
+ *  `monitor_leases`, a table nothing else reads, and are optional so a store without them — an
+ *  in-memory double, a pre-00009-08 deployment — still satisfies this interface. */
 export interface ScannerServiceStore {
   listActive(limit?: number): Promise<MonitorRecord[]>;
+  claimMonitorLease?(
+    monitorId: string, owner: string, ttlMs: number,
+  ): Promise<{ readonly acquired: boolean }>;
+  releaseMonitorLease?(monitorId: string, owner: string): Promise<{ readonly released: boolean }>;
 }
 
 export class ShieldedMonitorScannerService {
@@ -96,21 +138,24 @@ export class ShieldedMonitorScannerService {
   private readonly maxBatchesPerMonitorPerCycle: number;
   private readonly onCycle: (summary: ScanCycleSummary) => void;
   private readonly logger: (line: string) => void;
+  private readonly instanceId?: string;
+  private readonly leaseTtlMs: number;
+  private readonly shuffleMonitors: boolean;
 
   private readonly inFlight = new Set<string>();
   private running = false;
   private loop?: Promise<void>;
   private wake: (() => void) | undefined;
   private woken = false;
-  private listener?: { unlisten: () => Promise<unknown> };
+  private listener?: ArchiveWakeSubscription;
 
   constructor(
     private readonly scanner: ShieldedMonitorScanner,
     private readonly store: ScannerServiceStore,
-    /** B's OWN connection, used only to `LISTEN`. Rule B is not at risk: `LISTEN` is not a write
-     *  and the channel is a name, not a table — but the wake-up is deliberately advisory, and
-     *  every byte the scanner acts on still comes through the {@link ArchiveReadContract}. */
-    private readonly sql: UmbraDBSql,
+    /** Where "the archive moved" comes from. Deliberately advisory: every byte the scanner acts
+     *  on still arrives through the {@link ArchiveReadContract}, and {@link NO_WAKE} — polling
+     *  only — is a correct implementation. */
+    private readonly wakeSource: ArchiveWakeSource,
     options: ScannerServiceOptions,
   ) {
     this.net = options.net;
@@ -120,6 +165,9 @@ export class ShieldedMonitorScannerService {
     this.maxBatchesPerMonitorPerCycle = options.maxBatchesPerMonitorPerCycle ?? 64;
     this.onCycle = options.onCycle ?? (() => {});
     this.logger = options.logger ?? (() => {});
+    if (options.instanceId !== undefined) this.instanceId = options.instanceId;
+    this.leaseTtlMs = options.leaseTtlMs ?? 30_000;
+    this.shuffleMonitors = options.shuffleMonitors ?? this.leasesEnabled;
     if (this.concurrency < 1) throw new Error(`concurrency must be >= 1; got ${this.concurrency}`);
     if (this.pollMs < 1) throw new Error(`pollMs must be >= 1; got ${this.pollMs}`);
   }
@@ -141,7 +189,7 @@ export class ShieldedMonitorScannerService {
     await this.loop?.catch(() => {});
     this.loop = undefined;
     if (this.listener !== undefined) {
-      await this.listener.unlisten().catch(() => {});
+      await this.listener.close().catch(() => {});
       this.listener = undefined;
     }
   }
@@ -160,13 +208,23 @@ export class ShieldedMonitorScannerService {
     const outcomes: Partial<Record<ScanBatchResult["kind"], number>> = {};
     let batches = 0;
     let scanned = 0;
+    let leasedElsewhere = 0;
 
-    const queue = [...eligible];
+    const queue = this.shuffleMonitors ? rotateRandomly(eligible) : [...eligible];
     const worker = async (): Promise<void> => {
       for (;;) {
         const monitor = queue.shift();
         if (monitor === undefined) return;
         if (this.inFlight.has(monitor.id)) continue;
+        // Claimed BEFORE the work, and only for the duration of this turn. A claim that fails
+        // means another instance is already scanning this monitor; skipping is the entire point.
+        // A claim that THROWS is not: it means the store is unhappy, and scanning without a lease
+        // is still correct (the epoch fence admits the commit), so the turn proceeds rather than
+        // letting an optimisation's failure stop a wallet from being scanned.
+        if (!(await this.claimLease(monitor.id))) {
+          leasedElsewhere += 1;
+          continue;
+        }
         this.inFlight.add(monitor.id);
         try {
           const result = await this.scanner.scanToTip(monitor.id, {
@@ -184,6 +242,11 @@ export class ShieldedMonitorScannerService {
           outcomes.failed = (outcomes.failed ?? 0) + 1;
         } finally {
           this.inFlight.delete(monitor.id);
+          // Released at the END OF THE TURN, not held until it expires. Holding would make the
+          // assignment sticky and leave a second instance with the leftovers; releasing lets the
+          // next cycle redistribute. A turn cut short by a crash releases nothing, which is
+          // exactly when the TTL has to do the work instead.
+          await this.releaseLease(monitor.id);
         }
       }
     };
@@ -192,10 +255,46 @@ export class ShieldedMonitorScannerService {
       Array.from({ length: Math.min(this.concurrency, Math.max(queue.length, 1)) }, () => worker()),
     );
     const summary: ScanCycleSummary = {
-      monitorsConsidered: monitors.length, monitorsScanned: scanned, batches, outcomes,
+      monitorsConsidered: monitors.length,
+      monitorsScanned: scanned,
+      batches,
+      outcomes,
+      ...(this.leasesEnabled ? { monitorsLeasedElsewhere: leasedElsewhere } : {}),
     };
     this.onCycle(summary);
     return summary;
+  }
+
+  /** True when this instance is configured to claim leases AND the store implements them. Both
+   *  halves matter: a store double without the methods must not turn a scheduler into a no-op. */
+  private get leasesEnabled(): boolean {
+    return this.instanceId !== undefined && typeof this.store.claimMonitorLease === "function";
+  }
+
+  private async claimLease(monitorId: string): Promise<boolean> {
+    if (!this.leasesEnabled) return true;
+    try {
+      const claim = await this.store.claimMonitorLease!(monitorId, this.instanceId!, this.leaseTtlMs);
+      return claim.acquired;
+    } catch (err) {
+      this.logger(
+        `[shielded-monitor-scanner] could not claim a monitor lease (${describeError(err)}); ` +
+          "scanning anyway — the lease is an optimisation and the epoch fence is what makes the " +
+          "commit safe",
+      );
+      return true;
+    }
+  }
+
+  private async releaseLease(monitorId: string): Promise<void> {
+    if (!this.leasesEnabled) return;
+    try {
+      await this.store.releaseMonitorLease!(monitorId, this.instanceId!);
+    } catch (err) {
+      // A lease that is not released simply expires. Logged, never thrown: a failure to clean up
+      // an optimisation must not surface as a scan failure.
+      this.logger(`[shielded-monitor-scanner] could not release a monitor lease: ${describeError(err)}`);
+    }
   }
 
   private async run(): Promise<void> {
@@ -229,19 +328,15 @@ export class ShieldedMonitorScannerService {
 
   private async attachListener(): Promise<void> {
     try {
-      const handle = await this.sql.listen(ARCHIVE_PROGRESS_CHANNEL, (payload) => {
-        // The payload is `<net>:<height>`. Only the net is used — the height is advisory, and
-        // the scanner re-reads coverage from its own schema rather than trusting a message.
-        if (!payload.startsWith(`${this.net}:`)) return;
+      this.listener = await this.wakeSource.subscribe(this.net, () => {
         this.woken = true;
         this.wake?.();
       });
-      this.listener = handle;
     } catch (err) {
-      // A missing listener degrades to polling, which is the documented fallback — it must not
+      // A missing wake-up degrades to polling, which is the documented fallback — it must not
       // stop the scanner from running.
       this.logger(
-        `[shielded-monitor-scanner] LISTEN ${ARCHIVE_PROGRESS_CHANNEL} unavailable, ` +
+        `[shielded-monitor-scanner] wake-up source (${this.wakeSource.describe}) unavailable, ` +
           `falling back to ${this.pollMs} ms polling: ` +
           `${err instanceof Error ? err.message : String(err)}`,
       );

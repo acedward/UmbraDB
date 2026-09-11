@@ -1,3 +1,5 @@
+import { DEFAULT_ARCHIVE_SCHEMA } from "../../src/postgres/archive-conventions.js";
+import { normalizeArchiveBaseUrl } from "../archive-http-client.js";
 import { DEFAULT_SHIELDED_MONITOR_SCHEMA } from "../bootstrap.js";
 import { MAX_ASSOCIATION_PAGE } from "../store.js";
 
@@ -35,6 +37,17 @@ export interface ApiConfig {
    *  Key intake validates a submitted key's HRP against it. */
   readonly net: string;
   readonly schema: string;
+  /**
+   * `ARCHIVE_URL` — the base URL of an `umbradb-archive-read-api` (00009-08). Set means the API
+   * reports `sourceTip` by asking that process, and holds no credential for A's database.
+   */
+  readonly archiveUrl?: string;
+  /** Single-host mode only: the archive schema in the SAME database, read through the read
+   *  contract to report `sourceTip`. Ignored when {@link archiveUrl} is set. */
+  readonly archiveSchema: string;
+  /** `SOURCE_TIP=off`: report `sourceTip: null`, for an API deployed with no archive access at
+   *  all. The honest answer for that deployment, and never a substitute for a real tip. */
+  readonly sourceTipDisabled: boolean;
 }
 
 /** Thrown for any invalid configuration. Names the variable, so an operator does not have to
@@ -77,6 +90,7 @@ export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const host = env.API_HOST?.trim() ?? DEFAULT_API_HOST;
   if (host === "") throw new ApiConfigError("API_HOST", "must not be empty");
   return {
+    ...readArchiveAccess(env),
     host,
     // Port 0 is legitimate and useful — it asks the kernel for a free port, which is exactly what
     // a test wants on a shared host — so the range starts at 0, not 1.
@@ -87,4 +101,41 @@ export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     net,
     schema: env.SHIELDED_MONITOR_SCHEMA?.trim() ?? DEFAULT_SHIELDED_MONITOR_SCHEMA,
   };
+}
+
+/**
+ * How this API process reaches the archive in order to report `sourceTip` — and the one
+ * configuration it refuses (00009-08).
+ *
+ * `ARCHIVE_URL` and the archive DATABASE settings describe two different deployments. Accepting
+ * both and silently preferring one would leave the other in the environment as a false
+ * description of the process — and in the `ARCHIVE_PG` case, as a live credential for A's
+ * database inside a container whose entire reason for existing is that it has none. So the
+ * process names both variables and refuses to start.
+ */
+function readArchiveAccess(env: NodeJS.ProcessEnv): {
+  archiveUrl?: string; archiveSchema: string; sourceTipDisabled: boolean;
+} {
+  const sourceTipDisabled = env.SOURCE_TIP?.trim().toLowerCase() === "off";
+  const archiveSchema = env.ARCHIVE_SCHEMA?.trim() || DEFAULT_ARCHIVE_SCHEMA;
+  const raw = env.ARCHIVE_URL?.trim();
+  if (raw === undefined || raw === "") return { archiveSchema, sourceTipDisabled };
+
+  const conflicting = (["ARCHIVE_SCHEMA", "ARCHIVE_PG"] as const).filter(
+    (name) => env[name] !== undefined && env[name]!.trim() !== "",
+  );
+  if (conflicting.length > 0) {
+    throw new ApiConfigError(
+      "ARCHIVE_URL",
+      `it is set (${raw}) and so ${conflicting.length === 1 ? "is" : "are"} ${conflicting.join(", ")}. ` +
+        "ARCHIVE_URL says the archive is another process reached over HTTP; the database settings " +
+        "say it is a schema in this process's own database. Refusing to start rather than picking " +
+        "one and leaving the other as a false description of the deployment.",
+    );
+  }
+  try {
+    return { archiveUrl: normalizeArchiveBaseUrl(raw), archiveSchema, sourceTipDisabled };
+  } catch (err) {
+    throw new ApiConfigError("ARCHIVE_URL", err instanceof Error ? err.message : String(err));
+  }
 }

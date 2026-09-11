@@ -102,12 +102,67 @@ export class NotAStandardTransactionError extends Error {
  * hand-written `any`-shaped interface would document a contract nothing checks. The only
  * legitimate thing to do with one is pass it to `EncryptionSecretKey.test`.
  */
-export interface ExtractedOffers {
+export interface ExtractedOffers extends OfferSet {
+  /**
+   * The transaction's OWN hash, recomputed from the bytes just deserialized
+   * (`Transaction.transactionHash()`), lowercase hex with no `0x`.
+   *
+   * It is here — rather than derived separately by a caller that wants it — because the whole
+   * point is that it comes from the SAME deserialization as the offers. `chain-archive-sync`
+   * keys every archived transaction on exactly this value (`sync-service.ts`: "what we key on is
+   * derived from what we archive rather than asserted alongside it"), so recomputing it on the
+   * read side lets a consumer check that the identity a page CLAIMS for a transaction is the
+   * identity its bytes actually have. Over an in-process read that is A's own verified work; over
+   * a network boundary (00009-08) it is the only thing that binds the two halves of a page
+   * together. See {@link ArchiveTransactionIdentityError}.
+   */
+  transactionHash: string;
+}
+
+/** The offers alone, for a consumer that has them already and does not need the identity —
+ *  `buildMatchDetails` takes this rather than the whole {@link ExtractedOffers} so that adding
+ *  the identity field did not force every caller to synthesise one. */
+export interface OfferSet {
   /** `undefined` when the transaction has no guaranteed offer (legal: an intent-only or
    *  fallible-only transaction). */
   guaranteed?: unknown;
   /** Empty when the transaction has no fallible sections. */
   fallible: Map<number, unknown>;
+}
+
+/**
+ * The identity a page claims for a transaction is not the identity its bytes have.
+ *
+ * **Fail closed, and NOT a monitor failure.** The archive's own ingest recomputes
+ * `transactionHash()` from the bytes before archiving and refuses a block whose two halves
+ * disagree, so this cannot arise from a healthy in-process read: it means the PAGE was assembled
+ * or altered by something between the archive and here — a broken proxy, a truncated response, a
+ * server pointed at another chain, or a deliberate substitution. The batch is therefore refused
+ * WITHOUT advancing coverage and without moving the monitor to `failed`: the fault belongs to the
+ * transport, it would hit every monitor equally, and burning one monitor's lifecycle over it
+ * would hide the real cause while leaving the others to trip over it one by one.
+ */
+export class ArchiveTransactionIdentityError extends Error {
+  readonly code = "ARCHIVE_TX_IDENTITY_MISMATCH" as const;
+  constructor(readonly claimedTxHash: string, readonly actualTxHash: string) {
+    super(
+      `the archive page claims transaction hash ${claimedTxHash}, but the bytes it carries hash ` +
+        `to ${actualTxHash}. Refusing the page: an association recorded under a hash its own ` +
+        "bytes contradict is provenance that lies, and coverage over it would make the error " +
+        "permanent.",
+    );
+    this.name = "ArchiveTransactionIdentityError";
+  }
+}
+
+/** True when `err` is the identity refusal, narrowed without `instanceof` across a module
+ *  boundary a bundler could duplicate (same idiom as `isUnsupportedProtocolVersion`). */
+export function isArchiveTransactionIdentityError(err: unknown): err is ArchiveTransactionIdentityError {
+  return (
+    err instanceof ArchiveTransactionIdentityError ||
+    (typeof err === "object" && err !== null &&
+      (err as { code?: unknown }).code === "ARCHIVE_TX_IDENTITY_MISMATCH")
+  );
 }
 
 /** Handle to a deserialized `EncryptionSecretKey`, with the one operation the scanner needs and
@@ -170,7 +225,17 @@ export async function extractOffers(
     }
   }
   const guaranteed = tx.guaranteedOffer === null ? undefined : tx.guaranteedOffer;
-  return guaranteed === undefined ? { fallible } : { guaranteed, fallible };
+  const transactionHash = normalizeTxHash(String(tx.transactionHash()));
+  return guaranteed === undefined
+    ? { fallible, transactionHash }
+    : { guaranteed, fallible, transactionHash };
+}
+
+/** The archive's own spelling of a transaction hash: lowercase hex, no `0x`
+ *  (`chain-archive-sync/sync-service.ts` stores `hexNoPrefix(...).toLowerCase()`). One
+ *  normaliser, so a comparison can never fail on case or a prefix. */
+export function normalizeTxHash(value: string): string {
+  return (value.startsWith("0x") || value.startsWith("0X") ? value.slice(2) : value).toLowerCase();
 }
 
 /**
