@@ -96,8 +96,27 @@ export function statusesFromReport(report: JsonReport): Map<string, string[]> {
 /** The pinned count of `required` tests (change-level audit BLOCK 9(b)). Structurally PINS the
  *  manifest so silently deleting (or adding) a required entry fails the gate: {@link loadManifest}
  *  rejects a manifest whose `required` length drifts from this constant. Bump it deliberately when
- *  a required test is genuinely added/removed. */
-export const EXPECTED_REQUIRED_COUNT = 25;
+ *  a required test is genuinely added/removed.
+ *
+ *  25 -> 29 (00009-01): the four `crash.archive-height.*` ids covering the owner's Rule A -- one
+ *  block height, one `BEGIN…COMMIT` (`spec/00009` FR-029). They belong in the REQUIRED set by the
+ *  manifest's own rule (every non-live crash test whose skipping must fail the gate), and the
+ *  set includes the suite's own negative control deliberately: a two-state result proven by
+ *  assertions that cannot fail is worth nothing, so the control that shows the pre-fold shape
+ *  DOES produce a partial height must not be skippable either.
+ *
+ *  29 -> 32 (merge of 00009-01 + 00009-02): 00009-02 added three `shielded-monitor.*` ids (fencing,
+ *  schema isolation, restore) on its own branch (25 -> 28); the merged set is the UNION of both
+ *  branches, never one side.
+ *
+ *  32 -> 39 (00009-03): the four `crash.shielded-monitor-batch.*` ids covering the owner's Rule B
+ *  -- one block height's associations and its coverage advance, one `BEGIN…COMMIT` (`spec/00009`
+ *  FR-010) -- plus three `shielded-monitor.*` scanner ids (SC-001 manifest equality, FR-013 stale
+ *  source, FR-007 fail-closed). The crash set again INCLUDES its own negative control and its
+ *  write-set audit deliberately: a two-state result proven by assertions that cannot fail is
+ *  worth nothing, so the control that shows the UNFOLDED shape DOES produce a partial batch must
+ *  not be skippable either. */
+export const EXPECTED_REQUIRED_COUNT = 39;
 
 /** The pinned count of `deferred` (WHERE-gated optional-feature) tests (BLOCK 6). Structurally PINS
  *  the deferred exemption set so deleting the sole deferred entry (a green "0 deferred" gate) fails the

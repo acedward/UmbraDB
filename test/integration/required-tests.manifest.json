@@ -1,5 +1,5 @@
 {
-  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 25) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
+  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 29 -- 25 from v1.0.0-recovery-testing plus the four 00009-01 archive per-height atomicity ids) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
   "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` — those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early — that would re-open the exact self-skip hole this manifest closes.",
   "required": [
     {
@@ -126,6 +126,76 @@
       "id": "differential.reference.import-clean",
       "file": "test/postgres/differential-equivalence.test.ts",
       "description": "Differential reference import-cleanliness (change-level round-3 BLOCK 4): a static audit that the in-repo reference imports nothing outside the repo - directly AND through its relative-import closure - catching bare import, dynamic import() and require(), and rejecting any @midnightntwrk/indexer/consumer/wallet specifier. Required-enforced so skipping/removing it turns the gate red by id."
+    },
+    {
+      "id": "crash.archive-height.pg-kill-two-states",
+      "file": "test/integration/crash/archive-height-atomicity.crash.test.ts",
+      "description": "00009-01 / owner Rule A (spec/00009 FR-029): 200 randomized PostgreSQL kills inside the per-height archive transaction leave exactly {nothing of H, all of H incl. watermark}; both classes must occur (non-vacuity) and every interrupted height must re-commit whole on retry."
+    },
+    {
+      "id": "crash.archive-height.sigkill-two-states",
+      "file": "test/integration/crash/archive-height-atomicity.crash.test.ts",
+      "description": "00009-01 / owner Rule A: a real child writer process SIGKILLed at named statement indices inside the per-height transaction leaves nothing of H; SIGKILLed immediately after the commit returned it leaves all of H including the watermark."
+    },
+    {
+      "id": "crash.archive-height.negative-control-unfolded-writes",
+      "file": "test/integration/crash/archive-height-atomicity.crash.test.ts",
+      "description": "00009-01 test-honesty control: the PRE-FOLD three-transaction shape (bundle, then checkpoint, then watermark) DOES expose a partial height, so the two-state result above is caused by the fold rather than by assertions that cannot fail."
+    },
+    {
+      "id": "crash.archive-height.notify-only-on-commit",
+      "file": "test/integration/crash/archive-height-atomicity.crash.test.ts",
+      "description": "00009-01: the transactional progress NOTIFY is delivered for a committed height and never for a rolled-back one, so a listener may treat an arrival as 'this height is readable'."
+    },
+    {
+      "id": "shielded-monitor.fencing.stale-epoch-never-commits",
+      "file": "test/shielded-monitor/store.integration.test.ts",
+      "description": "00009-02 (organizer spec FR-012, US3 scenario 1): a pause landing between a worker's load and its commit fences the advance, and a stale epoch commits nothing -- asserted with a full-content snapshot of every shielded_monitor table before and after, plus a positive control proving the same batch DOES commit under the current epoch."
+    },
+    {
+      "id": "shielded-monitor.isolation.b-writes-only-its-own-schema",
+      "file": "test/shielded-monitor/schema-isolation.integration.test.ts",
+      "description": "00009-02 (owner Rule B, organizer spec US5 scenario 4 / FR-025): the whole project-B flow runs as a PostgreSQL role holding only USAGE+SELECT on chain_archive, and the seeded archive content is byte-identical afterwards; a positive control asserts that same role's direct archive write IS rejected, so the boundary is real."
+    },
+    {
+      "id": "shielded-monitor.restore.revocation-survives-snapshot-restore",
+      "file": "test/shielded-monitor/restore-drill.integration.test.ts",
+      "description": "00009-02 (organizer spec FR-024): real pg_dump snapshot -> revoke -> DROP SCHEMA -> psql restore -> re-apply the exported revocation list; the monitor is refused again and an advance against it is fenced. Asserts mid-drill that the restore genuinely lost the revoke, so the drill cannot pass vacuously."
+    },
+    {
+      "id": "crash.shielded-monitor-batch.pg-kill-two-states",
+      "file": "test/integration/crash/shielded-monitor-batch-atomicity.crash.test.ts",
+      "description": "00009-03 / owner Rule B (spec/00009 FR-010, US5 scenario 2): 200 randomized PostgreSQL kills inside the scanner's per-batch transaction leave exactly {no association of H and coverage below H, all of H and coverage H}; both classes must occur, an interrupted height WITH matches and one WITHOUT must both occur (the latter is the case that turns entirely on coverage), and every interrupted batch must redo whole with no duplicate (height, position)."
+    },
+    {
+      "id": "crash.shielded-monitor-batch.sigkill-two-states",
+      "file": "test/integration/crash/shielded-monitor-batch-atomicity.crash.test.ts",
+      "description": "00009-03 / owner Rule B: a real child scanner process SIGKILLed at named statement indices inside its advance transaction leaves nothing of H; SIGKILLed immediately after the commit returned it leaves all of H including coverage. The worker's own pause signal is asserted, so a point that fell past the end of the transaction cannot masquerade as a crash point."
+    },
+    {
+      "id": "crash.shielded-monitor-batch.negative-control-unfolded-writes",
+      "file": "test/integration/crash/shielded-monitor-batch-atomicity.crash.test.ts",
+      "description": "00009-03 test-honesty control: the UNFOLDED shape (associations written, coverage advanced afterwards) DOES expose a partial batch, so the two-state result above is caused by the single transaction rather than by assertions that cannot fail."
+    },
+    {
+      "id": "crash.shielded-monitor-batch.write-set-is-shielded-monitor-only",
+      "file": "test/integration/crash/shielded-monitor-batch-atomicity.crash.test.ts",
+      "description": "00009-03 / owner Rule B, US5 scenario 4: every statement the scanner issues is captured and the ones whose LEADING verb writes are checked to name only shielded_monitor tables, in a run that demonstrably also read the archive. Two positive controls: an archive INSERT is classified and flagged, and a SELECT ... FOR UPDATE is NOT classified as a write (so the detector is precise, not merely permissive)."
+    },
+    {
+      "id": "shielded-monitor.relevance.matches-equal-the-fixture-manifest",
+      "file": "test/shielded-monitor/scanner.integration.test.ts",
+      "description": "00009-03 / SC-001: end to end over a real archive, every monitor's stored associations equal test/fixtures/shielded-monitor/corpus.manifest.json exactly -- every positive once (including the fallible-segment-only positive and the two-matching-output transaction, which yields ONE row), zero negatives, correct matched segments, appliedOutcome unknown, full FR-009 provenance, gapless seq in (blockHeight, position) order."
+    },
+    {
+      "id": "shielded-monitor.scanner.stale-source-stops-the-monitor",
+      "file": "test/shielded-monitor/scanner.integration.test.ts",
+      "description": "00009-03 / FR-013, US5 scenario 5: a re-bootstrapped archive (same chain, new archive instance id) moves the monitor to stale_source with its coverage frozen, instead of silently mixing two histories."
+    },
+    {
+      "id": "shielded-monitor.scanner.fail-closed-on-undecodable-bytes",
+      "file": "test/shielded-monitor/scanner.integration.test.ts",
+      "description": "00009-03 / FR-007: an undecodable transaction stops the monitor at its (height, position) with state failed and coverage left BELOW that height -- the unreadable range is never recorded as scanned-and-empty."
     }
   ],
   "deferred": [

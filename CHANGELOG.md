@@ -15,6 +15,40 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
   continuity, sparse ledger replay checkpoints, and per-block comparison with the chain-committed
   `midnight_ledgerStateRoot`.
 - Packaged `umbradb-archive-sync` CLI and digest-pinned Docker parity/live-service gates.
+- **Shielded monitor store (`shielded_monitor` schema, project B core).** A new, **additive**
+  migration lineage — `src/postgres/migrations/shielded_monitor/{000_schema,001_core}` applied
+  through `bootstrapShieldedMonitorSchema()` — creating `monitors`, `associations`,
+  `lifecycle_events` and `audit_events` in a schema of its own. Nothing existing changes: no
+  current migration, table, interface or exported symbol is touched, and a deployment that never
+  calls the bootstrap is unaffected.
+  Alongside it, a new top-level `shielded-monitor/` module (outside `src/`, like
+  `chain-archive-sync/`, with a committed guard test enforcing that nothing under `src/` imports
+  it): BIP-350 Bech32m intake for Midnight shielded viewing keys with the network-bound HRP rule
+  and ledger-v8 validation, a domain-separated SHA-256 registration fingerprint, a total lifecycle
+  state machine with a monotone epoch, an epoch-fenced `advance()` that commits a block range's
+  associations and its coverage advance in one transaction, a revocation-list export/apply pair
+  for restores, and a trusted operator harness (`npm run shielded-monitor:harness`).
+  Documented in `docs/shielded-monitor-restore.md` and `SECURITY.md`; specified in
+  `openspec/changes/00009-02-monitor-store/`.
+  **Alpha trust model:** viewing keys and wallet↔transaction associations are stored in
+  **plaintext** in this schema — at-rest encryption, key rotation, keyed fingerprints and tenant
+  isolation are deferred. See `SECURITY.md` before deploying it.
+- **Shielded viewing-key relevance scanner (project B's worker).** A new process,
+  `umbradb-shielded-monitor`, that reads the archive's canonical finalized history **only**
+  through the `ArchiveReadContract` interface, evaluates the ledger's own
+  `EncryptionSecretKey.test(offer)` over each regular transaction's guaranteed offer and every
+  fallible-segment offer, and commits each batch of whole block heights — that batch's
+  associations **and** the coverage advance — in ONE transaction in `shielded_monitor`. Blocks
+  with no matches still advance coverage, so "scanned and empty" stays distinguishable from
+  "not scanned". An unsupported protocol version or an undecodable transaction stops the monitor
+  at that height and position **without** claiming coverage over it; an archive rebuilt under a
+  monitor moves it to `stale_source` rather than mixing histories. The tail follows
+  `LISTEN chain_archive_progress` with polling as the fallback. Every association carries
+  `appliedOutcome = "unknown"`; the archive's replay outcome, where it recorded one, is exposed
+  separately as `sourceOutcome` and is never promoted. Additive: no existing migration, table,
+  interface or exported symbol changes, and a deployment that never runs the binary is
+  unaffected. Documented in `docs/shielded-monitor-scanner.md`; specified in
+  `openspec/changes/00009-03-relevance-scanner/`.
 
 ### Changed
 

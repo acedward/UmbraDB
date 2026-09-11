@@ -46,6 +46,8 @@
     "test:live": "UMBRADB_LIVE_PREPROD=1 vitest run test/integration/preprod-db-sync.integration.test.ts test/integration/cold-boot-recovery.integration.test.ts",
     "test:smoke": "npm run build && node test/smoke/pack-install.mjs",
     "archive:sync": "tsx chain-archive-sync/sync-cli.ts",
+    "shielded-monitor:harness": "tsx shielded-monitor/harness-cli.ts",
+    "shielded-monitor:scan": "tsx shielded-monitor/scanner-cli.ts",
     "bench": "tsx bench/harness.ts",
     "bench:smoke": "tsx bench/smoke.ts",
     "build:cli": "tsc -p tsconfig.cli.json && node scripts/copy-cli-assets.mjs"
@@ -73,6 +75,8 @@
     "vitest": "^4.1.10"
   },
   "bin": {
-    "umbradb-archive-sync": "dist-cli/chain-archive-sync/sync-cli.js"
+    "umbradb-archive-sync": "dist-cli/chain-archive-sync/sync-cli.js",
+    "umbradb-archive-backfill-timestamps": "dist-cli/chain-archive-sync/backfill-timestamps-cli.js",
+    "umbradb-shielded-monitor": "dist-cli/shielded-monitor/scanner-cli.js"
   }
 }
