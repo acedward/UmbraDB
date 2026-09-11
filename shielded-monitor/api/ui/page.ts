@@ -90,6 +90,20 @@ label { display: block; color: var(--dim); font-size: 11.5px; margin-bottom: 3px
 .dot.up { background: var(--ok); } .dot.down { background: var(--bad); }
 .wide { width: 100%; }
 .mt8 { margin-top: 8px; }
+/* 00009-07: the expandable match row. */
+tr.exp { cursor: pointer; }
+tr.exp:hover td { background: #1b202a; }
+td.dt { padding: 0; background: #12161e; }
+.det { padding: 6px 12px 12px; border-left: 2px solid var(--accent); }
+.det h3 { margin: 12px 0 2px; font-size: 12px; font-weight: 600; color: var(--ink); }
+.det table { margin-bottom: 2px; }
+.leg { color: var(--dim); font-size: 11px; margin-top: 12px; line-height: 1.6; }
+.sum { color: var(--dim); font-size: 11.5px; }
+.yes { color: var(--ok); }
+.no { color: var(--dim); }
+.unk { color: var(--warn); }
+.ph { color: var(--warn); font-size: 12px; margin: 6px 0 2px; }
+.cr { width: 26px; padding-left: 4px; padding-right: 4px; }
 `;
 
 // ── Behaviour ────────────────────────────────────────────────────────────────────────────────
@@ -125,6 +139,9 @@ var state = {
   timer: null, paused: false, selected: null, inflight: false,
   monitors: [], sourceTip: null, net: null, health: null,
   matches: [], cursor: "", exhausted: false, matchesFor: null, matchCoverage: null, matchesError: null,
+  // 00009-07: which rows are expanded, keyed by the match's own cursor (stable across the 3 s
+  // poll, so a refresh never collapses a row the operator opened).
+  expanded: {},
 };
 
 function el(id) { return document.getElementById(id); }
@@ -274,7 +291,7 @@ function renderMonitors() {
 function selectMonitor(id) {
   state.selected = id;
   state.matches = []; state.cursor = ""; state.exhausted = false; state.matchesFor = id;
-  state.matchCoverage = null; state.matchesError = null;
+  state.matchCoverage = null; state.matchesError = null; state.expanded = {};
   renderMonitors();
   renderMatches();
   if (id !== null) loadMoreMatches();
@@ -343,21 +360,41 @@ function renderMatches() {
   } else {
     var table = node("table");
     var head = node("tr");
-    ["height", "pos", "tx hash", "segments", "source", "applied"].forEach(function (h) { head.appendChild(node("th", h)); });
+    ["", "block time", "height / pos", "tx hash", "segments", "what is in it"].forEach(function (h) { head.appendChild(node("th", h)); });
     table.appendChild(head);
-    for (var i = state.matches.length - 1; i >= 0; i--) {       // newest first
-      var m = state.matches[i];
-      var tr = node("tr");
-      tr.appendChild(node("td", m.blockHeight));
-      tr.appendChild(node("td", String(m.position)));
-      var h = node("td");
-      h.appendChild(copyable(m.txHash));
-      tr.appendChild(h);
+    // Newest first. "slice().reverse().forEach" rather than an index loop, because each row
+    // installs a click handler that must capture ITS OWN match — a "var" in a "for" body is
+    // function-scoped, so every handler would close over the last one.
+    state.matches.slice().reverse().forEach(function (m) {
+      var open = state.expanded[m.cursor] === true;
+      var tr = node("tr", null, "exp");
+      tr.addEventListener("click", function () { toggleRow(m.cursor); });
+
+      var caret = node("td", null, "cr");
+      var toggleButton = node("button", open ? "▾" : "▸");
+      toggleButton.title = open ? "hide details" : "show details";
+      toggleButton.addEventListener("click", function (ev) { ev.stopPropagation(); toggleRow(m.cursor); });
+      caret.appendChild(toggleButton);
+      tr.appendChild(caret);
+
+      tr.appendChild(node("td", fmtWhen(m.blockTimestampMs)));
+      tr.appendChild(node("td", m.blockHeight + " / " + m.position));
+      var hash = node("td");
+      hash.appendChild(copyable(m.txHash));
+      tr.appendChild(hash);
       tr.appendChild(node("td", m.matchedSegments.join(", ")));
-      tr.appendChild(node("td", m.sourceOutcome === undefined ? "—" : m.sourceOutcome));
-      tr.appendChild(node("td", m.appliedOutcome));
+      tr.appendChild(node("td", summaryOf(m), "sum"));
       table.appendChild(tr);
-    }
+
+      if (open) {
+        var detailRow = node("tr");
+        var cell = node("td", null, "dt");
+        cell.colSpan = 6;
+        cell.appendChild(detailsPanel(m));
+        detailRow.appendChild(cell);
+        table.appendChild(detailRow);
+      }
+    });
     host.appendChild(table);
   }
   var foot = node("div", null, "tools");
@@ -367,6 +404,134 @@ function renderMatches() {
   foot.appendChild(more);
   foot.appendChild(node("span", state.matches.length + " loaded, newest first", "note"));
   host.appendChild(foot);
+}
+
+// -- Match details (00009-07) ----------------------------------------------------------------
+// Everything below renders PUBLIC zswap data the scanner recorded beside the match. "mine" is
+// three-valued and each value is drawn differently on purpose: a dash is "not yours", a "?" is
+// "the ledger cannot attribute this from a viewing key alone", and only a green "yours" claims
+// ownership. See shielded-monitor/match-details.ts and organizer question Q22.
+
+function fmtWhen(ms) {
+  if (ms === null || ms === undefined) return "not recorded";
+  var n = Number(ms);
+  if (!isFinite(n)) return "not recorded";
+  return new Date(n).toISOString().replace(".000Z", "Z");
+}
+
+function ago(ms) {
+  var n = Number(ms);
+  if (ms === null || ms === undefined || !isFinite(n)) return "";
+  var s = Math.round((Date.now() - n) / 1000);
+  if (s < 0) return "in the future";
+  if (s < 60) return s + "s ago";
+  if (s < 3600) return Math.round(s / 60) + "m ago";
+  if (s < 86400) return Math.round(s / 3600) + "h ago";
+  return Math.round(s / 86400) + "d ago";
+}
+
+function plural(n, word) { return n + " " + word + (n === 1 ? "" : "s"); }
+
+function mineCell(mine) {
+  if (mine === true) return node("span", "yours", "yes");
+  if (mine === false) return node("span", "—", "no");
+  return node("span", "?", "unk");
+}
+
+function summaryOf(m) {
+  if (!m.details) return "details not recorded yet — run the backfill";
+  var t = m.details.totals;
+  var mine = t.mine > 0
+    ? plural(t.mine, "output") + " yours"
+    : (t.unattributed > 0 ? "1 of " + t.unattributed + " yours" : "none yours");
+  return mine + " · " + plural(t.outputs, "commitment") +
+    " · " + plural(t.inputs, "nullifier") + " · " + plural(t.transients, "transient");
+}
+
+function detailTable(columns, rows) {
+  var table = node("table");
+  var head = node("tr");
+  columns.forEach(function (c) { head.appendChild(node("th", c)); });
+  table.appendChild(head);
+  rows.forEach(function (cells) {
+    var tr = node("tr");
+    cells.forEach(function (cell) {
+      var td = node("td");
+      if (cell !== null && typeof cell === "object") td.appendChild(cell);
+      else td.textContent = cell === null ? "—" : String(cell);
+      tr.appendChild(td);
+    });
+    table.appendChild(tr);
+  });
+  return table;
+}
+
+function contractCell(address) { return address ? copyable(address) : null; }
+
+function segmentPanel(wrap, s) {
+  var title = "segment " + s.segment + (s.segment === 0 ? " (guaranteed)" : " (fallible)") +
+    " · " + (s.matched ? "matched" : "not matched");
+  if (s.mineAmong) title += " · one of these " + s.mineAmong + " is yours";
+  if (s.truncated) title += " · list truncated (" + s.counts.outputs + " outputs, " +
+    s.counts.inputs + " inputs, " + s.counts.transients + " transients in total)";
+  wrap.appendChild(node("h3", title));
+  var empty = true;
+  if (s.outputs.length > 0) {
+    empty = false;
+    wrap.appendChild(detailTable(["#", "output commitment", "contract", "mine"], s.outputs.map(function (o) {
+      return [o.index, copyable(o.commitment), contractCell(o.contractAddress), mineCell(o.mine)];
+    })));
+  }
+  if (s.inputs.length > 0) {
+    empty = false;
+    wrap.appendChild(detailTable(["#", "spent nullifier", "contract"], s.inputs.map(function (i) {
+      return [i.index, copyable(i.nullifier), contractCell(i.contractAddress)];
+    })));
+  }
+  if (s.transients.length > 0) {
+    empty = false;
+    wrap.appendChild(detailTable(["#", "transient commitment", "transient nullifier", "contract", "mine"], s.transients.map(function (t) {
+      return [t.index, copyable(t.commitment), copyable(t.nullifier), contractCell(t.contractAddress), mineCell(t.mine)];
+    })));
+  }
+  if (empty) wrap.appendChild(node("div", "no zswap entries in this segment", "note"));
+}
+
+function detailsPanel(m) {
+  var wrap = node("div", null, "det");
+  var when = fmtWhen(m.blockTimestampMs);
+  var rel = ago(m.blockTimestampMs);
+  wrap.appendChild(node("div",
+    "block time " + when + (rel ? " (" + rel + ")" : "") +
+    " · applied " + m.appliedOutcome +
+    " · source " + (m.sourceOutcome === undefined ? "not recorded" : m.sourceOutcome) +
+    " · protocol " + m.protocolVersion, "nums"));
+  if (!m.details) {
+    wrap.appendChild(node("div",
+      "Details not recorded yet — run the backfill: " +
+      "umbradb-shielded-monitor --backfill-details", "ph"));
+    wrap.appendChild(node("div",
+      "This match was recorded before the service stored per-transaction zswap data. The " +
+      "backfill fills it in from the archive; nothing about the match itself changes.", "note"));
+    return wrap;
+  }
+  m.details.segments.forEach(function (s) { segmentPanel(wrap, s); });
+  if (m.details.segments.length === 0) {
+    wrap.appendChild(node("div", "this transaction carried no zswap offer", "note"));
+  }
+  wrap.appendChild(node("div",
+    "commitment = a new shielded coin · nullifier = a coin this transaction spent · " +
+    "a transient is created and spent in the same transaction · only outputs encrypted to " +
+    "your key are yours; “?” means the ledger cannot attribute one from a viewing key " +
+    "alone, and the segment line says how many it is one of · " + m.details.ledgerBuild +
+    " · " + m.details.version, "leg"));
+  return wrap;
+}
+
+function toggleRow(cursor) {
+  if (state.expanded[cursor]) delete state.expanded[cursor];
+  else state.expanded[cursor] = true;
+  renderMatches();
 }
 
 // ── Registration ────────────────────────────────────────────────────────────────────────────
