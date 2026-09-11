@@ -127,8 +127,24 @@ export function statusesFromReport(report: JsonReport): Map<string, string[]> {
  *  "the dashboard adds no runtime dependency and loads nothing from the network" from a review
  *  habit into an assertion with a positive control. `…derive-key.matches-the-service-encoding`
  *  pins the derive command's output to the repository's own key-encoding path, so the command and
- *  the service's intake cannot drift apart without a red gate. */
-export const EXPECTED_REQUIRED_COUNT = 45;
+ *  the service's intake cannot drift apart without a red gate.
+ *
+ *  45 -> 50 (00009-07): five ids for MATCH DETAILS. Two pin the attribution rule and the ledger
+ *  fact that forces its shape — `…match-details.attribution-is-sound-on-the-fixture-manifest`
+ *  (every `mine` value is one the ledger entails, over the whole SC-001 corpus, with non-vacuity
+ *  assertions that each branch occurred) and
+ *  `…match-details.per-output-isolation-is-refused-for-archived-bytes` (the measured refusal
+ *  behind organizer question Q22, with a positive control). Two pin the backfill's idempotence at
+ *  both levels — the store predicate (`…backfill.fills-null-rows-once-and-is-idempotent`) and the
+ *  end-to-end run (`…backfill.fills-existing-matches-and-is-idempotent`). The fifth,
+ *  `crash.shielded-monitor-batch.details-commit-with-the-height`, is a STRENGTHENING of the
+ *  existing Rule B gate: a height's details must commit inside the height's own transaction, and
+ *  the classifier is shown to refuse the state where they did not.
+ *
+ *  UNION RULE, unchanged and still load-bearing: a branch that merges this one with any other
+ *  00009 branch takes the UNION of the id sets and the count that follows from it, never one
+ *  side's number. */
+export const EXPECTED_REQUIRED_COUNT = 50;
 
 /** The pinned count of `deferred` (WHERE-gated optional-feature) tests (BLOCK 6). Structurally PINS
  *  the deferred exemption set so deleting the sole deferred entry (a green "0 deferred" gate) fails the

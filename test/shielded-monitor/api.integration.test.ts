@@ -591,6 +591,77 @@ describe("shielded-monitor private API", () => {
       expect(item.matchingRuleVersion).toBe("shielded-monitor/v1");
     });
 
+    // ── 00009-07: block time and details on the wire ────────────────────────────────────────
+
+    it("carries blockTimestampMs and details, with `null` for a match that has neither recorded", async () => {
+      // The paged monitor's associations were written the pre-00009-07 way, which is exactly the
+      // state a deployment is in before the backfill runs.
+      const page = await call("GET", `/v1/monitors/${pagedId}/matches?limit=1`);
+      const item = (page.json.items as Array<Record<string, unknown>>)[0]!;
+      // The KEYS are present and the VALUES are null: a consumer must be able to tell "this
+      // deployment does not send details" from "this match has none recorded yet", and an absent
+      // key cannot express the second.
+      expect(Object.keys(item)).toContain("blockTimestampMs");
+      expect(Object.keys(item)).toContain("details");
+      expect(item.blockTimestampMs).toBeNull();
+      expect(item.details).toBeNull();
+    });
+
+    it("returns the recorded details object and the block time as a decimal string", async () => {
+      const id = await register(133);
+      const monitor = await store.getIncludingRevoked(id);
+      const details = {
+        version: "shielded-monitor/match-details/v1",
+        ledgerBuild: "ledger-v8@8.1.0-syshash.4",
+        segments: [{
+          segment: 0,
+          matched: true,
+          outputs: [{ index: 0, commitment: "abcd", mine: true }],
+          inputs: [{ index: 0, nullifier: "beef" }],
+          transients: [],
+          counts: { outputs: 1, inputs: 1, transients: 0 },
+        }],
+        totals: { outputs: 1, inputs: 1, transients: 0, mine: 1, unattributed: 0 },
+      };
+      await store.advance(id, monitor!.epoch, 11n, [
+        association(11n, 0, { details: details as never, blockTimestampMs: 1_754_395_200_000n }),
+      ]);
+      const page = await call("GET", `/v1/monitors/${id}/matches`);
+      const item = (page.json.items as Array<Record<string, unknown>>)[0]!;
+      expect(item.details).toStrictEqual(details);
+      // A STRING, for the same reason every height is one: a millisecond epoch is well inside
+      // 2^53 today, but nothing in this API sends a 64-bit integer as a JSON number.
+      expect(item.blockTimestampMs).toBe("1754395200000");
+    });
+
+    it("omits both fields for `?details=0`, reproducing the pre-00009-07 item exactly", async () => {
+      const id = await register(134);
+      const monitor = await store.getIncludingRevoked(id);
+      await store.advance(id, monitor!.epoch, 12n, [
+        association(12n, 0, {
+          details: { version: "v1", segments: [] } as never,
+          blockTimestampMs: 1_754_395_200_000n,
+        }),
+      ]);
+      const withThem = await call("GET", `/v1/monitors/${id}/matches`);
+      const without = await call("GET", `/v1/monitors/${id}/matches?details=0`);
+      const item = (without.json.items as Array<Record<string, unknown>>)[0]!;
+      expect(Object.keys(item)).not.toContain("details");
+      expect(Object.keys(item)).not.toContain("blockTimestampMs");
+      // Everything else is byte-identical, so `details=0` really is "the old shape" and not a
+      // second, differently-shaped item.
+      const full = (withThem.json.items as Array<Record<string, unknown>>)[0]!;
+      const { details: _d, blockTimestampMs: _t, ...rest } = full;
+      expect(item).toStrictEqual(rest);
+      // Any other value means "include them": a typo must fail towards MORE data, never towards
+      // a silently smaller page.
+      for (const value of ["1", "true", "", "yes"]) {
+        const response = await call("GET", `/v1/monitors/${id}/matches?details=${value}`);
+        expect(Object.keys((response.json.items as Array<Record<string, unknown>>)[0]!))
+          .toContain("details");
+      }
+    });
+
     it("carries sourceOutcome when the archive recorded one, without replacing appliedOutcome (FR-009)", async () => {
       const id = await register(132);
       const monitor = await store.getIncludingRevoked(id);

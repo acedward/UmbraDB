@@ -268,8 +268,8 @@ describe("match details", () => {
 
   // ── The Q22 pin ─────────────────────────────────────────────────────────────────────────────
 
-  describe("[[shielded-monitor.match-details.per-output-isolation-is-refused-for-archived-bytes]] per-output isolation against the vendored ledger", () => {
-    it("is REFUSED for an output read out of an archived (proven) transaction", async () => {
+  describe("per-output isolation against the vendored ledger", () => {
+    it("[[shielded-monitor.match-details.per-output-isolation-is-refused-for-archived-bytes]] is REFUSED for an output read out of an archived (proven) transaction", async () => {
       // This is the measurement organizer question Q22 rests on. If a future ledger allows it, this
       // test fails — which is the point: the deduction that replaces it is a fallback, and the day
       // the exact call works again is a day someone should notice.

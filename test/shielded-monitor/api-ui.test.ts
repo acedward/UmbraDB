@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createContext, runInContext } from "node:vm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadApiConfig } from "../../shielded-monitor/api/config.js";
 import {
@@ -224,6 +225,172 @@ describe("shielded-monitor dashboard (GET /ui)", () => {
       const response = await fetch(`${base}/v1/monitors/00000000-0000-4000-8000-000000000000/nonsense`);
       expect(response.status).toBe(404);
       expect(((await response.json()) as { error: { code: string } }).error.code).toBe("NOT_FOUND");
+    });
+  });
+
+  // ── The match-details renderer, actually executed (00009-07) ────────────────────────────────
+
+  describe("expandable match row", () => {
+    /** The page's own script, run in a sandbox against a DOM stub small enough to fit here.
+     *
+     *  Executing the renderer is worth the twenty lines of stub: string-matching the template
+     *  would pass for a page whose summary line reads "undefined output yours", which is exactly
+     *  the class of mistake a hand-written renderer makes. The stub records a tree, and the
+     *  assertions read the text out of it. */
+    interface StubNode {
+      tag: string;
+      textContent: string;
+      className: string;
+      children: StubNode[];
+      colSpan?: number;
+      title?: string;
+    }
+    function makeNode(tag: string): StubNode {
+      const node: StubNode = { tag, textContent: "", className: "", children: [] };
+      return Object.assign(node, {
+        style: {},
+        appendChild(child: StubNode) { node.children.push(child); return child; },
+        addEventListener() { /* the renderer installs handlers; none are invoked here */ },
+      });
+    }
+    function text(node: StubNode): string {
+      return [node.textContent, ...node.children.map(text)].filter((t) => t !== "").join(" | ");
+    }
+
+    /** Pulls the page's inline script out of the SERVED document and evaluates it, so what is
+     *  under test is the bytes the browser receives, not a copy. */
+    function loadScript(): Record<string, any> {
+      const open = DASHBOARD_HTML.indexOf("<script>");
+      const close = DASHBOARD_HTML.indexOf("</script>", open);
+      const source = DASHBOARD_HTML.slice(open + "<script>".length, close);
+      const sandbox: Record<string, any> = {
+        document: { createElement: makeNode, getElementById: () => makeNode("div") },
+        window: { addEventListener: () => {}, setInterval: () => 0, clearInterval: () => {}, confirm: () => false },
+        navigator: {},
+        fetch: () => Promise.reject(new Error("the renderer under test must not fetch")),
+        Date, Math, JSON, BigInt, Number, String, Object, Array, Boolean, isFinite, encodeURIComponent,
+      };
+      sandbox.globalThis = sandbox;
+      createContext(sandbox);
+      runInContext(source, sandbox);
+      return sandbox;
+    }
+
+    const page = loadScript();
+
+    const item = (details: unknown, blockTimestampMs: string | null) => ({
+      cursor: "c1", blockHeight: "1116", position: 0, txHash: "ab".repeat(32),
+      matchedSegments: [0], appliedOutcome: "unknown", protocolVersion: "1000000",
+      blockTimestampMs, details,
+    });
+
+    const fullDetails = {
+      version: "shielded-monitor/match-details/v1",
+      ledgerBuild: "ledger-v8@8.1.0-syshash.4",
+      segments: [{
+        segment: 0,
+        matched: true,
+        outputs: [
+          { index: 0, commitment: "c0".repeat(32), mine: null },
+          { index: 1, commitment: "c1".repeat(32), mine: null },
+          { index: 2, commitment: "c2".repeat(32), contractAddress: "ca".repeat(32), mine: false },
+        ],
+        inputs: [{ index: 0, nullifier: "nu".repeat(32) }],
+        transients: [{ index: 0, commitment: "tc".repeat(32), nullifier: "tn".repeat(32), mine: false }],
+        counts: { outputs: 3, inputs: 1, transients: 1 },
+        mineAmong: 2,
+      }],
+      totals: { outputs: 3, inputs: 1, transients: 1, mine: 0, unattributed: 2 },
+    };
+
+    it("summarises a match with details, pluralising the counts", () => {
+      expect(page.summaryOf(item(fullDetails, "1754395200000")))
+        .toBe("1 of 2 yours · 3 commitments · 1 nullifier · 1 transient");
+      const pinned = { ...fullDetails, totals: { outputs: 1, inputs: 0, transients: 0, mine: 1, unattributed: 0 } };
+      expect(page.summaryOf(item(pinned, "1")))
+        .toBe("1 output yours · 1 commitment · 0 nullifiers · 0 transients");
+      const none = { ...fullDetails, totals: { outputs: 2, inputs: 2, transients: 0, mine: 0, unattributed: 0 } };
+      expect(page.summaryOf(item(none, "1")))
+        .toBe("none yours · 2 commitments · 2 nullifiers · 0 transients");
+    });
+
+    it("summarises a match with NO details as the backfill prompt, never as an empty transaction", () => {
+      expect(page.summaryOf(item(null, null))).toBe("details not recorded yet — run the backfill");
+    });
+
+    it("renders a time only when there is one, and never a zero or a clock read", () => {
+      expect(page.fmtWhen(null)).toBe("not recorded");
+      expect(page.fmtWhen(undefined)).toBe("not recorded");
+      expect(page.fmtWhen("not-a-number")).toBe("not recorded");
+      expect(page.fmtWhen("1754395200000")).toBe("2025-08-05T12:00:00Z");
+      expect(page.ago(null)).toBe("");
+      expect(page.ago(String(Date.now() - 90_000))).toBe("2m ago");
+    });
+
+    it("renders the expanded panel: every commitment, every nullifier, the attribution and the legend", () => {
+      const rendered = text(page.detailsPanel(item(fullDetails, "1754395200000")) as StubNode);
+      // The block time and the two outcomes.
+      expect(rendered).toContain("block time 2025-08-05T12:00:00Z");
+      expect(rendered).toContain("applied unknown");
+      expect(rendered).toContain("source not recorded");
+      // The segment header, including how many candidates the one match is among.
+      expect(rendered).toContain("segment 0 (guaranteed) · matched");
+      expect(rendered).toContain("one of these 2 is yours");
+      // Every public value reaches the panel.
+      for (const value of [
+        fullDetails.segments[0]!.outputs[0]!.commitment,
+        fullDetails.segments[0]!.outputs[2]!.contractAddress!,
+        fullDetails.segments[0]!.inputs[0]!.nullifier,
+        fullDetails.segments[0]!.transients[0]!.commitment,
+        fullDetails.segments[0]!.transients[0]!.nullifier,
+      ]) {
+        expect(rendered).toContain(value);
+      }
+      // The three attribution renderings, and the legend that explains them.
+      expect(rendered).toContain("?");
+      expect(rendered).toContain("commitment = a new shielded coin");
+      expect(rendered).toContain("only outputs encrypted to your key are yours");
+      expect(rendered).toContain("ledger-v8@8.1.0-syshash.4");
+
+      const pinned = {
+        ...fullDetails,
+        segments: [{
+          ...fullDetails.segments[0]!,
+          outputs: [{ index: 0, commitment: "aa", mine: true }],
+          inputs: [], transients: [],
+          counts: { outputs: 1, inputs: 0, transients: 0 },
+          mineAmong: undefined,
+        }],
+      };
+      expect(text(page.detailsPanel(item(pinned, "1")) as StubNode)).toContain("yours");
+    });
+
+    it("renders the backfill placeholder when the match has no details", () => {
+      const rendered = text(page.detailsPanel(item(null, null)) as StubNode);
+      expect(rendered).toContain("Details not recorded yet");
+      expect(rendered).toContain("umbradb-shielded-monitor --backfill-details");
+      expect(rendered).toContain("block time not recorded");
+    });
+
+    it("says a segment holds nothing rather than rendering an empty table", () => {
+      const empty = {
+        version: "v1", ledgerBuild: "b",
+        segments: [{
+          segment: 2, matched: false, outputs: [], inputs: [], transients: [],
+          counts: { outputs: 0, inputs: 0, transients: 0 },
+        }],
+        totals: { outputs: 0, inputs: 0, transients: 0, mine: 0, unattributed: 0 },
+      };
+      const rendered = text(page.detailsPanel(item(empty, "1")) as StubNode);
+      expect(rendered).toContain("segment 2 (fallible) · not matched");
+      expect(rendered).toContain("no zswap entries in this segment");
+    });
+
+    it("keeps the expansion state keyed by cursor, so the 3 s refresh cannot collapse an open row", () => {
+      // Structural, because the toggle's effect is only observable through a re-render the stub
+      // does not drive: the state key must be the item's own cursor, which is stable across polls.
+      expect(DASHBOARD_HTML).toContain("state.expanded[m.cursor]");
+      expect(DASHBOARD_HTML).toContain("function toggleRow(cursor)");
     });
   });
 
