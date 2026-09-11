@@ -33,6 +33,22 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
   **Alpha trust model:** viewing keys and wallet↔transaction associations are stored in
   **plaintext** in this schema — at-rest encryption, key rotation, keyed fingerprints and tenant
   isolation are deferred. See `SECURITY.md` before deploying it.
+- **Shielded viewing-key relevance scanner (project B's worker).** A new process,
+  `umbradb-shielded-monitor`, that reads the archive's canonical finalized history **only**
+  through the `ArchiveReadContract` interface, evaluates the ledger's own
+  `EncryptionSecretKey.test(offer)` over each regular transaction's guaranteed offer and every
+  fallible-segment offer, and commits each batch of whole block heights — that batch's
+  associations **and** the coverage advance — in ONE transaction in `shielded_monitor`. Blocks
+  with no matches still advance coverage, so "scanned and empty" stays distinguishable from
+  "not scanned". An unsupported protocol version or an undecodable transaction stops the monitor
+  at that height and position **without** claiming coverage over it; an archive rebuilt under a
+  monitor moves it to `stale_source` rather than mixing histories. The tail follows
+  `LISTEN chain_archive_progress` with polling as the fallback. Every association carries
+  `appliedOutcome = "unknown"`; the archive's replay outcome, where it recorded one, is exposed
+  separately as `sourceOutcome` and is never promoted. Additive: no existing migration, table,
+  interface or exported symbol changes, and a deployment that never runs the binary is
+  unaffected. Documented in `docs/shielded-monitor-scanner.md`; specified in
+  `openspec/changes/00009-03-relevance-scanner/`.
 
 ### Changed
 
