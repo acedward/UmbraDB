@@ -36,6 +36,11 @@ describe("shielded-monitor CLI entry points (FR-026)", () => {
     // client, because that client's import audit requires it to import nothing but Node built-ins
     // and this command must load the ledger WASM (organizer question Q20).
     ["umbradb-shielded-monitor-derive-key", "shielded-monitor/derive-key-cli.ts"],
+    // 00009-08 v2: the A-side storage process that owns the one main database, and the random
+    // balancer in front of the private API instances. Project B's own processes hold no database
+    // credential at all — see `shielded-monitor/no-database.ts`.
+    ["umbradb-storage-api", "storage-api/server-cli.ts"],
+    ["umbradb-shielded-monitor-balancer", "shielded-monitor/balancer/balancer-cli.ts"],
   ];
 
   it.each(entries)("%s names the file tsc emits for %s", (binName, source) => {
@@ -81,10 +86,12 @@ describe("shielded-monitor CLI entry points (FR-026)", () => {
       const contents = readFileSync(fileURLToPath(new URL(source, repoRoot)), "utf8");
       expect(contents.startsWith("#!/usr/bin/env node"), `${source} must be runnable`).toBe(true);
     }
-    // Non-vacuity: the loop must actually have examined the six bins this package ships.
-    // 5 -> 6 (00009-06): `umbradb-shielded-monitor-derive-key`. The pin is bumped deliberately,
+    // Non-vacuity: the loop must actually have examined the nine bins this package ships.
+    // 5 -> 6 (00009-06): `umbradb-shielded-monitor-derive-key`. 6 -> ... the two archive bins and
+    // the sync bin were already there; 00009-08 v2 adds `umbradb-storage-api` and
+    // `umbradb-shielded-monitor-balancer`, taking the count to 9. The pin is bumped deliberately,
     // which is the whole point of having one — an accidental bin still fails here.
-    expect(Object.keys(pkg.bin).length).toBe(6);
+    expect(Object.keys(pkg.bin).length).toBe(9);
   });
 
   it("leaves the published LIBRARY surface alone", () => {

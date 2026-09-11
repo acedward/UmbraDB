@@ -48,6 +48,7 @@
     "archive:sync": "tsx chain-archive-sync/sync-cli.ts",
     "archive:read-api": "tsx archive-read-api/server-cli.ts",
     "storage-api": "tsx storage-api/server-cli.ts",
+    "shielded-monitor:balancer": "tsx shielded-monitor/balancer/balancer-cli.ts",
     "shielded-monitor:harness": "tsx storage-api/harness-cli.ts",
     "shielded-monitor:scan": "tsx shielded-monitor/scanner-cli.ts",
     "bench": "tsx bench/harness.ts",
@@ -82,9 +83,11 @@
     "umbradb-archive-sync": "dist-cli/chain-archive-sync/sync-cli.js",
     "umbradb-archive-backfill-timestamps": "dist-cli/chain-archive-sync/backfill-timestamps-cli.js",
     "umbradb-archive-read-api": "dist-cli/archive-read-api/server-cli.js",
+    "umbradb-storage-api": "dist-cli/storage-api/server-cli.js",
     "umbradb-shielded-monitor": "dist-cli/shielded-monitor/scanner-cli.js",
     "umbradb-shielded-monitor-api": "dist-cli/shielded-monitor/api/server-cli.js",
     "umbradb-shielded-monitor-client": "dist-cli/shielded-monitor/client/cli.js",
-    "umbradb-shielded-monitor-derive-key": "dist-cli/shielded-monitor/derive-key-cli.js"
+    "umbradb-shielded-monitor-derive-key": "dist-cli/shielded-monitor/derive-key-cli.js",
+    "umbradb-shielded-monitor-balancer": "dist-cli/shielded-monitor/balancer/balancer-cli.js"
   }
 }
