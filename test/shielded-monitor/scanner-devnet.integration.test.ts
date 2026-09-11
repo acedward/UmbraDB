@@ -122,7 +122,8 @@ describe.skipIf(skip)("the relevance scanner over a real devnet archive", () => 
   it("scans the real archive to its real tip, binds the real archive identity, and goes live", async () => {
     const scanner = new ShieldedMonitorScanner(archive, store, { net: NET, batchBlocks: 7, metrics });
     const drained = await scanner.scanToTip(monitorId, { maxBatches: 64 });
-    expect(drained.last.kind, JSON.stringify(drained.last)).not.toBe("failed");
+    const rendered = JSON.stringify(drained.last, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
+    expect(drained.last.kind, rendered).not.toBe("failed");
     expect(drained.last.kind).not.toBe("stale-source");
 
     const monitor = await store.get(monitorId);
@@ -149,6 +150,13 @@ describe.skipIf(skip)("the relevance scanner over a real devnet archive", () => 
              count(*) FILTER (WHERE kind = 'system')::int AS system
         FROM ${sql(ARCHIVE_SCHEMA)}.transactions WHERE net = ${NET}
     `;
+    // Printed, because a live-gated suite's value depends on WHAT it found: a reader of the run
+    // log needs the corpus shape to judge what the pass actually covered.
+    // eslint-disable-next-line no-console
+    console.log(
+      `[devnet] scanned ${tipHeight + 1} real blocks; archive holds ${row!.n} transactions ` +
+        `(${row!.system} system, ${row!.n - row!.system} regular); associations: 0`,
+    );
     expect(row!.n, "a devnet archive with no transactions at all would prove nothing").toBeGreaterThan(0);
     expect(metrics.snapshot(NET).blocksScanned).toBe(tipHeight + 1);
     // Real system transactions were skipped on `kind` rather than handed to the standard codec
