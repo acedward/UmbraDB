@@ -1,3 +1,4 @@
+import { ARCHIVE_PROGRESS_CHANNEL } from "../src/postgres/archive-conventions.js";
 import type { UmbraDBSql } from "../src/postgres/client.js";
 import type { MonitorRecord } from "./store.js";
 import type { ScanBatchResult, ShieldedMonitorScanner } from "./scanner.js";
@@ -24,8 +25,16 @@ import type { ScanBatchResult, ShieldedMonitorScanner } from "./scanner.js";
  *     makes it correct.
  */
 
-/** The channel 00009-01's `putBlockBundle` notifies inside the height transaction. */
-export const ARCHIVE_PROGRESS_CHANNEL = "chain_archive_progress";
+/**
+ * The channel 00009-01's `putBlockBundle` notifies inside the height transaction.
+ *
+ * Imported from the archive's own conventions module, never retyped here: B carries no archive
+ * name of its own (owner Rule B / FR-025, enforced by
+ * `test/shielded-monitor/schema-isolation.integration.test.ts`), and a second copy of the string
+ * could drift from the writer's — leaving this scheduler listening on a channel nobody notifies
+ * and silently falling back to `SCAN_POLL_MS` with nothing to show for it.
+ */
+export { ARCHIVE_PROGRESS_CHANNEL };
 
 /** Any UUID in a log line, which for this module means a monitor id. */
 const MONITOR_ID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;

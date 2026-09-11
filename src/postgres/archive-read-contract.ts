@@ -16,6 +16,7 @@ import {
   type TransactionResult,
 } from "../interfaces/chain-archive-store.js";
 import { ValidationError } from "../interfaces/storage-errors.js";
+import { DEFAULT_ARCHIVE_SCHEMA } from "./archive-conventions.js";
 import { ARCHIVE_IDENTITY_KEY_PREFIX } from "./chain-archive-store.js";
 import type { UmbraDBSql } from "./client.js";
 import { translatePostgresError } from "./errors.js";
@@ -45,7 +46,7 @@ import { translatePostgresError } from "./errors.js";
 export class PgArchiveReadContract implements ArchiveReadContract {
   constructor(
     private readonly sql: UmbraDBSql,
-    private readonly schema: string = "chain_archive",
+    private readonly schema: string = DEFAULT_ARCHIVE_SCHEMA,
   ) {}
 
   /** @inheritdoc */

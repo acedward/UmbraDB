@@ -1,3 +1,4 @@
+import { ARCHIVE_PROGRESS_CHANNEL } from "../src/postgres/archive-conventions.js";
 import { PgChainArchiveStore } from "../src/postgres/chain-archive-store.js";
 import type { UmbraDBSql } from "../src/postgres/client.js";
 import type {
@@ -235,8 +236,12 @@ const WATERMARK_KEY_PREFIX = "sync_cursor:";
  * An OPTIMISATION, never a contract: notifications are not queued for a listener that is not
  * connected, so a consumer that misses one simply finds the height on its next poll. Nothing in
  * this repo depends on receiving it.
+ *
+ * The name itself is declared once in `src/postgres/archive-conventions.ts` and re-exported here
+ * under the writer's own name, so the channel the writer notifies and the channel a consumer
+ * listens on cannot drift apart into a silently polling scanner.
  */
-export const CHAIN_ARCHIVE_PROGRESS_CHANNEL = "chain_archive_progress";
+export const CHAIN_ARCHIVE_PROGRESS_CHANNEL = ARCHIVE_PROGRESS_CHANNEL;
 
 export class ChainArchiveSyncService {
   /** Honest scope declaration (Sol-audit fix round, Finding 5): this service does NOT ingest

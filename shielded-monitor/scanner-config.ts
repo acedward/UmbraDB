@@ -9,7 +9,12 @@
  * became the default is exactly the class of bug the archive CLI's own audit finding T6 records
  * (`chain-archive-sync/sync-cli.ts`): a mistyped bound that disables the thing it was meant to
  * limit, with no message. Here a bad value stops the process with the name of the variable.
+ *
+ * The one default this module does NOT own is the archive's schema name: it is A's, imported from
+ * A's conventions module, because B holds no archive schema knowledge of its own (owner Rule B /
+ * FR-025, enforced by `test/shielded-monitor/schema-isolation.integration.test.ts`).
  */
+import { DEFAULT_ARCHIVE_SCHEMA } from "../src/postgres/archive-conventions.js";
 
 export interface ScannerEnvConfig {
   /** Postgres connection string. Both schemas live in one database in the alpha; project B
@@ -35,7 +40,7 @@ Environment (umbradb-shielded-monitor):
 
   MONITOR_PG            Postgres connection string (REQUIRED).
   NET                   network id / row scope, e.g. "undeployed" (default "undeployed").
-  ARCHIVE_SCHEMA        schema the archive was ingested into (default "chain_archive").
+  ARCHIVE_SCHEMA        schema the archive was ingested into (default "${DEFAULT_ARCHIVE_SCHEMA}").
                         Read-only: the scanner reaches it ONLY through the archive read
                         contract, and never writes to it (owner Rule B).
   MONITOR_SCHEMA        schema project B owns and writes (default "shielded_monitor").
@@ -100,7 +105,7 @@ export function readScannerConfig(env: NodeJS.ProcessEnv = process.env): Scanner
   return {
     connectionString: requireString(env, "MONITOR_PG"),
     net: env.NET ?? "undeployed",
-    archiveSchema: env.ARCHIVE_SCHEMA ?? "chain_archive",
+    archiveSchema: env.ARCHIVE_SCHEMA ?? DEFAULT_ARCHIVE_SCHEMA,
     monitorSchema: env.MONITOR_SCHEMA ?? "shielded_monitor",
     batchBlocks: positiveInt(env, "SCAN_BATCH_BLOCKS", 1),
     concurrency: positiveInt(env, "SCAN_CONCURRENCY", 4),

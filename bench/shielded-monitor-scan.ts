@@ -5,7 +5,7 @@ import { createClient } from "../src/postgres/client.js";
 import { runMigrations } from "../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../src/postgres/migrations/chain_archive/index.js";
 import { bootstrapShieldedMonitorSchema } from "../shielded-monitor/bootstrap.js";
-import { LEDGER_BUILD_ID, MATCHING_RULE_VERSION } from "../shielded-monitor/offers.js";
+import { LEDGER_BUILD_ID, loadLedger, MATCHING_RULE_VERSION } from "../shielded-monitor/offers.js";
 import { ShieldedMonitorScanner } from "../shielded-monitor/scanner.js";
 import { InMemoryScannerMetrics } from "../shielded-monitor/scanner-metrics.js";
 import { ShieldedMonitorScannerService } from "../shielded-monitor/scanner-service.js";
@@ -211,11 +211,18 @@ async function main(): Promise<void> {
   console.log(JSON.stringify({ harness: "shielded-monitor-scan/v1", results }, null, 2));
 }
 
-/** One real serialized encryption secret key from a seed. */
+/**
+ * One real serialized encryption secret key from a seed.
+ *
+ * The WASM comes from the scanner's OWN memoized loader (`shielded-monitor/offers.ts`), not from
+ * the sync app's decoder: `bench/` drives UmbraDB's own adapters and must not import an
+ * ingest/consumer application to generate load (the G14 boundary guard,
+ * `test/postgres/no-consumer-import-in-bench.test.ts`). Sharing the scanner's memo also means the
+ * bench measures one WASM instance, which is what the process under measurement actually has.
+ */
 async function serializeKeyFromSeed(seed: Uint8Array): Promise<Uint8Array> {
-  const { loadLedgerV8 } = await import("../chain-archive-sync/tx-replay-decoder.js");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ledger = (await loadLedgerV8()) as any;
+  const ledger = (await loadLedger()) as any;
   return Uint8Array.from(
     ledger.ZswapSecretKeys.fromSeed(seed).encryptionSecretKey
       .yesIKnowTheSecurityImplicationsOfThis_serialize(),
