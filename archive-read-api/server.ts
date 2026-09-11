@@ -99,6 +99,33 @@ export interface ArchiveReadApi {
   readonly server: Server;
 }
 
+/**
+ * The archive read routes as a MOUNTABLE router (00009-08 v2).
+ *
+ * `umbradb-storage-api` serves the archive read contract and the monitor-store commands from one
+ * port, because project B's whole egress in the split topology is one base URL. Rather than a
+ * second copy of these five routes, the router is extracted here and both processes mount the
+ * same one: `umbradb-archive-read-api` keeps existing as its own (archive-only, structurally
+ * read-only) bin for deployments that want the archive served on its own port, and the storage
+ * API mounts this router alongside the monitor-store router.
+ *
+ * `handle` returns `false` when the path is none of this router's, so the caller can try its own
+ * routes; it returns `true` once it has written a response (including an error response).
+ */
+export interface ArchiveRouter {
+  handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean>;
+  close(): Promise<void>;
+}
+
+export interface ArchiveRouterOptions extends ArchiveReadApiOptions {
+  /** `true` (the storage API) makes an unmatched path return `false` instead of a 404, so the
+   *  mounting server can try its own routes. */
+  readonly fallthrough?: boolean;
+  /** `false` (the storage API) leaves `/v1/health` to the mounting server, whose health payload
+   *  names BOTH wire versions. */
+  readonly serveHealth?: boolean;
+}
+
 /** A `?net=` that is absent falls back to the deployment's one network; anything malformed is
  *  refused rather than passed to the store as a row filter that will simply match nothing. */
 function readNet(url: URL, fallback: string): string {
@@ -138,21 +165,18 @@ function readMax(url: URL, cap: number): number {
   return Math.min(value, cap);
 }
 
-export function createArchiveReadApi(options: ArchiveReadApiOptions): ArchiveReadApi {
+export function createArchiveRouter(options: ArchiveRouterOptions): ArchiveRouter {
   const { archive, config } = options;
   const logger = options.logger ?? silentLogger();
+  const fallthrough = options.fallthrough ?? false;
+  const serveHealth = options.serveHealth ?? true;
   /** Open SSE responses, so `close()` can end them instead of hanging on the server's own
    *  `close()` waiting for streams that never finish by themselves. */
   const streams = new Set<{ response: ServerResponse; subscription?: ArchiveProgressSubscription; timer: NodeJS.Timeout }>();
 
-  const server = createServer((req, res) => {
-    void handle(req, res);
-  });
-
-  async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
     const requestId = randomUUID();
     const started = Date.now();
-    const url = new URL(req.url ?? "/", "http://localhost");
     const method = req.method ?? "GET";
     let route = "(unmatched)";
 
@@ -192,9 +216,10 @@ export function createArchiveReadApi(options: ArchiveReadApiOptions): ArchiveRea
           if (method !== "GET" && method !== "HEAD") {
             throw new HttpError(405, "METHOD_NOT_ALLOWED", `${method} is not allowed here`, ["GET", "HEAD"]);
           }
+          if (!serveHealth) return false;
           sendJson(200, { status: "ok", net: config.net, wireVersion: ARCHIVE_READ_WIRE_VERSION });
           finish(200);
-          return;
+          return true;
         }
         case ARCHIVE_READ_ROUTES.identity: {
           route = "GET /v1/archive/identity";
@@ -211,7 +236,7 @@ export function createArchiveReadApi(options: ArchiveReadApiOptions): ArchiveRea
           }
           sendJson(200, encodeIdentity(identity));
           finish(200);
-          return;
+          return true;
         }
         case ARCHIVE_READ_ROUTES.blocks: {
           route = "GET /v1/archive/blocks";
@@ -222,7 +247,7 @@ export function createArchiveReadApi(options: ArchiveReadApiOptions): ArchiveRea
           const page = await archive.readBlocksSince(net, readAfter(url), readMax(url, config.maxBlocksPerPage));
           sendJson(200, encodeBlockPage(page));
           finish(200);
-          return;
+          return true;
         }
         case ARCHIVE_READ_ROUTES.tip: {
           route = "GET /v1/archive/tip";
@@ -236,7 +261,7 @@ export function createArchiveReadApi(options: ArchiveReadApiOptions): ArchiveRea
           const page = await archive.readBlocksSince(net, Number.MAX_SAFE_INTEGER - 1, 1);
           sendJson(200, { net, sourceTip: page.sourceTip ?? null });
           finish(200);
-          return;
+          return true;
         }
         case ARCHIVE_READ_ROUTES.events: {
           route = "GET /v1/archive/events";
@@ -246,31 +271,35 @@ export function createArchiveReadApi(options: ArchiveReadApiOptions): ArchiveRea
           const net = readNet(url, config.net);
           await openEventStream(res, net);
           finish(200);
-          return;
+          return true;
         }
         default:
+          // A path none of this router's own. The standalone read API answers 404 here; the
+          // storage API asks to fall through so it can try the monitor-store routes.
+          if (fallthrough) return false;
           throw new HttpError(404, "NOT_FOUND", `no route for ${method} ${path}`);
       }
     } catch (err) {
       if (err instanceof HttpError) {
         sendError(err);
-        return;
+        return true;
       }
       if (err instanceof ArchiveDiscontinuityError) {
         // Fail-closed all the way to the client: the page the archive refused to assemble must
         // not become a 500 a client might retry into a different answer.
         sendError(new HttpError(409, "ARCHIVE_DISCONTINUITY", err.message));
-        return;
+        return true;
       }
       if (err instanceof StorageError) {
         const code = err.code === "BLOB_INTEGRITY" ? "BLOB_INTEGRITY"
           : err.code === "BLOB_MISSING" ? "BLOB_MISSING"
           : "INTERNAL_ERROR";
         sendError(new HttpError(code === "INTERNAL_ERROR" ? 500 : 409, code, err.message));
-        return;
+        return true;
       }
       const message = err instanceof Error ? err.message : String(err);
       sendError(new HttpError(500, "INTERNAL_ERROR", message));
+      return true;
     }
   }
 
@@ -337,6 +366,32 @@ export function createArchiveReadApi(options: ArchiveReadApiOptions): ArchiveRea
   }
 
   return {
+    handle,
+    async close() {
+      for (const entry of [...streams]) {
+        clearInterval(entry.timer);
+        await entry.subscription?.close().catch(() => undefined);
+        entry.response.end();
+      }
+      streams.clear();
+    },
+  };
+}
+
+/**
+ * The standalone `umbradb-archive-read-api` process: one port, the archive routes only.
+ *
+ * Unchanged in behaviour by 00009-08 v2 — it is the same router, now also mountable inside
+ * `umbradb-storage-api`.
+ */
+export function createArchiveReadApi(options: ArchiveReadApiOptions): ArchiveReadApi {
+  const router = createArchiveRouter(options);
+  const { config } = options;
+  const server = createServer((req, res) => {
+    void router.handle(req, res, new URL(req.url ?? "/", "http://localhost"));
+  });
+
+  return {
     server,
     async listen() {
       await new Promise<void>((resolve, reject) => {
@@ -350,12 +405,7 @@ export function createArchiveReadApi(options: ArchiveReadApiOptions): ArchiveRea
       return { host: address.address, port: address.port };
     },
     async close() {
-      for (const entry of [...streams]) {
-        clearInterval(entry.timer);
-        await entry.subscription?.close().catch(() => undefined);
-        entry.response.end();
-      }
-      streams.clear();
+      await router.close();
       await new Promise<void>((resolve) => {
         server.close(() => resolve());
         // Idle keep-alive sockets would otherwise hold `close()` open for the agent's timeout.
