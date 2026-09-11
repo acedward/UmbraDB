@@ -22,7 +22,7 @@
  * project name.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { createWriteStream, mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { openSync, closeSync, mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -125,8 +125,12 @@ async function json(url, init) {
 }
 
 function startChild(name, command, args, env, dir, children) {
-  const out = createWriteStream(join(dir, `${name}.log`));
-  const child = spawn(command, args, { cwd: repoRoot, env: { ...process.env, ...env }, stdio: ["ignore", out, out] });
+  // A file DESCRIPTOR, not a stream: `spawn` needs an fd at call time, and a freshly created
+  // write stream has not opened yet (`fd: null`), which spawn rejects as an invalid stdio entry.
+  const logFd = openSync(join(dir, `${name}.log`), "w");
+  const child = spawn(command, args, { cwd: repoRoot, env: { ...process.env, ...env }, stdio: ["ignore", logFd, logFd] });
+  // The child owns its duplicated descriptors; the parent's copy can go once the child exits.
+  child.once("exit", () => { try { closeSync(logFd); } catch { /* already closed */ } });
   child.on("exit", (code, signal) => {
     if (code !== 0 && signal === null) log(`! ${name} exited with code ${code}; see ${join(dir, `${name}.log`)}`);
   });
