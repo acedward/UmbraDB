@@ -6,7 +6,11 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { loadApiConfig } from "../../shielded-monitor/api/config.js";
-import { createShieldedMonitorApi, type ShieldedMonitorApi } from "../../shielded-monitor/api/server.js";
+import {
+  createShieldedMonitorApi,
+  silentLogger,
+  type ShieldedMonitorApi,
+} from "../../shielded-monitor/api/server.js";
 import { staticSourceTip } from "../../shielded-monitor/api/source-tip.js";
 import { runClient } from "../../shielded-monitor/client/cli.js";
 import type { PgShieldedMonitorStore } from "../../shielded-monitor/store.js";
@@ -76,7 +80,7 @@ describe("reference consumer CLI end to end", () => {
       config: { ...loadApiConfig({ API_PORT: "0" }), schema },
       // A real tip so the client's coverage rendering is exercised in both directions.
       sourceTipProvider: staticSourceTip(500n),
-      logger: { log: () => undefined },
+      logger: silentLogger(),
     });
     const address = await api.listen();
     base = `http://127.0.0.1:${address.port}`;

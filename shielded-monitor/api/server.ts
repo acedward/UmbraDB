@@ -426,13 +426,42 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
     const startedAt = process.hrtime.bigint();
     let requestBytes = 0;
     let route = "unmatched";
+    let sent = false;
 
-    const finish = (status: number, body: unknown, errorCode?: string, errorName?: string, errorMessage?: string, allow?: readonly string[]): void => {
+    interface FinishArgs {
+      readonly status: number;
+      readonly body?: unknown;
+      readonly errorCode?: string;
+      readonly errorName?: string;
+      readonly errorMessage?: string;
+      readonly allow?: readonly string[];
+    }
+
+    const finish = (args: FinishArgs): void => {
+      // One response per request, always. Without the guard, a fault inside this function would
+      // send the catch below straight back into it and produce a write-after-end — a crashed
+      // worker instead of the 500 the caller should have got.
+      if (sent) return;
+      let payload: Buffer | undefined;
+      if (args.body !== undefined) {
+        // Serialization is the one step here that can throw, and it must not be able to turn a
+        // correct response into a dropped connection. If it does throw, the caller gets the
+        // same fixed 500 body as any other unmapped fault.
+        try {
+          payload = Buffer.from(JSON.stringify(args.body, bigintSafe), "utf8");
+        } catch {
+          payload = Buffer.from(
+            JSON.stringify({ error: { code: "INTERNAL_ERROR", message: INTERNAL_ERROR_MESSAGE, requestId } }),
+            "utf8",
+          );
+          args = { ...args, status: 500, errorCode: "INTERNAL_ERROR", errorName: "ResponseSerializationError" };
+        }
+      }
+      sent = true;
       const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
-      const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body, bigintSafe), "utf8");
-      res.statusCode = status;
+      res.statusCode = args.status;
       res.setHeader("x-request-id", requestId);
-      if (allow !== undefined) res.setHeader("allow", allow.join(", "));
+      if (args.allow !== undefined) res.setHeader("allow", args.allow.join(", "));
       if (payload !== undefined) {
         res.setHeader("content-type", "application/json; charset=utf-8");
         res.setHeader("content-length", String(payload.byteLength));
@@ -442,12 +471,12 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
         requestId,
         method: req.method ?? "?",
         route,
-        status,
+        status: args.status,
         durationMs,
         requestBytes,
-        ...(errorCode !== undefined ? { errorCode } : {}),
-        ...(errorName !== undefined ? { errorName } : {}),
-        ...(errorMessage !== undefined ? { errorMessage } : {}),
+        ...(args.errorCode !== undefined ? { errorCode: args.errorCode } : {}),
+        ...(args.errorName !== undefined ? { errorName: args.errorName } : {}),
+        ...(args.errorMessage !== undefined ? { errorMessage: args.errorMessage } : {}),
       });
     };
 
@@ -461,22 +490,36 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
           url,
           monitorId: resolved.monitorId,
           requestId,
-          readBody: async () => {
-            const body = await readBody(req, config.maxBodyBytes);
-            requestBytes = body.byteLength;
-            return body;
-          },
+          // `onBytes` runs even on the over-the-cap path, so an oversized request is logged with
+          // the bytes that actually arrived rather than as `requestBytes: 0` — a log line
+          // claiming an empty body for a request rejected FOR ITS SIZE is worse than no line.
+          readBody: async () =>
+            await readBody(req, config.maxBodyBytes, (total) => {
+              requestBytes = total;
+            }),
         };
         const reply = await resolved.route.handle(ctx);
-        finish(reply.status, reply.body);
+        finish({ status: reply.status, body: reply.body });
       } catch (err) {
         // `route` is already the matched pattern when the failure happened inside a handler, and
         // "unmatched" when routing itself failed — either way it is one of this module's own
         // fixed strings, never caller text.
         const mapped = mapError(err, requestId, route);
-        finish(mapped.status, mapped.body, mapped.body.error.code, mapped.errorName, mapped.logMessage, mapped.allow);
+        finish({
+          status: mapped.status,
+          body: mapped.body,
+          errorCode: mapped.body.error.code,
+          errorName: mapped.errorName,
+          ...(mapped.logMessage !== undefined ? { errorMessage: mapped.logMessage } : {}),
+          ...(mapped.allow !== undefined ? { allow: mapped.allow } : {}),
+        });
       }
-    })();
+    })().catch(() => {
+      // Nothing above may reject — `finish` swallows its own faults and the catch is total — but
+      // an unhandled rejection out of a request handler would take the process down, so the
+      // socket is closed rather than left hanging.
+      if (!sent) res.destroy();
+    });
   });
 
   // A slow or absent client must not pin a socket forever. Node's defaults are already finite
@@ -525,9 +568,20 @@ function bigintSafe(_key: string, value: unknown): unknown {
   return typeof value === "bigint" ? value.toString(10) : value;
 }
 
+/** PostgreSQL `bigint` is signed 64-bit, and `monitors.requested_start_height` is one. A height
+ *  above this cannot be stored, and letting it through would surface as a numeric-overflow fault
+ *  from the driver — a 500 for what is plainly a client error. */
+const MAX_BLOCK_HEIGHT = 9_223_372_036_854_775_807n;
+
 function resolveStartHeight(value: string | number | undefined): bigint {
   if (value === undefined || value === "earliest") return 0n;
-  return typeof value === "number" ? BigInt(value) : BigInt(value);
+  const height = BigInt(value);
+  if (height > MAX_BLOCK_HEIGHT) {
+    throw new HttpError(400, "VALIDATION_FAILED", "invalid start height", [
+      { path: "startHeight", message: "above the maximum storable block height" },
+    ]);
+  }
+  return height;
 }
 
 function parseLimit(raw: string | null, config: ApiConfig): number {
@@ -562,7 +616,11 @@ function parseLimit(raw: string | null, config: ApiConfig): number {
  * remainder correctly on its own: when a response finishes while its request is unconsumed, the
  * server dumps the rest of that request rather than leaving it in the pipe.
  */
-async function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
+async function readBody(
+  req: IncomingMessage,
+  maxBytes: number,
+  onBytes: (total: number) => void,
+): Promise<Buffer> {
   return await new Promise<Buffer>((resolve, reject) => {
     let chunks: Buffer[] = [];
     let total = 0;
@@ -579,6 +637,7 @@ async function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer>
     req.on("data", (chunk: Buffer) => {
       if (settled) return; // over the limit already: drain and discard, do not accumulate
       total += chunk.byteLength;
+      onBytes(total);
       if (total > maxBytes) {
         fail(new HttpError(400, "BODY_TOO_LARGE", `request body exceeds ${maxBytes} bytes`), false);
         return;

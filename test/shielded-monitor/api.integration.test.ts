@@ -185,6 +185,17 @@ describe("shielded-monitor private API", () => {
       expect(coverageOf(created.json).requestedStart).toBe(huge);
     });
 
+    it("refuses a start height above what the column can hold, as a 400 and not a 500", async () => {
+      // 2^63 — one past PostgreSQL's signed bigint. Without the boundary check this surfaces as
+      // a numeric-overflow fault from the driver, i.e. a server error for a plain client mistake.
+      const refused = await postJson("/v1/monitors", {
+        viewingKey: await fixtureViewingKeyEncoded(105),
+        startHeight: "9223372036854775808",
+      });
+      expect(refused.status).toBe(400);
+      expect((refused.json.error as Record<string, unknown>).code).toBe("VALIDATION_FAILED");
+    });
+
     it.each([
       ["malformed bech32m", "not-a-key"],
       ["a bech32m string for another network", "wrong-network"],
