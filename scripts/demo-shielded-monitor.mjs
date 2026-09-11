@@ -4,8 +4,14 @@
  * as one command (organizer sub-plan 00009-06).
  *
  * It brings up this repository's own Compose devnet under a unique project name and randomised
- * loopback-only ports, ingests node-only, starts the scanner and the API, derives a demo viewing
- * key, registers it, waits for coverage to reach the archive tip, and prints the dashboard URL.
+ * loopback-only ports, ingests node-only, starts the STORAGE API (the one process with a database
+ * credential), then the scanner and the private API — which hold `STORAGE_URL` and nothing else —
+ * derives a demo viewing key, registers it, waits for coverage to reach the archive tip, and
+ * prints the dashboard URL.
+ *
+ * `--split` (00009-08 v2) runs the deployment shape the tests run: TWO scanners, TWO private API
+ * instances and a balancer in front of them, over one storage API and one database. The dashboard
+ * URL it prints is the balancer's, so every request is served by a randomly chosen instance.
  *
  * ── What it deliberately does NOT do ────────────────────────────────────────────────────────
  * Step 7 of the runbook — a real shielded transfer — needs the Midnight wallet SDK, which is not
@@ -37,6 +43,7 @@ const USAGE = `npm run demo:shielded-monitor — bring the shielded monitor up a
 
 Usage:
   npm run demo:shielded-monitor                 bring it up and print the dashboard URL
+  npm run demo:shielded-monitor -- --split      2 scanners + 2 APIs + a balancer (00009-08 v2)
   npm run demo:shielded-monitor -- --down       tear down the most recent run
   npm run demo:shielded-monitor -- --project P  act on a specific compose project
   npm run demo:shielded-monitor -- --keep       leave the stack running after Ctrl-C (default: tear down)
@@ -183,12 +190,16 @@ async function main() {
 
   const sha = spawnSync("git", ["rev-parse", "--short", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).stdout?.trim();
   const project = projectFlag >= 0 ? argv[projectFlag + 1] : `umbradb-00009-06-${sha || Date.now().toString(36)}`;
+  const split = argv.includes("--split");
   const ports = {
     node: randomPort(),
     indexer: randomPort(),
     proof: randomPort(),
     postgres: randomPort(),
+    storage: randomPort(),
     api: randomPort(),
+    api2: randomPort(),
+    balancer: randomPort(),
   };
   const dir = mkdtempSync(join(tmpdir(), "umbradb-demo-"));
   writeFileSync(STATE_FILE, JSON.stringify({ project, dir, ports }, null, 2));
@@ -207,13 +218,17 @@ async function main() {
   }
 
   log(`project ${project}`);
-  log(`ports    node=${ports.node} postgres=${ports.postgres} api=${ports.api} (127.0.0.1 only)`);
+  log(`topology ${split ? "SPLIT — 2 scanners + 2 APIs + balancer + 1 storage API" : "single scanner + single API + 1 storage API"}`);
+  log(
+    `ports    node=${ports.node} postgres=${ports.postgres} storage=${ports.storage} api=${ports.api}` +
+      `${split ? ` api2=${ports.api2} balancer=${ports.balancer}` : ""} (127.0.0.1 only)`,
+  );
   log(`workdir  ${dir}`);
   log("");
 
   try {
     // ── 1. the devnet: node and postgres only ────────────────────────────────────────────────
-    log("1/6 bringing up node + postgres (node-only ingest: no indexer, no proof server)");
+    log("1/7 bringing up node + postgres (node-only ingest: no indexer, no proof server)");
     const up = compose(["up", "-d", "node", "postgres"], { project, ports });
     if (up.status !== 0) throw new Error("docker compose up failed");
 
@@ -229,7 +244,7 @@ async function main() {
 
     // ── 2. ingest ────────────────────────────────────────────────────────────────────────────
     const pg = `postgres://umbra:umbra@127.0.0.1:${ports.postgres}/umbra`;
-    log("2/6 starting the archive sync (node-only, from genesis)");
+    log("2/7 starting the archive sync (node-only, from genesis)");
     startChild("archive-sync", "npx", ["tsx", "chain-archive-sync/sync-cli.ts"], {
       ARCHIVE_PG: pg,
       NET: "undeployed",
@@ -237,27 +252,63 @@ async function main() {
       NODE_ONLY: "1",
     }, dir, children);
 
-    // ── 3. scanner + API ─────────────────────────────────────────────────────────────────────
-    log("3/6 starting the scanner and the API");
-    startChild("scanner", "npx", ["tsx", "shielded-monitor/scanner-cli.ts"], {
-      MONITOR_PG: pg,
+    // ── 3. the storage API: the ONE process with a database credential ───────────────────────
+    log("3/7 starting the storage API (the only process holding a database credential)");
+    startChild("storage-api", "npx", ["tsx", "storage-api/server-cli.ts"], {
+      ARCHIVE_PG: pg,
       NET: "undeployed",
-      SCAN_BATCH_BLOCKS: "8",
-      SCAN_POLL_MS: "2000",
+      STORAGE_HOST: "127.0.0.1",
+      STORAGE_PORT: String(ports.storage),
+      STORAGE_BOOTSTRAP: "1",
     }, dir, children);
-    startChild("api", "npx", ["tsx", "shielded-monitor/api/server-cli.ts"], {
-      SHIELDED_MONITOR_PG: pg,
-      SHIELDED_MONITOR_NET: "undeployed",
-      SHIELDED_MONITOR_BOOTSTRAP: "1",
-      API_HOST: "127.0.0.1",
-      API_PORT: String(ports.api),
-    }, dir, children);
+    const storage = `http://127.0.0.1:${ports.storage}`;
+    await waitFor("the storage API", async () => (await json(`${storage}/v1/health`)).status === 200);
 
-    const api = `http://127.0.0.1:${ports.api}`;
-    await waitFor("the API", async () => (await json(`${api}/v1/health`)).status === 200);
+    // ── 4. project B: scanners and APIs, each holding STORAGE_URL and nothing else ───────────
+    //
+    // Note what is NOT in these environments: no connection string, no schema name, nothing
+    // ending in _PG. Each process refuses to start if one appears (owner decision Q25).
+    log(split
+      ? "4/7 starting 2 scanners, 2 API instances and the balancer (no database in any of them)"
+      : "4/7 starting the scanner and the API (no database in either of them)");
+    const scannerCount = split ? 2 : 1;
+    for (let i = 1; i <= scannerCount; i++) {
+      startChild(`scanner-${i}`, "npx", ["tsx", "shielded-monitor/scanner-cli.ts"], {
+        STORAGE_URL: storage,
+        NET: "undeployed",
+        SCAN_BATCH_BLOCKS: "8",
+        SCAN_POLL_MS: "2000",
+        SCAN_INSTANCE_ID: `scanner-${i}`,
+      }, dir, children);
+    }
+    const apiPorts = split ? [ports.api, ports.api2] : [ports.api];
+    apiPorts.forEach((port, index) => {
+      startChild(`api-${index + 1}`, "npx", ["tsx", "shielded-monitor/api/server-cli.ts"], {
+        STORAGE_URL: storage,
+        SHIELDED_MONITOR_NET: "undeployed",
+        API_HOST: "127.0.0.1",
+        API_PORT: String(port),
+      }, dir, children);
+    });
+    for (const port of apiPorts) {
+      await waitFor(`the API on ${port}`, async () => (await json(`http://127.0.0.1:${port}/v1/health`)).status === 200);
+    }
 
-    // ── 4. a demo key ────────────────────────────────────────────────────────────────────────
-    log("4/6 deriving a demo viewing key");
+    // The URL everything below uses: the balancer in split mode, the single instance otherwise.
+    let api = `http://127.0.0.1:${apiPorts[0]}`;
+    if (split) {
+      startChild("balancer", "npx", ["tsx", "shielded-monitor/balancer/balancer-cli.ts"], {
+        BALANCER_UPSTREAMS: apiPorts.map((port) => `http://127.0.0.1:${port}`).join(","),
+        BALANCER_HOST: "127.0.0.1",
+        BALANCER_PORT: String(ports.balancer),
+        BALANCER_PROBE_MS: "2000",
+      }, dir, children);
+      api = `http://127.0.0.1:${ports.balancer}`;
+      await waitFor("the balancer", async () => (await json(`${api}/v1/health`)).status === 200);
+    }
+
+    // ── 5. a demo key ────────────────────────────────────────────────────────────────────────
+    log("5/7 deriving a demo viewing key");
     const seedFile = join(dir, "seed.hex");
     writeFileSync(seedFile, `${Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex")}\n`, {
       mode: 0o600,
@@ -272,8 +323,8 @@ async function main() {
     log(`    shielded address to fund: coinPublicKey=${key.coinPublicKey}`);
     log(`                              encryptionPublicKey=${key.encryptionPublicKey}`);
 
-    // ── 5. register ──────────────────────────────────────────────────────────────────────────
-    log("5/6 registering it");
+    // ── 6. register ──────────────────────────────────────────────────────────────────────────
+    log("6/7 registering it");
     const created = await json(`${api}/v1/monitors`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -285,8 +336,8 @@ async function main() {
     const monitorId = created.body.monitorId;
     log(`    monitor ${monitorId}`);
 
-    // ── 6. wait for coverage to catch up ─────────────────────────────────────────────────────
-    log("6/6 waiting for coverage to reach the archive tip");
+    // ── 7. wait for coverage to catch up ─────────────────────────────────────────────────────
+    log("7/7 waiting for coverage to reach the archive tip");
     await waitFor("coverage", async () => {
       const list = await json(`${api}/v1/monitors`);
       const monitor = list.body?.items?.find((m) => m.monitorId === monitorId);
@@ -301,13 +352,14 @@ async function main() {
     log(`    coverage  start ${monitor.coverage.requestedStart} · from ${monitor.coverage.scannedFrom}` +
         ` · through ${monitor.coverage.scannedThrough} · tip ${monitor.coverage.sourceTip}`);
     log("");
-    log(`    DASHBOARD  ${api}/ui`);
+    log(`    DASHBOARD  ${api}/ui${split ? "   (through the balancer — a random instance serves each request)" : ""}`);
     log("");
     log("    No matches is the correct answer on a fresh devnet: nothing on this chain is");
     log("    encrypted to that key yet. To make one appear, follow step 7 of");
     log("    docs/shielded-monitor-demo.md — it needs the Midnight wallet SDK, out of tree.");
     log("");
-    log(`    logs       ${dir}/{archive-sync,scanner,api}.log`);
+    log(`    STORAGE    ${storage}/v1/health  (the only process with a database credential)`);
+    log(`    logs       ${dir}/*.log`);
     log("    Ctrl-C to stop and tear down (pass --keep to leave the stack up).");
 
     // Hold the process so the child services keep running and Ctrl-C reaches the handler above.

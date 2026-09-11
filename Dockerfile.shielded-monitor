@@ -1,0 +1,64 @@
+# syntax=docker/dockerfile:1
+#
+# The shielded-monitor image (sub-plan 00009-08 v2; `spec/00009` FR-026).
+#
+# ── One image, six commands ─────────────────────────────────────────────────────────────────
+#   scanner      umbradb-shielded-monitor            project B: relevance scanning
+#   api          umbradb-shielded-monitor-api        project B: the private API + dashboard
+#   balancer     umbradb-shielded-monitor-balancer   project B: random selection over the APIs
+#   derive-key   umbradb-shielded-monitor-derive-key project B: a seed file -> a viewing key
+#   storage      umbradb-storage-api                 project A: the ONE process with a database
+#                                                    credential, serving both route families
+#   archive-sync umbradb-archive-sync                project A: node-only finalized ingest, so a
+#                                                    compose stack needs no second image
+#
+# One image rather than two because they share a lockfile, a build and a vendored ledger; the
+# deployment separation is which COMMAND runs and which environment it gets, which is what
+# `test/compose/docker-compose.shielded-monitor.yml` expresses.
+#
+# ── What "project B has no database" means for this image ────────────────────────────────────
+# It is a property of the four B commands, not of the layer: the image contains `dist-cli/
+# storage-api` and `dist-cli/src/postgres` because the `storage` command needs them.
+# `test/shielded-monitor/import-boundary.test.ts` proves no module reachable from
+# `shielded-monitor/**` can load any of it, and `shielded-monitor/no-database.ts` refuses to start
+# a B process whose environment carries a `*_PG` variable at all. A hardened build (the TEE step)
+# would drop `dist-cli/storage-api`, `dist-cli/chain-archive-sync` and `dist-cli/src/postgres`
+# from the B image entirely; nothing in B's code would change.
+#
+# Built and run as an unprivileged user, with no shell in the entrypoint path beyond `exec`.
+
+FROM node:24-bookworm-slim AS build
+WORKDIR /app
+
+# The vendored ledger is a `file:` dependency, so it has to be present before `npm ci`.
+COPY package.json package-lock.json ./
+COPY vendor ./vendor
+# `--ignore-scripts`: nothing in this dependency set needs a postinstall, and a build that runs
+# arbitrary install hooks is a supply-chain surface for no benefit.
+RUN npm ci --ignore-scripts
+
+COPY tsconfig.json tsconfig.cli.json ./
+COPY src ./src
+COPY chain-archive-sync ./chain-archive-sync
+COPY archive-read-api ./archive-read-api
+COPY storage-api ./storage-api
+COPY shielded-monitor ./shielded-monitor
+COPY scripts ./scripts
+RUN npm run build:cli && npm prune --omit=dev
+
+FROM node:24-bookworm-slim AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+# Loopback by default everywhere in this alpha (owner decision Q3: no authentication). A container
+# must bind 0.0.0.0 to be reachable on the compose network, so the compose file sets these
+# explicitly — the IMAGE keeps the safe default, so a `docker run` with no configuration does not
+# expose an unauthenticated API on every interface.
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist-cli ./dist-cli
+COPY --from=build /app/vendor ./vendor
+COPY --from=build /app/package.json ./package.json
+COPY docker/shielded-monitor-entrypoint.sh /usr/local/bin/umbradb-entrypoint
+
+USER node
+ENTRYPOINT ["/usr/local/bin/umbradb-entrypoint"]
+CMD ["scanner"]

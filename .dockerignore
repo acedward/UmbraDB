@@ -1,0 +1,16 @@
+# Everything the image build does not need. `node_modules` above all: sending a 1 GB context to
+# the daemon on every build is slow, and the image installs its own from the lockfile anyway.
+node_modules
+dist
+dist-cli
+.git
+graphify-out
+test
+bench
+docs
+openspec
+design
+Formal
+Performance
+research
+*.log

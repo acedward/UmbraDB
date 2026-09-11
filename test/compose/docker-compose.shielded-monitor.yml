@@ -1,0 +1,160 @@
+# The shielded monitor as a SPLIT deployment: 2 scanners + 2 APIs + 1 balancer + 1 storage API,
+# over the one database `docker-compose.yml` already provides (sub-plan 00009-08 v2, owner Q25).
+#
+# ── How to run it ────────────────────────────────────────────────────────────────────────────
+#   docker compose -p umbradb-<yours> \
+#     -f test/compose/docker-compose.yml \
+#     -f test/compose/docker-compose.shielded-monitor.yml \
+#     up -d node postgres archive-sync storage-api \
+#        shielded-monitor-scanner-1 shielded-monitor-scanner-2 \
+#        shielded-monitor-api-1 shielded-monitor-api-2 shielded-monitor-balancer
+#
+# Use a UNIQUE project name (this is a shared machine) and tear down with
+# `down -v --remove-orphans`. `npm run demo:shielded-monitor -- --split` does all of that for you
+# and prints the dashboard URL.
+#
+# ── No host ports, except the balancer's, and that one is opt-in ─────────────────────────────
+# The base file publishes nothing, for the reasons its own header gives. This overlay follows it:
+# the only host-facing service is the balancer, and it binds `127.0.0.1:${BALANCER_HOST_PORT}`
+# with no default worth colliding on — set it, or use the demo script, which randomises a port
+# above 10000.
+#
+# ── The one thing to read this file for ──────────────────────────────────────────────────────
+# Which services carry `ARCHIVE_PG`/`MONITOR_PG`. There is exactly one: `storage-api`. Every
+# project-B service has `STORAGE_URL` and nothing else, and each of them REFUSES to start if a
+# `*_PG` variable appears in its environment (`shielded-monitor/no-database.ts`). That refusal is
+# what makes this file's separation real rather than a convention nobody checks.
+#
+# `x-` anchors keep the two scanners and the two API instances literally identical apart from
+# their instance id and port, because "two of everything" is only meaningful if the two are the
+# same thing.
+
+x-monitor-image: &monitor-image
+  build:
+    context: ../..
+    dockerfile: Dockerfile.shielded-monitor
+  image: 'umbradb-shielded-monitor:${MONITOR_IMAGE_TAG:-local}'
+  restart: unless-stopped
+
+x-b-environment: &b-environment
+  # Project B's ENTIRE configuration surface. No connection string, no schema, no credential.
+  STORAGE_URL: 'http://storage-api:8788'
+  NET: 'undeployed'
+  SHIELDED_MONITOR_NET: 'undeployed'
+
+services:
+  # ── Project A ─────────────────────────────────────────────────────────────────────────────
+  archive-sync:
+    <<: *monitor-image
+    command: ['archive-sync']
+    depends_on:
+      node:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      ARCHIVE_PG: 'postgres://umbra:umbra@postgres:5432/umbra'
+      NET: 'undeployed'
+      NODE_URL: 'http://node:9944'
+      NODE_ONLY: '1'
+
+  storage-api:
+    <<: *monitor-image
+    command: ['storage']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # The ONE credential in this stack.
+      ARCHIVE_PG: 'postgres://umbra:umbra@postgres:5432/umbra'
+      NET: 'undeployed'
+      STORAGE_HOST: '0.0.0.0'
+      STORAGE_PORT: '8788'
+      # Applies project B's migration lineage at boot. Opt-in everywhere else; on a disposable
+      # test stack it is what makes `up -d` sufficient.
+      STORAGE_BOOTSTRAP: '1'
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8788/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ── Project B: two scanners ───────────────────────────────────────────────────────────────
+  shielded-monitor-scanner-1:
+    <<: *monitor-image
+    command: ['scanner']
+    depends_on:
+      storage-api:
+        condition: service_healthy
+    environment:
+      <<: *b-environment
+      SCAN_INSTANCE_ID: 'scanner-1'
+      SCAN_BATCH_BLOCKS: '8'
+      SCAN_POLL_MS: '2000'
+      SCAN_LEASE_TTL_MS: '30000'
+
+  shielded-monitor-scanner-2:
+    <<: *monitor-image
+    command: ['scanner']
+    depends_on:
+      storage-api:
+        condition: service_healthy
+    environment:
+      <<: *b-environment
+      SCAN_INSTANCE_ID: 'scanner-2'
+      SCAN_BATCH_BLOCKS: '8'
+      SCAN_POLL_MS: '2000'
+      SCAN_LEASE_TTL_MS: '30000'
+
+  # ── Project B: two API instances ──────────────────────────────────────────────────────────
+  shielded-monitor-api-1:
+    <<: *monitor-image
+    command: ['api']
+    depends_on:
+      storage-api:
+        condition: service_healthy
+    environment:
+      <<: *b-environment
+      API_HOST: '0.0.0.0'
+      API_PORT: '8787'
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8787/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  shielded-monitor-api-2:
+    <<: *monitor-image
+    command: ['api']
+    depends_on:
+      storage-api:
+        condition: service_healthy
+    environment:
+      <<: *b-environment
+      API_HOST: '0.0.0.0'
+      API_PORT: '8787'
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8787/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ── Project B: the balancer, the only host-facing service ─────────────────────────────────
+  shielded-monitor-balancer:
+    <<: *monitor-image
+    command: ['balancer']
+    depends_on:
+      shielded-monitor-api-1:
+        condition: service_healthy
+      shielded-monitor-api-2:
+        condition: service_healthy
+    environment:
+      <<: *b-environment
+      BALANCER_UPSTREAMS: 'http://shielded-monitor-api-1:8787,http://shielded-monitor-api-2:8787'
+      BALANCER_HOST: '0.0.0.0'
+      BALANCER_PORT: '8789'
+      BALANCER_PROBE_MS: '5000'
+    ports:
+      # Loopback only, and the port is required rather than defaulted: a default would be a fixed
+      # number two parallel stacks on this machine would fight over.
+      - '127.0.0.1:${BALANCER_HOST_PORT}:8789'
