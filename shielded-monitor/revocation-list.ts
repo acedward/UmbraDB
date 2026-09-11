@@ -1,4 +1,4 @@
-import type { PgShieldedMonitorStore, RevocationRecord } from "./store.js";
+import type { RevocationRecord, ShieldedMonitorStore } from "./store.js";
 
 /**
  * The revocation list: the one piece of project-B state that must survive a database restore
@@ -41,7 +41,7 @@ export interface RevocationApplyReport {
 
 /** Exports every monitor whose access must stay refused. */
 export async function exportRevocationList(
-  store: PgShieldedMonitorStore,
+  store: ShieldedMonitorStore,
   schema: string,
 ): Promise<RevocationListFile> {
   return {
@@ -68,7 +68,7 @@ export async function exportRevocationList(
  * delete. The report names those monitors so the operator knows to.
  */
 export async function applyRevocationList(
-  store: PgShieldedMonitorStore,
+  store: ShieldedMonitorStore,
   list: RevocationListFile,
   actor = "restore",
 ): Promise<RevocationApplyReport> {

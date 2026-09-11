@@ -29,13 +29,13 @@
  */
 import { openArchiveSource } from "./archive-source.js";
 import { createClient } from "../src/postgres/client.js";
-import { bootstrapShieldedMonitorSchema } from "./bootstrap.js";
+import { bootstrapShieldedMonitorSchema } from "../storage-api/bootstrap.js";
 import { ShieldedMonitorDetailsBackfill } from "./details-backfill.js";
 import { readScannerConfig, SCANNER_ENV_DOC } from "./scanner-config.js";
 import { InMemoryScannerMetrics } from "./scanner-metrics.js";
 import { ShieldedMonitorScanner } from "./scanner.js";
 import { ShieldedMonitorScannerService } from "./scanner-service.js";
-import { PgShieldedMonitorStore } from "./store.js";
+import { PgShieldedMonitorStore } from "../storage-api/monitor-store-pg.js";
 
 /* eslint-disable no-console */
 

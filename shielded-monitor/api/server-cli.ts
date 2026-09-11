@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { createClient } from "../../src/postgres/client.js";
 import { openArchiveSource } from "../archive-source.js";
-import { bootstrapShieldedMonitorSchema } from "../bootstrap.js";
-import { PgShieldedMonitorStore } from "../store.js";
+import { bootstrapShieldedMonitorSchema } from "../../storage-api/bootstrap.js";
+import { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";
 import { loadApiConfig } from "./config.js";
 import { createShieldedMonitorApi, stderrLogger } from "./server.js";
 import { archiveSourceTip, unknownSourceTip } from "./source-tip.js";

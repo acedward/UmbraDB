@@ -9,7 +9,7 @@ import {
 } from "../../shielded-monitor/api/server.js";
 import { DASHBOARD_CSP, DASHBOARD_HTML } from "../../shielded-monitor/api/ui/page.js";
 import { MonitorNotFoundError } from "../../shielded-monitor/errors.js";
-import type { PgShieldedMonitorStore } from "../../shielded-monitor/store.js";
+import type { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";
 
 /**
  * The dashboard route and the page it serves (organizer sub-plan 00009-06;

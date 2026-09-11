@@ -11,11 +11,8 @@ import {
   IllegalLifecycleTransitionError,
 } from "../../shielded-monitor/errors.js";
 import type { MatchDetails } from "../../shielded-monitor/match-details.js";
-import {
-  MAX_ASSOCIATION_DETAILS_BYTES,
-  MAX_ASSOCIATION_PAGE,
-  type PgShieldedMonitorStore,
-} from "../../shielded-monitor/store.js";
+import { MAX_ASSOCIATION_DETAILS_BYTES, MAX_ASSOCIATION_PAGE } from "../../shielded-monitor/store.js";
+import { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";
 import {
   TEST_LEDGER_BUILD,
   TEST_MATCHING_RULE,

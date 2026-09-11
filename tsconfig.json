@@ -15,6 +15,7 @@
     "test/**/*.ts",
     "chain-archive-sync/**/*.ts",
     "archive-read-api/**/*.ts",
+    "storage-api/**/*.ts",
     "shielded-monitor/**/*.ts",
     "bench/**/*.ts"
   ]

@@ -1,6 +1,6 @@
 import { DEFAULT_ARCHIVE_SCHEMA } from "../../src/postgres/archive-conventions.js";
 import { normalizeArchiveBaseUrl } from "../archive-http-client.js";
-import { DEFAULT_SHIELDED_MONITOR_SCHEMA } from "../bootstrap.js";
+import { DEFAULT_SHIELDED_MONITOR_SCHEMA } from "../../storage-api/bootstrap.js";
 import { MAX_ASSOCIATION_PAGE } from "../store.js";
 
 /**

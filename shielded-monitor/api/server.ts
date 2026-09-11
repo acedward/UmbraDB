@@ -11,7 +11,7 @@ import {
   MonitorRevokedError,
 } from "../errors.js";
 import type { MonitorState } from "../lifecycle.js";
-import type { MonitorRecord, PgShieldedMonitorStore } from "../store.js";
+import type { MonitorRecord, ShieldedMonitorStore } from "../store.js";
 import { LEDGER_BUILD_ID, parseViewingKey } from "../viewing-key.js";
 import { loadApiConfig, type ApiConfig } from "./config.js";
 import { CursorError, decodeCursor, encodeCursor } from "./cursor.js";
@@ -182,7 +182,7 @@ function scrubIssues(
 // ── Server ───────────────────────────────────────────────────────────────────────────────────
 
 export interface ShieldedMonitorApiDeps {
-  readonly store: PgShieldedMonitorStore;
+  readonly store: ShieldedMonitorStore;
   readonly config?: ApiConfig;
   readonly sourceTipProvider?: SourceTipProvider;
   readonly logger?: ApiLogger;

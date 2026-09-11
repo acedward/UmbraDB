@@ -10,6 +10,7 @@
   },
   "include": [
     "archive-read-api/**/*.ts",
+    "storage-api/**/*.ts",
     "chain-archive-sync/**/*.ts",
     "shielded-monitor/**/*.ts",
     "src/**/*.ts"

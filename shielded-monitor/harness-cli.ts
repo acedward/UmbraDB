@@ -1,8 +1,9 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { createClient } from "../src/postgres/client.js";
-import { DEFAULT_SHIELDED_MONITOR_SCHEMA, bootstrapShieldedMonitorSchema } from "./bootstrap.js";
+import { DEFAULT_SHIELDED_MONITOR_SCHEMA, bootstrapShieldedMonitorSchema } from "../storage-api/bootstrap.js";
 import { applyRevocationList, exportRevocationList, type RevocationListFile } from "./revocation-list.js";
-import { PgShieldedMonitorStore, type AssociationInput } from "./store.js";
+import { type AssociationInput } from "./store.js";
+import { PgShieldedMonitorStore } from "../storage-api/monitor-store-pg.js";
 import { LEDGER_BUILD_ID, parseViewingKey } from "./viewing-key.js";
 
 /**

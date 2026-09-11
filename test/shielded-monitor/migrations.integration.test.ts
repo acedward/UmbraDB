@@ -6,7 +6,7 @@ import { runMigrations } from "../../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_archive/index.js";
 import * as associationDetailsMigration from "../../src/postgres/migrations/shielded_monitor/002_association_details.js";
 import { shieldedMonitorMigrations } from "../../src/postgres/migrations/shielded_monitor/index.js";
-import { bootstrapShieldedMonitorSchema } from "../../shielded-monitor/bootstrap.js";
+import { bootstrapShieldedMonitorSchema } from "../../storage-api/bootstrap.js";
 
 /**
  * The `shielded_monitor` lineage against real PostgreSQL 17 — every constraint asserted by

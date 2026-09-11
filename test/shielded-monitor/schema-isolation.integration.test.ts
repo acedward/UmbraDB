@@ -4,8 +4,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_archive/index.js";
-import { bootstrapShieldedMonitorSchema } from "../../shielded-monitor/bootstrap.js";
-import { PgShieldedMonitorStore } from "../../shielded-monitor/store.js";
+import { bootstrapShieldedMonitorSchema } from "../../storage-api/bootstrap.js";
+import { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";
 import { TEST_LEDGER_BUILD, TEST_MATCHING_RULE, association, fixtureViewingKey } from "./helpers.js";
 
 /**

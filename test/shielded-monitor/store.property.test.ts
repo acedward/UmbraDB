@@ -4,7 +4,7 @@ import fc from "fast-check";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { MonitorFencedError, MonitorRevokedError } from "../../shielded-monitor/errors.js";
 import { isScannable, type MonitorState } from "../../shielded-monitor/lifecycle.js";
-import type { PgShieldedMonitorStore } from "../../shielded-monitor/store.js";
+import type { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";
 import {
   TEST_LEDGER_BUILD,
   TEST_MATCHING_RULE,

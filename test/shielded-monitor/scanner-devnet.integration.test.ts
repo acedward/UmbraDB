@@ -5,11 +5,11 @@ import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.j
 import { ledgerV8EntryPath } from "../../chain-archive-sync/tx-replay-decoder.js";
 import { PgArchiveReadContract } from "../../src/postgres/archive-read-contract.js";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
-import { bootstrapShieldedMonitorSchema } from "../../shielded-monitor/bootstrap.js";
+import { bootstrapShieldedMonitorSchema } from "../../storage-api/bootstrap.js";
 import { LEDGER_BUILD_ID, MATCHING_RULE_VERSION } from "../../shielded-monitor/offers.js";
 import { ShieldedMonitorScanner } from "../../shielded-monitor/scanner.js";
 import { InMemoryScannerMetrics } from "../../shielded-monitor/scanner-metrics.js";
-import { PgShieldedMonitorStore } from "../../shielded-monitor/store.js";
+import { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";
 import { encodeViewingKey, parseViewingKey } from "../../shielded-monitor/viewing-key.js";
 import { skipUnlessRequired } from "../integration/required-services.js";
 import { fixtureViewingKey } from "./helpers.js";

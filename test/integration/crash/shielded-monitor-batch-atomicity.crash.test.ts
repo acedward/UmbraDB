@@ -7,10 +7,10 @@ import { PgChainArchiveStore } from "../../../src/postgres/chain-archive-store.j
 import { createClient, type UmbraDBSql } from "../../../src/postgres/client.js";
 import { runMigrations } from "../../../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../../../src/postgres/migrations/chain_archive/index.js";
-import { bootstrapShieldedMonitorSchema } from "../../../shielded-monitor/bootstrap.js";
+import { bootstrapShieldedMonitorSchema } from "../../../storage-api/bootstrap.js";
 import { LEDGER_BUILD_ID, MATCHING_RULE_VERSION } from "../../../shielded-monitor/offers.js";
 import { ShieldedMonitorScanner } from "../../../shielded-monitor/scanner.js";
-import { PgShieldedMonitorStore } from "../../../shielded-monitor/store.js";
+import { PgShieldedMonitorStore } from "../../../storage-api/monitor-store-pg.js";
 import { encodeViewingKey, parseViewingKey } from "../../../shielded-monitor/viewing-key.js";
 import { buildCorpus, type BuiltCorpus } from "../../fixtures/shielded-monitor/build-corpus.js";
 import { pgTerminateBackend } from "../../postgres/setup.js";

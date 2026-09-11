@@ -7,8 +7,8 @@ import {
   exportRevocationList,
   type RevocationListFile,
 } from "../../shielded-monitor/revocation-list.js";
-import { PgShieldedMonitorStore } from "../../shielded-monitor/store.js";
-import { bootstrapShieldedMonitorSchema } from "../../shielded-monitor/bootstrap.js";
+import { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";
+import { bootstrapShieldedMonitorSchema } from "../../storage-api/bootstrap.js";
 import { association, registerFixture } from "./helpers.js";
 
 /**

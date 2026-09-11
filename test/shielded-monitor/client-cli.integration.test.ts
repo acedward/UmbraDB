@@ -13,7 +13,7 @@ import {
 } from "../../shielded-monitor/api/server.js";
 import { staticSourceTip } from "../../shielded-monitor/api/source-tip.js";
 import { runClient } from "../../shielded-monitor/client/cli.js";
-import type { PgShieldedMonitorStore } from "../../shielded-monitor/store.js";
+import type { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";
 import { association, fixtureViewingKeyEncoded, freshStore, uniqueSchema } from "./helpers.js";
 
 /**

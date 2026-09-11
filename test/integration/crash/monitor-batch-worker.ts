@@ -22,7 +22,7 @@
 import { PgArchiveReadContract } from "../../../src/postgres/archive-read-contract.js";
 import { createClient } from "../../../src/postgres/client.js";
 import { ShieldedMonitorScanner } from "../../../shielded-monitor/scanner.js";
-import { PgShieldedMonitorStore } from "../../../shielded-monitor/store.js";
+import { PgShieldedMonitorStore } from "../../../storage-api/monitor-store-pg.js";
 import { withStatementFault, type FaultState } from "./archive-fault-injection.js";
 import { CRASH_NET } from "./monitor-batch-fixture.js";
 

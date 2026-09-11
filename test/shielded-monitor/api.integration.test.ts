@@ -12,7 +12,7 @@ import {
 } from "../../shielded-monitor/api/server.js";
 import type { SourceTipProvider } from "../../shielded-monitor/api/source-tip.js";
 import { INVALID_VIEWING_KEY_MESSAGE } from "../../shielded-monitor/errors.js";
-import type { PgShieldedMonitorStore } from "../../shielded-monitor/store.js";
+import type { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";
 import { encodeViewingKey } from "../../shielded-monitor/viewing-key.js";
 import {
   association,

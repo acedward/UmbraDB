@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
-import { bootstrapShieldedMonitorSchema } from "../../shielded-monitor/bootstrap.js";
+import { bootstrapShieldedMonitorSchema } from "../../storage-api/bootstrap.js";
 import { encodeViewingKey, parseViewingKey, type ShieldedViewingKey } from "../../shielded-monitor/viewing-key.js";
-import { PgShieldedMonitorStore, type AssociationInput } from "../../shielded-monitor/store.js";
+import { type AssociationInput } from "../../shielded-monitor/store.js";
+import { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";
 
 /**
  * Shared fixtures for the project-B integration tests.
