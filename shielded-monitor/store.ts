@@ -20,6 +20,7 @@ import {
   type MonitorState,
 } from "./lifecycle.js";
 import { NETWORK_ID_PATTERN } from "./fingerprint.js";
+import type { MatchDetails } from "./match-details.js";
 import type { ShieldedViewingKey } from "./viewing-key.js";
 
 /**
@@ -69,6 +70,36 @@ const RegisterInputSchema = z.object({
   actor: ActorSchema,
 });
 
+/**
+ * The largest `details` document this store will write, measured on its JSON encoding.
+ *
+ * `shielded-monitor/match-details.ts` already caps each list at `MAX_DETAIL_ENTRIES`, so this is
+ * the second, independent bound: the producer's cap is a promise, and a store that accepts a
+ * caller's object should not rely on a promise made in another module. A document over the bound
+ * is refused with a `ValidationError` rather than silently truncated — a truncated detail record
+ * that still claims to describe a transaction is worse than none.
+ */
+export const MAX_ASSOCIATION_DETAILS_BYTES = 256 * 1024;
+
+/** `details` is validated as a bounded JSON OBJECT, not against the full {@link MatchDetails}
+ *  shape. Restating that shape here would create a second definition of it that could drift from
+ *  the producer's, and the column is `jsonb`: what the database must be protected from is a
+ *  non-object, an unbounded document, or one carrying an escaped NUL (which PostgreSQL's `jsonb`
+ *  rejects at write time with an opaque error). Those three are exactly what this checks. */
+const DetailsSchema = z
+  .custom<MatchDetails>(
+    (value) => typeof value === "object" && value !== null && !Array.isArray(value),
+    "details must be a JSON object",
+  )
+  .refine((value) => {
+    const encoded = JSON.stringify(value);
+    return (
+      encoded !== undefined &&
+      encoded.length <= MAX_ASSOCIATION_DETAILS_BYTES &&
+      !encoded.includes("\\u0000")
+    );
+  }, `details must encode to at most ${MAX_ASSOCIATION_DETAILS_BYTES} JSON characters and must not contain an escaped NUL`);
+
 const AssociationInputSchema = z.object({
   net: NetSchema,
   blockHeight: HeightSchema,
@@ -80,6 +111,16 @@ const AssociationInputSchema = z.object({
   sourceOutcome: z.string().min(1).max(64).optional(),
   matchingRuleVersion: VersionSchema.optional(),
   ledgerBuild: LedgerBuildSchema.optional(),
+  // 00009-07, both additive and both optional: an association written without them is exactly the
+  // pre-00009-07 row, which is what keeps the migration additive in behaviour as well as in DDL.
+  details: DetailsSchema.optional(),
+  blockTimestampMs: z.bigint().nonnegative().optional(),
+});
+
+const AssociationDetailsUpdateSchema = z.object({
+  seq: z.bigint().positive(),
+  details: DetailsSchema,
+  blockTimestampMs: z.bigint().nonnegative().optional(),
 });
 
 /** The maximum number of association rows a single {@link PgShieldedMonitorStore.readAssociations}
@@ -136,6 +177,15 @@ export interface AssociationRecord {
   readonly sourceOutcome?: string;
   readonly matchingRuleVersion: string;
   readonly ledgerBuild: string;
+  /** The matched transaction's public zswap data (00009-07). **Absent** means "not recorded yet"
+   *  — a row written before migration 002, or one the details backfill has not visited. It never
+   *  means "this transaction had no outputs"; a transaction with no outputs records an empty
+   *  list, which is a different, visible thing. */
+  readonly details?: MatchDetails;
+  /** The time of the block this observation sits in, in milliseconds. Absent for the same reason
+   *  `details` can be absent, and additionally for a block the ARCHIVE itself has no timestamp
+   *  for (migration 008's unbackfilled rows) — never a guessed value. */
+  readonly blockTimestampMs?: bigint;
   readonly createdAt: Date;
 }
 
@@ -151,6 +201,18 @@ export interface AssociationInput {
   readonly sourceOutcome?: string;
   readonly matchingRuleVersion?: string;
   readonly ledgerBuild?: string;
+  /** 00009-07, optional: omitting it writes exactly the pre-00009-07 row. */
+  readonly details?: MatchDetails;
+  readonly blockTimestampMs?: bigint;
+}
+
+/** One row of a details backfill (00009-07). `seq` names the association; the two payload fields
+ *  are the only columns the backfill may write. */
+export interface AssociationDetailsUpdate {
+  readonly seq: bigint;
+  readonly details: MatchDetails;
+  /** Absent when the ARCHIVE itself has no timestamp for that block — never a guessed value. */
+  readonly blockTimestampMs?: bigint;
 }
 
 /** Everything registration needs besides the key itself. */
@@ -246,6 +308,8 @@ interface AssociationRow {
   source_outcome: string | null;
   matching_rule_version: string;
   ledger_build: string;
+  details: MatchDetails | null;
+  block_timestamp_ms: bigint | null;
   created_at: Date;
 }
 
@@ -284,6 +348,10 @@ function toAssociation(row: AssociationRow): AssociationRecord {
     ...(row.source_outcome !== null ? { sourceOutcome: row.source_outcome } : {}),
     matchingRuleVersion: row.matching_rule_version,
     ledgerBuild: row.ledger_build,
+    // `null` in the column becomes ABSENT in the record, so every consumer has one spelling for
+    // "not recorded yet" and none of them has to decide whether `null` and `undefined` differ.
+    ...(row.details !== null ? { details: row.details } : {}),
+    ...(row.block_timestamp_ms !== null ? { blockTimestampMs: row.block_timestamp_ms } : {}),
     createdAt: row.created_at,
   };
 }
@@ -551,9 +619,49 @@ export class PgShieldedMonitorStore {
       const rows = await this.sql<AssociationRow[]>`
         SELECT seq, net, block_height, block_hash, position, tx_hash, protocol_version,
                matched_segments, applied_outcome, source_outcome, matching_rule_version,
-               ledger_build, created_at
+               ledger_build, details, block_timestamp_ms, created_at
           FROM ${this.sql(this.schema)}.associations
          WHERE monitor_id = ${monitorId} AND seq > ${afterSeq}
+         ORDER BY seq
+         LIMIT ${bounded}
+      `;
+      return rows.map(toAssociation);
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /**
+   * The details backfill's work list: this monitor's associations that carry no `details` yet,
+   * oldest first (00009-07).
+   *
+   * Ordered by `seq`, which is `(blockHeight, position)` order, so a backfill that walks pages of
+   * this list visits history forwards and its progress is describable as a height. Rows already
+   * carrying details are never returned, which is what makes a re-run cheap rather than a
+   * re-scan: the partial index `associations_details_missing` shrinks to nothing as the backfill
+   * completes.
+   *
+   * Refuses revoked monitors and reports deleted ones as not found, exactly like
+   * {@link PgShieldedMonitorStore.readAssociations} — a backfill must not become a way to read a
+   * monitor the lifecycle has closed.
+   */
+  async readAssociationsMissingDetails(monitorId: string, limit: number): Promise<AssociationRecord[]> {
+    parse(UuidSchema, monitorId, "PgShieldedMonitorStore.readAssociationsMissingDetails");
+    const bounded = parse(
+      z.number().int().positive().max(MAX_ASSOCIATION_PAGE),
+      limit,
+      "PgShieldedMonitorStore.readAssociationsMissingDetails",
+    );
+    const row = await this.loadRow(monitorId);
+    if (row === undefined || row.state === "deleted") throw new MonitorNotFoundError(monitorId);
+    if (refusesReads(row.state as MonitorState)) throw new MonitorRevokedError(monitorId);
+    try {
+      const rows = await this.sql<AssociationRow[]>`
+        SELECT seq, net, block_height, block_hash, position, tx_hash, protocol_version,
+               matched_segments, applied_outcome, source_outcome, matching_rule_version,
+               ledger_build, details, block_timestamp_ms, created_at
+          FROM ${this.sql(this.schema)}.associations
+         WHERE monitor_id = ${monitorId} AND details IS NULL
          ORDER BY seq
          LIMIT ${bounded}
       `;
@@ -682,14 +790,19 @@ export class PgShieldedMonitorStore {
             INSERT INTO ${tx(this.schema)}.associations (
               monitor_id, seq, net, block_height, block_hash, position, tx_hash,
               protocol_version, matched_segments, applied_outcome, source_outcome,
-              matching_rule_version, ledger_build
+              matching_rule_version, ledger_build, details, block_timestamp_ms
             ) VALUES (
               ${monitorId}, ${base + BigInt(index) + 1n}, ${a.net}, ${a.blockHeight},
               ${Buffer.from(a.blockHash)}, ${a.position}, ${Buffer.from(a.txHash)},
               ${a.protocolVersion}, ${segmentArrayLiteral(a.matchedSegments)}::smallint[], 'unknown',
               ${a.sourceOutcome ?? null},
               ${a.matchingRuleVersion ?? row.matching_rule_version},
-              ${a.ledgerBuild ?? row.ledger_build}
+              ${a.ledgerBuild ?? row.ledger_build},
+              -- 00009-07: written INSIDE this same transaction, so a match's details and the
+              -- coverage advance that admits it are one commit unit (owner Rule B). A crash can
+              -- therefore never leave a match whose details describe a different scan.
+              ${a.details === undefined ? null : tx.json(a.details as never)},
+              ${a.blockTimestampMs ?? null}
             )
           `;
         }
@@ -700,6 +813,82 @@ export class PgShieldedMonitorStore {
           lastSeq: row.last_assoc_seq,
           coverage: toRecord(row).coverage,
         } as const;
+      });
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /**
+   * Fills in `details`/`block_timestamp_ms` for associations that were written before this data
+   * existed (00009-07's backfill), for ONE monitor, in ONE transaction, fenced by `epoch`.
+   *
+   * **Fill-only, and that is what makes it idempotent.** Each row is updated under
+   * `WHERE … AND details IS NULL`, so a second run over the same range updates zero rows and
+   * reports `applied: 0` — the plan's "fills NULL rows exactly once" is a property of the
+   * predicate, not of the caller remembering where it got to. A details record whose
+   * `MATCH_DETAILS_VERSION` later changes is therefore NOT re-derived by re-running the
+   * backfill; that would be a deliberate re-derivation and needs its own opt-in, which this alpha
+   * does not ship.
+   *
+   * **What it may NOT change.** Nothing about the match itself: not the height, the position, the
+   * transaction hash, the matched segments, the outcome or the coverage. The `SET` list is two
+   * columns that were `NULL`, so a backfill cannot rewrite history even if it is wrong about the
+   * bytes — the worst it can do is record a detail row that a later fix overwrites via `NULL`ing.
+   *
+   * **The fence.** The monitor row is locked `FOR UPDATE` and its epoch compared inside the same
+   * transaction, so a pause, resume, revoke or delete landing under a running backfill either
+   * happens before the lock (and the commit is refused with {@link MonitorFencedError}) or after
+   * it (and sees a committed, consistent set of rows). Revoked and deleted monitors are refused
+   * outright — the backfill is not a hole in US3's "stop processing".
+   *
+   * Deliberately NOT restricted to {@link SCANNABLE_STATES}: a `paused`, `failed` or
+   * `stale_source` monitor's already-recorded matches are still readable through the API
+   * (FR-020), so leaving them permanently detail-less would make the placeholder the dashboard
+   * shows for them a lie about what the operator can do.
+   *
+   * @returns how many rows this call actually filled.
+   */
+  async updateAssociationDetails(
+    monitorId: string,
+    expectedEpoch: bigint,
+    updates: readonly AssociationDetailsUpdate[],
+  ): Promise<{ readonly applied: number }> {
+    parse(UuidSchema, monitorId, "PgShieldedMonitorStore.updateAssociationDetails");
+    parse(z.bigint().nonnegative(), expectedEpoch, "PgShieldedMonitorStore.updateAssociationDetails");
+    const rows = parse(
+      z.array(AssociationDetailsUpdateSchema).max(MAX_ASSOCIATION_PAGE),
+      updates,
+      "PgShieldedMonitorStore.updateAssociationDetails",
+    );
+    if (rows.length === 0) return { applied: 0 };
+
+    try {
+      return await this.sql.begin(async (tx) => {
+        const current = await tx<MonitorRow[]>`
+          SELECT * FROM ${tx(this.schema)}.monitors WHERE id = ${monitorId} FOR UPDATE
+        `;
+        const monitor = current[0];
+        if (monitor === undefined || monitor.state === "deleted") throw new MonitorNotFoundError(monitorId);
+        if (refusesReads(monitor.state as MonitorState)) throw new MonitorRevokedError(monitorId);
+        if (monitor.epoch !== expectedEpoch) {
+          throw new MonitorFencedError(monitorId, "epoch", { epoch: monitor.epoch, state: monitor.state });
+        }
+
+        let applied = 0;
+        for (const update of rows) {
+          const updated = await tx<{ seq: bigint }[]>`
+            UPDATE ${tx(this.schema)}.associations
+               SET details            = ${tx.json(update.details as never)},
+                   block_timestamp_ms = ${update.blockTimestampMs ?? null}
+             WHERE monitor_id = ${monitorId}
+               AND seq = ${update.seq}
+               AND details IS NULL
+            RETURNING seq
+          `;
+          if (updated.length > 0) applied += 1;
+        }
+        return { applied } as const;
       });
     } catch (err) {
       throw translatePostgresError(err);

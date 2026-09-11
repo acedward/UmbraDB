@@ -1,5 +1,6 @@
 import * as migration000 from "../000_schema.js";
 import * as shieldedMonitorCore from "./001_core.js";
+import * as shieldedMonitorAssociationDetails from "./002_association_details.js";
 import type { Migration } from "../../migrate.js";
 
 /**
@@ -26,4 +27,12 @@ import type { Migration } from "../../migrate.js";
  * integration tests exercise the same bootstrap against real PostgreSQL) — the same relationship
  * `chain-archive-sync/bootstrap.ts` has to `chainArchiveMigrations`.
  */
-export const shieldedMonitorMigrations: Migration[] = [migration000, shieldedMonitorCore];
+export const shieldedMonitorMigrations: Migration[] = [
+  migration000,
+  shieldedMonitorCore,
+  // 00009-07: additive, nullable `associations.details` / `associations.block_timestamp_ms` plus
+  // the partial index the details backfill works from. Appended, never inserted: the runner
+  // applies this list in order and records each by name, so the order of already-applied entries
+  // is part of the lineage's identity.
+  shieldedMonitorAssociationDetails,
+];

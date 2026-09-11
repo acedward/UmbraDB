@@ -1,6 +1,8 @@
 import type { ArchivedTransaction } from "../src/interfaces/archive-read-contract.js";
+import { buildMatchDetails, type MatchDetails } from "./match-details.js";
 import {
   extractOffers,
+  GUARANTEED_SEGMENT_ID,
   UnsupportedProtocolVersionError,
   type EncryptionSecretKeyHandle,
 } from "./offers.js";
@@ -30,15 +32,11 @@ import {
  * ledger that DID make them visible would fail loudly rather than change coverage silently.
  */
 
-/** Segment id the guaranteed section is recorded under.
- *
- *  The ledger's own `SegmentSpecifier` treats `guaranteedOnly` and `specific(0)` as the same
- *  thing (`ledger-wasm/src/tx.rs`'s `add_zswap_offer`: `GuaranteedOnly | Specific(0)` share a
- *  branch), and a fallible offer therefore never carries segment 0. Recording the guaranteed
- *  match as segment 0 is thus not a convention this module invents — it is the ledger's
- *  numbering, and it keeps `matchedSegments` a single flat list of ledger segment ids rather
+/** Segment id the guaranteed section is recorded under — the ledger's own numbering, defined in
+ *  `offers.ts` (the module that owns the ledger call) and re-exported here, which is where it was
+ *  first published. It keeps `matchedSegments` a single flat list of ledger segment ids rather
  *  than a list plus a boolean. */
-export const GUARANTEED_SEGMENT_ID = 0;
+export { GUARANTEED_SEGMENT_ID } from "./offers.js";
 
 /** Why a transaction was not evaluated at all. Recorded so a scan can report "skipped" as a
  *  distinct outcome from "evaluated, no match" — the spec forbids collapsing the two anywhere
@@ -57,9 +55,27 @@ export type RelevanceSkipReason =
 
 /** The outcome of evaluating one archived transaction against one key. */
 export type RelevanceOutcome =
-  | { readonly kind: "match"; readonly segments: readonly number[] }
+  | {
+      readonly kind: "match";
+      readonly segments: readonly number[];
+      /** The transaction's public zswap data, present only when the caller asked for it
+       *  ({@link EvaluateRelevanceOptions.details}). Computed from the SAME extracted offers and
+       *  the SAME per-segment `test` results that decided the match, so a stored detail record
+       *  can never describe a different evaluation than the association it hangs off. */
+      readonly details?: MatchDetails;
+    }
   | { readonly kind: "no-match" }
   | { readonly kind: "skipped"; readonly reason: RelevanceSkipReason };
+
+/** Options for {@link evaluateRelevance}. */
+export interface EvaluateRelevanceOptions {
+  /** Also collect the matched transaction's public zswap data (organizer sub-plan 00009-07).
+   *
+   *  Off by default, and only ever does work for a transaction that actually matched: a
+   *  non-matching transaction costs nothing, so the scanner can ask for details on every
+   *  transaction it evaluates without paying for the overwhelming majority that do not match. */
+  readonly details?: boolean;
+}
 
 /**
  * Evaluate one archived transaction against one viewing key.
@@ -76,6 +92,7 @@ export type RelevanceOutcome =
 export async function evaluateRelevance(
   tx: Pick<ArchivedTransaction, "kind" | "protocolVersion" | "rawBytes">,
   key: EncryptionSecretKeyHandle,
+  options: EvaluateRelevanceOptions = {},
 ): Promise<RelevanceOutcome> {
   if (tx.kind === "system") return { kind: "skipped", reason: "system-transaction" };
 
@@ -93,7 +110,8 @@ export async function evaluateRelevance(
   if (segments.length === 0) return { kind: "no-match" };
   // Ascending, so a manifest comparison and a stored `matched_segments` array have one order.
   segments.sort((a, b) => a - b);
-  return { kind: "match", segments };
+  if (options.details !== true) return { kind: "match", segments };
+  return { kind: "match", segments, details: await buildMatchDetails(offers, key, segments) };
 }
 
 /** True when `err` is the fail-closed protocol-version refusal, narrowed without `instanceof`

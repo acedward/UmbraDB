@@ -35,6 +35,17 @@ import { loadLedgerV8 } from "../chain-archive-sync/tx-replay-decoder.js";
  *  provenance that lies. */
 export const LEDGER_BUILD_ID = "ledger-v8@8.1.0-syshash.4";
 
+/** Segment id the guaranteed section is recorded under.
+ *
+ *  The ledger's own `SegmentSpecifier` treats `guaranteedOnly` and `specific(0)` as the same thing
+ *  (`ledger-wasm/src/tx.rs`'s `add_zswap_offer`: `GuaranteedOnly | Specific(0)` share a branch),
+ *  and a fallible offer therefore never carries segment 0. Recording the guaranteed section as
+ *  segment 0 is thus not a convention this project invents — it is the ledger's numbering, which
+ *  is why the constant lives HERE, in the one module that owns the ledger call, rather than in a
+ *  consumer. Re-exported from `relevance.ts`, which is where it was first published.
+ */
+export const GUARANTEED_SEGMENT_ID = 0;
+
 /** The matching-rule version recorded alongside each association. Bumped whenever what counts as
  *  a match changes (which offers are examined, which key API is used) even if the ledger build
  *  does not, so a stored association always says which rule produced it. */
