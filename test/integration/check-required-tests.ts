@@ -115,9 +115,10 @@ export function statusesFromReport(report: JsonReport): Map<string, string[]> {
  *  source, FR-007 fail-closed). The crash set again INCLUDES its own negative control and its
  *  write-set audit deliberately: a two-state result proven by assertions that cannot fail is
  *  worth nothing, so the control that shows the UNFOLDED shape DOES produce a partial batch must
- *  not be skippable either. */
- *  Merge of all four 00009 branches (01+02 → 32, 03 → 39, 04 → +3): the pinned set is the UNION of
- *  every branch's ids, never one side. */
+ *  not be skippable either.
+ *
+ *  39 -> 42 (merge of all four 00009 branches: 01+02 -> 32, 03 -> 39, 04 adds three API/client ids
+ *  on top of 02's 28): the pinned set is the UNION of every branch's ids, never one side. */
 export const EXPECTED_REQUIRED_COUNT = 42;
 
 /** The pinned count of `deferred` (WHERE-gated optional-feature) tests (BLOCK 6). Structurally PINS
