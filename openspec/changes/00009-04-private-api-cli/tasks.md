@@ -149,5 +149,13 @@ Three new required ids, count pin 28 → 31.
   commit `graphify-out/`" close-out step could not run; committing a stale or partially
   regenerated graph would be worse than leaving it. Called out in the PR description.
 - **Deferred to Phase 5, not skipped:** the Compose end-to-end run with a real shielded transaction
-  (SC-005/SC-008's live half) needs Phase 3's scanner, which exists on no branch at the time of
-  writing (`git fetch origin --prune` shows no `origin/feat/00009-03-relevance-scanner`).
+  (SC-005/SC-008's live half) needs Phase 3's scanner, which is not on `origin` at the time of
+  writing (`git fetch origin --prune` shows no `origin/feat/00009-03-relevance-scanner`; a local,
+  still-advancing branch of that name exists in the shared clone, but merging an unpushed branch
+  another runner is actively committing to would put their unreviewed work in this PR and collide
+  on the `EXPECTED_REQUIRED_COUNT` pin both branches move).
+- **Stated as unverified rather than as passing:** `gitleaks detect` — the binary is not installed
+  in this environment (`which gitleaks` → not found). Every file this branch touches was scanned
+  by hand for a Bech32m key, a credential literal, a private-key header and an API-key assignment,
+  with a positive control proving the scan fires; nothing was found. The Compose-based
+  `chain-archive-parity` and live-service jobs are owner-gated and unrelated to this surface.
