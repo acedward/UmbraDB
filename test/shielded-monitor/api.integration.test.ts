@@ -130,7 +130,9 @@ describe("shielded-monitor private API", () => {
   });
 
   it("binds loopback by default (FR-018)", () => {
-    expect(loadApiConfig({}).host).toBe("127.0.0.1");
+    // `STORAGE_URL` is required since 00009-08 v2 (project B has no database), so the minimal
+    // environment this case is really about — "nothing else set" — has to include it.
+    expect(loadApiConfig({ STORAGE_URL: "http://storage-api:8788" }).host).toBe("127.0.0.1");
   });
 
   // ── Registration (US1, FR-017) ─────────────────────────────────────────────────────────────

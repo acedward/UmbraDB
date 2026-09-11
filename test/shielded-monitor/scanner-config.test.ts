@@ -13,15 +13,19 @@ import { MonitorFencedError, MonitorNotFoundError } from "../../shielded-monitor
  * refuses a bad value and names the variable, and these are the tests that keep it that way.
  */
 
-const MINIMAL = { MONITOR_PG: "postgres://u:p@localhost:5432/db" } as NodeJS.ProcessEnv;
+/** The minimal environment a scanner needs since 00009-08 v2 (owner question Q25): ONE base URL.
+ *  Project B has no database, so there is no connection string here — and setting one would make
+ *  the process refuse to start (`shielded-monitor/no-database.ts`). */
+const MINIMAL = { STORAGE_URL: "http://storage-api:8788" } as NodeJS.ProcessEnv;
 
 describe("scanner configuration", () => {
   it("defaults are exactly what the documentation says", () => {
     const config = readScannerConfig(MINIMAL);
     expect(config).toMatchObject({
       net: "undeployed",
-      archiveSchema: "chain_archive",
-      monitorSchema: "shielded_monitor",
+      storageUrl: "http://storage-api:8788",
+      // `ARCHIVE_URL` defaults to the storage API: one process serves both route families.
+      archiveUrl: "http://storage-api:8788",
       batchBlocks: 1,
       concurrency: 4,
       pollMs: 2000,
@@ -37,9 +41,16 @@ describe("scanner configuration", () => {
     }
   });
 
-  it("a missing connection string is refused with the documentation attached", () => {
-    expect(() => readScannerConfig({})).toThrow(/MONITOR_PG is required/);
-    expect(() => readScannerConfig({ MONITOR_PG: "   " })).toThrow(/MONITOR_PG is required/);
+  it("a missing storage URL is refused with the documentation attached", () => {
+    expect(() => readScannerConfig({})).toThrow(/STORAGE_URL is required/);
+    expect(() => readScannerConfig({ STORAGE_URL: "   " })).toThrow(/STORAGE_URL is required/);
+  });
+
+  it("a database credential in the environment is refused, naming the variable", () => {
+    // The leftover this catches is not cosmetic: it is a live credential in the environment of a
+    // process whose whole reason for existing is that it has none (owner question Q25).
+    expect(() => readScannerConfig({ ...MINIMAL, MONITOR_PG: "postgres://u:p@h:5432/db" }))
+      .toThrow(/database configuration in its environment[\s\S]*MONITOR_PG/);
   });
 
   it.each([
@@ -68,12 +79,12 @@ describe("scanner configuration", () => {
 
   it("every setting can be overridden", () => {
     const config = readScannerConfig({
-      ...MINIMAL, NET: "preview", ARCHIVE_SCHEMA: "arc", MONITOR_SCHEMA: "mon",
+      ...MINIMAL, NET: "preview", ARCHIVE_URL: "http://archive-read-api:8790",
       SCAN_BATCH_BLOCKS: "8", SCAN_CONCURRENCY: "2", SCAN_POLL_MS: "500", MAX_MONITORS: "7",
       SCAN_MAX_BATCHES: "3", SCAN_METRICS_LOG_S: "5", SCAN_ONCE: "1",
     });
     expect(config).toMatchObject({
-      net: "preview", archiveSchema: "arc", monitorSchema: "mon", batchBlocks: 8,
+      net: "preview", archiveUrl: "http://archive-read-api:8790", batchBlocks: 8,
       concurrency: 2, pollMs: 500, maxMonitors: 7, maxBatchesPerMonitorPerCycle: 3,
       metricsLogSeconds: 5, once: true,
     });
