@@ -115,7 +115,7 @@ console.log(`[archive-sync] replay validation ${REPLAY_VALIDATION ? "ON" : "off"
   (REPLAY_VALIDATION ? ` (ledger network ${LEDGER_NETWORK_ID}, checkpoint every ${REPLAY_CHECKPOINT_INTERVAL})` : ""));
 
 const sql = createClient({ connectionString: CONN, schema: SCHEMA });
-await bootstrapChainArchiveSchema(sql, SCHEMA);
+await bootstrapChainArchiveSchema(sql, SCHEMA, { net: NET });
 const service = new ChainArchiveSyncService({
   sql,
   net: NET,

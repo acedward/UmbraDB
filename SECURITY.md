@@ -143,6 +143,111 @@ If neither mitigation is in place, secret-bearing wallet state is stored in the 
 CWE-312 (cleartext storage of sensitive information) and is an **accepted, documented** property of
 the 1.0.0 library — the obligation to close it sits with the deployer.
 
+## Shielded monitors (`shielded_monitor` schema) — alpha trust model
+
+The `shielded_monitor` schema, added by the 00009-02 change
+(`openspec/changes/00009-02-monitor-store/`), registers Midnight **shielded viewing keys** so a
+scanner can find the finalized transactions relevant to them. Its trust model is deliberately
+narrower than the rest of this document's, and the narrowness is an owner decision of 2026-09-10
+(User Story 4 of the feature specification deferred), not an implementation gap.
+
+**What is stored, and who can read it.**
+
+- `shielded_monitor.monitors.key_serialized` holds the **plaintext serialized encryption secret
+  key** exactly as its owner submitted it. There is no envelope encryption, no key-encryption key
+  and no rotation. Anyone who can read this schema — or **any backup, replica or dump of it** —
+  can read every registered viewing key, and with it decrypt those wallets' shielded transaction
+  history. Treat a backup of this schema as key material (see
+  `docs/shielded-monitor-restore.md` §2).
+- `shielded_monitor.associations` holds the wallet↔transaction association tuples in plaintext
+  columns: network, block height and hash, position, transaction hash, protocol version and the
+  matched segment ids. Anyone with read access learns **which transactions are relevant to which
+  registered key** — the exact linkage the shielded protocol otherwise hides.
+- `shielded_monitor.monitors.fingerprint` is an **unkeyed** SHA-256 over a domain string, the
+  network id and the serialized key. Someone holding a candidate key can confirm whether it is
+  registered by recomputing it. (With the key itself stored in plaintext beside it, this is the
+  lesser exposure — but it is the reason keyed fingerprints are on the list below.)
+
+**What the alpha does enforce.**
+
+- Viewing keys are accepted only in a request body / from a file, never from a command line
+  (`shielded-monitor/harness-cli.ts` reads `--key-file`, never `argv`), so a key does not land in
+  shell history or a `ps` listing.
+- The in-memory key type redacts itself under every stringification path — `toString`,
+  `JSON.stringify`, template interpolation and `util.inspect` — and exposes its bytes only through
+  one explicitly-named accessor. A test with a positive control asserts no path leaks the payload
+  (`test/shielded-monitor/viewing-key.test.ts`).
+- Every key-intake failure returns one generic, identically-worded error, so a caller cannot use
+  the error to distinguish a bad checksum from a wrong network from a bad payload.
+- Project B writes **only** its own schema and never an archive table; this is proved at runtime by
+  running the whole flow under a PostgreSQL role holding only `USAGE`/`SELECT` on `chain_archive`
+  (`test/shielded-monitor/schema-isolation.integration.test.ts`).
+
+**The scanner process (`umbradb-shielded-monitor`, 00009-03).**
+
+Added by the 00009-03 change (`openspec/changes/00009-03-relevance-scanner/`), it is the only
+process that holds a decoded viewing key in memory, and the only one that writes associations.
+
+- **Key lifetime is one batch.** A monitor's key is deserialized into the ledger WASM heap for the
+  batch that needs it and `clear()`ed in a `finally`, on the throwing path as well as the happy
+  one; two monitors never share a handle, and a page containing no regular transaction loads no
+  key at all. Asserted directly (`test/shielded-monitor/scanner.test.ts`), because "cleared in a
+  `finally`" is the kind of claim that rots silently.
+- **No monitor id reaches a log line or a metric label.** Metric labels are a closed union the
+  type system will not let a monitor id into, and the scheduler prints the failure class plus the
+  stable error code rather than the error's own message, which carried the id. A log naming which
+  monitor matched and when is a per-wallet signal to anyone who can read the log — the same
+  linkage `associations` exposes, arriving by a different route.
+- It reaches the archive **only** through `ArchiveReadContract`, an object whose whole surface is
+  two read methods, and its write set is audited at runtime against `shielded_monitor.*`
+  (`test/integration/crash/shielded-monitor-batch-atomicity.crash.test.ts`).
+
+**The private API (`umbradb-shielded-monitor-api`, 00009-04) is unauthenticated by design.**
+
+Added by the 00009-04 change (`openspec/changes/00009-04-private-api-cli/`), it serves the
+monitors above over HTTP/JSON with **no authentication, no authorization, no tenant scoping, no
+rate limiting and no quotas** (owner decision, 2026-09-10). Its only admission controls are a
+request-body size cap and a page-size cap.
+
+- **Anyone who can open a TCP connection to its port can register a viewing key, read every
+  monitor's matches, and revoke or delete any monitor.** It binds `127.0.0.1` by default, and a
+  deployment that binds anything else **must** restrict network access by other means. It speaks
+  plain HTTP; terminating TLS is the deployment's job.
+- The cursor is opaque but **unsigned** — a caller can forge one. With no authentication this
+  grants nothing extra: a forged cursor can only reposition a caller inside a monitor it can
+  already read in full. Signing is on the deferred list below.
+- What the API does enforce: a viewing key is accepted **only** in the body of
+  `POST /v1/monitors` and is never returned; request logging never sees a body, logs the matched
+  route pattern rather than the raw URL, and logs no error message at all on the create route; an
+  unmapped internal error never forwards its message to the client (a driver message can quote a
+  bound parameter, and on that route a bound parameter is a key). A test with a positive control
+  scans every captured log record and error body for the key in three encodings
+  (`test/shielded-monitor/api.integration.test.ts`).
+- **It reads the archive, read-only, to report `sourceTip`** (00009-05). On a deployment where
+  the archive shares the database, the API process constructs a `PgArchiveReadContract` — two
+  `SELECT`s, no schema name of its own, no write method in reach — so a consumer can tell
+  "scanned and empty" from "not scanned yet" (FR-020). The database role the API runs as
+  therefore needs `USAGE`/`SELECT` on the archive schema and nothing more; `SOURCE_TIP=off`
+  removes the need entirely, at the cost of reporting `sourceTip: null` forever.
+
+**Deferred hardening — required before any multi-tenant or hosted deployment.**
+
+| Deferred control | Consequence of its absence today |
+|---|---|
+| At-rest encryption of `key_serialized` (AEAD under a key-encryption key) | Keys readable from the database, backups, replicas and dumps |
+| Key-encryption-key rotation and fail-closed boot on missing key material | No way to re-key; nothing refuses to start when key material is absent |
+| Keyed (HMAC) fingerprints | A guessed key can be confirmed by recomputing its fingerprint |
+| Encrypted association content | The wallet↔transaction linkage is readable by anyone with database access |
+| Tenant isolation and non-oracular cross-tenant behaviour | There is no tenant concept; one consumer credential, one trust domain |
+| Authentication on the private API, and signed cursors | Anyone who can reach the port is fully authorized; a cursor can be forged |
+| Least-privilege database roles as a shipped script | The privilege split exists only as a test instrument, not as a deployment artefact |
+| The full redaction/leakage gate over logs, metrics and database dumps | Only the key-not-logged property is asserted today |
+
+**Deployment requirement.** Until the table above is closed, run this schema only in a
+single-tenant, operator-trusted deployment on an encrypted substrate, with the private API bound
+to localhost and network access restricted, and with every backup encrypted and access-controlled
+as key material.
+
 ## Commit policy — what may and may not go into git
 
 - **No key, seed, password, or credential with ANY value may EVER be committed to this repository** —
