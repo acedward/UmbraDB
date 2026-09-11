@@ -8,7 +8,12 @@
     "outDir": "dist-cli",
     "rootDir": "."
   },
-  "include": ["chain-archive-sync/**/*.ts", "shielded-monitor/**/*.ts", "src/**/*.ts"],
+  "include": [
+    "archive-read-api/**/*.ts",
+    "chain-archive-sync/**/*.ts",
+    "shielded-monitor/**/*.ts",
+    "src/**/*.ts"
+  ],
   "exclude": [
     "node_modules",
     "dist",

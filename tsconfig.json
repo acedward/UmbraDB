@@ -14,6 +14,7 @@
     "src/**/*.ts",
     "test/**/*.ts",
     "chain-archive-sync/**/*.ts",
+    "archive-read-api/**/*.ts",
     "shielded-monitor/**/*.ts",
     "bench/**/*.ts"
   ]
