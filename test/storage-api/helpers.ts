@@ -45,12 +45,18 @@ export async function startStorageApi(
   options: {
     config?: Partial<StorageApiConfig>;
     archive?: StartedArchiveOptions;
+    /** Collects the server's own access-log records, so a suite can assert what does and does not
+     *  reach a log (organizer spec FR-023: never a viewing key). */
+    onLog?: (line: string) => void;
   } = {},
 ): Promise<StartedStorageApi> {
   const config = storageConfig(options.config);
   const api = createStorageApi({
     config,
     store,
+    ...(options.onLog === undefined
+      ? {}
+      : { logger: { log: (record) => options.onLog!(JSON.stringify(record)) } }),
     ...(options.archive === undefined
       ? {}
       : {

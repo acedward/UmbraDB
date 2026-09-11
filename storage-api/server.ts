@@ -115,9 +115,15 @@ export interface StorageApi {
   readonly server: Server;
 }
 
-/** Reads a bounded request body. A body over the cap is refused with 413 **and the connection is
- *  not drained**: continuing to read a body you have already refused is how a size cap becomes a
- *  way to make the server read an unbounded amount anyway. */
+/**
+ * Reads a bounded request body.
+ *
+ * A body over the cap is refused with 413 and the stream is **paused, not drained**: continuing
+ * to read a body you have already refused is how a size cap becomes a way to make the server read
+ * an unbounded amount anyway. Pausing applies TCP backpressure instead, so a sender stalls rather
+ * than being served. The socket is closed once the 413 has been written (see `sendError`) —
+ * destroying it before that would truncate the very response that explains the refusal.
+ */
 async function readBody(req: IncomingMessage, maxBytes: number): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -125,8 +131,8 @@ async function readBody(req: IncomingMessage, maxBytes: number): Promise<string>
     req.on("data", (chunk: Buffer) => {
       total += chunk.length;
       if (total > maxBytes) {
+        req.pause();
         reject(new HttpError(413, "PAYLOAD_TOO_LARGE", `request body exceeds ${maxBytes} bytes`));
-        req.destroy();
         return;
       }
       chunks.push(chunk);
@@ -303,11 +309,16 @@ export function createStorageApi(options: StorageApiOptions): StorageApi {
           ...(http.detail === undefined ? {} : { detail: http.detail }),
         },
       });
+      // A refused body is still unread, so the connection cannot be reused: `connection: close`
+      // tells the client, and the socket is destroyed only AFTER the response has flushed.
+      const refusedBody = http.wireCode === "PAYLOAD_TOO_LARGE";
       res.writeHead(http.status, {
         "content-type": "application/json; charset=utf-8",
         "content-length": Buffer.byteLength(payload),
         "cache-control": "no-store",
+        ...(refusedBody ? { connection: "close" } : {}),
       });
+      if (refusedBody) res.on("finish", () => req.destroy());
       res.end(payload);
       finish(http.status, { code: http.wireCode, message: http.message });
     }
