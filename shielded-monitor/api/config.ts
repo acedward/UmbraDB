@@ -1,6 +1,5 @@
-import { DEFAULT_ARCHIVE_SCHEMA } from "../../src/postgres/archive-conventions.js";
-import { normalizeArchiveBaseUrl } from "../archive-http-client.js";
-import { DEFAULT_SHIELDED_MONITOR_SCHEMA } from "../../storage-api/bootstrap.js";
+import { assertNoDatabaseEnvironment } from "../no-database.js";
+import { normalizeStorageBaseUrl } from "../storage-http-client.js";
 import { MAX_ASSOCIATION_PAGE } from "../store.js";
 
 /**
@@ -36,15 +35,14 @@ export interface ApiConfig {
   /** The single network this deployment serves (spec assumption: one network per deployment).
    *  Key intake validates a submitted key's HRP against it. */
   readonly net: string;
-  readonly schema: string;
   /**
-   * `ARCHIVE_URL` — the base URL of an `umbradb-archive-read-api` (00009-08). Set means the API
-   * reports `sourceTip` by asking that process, and holds no credential for A's database.
+   * `STORAGE_URL` — the base URL of the `umbradb-storage-api` that owns the main database
+   * (00009-08 v2, owner question Q25). Every monitor, association and lifecycle read this API
+   * serves goes through it; this process has no database connection.
    */
-  readonly archiveUrl?: string;
-  /** Single-host mode only: the archive schema in the SAME database, read through the read
-   *  contract to report `sourceTip`. Ignored when {@link archiveUrl} is set. */
-  readonly archiveSchema: string;
+  readonly storageUrl: string;
+  /** Where `/v1/archive/*` is served, for `sourceTip`. Defaults to {@link storageUrl}. */
+  readonly archiveUrl: string;
   /** `SOURCE_TIP=off`: report `sourceTip: null`, for an API deployed with no archive access at
    *  all. The honest answer for that deployment, and never a substitute for a real tip. */
   readonly sourceTipDisabled: boolean;
@@ -81,6 +79,7 @@ function readInt(env: NodeJS.ProcessEnv, name: string, fallback: number, min: nu
  * between one clear error and a class of confusing ones.
  */
 export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
+  assertNoDatabaseEnvironment(env, "umbradb-shielded-monitor-api");
   const maxPage = readInt(env, "API_MAX_PAGE", DEFAULT_MAX_PAGE, 1, MAX_ASSOCIATION_PAGE);
   const defaultPage = readInt(env, "API_DEFAULT_PAGE", Math.min(DEFAULT_PAGE, maxPage), 1, maxPage);
   const net = env.SHIELDED_MONITOR_NET?.trim() ?? "undeployed";
@@ -90,7 +89,7 @@ export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const host = env.API_HOST?.trim() ?? DEFAULT_API_HOST;
   if (host === "") throw new ApiConfigError("API_HOST", "must not be empty");
   return {
-    ...readArchiveAccess(env),
+    ...readStorageAccess(env),
     host,
     // Port 0 is legitimate and useful — it asks the kernel for a free port, which is exactly what
     // a test wants on a shared host — so the range starts at 0, not 1.
@@ -99,43 +98,42 @@ export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     maxPage,
     defaultPage,
     net,
-    schema: env.SHIELDED_MONITOR_SCHEMA?.trim() ?? DEFAULT_SHIELDED_MONITOR_SCHEMA,
   };
 }
 
 /**
- * How this API process reaches the archive in order to report `sourceTip` — and the one
- * configuration it refuses (00009-08).
+ * How this API process reaches its storage (00009-08 v2).
  *
- * `ARCHIVE_URL` and the archive DATABASE settings describe two different deployments. Accepting
- * both and silently preferring one would leave the other in the environment as a false
- * description of the process — and in the `ARCHIVE_PG` case, as a live credential for A's
- * database inside a container whose entire reason for existing is that it has none. So the
- * process names both variables and refuses to start.
+ * `STORAGE_URL` is required, because without it the process has no way to read a monitor at all
+ * — there is no database to fall back to. `ARCHIVE_URL` is an optional override for `sourceTip`,
+ * and `SOURCE_TIP=off` is the honest answer for a deployment whose storage API serves no archive
+ * routes: `sourceTip: null`, never a placeholder a consumer could read as "caught up" (Q14).
  */
-function readArchiveAccess(env: NodeJS.ProcessEnv): {
-  archiveUrl?: string; archiveSchema: string; sourceTipDisabled: boolean;
+function readStorageAccess(env: NodeJS.ProcessEnv): {
+  storageUrl: string; archiveUrl: string; sourceTipDisabled: boolean;
 } {
   const sourceTipDisabled = env.SOURCE_TIP?.trim().toLowerCase() === "off";
-  const archiveSchema = env.ARCHIVE_SCHEMA?.trim() || DEFAULT_ARCHIVE_SCHEMA;
-  const raw = env.ARCHIVE_URL?.trim();
-  if (raw === undefined || raw === "") return { archiveSchema, sourceTipDisabled };
-
-  const conflicting = (["ARCHIVE_SCHEMA", "ARCHIVE_PG"] as const).filter(
-    (name) => env[name] !== undefined && env[name]!.trim() !== "",
-  );
-  if (conflicting.length > 0) {
+  const raw = env.STORAGE_URL?.trim();
+  if (raw === undefined || raw === "") {
     throw new ApiConfigError(
-      "ARCHIVE_URL",
-      `it is set (${raw}) and so ${conflicting.length === 1 ? "is" : "are"} ${conflicting.join(", ")}. ` +
-        "ARCHIVE_URL says the archive is another process reached over HTTP; the database settings " +
-        "say it is a schema in this process's own database. Refusing to start rather than picking " +
-        "one and leaving the other as a false description of the deployment.",
+      "STORAGE_URL",
+      "it is required: project B has no database, and this process reads and writes every monitor " +
+        "record through the umbradb-storage-api at this base URL.",
     );
   }
+  const storageUrl = normalize("STORAGE_URL", raw);
+  const archiveRaw = env.ARCHIVE_URL?.trim();
+  return {
+    storageUrl,
+    archiveUrl: archiveRaw === undefined || archiveRaw === "" ? storageUrl : normalize("ARCHIVE_URL", archiveRaw),
+    sourceTipDisabled,
+  };
+}
+
+function normalize(variable: string, raw: string): string {
   try {
-    return { archiveUrl: normalizeArchiveBaseUrl(raw), archiveSchema, sourceTipDisabled };
+    return normalizeStorageBaseUrl(raw);
   } catch (err) {
-    throw new ApiConfigError("ARCHIVE_URL", err instanceof Error ? err.message : String(err));
+    throw new ApiConfigError(variable, err instanceof Error ? err.message : String(err));
   }
 }

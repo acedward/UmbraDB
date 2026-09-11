@@ -10,7 +10,7 @@
 
 Phase 2 (`00009-02`, PR #10) delivered project **B**'s storage core: a `shielded_monitor` schema,
 validated viewing-key intake, a fenced lifecycle, and `PgShieldedMonitorStore`. It is driven today
-only by a **trusted, in-process harness** (`shielded-monitor/harness-cli.ts`) that speaks directly
+only by a **trusted, in-process harness** (`storage-api/harness-cli.ts`) that speaks directly
 to PostgreSQL with operator credentials.
 
 That is not a consumer surface. The proposal's step 2 acceptance is that **one application

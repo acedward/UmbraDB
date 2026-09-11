@@ -1,10 +1,14 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { createClient } from "../src/postgres/client.js";
-import { DEFAULT_SHIELDED_MONITOR_SCHEMA, bootstrapShieldedMonitorSchema } from "../storage-api/bootstrap.js";
-import { applyRevocationList, exportRevocationList, type RevocationListFile } from "./revocation-list.js";
-import { type AssociationInput } from "./store.js";
-import { PgShieldedMonitorStore } from "../storage-api/monitor-store-pg.js";
-import { LEDGER_BUILD_ID, parseViewingKey } from "./viewing-key.js";
+import { DEFAULT_SHIELDED_MONITOR_SCHEMA, bootstrapShieldedMonitorSchema } from "./bootstrap.js";
+import {
+  applyRevocationList,
+  exportRevocationList,
+  type RevocationListFile,
+} from "../shielded-monitor/revocation-list.js";
+import { type AssociationInput } from "../shielded-monitor/store.js";
+import { PgShieldedMonitorStore } from "./monitor-store-pg.js";
+import { LEDGER_BUILD_ID, parseViewingKey } from "../shielded-monitor/viewing-key.js";
 
 /**
  * The **trusted harness** for project B's store (organizer sub-plan 00009-02's exit criterion:
@@ -29,6 +33,13 @@ import { LEDGER_BUILD_ID, parseViewingKey } from "./viewing-key.js";
  * deployment actually runs (`umbradb-shielded-monitor`, `…-api`, `…-client`). This harness is
  * reachable through the `shielded-monitor:harness` npm script instead, so it stays a development
  * and operations tool rather than something a consumer installs by accident.
+ *
+ * ── Why it lives under `storage-api/` since 00009-08 v2 ─────────────────────────────────────
+ * It talks to the database directly — it has a `bootstrap` command, which is a migration run —
+ * and under owner decision Q25 project B has no database connection at all. A tool holding a DSN
+ * is therefore an A-side tool, and keeping it in `shielded-monitor/` would have left exactly the
+ * `postgres` import the import-boundary guard now forbids there. Nothing about its behaviour
+ * changed; it is the same commands against the same store.
  */
 
 interface ParsedArgs {

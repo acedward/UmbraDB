@@ -171,7 +171,7 @@ narrower than the rest of this document's, and the narrowness is an owner decisi
 **What the alpha does enforce.**
 
 - Viewing keys are accepted only in a request body / from a file, never from a command line
-  (`shielded-monitor/harness-cli.ts` reads `--key-file`, never `argv`), so a key does not land in
+  (`storage-api/harness-cli.ts` reads `--key-file`, never `argv`), so a key does not land in
   shell history or a `ps` listing.
 - The in-memory key type redacts itself under every stringification path — `toString`,
   `JSON.stringify`, template interpolation and `util.inspect` — and exposes its bytes only through

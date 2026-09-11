@@ -136,7 +136,7 @@ constant, mixed-case rejection, 512-character bound.
 
 ## 9. Trusted harness
 
-`shielded-monitor/harness-cli.ts` plus the `shielded-monitor:harness` npm script.
+`storage-api/harness-cli.ts` plus the `shielded-monitor:harness` npm script.
 
 **Acceptance criteria**
 

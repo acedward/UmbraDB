@@ -15,22 +15,24 @@
  * FR-025, enforced by `test/shielded-monitor/schema-isolation.integration.test.ts`).
  */
 import { randomUUID } from "node:crypto";
-import { DEFAULT_ARCHIVE_SCHEMA } from "../src/postgres/archive-conventions.js";
-import { normalizeArchiveBaseUrl } from "./archive-http-client.js";
+import { assertNoDatabaseEnvironment } from "./no-database.js";
+import { normalizeStorageBaseUrl } from "./storage-http-client.js";
 
 export interface ScannerEnvConfig {
-  /** Postgres connection string. Both schemas live in one database in the alpha; project B
-   *  still only WRITES its own (Rule B), which the isolation test proves with a restricted role. */
-  readonly connectionString: string;
+  /**
+   * `STORAGE_URL` — the base URL of the `umbradb-storage-api` that owns the main database
+   * (00009-08 v2, owner question Q25). This is project B's ENTIRE egress surface and its entire
+   * persistence surface: monitors, associations, coverage, lifecycle and leases all travel over
+   * it, and this process holds no database credential of any kind.
+   */
+  readonly storageUrl: string;
   readonly net: string;
   /**
-   * `ARCHIVE_URL` — the base URL of an `umbradb-archive-read-api`. Set means the SPLIT topology:
-   * the archive is reached over HTTP, this process holds no credential for A's database, and
-   * {@link archiveSchema} is not used at all (00009-08).
+   * Where `/v1/archive/*` is served. Defaults to {@link storageUrl}, because
+   * `umbradb-storage-api` serves both route families on one port; a deployment running the
+   * standalone `umbradb-archive-read-api` on its own port sets `ARCHIVE_URL`.
    */
-  readonly archiveUrl?: string;
-  readonly archiveSchema: string;
-  readonly monitorSchema: string;
+  readonly archiveUrl: string;
   readonly batchBlocks: number;
   readonly concurrency: number;
   readonly pollMs: number;
@@ -73,17 +75,14 @@ export interface ScannerEnvConfig {
 export const SCANNER_ENV_DOC = `
 Environment (umbradb-shielded-monitor):
 
-  MONITOR_PG            Postgres connection string for project B's OWN database (REQUIRED).
+  STORAGE_URL           base URL of the umbradb-storage-api that owns the main database
+                        (REQUIRED), e.g. http://storage-api:8788. The scanner reads the archive
+                        AND persists every monitor record through it. This process has no
+                        database connection: it refuses to start if any *_PG variable, or an
+                        ARCHIVE_SCHEMA/MONITOR_SCHEMA, is present in its environment.
+  ARCHIVE_URL           optional: serve /v1/archive/* from a different base URL (a standalone
+                        umbradb-archive-read-api). Defaults to STORAGE_URL.
   NET                   network id / row scope, e.g. "undeployed" (default "undeployed").
-  ARCHIVE_URL           base URL of an umbradb-archive-read-api, e.g.
-                        http://archive-read-api:8790. SET IT for a split deployment: the
-                        scanner then reaches the archive only over HTTP, needs no credential
-                        for A's database, and ARCHIVE_SCHEMA/ARCHIVE_PG must NOT be set.
-  ARCHIVE_SCHEMA        single-host mode only: schema the archive was ingested into in the SAME
-                        database as MONITOR_PG (default "${DEFAULT_ARCHIVE_SCHEMA}").
-                        Read-only: the scanner reaches it ONLY through the archive read
-                        contract, and never writes to it (owner Rule B).
-  MONITOR_SCHEMA        schema project B owns and writes (default "shielded_monitor").
   SCAN_BATCH_BLOCKS     whole blocks per batch, and therefore per commit (default 1).
   SCAN_CONCURRENCY      monitors scanned in parallel (default 4).
   SCAN_POLL_MS          fallback wake-up interval when no NOTIFY arrives (default 2000).
@@ -99,10 +98,10 @@ Environment (umbradb-shielded-monitor):
   SCAN_BACKFILL_ROWS    associations filled per transaction during that backfill (default 100).
   SCAN_INSTANCE_ID      this instance's lease owner name (default: a random UUID per process).
   SCAN_LEASE_TTL_MS     how long a monitor lease survives without renewal (default 30000).
-                        Several scanner instances may run against one B database: each claims a
+                        Several scanner instances may run against one storage API: each claims a
                         monitor before scanning it and renews the claim inside the same
-                        transaction as the coverage advance. Leases only avoid duplicated work —
-                        epoch fencing is what makes concurrency SAFE.
+                        server-side transaction as the coverage advance. Leases only avoid
+                        duplicated work — epoch fencing is what makes concurrency SAFE.
 `.trim();
 
 class ScannerConfigError extends Error {}
@@ -155,13 +154,15 @@ export function readScannerConfig(
   argv: readonly string[] = process.argv,
 ): ScannerEnvConfig {
   const budget = optionalPositiveNumber(env, "SCAN_BUDGET_TX_PER_S");
-  const archiveUrl = readArchiveUrl(env);
+  // Before anything else: a database credential in this process's environment is a refusal, not
+  // a warning (see `no-database.ts`).
+  assertNoDatabaseEnvironment(env, "umbradb-shielded-monitor");
+  const storageUrl = readBaseUrl(env, "STORAGE_URL", requireString(env, "STORAGE_URL"));
+  const archiveUrl = env.ARCHIVE_URL?.trim();
   return {
-    connectionString: requireString(env, "MONITOR_PG"),
+    storageUrl,
     net: env.NET ?? "undeployed",
-    ...(archiveUrl === undefined ? {} : { archiveUrl }),
-    archiveSchema: env.ARCHIVE_SCHEMA ?? DEFAULT_ARCHIVE_SCHEMA,
-    monitorSchema: env.MONITOR_SCHEMA ?? "shielded_monitor",
+    archiveUrl: archiveUrl === undefined || archiveUrl === "" ? storageUrl : readBaseUrl(env, "ARCHIVE_URL", archiveUrl),
     batchBlocks: positiveInt(env, "SCAN_BATCH_BLOCKS", 1),
     concurrency: positiveInt(env, "SCAN_CONCURRENCY", 4),
     pollMs: positiveInt(env, "SCAN_POLL_MS", 2000),
@@ -179,43 +180,13 @@ export function readScannerConfig(
   };
 }
 
-/**
- * The archive DB settings that are meaningless — and dangerous — alongside `ARCHIVE_URL`.
- *
- * Dangerous because the failure they produce is silent. An operator migrating to a split
- * deployment who leaves `ARCHIVE_SCHEMA` in place would see a scanner that starts, connects,
- * reports healthy and reads the archive over HTTP — while the stale variable sits in the manifest
- * documenting a topology that is not in effect, and the next person to read it believes the
- * process has database access it does not have. Worse in the other direction: an `ARCHIVE_PG`
- * left behind is a CREDENTIAL for A's database in the environment of a container that is supposed
- * to have none, which is exactly the property the split topology exists to establish.
- *
- * So the process refuses to start and names the variables. There is no "it probably meant" here.
- */
-const ARCHIVE_DB_SETTINGS = ["ARCHIVE_SCHEMA", "ARCHIVE_PG"] as const;
-
-function readArchiveUrl(env: NodeJS.ProcessEnv): string | undefined {
-  const raw = env.ARCHIVE_URL?.trim();
-  if (raw === undefined || raw === "") return undefined;
-
-  const conflicting = ARCHIVE_DB_SETTINGS.filter(
-    (name) => env[name] !== undefined && env[name]!.trim() !== "",
-  );
-  if (conflicting.length > 0) {
-    throw new ScannerConfigError(
-      `ARCHIVE_URL is set (${raw}) and so ${conflicting.length === 1 ? "is" : "are"} ` +
-        `${conflicting.join(", ")}. These describe two different topologies: ARCHIVE_URL says the ` +
-        "archive is another process reached over HTTP, and the database settings say it is a " +
-        "schema in this process's own database. Refusing to start rather than picking one and " +
-        `leaving the other in the environment as a false description of the deployment.\n\n${SCANNER_ENV_DOC}`,
-    );
-  }
-
+/** Normalises a base URL, naming the variable when it is unusable. */
+function readBaseUrl(env: NodeJS.ProcessEnv, name: string, raw: string): string {
   try {
-    return normalizeArchiveBaseUrl(raw);
+    return normalizeStorageBaseUrl(raw.trim());
   } catch (err) {
     throw new ScannerConfigError(
-      `ARCHIVE_URL is not a usable base URL: ${err instanceof Error ? err.message : String(err)}`,
+      `${name} is not a usable base URL: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 }

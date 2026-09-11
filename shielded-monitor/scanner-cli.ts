@@ -6,36 +6,33 @@
  * (Phase 4), by requirement, not by convention: FR-026 says the scanner and the API run as their
  * own processes, and FR-025 keeps B's only dependency on A the read contract.
  *
- * ── Two topologies (00009-08) ───────────────────────────────────────────────────────────────
+ * ── One topology (00009-08 v2, owner question Q25) ──────────────────────────────────────────
  *
  * ```text
- *   SPLIT        MONITOR_PG -> B's own PostgreSQL  (shielded_monitor and nothing else)
- *                ARCHIVE_URL -> http://archive-read-api:8790
- *                No credential for A's database. No archive schema name. One egress URL.
- *                Several instances may run: each claims a monitor lease before working on it.
+ *   STORAGE_URL -> http://storage-api:8788
  *
- *   SINGLE-HOST  MONITOR_PG -> one PostgreSQL holding BOTH schemas
- *                ARCHIVE_SCHEMA -> chain_archive (read-only, through the read contract only)
- *                The mode this repository shipped before 00009-08, unchanged.
+ *   Everything this process reads and everything it writes travels over that one base URL:
+ *   the archive pages it scans (/v1/archive/*) and every monitor record it persists
+ *   (/v1/monitor-store/*). It has NO database connection, no driver, no schema name and no
+ *   credential — and it refuses to start if any *_PG variable is in its environment.
+ *
+ *   Several instances may run against one storage API: each claims a monitor lease before
+ *   working on it, and the renewal rides inside the same server-side transaction as the
+ *   coverage advance.
  * ```
  *
- * Setting `ARCHIVE_URL` together with `ARCHIVE_SCHEMA`/`ARCHIVE_PG` is REFUSED at startup: they
- * describe two different deployments, and leaving the loser in the environment documents a
- * topology that is not in effect (see `scanner-config.ts`).
+ * It writes to `shielded_monitor.*` and nothing else (owner Rule B) — through commands the
+ * storage API executes, each one exactly one transaction.
  *
- * It writes to `shielded_monitor.*` and nothing else (owner Rule B).
- *
- * Run:  MONITOR_PG=postgres://user:pass@host:5432/db npx tsx shielded-monitor/scanner-cli.ts
+ * Run:  STORAGE_URL=http://127.0.0.1:8788 npx tsx shielded-monitor/scanner-cli.ts
  */
 import { openArchiveSource } from "./archive-source.js";
-import { createClient } from "../src/postgres/client.js";
-import { bootstrapShieldedMonitorSchema } from "../storage-api/bootstrap.js";
 import { ShieldedMonitorDetailsBackfill } from "./details-backfill.js";
 import { readScannerConfig, SCANNER_ENV_DOC } from "./scanner-config.js";
 import { InMemoryScannerMetrics } from "./scanner-metrics.js";
 import { ShieldedMonitorScanner } from "./scanner.js";
 import { ShieldedMonitorScannerService } from "./scanner-service.js";
-import { PgShieldedMonitorStore } from "../storage-api/monitor-store-pg.js";
+import { HttpMonitorStore } from "./storage-http-client.js";
 
 /* eslint-disable no-console */
 
@@ -48,24 +45,11 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // B's OWN database. In the split topology this connection string names a PostgreSQL server
-  // that holds `shielded_monitor` and nothing else, and this process has no credential for A's.
-  const sql = createClient({
-    connectionString: config.connectionString,
-    schema: config.monitorSchema,
-    // One spare over the worker count: the workers, plus the connection a `LISTEN` subscription
-    // takes in the single-host topology.
-    maxConnections: config.concurrency + 2,
-  });
-  // Idempotent: applies zero migrations against an already-migrated schema. The scanner
-  // bootstraps ITS OWN schema only — it never runs the archive's lineage, which belongs to A.
-  await bootstrapShieldedMonitorSchema(sql, config.monitorSchema);
-
-  const store = new PgShieldedMonitorStore(sql, config.monitorSchema);
-  const source = await openArchiveSource({
-    ...(config.archiveUrl === undefined ? {} : { archiveUrl: config.archiveUrl }),
-    archiveSchema: config.archiveSchema,
-    sql,
+  // Project B's whole persistence surface. No pool, no migration, no schema: the storage API
+  // owns the database and runs each command as one transaction on this process's behalf.
+  const store = new HttpMonitorStore(config.storageUrl, { userAgent: "umbradb-shielded-monitor" });
+  const source = openArchiveSource({
+    archiveUrl: config.archiveUrl,
     logger: (line) => { console.error(line); },
   });
   const metrics = new InMemoryScannerMetrics();
@@ -93,9 +77,9 @@ async function main(): Promise<void> {
 
   console.error(
     `[shielded-monitor-scanner] net=${config.net} ${source.describe} ` +
-      `monitorSchema=${config.monitorSchema} batchBlocks=${config.batchBlocks} ` +
+      `storage=${store.baseUrl} batchBlocks=${config.batchBlocks} ` +
       `concurrency=${config.concurrency} pollMs=${config.pollMs} wake=${source.wake.describe} ` +
-      `instance=${config.instanceId} leaseTtlMs=${config.leaseTtlMs}`,
+      `instance=${config.instanceId} leaseTtlMs=${config.leaseTtlMs} database=none`,
   );
 
   if (config.backfillDetails) {
@@ -110,7 +94,6 @@ async function main(): Promise<void> {
     // No monitor id is printed: which wallet had how many matches is a per-wallet signal, and the
     // counts are what an operator acts on.
     console.error(`[shielded-monitor-scanner] details backfill: ${JSON.stringify(summary)}`);
-    await sql.end({ timeout: 5 });
     return;
   }
 
@@ -118,7 +101,6 @@ async function main(): Promise<void> {
     const summary = await service.runCycle();
     console.error(`[shielded-monitor-scanner] one cycle: ${JSON.stringify(summary)}`);
     logMetrics(metrics, config.net);
-    await sql.end({ timeout: 5 });
     return;
   }
 
@@ -139,7 +121,6 @@ async function main(): Promise<void> {
       // leaving another instance to wait out `SCAN_LEASE_TTL_MS`.
       await service.stop();
       logMetrics(metrics, config.net);
-      await sql.end({ timeout: 5 });
       process.exit(0);
     })();
   };

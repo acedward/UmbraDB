@@ -1,4 +1,3 @@
-import { ARCHIVE_PROGRESS_CHANNEL } from "../src/postgres/archive-conventions.js";
 import { ARCHIVE_READ_ROUTES, decodeProgressEvent } from "../src/interfaces/archive-read-wire.js";
 import { normalizeArchiveBaseUrl, type FetchLike } from "./archive-http-client.js";
 
@@ -13,12 +12,14 @@ import { normalizeArchiveBaseUrl, type FetchLike } from "./archive-http-client.j
  * carries; a wake means "look again", nothing more. That is what lets {@link NO_WAKE} be a
  * correct implementation.
  *
- * **Why it became a seam in 00009-08.** Until now the scheduler held B's own `UmbraDBSql` and
- * called `sql.listen(ARCHIVE_PROGRESS_CHANNEL)` on it. That works only while A and B share one
- * PostgreSQL server. In a SPLIT deployment B's database is a different server that nobody
- * notifies, so the `LISTEN` would attach successfully, never fire, and the tail would silently
- * degrade to polling with nothing in the logs to say so. The seam makes the choice explicit and
- * configuration-driven: shared database → {@link pgListenWake}; `ARCHIVE_URL` → {@link sseWake}.
+ * **Why it is a seam, and why only one implementation is left.** Until 00009-08 the scheduler
+ * held B's own `UmbraDBSql` and called `sql.listen("chain_archive_progress")` on it — which works
+ * only while A and B share one PostgreSQL server. Under the v2 topology (owner question Q25)
+ * project B has **no database connection at all**, so it cannot `LISTEN` to anything and the
+ * PostgreSQL wake source is gone from B entirely: the storage API republishes the archive's own
+ * `NOTIFY` as `GET /v1/archive/events`, and B subscribes to that with {@link sseWake}.
+ * {@link NO_WAKE} remains the honest choice for a process with no stream (`NO_WAKE` is what the
+ * private API uses: it answers requests and has no loop to wake).
  */
 
 export interface ArchiveWakeSubscription {
@@ -39,34 +40,6 @@ export const NO_WAKE: ArchiveWakeSource = {
   describe: "polling only",
   subscribe: async () => ({ close: async () => undefined }),
 };
-
-/** The minimal surface {@link pgListenWake} needs: B's own connection, used ONLY to `LISTEN`.
- *  Typed structurally so this module does not have to import the driver's client type. */
-export interface ListenCapable {
-  listen(channel: string, onNotify: (payload: string) => void): Promise<{ unlisten: () => Promise<unknown> }>;
-}
-
-/**
- * `LISTEN chain_archive_progress` on a connection to the database that also holds the archive.
- *
- * Valid ONLY when A and B share a PostgreSQL server — which is the single-host deployment mode,
- * and the mode this repository shipped before 00009-08. In a split deployment this would attach
- * to B's own database and never hear anything; the configuration refuses to build it there.
- */
-export function pgListenWake(sql: ListenCapable): ArchiveWakeSource {
-  return {
-    describe: `LISTEN ${ARCHIVE_PROGRESS_CHANNEL}`,
-    async subscribe(net, onWake) {
-      const handle = await sql.listen(ARCHIVE_PROGRESS_CHANNEL, (payload) => {
-        // The payload is `<net>:<height>`. Only the net is used — the height is advisory, and the
-        // scanner re-reads coverage from its own schema rather than trusting a message.
-        if (!payload.startsWith(`${net}:`)) return;
-        onWake();
-      });
-      return { close: async () => { await handle.unlisten().catch(() => undefined); } };
-    },
-  };
-}
 
 export interface SseWakeOptions {
   readonly fetch?: FetchLike;

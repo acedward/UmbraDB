@@ -1,8 +1,6 @@
 #!/usr/bin/env node
-import { createClient } from "../../src/postgres/client.js";
 import { openArchiveSource } from "../archive-source.js";
-import { bootstrapShieldedMonitorSchema } from "../../storage-api/bootstrap.js";
-import { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";
+import { HttpMonitorStore } from "../storage-http-client.js";
 import { loadApiConfig } from "./config.js";
 import { createShieldedMonitorApi, stderrLogger } from "./server.js";
 import { archiveSourceTip, unknownSourceTip } from "./source-tip.js";
@@ -10,18 +8,18 @@ import { archiveSourceTip, unknownSourceTip } from "./source-tip.js";
 /**
  * `umbradb-shielded-monitor-api` — the private API as a process (organizer spec FR-026).
  *
- * A separate process from the archive ingester and from the scanner, sharing only the database.
- * Everything is configured through the environment, so the process needs no argument parsing and
- * a container image needs no entrypoint script:
+ * A separate process from the archive ingester, the storage API and the scanner. Since 00009-08
+ * v2 (owner question Q25) it has **no database connection**: every monitor, association and
+ * lifecycle record it serves is read through `STORAGE_URL`, and it refuses to start if any `*_PG`
+ * variable is present in its environment. Several instances run behind
+ * `umbradb-shielded-monitor-balancer`; cursors are monitor-bound, so any instance serves any
+ * request.
  *
  * | variable | default | meaning |
  * |---|---|---|
- * | `SHIELDED_MONITOR_PG` | `PG*` environment | PostgreSQL connection string |
- * | `SHIELDED_MONITOR_SCHEMA` | `shielded_monitor` | schema project B owns |
+ * | `STORAGE_URL` | — (REQUIRED) | base URL of the `umbradb-storage-api` |
+ * | `ARCHIVE_URL` | `STORAGE_URL` | where `/v1/archive/*` is served, for `sourceTip` |
  * | `SHIELDED_MONITOR_NET` | `undeployed` | the one network this deployment serves |
- * | `SHIELDED_MONITOR_BOOTSTRAP` | unset | `1` applies the migration lineage at boot |
- * | `ARCHIVE_URL` | unset | base URL of an `umbradb-archive-read-api` — SPLIT topology (00009-08) |
- * | `ARCHIVE_SCHEMA` | `chain_archive` | single-host only: the archive schema whose tip is `sourceTip` |
  * | `SOURCE_TIP` | unset | `off` reports `sourceTip: null` (an API with no archive access) |
  * | `API_HOST` | `127.0.0.1` | bind address |
  * | `API_PORT` | `8787` | bind port (`0` asks the kernel for a free one) |
@@ -35,18 +33,10 @@ import { archiveSourceTip, unknownSourceTip } from "./source-tip.js";
  */
 export async function runApiServer(env: NodeJS.ProcessEnv = process.env): Promise<() => Promise<void>> {
   const config = loadApiConfig(env);
-  const connectionString = env.SHIELDED_MONITOR_PG;
-  // Project B's OWN database. In the split topology it holds `shielded_monitor` and nothing else.
-  const sql = createClient({
-    ...(connectionString !== undefined ? { connectionString } : {}),
-    schema: config.schema,
+  // Project B's whole persistence surface: one base URL, no pool, no migration, no schema.
+  const store = new HttpMonitorStore(config.storageUrl, {
+    userAgent: "umbradb-shielded-monitor-api",
   });
-
-  // Opt-in rather than automatic: a service that silently migrates on boot is a service that can
-  // migrate a production database because someone started it with the wrong connection string.
-  if (env.SHIELDED_MONITOR_BOOTSTRAP === "1") {
-    await bootstrapShieldedMonitorSchema(sql, config.schema);
-  }
 
   // `sourceTip` (FR-011/FR-020): report the archive's real tip when this deployment can see the
   // archive, and `null` when it cannot. Opt-OUT rather than opt-in, because a permanent
@@ -60,17 +50,10 @@ export async function runApiServer(env: NodeJS.ProcessEnv = process.env): Promis
   // `wake: false`: the API answers requests, it has no loop to wake up.
   const sourceTipProvider = config.sourceTipDisabled
     ? unknownSourceTip()
-    : archiveSourceTip(
-        (await openArchiveSource({
-          ...(config.archiveUrl === undefined ? {} : { archiveUrl: config.archiveUrl }),
-          archiveSchema: config.archiveSchema,
-          sql,
-          wake: false,
-        })).archive,
-      );
+    : archiveSourceTip(openArchiveSource({ archiveUrl: config.archiveUrl, wake: false }).archive);
 
   const api = createShieldedMonitorApi({
-    store: new PgShieldedMonitorStore(sql, config.schema),
+    store,
     config,
     sourceTipProvider,
     logger: stderrLogger(),
@@ -83,14 +66,14 @@ export async function runApiServer(env: NodeJS.ProcessEnv = process.env): Promis
       host: address.host,
       port: address.port,
       net: config.net,
-      schema: config.schema,
+      storage: config.storageUrl,
+      database: "none (owner decision Q25) — all state is reached through STORAGE_URL",
       authentication: "none (owner decision Q3) — restrict network access at the deployment",
     })}\n`,
   );
 
   return async () => {
     await api.close();
-    await sql.end({ timeout: 5 });
   };
 }
 

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { runHarness } from "../../shielded-monitor/harness-cli.js";
+import { runHarness } from "../../storage-api/harness-cli.js";
 import { fixtureViewingKeyEncoded } from "./helpers.js";
 
 /**
@@ -209,7 +209,7 @@ describe("trusted harness (no scanner, no API)", () => {
   it("STRUCTURAL: the harness imports no scanner and no server", async () => {
     const { fileURLToPath } = await import("node:url");
     const source = readFileSync(
-      fileURLToPath(new URL("../../shielded-monitor/harness-cli.ts", import.meta.url)),
+      fileURLToPath(new URL("../../storage-api/harness-cli.ts", import.meta.url)),
       "utf8",
     );
     const imports = [...source.matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1]!);
