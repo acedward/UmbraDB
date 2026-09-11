@@ -15,6 +15,42 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
   continuity, sparse ledger replay checkpoints, and per-block comparison with the chain-committed
   `midnight_ledgerStateRoot`.
 - Packaged `umbradb-archive-sync` CLI and digest-pinned Docker parity/live-service gates.
+- **Shielded monitor store (`shielded_monitor` schema, project B core).** A new, **additive**
+  migration lineage — `src/postgres/migrations/shielded_monitor/{000_schema,001_core}` applied
+  through `bootstrapShieldedMonitorSchema()` — creating `monitors`, `associations`,
+  `lifecycle_events` and `audit_events` in a schema of its own. Nothing existing changes: no
+  current migration, table, interface or exported symbol is touched, and a deployment that never
+  calls the bootstrap is unaffected.
+  Alongside it, a new top-level `shielded-monitor/` module (outside `src/`, like
+  `chain-archive-sync/`, with a committed guard test enforcing that nothing under `src/` imports
+  it): BIP-350 Bech32m intake for Midnight shielded viewing keys with the network-bound HRP rule
+  and ledger-v8 validation, a domain-separated SHA-256 registration fingerprint, a total lifecycle
+  state machine with a monotone epoch, an epoch-fenced `advance()` that commits a block range's
+  associations and its coverage advance in one transaction, a revocation-list export/apply pair
+  for restores, and a trusted operator harness (`npm run shielded-monitor:harness`).
+  Documented in `docs/shielded-monitor-restore.md` and `SECURITY.md`; specified in
+  `openspec/changes/00009-02-monitor-store/`.
+  **Alpha trust model:** viewing keys and wallet↔transaction associations are stored in
+  **plaintext** in this schema — at-rest encryption, key rotation, keyed fingerprints and tenant
+  isolation are deferred. See `SECURITY.md` before deploying it.
+- **Shielded monitor private API and reference consumer (project C, private half).** Two new
+  packaged CLI entry points, `umbradb-shielded-monitor-api` and
+  `umbradb-shielded-monitor-client`, over the `shielded_monitor` schema above. The service is
+  built on Node's own `http` plus the `zod` this package already depends on — **no new runtime
+  dependency** — and serves `POST /v1/monitors`, `GET /v1/monitors/:id`,
+  `GET /v1/monitors/:id/matches`, `POST /v1/monitors/:id/{pause,resume,revoke}`,
+  `DELETE /v1/monitors/:id` and `GET /v1/health`. Matches page by an opaque base64url cursor
+  bound to its monitor; every status and matches response carries the coverage object
+  (`requestedStart`, `scannedFrom`, `scannedThrough`, `sourceTip`) as decimal strings, so an
+  unscanned range is never presented as an empty result. The reference client registers a key
+  read from a file, polls with a cursor persisted atomically to a file, and drives the whole
+  lifecycle over HTTP alone — it imports nothing but Node built-ins. Documented in
+  `docs/shielded-monitor-api.md`; specified in `openspec/changes/00009-04-private-api-cli/`.
+  Additive: no migration, no change under `src/`, and the published library surface is unchanged.
+  **Unauthenticated by design:** this alpha has no authentication, authorization, tenant scoping,
+  rate limiting or quotas (only a body-size and a page-size cap). It binds `127.0.0.1` by default
+  and **the deployment must restrict network access** — anyone who can reach the port can
+  register, read and delete any monitor. See `README.md` and `SECURITY.md` before exposing it.
 
 ### Changed
 

@@ -97,7 +97,7 @@ export function statusesFromReport(report: JsonReport): Map<string, string[]> {
  *  manifest so silently deleting (or adding) a required entry fails the gate: {@link loadManifest}
  *  rejects a manifest whose `required` length drifts from this constant. Bump it deliberately when
  *  a required test is genuinely added/removed. */
-export const EXPECTED_REQUIRED_COUNT = 25;
+export const EXPECTED_REQUIRED_COUNT = 31;
 
 /** The pinned count of `deferred` (WHERE-gated optional-feature) tests (BLOCK 6). Structurally PINS
  *  the deferred exemption set so deleting the sole deferred entry (a green "0 deferred" gate) fails the
