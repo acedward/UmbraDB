@@ -479,70 +479,56 @@ describe("the split topology: 2 monitor-nodes + 1 balancer + 1 storage API, one 
     }
   }, 180_000);
 
-  it("[[shielded-monitor.node.resume-through-the-balancer-needs-no-resend]] a pause through the balancer freezes the holder's key and its coverage, and a resume brings it back to live with no re-send", async () => {
-    // §11 check 8, and organizer question Q31, which that check found: a pause reaches the holder
-    // through the fence in its next `advance-batch`, but a RESUME has no such route — a paused key
-    // is not in the live set, so no batch item of its ever comes back fenced. Until the balancer
-    // forwarded lifecycle events and the node re-read its paused keys per block, the monitor
-    // stayed `paused` inside its holder forever while the storage record said `backfilling`.
-    const monitorId = world.monitors.get("Kthird")!;
+  it("[[shielded-monitor.node.delete-through-the-balancer-destroys-the-key-and-the-rows]] a delete through the balancer drops the key from its holder within one block, answers 404 afterwards, and lets the same key start a FRESH monitor", async () => {
+    // The whole lifecycle a consumer has, end to end over two nodes and a real database (owner
+    // decision Q33): give a key, delete it, and what is left is nothing — no key in RAM, no
+    // matches, no monitor. Registering the same key again is a new monitor, not a resurrection.
+    const keyId = "Kthird";
+    const monitorId = world.monitors.get(keyId)!;
     const holder = nodes.find((n) => n.node.holdsMonitor(monitorId).holds)!;
-    expect(holder, "the key must be held before it can be paused").toBeDefined();
-    const associationsBefore = await world.store.readAssociations(monitorId, 0n, 100);
-    const coverageBefore = (await world.store.get(monitorId)).coverage.scannedThrough;
+    expect(holder, "the key must be held before it can be deleted").toBeDefined();
+    expect((await world.store.readAssociations(monitorId, 0n, 100)).length).toBeGreaterThan(0);
 
-    // ── Pause ──────────────────────────────────────────────────────────────────────────────
-    const paused = await fetch(`${balancerUrl}/v1/monitors/${monitorId}/pause`, { method: "POST" });
-    expect(paused.status).toBe(200);
-    // Nothing has been scanned since, so the ONLY thing that can have told the holder is the
-    // event the balancer forwarded after that 200.
+    // ── The delete ─────────────────────────────────────────────────────────────────────────
+    const deleted = await fetch(`${balancerUrl}/v1/monitors/${monitorId}`, { method: "DELETE" });
+    expect(deleted.status).toBe(204);
+
+    // The holder destroys the key. Nothing has been scanned since, so the only thing that can
+    // have told it this fast is the event the balancer forwarded after that 204; the `not-found`
+    // fence on the next block is the backstop, and the block below proves it too.
     await waitFor(
-      async () => holder.node.holdsMonitor(monitorId).phase === "paused",
+      async () => !holder.node.holdsMonitor(monitorId).holds,
       10_000,
-      "the holder marks its key paused",
+      "the holder destroys the key it was given",
     );
-    const pausedView = (await (await fetch(`${balancerUrl}/v1/monitors/${monitorId}`)).json()) as {
-      state: string; heldBy: string | null; heldPhase: string | null; keyNeeded: boolean;
-    };
-    expect(pausedView).toMatchObject({
-      state: "paused", heldBy: holder.node.nodeId, heldPhase: "paused", keyNeeded: false,
-    });
 
-    // ── The tip moves; this monitor's coverage does not ────────────────────────────────────
-    const frozenAt = await appendEmptyBlock();
+    // ── Afterwards, the monitor is gone for every reader ───────────────────────────────────
+    expect((await fetch(`${balancerUrl}/v1/monitors/${monitorId}`)).status).toBe(404);
+    expect((await fetch(`${balancerUrl}/v1/monitors/${monitorId}/matches`)).status).toBe(404);
+    expect((await fetch(`${balancerUrl}/v1/monitors/${monitorId}`, { method: "DELETE" })).status).toBe(404);
+    expect((await world.store.listAll(100)).map((m) => m.id)).not.toContain(monitorId);
+    const rows = await world.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM ${world.sql(world.monitorSchema)}.associations
+       WHERE monitor_id = ${monitorId}
+    `;
+    expect(rows[0]?.n, "the matches went with it").toBe(0);
+
+    // ── The tip moves; nothing resurrects ──────────────────────────────────────────────────
+    const newHeight = await appendEmptyBlock();
     await drainNodes();
-    expect((await world.store.get(monitorId)).coverage.scannedThrough,
-      "a paused monitor's coverage is frozen while the tip advances").toBe(coverageBefore);
-    // Non-vacuity: the block really was scanned — for every OTHER monitor the node holds.
+    expect(nodes.some((n) => n.node.holdsMonitor(monitorId).holds)).toBe(false);
+    // Non-vacuity: the block really was scanned, for the monitors that are still alive.
     const neighbour = world.monitors.get("K")!;
-    expect((await world.store.get(neighbour)).coverage.scannedThrough).toBe(frozenAt);
-    expect(holder.node.holdsMonitor(monitorId).phase, "and the key is kept, not dropped").toBe("paused");
+    expect((await world.store.get(neighbour)).coverage.scannedThrough).toBe(newHeight);
 
-    // ── Resume, with NO re-send of the key ─────────────────────────────────────────────────
-    const resumed = await fetch(`${balancerUrl}/v1/monitors/${monitorId}/resume`, { method: "POST" });
-    expect(resumed.status).toBe(200);
-    expect((await resumed.json() as { state: string }).state).toBe("backfilling");
-    await waitFor(
-      async () => holder.node.holdsMonitor(monitorId).phase === "syncing",
-      10_000,
-      "the holder puts the resumed key back into sync",
-    );
-
-    await drainNodes();
-    expect(holder.node.holdsMonitor(monitorId).phase).toBe("live");
-    const after = await world.store.get(monitorId);
-    expect(after.coverage.scannedThrough, "coverage caught up with the tip").toBe(frozenAt);
-    expect(after.state).toBe("live");
-    expect(after.gaps, "the catch-up is a sync, not a hole").toStrictEqual([]);
-    // The matches are exactly the ones that were there: a resume re-reads the range it missed and
-    // must not double-write what it already had.
-    expect((await world.store.readAssociations(monitorId, 0n, 100))
-      .map((a) => `${a.blockHeight}/${a.position}`))
-      .toStrictEqual(associationsBefore.map((a) => `${a.blockHeight}/${a.position}`));
-
-    const liveView = (await (await fetch(`${balancerUrl}/v1/monitors/${monitorId}`)).json()) as {
-      state: string; heldPhase: string | null; keyNeeded: boolean;
-    };
-    expect(liveView).toMatchObject({ state: "live", heldPhase: "live", keyNeeded: false });
+    // ── The same key can be given again, and it starts over ────────────────────────────────
+    const reborn = await registerThroughBalancer(keyId);
+    expect(reborn.status, JSON.stringify(reborn.body)).toBe(201);
+    expect(reborn.body.monitorId).not.toBe(monitorId);
+    expect(reborn.body.state).toBe("backfilling");
+    const rebornId = reborn.body.monitorId as string;
+    expect((await world.store.get(rebornId)).coverage.scannedThrough,
+      "a fresh monitor has scanned nothing").toBeUndefined();
+    expect(await world.store.readAssociations(rebornId, 0n, 10)).toStrictEqual([]);
   }, 300_000);
 });
