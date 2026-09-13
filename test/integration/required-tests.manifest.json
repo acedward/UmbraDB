@@ -158,9 +158,9 @@
       "description": "00009-02 (owner Rule B, organizer spec US5 scenario 4 / FR-025): the whole project-B flow runs as a PostgreSQL role holding only USAGE+SELECT on chain_archive, and the seeded archive content is byte-identical afterwards; a positive control asserts that same role's direct archive write IS rejected, so the boundary is real."
     },
     {
-      "id": "shielded-monitor.restore.revocation-survives-snapshot-restore",
+      "id": "shielded-monitor.restore.deletion-survives-snapshot-restore",
       "file": "test/shielded-monitor/restore-drill.integration.test.ts",
-      "description": "00009-02 (organizer spec FR-024): real pg_dump snapshot -> revoke -> DROP SCHEMA -> psql restore -> re-apply the exported revocation list; the monitor is refused again and an advance against it is fenced. Asserts mid-drill that the restore genuinely lost the revoke, so the drill cannot pass vacuously."
+      "description": "00009-09 (Q33; FR-024): a delete that post-dates the snapshot survives a real pg_dump/psql restore - the exported DELETION list re-applies it, destroying the matches the restore brought back, with the pre-apply resurrection asserted so the drill cannot go vacuous."
     },
     {
       "id": "crash.shielded-monitor-batch.pg-kill-two-states",
@@ -213,9 +213,9 @@
       "description": "00009-04 (organizer spec SC-008, US1-US3): the reference consumer CLI drives register -> status -> poll(empty) -> poll(matches) -> poll(idempotent resume) -> pause -> resume -> revoke -> delete against a REAL HTTP server on a loopback socket backed by Testcontainers PostgreSQL, asserting state, coverage and cursor-file stability at each step, and that no viewing key appears in anything the client printed. Matches are seeded through the store because Phase 3's scanner does not exist yet; the Compose run with a real shielded transaction is deferred to Phase 5."
     },
     {
-      "id": "shielded-monitor.api.list-includes-revoked-excludes-deleted",
+      "id": "shielded-monitor.api.list-includes-stopped-excludes-deleted",
       "file": "test/shielded-monitor/api.integration.test.ts",
-      "description": "00009-06: GET /v1/monitors lists a revoked monitor (whose own reads answer 410) and never lists a deleted one (US3 scenario 4). The documented asymmetry of the operator list; both halves fail silently if broken."
+      "description": "00009-09 (Q33): a monitor that STOPPED stays listed with its reason and its matches stay readable; a deleted one is never listed - the one exclusion that is not negotiable (US3 scenario 4)."
     },
     {
       "id": "shielded-monitor.ui.self-contained-no-external-resources",
@@ -236,16 +236,6 @@
       "id": "shielded-monitor.match-details.per-output-isolation-is-refused-for-archived-bytes",
       "file": "test/shielded-monitor/match-details.test.ts",
       "description": "00009-07 / organizer question Q22: `ZswapOffer.fromOutput` (and fromTransient/fromInput) is REFUSED for a value read out of an archived (proven) transaction, which is why `mine` is three-valued. Paired with a positive control showing the same call is exact for an unproven output. A ledger that relaxed this would turn this test red, which is the intended signal."
-    },
-    {
-      "id": "shielded-monitor.backfill.fills-null-rows-once-and-is-idempotent",
-      "file": "test/shielded-monitor/store.integration.test.ts",
-      "description": "00009-07: `updateAssociationDetails` writes only rows whose details are NULL, so a re-run fills nothing and can never overwrite a recorded detail; epoch-fenced like every other worker write."
-    },
-    {
-      "id": "shielded-monitor.backfill.fills-existing-matches-and-is-idempotent",
-      "file": "test/shielded-monitor/details-backfill.integration.test.ts",
-      "description": "00009-07: end to end against a real archive and store — the backfill fills every pre-00009-07 match exactly once through the ArchiveReadContract, and a second run reports zero."
     },
     {
       "id": "crash.shielded-monitor-batch.details-commit-with-the-height",
@@ -323,9 +313,9 @@
       "description": "00009-09: the HAS_SCANNED_ONCE check records the range a key missed on its first live block, in the same transaction that moves coverage, and the queued back-sync fills it without moving coverage."
     },
     {
-      "id": "shielded-monitor.node.paused-keeps-the-key-and-revoked-clears-it",
+      "id": "shielded-monitor.node.stopped-keeps-the-key-and-deleted-clears-it",
       "file": "test/shielded-monitor/monitor-node.test.ts",
-      "description": "00009-09 (OP-3): a paused key stays in RAM so a resume needs no re-send; a revoked or deleted one is destroyed."
+      "description": "00009-09 (Q33): a monitor that merely stopped keeps its key in RAM (its matches stay readable); a DELETED monitor's key is destroyed."
     },
     {
       "id": "shielded-monitor.node.scanner-never-clears-a-borrowed-key",
@@ -368,14 +358,9 @@
       "description": "00009-09: key-material and the three lease routes answer 410 GONE with a message naming the decision, not 404."
     },
     {
-      "id": "shielded-monitor.balancer.lifecycle-writes-forward-state-changed",
+      "id": "shielded-monitor.balancer.delete-is-forwarded-to-the-holder",
       "file": "test/shielded-monitor/balancer-routing.test.ts",
-      "description": "00009-09 (Q31): after a 2xx pause/resume/revoke/DELETE the balancer posts stateChanged to the hinted holder, or to every healthy node when it has no hint, and a refused forward leaves the client's response untouched."
-    },
-    {
-      "id": "shielded-monitor.node.resume-in-storage-is-noticed-on-the-next-block",
-      "file": "test/shielded-monitor/monitor-node.test.ts",
-      "description": "00009-09 (Q31): a paused key whose monitor was resumed in storage re-enters sync on the next processed block with NO event and no re-send — the backstop for a lost forward."
+      "description": "00009-09 (Q31/Q33): after a 2xx DELETE the balancer posts stateChanged to the hinted holder, or to every healthy node when it has no hint, and a refused forward leaves the client's response untouched."
     },
     {
       "id": "shielded-monitor.node.sync-key-queues-a-back-sync-for-a-recorded-gap",
@@ -383,14 +368,19 @@
       "description": "00009-09 (Q32): a key whose sync finishes with a gap already in its record queues the back-sync for it, so a hole left behind by a dead node or a failed transport heals at the next hold."
     },
     {
-      "id": "shielded-monitor.node.resume-through-the-balancer-needs-no-resend",
-      "file": "test/storage-api/split-topology.integration.test.ts",
-      "description": "00009-09 (Q31, design §11 check 8): pause through the balancer freezes the holder's key and its coverage while the tip advances; resume brings it back to syncing and then live, with no key re-sent and no duplicate association."
-    },
-    {
       "id": "shielded-monitor.store.fill-gap-skips-rows-it-already-holds",
       "file": "test/shielded-monitor/store.integration.test.ts",
       "description": "00009-09 (Q32): a fill over a range that already holds a recorded match inserts only the missing rows, reports `written` as rows actually inserted, keeps `seq` dense, and still shrinks the gap — running it twice writes nothing more."
+    },
+    {
+      "id": "shielded-monitor.node.delete-destroys-the-key-on-the-holder",
+      "file": "test/shielded-monitor/monitor-node.test.ts",
+      "description": "00009-09 (Q33): a delete destroys the held key by BOTH routes it can arrive by - the balancer's forwarded event, and the not-found fence on the node's next block - with the WASM handle cleared exactly once."
+    },
+    {
+      "id": "shielded-monitor.node.delete-through-the-balancer-destroys-the-key-and-the-rows",
+      "file": "test/storage-api/split-topology.integration.test.ts",
+      "description": "00009-09 (Q33), end to end over two nodes and one database: a delete through the balancer drops the key from its holder, answers 404 for every route afterwards, leaves no association row, and lets the same key start a FRESH monitor."
     }
   ],
   "deferred": [

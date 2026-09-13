@@ -177,28 +177,38 @@ export function statusesFromReport(report: JsonReport): Map<string, string[]> {
  *  lock on the nodes' private door. `storage-api.removed-routes-answer-410` pins the four routes
  *  this phase removed as REMOVED rather than missing.
  *
- *  73 -> 78 (00009-09, the fixes the LIVE end-to-end run found): five ids for the two defects
- *  recorded as organizer questions Q31 and Q32, both of which were invisible to a suite that
- *  never paused a monitor and never re-read a range twice.
- *
- *  A RESUME MUST REACH THE HOLDER (Q31). A paused key is deliberately outside the live set, so it
- *  has no `advance-batch` item — and that fence is how every OTHER lifecycle change reaches a
- *  holder. Three ids close the hole at the three levels it exists on:
- *  `…balancer.lifecycle-writes-forward-state-changed` (the sender, which did not exist),
- *  `…node.resume-in-storage-is-noticed-on-the-next-block` (the backstop, for a forward that is
- *  best-effort by design) and `…node.resume-through-the-balancer-needs-no-resend` (design §11
- *  check 8, end to end over two nodes and a real database: pause freezes coverage while the tip
- *  moves, resume catches it up, and no key is ever re-sent).
+ *  73 -> 76 (00009-09, after the live end-to-end run and owner decisions Q33/Q29/Q32). The count
+ *  moved twice and the SET moved more than the count does: five ids were added for the two
+ *  defects the live run found (Q31, Q32), then the lifecycle itself was simplified and four of
+ *  those, plus four older ones, went away.
  *
  *  A BACK-SYNC RE-READS A RANGE (Q32). `…store.fill-gap-skips-rows-it-already-holds` pins the
- *  idempotence the live run's 500 proved missing — the only writer here with no coverage fence to
+ *  idempotence the live run's 500 proved missing — the only writer with no coverage fence to
  *  protect it from a replay — and `…node.sync-key-queues-a-back-sync-for-a-recorded-gap` pins the
  *  retry path a stuck gap had none of.
+ *
+ *  GIVE OR DELETE (owner decision Q33). Pause, resume and revoke left the product, so the ids
+ *  that pinned them are gone or restated: `…api.list-includes-revoked-excludes-deleted` ->
+ *  `…list-includes-stopped-excludes-deleted`, `…node.paused-keeps-the-key-and-revoked-clears-it`
+ *  -> `…node.stopped-keeps-the-key-and-deleted-clears-it`,
+ *  `…restore.revocation-survives-snapshot-restore` -> `…restore.deletion-survives-snapshot-restore`
+ *  (the same FR-024 property over the operation that still exists), and the balancer's
+ *  lifecycle-forward id -> `…balancer.delete-is-forwarded-to-the-holder`. Two ids are NEW, because
+ *  destroying a key is now the whole consumer-facing lifecycle and deserves to be pinned at both
+ *  levels: `…node.delete-destroys-the-key-on-the-holder` (both routes a delete can reach a holder
+ *  by) and `…node.delete-through-the-balancer-destroys-the-key-and-the-rows` (end to end: 404
+ *  afterwards, no rows left, and the same key starts a fresh monitor). The two Q31 resume ids are
+ *  REMOVED: there is no resume to notice.
+ *
+ *  THE DETAILS BACKFILL IS GONE (owner decision Q29, option A). `…backfill.fills-null-rows-once-
+ *  and-is-idempotent` and `…backfill.fills-existing-matches-and-is-idempotent` are removed with
+ *  the command they governed; the `details` column and the live path that writes it stay, and the
+ *  match-details ids that cover THAT are untouched.
  *
  *  UNION RULE, unchanged and still load-bearing: a branch that merges this one with any other
  *  00009 branch takes the UNION of the id sets and the count that follows from it, never one
  *  side's number. */
-export const EXPECTED_REQUIRED_COUNT = 78;
+export const EXPECTED_REQUIRED_COUNT = 76;
 
 /** The pinned count of `deferred` (WHERE-gated optional-feature) tests (BLOCK 6). Structurally PINS
  *  the deferred exemption set so deleting the sole deferred entry (a green "0 deferred" gate) fails the
