@@ -5,13 +5,14 @@
  *
  * It brings up this repository's own Compose devnet under a unique project name and randomised
  * loopback-only ports, ingests node-only, starts the STORAGE API (the one process with a database
- * credential), then the scanner and the private API — which hold `STORAGE_URL` and nothing else —
- * derives a demo viewing key, registers it, waits for coverage to reach the archive tip, and
- * prints the dashboard URL.
+ * credential), then the MONITOR-NODE — which holds `STORAGE_URL` and nothing else — derives a demo
+ * viewing key, registers it, waits for coverage to reach the archive tip, and prints the dashboard
+ * URL.
  *
- * `--split` (00009-08 v2) runs the deployment shape the tests run: TWO scanners, TWO private API
- * instances and a balancer in front of them, over one storage API and one database. The dashboard
- * URL it prints is the balancer's, so every request is served by a randomly chosen instance.
+ * `--split` (00009-09) runs the deployment shape the tests run: TWO monitor-nodes and a balancer in
+ * front of them, over one storage API and one database. The dashboard URL it prints is the
+ * balancer's; registration is ROUTED to the node that holds the key, and every other request goes
+ * to a randomly chosen node.
  *
  * ── What it deliberately does NOT do ────────────────────────────────────────────────────────
  * Step 7 of the runbook — a real shielded transfer — needs the Midnight wallet SDK, which is not
@@ -43,7 +44,7 @@ const USAGE = `npm run demo:shielded-monitor — bring the shielded monitor up a
 
 Usage:
   npm run demo:shielded-monitor                 bring it up and print the dashboard URL
-  npm run demo:shielded-monitor -- --split      2 scanners + 2 APIs + a balancer (00009-08 v2)
+  npm run demo:shielded-monitor -- --split      2 monitor-nodes + a balancer (00009-09)
   npm run demo:shielded-monitor -- --down       tear down the most recent run
   npm run demo:shielded-monitor -- --project P  act on a specific compose project
   npm run demo:shielded-monitor -- --keep       leave the stack running after Ctrl-C (default: tear down)
@@ -189,7 +190,7 @@ async function main() {
   requireDocker();
 
   const sha = spawnSync("git", ["rev-parse", "--short", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).stdout?.trim();
-  const project = projectFlag >= 0 ? argv[projectFlag + 1] : `umbradb-00009-08-${sha || Date.now().toString(36)}`;
+  const project = projectFlag >= 0 ? argv[projectFlag + 1] : `umbradb-00009-09-${sha || Date.now().toString(36)}`;
   const split = argv.includes("--split");
   const ports = {
     node: randomPort(),
@@ -218,7 +219,7 @@ async function main() {
   }
 
   log(`project ${project}`);
-  log(`topology ${split ? "SPLIT — 2 scanners + 2 APIs + balancer + 1 storage API" : "single scanner + single API + 1 storage API"}`);
+  log(`topology ${split ? "SPLIT — 2 monitor-nodes + balancer + 1 storage API" : "1 monitor-node + 1 storage API"}`);
   log(
     `ports    node=${ports.node} postgres=${ports.postgres} storage=${ports.storage} api=${ports.api}` +
       `${split ? ` api2=${ports.api2} balancer=${ports.balancer}` : ""} (127.0.0.1 only)`,
@@ -264,44 +265,40 @@ async function main() {
     const storage = `http://127.0.0.1:${ports.storage}`;
     await waitFor("the storage API", async () => (await json(`${storage}/v1/health`)).status === 200);
 
-    // ── 4. project B: scanners and APIs, each holding STORAGE_URL and nothing else ───────────
+    // ── 4. project B: the monitor-node(s), each holding STORAGE_URL and nothing else ─────────
     //
     // Note what is NOT in these environments: no connection string, no schema name, nothing
-    // ending in _PG. Each process refuses to start if one appears (owner decision Q25).
+    // ending in _PG. Each process refuses to start if one appears (owner decision Q25). And note
+    // what is not written anywhere: the viewing key registered in step 6 lives in the RAM of
+    // exactly one of these processes and nowhere else (owner decision Q28).
     log(split
-      ? "4/7 starting 2 scanners, 2 API instances and the balancer (no database in any of them)"
-      : "4/7 starting the scanner and the API (no database in either of them)");
-    const scannerCount = split ? 2 : 1;
-    for (let i = 1; i <= scannerCount; i++) {
-      startChild(`scanner-${i}`, "npx", ["tsx", "shielded-monitor/scanner-cli.ts"], {
-        STORAGE_URL: storage,
-        NET: "undeployed",
-        SCAN_BATCH_BLOCKS: "8",
-        SCAN_POLL_MS: "2000",
-        SCAN_INSTANCE_ID: `scanner-${i}`,
-      }, dir, children);
-    }
-    const apiPorts = split ? [ports.api, ports.api2] : [ports.api];
-    apiPorts.forEach((port, index) => {
-      startChild(`api-${index + 1}`, "npx", ["tsx", "shielded-monitor/api/server-cli.ts"], {
+      ? "4/7 starting 2 monitor-nodes and the balancer (no database in any of them)"
+      : "4/7 starting the monitor-node (no database in it)");
+    const nodePorts = split ? [ports.api, ports.api2] : [ports.api];
+    nodePorts.forEach((port, index) => {
+      startChild(`node-${index + 1}`, "npx", ["tsx", "shielded-monitor/node-cli.ts"], {
         STORAGE_URL: storage,
         SHIELDED_MONITOR_NET: "undeployed",
+        MONITOR_NODE_ID: `node-${index + 1}`,
         API_HOST: "127.0.0.1",
         API_PORT: String(port),
+        SCAN_BATCH_BLOCKS: "8",
+        SCAN_POLL_MS: "2000",
       }, dir, children);
     });
-    for (const port of apiPorts) {
-      await waitFor(`the API on ${port}`, async () => (await json(`http://127.0.0.1:${port}/v1/health`)).status === 200);
+    for (const port of nodePorts) {
+      await waitFor(`the node on ${port}`, async () => (await json(`http://127.0.0.1:${port}/v1/health`)).status === 200);
     }
 
-    // The URL everything below uses: the balancer in split mode, the single instance otherwise.
-    let api = `http://127.0.0.1:${apiPorts[0]}`;
+    // The URL everything below uses: the balancer in split mode, the single node otherwise.
+    let api = `http://127.0.0.1:${nodePorts[0]}`;
     if (split) {
       startChild("balancer", "npx", ["tsx", "shielded-monitor/balancer/balancer-cli.ts"], {
-        BALANCER_UPSTREAMS: apiPorts.map((port) => `http://127.0.0.1:${port}`).join(","),
+        BALANCER_UPSTREAMS: nodePorts.map((port) => `http://127.0.0.1:${port}`).join(","),
         BALANCER_HOST: "127.0.0.1",
         BALANCER_PORT: String(ports.balancer),
         BALANCER_PROBE_MS: "2000",
+        NET: "undeployed",
       }, dir, children);
       api = `http://127.0.0.1:${ports.balancer}`;
       await waitFor("the balancer", async () => (await json(`${api}/v1/health`)).status === 200);
@@ -352,7 +349,10 @@ async function main() {
     log(`    coverage  start ${monitor.coverage.requestedStart} · from ${monitor.coverage.scannedFrom}` +
         ` · through ${monitor.coverage.scannedThrough} · tip ${monitor.coverage.sourceTip}`);
     log("");
-    log(`    DASHBOARD  ${api}/ui${split ? "   (through the balancer — a random instance serves each request)" : ""}`);
+    log(`    held by   ${monitor.heldBy ?? "nobody"}${monitor.keyNeeded ? "  (KEY NEEDED — re-send the viewing key)" : ""}`);
+    log(`    gaps      ${monitor.gaps.length === 0 ? "none" : monitor.gaps.map((g) => `${g.from}-${g.to}`).join(", ")}`);
+    log("");
+    log(`    DASHBOARD  ${api}/ui${split ? "   (through the balancer — registration is routed to the node holding the key)" : ""}`);
     log("");
     log("    No matches is the correct answer on a fresh devnet: nothing on this chain is");
     log("    encrypted to that key yet. To make one appear, follow step 7 of");

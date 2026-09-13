@@ -1,13 +1,19 @@
-# The shielded monitor as a SPLIT deployment: 2 scanners + 2 APIs + 1 balancer + 1 storage API,
-# over the one database `docker-compose.yml` already provides (sub-plan 00009-08 v2, owner Q25).
+# The shielded monitor as a SPLIT deployment: 2 MONITOR-NODES + 1 balancer + 1 storage API, over
+# the one database `docker-compose.yml` already provides (00009-09, owner decisions Q25 and Q28).
+#
+# ── What changed from 00009-08 ───────────────────────────────────────────────────────────────
+# The `scanner` and `api` services are gone. A monitor-node is one process that serves the API and
+# the dashboard, scans every new block once for every key it holds, and is the ONLY place a viewing
+# key exists — in RAM, never on disk and never in the database. Two of them, because "two of
+# everything" is what this file has always been for; the balancer routes each registration to the
+# node that holds that key.
 #
 # ── How to run it ────────────────────────────────────────────────────────────────────────────
 #   docker compose -p umbradb-<yours> \
 #     -f test/compose/docker-compose.yml \
 #     -f test/compose/docker-compose.shielded-monitor.yml \
 #     up -d node postgres archive-sync storage-api \
-#        shielded-monitor-scanner-1 shielded-monitor-scanner-2 \
-#        shielded-monitor-api-1 shielded-monitor-api-2 shielded-monitor-balancer
+#        shielded-monitor-node-1 shielded-monitor-node-2 shielded-monitor-balancer
 #
 # Use a UNIQUE project name (this is a shared machine) and tear down with
 # `down -v --remove-orphans`. `npm run demo:shielded-monitor -- --split` does all of that for you
@@ -25,9 +31,8 @@
 # `*_PG` variable appears in its environment (`shielded-monitor/no-database.ts`). That refusal is
 # what makes this file's separation real rather than a convention nobody checks.
 #
-# `x-` anchors keep the two scanners and the two API instances literally identical apart from
-# their instance id and port, because "two of everything" is only meaningful if the two are the
-# same thing.
+# `x-` anchors keep the two monitor-nodes literally identical apart from their node id, because
+# "two of everything" is only meaningful if the two are the same thing.
 
 x-monitor-image: &monitor-image
   build:
@@ -79,60 +84,43 @@ services:
       timeout: 5s
       retries: 20
 
-  # ── Project B: two scanners ───────────────────────────────────────────────────────────────
-  shielded-monitor-scanner-1:
+  # ── Project B: two monitor-nodes ──────────────────────────────────────────────────────────
+  #
+  # One process each: the public API, the dashboard at /ui, `/internal/*` for the balancer, and
+  # both scan queues. The viewing keys they are sent live in these containers' RAM and nowhere
+  # else — there is no volume here, deliberately, because there is nothing to persist.
+  shielded-monitor-node-1:
     <<: *monitor-image
-    command: ['scanner']
+    command: ['node']
     depends_on:
       storage-api:
         condition: service_healthy
     environment:
       <<: *b-environment
-      SCAN_INSTANCE_ID: 'scanner-1'
-      SCAN_BATCH_BLOCKS: '8'
-      SCAN_POLL_MS: '2000'
-      SCAN_LEASE_TTL_MS: '30000'
-
-  shielded-monitor-scanner-2:
-    <<: *monitor-image
-    command: ['scanner']
-    depends_on:
-      storage-api:
-        condition: service_healthy
-    environment:
-      <<: *b-environment
-      SCAN_INSTANCE_ID: 'scanner-2'
-      SCAN_BATCH_BLOCKS: '8'
-      SCAN_POLL_MS: '2000'
-      SCAN_LEASE_TTL_MS: '30000'
-
-  # ── Project B: two API instances ──────────────────────────────────────────────────────────
-  shielded-monitor-api-1:
-    <<: *monitor-image
-    command: ['api']
-    depends_on:
-      storage-api:
-        condition: service_healthy
-    environment:
-      <<: *b-environment
+      MONITOR_NODE_ID: 'node-1'
       API_HOST: '0.0.0.0'
       API_PORT: '8787'
+      SCAN_BATCH_BLOCKS: '8'
+      SCAN_POLL_MS: '2000'
     healthcheck:
       test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8787/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
       interval: 5s
       timeout: 5s
       retries: 20
 
-  shielded-monitor-api-2:
+  shielded-monitor-node-2:
     <<: *monitor-image
-    command: ['api']
+    command: ['node']
     depends_on:
       storage-api:
         condition: service_healthy
     environment:
       <<: *b-environment
+      MONITOR_NODE_ID: 'node-2'
       API_HOST: '0.0.0.0'
       API_PORT: '8787'
+      SCAN_BATCH_BLOCKS: '8'
+      SCAN_POLL_MS: '2000'
     healthcheck:
       test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8787/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
       interval: 5s
@@ -144,13 +132,13 @@ services:
     <<: *monitor-image
     command: ['balancer']
     depends_on:
-      shielded-monitor-api-1:
+      shielded-monitor-node-1:
         condition: service_healthy
-      shielded-monitor-api-2:
+      shielded-monitor-node-2:
         condition: service_healthy
     environment:
       <<: *b-environment
-      BALANCER_UPSTREAMS: 'http://shielded-monitor-api-1:8787,http://shielded-monitor-api-2:8787'
+      BALANCER_UPSTREAMS: 'http://shielded-monitor-node-1:8787,http://shielded-monitor-node-2:8787'
       BALANCER_HOST: '0.0.0.0'
       BALANCER_PORT: '8789'
       BALANCER_PROBE_MS: '5000'
