@@ -5,7 +5,6 @@ import type {
 } from "../src/interfaces/archive-read-contract.js";
 import { MonitorFencedError, MonitorNotFoundError, MonitorRevokedError } from "./errors.js";
 import {
-  deserializeEncryptionSecretKey,
   isArchiveTransactionIdentityError,
   LEDGER_BUILD_ID,
   MATCHING_RULE_VERSION,
@@ -21,7 +20,6 @@ import {
 import type {
   AdvanceResult,
   AssociationInput,
-  LeaseRenewal,
   MonitorLastError,
   MonitorRecord,
 } from "./store.js";
@@ -36,13 +34,19 @@ import type {
  * ```text
  *   read the archive identity ──► compare with the monitor's binding ──► stale? stop.
  *   read ONE PAGE of WHOLE BLOCKS through the ArchiveReadContract (never SQL)
- *   deserialize the viewing key                       ┐
- *     for every regular transaction of every block:   │ key lives exactly this long
- *       guaranteed offer, then every fallible segment │
- *   clear() the key                                   ┘
+ *   for every regular transaction of every block:
+ *     guaranteed offer, then every fallible segment, against the CALLER'S key handle
  *   ONE store.advance(...) ──► this batch's associations AND the coverage advance,
  *                              one BEGIN…COMMIT, in shielded_monitor.* only, epoch-fenced
  * ```
+ *
+ * ── Since 00009-09: the key is the caller's, and so is its lifetime ─────────────────────────
+ * This class no longer FETCHES a key — there is nowhere to fetch one from, because a viewing key
+ * lives only in the RAM of the monitor-node that was handed it (owner decision Q28). The handle
+ * arrives as an option and is neither cleared nor freed here: the node owns it for as long as it
+ * holds the key, across many batches, and clears it on revoke, delete, a fenced drop or SIGTERM.
+ * This is also the ONE-KEY path (Queue B's `sync-key`); the live path is block-centric and lives in
+ * `shielded-monitor/node/`.
  *
  * Four properties are load-bearing and each is enforced structurally rather than by convention:
  *
@@ -61,11 +65,10 @@ import type {
  *    transaction it could not read: the difference between "no match" and "could not look" is
  *    invisible afterwards, and a monitor that recorded the range as scanned would never revisit
  *    it.
- * 4. **Key lifetime is one batch (FR-002's alpha posture, and plain hygiene).** The key is
- *    deserialized inside {@link ShieldedMonitorScanner.scanBatch} and `clear()`ed in a `finally`
- *    before the function returns. No handle is stored on the instance, so no handle can be
- *    shared between monitors — including by a future refactor that adds caching without
- *    thinking about it.
+ * 4. **One scanner, one key (00009-09).** The handle is a constructor option, so an instance is
+ *    bound to exactly one monitor's key for its whole life and cannot be pointed at another
+ *    monitor by a caller that forgot. The node builds one scanner per `sync-key` job and throws it
+ *    away; the KEY outlives it, in the node's key store.
  */
 
 /** How a batch ended. Every field a caller might act on is on the variant, so no caller has to
@@ -82,10 +85,6 @@ export type ScanBatchResult =
       /** Coverage reached the tip in this batch and the monitor was promoted to `live`. */
       readonly wentLive: boolean;
       readonly sourceTip?: bigint;
-      /** 00009-08: `false` when another instance had taken this monitor's lease before the
-       *  commit. The commit still happened and is still correct — the epoch fence, never the
-       *  lease, is what admits it — but this instance should stop working on this monitor. */
-      readonly leaseHeld?: boolean;
     }
   /** The batch had already been committed (crash-retry path, US5 scenario 2). */
   | { readonly kind: "already-advanced"; readonly throughHeight: bigint }
@@ -110,21 +109,19 @@ export type ScanBatchResult =
  *
  * `PgShieldedMonitorStore` satisfies this structurally; nothing needs to declare that it does.
  * Writing the dependency as a NARROW interface rather than the concrete class is part of the
- * Rule B argument: a reader checking "what can the scanner write" reads seven method names, not
- * a 1000-line class, and a new write path added to the store does not silently become available
- * to the scanner. It also lets the unit suite drive the scanner with an in-memory double and
- * assert the call sequence (one `advance` per batch, one key deserialization per batch) without
- * a database.
+ * Rule B argument: a reader checking "what can the scanner write" reads six method names, not a
+ * 1200-line class, and a new write path added to the store does not silently become available to
+ * the scanner. It also lets the unit suite drive the scanner with an in-memory double and assert
+ * the call sequence (one `advance` per batch) without a database.
  */
 export interface ScannerStore {
   get(id: string): Promise<MonitorRecord>;
-  getKeyMaterial(id: string): Promise<Uint8Array>;
   advance(
     monitorId: string,
     epoch: bigint,
     throughHeight: bigint,
     associations: readonly AssociationInput[],
-    opts?: { readonly fromHeight?: bigint; readonly lease?: LeaseRenewal },
+    opts?: { readonly fromHeight?: bigint },
   ): Promise<AdvanceResult>;
   goLive(id: string, expectedEpoch: bigint, actor: string): Promise<MonitorRecord>;
   markFailed(
@@ -156,16 +153,15 @@ export interface ShieldedMonitorScannerOptions {
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
   /**
-   * How a serialized viewing key becomes a testable handle. Defaults to the vendored ledger's
-   * `deserializeEncryptionSecretKey`.
+   * The viewing key this scanner tests with — **owned by the caller** (00009-09).
    *
-   * A seam rather than a hard call for two reasons that are not "so a test can mock it": a TEE
-   * deployment would supply a handle backed by key material the process never sees in the clear,
-   * and the unit suite uses it to ASSERT the key lifetime (exactly one deserialization per
-   * batch, `clear()` exactly once, even when the predicate throws) — which is otherwise a
-   * property no test can observe.
+   * It is not fetched, not deserialized here and not cleared here. A monitor-node holds the handle
+   * for the life of the key and clears it on revoke, delete, a fenced drop or SIGTERM; this class
+   * borrows it for a batch. That is what "keys only in RAM" means at this seam: there is no store
+   * method that could return one, so there is no path by which this class could obtain a key the
+   * caller did not already have.
    */
-  readonly deserializeKey?: (bytes: Uint8Array) => Promise<EncryptionSecretKeyHandle>;
+  readonly key: EncryptionSecretKeyHandle;
   /**
    * Check every regular transaction's claimed `txHash` against the hash its bytes actually have
    * (organizer sub-plan 00009-08). Default OFF, and the composition root turns it ON whenever the
@@ -183,13 +179,14 @@ export interface ShieldedMonitorScannerOptions {
    */
   readonly verifyTxIdentity?: boolean;
   /**
-   * Renew this instance's monitor lease inside every batch's own commit (00009-08).
+   * An upper bound on the heights this scanner may read, re-read before every page (00009-09).
    *
-   * Set by the scheduler for the duration of one monitor's turn. The renewal travels in the SAME
-   * transaction as the associations and the coverage advance, so there is no window in which a
-   * height is durable under a lapsed claim.
+   * Queue B's `sync-key` catches a newly registered key up to the node's LIVE WATERMARK, not to
+   * the archive tip: above the watermark the block-centric Queue A owns the commits, and a syncing
+   * key that ran past it would do work Queue A is about to redo. Absent means "no bound" — the
+   * standalone behaviour, which is what the unit suite and the details backfill use.
    */
-  readonly lease?: LeaseRenewal;
+  readonly maxHeight?: () => bigint | undefined;
 }
 
 const DEFAULT_BATCH_BLOCKS = 1;
@@ -250,9 +247,9 @@ export class ShieldedMonitorScanner {
   private readonly budgetTxPerSecond?: number;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
-  private readonly deserializeKey: (bytes: Uint8Array) => Promise<EncryptionSecretKeyHandle>;
+  private readonly key: EncryptionSecretKeyHandle;
   private readonly verifyTxIdentity: boolean;
-  private readonly lease?: LeaseRenewal;
+  private readonly maxHeight: () => bigint | undefined;
 
   constructor(
     private readonly archive: ArchiveReadContract,
@@ -269,9 +266,9 @@ export class ShieldedMonitorScanner {
     if (options.budgetTxPerSecond !== undefined) this.budgetTxPerSecond = options.budgetTxPerSecond;
     this.now = options.now ?? (() => Date.now());
     this.sleep = options.sleep ?? defaultSleep;
-    this.deserializeKey = options.deserializeKey ?? deserializeEncryptionSecretKey;
+    this.key = options.key;
     this.verifyTxIdentity = options.verifyTxIdentity ?? false;
-    if (options.lease !== undefined) this.lease = options.lease;
+    this.maxHeight = options.maxHeight ?? (() => undefined);
   }
 
   /**
@@ -311,6 +308,13 @@ export class ShieldedMonitorScanner {
 
     // ── 2. One page of WHOLE blocks, through the contract only ──────────────────────────────
     const afterHeight = this.afterHeightFor(monitor);
+    const ceiling = this.maxHeight();
+    if (ceiling !== undefined && BigInt(afterHeight) >= ceiling) {
+      // Already at the caller's ceiling (00009-09: the node's live watermark). Not "at the tip" in
+      // the archive's sense, but there is nothing this worker may read, which is the same
+      // outcome for the caller. Re-read every batch, never memoized: the watermark moves.
+      return { kind: "at-tip", wentLive: false };
+    }
     const page = await this.archive.readBlocksSince(this.net, afterHeight, this.batchBlocks);
     const sourceTip = page.sourceTip === undefined ? undefined : BigInt(page.sourceTip.height);
     if (sourceTip !== undefined) {
@@ -321,15 +325,21 @@ export class ShieldedMonitorScanner {
       const lag = sourceTip - from;
       this.metrics.observeLag({ net: this.net }, lag > 0n ? Number(lag) : 0);
     }
-    if (page.blocks.length === 0) {
+    // The page is truncated to the caller's ceiling BEFORE anything is scanned or committed, so
+    // the batch's through-height can never exceed it (00009-09). Whole blocks only, as ever: the
+    // cut is between blocks, never inside one.
+    const blocks = ceiling === undefined
+      ? page.blocks
+      : page.blocks.filter((block) => BigInt(block.height) <= ceiling);
+    if (blocks.length === 0) {
       const wentLive = await this.promoteIfCaughtUp(monitor, sourceTip);
       return sourceTip === undefined ? { kind: "at-tip", wentLive } : { kind: "at-tip", sourceTip, wentLive };
     }
 
-    // ── 3. The predicate, with the key alive for exactly this long ──────────────────────────
+    // ── 3. The predicate, against the caller's key handle ───────────────────────────────────
     let associations: AssociationInput[];
     try {
-      associations = await this.matchPage(monitor, page.blocks);
+      associations = await this.matchPage(monitor, blocks);
     } catch (err) {
       // A page whose claimed identity contradicts its own bytes is a TRANSPORT fault, not a
       // property of this monitor or of the chain: it would refuse every monitor's page equally.
@@ -345,10 +355,10 @@ export class ShieldedMonitorScanner {
     }
 
     // ── 4. ONE commit: this batch's associations AND the coverage advance (Rule B) ──────────
-    const lastBlock = page.blocks[page.blocks.length - 1]!;
+    const lastBlock = blocks[blocks.length - 1]!;
     const throughHeight = BigInt(lastBlock.height);
-    const firstHeight = BigInt(page.blocks[0]!.height);
-    const transactionsScanned = page.blocks.reduce(
+    const firstHeight = BigInt(blocks[0]!.height);
+    const transactionsScanned = blocks.reduce(
       (n, block) => n + block.transactions.filter((tx) => tx.kind !== "system").length,
       0,
     );
@@ -356,9 +366,6 @@ export class ShieldedMonitorScanner {
     let advanced;
     try {
       advanced = await this.store.advance(monitor.id, monitor.epoch, throughHeight, associations, {
-        // 00009-08. Absent in a single-instance deployment, and then `advance` behaves exactly as
-        // it did before leases existed.
-        ...(this.lease === undefined ? {} : { lease: this.lease }),
         // Only consulted on the very first advance (the store COALESCEs it away afterwards).
         //
         // It is the FIRST HEIGHT THIS BATCH ACTUALLY READ, never the requested start. The
@@ -377,7 +384,7 @@ export class ShieldedMonitorScanner {
 
     this.metrics.observeTransactionsScanned({ net: this.net }, transactionsScanned);
     this.metrics.observeMatches({ net: this.net }, associations.length);
-    this.metrics.observeBlocksScanned({ net: this.net }, page.blocks.length);
+    this.metrics.observeBlocksScanned({ net: this.net }, blocks.length);
 
     const wentLive = await this.promoteIfCaughtUp(
       { ...monitor, coverage: advanced.coverage }, sourceTip,
@@ -385,12 +392,11 @@ export class ShieldedMonitorScanner {
     return {
       kind: "advanced",
       throughHeight,
-      blocks: page.blocks.length,
+      blocks: blocks.length,
       transactionsScanned,
       matches: associations.length,
       wentLive,
       ...(sourceTip === undefined ? {} : { sourceTip }),
-      ...(advanced.leaseHeld === undefined ? {} : { leaseHeld: advanced.leaseHeld }),
     };
   }
 
@@ -425,10 +431,6 @@ export class ShieldedMonitorScanner {
       last = await this.scanBatch(monitor);
       batches += 1;
       if (last.kind !== "advanced" && last.kind !== "already-advanced") break;
-      // 00009-08: the lease was taken over mid-turn (this instance stalled long enough for its
-      // TTL to lapse). Stop here and let the new holder continue rather than racing it for every
-      // subsequent batch — nothing is at risk either way, it is simply wasted ledger work.
-      if (last.kind === "advanced" && last.leaseHeld === false) break;
       if (last.kind === "advanced" && last.sourceTip !== undefined && last.throughHeight >= last.sourceTip) break;
     }
     return { batches, last };
@@ -510,10 +512,11 @@ export class ShieldedMonitorScanner {
   }
 
   /**
-   * The predicate over one page, with the key deserialized here and `clear()`ed here.
+   * The predicate over one page, using the caller's key handle (00009-09).
    *
-   * The handle is a local, never an instance field: two monitors scanned concurrently by the
-   * scheduler each get their own, and neither can observe the other's.
+   * The handle is NOT cleared here: a monitor-node holds one handle per key across the key's whole
+   * life and clears it exactly once, on revoke, delete, a fenced drop or SIGTERM. Clearing it at
+   * the end of a batch would destroy a key the node is still monitoring with.
    */
   private async matchPage(
     monitor: MonitorRecord, blocks: readonly ArchivedBlock[],
@@ -524,10 +527,9 @@ export class ShieldedMonitorScanner {
     // coverage advance: the caller does that, not this method.
     if (!blocks.some((block) => block.transactions.some((tx) => tx.kind !== "system"))) return [];
 
-    const keyBytes = await this.store.getKeyMaterial(monitor.id);
-    const key = await this.deserializeKey(keyBytes);
+    const key = this.key;
     const associations: AssociationInput[] = [];
-    try {
+    {
       for (const block of blocks) {
         for (const tx of block.transactions) {
           let outcome;
@@ -551,11 +553,6 @@ export class ShieldedMonitorScanner {
           associations.push(this.associationFor(block, tx, outcome.segments, outcome.details));
         }
       }
-    } finally {
-      // In a `finally`, so a throw partway through a page does not leave key material in the
-      // WASM heap until the process exits.
-      key.clear();
-      keyBytes.fill(0);
     }
     return associations;
   }

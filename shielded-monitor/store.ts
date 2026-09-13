@@ -1,6 +1,5 @@
 import type { LifecycleEvent, MonitorState } from "./lifecycle.js";
 import type { MatchDetails } from "./match-details.js";
-import type { ShieldedViewingKey } from "./viewing-key.js";
 
 /**
  * **The monitor store CONTRACT** — project B's record shapes and the one interface every
@@ -26,10 +25,17 @@ import type { ShieldedViewingKey } from "./viewing-key.js";
  * `BEGIN … COMMIT` on the server, and its epoch fence is inside the same statement that moves
  * coverage.
  *
- * **Deferred with User Story 4** (owner, 2026-09-10): `key_serialized` is plaintext, the
- * fingerprint is unkeyed, there is no tenant column and no least-privilege role script. The
- * storage-API boundary introduced here is exactly where at-rest encryption will sit when it
- * arrives (Q25's "first divide the process, then add the encryption").
+ * ── 00009-09: no key material crosses this interface at all ─────────────────────────────────
+ * `register` takes a FINGERPRINT, not a key: the viewing key lives in the RAM of exactly one
+ * monitor-node and is never persisted (owner decision Q28). `getKeyMaterial` and the three lease
+ * methods are gone — there is no key to fetch, and what a node holds in RAM is the truth about who
+ * scans a monitor. `advanceBatch` is the block-centric commit (one node, one block, every held
+ * monitor, one transaction) and `fillGap` is how a back-sync fills a hole without moving coverage.
+ *
+ * **Deferred with User Story 4** (owner, 2026-09-10): the fingerprint is unkeyed, associations are
+ * plaintext, there is no tenant column and no least-privilege role script. The storage-API
+ * boundary is exactly where at-rest encryption will sit when it arrives (Q25's "first divide the
+ * process, then add the encryption").
  */
 
 // ── Public record shapes ─────────────────────────────────────────────────────────────────────
@@ -50,6 +56,22 @@ export interface MonitorLastError {
   readonly atPosition?: number;
 }
 
+/**
+ * One contiguous range of block heights BELOW a monitor's `scannedThrough` that was never
+ * actually read for it (00009-09).
+ *
+ * Block-centric scanning is what makes these possible: a key that joins the live set at height H
+ * starts having every new block committed for it, even though its own coverage may still stand
+ * below H − 1. Moving `scannedThrough` to H would claim the range in between as covered, so
+ * instead the range is recorded here, a `back-sync` job reads it, and `fillGap` shrinks or deletes
+ * the row. "Complete" is `scannedThrough = tip AND gaps.length === 0`.
+ */
+export interface MonitorGap {
+  readonly from: bigint;
+  readonly to: bigint;
+  readonly recordedAt: Date;
+}
+
 /** A monitor row as callers see it. Deliberately carries **no fingerprint and no key**
  *  (organizer spec FR-003: fingerprints are never returned to callers). */
 export interface MonitorRecord {
@@ -58,6 +80,9 @@ export interface MonitorRecord {
   readonly state: MonitorState;
   readonly epoch: bigint;
   readonly coverage: MonitorCoverage;
+  /** The holes in {@link MonitorCoverage}, lowest first (00009-09). Always present — an empty
+   *  array is the normal, healthy shape and is a different statement from "unknown". */
+  readonly gaps: readonly MonitorGap[];
   readonly sourceGenesisHash?: string;
   readonly sourceInstanceId?: string;
   readonly matchingRuleVersion: string;
@@ -119,9 +144,18 @@ export interface AssociationDetailsUpdate {
   readonly blockTimestampMs?: bigint;
 }
 
-/** Everything registration needs besides the key itself. */
+/**
+ * Everything registration needs — and, since 00009-09, **no key material**.
+ *
+ * The caller (a monitor-node) has already decoded, validated and fingerprinted the key; what it
+ * sends the storage API is the 32-byte fingerprint. The key itself stays in that node's RAM. A
+ * second registration of the same key on the same network is an upsert on `(net, fingerprint)`
+ * that returns the existing record with its coverage and gaps, which is how a node learns where to
+ * resume after a restart.
+ */
 export interface RegisterMonitorInput {
-  readonly key: ShieldedViewingKey;
+  /** SHA-256("umbradb/shielded-monitor/fp/v1" ‖ net ‖ serialized key) — `monitorFingerprint`. */
+  readonly fingerprint: Uint8Array;
   readonly net: string;
   readonly requestedStartHeight: bigint;
   readonly matchingRuleVersion: string;
@@ -149,31 +183,59 @@ export type AdvanceResult =
       readonly firstSeq: bigint;
       readonly lastSeq: bigint;
       readonly coverage: MonitorCoverage;
-      /** Present only when the caller asked for a lease renewal (00009-08). `false` means the
-       *  lease had been taken by ANOTHER instance before this commit — the commit still happened
-       *  and is still correct (the epoch fence, not the lease, is what admits it), but this
-       *  instance should stop working on that monitor and let its new holder continue. */
-      readonly leaseHeld?: boolean;
     }
   | {
       readonly applied: false;
       readonly reason: "already-advanced";
       readonly coverage: MonitorCoverage;
-      readonly leaseHeld?: boolean;
     };
 
-/** Who holds a monitor's scan lease, and until when (00009-08). */
-export interface MonitorLeaseRecord {
+// ── Block-centric commit (00009-09) ──────────────────────────────────────────────────────────
+
+/** One monitor's share of one block, inside an {@link ShieldedMonitorStore.advanceBatch}. */
+export interface AdvanceBatchItem {
   readonly monitorId: string;
-  readonly owner: string;
-  readonly claimedAt: Date;
-  readonly expiresAt: Date;
+  /** The fence, per monitor: the epoch the node's in-RAM view of this monitor carries. */
+  readonly expectedEpoch: bigint;
+  /** This monitor's matches in this block. Empty is normal and still advances its coverage. */
+  readonly associations: readonly AssociationInput[];
+  /** Ranges to record as unscanned for this monitor, recorded in the SAME transaction as the
+   *  coverage move that would otherwise have hidden them (the `HAS_SCANNED_ONCE` check). */
+  readonly newGaps?: readonly { readonly from: bigint; readonly to: bigint }[];
 }
 
-/** What a caller asks for when it wants a batch commit to also renew its lease. */
-export interface LeaseRenewal {
-  readonly owner: string;
-  readonly ttlMs: number;
+/** Why one item of an {@link ShieldedMonitorStore.advanceBatch} was not applied.
+ *
+ *  None of these fails the batch (OP-2): one paused monitor must not stall a block for every other
+ *  monitor the node holds. The node acts on the reason — `state`/`not-found` drop the key,
+ *  `epoch` re-reads it, `already-advanced` is the idempotent replay path. */
+export type AdvanceBatchFenceReason = "epoch" | "state" | "not-found" | "already-advanced";
+
+/** The outcome of one block's commit for every monitor a node holds. */
+export interface AdvanceBatchResult {
+  /** Monitor ids whose coverage now stands at the batch's height, with this block's associations
+   *  and gap rows written. */
+  readonly advanced: readonly string[];
+  /** Monitor ids that were not advanced, each with the reason. Never empty-by-convention: a
+   *  caller reads this list rather than diffing `advanced` against what it sent. */
+  readonly fenced: readonly { readonly id: string; readonly reason: AdvanceBatchFenceReason }[];
+}
+
+/** What a `back-sync` commits for one monitor: a range it has now actually read, and that range's
+ *  matches. Coverage is NOT moved — it is already above this range, which is why the gap existed. */
+export interface FillGapInput {
+  readonly expectedEpoch: bigint;
+  readonly from: bigint;
+  readonly to: bigint;
+  readonly associations: readonly AssociationInput[];
+}
+
+/** The outcome of {@link ShieldedMonitorStore.fillGap}. */
+export interface FillGapResult {
+  /** How many association rows this call wrote. */
+  readonly written: number;
+  /** The monitor's gaps after the fill, lowest first. */
+  readonly gaps: readonly MonitorGap[];
 }
 
 /** One entry of the lifecycle log. */
@@ -236,7 +298,9 @@ export interface ShieldedMonitorStore {
   getByFingerprint(net: string, fingerprint: Uint8Array): Promise<MonitorRecord | undefined>;
   listActive(limit?: number): Promise<MonitorRecord[]>;
   listAll(limit?: number): Promise<MonitorRecord[]>;
-  getKeyMaterial(id: string): Promise<Uint8Array>;
+  /** A monitor's unscanned ranges, lowest first. Also embedded in every {@link MonitorRecord};
+   *  this route exists so a back-sync worker can re-read them without re-reading the monitor. */
+  listGaps(monitorId: string): Promise<MonitorGap[]>;
   readAssociations(monitorId: string, afterSeq: bigint, limit: number): Promise<AssociationRecord[]>;
   readAssociationsMissingDetails(
     monitorId: string, afterSeq: bigint, limit: number,
@@ -247,8 +311,33 @@ export interface ShieldedMonitorStore {
     epoch: bigint,
     throughHeight: bigint,
     associations: readonly AssociationInput[],
-    opts?: { readonly fromHeight?: bigint; readonly lease?: LeaseRenewal },
+    opts?: { readonly fromHeight?: bigint },
   ): Promise<AdvanceResult>;
+  /**
+   * ONE block, every monitor a node holds, ONE transaction (00009-09; owner Rule B).
+   *
+   * This is the live path: the node deserializes each transaction of block `height` once, tests
+   * every held key against it, and commits the whole block's outcome — each monitor's associations,
+   * each monitor's coverage move to `height`, and any gap rows the `HAS_SCANNED_ONCE` check
+   * produced — in a single `BEGIN … COMMIT`. Rule B is therefore stronger than before, not weaker:
+   * one height is one commit for the node as a whole rather than one commit per monitor.
+   *
+   * Per-item fences are reported, never thrown (OP-2).
+   */
+  advanceBatch(
+    net: string,
+    height: bigint,
+    blockHash: Uint8Array,
+    items: readonly AdvanceBatchItem[],
+  ): Promise<AdvanceBatchResult>;
+  /**
+   * A back-sync's commit for one monitor: this range's associations, and the gap rows shrunk,
+   * split or deleted to match — ONE transaction, fenced on `expectedEpoch`.
+   *
+   * Coverage is deliberately untouched: the range is BELOW `scannedThrough`, which is exactly why
+   * a gap row existed for it.
+   */
+  fillGap(monitorId: string, input: FillGapInput): Promise<FillGapResult>;
   updateAssociationDetails(
     monitorId: string, expectedEpoch: bigint, updates: readonly AssociationDetailsUpdate[],
   ): Promise<{ readonly applied: number }>;
@@ -272,9 +361,4 @@ export interface ShieldedMonitorStore {
     actor: string, action: string, monitorId?: string, detail?: Record<string, unknown>,
   ): Promise<void>;
   listRevocations(): Promise<RevocationRecord[]>;
-  claimMonitorLease(
-    monitorId: string, owner: string, ttlMs: number,
-  ): Promise<{ readonly acquired: boolean; readonly lease?: MonitorLeaseRecord }>;
-  releaseMonitorLease(monitorId: string, owner: string): Promise<{ readonly released: boolean }>;
-  readMonitorLease(monitorId: string): Promise<MonitorLeaseRecord | undefined>;
 }

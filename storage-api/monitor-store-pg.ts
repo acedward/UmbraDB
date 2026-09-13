@@ -24,14 +24,18 @@ import type { MatchDetails } from "../shielded-monitor/match-details.js";
 import {
   MAX_ASSOCIATION_DETAILS_BYTES,
   MAX_ASSOCIATION_PAGE,
+  type AdvanceBatchFenceReason,
+  type AdvanceBatchItem,
+  type AdvanceBatchResult,
   type AdvanceResult,
   type AssociationDetailsUpdate,
   type AssociationInput,
   type AssociationRecord,
-  type LeaseRenewal,
+  type FillGapInput,
+  type FillGapResult,
   type LifecycleEventRecord,
+  type MonitorGap,
   type MonitorLastError,
-  type MonitorLeaseRecord,
   type MonitorRecord,
   type RegisterMonitorInput,
   type RevocationRecord,
@@ -64,9 +68,20 @@ import {
  * not reopen §4's decision to keep fencing tokens out of the lease layer, because there is
  * exactly one downstream write path and it is the check itself.
  *
- * **Deferred with User Story 4** (owner, 2026-09-10): `key_serialized` is plaintext, the
- * fingerprint is unkeyed, there is no tenant column and no least-privilege role script. See
- * `SECURITY.md` and `docs/shielded-monitor-restore.md`.
+ * ── 00009-09: there is no key in this file any more ─────────────────────────────────────────
+ * `register` takes a fingerprint; `key_serialized` is never written (it stays as an always-NULL
+ * column until a later cleanup migration drops it, OP-4) and there is no route or method that
+ * reads one. The lease methods are gone with it: what a monitor-node holds in RAM is the truth
+ * about who scans a monitor, so `monitor_leases` is neither read nor written any more.
+ *
+ * Two new commands carry the block-centric shape: {@link PgShieldedMonitorStore.advanceBatch} —
+ * one block, every monitor a node holds, one transaction, per-item fences REPORTED rather than
+ * thrown (OP-2) — and {@link PgShieldedMonitorStore.fillGap}, which writes a back-sync's
+ * associations and shrinks the gap rows without moving coverage.
+ *
+ * **Deferred with User Story 4** (owner, 2026-09-10): the fingerprint is unkeyed, associations are
+ * plaintext, there is no tenant column and no least-privilege role script. See `SECURITY.md` and
+ * `docs/shielded-monitor-restore.md`.
  */
 
 /** The `sql` handle `UmbraDBSql.begin(async (tx) => …)` hands its callback. Matches
@@ -135,12 +150,17 @@ const AssociationDetailsUpdateSchema = z.object({
   blockTimestampMs: z.bigint().nonnegative().optional(),
 });
 
-/** A lease owner is an operator-chosen label or a random UUID (`SCAN_INSTANCE_ID`). Bounded so a
- *  caller cannot write an arbitrary blob into a column an operator reads. */
-const LeaseOwnerSchema = z.string().min(1).max(128);
-/** 1 s .. 1 h. A sub-second lease would expire inside a single batch on a slow block; an
- *  hour-long one would make a crashed instance's monitors unreachable for an hour. */
-const LeaseTtlSchema = z.number().int().min(1_000).max(3_600_000);
+/** The block hash a batch names. Same bound as an association's own hash column. */
+const BlockHashSchema = z
+  .instanceof(Uint8Array)
+  .refine((b) => b.length >= 1 && b.length <= 64, "block hash must be 1..64 bytes");
+
+/** One unscanned range (00009-09). Inverted ranges are refused here as well as by the table's own
+ *  CHECK, so a caller gets a `ValidationError` naming the field rather than a constraint
+ *  violation naming a constraint. */
+const GapRangeSchema = z
+  .object({ from: HeightSchema, to: HeightSchema })
+  .refine((r) => r.to >= r.from, "a gap's `to` must be at or above its `from`");
 
 // ── Row shapes ───────────────────────────────────────────────────────────────────────────────
 
@@ -162,20 +182,15 @@ interface MonitorRow {
   updated_at: Date;
 }
 
-interface LeaseRow {
+interface GapRow {
   monitor_id: string;
-  owner: string;
-  claimed_at: Date;
-  expires_at: Date;
+  from_height: bigint;
+  to_height: bigint;
+  recorded_at: Date;
 }
 
-function toLease(row: LeaseRow): MonitorLeaseRecord {
-  return {
-    monitorId: row.monitor_id,
-    owner: row.owner,
-    claimedAt: row.claimed_at,
-    expiresAt: row.expires_at,
-  };
+function toGap(row: GapRow): MonitorGap {
+  return { from: row.from_height, to: row.to_height, recordedAt: row.recorded_at };
 }
 
 interface AssociationRow {
@@ -196,7 +211,17 @@ interface AssociationRow {
   created_at: Date;
 }
 
-function toRecord(row: MonitorRow): MonitorRecord {
+/**
+ * A monitor row as a record.
+ *
+ * `gaps` is a SEPARATE argument rather than a column, because it is a separate table: every read
+ * path that returns records loads the gaps for the ids it is about to return in one extra query
+ * and passes them here. The default is an empty array and not "unknown" — a monitor with no holes
+ * genuinely has none, and a caller must never have to distinguish "no gaps" from "gaps not
+ * loaded". The one place that would be wrong is a read that deliberately skips the gap query, and
+ * there is none.
+ */
+function toRecord(row: MonitorRow, gaps: readonly MonitorGap[] = []): MonitorRecord {
   return {
     id: row.id,
     net: row.net,
@@ -207,6 +232,7 @@ function toRecord(row: MonitorRow): MonitorRecord {
       ...(row.scanned_from_height !== null ? { scannedFrom: row.scanned_from_height } : {}),
       ...(row.scanned_through_height !== null ? { scannedThrough: row.scanned_through_height } : {}),
     },
+    gaps,
     ...(row.source_genesis_hash !== null ? { sourceGenesisHash: row.source_genesis_hash } : {}),
     ...(row.source_instance_id !== null ? { sourceInstanceId: row.source_instance_id } : {}),
     matchingRuleVersion: row.matching_rule_version,
@@ -271,10 +297,17 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
   // ── Registration ───────────────────────────────────────────────────────────────────────────
 
   /**
-   * Registers a viewing key, or returns the monitor that already holds it.
+   * Registers a viewing key's FINGERPRINT, or returns the monitor that already holds it.
+   *
+   * **No key material (00009-09).** The caller decoded, validated and hashed the key and keeps it
+   * in RAM; what arrives here is 32 bytes of SHA-256. `key_serialized` is left NULL and is never
+   * written again.
    *
    * Idempotent per `(net, fingerprint)` (organizer spec FR-004): the second registration of the
-   * same key on the same network returns the first monitor rather than creating a duplicate.
+   * same key on the same network returns the first monitor — **with its coverage and its gaps** —
+   * rather than creating a duplicate. That is not a nicety here; it is how a monitor-node that has
+   * just been handed a key it already knows about learns where to resume, and how a client
+   * re-sending a key after a node died reaches the same monitor.
    *
    * One case is deliberately NOT idempotent: a match in state `revoked` is refused with
    * {@link MonitorRevokedError} instead of being returned, because returning it would hand the
@@ -293,15 +326,14 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
       actor: input.actor,
     }, "PgShieldedMonitorStore.register");
 
-    if (input.key.net !== validated.net) {
+    if (input.fingerprint.length !== 32) {
       throw new ValidationError(
-        "PgShieldedMonitorStore.register: the key was validated for a different network than the one supplied",
-        [{ path: "net", message: `key network ${input.key.net} != requested ${validated.net}` }],
+        "PgShieldedMonitorStore.register: a monitor fingerprint is 32 bytes of SHA-256",
+        [{ path: "fingerprint", message: `got ${input.fingerprint.length} bytes` }],
       );
     }
 
-    const fingerprint = Buffer.from(input.key.fingerprint);
-    const serialized = Buffer.from(input.key.yesIKnowTheSecurityImplicationsOfThis_serialized());
+    const fingerprint = Buffer.from(input.fingerprint);
 
     try {
       return await this.sql.begin(async (tx) => {
@@ -313,7 +345,7 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
         const found = existing[0];
         if (found !== undefined) {
           if (found.state === "revoked") throw new MonitorRevokedError(found.id);
-          return toRecord(found);
+          return toRecord(found, await this.gapsInTx(tx, found.id));
         }
 
         const id = randomUUID();
@@ -323,13 +355,17 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
         // however narrow. Treating it as an error would make idempotent registration (FR-004)
         // hold only when nobody registers twice at once; instead the caller falls through to
         // re-reading the winner below, which is what idempotency actually means.
+        // `key_serialized` is absent from the column list, not written as NULL: absence is the
+        // statement. There is no code path in this repository that puts a viewing key into this
+        // table any more (00009-09), and the column stays only because dropping it would not be an
+        // additive migration (OP-4).
         const inserted = await tx<MonitorRow[]>`
           INSERT INTO ${tx(this.schema)}.monitors (
-            id, net, fingerprint, key_serialized, state, epoch, last_assoc_seq,
+            id, net, fingerprint, state, epoch, last_assoc_seq,
             requested_start_height, source_genesis_hash, source_instance_id,
             matching_rule_version, ledger_build
           ) VALUES (
-            ${id}, ${validated.net}, ${fingerprint}, ${serialized}, ${INITIAL_STATE}, ${0n}, ${0n},
+            ${id}, ${validated.net}, ${fingerprint}, ${INITIAL_STATE}, ${0n}, ${0n},
             ${validated.requestedStartHeight}, ${validated.sourceGenesisHash ?? null},
             ${validated.sourceInstanceId ?? null},
             ${validated.matchingRuleVersion}, ${validated.ledgerBuild}
@@ -354,7 +390,7 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
             );
           }
           if (raced.state === "revoked") throw new MonitorRevokedError(raced.id);
-          return toRecord(raced);
+          return toRecord(raced, await this.gapsInTx(tx, raced.id));
         }
         await this.appendLifecycleEvent(tx, id, "register", undefined, INITIAL_STATE, 0n, validated.actor);
         return toRecord(row);
@@ -375,7 +411,7 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
     const row = await this.loadRow(id);
     if (row === undefined || row.state === "deleted") throw new MonitorNotFoundError(id);
     if (refusesReads(row.state as MonitorState)) throw new MonitorRevokedError(id);
-    return toRecord(row);
+    return toRecord(row, await this.loadGaps([id]).then((m) => m.get(id) ?? []));
   }
 
   /**
@@ -385,7 +421,8 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
    */
   async getIncludingRevoked(id: string): Promise<MonitorRecord | undefined> {
     const row = await this.loadRow(id);
-    return row === undefined ? undefined : toRecord(row);
+    if (row === undefined) return undefined;
+    return toRecord(row, (await this.loadGaps([id])).get(id) ?? []);
   }
 
   /** Looks a monitor up by its registration identity. Takes the fingerprint rather than the key
@@ -398,7 +435,8 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
          WHERE net = ${net} AND fingerprint = ${Buffer.from(fingerprint)}
       `;
       const row = rows[0];
-      return row === undefined ? undefined : toRecord(row);
+      if (row === undefined) return undefined;
+      return toRecord(row, (await this.loadGaps([row.id])).get(row.id) ?? []);
     } catch (err) {
       throw translatePostgresError(err);
     }
@@ -414,7 +452,7 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
          ORDER BY created_at, id
          LIMIT ${bounded}
       `;
-      return rows.map(toRecord);
+      return await this.withGaps(rows);
     } catch (err) {
       throw translatePostgresError(err);
     }
@@ -450,34 +488,67 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
          ORDER BY created_at, id
          LIMIT ${bounded}
       `;
-      return rows.map(toRecord);
+      return await this.withGaps(rows);
     } catch (err) {
       throw translatePostgresError(err);
     }
   }
 
+  // ── Gaps (00009-09) ────────────────────────────────────────────────────────────────────────
+
   /**
-   * The serialized viewing key of a scannable monitor.
+   * A monitor's unscanned ranges, lowest first.
    *
-   * The single choke point through which key material leaves the database — which is exactly why
-   * it is one small method: when at-rest encryption returns with User Story 4, decryption goes
-   * here and nowhere else. Refuses revoked and deleted monitors.
+   * Deliberately NOT state-restricted: a paused monitor's gaps are still the truth about what was
+   * never read for it, and hiding them would make a resumed monitor look complete when it is not.
+   * A monitor that does not exist has no gaps rather than an error — the callers that need the
+   * not-found distinction read the monitor itself, and this is a list.
    */
-  async getKeyMaterial(id: string): Promise<Uint8Array> {
-    parse(UuidSchema, id, "PgShieldedMonitorStore.getKeyMaterial");
+  async listGaps(monitorId: string): Promise<MonitorGap[]> {
+    parse(UuidSchema, monitorId, "PgShieldedMonitorStore.listGaps");
     try {
-      const rows = await this.sql<{ state: string; key_serialized: Buffer | null }[]>`
-        SELECT state, key_serialized FROM ${this.sql(this.schema)}.monitors WHERE id = ${id}
-      `;
-      const row = rows[0];
-      if (row === undefined || row.state === "deleted" || row.key_serialized === null) {
-        throw new MonitorNotFoundError(id);
-      }
-      if (refusesReads(row.state as MonitorState)) throw new MonitorRevokedError(id);
-      return Uint8Array.from(row.key_serialized);
+      return (await this.loadGaps([monitorId])).get(monitorId) ?? [];
     } catch (err) {
       throw translatePostgresError(err);
     }
+  }
+
+  /** Attaches each row's gaps in ONE extra query rather than one per row — a 50-monitor list must
+   *  not become 51 round trips (the same reasoning the API's single `sourceTip` read follows). */
+  private async withGaps(rows: readonly MonitorRow[]): Promise<MonitorRecord[]> {
+    if (rows.length === 0) return [];
+    const byMonitor = await this.loadGaps(rows.map((r) => r.id));
+    return rows.map((row) => toRecord(row, byMonitor.get(row.id) ?? []));
+  }
+
+  /** `monitor_id → gaps`, for any number of ids, in one statement. */
+  private async loadGaps(ids: readonly string[]): Promise<Map<string, MonitorGap[]>> {
+    const byMonitor = new Map<string, MonitorGap[]>();
+    if (ids.length === 0) return byMonitor;
+    const rows = await this.sql<GapRow[]>`
+      SELECT monitor_id, from_height, to_height, recorded_at
+        FROM ${this.sql(this.schema)}.monitor_gaps
+       WHERE monitor_id IN ${this.sql(ids as string[])}
+       ORDER BY monitor_id, from_height
+    `;
+    for (const row of rows) {
+      const list = byMonitor.get(row.monitor_id);
+      if (list === undefined) byMonitor.set(row.monitor_id, [toGap(row)]);
+      else list.push(toGap(row));
+    }
+    return byMonitor;
+  }
+
+  /** The same read, inside a caller's transaction, for the commands that must return the gaps
+   *  they just wrote without a second, racy round trip. */
+  private async gapsInTx(tx: MonitorTx, monitorId: string): Promise<MonitorGap[]> {
+    const rows = await tx<GapRow[]>`
+      SELECT monitor_id, from_height, to_height, recorded_at
+        FROM ${tx(this.schema)}.monitor_gaps
+       WHERE monitor_id = ${monitorId}
+       ORDER BY from_height
+    `;
+    return rows.map(toGap);
   }
 
   /**
@@ -631,7 +702,7 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
     epoch: bigint,
     throughHeight: bigint,
     associations: readonly AssociationInput[],
-    opts: { readonly fromHeight?: bigint; readonly lease?: LeaseRenewal } = {},
+    opts: { readonly fromHeight?: bigint } = {},
   ): Promise<AdvanceResult> {
     parse(UuidSchema, monitorId, "PgShieldedMonitorStore.advance");
     parse(z.bigint().nonnegative(), epoch, "PgShieldedMonitorStore.advance");
@@ -677,49 +748,309 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
         if (row === undefined) return await this.classifyFenceMiss(tx, monitorId, epoch);
 
         const base = row.last_assoc_seq - BigInt(rows.length);
-        for (const [index, a] of rows.entries()) {
-          await tx`
-            INSERT INTO ${tx(this.schema)}.associations (
-              monitor_id, seq, net, block_height, block_hash, position, tx_hash,
-              protocol_version, matched_segments, applied_outcome, source_outcome,
-              matching_rule_version, ledger_build, details, block_timestamp_ms
-            ) VALUES (
-              ${monitorId}, ${base + BigInt(index) + 1n}, ${a.net}, ${a.blockHeight},
-              ${Buffer.from(a.blockHash)}, ${a.position}, ${Buffer.from(a.txHash)},
-              ${a.protocolVersion}, ${segmentArrayLiteral(a.matchedSegments)}::smallint[], 'unknown',
-              ${a.sourceOutcome ?? null},
-              ${a.matchingRuleVersion ?? row.matching_rule_version},
-              ${a.ledgerBuild ?? row.ledger_build},
-              -- 00009-07: written INSIDE this same transaction, so a match's details and the
-              -- coverage advance that admits it are one commit unit (owner Rule B). A crash can
-              -- therefore never leave a match whose details describe a different scan.
-              ${a.details === undefined ? null : tx.json(a.details as never)},
-              ${a.blockTimestampMs ?? null}
-            )
-          `;
-        }
-
-        // 00009-08: the lease renewal rides in THIS transaction, with the associations and the
-        // coverage advance. Not "soon after" and not in a timer: if the renewal were a separate
-        // statement, a crash between the two would leave a height committed under a lease that
-        // had already lapsed, and the takeover would begin while the previous holder still
-        // believed it was mid-turn. One commit, one observable state — the same rule the height's
-        // own data follows (owner Rule B), extended to the claim that produced it.
-        const leaseHeld = opts.lease === undefined
-          ? undefined
-          : await this.renewLeaseInTx(tx, monitorId, opts.lease);
+        await this.insertAssociations(tx, monitorId, base, rows, row);
 
         return {
           applied: true,
           firstSeq: base + 1n,
           lastSeq: row.last_assoc_seq,
           coverage: toRecord(row).coverage,
-          ...(leaseHeld === undefined ? {} : { leaseHeld }),
         } as const;
       });
     } catch (err) {
       throw translatePostgresError(err);
     }
+  }
+
+  /**
+   * ONE block, every monitor a node holds, ONE transaction (00009-09; owner Rule B).
+   *
+   * ── Why this exists at all ────────────────────────────────────────────────────────────────
+   * Before 00009-09 a scanner committed once per monitor per batch, because it scanned once per
+   * monitor. A monitor-node deserializes each transaction of a block ONCE and tests every held key
+   * against it, so the natural commit unit stopped being "this monitor's batch" and became "this
+   * block, for everyone". Rule B is strengthened by that, not weakened: a height is still exactly
+   * one `BEGIN … COMMIT`, and now that commit also cannot leave two of a node's monitors
+   * disagreeing about whether the height happened.
+   *
+   * ── Fenced items are REPORTED, never thrown (OP-2) ────────────────────────────────────────
+   * A `MonitorFencedError` here would abort the whole block for every other monitor, which is
+   * exactly the wrong shape: pausing one wallet must not stop the node. So each item is fenced
+   * independently, the failures come back in `fenced` with the reason, and the transaction commits
+   * what it could. The four reasons are the four causes of a zero-row fencing `UPDATE`, classified
+   * inside the same transaction so the classification cannot race a concurrent transition.
+   *
+   * ── What `newGaps` is doing in here ───────────────────────────────────────────────────────
+   * It is the `HAS_SCANNED_ONCE` finding: this monitor's coverage stood BELOW `height − 1` when it
+   * joined the live set, so the range in between was never read for it. Writing the gap row in the
+   * same transaction as the coverage move is the whole point — a crash between the two would leave
+   * coverage claiming a range no gap row admits was never scanned, and nothing would ever revisit
+   * it. Ranges at or above `height` are refused: a gap is a hole BELOW coverage by definition.
+   */
+  async advanceBatch(
+    net: string,
+    height: bigint,
+    blockHash: Uint8Array,
+    items: readonly AdvanceBatchItem[],
+  ): Promise<AdvanceBatchResult> {
+    parse(NetSchema, net, "PgShieldedMonitorStore.advanceBatch");
+    parse(HeightSchema, height, "PgShieldedMonitorStore.advanceBatch");
+    parse(BlockHashSchema, blockHash, "PgShieldedMonitorStore.advanceBatch");
+    const validated = items.map((item) => ({
+      monitorId: parse(UuidSchema, item.monitorId, "PgShieldedMonitorStore.advanceBatch"),
+      expectedEpoch: parse(z.bigint().nonnegative(), item.expectedEpoch, "PgShieldedMonitorStore.advanceBatch"),
+      associations: item.associations.map((a) =>
+        parse(AssociationInputSchema, a, "PgShieldedMonitorStore.advanceBatch")),
+      newGaps: (item.newGaps ?? []).map((g) => parse(GapRangeSchema, g, "PgShieldedMonitorStore.advanceBatch")),
+    }));
+    const blockHashHex = Buffer.from(blockHash).toString("hex");
+    for (const item of validated) {
+      for (const a of item.associations) {
+        // The batch NAMES one block, so every association in it must belong to that block — both
+        // the height and the hash. Checked rather than assumed: the batch's own identity is the
+        // only thing tying a node's per-monitor lists together, and a mismatch would write a
+        // match into the wrong block's row while advancing coverage as if it were right.
+        if (a.blockHeight !== height) {
+          throw new ValidationError(
+            "PgShieldedMonitorStore.advanceBatch: every association in a block batch belongs to that block",
+            [{ path: "items.associations", message: `blockHeight ${a.blockHeight} != height ${height}` }],
+          );
+        }
+        if (Buffer.from(a.blockHash).toString("hex") !== blockHashHex) {
+          throw new ValidationError(
+            "PgShieldedMonitorStore.advanceBatch: an association names a different block hash than the batch",
+            [{ path: "items.associations", message: "blockHash != the batch's blockHash" }],
+          );
+        }
+      }
+      for (const gap of item.newGaps) {
+        if (gap.to >= height) {
+          throw new ValidationError(
+            "PgShieldedMonitorStore.advanceBatch: a gap is a range BELOW the coverage this batch sets",
+            [{ path: "items.newGaps", message: `to ${gap.to} >= height ${height}` }],
+          );
+        }
+      }
+    }
+    // A block batch addressing the same monitor twice would allocate two overlapping `seq` ranges
+    // from one `last_assoc_seq` read. Refused rather than merged: a node that sent one is holding
+    // the same key twice, which is a bug worth surfacing at the boundary.
+    const seen = new Set<string>();
+    for (const item of validated) {
+      if (seen.has(item.monitorId)) {
+        throw new ValidationError(
+          "PgShieldedMonitorStore.advanceBatch: a monitor appears twice in one block batch",
+          [{ path: "items.monitorId", message: item.monitorId }],
+        );
+      }
+      seen.add(item.monitorId);
+    }
+
+    if (validated.length === 0) return { advanced: [], fenced: [] };
+
+    try {
+      return await this.sql.begin(async (tx) => {
+        const advanced: string[] = [];
+        const fenced: { id: string; reason: AdvanceBatchFenceReason }[] = [];
+        for (const item of validated) {
+          // One block, so `(blockHeight, position)` order is position order.
+          const rows = [...item.associations].sort((a, b) => a.position - b.position);
+          // The SAME fencing statement `advance` uses, per item.
+          const updated = await tx<MonitorRow[]>`
+            UPDATE ${tx(this.schema)}.monitors
+               SET scanned_from_height    = COALESCE(scanned_from_height, requested_start_height),
+                   scanned_through_height = ${height},
+                   last_assoc_seq         = last_assoc_seq + ${BigInt(rows.length)},
+                   updated_at             = now()
+             WHERE id = ${item.monitorId}
+               AND net = ${net}
+               AND epoch = ${item.expectedEpoch}
+               AND state IN ${tx(SCANNABLE_STATES as string[])}
+               AND (scanned_through_height IS NULL OR scanned_through_height < ${height})
+            RETURNING *
+          `;
+          const row = updated[0];
+          if (row === undefined) {
+            const reason = await this.classifyBatchMiss(tx, item.monitorId, net, item.expectedEpoch);
+            fenced.push({ id: item.monitorId, reason });
+            continue;
+          }
+          const base = row.last_assoc_seq - BigInt(rows.length);
+          await this.insertAssociations(tx, item.monitorId, base, rows, row);
+          for (const gap of item.newGaps) {
+            // `ON CONFLICT DO NOTHING`: a gap starting at the same height is the same hole. A node
+            // that re-reports one after a lost response must not fail the block for everyone else.
+            await tx`
+              INSERT INTO ${tx(this.schema)}.monitor_gaps (monitor_id, from_height, to_height)
+              VALUES (${item.monitorId}, ${gap.from}, ${gap.to})
+              ON CONFLICT (monitor_id, from_height) DO NOTHING
+            `;
+          }
+          advanced.push(item.monitorId);
+        }
+        return { advanced, fenced } as const;
+      });
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /**
+   * A back-sync's commit for one monitor: the range `[from, to]` has now actually been read, so
+   * its matches are written and the gap rows covering it are shrunk, split or deleted — ONE
+   * transaction, fenced on `expectedEpoch` (00009-09).
+   *
+   * **Coverage is not touched, and that is the point.** `scanned_through_height` is already ABOVE
+   * this range — that is why a gap row existed — so moving it would be meaningless at best and a
+   * regression at worst.
+   *
+   * **The four shapes of a fill.** A fill of `[a, b]` against a stored gap `[f, t]`:
+   * - exactly equal → the row is deleted;
+   * - `a == f`, `b < t` → the row moves up to `[b + 1, t]` (delete + insert, because `from_height`
+   *   is the primary key);
+   * - `a > f`, `b == t` → the row shrinks to `[f, a − 1]`;
+   * - `a > f`, `b < t` → the row splits into `[f, a − 1]` and `[b + 1, t]`.
+   * A fill that covers several gap rows applies this to each of them. A fill that overlaps nothing
+   * still writes its associations and reports `written`: re-reading a range that is already
+   * covered is wasteful, not wrong, and the `UNIQUE (monitor_id, block_height, block_hash,
+   * position)` index is what actually stops a duplicate row.
+   *
+   * **Sequence numbers.** Back-filled associations get the NEXT sequence numbers, above every
+   * match already recorded, even though their heights are older. That is deliberate: `seq` is the
+   * consumer's cursor, and a poller that has already paged past height H must still be handed a
+   * match discovered later at height H. The cost is that `seq` order is no longer `(blockHeight,
+   * position)` order for a monitor that had a gap — recorded as a deviation in the design doc.
+   */
+  async fillGap(monitorId: string, input: FillGapInput): Promise<FillGapResult> {
+    parse(UuidSchema, monitorId, "PgShieldedMonitorStore.fillGap");
+    const range = parse(GapRangeSchema, { from: input.from, to: input.to }, "PgShieldedMonitorStore.fillGap");
+    const expectedEpoch = parse(z.bigint().nonnegative(), input.expectedEpoch, "PgShieldedMonitorStore.fillGap");
+    const rows = input.associations
+      .map((a) => parse(AssociationInputSchema, a, "PgShieldedMonitorStore.fillGap"))
+      .sort((a, b) => (a.blockHeight === b.blockHeight
+        ? a.position - b.position
+        : a.blockHeight < b.blockHeight ? -1 : 1));
+    for (const a of rows) {
+      if (a.blockHeight < range.from || a.blockHeight > range.to) {
+        throw new ValidationError(
+          "PgShieldedMonitorStore.fillGap: an association sits outside the range this call claims to have read",
+          [{ path: "associations", message: `blockHeight ${a.blockHeight} outside [${range.from}, ${range.to}]` }],
+        );
+      }
+    }
+
+    try {
+      return await this.sql.begin(async (tx) => {
+        const current = await tx<MonitorRow[]>`
+          SELECT * FROM ${tx(this.schema)}.monitors WHERE id = ${monitorId} FOR UPDATE
+        `;
+        const monitor = current[0];
+        if (monitor === undefined || monitor.state === "deleted") throw new MonitorNotFoundError(monitorId);
+        if (refusesReads(monitor.state as MonitorState)) throw new MonitorRevokedError(monitorId);
+        if (monitor.epoch !== expectedEpoch) {
+          throw new MonitorFencedError(monitorId, "epoch", { epoch: monitor.epoch, state: monitor.state });
+        }
+
+        if (rows.length > 0) {
+          const bumped = await tx<MonitorRow[]>`
+            UPDATE ${tx(this.schema)}.monitors
+               SET last_assoc_seq = last_assoc_seq + ${BigInt(rows.length)}, updated_at = now()
+             WHERE id = ${monitorId} AND epoch = ${expectedEpoch}
+            RETURNING *
+          `;
+          const row = bumped[0]!;
+          await this.insertAssociations(tx, monitorId, row.last_assoc_seq - BigInt(rows.length), rows, row);
+        }
+
+        // Every stored gap this fill touches, locked so two back-syncs on one monitor cannot both
+        // rewrite the same row.
+        const overlapping = await tx<GapRow[]>`
+          SELECT monitor_id, from_height, to_height, recorded_at
+            FROM ${tx(this.schema)}.monitor_gaps
+           WHERE monitor_id = ${monitorId}
+             AND from_height <= ${range.to}
+             AND to_height >= ${range.from}
+           ORDER BY from_height
+           FOR UPDATE
+        `;
+        for (const gap of overlapping) {
+          await tx`
+            DELETE FROM ${tx(this.schema)}.monitor_gaps
+             WHERE monitor_id = ${monitorId} AND from_height = ${gap.from_height}
+          `;
+          // The left remainder keeps the original `recorded_at`: it is the same hole, discovered
+          // at the same moment, merely smaller. A fresh timestamp would make an old unfilled range
+          // look newly found every time a back-sync nibbled at it.
+          if (gap.from_height < range.from) {
+            await tx`
+              INSERT INTO ${tx(this.schema)}.monitor_gaps (monitor_id, from_height, to_height, recorded_at)
+              VALUES (${monitorId}, ${gap.from_height}, ${range.from - 1n}, ${gap.recorded_at})
+            `;
+          }
+          if (gap.to_height > range.to) {
+            await tx`
+              INSERT INTO ${tx(this.schema)}.monitor_gaps (monitor_id, from_height, to_height, recorded_at)
+              VALUES (${monitorId}, ${range.to + 1n}, ${gap.to_height}, ${gap.recorded_at})
+            `;
+          }
+        }
+
+        return { written: rows.length, gaps: await this.gapsInTx(tx, monitorId) } as const;
+      });
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /** The association INSERT loop, shared by `advance`, `advanceBatch` and `fillGap` so all three
+   *  write literally the same row shape. `seq` is allocated from `base + 1` upwards in the caller's
+   *  already-sorted order. */
+  private async insertAssociations(
+    tx: MonitorTx,
+    monitorId: string,
+    base: bigint,
+    rows: readonly z.infer<typeof AssociationInputSchema>[],
+    monitor: Pick<MonitorRow, "matching_rule_version" | "ledger_build">,
+  ): Promise<void> {
+    for (const [index, a] of rows.entries()) {
+      await tx`
+        INSERT INTO ${tx(this.schema)}.associations (
+          monitor_id, seq, net, block_height, block_hash, position, tx_hash,
+          protocol_version, matched_segments, applied_outcome, source_outcome,
+          matching_rule_version, ledger_build, details, block_timestamp_ms
+        ) VALUES (
+          ${monitorId}, ${base + BigInt(index) + 1n}, ${a.net}, ${a.blockHeight},
+          ${Buffer.from(a.blockHash)}, ${a.position}, ${Buffer.from(a.txHash)},
+          ${a.protocolVersion}, ${segmentArrayLiteral(a.matchedSegments)}::smallint[], 'unknown',
+          ${a.sourceOutcome ?? null},
+          ${a.matchingRuleVersion ?? monitor.matching_rule_version},
+          ${a.ledgerBuild ?? monitor.ledger_build},
+          -- 00009-07: written INSIDE this same transaction, so a match's details and the
+          -- coverage advance that admits it are one commit unit (owner Rule B). A crash can
+          -- therefore never leave a match whose details describe a different scan.
+          ${a.details === undefined ? null : tx.json(a.details as never)},
+          ${a.blockTimestampMs ?? null}
+        )
+      `;
+    }
+  }
+
+  /** `classifyFenceMiss`'s reporting sibling: the same four causes, returned rather than thrown,
+   *  because one item of a block batch must never fail the block (OP-2). */
+  private async classifyBatchMiss(
+    tx: MonitorTx, monitorId: string, net: string, epoch: bigint,
+  ): Promise<AdvanceBatchFenceReason> {
+    const current = await tx<MonitorRow[]>`
+      SELECT * FROM ${tx(this.schema)}.monitors WHERE id = ${monitorId} FOR SHARE
+    `;
+    const row = current[0];
+    // A monitor on a DIFFERENT network is reported as not-found rather than as some new fourth
+    // reason: from this batch's point of view it does not exist, and the node's correct response
+    // is the same one it makes for a deleted monitor — drop the key.
+    if (row === undefined || row.net !== net) return "not-found";
+    if (!(SCANNABLE_STATES as string[]).includes(row.state)) return "state";
+    if (row.epoch !== epoch) return "epoch";
+    return "already-advanced";
   }
 
   /**
@@ -973,6 +1304,12 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
             // crash mid-delete leaves either a fully live monitor or a fully shredded one
             // (organizer spec US3 scenario 4).
             await tx`DELETE FROM ${tx(this.schema)}.associations WHERE monitor_id = ${id}`;
+            // 00009-09: gaps go with them. The FK's `ON DELETE CASCADE` never fires for a delete,
+            // because `delete` keeps a TOMBSTONE row rather than removing the monitor (US3
+            // scenario 4), so the shred has to be explicit — otherwise a re-registration of the
+            // same key would mint a fresh monitor while stale gap rows still described the old
+            // one's coverage.
+            await tx`DELETE FROM ${tx(this.schema)}.monitor_gaps WHERE monitor_id = ${id}`;
             const done = await tx<MonitorRow[]>`
               UPDATE ${tx(this.schema)}.monitors
                  SET state = ${outcome.to}, epoch = ${epochAfter},
@@ -1123,103 +1460,6 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
     } catch (err) {
       throw translatePostgresError(err);
     }
-  }
-
-  // ── Monitor leases (00009-08) ──────────────────────────────────────────────────────────────
-
-  /**
-   * Claim a monitor for this scanner instance, or report that someone else holds it.
-   *
-   * ONE statement, so the read and the write cannot race: `INSERT … ON CONFLICT DO UPDATE`
-   * where the update is admitted only when the existing lease has EXPIRED or is already ours.
-   * `RETURNING` therefore yields a row exactly when the claim succeeded, and no rows when another
-   * instance's unexpired lease stood in the way — which is the whole answer, with no second query
-   * whose result could have changed in between.
-   *
-   * "…or is already ours" is not a convenience: a scanner re-claims the monitor it is already
-   * working on at the top of every cycle, and without that clause it would lose its own monitor
-   * to itself the moment the first TTL elapsed.
-   *
-   * **This is not a lock** (see `003_monitor_leases.ts`): a successful claim does not make a
-   * commit safe, and a failed one does not make it unsafe. It decides who does the WORK.
-   */
-  async claimMonitorLease(
-    monitorId: string, owner: string, ttlMs: number,
-  ): Promise<{ readonly acquired: boolean; readonly lease?: MonitorLeaseRecord }> {
-    parse(UuidSchema, monitorId, "PgShieldedMonitorStore.claimMonitorLease");
-    parse(LeaseOwnerSchema, owner, "PgShieldedMonitorStore.claimMonitorLease");
-    parse(LeaseTtlSchema, ttlMs, "PgShieldedMonitorStore.claimMonitorLease");
-    try {
-      const rows = await this.sql<LeaseRow[]>`
-        INSERT INTO ${this.sql(this.schema)}.monitor_leases (monitor_id, owner, claimed_at, expires_at)
-        VALUES (${monitorId}, ${owner}, now(), now() + make_interval(secs => ${ttlMs / 1000}))
-        ON CONFLICT (monitor_id) DO UPDATE
-           SET owner = EXCLUDED.owner, claimed_at = now(), expires_at = EXCLUDED.expires_at
-         WHERE ${this.sql(this.schema)}.monitor_leases.expires_at < now()
-            OR ${this.sql(this.schema)}.monitor_leases.owner = EXCLUDED.owner
-        RETURNING monitor_id, owner, claimed_at, expires_at
-      `;
-      const row = rows[0];
-      return row === undefined ? { acquired: false } : { acquired: true, lease: toLease(row) };
-    } catch (err) {
-      throw translatePostgresError(err);
-    }
-  }
-
-  /**
-   * Give a monitor back, so another instance need not wait out the TTL.
-   *
-   * Scoped to `owner`: releasing someone else's lease would be a way for a departing instance to
-   * hand a monitor to a third party mid-batch. A release that matches nothing is not an error —
-   * the lease may already have expired and been re-claimed, which is exactly the case where the
-   * caller must NOT be told something went wrong.
-   */
-  async releaseMonitorLease(monitorId: string, owner: string): Promise<{ readonly released: boolean }> {
-    parse(UuidSchema, monitorId, "PgShieldedMonitorStore.releaseMonitorLease");
-    parse(LeaseOwnerSchema, owner, "PgShieldedMonitorStore.releaseMonitorLease");
-    try {
-      const rows = await this.sql<{ monitor_id: string }[]>`
-        DELETE FROM ${this.sql(this.schema)}.monitor_leases
-         WHERE monitor_id = ${monitorId} AND owner = ${owner}
-        RETURNING monitor_id
-      `;
-      return { released: rows.length > 0 };
-    } catch (err) {
-      throw translatePostgresError(err);
-    }
-  }
-
-  /** The current lease, for an operator view and for the tests that assert takeover. Reads the
-   *  row as stored; an EXPIRED lease is still returned, because "expired but not yet reclaimed"
-   *  is a real and interesting state. */
-  async readMonitorLease(monitorId: string): Promise<MonitorLeaseRecord | undefined> {
-    parse(UuidSchema, monitorId, "PgShieldedMonitorStore.readMonitorLease");
-    try {
-      const rows = await this.sql<LeaseRow[]>`
-        SELECT monitor_id, owner, claimed_at, expires_at
-          FROM ${this.sql(this.schema)}.monitor_leases WHERE monitor_id = ${monitorId}
-      `;
-      const row = rows[0];
-      return row === undefined ? undefined : toLease(row);
-    } catch (err) {
-      throw translatePostgresError(err);
-    }
-  }
-
-  /** The renewal {@link advance} performs inside its own transaction. Scoped to `owner`, so a
-   *  lease another instance took over is NOT silently stolen back by the commit. */
-  private async renewLeaseInTx(
-    tx: MonitorTx, monitorId: string, lease: LeaseRenewal,
-  ): Promise<boolean> {
-    parse(LeaseOwnerSchema, lease.owner, "PgShieldedMonitorStore.advance");
-    parse(LeaseTtlSchema, lease.ttlMs, "PgShieldedMonitorStore.advance");
-    const rows = await tx<{ monitor_id: string }[]>`
-      UPDATE ${tx(this.schema)}.monitor_leases
-         SET expires_at = now() + make_interval(secs => ${lease.ttlMs / 1000})
-       WHERE monitor_id = ${monitorId} AND owner = ${lease.owner}
-      RETURNING monitor_id
-    `;
-    return rows.length > 0;
   }
 
   private async loadRow(id: string): Promise<MonitorRow | undefined> {

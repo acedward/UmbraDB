@@ -21,28 +21,29 @@ import {
 import {
   MONITOR_STORE_PREFIX,
   MONITOR_STORE_WIRE_VERSION,
-  bytesToBase64,
   base64ToBytes,
+  decodeAdvanceBatchItem,
   decodeAssociationInput,
   decodeDetailsUpdate,
+  encodeAdvanceBatchResult,
   encodeAdvanceResult,
   encodeAssociation,
-  encodeLease,
+  encodeFillGapResult,
+  encodeGap,
   encodeLifecycleEvent,
   encodeMonitor,
   encodeRevocation,
+  WireAdvanceBatchRequestSchema,
   WireAdvanceRequestSchema,
   WireAssociationDetailsRequestSchema,
   WireAuditRequestSchema,
   WireBindSourceRequestSchema,
-  WireLeaseClaimRequestSchema,
-  WireLeaseReleaseRequestSchema,
+  WireFillGapRequestSchema,
   WireRegisterRequestSchema,
   WireTransitionRequestSchema,
   type MonitorStoreErrorCode,
 } from "../shielded-monitor/storage-wire.js";
 import { MAX_ASSOCIATION_PAGE, type ShieldedMonitorStore } from "../shielded-monitor/store.js";
-import { ShieldedViewingKey } from "../shielded-monitor/viewing-key.js";
 import type { StorageApiConfig } from "./config.js";
 
 /**
@@ -95,6 +96,17 @@ class HttpError extends Error {
     super(message);
     this.name = "HttpError";
   }
+}
+
+/** The one message every removed lease route answers with (00009-09, owner decision Q28). */
+const LEASES_ARE_GONE =
+  "monitor leases are gone: what a monitor-node holds in RAM is the truth about who scans a " +
+  "monitor, and the balancer asks the nodes rather than reading a table (00009-09, owner " +
+  "decision Q28)";
+
+/** A route this API used to serve and deliberately no longer does. */
+function gone(message: string): HttpError {
+  return new HttpError(410, "GONE", message);
 }
 
 export interface StorageApiOptions {
@@ -358,12 +370,11 @@ export function createStorageApi(options: StorageApiOptions): StorageApi {
       if (method === "POST") {
         setRoute("POST /v1/monitor-store/monitors");
         const input = await body(WireRegisterRequestSchema, "register");
-        // The fingerprint is RE-DERIVED here from the submitted bytes rather than accepted from
-        // the client: registration identity (FR-003) must be computed by the side that writes the
-        // row, or a client could register the same key under two identities.
-        const key = new ShieldedViewingKey(input.net, base64ToBytes(input.keySerialized));
+        // 00009-09: a FINGERPRINT, never a key. The upsert on `(net, fingerprint)` returns the
+        // existing record — with its coverage and its gaps — when one is already there, which is
+        // what a monitor-node needs in order to resume a key it has been handed again.
         const monitor = await store.register({
-          key,
+          fingerprint: base64ToBytes(input.fingerprint),
           net: input.net,
           requestedStartHeight: BigInt(input.requestedStartHeight),
           matchingRuleVersion: input.matchingRuleVersion,
@@ -419,20 +430,38 @@ export function createStorageApi(options: StorageApiOptions): StorageApi {
           const events = await store.listLifecycleEvents(id);
           return { status: 200, body: { events: events.map(encodeLifecycleEvent) } };
         }
-        case "key-material": {
+        // ── 00009-09: routes that are deliberately GONE ─────────────────────────────────────
+        //
+        // 410, not 404. A 404 says "no such route, check your spelling"; these routes EXISTED and
+        // were removed, and an operator running a 00009-08 scanner against a 00009-09 storage API
+        // deserves to be told which. `key-material` is gone because the database holds no key
+        // material any more (owner Q28) and `lease` because what a monitor-node holds in RAM is
+        // the truth about who scans a monitor.
+        case "key-material":
           setRoute("GET /v1/monitor-store/monitors/<id>/key-material");
-          requireGet(method);
-          // The one route that serves key material, and the one a TEE deployment replaces with an
-          // attested channel. It is a GET with `cache-control: no-store` (set on every response
-          // here) and the key never appears in a log line, because the logger records the route
-          // PATTERN and the status, never a body.
-          return { status: 200, body: { keySerialized: bytesToBase64(await store.getKeyMaterial(id)) } };
-        }
-        case "lease": {
+          throw gone(
+            "the storage API no longer holds key material: a viewing key lives only in the RAM of " +
+              "the monitor-node that was given it (00009-09, owner decision Q28)",
+          );
+        case "lease":
           setRoute("GET /v1/monitor-store/monitors/<id>/lease");
+          throw gone(LEASES_ARE_GONE);
+        case "gaps": {
+          setRoute("GET /v1/monitor-store/monitors/<id>/gaps");
           requireGet(method);
-          const lease = await store.readMonitorLease(id);
-          return { status: 200, body: lease === undefined ? {} : { lease: encodeLease(lease) } };
+          return { status: 200, body: { gaps: (await store.listGaps(id)).map(encodeGap) } };
+        }
+        case "fill-gap": {
+          setRoute("POST /v1/monitor-store/monitors/<id>/fill-gap");
+          requirePost(method);
+          const input = await body(WireFillGapRequestSchema, "fill-gap");
+          const result = await store.fillGap(id, {
+            expectedEpoch: BigInt(input.expectedEpoch),
+            from: BigInt(input.from),
+            to: BigInt(input.to),
+            associations: input.associations.map(decodeAssociationInput),
+          });
+          return { status: 200, body: encodeFillGapResult(result) };
         }
         case "advance": {
           setRoute("POST /v1/monitor-store/monitors/<id>/advance");
@@ -443,10 +472,7 @@ export function createStorageApi(options: StorageApiOptions): StorageApi {
             BigInt(input.expectedEpoch),
             BigInt(input.throughHeight),
             input.associations.map(decodeAssociationInput),
-            {
-              ...(input.fromHeight === undefined ? {} : { fromHeight: BigInt(input.fromHeight) }),
-              ...(input.lease === undefined ? {} : { lease: input.lease }),
-            },
+            input.fromHeight === undefined ? {} : { fromHeight: BigInt(input.fromHeight) },
           );
           return { status: 200, body: encodeAdvanceResult(result) };
         }
@@ -515,23 +541,22 @@ export function createStorageApi(options: StorageApiOptions): StorageApi {
       }
     }
 
-    if (head === "leases" && (second === "claim" || second === "release")) {
+    if (head === "advance-batch" && second === undefined) {
+      setRoute("POST /v1/monitor-store/advance-batch");
       requirePost(method);
-      if (second === "claim") {
-        setRoute("POST /v1/monitor-store/leases/claim");
-        const input = await body(WireLeaseClaimRequestSchema, "leases/claim");
-        const result = await store.claimMonitorLease(input.monitorId, input.owner, input.ttlMs);
-        return {
-          status: 200,
-          body: {
-            acquired: result.acquired,
-            ...(result.lease === undefined ? {} : { lease: encodeLease(result.lease) }),
-          },
-        };
-      }
-      setRoute("POST /v1/monitor-store/leases/release");
-      const input = await body(WireLeaseReleaseRequestSchema, "leases/release");
-      return { status: 200, body: await store.releaseMonitorLease(input.monitorId, input.owner) };
+      const input = await body(WireAdvanceBatchRequestSchema, "advance-batch");
+      const result = await store.advanceBatch(
+        input.net,
+        BigInt(input.height),
+        base64ToBytes(input.blockHash),
+        input.items.map(decodeAdvanceBatchItem),
+      );
+      return { status: 200, body: encodeAdvanceBatchResult(result) };
+    }
+
+    if (head === "leases" && (second === "claim" || second === "release")) {
+      setRoute(`POST /v1/monitor-store/leases/${second}`);
+      throw gone(LEASES_ARE_GONE);
     }
 
     if (head === "revocations" && second === undefined) {

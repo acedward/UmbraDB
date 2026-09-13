@@ -7,10 +7,14 @@ import {
   type AssociationDetailsUpdate,
   type AssociationInput,
   type AssociationRecord,
+  type AdvanceBatchItem,
+  type AdvanceBatchResult,
+  type FillGapInput,
+  type FillGapResult,
   type LifecycleEventRecord,
   type MonitorCoverage,
+  type MonitorGap,
   type MonitorLastError,
-  type MonitorLeaseRecord,
   type MonitorRecord,
   type RevocationRecord,
 } from "./store.js";
@@ -70,8 +74,8 @@ export const MONITOR_STORE_ROUTES = {
   byFingerprint: `${MONITOR_STORE_PREFIX}/monitors/by-fingerprint`,
   revocations: `${MONITOR_STORE_PREFIX}/revocations`,
   audit: `${MONITOR_STORE_PREFIX}/audit`,
-  leaseClaim: `${MONITOR_STORE_PREFIX}/leases/claim`,
-  leaseRelease: `${MONITOR_STORE_PREFIX}/leases/release`,
+  /** 00009-09: one block, every monitor a node holds, one transaction. */
+  advanceBatch: `${MONITOR_STORE_PREFIX}/advance-batch`,
 } as const;
 
 /** `/v1/monitor-store/monitors/<id>[/<suffix>]`. The id is percent-encoded even though it is a
@@ -97,6 +101,10 @@ export const MONITOR_STORE_ERROR_CODES = [
   "MONITOR_ILLEGAL_TRANSITION",
   "INVALID_VIEWING_KEY",
   "NOT_FOUND",
+  /** 00009-09: a route that existed in 00009-08 and is deliberately gone — `key-material` and the
+   *  three lease routes. A 410 rather than a 404 so an operator running a stale binary is told the
+   *  route was REMOVED rather than left to wonder whether they typed it wrong. */
+  "GONE",
   "METHOD_NOT_ALLOWED",
   "PAYLOAD_TOO_LARGE",
   "INTERNAL_ERROR",
@@ -191,12 +199,22 @@ export const WireCoverageSchema = z.object({
   scannedThrough: BigintStringSchema.optional(),
 });
 
+/** One unscanned range below a monitor's coverage (00009-09). */
+export const WireGapSchema = z.object({
+  from: BigintStringSchema,
+  to: BigintStringSchema,
+  recordedAt: IsoDateSchema,
+});
+
 export const WireMonitorSchema = z.object({
   id: z.string().min(1).max(128),
   net: z.string().min(1).max(64),
   state: MonitorStateSchema,
   epoch: BigintStringSchema,
   coverage: WireCoverageSchema,
+  /** 00009-09. Optional ON THE WIRE only so a client can read a record written by a server that
+   *  predates gaps; decoded to `[]`, which is the same thing that server meant. */
+  gaps: z.array(WireGapSchema).max(10_000).optional(),
   sourceGenesisHash: z.string().max(256).optional(),
   sourceInstanceId: z.string().max(256).optional(),
   matchingRuleVersion: z.string().min(1).max(64),
@@ -243,13 +261,6 @@ export const WireLifecycleEventSchema = z.object({
   at: IsoDateSchema,
 });
 
-export const WireLeaseSchema = z.object({
-  monitorId: z.string().min(1).max(128),
-  owner: z.string().min(1).max(128),
-  claimedAt: IsoDateSchema,
-  expiresAt: IsoDateSchema,
-});
-
 export const WireRevocationSchema = z.object({
   monitorId: z.string().min(1).max(128),
   net: z.string().min(1).max(64),
@@ -264,13 +275,11 @@ export const WireAdvanceResultSchema = z.union([
     firstSeq: BigintStringSchema,
     lastSeq: BigintStringSchema,
     coverage: WireCoverageSchema,
-    leaseHeld: z.boolean().optional(),
   }),
   z.object({
     applied: z.literal(false),
     reason: z.literal("already-advanced"),
     coverage: WireCoverageSchema,
-    leaseHeld: z.boolean().optional(),
   }),
 ]);
 
@@ -291,34 +300,74 @@ export const WireAssociationInputSchema = z.object({
   blockTimestampMs: BigintStringSchema.optional(),
 });
 
-export const WireLeaseRenewalSchema = z.object({
-  owner: z.string().min(1).max(128),
-  ttlMs: z.number().int().min(1).max(3_600_000),
-});
-
 /**
  * `POST /v1/monitor-store/monitors/<id>/advance` — ONE transaction (owner Rule B, FR-010,
  * FR-012).
  *
  * The whole of a height's work travels in one body: the expected epoch (the fence), the
- * through-height, the associations, the optional first-advance `fromHeight`, and the optional
- * lease renewal that must land inside the same commit.
+ * through-height, the associations and the optional first-advance `fromHeight`.
+ *
+ * Since 00009-09 this is the SYNC path only — a monitor-node catching one newly registered key up
+ * to the live watermark. The live path is `advance-batch`, which commits one block for every
+ * monitor a node holds in one transaction.
  */
 export const WireAdvanceRequestSchema = z.object({
   expectedEpoch: BigintStringSchema,
   throughHeight: BigintStringSchema,
   associations: z.array(WireAssociationInputSchema).max(100_000),
   fromHeight: BigintStringSchema.optional(),
-  lease: WireLeaseRenewalSchema.optional(),
+});
+
+/** One unscanned range, as a caller reports it. */
+export const WireGapRangeSchema = z.object({
+  from: BigintStringSchema,
+  to: BigintStringSchema,
+});
+
+/** One monitor's share of one block (00009-09). */
+export const WireAdvanceBatchItemSchema = z.object({
+  monitorId: z.string().min(1).max(128),
+  expectedEpoch: BigintStringSchema,
+  associations: z.array(WireAssociationInputSchema).max(10_000),
+  newGaps: z.array(WireGapRangeSchema).max(1_000).optional(),
+});
+
+/**
+ * `POST /v1/monitor-store/advance-batch` — ONE block, every monitor a node holds, ONE transaction
+ * (00009-09; owner Rule B).
+ *
+ * `items` is bounded at 10 000 monitors per block, which is three orders of magnitude above what a
+ * node holds in this alpha and still small enough that a hostile body cannot make the server open
+ * an unbounded transaction.
+ */
+export const WireAdvanceBatchRequestSchema = z.object({
+  net: z.string().min(1).max(64),
+  height: BigintStringSchema,
+  blockHash: Base64Schema,
+  items: z.array(WireAdvanceBatchItemSchema).max(10_000),
+});
+
+/** `POST /v1/monitor-store/monitors/<id>/fill-gap` — a back-sync's commit (00009-09). */
+export const WireFillGapRequestSchema = z.object({
+  expectedEpoch: BigintStringSchema,
+  from: BigintStringSchema,
+  to: BigintStringSchema,
+  associations: z.array(WireAssociationInputSchema).max(100_000),
 });
 
 export const WireRegisterRequestSchema = z.object({
   net: z.string().min(1).max(64),
-  /** The serialized viewing key. Plaintext on this hop: the alpha has no encryption anywhere
-   *  (owner Q10/Q25) and the storage API is loopback-by-default and unauthenticated (Q3). The
-   *  server RE-DERIVES the fingerprint from these bytes rather than trusting a client-supplied
-   *  one, so registration identity (FR-003) is computed by the side that writes the row. */
-  keySerialized: Base64Schema,
+  /**
+   * The key's 32-byte SHA-256 FINGERPRINT, base64 — **never the key** (00009-09, owner Q28).
+   *
+   * 00009-08 sent the serialized viewing key here and the server derived the fingerprint from it,
+   * so that registration identity was computed by the side that writes the row. That reasoning is
+   * gone with the key: the database holds no key material at all now, so there is nothing for a
+   * server-side derivation to protect. What a client can do by sending a fingerprint it did not
+   * derive from a real key is register a monitor that will never match anything — which it could
+   * equally do by registering a key nobody ever pays.
+   */
+  fingerprint: Base64Schema,
   requestedStartHeight: BigintStringSchema,
   matchingRuleVersion: z.string().min(1).max(64),
   ledgerBuild: z.string().min(1).max(128),
@@ -353,17 +402,6 @@ export const WireAssociationDetailsRequestSchema = z.object({
   updates: z.array(WireDetailsUpdateSchema).max(MAX_ASSOCIATION_PAGE),
 });
 
-export const WireLeaseClaimRequestSchema = z.object({
-  monitorId: z.string().min(1).max(128),
-  owner: z.string().min(1).max(128),
-  ttlMs: z.number().int().min(1).max(3_600_000),
-});
-
-export const WireLeaseReleaseRequestSchema = z.object({
-  monitorId: z.string().min(1).max(128),
-  owner: z.string().min(1).max(128),
-});
-
 export const WireAuditRequestSchema = z.object({
   actor: z.string().min(1).max(128),
   action: z.string().min(1).max(64),
@@ -383,18 +421,27 @@ export const WireLifecycleListSchema = z.object({
 export const WireRevocationListSchema = z.object({
   revocations: z.array(WireRevocationSchema).max(100_000),
 });
-export const WireKeyMaterialSchema = z.object({ keySerialized: Base64Schema });
+export const WireGapListSchema = z.object({ gaps: z.array(WireGapSchema).max(10_000) });
+export const WireAdvanceBatchResultSchema = z.object({
+  advanced: z.array(z.string().min(1).max(128)).max(10_000),
+  fenced: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(128),
+        reason: z.enum(["epoch", "state", "not-found", "already-advanced"]),
+      }),
+    )
+    .max(10_000),
+});
+export const WireFillGapResultSchema = z.object({
+  written: z.number().int().min(0),
+  gaps: z.array(WireGapSchema).max(10_000),
+});
 export const WireBindSourceResultSchema = z.object({
   applied: z.boolean(),
   monitor: WireMonitorSchema,
 });
 export const WireDetailsResultSchema = z.object({ applied: z.number().int().min(0) });
-export const WireLeaseClaimResultSchema = z.object({
-  acquired: z.boolean(),
-  lease: WireLeaseSchema.optional(),
-});
-export const WireLeaseReleaseResultSchema = z.object({ released: z.boolean() });
-export const WireLeaseReadSchema = z.object({ lease: WireLeaseSchema.optional() });
 export const WireMonitorOptionalSchema = z.object({ monitor: WireMonitorSchema.optional() });
 export const WireHealthSchema = z.object({
   status: z.literal("ok"),
@@ -420,6 +467,7 @@ export function encodeMonitor(record: MonitorRecord): z.infer<typeof WireMonitor
     state: record.state,
     epoch: record.epoch.toString(),
     coverage: encodeCoverage(record.coverage),
+    gaps: record.gaps.map(encodeGap),
     ...(record.sourceGenesisHash === undefined ? {} : { sourceGenesisHash: record.sourceGenesisHash }),
     ...(record.sourceInstanceId === undefined ? {} : { sourceInstanceId: record.sourceInstanceId }),
     matchingRuleVersion: record.matchingRuleVersion,
@@ -464,13 +512,18 @@ export function encodeLifecycleEvent(
   };
 }
 
-export function encodeLease(record: MonitorLeaseRecord): z.infer<typeof WireLeaseSchema> {
-  return {
-    monitorId: record.monitorId,
-    owner: record.owner,
-    claimedAt: record.claimedAt.toISOString(),
-    expiresAt: record.expiresAt.toISOString(),
-  };
+export function encodeGap(gap: MonitorGap): z.infer<typeof WireGapSchema> {
+  return { from: gap.from.toString(), to: gap.to.toString(), recordedAt: gap.recordedAt.toISOString() };
+}
+
+export function encodeAdvanceBatchResult(
+  result: AdvanceBatchResult,
+): z.infer<typeof WireAdvanceBatchResultSchema> {
+  return { advanced: [...result.advanced], fenced: result.fenced.map((f) => ({ ...f })) };
+}
+
+export function encodeFillGapResult(result: FillGapResult): z.infer<typeof WireFillGapResultSchema> {
+  return { written: result.written, gaps: result.gaps.map(encodeGap) };
 }
 
 export function encodeRevocation(record: RevocationRecord): z.infer<typeof WireRevocationSchema> {
@@ -484,14 +537,32 @@ export function encodeAdvanceResult(result: AdvanceResult): z.infer<typeof WireA
       firstSeq: result.firstSeq.toString(),
       lastSeq: result.lastSeq.toString(),
       coverage: encodeCoverage(result.coverage),
-      ...(result.leaseHeld === undefined ? {} : { leaseHeld: result.leaseHeld }),
     };
   }
+  return { applied: false, reason: "already-advanced", coverage: encodeCoverage(result.coverage) };
+}
+
+/** Client side: one block batch's items, into the body the storage API reads back. */
+export function encodeAdvanceBatchItem(
+  item: AdvanceBatchItem,
+): z.infer<typeof WireAdvanceBatchItemSchema> {
   return {
-    applied: false,
-    reason: "already-advanced",
-    coverage: encodeCoverage(result.coverage),
-    ...(result.leaseHeld === undefined ? {} : { leaseHeld: result.leaseHeld }),
+    monitorId: item.monitorId,
+    expectedEpoch: item.expectedEpoch.toString(),
+    associations: item.associations.map(encodeAssociationInput),
+    ...(item.newGaps === undefined || item.newGaps.length === 0
+      ? {}
+      : { newGaps: item.newGaps.map((g) => ({ from: g.from.toString(), to: g.to.toString() })) }),
+  };
+}
+
+/** Client side: a back-sync's body. */
+export function encodeFillGapRequest(input: FillGapInput): z.infer<typeof WireFillGapRequestSchema> {
+  return {
+    expectedEpoch: input.expectedEpoch.toString(),
+    from: input.from.toString(),
+    to: input.to.toString(),
+    associations: input.associations.map(encodeAssociationInput),
   };
 }
 
@@ -571,6 +642,7 @@ function monitorFromWire(wire: z.infer<typeof WireMonitorSchema>): MonitorRecord
     state: wire.state,
     epoch: BigInt(wire.epoch),
     coverage: decodeCoverage(wire.coverage),
+    gaps: (wire.gaps ?? []).map(decodeGap),
     ...(wire.sourceGenesisHash === undefined ? {} : { sourceGenesisHash: wire.sourceGenesisHash }),
     ...(wire.sourceInstanceId === undefined ? {} : { sourceInstanceId: wire.sourceInstanceId }),
     matchingRuleVersion: wire.matchingRuleVersion,
@@ -633,12 +705,35 @@ export function decodeRevocationList(value: unknown): RevocationRecord[] {
   }));
 }
 
-export function decodeLease(wire: z.infer<typeof WireLeaseSchema>): MonitorLeaseRecord {
+export function decodeGap(wire: z.infer<typeof WireGapSchema>): MonitorGap {
+  return { from: BigInt(wire.from), to: BigInt(wire.to), recordedAt: new Date(wire.recordedAt) };
+}
+
+export function decodeGapList(value: unknown): MonitorGap[] {
+  return decodeWith(WireGapListSchema, value, "gap list").gaps.map(decodeGap);
+}
+
+export function decodeAdvanceBatchResult(value: unknown): AdvanceBatchResult {
+  const wire = decodeWith(WireAdvanceBatchResultSchema, value, "advance-batch result");
+  return { advanced: wire.advanced, fenced: wire.fenced };
+}
+
+export function decodeFillGapResult(value: unknown): FillGapResult {
+  const wire = decodeWith(WireFillGapResultSchema, value, "fill-gap result");
+  return { written: wire.written, gaps: wire.gaps.map(decodeGap) };
+}
+
+/** Server side: a block batch's items, back into store inputs. */
+export function decodeAdvanceBatchItem(
+  wire: z.infer<typeof WireAdvanceBatchItemSchema>,
+): AdvanceBatchItem {
   return {
     monitorId: wire.monitorId,
-    owner: wire.owner,
-    claimedAt: new Date(wire.claimedAt),
-    expiresAt: new Date(wire.expiresAt),
+    expectedEpoch: BigInt(wire.expectedEpoch),
+    associations: wire.associations.map(decodeAssociationInput),
+    ...(wire.newGaps === undefined
+      ? {}
+      : { newGaps: wire.newGaps.map((g) => ({ from: BigInt(g.from), to: BigInt(g.to) })) }),
   };
 }
 
@@ -650,15 +745,9 @@ export function decodeAdvanceResult(value: unknown): AdvanceResult {
       firstSeq: BigInt(wire.firstSeq),
       lastSeq: BigInt(wire.lastSeq),
       coverage: decodeCoverage(wire.coverage),
-      ...(wire.leaseHeld === undefined ? {} : { leaseHeld: wire.leaseHeld }),
     };
   }
-  return {
-    applied: false,
-    reason: "already-advanced",
-    coverage: decodeCoverage(wire.coverage),
-    ...(wire.leaseHeld === undefined ? {} : { leaseHeld: wire.leaseHeld }),
-  };
+  return { applied: false, reason: "already-advanced", coverage: decodeCoverage(wire.coverage) };
 }
 
 /** Server side: the association payloads of one `advance` body, back into store inputs. */

@@ -13,35 +13,39 @@ import {
   MonitorStoreErrorSchema,
   WireAdvanceResultSchema,
   WireBindSourceResultSchema,
+  WireAdvanceBatchResultSchema,
   WireDetailsResultSchema,
-  WireKeyMaterialSchema,
-  WireLeaseClaimResultSchema,
-  WireLeaseReadSchema,
-  WireLeaseReleaseResultSchema,
+  WireFillGapResultSchema,
   WireMonitorOptionalSchema,
-  base64ToBytes,
   bytesToBase64,
+  decodeAdvanceBatchResult,
   decodeAdvanceResult,
   decodeAssociationList,
-  decodeLease,
+  decodeGapList,
+  decodeFillGapResult,
   decodeLifecycleList,
   decodeMonitor,
   decodeMonitorList,
   decodeRevocationList,
   decodeWith,
+  encodeAdvanceBatchItem,
   encodeAssociationInput,
   encodeDetailsUpdate,
+  encodeFillGapRequest,
   monitorRoute,
 } from "./storage-wire.js";
 import type {
+  AdvanceBatchItem,
+  AdvanceBatchResult,
   AdvanceResult,
   AssociationDetailsUpdate,
   AssociationInput,
   AssociationRecord,
-  LeaseRenewal,
+  FillGapInput,
+  FillGapResult,
   LifecycleEventRecord,
+  MonitorGap,
   MonitorLastError,
-  MonitorLeaseRecord,
   MonitorRecord,
   RegisterMonitorInput,
   RevocationRecord,
@@ -171,12 +175,18 @@ export class HttpMonitorStore implements ShieldedMonitorStore {
 
   // ── Registration and reads ─────────────────────────────────────────────────────────────────
 
+  /**
+   * Registration, carrying a FINGERPRINT and no key material at all (00009-09).
+   *
+   * This used to be "the one call that carries key material". It no longer carries any: the key
+   * stays in the monitor-node's RAM and only its SHA-256 crosses this boundary. The storage API
+   * upserts on `(net, fingerprint)` and returns the existing record — coverage, gaps and all —
+   * when one is already there, which is how a node resumes a key it has been handed again.
+   */
   async register(input: RegisterMonitorInput): Promise<MonitorRecord> {
-    // The one call that carries key material. It is a POST body, never a query parameter, so it
-    // cannot land in an access log or a proxy's URL history (FR-023).
     const body = await this.post(MONITOR_STORE_ROUTES.monitors, {
       net: input.net,
-      keySerialized: bytesToBase64(input.key.yesIKnowTheSecurityImplicationsOfThis_serialized()),
+      fingerprint: bytesToBase64(input.fingerprint),
       requestedStartHeight: input.requestedStartHeight.toString(),
       matchingRuleVersion: input.matchingRuleVersion,
       ledgerBuild: input.ledgerBuild,
@@ -218,9 +228,8 @@ export class HttpMonitorStore implements ShieldedMonitorStore {
     );
   }
 
-  async getKeyMaterial(id: string): Promise<Uint8Array> {
-    const body = await this.get_(monitorRoute(id, "key-material"));
-    return base64ToBytes(decodeWith(WireKeyMaterialSchema, body, "key material").keySerialized);
+  async listGaps(monitorId: string): Promise<MonitorGap[]> {
+    return decodeGapList(await this.get_(monitorRoute(monitorId, "gaps")));
   }
 
   async readAssociations(monitorId: string, afterSeq: bigint, limit: number): Promise<AssociationRecord[]> {
@@ -252,12 +261,6 @@ export class HttpMonitorStore implements ShieldedMonitorStore {
     return decodeRevocationList(await this.get_(MONITOR_STORE_ROUTES.revocations));
   }
 
-  async readMonitorLease(monitorId: string): Promise<MonitorLeaseRecord | undefined> {
-    const body = await this.get_(monitorRoute(monitorId, "lease"));
-    const parsed = decodeWith(WireLeaseReadSchema, body, "lease");
-    return parsed.lease === undefined ? undefined : decodeLease(parsed.lease);
-  }
-
   // ── The fenced write path ──────────────────────────────────────────────────────────────────
 
   /**
@@ -272,7 +275,7 @@ export class HttpMonitorStore implements ShieldedMonitorStore {
     epoch: bigint,
     throughHeight: bigint,
     associations: readonly AssociationInput[],
-    opts: { readonly fromHeight?: bigint; readonly lease?: LeaseRenewal } = {},
+    opts: { readonly fromHeight?: bigint } = {},
   ): Promise<AdvanceResult> {
     const url = this.url(monitorRoute(monitorId, "advance"));
     const payload = {
@@ -280,7 +283,6 @@ export class HttpMonitorStore implements ShieldedMonitorStore {
       throughHeight: throughHeight.toString(),
       associations: associations.map(encodeAssociationInput),
       ...(opts.fromHeight === undefined ? {} : { fromHeight: opts.fromHeight.toString() }),
-      ...(opts.lease === undefined ? {} : { lease: opts.lease }),
     };
 
     try {
@@ -320,6 +322,59 @@ export class HttpMonitorStore implements ShieldedMonitorStore {
     }
     const through = monitor.coverage.scannedThrough;
     return through !== undefined && through >= throughHeight ? "committed" : "not-committed";
+  }
+
+  /**
+   * ONE block, every monitor a node holds, ONE server-side transaction (00009-09).
+   *
+   * **The lost response is resolved by re-sending, not by re-reading.** `advance`'s protocol
+   * re-reads ONE monitor's coverage to decide whether its commit landed; the same trick for a
+   * batch would mean re-reading every monitor in it and then sending a partial batch, which is a
+   * second, differently-shaped request whose own failure would need its own protocol. This call
+   * needs none of that, because the whole batch is idempotent by construction: every item is
+   * guarded by the monotonic coverage predicate, so re-sending a batch that already committed
+   * returns exactly the same block's work as `fenced: already-advanced` for every item, writes
+   * nothing, and duplicates nothing. So an unreachable storage API is retried once, and the caller
+   * reads `fenced` as it would on any other run.
+   */
+  async advanceBatch(
+    net: string,
+    height: bigint,
+    blockHash: Uint8Array,
+    items: readonly AdvanceBatchItem[],
+  ): Promise<AdvanceBatchResult> {
+    const url = this.url(MONITOR_STORE_ROUTES.advanceBatch);
+    const payload = {
+      net,
+      height: height.toString(),
+      blockHash: bytesToBase64(blockHash),
+      items: items.map(encodeAdvanceBatchItem),
+    };
+    const send = async (): Promise<AdvanceBatchResult> =>
+      decodeAdvanceBatchResult(
+        decodeWith(WireAdvanceBatchResultSchema, await this.send("POST", url, payload), "advance-batch result"),
+      );
+    try {
+      return await send();
+    } catch (err) {
+      if (!(err instanceof StorageUnreachableError)) throw err;
+      return await send();
+    }
+  }
+
+  /**
+   * A back-sync's commit: one range, one monitor, one server-side transaction (00009-09).
+   *
+   * Idempotent for the same reason `advanceBatch` is, by a different mechanism: the gap rows it
+   * shrinks are gone after the first success, so a replay finds nothing to shrink, and the
+   * `UNIQUE (monitor_id, block_height, block_hash, position)` index refuses the association rows it
+   * would otherwise re-insert. Since a refused INSERT would abort the whole transaction rather
+   * than silently duplicating, a lost response is NOT retried blind here: the gaps that come back
+   * from a re-read are what the caller acts on.
+   */
+  async fillGap(monitorId: string, input: FillGapInput): Promise<FillGapResult> {
+    const body = await this.post(monitorRoute(monitorId, "fill-gap"), encodeFillGapRequest(input));
+    return decodeFillGapResult(decodeWith(WireFillGapResultSchema, body, "fill-gap result"));
   }
 
   async updateAssociationDetails(
@@ -396,22 +451,7 @@ export class HttpMonitorStore implements ShieldedMonitorStore {
     return decodeMonitor(unwrapMonitor(await this.post(monitorRoute(id, "transition"), payload)));
   }
 
-  // ── Leases and audit ───────────────────────────────────────────────────────────────────────
-
-  async claimMonitorLease(
-    monitorId: string, owner: string, ttlMs: number,
-  ): Promise<{ readonly acquired: boolean; readonly lease?: MonitorLeaseRecord }> {
-    const body = await this.post(MONITOR_STORE_ROUTES.leaseClaim, { monitorId, owner, ttlMs });
-    const parsed = decodeWith(WireLeaseClaimResultSchema, body, "lease claim");
-    return parsed.lease === undefined
-      ? { acquired: parsed.acquired }
-      : { acquired: parsed.acquired, lease: decodeLease(parsed.lease) };
-  }
-
-  async releaseMonitorLease(monitorId: string, owner: string): Promise<{ readonly released: boolean }> {
-    const body = await this.post(MONITOR_STORE_ROUTES.leaseRelease, { monitorId, owner });
-    return decodeWith(WireLeaseReleaseResultSchema, body, "lease release");
-  }
+  // ── Audit ──────────────────────────────────────────────────────────────────────────────────
 
   async recordAudit(
     actor: string, action: string, monitorId?: string, detail?: Record<string, unknown>,

@@ -2,6 +2,7 @@ import * as migration000 from "../000_schema.js";
 import * as shieldedMonitorCore from "./001_core.js";
 import * as shieldedMonitorAssociationDetails from "./002_association_details.js";
 import * as shieldedMonitorLeases from "./003_monitor_leases.js";
+import * as shieldedMonitorKeyInRamAndGaps from "./004_key_in_ram_and_gaps.js";
 import type { Migration } from "../../migrate.js";
 
 /**
@@ -38,5 +39,14 @@ export const shieldedMonitorMigrations: Migration[] = [
   shieldedMonitorAssociationDetails,
   // 00009-08: additive `monitor_leases`, so several scanner instances can share one B database
   // without duplicating work. Appended, never inserted, for the same reason 002 was.
+  //
+  // 00009-09 made it dead weight rather than removing it: nothing reads or writes that table any
+  // more (what a monitor-node holds in RAM is the truth, owner decision Q28), and a later cleanup
+  // migration drops it. It stays in the lineage because a lineage is a HISTORY — removing an
+  // applied entry would make every database that ran it disagree with the list.
   shieldedMonitorLeases,
+  // 00009-09: the viewing key leaves the database (the `monitors` CHECK becomes fingerprint-only)
+  // and coverage gains `monitor_gaps`, the rows that say which ranges below `scanned_through` were
+  // never actually read for that monitor. Appended, never inserted.
+  shieldedMonitorKeyInRamAndGaps,
 ];
