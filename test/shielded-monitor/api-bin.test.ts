@@ -26,11 +26,10 @@ describe("shielded-monitor CLI entry points (FR-026)", () => {
   ) as { compilerOptions: { outDir: string; rootDir: string }; include: string[] };
 
   const entries: ReadonlyArray<readonly [string, string]> = [
-    // 00009-05: the scanner bin joined the other two when Phase 3 merged with Phase 4. On
-    // Phase 4's branch there was no scanner module, so the entry could not be declared; here it
-    // is declared AND emitted, which is what the rule below actually asks for.
-    ["umbradb-shielded-monitor", "shielded-monitor/scanner-cli.ts"],
-    ["umbradb-shielded-monitor-api", "shielded-monitor/api/server-cli.ts"],
+    // 00009-09: `umbradb-shielded-monitor` (the scanner) and `umbradb-shielded-monitor-api` are
+    // GONE, replaced by ONE process that is both — and is the only place a viewing key exists
+    // (owner decision Q28, OP-5). The breaking change is deliberate and is called out in the PR.
+    ["umbradb-shielded-monitor-node", "shielded-monitor/node-cli.ts"],
     ["umbradb-shielded-monitor-client", "shielded-monitor/client/cli.ts"],
     // 00009-06: `derive-viewing-key` is its own bin rather than a subcommand of the reference
     // client, because that client's import audit requires it to import nothing but Node built-ins
@@ -86,12 +85,15 @@ describe("shielded-monitor CLI entry points (FR-026)", () => {
       const contents = readFileSync(fileURLToPath(new URL(source, repoRoot)), "utf8");
       expect(contents.startsWith("#!/usr/bin/env node"), `${source} must be runnable`).toBe(true);
     }
-    // Non-vacuity: the loop must actually have examined the nine bins this package ships.
-    // 5 -> 6 (00009-06): `umbradb-shielded-monitor-derive-key`. 6 -> ... the two archive bins and
-    // the sync bin were already there; 00009-08 v2 adds `umbradb-storage-api` and
-    // `umbradb-shielded-monitor-balancer`, taking the count to 9. The pin is bumped deliberately,
-    // which is the whole point of having one — an accidental bin still fails here.
-    expect(Object.keys(pkg.bin).length).toBe(9);
+    // Non-vacuity: the loop must actually have examined the eight bins this package ships.
+    // 5 -> 6 (00009-06): `umbradb-shielded-monitor-derive-key`. 6 -> 9 (00009-08 v2):
+    // `umbradb-storage-api` and `umbradb-shielded-monitor-balancer`. 9 -> 8 (00009-09): the
+    // scanner and API bins are replaced by the single `umbradb-shielded-monitor-node`. The pin is
+    // bumped deliberately, which is the whole point of having one — an accidental bin, and an
+    // accidental REMOVAL, both still fail here.
+    expect(Object.keys(pkg.bin).length).toBe(8);
+    expect(pkg.bin["umbradb-shielded-monitor"], "the scanner bin is gone (00009-09, OP-5)").toBeUndefined();
+    expect(pkg.bin["umbradb-shielded-monitor-api"], "the API bin is gone (00009-09, OP-5)").toBeUndefined();
   });
 
   it("leaves the published LIBRARY surface alone", () => {

@@ -182,7 +182,7 @@ describe("project B reaches no database at all (owner Rule B / FR-025, question 
   it("POSITIVE CONTROL: a planted import of the DRIVER itself is caught (Q25's tightening)", () => {
     // The v1 guard would have allowed this: `postgres` is not an archive storage module, and B
     // owned a database of its own. Under Q25 it is the single most important thing to forbid.
-    const planted = path.join(repoRoot, "shielded-monitor", "scanner-service.ts");
+    const planted = path.join(repoRoot, "shielded-monitor", "node", "monitor-node.ts");
     const read = (file: string): string =>
       file === planted ? `import postgres from "postgres";\n${realRead(file)}` : realRead(file);
     const { violations } = reachStatically(productionFiles, read);
