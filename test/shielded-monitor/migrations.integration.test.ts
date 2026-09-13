@@ -34,7 +34,7 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
     return sql;
   }
 
-  it("applies cleanly, is idempotent, and creates exactly the five tables", async () => {
+  it("applies cleanly, is idempotent, and creates exactly the six tables", async () => {
     const schema = "shielded_monitor_apply";
     const sql = createClient({ connectionString: container.getConnectionUri(), schema });
     try {
@@ -44,6 +44,7 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
       `;
       expect(first.map((r) => r.name)).toStrictEqual([
         "000_schema", "001_core", "002_association_details", "003_monitor_leases",
+        "004_key_in_ram_and_gaps",
       ]);
 
       // Idempotent: the second bootstrap applies nothing.
@@ -58,15 +59,20 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
          WHERE table_schema = ${schema} ORDER BY table_name
       `;
       expect(tables.map((r) => r.table_name)).toStrictEqual([
-        // `monitor_leases` joined the set in 00009-08 (migration 003). The list is pinned rather
-        // than counted, so a table appearing by accident fails here.
-        "_migrations", "associations", "audit_events", "lifecycle_events", "monitor_leases", "monitors",
+        // `monitor_leases` joined the set in 00009-08 (migration 003) and `monitor_gaps` in
+        // 00009-09 (migration 004). `monitor_leases` is now DEAD — nothing reads or writes it —
+        // and stays only because dropping it would not be an additive migration (OP-4); it is
+        // still pinned here, because a table silently disappearing is exactly as interesting as
+        // one silently appearing.
+        "_migrations", "associations", "audit_events", "lifecycle_events",
+        "monitor_gaps", "monitor_leases", "monitors",
       ]);
 
       // The lineage is selectable exactly like the Tier-1.5 one; `shieldedMonitorMigrations`
       // is the same array the bootstrap uses, and running it directly is equivalent.
       expect(shieldedMonitorMigrations.map((m) => m.name)).toStrictEqual([
         "000_schema", "001_core", "002_association_details", "003_monitor_leases",
+        "004_key_in_ram_and_gaps",
       ]);
     } finally {
       await sql.end({ timeout: 5 });
@@ -177,16 +183,38 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
       );
     });
 
-    it("rejects a live monitor with no key (only a deleted one may be shredded)", async () => {
-      await expect(insertMonitor({ key_serialized: null })).rejects.toThrow(
-        /monitors_deleted_is_shredded|violates check/i,
-      );
+    it("[[shielded-monitor.migrations.live-monitor-needs-no-key]] ACCEPTS a live monitor with no key — the 00009-09 inversion", async () => {
+      // Before migration 004 this was a CHECK VIOLATION: every non-deleted monitor had to hold
+      // `key_serialized`. It is now the only shape the code can produce, because a viewing key
+      // lives in the RAM of exactly one monitor-node and is never written (owner decision Q28).
+      // The constraint that survives is the half that still means something — a deleted monitor
+      // sheds its identity, a live one has one.
+      await expect(insertMonitor({ key_serialized: null })).resolves.toBeTypeOf("string");
     });
 
-    it("rejects a deleted monitor that still holds its key", async () => {
-      await expect(insertMonitor({ state: "deleted" })).rejects.toThrow(
-        /monitors_deleted_is_shredded|violates check/i,
-      );
+    it("rejects a deleted monitor that still holds its identity", async () => {
+      await expect(insertMonitor({ state: "deleted", key_serialized: null }))
+        .rejects.toThrow(/monitors_deleted_is_shredded|violates check/i);
+    });
+
+    it("rejects an inverted gap range, and accepts a single-height one", async () => {
+      // A gap is `[from, to]` with `to >= from`; `from === to` is the common case after a
+      // one-block desync. An inverted range is not a smaller hole, it is a nonsense one.
+      const monitorId = await insertMonitor();
+      await expect(sql`
+        INSERT INTO ${sql(schema)}.monitor_gaps (monitor_id, from_height, to_height)
+        VALUES (${monitorId}, ${10n}, ${9n})
+      `).rejects.toThrow(/monitor_gaps_range|violates check/i);
+      await expect(sql`
+        INSERT INTO ${sql(schema)}.monitor_gaps (monitor_id, from_height, to_height)
+        VALUES (${monitorId}, ${7n}, ${7n})
+      `).resolves.toBeDefined();
+      // One hole per starting height: two rows starting at the same place would be two
+      // descriptions of one gap.
+      await expect(sql`
+        INSERT INTO ${sql(schema)}.monitor_gaps (monitor_id, from_height, to_height)
+        VALUES (${monitorId}, ${7n}, ${9n})
+      `).rejects.toThrow(/duplicate key|monitor_gaps_pkey/i);
     });
 
     it("accepts a deleted monitor with neither key nor fingerprint", async () => {

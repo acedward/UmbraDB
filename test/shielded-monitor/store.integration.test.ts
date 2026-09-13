@@ -127,10 +127,16 @@ describe("PgShieldedMonitorStore", () => {
       expect(onPreview.id).not.toBe(onUndeployed.id);
     });
 
-    it("refuses a key validated for a different network than the one requested", async () => {
+    it("refuses a fingerprint that is not 32 bytes of SHA-256", async () => {
+      // The cross-network check this case used to make — "a key validated for `preview` may not
+      // be registered on `undeployed`" — MOVED in 00009-09, and had to: the store is handed a
+      // hash now, and a hash carries no network to compare. The check lives where the key still
+      // exists, in `parseViewingKey`, which refuses a wrong-HRP key before a fingerprint is ever
+      // computed (`viewing-key.test.ts`). What the store can still refuse is a value that is not
+      // a fingerprint at all, and it does.
       await expect(
         store.register({
-          fingerprint: (await fixtureViewingKey(4, "preview")).fingerprint,
+          fingerprint: Uint8Array.from([1, 2, 3]),
           net: "undeployed",
           requestedStartHeight: 0n,
           matchingRuleVersion: TEST_MATCHING_RULE,
