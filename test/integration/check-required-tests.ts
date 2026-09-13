@@ -177,10 +177,28 @@ export function statusesFromReport(report: JsonReport): Map<string, string[]> {
  *  lock on the nodes' private door. `storage-api.removed-routes-answer-410` pins the four routes
  *  this phase removed as REMOVED rather than missing.
  *
+ *  73 -> 78 (00009-09, the fixes the LIVE end-to-end run found): five ids for the two defects
+ *  recorded as organizer questions Q31 and Q32, both of which were invisible to a suite that
+ *  never paused a monitor and never re-read a range twice.
+ *
+ *  A RESUME MUST REACH THE HOLDER (Q31). A paused key is deliberately outside the live set, so it
+ *  has no `advance-batch` item — and that fence is how every OTHER lifecycle change reaches a
+ *  holder. Three ids close the hole at the three levels it exists on:
+ *  `…balancer.lifecycle-writes-forward-state-changed` (the sender, which did not exist),
+ *  `…node.resume-in-storage-is-noticed-on-the-next-block` (the backstop, for a forward that is
+ *  best-effort by design) and `…node.resume-through-the-balancer-needs-no-resend` (design §11
+ *  check 8, end to end over two nodes and a real database: pause freezes coverage while the tip
+ *  moves, resume catches it up, and no key is ever re-sent).
+ *
+ *  A BACK-SYNC RE-READS A RANGE (Q32). `…store.fill-gap-skips-rows-it-already-holds` pins the
+ *  idempotence the live run's 500 proved missing — the only writer here with no coverage fence to
+ *  protect it from a replay — and `…node.sync-key-queues-a-back-sync-for-a-recorded-gap` pins the
+ *  retry path a stuck gap had none of.
+ *
  *  UNION RULE, unchanged and still load-bearing: a branch that merges this one with any other
  *  00009 branch takes the UNION of the id sets and the count that follows from it, never one
  *  side's number. */
-export const EXPECTED_REQUIRED_COUNT = 73;
+export const EXPECTED_REQUIRED_COUNT = 78;
 
 /** The pinned count of `deferred` (WHERE-gated optional-feature) tests (BLOCK 6). Structurally PINS
  *  the deferred exemption set so deleting the sole deferred entry (a green "0 deferred" gate) fails the

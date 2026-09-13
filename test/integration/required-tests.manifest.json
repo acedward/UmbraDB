@@ -366,6 +366,31 @@
       "id": "storage-api.removed-routes-answer-410",
       "file": "test/storage-api/storage-api.test.ts",
       "description": "00009-09: key-material and the three lease routes answer 410 GONE with a message naming the decision, not 404."
+    },
+    {
+      "id": "shielded-monitor.balancer.lifecycle-writes-forward-state-changed",
+      "file": "test/shielded-monitor/balancer-routing.test.ts",
+      "description": "00009-09 (Q31): after a 2xx pause/resume/revoke/DELETE the balancer posts stateChanged to the hinted holder, or to every healthy node when it has no hint, and a refused forward leaves the client's response untouched."
+    },
+    {
+      "id": "shielded-monitor.node.resume-in-storage-is-noticed-on-the-next-block",
+      "file": "test/shielded-monitor/monitor-node.test.ts",
+      "description": "00009-09 (Q31): a paused key whose monitor was resumed in storage re-enters sync on the next processed block with NO event and no re-send — the backstop for a lost forward."
+    },
+    {
+      "id": "shielded-monitor.node.sync-key-queues-a-back-sync-for-a-recorded-gap",
+      "file": "test/shielded-monitor/monitor-node.test.ts",
+      "description": "00009-09 (Q32): a key whose sync finishes with a gap already in its record queues the back-sync for it, so a hole left behind by a dead node or a failed transport heals at the next hold."
+    },
+    {
+      "id": "shielded-monitor.node.resume-through-the-balancer-needs-no-resend",
+      "file": "test/storage-api/split-topology.integration.test.ts",
+      "description": "00009-09 (Q31, design §11 check 8): pause through the balancer freezes the holder's key and its coverage while the tip advances; resume brings it back to syncing and then live, with no key re-sent and no duplicate association."
+    },
+    {
+      "id": "shielded-monitor.store.fill-gap-skips-rows-it-already-holds",
+      "file": "test/shielded-monitor/store.integration.test.ts",
+      "description": "00009-09 (Q32): a fill over a range that already holds a recorded match inserts only the missing rows, reports `written` as rows actually inserted, keeps `seq` dense, and still shrinks the gap — running it twice writes nothing more."
     }
   ],
   "deferred": [
