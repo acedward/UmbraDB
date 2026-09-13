@@ -8,6 +8,9 @@ import { createClient, type UmbraDBSql } from "../../../src/postgres/client.js";
 import { runMigrations } from "../../../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../../../src/postgres/migrations/chain_archive/index.js";
 import { bootstrapShieldedMonitorSchema } from "../../../storage-api/bootstrap.js";
+import {
+  deserializeEncryptionSecretKey, type EncryptionSecretKeyHandle,
+} from "../../../shielded-monitor/offers.js";
 import { LEDGER_BUILD_ID, MATCHING_RULE_VERSION } from "../../../shielded-monitor/offers.js";
 import { ShieldedMonitorScanner } from "../../../shielded-monitor/scanner.js";
 import { MonitorFencedError } from "../../../shielded-monitor/errors.js";
@@ -146,6 +149,8 @@ describe("Rule B over HTTP: a lost response never duplicates a height, and never
   let proxy: FaultProxy;
   let client: HttpMonitorStore;
   let monitorId: string;
+  /** The monitor's key handle, held by the TEST as a monitor-node holds it (00009-09). */
+  let heldKey: EncryptionSecretKeyHandle;
   const archiveSchema = "rule_b_http_archive";
   const monitorSchema = "rule_b_http_monitor";
   const HEIGHTS = 12;
@@ -173,6 +178,7 @@ describe("Rule B over HTTP: a lost response never duplicates a height, and never
     client = new HttpMonitorStore(proxy.url, { requestTimeoutMs: 15_000 });
 
     const key = await parseViewingKey(encodeViewingKey(corpus.keyBytes.get("K")!, CRASH_NET), CRASH_NET);
+    heldKey = await deserializeEncryptionSecretKey(corpus.keyBytes.get("K")!);
     const monitor = await serverStore.register({
       fingerprint: key.fingerprint, net: CRASH_NET, requestedStartHeight: 0n,
       matchingRuleVersion: MATCHING_RULE_VERSION, ledgerBuild: LEDGER_BUILD_ID, actor: "rule-b-http",
@@ -201,6 +207,8 @@ describe("Rule B over HTTP: a lost response never duplicates a height, and never
       // The archive here is IN-PROCESS (this suite is about the store hop, not the archive hop),
       // so the transaction-identity check stays off exactly as the composition root would set it.
       verifyTxIdentity: false,
+      // 00009-09: the key belongs to the caller. Nothing on the store side can hand one out.
+      key: heldKey,
     });
     proxy.forwarded = 0;
     proxy.mode = mode;

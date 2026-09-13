@@ -36,6 +36,7 @@ const MONITOR: MonitorRecord = {
   state: "backfilling",
   epoch: 3n,
   coverage: { requestedStart: 0n, scannedFrom: 0n, scannedThrough: 41n },
+  gaps: [],
   matchingRuleVersion: "shielded-monitor/v1",
   ledgerBuild: "ledger-v8@8.1.0-syshash.4",
   createdAt: new Date("2026-09-11T10:00:00.000Z"),
@@ -59,11 +60,13 @@ function stubStore(overrides: Partial<ShieldedMonitorStore> = {}): ShieldedMonit
     getByFingerprint: async () => undefined,
     listActive: async () => [MONITOR],
     listAll: async () => [MONITOR],
-    getKeyMaterial: async () => Uint8Array.from([1, 2, 3, 4]),
+    listGaps: async () => [],
     readAssociations: async () => [],
     readAssociationsMissingDetails: async () => [],
     listLifecycleEvents: async () => [],
     advance: fail("advance"),
+    advanceBatch: fail("advanceBatch"),
+    fillGap: fail("fillGap"),
     updateAssociationDetails: async () => ({ applied: 0 }),
     bindArchiveSource: async () => ({ applied: true, monitor: MONITOR }),
     goLive: async () => MONITOR,
@@ -75,9 +78,6 @@ function stubStore(overrides: Partial<ShieldedMonitorStore> = {}): ShieldedMonit
     delete: async () => MONITOR,
     recordAudit: async () => undefined,
     listRevocations: async () => [],
-    claimMonitorLease: async () => ({ acquired: true }),
-    releaseMonitorLease: async () => ({ released: true }),
-    readMonitorLease: async () => undefined,
   };
   return Object.assign({ calls }, base, overrides);
 }
@@ -261,20 +261,19 @@ describe("the storage API's monitor-store routes", () => {
       if (result.applied) {
         expect(result.firstSeq).toBe(huge);
         expect(result.lastSeq).toBe(huge + 1n);
-        expect(result.leaseHeld).toBe(true);
       }
     });
   });
 
   it("hands the advance body to the store as ONE call — one call is one transaction", async () => {
-    // Rule B in the shape the wire has to preserve: the associations, the through-height, the
-    // fence and the lease renewal reach the store together or not at all. A route that made two
-    // store calls would be a route whose atomicity the wire cannot promise.
+    // Rule B in the shape the wire has to preserve: the associations, the through-height and the
+    // fence reach the store together or not at all. A route that made two store calls would be a
+    // route whose atomicity the wire cannot promise.
     const seen: unknown[] = [];
     const store = stubStore({
       advance: async (monitorId, epoch, throughHeight, associations, opts) => {
         seen.push({ monitorId, epoch, throughHeight, count: associations.length, opts });
-        return { applied: true, firstSeq: 1n, lastSeq: 2n, coverage: MONITOR.coverage, leaseHeld: true };
+        return { applied: true, firstSeq: 1n, lastSeq: 2n, coverage: MONITOR.coverage };
       },
     });
     await withApi(store, async ({ client }) => {
@@ -294,32 +293,38 @@ describe("the storage API's monitor-store routes", () => {
             blockTimestampMs: 1_700_000_000_000n,
           },
         ],
-        { fromHeight: 40n, lease: { owner: "scanner-1", ttlMs: 30_000 } },
+        { fromHeight: 40n },
       );
     });
     expect(seen).toStrictEqual([
-      {
-        monitorId: MONITOR.id,
-        epoch: 3n,
-        throughHeight: 42n,
-        count: 1,
-        opts: { fromHeight: 40n, lease: { owner: "scanner-1", ttlMs: 30_000 } },
-      },
+      { monitorId: MONITOR.id, epoch: 3n, throughHeight: 42n, count: 1, opts: { fromHeight: 40n } },
     ]);
   });
 
-  it("serves key material only through its own route, and never in a log line", async () => {
-    const logged: string[] = [];
-    const started = await startStorageApi(stubStore(), { onLog: (line) => logged.push(line) });
+  it("[[storage-api.removed-routes-answer-410]] answers 410 — not 404 — on every route 00009-09 removed", async () => {
+    // 410, deliberately. A 404 says "check your spelling"; these routes EXISTED and were removed,
+    // and an operator running a 00009-08 scanner against a 00009-09 storage API needs to be told
+    // which of the two is out of date. The message names the decision, not just the status.
+    const started = await startStorageApi(stubStore());
     try {
-      const client = new HttpMonitorStore(started.baseUrl);
-      expect([...(await client.getKeyMaterial(MONITOR.id))]).toStrictEqual([1, 2, 3, 4]);
-      // The access log records the route PATTERN and the status, never a body or a raw URL — so a
-      // key cannot reach a log through it (organizer spec FR-023, SC-004).
-      expect(logged.length).toBeGreaterThan(0);
-      expect(logged.join("\n")).toContain("GET /v1/monitor-store/monitors/<id>/key-material");
-      expect(logged.join("\n")).not.toContain("AQIDBA==");
-      expect(logged.join("\n")).not.toContain(MONITOR.id);
+      const cases: ReadonlyArray<readonly [string, string, string]> = [
+        ["GET", `/v1/monitor-store/monitors/${MONITOR.id}/key-material`, "RAM"],
+        ["GET", `/v1/monitor-store/monitors/${MONITOR.id}/lease`, "leases are gone"],
+        ["POST", "/v1/monitor-store/leases/claim", "leases are gone"],
+        ["POST", "/v1/monitor-store/leases/release", "leases are gone"],
+      ];
+      for (const [method, path, fragment] of cases) {
+        const response = await fetch(`${started.baseUrl}${path}`, {
+          method,
+          ...(method === "POST"
+            ? { headers: { "content-type": "application/json" }, body: "{}" }
+            : {}),
+        });
+        expect(response.status, `${method} ${path}`).toBe(410);
+        const body = (await response.json()) as { error: { code: string; message: string } };
+        expect(body.error.code).toBe("GONE");
+        expect(body.error.message).toContain(fragment);
+      }
     } finally {
       await started.close();
     }

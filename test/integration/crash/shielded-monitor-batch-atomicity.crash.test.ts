@@ -12,6 +12,9 @@ import { LEDGER_BUILD_ID, MATCHING_RULE_VERSION } from "../../../shielded-monito
 import { ShieldedMonitorScanner } from "../../../shielded-monitor/scanner.js";
 import { PgShieldedMonitorStore } from "../../../storage-api/monitor-store-pg.js";
 import { encodeViewingKey, parseViewingKey } from "../../../shielded-monitor/viewing-key.js";
+import {
+  deserializeEncryptionSecretKey, type EncryptionSecretKeyHandle,
+} from "../../../shielded-monitor/offers.js";
 import { buildCorpus, type BuiltCorpus } from "../../fixtures/shielded-monitor/build-corpus.js";
 import { pgTerminateBackend } from "../../postgres/setup.js";
 import { withStatementFault, type FaultState } from "./archive-fault-injection.js";
@@ -70,6 +73,8 @@ describe("Rule B: one block height, one transaction — the only observable stat
    *  observations, so it stays healthy for the whole run. */
   let clean: UmbraDBSql;
   let corpus: BuiltCorpus;
+  /** The monitor's key handle — held by the TEST, as a monitor-node holds it (00009-09). */
+  let heldKey: EncryptionSecretKeyHandle;
   let archiveStore: PgChainArchiveStore;
   let archive: PgArchiveReadContract;
   let cleanStore: PgShieldedMonitorStore;
@@ -82,6 +87,7 @@ describe("Rule B: one block height, one transaction — the only observable stat
 
   beforeAll(async () => {
     corpus = await buildCorpus();
+    heldKey = await deserializeEncryptionSecretKey(corpus.keyBytes.get("K")!);
     container = await new PostgreSqlContainer("postgres:17-alpine").start();
     admin = createClient({ connectionString: container.getConnectionUri(), schema: monitorSchema, maxConnections: 4 });
     await runMigrations(admin, { schema: archiveSchema, migrations: chainArchiveMigrations });
@@ -166,7 +172,7 @@ describe("Rule B: one block height, one transaction — the only observable stat
         };
         const pool = faultPool();
         const store = new PgShieldedMonitorStore(withStatementFault(pool, state), monitorSchema);
-        const scanner = new ShieldedMonitorScanner(archive, store, { net: CRASH_NET, batchBlocks: 1 });
+        const scanner = new ShieldedMonitorScanner(archive, store, { net: CRASH_NET, batchBlocks: 1, key: heldKey });
         const loaded = await cleanStore.get(monitorId);
         expect(loaded.coverage.scannedThrough ?? -1n).toBe(BigInt(height) - 1n);
 
@@ -197,7 +203,7 @@ describe("Rule B: one block height, one transaction — the only observable stat
           // Redo the SAME batch, unfaulted: the recovery the rule promises, and the per-point
           // negative control — the identical batch lands whole when nothing kills it.
           const retryScanner = new ShieldedMonitorScanner(archive, cleanStore, {
-            net: CRASH_NET, batchBlocks: 1,
+            net: CRASH_NET, batchBlocks: 1, key: heldKey,
           });
           const retry = await retryScanner.scanBatch(await cleanStore.get(monitorId));
           expect(retry.kind).toBe("advanced");
@@ -285,7 +291,7 @@ describe("Rule B: one block height, one transaction — the only observable stat
 
           if (classified === "nothing-of-height") {
             const retryScanner = new ShieldedMonitorScanner(archive, cleanStore, {
-              net: CRASH_NET, batchBlocks: 1,
+              net: CRASH_NET, batchBlocks: 1, key: heldKey,
             });
             expect((await retryScanner.scanBatch(await cleanStore.get(monitorId))).kind).toBe("advanced");
             expect(
@@ -354,7 +360,7 @@ describe("Rule B: one block height, one transaction — the only observable stat
       // strengthened predicate, but it can only ever show that the good state occurred. This case
       // shows the two halves separately: the production scanner really does write details inside
       // the batch, and the classifier really would refuse a state where it had not.
-      const scanner = new ShieldedMonitorScanner(archive, cleanStore, { net: CRASH_NET, batchBlocks: 1 });
+      const scanner = new ShieldedMonitorScanner(archive, cleanStore, { net: CRASH_NET, batchBlocks: 1, key: heldKey });
 
       // Advance until a height that actually CARRIES matches has been committed — a zero-match
       // height would make every assertion below vacuously true.
@@ -430,7 +436,8 @@ describe("Rule B: one block height, one transaction — the only observable stat
       const logged = logStatements(clean, statements);
       const store = new PgShieldedMonitorStore(logged, monitorSchema);
       const scanner = new ShieldedMonitorScanner(
-        new PgArchiveReadContract(logged, archiveSchema), store, { net: CRASH_NET, batchBlocks: 3 },
+        new PgArchiveReadContract(logged, archiveSchema), store,
+        { net: CRASH_NET, batchBlocks: 3, key: heldKey },
       );
       await scanner.scanBatch(await cleanStore.get(monitorId));
 

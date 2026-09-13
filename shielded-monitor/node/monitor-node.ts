@@ -185,7 +185,7 @@ export class MonitorNode {
    * set, which is pure waste and would delay every subsequently registered key behind it. History
    * is Queue B's job, per key, from that key's own coverage.
    */
-  async start(): Promise<void> {
+  async start(opts: { readonly loops?: boolean } = {}): Promise<void> {
     if (this.#running) return;
     this.#running = true;
     this.#liveWatermark = await this.readArchiveTip() ?? 0n;
@@ -196,7 +196,11 @@ export class MonitorNode {
     this.#subscription = await this.#wake.subscribe(this.#options.net, () => {
       this.#wakeSignal = true;
     });
-    this.#loops = [this.#runQueueALoop(), this.#runQueueBLoop()];
+    // `loops: false` boots the node — watermark, wake subscription, key store — WITHOUT the two
+    // timer-driven workers, so a suite can call `runQueueAOnce`/`runQueueBOnce` and observe each
+    // turn instead of racing a poll interval. It is the same node either way; what differs is who
+    // decides when a turn happens.
+    if (opts.loops !== false) this.#loops = [this.#runQueueALoop(), this.#runQueueBLoop()];
   }
 
   /**

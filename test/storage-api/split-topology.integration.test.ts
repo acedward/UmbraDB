@@ -1,58 +1,76 @@
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createBalancer, type Balancer } from "../../shielded-monitor/balancer/balancer.js";
 import { openArchiveSource } from "../../shielded-monitor/archive-source.js";
 import { createShieldedMonitorApi, silentLogger, type ShieldedMonitorApi } from "../../shielded-monitor/api/server.js";
-import { loadApiConfig } from "../../shielded-monitor/api/config.js";
 import { archiveSourceTip } from "../../shielded-monitor/api/source-tip.js";
-import { readScannerConfig } from "../../shielded-monitor/scanner-config.js";
-import { ShieldedMonitorScanner } from "../../shielded-monitor/scanner.js";
-import { ShieldedMonitorScannerService } from "../../shielded-monitor/scanner-service.js";
+import { createBalancer, type Balancer } from "../../shielded-monitor/balancer/balancer.js";
+import { loadBalancerConfig } from "../../shielded-monitor/balancer/balancer-cli.js";
+import { loadMonitorNodeConfig } from "../../shielded-monitor/node/config.js";
+import { MonitorNode } from "../../shielded-monitor/node/monitor-node.js";
 import { HttpMonitorStore } from "../../shielded-monitor/storage-http-client.js";
 import { encodeViewingKey } from "../../shielded-monitor/viewing-key.js";
+import { NO_WAKE } from "../../shielded-monitor/wake.js";
 import { createScannerWorld, destroyWorld, type ScannerWorld } from "../shielded-monitor/scanner-harness.js";
 import { startStorageApi, type StartedStorageApi } from "./helpers.js";
 
 /**
- * **The 2×2 split deployment, end to end** (sub-plan 00009-08 v2; owner question Q25;
- * `spec/00009` FR-010, FR-012, FR-025, FR-026, US2, US5).
+ * **The split deployment, end to end** (00009-09; owner decisions Q25 and Q28; `spec/00009`
+ * FR-010, FR-012, FR-025, FR-026, US2, US5).
  *
  * ```text
- *                          ┌── shielded-monitor-scanner-1 ──┐
- *   one PostgreSQL         │   shielded-monitor-scanner-2   │  STORAGE_URL only
- *        ▲                 │                                │
- *        │  the ONLY       │   shielded-monitor-api-1  ◄────┼── balancer ◄── consumer
- *        └── credential ── umbradb-storage-api               │   (random upstream)
- *                          │   shielded-monitor-api-2  ◄────┘
+ *                          ┌── monitor-node-1 ◄────┐        keys live HERE, in RAM only
+ *   one PostgreSQL         │   (API + /ui + scan)  │
+ *        ▲                 │                       ├── balancer ◄── consumer
+ *        │  the ONLY       │   monitor-node-2 ◄────┘   routes registration to the holder
+ *        └── credential ── umbradb-storage-api
  * ```
  *
  * Everything below runs as real processes-in-one-process: real HTTP servers, real sockets, real
  * `fetch`. The only thing faked is the container boundary, and it is faked in the direction that
- * makes the test STRONGER — the four B components hold `HttpMonitorStore` instances and nothing
- * else, so a database access from any of them would be a compile error, not a runtime surprise.
+ * makes the test STRONGER — each node holds an `HttpMonitorStore` and nothing else, so a database
+ * access from either of them would be a compile error, not a runtime surprise.
+ *
+ * The nodes are booted with `loops: false` and their queues are turned by hand. That is not a
+ * weaker test: it is the same `MonitorNode`, running the same `runQueueAOnce` / `runQueueBOnce`
+ * the timers would call, with the suite deciding WHEN instead of racing a poll interval on a
+ * shared machine.
  *
  * What it proves, in order:
- *  1. two scanners over HTTP produce exactly the fixture oracle, once, with no duplicated commit;
- *  2. leases are visible and correct THROUGH the storage API (claim, hand-back, takeover);
- *  3. a consumer talking to the balancer can register on one API instance and poll on the other;
- *  4. coverage advances and `sourceTip` is reported — the archive read contract travels over the
- *     same one base URL as the monitor store;
- *  5. the environment a split B process actually gets contains no `*_PG` at all, and the config
- *     loaders refuse one if it appears.
+ *  1. a split B process's environment holds no database configuration, and one is refused;
+ *  2. registering every corpus key through the balancer spreads them across both nodes, and each
+ *     node's scanning reproduces the fixture oracle exactly once;
+ *  3. re-registering a key lands on the node that already HOLDS it — never a second custodian;
+ *  4. killing the holder makes the monitor report `key needed`, and re-sending the key routes it
+ *     to the survivor, which syncs it back to the tip with no duplicate association;
+ *  5. `/internal/*` is answered 404 by the balancer and served by a node;
+ *  6. a consumer can page matches across nodes through the balancer.
  */
 
 const NET = "undeployed";
 
-describe("the split topology: 2 scanners + 2 APIs + 1 balancer + 1 storage API, one database", () => {
+/** Polls `predicate` until it is true or the budget runs out. */
+async function waitFor(predicate: () => Promise<boolean>, budgetMs: number, what: string): Promise<void> {
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    if (await predicate()) return;
+    if (Date.now() > deadline) throw new Error(`${what}: not met within ${budgetMs} ms`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+interface RunningNode {
+  readonly node: MonitorNode;
+  readonly api: ShieldedMonitorApi;
+  readonly url: string;
+}
+
+describe("the split topology: 2 monitor-nodes + 1 balancer + 1 storage API, one database", () => {
   let container: StartedPostgreSqlContainer;
   let world: ScannerWorld;
   let storage: StartedStorageApi;
-  let apiOne: ShieldedMonitorApi;
-  let apiTwo: ShieldedMonitorApi;
+  let nodes: RunningNode[] = [];
   let balancer: Balancer;
   let balancerUrl: string;
-  let apiOneUrl: string;
-  let apiTwoUrl: string;
 
   /** The environment a split B container really gets: one URL, and nothing else. */
   const splitEnv = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
@@ -63,8 +81,65 @@ describe("the split topology: 2 scanners + 2 APIs + 1 balancer + 1 storage API, 
     ...extra,
   });
 
+  /** Starts one monitor-node exactly as `node-cli.ts` composes it, minus the timers. */
+  async function startNode(nodeId: string): Promise<RunningNode> {
+    const config = loadMonitorNodeConfig(splitEnv({ MONITOR_NODE_ID: nodeId }));
+    const store = new HttpMonitorStore(config.api.storageUrl, { userAgent: nodeId });
+    const source = openArchiveSource({ archiveUrl: config.api.archiveUrl, wake: false });
+    const node = new MonitorNode(source.archive, store, NO_WAKE, {
+      net: config.api.net,
+      nodeId,
+      syncBatchBlocks: 1,
+      // Remote archive ⇒ the transaction-identity check is ON (organizer question Q23). The
+      // corpus carries the ledger's real `transactionHash()`, so this exercises it.
+      verifyTxIdentity: source.remote,
+    });
+    const api = createShieldedMonitorApi({
+      store,
+      config: config.api,
+      node,
+      sourceTipProvider: archiveSourceTip(source.archive),
+      logger: silentLogger(),
+    });
+    const address = await api.listen();
+    await node.start({ loops: false });
+    return { node, api, url: `http://127.0.0.1:${address.port}` };
+  }
+
+  /** Turns every node's queues until nothing is left to do. */
+  async function drainNodes(rounds = 40): Promise<void> {
+    for (let round = 0; round < rounds; round++) {
+      let worked = false;
+      for (const running of nodes) {
+        if (await running.node.runQueueBOnce()) worked = true;
+        const turn = await running.node.runQueueAOnce();
+        if (turn.blocks > 0) worked = true;
+      }
+      if (!worked) return;
+    }
+  }
+
+  async function registerThroughBalancer(
+    keyId: string,
+  ): Promise<{ status: number; upstream: string | null; body: Record<string, unknown> }> {
+    const viewingKey = encodeViewingKey(world.corpus.keyBytes.get(keyId)!, NET);
+    const response = await fetch(`${balancerUrl}/v1/monitors`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ viewingKey, startHeight: 0 }),
+    });
+    return {
+      status: response.status,
+      upstream: response.headers.get("x-upstream"),
+      body: (await response.json()) as Record<string, unknown>,
+    };
+  }
+
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:17-alpine").start();
+    // The harness registers the corpus monitors by fingerprint, which is exactly the state a
+    // deployment is in after a restart: rows with coverage and no holder. The nodes below then
+    // take custody by being SENT the keys, which is the only way a key ever enters one.
     world = await createScannerWorld(container, "split", { maxConnections: 12 });
 
     // ── A side: the one process with a credential ──────────────────────────────────────────
@@ -73,29 +148,11 @@ describe("the split topology: 2 scanners + 2 APIs + 1 balancer + 1 storage API, 
       archive: { archive: world.archive },
     });
 
-    // ── B side: two private API instances, each an HTTP client and nothing more ────────────
-    const buildApi = async (): Promise<{ api: ShieldedMonitorApi; url: string }> => {
-      const config = loadApiConfig(splitEnv());
-      const api = createShieldedMonitorApi({
-        store: new HttpMonitorStore(config.storageUrl),
-        config,
-        sourceTipProvider: archiveSourceTip(
-          openArchiveSource({ archiveUrl: config.archiveUrl, wake: false }).archive,
-        ),
-        logger: silentLogger(),
-      });
-      const address = await api.listen();
-      return { api, url: `http://127.0.0.1:${address.port}` };
-    };
-    const first = await buildApi();
-    const second = await buildApi();
-    apiOne = first.api;
-    apiTwo = second.api;
-    apiOneUrl = first.url;
-    apiTwoUrl = second.url;
+    nodes = [await startNode("node-1"), await startNode("node-2")];
 
     balancer = createBalancer({
-      upstreams: [apiOneUrl, apiTwoUrl],
+      upstreams: nodes.map((n) => n.url),
+      net: NET,
       host: "127.0.0.1",
       port: 0,
       probeMs: 0,
@@ -107,8 +164,10 @@ describe("the split topology: 2 scanners + 2 APIs + 1 balancer + 1 storage API, 
 
   afterAll(async () => {
     await balancer?.close();
-    await apiOne?.close();
-    await apiTwo?.close();
+    for (const running of nodes) {
+      await running.api?.close();
+      await running.node?.stop();
+    }
     await storage?.close();
     if (world !== undefined) await destroyWorld(world);
     await container?.stop();
@@ -117,13 +176,14 @@ describe("the split topology: 2 scanners + 2 APIs + 1 balancer + 1 storage API, 
   it("a split B process's environment holds no database configuration, and one is refused", () => {
     const env = splitEnv();
     expect(Object.keys(env).filter((k) => k.endsWith("_PG"))).toStrictEqual([]);
-    expect(readScannerConfig(splitEnv(), []).storageUrl).toBe(storage.baseUrl);
-    expect(loadApiConfig(env).storageUrl).toBe(storage.baseUrl);
+    expect(loadMonitorNodeConfig(env).api.storageUrl).toBe(storage.baseUrl);
+    expect(loadBalancerConfig({ ...env, BALANCER_UPSTREAMS: nodes[0]!.url }).net).toBe(NET);
     // And the refusal, from the same environment plus the one variable a migration would leave.
-    expect(() => readScannerConfig(splitEnv({ MONITOR_PG: "postgres://u:p@h/db" }), []))
+    expect(() => loadMonitorNodeConfig(splitEnv({ MONITOR_PG: "postgres://u:p@h/db" })))
       .toThrow(/database configuration in its environment/);
-    expect(() => loadApiConfig(splitEnv({ MONITOR_PG: "postgres://u:p@h/db" })))
-      .toThrow(/database configuration in its environment/);
+    expect(() => loadBalancerConfig(splitEnv({
+      BALANCER_UPSTREAMS: nodes[0]!.url, MONITOR_PG: "postgres://u:p@h/db",
+    }))).toThrow(/database configuration in its environment/);
   });
 
   it("the storage API's health names both wire versions and serves the archive routes too", async () => {
@@ -136,155 +196,179 @@ describe("the split topology: 2 scanners + 2 APIs + 1 balancer + 1 storage API, 
     expect(tip.sourceTip?.height).toBe(world.corpus.bundles.at(-1)!.block.height);
   }, 60_000);
 
-  it("[[storage-api.split-topology.two-scanners-two-apis-one-balancer]] two scanners over HTTP reproduce the fixture oracle exactly once, and both do work", async () => {
-    const seen: { instance: string; monitorId: string; height: string }[] = [];
-    const makeInstance = (instance: string): ShieldedMonitorScannerService => {
-      // Exactly what `scanner-cli.ts` builds from `STORAGE_URL`: an HTTP store and an HTTP
-      // archive. No `sql`, no schema, no driver — this is the whole of the instance's world.
-      const store = new HttpMonitorStore(storage.baseUrl, { userAgent: instance });
-      const source = openArchiveSource({ archiveUrl: storage.baseUrl, wake: false });
-      const instrumented = new Proxy(store, {
-        get(target, property, receiver) {
-          if (property !== "advance") return Reflect.get(target, property, receiver) as unknown;
-          return async (...args: Parameters<HttpMonitorStore["advance"]>) => {
-            const result = await target.advance(...args);
-            if (result.applied) seen.push({ instance, monitorId: args[0], height: args[2].toString() });
-            return result;
-          };
-        },
-      });
-      const scanner = new ShieldedMonitorScanner(source.archive, instrumented, {
-        net: NET,
-        batchBlocks: 1,
-        // Remote archive ⇒ the transaction-identity check is ON (organizer question Q23). The
-        // corpus carries the ledger's real `transactionHash()`, so this exercises it.
-        verifyTxIdentity: source.remote,
-        lease: { owner: instance, ttlMs: 30_000 },
-      });
-      return new ShieldedMonitorScannerService(scanner, instrumented, source.wake, {
-        net: NET,
-        concurrency: 2,
-        instanceId: instance,
-        leaseTtlMs: 30_000,
-      });
-    };
-
-    const a = makeInstance("scanner-1");
-    const b = makeInstance("scanner-2");
-    for (let round = 0; round < 4; round++) {
-      await Promise.all([a.runCycle(), b.runCycle()]);
+  it("[[storage-api.split-topology.two-monitor-nodes-one-balancer]] every key registered through the balancer is scanned exactly once, by the node that holds it", async () => {
+    for (const key of world.corpus.manifest.keys) {
+      const created = await registerThroughBalancer(key.id);
+      // 200, not 201: the harness already registered these fingerprints, and re-sending a key to
+      // a deployment that knows the monitor is the NORMAL recovery flow, not an error.
+      expect(created.status, JSON.stringify(created.body)).toBe(200);
+      expect(created.body.monitorId).toBe(world.monitors.get(key.id)!);
+      expect(nodes.map((n) => n.url)).toContain(created.upstream);
     }
 
-    // 1. No (monitor, height) was committed twice. A racing instance is refused by the monotonic
-    //    coverage guard as `already-advanced`, which the proxy does not record.
-    const keys = seen.map((s) => `${s.monitorId}@${s.height}`);
-    expect(new Set(keys).size).toBe(keys.length);
+    await drainNodes();
 
-    // 2. The oracle (SC-001), unchanged by putting HTTP between the scanner and the store.
+    // 1. The oracle (SC-001), unchanged by a block-centric scan across two nodes.
     const lastHeight = BigInt(world.corpus.bundles.at(-1)!.block.height);
     for (const key of world.corpus.manifest.keys) {
       const monitorId = world.monitors.get(key.id)!;
       const expected = world.corpus.expectedMatches.get(key.id) ?? [];
       const stored = await world.store.readAssociations(monitorId, 0n, 100);
-      expect(stored.map((x) => `${x.blockHeight}/${x.position}`)).toStrictEqual(
-        expected.map((t) => `${t.blockHeight}/${t.position}`),
+      expect(new Set(stored.map((x) => `${x.blockHeight}/${x.position}`))).toStrictEqual(
+        new Set(expected.map((t) => `${t.blockHeight}/${t.position}`)),
       );
-      expect((await world.store.get(monitorId)).coverage.scannedThrough).toBe(lastHeight);
+      // Exactly once: a (height, position) written twice would show up here as a longer list.
+      expect(stored.length).toBe(expected.length);
+      const monitor = await world.store.get(monitorId);
+      expect(monitor.coverage.scannedThrough).toBe(lastHeight);
+      expect(monitor.gaps, `${key.id} should have no holes`).toStrictEqual([]);
     }
 
-    // 3. Non-vacuity: BOTH instances really committed something. Without this a lease bug that
-    //    gave every monitor to one instance would pass 1 and 2 in silence.
-    expect(new Set(seen.map((s) => s.instance))).toStrictEqual(new Set(["scanner-1", "scanner-2"]));
-
-    // 4. Every lease was handed back at the end of its turn, through the storage API.
+    // 2. Non-vacuity: every key is held by exactly one node, and both nodes hold something. A
+    //    routing bug that gave every key to one node would pass 1 in silence.
+    const holders = new Map<string, string[]>();
+    for (const running of nodes) {
+      for (const entry of running.node.heldMonitors()) {
+        holders.set(entry.monitorId, [...(holders.get(entry.monitorId) ?? []), running.node.nodeId]);
+      }
+    }
     for (const key of world.corpus.manifest.keys) {
-      expect(await world.store.readMonitorLease(world.monitors.get(key.id)!)).toBeUndefined();
+      expect(holders.get(world.monitors.get(key.id)!), `${key.id} must have exactly one holder`)
+        .toHaveLength(1);
     }
+    expect(new Set([...holders.values()].flat()).size,
+      "both nodes should hold at least one key — otherwise placement is not load-aware")
+      .toBeGreaterThan(1);
   }, 300_000);
 
-  it("claims, refusals and takeover all work THROUGH the storage API", async () => {
+  it("[[shielded-monitor.balancer.duplicate-registration-lands-on-the-holder]] re-sending a key reaches the node that already holds it, and never mints a second custodian", async () => {
+    const keyId = "K";
+    const monitorId = world.monitors.get(keyId)!;
+    const holder = nodes.find((n) => n.node.holdsMonitor(monitorId).holds)!;
+    expect(holder, "the previous case must have placed this key").toBeDefined();
+
+    // Five more registrations of the SAME key. Every one must reach the holder — not "usually",
+    // which is what a random balancer would give and what would let a second node take custody.
+    for (let i = 0; i < 5; i++) {
+      const again = await registerThroughBalancer(keyId);
+      expect(again.status).toBe(200);
+      expect(again.body.monitorId).toBe(monitorId);
+      expect(again.upstream).toBe(holder.url);
+    }
+
+    // Still exactly one holder, asked of the nodes themselves rather than of the hint table.
+    const claiming = nodes.filter((n) => n.node.holdsMonitor(monitorId).holds);
+    expect(claiming.map((n) => n.node.nodeId)).toStrictEqual([holder.node.nodeId]);
+
+    // And the balancer's own answer agrees.
+    const response = await fetch(`${balancerUrl}/v1/monitors/${monitorId}/holder`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toStrictEqual({ heldBy: holder.node.nodeId });
+  }, 180_000);
+
+  it("[[shielded-monitor.node.restart-shows-key-needed-and-a-resend-resumes]] killing the holder leaves `key needed`, and re-sending the key routes it to the survivor and resumes from its coverage", async () => {
+    const keyId = "Kprime";
+    const monitorId = world.monitors.get(keyId)!;
+    const holderIndex = nodes.findIndex((n) => n.node.holdsMonitor(monitorId).holds);
+    expect(holderIndex, "the key must be held before it can be lost").toBeGreaterThanOrEqual(0);
+    const holder = nodes[holderIndex]!;
+    const before = await world.store.readAssociations(monitorId, 0n, 100);
+    const coverageBefore = (await world.store.get(monitorId)).coverage.scannedThrough;
+
+    // The node dies. Its keys die with it — that is the design, not a failure of it.
+    await holder.api.close();
+    await holder.node.stop();
+    nodes = nodes.filter((_, i) => i !== holderIndex);
+    expect(holder.node.keys.size, "a stopped node must hold nothing").toBe(0);
+    await balancer.probeOnce();
+
+    // The deployment now reports the monitor as needing its key back. `heldBy` is the BALANCER's
+    // answer — a fan-out over the survivors — not the surviving node's guess about itself.
+    const view = await fetch(`${balancerUrl}/v1/monitors/${monitorId}`);
+    expect(view.status).toBe(200);
+    const body = (await view.json()) as { heldBy: string | null; keyNeeded: boolean; state: string };
+    expect(body.heldBy).toBeNull();
+    expect(body.keyNeeded).toBe(true);
+
+    // The client re-sends the key. Same fingerprint ⇒ same monitor ⇒ the survivor picks it up and
+    // resumes from the coverage already in the database rather than rescanning history.
+    const resent = await registerThroughBalancer(keyId);
+    expect(resent.status).toBe(200);
+    expect(resent.body.monitorId).toBe(monitorId);
+    expect(resent.upstream).toBe(nodes[0]!.url);
+    await drainNodes();
+
+    const after = await world.store.readAssociations(monitorId, 0n, 100);
+    expect(after.map((a) => `${a.blockHeight}/${a.position}`))
+      .toStrictEqual(before.map((a) => `${a.blockHeight}/${a.position}`));
+    const monitor = await world.store.get(monitorId);
+    expect(monitor.coverage.scannedThrough).toBe(coverageBefore);
+    expect(nodes[0]!.node.holdsMonitor(monitorId).holds).toBe(true);
+
+    const recovered = await fetch(`${balancerUrl}/v1/monitors/${monitorId}`);
+    const recoveredBody = (await recovered.json()) as { heldBy: string | null; keyNeeded: boolean };
+    expect(recoveredBody.heldBy).toBe(nodes[0]!.node.nodeId);
+    expect(recoveredBody.keyNeeded).toBe(false);
+  }, 300_000);
+
+  it("[[shielded-monitor.balancer.internal-routes-are-never-forwarded]] /internal/* is 404 at the balancer and served on a node", async () => {
+    for (const path of ["/internal/status", "/internal/holds", "/internal/events", "/internal"]) {
+      const response = await fetch(`${balancerUrl}${path}`);
+      expect(response.status, `${path} must not be forwarded`).toBe(404);
+      expect(response.headers.get("x-upstream"), `${path} must not have reached a node`).toBeNull();
+    }
+    // The same route IS served on a node, which is what makes the 404 above a routing decision
+    // rather than a missing feature.
+    const direct = await fetch(`${nodes[0]!.url}/internal/status`);
+    expect(direct.status).toBe(200);
+    expect((await direct.json()) as { nodeId: string }).toMatchObject({ nodeId: nodes[0]!.node.nodeId });
+  }, 60_000);
+
+  it("a consumer pages matches through the balancer and the pages concatenate into the oracle", async () => {
+    // The property that makes a random balancer legitimate for reads: a cursor is a per-monitor
+    // association sequence, not a server handle, so a consumer may be moved between nodes.
     const monitorId = world.monitors.get("K")!;
-    const one = new HttpMonitorStore(storage.baseUrl);
-    const two = new HttpMonitorStore(storage.baseUrl);
-
-    expect((await one.claimMonitorLease(monitorId, "http-1", 1_500)).acquired).toBe(true);
-    expect((await two.claimMonitorLease(monitorId, "http-2", 30_000)).acquired).toBe(false);
-    const lease = await two.readMonitorLease(monitorId);
-    expect(lease?.owner).toBe("http-1");
-    expect(lease?.expiresAt.getTime()).toBeGreaterThan(lease!.claimedAt.getTime());
-
-    // The TTL is the only thing that lets a dead instance's monitors move.
-    await new Promise((r) => setTimeout(r, 1_700));
-    expect((await two.claimMonitorLease(monitorId, "http-2", 30_000)).acquired).toBe(true);
-    // A release is scoped to its owner, over HTTP exactly as in-process.
-    expect((await one.releaseMonitorLease(monitorId, "http-1")).released).toBe(false);
-    expect((await two.releaseMonitorLease(monitorId, "http-2")).released).toBe(true);
-    expect(await one.readMonitorLease(monitorId)).toBeUndefined();
-  }, 120_000);
-
-  it("a consumer registers on one API instance through the balancer and polls on the other", async () => {
-    // The property that makes a random balancer legitimate: a cursor is a per-monitor association
-    // sequence, not a server handle, so a consumer may be moved between instances mid-flow.
-    const serialized = world.corpus.keyBytes.get("K")!;
-    const viewingKey = encodeViewingKey(serialized, NET);
-
-    const created = await fetch(`${balancerUrl}/v1/monitors`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ viewingKey, startHeight: 0 }),
-    });
-    expect(created.status).toBe(200);
-    const createdBody = (await created.json()) as { monitorId: string; coverage: Record<string, unknown> };
-    expect(typeof createdBody.monitorId).toBe("string");
-    // Registration is idempotent per (net, key), so this returns the monitor the harness already
-    // registered — which is the one the scanners above filled with matches.
-    expect(createdBody.monitorId).toBe(world.monitors.get("K")!);
-    const registeredOn = created.headers.get("x-upstream");
-    expect([apiOneUrl, apiTwoUrl]).toContain(registeredOn);
-
-    // Poll every page through the balancer. Over enough requests both instances answer, and the
-    // pages concatenate into exactly the oracle regardless of which one served each.
-    const servers = new Set<string>();
     const seenMatches: string[] = [];
     let cursor: string | undefined;
     for (let page = 0; page < 12; page++) {
-      const url = new URL(`${balancerUrl}/v1/monitors/${createdBody.monitorId}/matches`);
+      const url = new URL(`${balancerUrl}/v1/monitors/${monitorId}/matches`);
       url.searchParams.set("limit", "1");
       if (cursor !== undefined) url.searchParams.set("cursor", cursor);
       const response = await fetch(url);
       expect(response.status).toBe(200);
-      servers.add(response.headers.get("x-upstream")!);
       const body = (await response.json()) as {
         items: { blockHeight: string; position: number }[];
         nextCursor: string;
-        coverage: { scannedThrough?: string | null; sourceTip?: string | null };
+        coverage: { sourceTip?: string | null };
       };
       for (const match of body.items) seenMatches.push(`${match.blockHeight}/${match.position}`);
-      // The archive read contract travels over the same base URL, so a split API still answers
+      // The archive read contract travels over the same base URL, so a split node still answers
       // "am I caught up?" honestly (organizer question Q14).
       expect(body.coverage.sourceTip).toBe(String(world.corpus.bundles.at(-1)!.block.height));
       if (body.items.length === 0) break;
       cursor = body.nextCursor;
     }
-    const expected = (world.corpus.expectedMatches.get("K") ?? []).map(
-      (t) => `${t.blockHeight}/${t.position}`,
+    expect(new Set(seenMatches)).toStrictEqual(
+      new Set((world.corpus.expectedMatches.get("K") ?? []).map((t) => `${t.blockHeight}/${t.position}`)),
     );
-    expect(seenMatches).toStrictEqual(expected);
-    expect(servers.size, `both API instances should have served a page (saw ${[...servers].join(", ")})`)
-      .toBeGreaterThan(1);
   }, 180_000);
 
-  it("the dashboard and the monitor list are served through the balancer", async () => {
+  it("the dashboard and the monitor list are served through the balancer, with custody filled in", async () => {
     const list = await fetch(`${balancerUrl}/v1/monitors`);
     expect(list.status).toBe(200);
     const body = (await list.json()) as {
-      items: { monitorId: string; state: string }[];
+      items: { monitorId: string; state: string; heldBy: string | null; keyNeeded: boolean; gaps: unknown[] }[];
       sourceTip: string | null;
       net: string;
     };
     expect(body.items.length).toBe(world.corpus.manifest.keys.length);
-    expect(body.items.every((m) => typeof m.monitorId === "string")).toBe(true);
-    // The deployment-level tip comes from the archive routes of the SAME storage API.
+    // `heldBy` is the DEPLOYMENT's answer: the node that served this request can only speak for
+    // itself, so a list in which every item held by the other node read `null` would be the bug
+    // this assertion exists to catch.
+    const held = body.items.filter((m) => m.heldBy !== null);
+    expect(held.length).toBe(body.items.length);
+    expect(body.items.every((m) => m.keyNeeded === false)).toBe(true);
+    expect(body.items.every((m) => Array.isArray(m.gaps))).toBe(true);
     expect(body.sourceTip).toBe(String(world.corpus.bundles.at(-1)!.block.height));
     expect(body.net).toBe(NET);
 
@@ -293,4 +377,68 @@ describe("the split topology: 2 scanners + 2 APIs + 1 balancer + 1 storage API, 
     expect(ui.headers.get("content-type")).toContain("text/html");
     expect(ui.headers.get("x-upstream")).not.toBeNull();
   }, 120_000);
+
+  it("[[shielded-monitor.key-never-logged-through-the-balancer-and-the-node]] a registration's viewing key never reaches a log line, at the balancer or at the node", async () => {
+    // SC-004, extended to 00009-09's two new handlers: the balancer READS the body in order to
+    // route it, and the node holds the key in RAM for the rest of its life. Both are new places a
+    // key could leak into a log, so both are captured and searched here — with a positive control,
+    // because a search that can never find anything proves nothing.
+    const lines: string[] = [];
+    const capture = (line: string): void => { lines.push(line); };
+    const loggingBalancer = createBalancer({
+      upstreams: nodes.map((n) => n.url),
+      net: NET,
+      host: "127.0.0.1",
+      port: 0,
+      probeMs: 0,
+      requestTimeoutMs: 20_000,
+      logger: capture,
+    });
+    const url = `http://127.0.0.1:${(await loggingBalancer.listen()).port}`;
+    const apiLines: string[] = [];
+    const loggingNode = await (async () => {
+      const config = loadMonitorNodeConfig(splitEnv({ MONITOR_NODE_ID: "node-logging" }));
+      const store = new HttpMonitorStore(config.api.storageUrl);
+      const source = openArchiveSource({ archiveUrl: config.api.archiveUrl, wake: false });
+      const node = new MonitorNode(source.archive, store, NO_WAKE, {
+        net: NET, nodeId: "node-logging", logger: (line) => apiLines.push(line),
+      });
+      const api = createShieldedMonitorApi({
+        store,
+        config: config.api,
+        node,
+        logger: { log: (record) => apiLines.push(JSON.stringify(record)) },
+      });
+      const address = await api.listen();
+      await node.start({ loops: false });
+      return { node, api, url: `http://127.0.0.1:${address.port}` };
+    })();
+
+    const viewingKey = encodeViewingKey(world.corpus.keyBytes.get("K")!, NET);
+    try {
+      await fetch(`${url}/v1/monitors`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ viewingKey, startHeight: 0 }),
+      });
+      // A deliberately malformed key too: the error path is where a message is most likely to
+      // quote its input.
+      await fetch(`${loggingNode.url}/v1/monitors`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ viewingKey: `${viewingKey}zz`, startHeight: 0 }),
+      });
+
+      const captured = [...lines, ...apiLines].join("\n");
+      expect(captured).not.toContain(viewingKey);
+      // Not even a fragment: a truncated key is still key material.
+      expect(captured).not.toContain(viewingKey.slice(-24));
+      // Positive control: the search WOULD find the key if it were there.
+      expect(`${captured}\n${viewingKey}`).toContain(viewingKey);
+    } finally {
+      await loggingBalancer.close();
+      await loggingNode.api.close();
+      await loggingNode.node.stop();
+    }
+  }, 180_000);
 });
