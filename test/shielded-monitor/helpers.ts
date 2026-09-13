@@ -3,7 +3,10 @@ import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { bootstrapShieldedMonitorSchema } from "../../storage-api/bootstrap.js";
 import { encodeViewingKey, parseViewingKey, type ShieldedViewingKey } from "../../shielded-monitor/viewing-key.js";
-import { type AssociationInput } from "../../shielded-monitor/store.js";
+import type { ArchiveReadContract } from "../../src/interfaces/archive-read-contract.js";
+import { MonitorNode } from "../../shielded-monitor/node/monitor-node.js";
+import { NO_WAKE } from "../../shielded-monitor/wake.js";
+import { type AssociationInput, type ShieldedMonitorStore } from "../../shielded-monitor/store.js";
 import { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";
 
 /**
@@ -128,4 +131,37 @@ export async function schemaSnapshot(sql: UmbraDBSql, schema: string): Promise<s
     parts.push(`-- ${table}\n${rows.map((r) => r.line).join("\n")}`);
   }
   return parts.join("\n");
+}
+
+/**
+ * An archive that holds nothing, for suites that are about the API surface rather than about
+ * scanning (00009-09).
+ *
+ * A monitor-node needs an {@link ArchiveReadContract} to read its boot watermark from. The suites
+ * below drive registration and lifecycle over HTTP and never scan a block, so the honest stand-in
+ * is an archive with no blocks and no identity — not a mock that pretends to have history.
+ */
+export function emptyArchive(): ArchiveReadContract {
+  return {
+    readBlocksSince: async () => ({ blocks: [] }),
+    getArchiveIdentity: async () => undefined,
+  };
+}
+
+/**
+ * A monitor-node for a suite that wants the API's registration path without a scanner.
+ *
+ * Booted with `loops: false`, so nothing runs on a timer: the node takes custody of keys (which is
+ * what `POST /v1/monitors` requires since 00009-09) and its queues sit idle until a test turns
+ * them. Remember to `stop()` it — that is what clears the keys.
+ */
+export async function testMonitorNode(
+  store: ShieldedMonitorStore, opts: { net?: string; nodeId?: string } = {},
+): Promise<MonitorNode> {
+  const node = new MonitorNode(emptyArchive(), store, NO_WAKE, {
+    net: opts.net ?? "undeployed",
+    nodeId: opts.nodeId ?? "test-node",
+  });
+  await node.start({ loops: false });
+  return node;
 }

@@ -14,7 +14,10 @@ import {
 import { staticSourceTip } from "../../shielded-monitor/api/source-tip.js";
 import { runClient } from "../../shielded-monitor/client/cli.js";
 import type { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";
-import { association, fixtureViewingKeyEncoded, freshStore, uniqueSchema } from "./helpers.js";
+import {
+  association, fixtureViewingKeyEncoded, freshStore, testMonitorNode, uniqueSchema,
+} from "./helpers.js";
+import type { MonitorNode } from "../../shielded-monitor/node/monitor-node.js";
 
 /**
  * **This phase's exit criterion, executed** (organizer spec SC-008, US1–US3; owner decision Q4):
@@ -43,6 +46,8 @@ describe("reference consumer CLI end to end", () => {
   let sql: UmbraDBSql;
   let store: PgShieldedMonitorStore;
   let api: ShieldedMonitorApi;
+  /** The key custodian the API needs since 00009-09; it scans nothing here. */
+  let node: MonitorNode;
   let base: string;
   let workDir: string;
   let keyFile: string;
@@ -75,8 +80,12 @@ describe("reference consumer CLI end to end", () => {
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:17-alpine").start();
     ({ sql, store } = await freshStore(container, schema));
+    // 00009-09: the API takes custody of a key through a monitor-node, so the suite has to give
+    // it one. It scans nothing — the fixture associations are still written directly.
+    node = await testMonitorNode(store);
     api = createShieldedMonitorApi({
       store,
+      node,
       config: loadApiConfig({ API_PORT: "0", STORAGE_URL: "http://storage-api:8788" }),
       // A real tip so the client's coverage rendering is exercised in both directions.
       sourceTipProvider: staticSourceTip(500n),

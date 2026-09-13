@@ -12,6 +12,7 @@ import {
 } from "../../shielded-monitor/api/server.js";
 import type { SourceTipProvider } from "../../shielded-monitor/api/source-tip.js";
 import { INVALID_VIEWING_KEY_MESSAGE } from "../../shielded-monitor/errors.js";
+import type { MonitorNode } from "../../shielded-monitor/node/monitor-node.js";
 import type { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";
 import { encodeViewingKey } from "../../shielded-monitor/viewing-key.js";
 import {
@@ -19,6 +20,7 @@ import {
   fixtureViewingKey,
   fixtureViewingKeyEncoded,
   freshStore,
+  testMonitorNode,
   uniqueSchema,
 } from "./helpers.js";
 
@@ -42,6 +44,8 @@ describe("shielded-monitor private API", () => {
   let sql: UmbraDBSql;
   let store: PgShieldedMonitorStore;
   let api: ShieldedMonitorApi;
+  /** The key custodian the API needs since 00009-09; it scans nothing here. */
+  let node: MonitorNode;
   let base: string;
   const schema = uniqueSchema("sm_api");
 
@@ -102,8 +106,12 @@ describe("shielded-monitor private API", () => {
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:17-alpine").start();
     ({ sql, store } = await freshStore(container, schema));
+    // 00009-09: registration hands a key to a monitor-node, so a server without one refuses it.
+    // The node here holds no archive and turns no queue; it is exactly the custodian half.
+    node = await testMonitorNode(store);
     api = createShieldedMonitorApi({
       store,
+      node,
       // Port 0: the kernel picks a free port. This is a shared host and a fixed port would
       // collide with a parallel suite or with something else on the box entirely.
       config: { ...loadApiConfig({ API_PORT: "0", API_MAX_PAGE: "50", STORAGE_URL: "http://storage-api:8788" }), maxBodyBytes: 1024 },
@@ -116,6 +124,7 @@ describe("shielded-monitor private API", () => {
 
   afterAll(async () => {
     await api?.close();
+    await node?.stop();
     await sql?.end({ timeout: 5 });
     await container?.stop();
   }, 60_000);
