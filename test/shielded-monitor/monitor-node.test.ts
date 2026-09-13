@@ -207,6 +207,15 @@ class FakeStore implements ShieldedMonitorStore {
     return next;
   }
 
+  /** Resume goes to `backfilling`, never straight to `live`: the tip moved while the monitor
+   *  slept, so `live` would be false at the moment it was claimed (see `lifecycle.ts`). */
+  async resume(id: string): Promise<MonitorRecord> {
+    const monitor = await this.get(id);
+    const next = { ...monitor, state: "backfilling" as const, epoch: monitor.epoch + 1n };
+    this.monitors.set(id, next);
+    return next;
+  }
+
   // ── Not reached by a node; loud rather than silent if one ever does ─────────────────────────
   private nope(name: string): never {
     throw new Error(`FakeStore.${name} was not expected to be called`);
@@ -219,7 +228,6 @@ class FakeStore implements ShieldedMonitorStore {
   async readAssociationsMissingDetails(): Promise<never> { return this.nope("readAssociationsMissingDetails"); }
   async listLifecycleEvents(): Promise<LifecycleEventRecord[]> { return this.nope("listLifecycleEvents"); }
   async updateAssociationDetails(): Promise<never> { return this.nope("updateAssociationDetails"); }
-  async resume(): Promise<MonitorRecord> { return this.nope("resume"); }
   async markFailed(_id: string, _actor: string, _error: MonitorLastError): Promise<MonitorRecord> {
     return this.nope("markFailed");
   }
@@ -438,6 +446,79 @@ describe("the monitor-node's queues (00009-09)", () => {
     await node.refreshHeldMonitor(node.keys.get(fingerprintHex)!);
     expect(node.keys.get(fingerprintHex)).toBeUndefined();
     expect(lifecycle.cleared).toBe(1);
+    await node.stop();
+  });
+
+  it("[[shielded-monitor.node.resume-in-storage-is-noticed-on-the-next-block]] re-enters sync for a paused key whose monitor was resumed in storage, with no event at all", async () => {
+    // Organizer question Q31, measured on the live demo. A paused key is deliberately outside the
+    // live set, so it has no `advance-batch` item — and the fence in that batch is how every OTHER
+    // lifecycle change reaches a holder. Without the per-block re-read below, a resumed monitor
+    // stays `paused` inside the node that holds its key until the process restarts and the client
+    // re-sends the key, which is precisely what pausing was meant to make unnecessary.
+    const { node, store, archive, monitor, lifecycle } = await liveNode(1);
+    const fingerprintHex = node.keys.byMonitorId(monitor.id)!.fingerprintHex;
+
+    await store.pause(monitor.id);
+    archive.blocks.push(systemBlock(2));
+    await node.runQueueAOnce();
+    expect(node.keys.get(fingerprintHex)!.phase).toBe("paused");
+    expect(lifecycle.cleared, "a paused key is kept").toBe(0);
+
+    // The resume happens in STORAGE and nowhere else: `onEvent` is never called here, no key is
+    // re-sent, and the node is told nothing.
+    await store.resume(monitor.id);
+    expect(node.keys.get(fingerprintHex)!.phase, "still paused until a block is processed").toBe("paused");
+
+    archive.blocks.push(systemBlock(3));
+    await node.runQueueAOnce();
+
+    const held = node.keys.get(fingerprintHex)!;
+    expect(held.phase).toBe("syncing");
+    // Re-armed, because the key rejoins the live set behind the watermark the pause let run on.
+    expect(held.hasScannedOnce).toBe(false);
+    expect(node.status().queueB, "a sync-key was queued").toBe(1);
+
+    // And the sync takes it back to live from its own coverage — no re-send anywhere in this test.
+    expect(await node.runQueueBOnce()).toBe(true);
+    expect(node.keys.get(fingerprintHex)!.phase).toBe("live");
+    expect((await store.get(monitor.id)).coverage.scannedThrough).toBe(3n);
+    expect(lifecycle.cleared).toBe(0);
+    await node.stop();
+  });
+
+  it("[[shielded-monitor.node.sync-key-queues-a-back-sync-for-a-recorded-gap]] picks up a gap the record already carries when it takes a hold of the key", async () => {
+    // Organizer question Q32, use case 3: a gap is DISCOVERED once, by the HAS_SCANNED_ONCE
+    // check, and the job that fills it used to exist only in the RAM of the node that found it.
+    // A node that died, or a back-sync whose transport failed, therefore left a row in
+    // `monitor_gaps` with nothing anywhere scheduled to clear it. Taking a hold is the moment to
+    // pick those up: it is exactly when a node has the key the range must be re-read with.
+    const archive = new FakeArchive(Array.from({ length: 4 }, (_, h) => systemBlock(h)));
+    const store = new FakeStore();
+    const node = nodeWith(archive, store, fakeKey({ cleared: 0 }));
+    await node.start({ loops: false });
+    const monitor = await node.register(await fixtureViewingKey(9191, NET), 0n);
+    const fingerprintHex = node.keys.byMonitorId(monitor.id)!.fingerprintHex;
+    store.monitors.set(monitor.id, {
+      ...(await store.get(monitor.id)),
+      gaps: [{ from: 1n, to: 2n, recordedAt: new Date(0) }],
+    });
+
+    // The registration's own `sync-key`, and nothing else, is in the queue.
+    expect(node.status().queueB).toBe(1);
+    expect(await node.runQueueBOnce()).toBe(true);
+    expect(node.keys.get(fingerprintHex)!.phase).toBe("live");
+    expect(node.status().queueB, "the recorded gap is now queued").toBe(1);
+
+    // Queued once, not once per hold: a second sync of the same key must not grow Queue B.
+    await node.runQueueBJob({ kind: "sync-key", fingerprintHex });
+    expect(node.status().queueB).toBe(1);
+
+    expect(await node.runQueueBOnce()).toBe(true);
+    expect(store.fills).toStrictEqual([
+      { monitorId: monitor.id, from: 1n, to: 1n },
+      { monitorId: monitor.id, from: 2n, to: 2n },
+    ]);
+    expect((await store.get(monitor.id)).gaps).toStrictEqual([]);
     await node.stop();
   });
 
