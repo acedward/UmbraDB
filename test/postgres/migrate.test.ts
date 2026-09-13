@@ -241,5 +241,16 @@ describe("error translation (design.md §4a)", () => {
       await sql?.end({ timeout: 5 });
       await container2.stop();
     }
-  }, 30_000);
+    // 120 s, not the 30 s this case previously carried. Its body starts a SECOND PostgreSQL
+    // container, applies the whole tier-1 lineage (including `CREATE EXTENSION btree_gist` and
+    // the durability probe), and stops the container again — and the repo's own budget for
+    // exactly that operation is 120 s for the start and 60 s for the stop
+    // (`test/postgres/setup.ts:41,44`, and `vitest.config.ts`'s global `hookTimeout: 60_000`,
+    // which exists because "container.stop() can exceed the 10s default under heavy host load").
+    // At 30 s this case was the only container-starting test in the repo left at a budget its own
+    // work cannot reliably fit: it was observed timing out at exactly 30 000 ms in a full
+    // `--maxWorkers=2` gate run while passing in 26 s when run alone. Nothing about the
+    // assertions changes — a timeout is not an assertion, and the SQLSTATE checks below are
+    // untouched.
+  }, 120_000);
 });

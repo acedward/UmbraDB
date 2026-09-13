@@ -43,8 +43,31 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
         "000_schema", "001_chain_archive_core", "002_transaction_position_key",
         "003_runtime_metadata", "004_replay_checkpoints",
         "005_replay_checkpoint_block_time", "006_replay_checkpoint_ledger_network",
-        "007_blob_role_guard_forward_fix",
+        "007_blob_role_guard_forward_fix", "008_block_timestamp",
       ]);
+
+      // --- 008 is ADDITIVE: `blocks.timestamp_ms` exists, is NULLABLE, and reaches every
+      // partition of the range-partitioned parent (a column added only to the parent would leave
+      // the ingest path writing into partitions that do not have it). ---
+      const [tsColumn] = await sql<{ is_nullable: string; data_type: string }[]>`
+        SELECT is_nullable, data_type FROM information_schema.columns
+        WHERE table_schema = ${schema} AND table_name = 'blocks' AND column_name = 'timestamp_ms'
+      `;
+      expect(tsColumn).toEqual({ is_nullable: "YES", data_type: "bigint" });
+      const partitionsMissingColumn = await sql<{ relname: string }[]>`
+        SELECT c.relname
+        FROM pg_class c
+        JOIN pg_namespace ns ON ns.oid = c.relnamespace
+        JOIN pg_inherits i ON i.inhrelid = c.oid
+        JOIN pg_class parent ON parent.oid = i.inhparent
+        WHERE ns.nspname = ${schema} AND parent.relname = 'blocks'
+          AND NOT EXISTS (
+            SELECT 1 FROM information_schema.columns col
+            WHERE col.table_schema = ${schema} AND col.table_name = c.relname
+              AND col.column_name = 'timestamp_ms'
+          )
+      `;
+      expect(partitionsMissingColumn).toEqual([]);
 
       // --- idempotent re-run: applies zero additional migrations ---
       await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
