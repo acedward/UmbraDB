@@ -51,6 +51,12 @@ export interface BlockRecord {
   isCanonical: boolean;
   status: BlockStatus;
   finalized: boolean;
+  /** This block's own `Timestamp::set` value in milliseconds (migration 008, `spec/00009`
+   *  FR-028). Optional, and `undefined` writes SQL `NULL`: the value lives in the block body, so
+   *  a caller that has not decoded it must be able to archive the block without inventing one.
+   *  The production sync writer supplies it; the backfill
+   *  (`chain-archive-sync/backfill-block-timestamps.ts`) fills in rows archived before 008. */
+  timestampMs?: number;
 }
 
 /** Metadata-only projection of `BlockRecord` returned by read paths -- raw bytes are fetched
@@ -69,6 +75,9 @@ export interface BlockMeta {
   isCanonical: boolean;
   status: BlockStatus;
   finalized: boolean;
+  /** See {@link BlockRecord.timestampMs}. `undefined` means the column is `NULL` -- "not decoded
+   *  yet", never "this block has no time". */
+  timestampMs?: number;
 }
 
 export type TransactionKind = "regular" | "system";
@@ -130,6 +139,41 @@ export interface BlockBundle {
   block: BlockRecord;
   transactions: readonly TransactionRecord[];
   bridgeObservations: readonly BridgeObservationRecord[];
+  /**
+   * Owner **Rule A** (`spec/00009` User Story 5, FR-029): the replay checkpoint for THIS height,
+   * when one is due, written inside the SAME transaction as everything else about the height.
+   *
+   * Before this, the sync service wrote it in a transaction of its own immediately after the
+   * bundle committed (`chain-archive-sync/sync-service.ts`), which made a crash between the two
+   * an observable third state: the height durable, its checkpoint absent. `replay_checkpoints`
+   * has a real FK to `blocks`, which is why the checkpoint could not simply be written first --
+   * inside one transaction the block row is already visible to the FK check, so the ordering
+   * problem disappears rather than being traded for a different one.
+   *
+   * MUST describe this bundle's own block: `net`, `blockHeight` and `blockHash` are checked
+   * against `block` and a mismatch is refused, because a checkpoint naming another block would
+   * make resume fold this chain onto a state that is not its own.
+   */
+  replayCheckpoint?: ReplayCheckpointRecord;
+  /**
+   * Owner **Rule A**: the sync watermark advance for THIS height, written inside the same
+   * transaction. The monotonic guard `setWatermark` applies is applied here too -- a lower height
+   * never overwrites a higher one -- so folding the write in does not weaken it.
+   *
+   * Before this, the watermark advanced in a fourth transaction after the bundle and the
+   * checkpoint, so a crash left the height durable with the cursor behind it. That state was
+   * SAFE (the retry re-ingested the same height idempotently) but it was a third observable
+   * state, and the owner's rule is that there are exactly two: nothing of the height, or all of
+   * it including the watermark.
+   */
+  watermark?: { key: string; value: unknown };
+  /**
+   * Owner Rule A, wake-up half: `NOTIFY <channel>, '<net>:<height>'` issued inside the same
+   * transaction, so it is delivered if and only if the height commits. A consumer that misses it
+   * (not listening, connection dropped) loses nothing -- polling remains the contract; this only
+   * removes the latency of waiting for the next poll.
+   */
+  notifyChannel?: string;
 }
 
 export type VerifierKeyScope = "protocol" | "contract";
@@ -260,8 +304,31 @@ export interface ChainArchiveStore {
    * The production sync writer supplies only finalized canonical blocks; arbitrary, partially
    * flipped `setCanonical` histories remain outside replay's contract.
    * Returns the same header/body blob hashes `putBlock` would.
+   *
+   * **Owner Rule A (`spec/00009` FR-029).** With `bundle.replayCheckpoint` and
+   * `bundle.watermark` supplied, this call is the ONLY durable write for the height: block row,
+   * transactions, bridge observations, the block's timestamp column, the replay checkpoint when
+   * due, and the sync watermark all commit together. A crash therefore leaves either nothing of
+   * the height or all of it including the watermark -- there is no third state to recover from,
+   * and recovery is "continue from the last committed height".
    */
   putBlockBundle(bundle: BlockBundle): Promise<{ headerBlobHash: Hex32; bodyBlobHash?: Hex32 }>;
+
+  /**
+   * This archive database's own identity for `net` (`spec/00009` FR-028): 32 lowercase hex
+   * characters of cryptographically random data, minted on the first call and returned unchanged
+   * by every call after it.
+   *
+   * Idempotent by construction (`INSERT ... ON CONFLICT DO NOTHING`, then read back), so
+   * concurrent bootstraps of the same archive agree, and it is NOT routed through
+   * `setWatermark`: that method's last-write-wins behaviour for non-`{height}` values would let a
+   * second bootstrap silently replace an identity every consumer has already bound to.
+   *
+   * Dropping the archive and re-syncing the same chain mints a NEW id. That is the point: a
+   * consumer's persisted coverage is a claim about a specific archive's history, and this is what
+   * lets it notice the history underneath it was replaced (`stale_source`, FR-013).
+   */
+  ensureArchiveInstanceId(net: string): Promise<string>;
 
   /** Upserts via `ON CONFLICT ... DO UPDATE SET first_seen_height = LEAST(...)`, matching the
    *  schema's own documented convention (`001_chain_archive_core.ts`'s verifier_key_observations

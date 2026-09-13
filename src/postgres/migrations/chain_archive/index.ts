@@ -6,6 +6,7 @@ import * as replayCheckpoints from "./004_replay_checkpoints.js";
 import * as replayCheckpointBlockTime from "./005_replay_checkpoint_block_time.js";
 import * as replayCheckpointLedgerNetwork from "./006_replay_checkpoint_ledger_network.js";
 import * as blobRoleGuardForwardFix from "./007_blob_role_guard_forward_fix.js";
+import * as blockTimestamp from "./008_block_timestamp.js";
 import type { Migration } from "../../migrate.js";
 
 /**
@@ -40,6 +41,7 @@ export const chainArchiveMigrations: Migration[] = [
   replayCheckpointBlockTime,
   replayCheckpointLedgerNetwork,
   blobRoleGuardForwardFix,
+  blockTimestamp,
 ];
 
 // v3 note: `chainArchiveCore` now also creates `chain_archive_assert_blob_role` (a shared
@@ -59,3 +61,9 @@ export const chainArchiveMigrations: Migration[] = [
 // Sprint 9 notes: 002 re-keys transactions on position; 003 persists runtime metadata; 004-006
 // define replay checkpoints with time/network identity; and 007 forward-fixes the role-removal
 // guard for databases that already recorded the earlier draft migrations.
+//
+// 00009-01 note: 008 adds the nullable `blocks.timestamp_ms` column the archive read contract
+// (`src/interfaces/archive-read-contract.ts`, spec/00009 FR-028) exposes, so a consumer never
+// re-decodes a block body to date it. Additive: no existing column, constraint or row changes,
+// and pre-existing blocks keep `NULL` until `chain-archive-sync/backfill-block-timestamps.ts`
+// re-decodes their archived bodies.
