@@ -6,6 +6,7 @@ import { runMigrations } from "../../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_archive/index.js";
 import * as associationDetailsMigration from "../../src/postgres/migrations/shielded_monitor/002_association_details.js";
 import * as monitorLeasesMigration from "../../src/postgres/migrations/shielded_monitor/003_monitor_leases.js";
+import * as keyInRamAndGapsMigration from "../../src/postgres/migrations/shielded_monitor/004_key_in_ram_and_gaps.js";
 import { shieldedMonitorMigrations } from "../../src/postgres/migrations/shielded_monitor/index.js";
 import { bootstrapShieldedMonitorSchema } from "../../storage-api/bootstrap.js";
 
@@ -471,6 +472,73 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
           expect(before).toStrictEqual(["claimed_at", "expires_at", "monitor_id", "owner"]);
           await monitorLeasesMigration.up(sql as never, schema);
           expect(await shape()).toStrictEqual(before);
+        });
+      });
+
+      describe("004_key_in_ram_and_gaps", () => {
+        it("refuses a schema whose `monitors` table 001_core never created — and a VIEW by that name is not a table", async () => {
+          // The same preflight 002 and 003 carry, for the same reason: `runMigrations` applies 001
+          // first, so only a caller invoking `up()` directly can arrive here — and without the
+          // check the ALTER would fail on a constraint of a table that does not exist, which is
+          // the wrong thing to hand an operator.
+          const bare = "shielded_monitor_no_monitors_004";
+          await sql`DROP SCHEMA IF EXISTS ${sql(bare)} CASCADE`;
+          await sql`CREATE SCHEMA ${sql(bare)}`;
+          try {
+            await expect(keyInRamAndGapsMigration.up(sql as never, bare)).rejects.toThrow(
+              /monitors does not exist as an ordinary table/,
+            );
+            // Nothing was created on the way to the refusal: the preflight runs FIRST, before the
+            // constraint swap and before `monitor_gaps`.
+            const empty = await sql<{ table_name: string }[]>`
+              SELECT table_name FROM information_schema.tables WHERE table_schema = ${bare}
+            `;
+            expect(empty).toHaveLength(0);
+
+            // `relkind = 'r'` is load-bearing: a VIEW called `monitors` would satisfy a laxer
+            // existence check and then fail on the ALTER.
+            await sql`CREATE TABLE ${sql(bare)}.real_monitors (id uuid PRIMARY KEY)`;
+            await sql`CREATE VIEW ${sql(bare)}.monitors AS SELECT id FROM ${sql(bare)}.real_monitors`;
+            await expect(keyInRamAndGapsMigration.up(sql as never, bare)).rejects.toThrow(
+              /monitors does not exist as an ordinary table/,
+            );
+          } finally {
+            await sql`DROP SCHEMA IF EXISTS ${sql(bare)} CASCADE`;
+          }
+        });
+
+        it("refuses an invalid schema name before it reaches the database", async () => {
+          await expect(keyInRamAndGapsMigration.up(sql as never, 'x"; DROP SCHEMA public; --')).rejects.toThrow();
+        });
+
+        it("is idempotent: re-running `up` against the migrated schema changes nothing", async () => {
+          // Both halves have to be idempotent for different reasons — the constraint swap is
+          // `DROP … IF EXISTS` then `ADD`, and the table is `CREATE TABLE IF NOT EXISTS` — so a
+          // re-run has to be checked on both.
+          const shape = async (): Promise<string[]> => {
+            const rows = await sql<{ column_name: string }[]>`
+              SELECT column_name FROM information_schema.columns
+               WHERE table_schema = ${schema} AND table_name = 'monitor_gaps'
+               ORDER BY column_name
+            `;
+            return rows.map((r) => r.column_name);
+          };
+          const constraint = async (): Promise<number> => {
+            const [row] = await sql<{ n: number }[]>`
+              SELECT count(*)::int AS n FROM pg_constraint c
+                JOIN pg_class t ON t.oid = c.conrelid
+                JOIN pg_namespace ns ON ns.oid = t.relnamespace
+               WHERE ns.nspname = ${schema} AND t.relname = 'monitors'
+                 AND c.conname = 'monitors_deleted_is_shredded'
+            `;
+            return row?.n ?? 0;
+          };
+          const before = await shape();
+          expect(before).toStrictEqual(["from_height", "monitor_id", "recorded_at", "to_height"]);
+          expect(await constraint()).toBe(1);
+          await keyInRamAndGapsMigration.up(sql as never, schema);
+          expect(await shape()).toStrictEqual(before);
+          expect(await constraint(), "the constraint must exist exactly once after a re-run").toBe(1);
         });
       });
     });
