@@ -2,7 +2,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import fc from "fast-check";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
-import { MonitorFencedError, MonitorRevokedError } from "../../shielded-monitor/errors.js";
+import { MonitorFencedError, MonitorNotFoundError } from "../../shielded-monitor/errors.js";
 import { isScannable, type MonitorState } from "../../shielded-monitor/lifecycle.js";
 import type { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";
 import {
@@ -32,10 +32,9 @@ import {
 
 type Op =
   | { readonly kind: "advance"; readonly heightStep: number; readonly matches: number; readonly useStaleEpoch: boolean }
-  | { readonly kind: "pause" }
-  | { readonly kind: "resume" }
   | { readonly kind: "goLive" }
-  | { readonly kind: "revoke" };
+  | { readonly kind: "fail" }
+  | { readonly kind: "delete" };
 
 const opArb: fc.Arbitrary<Op> = fc.oneof(
   { weight: 6, arbitrary: fc.record({
@@ -44,10 +43,9 @@ const opArb: fc.Arbitrary<Op> = fc.oneof(
     matches: fc.integer({ min: 0, max: 3 }),
     useStaleEpoch: fc.boolean(),
   }) },
-  { weight: 2, arbitrary: fc.constant({ kind: "pause" as const }) },
-  { weight: 2, arbitrary: fc.constant({ kind: "resume" as const }) },
-  { weight: 1, arbitrary: fc.constant({ kind: "goLive" as const }) },
-  { weight: 1, arbitrary: fc.constant({ kind: "revoke" as const }) },
+  { weight: 2, arbitrary: fc.constant({ kind: "goLive" as const }) },
+  { weight: 2, arbitrary: fc.constant({ kind: "fail" as const }) },
+  { weight: 1, arbitrary: fc.constant({ kind: "delete" as const }) },
 );
 
 describe("PgShieldedMonitorStore laws", () => {
@@ -88,7 +86,7 @@ describe("PgShieldedMonitorStore laws", () => {
         const staleEpoch = 0n;
 
         for (const op of ops) {
-          const current = (await store.getIncludingRevoked(id))!;
+          const current = (await store.getIncludingDeleted(id))!;
           expect(current.state).toBe(expectedState);
           expect(current.epoch).toBe(expectedEpoch);
 
@@ -109,36 +107,43 @@ describe("PgShieldedMonitorStore laws", () => {
             } else {
               expect(outcome.ok).toBe(false);
               if (outcome.ok) throw new Error("unreachable");
-              expect(outcome.e).toBeInstanceOf(MonitorFencedError);
+              // A deleted monitor answers NOT FOUND — a caller must not be able to tell it from
+              // one that never existed (US3 scenario 4) — and everything else that is refused is
+              // fenced.
+              expect(outcome.e).toBeInstanceOf(
+                expectedState === "deleted" ? MonitorNotFoundError : MonitorFencedError,
+              );
               // Nothing at all changed — not the coverage, not a lifecycle row, not the counter.
               expect(await schemaSnapshot(sql, schema)).toBe(before);
             }
-          } else if (op.kind === "revoke") {
-            await store.revoke(id, "prop");
-            if (expectedState !== "revoked") {
-              expectedState = "revoked";
+          } else if (op.kind === "delete") {
+            await store.delete(id, "prop");
+            if (expectedState !== "deleted") {
+              expectedState = "deleted";
               expectedEpoch += 1n;
+              // A delete takes the matches and every scan fact with it, which the oracle has to
+              // track or the final reconciliation below is comparing against a history that no
+              // longer exists.
+              expectedThrough = undefined;
+              expectedSeq = 0n;
             }
           } else {
-            const event = op.kind === "pause" ? "pause" : op.kind === "resume" ? "resume" : "goLive";
+            const event = op.kind === "fail" ? "fail" : "goLive";
             const legal =
-              (event === "pause" && (expectedState === "backfilling" || expectedState === "live")) ||
-              (event === "resume" && expectedState === "paused") ||
+              (event === "fail" && (expectedState === "backfilling" || expectedState === "live")) ||
               (event === "goLive" && expectedState === "backfilling");
             const idempotent =
-              (event === "pause" && expectedState === "paused") ||
+              (event === "fail" && expectedState === "failed") ||
               (event === "goLive" && expectedState === "live");
 
-            const call = event === "pause"
-              ? store.pause(id, "prop")
-              : event === "resume"
-                ? store.resume(id, "prop")
-                : store.goLive(id, expectedEpoch, "prop");
+            const call = event === "fail"
+              ? store.markFailed(id, "prop", { code: "X", message: "y" })
+              : store.goLive(id, expectedEpoch, "prop");
             const outcome = await call.then(() => true, () => false);
 
             if (legal) {
               expect(outcome).toBe(true);
-              expectedState = event === "pause" ? "paused" : event === "resume" ? "backfilling" : "live";
+              expectedState = event === "fail" ? "failed" : "live";
               expectedEpoch += 1n;
             } else if (idempotent) {
               expect(outcome).toBe(true);
@@ -149,7 +154,7 @@ describe("PgShieldedMonitorStore laws", () => {
         }
 
         // Final reconciliation against the database.
-        const final = (await store.getIncludingRevoked(id))!;
+        const final = (await store.getIncludingDeleted(id))!;
         expect(final.state).toBe(expectedState);
         expect(final.epoch).toBe(expectedEpoch);
         expect(final.coverage.scannedThrough).toBe(expectedThrough);
@@ -213,38 +218,39 @@ describe("PgShieldedMonitorStore laws", () => {
   }, 300_000);
 
   /**
-   * Law A (absorbing revocation): once revoked, no sequence of operations makes the monitor
-   * readable, scannable or advanceable again.
+   * Law A (absorbing deletion): once deleted, no sequence of operations makes the monitor
+   * readable, scannable or advanceable again. Since owner decision Q33 this is the ONLY absorbing
+   * state a consumer can produce, and it is the one that matters — a consumer who deletes a
+   * monitor is asking for it to be gone, and "gone" has to survive whatever is issued next.
    */
-  it("a revoked monitor is never readable or advanceable again, whatever follows", async () => {
+  it("a deleted monitor is never readable or advanceable again, whatever follows", async () => {
     await fc.assert(
       fc.asyncProperty(fc.array(opArb, { minLength: 1, maxLength: 8 }), async (ops) => {
         seed += 1;
         const { id } = await registerFixture(store, seed);
-        const revoked = await store.revoke(id, "prop");
+        const deleted = (await store.delete(id, "prop"))!;
 
         for (const op of ops) {
           if (op.kind === "advance") {
-            await expect(store.advance(id, revoked.epoch, 1n, [])).rejects.toThrow(MonitorFencedError);
-          } else if (op.kind === "revoke") {
-            await store.revoke(id, "prop"); // idempotent no-op
+            await expect(store.advance(id, deleted.epoch, 1n, [])).rejects.toThrow(MonitorNotFoundError);
+          } else if (op.kind === "delete") {
+            await store.delete(id, "prop"); // idempotent no-op
           } else {
-            // Every other lifecycle event is illegal from `revoked`.
-            const call = op.kind === "pause"
-              ? store.pause(id, "prop")
-              : op.kind === "resume"
-                ? store.resume(id, "prop")
-                : store.goLive(id, revoked.epoch, "prop");
+            // Every other lifecycle event is illegal from `deleted`.
+            const call = op.kind === "fail"
+              ? store.markFailed(id, "prop", { code: "X", message: "y" })
+              : store.goLive(id, deleted.epoch, "prop");
             await expect(call).rejects.toThrow();
           }
-          await expect(store.get(id)).rejects.toThrow(MonitorRevokedError);
-          await expect(store.readAssociations(id, 0n, 10)).rejects.toThrow(MonitorRevokedError);
+          await expect(store.get(id)).rejects.toThrow(MonitorNotFoundError);
+          await expect(store.readAssociations(id, 0n, 10)).rejects.toThrow(MonitorNotFoundError);
           expect((await store.listActive(1000)).map((m) => m.id)).not.toContain(id);
+          expect((await store.listAll(1000)).map((m) => m.id)).not.toContain(id);
         }
 
-        const final = (await store.getIncludingRevoked(id))!;
-        expect(final.state).toBe("revoked");
-        expect(final.epoch).toBe(revoked.epoch);
+        const final = (await store.getIncludingDeleted(id))!;
+        expect(final.state).toBe("deleted");
+        expect(final.epoch).toBe(deleted.epoch);
       }),
       { numRuns: 8 },
     );

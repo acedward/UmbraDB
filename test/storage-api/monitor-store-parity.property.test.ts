@@ -4,7 +4,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   MonitorFencedError,
   MonitorNotFoundError,
-  MonitorRevokedError,
 } from "../../shielded-monitor/errors.js";
 import type { ShieldedMonitorStore } from "../../shielded-monitor/store.js";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
@@ -31,7 +30,7 @@ import { startStorageApi, type StartedStorageApi } from "./helpers.js";
  * The sequences are generated with `fast-check` and sampled with a FIXED seed, so the suite is
  * deterministic on CI and on a laptop while still covering command interleavings nobody would
  * have written by hand — including the ones that matter most here: an advance fenced by a
- * lifecycle transition that landed between the read and the write, a replayed advance, a revoke
+ * lifecycle transition that landed between the read and the write, a replayed advance, a delete
  * followed by a read, and a delete followed by everything.
  *
  * What it deliberately does NOT do is compare ids or timestamps: the two sides register different
@@ -40,18 +39,13 @@ import { startStorageApi, type StartedStorageApi } from "./helpers.js";
 
 type Command =
   | { kind: "get" }
-  | { kind: "getIncludingRevoked" }
+  | { kind: "getIncludingDeleted" }
   | { kind: "getByFingerprint" }
   | { kind: "advance"; through: number; matches: number }
   | { kind: "advanceStaleEpoch"; through: number }
   | { kind: "readAssociations"; afterSeq: number; limit: number }
-  | { kind: "readMissingDetails" }
-  | { kind: "backfillDetails"; count: number }
   | { kind: "bindSource" }
   | { kind: "goLive" }
-  | { kind: "pause" }
-  | { kind: "resume" }
-  | { kind: "revoke" }
   | { kind: "delete" }
   | { kind: "markFailed" }
   | { kind: "markStaleSource" }
@@ -62,7 +56,7 @@ type Command =
 
 const commandArb: fc.Arbitrary<Command> = fc.oneof(
   fc.constant<Command>({ kind: "get" }),
-  fc.constant<Command>({ kind: "getIncludingRevoked" }),
+  fc.constant<Command>({ kind: "getIncludingDeleted" }),
   fc.constant<Command>({ kind: "getByFingerprint" }),
   fc.record({
     kind: fc.constant<"advance">("advance"),
@@ -75,13 +69,8 @@ const commandArb: fc.Arbitrary<Command> = fc.oneof(
     afterSeq: fc.integer({ min: 0, max: 4 }),
     limit: fc.integer({ min: 1, max: 10 }),
   }),
-  fc.constant<Command>({ kind: "readMissingDetails" }),
-  fc.record({ kind: fc.constant<"backfillDetails">("backfillDetails"), count: fc.integer({ min: 1, max: 3 }) }),
   fc.constant<Command>({ kind: "bindSource" }),
   fc.constant<Command>({ kind: "goLive" }),
-  fc.constant<Command>({ kind: "pause" }),
-  fc.constant<Command>({ kind: "resume" }),
-  fc.constant<Command>({ kind: "revoke" }),
   fc.constant<Command>({ kind: "delete" }),
   fc.constant<Command>({ kind: "markFailed" }),
   fc.constant<Command>({ kind: "markStaleSource" }),
@@ -142,7 +131,6 @@ function describeError(err: unknown): string {
     return `MonitorFencedError(${err.rejection}, epoch=${err.observed.epoch}, state=${err.observed.state})`;
   }
   if (err instanceof MonitorNotFoundError) return "MonitorNotFoundError";
-  if (err instanceof MonitorRevokedError) return "MonitorRevokedError";
   if (err instanceof Error) return `${err.name}(${String((err as { code?: unknown }).code ?? "")})`;
   return `unknown(${String(err)})`;
 }
@@ -156,13 +144,13 @@ interface World {
 /** Applies one command and returns its normalised transcript line. */
 async function apply(world: World, command: Command): Promise<string> {
   const { store, monitorId } = world;
-  const current = async (): Promise<bigint> => (await store.getIncludingRevoked(monitorId))?.epoch ?? 0n;
+  const current = async (): Promise<bigint> => (await store.getIncludingDeleted(monitorId))?.epoch ?? 0n;
   try {
     switch (command.kind) {
       case "get":
         return show(normalize(await store.get(monitorId)));
-      case "getIncludingRevoked":
-        return show(normalize(await store.getIncludingRevoked(monitorId)));
+      case "getIncludingDeleted":
+        return show(normalize(await store.getIncludingDeleted(monitorId)));
       case "getByFingerprint":
         return show(normalize(await store.getByFingerprint("undeployed", world.fingerprint)));
       case "advance": {
@@ -214,25 +202,6 @@ async function apply(world: World, command: Command): Promise<string> {
         return show(
           normalize(await store.readAssociations(monitorId, BigInt(command.afterSeq), command.limit)),
         );
-      case "readMissingDetails":
-        return show(normalize(await store.readAssociationsMissingDetails(monitorId, 0n, 10)));
-      case "backfillDetails": {
-        const epoch = await current();
-        const rows = await store.readAssociationsMissingDetails(monitorId, 0n, command.count);
-        return show(
-          normalize(
-            await store.updateAssociationDetails(
-              monitorId,
-              epoch,
-              rows.map((row) => ({
-                seq: row.seq,
-                details: { version: "test/v1", outputs: [], transients: [], contracts: [] } as never,
-                blockTimestampMs: 1_700_000_000_000n,
-              })),
-            ),
-          ),
-        );
-      }
       case "bindSource":
         return show(
           normalize(
@@ -244,12 +213,6 @@ async function apply(world: World, command: Command): Promise<string> {
         );
       case "goLive":
         return show(normalize(await store.goLive(monitorId, await current(), "parity")));
-      case "pause":
-        return show(normalize(await store.pause(monitorId, "parity")));
-      case "resume":
-        return show(normalize(await store.resume(monitorId, "parity")));
-      case "revoke":
-        return show(normalize(await store.revoke(monitorId, "parity")));
       case "delete":
         return show(normalize(await store.delete(monitorId, "parity")));
       case "markFailed":
@@ -335,14 +298,14 @@ describe("HttpMonitorStore and PgShieldedMonitorStore are the same store (FR-025
       }
 
       // Final state, independently of what the transcript happened to show.
-      const finalDirect = await direct.getIncludingRevoked(directMonitor.id);
-      const finalServed = await served.client.getIncludingRevoked(servedMonitor.id);
+      const finalDirect = await direct.getIncludingDeleted(directMonitor.id);
+      const finalServed = await served.client.getIncludingDeleted(servedMonitor.id);
       expect(show(normalize(finalServed))).toBe(show(normalize(finalDirect)));
       expect(show(normalize(await served.client.listLifecycleEvents(servedMonitor.id)))).toBe(
         show(normalize(await direct.listLifecycleEvents(directMonitor.id))),
       );
-      // Associations are read administratively (a revoked monitor refuses `readAssociations`), so
-      // the comparison covers the sequences that ended in a refusal too.
+      // Associations are read administratively (a deleted monitor answers not-found), so the
+      // comparison covers the sequences that ended in a refusal too.
       const directRows = await directSql`
         SELECT seq, block_height, position, encode(tx_hash, 'hex') AS tx, details IS NOT NULL AS has_details
           FROM ${directSql(directSchema)}.associations WHERE monitor_id = ${directMonitor.id} ORDER BY seq
@@ -361,10 +324,10 @@ describe("HttpMonitorStore and PgShieldedMonitorStore are the same store (FR-025
       normalize(rows.map((r) => ({ ...r, id: undefined })));
     expect(show(strip(await served.client.listAll(500)))).toBe(show(strip(await direct.listAll(500))));
     expect(show(strip(await served.client.listActive(500)))).toBe(show(strip(await direct.listActive(500))));
-    const revocations = (rows: readonly { monitorId: string; epoch: string; at: string }[]): unknown =>
+    const deletions = (rows: readonly { monitorId: string; epoch: string; at: string }[]): unknown =>
       rows.map((r) => ({ ...r, monitorId: "<id>", at: "<date>" }));
-    expect(show(revocations(await served.client.listRevocations()))).toBe(
-      show(revocations(await direct.listRevocations())),
+    expect(show(deletions(await served.client.listDeletions()))).toBe(
+      show(deletions(await direct.listDeletions())),
     );
   }, 60_000);
 });

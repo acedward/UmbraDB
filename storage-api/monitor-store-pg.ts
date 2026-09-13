@@ -1018,10 +1018,10 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
       SELECT * FROM ${tx(this.schema)}.monitors WHERE id = ${monitorId} FOR SHARE
     `;
     const row = current[0];
-    // A monitor on a DIFFERENT network is reported as not-found rather than as some new fourth
-    // reason: from this batch's point of view it does not exist, and the node's correct response
-    // is the same one it makes for a deleted monitor — drop the key.
-    if (row === undefined || row.net !== net) return "not-found";
+    // A monitor on a DIFFERENT network, and a DELETED one, are both reported as not-found rather
+    // than as some new reason: from this batch's point of view they do not exist, and the node's
+    // correct response to either is the same — drop the key it is holding.
+    if (row === undefined || row.net !== net || row.state === "deleted") return "not-found";
     if (!(SCANNABLE_STATES as string[]).includes(row.state)) return "state";
     if (row.epoch !== epoch) return "epoch";
     return "already-advanced";
@@ -1035,7 +1035,10 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
       SELECT * FROM ${tx(this.schema)}.monitors WHERE id = ${monitorId} FOR SHARE
     `;
     const row = current[0];
-    if (row === undefined) throw new MonitorNotFoundError(monitorId);
+    // A deleted monitor is reported as NOT FOUND, never as fenced: US3 scenario 4 says a caller
+    // must not be able to tell one from a monitor that never existed, and the tombstone is an
+    // implementation detail of the deletion list, not a state a worker should reason about.
+    if (row === undefined || row.state === "deleted") throw new MonitorNotFoundError(monitorId);
     const observed = { epoch: row.epoch, state: row.state };
     if (!(SCANNABLE_STATES as string[]).includes(row.state)) {
       throw new MonitorFencedError(monitorId, "state", observed);
