@@ -67,3 +67,26 @@ Stated in full in `docs/shielded-monitor-deployment.md` ("Migrating from the 000
 deployment"): two bins and two image commands removed, four storage routes now 410, registration
 takes a fingerprint instead of a key, the scanner-only environment variables are gone, and
 **every viewing key must be re-sent** after the upgrade because none was loaded from the database.
+
+
+## Amendment — owner decisions Q33, Q29 and Q32 (2026-09-13)
+
+Three decisions landed after the live end-to-end run and are implemented in this change rather
+than deferred to another. They SUPERSEDE requirements in earlier 00009 changes, whose folders are
+deliberately left as they were written — an accepted change is a record of what was decided then,
+not a document to be edited later.
+
+- **Q33 — the lifecycle is give or delete.** A viewing key is registered or it is deleted; pause,
+  resume and revoke are gone from the product. This supersedes the pause/resume/revoke
+  requirements of `00009-02-monitor-store` (the store's lifecycle transitions and the revocation
+  list), `00009-04-private-api-cli` (the three routes and the CLI subcommands) and
+  `00009-06-dashboard` (the badges and buttons). The new requirements are MN-040…MN-044 above;
+  FR-024's restore property is preserved as a DELETION list.
+- **Q29 — the Phase 7 details backfill is deleted**, option A. It could not survive "keys only in
+  RAM" as a standalone command, and the owner's answer was to ship forward rather than carry a
+  repair tool for a service nobody is running. This supersedes the backfill requirements and tasks
+  of `00009-07-match-details`; the `details` column and the live path that writes it stay
+  untouched.
+- **Q32 — `fill-gap` uses `ON CONFLICT DO NOTHING`**, option B, so association sequence numbers
+  are monotonic but not dense (MN-026). Nothing in this repository derives a match count from a
+  sequence number; the cursor contract in `docs/shielded-monitor-api.md` says so explicitly.

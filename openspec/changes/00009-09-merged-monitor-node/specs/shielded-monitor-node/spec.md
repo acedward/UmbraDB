@@ -14,8 +14,8 @@ or leases.
   holding that key once the ledger handle exists, whether or not the handle was created.
 - **MN-003** — When a held key is revoked, deleted, dropped after a `not-found` fence, or when the
   process shuts down, the node SHALL call `clear()` on that key's ledger handle exactly once.
-- **MN-004** — When a monitor is paused, the node SHALL retain its key in memory and SHALL NOT
-  scan with it; when the monitor resumes, the node SHALL NOT require the key to be re-sent.
+- **MN-004** — When a monitor stops (`failed`, `stale_source`), the node SHALL retain its key in
+  memory and SHALL NOT scan with it; when a monitor is deleted, the node SHALL destroy its key.
 - **MN-005** — The node SHALL NOT write a viewing key, a key fragment, or a fingerprint to any log
   record, and neither SHALL the balancer, which reads a registration body in order to route it.
 - **MN-006** — A monitor-node SHALL acquire a key only through `POST /v1/monitors`.
@@ -40,9 +40,9 @@ or leases.
 - **MN-017** — When a key finishes syncing, the node SHALL enqueue a back-sync for every gap the
   monitor's record still carries and that is not already queued, so a gap left behind by an
   earlier hold or a failed transport is retried at the next hold.
-- **MN-018** — While it holds a paused key, the node SHALL re-read that monitor's record on each
-  block it processes, SHALL return the key to the sync phase when the monitor is scannable again,
-  and SHALL clear it when the monitor is revoked, deleted or gone.
+- **MN-018** — When a held monitor is deleted or is no longer in the store, the node SHALL clear
+  that key's ledger handle and forget it; when a held monitor has merely stopped, the node SHALL
+  keep the key and leave the live set.
 - **MN-016** — When a block cannot be read or decoded, the node SHALL NOT advance its watermark
   past it.
 
@@ -58,9 +58,9 @@ or leases.
 - **MN-023** — `POST /v1/monitor-store/monitors/<id>/fill-gap` SHALL execute exactly one database
   transaction, fenced by `expectedEpoch`.
 - **MN-026** — `fill-gap` SHALL skip every incoming association already stored under `(monitor_id,
-  block_height, block_hash, position)`, SHALL allocate sequence numbers only for the rows it
-  inserts, SHALL report `written` as the number of rows inserted, and SHALL shrink, split or
-  delete the gap rows regardless.
+  block_height, block_hash, position)`, SHALL report `written` as the number of rows actually
+  inserted, and SHALL shrink, split or delete the gap rows regardless. Association sequence
+  numbers SHALL be monotonic; they are NOT required to be dense (owner decision Q32, option B).
 - **MN-024** — `GET /v1/monitor-store/monitors/<id>/key-material`, `GET …/lease`,
   `POST /v1/monitor-store/leases/claim` and `POST …/leases/release` SHALL respond `410`.
 - **MN-025** — The storage API SHALL NOT read or write `monitor_leases`.
@@ -82,8 +82,26 @@ or leases.
 - **MN-036** — `GET /v1/monitors` and `GET /v1/monitors/<id>` through the balancer SHALL report
   `heldBy` as the answer of a fan-out across healthy nodes, and `keyNeeded` as true exactly when
   `heldBy` is null and the monitor's state is `backfilling` or `live`.
-- **MN-037** — After a 2xx response to `POST /v1/monitors/<id>/pause`, `…/resume`, `…/revoke` or
-  `DELETE /v1/monitors/<id>`, the balancer SHALL post `{"type": "stateChanged", "monitorId": <id>}`
-  to `POST /internal/events` on the node it has last observed holding that monitor, or on every
-  healthy node when it has observed none, and SHALL NOT let the outcome of that post change the
-  client's response, its status or its timing.
+- **MN-037** — After a 2xx response to `DELETE /v1/monitors/<id>`, the balancer SHALL post
+  `{"type": "stateChanged", "monitorId": <id>}` to `POST /internal/events` on the node it has last
+  observed holding that monitor, or on every healthy node when it has observed none, and SHALL NOT
+  let the outcome of that post change the client's response, its status or its timing.
+
+## The lifecycle (owner decision Q33)
+
+- **MN-040** — A consumer SHALL have exactly two operations on a monitor: `POST /v1/monitors`,
+  which gives a viewing key, and `DELETE /v1/monitors/<id>`, which destroys it. The system SHALL
+  NOT expose pause, resume or revoke as routes, states, transitions, CLI commands or dashboard
+  actions.
+- **MN-041** — A monitor SHALL occupy one of `backfilling`, `live`, `failed`, `stale_source` or
+  `deleted`. `failed` and `stale_source` SHALL be reachable only from the system's own detection,
+  never from a consumer request.
+- **MN-042** — `DELETE` SHALL destroy, in ONE transaction, the monitor's registration identity,
+  every association, every gap row and every scan fact, and SHALL leave a tombstone carrying only
+  the monitor's id, network, epoch and timestamps. Every route for that id SHALL answer `404`
+  afterwards, and the lifecycle log SHALL survive.
+- **MN-043** — Registering a viewing key whose previous monitor was deleted SHALL create a NEW
+  monitor with no coverage and no matches.
+- **MN-044** — The deployment SHALL be able to export the set of deleted monitors and re-apply it
+  to a database restored from an older snapshot, deleting again every monitor the restore brought
+  back (organizer spec FR-024). The export SHALL contain no key material and no fingerprint.
