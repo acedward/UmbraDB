@@ -33,16 +33,40 @@ interface FakeNode {
   queueB: number;
   /** Every `POST /v1/monitors` this node received, as raw bodies. */
   readonly registrations: string[];
+  /** Every `POST /internal/events` this node received (00009-09, Q31). */
+  readonly events: { type: string; monitorId: string }[];
+  /** Every lifecycle write this node served, as `<method> <path>`. */
+  readonly lifecycleWrites: string[];
   /** Answers `/internal/*` with 500 — a node that is up but broken. */
   broken: boolean;
   stop(): Promise<void>;
 }
 
+/** The monitor id a double reports for a fingerprint it holds. UUID-shaped, because that is what
+ *  the real `/internal/holds` answers and what the lifecycle routes take. */
+function monitorIdFor(fingerprintHex: string): string {
+  const h = fingerprintHex;
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+
+/** Polls until `predicate` holds or the budget runs out. A forwarded event is fire-and-forget by
+ *  design, so its arrival is observed rather than awaited. */
+async function waitFor(predicate: () => boolean, budgetMs: number, what: string): Promise<void> {
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    if (predicate()) return;
+    if (Date.now() > deadline) throw new Error(`${what}: not met within ${budgetMs} ms`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 async function startFakeNode(nodeId: string): Promise<FakeNode> {
   const holds = new Set<string>();
   const registrations: string[] = [];
+  const events: { type: string; monitorId: string }[] = [];
+  const lifecycleWrites: string[] = [];
   const node = {
-    nodeId, holds, registrations, keysHeld: 0, queueB: 0, broken: false,
+    nodeId, holds, registrations, events, lifecycleWrites, keysHeld: 0, queueB: 0, broken: false,
   } as unknown as FakeNode & { base: string };
 
   const server: Server = createServer((req, res) => {
@@ -70,7 +94,30 @@ async function startFakeNode(nodeId: string): Promise<FakeNode> {
         json(200, { holds: holds.has(Buffer.from(fp, "base64url").toString("hex")) });
         return;
       }
-      json(200, { monitors: [...holds].map((h) => ({ monitorId: `monitor-${h.slice(0, 8)}`, phase: "live" })) });
+      json(200, { monitors: [...holds].map((h) => ({ monitorId: monitorIdFor(h), phase: "live" })) });
+      return;
+    }
+    if (url.pathname === "/internal/events" && req.method === "POST") {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        events.push(JSON.parse(Buffer.concat(chunks).toString("utf8")) as { type: string; monitorId: string });
+        json(202, { accepted: true });
+      });
+      return;
+    }
+    // The four lifecycle writes, which any node may serve: they are storage operations, and the
+    // key they concern may live in another node's RAM.
+    if (/^\/v1\/monitors\/[^/]+\/(pause|resume|revoke)$/.test(url.pathname) && req.method === "POST") {
+      req.resume();
+      lifecycleWrites.push(`POST ${url.pathname}`);
+      json(200, { monitorId: url.pathname.split("/")[3], state: "paused" });
+      return;
+    }
+    if (/^\/v1\/monitors\/[^/]+$/.test(url.pathname) && req.method === "DELETE") {
+      req.resume();
+      lifecycleWrites.push(`DELETE ${url.pathname}`);
+      json(200, { deleted: true });
       return;
     }
     if (url.pathname === "/v1/monitors" && req.method === "POST") {
@@ -143,6 +190,10 @@ describe("the balancer's registration routing (00009-09 §7)", () => {
     two.queueB = 0;
     one.broken = false;
     two.broken = false;
+    one.events.length = 0;
+    two.events.length = 0;
+    one.lifecycleWrites.length = 0;
+    two.lifecycleWrites.length = 0;
   }
 
   it("computes the routing fingerprint from a Bech32m decode and a SHA-256, with no ledger", () => {
@@ -211,6 +262,72 @@ describe("the balancer's registration routing (00009-09 §7)", () => {
     one.keysHeld = 0;
     two.keysHeld = 40;
     expect((await register()).headers.get("x-upstream")).toBe(two.base);
+  }, 60_000);
+
+  it("[[shielded-monitor.balancer.lifecycle-writes-forward-state-changed]] tells the holder about a 2xx lifecycle write — the hinted node, or every healthy node — without touching the client's response", async () => {
+    // Organizer question Q31, measured on the live demo: a pause or a revoke reaches the holder
+    // through the fence in its next `advance-batch`, but a RESUME cannot — a paused key is not in
+    // the live set, so it has no batch item to be fenced on. Nothing else in the deployment can
+    // tell the holder, because only the balancer knows which node that is.
+    reset();
+    two.holds.add(fingerprintHex);
+    const monitorId = monitorIdFor(fingerprintHex);
+
+    // ── 1. HINTED: one node is told, and only that node ────────────────────────────────────
+    // The hint comes from the `holds` fan-out the read routes already make, so no extra request
+    // is spent learning it.
+    expect(await (await fetch(`${base}/v1/monitors/${monitorId}/holder`)).json())
+      .toStrictEqual({ heldBy: "node-2" });
+    expect(balancer.monitorHints().get(monitorId)).toBe(two.base);
+
+    const resumed = await fetch(`${base}/v1/monitors/${monitorId}/resume`, { method: "POST" });
+    expect(resumed.status).toBe(200);
+    expect(resumed.headers.get("x-upstream")).toBe(one.base); // served by whoever; forwarded to the holder
+    await waitFor(() => two.events.length === 1, 5_000, "the holder is told about the resume");
+    expect(two.events).toStrictEqual([{ type: "stateChanged", monitorId }]);
+    expect(one.events, "an addressed event must not be broadcast").toStrictEqual([]);
+
+    // Every one of the four writes, not just resume: revoke and delete race the fence, and a lost
+    // race is a key held for a monitor that no longer wants one.
+    for (const write of [
+      { method: "POST", path: `/v1/monitors/${monitorId}/pause` },
+      { method: "POST", path: `/v1/monitors/${monitorId}/revoke` },
+      { method: "DELETE", path: `/v1/monitors/${monitorId}` },
+    ]) {
+      two.events.length = 0;
+      const response = await fetch(`${base}${write.path}`, { method: write.method });
+      expect(response.status, write.path).toBe(200);
+      await waitFor(() => two.events.length === 1, 5_000, `the holder is told about ${write.path}`);
+    }
+    // A read is not a lifecycle write, and neither is a registration.
+    two.events.length = 0;
+    await fetch(`${base}/v1/monitors/${monitorId}`);
+    await register();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect([...one.events, ...two.events]).toStrictEqual([]);
+
+    // ── 2. UNHINTED: every healthy node is told ────────────────────────────────────────────
+    // A node that does not hold the monitor discards the event, so a fan-out of one small POST
+    // per node is both cheaper and more reliable than a `holds` fan-out to find the holder first.
+    reset();
+    const unknownId = monitorIdFor("f".repeat(64));
+    expect(balancer.monitorHints().has(unknownId)).toBe(false);
+    const pausedUnhinted = await fetch(`${base}/v1/monitors/${unknownId}/pause`, { method: "POST" });
+    expect(pausedUnhinted.status).toBe(200);
+    await waitFor(() => one.events.length === 1 && two.events.length === 1, 5_000, "both nodes are told");
+
+    // ── 3. A FAILED forward changes nothing the client can see ─────────────────────────────
+    reset();
+    one.broken = true;
+    two.broken = true;
+    const stillFine = await fetch(`${base}/v1/monitors/${monitorId}/resume`, { method: "POST" });
+    expect(stillFine.status).toBe(200);
+    expect(await stillFine.json()).toMatchObject({ monitorId });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect([...one.events, ...two.events], "the forwards were refused").toStrictEqual([]);
+    // And the write itself still happened — the forward is an extra, never a precondition.
+    expect([...one.lifecycleWrites, ...two.lifecycleWrites])
+      .toStrictEqual([`POST /v1/monitors/${monitorId}/resume`]);
   }, 60_000);
 
   it("[[shielded-monitor.balancer.hint-invalidated-when-a-node-goes-away]] drops every hint naming a node the moment that node is seen to be gone", async () => {

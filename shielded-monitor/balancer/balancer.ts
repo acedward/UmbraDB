@@ -41,7 +41,20 @@ import { FingerprintLocks, fingerprintHexToBase64Url, routingKeyFor } from "./ro
  * ── `/internal/*` is never forwarded ────────────────────────────────────────────────────────
  * A client asking for `/internal/status` gets 404 from the balancer, full stop. The nodes are
  * reachable only from the balancer in every supported topology, and this is the second lock on
- * that door.
+ * that door. The balancer is nonetheless the only component that CALLS `/internal/*`, which is
+ * why the lifecycle forward below lives here and nowhere else.
+ *
+ * ── Lifecycle writes are forwarded to the holder (§4.5, organizer question Q31) ─────────────
+ * `pause`/`resume`/`revoke`/`DELETE` are written by whichever node served the request — they are
+ * storage operations — but the key sits in the RAM of a node that may not be that one. A pause or
+ * a revoke reaches the holder anyway, through the fence in its next `advance-batch`; **a resume
+ * does not**, because a paused key is not in the live set and so has no batch item to be fenced
+ * on. So after a 2xx on one of those four routes the balancer posts a best-effort
+ * `{"type":"stateChanged","monitorId":…}` to the node it believes holds that monitor, or to every
+ * healthy node when it has no belief. It is fire-and-forget with a short timeout: the client's
+ * response has already been written and is never affected by it, a failed forward is logged
+ * without a body, and the node's own per-block re-read of its paused keys is the backstop for a
+ * forward that is lost.
  *
  * ── What it still does NOT do ───────────────────────────────────────────────────────────────
  * No TLS, no authentication (there is none anywhere in this alpha, owner Q3), no rate limiting, no
@@ -87,6 +100,9 @@ export interface Balancer {
   /** The current hint table, as `fingerprintHex → upstream base URL`. For the tests; an operator
    *  reads `X-Upstream` and `GET /v1/monitors/<id>/holder` instead. */
   hints(): Map<string, string>;
+  /** The custody hints learned from `/internal/holds`, as `monitorId → upstream base URL`. Used to
+   *  address a lifecycle event at one node instead of every node. For the tests. */
+  monitorHints(): Map<string, string>;
   readonly server: Server;
 }
 
@@ -107,6 +123,11 @@ interface NodeAnswer {
 
 const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
 
+/** How long a forwarded lifecycle event may take before it is abandoned. Deliberately short: the
+ *  client's response is already out, nothing retries this, and the node re-reads its paused keys
+ *  every block anyway. */
+const EVENT_FORWARD_TIMEOUT_MS = 2_000;
+
 export function createBalancer(options: BalancerOptions): Balancer {
   const log = options.logger ?? (() => undefined);
   const random = options.random ?? Math.random;
@@ -124,6 +145,11 @@ export function createBalancer(options: BalancerOptions): Balancer {
 
   /** `fingerprintHex → upstream base`. A HINT, never trusted without a `holds` check. */
   const hintTable = new Map<string, string>();
+  /** `monitorId → upstream base`, learned from the `/internal/holds` fan-out the read routes
+   *  already make. Also a hint, and one that costs nothing to be wrong about: it only decides
+   *  WHERE a best-effort lifecycle event is posted, and a node that does not hold the monitor
+   *  ignores the event. */
+  const monitorHintTable = new Map<string, string>();
   const locks = new FingerprintLocks();
 
   let probeTimer: NodeJS.Timeout | undefined;
@@ -199,7 +225,78 @@ export function createBalancer(options: BalancerOptions): Balancer {
     }
     // A GET body is not forwarded, so a GET can be replayed. Anything else is read once and
     // streamed, and is never retried.
-    proxy(req, res, first, method === "GET" || method === "HEAD");
+    proxy(req, res, first, method === "GET" || method === "HEAD", undefined, lifecycleTargetOf(method, path));
+  }
+
+  /**
+   * The monitor id of a LIFECYCLE WRITE, or `undefined` for every other request (§4.5, Q31).
+   *
+   * Only these four routes change a monitor's state, and only a state change is worth waking a
+   * holder for. A `found` event has no sender here: it is peer-to-peer between nodes and does not
+   * pass through the balancer.
+   */
+  function lifecycleTargetOf(method: string, path: string): string | undefined {
+    const action = /^\/v1\/monitors\/([^/]+)\/(pause|resume|revoke)$/.exec(path);
+    if (method === "POST" && action !== null) return decodeURIComponent(action[1]!);
+    const item = /^\/v1\/monitors\/([^/]+)$/.exec(path);
+    if (method === "DELETE" && item !== null) return decodeURIComponent(item[1]!);
+    return undefined;
+  }
+
+  /**
+   * Tells the holder that a monitor's state moved (§4.5). Fire-and-forget, by construction: the
+   * client's response was written before this is called, nothing here can change it, and nothing
+   * retries.
+   *
+   * One node when a hint names one, every healthy node otherwise — a fan-out of at most one small
+   * POST per node, which is cheaper than the `holds` fan-out it would take to be sure, and equally
+   * correct because a node that does not hold the monitor discards the event.
+   */
+  function forwardStateChanged(monitorId: string): void {
+    const hinted = monitorHintTable.get(monitorId);
+    const addressed = hinted === undefined
+      ? []
+      : upstreams.filter((u) => u.base === hinted && u.healthy);
+    const targets = addressed.length > 0 ? addressed : selectable();
+    for (const upstream of targets) void postStateChanged(upstream, monitorId);
+  }
+
+  /** One `POST /internal/events`. Never throws, never logs a body or a monitor id: an operator
+   *  needs to know that a node did not take the event, not which monitor it was about. */
+  async function postStateChanged(upstream: Upstream, monitorId: string): Promise<void> {
+    const payload = Buffer.from(JSON.stringify({ type: "stateChanged", monitorId }), "utf8");
+    const failure = await new Promise<string | undefined>((resolve) => {
+      const send = upstream.url.protocol === "https:" ? httpsRequest : httpRequest;
+      const request = send(
+        {
+          protocol: upstream.url.protocol,
+          hostname: upstream.url.hostname,
+          port: upstream.url.port,
+          method: "POST",
+          path: "/internal/events",
+          headers: {
+            "content-type": "application/json",
+            "content-length": payload.byteLength,
+            host: upstream.url.host,
+          },
+          timeout: Math.min(options.requestTimeoutMs, EVENT_FORWARD_TIMEOUT_MS),
+        },
+        (response) => {
+          response.resume();
+          const status = response.statusCode ?? 500;
+          resolve(status < 400 ? undefined : `status ${status}`);
+        },
+      );
+      request.on("error", (err: Error) => resolve(err.message));
+      request.on("timeout", () => {
+        request.destroy();
+        resolve("timed out");
+      });
+      request.end(payload);
+    });
+    if (failure !== undefined) {
+      log(`[balancer] ${upstream.base} did not take a lifecycle event (${failure}); the node's own re-read will catch it`);
+    }
   }
 
   /**
@@ -308,14 +405,23 @@ export function createBalancer(options: BalancerOptions): Balancer {
       const nodeId = (status as { nodeId?: unknown } | undefined)?.nodeId;
       const monitors = (held as { monitors?: unknown } | undefined)?.monitors;
       if (typeof nodeId !== "string" || !Array.isArray(monitors)) return;
+      const here = new Set<string>();
       for (const entry of monitors as { monitorId?: unknown; phase?: unknown }[]) {
         if (typeof entry?.monitorId === "string") {
+          here.add(entry.monitorId);
           map.set(entry.monitorId, {
             nodeId,
             phase: typeof entry.phase === "string" ? entry.phase : null,
           });
         }
       }
+      // This node just enumerated everything it holds, so it is authoritative about ITSELF: what
+      // it named is hinted at it, and what it no longer names is un-hinted from it. Nothing is
+      // inferred about the other nodes, whose answers are being folded in concurrently.
+      for (const [monitorId, base] of [...monitorHintTable]) {
+        if (base === upstream.base && !here.has(monitorId)) monitorHintTable.delete(monitorId);
+      }
+      for (const monitorId of here) monitorHintTable.set(monitorId, upstream.base);
     }));
     return map;
   }
@@ -382,6 +488,8 @@ export function createBalancer(options: BalancerOptions): Balancer {
     upstream: Upstream,
     retryable: boolean,
     body?: Buffer,
+    /** Set for the four lifecycle writes: the monitor whose holder is told about a 2xx (Q31). */
+    lifecycleMonitorId?: string,
   ): void {
     const target = new URL(req.url ?? "/", upstream.url);
     const send = upstream.url.protocol === "https:" ? httpsRequest : httpRequest;
@@ -408,11 +516,17 @@ export function createBalancer(options: BalancerOptions): Balancer {
         timeout: options.requestTimeoutMs,
       },
       (upstreamRes) => {
-        res.writeHead(upstreamRes.statusCode ?? 502, {
+        const status = upstreamRes.statusCode ?? 502;
+        res.writeHead(status, {
           ...upstreamRes.headers,
           "x-upstream": upstream.base,
         });
         upstreamRes.pipe(res);
+        // AFTER the client's status and headers are on the wire, so the forward cannot delay,
+        // change or fail the response the caller sees.
+        if (lifecycleMonitorId !== undefined && status >= 200 && status < 300) {
+          forwardStateChanged(lifecycleMonitorId);
+        }
       },
     );
 
@@ -424,9 +538,7 @@ export function createBalancer(options: BalancerOptions): Balancer {
       // than waiting for the next `holds` check means the first registration after a node dies
       // takes the fan-out path immediately instead of spending a round trip on a hint that cannot
       // be true.
-      for (const [fingerprintHex, base] of [...hintTable]) {
-        if (base === upstream.base) hintTable.delete(fingerprintHex);
-      }
+      dropHintsFor(upstream);
       if (res.headersSent) {
         // The upstream died mid-body. Nothing honest is left to do: the client has a truncated
         // response and MUST see it as a failure, not as a complete one.
@@ -444,7 +556,7 @@ export function createBalancer(options: BalancerOptions): Balancer {
       }
       log(`[balancer] retrying on ${next.base}`);
       // `retryable: false` on the second attempt: one retry, never a storm.
-      proxy(req, res, next, false, body);
+      proxy(req, res, next, false, body, lifecycleMonitorId);
     };
 
     outbound.on("error", fail);
@@ -572,10 +684,18 @@ export function createBalancer(options: BalancerOptions): Balancer {
       log(`[balancer] ${upstream.base} is now ${upstream.healthy ? "healthy" : "unhealthy"}`);
     }
     // A node that went away lost its keys with it, so its hints are stale by definition.
-    if (was && !upstream.healthy) {
-      for (const [fingerprintHex, base] of [...hintTable]) {
-        if (base === upstream.base) hintTable.delete(fingerprintHex);
-      }
+    if (was && !upstream.healthy) dropHintsFor(upstream);
+  }
+
+  /** Forgets everything this balancer believed one node was holding — both the fingerprint hints
+   *  that route a registration and the monitor hints that address a lifecycle event. A node that
+   *  is gone, or that has just been seen to fail, holds nothing. */
+  function dropHintsFor(upstream: Upstream): void {
+    for (const [fingerprintHex, base] of [...hintTable]) {
+      if (base === upstream.base) hintTable.delete(fingerprintHex);
+    }
+    for (const [monitorId, base] of [...monitorHintTable]) {
+      if (base === upstream.base) monitorHintTable.delete(monitorId);
     }
   }
 
@@ -587,6 +707,7 @@ export function createBalancer(options: BalancerOptions): Balancer {
     server,
     healthy: () => upstreams.filter((u) => u.healthy).map((u) => u.base),
     hints: () => new Map(hintTable),
+    monitorHints: () => new Map(monitorHintTable),
     probeOnce,
     async listen() {
       await new Promise<void>((resolve, reject) => {
