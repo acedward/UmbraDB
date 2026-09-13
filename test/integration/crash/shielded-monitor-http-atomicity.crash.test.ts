@@ -300,21 +300,19 @@ describe("Rule B over HTTP: a lost response never duplicates a height, and never
     const shape = heightShape(height);
     const before = await observeMonitorHeight(sql, monitorSchema, monitorId, height);
     const monitor = await serverStore.get(monitorId);
-    // The worker's loaded epoch, captured BEFORE the pause lands.
+    // The worker's loaded epoch, captured BEFORE the transition lands. `go_live` is the one
+    // available here that moves the epoch without stopping the monitor, so the rest of this file
+    // can carry on scanning it afterwards — the fence is what is under test, not the state.
     const loadedEpoch = monitor.epoch;
-    await serverStore.pause(monitorId, "test");
-    try {
-      await expect(
-        client.advance(monitorId, loadedEpoch, BigInt(height), []),
-      ).rejects.toBeInstanceOf(MonitorFencedError);
-      expect(
-        classifyRuleBState(await observeMonitorHeight(sql, monitorSchema, monitorId, height), {
-          height, associationRows: shape.matchPositions.length, totalBefore: before.totalAssociationRows,
-        }),
-      ).toBe("nothing-of-height");
-    } finally {
-      await serverStore.resume(monitorId, "test");
-    }
+    await serverStore.goLive(monitorId, loadedEpoch, "test");
+    await expect(
+      client.advance(monitorId, loadedEpoch, BigInt(height), []),
+    ).rejects.toBeInstanceOf(MonitorFencedError);
+    expect(
+      classifyRuleBState(await observeMonitorHeight(sql, monitorSchema, monitorId, height), {
+        height, associationRows: shape.matchPositions.length, totalBefore: before.totalAssociationRows,
+      }),
+    ).toBe("nothing-of-height");
   }, 120_000);
 
   it("scanning the rest of the corpus through the proxy, with faults every other height, still equals the oracle", async () => {

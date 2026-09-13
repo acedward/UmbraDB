@@ -444,7 +444,7 @@ describe("shielded-monitor private API", () => {
   describe("coverage", () => {
     it("distinguishes not-scanned-yet from scanned-and-empty (FR-020, US2 scenario 1)", async () => {
       const id = await register(120);
-      const monitor = await store.getIncludingRevoked(id);
+      const monitor = await store.getIncludingDeleted(id);
 
       const before = await call("GET", `/v1/monitors/${id}/matches`);
       expect(before.status).toBe(200);
@@ -496,7 +496,7 @@ describe("shielded-monitor private API", () => {
 
     beforeAll(async () => {
       pagedId = await register(130);
-      const monitor = await store.getIncludingRevoked(pagedId);
+      const monitor = await store.getIncludingDeleted(pagedId);
       // 37 associations spread over 8 heights with several per height, deliberately handed to
       // the store OUT of (height, position) order so the ordering guarantee is the store's
       // structural one and not an artefact of how the test happened to build its array.
@@ -620,7 +620,7 @@ describe("shielded-monitor private API", () => {
 
     it("returns the recorded details object and the block time as a decimal string", async () => {
       const id = await register(133);
-      const monitor = await store.getIncludingRevoked(id);
+      const monitor = await store.getIncludingDeleted(id);
       const details = {
         version: "shielded-monitor/match-details/v1",
         ledgerBuild: "ledger-v8@8.1.0-syshash.4",
@@ -647,7 +647,7 @@ describe("shielded-monitor private API", () => {
 
     it("omits both fields for `?details=0`, reproducing the pre-00009-07 item exactly", async () => {
       const id = await register(134);
-      const monitor = await store.getIncludingRevoked(id);
+      const monitor = await store.getIncludingDeleted(id);
       await store.advance(id, monitor!.epoch, 12n, [
         association(12n, 0, {
           details: { version: "v1", segments: [] } as never,
@@ -675,7 +675,7 @@ describe("shielded-monitor private API", () => {
 
     it("carries sourceOutcome when the archive recorded one, without replacing appliedOutcome (FR-009)", async () => {
       const id = await register(132);
-      const monitor = await store.getIncludingRevoked(id);
+      const monitor = await store.getIncludingDeleted(id);
       await store.advance(id, monitor!.epoch, 10n, [
         association(10n, 0, { sourceOutcome: "success" }),
       ]);
@@ -707,7 +707,7 @@ describe("shielded-monitor private API", () => {
 
     it("keeps matches readable while paused (US3 scenario 1)", async () => {
       const id = await register(141);
-      const monitor = await store.getIncludingRevoked(id);
+      const monitor = await store.getIncludingDeleted(id);
       await store.advance(id, monitor!.epoch, 5n, [association(5n, 0)]);
       await postJson(`/v1/monitors/${id}/pause`, undefined);
 
@@ -746,7 +746,7 @@ describe("shielded-monitor private API", () => {
 
     it("deletes, then answers as if the monitor never existed (US3 scenario 4)", async () => {
       const id = await register(144);
-      const monitor = await store.getIncludingRevoked(id);
+      const monitor = await store.getIncludingDeleted(id);
       await store.advance(id, monitor!.epoch, 3n, [association(3n, 0)]);
 
       const deleted = await call("DELETE", `/v1/monitors/${id}`);

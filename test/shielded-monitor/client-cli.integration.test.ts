@@ -144,7 +144,7 @@ describe("reference consumer CLI end to end", () => {
     const cursorAfterEmpty = readFileSync(cursorFile, "utf8");
 
     // ── the scanner's job, performed by the store (see the file note) ───────────────────────
-    const loaded = await store.getIncludingRevoked(monitorId);
+    const loaded = await store.getIncludingDeleted(monitorId);
     await store.advance(monitorId, loaded!.epoch, 120n, [
       association(100n, 0),
       association(100n, 4),
@@ -216,7 +216,7 @@ describe("reference consumer CLI end to end", () => {
 
     const registered = await client("register", "--key-file", secondKeyFile);
     const id = parse(registered.out).monitorId as string;
-    const loaded = await store.getIncludingRevoked(id);
+    const loaded = await store.getIncludingDeleted(id);
     await store.advance(loaded!.id, loaded!.epoch, 10n, [association(10n, 0), association(10n, 1)]);
 
     const first = await client("poll", "--id", id, "--cursor-file", secondCursor, "--limit", "1");

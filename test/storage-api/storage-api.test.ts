@@ -3,7 +3,6 @@ import {
   IllegalLifecycleTransitionError,
   MonitorFencedError,
   MonitorNotFoundError,
-  MonitorRevokedError,
 } from "../../shielded-monitor/errors.js";
 import { HttpMonitorStore } from "../../shielded-monitor/storage-http-client.js";
 import type {
@@ -56,28 +55,23 @@ function stubStore(overrides: Partial<ShieldedMonitorStore> = {}): ShieldedMonit
       calls.push(`get:${id}`);
       return MONITOR;
     },
-    getIncludingRevoked: async () => MONITOR,
+    getIncludingDeleted: async () => MONITOR,
     getByFingerprint: async () => undefined,
     listActive: async () => [MONITOR],
     listAll: async () => [MONITOR],
     listGaps: async () => [],
     readAssociations: async () => [],
-    readAssociationsMissingDetails: async () => [],
     listLifecycleEvents: async () => [],
     advance: fail("advance"),
     advanceBatch: fail("advanceBatch"),
     fillGap: fail("fillGap"),
-    updateAssociationDetails: async () => ({ applied: 0 }),
     bindArchiveSource: async () => ({ applied: true, monitor: MONITOR }),
     goLive: async () => MONITOR,
-    pause: async () => MONITOR,
-    resume: async () => MONITOR,
     markFailed: async () => MONITOR,
     markStaleSource: async () => MONITOR,
-    revoke: async () => MONITOR,
     delete: async () => MONITOR,
     recordAudit: async () => undefined,
-    listRevocations: async () => [],
+    listDeletions: async () => [],
   };
   return Object.assign({ calls }, base, overrides);
 }
@@ -109,7 +103,7 @@ describe("the storage API's monitor-store routes", () => {
   it("[[storage-api.fencing.stale-epoch-is-409-and-rethrown]] turns a stale epoch into 409 MONITOR_FENCED, and the client back into MonitorFencedError", async () => {
     const store = stubStore({
       advance: async () => {
-        throw new MonitorFencedError(MONITOR.id, "epoch", { epoch: 9n, state: "paused" });
+        throw new MonitorFencedError(MONITOR.id, "epoch", { epoch: 9n, state: "failed" });
       },
     });
     await withApi(store, async ({ url, client }) => {
@@ -121,14 +115,14 @@ describe("the storage API's monitor-store routes", () => {
       expect(raw.status).toBe(409);
       const payload = (await raw.json()) as { error: { code: string; detail?: Record<string, string> } };
       expect(payload.error.code).toBe("MONITOR_FENCED");
-      expect(payload.error.detail).toMatchObject({ rejection: "epoch", epoch: "9", state: "paused" });
+      expect(payload.error.detail).toMatchObject({ rejection: "epoch", epoch: "9", state: "failed" });
 
       // And the round trip: the caller above `HttpMonitorStore` sees the same class it always did.
       await expect(client.advance(MONITOR.id, 3n, 42n, [])).rejects.toSatisfy((err: unknown) => {
         expect(err).toBeInstanceOf(MonitorFencedError);
         const fenced = err as MonitorFencedError;
         expect(fenced.rejection).toBe("epoch");
-        expect(fenced.observed).toStrictEqual({ epoch: 9n, state: "paused" });
+        expect(fenced.observed).toStrictEqual({ epoch: 9n, state: "failed" });
         return true;
       });
     });
@@ -137,9 +131,8 @@ describe("the storage API's monitor-store routes", () => {
   it("maps every typed store error onto its status and back onto its class", async () => {
     const cases: ReadonlyArray<readonly [Error, number, string, (err: unknown) => void]> = [
       [new MonitorNotFoundError(MONITOR.id), 404, "MONITOR_NOT_FOUND", (e) => expect(e).toBeInstanceOf(MonitorNotFoundError)],
-      [new MonitorRevokedError(MONITOR.id), 403, "MONITOR_REVOKED", (e) => expect(e).toBeInstanceOf(MonitorRevokedError)],
       [
-        new IllegalLifecycleTransitionError("revoked", "resume"),
+        new IllegalLifecycleTransitionError("failed", "go_live"),
         409,
         "MONITOR_ILLEGAL_TRANSITION",
         (e) => expect(e).toBeInstanceOf(IllegalLifecycleTransitionError),

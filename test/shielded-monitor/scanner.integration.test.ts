@@ -230,7 +230,7 @@ describe("scanner lifecycle interaction (US3, FR-012, FR-013)", () => {
 
   afterAll(async () => { await container?.stop(); });
 
-  it("a pause landing between the load and the commit fences the batch, and resume continues with no duplicate and no gap (US3 scenarios 1 and 2)", async () => {
+  it("a transition landing between the load and the commit fences the batch, and the next scan continues with no duplicate and no gap (US3 scenarios 1 and 2)", async () => {
     const world = await createScannerWorld(container, "fence");
     try {
       const monitorId = world.monitors.get("K")!;
@@ -238,16 +238,17 @@ describe("scanner lifecycle interaction (US3, FR-012, FR-013)", () => {
 
       // Load the monitor the way a worker does...
       const loaded = await world.store.get(monitorId);
-      // ...then a consumer pauses it while that worker is "mid-batch".
-      await world.store.pause(monitorId, "consumer");
+      // ...then something moves its epoch while that worker is "mid-batch". `go_live` is the
+      // transition available to a scanner-side test that moves the epoch without stopping the
+      // monitor, which is what lets the second half of this case scan it properly.
+      await world.store.goLive(monitorId, loaded.epoch, "scanner");
 
       const result = await scanner.scanBatch(loaded);
-      expect(result).toEqual({ kind: "fenced", rejection: "state" });
+      expect(result).toEqual({ kind: "fenced", rejection: "epoch" });
       expect(await world.store.readAssociations(monitorId, 0n, 100)).toHaveLength(0);
       expect((await world.store.get(monitorId)).coverage.scannedThrough).toBeUndefined();
 
-      // Resume, scan properly, and compare against the manifest: nothing skipped, nothing doubled.
-      await world.store.resume(monitorId, "consumer");
+      // Scan properly and compare against the manifest: nothing skipped, nothing doubled.
       await drain(scanner, monitorId);
       const associations = await world.store.readAssociations(monitorId, 0n, 1000);
       expect(associations).toHaveLength(world.corpus.expectedMatches.get("K")!.length);
@@ -257,13 +258,13 @@ describe("scanner lifecycle interaction (US3, FR-012, FR-013)", () => {
     }
   }, 300_000);
 
-  it("a revoke mid-batch stops the monitor and no worker advances it again (US3 scenario 3)", async () => {
-    const world = await createScannerWorld(container, "revoke");
+  it("a delete mid-batch stops the monitor and no worker advances it again (US3 scenario 4)", async () => {
+    const world = await createScannerWorld(container, "deleted");
     try {
       const monitorId = world.monitors.get("K")!;
       const scanner = await scannerFor(world, "K");
       const loaded = await world.store.get(monitorId);
-      await world.store.revoke(monitorId, "consumer");
+      await world.store.delete(monitorId, "consumer");
 
       expect(await scanner.scanBatch(loaded)).toEqual({ kind: "fenced", rejection: "state" });
       // And the ordered worker refuses to even start on it.

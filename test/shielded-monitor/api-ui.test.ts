@@ -33,7 +33,7 @@ describe("shielded-monitor dashboard (GET /ui)", () => {
     get: async (id: string) => {
       throw new MonitorNotFoundError(id);
     },
-    getIncludingRevoked: async () => undefined,
+    getIncludingDeleted: async () => undefined,
     getByFingerprint: async () => undefined,
   } as unknown as PgShieldedMonitorStore;
 

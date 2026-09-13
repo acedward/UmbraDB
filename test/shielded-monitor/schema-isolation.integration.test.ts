@@ -125,7 +125,9 @@ describe("project B writes only its own schema (owner Rule B)", () => {
     const before = await archiveSnapshot();
     expect(before).toContain("chain_blobs(1)"); // the snapshot has real content in it
 
-    // register -> advance -> go live -> advance -> pause -> resume -> revoke -> delete
+    // register -> advance -> go live -> advance -> mark stale -> delete (the whole lifecycle
+    // there is since owner decision Q33: a key is given, the system moves it along, and the
+    // consumer deletes it)
     const key = await fixtureViewingKey(7_001);
     const monitor = await store.register({
       fingerprint: key.fingerprint,
@@ -147,14 +149,12 @@ describe("project B writes only its own schema (owner Rule B)", () => {
     const second = await store.advance(live.id, live.epoch, 4n, [association(4n, 0), association(4n, 1)]);
     expect(second.applied).toBe(true);
 
-    const paused = await store.pause(monitor.id, "rule-b-test");
-    const resumed = await store.resume(monitor.id, "rule-b-test");
-    expect(resumed.epoch).toBe(paused.epoch + 1n);
+    const stale = await store.markStaleSource(monitor.id, "rule-b-test");
+    expect(stale.epoch).toBe(live.epoch + 1n);
 
     expect((await store.readAssociations(monitor.id, 0n, 100)).length).toBe(3);
     await store.recordAudit("rule-b-test", "flow-complete", monitor.id, { associations: 3 });
 
-    await store.revoke(monitor.id, "rule-b-test");
     const deleted = await store.delete(monitor.id, "rule-b-test");
     expect(deleted?.state).toBe("deleted");
 

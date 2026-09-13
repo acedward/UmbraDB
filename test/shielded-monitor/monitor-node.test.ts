@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
   ArchiveBlockPage, ArchiveIdentity, ArchiveReadContract, ArchivedBlock,
 } from "../../src/interfaces/archive-read-contract.js";
@@ -10,7 +10,7 @@ import { NO_WAKE } from "../../shielded-monitor/wake.js";
 import type {
   AdvanceBatchItem, AdvanceBatchResult, AdvanceResult, AssociationInput, FillGapInput,
   FillGapResult, LifecycleEventRecord, MonitorGap, MonitorLastError, MonitorRecord,
-  RegisterMonitorInput, RevocationRecord, ShieldedMonitorStore,
+  DeletionRecord, RegisterMonitorInput, ShieldedMonitorStore,
 } from "../../shielded-monitor/store.js";
 import { ShieldedViewingKey } from "../../shielded-monitor/viewing-key.js";
 import { fixtureViewingKey } from "./helpers.js";
@@ -124,7 +124,7 @@ class FakeStore implements ShieldedMonitorStore {
     return record;
   }
 
-  async getIncludingRevoked(id: string): Promise<MonitorRecord | undefined> {
+  async getIncludingDeleted(id: string): Promise<MonitorRecord | undefined> {
     return this.monitors.get(id);
   }
 
@@ -200,18 +200,20 @@ class FakeStore implements ShieldedMonitorStore {
     return { applied: true, monitor: next };
   }
 
-  async pause(id: string): Promise<MonitorRecord> {
-    const monitor = await this.get(id);
-    const next = { ...monitor, state: "paused" as const, epoch: monitor.epoch + 1n };
+  /** The one lifecycle operation a consumer has (owner decision Q33). The double keeps the
+   *  tombstone the real store keeps, so `getIncludingDeleted` can still answer for it. */
+  async delete(id: string): Promise<MonitorRecord | undefined> {
+    const monitor = this.monitors.get(id);
+    if (monitor === undefined) return undefined;
+    const next = { ...monitor, state: "deleted" as const, epoch: monitor.epoch + 1n, gaps: [] };
     this.monitors.set(id, next);
     return next;
   }
 
-  /** Resume goes to `backfilling`, never straight to `live`: the tip moved while the monitor
-   *  slept, so `live` would be false at the moment it was claimed (see `lifecycle.ts`). */
-  async resume(id: string): Promise<MonitorRecord> {
+  /** The system's own stop, for the cases about a key whose monitor failed. */
+  async markFailed(id: string): Promise<MonitorRecord> {
     const monitor = await this.get(id);
-    const next = { ...monitor, state: "backfilling" as const, epoch: monitor.epoch + 1n };
+    const next = { ...monitor, state: "failed" as const, epoch: monitor.epoch + 1n };
     this.monitors.set(id, next);
     return next;
   }
@@ -228,14 +230,9 @@ class FakeStore implements ShieldedMonitorStore {
   async readAssociationsMissingDetails(): Promise<never> { return this.nope("readAssociationsMissingDetails"); }
   async listLifecycleEvents(): Promise<LifecycleEventRecord[]> { return this.nope("listLifecycleEvents"); }
   async updateAssociationDetails(): Promise<never> { return this.nope("updateAssociationDetails"); }
-  async markFailed(_id: string, _actor: string, _error: MonitorLastError): Promise<MonitorRecord> {
-    return this.nope("markFailed");
-  }
   async markStaleSource(): Promise<MonitorRecord> { return this.nope("markStaleSource"); }
-  async revoke(): Promise<MonitorRecord> { return this.nope("revoke"); }
-  async delete(): Promise<MonitorRecord | undefined> { return this.nope("delete"); }
   async recordAudit(): Promise<void> { return this.nope("recordAudit"); }
-  async listRevocations(): Promise<RevocationRecord[]> { return this.nope("listRevocations"); }
+  async listDeletions(): Promise<DeletionRecord[]> { return this.nope("listDeletions"); }
 }
 
 /** A key double that records what was done to it. */
@@ -428,62 +425,56 @@ describe("the monitor-node's queues (00009-09)", () => {
     await node.stop();
   });
 
-  it("[[shielded-monitor.node.paused-keeps-the-key-and-revoked-clears-it]] keeps a paused key in RAM and destroys a revoked one (OP-3)", async () => {
+  it("[[shielded-monitor.node.stopped-keeps-the-key-and-deleted-clears-it]] keeps the key of a monitor that merely stopped, and destroys the key of a deleted one", async () => {
+    // The whole custody rule since owner decision Q33, in one case. A monitor that STOPPED — an
+    // undecodable transaction, an archive rebuilt underneath it — keeps its key: its matches stay
+    // readable, and nothing about a stopped scan is a reason to destroy a key its owner has not
+    // asked to delete. A monitor that was DELETED loses it immediately, because that is what a
+    // consumer asking for deletion is asking for.
     const { node, store, monitor, lifecycle } = await liveNode(1);
     const fingerprintHex = node.keys.byMonitorId(monitor.id)!.fingerprintHex;
 
-    // Paused: the key stays, marked, so a resume needs no re-send from the client.
-    await store.pause(monitor.id);
+    await store.markFailed(monitor.id);
     store.fencedAs.set(monitor.id, "state");
     await node.refreshHeldMonitor(node.keys.byMonitorId(monitor.id)!);
-    expect(node.keys.get(fingerprintHex)?.phase).toBe("paused");
-    expect(lifecycle.cleared, "a paused key must NOT be cleared").toBe(0);
+    expect(node.keys.get(fingerprintHex)?.phase).toBe("failed");
+    expect(lifecycle.cleared, "a stopped monitor's key must NOT be cleared").toBe(0);
     expect(node.keys.live()).toStrictEqual([]);
-    expect(node.status()).toMatchObject({ keysHeld: 1, paused: 1, live: 0 });
+    expect(node.status()).toMatchObject({ keysHeld: 1, failed: 1, live: 0 });
 
-    // Deleted: there is nothing left to resume, so the key is destroyed.
-    store.monitors.delete(monitor.id);
+    // Deleted: there is nothing left to hold a key for, so it is destroyed.
+    await store.delete(monitor.id);
     await node.refreshHeldMonitor(node.keys.get(fingerprintHex)!);
     expect(node.keys.get(fingerprintHex)).toBeUndefined();
     expect(lifecycle.cleared).toBe(1);
     await node.stop();
   });
 
-  it("[[shielded-monitor.node.resume-in-storage-is-noticed-on-the-next-block]] re-enters sync for a paused key whose monitor was resumed in storage, with no event at all", async () => {
-    // Organizer question Q31, measured on the live demo. A paused key is deliberately outside the
-    // live set, so it has no `advance-batch` item — and the fence in that batch is how every OTHER
-    // lifecycle change reaches a holder. Without the per-block re-read below, a resumed monitor
-    // stays `paused` inside the node that holds its key until the process restarts and the client
-    // re-sends the key, which is precisely what pausing was meant to make unnecessary.
-    const { node, store, archive, monitor, lifecycle } = await liveNode(1);
-    const fingerprintHex = node.keys.byMonitorId(monitor.id)!.fingerprintHex;
+  it("[[shielded-monitor.node.delete-destroys-the-key-on-the-holder]] destroys a held key the moment the monitor is deleted, by event or by the next block's fence", async () => {
+    // The two paths a delete reaches a holder by, both of which must end with the WASM handle
+    // cleared (owner decision Q33): the balancer's forwarded event, and — if that is lost — the
+    // `not-found` fence on the node's next block.
+    //
+    // 1. The event.
+    const first = await liveNode(1);
+    const firstFp = first.node.keys.byMonitorId(first.monitor.id)!.fingerprintHex;
+    await first.store.delete(first.monitor.id);
+    first.node.onEvent({ type: "stateChanged", monitorId: first.monitor.id });
+    await vi.waitFor(() => {
+      expect(first.node.keys.get(firstFp)).toBeUndefined();
+    });
+    expect(first.lifecycle.cleared).toBe(1);
+    await first.node.stop();
 
-    await store.pause(monitor.id);
-    archive.blocks.push(systemBlock(2));
-    await node.runQueueAOnce();
-    expect(node.keys.get(fingerprintHex)!.phase).toBe("paused");
-    expect(lifecycle.cleared, "a paused key is kept").toBe(0);
-
-    // The resume happens in STORAGE and nowhere else: `onEvent` is never called here, no key is
-    // re-sent, and the node is told nothing.
-    await store.resume(monitor.id);
-    expect(node.keys.get(fingerprintHex)!.phase, "still paused until a block is processed").toBe("paused");
-
-    archive.blocks.push(systemBlock(3));
-    await node.runQueueAOnce();
-
-    const held = node.keys.get(fingerprintHex)!;
-    expect(held.phase).toBe("syncing");
-    // Re-armed, because the key rejoins the live set behind the watermark the pause let run on.
-    expect(held.hasScannedOnce).toBe(false);
-    expect(node.status().queueB, "a sync-key was queued").toBe(1);
-
-    // And the sync takes it back to live from its own coverage — no re-send anywhere in this test.
-    expect(await node.runQueueBOnce()).toBe(true);
-    expect(node.keys.get(fingerprintHex)!.phase).toBe("live");
-    expect((await store.get(monitor.id)).coverage.scannedThrough).toBe(3n);
-    expect(lifecycle.cleared).toBe(0);
-    await node.stop();
+    // 2. The fence, with no event at all.
+    const second = await liveNode(1);
+    const secondFp = second.node.keys.byMonitorId(second.monitor.id)!.fingerprintHex;
+    await second.store.delete(second.monitor.id);
+    second.archive.blocks.push(systemBlock(2));
+    await second.node.runQueueAOnce();
+    expect(second.node.keys.get(secondFp)).toBeUndefined();
+    expect(second.lifecycle.cleared).toBe(1);
+    await second.node.stop();
   });
 
   it("[[shielded-monitor.node.sync-key-queues-a-back-sync-for-a-recorded-gap]] picks up a gap the record already carries when it takes a hold of the key", async () => {
