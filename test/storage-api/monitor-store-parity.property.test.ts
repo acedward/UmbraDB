@@ -180,13 +180,20 @@ async function apply(world: World, command: Command): Promise<string> {
         // The batch's block hash is `association`'s own, so the store's cross-check between the
         // batch and its items is exercised rather than bypassed.
         const blockHash = association(height, 0).blockHash;
-        return show(normalize(await store.advanceBatch("undeployed", height, blockHash, [{
+        const result = await store.advanceBatch("undeployed", height, blockHash, [{
           monitorId,
           expectedEpoch: epoch,
           associations,
           // A gap strictly below the height, which is the only kind the store admits.
           ...(command.gap && height > 1n ? { newGaps: [{ from: 0n, to: height - 1n }] } : {}),
-        }])));
+        }]);
+        // The ids are the two sides' OWN monitor uuids, which differ by construction — the same
+        // reason `normalize` drops an `id` field. What is compared is the decision: how many were
+        // advanced, and with what reason the rest were refused.
+        return show({
+          advanced: result.advanced.length,
+          fenced: result.fenced.map((f) => f.reason),
+        });
       }
       case "fillGap": {
         const epoch = await current();
