@@ -10,6 +10,34 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
 
 ### Added
 
+- **The merged monitor-node: viewing keys live only in RAM (00009-09).** A new process,
+  `umbradb-shielded-monitor-node`, is project B: it serves the public API and the `/ui` dashboard,
+  runs both scan queues, and is the **sole custodian of every viewing key it is sent**. A key is
+  decoded, validated, fingerprinted and handed to the ledger, and its byte buffers are zero-filled
+  the instant the handle exists; from then on the only representation is a WASM handle, cleared on
+  revoke, delete, a fenced drop and SIGTERM. **The database holds no key material at all** —
+  registration sends a 32-byte SHA-256 fingerprint, which was already the monitor's identity.
+  Migration `004_key_in_ram_and_gaps` relaxes the `monitors` CHECK to fingerprint-only and adds
+  `monitor_gaps`; `monitors.key_serialized` and `monitor_leases` are left in place, always NULL
+  and never read, for a later cleanup migration to drop (additive-migration rule).
+  Scanning inverted with it: a block is read once, each transaction is deserialized **once for all
+  keys**, and the whole block commits as ONE `advance-batch` — every held monitor's associations,
+  coverage advance and gap rows in one transaction, with a fenced monitor reported in the response
+  rather than failing the block. Queue B catches a newly registered key up to the live watermark
+  (`sync-key`) and re-reads ranges that were missed (`back-sync`, committing through the new
+  `fill-gap`, which never moves coverage).
+  Coverage learned to have holes: a key's first live pass compares its recorded `scannedThrough`
+  with the height being scanned, and a shortfall becomes a `monitor_gaps` row written in the same
+  transaction as the coverage move, plus a queued back-sync. A monitor is complete when
+  `scannedThrough == sourceTip` **and** its `gaps` list is empty; both the API and the dashboard
+  show the list.
+  The balancer now routes registrations: it computes the key's fingerprint from a Bech32m decode
+  and a SHA-256 (**no ledger WASM**), verifies its hint with `GET /internal/holds`, fans out to
+  every healthy node on a miss, and places an unheld key on the node with the fewest keys (ties
+  broken by the shortest Queue B). It fills `heldBy`/`keyNeeded` on the monitor read routes from a
+  fan-out, serves `GET /v1/monitors/<id>/holder`, and answers **404 to any client request under
+  `/internal/`** without forwarding it. The registration body is never logged, at either end.
+
 - **Project B as a distinct deployable, with no database of its own (00009-08).** A new A-side
   process `umbradb-storage-api` owns the single main PostgreSQL and serves two route families on
   one port: the archive read contract (`/v1/archive/*`, mounted from the same router
@@ -142,7 +170,32 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
 
 ### Changed
 
-- **BREAKING (alpha deployment shape): `umbradb-shielded-monitor` and
+- **BREAKING (00009-09): `umbradb-shielded-monitor` (the scanner) and
+  `umbradb-shielded-monitor-api` are REPLACED by `umbradb-shielded-monitor-node`.** Both bins and
+  both image commands (`scanner`, `api`) are gone; the image's commands are now `node`,
+  `balancer`, `derive-key`, `storage`, `archive-sync` and `client`, and the Compose overlay runs
+  `shielded-monitor-node-1` / `-2`. The scanner-only environment variables go with them:
+  `SCAN_INSTANCE_ID`, `SCAN_LEASE_TTL_MS`, `SCAN_CONCURRENCY`, `MAX_MONITORS`, `SCAN_MAX_BATCHES`,
+  `SCAN_ONCE` and `SCAN_BACKFILL_DETAILS` (a node scans one block at a time for every key at once,
+  so there is nothing to parallelise across monitors and no claim to own; the details backfill now
+  runs inside the node that holds the key, because re-deriving details needs one).
+- **BREAKING (00009-09): four storage-API routes answer `410 Gone`.**
+  `GET /v1/monitor-store/monitors/<id>/key-material` (the database holds no key material),
+  `GET …/lease`, `POST /v1/monitor-store/leases/claim` and `POST …/leases/release` (there are no
+  leases). `POST /v1/monitor-store/monitors` takes `fingerprint` instead of `keySerialized` and
+  refuses anything that is not 32 bytes.
+- **BREAKING (00009-09), operationally: every viewing key must be re-sent after the upgrade.**
+  The keys that were in `monitors.key_serialized` are not loaded from it, so every existing
+  monitor reports `"keyNeeded": true` until its client registers the key again. The re-send is
+  idempotent, reaches the same monitor (the fingerprint is unchanged), and resumes from the
+  recorded coverage — it does not rescan history. Coverage, associations and lifecycle rows are
+  untouched by the migration. Full steps in `docs/shielded-monitor-deployment.md`
+  ("Migrating from the 00009-08 deployment").
+- The monitor view gains `gaps`, `heldBy` and `keyNeeded`. `heldBy`/`keyNeeded` describe
+  **custody**, which is a different fact from `state`: a monitor can be `live` and yet have nobody
+  holding its key, which is exactly what a node restart leaves behind.
+
+- **BREAKING (alpha deployment shape, 00009-08): `umbradb-shielded-monitor` and
   `umbradb-shielded-monitor-api` no longer take a database connection.** `MONITOR_PG`,
   `SHIELDED_MONITOR_PG`, `SHIELDED_MONITOR_SCHEMA`, `ARCHIVE_SCHEMA` and
   `SHIELDED_MONITOR_BOOTSTRAP` are gone from those two processes, which now require `STORAGE_URL`
