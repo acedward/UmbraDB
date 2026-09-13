@@ -179,6 +179,27 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
   `SCAN_ONCE` and `SCAN_BACKFILL_DETAILS` (a node scans one block at a time for every key at once,
   so there is nothing to parallelise across monitors and no claim to own; the details backfill now
   runs inside the node that holds the key, because re-deriving details needs one).
+- **BREAKING (00009-09, owner decision Q33): `pause`, `resume` and `revoke` are REMOVED — a
+  monitor is registered or it is deleted.** `POST /v1/monitors/:id/pause`, `…/resume` and
+  `…/revoke` are gone from the private API (a client still calling one gets the `404` any unknown
+  path gets), from the reference CLI, from the dashboard and from the storage API's transition
+  command. The `paused` and `revoked` STATES are gone with them: a monitor is `backfilling`,
+  `live`, `failed`, `stale_source` or `deleted`, and the middle two are reached only by the
+  system's own fail-closed detection, never by a request. `DELETE /v1/monitors/:id` now destroys
+  the registration identity, every association, every gap row and every scan fact in one
+  transaction, and the key held for it is destroyed in its node's RAM — the balancer forwards the
+  delete to the holder, and the holder's next block would fence it anyway. Giving the same key
+  again mints a FRESH monitor. Migration 001's `state` CHECK still admits the two removed literals
+  and is deliberately not rewritten; no code path can produce one.
+  `MONITOR_REVOKED` (410) disappears from both error catalogues, and FR-024's restore mechanism
+  becomes a **deletion list**: `export-deletions` / `apply-deletions` on the harness, file version
+  2, re-applying a delete rather than a revoke (`docs/shielded-monitor-restore.md`).
+- **BREAKING (00009-09, owner decision Q29): the 00009-07 details backfill is REMOVED.** Filling a
+  match's `details` needs the viewing key, which since this phase exists only in a node's RAM;
+  rather than carry a repair tool for a service nobody is running, the command, its store methods
+  (`readAssociationsMissingDetails`, `updateAssociationDetails`), its storage-API routes and its
+  suite are deleted. The `details` column and the live path that writes it are untouched; a match
+  recorded by an older build keeps `details: null` forever.
 - **BREAKING (00009-09): four storage-API routes answer `410 Gone`.**
   `GET /v1/monitor-store/monitors/<id>/key-material` (the database holds no key material),
   `GET …/lease`, `POST /v1/monitor-store/leases/claim` and `POST …/leases/release` (there are no
@@ -229,27 +250,25 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
 
 ### Fixed
 
-- **A resumed monitor now actually resumes on the node holding its key (00009-09).** A pause or a
-  revoke reaches the holder through the epoch fence in its next `advance-batch`; a **resume** could
-  not, because a paused key is deliberately outside the live pass and so has no batch item to be
-  fenced on — the monitor read `backfilling` in the database and stayed `paused` inside its holder,
-  with coverage frozen, until the process was restarted and the client re-sent the key. Two things
-  carry it now: the balancer posts a best-effort `POST /internal/events
-  {"type":"stateChanged","monitorId":…}` to the holder (or to every healthy node when it has no
-  hint) after each 2xx `pause`/`resume`/`revoke`/`DELETE` — fire-and-forget, after the client's
-  response, never able to change it — and every monitor-node re-reads each of its paused keys'
-  records on every block it processes. So a resume takes effect at once, or by the next block at
-  the latest, and still needs no key re-sent.
+- **A deleted monitor's key is destroyed on its holder immediately (00009-09).** The live run
+  found that nothing in the deployment told a node about a lifecycle change: the node's
+  `POST /internal/events` handler existed and had no caller. The balancer now posts a best-effort
+  `{"type":"stateChanged","monitorId":…}` to the node it believes holds the monitor (or to every
+  healthy node when it has no hint) after a 2xx `DELETE` — fire-and-forget, sent after the client's
+  response, unable to change it — so the WASM handle is cleared in milliseconds rather than at the
+  holder's next block. The `not-found` fence on that next block remains the backstop, and is what
+  makes the guarantee independent of a best-effort message.
 - **`fill-gap` is idempotent, and a stuck gap heals itself (00009-09).** A back-sync re-reads a
   range the coverage number already claims, which is the one write path with no `scanned_through <
   height` fence to protect it from a replay. When the range held a match that was already recorded
   — after a moment of double custody, or an operator's coverage repair — the fill died on
   `associations_observation_key`, the storage API answered 500, the job was dropped and the
-  `monitor_gaps` row stayed forever with nothing scheduled to retry it. `fill-gap` now selects the
-  observations it already holds inside the same transaction and drops them from the batch before
-  allocating sequence numbers (so `seq` stays dense and `written` counts only rows actually
-  inserted), and a node queues a back-sync for every gap still in a monitor's record whenever it
-  finishes syncing that key.
+  `monitor_gaps` row stayed forever with nothing scheduled to retry it. The insert is now
+  `ON CONFLICT … DO NOTHING` and `written` counts the rows that really landed, and a node queues a
+  back-sync for every gap still in a monitor's record whenever it finishes syncing that key. One
+  consequence, documented in the cursor contract: association sequence numbers are **monotonic but
+  no longer dense** — a skipped row's number is allocated and unused. `seq` is a cursor, not a
+  count, and nothing derives a match total from it.
 
 ## [1.0.0] - unreleased — "Totality"
 
