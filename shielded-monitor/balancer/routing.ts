@@ -57,7 +57,12 @@ export function routingKeyFor(body: string, net: string): RoutingKey {
   } catch {
     return { ok: false, rejection: "not-json" };
   }
-  if (typeof parsed !== "object" || parsed === null) return { ok: false, rejection: "not-json" };
+  // An array is valid JSON and is not a registration body. Rejected as `not-json` rather than as
+  // `no-viewing-key`, because the distinction is diagnostic only and "this is not an object" is
+  // the more accurate of the two.
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { ok: false, rejection: "not-json" };
+  }
   const viewingKey = (parsed as { viewingKey?: unknown }).viewingKey;
   if (typeof viewingKey !== "string" || viewingKey === "") {
     return { ok: false, rejection: "no-viewing-key" };
