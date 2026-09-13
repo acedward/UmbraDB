@@ -185,7 +185,7 @@ describe("PgShieldedMonitorStore laws", () => {
             for (const index of keyIndexes) {
               const key = await fixtureViewingKey(seed + index);
               const monitor = await localStore.register({
-                key,
+                fingerprint: key.fingerprint,
                 net: "undeployed",
                 requestedStartHeight: 0n,
                 matchingRuleVersion: TEST_MATCHING_RULE,

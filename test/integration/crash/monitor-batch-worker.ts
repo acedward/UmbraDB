@@ -21,10 +21,12 @@
  */
 import { PgArchiveReadContract } from "../../../src/postgres/archive-read-contract.js";
 import { createClient } from "../../../src/postgres/client.js";
+import { deserializeEncryptionSecretKey } from "../../../shielded-monitor/offers.js";
 import { ShieldedMonitorScanner } from "../../../shielded-monitor/scanner.js";
 import { PgShieldedMonitorStore } from "../../../storage-api/monitor-store-pg.js";
 import { withStatementFault, type FaultState } from "./archive-fault-injection.js";
 import { CRASH_NET } from "./monitor-batch-fixture.js";
+import { buildCorpus } from "../../fixtures/shielded-monitor/build-corpus.js";
 
 const READY_SENTINEL = "@@CRASH_WORKER_READY@@";
 const ERROR_SENTINEL = "@@CRASH_WORKER_ERROR@@";
@@ -78,7 +80,10 @@ async function main(): Promise<void> {
 
   const archive = new PgArchiveReadContract(readSql, archiveSchema);
   const store = new PgShieldedMonitorStore(withStatementFault(writeSql, state), monitorSchema);
-  const scanner = new ShieldedMonitorScanner(archive, store, { net: CRASH_NET, batchBlocks: 1 });
+  // 00009-09: the key is the caller's. The worker deserializes the corpus key once here, exactly
+  // as a monitor-node would hold it, and never asks the store for one — there is nothing to ask.
+  const key = await deserializeEncryptionSecretKey((await buildCorpus()).keyBytes.get("K")!);
+  const scanner = new ShieldedMonitorScanner(archive, store, { net: CRASH_NET, batchBlocks: 1, key });
 
   // The monitor is loaded through the CLEAN handle so the load's statements never count against
   // the fault indices; only the commit runs through the faulted one.

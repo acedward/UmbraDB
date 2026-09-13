@@ -6,7 +6,9 @@ import { ledgerV8EntryPath } from "../../chain-archive-sync/tx-replay-decoder.js
 import { PgArchiveReadContract } from "../../src/postgres/archive-read-contract.js";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { bootstrapShieldedMonitorSchema } from "../../storage-api/bootstrap.js";
-import { LEDGER_BUILD_ID, MATCHING_RULE_VERSION } from "../../shielded-monitor/offers.js";
+import {
+  deserializeEncryptionSecretKey, LEDGER_BUILD_ID, MATCHING_RULE_VERSION,
+} from "../../shielded-monitor/offers.js";
 import { ShieldedMonitorScanner } from "../../shielded-monitor/scanner.js";
 import { InMemoryScannerMetrics } from "../../shielded-monitor/scanner-metrics.js";
 import { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";
@@ -79,6 +81,8 @@ describe.skipIf(skip)("the relevance scanner over a real devnet archive", () => 
   let monitorId: string;
   let tipHeight: number;
   let metrics: InMemoryScannerMetrics;
+  /** The monitor's key bytes, held by the TEST — since 00009-09 nothing else holds one. */
+  let keySerialized: Uint8Array;
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:17-alpine").start();
@@ -100,10 +104,9 @@ describe.skipIf(skip)("the relevance scanner over a real devnet archive", () => 
     archive = new PgArchiveReadContract(sql, ARCHIVE_SCHEMA);
     store = new PgShieldedMonitorStore(sql, MONITOR_SCHEMA);
     const key = await fixtureViewingKey(21, NET);
+    keySerialized = key.yesIKnowTheSecurityImplicationsOfThis_serialized();
     const monitor = await store.register({
-      key: await parseViewingKey(
-        encodeViewingKey(key.yesIKnowTheSecurityImplicationsOfThis_serialized(), NET), NET,
-      ),
+      fingerprint: (await parseViewingKey(encodeViewingKey(keySerialized, NET), NET)).fingerprint,
       net: NET,
       requestedStartHeight: 0n,
       matchingRuleVersion: MATCHING_RULE_VERSION,
@@ -120,7 +123,11 @@ describe.skipIf(skip)("the relevance scanner over a real devnet archive", () => 
   });
 
   it("scans the real archive to its real tip, binds the real archive identity, and goes live", async () => {
-    const scanner = new ShieldedMonitorScanner(archive, store, { net: NET, batchBlocks: 7, metrics });
+    const scanner = new ShieldedMonitorScanner(archive, store, {
+      net: NET, batchBlocks: 7, metrics,
+      // 00009-09: the key is held by the caller, not fetched from the store.
+      key: await deserializeEncryptionSecretKey(keySerialized),
+    });
     const drained = await scanner.scanToTip(monitorId, { maxBatches: 64 });
     const rendered = JSON.stringify(drained.last, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
     expect(drained.last.kind, rendered).not.toBe("failed");

@@ -59,7 +59,7 @@ describe("PgShieldedMonitorStore", () => {
     it("creates a monitor in `backfilling` with no coverage and never echoes the key", async () => {
       const key = await fixtureViewingKey(1);
       const monitor = await store.register({
-        key,
+        fingerprint: key.fingerprint,
         net: "undeployed",
         requestedStartHeight: 0n,
         matchingRuleVersion: TEST_MATCHING_RULE,
@@ -86,7 +86,7 @@ describe("PgShieldedMonitorStore", () => {
     it("is idempotent: registering the same key twice returns the same monitor", async () => {
       const key = await fixtureViewingKey(2);
       const input = {
-        key,
+        fingerprint: key.fingerprint,
         net: "undeployed",
         requestedStartHeight: 5n,
         matchingRuleVersion: TEST_MATCHING_RULE,
@@ -109,7 +109,7 @@ describe("PgShieldedMonitorStore", () => {
 
     it("the same key on two networks is two monitors", async () => {
       const onUndeployed = await store.register({
-        key: await fixtureViewingKey(3, "undeployed"),
+        fingerprint: (await fixtureViewingKey(3, "undeployed")).fingerprint,
         net: "undeployed",
         requestedStartHeight: 0n,
         matchingRuleVersion: TEST_MATCHING_RULE,
@@ -117,7 +117,7 @@ describe("PgShieldedMonitorStore", () => {
         actor: "test",
       });
       const onPreview = await store.register({
-        key: await fixtureViewingKey(3, "preview"),
+        fingerprint: (await fixtureViewingKey(3, "preview")).fingerprint,
         net: "preview",
         requestedStartHeight: 0n,
         matchingRuleVersion: TEST_MATCHING_RULE,
@@ -130,7 +130,7 @@ describe("PgShieldedMonitorStore", () => {
     it("refuses a key validated for a different network than the one requested", async () => {
       await expect(
         store.register({
-          key: await fixtureViewingKey(4, "preview"),
+          fingerprint: (await fixtureViewingKey(4, "preview")).fingerprint,
           net: "undeployed",
           requestedStartHeight: 0n,
           matchingRuleVersion: TEST_MATCHING_RULE,
@@ -142,7 +142,7 @@ describe("PgShieldedMonitorStore", () => {
 
     it("stores the caller's opaque archive identity without interpreting it", async () => {
       const monitor = await store.register({
-        key: await fixtureViewingKey(5),
+        fingerprint: (await fixtureViewingKey(5)).fingerprint,
         net: "undeployed",
         requestedStartHeight: 0n,
         matchingRuleVersion: TEST_MATCHING_RULE,
@@ -164,7 +164,7 @@ describe("PgShieldedMonitorStore", () => {
     it("is idempotent even when two registrations race", async () => {
       const key = await fixtureViewingKey(7);
       const input = {
-        key,
+        fingerprint: key.fingerprint,
         net: "undeployed",
         requestedStartHeight: 0n,
         matchingRuleVersion: TEST_MATCHING_RULE,
@@ -187,7 +187,7 @@ describe("PgShieldedMonitorStore", () => {
     it("refuses re-registration of a revoked key (Q11) but allows it after a delete", async () => {
       const key = await fixtureViewingKey(6);
       const input = {
-        key,
+        fingerprint: key.fingerprint,
         net: "undeployed",
         requestedStartHeight: 0n,
         matchingRuleVersion: TEST_MATCHING_RULE,

@@ -73,8 +73,10 @@ export async function registerFixture(
 ): Promise<{ id: string; epoch: bigint }> {
   const net = opts.net ?? "undeployed";
   const key = await fixtureViewingKey(seed, net);
+  // 00009-09: registration carries the FINGERPRINT, never the key. The key stays with the caller
+  // (in production, in a monitor-node's RAM).
   const monitor = await store.register({
-    key,
+    fingerprint: key.fingerprint,
     net,
     requestedStartHeight: opts.startHeight ?? 0n,
     matchingRuleVersion: TEST_MATCHING_RULE,

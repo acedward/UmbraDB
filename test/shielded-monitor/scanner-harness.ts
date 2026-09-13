@@ -6,7 +6,12 @@ import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_archive/index.js";
 import { bootstrapShieldedMonitorSchema } from "../../storage-api/bootstrap.js";
-import { LEDGER_BUILD_ID, MATCHING_RULE_VERSION } from "../../shielded-monitor/offers.js";
+import {
+  deserializeEncryptionSecretKey,
+  LEDGER_BUILD_ID,
+  MATCHING_RULE_VERSION,
+  type EncryptionSecretKeyHandle,
+} from "../../shielded-monitor/offers.js";
 import { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";
 import { encodeViewingKey, parseViewingKey } from "../../shielded-monitor/viewing-key.js";
 import { buildCorpus, type BuiltCorpus } from "../fixtures/shielded-monitor/build-corpus.js";
@@ -77,7 +82,13 @@ export async function archiveCorpusBlocks(
   }
 }
 
-/** Registers one monitor per corpus key, with the corpus's own serialized keys. */
+/**
+ * Registers one monitor per corpus key, by FINGERPRINT (00009-09).
+ *
+ * The key material never reaches the store any more, so the harness keeps the handles: a scanner
+ * or a monitor-node under test is handed the handle for the monitor it is scanning, exactly as a
+ * real node hands its own key store's handle. `keyHandle(monitorId)` is the lookup the suites use.
+ */
 export async function registerCorpusMonitors(
   store: PgShieldedMonitorStore,
   corpus: BuiltCorpus,
@@ -89,7 +100,7 @@ export async function registerCorpusMonitors(
     const serialized = corpus.keyBytes.get(key.id)!;
     const viewingKey = await parseViewingKey(encodeViewingKey(serialized, net), net);
     const monitor = await store.register({
-      key: viewingKey,
+      fingerprint: viewingKey.fingerprint,
       net,
       requestedStartHeight: opts.startHeight ?? 0n,
       matchingRuleVersion: MATCHING_RULE_VERSION,
@@ -99,6 +110,25 @@ export async function registerCorpusMonitors(
     monitors.set(key.id, monitor.id);
   }
   return monitors;
+}
+
+/** The ledger handle for one corpus key id. The suites hand this to a scanner, which since
+ *  00009-09 never fetches a key of its own. */
+export async function corpusKeyHandle(
+  corpus: BuiltCorpus, keyId: string,
+): Promise<EncryptionSecretKeyHandle> {
+  return await deserializeEncryptionSecretKey(corpus.keyBytes.get(keyId)!);
+}
+
+/** `monitorId -> handle`, for a suite that drives several monitors at once. */
+export async function corpusKeyHandles(
+  corpus: BuiltCorpus, monitors: Map<string, string>,
+): Promise<Map<string, EncryptionSecretKeyHandle>> {
+  const handles = new Map<string, EncryptionSecretKeyHandle>();
+  for (const [keyId, monitorId] of monitors) {
+    handles.set(monitorId, await corpusKeyHandle(corpus, keyId));
+  }
+  return handles;
 }
 
 /** The whole world: schemas, corpus archived, monitors registered. */

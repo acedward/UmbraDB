@@ -5,11 +5,16 @@ import { createClient } from "../src/postgres/client.js";
 import { runMigrations } from "../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../src/postgres/migrations/chain_archive/index.js";
 import { bootstrapShieldedMonitorSchema } from "../storage-api/bootstrap.js";
-import { LEDGER_BUILD_ID, loadLedger, MATCHING_RULE_VERSION } from "../shielded-monitor/offers.js";
-import { ShieldedMonitorScanner } from "../shielded-monitor/scanner.js";
-import { InMemoryScannerMetrics } from "../shielded-monitor/scanner-metrics.js";
-import { ShieldedMonitorScannerService } from "../shielded-monitor/scanner-service.js";
-import { pgListenWake } from "../storage-api/pg-wake.js";
+import {
+  deserializeEncryptionSecretKey,
+  LEDGER_BUILD_ID,
+  loadLedger,
+  MATCHING_RULE_VERSION,
+  type EncryptionSecretKeyHandle,
+} from "../shielded-monitor/offers.js";
+import { scanBlock } from "../shielded-monitor/node/block-scan.js";
+import type { HeldKey } from "../shielded-monitor/node/key-store.js";
+import { hexToBytes } from "../shielded-monitor/scanner.js";
 import { PgShieldedMonitorStore } from "../storage-api/monitor-store-pg.js";
 import { encodeViewingKey, parseViewingKey } from "../shielded-monitor/viewing-key.js";
 import { buildCorpus } from "../test/fixtures/shielded-monitor/build-corpus.js";
@@ -22,11 +27,16 @@ import { POSTGRES_IMAGE } from "./environment.js";
  *
  * **What is and is not measured, stated before the numbers so nobody over-reads them.**
  *
- * MEASURED: the whole production scan path — `readBlocksSince` through the archive read
- * contract, `EncryptionSecretKey.deserialize` once per batch per monitor, the ledger's real
- * `test(offer)` trial decryption over every transaction's guaranteed offer and every fallible
- * segment, and the fenced `advance` commit — against a real PostgreSQL 17 and real archived
- * ledger bytes.
+ * MEASURED: the whole production scan path AS OF 00009-09 — `readBlocksSince` through the archive
+ * read contract, ONE `extractOffers` deserialization per transaction for ALL keys (the
+ * block-centric inversion this phase introduced), the ledger's real `test(offer)` trial decryption
+ * over every transaction's guaranteed offer and every fallible segment for every key, and ONE
+ * fenced `advance-batch` commit per block for every monitor at once — against a real PostgreSQL 17
+ * and real archived ledger bytes.
+ *
+ * The figures are therefore NOT comparable to the 00009-05 run recorded in the plan: that one
+ * deserialized each transaction once PER KEY, so its cost grew with the key count in a way this
+ * one's does not. That is the change this benchmark now measures.
  *
  * NOT MEASURED: a real chain's transaction mix. The corpus is synthesized (the plan explicitly
  * permits "a synthesized archive of a few thousand transactions"), so the offers are small and
@@ -35,12 +45,10 @@ import { POSTGRES_IMAGE } from "./environment.js";
  * mainnet**. SC-006 says the plan sets a threshold once a first measurement exists; this is that
  * measurement, and the threshold is a separate decision.
  *
- * **Work is capped per measurement, and the table says by how much.** Scanning 2 000 archived
- * transactions with 50 keys is 100 000 trial decryptions, which is tens of minutes — most of it
- * re-deserializing the same transaction once per monitor. `BENCH_SCAN_MAX_EVALS` bounds each
- * row's work by scanning a PREFIX of the archive for the larger key counts; the row reports the
- * blocks and transactions it actually scanned, and the reported figure is a RATE, which is what
- * SC-006 asks for. Nothing is extrapolated.
+ * **Work is capped per measurement, and the table says by how much.** `BENCH_SCAN_MAX_EVALS`
+ * bounds each row's work by scanning a PREFIX of the archive for the larger key counts; the row
+ * reports the blocks and transactions it actually scanned, and the reported figure is a RATE,
+ * which is what SC-006 asks for. Nothing is extrapolated.
  *
  * Run: `npx tsx bench/shielded-monitor-scan.ts` (Docker required).
  * Env: `BENCH_SCAN_BLOCKS` (default 500), `BENCH_SCAN_TX_PER_BLOCK` (default 4),
@@ -141,6 +149,7 @@ async function main(): Promise<void> {
       const monitorSchema = `bench_monitor_${keys}`;
       await bootstrapShieldedMonitorSchema(sql, monitorSchema);
       const store = new PgShieldedMonitorStore(sql, monitorSchema);
+      const handles: EncryptionSecretKeyHandle[] = [];
       for (let i = 0; i < keys; i++) {
         // Distinct REAL keys, one per monitor, so each monitor does a genuine trial decryption
         // that mostly FAILS — the realistic case, and the expensive one. Monitor 0 is the
@@ -152,42 +161,74 @@ async function main(): Promise<void> {
           : await serializeKeyFromSeed(benchSeed(i));
         const key = await parseViewingKey(encodeViewingKey(serialized, NET), NET);
         await store.register({
-          key, net: NET, requestedStartHeight: 0n,
+          fingerprint: key.fingerprint, net: NET, requestedStartHeight: 0n,
           matchingRuleVersion: MATCHING_RULE_VERSION, ledgerBuild: LEDGER_BUILD_ID, actor: "bench",
         });
+        handles.push(await deserializeEncryptionSecretKey(serialized));
       }
 
-      // Bound this row's work: each monitor scans a prefix long enough to be a stable rate
+      // Bound this row's work: the node scans a prefix long enough to be a stable rate
       // measurement and short enough to finish. The row reports what it actually scanned.
       const blocksForRow = Math.max(
         batchBlocks,
         Math.min(blocks, Math.ceil(maxEvals / (keys * txPerBlock))),
       );
-      const metrics = new InMemoryScannerMetrics();
-      const scanner = new ShieldedMonitorScanner(archive, store, { net: NET, batchBlocks, metrics });
-      const service = new ShieldedMonitorScannerService(scanner, store, pgListenWake(sql), {
-        net: NET, concurrency: 4, pollMs: 1000, maxMonitors: keys,
-        maxBatchesPerMonitorPerCycle: Math.ceil(blocksForRow / batchBlocks),
-      });
+
+      // The held key set, as a monitor-node would hold it: one WASM handle per key, in RAM, for
+      // the whole run. Nothing fetches a key from the database, because nothing can.
+      const monitors = await store.listActive(keys);
+      const held: HeldKey[] = [];
+      for (const [index, monitor] of monitors.entries()) {
+        held.push({
+          monitorId: monitor.id,
+          fingerprintHex: `bench-${index}`,
+          esk: handles[index]!,
+          phase: "live",
+          hasScannedOnce: true,
+          addedAt: new Date(),
+        });
+      }
 
       if (global.gc !== undefined) global.gc();
       const started = Date.now();
-      await service.runCycle();
+      let scannedBlocks = 0;
+      let scannedTransactions = 0;
+      let matched = 0;
+      for (let height = 0; height < blocksForRow; height += 1) {
+        // Exactly Queue A's shape: one page of one block, one deserialization per transaction for
+        // every key, one `advance-batch` for the whole node.
+        const page = await archive.readBlocksSince(NET, height - 1, 1);
+        const block = page.blocks[0];
+        if (block === undefined) break;
+        const byKey = await scanBlock(block, held, { net: NET, verifyTxIdentity: false });
+        scannedBlocks += 1;
+        scannedTransactions += block.transactions.filter((t) => t.kind !== "system").length * keys;
+        const epochs = new Map(monitors.map((m) => [m.id, m.epoch]));
+        const result = await store.advanceBatch(NET, BigInt(block.height), hexToBytes(block.hash),
+          held.map((k) => ({
+            monitorId: k.monitorId,
+            expectedEpoch: epochs.get(k.monitorId)!,
+            associations: byKey.get(k.fingerprintHex) ?? [],
+          })));
+        for (const list of byKey.values()) matched += list.length;
+        if (result.advanced.length === 0) break;
+      }
       const wallMs = Date.now() - started;
-      const snapshot = metrics.snapshot(NET);
       const rssMb = process.memoryUsage.rss() / 1024 / 1024;
 
       results.push({
         keys,
-        blocks: snapshot.blocksScanned / keys,
-        transactions: snapshot.transactionsScanned,
-        aggregateTxPerSecond: (snapshot.transactionsScanned * 1000) / wallMs,
-        txPerSecondPerKey: (snapshot.transactionsScanned * 1000) / wallMs / keys,
-        matches: snapshot.matches,
+        blocks: scannedBlocks,
+        transactions: scannedTransactions,
+        aggregateTxPerSecond: (scannedTransactions * 1000) / wallMs,
+        txPerSecondPerKey: (scannedTransactions * 1000) / wallMs / keys,
+        matches: matched,
         wallMs,
         rssMb: Math.round(rssMb * 10) / 10,
         peakRssMb: Math.round(peakRssMb * 10) / 10,
       });
+      for (const handle of handles) handle.clear();
+      handles.length = 0;
       console.log(`[bench] keys=${keys} done in ${wallMs} ms`);
       await sql.unsafe(`DROP SCHEMA IF EXISTS ${monitorSchema} CASCADE`);
     }

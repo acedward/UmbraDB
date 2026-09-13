@@ -281,7 +281,7 @@ describe("HttpMonitorStore and PgShieldedMonitorStore are the same store (FR-025
       const seed = 900 + index;
       const key = await fixtureViewingKey(seed);
       const registration = {
-        key,
+        fingerprint: key.fingerprint,
         net: "undeployed",
         requestedStartHeight: 0n,
         matchingRuleVersion: TEST_MATCHING_RULE,

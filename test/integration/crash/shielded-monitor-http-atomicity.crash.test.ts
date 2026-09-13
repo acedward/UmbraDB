@@ -174,7 +174,7 @@ describe("Rule B over HTTP: a lost response never duplicates a height, and never
 
     const key = await parseViewingKey(encodeViewingKey(corpus.keyBytes.get("K")!, CRASH_NET), CRASH_NET);
     const monitor = await serverStore.register({
-      key, net: CRASH_NET, requestedStartHeight: 0n,
+      fingerprint: key.fingerprint, net: CRASH_NET, requestedStartHeight: 0n,
       matchingRuleVersion: MATCHING_RULE_VERSION, ledgerBuild: LEDGER_BUILD_ID, actor: "rule-b-http",
     });
     monitorId = monitor.id;

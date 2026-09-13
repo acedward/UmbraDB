@@ -10,6 +10,7 @@ import { bootstrapShieldedMonitorSchema } from "../../storage-api/bootstrap.js";
 import { LEDGER_BUILD_ID, MATCHING_RULE_VERSION } from "../../shielded-monitor/offers.js";
 import { ShieldedMonitorScanner } from "../../shielded-monitor/scanner.js";
 import { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";
+import { deserializeEncryptionSecretKey } from "../../shielded-monitor/offers.js";
 import { encodeViewingKey, parseViewingKey } from "../../shielded-monitor/viewing-key.js";
 import { buildCorpus, type BuiltCorpus } from "../fixtures/shielded-monitor/build-corpus.js";
 import { uniqueSchema } from "./helpers.js";
@@ -106,8 +107,10 @@ describe("scanner laws over interleaved archive growth and scanning", () => {
         await archiveStore.ensureArchiveInstanceId(net);
 
         const key = await parseViewingKey(encodeViewingKey(corpus.keyBytes.get("K")!, net), net);
+        // 00009-09: the scanner is handed a handle the caller owns, for the whole run.
+        const handle = await deserializeEncryptionSecretKey(corpus.keyBytes.get("K")!);
         const monitor = await store.register({
-          key, net, requestedStartHeight: 0n,
+          fingerprint: key.fingerprint, net, requestedStartHeight: 0n,
           matchingRuleVersion: MATCHING_RULE_VERSION, ledgerBuild: LEDGER_BUILD_ID, actor: "prop",
         });
 
@@ -157,7 +160,7 @@ describe("scanner laws over interleaved archive growth and scanning", () => {
             }
           } else {
             const scanner = new ShieldedMonitorScanner(archive, store, {
-              net, batchBlocks: op.batchBlocks,
+              net, batchBlocks: op.batchBlocks, key: handle,
             });
             const loaded = await store.get(monitor.id);
             const result = await scanner.scanBatch(loaded);

@@ -14,14 +14,14 @@ import type {
  * The scanner's control flow, without a database and without the ledger.
  *
  * The Testcontainers suite (`scanner.integration.test.ts`) proves the real thing end to end.
- * This file exists for the properties that suite CANNOT observe: how many times the key was
- * deserialized, whether `clear()` ran on the failure path, how many `advance` calls one batch
- * makes, and what happens when a store method throws a fence at each of the four places one can
- * arrive. Those are call-sequence facts, and a double is the only instrument that sees them.
+ * This file exists for the properties that suite CANNOT observe: how many `advance` calls one
+ * batch makes, whether the caller's key handle survives a batch (00009-09: this class must NEVER
+ * clear a key it does not own), and what happens when a store method throws a fence at each of the
+ * four places one can arrive. Those are call-sequence facts, and a double is the only instrument
+ * that sees them.
  */
 
 const NET = "undeployed";
-const KEY_BYTES = Uint8Array.from([1, 2, 3, 4]);
 
 function hex(seed: number): string {
   return seed.toString(16).padStart(64, "0");
@@ -34,6 +34,7 @@ function monitorRecord(over: Partial<MonitorRecord> = {}): MonitorRecord {
     state: "backfilling",
     epoch: 1n,
     coverage: { requestedStart: 0n },
+    gaps: [],
     sourceGenesisHash: hex(0),
     sourceInstanceId: "a".repeat(32),
     matchingRuleVersion: "shielded-monitor/relevance/v1",
@@ -105,7 +106,6 @@ interface Advance {
 class FakeStore implements ScannerStore {
   monitor: MonitorRecord = monitorRecord();
   readonly advances: Advance[] = [];
-  readonly keyReads: number[] = [];
   goLiveCalls = 0;
   failed: MonitorLastError | undefined;
   staleCalls = 0;
@@ -114,11 +114,6 @@ class FakeStore implements ScannerStore {
   markFailedThrows: Error | undefined;
 
   async get(): Promise<MonitorRecord> { return this.monitor; }
-
-  async getKeyMaterial(): Promise<Uint8Array> {
-    this.keyReads.push(this.keyReads.length);
-    return Uint8Array.from(KEY_BYTES);
-  }
 
   async advance(
     _id: string, epoch: bigint, throughHeight: bigint,
@@ -170,13 +165,21 @@ class FakeStore implements ScannerStore {
   }
 }
 
-/** A key double that records its own lifecycle. `matches` decides the predicate's answer, but
- *  the predicate here never runs — the scanner is driven with a `deserializeKey` that also
- *  short-circuits offer extraction by throwing or matching, per test. */
-function fakeKey(state: { deserialized: number; cleared: number }): EncryptionSecretKeyHandle {
-  state.deserialized += 1;
+/**
+ * A key double that records what was done to it.
+ *
+ * Since 00009-09 the interesting number is `cleared`, and the interesting value is **zero**: the
+ * key belongs to the monitor-node that holds it, across many batches and many blocks, and a
+ * scanner that cleared it at the end of a batch would destroy a key the node is still monitoring
+ * with. `tests` is there so a test can see the predicate was reached at all.
+ */
+function inertKey(): EncryptionSecretKeyHandle {
+  return { test: () => false, clear: () => {} };
+}
+
+function fakeKey(state: { tests: number; cleared: number }): EncryptionSecretKeyHandle {
   return {
-    test: () => false,
+    test: () => { state.tests += 1; return false; },
     clear: () => { state.cleared += 1; },
   };
 }
@@ -185,9 +188,9 @@ describe("scanner control flow (no database, no ledger)", () => {
   it("commits exactly ONE advance per batch, at the LAST block height of the page (Rule B)", async () => {
     const archive = new FakeArchive([systemBlock(0, 1), systemBlock(1, 2), block(2, 0)]);
     const store = new FakeStore();
-    const lifecycle = { deserialized: 0, cleared: 0 };
+    const lifecycle = { tests: 0, cleared: 0 };
     const scanner = new ShieldedMonitorScanner(archive, store, {
-      net: NET, batchBlocks: 3, deserializeKey: async () => fakeKey(lifecycle),
+      net: NET, batchBlocks: 3, key: fakeKey(lifecycle),
     });
 
     const result = await scanner.scanBatch(store.monitor);
@@ -199,25 +202,25 @@ describe("scanner control flow (no database, no ledger)", () => {
     expect(result.kind === "advanced" && result.blocks).toBe(3);
   });
 
-  it("deserializes the key ONCE per batch and clears it once, even when the predicate throws", async () => {
+  it("[[shielded-monitor.node.scanner-never-clears-a-borrowed-key]] never clears the caller's key, even when the predicate throws", async () => {
     const archive = new FakeArchive([block(0, 3)]);
     const store = new FakeStore();
-    const lifecycle = { deserialized: 0, cleared: 0 };
+    const lifecycle = { tests: 0, cleared: 0 };
     const scanner = new ShieldedMonitorScanner(archive, store, {
       net: NET,
-      deserializeKey: async () => {
-        const handle = fakeKey(lifecycle);
-        return { test: handle.test, clear: handle.clear };
-      },
+      key: fakeKey(lifecycle),
     });
 
     // The fake transactions are not real ledger bytes, so `extractOffers` throws on the FIRST
-    // one — i.e. this exercises the failure path through `matchPage`'s `finally`.
+    // one — i.e. this exercises the failure path, which is where a stray `clear()` in a `finally`
+    // would live.
     const result = await scanner.scanBatch(store.monitor);
 
     expect(result.kind).toBe("failed");
-    expect(lifecycle.deserialized).toBe(1);
-    expect(lifecycle.cleared).toBe(1);
+    // THE assertion of this case (00009-09): the key belongs to the monitor-node, which holds it
+    // across many batches. A scanner that cleared it here would destroy a key still in use, and
+    // every subsequent block would silently match nothing.
+    expect(lifecycle.cleared).toBe(0);
     // Fail-closed: nothing was committed for the height it could not read.
     expect(store.advances).toHaveLength(0);
     expect(store.failed?.code).toBe("UNDECODABLE_TRANSACTION");
@@ -225,44 +228,21 @@ describe("scanner control flow (no database, no ledger)", () => {
     expect(store.failed?.atPosition).toBe(0);
   });
 
-  it("never shares a key handle between monitors — each batch gets its own", async () => {
-    const archive = new FakeArchive([block(0, 1)]);
-    const store = new FakeStore();
-    const handles: EncryptionSecretKeyHandle[] = [];
-    const scanner = new ShieldedMonitorScanner(archive, store, {
-      net: NET,
-      deserializeKey: async () => {
-        const handle = { test: () => false, clear: () => {} };
-        handles.push(handle);
-        return handle;
-      },
-    });
-
-    // Both batches fail at the predicate (the placeholder bytes are not a transaction), which
-    // is irrelevant here: what matters is that each obtained its OWN handle.
-    await scanner.scanBatch(monitorRecord({ id: "11111111-2222-4333-8444-555555555555" }));
-    store.monitor = monitorRecord({ id: "22222222-2222-4333-8444-555555555555" });
-    await scanner.scanBatch(store.monitor);
-
-    expect(handles).toHaveLength(2);
-    expect(handles[0]).not.toBe(handles[1]);
-  });
-
-  it("a page with no regular transaction never loads the key at all, and still advances", async () => {
+  it("a page with no regular transaction never touches the key at all, and still advances", async () => {
     const archive = new FakeArchive([systemBlock(0, 2), block(1, 0)]);
     const store = new FakeStore();
-    const lifecycle = { deserialized: 0, cleared: 0 };
+    const lifecycle = { tests: 0, cleared: 0 };
     const scanner = new ShieldedMonitorScanner(archive, store, {
-      net: NET, batchBlocks: 2, deserializeKey: async () => fakeKey(lifecycle),
+      net: NET, batchBlocks: 2, key: fakeKey(lifecycle),
     });
 
     const result = await scanner.scanBatch(store.monitor);
 
     expect(result).toMatchObject({ kind: "advanced", throughHeight: 1n, matches: 0 });
-    // The quiet live tail is the common case; putting key material in the WASM heap once per
-    // empty block to test nothing is both wasteful and a needless exposure.
-    expect(lifecycle.deserialized).toBe(0);
-    expect(store.keyReads).toHaveLength(0);
+    // The quiet live tail is the common case; a trial decryption per empty block against nothing
+    // is pure waste.
+    expect(lifecycle.tests).toBe(0);
+    expect(lifecycle.cleared).toBe(0);
   });
 
   it("an unsupported protocol version stops the monitor with the typed code (FR-007)", async () => {
@@ -273,7 +253,7 @@ describe("scanner control flow (no database, no ledger)", () => {
     }]);
     const store = new FakeStore();
     const scanner = new ShieldedMonitorScanner(archive, store, {
-      net: NET, deserializeKey: async () => ({ test: () => false, clear: () => {} }),
+      net: NET, key: { test: () => false, clear: () => {} },
     });
 
     const result = await scanner.scanBatch(store.monitor);
@@ -286,7 +266,7 @@ describe("scanner control flow (no database, no ledger)", () => {
     const archive = new FakeArchive([systemBlock(0, 2)]);
     const store = new FakeStore();
     const scanner = new ShieldedMonitorScanner(archive, store, {
-      net: NET, deserializeKey: async () => ({ test: () => false, clear: () => {} }),
+      net: NET, key: { test: () => false, clear: () => {} },
     });
 
     const result = await scanner.scanBatch(store.monitor);
@@ -300,7 +280,7 @@ describe("scanner control flow (no database, no ledger)", () => {
     archive.identity = { net: NET, genesisHash: hex(0), archiveInstanceId: "b".repeat(32) };
     const store = new FakeStore();
     const scanner = new ShieldedMonitorScanner(archive, store, {
-      net: NET, deserializeKey: async () => ({ test: () => false, clear: () => {} }),
+      net: NET, key: { test: () => false, clear: () => {} },
     });
 
     expect(await scanner.scanBatch(store.monitor)).toEqual({ kind: "stale-source" });
@@ -315,7 +295,7 @@ describe("scanner control flow (no database, no ledger)", () => {
     const store = new FakeStore();
     store.monitor = monitorRecord({ sourceGenesisHash: undefined, sourceInstanceId: undefined });
     const scanner = new ShieldedMonitorScanner(archive, store, {
-      net: NET, deserializeKey: async () => ({ test: () => false, clear: () => {} }),
+      net: NET, key: { test: () => false, clear: () => {} },
     });
 
     await scanner.scanBatch(store.monitor);
@@ -331,7 +311,7 @@ describe("scanner control flow (no database, no ledger)", () => {
     archive.identity = undefined;
     const store = new FakeStore();
     const scanner = new ShieldedMonitorScanner(archive, store, {
-      net: NET, deserializeKey: async () => ({ test: () => false, clear: () => {} }),
+      net: NET, key: { test: () => false, clear: () => {} },
     });
 
     expect(await scanner.scanBatch(store.monitor)).toEqual({ kind: "at-tip", wentLive: false });
@@ -344,7 +324,7 @@ describe("scanner control flow (no database, no ledger)", () => {
     const store = new FakeStore();
     store.advanceThrows = new MonitorFencedError(store.monitor.id, "epoch", { epoch: 9n, state: "backfilling" });
     const scanner = new ShieldedMonitorScanner(archive, store, {
-      net: NET, deserializeKey: async () => ({ test: () => false, clear: () => {} }),
+      net: NET, key: { test: () => false, clear: () => {} },
     });
 
     expect(await scanner.scanBatch(store.monitor)).toEqual({ kind: "fenced", rejection: "epoch" });
@@ -355,7 +335,7 @@ describe("scanner control flow (no database, no ledger)", () => {
     const store = new FakeStore();
     store.markFailedThrows = new MonitorFencedError(store.monitor.id, "state", { epoch: 1n, state: "revoked" });
     const scanner = new ShieldedMonitorScanner(archive, store, {
-      net: NET, deserializeKey: async () => ({ test: () => false, clear: () => {} }),
+      net: NET, key: { test: () => false, clear: () => {} },
     });
 
     expect(await scanner.scanBatch(store.monitor)).toEqual({ kind: "fenced", rejection: "state" });
@@ -365,7 +345,7 @@ describe("scanner control flow (no database, no ledger)", () => {
     const archive = new FakeArchive([block(0, 0), block(1, 0)]);
     const store = new FakeStore();
     const scanner = new ShieldedMonitorScanner(archive, store, {
-      net: NET, batchBlocks: 1, deserializeKey: async () => ({ test: () => false, clear: () => {} }),
+      net: NET, batchBlocks: 1, key: { test: () => false, clear: () => {} },
     });
 
     const first = await scanner.scanBatch(store.monitor);
@@ -383,7 +363,7 @@ describe("scanner control flow (no database, no ledger)", () => {
     store.monitor = monitorRecord({ coverage: { requestedStart: 0n, scannedThrough: 0n } });
     const metrics = new InMemoryScannerMetrics();
     const scanner = new ShieldedMonitorScanner(archive, store, {
-      net: NET, metrics, deserializeKey: async () => ({ test: () => false, clear: () => {} }),
+      net: NET, metrics, key: { test: () => false, clear: () => {} },
     });
 
     await scanner.scanBatch(store.monitor);
@@ -393,13 +373,13 @@ describe("scanner control flow (no database, no ledger)", () => {
   it("refuses to scan a monitor belonging to another network", async () => {
     const archive = new FakeArchive([block(0, 0)]);
     const store = new FakeStore();
-    const scanner = new ShieldedMonitorScanner(archive, store, { net: NET });
+    const scanner = new ShieldedMonitorScanner(archive, store, { net: NET, key: inertKey() });
     await expect(scanner.scanBatch(monitorRecord({ net: "someothernet" }))).rejects.toThrow(/One network per deployment/);
   });
 
   it("refuses a non-positive batch size at construction rather than silently scanning nothing", () => {
     const archive = new FakeArchive([]);
-    expect(() => new ShieldedMonitorScanner(archive, new FakeStore(), { net: NET, batchBlocks: 0 }))
+    expect(() => new ShieldedMonitorScanner(archive, new FakeStore(), { net: NET, batchBlocks: 0, key: inertKey() }))
       .toThrow(/batchBlocks/);
   });
 
@@ -412,7 +392,7 @@ describe("scanner control flow (no database, no ledger)", () => {
     const scanner = new ShieldedMonitorScanner(archive, store, {
       net: NET, budgetTxPerSecond: 1,
       sleep: async (ms) => { slept.push(ms); },
-      deserializeKey: async () => ({ test: () => false, clear: () => {} }),
+      key: { test: () => false, clear: () => {} },
     });
     await scanner.scanBatch(store.monitor);
     expect(slept).toEqual([]);

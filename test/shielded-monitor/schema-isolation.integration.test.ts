@@ -128,7 +128,7 @@ describe("project B writes only its own schema (owner Rule B)", () => {
     // register -> advance -> go live -> advance -> pause -> resume -> revoke -> delete
     const key = await fixtureViewingKey(7_001);
     const monitor = await store.register({
-      key,
+      fingerprint: key.fingerprint,
       net: "undeployed",
       requestedStartHeight: 0n,
       matchingRuleVersion: TEST_MATCHING_RULE,

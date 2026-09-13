@@ -104,7 +104,7 @@ describe("Rule B: one block height, one transaction — the only observable stat
     const serialized = corpus.keyBytes.get("K")!;
     const key = await parseViewingKey(encodeViewingKey(serialized, CRASH_NET), CRASH_NET);
     const monitor = await cleanStore.register({
-      key, net: CRASH_NET, requestedStartHeight: 0n,
+      fingerprint: key.fingerprint, net: CRASH_NET, requestedStartHeight: 0n,
       matchingRuleVersion: MATCHING_RULE_VERSION, ledgerBuild: LEDGER_BUILD_ID, actor: "rule-b-crash",
     });
     monitorId = monitor.id;
