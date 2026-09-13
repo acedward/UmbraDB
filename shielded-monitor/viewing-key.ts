@@ -114,6 +114,24 @@ export class ShieldedViewingKey {
     return this.#serialized.length;
   }
 
+  /**
+   * Zero-fills the bytes this object holds (00009-09).
+   *
+   * The monitor-node calls this the moment the key has become a ledger WASM handle, so that the
+   * only representation left in the process is the one `EncryptionSecretKey.clear()` can destroy.
+   * Without it, "keys only in RAM" would still leave a plain `Uint8Array` of key bytes reachable
+   * from a request handler's closure for as long as the garbage collector felt like it — which a
+   * heap dump, a core file or an error carrying the object as `cause` would happily carry.
+   *
+   * After this the object is a husk: {@link yesIKnowTheSecurityImplicationsOfThis_serialized}
+   * returns zeros, and `fingerprint` — already computed, and not secret — still identifies the
+   * monitor. `Object.freeze` does not stop this: freezing an object does not freeze the contents
+   * of a typed array it holds, which is exactly the loophole being used, deliberately.
+   */
+  shred(): void {
+    this.#serialized.fill(0);
+  }
+
   toString(): string {
     return REDACTED;
   }

@@ -1,5 +1,5 @@
 import type { MatchDetails } from "../match-details.js";
-import type { AssociationRecord, MonitorCoverage, MonitorRecord } from "../store.js";
+import type { AssociationRecord, MonitorCoverage, MonitorGap, MonitorRecord } from "../store.js";
 import { encodeCursor } from "./cursor.js";
 
 /**
@@ -30,12 +30,41 @@ export interface CoverageView {
   readonly sourceTip: string | null;
 }
 
+/** One hole in a monitor's coverage (00009-09), as heights a consumer can render. */
+export interface GapView {
+  readonly from: string;
+  readonly to: string;
+  readonly recordedAt: string;
+}
+
 /** A monitor as a consumer sees it. */
 export interface MonitorView {
   readonly monitorId: string;
   readonly net: string;
   readonly state: string;
   readonly coverage: CoverageView;
+  /**
+   * The ranges below `coverage.scannedThrough` that were never actually read for this monitor
+   * (00009-09). Empty is the healthy shape; "complete" is `scannedThrough === sourceTip` AND an
+   * empty list, which is why this travels with the coverage rather than beside it.
+   */
+  readonly gaps: readonly GapView[];
+  /**
+   * The monitor-node currently holding this monitor's viewing key in RAM, or `null` when none is
+   * (00009-09).
+   *
+   * A node answers `null` for a monitor it does not hold, because that is all it can honestly
+   * say — it cannot see its peers. The BALANCER is the component that can, and it overwrites this
+   * field with the answer of a fan-out before the response reaches a client. So a `null` from a
+   * balancer means "nobody holds it"; a `null` from a node reached directly means "not me".
+   */
+  readonly heldBy: string | null;
+  /**
+   * `true` when this monitor is in a state that should be scanning but no node holds its key —
+   * the shape a restart leaves behind (§4.6). The client's remedy is to re-send the key, which
+   * reaches the same monitor because the fingerprint is the identity.
+   */
+  readonly keyNeeded: boolean;
   readonly matchingRuleVersion: string;
   readonly ledgerBuild: string;
   /** Present only for `failed`/`stale_source`. Carries the failure CLASS and a non-secret
@@ -102,12 +131,36 @@ export function coverageView(coverage: MonitorCoverage, sourceTip: bigint | unde
   };
 }
 
-export function monitorView(record: MonitorRecord, sourceTip: bigint | undefined): MonitorView {
+export function gapView(gap: MonitorGap): GapView {
+  return {
+    from: gap.from.toString(10),
+    to: gap.to.toString(10),
+    recordedAt: gap.recordedAt.toISOString(),
+  };
+}
+
+/**
+ * `keyNeeded` is derived, never stored: a monitor needs a key when it is in a state that should be
+ * scanning and nobody is holding one for it. A `paused` monitor whose key a node still holds is
+ * not in that position, and neither is a `revoked` one, which is never going to scan again.
+ */
+export function keyNeededFor(state: string, heldBy: string | null): boolean {
+  return heldBy === null && (state === "backfilling" || state === "live");
+}
+
+export function monitorView(
+  record: MonitorRecord,
+  sourceTip: bigint | undefined,
+  heldBy: string | null = null,
+): MonitorView {
   return {
     monitorId: record.id,
     net: record.net,
     state: record.state,
     coverage: coverageView(record.coverage, sourceTip),
+    gaps: record.gaps.map(gapView),
+    heldBy,
+    keyNeeded: keyNeededFor(record.state, heldBy),
     matchingRuleVersion: record.matchingRuleVersion,
     ledgerBuild: record.ledgerBuild,
     // Only the CLASS and the position reach the wire. `MonitorLastError.message` is written by

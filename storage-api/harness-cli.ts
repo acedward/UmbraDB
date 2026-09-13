@@ -158,11 +158,16 @@ export async function runHarness(argv: readonly string[]): Promise<number> {
 
       case "register": {
         // The key is read from a file and never echoed. `parseViewingKey` validates it against
-        // the deployment network and the ledger before anything touches the database.
+        // the deployment network and the ledger; only its FINGERPRINT then reaches the database
+        // (00009-09). The key itself is shredded here and the monitor is registered WITHOUT a
+        // holder — the harness is an operator tool, not a monitor-node, so the row it creates
+        // shows `key needed` until a client sends that key to a node.
         const encoded = (await readFile(requireFlag(flags, "key-file"), "utf8")).trim();
         const key = await parseViewingKey(encoded, net);
+        const fingerprint = key.fingerprint;
+        key.shred();
         const monitor = await store.register({
-          key,
+          fingerprint,
           net,
           requestedStartHeight: BigInt(flags.get("start") ?? "0"),
           matchingRuleVersion: flags.get("matching-rule-version") ?? "shielded-monitor/v1",

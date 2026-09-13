@@ -1,7 +1,7 @@
 import type { ArchiveReadContract, ArchivedBlock } from "../src/interfaces/archive-read-contract.js";
 import { MonitorFencedError, MonitorNotFoundError, MonitorRevokedError } from "./errors.js";
 import type { MatchDetails } from "./match-details.js";
-import { deserializeEncryptionSecretKey, type EncryptionSecretKeyHandle } from "./offers.js";
+import type { EncryptionSecretKeyHandle } from "./offers.js";
 import { evaluateRelevance } from "./relevance.js";
 import type { AssociationDetailsUpdate, AssociationRecord, MonitorRecord } from "./store.js";
 
@@ -41,7 +41,6 @@ import type { AssociationDetailsUpdate, AssociationRecord, MonitorRecord } from 
 export interface DetailsBackfillStore {
   listAll(limit: number): Promise<MonitorRecord[]>;
   get(id: string): Promise<MonitorRecord>;
-  getKeyMaterial(id: string): Promise<Uint8Array>;
   readAssociationsMissingDetails(
     monitorId: string, afterSeq: bigint, limit: number,
   ): Promise<AssociationRecord[]>;
@@ -58,6 +57,9 @@ export type DetailsBackfillSkipReason =
   /** The block at that height is not the one the association names. A rebuilt or re-synced
    *  archive: filling from it would mix two histories. */
   | "block-hash-differs"
+  /** This process holds no viewing key for that monitor (00009-09): keys live only in the RAM of
+   *  the node they were sent to, so a backfill can only fill what its own node monitors. */
+  | "key-not-held"
   /** No transaction sits at the recorded position, or it carries a different hash. */
   | "transaction-missing"
   /** Re-evaluating the transaction against the monitor's key no longer reproduces the recorded
@@ -87,8 +89,17 @@ export interface DetailsBackfillOptions {
   readonly net: string;
   /** Associations read — and therefore filled — per store transaction. Default 100. */
   readonly batchRows?: number;
-  /** Injectable for tests and for a future TEE deployment, exactly as the scanner's is. */
-  readonly deserializeKey?: (bytes: Uint8Array) => Promise<EncryptionSecretKeyHandle>;
+  /**
+   * The viewing key to re-derive a monitor's details with, or `undefined` when this process does
+   * not hold one (00009-09).
+   *
+   * Before 00009-09 the backfill fetched the key from the database. There is no key in the
+   * database any more, so the caller supplies one — in practice a monitor-node looking up its own
+   * key store. A monitor whose key nobody holds is simply not backfilled: its rows keep their
+   * `details: null`, which is the honest answer, and the fill happens when the client re-sends the
+   * key. The handle is borrowed, never cleared here: the node owns its lifetime.
+   */
+  readonly keyFor: (monitorId: string) => EncryptionSecretKeyHandle | undefined;
 }
 
 const DEFAULT_BATCH_ROWS = 100;
@@ -99,6 +110,7 @@ function emptySkips(): Record<DetailsBackfillSkipReason, number> {
     "block-hash-differs": 0,
     "transaction-missing": 0,
     "match-not-reproduced": 0,
+    "key-not-held": 0,
   };
 }
 
@@ -111,7 +123,7 @@ function toHex(bytes: Uint8Array): string {
 export class ShieldedMonitorDetailsBackfill {
   private readonly net: string;
   private readonly batchRows: number;
-  private readonly deserializeKey: (bytes: Uint8Array) => Promise<EncryptionSecretKeyHandle>;
+  private readonly keyFor: (monitorId: string) => EncryptionSecretKeyHandle | undefined;
 
   constructor(
     private readonly archive: ArchiveReadContract,
@@ -123,7 +135,7 @@ export class ShieldedMonitorDetailsBackfill {
     if (!Number.isSafeInteger(this.batchRows) || this.batchRows < 1) {
       throw new Error(`batchRows must be a positive integer; got ${String(options.batchRows)}`);
     }
-    this.deserializeKey = options.deserializeKey ?? deserializeEncryptionSecretKey;
+    this.keyFor = options.keyFor;
   }
 
   /**
@@ -197,8 +209,8 @@ export class ShieldedMonitorDetailsBackfill {
       try {
         derived = await this.deriveForPage(monitorId, page);
       } catch (err) {
-        // `getKeyMaterial` refuses a monitor that was revoked or deleted between the page read
-        // and the derivation. That is this monitor's answer, not the run's: `runAll` must still
+        // A monitor revoked or deleted between the page read and the derivation refuses the rest
+        // of its own work. That is this monitor's answer, not the run's: `runAll` must still
         // finish the others.
         if (err instanceof MonitorNotFoundError || err instanceof MonitorRevokedError) {
           return { examined, filled, skipped, fenced: false, refused: true };
@@ -280,9 +292,14 @@ export class ShieldedMonitorDetailsBackfill {
     }
     if (candidates.length === 0) return { updates, skips };
 
-    const keyBytes = await this.store.getKeyMaterial(monitorId);
-    const key = await this.deserializeKey(keyBytes);
-    try {
+    const key = this.keyFor(monitorId);
+    // No key held for this monitor: nothing can be re-derived, and saying so as a skip is better
+    // than pretending the rows were examined and found unfillable.
+    if (key === undefined) {
+      for (let i = 0; i < candidates.length; i += 1) skips.push("key-not-held");
+      return { updates, skips };
+    }
+    {
       for (const candidate of candidates) {
         let details: MatchDetails | undefined;
         try {
@@ -305,9 +322,6 @@ export class ShieldedMonitorDetailsBackfill {
             : { blockTimestampMs: BigInt(candidate.block.timestampMs) }),
         });
       }
-    } finally {
-      key.clear();
-      keyBytes.fill(0);
     }
     return { updates, skips };
   }

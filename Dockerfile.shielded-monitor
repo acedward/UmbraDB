@@ -2,10 +2,13 @@
 #
 # The shielded-monitor image (sub-plan 00009-08 v2; `spec/00009` FR-026).
 #
-# ── One image, six commands ─────────────────────────────────────────────────────────────────
-#   scanner      umbradb-shielded-monitor            project B: relevance scanning
-#   api          umbradb-shielded-monitor-api        project B: the private API + dashboard
-#   balancer     umbradb-shielded-monitor-balancer   project B: random selection over the APIs
+# ── One image, six commands (00009-09) ──────────────────────────────────────────────────────
+#   node         umbradb-shielded-monitor-node       project B: the API + dashboard + scanning,
+#                                                    holding every viewing key in RAM and nowhere
+#                                                    else. Replaces the 00009-08 `scanner` and
+#                                                    `api` commands, which are GONE.
+#   balancer     umbradb-shielded-monitor-balancer   project B: routes registrations to the node
+#                                                    that holds the key, and load-balances the rest
 #   derive-key   umbradb-shielded-monitor-derive-key project B: a seed file -> a viewing key
 #   storage      umbradb-storage-api                 project A: the ONE process with a database
 #                                                    credential, serving both route families
@@ -17,7 +20,7 @@
 # `test/compose/docker-compose.shielded-monitor.yml` expresses.
 #
 # ── What "project B has no database" means for this image ────────────────────────────────────
-# It is a property of the four B commands, not of the layer: the image contains `dist-cli/
+# It is a property of the three B commands, not of the layer: the image contains `dist-cli/
 # storage-api` and `dist-cli/src/postgres` because the `storage` command needs them.
 # `test/shielded-monitor/import-boundary.test.ts` proves no module reachable from
 # `shielded-monitor/**` can load any of it, and `shielded-monitor/no-database.ts` refuses to start
@@ -61,4 +64,4 @@ COPY docker/shielded-monitor-entrypoint.sh /usr/local/bin/umbradb-entrypoint
 
 USER node
 ENTRYPOINT ["/usr/local/bin/umbradb-entrypoint"]
-CMD ["scanner"]
+CMD ["node"]

@@ -7,6 +7,7 @@ import {
   normalizeTxHash,
   UnsupportedProtocolVersionError,
   type EncryptionSecretKeyHandle,
+  type OfferSet,
 } from "./offers.js";
 
 /**
@@ -122,6 +123,26 @@ export async function evaluateRelevance(
       throw new ArchiveTransactionIdentityError(claimed, offers.transactionHash);
     }
   }
+  return await evaluateExtractedOffers(offers, key, options.details === true);
+}
+
+/**
+ * The predicate over offers that have ALREADY been extracted — the block-centric path (00009-09).
+ *
+ * A monitor-node deserializes each transaction of a block exactly once and then tests every key it
+ * holds against the result, so the per-key work has to start from an {@link OfferSet} rather than
+ * from bytes. {@link evaluateRelevance} is that same function with the deserialization in front of
+ * it, which is what keeps the one-key path and the many-key path provably identical: there is one
+ * implementation of "what counts as a match", and both call it.
+ *
+ * The offers are WASM handles shared across every key in the pass. `test()` does not mutate them,
+ * so sharing is safe; what must NOT be shared is the key, and each key here is its own handle.
+ */
+export async function evaluateExtractedOffers(
+  offers: OfferSet,
+  key: EncryptionSecretKeyHandle,
+  details = false,
+): Promise<RelevanceOutcome> {
   const segments: number[] = [];
   if (offers.guaranteed !== undefined && key.test(offers.guaranteed)) {
     segments.push(GUARANTEED_SEGMENT_ID);
@@ -135,7 +156,7 @@ export async function evaluateRelevance(
   if (segments.length === 0) return { kind: "no-match" };
   // Ascending, so a manifest comparison and a stored `matched_segments` array have one order.
   segments.sort((a, b) => a - b);
-  if (options.details !== true) return { kind: "match", segments };
+  if (!details) return { kind: "match", segments };
   return { kind: "match", segments, details: await buildMatchDetails(offers, key, segments) };
 }
 

@@ -11,8 +11,9 @@ import {
   MonitorRevokedError,
 } from "../errors.js";
 import type { MonitorState } from "../lifecycle.js";
+import type { MonitorNode } from "../node/monitor-node.js";
 import type { MonitorRecord, ShieldedMonitorStore } from "../store.js";
-import { LEDGER_BUILD_ID, parseViewingKey } from "../viewing-key.js";
+import { parseViewingKey } from "../viewing-key.js";
 import { loadApiConfig, type ApiConfig } from "./config.js";
 import { CursorError, decodeCursor, encodeCursor } from "./cursor.js";
 import { unknownSourceTip, type SourceTipProvider } from "./source-tip.js";
@@ -169,6 +170,16 @@ const CreateMonitorBodySchema = z
 
 const MonitorIdSchema = z.string().uuid();
 
+/** `POST /internal/events` (§5.2). `.strict()` so a peer running a newer build cannot smuggle a
+ *  field this one silently ignores — a best-effort channel still has a contract. */
+const InternalEventSchema = z
+  .object({
+    type: z.enum(["found", "stateChanged"]),
+    monitorId: z.string().uuid(),
+    height: z.string().regex(/^\d{1,39}$/).optional(),
+  })
+  .strict();
+
 function scrubIssues(
   issues: ReadonlyArray<{ readonly path: string; readonly message: string }>,
 ): ReadonlyArray<{ readonly path: string; readonly message: string }> {
@@ -188,8 +199,15 @@ export interface ShieldedMonitorApiDeps {
   readonly logger?: ApiLogger;
   /** Recorded as the actor on every lifecycle event this API causes. */
   readonly actor?: string;
-  readonly matchingRuleVersion?: string;
-  readonly ledgerBuild?: string;
+  /**
+   * The monitor-node this API runs inside (00009-09).
+   *
+   * When present — which is every real deployment — registration hands the validated key to the
+   * node instead of writing it anywhere, monitor views carry `heldBy`/`keyNeeded` computed from
+   * this node's own key store, and `/internal/*` is served. When absent the API is a read-only
+   * façade over the storage API, which is what the contract suites drive.
+   */
+  readonly node?: MonitorNode;
 }
 
 export interface ShieldedMonitorApi {
@@ -234,8 +252,7 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
   const tips = deps.sourceTipProvider ?? unknownSourceTip();
   const logger = deps.logger ?? stderrLogger();
   const actor = deps.actor ?? "private-api";
-  const matchingRuleVersion = deps.matchingRuleVersion ?? "shielded-monitor/v1";
-  const ledgerBuild = deps.ledgerBuild ?? LEDGER_BUILD_ID;
+  const node = deps.node;
 
   /** The source tip, or `undefined` when this deployment cannot observe it. A provider fault is
    *  never allowed to fail a request: `sourceTip` is advisory, and answering "unknown" is
@@ -248,8 +265,14 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
     }
   }
 
+  /** This node's own answer to "do I hold this monitor's key?". `null` when it does not — which
+   *  a balancer replaces with the fan-out's answer before the response reaches a client. */
+  function heldByHere(monitorId: string): string | null {
+    return node !== undefined && node.holdsMonitor(monitorId).holds ? node.nodeId : null;
+  }
+
   async function viewOf(record: MonitorRecord): Promise<MonitorView> {
-    return monitorView(record, await currentTip(record.net));
+    return monitorView(record, await currentTip(record.net), heldByHere(record.id));
   }
 
   // ── Handlers ───────────────────────────────────────────────────────────────────────────────
@@ -271,26 +294,31 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
     const key = await parseViewingKey(parsed.data.viewingKey, config.net);
     const requestedStartHeight = resolveStartHeight(parsed.data.startHeight);
 
-    // Idempotent registration (organizer spec FR-004, US1 scenario 5) reported honestly: 201
-    // only when a monitor was actually created. A concurrent double-create can still produce two
-    // 201s naming the SAME monitor, which is harmless — `register` is idempotent at the database
-    // level (`ON CONFLICT … DO NOTHING`) — and is the only way to avoid a lock held across an
-    // HTTP request.
-    const existing = await store.getByFingerprint(config.net, key.fingerprint);
-    if (existing !== undefined) {
-      if (existing.state === "revoked") throw new MonitorRevokedError(existing.id);
-      return { status: 200, body: await viewOf(existing) };
+    // A monitor-node is required to accept a key, and the refusal is deliberate rather than a
+    // fallback to some keyless registration: a monitor registered by a process that does not hold
+    // the key would be a row nobody can ever scan, and would report itself `backfilling` forever.
+    if (node === undefined) {
+      key.shred();
+      throw new HttpError(
+        503,
+        "INTERNAL_ERROR",
+        "this process holds no monitor-node, so it cannot take custody of a viewing key",
+      );
     }
 
-    const monitor = await store.register({
-      key,
-      net: config.net,
-      requestedStartHeight,
-      matchingRuleVersion,
-      ledgerBuild,
-      actor,
-    });
-    return { status: 201, body: await viewOf(monitor) };
+    // Idempotent registration (organizer spec FR-004, US1 scenario 5) reported honestly: 201 only
+    // when a monitor was actually created, 200 when this fingerprint was already registered. The
+    // key is handed to the node EITHER WAY — a second registration of a key this node does not
+    // hold is exactly how a client recovers from a node restart (§4.6), and refusing it because
+    // the monitor already exists would make that recovery impossible.
+    const existing = await store.getByFingerprint(config.net, key.fingerprint);
+    if (existing !== undefined && existing.state === "revoked") {
+      key.shred();
+      throw new MonitorRevokedError(existing.id);
+    }
+    // `register` shreds the key itself, on every path.
+    const monitor = await node.register(key, requestedStartHeight);
+    return { status: existing === undefined ? 201 : 200, body: await viewOf(monitor) };
   }
 
   /**
@@ -312,7 +340,8 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
     return {
       status: 200,
       body: {
-        items: records.map((record) => monitorView(record, record.net === config.net ? tip : undefined)),
+        items: records.map((record) =>
+          monitorView(record, record.net === config.net ? tip : undefined, heldByHere(record.id))),
         // Also at the top level, because it belongs to the DEPLOYMENT and not to any monitor, and
         // because an empty `items` would otherwise hide it entirely. `null`, never 0, when
         // unobserved (organizer question Q14).
@@ -401,6 +430,59 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
     return { status: 204 };
   }
 
+  // ── /internal/* — the balancer's routes, and only the balancer's (§5.2) ───────────────────
+  //
+  // They are served on the SAME port as the public API because a monitor-node is one process with
+  // one listener; what keeps them private is the deployment (a node is reachable only from the
+  // balancer on the compose network) plus the balancer's own refusal to forward anything under
+  // `/internal/`, which answers 404 to a client that tries. Nothing here returns a key, a
+  // fingerprint, or anything derived from one: the balancer addresses keys by the fingerprint it
+  // computed itself, and gets back a boolean.
+
+  async function internalStatus(): Promise<Reply> {
+    if (node === undefined) throw notFound();
+    return { status: 200, body: node.status() };
+  }
+
+  /**
+   * `?fp=<base64url>` or `?monitorId=<uuid>` → `{holds, phase?}`.
+   *
+   * With NEITHER it answers `{monitors: [{monitorId, phase}]}` — every monitor this node holds a
+   * key for. That is a deliberate extension of §5.2: filling `heldBy` for a list of N monitors
+   * would otherwise cost N fan-outs across M nodes, and the balancer needs exactly this answer
+   * once per node to render the dashboard. It exposes no more than the single-monitor form does,
+   * one monitor id at a time.
+   */
+  async function internalHolds(ctx: RequestContext): Promise<Reply> {
+    if (node === undefined) throw notFound();
+    const fp = ctx.url.searchParams.get("fp");
+    const monitorId = ctx.url.searchParams.get("monitorId");
+    if (fp !== null && fp !== "") {
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(fp)) {
+        throw new HttpError(400, "VALIDATION_FAILED", "fp must be base64url");
+      }
+      return { status: 200, body: node.holds(Buffer.from(fp, "base64url").toString("hex")) };
+    }
+    if (monitorId !== null && monitorId !== "") {
+      if (!MonitorIdSchema.safeParse(monitorId).success) throw notFound();
+      return { status: 200, body: node.holdsMonitor(monitorId) };
+    }
+    return { status: 200, body: { monitors: node.heldMonitors() } };
+  }
+
+  /** Best effort, and it says so by always answering 200: a peer notification that failed would
+   *  be retried by nobody, because the fence in `advance-batch` is what actually enforces a
+   *  lifecycle change. This only makes the holder notice sooner. */
+  async function internalEvents(ctx: RequestContext): Promise<Reply> {
+    if (node === undefined) throw notFound();
+    const parsed = InternalEventSchema.safeParse(await readJson(ctx));
+    if (!parsed.success) {
+      throw new HttpError(400, "VALIDATION_FAILED", "invalid event", [{ path: "", message: "malformed event" }]);
+    }
+    node.onEvent(parsed.data);
+    return { status: 202, body: { accepted: true } };
+  }
+
   async function health(): Promise<Reply> {
     // Organizer spec US6 scenario 2: with zero monitors the API must boot healthy and idle. This
     // endpoint is what makes that observable, and it deliberately touches no table.
@@ -483,6 +565,23 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
     if (segments.length === 2 && segments[0] === "v1" && segments[1] === "health") {
       if (method !== "GET") throw methodNotAllowed(["GET"]);
       return { route: { pattern: "GET /v1/health", handle: health }, monitorId: "" };
+    }
+
+    // ── /internal/* (00009-09) ───────────────────────────────────────────────────────────────
+    if (segments[0] === "internal") {
+      if (segments.length === 2 && segments[1] === "status") {
+        if (method !== "GET") throw methodNotAllowed(["GET"]);
+        return { route: { pattern: "GET /internal/status", handle: internalStatus }, monitorId: "" };
+      }
+      if (segments.length === 2 && segments[1] === "holds") {
+        if (method !== "GET") throw methodNotAllowed(["GET"]);
+        return { route: { pattern: "GET /internal/holds", handle: internalHolds }, monitorId: "" };
+      }
+      if (segments.length === 2 && segments[1] === "events") {
+        if (method !== "POST") throw methodNotAllowed(["POST"]);
+        return { route: { pattern: "POST /internal/events", handle: internalEvents }, monitorId: "" };
+      }
+      throw notFound();
     }
     if (segments[0] !== "v1" || segments[1] !== "monitors") throw notFound();
 
