@@ -153,20 +153,27 @@ narrower than the rest of this document's, and the narrowness is an owner decisi
 
 **What is stored, and who can read it.**
 
-- `shielded_monitor.monitors.key_serialized` holds the **plaintext serialized encryption secret
-  key** exactly as its owner submitted it. There is no envelope encryption, no key-encryption key
-  and no rotation. Anyone who can read this schema — or **any backup, replica or dump of it** —
-  can read every registered viewing key, and with it decrypt those wallets' shielded transaction
-  history. Treat a backup of this schema as key material (see
-  `docs/shielded-monitor-restore.md` §2).
+- **No viewing key is stored at all** (00009-09, owner decision Q28). A key lives in the RAM of
+  exactly one `umbradb-shielded-monitor-node` and nowhere else: not on disk, not in the database,
+  not in a log. `shielded_monitor.monitors.key_serialized` is an always-NULL column kept only
+  because dropping it would not be an additive migration; a later cleanup migration removes it.
+  Nothing in this repository writes it any more, which
+  `test/shielded-monitor/store.integration.test.ts` asserts over every row and every state.
+  **This is the single largest change to this trust model since the schema was added**: a backup,
+  replica or dump of `shielded_monitor` no longer contains key material, and reading the schema no
+  longer lets anyone decrypt a wallet's history. What it still exposes is the LINKAGE below.
 - `shielded_monitor.associations` holds the wallet↔transaction association tuples in plaintext
   columns: network, block height and hash, position, transaction hash, protocol version and the
   matched segment ids. Anyone with read access learns **which transactions are relevant to which
   registered key** — the exact linkage the shielded protocol otherwise hides.
 - `shielded_monitor.monitors.fingerprint` is an **unkeyed** SHA-256 over a domain string, the
-  network id and the serialized key. Someone holding a candidate key can confirm whether it is
-  registered by recomputing it. (With the key itself stored in plaintext beside it, this is the
-  lesser exposure — but it is the reason keyed fingerprints are on the list below.)
+  network id and the serialized key, and since 00009-09 it is the monitor's ONLY identity.
+  Someone holding a candidate key can confirm whether it is registered by recomputing it. That was
+  the lesser exposure while the key sat in plaintext beside it; now that the key is gone it is the
+  principal one, and keyed fingerprints move up the deferred list below accordingly.
+- `shielded_monitor.monitor_gaps` (00009-09) holds ranges of block heights that were never scanned
+  for a monitor. Heights and a monitor id: the same class of linkage `associations` carries, and
+  nothing derived from a key.
 
 **What the alpha does enforce.**
 
@@ -183,16 +190,26 @@ narrower than the rest of this document's, and the narrowness is an owner decisi
   running the whole flow under a PostgreSQL role holding only `USAGE`/`SELECT` on `chain_archive`
   (`test/shielded-monitor/schema-isolation.integration.test.ts`).
 
-**The scanner process (`umbradb-shielded-monitor`, 00009-03).**
+**The monitor-node (`umbradb-shielded-monitor-node`, 00009-09) is where every viewing key lives.**
 
-Added by the 00009-03 change (`openspec/changes/00009-03-relevance-scanner/`), it is the only
-process that holds a decoded viewing key in memory, and the only one that writes associations.
+It replaces the 00009-03 scanner and the 00009-04 private API, which were two processes sharing a
+key through a database column. One process now serves the public API and the dashboard, runs both
+scan queues, and is the sole custodian of the keys it was sent.
 
-- **Key lifetime is one batch.** A monitor's key is deserialized into the ledger WASM heap for the
-  batch that needs it and `clear()`ed in a `finally`, on the throwing path as well as the happy
-  one; two monitors never share a handle, and a page containing no regular transaction loads no
-  key at all. Asserted directly (`test/shielded-monitor/scanner.test.ts`), because "cleared in a
-  `finally`" is the kind of claim that rots silently.
+- **Key lifetime is the key's registration, and its end is a `clear()`.** A submitted key is
+  decoded, validated by the ledger, fingerprinted, handed to `EncryptionSecretKey.deserialize`,
+  and the serialized byte buffer is **zero-filled immediately** — both the copy the ledger saw and
+  the `ShieldedViewingKey` object's own, which the request handler's closure would otherwise keep
+  alive for whatever a heap dump or a core file might capture. From that point the only
+  representation is a WASM handle, and every path a key leaves by — revoke, delete, a fenced
+  `not-found`, SIGTERM/SIGINT — goes through the one method that calls `clear()`. Asserted
+  directly (`test/shielded-monitor/monitor-node.test.ts`), because "cleared in a `finally`" is the
+  kind of claim that rots silently.
+- **A paused key is KEPT in RAM and skipped** (open point OP-3), so a resume needs no re-send; a
+  revoked or deleted one is destroyed, because there is nothing left to resume.
+- **A restart destroys every key it held, by design.** The monitors then report `key needed` and
+  the client re-sends. That is the recovery path, not a failure of one: it is also the property
+  that makes "the keys are only in RAM" verifiable rather than asserted.
 - **No monitor id reaches a log line or a metric label.** Metric labels are a closed union the
   type system will not let a monitor id into, and the scheduler prints the failure class plus the
   stable error code rather than the error's own message, which carried the id. A log naming which
@@ -202,12 +219,19 @@ process that holds a decoded viewing key in memory, and the only one that writes
   two read methods, and its write set is audited at runtime against `shielded_monitor.*`
   (`test/integration/crash/shielded-monitor-batch-atomicity.crash.test.ts`).
 
-**The private API (`umbradb-shielded-monitor-api`, 00009-04) is unauthenticated by design.**
+**The public API — now served by the monitor-node — is unauthenticated by design.**
 
-Added by the 00009-04 change (`openspec/changes/00009-04-private-api-cli/`), it serves the
-monitors above over HTTP/JSON with **no authentication, no authorization, no tenant scoping, no
-rate limiting and no quotas** (owner decision, 2026-09-10). Its only admission controls are a
-request-body size cap and a page-size cap.
+Added by the 00009-04 change (`openspec/changes/00009-04-private-api-cli/`) and folded into the
+monitor-node by 00009-09, it serves the monitors above over HTTP/JSON with **no authentication, no
+authorization, no tenant scoping, no rate limiting and no quotas** (owner decision, 2026-09-10).
+Its only admission controls are a request-body size cap and a page-size cap.
+
+A monitor-node additionally serves `/internal/*` — `status`, `holds`, `events` — for the balancer.
+Those routes return counts, heights, this node's name and booleans; none of them returns a key, a
+fingerprint or anything derived from one, because the balancer addresses keys by a fingerprint it
+computed itself. **A node must be reachable only from the balancer**, which is what the compose
+topology arranges and what the balancer's blanket 404 on `/internal/*` backs up from the other
+side.
 
 - **Anyone who can open a TCP connection to its port can register a viewing key, read every
   monitor's matches, and revoke or delete any monitor.** It binds `127.0.0.1` by default, and a
@@ -261,9 +285,8 @@ request-body size cap and a page-size cap.
 
 **The storage boundary (`umbradb-storage-api`, 00009-08 v2) is the new security-relevant hop.**
 
-Owner decision Q25 removed project B's database connection entirely: the scanner, the private API,
-the dashboard, the details backfill and the balancer hold one base URL (`STORAGE_URL`) and no
-credential at all, and one A-side process — `umbradb-storage-api` — owns the single main database
+Owner decision Q25 removed project B's database connection entirely: the monitor-nodes and the
+balancer hold one base URL (`STORAGE_URL`) and no credential at all, and one A-side process — `umbradb-storage-api` — owns the single main database
 and executes each of B's operations as exactly one transaction. Two consequences, and they pull in
 opposite directions:
 
@@ -275,37 +298,51 @@ opposite directions:
   TEE profile attests and encrypts across, and it exists before the encryption does deliberately
   (owner Q25: "first divide the process, then figure out the correct structure and add the
   encryption").
-- **Worse, today**: the alpha has no transport security anywhere, so **a registration carries a
-  serialized viewing key in the clear over this hop**, and `GET /v1/monitor-store/monitors/<id>/
-  key-material` serves one to anything that can reach the port. The storage API is
-  **unauthenticated by design** (owner Q3) and binds loopback by default. Anyone who can open a
-  TCP connection to it can read every archived block, read and delete every monitor, and read
-  every registered viewing key. Run it on loopback or on a private network, and treat reaching it
-  as equivalent to reading the database.
+- **Better again, since 00009-09**: no key crosses this hop at all. Registration sends a 32-byte
+  fingerprint, and `GET …/key-material` is **410 Gone** along with the three lease routes. The
+  worst a plaintext capture of this hop yields is the linkage — which monitor matched which
+  transaction — not the ability to decrypt a wallet.
+- **Still worse than it should be**: the alpha has no transport security anywhere and the storage
+  API is **unauthenticated by design** (owner Q3), binding loopback by default. Anyone who can open
+  a TCP connection to it can read every archived block and read, revoke or delete every monitor.
+  Run it on loopback or on a private network, and treat reaching it as equivalent to reading the
+  database.
 
 The access log records the route PATTERN, the status and a request id — never a body, never a raw
 URL, and never a monitor id — so key material cannot reach a log through it
 (`test/storage-api/storage-api.test.ts`).
 
-**The balancer (`umbradb-shielded-monitor-balancer`, 00009-08 v2)** terminates nothing and
-authenticates nothing; it is a request router in front of interchangeable API instances. It never
-retries a POST (a replayed registration would be a request the consumer never made), and it adds
-`X-Upstream` to every response, which names an internal instance — do not expose it to an
-untrusted network any more than the API it fronts.
+**The balancer (`umbradb-shielded-monitor-balancer`)** terminates nothing and authenticates
+nothing; it is a request router in front of the monitor-nodes. It never retries a POST (a replayed
+registration would be a request the consumer never made), refuses to forward `/internal/*` at all,
+and adds `X-Upstream` to every response, which names an internal node — do not expose it to an
+untrusted network any more than the nodes it fronts.
+
+**It handles a viewing key, briefly** (00009-09, open point **OP-1**, accepted by the owner). To
+route `POST /v1/monitors` to the node that already holds that key, it decodes the submitted string
+and computes the key's fingerprint: a Bech32m decode and a SHA-256, no ledger. So a key exists in
+the balancer's memory for the length of one function call. It is not retained, not logged (the
+required test `shielded-monitor.key-never-logged-through-the-balancer-and-the-node` captures the
+balancer's and the node's logs and searches them, with a positive control), and not forwarded
+anywhere but to the chosen node. **The balancer is therefore inside the trust boundary**, alongside
+the nodes and not alongside the client. The TEE step resolves this one of two ways — move it into
+the enclave, or have the client send a precomputed fingerprint header so the balancer never sees a
+key — and the routing already works from the fingerprint alone either way.
 
 **Deferred hardening — required before any multi-tenant or hosted deployment.**
 
 | Deferred control | Consequence of its absence today |
 |---|---|
-| At-rest encryption of `key_serialized` (AEAD under a key-encryption key) | Keys readable from the database, backups, replicas and dumps |
-| Key-encryption-key rotation and fail-closed boot on missing key material | No way to re-key; nothing refuses to start when key material is absent |
+| ~~At-rest encryption of `key_serialized`~~ — **resolved differently by 00009-09**: the key is not stored at all | — (the exposure is gone; the column is always NULL and a later migration drops it) |
+| A way for a node to reacquire a key without the client | A node restart makes every monitor it held report `key needed` until its client re-sends; there is no sealed-key store and no operator-side recovery |
 | Keyed (HMAC) fingerprints | A guessed key can be confirmed by recomputing its fingerprint |
 | Encrypted association content | The wallet↔transaction linkage is readable by anyone with database access |
 | Tenant isolation and non-oracular cross-tenant behaviour | There is no tenant concept; one consumer credential, one trust domain |
 | Authentication on the private API, and signed cursors | Anyone who can reach the port is fully authorized — through `curl` or through the `/ui` dashboard, which is the same surface; a cursor can be forged |
 | Least-privilege database roles as a shipped script | The privilege split exists only as a test instrument, not as a deployment artefact |
 | The full redaction/leakage gate over logs, metrics and database dumps | Only the key-not-logged property is asserted today |
-| Transport security and authentication on `STORAGE_URL` (mTLS + attestation) | A viewing key crosses the storage hop in plaintext, and anything that can reach the storage API can read every key and delete every monitor |
+| Transport security and authentication on `STORAGE_URL` (mTLS + attestation) | Anything that can reach the storage API can read every archived block and revoke or delete every monitor (no key crosses this hop since 00009-09) |
+| Transport security on the client → balancer hop | A registration carries the viewing key in the clear to the balancer, which is the one moment a key crosses into project B (open point OP-1) |
 | Encryption of B's records at the storage boundary (opaque payloads the host never parses) | The host stores B's fields as plaintext columns, so the storage API's own operator sees everything B does |
 
 **Deployment requirement.** Until the table above is closed, run this schema only in a

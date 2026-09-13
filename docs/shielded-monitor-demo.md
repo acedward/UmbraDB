@@ -2,7 +2,7 @@
 
 > Change: `openspec/changes/00009-06-dashboard/`. API reference:
 > [`shielded-monitor-api.md`](shielded-monitor-api.md). Scanner:
-> [`shielded-monitor-scanner.md`](shielded-monitor-scanner.md). Backup and restore:
+> [`shielded-monitor-node.md`](shielded-monitor-node.md). Backup and restore:
 > [`shielded-monitor-restore.md`](shielded-monitor-restore.md).
 
 This brings the whole alpha up on a private Midnight devnet, registers a viewing key, and ends
@@ -153,11 +153,12 @@ chmod 600 "$DEMO_DIR/viewing-key.txt"
 
 Once installed, the same command is `umbradb-shielded-monitor-derive-key`.
 
-## 4. Start the storage API, then the scanner and the API
+## 4. Start the storage API, then the monitor-node
 
-Since 00009-08 v2 the scanner and the private API have **no database connection**: one A-side
-process owns the database and they reach it over HTTP (owner decision Q25). See
-[`shielded-monitor-deployment.md`](shielded-monitor-deployment.md).
+Since 00009-09 project B is ONE process — the monitor-node — and it has **no database
+connection**: an A-side process owns the database and the node reaches it over HTTP (owner
+decisions Q25 and Q28). The viewing key you registered lives in that node's RAM and nowhere else.
+See [`shielded-monitor-deployment.md`](shielded-monitor-deployment.md).
 
 ```bash
 ARCHIVE_PG="$ARCHIVE_PG" \
@@ -169,25 +170,27 @@ npx tsx storage-api/server-cli.ts > "$DEMO_DIR/storage-api.log" 2>&1 &
 echo $! > "$DEMO_DIR/storage-api.pid"
 
 STORAGE_URL="http://127.0.0.1:${STORAGE_PORT}" \
-NET=undeployed \
-SCAN_BATCH_BLOCKS=8 \
-SCAN_POLL_MS=2000 \
-npx tsx shielded-monitor/scanner-cli.ts > "$DEMO_DIR/scanner.log" 2>&1 &
-echo $! > "$DEMO_DIR/scanner.pid"
-
-STORAGE_URL="http://127.0.0.1:${STORAGE_PORT}" \
 SHIELDED_MONITOR_NET=undeployed \
+MONITOR_NODE_ID=node-1 \
 API_HOST=127.0.0.1 \
 API_PORT="$API_PORT" \
-npx tsx shielded-monitor/api/server-cli.ts > "$DEMO_DIR/api.log" 2>&1 &
-echo $! > "$DEMO_DIR/api.pid"
+SCAN_BATCH_BLOCKS=8 \
+SCAN_POLL_MS=2000 \
+npx tsx shielded-monitor/node-cli.ts > "$DEMO_DIR/node.log" 2>&1 &
+echo $! > "$DEMO_DIR/node.pid"
 
 curl -s "http://127.0.0.1:${API_PORT}/v1/health"
 # {"status":"ok","net":"undeployed"}
 ```
 
-Three processes, one database, three roles: the archive writes `chain_archive`, the scanner writes
-`shielded_monitor` and reads the archive through the read contract only, and the API serves.
+Two project-B-relevant processes, one database, three roles: the archive writes `chain_archive`,
+the storage API owns the credential, and the node writes `shielded_monitor` through it while
+reading the archive through the read contract only.
+
+To run the two-node shape instead, start a second node with a different `MONITOR_NODE_ID` and
+`API_PORT`, then put `umbradb-shielded-monitor-balancer` in front of both with
+`BALANCER_UPSTREAMS` naming them and `NET=undeployed`; open the dashboard on the balancer's port.
+`npm run demo:shielded-monitor -- --split` does exactly that.
 
 ## 5. Open the dashboard
 
@@ -235,14 +238,10 @@ alone, and the segment line says how many candidates it is one of. See
 A match recorded before this data was stored shows **"Details not recorded yet — run the
 backfill"** instead. Fill them in with:
 
-```bash
-STORAGE_URL="http://127.0.0.1:${STORAGE_PORT}" NET=undeployed \
-  npx tsx shielded-monitor/scanner-cli.ts --backfill-details
-```
-
-It is idempotent — running it twice fills nothing the second time — and it only ever writes the
-two detail columns. Stop the tailing scanner first or run it alongside; either is safe, because
-every write is epoch-fenced and predicated on `details IS NULL`.
+Since 00009-09 the backfill needs the viewing key, and the key lives only in the node that holds
+it — so it runs inside a node, for that node's own monitors, rather than as a standalone command.
+It is idempotent (running it twice fills nothing the second time), it only ever writes the two
+detail columns, and a monitor whose key nobody holds is skipped and counted rather than guessed at.
 
 Register from the command line instead if you prefer:
 
@@ -362,7 +361,7 @@ application state this project does not compute.
 ## 8. Tear down
 
 ```bash
-for p in api scanner archive-sync; do
+for p in node storage-api archive-sync; do
   [ -f "$DEMO_DIR/$p.pid" ] && kill "$(cat "$DEMO_DIR/$p.pid")" 2>/dev/null
 done
 
@@ -389,17 +388,20 @@ npm run demo:shielded-monitor -- --help
 ```
 
 It picks its own project name and random loopback ports, brings up `node` and `postgres` only,
-starts the archive sync, the scanner and the API as child processes, derives a demo key into its
-working directory, registers it, waits for coverage to reach the tip, and prints the URL. It does
-**not** do step 7 — that needs a wallet, and a wallet needs a decision about funds.
+starts the archive sync, the storage API and the monitor-node(s) as child processes, derives a
+demo key into its working directory, registers it, waits for coverage to reach the tip, and prints
+the URL. It does **not** do step 7 — that needs a wallet, and a wallet needs a decision about
+funds.
 
 ## If something is not moving
 
 | Symptom | Look at |
 |---|---|
-| Dashboard says "API unreachable" | `$DEMO_DIR/api.log`; is `API_PORT` the one you opened? |
+| Dashboard says "API unreachable" | `$DEMO_DIR/node.log`; is `API_PORT` the one you opened? |
 | `sourceTip` is `unknown` | The archive has no block 0 yet, or the API cannot read the archive schema. Check `$DEMO_DIR/archive-sync.log`; `SOURCE_TIP=off` also disables the reader deliberately. |
-| `sourceTip` climbs, `scannedThrough` does not | The scanner is not running or the monitor is not scannable. Check `$DEMO_DIR/scanner.log` and the monitor's state badge — `paused`, `failed` and `stale_source` all stop coverage, and the row says which. |
+| `sourceTip` climbs, `scannedThrough` does not | The node is not running, nobody holds the key, or the monitor is not scannable. Check `$DEMO_DIR/node.log` and the monitor's row — a **`key needed`** badge means no node holds the key (re-send it); `paused`, `failed` and `stale_source` all stop coverage, and the state badge says which. |
+| The monitor shows `key needed` after a restart | Expected, and it is the design: a node holds its keys only in RAM. Register the same key again — it reaches the same monitor and resumes from its recorded coverage. |
+| A monitor shows a `gaps` entry | A range was never read for that key (a desync at hand-off). A back-sync is queued automatically; the entry disappears when the range has been read. |
 | Registration answers `INVALID_VIEWING_KEY` | The key's network does not match `SHIELDED_MONITOR_NET`. One generic error covers every intake failure by design (FR-001), so re-derive with `--net` matching the deployment. |
 | Coverage reaches the tip, no matches | Expected until step 7. Nothing on a fresh devnet is encrypted to your key. |
 | Node answers on 9944 and you did not start it there | That is someone else's devnet. Use your `$NODE_HOST_PORT`. |

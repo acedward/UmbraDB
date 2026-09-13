@@ -4,9 +4,11 @@
 > `openspec/changes/00009-02-monitor-store/`. Backup and restore:
 > [`shielded-monitor-restore.md`](shielded-monitor-restore.md).
 
-`umbradb-shielded-monitor-api` is the private HTTP/JSON surface over the `shielded_monitor`
-schema. One consumer application registers a Midnight shielded viewing key, watches the scan
-coverage advance, and pages the matching transactions with an opaque cursor.
+`umbradb-shielded-monitor-node` is the HTTP/JSON surface over the `shielded_monitor` schema — and,
+since 00009-09, the same process that does the scanning and holds the viewing keys. One consumer
+application registers a Midnight shielded viewing key, watches the scan coverage advance, and pages
+the matching transactions with an opaque cursor. In a multi-node deployment the client talks to
+`umbradb-shielded-monitor-balancer`, which routes each registration to the node holding that key.
 
 ---
 
@@ -25,9 +27,14 @@ authenticates. Do not expose the port.
 
 Two further facts about the alpha's trust model, both inherited from the store:
 
-- Registered viewing keys are stored **in plaintext** in `shielded_monitor.monitors`, and the
-  wallet↔transaction associations are stored in plaintext in `shielded_monitor.associations`.
-  Anyone with database access can read both. At-rest encryption is deferred.
+- Registered viewing keys are **not stored at all** (00009-09): a key lives in the RAM of the one
+  monitor-node it was sent to, and the database keeps only its SHA-256 fingerprint. The
+  wallet↔transaction associations ARE stored in plaintext in `shielded_monitor.associations`, so
+  anyone with database access learns the linkage even though they cannot decrypt anything.
+  Encryption of the associations is deferred.
+- A node that restarts holds no keys. Its monitors then report `"keyNeeded": true` with
+  `"heldBy": null`, and the remedy is to `POST /v1/monitors` the same key again — it reaches the
+  same monitor and resumes from the coverage already recorded.
 - The cursor is opaque but **unsigned**. A caller can forge one. Because there is no
   authentication, this grants nothing a caller does not already have: a forged cursor can only
   reposition a caller within a monitor it can already read in full.
@@ -50,7 +57,8 @@ What the service **does** guarantee about key handling:
 ```
 STORAGE_URL=http://127.0.0.1:8788 \
 SHIELDED_MONITOR_NET=undeployed \
-umbradb-shielded-monitor-api
+MONITOR_NODE_ID=node-1 \
+umbradb-shielded-monitor-node
 ```
 
 | Variable | Default | Meaning |
@@ -64,13 +72,18 @@ umbradb-shielded-monitor-api
 | `API_MAX_BODY_BYTES` | `65536` | request body cap; exceeding it is `400 BODY_TOO_LARGE` |
 | `API_MAX_PAGE` | `200` | matches page cap; may not exceed the store's own cap of 1000, and a value above it fails at boot |
 | `API_DEFAULT_PAGE` | `50` | page size when the caller does not ask for one |
+| `MONITOR_NODE_ID` | random UUID | this node's name, returned as `heldBy` |
+| `SCAN_POLL_MS` | `2000` | fallback wake-up interval for the live scan |
+| `SCAN_BATCH_BLOCKS` | `8` | whole blocks per catch-up page (the live pass is always one block per commit) |
 
 The service is a **separate process** from the archive ingester (`umbradb-archive-sync`) and from
-the scanner. It shares only the database.
+the storage API. It holds no database connection; see
+[`shielded-monitor-deployment.md`](shielded-monitor-deployment.md) for the full topology.
 
-Without a scanner running, the API is correct but idle: coverage never advances and no match ever
-appears, because nothing is scanning. That is the honest state of a scanner-less deployment, and
-the coverage object says so rather than reporting an empty result (see below).
+It also serves `/internal/status`, `/internal/holds` and `/internal/events` **for the balancer
+only**. Those routes return counts, heights, this node's name and booleans — never a key, a
+fingerprint, or anything derived from one — and the balancer answers 404 to any client that asks
+for them. A node should be reachable only from the balancer.
 
 ---
 
@@ -204,6 +217,9 @@ command line and never printed.
   "net": "undeployed",
   "state": "backfilling",
   "coverage": { "requestedStart": "0", "scannedFrom": null, "scannedThrough": null, "sourceTip": null },
+  "gaps": [],
+  "heldBy": "node-1",
+  "keyNeeded": false,
   "matchingRuleVersion": "shielded-monitor/v1",
   "ledgerBuild": "ledger-v8@8.1.0-syshash.4",
   "createdAt": "2026-09-10T12:00:00.000Z",
@@ -215,6 +231,24 @@ States: `backfilling` → `live`; `{backfilling, live}` ↔ `paused`; any → `r
 plus terminal `failed` and `stale_source`. A `failed` or `stale_source` monitor additionally
 carries `lastError: { code, atHeight? }` — the failure **class** only, never a driver message and
 never caller input.
+
+**`heldBy` and `keyNeeded` are about CUSTODY, which is a different fact from `state`** (00009-09).
+`heldBy` names the monitor-node currently holding this monitor's viewing key in RAM, or `null`
+when none is; `keyNeeded` is `true` when nobody holds the key and the monitor is in a state that
+should be scanning (`backfilling` or `live`). A monitor can therefore read `"state": "live"` and
+`"keyNeeded": true` at the same time, and that pair is exactly what a node restart leaves behind:
+the monitor is fine, its history is intact, and nothing is scanning for it until the client sends
+the key again.
+
+Through the **balancer**, `heldBy` is the deployment's answer — a fan-out across every healthy
+node. Asking a node directly gives that node's own answer only: it cannot see its peers, so it
+reports `null` for a monitor one of them holds. `GET /v1/monitors/<id>/holder` on the balancer
+returns `{"heldBy": …}` on its own.
+
+**`gaps`** lists the ranges below `scannedThrough` that were never actually read for this monitor,
+lowest first (`[{"from":"120","to":"125","recordedAt":"…"}]`). Empty is the healthy shape. A gap
+appears when a key joins the live scan behind its own coverage, and a back-sync job clears it; the
+monitor is **complete** when `scannedThrough === sourceTip` AND `gaps` is empty.
 
 The view carries **no viewing key and no fingerprint**, by construction.
 
@@ -276,8 +310,9 @@ in a fallible segment is still just a match: the segment may have failed.
 
 Each item also carries the transaction's **public zswap data** and the time of the block it sat
 in. Both are `null` when the match was recorded before the service stored them — run the backfill
-(`umbradb-shielded-monitor --backfill-details`, see `docs/shielded-monitor-scanner.md`). `null`
-here means *not recorded yet*; it never means "this transaction had no outputs".
+— which since 00009-09 runs inside the node that holds the key, because re-deriving details needs
+the key and there is nowhere else to get one. `null` here means *not recorded yet*; it never means
+"this transaction had no outputs".
 
 ```json
 {
