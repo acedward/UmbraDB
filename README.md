@@ -324,7 +324,8 @@ admission controls are a request-body size cap and a page-size cap.
 
 - It binds **`127.0.0.1`** by default (`API_HOST`, `API_PORT`).
 - **A deployment MUST restrict network access to this port.** Anyone who can open a connection to
-  it can register a viewing key, read every monitor's matches, and revoke or delete any monitor.
+  it can register a viewing key, read every monitor's matches, and delete any monitor — destroying
+  its matches and the key held for it.
 - Registered viewing keys and wallet↔transaction associations are stored **in plaintext** in the
   `shielded_monitor` schema; anyone with database access can read them.
 - The service never returns or logs a viewing key, and the key is accepted only in the body of
