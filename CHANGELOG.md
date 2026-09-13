@@ -227,6 +227,30 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
 - The runtime ledger is a checksummed vendored `8.1.0-syshash.4` build; its provenance and minimal
   source patches are committed under `vendor/ledger-v8-syshash/`.
 
+### Fixed
+
+- **A resumed monitor now actually resumes on the node holding its key (00009-09).** A pause or a
+  revoke reaches the holder through the epoch fence in its next `advance-batch`; a **resume** could
+  not, because a paused key is deliberately outside the live pass and so has no batch item to be
+  fenced on — the monitor read `backfilling` in the database and stayed `paused` inside its holder,
+  with coverage frozen, until the process was restarted and the client re-sent the key. Two things
+  carry it now: the balancer posts a best-effort `POST /internal/events
+  {"type":"stateChanged","monitorId":…}` to the holder (or to every healthy node when it has no
+  hint) after each 2xx `pause`/`resume`/`revoke`/`DELETE` — fire-and-forget, after the client's
+  response, never able to change it — and every monitor-node re-reads each of its paused keys'
+  records on every block it processes. So a resume takes effect at once, or by the next block at
+  the latest, and still needs no key re-sent.
+- **`fill-gap` is idempotent, and a stuck gap heals itself (00009-09).** A back-sync re-reads a
+  range the coverage number already claims, which is the one write path with no `scanned_through <
+  height` fence to protect it from a replay. When the range held a match that was already recorded
+  — after a moment of double custody, or an operator's coverage repair — the fill died on
+  `associations_observation_key`, the storage API answered 500, the job was dropped and the
+  `monitor_gaps` row stayed forever with nothing scheduled to retry it. `fill-gap` now selects the
+  observations it already holds inside the same transaction and drops them from the batch before
+  allocating sequence numbers (so `seq` stays dense and `written` counts only rows actually
+  inserted), and a node queues a back-sync for every gap still in a monitor's record whenever it
+  finishes syncing that key.
+
 ## [1.0.0] - unreleased — "Totality"
 
 **Blocked.** The 1.0.0 tag additionally requires a **full local sync of UmbraDB against Midnight**

@@ -140,6 +140,17 @@ retries a **GET** once on another node, and **never retries a POST**. Every resp
 in from a fan-out, because a node can only speak for itself: it cannot see its peers.
 `/internal/*` is **never forwarded** — a client asking for it gets 404 from the balancer.
 
+**The balancer forwards lifecycle events.** A `pause`, `resume`, `revoke` or `DELETE` is served by
+whichever node the balancer picked — they are storage operations — but the key concerned sits in
+the RAM of a node that may not be that one. So after a 2xx on one of those four routes the balancer
+posts a best-effort `POST /internal/events {"type":"stateChanged","monitorId":…}` to the node it
+believes holds that monitor (from the same `holds` fan-out that fills `heldBy`), or to every healthy
+node when it has no belief. It is fire-and-forget with a two-second timeout, sent after the client's
+response is already on the wire, and a refused forward is logged and otherwise ignored — the holder
+re-reads its own paused keys on every block it processes, so a lost event costs one block, not a
+stuck monitor. This matters most for **resume**: a paused key is not in the live pass, so unlike
+every other lifecycle change it has no `advance-batch` fence to arrive by.
+
 **The storage API is currently one process.** It is stateless itself (all state is in PostgreSQL),
 so several instances behind a balancer would work; nothing in this alpha needs it, and one fewer
 moving part is worth more than the headroom.

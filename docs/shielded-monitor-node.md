@@ -45,7 +45,7 @@ A key is in one queue or the other, never both — which is what the key's **pha
 |---|---|
 | `syncing` | Queue B is catching it up; Queue A skips it, so its coverage cannot move past a range it never read |
 | `live` | in the block-centric pass; every new block is committed for it |
-| `paused` | its monitor is paused. The key **stays in RAM** and is skipped, so a resume needs no re-send |
+| `paused` | its monitor is paused. The key **stays in RAM** and is skipped, so a resume needs no re-send. The node hears about the resume immediately (the balancer forwards `stateChanged` after the write) or by the next block at the latest (it re-reads every paused key's record on each block it processes) |
 
 **At boot the live watermark is the archive tip, not zero.** A node holds no keys at boot, so
 there is nothing to scan history for; starting at zero would walk the whole chain testing an empty
@@ -111,6 +111,19 @@ deletes the gap **without moving coverage**, because coverage is already above i
 A monitor is **complete** when `scannedThrough === sourceTip` AND its `gaps` list is empty. The
 API and the dashboard both show the list.
 
+**A back-sync expects rows it already has.** Its whole purpose is to go back over ground the
+coverage number already claims, so `fill-gap` is idempotent: rows already present under `(monitor,
+height, block hash, position)` are skipped, `written` counts only what was really inserted, and the
+gap shrinks either way. Two ordinary situations produce the overlap — a moment of double custody
+(the balancer's `holds` probe times out, the client re-sends the key, and the old holder writes the
+same height before it notices) and an operator repairing coverage by hand.
+
+**A gap is retried at the next hold.** A gap is discovered once, by the check above, and the job
+that fills it lives in the RAM of the node that found it. So whenever a node finishes syncing a
+key, it also queues a back-sync for every gap the record still carries — which is how a hole left
+behind by a node that died, or by a back-sync whose transport failed, gets cleared instead of
+sitting in `monitor_gaps` forever.
+
 ## Backfilling match details for older matches
 
 Matches recorded before this service stored per-transaction zswap data have `details = NULL`; the
@@ -168,7 +181,7 @@ and searches them, with a positive control.
 |---|---|---|
 | `backfilling` | converging from the requested start towards the tip | nothing |
 | `live` | coverage has reached the archive tip and is following it | nothing |
-| `paused` | a consumer paused it; coverage frozen, matches still readable | resume when ready |
+| `paused` | a consumer paused it; coverage frozen, matches still readable | resume when ready — the holder picks it up at once, or on its next block, and needs no key re-sent |
 | `failed` | fail-closed: a transaction could not be read at a named height and position | investigate the bytes; the range was NOT recorded as scanned |
 | `stale_source` | the archive was rebuilt (its instance id changed) under this monitor | decide whether to delete and re-register against the new archive |
 | `revoked` / `deleted` | lifecycle terminal states | nothing; the node clears the key and forgets it |

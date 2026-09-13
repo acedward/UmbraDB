@@ -71,10 +71,39 @@ id over both components; and the Rule B crash suite's
 `docs/shielded-monitor-node.md` (renamed from `-scanner.md`), `docs/shielded-monitor-deployment.md`
 (topology, env matrix, scaling, the BREAKING migration), `docs/shielded-monitor-api.md`
 (`heldBy`/`keyNeeded`/`gaps`), `docs/shielded-monitor-demo.md`, SECURITY.md's trust model, the
-CHANGELOG entry with the breaking change, and `EXPECTED_REQUIRED_COUNT` 56 → 73.
+CHANGELOG entry with the breaking change, and `EXPECTED_REQUIRED_COUNT` 56 → 73 (→ 78 with §7a).
 
 **Acceptance**: `npx vitest run test/integration/check-required-tests.test.ts` passes and
 `VITEST_MAX_WORKERS=2 npm run test:conformance` is green.
+
+## 7a. The two defects the live end-to-end run found (organizer questions Q31 and Q32)
+
+Both were invisible to a suite that never paused a monitor and never re-read a range twice; both
+were measured on the owner's live demo on 2026-09-13 and fixed here.
+
+- **MN-037** — the balancer forwards `stateChanged` to the holder after every 2xx lifecycle write
+  (`shielded-monitor/balancer/balancer.ts`), addressed by the monitor hints its `holds` fan-out
+  already collects, fanned out when it has none, and unable to affect the client's response.
+- **MN-018** — the node re-reads every paused key's record on each block it processes
+  (`MonitorNode.#refreshPausedKeys`), which is the backstop for a forward that is lost. The same
+  change narrows `refreshHeldMonitor` to `isScannable`, so a `failed` or `stale_source` monitor is
+  no longer handed a `sync-key` the store is bound to fence.
+- **MN-026** — `PgShieldedMonitorStore.fillGap` selects the observations it already holds for the
+  range and drops them before the `last_assoc_seq` bump, so `seq` stays dense and `written` counts
+  rows actually inserted.
+- **MN-017** — `MonitorNode.#queueRecordedGaps` queues a back-sync for every gap still in the
+  record when a key finishes syncing, which is the retry path a stuck gap had none of.
+
+**Acceptance**: the required ids `shielded-monitor.balancer.lifecycle-writes-forward-state-changed`,
+`shielded-monitor.node.resume-in-storage-is-noticed-on-the-next-block`,
+`shielded-monitor.node.resume-through-the-balancer-needs-no-resend`,
+`shielded-monitor.store.fill-gap-skips-rows-it-already-holds` and
+`shielded-monitor.node.sync-key-queues-a-back-sync-for-a-recorded-gap` pass, and
+`EXPECTED_REQUIRED_COUNT` is 78. **Not added**: a `fill-gap` overlap case in the Rule B crash
+suite. That suite's subject is atomicity under a kill, and this fix changes no transaction
+boundary — it adds one SELECT inside the existing one. The claim a crash case would make (a retry
+after a lost response writes nothing twice) is made directly by the store id above, which runs the
+identical fill twice and asserts `written: 0` and two rows.
 
 ## 8. Close-out
 

@@ -37,6 +37,12 @@ or leases.
   that range.
 - **MN-015** — A back-sync SHALL write the range's associations and shrink, split or delete the
   gap rows it covers, and SHALL NOT move coverage.
+- **MN-017** — When a key finishes syncing, the node SHALL enqueue a back-sync for every gap the
+  monitor's record still carries and that is not already queued, so a gap left behind by an
+  earlier hold or a failed transport is retried at the next hold.
+- **MN-018** — While it holds a paused key, the node SHALL re-read that monitor's record on each
+  block it processes, SHALL return the key to the sync phase when the monitor is scannable again,
+  and SHALL clear it when the monitor is revoked, deleted or gone.
 - **MN-016** — When a block cannot be read or decoded, the node SHALL NOT advance its watermark
   past it.
 
@@ -51,6 +57,10 @@ or leases.
   batch.
 - **MN-023** — `POST /v1/monitor-store/monitors/<id>/fill-gap` SHALL execute exactly one database
   transaction, fenced by `expectedEpoch`.
+- **MN-026** — `fill-gap` SHALL skip every incoming association already stored under `(monitor_id,
+  block_height, block_hash, position)`, SHALL allocate sequence numbers only for the rows it
+  inserts, SHALL report `written` as the number of rows inserted, and SHALL shrink, split or
+  delete the gap rows regardless.
 - **MN-024** — `GET /v1/monitor-store/monitors/<id>/key-material`, `GET …/lease`,
   `POST /v1/monitor-store/leases/claim` and `POST …/leases/release` SHALL respond `410`.
 - **MN-025** — The storage API SHALL NOT read or write `monitor_leases`.
@@ -72,3 +82,8 @@ or leases.
 - **MN-036** — `GET /v1/monitors` and `GET /v1/monitors/<id>` through the balancer SHALL report
   `heldBy` as the answer of a fan-out across healthy nodes, and `keyNeeded` as true exactly when
   `heldBy` is null and the monitor's state is `backfilling` or `live`.
+- **MN-037** — After a 2xx response to `POST /v1/monitors/<id>/pause`, `…/resume`, `…/revoke` or
+  `DELETE /v1/monitors/<id>`, the balancer SHALL post `{"type": "stateChanged", "monitorId": <id>}`
+  to `POST /internal/events` on the node it has last observed holding that monitor, or on every
+  healthy node when it has observed none, and SHALL NOT let the outcome of that post change the
+  client's response, its status or its timing.
