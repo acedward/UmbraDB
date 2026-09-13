@@ -189,6 +189,14 @@ interface GapRow {
   recorded_at: Date;
 }
 
+/** The identity of one observation, spelled the same way from a stored row and from an incoming
+ *  association: the `UNIQUE (monitor_id, block_height, block_hash, position)` index's own key,
+ *  minus the monitor (which is fixed by the caller). Used by `fillGap` to recognise a match it
+ *  already holds. */
+function observationKey(height: bigint | number, blockHash: Uint8Array, position: number): string {
+  return `${height.toString()}/${Buffer.from(blockHash).toString("hex")}/${position}`;
+}
+
 function toGap(row: GapRow): MonitorGap {
   return { from: row.from_height, to: row.to_height, recordedAt: row.recorded_at };
 }
@@ -912,8 +920,20 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
    * - `a > f`, `b < t` → the row splits into `[f, a − 1]` and `[b + 1, t]`.
    * A fill that covers several gap rows applies this to each of them. A fill that overlaps nothing
    * still writes its associations and reports `written`: re-reading a range that is already
-   * covered is wasteful, not wrong, and the `UNIQUE (monitor_id, block_height, block_hash,
-   * position)` index is what actually stops a duplicate row.
+   * covered is wasteful, not wrong.
+   *
+   * **A back-sync re-reads a range, so it MUST expect rows it already has** (organizer question
+   * Q32). Every other writer here is protected from a replay by the `scanned_through_height <
+   * height` fence; a back-sync has no such fence, because its whole purpose is to go back over
+   * ground the coverage number already claims. Two ordinary situations put a match inside the
+   * range twice: a moment of double custody (the balancer's `holds` probe times out, the client
+   * re-sends the key, and the old holder writes the same height before it notices), and an
+   * operator repairing coverage by hand. So the rows already present under `(monitor_id,
+   * block_height, block_hash, position)` are SELECTed inside this transaction and dropped from the
+   * batch **before** `last_assoc_seq` is bumped — which keeps `seq` dense, keeps `written`
+   * truthful (it counts rows actually inserted), and lets the gap shrink either way. A duplicate
+   * whose `details` differ from the stored row leaves the stored row alone: it was committed with
+   * its own coverage move and is not this call's to rewrite.
    *
    * **Sequence numbers.** Back-filled associations get the NEXT sequence numbers, above every
    * match already recorded, even though their heights are older. That is deliberate: `seq` is the
@@ -951,15 +971,31 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
           throw new MonitorFencedError(monitorId, "epoch", { epoch: monitor.epoch, state: monitor.state });
         }
 
-        if (rows.length > 0) {
+        // What this monitor ALREADY has in the range. One SELECT, ahead of the bump, so that a
+        // re-read of a range that was after all recorded is idempotent rather than a unique-index
+        // violation — see the method note.
+        const fresh = rows.length === 0 ? rows : await (async () => {
+          const present = await tx<{ block_height: bigint; block_hash: Buffer; position: number }[]>`
+            SELECT block_height, block_hash, position
+              FROM ${tx(this.schema)}.associations
+             WHERE monitor_id = ${monitorId}
+               AND block_height >= ${range.from}
+               AND block_height <= ${range.to}
+          `;
+          const seen = new Set(present.map((r) =>
+            observationKey(r.block_height, r.block_hash, r.position)));
+          return rows.filter((a) => !seen.has(observationKey(a.blockHeight, a.blockHash, a.position)));
+        })();
+
+        if (fresh.length > 0) {
           const bumped = await tx<MonitorRow[]>`
             UPDATE ${tx(this.schema)}.monitors
-               SET last_assoc_seq = last_assoc_seq + ${BigInt(rows.length)}, updated_at = now()
+               SET last_assoc_seq = last_assoc_seq + ${BigInt(fresh.length)}, updated_at = now()
              WHERE id = ${monitorId} AND epoch = ${expectedEpoch}
             RETURNING *
           `;
           const row = bumped[0]!;
-          await this.insertAssociations(tx, monitorId, row.last_assoc_seq - BigInt(rows.length), rows, row);
+          await this.insertAssociations(tx, monitorId, row.last_assoc_seq - BigInt(fresh.length), fresh, row);
         }
 
         // Every stored gap this fill touches, locked so two back-syncs on one monitor cannot both
@@ -995,7 +1031,10 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
           }
         }
 
-        return { written: rows.length, gaps: await this.gapsInTx(tx, monitorId) } as const;
+        // `written` counts rows this call actually inserted, not rows it was handed: a caller
+        // reconciling a back-sync needs to know what changed, and "10 written" for a range that
+        // already held all ten would be a lie in the one direction that matters.
+        return { written: fresh.length, gaps: await this.gapsInTx(tx, monitorId) } as const;
       });
     } catch (err) {
       throw translatePostgresError(err);

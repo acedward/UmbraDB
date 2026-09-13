@@ -557,6 +557,55 @@ describe("PgShieldedMonitorStore", () => {
       expect(rows.map((r) => `${r.blockHeight}@${r.seq}`)).toStrictEqual(["5@1", "7@2"]);
     });
 
+    it("[[shielded-monitor.store.fill-gap-skips-rows-it-already-holds]] a fill over a range that already holds a recorded match writes only what is missing, reports `written` accordingly, and still shrinks the gap", async () => {
+      // Organizer question Q32, measured on the live demo: the first `fill-gap` of a back-sync
+      // over a range containing an already-recorded match died on `associations_observation_key`
+      // (a 500 from the storage API), Queue B dropped the job, and the gap row stayed forever.
+      // Every other writer here is protected from a replay by the `scanned_through < height`
+      // fence; a back-sync has none, because re-reading covered ground IS its purpose.
+      const { id, epoch } = await registerFixture(store, seedCounter);
+      // Height 5 was recorded by the live pass. Coverage then jumped to 20 with `[1, 10]` marked
+      // never read — the shape a coverage repair, or a moment of double custody, leaves behind.
+      await store.advanceBatch(NET, 5n, blockHashFor(5n), [
+        { monitorId: id, expectedEpoch: epoch, associations: [association(5n, 0)] },
+      ]);
+      const at5 = await store.get(id);
+      await store.advanceBatch(NET, 20n, blockHashFor(20n), [
+        { monitorId: id, expectedEpoch: at5.epoch, associations: [], newGaps: [{ from: 1n, to: 10n }] },
+      ]);
+      const withGap = await store.get(id);
+      expect(withGap.gaps.map((g) => `${g.from}-${g.to}`)).toStrictEqual(["1-10"]);
+
+      // The back-sync re-reads the whole range and finds both matches: the one already stored at
+      // height 5, and one at height 7 that nothing has ever recorded.
+      const filled = await store.fillGap(id, {
+        expectedEpoch: withGap.epoch,
+        from: 1n,
+        to: 10n,
+        associations: [association(5n, 0), association(7n, 1)],
+      });
+      expect(filled.written, "only the row that was actually missing").toBe(1);
+      expect(filled.gaps, "and the gap is cleared all the same").toStrictEqual([]);
+      expect(await store.listGaps(id)).toStrictEqual([]);
+
+      // Two rows, and the sequence is DENSE: allocating a `seq` for the row that was skipped
+      // would leave a hole, and a hole is a cursor step that hands a consumer nothing.
+      const rows = await store.readAssociations(id, 0n, 100);
+      expect(rows.map((r) => `${r.blockHeight}@${r.seq}`)).toStrictEqual(["5@1", "7@2"]);
+
+      // Idempotent from here on: the same back-sync run twice writes nothing more, which is what
+      // makes a retry after a lost response safe.
+      const again = await store.fillGap(id, {
+        expectedEpoch: withGap.epoch,
+        from: 1n,
+        to: 10n,
+        associations: [association(5n, 0), association(7n, 1)],
+      });
+      expect(again.written).toBe(0);
+      expect(await store.readAssociations(id, 0n, 100)).toHaveLength(2);
+      expect((await store.get(id)).coverage.scannedThrough, "a fill never moves coverage").toBe(20n);
+    });
+
     it("a fill is fenced on the epoch, and refuses a range its associations sit outside", async () => {
       const { id, epoch } = await registerFixture(store, seedCounter);
       await store.advanceBatch(NET, 20n, blockHashFor(20n), [
