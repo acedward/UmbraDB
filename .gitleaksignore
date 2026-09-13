@@ -16,3 +16,10 @@
 # planting a fresh hex value in EITHER field of the tracked .example template fails the gate.
 be646fcff58052a77e848914a79ccef2279cf78f:nix/midnight-env/test-wallets/preview-test-wallet.json:umbradb-wallet-seed-hex:4
 be646fcff58052a77e848914a79ccef2279cf78f:nix/midnight-env/test-wallets/preview-test-wallet.json:umbradb-wallet-seed-hex:5
+#
+# 2026-09-13 (00009 review, Q17) -- FALSE POSITIVE, triaged. The stock `generic-api-key` rule matched
+# the Ethereum JSON-RPC method-name list in `evm-rpc/test/not-implemented.test.ts` at the commit that
+# introduced it: keyword `eth_createAccessList`, "value" `eth_simulateV1` (entropy 3.52). Those are
+# method names from `ethereum/execution-apis`, not a credential. The exact fingerprint is pinned, so
+# the same file at another commit, or a different match on that line, still fails the gate.
+e5f53f5122c973556531ce07c696a32e9f911b5f:evm-rpc/test/not-implemented.test.ts:generic-api-key:31
