@@ -185,7 +185,9 @@ describe("shielded-monitor dashboard (GET /ui)", () => {
     );
 
     it("declares the routes it uses (non-vacuity: the list is not empty)", () => {
-      expect(declared.length).toBeGreaterThanOrEqual(8);
+      // Five since owner decision Q33 took `pause`, `resume` and `revoke` off the page: health,
+      // the list, registration, matches and delete.
+      expect(declared.length).toBeGreaterThanOrEqual(5);
     });
 
     it("every path literal in the page appears in the declared list", () => {

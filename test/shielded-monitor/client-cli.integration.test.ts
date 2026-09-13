@@ -21,7 +21,7 @@ import type { MonitorNode } from "../../shielded-monitor/node/monitor-node.js";
 
 /**
  * **This phase's exit criterion, executed** (organizer spec SC-008, US1–US3; owner decision Q4):
- * the reference consumer completes register → status → poll → pause → resume → revoke → delete
+ * the reference consumer completes register → status → poll → poll → delete
  * against a **real HTTP server over a real socket**, backed by a real PostgreSQL 17.
  *
  * ── What stands in for the scanner, and why that is honest ──────────────────────────────────
@@ -110,7 +110,7 @@ describe("reference consumer CLI end to end", () => {
     await container?.stop();
   }, 60_000);
 
-  it("[[shielded-monitor.client.end-to-end-lifecycle]] completes register → status → poll → pause → resume → revoke → delete", async () => {
+  it("[[shielded-monitor.client.end-to-end-lifecycle]] completes register → status → poll → poll → delete", async () => {
     // ── register ────────────────────────────────────────────────────────────────────────────
     const registered = await client("register", "--key-file", keyFile, "--start", "earliest");
     expect(registered.code).toBe(0);
@@ -177,26 +177,11 @@ describe("reference consumer CLI end to end", () => {
     const firstHashes = matches.map((m) => m.txHash as string);
     for (const hash of firstHashes) expect(resumePoll.out).not.toContain(hash);
 
-    // ── pause and resume ────────────────────────────────────────────────────────────────────
-    const paused = await client("pause", "--id", monitorId);
-    expect(parse(paused.out).state).toBe("paused");
-    // Matches stay readable while paused (US3 scenario 1).
-    const pausedPoll = await client("poll", "--id", monitorId, "--cursor-file", cursorFile);
-    expect(pausedPoll.code).toBe(0);
-    expect(parse(pausedPoll.out).coverage).toMatchObject({ scannedThrough: "120" });
+    // ── the status route still answers, with the coverage the poll paged over ───────────────
+    const stillThere = await client("status", "--id", monitorId);
+    expect(parse(stillThere.out).coverage).toMatchObject({ scannedThrough: "120" });
 
-    const resumed = await client("resume", "--id", monitorId);
-    expect(parse(resumed.out).state).toBe("backfilling");
-
-    // ── revoke: reads are refused afterwards ────────────────────────────────────────────────
-    const revoked = await client("revoke", "--id", monitorId);
-    expect(parse(revoked.out).state).toBe("revoked");
-    await expect(client("status", "--id", monitorId)).rejects.toThrow(/410 MONITOR_REVOKED/);
-    await expect(
-      client("poll", "--id", monitorId, "--cursor-file", cursorFile),
-    ).rejects.toThrow(/410 MONITOR_REVOKED/);
-
-    // ── delete: as if it never existed ──────────────────────────────────────────────────────
+    // ── delete: the one lifecycle command there is (owner decision Q33) ─────────────────────
     const deleted = await client("delete", "--id", monitorId);
     expect(deleted.code).toBe(0);
     expect(parse(deleted.out)).toEqual({ monitorId, deleted: true });

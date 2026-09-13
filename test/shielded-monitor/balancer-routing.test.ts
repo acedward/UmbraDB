@@ -106,14 +106,8 @@ async function startFakeNode(nodeId: string): Promise<FakeNode> {
       });
       return;
     }
-    // The four lifecycle writes, which any node may serve: they are storage operations, and the
-    // key they concern may live in another node's RAM.
-    if (/^\/v1\/monitors\/[^/]+\/(pause|resume|revoke)$/.test(url.pathname) && req.method === "POST") {
-      req.resume();
-      lifecycleWrites.push(`POST ${url.pathname}`);
-      json(200, { monitorId: url.pathname.split("/")[3], state: "paused" });
-      return;
-    }
+    // The one lifecycle write, which any node may serve: it is a storage operation, and the key
+    // it destroys may live in another node's RAM.
     if (/^\/v1\/monitors\/[^/]+$/.test(url.pathname) && req.method === "DELETE") {
       req.resume();
       lifecycleWrites.push(`DELETE ${url.pathname}`);
@@ -264,11 +258,12 @@ describe("the balancer's registration routing (00009-09 §7)", () => {
     expect((await register()).headers.get("x-upstream")).toBe(two.base);
   }, 60_000);
 
-  it("[[shielded-monitor.balancer.lifecycle-writes-forward-state-changed]] tells the holder about a 2xx lifecycle write — the hinted node, or every healthy node — without touching the client's response", async () => {
-    // Organizer question Q31, measured on the live demo: a pause or a revoke reaches the holder
-    // through the fence in its next `advance-batch`, but a RESUME cannot — a paused key is not in
-    // the live set, so it has no batch item to be fenced on. Nothing else in the deployment can
-    // tell the holder, because only the balancer knows which node that is.
+  it("[[shielded-monitor.balancer.delete-is-forwarded-to-the-holder]] tells the holder about a 2xx DELETE — the hinted node, or every healthy node — without touching the client's response", async () => {
+    // Owner decision Q33: deleting is the only thing a consumer can do to a monitor, and it is
+    // supposed to destroy the KEY, which lives in the RAM of a node that may not be the one that
+    // served the request. The holder finds out at its next block regardless (the `not-found`
+    // fence, measured at 2.8 s on the live demo), but "the key is gone" is the claim this system
+    // makes, so it is worth making true in milliseconds.
     reset();
     two.holds.add(fingerprintHex);
     const monitorId = monitorIdFor(fingerprintHex);
@@ -280,25 +275,13 @@ describe("the balancer's registration routing (00009-09 §7)", () => {
       .toStrictEqual({ heldBy: "node-2" });
     expect(balancer.monitorHints().get(monitorId)).toBe(two.base);
 
-    const resumed = await fetch(`${base}/v1/monitors/${monitorId}/resume`, { method: "POST" });
-    expect(resumed.status).toBe(200);
-    expect(resumed.headers.get("x-upstream")).toBe(one.base); // served by whoever; forwarded to the holder
-    await waitFor(() => two.events.length === 1, 5_000, "the holder is told about the resume");
+    const deleted = await fetch(`${base}/v1/monitors/${monitorId}`, { method: "DELETE" });
+    expect(deleted.status).toBe(200);
+    expect(deleted.headers.get("x-upstream")).toBe(one.base); // served by whoever; forwarded to the holder
+    await waitFor(() => two.events.length === 1, 5_000, "the holder is told about the delete");
     expect(two.events).toStrictEqual([{ type: "stateChanged", monitorId }]);
     expect(one.events, "an addressed event must not be broadcast").toStrictEqual([]);
 
-    // Every one of the four writes, not just resume: revoke and delete race the fence, and a lost
-    // race is a key held for a monitor that no longer wants one.
-    for (const write of [
-      { method: "POST", path: `/v1/monitors/${monitorId}/pause` },
-      { method: "POST", path: `/v1/monitors/${monitorId}/revoke` },
-      { method: "DELETE", path: `/v1/monitors/${monitorId}` },
-    ]) {
-      two.events.length = 0;
-      const response = await fetch(`${base}${write.path}`, { method: write.method });
-      expect(response.status, write.path).toBe(200);
-      await waitFor(() => two.events.length === 1, 5_000, `the holder is told about ${write.path}`);
-    }
     // A read is not a lifecycle write, and neither is a registration.
     two.events.length = 0;
     await fetch(`${base}/v1/monitors/${monitorId}`);
@@ -312,22 +295,22 @@ describe("the balancer's registration routing (00009-09 §7)", () => {
     reset();
     const unknownId = monitorIdFor("f".repeat(64));
     expect(balancer.monitorHints().has(unknownId)).toBe(false);
-    const pausedUnhinted = await fetch(`${base}/v1/monitors/${unknownId}/pause`, { method: "POST" });
-    expect(pausedUnhinted.status).toBe(200);
+    const unhinted = await fetch(`${base}/v1/monitors/${unknownId}`, { method: "DELETE" });
+    expect(unhinted.status).toBe(200);
     await waitFor(() => one.events.length === 1 && two.events.length === 1, 5_000, "both nodes are told");
 
     // ── 3. A FAILED forward changes nothing the client can see ─────────────────────────────
     reset();
     one.broken = true;
     two.broken = true;
-    const stillFine = await fetch(`${base}/v1/monitors/${monitorId}/resume`, { method: "POST" });
+    const stillFine = await fetch(`${base}/v1/monitors/${monitorId}`, { method: "DELETE" });
     expect(stillFine.status).toBe(200);
-    expect(await stillFine.json()).toMatchObject({ monitorId });
+    expect(await stillFine.json()).toMatchObject({ deleted: true });
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect([...one.events, ...two.events], "the forwards were refused").toStrictEqual([]);
-    // And the write itself still happened — the forward is an extra, never a precondition.
+    // And the delete itself still happened — the forward is an extra, never a precondition.
     expect([...one.lifecycleWrites, ...two.lifecycleWrites])
-      .toStrictEqual([`POST /v1/monitors/${monitorId}/resume`]);
+      .toStrictEqual([`DELETE /v1/monitors/${monitorId}`]);
   }, 60_000);
 
   it("[[shielded-monitor.balancer.hint-invalidated-when-a-node-goes-away]] drops every hint naming a node the moment that node is seen to be gone", async () => {

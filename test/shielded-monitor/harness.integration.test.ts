@@ -133,41 +133,33 @@ describe("trusted harness (no scanner, no API)", () => {
     const live = await harness("go-live", "--id", monitor.id, "--epoch", "0");
     expect(parse(live.out)).toMatchObject({ state: "live", epoch: "1" });
 
-    const paused = await harness("pause", "--id", monitor.id);
-    expect(parse(paused.out)).toMatchObject({ state: "paused", epoch: "2" });
-
-    // A worker holding the pre-pause epoch is fenced, through the harness.
-    const fenced = await harness("advance", "--id", monitor.id, "--epoch", "1", "--through", "13")
+    // A worker holding the pre-go-live epoch is fenced, through the harness.
+    const fenced = await harness("advance", "--id", monitor.id, "--epoch", "0", "--through", "13")
       .catch((e: unknown) => e);
     expect(String(fenced)).toMatch(/fenced|rejected a fenced write/i);
 
-    const resumed = await harness("resume", "--id", monitor.id);
-    expect(parse(resumed.out)).toMatchObject({ state: "backfilling", epoch: "3" });
-
     const events = await harness("events", "--id", monitor.id);
     expect((parse(events.out) as unknown as { event: string }[]).map((e) => e.event))
-      .toStrictEqual(["register", "go_live", "pause", "resume"]);
+      .toStrictEqual(["register", "go_live"]);
 
-    // ── revocation list round trip, the operator half of the restore procedure ────────────
-    const revoked = await harness("revoke", "--id", monitor.id);
-    expect(parse(revoked.out)).toMatchObject({ state: "revoked" });
-
-    const listFile = path.join(workDir, "revocations.json");
-    const exported = await harness("export-revocations", "--out", listFile);
-    expect(parse(exported.out)).toMatchObject({ exported: 1 });
-    expect(JSON.parse(readFileSync(listFile, "utf8")) as { revocations: { monitorId: string }[] })
-      .toMatchObject({ revocations: [{ monitorId: monitor.id }] });
-
-    const applied = await harness("apply-revocations", "--in", listFile);
-    expect(parse(applied.out)).toMatchObject({ examined: 1, reapplied: [], alreadyRefused: [monitor.id] });
-
-    // A revoked monitor refuses `status`, and `inspect` is the administrative way to see it.
-    await expect(harness("status", "--id", monitor.id)).rejects.toThrow(/revoked/i);
-    const inspected = await harness("inspect", "--id", monitor.id);
-    expect(parse(inspected.out)).toMatchObject({ state: "revoked" });
-
+    // ── delete, and the deletion-list round trip that is the operator half of the restore
+    //    procedure (owner decision Q33: give or delete, nothing in between) ─────────────────
     const deleted = await harness("delete", "--id", monitor.id);
     expect(parse(deleted.out)).toMatchObject({ state: "deleted" });
+
+    const listFile = path.join(workDir, "deletions.json");
+    const exported = await harness("export-deletions", "--out", listFile);
+    expect(parse(exported.out)).toMatchObject({ exported: 1 });
+    expect(JSON.parse(readFileSync(listFile, "utf8")) as { deletions: { monitorId: string }[] })
+      .toMatchObject({ deletions: [{ monitorId: monitor.id }] });
+
+    const applied = await harness("apply-deletions", "--in", listFile);
+    expect(parse(applied.out)).toMatchObject({ examined: 1, reapplied: [], alreadyDeleted: [monitor.id] });
+
+    // `inspect` is the administrative way to see the tombstone; `status` answers as if the
+    // monitor never existed.
+    const inspected = await harness("inspect", "--id", monitor.id);
+    expect(parse(inspected.out)).toMatchObject({ state: "deleted" });
     const gone = await harness("inspect", "--id", monitor.id);
     expect(parse(gone.out)).toMatchObject({ state: "deleted" });
     // A deleted monitor is indistinguishable from one that never existed, harness included.

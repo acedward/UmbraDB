@@ -365,18 +365,20 @@ describe("shielded-monitor private API", () => {
      * hiding revoked monitors makes the dashboard's own revoke button orphan the delete that must
      * follow it, and LISTING deleted ones breaks US3 scenario 4's "as if it never existed".
      */
-    it("[[shielded-monitor.api.list-includes-revoked-excludes-deleted]] lists a revoked monitor whose own reads are refused, and never lists a deleted one", async () => {
-      const revoked = await register(154);
-      expect((await postJson(`/v1/monitors/${revoked}/revoke`, undefined)).status).toBe(200);
+    it("[[shielded-monitor.api.list-includes-stopped-excludes-deleted]] lists a monitor that stopped, with the reason, and never lists a deleted one", async () => {
+      // The list is the operator's surface, so a monitor that stopped has to stay on it — its
+      // matches are still readable and the reason it stopped is the actionable part. A DELETED
+      // monitor is the one exclusion that is not negotiable (US3 scenario 4).
+      const stopped = await register(154);
+      await store.markFailed(stopped, "test", { code: "UNSUPPORTED_PROTOCOL_VERSION", message: "test" });
 
-      // 410 on the item routes: US3 scenario 3 — a revoked monitor's DATA is refused.
-      expect((await call("GET", `/v1/monitors/${revoked}`)).status).toBe(410);
-      expect((await call("GET", `/v1/monitors/${revoked}/matches`)).status).toBe(410);
-
-      // ...and yet it is listed, with its state, so an operator can see and then delete it.
-      const item = (await listed()).byId.get(revoked);
-      expect(item, "a revoked monitor must remain listed").toBeDefined();
-      expect(item!.state).toBe("revoked");
+      const item = (await listed()).byId.get(stopped);
+      expect(item, "a stopped monitor must remain listed").toBeDefined();
+      expect(item!.state).toBe("failed");
+      expect((item!.lastError as Record<string, unknown>).code).toBe("UNSUPPORTED_PROTOCOL_VERSION");
+      // Its own reads still work — that is the difference between stopped and gone.
+      expect((await call("GET", `/v1/monitors/${stopped}`)).status).toBe(200);
+      expect((await call("GET", `/v1/monitors/${stopped}/matches`)).status).toBe(200);
 
       // The other half, which is not negotiable.
       const deleted = await register(155);
@@ -387,21 +389,9 @@ describe("shielded-monitor private API", () => {
         "a deleted monitor must be indistinguishable from one that never existed",
       ).toBe(false);
 
-      // And the revoked one is STILL there after the delete, so the two rules did not collapse
+      // And the stopped one is STILL there after the delete, so the two rules did not collapse
       // into one another.
-      expect((await listed()).byId.has(revoked)).toBe(true);
-    });
-
-    it("shows paused and failed monitors, which is what an operator most needs to see", async () => {
-      const paused = await register(156);
-      await postJson(`/v1/monitors/${paused}/pause`, undefined);
-      const failed = await register(157);
-      await store.markFailed(failed, "test", { code: "UNSUPPORTED_PROTOCOL_VERSION", message: "test" });
-
-      const list = await listed();
-      expect(list.byId.get(paused)!.state).toBe("paused");
-      expect(list.byId.get(failed)!.state).toBe("failed");
-      expect((list.byId.get(failed)!.lastError as Record<string, unknown>).code).toBe("UNSUPPORTED_PROTOCOL_VERSION");
+      expect((await listed()).byId.has(stopped)).toBe(true);
     });
 
     it("never carries a key or a fingerprint, over the raw response text", async () => {
@@ -689,27 +679,23 @@ describe("shielded-monitor private API", () => {
   // ── Lifecycle (US3) ────────────────────────────────────────────────────────────────────────
 
   describe("lifecycle", () => {
-    it("pauses, resumes, and refuses a resume that the state machine does not admit", async () => {
+    it("has no route but DELETE: pause, resume and revoke are gone (owner decision Q33)", async () => {
+      // They are 404s, not 405s or 410s: the paths do not exist, and a client still calling one
+      // gets the same answer as for any other path this service does not serve.
       const id = await register(140);
-
-      const paused = await postJson(`/v1/monitors/${id}/pause`, undefined);
-      expect(paused.status).toBe(200);
-      expect(paused.json.state).toBe("paused");
-
-      const resumed = await postJson(`/v1/monitors/${id}/resume`, undefined);
-      expect(resumed.status).toBe(200);
-      expect(resumed.json.state).toBe("backfilling");
-
-      const again = await postJson(`/v1/monitors/${id}/resume`, undefined);
-      expect(again.status).toBe(409);
-      expect((again.json.error as Record<string, unknown>).code).toBe("ILLEGAL_TRANSITION");
+      for (const action of ["pause", "resume", "revoke"]) {
+        const response = await postJson(`/v1/monitors/${id}/${action}`, undefined);
+        expect(response.status, action).toBe(404);
+      }
+      // And the monitor is untouched by the attempt.
+      expect((await call("GET", `/v1/monitors/${id}`)).json.state).toBe("backfilling");
     });
 
-    it("keeps matches readable while paused (US3 scenario 1)", async () => {
+    it("keeps matches readable when a monitor stops (US3 scenario 1)", async () => {
       const id = await register(141);
       const monitor = await store.getIncludingDeleted(id);
       await store.advance(id, monitor!.epoch, 5n, [association(5n, 0)]);
-      await postJson(`/v1/monitors/${id}/pause`, undefined);
+      await store.markFailed(id, "test", { code: "UNSUPPORTED_PROTOCOL_VERSION", message: "test" });
 
       const page = await call("GET", `/v1/monitors/${id}/matches`);
       expect(page.status).toBe(200);
@@ -717,31 +703,21 @@ describe("shielded-monitor private API", () => {
       expect(coverageOf(page.json).scannedThrough).toBe("5");
     });
 
-    it("answers 410 everywhere once revoked, and stays idempotent on revoke (US3 scenario 3)", async () => {
-      const id = await register(142);
-
-      const revoked = await postJson(`/v1/monitors/${id}/revoke`, undefined);
-      expect(revoked.status).toBe(200);
-      expect(revoked.json.state).toBe("revoked");
-
-      expect((await call("GET", `/v1/monitors/${id}`)).status).toBe(410);
-      expect((await call("GET", `/v1/monitors/${id}/matches`)).status).toBe(410);
-      expect((await postJson(`/v1/monitors/${id}/pause`, undefined)).status).toBe(410);
-      expect((await postJson(`/v1/monitors/${id}/resume`, undefined)).status).toBe(410);
-
-      const again = await postJson(`/v1/monitors/${id}/revoke`, undefined);
-      expect(again.status).toBe(200);
-      expect(again.json.state).toBe("revoked");
-    });
-
-    it("refuses to re-register a revoked key (Q11)", async () => {
+    it("re-registering a key whose monitor was deleted mints a fresh monitor", async () => {
+      // The whole "I changed my mind" path since Q33, over the wire: there is nothing to un-do,
+      // so a consumer deletes and gives the key again — and gets a NEW monitor, 201, with no
+      // coverage. (Organizer question Q11's revoked case no longer exists.)
       const encoded = await fixtureViewingKeyEncoded(143);
       const created = await postJson("/v1/monitors", { viewingKey: encoded });
-      await postJson(`/v1/monitors/${created.json.monitorId as string}/revoke`, undefined);
+      expect(created.status).toBe(201);
+      const first = created.json.monitorId as string;
+      expect((await call("DELETE", `/v1/monitors/${first}`)).status).toBe(204);
 
       const retried = await postJson("/v1/monitors", { viewingKey: encoded });
-      expect(retried.status).toBe(410);
-      expect((retried.json.error as Record<string, unknown>).code).toBe("MONITOR_REVOKED");
+      expect(retried.status).toBe(201);
+      expect(retried.json.monitorId).not.toBe(first);
+      expect(retried.json.state).toBe("backfilling");
+      expect((await call("GET", `/v1/monitors/${first}`)).status).toBe(404);
     });
 
     it("deletes, then answers as if the monitor never existed (US3 scenario 4)", async () => {
@@ -756,7 +732,6 @@ describe("shielded-monitor private API", () => {
       // Every endpoint, 404 — the same answer a never-issued id gets.
       expect((await call("GET", `/v1/monitors/${id}`)).status).toBe(404);
       expect((await call("GET", `/v1/monitors/${id}/matches`)).status).toBe(404);
-      expect((await postJson(`/v1/monitors/${id}/pause`, undefined)).status).toBe(404);
       expect((await call("DELETE", `/v1/monitors/${id}`)).status).toBe(404);
 
       // And the rows really are gone, not merely hidden.
