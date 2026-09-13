@@ -59,16 +59,17 @@ import {
  *
  * **The fence.** `monitors.epoch` is a monotone token bumped by every lifecycle transition. It is
  * checked inside the same `UPDATE` that advances coverage, so "check the fence" and "do the
- * write" are one statement and cannot be separated by a pause, a revoke or a scheduler. This is
+ * write" are one statement and cannot be separated by a delete or a scheduler. This is
  * the CAS shape of `Formal/STORAGE_ALGEBRA.md` §1's Law T2 applied to a different column; it does
  * not reopen §4's decision to keep fencing tokens out of the lease layer, because there is
  * exactly one downstream write path and it is the check itself.
  *
  * ── 00009-09: there is no key in this file any more ─────────────────────────────────────────
- * `register` takes a fingerprint; `key_serialized` is never written (it stays as an always-NULL
- * column until a later cleanup migration drops it, OP-4) and there is no route or method that
- * reads one. The lease methods are gone with it: what a monitor-node holds in RAM is the truth
- * about who scans a monitor, so `monitor_leases` is neither read nor written any more.
+ * `register` takes a fingerprint, and there is no route or method that reads a key. Migration 004
+ * DROPPED `monitors.key_serialized` outright (OP-4, owner decision 2026-09-13), so this is not a
+ * convention anyone can quietly break: naming the column is now a syntax error. The lease methods
+ * went the same way — what a monitor-node holds in RAM is the truth about who scans a monitor —
+ * and migration 004 drops `monitor_leases` with them.
  *
  * Two new commands carry the block-centric shape: {@link PgShieldedMonitorStore.advanceBatch} —
  * one block, every monitor a node holds, one transaction, per-item fences REPORTED rather than
@@ -290,8 +291,8 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
    * Registers a viewing key's FINGERPRINT, or returns the monitor that already holds it.
    *
    * **No key material (00009-09).** The caller decoded, validated and hashed the key and keeps it
-   * in RAM; what arrives here is 32 bytes of SHA-256. `key_serialized` is left NULL and is never
-   * written again.
+   * in RAM; what arrives here is 32 bytes of SHA-256, and migration 004 dropped the column that
+   * used to hold a key.
    *
    * Idempotent per `(net, fingerprint)` (organizer spec FR-004): the second registration of the
    * same key on the same network returns the first monitor — **with its coverage and its gaps** —
@@ -342,10 +343,8 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
         // however narrow. Treating it as an error would make idempotent registration (FR-004)
         // hold only when nobody registers twice at once; instead the caller falls through to
         // re-reading the winner below, which is what idempotency actually means.
-        // `key_serialized` is absent from the column list, not written as NULL: absence is the
-        // statement. There is no code path in this repository that puts a viewing key into this
-        // table any more (00009-09), and the column stays only because dropping it would not be an
-        // additive migration (OP-4).
+        // There is no key column to write: migration 004 dropped `key_serialized` (OP-4), so a
+        // viewing key cannot reach this table even by mistake.
         const inserted = await tx<MonitorRow[]>`
           INSERT INTO ${tx(this.schema)}.monitors (
             id, net, fingerprint, state, epoch, last_assoc_seq,
@@ -1195,7 +1194,7 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
         const done = await tx<MonitorRow[]>`
           UPDATE ${tx(this.schema)}.monitors
              SET state = ${outcome.to}, epoch = ${epochAfter},
-                 key_serialized = NULL, fingerprint = NULL,
+                 fingerprint = NULL,
                  -- "with all the related data": the coverage claim, the archive binding and the
                  -- last error describe a monitor that no longer exists. The requested start
                  -- height is a NOT NULL column, so it is reset rather than dropped.

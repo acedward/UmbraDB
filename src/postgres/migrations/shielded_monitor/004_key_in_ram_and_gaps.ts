@@ -27,13 +27,19 @@ import { assertValidSchemaName } from "../../client.js";
  *    for it, and `fill-gap` shrinks or deletes the row as the range is actually read. "Complete"
  *    is `scanned_through_height = tip AND no gap rows`.
  *
- * ── What is deliberately NOT done ───────────────────────────────────────────────────────────
- * `key_serialized` is **kept as a column** and `monitor_leases` is **kept as a table**, both
- * unused from now on (OP-4). Dropping a column and a table is not an additive migration, and this
- * lineage's rule is that a migration never invalidates a reader that ran before it. A later
- * cleanup migration drops both once no deployed reader references them. Until then the column is
- * always NULL — nothing writes it, and `register` no longer has anything to write — and the table
- * is never read or written.
+ * 3. **`key_serialized` and `monitor_leases` are DROPPED** (open point OP-4, owner decision
+ *    2026-09-13). This is the one non-additive step in the lineage, and it is deliberate: there is
+ *    no deployment of this service, so there is no reader to invalidate and nothing to stage a
+ *    two-migration retirement for. The alternative — leaving a column that once held plaintext
+ *    viewing keys in place, always NULL, "until later" — is a security claim resting on a promise
+ *    about future code. Dropping it makes the claim structural: `SELECT key_serialized` is now a
+ *    syntax error, not a query returning NULLs. `monitor_leases` goes with it (no lease exists in
+ *    this topology; what a node holds in RAM is the truth) along with its index, which the table
+ *    drop removes.
+ *
+ *    Both drops are `IF EXISTS`, so this migration is idempotent and a schema bootstrapped after
+ *    it applies cleanly. A dump taken BEFORE this migration still restores — 001 creates the
+ *    column, 004 removes it — which is what keeps the restore drill honest.
  *
  * ── The state CHECK is NOT touched, and the code is narrower than it ────────────────────────
  * Migration 001's `state IN (…)` still admits `'paused'` and `'revoked'`. Owner decision Q33
@@ -49,9 +55,9 @@ import { assertValidSchemaName } from "../../client.js";
  * nobody holding it in RAM, which is exactly the `key needed` state the dashboard shows until the
  * client re-sends the key. Its coverage, its associations and its lifecycle log are untouched.
  *
- * ADDITIVE. One CHECK replaced by a weaker one (every row that satisfied the old one satisfies the
- * new one, except the ones the old one forbade and the new topology requires), one new table, one
- * new index. No column is dropped, no row is rewritten.
+ * NOT purely additive, and knowingly so: one CHECK replaced by a weaker one, one new table, and
+ * two removals (a column and a table) that carry no data any build since 00009-09 has written.
+ * No row of a surviving table is rewritten.
  */
 export const name = "004_key_in_ram_and_gaps";
 
@@ -122,4 +128,23 @@ export async function up(sql: ISql, schema: string): Promise<void> {
   // No second index. Every read of this table is "this monitor's gaps, lowest first", which the
   // primary key `(monitor_id, from_height)` already serves as an index scan; a separate index on
   // the same two columns in the same order would be a duplicate that only costs write time.
+
+  // ── 3. The retired column and the retired table ───────────────────────────────────────────
+  //
+  // `key_serialized` held the plaintext serialized viewing key until this phase. Nothing writes it
+  // any more, and leaving it in place — always NULL, "for a later cleanup" — would make
+  // SECURITY.md's central claim depend on every future writer remembering not to fill it in.
+  // Dropping it makes the claim structural instead (owner decision on OP-4, 2026-09-13): there is
+  // no deployment to stage a retirement for.
+  await sql`
+    ALTER TABLE ${sql(schema)}.monitors
+      DROP COLUMN IF EXISTS key_serialized
+  `;
+
+  // `monitor_leases` (migration 003) described which scanner instance owned which monitor. There
+  // are no leases in this topology at all: a key lives in the RAM of exactly one node, and that is
+  // the truth a balancer asks for. The table's own index goes with it.
+  await sql`
+    DROP TABLE IF EXISTS ${sql(schema)}.monitor_leases
+  `;
 }

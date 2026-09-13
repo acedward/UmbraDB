@@ -81,9 +81,12 @@ The hint table is a hint. It is never trusted without a `holds` check, because t
 may have restarted — and a restarted node holds nothing. That single verification is what makes a
 stale hint self-correcting rather than a source of duplicate custody.
 
-## 6. What was kept unused rather than removed (OP-4)
+## 6. What was removed outright (OP-4, decided 2026-09-13)
 
-`monitors.key_serialized` and the `monitor_leases` table are left in place, always NULL and never
-read. Dropping a column and a table is not an additive migration, and this lineage's rule is that
-a migration never invalidates a reader that ran before it. A later cleanup migration removes both
-once no deployed reader references them.
+`monitors.key_serialized` and the `monitor_leases` table are **dropped by migration 004**. The
+first draft of this change kept them, always NULL and never read, on the lineage's usual rule that
+a migration never invalidates a reader that ran before it. The owner's decision reversed that:
+there is no deployment of this service, so there is no reader to invalidate, and a column that
+once held plaintext viewing keys is not something to leave lying around on the strength of a
+promise that nothing will write to it. Both drops are `IF EXISTS`, so the migration stays
+idempotent, and a dump taken before it still restores.

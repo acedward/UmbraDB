@@ -817,11 +817,10 @@ describe("PgShieldedMonitorStore", () => {
       const deletedError = await store.get(id).catch((e: unknown) => e);
       expect((deletedError as Error).constructor).toBe((unknownError as Error).constructor);
 
-      // Key and derived rows are gone.
-      const row = await sql<{ key_serialized: Buffer | null; fingerprint: Buffer | null }[]>`
-        SELECT key_serialized, fingerprint FROM ${sql(schema)}.monitors WHERE id = ${id}
+      // The identity and every derived row are gone.
+      const row = await sql<{ fingerprint: Buffer | null }[]>`
+        SELECT fingerprint FROM ${sql(schema)}.monitors WHERE id = ${id}
       `;
-      expect(row[0]!.key_serialized).toBeNull();
       expect(row[0]!.fingerprint).toBeNull();
       const assoc = await sql<{ count: string }[]>`
         SELECT count(*)::text AS count FROM ${sql(schema)}.associations WHERE monitor_id = ${id}
@@ -867,21 +866,23 @@ describe("PgShieldedMonitorStore", () => {
 
     it("[[shielded-monitor.store.no-key-material-is-ever-written]] never writes key material, for any monitor, in any state (00009-09)", async () => {
       // This case replaces `getKeyMaterial returns the stored key…`, and the inversion is the
-      // point of the phase: there is no method that could return a key, and the column that used
-      // to hold one is NULL for every row this code path can produce. The column itself survives
-      // only because dropping it would not be an additive migration (OP-4).
+      // point of the phase: there is no method that could return a key, and since migration 004
+      // (OP-4) there is no COLUMN either — a key cannot reach this table even by mistake.
       const first = await registerFixture(store, seedCounter);
       const second = await registerFixture(store, seedCounter + 1);
       await store.advance(first.id, first.epoch, 3n, [association(3n, 0)]);
       await store.markFailed(second.id, "op", { code: "X", message: "y" });
 
-      const rows = await sql<{ id: string; key_serialized: Buffer | null; fingerprint: Buffer | null }[]>`
-        SELECT id, key_serialized, fingerprint FROM ${sql(schema)}.monitors
+      const columns = await sql<{ column_name: string }[]>`
+        SELECT column_name FROM information_schema.columns
+         WHERE table_schema = ${schema} AND table_name = 'monitors'
+      `;
+      expect(columns.map((c) => c.column_name), "the key column does not exist")
+        .not.toContain("key_serialized");
+      const rows = await sql<{ id: string; fingerprint: Buffer | null }[]>`
+        SELECT id, fingerprint FROM ${sql(schema)}.monitors
       `;
       expect(rows.length).toBeGreaterThanOrEqual(2);
-      for (const row of rows) {
-        expect(row.key_serialized, `${row.id} must hold no key material`).toBeNull();
-      }
       // And the identity that replaced it is present, which is what makes re-sending a key find
       // the same monitor.
       const live = rows.find((r) => r.id === first.id)!;

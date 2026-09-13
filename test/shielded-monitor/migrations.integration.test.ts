@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_archive/index.js";
+import * as coreMigration from "../../src/postgres/migrations/shielded_monitor/001_core.js";
 import * as associationDetailsMigration from "../../src/postgres/migrations/shielded_monitor/002_association_details.js";
 import * as monitorLeasesMigration from "../../src/postgres/migrations/shielded_monitor/003_monitor_leases.js";
 import * as keyInRamAndGapsMigration from "../../src/postgres/migrations/shielded_monitor/004_key_in_ram_and_gaps.js";
@@ -60,13 +61,13 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
          WHERE table_schema = ${schema} ORDER BY table_name
       `;
       expect(tables.map((r) => r.table_name)).toStrictEqual([
-        // `monitor_leases` joined the set in 00009-08 (migration 003) and `monitor_gaps` in
-        // 00009-09 (migration 004). `monitor_leases` is now DEAD — nothing reads or writes it —
-        // and stays only because dropping it would not be an additive migration (OP-4); it is
-        // still pinned here, because a table silently disappearing is exactly as interesting as
-        // one silently appearing.
+        // `monitor_leases` joined the set in 00009-08 (migration 003) and was DROPPED again by
+        // migration 004 (open point OP-4): there are no leases in this topology, so the table
+        // described nothing. `monitor_gaps` arrived in the same migration. The list is pinned
+        // because a table silently disappearing is exactly as interesting as one silently
+        // appearing — and here it is the deliberate one.
         "_migrations", "associations", "audit_events", "lifecycle_events",
-        "monitor_gaps", "monitor_leases", "monitors",
+        "monitor_gaps", "monitors",
       ]);
 
       // The lineage is selectable exactly like the Tier-1.5 one; `shieldedMonitorMigrations`
@@ -140,7 +141,6 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
         id,
         net: "undeployed",
         fingerprint: Buffer.concat([fingerprint.subarray(0, 31), Buffer.of(Math.floor(Math.random() * 256))]),
-        key_serialized: Buffer.alloc(32, 9),
         state: "backfilling",
         epoch: 0n,
         requested_start_height: 0n,
@@ -184,17 +184,32 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
       );
     });
 
-    it("[[shielded-monitor.migrations.live-monitor-needs-no-key]] ACCEPTS a live monitor with no key — the 00009-09 inversion", async () => {
-      // Before migration 004 this was a CHECK VIOLATION: every non-deleted monitor had to hold
-      // `key_serialized`. It is now the only shape the code can produce, because a viewing key
-      // lives in the RAM of exactly one monitor-node and is never written (owner decision Q28).
-      // The constraint that survives is the half that still means something — a deleted monitor
-      // sheds its identity, a live one has one.
-      await expect(insertMonitor({ key_serialized: null })).resolves.toBeTypeOf("string");
+    it("[[shielded-monitor.migrations.live-monitor-needs-no-key]] a live monitor needs no key, because the COLUMN is gone — the 00009-09 inversion", async () => {
+      // Before migration 004 a non-deleted monitor was REQUIRED to hold `key_serialized`. Now
+      // there is no such column at all (open point OP-4): a viewing key lives in the RAM of
+      // exactly one monitor-node, and the strongest possible statement of that is a schema in
+      // which naming the column is an error. The constraint that survives is the half that still
+      // means something — a deleted monitor sheds its identity, a live one has one.
+      await expect(insertMonitor()).resolves.toBeTypeOf("string");
+      const columns = await sql<{ column_name: string }[]>`
+        SELECT column_name FROM information_schema.columns
+         WHERE table_schema = ${schema} AND table_name = 'monitors'
+      `;
+      expect(columns.map((c) => c.column_name)).not.toContain("key_serialized");
+      // And it cannot be written back by accident: the statement does not parse.
+      await expect(sql`
+        UPDATE ${sql(schema)}.monitors SET key_serialized = ${Buffer.alloc(32, 9)}
+      `).rejects.toThrow(/key_serialized/i);
+      // The lease table went with it, for the same reason: nothing holds a lease any more.
+      const leases = await sql<{ table_name: string }[]>`
+        SELECT table_name FROM information_schema.tables
+         WHERE table_schema = ${schema} AND table_name = 'monitor_leases'
+      `;
+      expect(leases).toHaveLength(0);
     });
 
     it("rejects a deleted monitor that still holds its identity", async () => {
-      await expect(insertMonitor({ state: "deleted", key_serialized: null }))
+      await expect(insertMonitor({ state: "deleted" }))
         .rejects.toThrow(/monitors_deleted_is_shredded|violates check/i);
     });
 
@@ -218,9 +233,9 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
       `).rejects.toThrow(/duplicate key|monitor_gaps_pkey/i);
     });
 
-    it("accepts a deleted monitor with neither key nor fingerprint", async () => {
+    it("accepts a deleted monitor with no fingerprint", async () => {
       await expect(
-        insertMonitor({ state: "deleted", key_serialized: null, fingerprint: null }),
+        insertMonitor({ state: "deleted", fingerprint: null }),
       ).resolves.toBeTypeOf("string");
     });
 
@@ -229,9 +244,9 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
       await insertMonitor({ fingerprint: shared });
       await expect(insertMonitor({ fingerprint: shared })).rejects.toThrow(/duplicate key|unique/i);
       // Tombstones carry a NULL fingerprint and therefore never collide.
-      await insertMonitor({ state: "deleted", key_serialized: null, fingerprint: null });
+      await insertMonitor({ state: "deleted", fingerprint: null });
       await expect(
-        insertMonitor({ state: "deleted", key_serialized: null, fingerprint: null }),
+        insertMonitor({ state: "deleted", fingerprint: null }),
       ).resolves.toBeTypeOf("string");
     });
 
@@ -459,19 +474,36 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
           await expect(monitorLeasesMigration.up(sql as never, 'x"; DROP SCHEMA public; --')).rejects.toThrow();
         });
 
-        it("is idempotent: re-running `up` against the migrated schema changes nothing", async () => {
-          const shape = async (): Promise<string[]> => {
-            const rows = await sql<{ column_name: string }[]>`
-              SELECT column_name FROM information_schema.columns
-               WHERE table_schema = ${schema} AND table_name = 'monitor_leases'
-               ORDER BY column_name
-            `;
-            return rows.map((r) => r.column_name);
-          };
-          const before = await shape();
-          expect(before).toStrictEqual(["claimed_at", "expires_at", "monitor_id", "owner"]);
-          await monitorLeasesMigration.up(sql as never, schema);
-          expect(await shape()).toStrictEqual(before);
+        it("is idempotent, and its table is later dropped by 004 rather than left behind", async () => {
+          // 003 still runs, and still creates the table — a migration lineage is a history, not a
+          // desired end state — but by the time the lineage finishes, 004 has dropped it (OP-4).
+          // Re-running 003 here would RE-CREATE it, which is exactly why this case asserts on a
+          // schema of its own rather than on the shared one.
+          const own = "shielded_monitor_leases_idem";
+          await sql`DROP SCHEMA IF EXISTS ${sql(own)} CASCADE`;
+          await sql`CREATE SCHEMA ${sql(own)}`;
+          try {
+            await coreMigration.up(sql as never, own);
+            await monitorLeasesMigration.up(sql as never, own);
+            const shape = async (): Promise<string[]> => {
+              const rows = await sql<{ column_name: string }[]>`
+                SELECT column_name FROM information_schema.columns
+                 WHERE table_schema = ${own} AND table_name = 'monitor_leases'
+                 ORDER BY column_name
+              `;
+              return rows.map((r) => r.column_name);
+            };
+            const before = await shape();
+            expect(before).toStrictEqual(["claimed_at", "expires_at", "monitor_id", "owner"]);
+            await monitorLeasesMigration.up(sql as never, own);
+            expect(await shape()).toStrictEqual(before);
+
+            // …and 004 removes it.
+            await keyInRamAndGapsMigration.up(sql as never, own);
+            expect(await shape()).toStrictEqual([]);
+          } finally {
+            await sql`DROP SCHEMA IF EXISTS ${sql(own)} CASCADE`;
+          }
         });
       });
 

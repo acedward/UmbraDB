@@ -155,10 +155,11 @@ narrower than the rest of this document's, and the narrowness is an owner decisi
 
 - **No viewing key is stored at all** (00009-09, owner decision Q28). A key lives in the RAM of
   exactly one `umbradb-shielded-monitor-node` and nowhere else: not on disk, not in the database,
-  not in a log. `shielded_monitor.monitors.key_serialized` is an always-NULL column kept only
-  because dropping it would not be an additive migration; a later cleanup migration removes it.
-  Nothing in this repository writes it any more, which
-  `test/shielded-monitor/store.integration.test.ts` asserts over every row and every state.
+  not in a log. `shielded_monitor.monitors.key_serialized` — the column that used to hold the
+  plaintext key — **no longer exists**: migration 004 drops it (open point OP-4), so naming it is
+  a syntax error rather than a query returning NULLs, which is the difference between a promise
+  and a property. `test/shielded-monitor/migrations.integration.test.ts` asserts the column's
+  absence and that a write naming it fails.
   **This is the single largest change to this trust model since the schema was added**: a backup,
   replica or dump of `shielded_monitor` no longer contains key material, and reading the schema no
   longer lets anyone decrypt a wallet's history. What it still exposes is the LINKAGE below.
@@ -337,7 +338,7 @@ key — and the routing already works from the fingerprint alone either way.
 
 | Deferred control | Consequence of its absence today |
 |---|---|
-| ~~At-rest encryption of `key_serialized`~~ — **resolved differently by 00009-09**: the key is not stored at all | — (the exposure is gone; the column is always NULL and a later migration drops it) |
+| ~~At-rest encryption of `key_serialized`~~ — **resolved differently by 00009-09**: the key is not stored at all | — (the exposure is gone; migration 004 drops the column outright) |
 | A way for a node to reacquire a key without the client | A node restart makes every monitor it held report `key needed` until its client re-sends; there is no sealed-key store and no operator-side recovery |
 | Keyed (HMAC) fingerprints | A guessed key can be confirmed by recomputing its fingerprint |
 | Encrypted association content | The wallet↔transaction linkage is readable by anyone with database access |

@@ -8,8 +8,8 @@ or leases.
 
 ## Key custody
 
-- **MN-001** — The system SHALL NOT persist a viewing key. `monitors.key_serialized` SHALL be
-  NULL for every row this system writes.
+- **MN-001** — The system SHALL NOT persist a viewing key, and migration 004 SHALL DROP the
+  `monitors.key_serialized` column that used to hold one (OP-4).
 - **MN-002** — When a monitor-node accepts a viewing key, it SHALL zero-fill every byte buffer
   holding that key once the ledger handle exists, whether or not the handle was created.
 - **MN-003** — When a held key is revoked, deleted, dropped after a `not-found` fence, or when the
@@ -63,7 +63,8 @@ or leases.
   numbers SHALL be monotonic; they are NOT required to be dense (owner decision Q32, option B).
 - **MN-024** — `GET /v1/monitor-store/monitors/<id>/key-material`, `GET …/lease`,
   `POST /v1/monitor-store/leases/claim` and `POST …/leases/release` SHALL respond `410`.
-- **MN-025** — The storage API SHALL NOT read or write `monitor_leases`.
+- **MN-025** — The storage API SHALL NOT read or write `monitor_leases`, and migration 004 SHALL
+  drop that table.
 
 ## Routing
 

@@ -207,9 +207,12 @@ To migrate:
    the same monitor — the fingerprint is unchanged — and the node resumes from the stored
    coverage.
 
-Existing coverage, associations and lifecycle history are untouched. `monitors.key_serialized` and
-the `monitor_leases` table are left in place, unused and never written, and a later cleanup
-migration drops them (open point OP-4: dropping them now would not be an additive migration).
+Existing coverage, associations and lifecycle history are untouched. Migration 004 **drops**
+`monitors.key_serialized` and the `monitor_leases` table (open point OP-4, decided 2026-09-13):
+neither carries anything this build writes, and leaving a column that once held plaintext viewing
+keys in place "until later" would make the security claim a promise about future code rather than
+a property of the schema. This is the one non-additive step in the lineage; there is no deployment
+of this service to stage a retirement for, and a dump taken before the migration still restores.
 
 If a B process still has a credential in its environment it will stop with a message naming the
 variable. That is deliberate: a leftover `MONITOR_PG` is a live credential in the environment of a

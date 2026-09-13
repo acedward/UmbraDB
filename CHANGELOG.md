@@ -17,9 +17,12 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
   the instant the handle exists; from then on the only representation is a WASM handle, cleared on
   revoke, delete, a fenced drop and SIGTERM. **The database holds no key material at all** —
   registration sends a 32-byte SHA-256 fingerprint, which was already the monitor's identity.
-  Migration `004_key_in_ram_and_gaps` relaxes the `monitors` CHECK to fingerprint-only and adds
-  `monitor_gaps`; `monitors.key_serialized` and `monitor_leases` are left in place, always NULL
-  and never read, for a later cleanup migration to drop (additive-migration rule).
+  Migration `004_key_in_ram_and_gaps` relaxes the `monitors` CHECK to fingerprint-only, adds
+  `monitor_gaps`, and **drops `monitors.key_serialized` and the `monitor_leases` table** (open
+  point OP-4, decided 2026-09-13). That last step is the lineage's one non-additive migration and
+  is deliberate: a column that once held plaintext viewing keys should not survive on the strength
+  of a promise that nothing writes to it, and there is no deployment of this service to stage a
+  retirement for.
   Scanning inverted with it: a block is read once, each transaction is deserialized **once for all
   keys**, and the whole block commits as ONE `advance-batch` — every held monitor's associations,
   coverage advance and gap rows in one transaction, with a fenced monitor reported in the response
