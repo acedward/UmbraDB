@@ -286,8 +286,11 @@ describe("the split topology: 2 monitor-nodes + 1 balancer + 1 storage API, one 
     // answer — a fan-out over the survivors — not the surviving node's guess about itself.
     const view = await fetch(`${balancerUrl}/v1/monitors/${monitorId}`);
     expect(view.status).toBe(200);
-    const body = (await view.json()) as { heldBy: string | null; keyNeeded: boolean; state: string };
+    const body = (await view.json()) as {
+      heldBy: string | null; heldPhase: string | null; keyNeeded: boolean; state: string;
+    };
     expect(body.heldBy).toBeNull();
+    expect(body.heldPhase, "nobody holds it, so there is no phase to report").toBeNull();
     expect(body.keyNeeded).toBe(true);
 
     // The client re-sends the key. Same fingerprint ⇒ same monitor ⇒ the survivor picks it up and
@@ -357,7 +360,10 @@ describe("the split topology: 2 monitor-nodes + 1 balancer + 1 storage API, one 
     const list = await fetch(`${balancerUrl}/v1/monitors`);
     expect(list.status).toBe(200);
     const body = (await list.json()) as {
-      items: { monitorId: string; state: string; heldBy: string | null; keyNeeded: boolean; gaps: unknown[] }[];
+      items: {
+        monitorId: string; state: string; heldBy: string | null; heldPhase: string | null;
+        keyNeeded: boolean; gaps: unknown[];
+      }[];
       sourceTip: string | null;
       net: string;
     };
@@ -368,6 +374,10 @@ describe("the split topology: 2 monitor-nodes + 1 balancer + 1 storage API, one 
     const held = body.items.filter((m) => m.heldBy !== null);
     expect(held.length).toBe(body.items.length);
     expect(body.items.every((m) => m.keyNeeded === false)).toBe(true);
+    // The key's PHASE inside its holder travels too, and it is a different fact from the state:
+    // `live` here means "in the block-centric pass", not "coverage has reached the tip".
+    expect(body.items.every((m) => m.heldPhase === "live"), JSON.stringify(body.items.map((m) => m.heldPhase)))
+      .toBe(true);
     expect(body.items.every((m) => Array.isArray(m.gaps))).toBe(true);
     expect(body.sourceTip).toBe(String(world.corpus.bundles.at(-1)!.block.height));
     expect(body.net).toBe(NET);

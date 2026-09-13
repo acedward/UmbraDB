@@ -173,8 +173,9 @@ and searches them, with a positive control.
 | `stale_source` | the archive was rebuilt (its instance id changed) under this monitor | decide whether to delete and re-register against the new archive |
 | `revoked` / `deleted` | lifecycle terminal states | nothing; the node clears the key and forgets it |
 
-Alongside the state, a monitor carries **custody**: `heldBy` (the node holding its key, or `null`)
-and `keyNeeded` (`true` when nobody holds it and the state says it should be scanning). A monitor
+Alongside the state, a monitor carries **custody**: `heldBy` (the node holding its key, or `null`),
+`heldPhase` (that key's phase inside the node — `syncing`, `live` or `paused`), and `keyNeeded`
+(`true` when nobody holds it and the state says it should be scanning). A monitor
 reading `live` + `keyNeeded: true` is what a node restart leaves behind — the history is intact
 and nothing is scanning until the client re-sends the key.
 

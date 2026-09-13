@@ -298,6 +298,15 @@ function renderMonitors() {
       stateCell.appendChild(document.createTextNode(" "));
       stateCell.appendChild(node("span", "key needed", "badge b-keyneeded"));
     }
+    // The PHASE, when a node holds the key: syncing while Queue B is catching it up, live once it
+    // is in the block-centric pass, paused when its monitor is. It answers a different question
+    // from the state badge beside it — "is anything happening right now?" rather than "is this
+    // wallet caught up?" — which is why both are shown. (No backticks in this file: the whole
+    // script is one template literal.)
+    if (m.heldBy && m.heldPhase) {
+      stateCell.appendChild(document.createTextNode(" "));
+      stateCell.appendChild(node("span", m.heldPhase, "badge s-" + m.heldPhase));
+    }
     stateCell.appendChild(node("div", m.heldBy ? "held by " + m.heldBy : "held by nobody", "held"));
     tr.appendChild(stateCell);
 

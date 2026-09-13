@@ -60,6 +60,17 @@ export interface MonitorView {
    */
   readonly heldBy: string | null;
   /**
+   * The PHASE of the key inside its holder: `syncing` while it is being caught up to the live
+   * scan, `live` once it is in it, `paused` when its monitor is. `null` when nobody holds it.
+   *
+   * It is not the monitor's `state` and does not duplicate it. A monitor is `backfilling` for as
+   * long as its coverage is short of the tip, which is a fact about the DATABASE; the phase says
+   * which of the holder's two queues is working on it, which is a fact about the node — and the
+   * two answer different operator questions ("is this wallet caught up?" versus "is anything
+   * happening right now?").
+   */
+  readonly heldPhase: string | null;
+  /**
    * `true` when this monitor is in a state that should be scanning but no node holds its key —
    * the shape a restart leaves behind (§4.6). The client's remedy is to re-send the key, which
    * reaches the same monitor because the fingerprint is the identity.
@@ -152,6 +163,7 @@ export function monitorView(
   record: MonitorRecord,
   sourceTip: bigint | undefined,
   heldBy: string | null = null,
+  heldPhase: string | null = null,
 ): MonitorView {
   return {
     monitorId: record.id,
@@ -160,6 +172,7 @@ export function monitorView(
     coverage: coverageView(record.coverage, sourceTip),
     gaps: record.gaps.map(gapView),
     heldBy,
+    heldPhase: heldBy === null ? null : heldPhase,
     keyNeeded: keyNeededFor(record.state, heldBy),
     matchingRuleVersion: record.matchingRuleVersion,
     ledgerBuild: record.ledgerBuild,

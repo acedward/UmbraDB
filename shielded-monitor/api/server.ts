@@ -265,14 +265,18 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
     }
   }
 
-  /** This node's own answer to "do I hold this monitor's key?". `null` when it does not — which
-   *  a balancer replaces with the fan-out's answer before the response reaches a client. */
-  function heldByHere(monitorId: string): string | null {
-    return node !== undefined && node.holdsMonitor(monitorId).holds ? node.nodeId : null;
+  /** This node's own answer to "do I hold this monitor's key, and in which phase?". Both `null`
+   *  when it does not — which a balancer replaces with the fan-out's answer before the response
+   *  reaches a client. */
+  function heldHere(monitorId: string): { by: string | null; phase: string | null } {
+    if (node === undefined) return { by: null, phase: null };
+    const answer = node.holdsMonitor(monitorId);
+    return answer.holds ? { by: node.nodeId, phase: answer.phase ?? null } : { by: null, phase: null };
   }
 
   async function viewOf(record: MonitorRecord): Promise<MonitorView> {
-    return monitorView(record, await currentTip(record.net), heldByHere(record.id));
+    const held = heldHere(record.id);
+    return monitorView(record, await currentTip(record.net), held.by, held.phase);
   }
 
   // ── Handlers ───────────────────────────────────────────────────────────────────────────────
@@ -340,8 +344,10 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
     return {
       status: 200,
       body: {
-        items: records.map((record) =>
-          monitorView(record, record.net === config.net ? tip : undefined, heldByHere(record.id))),
+        items: records.map((record) => {
+          const held = heldHere(record.id);
+          return monitorView(record, record.net === config.net ? tip : undefined, held.by, held.phase);
+        }),
         // Also at the top level, because it belongs to the DEPLOYMENT and not to any monitor, and
         // because an empty `items` would otherwise hide it entirely. `null`, never 0, when
         // unobserved (organizer question Q14).

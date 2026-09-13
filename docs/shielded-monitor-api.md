@@ -219,6 +219,7 @@ command line and never printed.
   "coverage": { "requestedStart": "0", "scannedFrom": null, "scannedThrough": null, "sourceTip": null },
   "gaps": [],
   "heldBy": "node-1",
+  "heldPhase": "live",
   "keyNeeded": false,
   "matchingRuleVersion": "shielded-monitor/v1",
   "ledgerBuild": "ledger-v8@8.1.0-syshash.4",
@@ -239,6 +240,13 @@ should be scanning (`backfilling` or `live`). A monitor can therefore read `"sta
 `"keyNeeded": true` at the same time, and that pair is exactly what a node restart leaves behind:
 the monitor is fine, its history is intact, and nothing is scanning for it until the client sends
 the key again.
+
+`heldPhase` is the key's phase INSIDE its holder — `syncing` while the node is catching it up to
+the live scan, `live` once it is in it, `paused` when its monitor is — and `null` when nobody holds
+the key. It is not the monitor's `state`: `state` is a fact about the database ("has coverage
+reached the tip?"), `heldPhase` is a fact about the node ("which of its two queues has this key?").
+A monitor can read `"state": "backfilling"` with `"heldPhase": "syncing"` (being caught up) or with
+`"heldPhase": "live"` (in the live pass, with coverage still climbing).
 
 Through the **balancer**, `heldBy` is the deployment's answer — a fan-out across every healthy
 node. Asking a node directly gives that node's own answer only: it cannot see its peers, so it

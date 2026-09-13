@@ -297,9 +297,9 @@ export function createBalancer(options: BalancerOptions): Balancer {
     return (answer as { holds?: unknown } | undefined)?.holds === true;
   }
 
-  /** `{monitorId → nodeId}` across every healthy node, in one request per node. */
-  async function heldMap(): Promise<Map<string, string>> {
-    const map = new Map<string, string>();
+  /** `{monitorId → {nodeId, phase}}` across every healthy node, in one request per node. */
+  async function heldMap(): Promise<Map<string, { nodeId: string; phase: string | null }>> {
+    const map = new Map<string, { nodeId: string; phase: string | null }>();
     await Promise.all(selectable().map(async (upstream) => {
       const [held, status] = await Promise.all([
         internalGet(upstream, "/internal/holds"),
@@ -308,16 +308,20 @@ export function createBalancer(options: BalancerOptions): Balancer {
       const nodeId = (status as { nodeId?: unknown } | undefined)?.nodeId;
       const monitors = (held as { monitors?: unknown } | undefined)?.monitors;
       if (typeof nodeId !== "string" || !Array.isArray(monitors)) return;
-      for (const entry of monitors as { monitorId?: unknown }[]) {
-        if (typeof entry?.monitorId === "string") map.set(entry.monitorId, nodeId);
+      for (const entry of monitors as { monitorId?: unknown; phase?: unknown }[]) {
+        if (typeof entry?.monitorId === "string") {
+          map.set(entry.monitorId, {
+            nodeId,
+            phase: typeof entry.phase === "string" ? entry.phase : null,
+          });
+        }
       }
     }));
     return map;
   }
 
   async function holderOf(monitorId: string): Promise<string | null> {
-    const map = await heldMap();
-    return map.get(monitorId) ?? null;
+    return (await heldMap()).get(monitorId)?.nodeId ?? null;
   }
 
   /**
@@ -348,11 +352,13 @@ export function createBalancer(options: BalancerOptions): Balancer {
     const held = await heldMap();
     const patch = (view: Record<string, unknown>): Record<string, unknown> => {
       const monitorId = view.monitorId;
-      const heldBy = typeof monitorId === "string" ? held.get(monitorId) ?? null : null;
+      const holder = typeof monitorId === "string" ? held.get(monitorId) : undefined;
+      const heldBy = holder?.nodeId ?? null;
       const state = typeof view.state === "string" ? view.state : "";
       return {
         ...view,
         heldBy,
+        heldPhase: holder?.phase ?? null,
         keyNeeded: heldBy === null && (state === "backfilling" || state === "live"),
       };
     };
