@@ -205,7 +205,7 @@ The page shows, refreshing every 3 seconds:
 - **service** — reachability, the network, the archive's tip, the monitor count.
 - **monitors** — one row per monitor with its state badge, a coverage bar of
   `scannedThrough / sourceTip`, the four coverage heights spelled out, the last error class, and
-  pause / resume / revoke / delete buttons.
+  and a delete button.
 - **register a viewing key** — paste the `mn_shield-esk_undeployed1…` string from step 3 and press
   **register**. The field is a password field, is cleared the moment the request is issued, and the
   key travels only in the request body. It is never put in a URL and never written to a log.
@@ -235,13 +235,10 @@ no ciphertext for anyone); **?** means the ledger cannot attribute that entry fr
 alone, and the segment line says how many candidates it is one of. See
 [`shielded-monitor-api.md`](shielded-monitor-api.md#mine-is-three-valued-and-every-value-is-entailed-by-the-ledger).
 
-A match recorded before this data was stored shows **"Details not recorded yet — run the
-backfill"** instead. Fill them in with:
-
-Since 00009-09 the backfill needs the viewing key, and the key lives only in the node that holds
-it — so it runs inside a node, for that node's own monitors, rather than as a standalone command.
-It is idempotent (running it twice fills nothing the second time), it only ever writes the two
-detail columns, and a monitor whose key nobody holds is skipped and counted rather than guessed at.
+A match recorded before this data was stored shows **"Details not recorded yet"** instead, and
+there is no command to fill it in: re-deriving a match's details needs the viewing key, which
+lives only in the RAM of the node holding it, and the owner's decision (Q29) was to ship the fix
+forward rather than carry a repair tool for a service nobody is running yet.
 
 Register from the command line instead if you prefer:
 
@@ -290,18 +287,17 @@ Use the row's buttons, or the CLI:
 ```bash
 ID=$(curl -s "http://127.0.0.1:${API_PORT}/v1/monitors" | sed -n 's/.*"monitorId":"\([^"]*\)".*/\1/p' | head -1)
 
-curl -s -XPOST "http://127.0.0.1:${API_PORT}/v1/monitors/$ID/pause"   # coverage freezes, tip keeps moving
-curl -s -XPOST "http://127.0.0.1:${API_PORT}/v1/monitors/$ID/resume"  # resumes with no gap and no duplicate
-curl -s -XPOST "http://127.0.0.1:${API_PORT}/v1/monitors/$ID/revoke"  # 410 on its own reads from now on
+curl -s -XDELETE "http://127.0.0.1:${API_PORT}/v1/monitors/$ID"      # 204; matches, gaps and the held key all go
 curl -s -XDELETE "http://127.0.0.1:${API_PORT}/v1/monitors/$ID"       # 204; afterwards every route answers 404
 ```
 
-Pausing is the most instructive one: `scannedThrough` stops while `sourceTip` keeps climbing, and
-the coverage bar visibly falls behind. That gap is the thing FR-011 exists to keep visible.
+Deleting is the instructive one: the row disappears from the list, `GET /v1/monitors/<id>` answers
+`404`, and the node that held the key logs that it dropped one. Giving the same key again produces
+a NEW monitor with no coverage — the identity went with the delete.
 
-A **revoked** monitor stays in the list, with state `revoked`, even though `GET /v1/monitors/<id>`
-answers `410` — otherwise revoking would hide the monitor you still need to name in order to delete
-it. A **deleted** monitor is gone from the list entirely. See
+A monitor that STOPPED (`failed`, `stale_source`) stays in the list with its `lastError` and its
+matches stay readable; that is the difference between stopped and gone. A **deleted** monitor is
+gone from the list entirely. See
 [`shielded-monitor-api.md`](shielded-monitor-api.md#get-v1monitors--list-monitors).
 
 ## 7. Optional: a real shielded transaction (needs a wallet, out of tree)
@@ -399,7 +395,7 @@ funds.
 |---|---|
 | Dashboard says "API unreachable" | `$DEMO_DIR/node.log`; is `API_PORT` the one you opened? |
 | `sourceTip` is `unknown` | The archive has no block 0 yet, or the API cannot read the archive schema. Check `$DEMO_DIR/archive-sync.log`; `SOURCE_TIP=off` also disables the reader deliberately. |
-| `sourceTip` climbs, `scannedThrough` does not | The node is not running, nobody holds the key, or the monitor is not scannable. Check `$DEMO_DIR/node.log` and the monitor's row — a **`key needed`** badge means no node holds the key (re-send it); `paused`, `failed` and `stale_source` all stop coverage, and the state badge says which. |
+| `sourceTip` climbs, `scannedThrough` does not | The node is not running, nobody holds the key, or the monitor is not scannable. Check `$DEMO_DIR/node.log` and the monitor's row — a **`key needed`** badge means no node holds the key (re-send it); `failed` and `stale_source` both stop coverage, and the state badge says which. |
 | The monitor shows `key needed` after a restart | Expected, and it is the design: a node holds its keys only in RAM. Register the same key again — it reaches the same monitor and resumes from its recorded coverage. |
 | A monitor shows a `gaps` entry | A range was never read for that key (a desync at hand-off). A back-sync is queued automatically; the entry disappears when the range has been read. |
 | Registration answers `INVALID_VIEWING_KEY` | The key's network does not match `SHIELDED_MONITOR_NET`. One generic error covers every intake failure by design (FR-001), so re-derive with `--net` matching the deployment. |

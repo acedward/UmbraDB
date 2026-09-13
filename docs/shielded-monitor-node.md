@@ -45,7 +45,7 @@ A key is in one queue or the other, never both — which is what the key's **pha
 |---|---|
 | `syncing` | Queue B is catching it up; Queue A skips it, so its coverage cannot move past a range it never read |
 | `live` | in the block-centric pass; every new block is committed for it |
-| `paused` | its monitor is paused. The key **stays in RAM** and is skipped, so a resume needs no re-send. The node hears about the resume immediately (the balancer forwards `stateChanged` after the write) or by the next block at the latest (it re-reads every paused key's record on each block it processes) |
+| `failed` | its monitor STOPPED — an undecodable transaction, an unsupported protocol version, or an archive rebuilt underneath it. The key **stays in RAM** and is skipped: the monitor's matches are still readable, and a stopped scan is not a reason to destroy a key its owner has not asked to delete. A DELETED monitor's key is cleared instead, at once (the balancer forwards the delete to the holder) or by the next block at the latest (the `not-found` fence) |
 
 **At boot the live watermark is the archive tip, not zero.** A node holds no keys at boot, so
 there is nothing to scan history for; starting at zero would walk the whole chain testing an empty
@@ -74,6 +74,14 @@ The scanner-only variables of 00009-08 are **gone**: `SCAN_INSTANCE_ID` and `SCA
 block at a time for every key at once, so there is nothing to parallelise across monitors),
 `SCAN_ONCE` and `SCAN_BACKFILL_DETAILS`.
 
+**The lifecycle is give or delete** (owner decision Q33). A viewing key is GIVEN with
+`POST /v1/monitors` and DELETED with `DELETE /v1/monitors/<id>`; there is no pause, no resume and
+no revoke. The states a monitor can occupy are the ones the SYSTEM reaches on its own —
+`backfilling`, `live`, `failed`, `stale_source` — plus `deleted`. Migration 001's `state` CHECK
+still admits the two removed literals and is deliberately not rewritten (it belongs to an
+already-open change, and this lineage does not edit a shipped migration); no code path can produce
+one, because no transition yields it.
+
 **Every numeric setting fails closed.** A zero, negative, fractional or non-numeric value stops
 the process with the variable named. It is never silently replaced by the default — a bound that
 quietly becomes something else is worse than no bound.
@@ -97,8 +105,8 @@ A crash at any point therefore leaves either none of a height or all of it, **fo
 the block together**. Blocks with no matches still advance coverage, so "scanned and empty" is
 always distinguishable from "not scanned".
 
-A monitor whose epoch moved (a pause, a revoke) is reported back as fenced and **does not fail the
-block for the others** (open point OP-2).
+A monitor whose epoch moved, or which stopped or was deleted underneath the batch, is reported
+back as fenced and **does not fail the block for the others** (open point OP-2).
 
 ## Gaps, and what clears them
 
@@ -124,56 +132,13 @@ key, it also queues a back-sync for every gap the record still carries — which
 behind by a node that died, or by a back-sync whose transport failed, gets cleared instead of
 sitting in `monitor_gaps` forever.
 
-## Backfilling match details for older matches
+## Match details
 
-Matches recorded before this service stored per-transaction zswap data have `details = NULL`; the
-API returns `null` and the dashboard says "details not recorded yet". One command fills them:
-
-Since 00009-09 the backfill runs **inside a node, for the keys that node holds**: re-deriving a
-match's details needs the viewing key, and there is nowhere else to get one. A monitor whose key
-nobody holds is skipped and counted as `key-not-held`, and the fill happens when the client
-re-sends the key.
-
-It reads each match's block back **through the archive read contract** (never SQL against the
-archive), recomputes the details with that monitor's key, and writes them. What it is careful
-about:
-
-- **Idempotent.** Every write carries `AND details IS NULL`, so a second run fills nothing and can
-  never overwrite a recorded detail. Re-deriving details under a future
-  `MATCH_DETAILS_VERSION` is therefore *not* something a re-run does; it would need its own
-  deliberate step.
-- **It cannot rewrite a match.** The only columns it may set are `details` and
-  `block_timestamp_ms`. Height, position, transaction hash, matched segments, outcomes and
-  coverage are not in its `SET` list.
-- **It refuses what it cannot tie to the recorded match.** If the archive no longer holds that
-  height, or the block there carries a different hash (a re-synced archive), or no transaction
-  sits at the recorded position with the recorded hash, or re-evaluating it no longer reproduces
-  the same matched segments, the row is **skipped and counted** — never filled with a guess. The
-  summary line reports the counts by reason.
-- **Fenced like every other write.** A pause, resume, revoke or delete landing under a run refuses
-  the commit; a later run continues from the rows still `NULL`. Revoked and deleted monitors are
-  refused outright. Paused, failed and `stale_source` monitors ARE filled: their matches stay
-  readable, so leaving them detail-less would be a worse answer than filling them.
-- It prints counts only — never a monitor id, for the same reason the scanner's own log lines do
-  not.
-
-## Tuning
-
-- The live pass commits **one block at a time**, which is the smallest unit Rule B admits and the
-  one that loses the least on a crash. `SCAN_BATCH_BLOCKS` tunes only Queue B's catch-up pages.
-- Throughput is dominated by ledger deserialization, which since 00009-09 happens **once per
-  transaction for all keys** rather than once per monitor per transaction. The 00009-05 figures
-  (~95 tx/s at one key, ~117 aggregate at ten, ~110 at fifty on a synthesized 2 000-transaction
-  corpus) were measured under the OLD shape and are not comparable; `bench/shielded-monitor-scan.ts`
-  now measures the block-centric path and says so in its own header.
-
-## What it logs
-
-One status line per `NODE_STATUS_LOG_SECONDS`, carrying this node's id, how many keys it holds and
-in which phases, the Queue B depth, the live watermark and the lag in blocks. **No monitor id, no
-fingerprint and no viewing key appear in any log line** — not in the node's, and not in the
-balancer's, which reads a registration body in order to route it. A required test captures both
-and searches them, with a positive control.
+Every match this node records carries the transaction's public zswap data (00009-07) written in
+the same transaction as the coverage advance. Matches recorded by an older build have
+`details: null`, and there is **no backfill command** to fill them in: re-deriving a match's
+details needs the viewing key, which since 00009-09 exists only in a node's RAM, and the owner's
+decision (Q29) was to ship forward rather than carry a repair tool for an unreleased service.
 
 ## Monitor states you may see
 
@@ -181,13 +146,13 @@ and searches them, with a positive control.
 |---|---|---|
 | `backfilling` | converging from the requested start towards the tip | nothing |
 | `live` | coverage has reached the archive tip and is following it | nothing |
-| `paused` | a consumer paused it; coverage frozen, matches still readable | resume when ready — the holder picks it up at once, or on its next block, and needs no key re-sent |
+
 | `failed` | fail-closed: a transaction could not be read at a named height and position | investigate the bytes; the range was NOT recorded as scanned |
 | `stale_source` | the archive was rebuilt (its instance id changed) under this monitor | decide whether to delete and re-register against the new archive |
-| `revoked` / `deleted` | lifecycle terminal states | nothing; the node clears the key and forgets it |
+| `deleted` | the consumer deleted it: its matches, its gaps and its registration identity are gone, and the node clears the key | nothing; giving the same key again starts a FRESH monitor |
 
 Alongside the state, a monitor carries **custody**: `heldBy` (the node holding its key, or `null`),
-`heldPhase` (that key's phase inside the node — `syncing`, `live` or `paused`), and `keyNeeded`
+`heldPhase` (that key's phase inside the node — `syncing`, `live` or `failed`), and `keyNeeded`
 (`true` when nobody holds it and the state says it should be scanning). A monitor
 reading `live` + `keyNeeded: true` is what a node restart leaves behind — the history is intact
 and nothing is scanning until the client re-sends the key.

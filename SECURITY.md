@@ -201,12 +201,16 @@ scan queues, and is the sole custodian of the keys it was sent.
   and the serialized byte buffer is **zero-filled immediately** — both the copy the ledger saw and
   the `ShieldedViewingKey` object's own, which the request handler's closure would otherwise keep
   alive for whatever a heap dump or a core file might capture. From that point the only
-  representation is a WASM handle, and every path a key leaves by — revoke, delete, a fenced
-  `not-found`, SIGTERM/SIGINT — goes through the one method that calls `clear()`. Asserted
+  representation is a WASM handle, and every path a key leaves by — delete, a fenced `not-found`,
+  SIGTERM/SIGINT — goes through the one method that calls `clear()`. Asserted
   directly (`test/shielded-monitor/monitor-node.test.ts`), because "cleared in a `finally`" is the
   kind of claim that rots silently.
-- **A paused key is KEPT in RAM and skipped** (open point OP-3), so a resume needs no re-send; a
-  revoked or deleted one is destroyed, because there is nothing left to resume.
+- **A key is GIVEN or it is DELETED** (owner decision Q33): those are the only two things a
+  consumer can do to a monitor. A key whose monitor merely STOPPED — an undecodable transaction,
+  an archive rebuilt underneath it — is kept and skipped: the monitor's matches stay readable, and
+  a stopped scan is not a reason to destroy a key its owner has not asked to delete. A DELETED
+  monitor's key is destroyed at once, by the delete the balancer forwards to its holder, and by
+  the `not-found` fence on that node's next block if the forward is lost.
 - **A restart destroys every key it held, by design.** The monitors then report `key needed` and
   the client re-sends. That is the recovery path, not a failure of one: it is also the property
   that makes "the keys are only in RAM" verifiable rather than asserted.
@@ -234,7 +238,7 @@ topology arranges and what the balancer's blanket 404 on `/internal/*` backs up 
 side.
 
 - **Anyone who can open a TCP connection to its port can register a viewing key, read every
-  monitor's matches, and revoke or delete any monitor.** It binds `127.0.0.1` by default, and a
+  monitor's matches, and delete any monitor — destroying its matches and the key held for it.** It binds `127.0.0.1` by default, and a
   deployment that binds anything else **must** restrict network access by other means. It speaks
   plain HTTP; terminating TLS is the deployment's job.
 - The cursor is opaque but **unsigned** — a caller can forge one. With no authentication this
@@ -304,7 +308,7 @@ opposite directions:
   transaction — not the ability to decrypt a wallet.
 - **Still worse than it should be**: the alpha has no transport security anywhere and the storage
   API is **unauthenticated by design** (owner Q3), binding loopback by default. Anyone who can open
-  a TCP connection to it can read every archived block and read, revoke or delete every monitor.
+  a TCP connection to it can read every archived block and read or delete every monitor.
   Run it on loopback or on a private network, and treat reaching it as equivalent to reading the
   database.
 
@@ -341,7 +345,7 @@ key — and the routing already works from the fingerprint alone either way.
 | Authentication on the private API, and signed cursors | Anyone who can reach the port is fully authorized — through `curl` or through the `/ui` dashboard, which is the same surface; a cursor can be forged |
 | Least-privilege database roles as a shipped script | The privilege split exists only as a test instrument, not as a deployment artefact |
 | The full redaction/leakage gate over logs, metrics and database dumps | Only the key-not-logged property is asserted today |
-| Transport security and authentication on `STORAGE_URL` (mTLS + attestation) | Anything that can reach the storage API can read every archived block and revoke or delete every monitor (no key crosses this hop since 00009-09) |
+| Transport security and authentication on `STORAGE_URL` (mTLS + attestation) | Anything that can reach the storage API can read every archived block and read or delete every monitor (no key crosses this hop since 00009-09) |
 | Transport security on the client → balancer hop | A registration carries the viewing key in the clear to the balancer, which is the one moment a key crosses into project B (open point OP-1) |
 | Encryption of B's records at the storage boundary (opaque payloads the host never parses) | The host stores B's fields as plaintext columns, so the storage API's own operator sees everything B does |
 

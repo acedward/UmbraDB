@@ -19,8 +19,8 @@ rate limiting, no quotas. That is a deliberate alpha decision (owner, 2026-09-10
 change proposal's non-goals, and it has a hard consequence:
 
 > **Anyone who can open a TCP connection to this port can register a viewing key, read every
-> monitor's matches, and revoke or delete any monitor. The deployment — not this service — is
-> responsible for making sure nobody can.**
+> monitor's matches, and delete any monitor — destroying its matches and the key held for it. The
+> deployment — not this service — is responsible for making sure nobody can.**
 
 Bind loopback (the default) and reach it from the same host, or put it behind something that
 authenticates. Do not expose the port.
@@ -107,8 +107,6 @@ error bodies.
   (registration is idempotent per network and key).
 - `400 INVALID_VIEWING_KEY` — one generic error for every intake failure.
 - `400 VALIDATION_FAILED` — the body did not match the schema.
-- `410 MONITOR_REVOKED` — this key's monitor was revoked. Re-enabling it requires an explicit
-  `DELETE` first, so a blind client retry cannot undo a revocation.
 - `415` — the content type was not `application/json`.
 
 ### `GET /v1/monitors` — list monitors
@@ -127,12 +125,10 @@ Every monitor this deployment holds, **in creation order**, each item in exactly
 `sourceTip` and `net` are repeated at the top level because they belong to the *deployment*, not to
 any monitor, and an empty `items` would otherwise hide them.
 
-**One asymmetry, chosen deliberately.** A **revoked** monitor IS listed, with `state: "revoked"`,
-even though `GET /v1/monitors/:id` answers `410` for it. The `410` protects that monitor's *data*;
-the list answers "what exists?". Hiding revoked monitors would mean revoking one makes it vanish
-from the only view an operator has — leaving them unable to name the id that `DELETE` needs. The
-list item carries nothing the `410` withholds: the id, the state, the coverage and the timestamps,
-no key and no fingerprint.
+**One exclusion, and it is not negotiable.** A **deleted** monitor is never listed — the contract
+is that it is indistinguishable from one that never existed. Everything else is: a monitor that
+STOPPED (`failed`, `stale_source`) stays on the list with its `lastError`, and its own routes keep
+answering, because an operator who cannot see a stopped monitor cannot act on it.
 
 A **deleted** monitor is never listed. That half is not negotiable: a deleted monitor must be
 indistinguishable from one that never existed, and a tombstone in the list would break that
@@ -164,8 +160,8 @@ Walk-through: [`shielded-monitor-demo.md`](shielded-monitor-demo.md).
 
 ### `GET /v1/monitors/:id` — status
 
-`200` with the monitor view; `404` if the id names nothing **or names a deleted monitor**;
-`410` if the monitor is revoked.
+`200` with the monitor view; `404` if the id names nothing **or names a deleted monitor**. A
+monitor that merely stopped (`failed`, `stale_source`) answers `200` with its `lastError`.
 
 ### `GET /v1/monitors/:id/matches?cursor=…&limit=…` — page matches
 
@@ -178,20 +174,24 @@ Walk-through: [`shielded-monitor-demo.md`](shielded-monitor-demo.md).
 ```
 
 `400` for a malformed cursor, a cursor minted for a different monitor, or a `limit` outside
-`1..API_MAX_PAGE`. `404`/`410` as above.
-
-### `POST /v1/monitors/:id/pause` · `/resume` · `/revoke`
-
-`200` with the monitor view. `resume` on a monitor that is not paused is `409
-ILLEGAL_TRANSITION`. `revoke` is idempotent (`200` again on a revoked monitor). `pause` and
-`resume` on a revoked monitor are `410`.
+`1..API_MAX_PAGE`. `404` as above.
 
 ### `DELETE /v1/monitors/:id`
 
-`204` when the monitor was deleted — the key and every association row are destroyed in one
-transaction. `404` when the id names nothing, **including an id that was already deleted**: after
-a delete, every endpoint for that id answers `404`, because the contract is that a deleted
-monitor is indistinguishable from one that never existed.
+**The only lifecycle operation there is** (owner decision Q33): a viewing key is GIVEN with
+`POST /v1/monitors` or DELETED with this route, and there is nothing in between. `pause`, `resume`
+and `revoke` were removed; a client still calling one gets the `404` any other unknown path gets.
+
+`204` when the monitor was deleted — its registration identity, every association row and every
+gap row go in one transaction, and the key held for it is destroyed in its node's RAM (the
+balancer forwards the delete to the holder; the holder's next block would fence it anyway).
+`404` when the id names nothing, **including an id that was already deleted**: after a delete,
+every endpoint for that id answers `404`, because the contract is that a deleted monitor is
+indistinguishable from one that never existed.
+
+Registering the same viewing key afterwards creates a **fresh** monitor, with a new id, no
+coverage and no matches — the identity was shed with the delete. That is the whole "I changed my
+mind" path, and it is a re-send of the key rather than an un-delete.
 
 ### `GET /v1/health`
 
@@ -228,10 +228,12 @@ command line and never printed.
 }
 ```
 
-States: `backfilling` → `live`; `{backfilling, live}` ↔ `paused`; any → `revoked` → `deleted`;
-plus terminal `failed` and `stale_source`. A `failed` or `stale_source` monitor additionally
-carries `lastError: { code, atHeight? }` — the failure **class** only, never a driver message and
-never caller input.
+States: `backfilling` → `live`, either of which the SYSTEM may stop at `failed` or
+`stale_source`, and any of the four → `deleted` when the consumer asks. There is no `paused` and
+no `revoked` (owner decision Q33). A `failed` or `stale_source` monitor additionally carries
+`lastError: { code, atHeight? }` — the failure **class** only, never a driver message and never
+caller input — and its matches stay readable, which is the difference between a monitor that
+stopped and one that is gone.
 
 **`heldBy` and `keyNeeded` are about CUSTODY, which is a different fact from `state`** (00009-09).
 `heldBy` names the monitor-node currently holding this monitor's viewing key in RAM, or `null`
@@ -242,8 +244,8 @@ the monitor is fine, its history is intact, and nothing is scanning for it until
 the key again.
 
 `heldPhase` is the key's phase INSIDE its holder — `syncing` while the node is catching it up to
-the live scan, `live` once it is in it, `paused` when its monitor is — and `null` when nobody holds
-the key. It is not the monitor's `state`: `state` is a fact about the database ("has coverage
+the live scan, `live` once it is in it, `failed` when its monitor stopped — and `null` when nobody
+holds the key. It is not the monitor's `state`: `state` is a fact about the database ("has coverage
 reached the tip?"), `heldPhase` is a fact about the node ("which of its two queues has this key?").
 A monitor can read `"state": "backfilling"` with `"heldPhase": "syncing"` (being caught up) or with
 `"heldPhase": "live"` (in the live pass, with coverage still climbing).
@@ -317,10 +319,11 @@ in a fallible segment is still just a match: the segment may have failed.
 ## Match details (`blockTimestampMs`, `details`)
 
 Each item also carries the transaction's **public zswap data** and the time of the block it sat
-in. Both are `null` when the match was recorded before the service stored them — run the backfill
-— which since 00009-09 runs inside the node that holds the key, because re-deriving details needs
-the key and there is nowhere else to get one. `null` here means *not recorded yet*; it never means
-"this transaction had no outputs".
+in. Both are `null` when the match was recorded before this service stored them — a monitor
+scanned by an older build. There is no backfill command to fill them in: re-deriving a match's
+details needs the viewing key, which lives only in a node's RAM, and the owner's decision (Q29)
+was to ship the fix forward rather than carry a repair tool. `null` here means *not recorded*; it
+never means "this transaction had no outputs".
 
 ```json
 {
@@ -431,7 +434,7 @@ skipped match is not.
 ## Error bodies
 
 ```json
-{ "error": { "code": "MONITOR_REVOKED", "message": "monitor is revoked", "requestId": "…" } }
+{ "error": { "code": "MONITOR_NOT_FOUND", "message": "no such monitor", "requestId": "…" } }
 ```
 
 `code` is the contract; `message` is for humans and may change. A `400 VALIDATION_FAILED` may
@@ -449,7 +452,6 @@ carry `issues: [{path, message}]` — with any issue on the `viewingKey` path re
 | `METHOD_NOT_ALLOWED` | 405 | route exists, verb does not (an `allow` header lists the verbs) |
 | `ILLEGAL_TRANSITION` | 409 | the lifecycle does not admit that transition from the current state |
 | `MONITOR_FENCED` | 409 | the monitor changed under the request; reload and retry |
-| `GONE` → `MONITOR_REVOKED` | 410 | the monitor is revoked |
 | `UNSUPPORTED_MEDIA_TYPE` | 415 | `content-type` was not `application/json` |
 | `INTERNAL_ERROR` | 500 / 503 | an unmapped fault, or storage unavailable |
 
@@ -468,9 +470,6 @@ credentials, imports no driver and knows no schema name.
 umbradb-shielded-monitor-client register --key-file ./viewing.key --start earliest
 umbradb-shielded-monitor-client status  --id <uuid>
 umbradb-shielded-monitor-client poll    --id <uuid> --cursor-file ./monitor.cursor
-umbradb-shielded-monitor-client pause   --id <uuid>
-umbradb-shielded-monitor-client resume  --id <uuid>
-umbradb-shielded-monitor-client revoke  --id <uuid>
 umbradb-shielded-monitor-client delete  --id <uuid>
 ```
 
