@@ -35,6 +35,16 @@ import { assertValidSchemaName } from "../../client.js";
  * always NULL — nothing writes it, and `register` no longer has anything to write — and the table
  * is never read or written.
  *
+ * ── The state CHECK is NOT touched, and the code is narrower than it ────────────────────────
+ * Migration 001's `state IN (…)` still admits `'paused'` and `'revoked'`. Owner decision Q33
+ * removed both from the product — a viewing key is GIVEN or it is DELETED, and there is no pause,
+ * resume or revoke anywhere in the code any more — but 001 belongs to an already-open PR and this
+ * lineage does not rewrite a shipped migration. So the database keeps accepting two literals that
+ * nothing can produce: there is no transition that yields them, and `MonitorState` does not name
+ * them. A database upgraded from a pre-Q33 deployment may still hold such rows; they are read as
+ * they are and never scanned, because neither state is scannable. A later migration may narrow
+ * the CHECK once no deployed writer can produce one.
+ *
  * Existing rows need no data migration: a monitor whose key used to be in the database simply has
  * nobody holding it in RAM, which is exactly the `key needed` state the dashboard shows until the
  * client re-sends the key. Its coverage, its associations and its lifecycle log are untouched.

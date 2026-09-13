@@ -3,7 +3,7 @@ import type {
   ArchivedBlock,
   ArchivedTransaction,
 } from "../src/interfaces/archive-read-contract.js";
-import { MonitorFencedError, MonitorNotFoundError, MonitorRevokedError } from "./errors.js";
+import { MonitorFencedError, MonitorNotFoundError } from "./errors.js";
 import {
   isArchiveTransactionIdentityError,
   LEDGER_BUILD_ID,
@@ -420,7 +420,7 @@ export class ShieldedMonitorScanner {
       try {
         monitor = await this.store.get(monitorId);
       } catch (err) {
-        if (err instanceof MonitorNotFoundError || err instanceof MonitorRevokedError) {
+        if (err instanceof MonitorNotFoundError) {
           return { batches, last: { kind: "fenced", rejection: "state" } };
         }
         throw err;

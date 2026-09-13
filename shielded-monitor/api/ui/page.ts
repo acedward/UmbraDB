@@ -62,9 +62,7 @@ tr.sel td { background: #1d222c; }
 .badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; border: 1px solid; }
 .s-live { color: var(--ok); border-color: #14532d; background: #0d2318; }
 .s-backfilling { color: var(--accent); border-color: #1e3a8a; background: #111a2e; }
-.s-paused { color: var(--warn); border-color: #78350f; background: #241a06; }
 .s-failed, .s-stale_source { color: var(--bad); border-color: #7f1d1d; background: #2a1416; }
-.s-revoked { color: var(--idle); border-color: #334155; background: #161b22; }
 /* 00009-09: a key's PHASE inside its holder, and the two states that are about custody rather
    than about the monitor's lifecycle. */
 .s-syncing { color: var(--accent); border-color: #1e3a8a; background: #111a2e; }
@@ -122,7 +120,6 @@ var PATH_HEALTH = "/v1/health";
 var PATH_MONITORS = "/v1/monitors";
 function pathMonitor(id) { return "/v1/monitors/" + id; }
 function pathMatches(id) { return "/v1/monitors/" + id + "/matches"; }
-function pathAction(id, action) { return "/v1/monitors/" + id + "/" + action; }
 function matchesQuery(id, cursor) {
   return pathMatches(id) + "?limit=" + MATCH_PAGE + (cursor ? "&cursor=" + encodeURIComponent(cursor) : "");
 }
@@ -133,9 +130,6 @@ function matchesQuery(id, cursor) {
 //   GET    /v1/monitors
 //   POST   /v1/monitors
 //   GET    /v1/monitors/:id/matches
-//   POST   /v1/monitors/:id/pause
-//   POST   /v1/monitors/:id/resume
-//   POST   /v1/monitors/:id/revoke
 //   DELETE /v1/monitors/:id
 
 var REFRESH_MS = 3000;
@@ -227,16 +221,16 @@ function actionButton(label, kind, monitor, handler) {
   return b;
 }
 
-async function lifecycle(monitor, action) {
-  if (action === "revoke" || action === "delete") {
-    if (!window.confirm(action + " monitor " + monitor.monitorId + "? This cannot be undone.")) return;
-  }
+// Delete is the only lifecycle action there is (owner decision Q33), and it takes the matches and
+// the key with it, so it asks first.
+async function deleteMonitor(monitor) {
+  if (!window.confirm("delete monitor " + monitor.monitorId +
+    "? Its matches and the viewing key held for it are destroyed. This cannot be undone.")) return;
   try {
-    if (action === "delete") await api("DELETE", pathMonitor(monitor.monitorId));
-    else await api("POST", pathAction(monitor.monitorId, action));
-    if (action === "delete" && state.selected === monitor.monitorId) selectMonitor(null);
-    say("ok", action + " applied");
-  } catch (e) { say("err", action + " refused: " + e.message); }
+    await api("DELETE", pathMonitor(monitor.monitorId));
+    if (state.selected === monitor.monitorId) selectMonitor(null);
+    say("ok", "deleted");
+  } catch (e) { say("err", "delete refused: " + e.message); }
   await refresh();
 }
 
@@ -299,7 +293,7 @@ function renderMonitors() {
       stateCell.appendChild(node("span", "key needed", "badge b-keyneeded"));
     }
     // The PHASE, when a node holds the key: syncing while Queue B is catching it up, live once it
-    // is in the block-centric pass, paused when its monitor is. It answers a different question
+    // is in the block-centric pass, failed when its monitor stopped. It answers a different question
     // from the state badge beside it — "is anything happening right now?" rather than "is this
     // wallet caught up?" — which is why both are shown. (No backticks in this file: the whole
     // script is one template literal.)
@@ -320,11 +314,7 @@ function renderMonitors() {
 
     var actions = node("td");
     var tools = node("div", null, "tools");
-    var running = m.state === "backfilling" || m.state === "live";
-    if (running) tools.appendChild(actionButton("pause", "", m, function (x) { lifecycle(x, "pause"); }));
-    if (m.state === "paused") tools.appendChild(actionButton("resume", "", m, function (x) { lifecycle(x, "resume"); }));
-    if (m.state !== "revoked") tools.appendChild(actionButton("revoke", "danger", m, function (x) { lifecycle(x, "revoke"); }));
-    tools.appendChild(actionButton("delete", "danger", m, function (x) { lifecycle(x, "delete"); }));
+    tools.appendChild(actionButton("delete", "danger", m, function (x) { deleteMonitor(x); }));
     actions.appendChild(tools);
     tr.appendChild(actions);
 
@@ -360,10 +350,10 @@ async function loadMoreMatches() {
     renderMatches();
   } catch (e) {
     if (state.matchesFor !== id) return;
-    // A revoked or deleted monitor is a settled answer, not a transient fault: stop asking, and
-    // render the reason where the matches would be. Without this the 3 s poll would repeat the
-    // same refusal into the status line forever.
-    if (e.code === "MONITOR_REVOKED" || e.code === "MONITOR_NOT_FOUND") {
+    // A deleted monitor is a settled answer, not a transient fault: stop asking, and render the
+    // reason where the matches would be. Without this the 3 s poll would repeat the same refusal
+    // into the status line forever.
+    if (e.code === "MONITOR_NOT_FOUND") {
       state.matchesError = e.code;
       state.exhausted = true;
       renderMatches();
@@ -399,10 +389,7 @@ function renderMatches() {
     host.appendChild(coverageCell(state.matchCoverage));
   }
   if (state.matchesError !== null) {
-    host.appendChild(node("div",
-      state.matchesError === "MONITOR_REVOKED"
-        ? "This monitor is revoked; its matches are no longer readable."
-        : "This monitor no longer exists.", "empty"));
+    host.appendChild(node("div", "This monitor no longer exists.", "empty"));
   } else if (state.matches.length === 0) {
     // Never a bare "no matches": the coverage line above says whether anything has been looked at
     // at all, which is the FR-020 distinction this panel exists to keep visible.

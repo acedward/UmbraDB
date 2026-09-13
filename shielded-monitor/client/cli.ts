@@ -42,10 +42,7 @@ Commands
   status --id <uuid>          state and coverage
   poll --id <uuid> --cursor-file <path> [--limit <n>]
                               read the next page of matches and persist the cursor (idempotent resume)
-  pause   --id <uuid>
-  resume  --id <uuid>
-  revoke  --id <uuid>
-  delete  --id <uuid>
+  delete  --id <uuid>         destroy the monitor, its matches and the key held for it
 
 Exit codes
   0  success
@@ -257,15 +254,6 @@ export async function runClient(argv: readonly string[]): Promise<number> {
         })),
         coverage: renderCoverage(page.coverage),
       });
-      return 0;
-    }
-
-    case "pause":
-    case "resume":
-    case "revoke": {
-      const id = requireFlag(flags, "id");
-      const monitor = await requestJson<MonitorView>(base, "POST", `/v1/monitors/${id}/${command}`);
-      print({ monitorId: monitor.monitorId, state: monitor.state, coverage: renderCoverage(monitor.coverage) });
       return 0;
     }
 

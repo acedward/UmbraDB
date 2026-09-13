@@ -206,9 +206,10 @@ export interface AdvanceBatchItem {
 
 /** Why one item of an {@link ShieldedMonitorStore.advanceBatch} was not applied.
  *
- *  None of these fails the batch (OP-2): one paused monitor must not stall a block for every other
- *  monitor the node holds. The node acts on the reason — `state`/`not-found` drop the key,
- *  `epoch` re-reads it, `already-advanced` is the idempotent replay path. */
+ *  None of these fails the batch (OP-2): one stopped monitor must not stall a block for every
+ *  other monitor the node holds. The node acts on the reason — `not-found` drops the key (the
+ *  monitor was deleted), `state` stops scanning with it (the monitor failed or its source went
+ *  stale), `epoch` re-reads it, `already-advanced` is the idempotent replay path. */
 export type AdvanceBatchFenceReason = "epoch" | "state" | "not-found" | "already-advanced";
 
 /** The outcome of one block's commit for every monitor a node holds. */
@@ -249,13 +250,13 @@ export interface LifecycleEventRecord {
   readonly at: Date;
 }
 
-/** A revocation record, exported so it can be kept OUTSIDE the database snapshot's rollback
- *  domain (organizer spec FR-024). Deliberately carries no key material, no fingerprint and no
- *  association data, so it is safe to store next to the backups. */
-export interface RevocationRecord {
+/** A deletion record, exported so it can be kept OUTSIDE the database snapshot's rollback domain
+ *  (organizer spec FR-024). Deliberately carries no key material, no fingerprint and no
+ *  association data — only the monitor's id, its network and when it went — so it is safe to
+ *  store next to the backups, which is where it has to live to be useful. */
+export interface DeletionRecord {
   readonly monitorId: string;
   readonly net: string;
-  readonly state: "revoked" | "deleted";
   readonly epoch: string;
   readonly at: string;
 }
@@ -294,7 +295,9 @@ export const MAX_ASSOCIATION_PAGE = 1000;
 export interface ShieldedMonitorStore {
   register(input: RegisterMonitorInput): Promise<MonitorRecord>;
   get(id: string): Promise<MonitorRecord>;
-  getIncludingRevoked(id: string): Promise<MonitorRecord | undefined>;
+  /** Administrative read: returns the record whatever its state, `deleted` tombstones included.
+   *  Never used to serve a consumer — that is {@link ShieldedMonitorStore.get}. */
+  getIncludingDeleted(id: string): Promise<MonitorRecord | undefined>;
   getByFingerprint(net: string, fingerprint: Uint8Array): Promise<MonitorRecord | undefined>;
   listActive(limit?: number): Promise<MonitorRecord[]>;
   listAll(limit?: number): Promise<MonitorRecord[]>;
@@ -347,18 +350,21 @@ export interface ShieldedMonitorStore {
     source: { readonly genesisHash: string; readonly instanceId: string },
   ): Promise<{ readonly applied: boolean; readonly monitor: MonitorRecord }>;
   goLive(id: string, expectedEpoch: bigint, actor: string): Promise<MonitorRecord>;
-  pause(id: string, actor: string): Promise<MonitorRecord>;
-  resume(id: string, actor: string): Promise<MonitorRecord>;
   markFailed(
     id: string, actor: string, error: MonitorLastError, expectedEpoch?: bigint,
   ): Promise<MonitorRecord>;
   markStaleSource(
     id: string, actor: string, error?: MonitorLastError, expectedEpoch?: bigint,
   ): Promise<MonitorRecord>;
-  revoke(id: string, actor: string): Promise<MonitorRecord>;
+  /**
+   * The only lifecycle operation a consumer has (owner decision Q33): it destroys the key's
+   * identity, every association and every gap, and leaves a tombstone that carries nothing about
+   * the monitor but its id, its network and the fact that it is gone.
+   */
   delete(id: string, actor: string): Promise<MonitorRecord | undefined>;
   recordAudit(
     actor: string, action: string, monitorId?: string, detail?: Record<string, unknown>,
   ): Promise<void>;
-  listRevocations(): Promise<RevocationRecord[]>;
+  /** Every deleted monitor, for the deletion list that must survive a restore (FR-024). */
+  listDeletions(): Promise<DeletionRecord[]>;
 }

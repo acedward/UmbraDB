@@ -1,5 +1,5 @@
 import type { ArchiveReadContract, ArchivedBlock } from "../src/interfaces/archive-read-contract.js";
-import { MonitorFencedError, MonitorNotFoundError, MonitorRevokedError } from "./errors.js";
+import { MonitorFencedError, MonitorNotFoundError } from "./errors.js";
 import type { MatchDetails } from "./match-details.js";
 import type { EncryptionSecretKeyHandle } from "./offers.js";
 import { evaluateRelevance } from "./relevance.js";
@@ -181,7 +181,7 @@ export class ShieldedMonitorDetailsBackfill {
     try {
       monitor = await this.store.get(monitorId);
     } catch (err) {
-      if (err instanceof MonitorNotFoundError || err instanceof MonitorRevokedError) {
+      if (err instanceof MonitorNotFoundError) {
         return { examined: 0, filled: 0, skipped, fenced: false, refused: true };
       }
       throw err;
@@ -196,7 +196,7 @@ export class ShieldedMonitorDetailsBackfill {
       try {
         page = await this.store.readAssociationsMissingDetails(monitorId, afterSeq, this.batchRows);
       } catch (err) {
-        if (err instanceof MonitorNotFoundError || err instanceof MonitorRevokedError) {
+        if (err instanceof MonitorNotFoundError) {
           return { examined, filled, skipped, fenced: false, refused: true };
         }
         throw err;
@@ -212,7 +212,7 @@ export class ShieldedMonitorDetailsBackfill {
         // A monitor revoked or deleted between the page read and the derivation refuses the rest
         // of its own work. That is this monitor's answer, not the run's: `runAll` must still
         // finish the others.
-        if (err instanceof MonitorNotFoundError || err instanceof MonitorRevokedError) {
+        if (err instanceof MonitorNotFoundError) {
           return { examined, filled, skipped, fenced: false, refused: true };
         }
         throw err;
@@ -232,7 +232,7 @@ export class ShieldedMonitorDetailsBackfill {
           if (err instanceof MonitorFencedError) {
             return { examined, filled, skipped, fenced: true, refused: false };
           }
-          if (err instanceof MonitorNotFoundError || err instanceof MonitorRevokedError) {
+          if (err instanceof MonitorNotFoundError) {
             return { examined, filled, skipped, fenced: false, refused: true };
           }
           throw err;

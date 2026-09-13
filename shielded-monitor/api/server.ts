@@ -8,7 +8,6 @@ import {
   InvalidViewingKeyError,
   MonitorFencedError,
   MonitorNotFoundError,
-  MonitorRevokedError,
 } from "../errors.js";
 import type { MonitorState } from "../lifecycle.js";
 import type { MonitorNode } from "../node/monitor-node.js";
@@ -316,10 +315,6 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
     // hold is exactly how a client recovers from a node restart (§4.6), and refusing it because
     // the monitor already exists would make that recovery impossible.
     const existing = await store.getByFingerprint(config.net, key.fingerprint);
-    if (existing !== undefined && existing.state === "revoked") {
-      key.shred();
-      throw new MonitorRevokedError(existing.id);
-    }
     // `register` shreds the key itself, on every path.
     const monitor = await node.register(key, requestedStartHeight);
     return { status: existing === undefined ? 201 : 200, body: await viewOf(monitor) };
@@ -359,8 +354,7 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
 
   async function getMonitor(ctx: RequestContext): Promise<Reply> {
     // `store.get` already draws the contract's own line: `MonitorNotFoundError` for unknown AND
-    // for deleted (US3 scenario 4 — a deleted monitor must be indistinguishable from one that
-    // never existed), `MonitorRevokedError` for revoked (US3 scenario 3 — refused, not hidden).
+    // for deleted, which US3 scenario 4 requires to be indistinguishable from one another.
     return { status: 200, body: await viewOf(await store.get(ctx.monitorId)) };
   }
 
@@ -393,46 +387,27 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
     return { status: 200, body: page };
   }
 
-  /** Loads a monitor for a lifecycle write and applies the endpoint contract before the
-   *  transition table gets a say. Without this, `pause` on a revoked monitor would surface the
-   *  store's `IllegalLifecycleTransitionError` as 409, while the contract says every operation on
-   *  a revoked monitor answers 410. */
-  async function loadForLifecycle(monitorId: string, event: "pause" | "resume" | "revoke" | "delete") {
-    const record = await store.getIncludingRevoked(monitorId);
-    if (record === undefined || record.state === ("deleted" satisfies MonitorState)) {
-      throw new MonitorNotFoundError(monitorId);
-    }
-    if (record.state === ("revoked" satisfies MonitorState) && event !== "revoke" && event !== "delete") {
-      throw new MonitorRevokedError(monitorId);
-    }
-    return record;
-  }
-
-  async function pauseMonitor(ctx: RequestContext): Promise<Reply> {
-    await loadForLifecycle(ctx.monitorId, "pause");
-    return { status: 200, body: await viewOf(await store.pause(ctx.monitorId, actor)) };
-  }
-
-  async function resumeMonitor(ctx: RequestContext): Promise<Reply> {
-    await loadForLifecycle(ctx.monitorId, "resume");
-    return { status: 200, body: await viewOf(await store.resume(ctx.monitorId, actor)) };
-  }
-
-  async function revokeMonitor(ctx: RequestContext): Promise<Reply> {
-    const record = await loadForLifecycle(ctx.monitorId, "revoke");
-    // Idempotent (organizer spec FR-016): re-revoking answers 200 with the revoked view rather
-    // than 410. Refusing a caller's own successful operation because it already succeeded is the
-    // one place 410 would be actively unhelpful.
-    if (record.state === "revoked") return { status: 200, body: await viewOf(record) };
-    return { status: 200, body: await viewOf(await store.revoke(ctx.monitorId, actor)) };
-  }
-
+  /**
+   * **The only lifecycle operation there is** (owner decision Q33): the monitor's rows go, and the
+   * key goes with them.
+   *
+   * A monitor that is already deleted answers 404, exactly as one that never existed does (US3
+   * scenario 4), and so does every other endpoint for that id afterwards — the only
+   * self-consistent reading of "as if the monitor never existed". Registering the same key again
+   * therefore mints a FRESH monitor rather than resurrecting this one.
+   *
+   * The key itself is destroyed in its holder's RAM two ways, whichever arrives first: the
+   * balancer forwards this delete to the node it believes holds the key, and the node's next
+   * `advance-batch` is fenced `not-found` regardless.
+   */
   async function deleteMonitor(ctx: RequestContext): Promise<Reply> {
-    // A monitor that is already deleted answers 404, exactly as one that never existed does
-    // (US3 scenario 4). After a successful delete, EVERY endpoint for that id answers 404 — the
-    // only self-consistent reading of "as if the monitor never existed".
-    await loadForLifecycle(ctx.monitorId, "delete");
+    const record = await store.getIncludingDeleted(ctx.monitorId);
+    if (record === undefined || record.state === ("deleted" satisfies MonitorState)) {
+      throw new MonitorNotFoundError(ctx.monitorId);
+    }
     await store.delete(ctx.monitorId, actor);
+    // The node that holds this key, if it is this one, drops it now rather than at its next block.
+    node?.onEvent({ type: "stateChanged", monitorId: ctx.monitorId });
     return { status: 204 };
   }
 
@@ -542,11 +517,6 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
   const matchesRoutes: Record<string, Route> = {
     GET: { pattern: "GET /v1/monitors/:id/matches", handle: getMatches },
   };
-  const actionRoutes: Record<string, Route> = {
-    pause: { pattern: "POST /v1/monitors/:id/pause", handle: pauseMonitor },
-    resume: { pattern: "POST /v1/monitors/:id/resume", handle: resumeMonitor },
-    revoke: { pattern: "POST /v1/monitors/:id/revoke", handle: revokeMonitor },
-  };
 
   /** Resolves a request to a route, or throws the 404/405 the contract requires. Returns the
    *  monitor id too, because path validation belongs with path parsing. */
@@ -613,12 +583,9 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
       if (route === undefined) throw methodNotAllowed(Object.keys(matchesRoutes));
       return { route, monitorId: rawId };
     }
-    if (segments.length === 4) {
-      const route = actionRoutes[segments[3] ?? ""];
-      if (route === undefined) throw notFound();
-      if (method !== "POST") throw methodNotAllowed(["POST"]);
-      return { route, monitorId: rawId };
-    }
+    // Nothing else hangs off a monitor since the lifecycle became give/delete (Q33): `pause`,
+    // `resume` and `revoke` are gone, and a client that still calls one gets the same 404 as any
+    // other path that does not exist.
     throw notFound();
   }
 
@@ -947,9 +914,6 @@ function mapError(err: unknown, requestId: string, route: string): MappedError {
   }
   if (err instanceof MonitorNotFoundError) {
     return wire(404, "MONITOR_NOT_FOUND", "no such monitor");
-  }
-  if (err instanceof MonitorRevokedError) {
-    return wire(410, "MONITOR_REVOKED", "monitor is revoked");
   }
   if (err instanceof IllegalLifecycleTransitionError) {
     return wire(409, "ILLEGAL_TRANSITION", err.message);

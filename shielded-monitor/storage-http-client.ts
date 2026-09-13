@@ -5,7 +5,6 @@ import {
   InvalidViewingKeyError,
   MonitorFencedError,
   MonitorNotFoundError,
-  MonitorRevokedError,
   type FenceRejection,
 } from "./errors.js";
 import {
@@ -26,7 +25,7 @@ import {
   decodeLifecycleList,
   decodeMonitor,
   decodeMonitorList,
-  decodeRevocationList,
+  decodeDeletionList,
   decodeWith,
   encodeAdvanceBatchItem,
   encodeAssociationInput,
@@ -48,7 +47,7 @@ import type {
   MonitorLastError,
   MonitorRecord,
   RegisterMonitorInput,
-  RevocationRecord,
+  DeletionRecord,
   ShieldedMonitorStore,
 } from "./store.js";
 
@@ -201,8 +200,8 @@ export class HttpMonitorStore implements ShieldedMonitorStore {
     return decodeMonitor(unwrapMonitor(await this.get_(monitorRoute(id))));
   }
 
-  async getIncludingRevoked(id: string): Promise<MonitorRecord | undefined> {
-    const body = await this.get_(monitorRoute(id), { includeRevoked: "1" });
+  async getIncludingDeleted(id: string): Promise<MonitorRecord | undefined> {
+    const body = await this.get_(monitorRoute(id), { includeDeleted: "1" });
     const parsed = decodeWith(WireMonitorOptionalSchema, body, "monitor");
     return parsed.monitor === undefined ? undefined : decodeMonitor(parsed.monitor);
   }
@@ -257,8 +256,8 @@ export class HttpMonitorStore implements ShieldedMonitorStore {
     return decodeLifecycleList(await this.get_(monitorRoute(monitorId, "lifecycle")));
   }
 
-  async listRevocations(): Promise<RevocationRecord[]> {
-    return decodeRevocationList(await this.get_(MONITOR_STORE_ROUTES.revocations));
+  async listDeletions(): Promise<DeletionRecord[]> {
+    return decodeDeletionList(await this.get_(MONITOR_STORE_ROUTES.deletions));
   }
 
   // ── The fenced write path ──────────────────────────────────────────────────────────────────
@@ -407,18 +406,6 @@ export class HttpMonitorStore implements ShieldedMonitorStore {
     return this.transition(id, { event: "goLive", actor, expectedEpoch: expectedEpoch.toString() });
   }
 
-  async pause(id: string, actor: string): Promise<MonitorRecord> {
-    return this.transition(id, { event: "pause", actor });
-  }
-
-  async resume(id: string, actor: string): Promise<MonitorRecord> {
-    return this.transition(id, { event: "resume", actor });
-  }
-
-  async revoke(id: string, actor: string): Promise<MonitorRecord> {
-    return this.transition(id, { event: "revoke", actor });
-  }
-
   async markFailed(
     id: string, actor: string, error: MonitorLastError, expectedEpoch?: bigint,
   ): Promise<MonitorRecord> {
@@ -543,8 +530,6 @@ function toStoreError(status: number, text: string, url: string): Error {
   switch (code) {
     case "MONITOR_NOT_FOUND":
       return new MonitorNotFoundError(detail?.monitorId ?? "(unknown)");
-    case "MONITOR_REVOKED":
-      return new MonitorRevokedError(detail?.monitorId ?? "(unknown)");
     case "MONITOR_FENCED":
       return new MonitorFencedError(
         detail?.monitorId ?? "(unknown)",

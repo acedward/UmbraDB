@@ -44,17 +44,17 @@ import { FingerprintLocks, fingerprintHexToBase64Url, routingKeyFor } from "./ro
  * that door. The balancer is nonetheless the only component that CALLS `/internal/*`, which is
  * why the lifecycle forward below lives here and nowhere else.
  *
- * ── Lifecycle writes are forwarded to the holder (§4.5, organizer question Q31) ─────────────
- * `pause`/`resume`/`revoke`/`DELETE` are written by whichever node served the request — they are
- * storage operations — but the key sits in the RAM of a node that may not be that one. A pause or
- * a revoke reaches the holder anyway, through the fence in its next `advance-batch`; **a resume
- * does not**, because a paused key is not in the live set and so has no batch item to be fenced
- * on. So after a 2xx on one of those four routes the balancer posts a best-effort
+ * ── A DELETE is forwarded to the holder (§4.5, owner decisions Q31/Q33) ─────────────────────
+ * `DELETE /v1/monitors/<id>` is the only lifecycle operation there is, and it is written by
+ * whichever node served the request — it is a storage operation — while the KEY it destroys sits
+ * in the RAM of a node that may not be that one. The holder finds out anyway at its next
+ * `advance-batch`, which is fenced `not-found` (measured at 2.8 s on the live demo), but "the key
+ * is gone" is exactly the claim this system makes about deletion, so it is worth making true in
+ * milliseconds rather than in a block. After a 2xx the balancer therefore posts a best-effort
  * `{"type":"stateChanged","monitorId":…}` to the node it believes holds that monitor, or to every
- * healthy node when it has no belief. It is fire-and-forget with a short timeout: the client's
- * response has already been written and is never affected by it, a failed forward is logged
- * without a body, and the node's own per-block re-read of its paused keys is the backstop for a
- * forward that is lost.
+ * healthy node when it has no belief. Fire-and-forget with a short timeout: the client's response
+ * has already been written and is never affected by it, a failed forward is logged without a body,
+ * and the fence remains the backstop.
  *
  * ── What it still does NOT do ───────────────────────────────────────────────────────────────
  * No TLS, no authentication (there is none anywhere in this alpha, owner Q3), no rate limiting, no
@@ -225,28 +225,26 @@ export function createBalancer(options: BalancerOptions): Balancer {
     }
     // A GET body is not forwarded, so a GET can be replayed. Anything else is read once and
     // streamed, and is never retried.
-    proxy(req, res, first, method === "GET" || method === "HEAD", undefined, lifecycleTargetOf(method, path));
+    proxy(req, res, first, method === "GET" || method === "HEAD", undefined, deleteTargetOf(method, path));
   }
 
   /**
-   * The monitor id of a LIFECYCLE WRITE, or `undefined` for every other request (§4.5, Q31).
+   * The monitor id of a DELETE, or `undefined` for every other request (§4.5, Q33).
    *
-   * Only these four routes change a monitor's state, and only a state change is worth waking a
-   * holder for. A `found` event has no sender here: it is peer-to-peer between nodes and does not
-   * pass through the balancer.
+   * Deletion is the only thing a consumer can do to a monitor's state, and the only state change
+   * worth waking a holder for. A `found` event has no sender here: it is peer-to-peer between
+   * nodes and does not pass through the balancer.
    */
-  function lifecycleTargetOf(method: string, path: string): string | undefined {
-    const action = /^\/v1\/monitors\/([^/]+)\/(pause|resume|revoke)$/.exec(path);
-    if (method === "POST" && action !== null) return decodeURIComponent(action[1]!);
+  function deleteTargetOf(method: string, path: string): string | undefined {
     const item = /^\/v1\/monitors\/([^/]+)$/.exec(path);
     if (method === "DELETE" && item !== null) return decodeURIComponent(item[1]!);
     return undefined;
   }
 
   /**
-   * Tells the holder that a monitor's state moved (§4.5). Fire-and-forget, by construction: the
-   * client's response was written before this is called, nothing here can change it, and nothing
-   * retries.
+   * Tells the holder that a monitor was deleted, so it destroys the key now (§4.5).
+   * Fire-and-forget, by construction: the client's response was written before this is called,
+   * nothing here can change it, and nothing retries.
    *
    * One node when a hint names one, every healthy node otherwise — a fan-out of at most one small
    * POST per node, which is cheaper than the `holds` fan-out it would take to be sure, and equally
@@ -295,7 +293,7 @@ export function createBalancer(options: BalancerOptions): Balancer {
       request.end(payload);
     });
     if (failure !== undefined) {
-      log(`[balancer] ${upstream.base} did not take a lifecycle event (${failure}); the node's own re-read will catch it`);
+      log(`[balancer] ${upstream.base} did not take a lifecycle event (${failure}); its next block's fence will catch it`);
     }
   }
 
@@ -488,7 +486,8 @@ export function createBalancer(options: BalancerOptions): Balancer {
     upstream: Upstream,
     retryable: boolean,
     body?: Buffer,
-    /** Set for the four lifecycle writes: the monitor whose holder is told about a 2xx (Q31). */
+    /** Set for a DELETE: the monitor whose holder is told about a 2xx, so the key it holds is
+     *  destroyed at once rather than at its next block (Q31/Q33). */
     lifecycleMonitorId?: string,
   ): void {
     const target = new URL(req.url ?? "/", upstream.url);

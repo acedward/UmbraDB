@@ -1,5 +1,5 @@
 import type { ArchiveReadContract } from "../../src/interfaces/archive-read-contract.js";
-import { MonitorFencedError, MonitorNotFoundError, MonitorRevokedError } from "../errors.js";
+import { MonitorFencedError, MonitorNotFoundError } from "../errors.js";
 import { isScannable } from "../lifecycle.js";
 import { isArchiveTransactionIdentityError, LEDGER_BUILD_ID, MATCHING_RULE_VERSION } from "../offers.js";
 import { isUnsupportedProtocolVersion } from "../relevance.js";
@@ -51,17 +51,17 @@ import { MonitorKeyStore, type DeserializeKey, type HeldKey, type KeyPhase } fro
  *
  * ── Keys ────────────────────────────────────────────────────────────────────────────────────
  * They arrive only through {@link MonitorNode.register} — there is no other way in, because there
- * is nowhere else they exist. They leave on revoke, delete, a fenced `not-found`/`state` drop, or
- * shutdown, always through {@link MonitorKeyStore.remove}, which clears the WASM handle. A
- * **paused** key is kept and skipped (OP-3), so a resume needs no re-send.
+ * is nowhere else they exist. They leave on delete, on a fenced `not-found` drop, or on shutdown,
+ * always through {@link MonitorKeyStore.remove}, which clears the WASM handle. A key whose monitor
+ * merely STOPPED (`failed`, `stale_source`) is kept and skipped: its matches stay readable, and
+ * nothing about it is a reason to destroy a key its owner has not asked to delete.
  *
- * ── How a paused key hears that it was resumed ──────────────────────────────────────────────
- * Every other lifecycle change reaches the holder through the fence in the next `advance-batch`.
- * A paused key has no batch item to be fenced on — that is what pausing it means — so a resume
- * would never arrive by that route. Two things carry it instead (organizer question Q31): the
- * balancer's best-effort `POST /internal/events {stateChanged}`, which is immediate, and this
- * node's own re-read of every paused key's record on each block it processes, which cannot be
- * lost. So a resume takes effect at once, or by the next block at the latest.
+ * ── How a deleted key leaves ────────────────────────────────────────────────────────────────
+ * A consumer has exactly one lifecycle operation, `DELETE` (owner decision Q33), and it must
+ * destroy the key here, not merely the rows over there. Two things carry it: the balancer's
+ * best-effort `POST /internal/events {stateChanged}` to the holder, which is immediate, and the
+ * `not-found` fence on this node's next `advance-batch`, which cannot be lost. So a deleted key
+ * is cleared at once, or by the next block at the latest.
  *
  * ── Rule B ──────────────────────────────────────────────────────────────────────────────────
  * Unchanged and, for the live path, stronger: one block is one `BEGIN … COMMIT` for the node as a
@@ -103,7 +103,8 @@ export interface MonitorNodeStatus {
   readonly keysHeld: number;
   readonly live: number;
   readonly syncing: number;
-  readonly paused: number;
+  /** Keys whose monitor stopped (`failed`, `stale_source`): held, readable, never scanned. */
+  readonly failed: number;
   /** Jobs waiting in Queue B, including the one being worked on. */
   readonly queueB: number;
   /** The last height Queue A committed, as a decimal string. `null` before boot completes. */
@@ -320,35 +321,25 @@ export class MonitorNode {
     void this.refreshHeldMonitor(held).catch(() => undefined);
   }
 
-  /** Re-reads one held monitor and applies its state to the key: unscannable keys are kept and
-   *  marked, revoked/deleted keys are cleared, and a key whose monitor became scannable again is
-   *  put back into `sync-key`. The same decision `advance-batch`'s fences make, taken early
-   *  because an event said so — or, for a paused key, because the per-block re-read found it. */
+  /**
+   * Re-reads one held monitor and applies its state to the key.
+   *
+   * Two outcomes, which is all the give/delete lifecycle can produce (Q33): a monitor that is
+   * **gone** — deleted, or no longer in the store at all — takes its key with it, cleared here;
+   * a monitor that is merely **stopped** (`failed`, `stale_source`) keeps its key and leaves the
+   * live set, because nothing may advance its coverage and the operator may still want to read
+   * its matches. A scannable monitor changes nothing: it is already being scanned.
+   *
+   * The same decision `advance-batch`'s fences make, taken early because an event said so.
+   */
   async refreshHeldMonitor(held: HeldKey): Promise<void> {
     try {
-      const monitor = await this.#store.getIncludingRevoked(held.monitorId);
-      if (monitor === undefined || monitor.state === "deleted" || monitor.state === "revoked") {
-        this.#dropKey(held, monitor === undefined ? "not-found" : monitor.state);
+      const monitor = await this.#store.getIncludingDeleted(held.monitorId);
+      if (monitor === undefined || monitor.state === "deleted") {
+        this.#dropKey(held, monitor === undefined ? "not-found" : "deleted");
         return;
       }
-      if (!isScannable(monitor.state)) {
-        // `paused`, and also `failed`/`stale_source`: the monitor is not deleted, so the key is
-        // kept, but nothing may advance its coverage. Marking all three `paused` is what keeps
-        // them out of the live set; only a state the store would actually accept a write for
-        // takes the resume path below. (Before Q31 this checked `paused` alone, which was
-        // harmless while nothing re-read a held monitor per block and is not now: a `failed`
-        // monitor would be handed a `sync-key` the store is bound to fence.)
-        held.phase = "paused";
-        return;
-      }
-      // `backfilling`/`live`: a paused key that was resumed re-enters the sync phase rather than
-      // the live set, because its coverage may have fallen behind the watermark while it was
-      // frozen — and `sync-key` is exactly the job that closes that.
-      if (held.phase === "paused") {
-        held.phase = "syncing";
-        held.hasScannedOnce = false;
-        this.#enqueueSync(held.fingerprintHex);
-      }
+      if (!isScannable(monitor.state)) held.phase = "failed";
     } catch {
       // A storage hiccup is not a reason to drop a key. The next `advance-batch` fences anyway.
     }
@@ -462,31 +453,7 @@ export class MonitorNode {
     }
 
     this.#liveWatermark = height;
-    // The paused keys, which no batch item could have spoken for. One GET each, per block, which
-    // is exactly what a live key already costs.
-    await this.#refreshPausedKeys();
     return { matches: matchesFound };
-  }
-
-  /**
-   * The resume backstop (organizer question Q31), run once per processed block.
-   *
-   * A paused key is deliberately outside the live set, so the fence that carries every other
-   * lifecycle change to its holder never sees it: without this, a monitor resumed in storage would
-   * stay `paused` in the node that holds its key until the process restarted and the client
-   * re-sent the key — which is precisely what pausing was supposed to make unnecessary. The
-   * balancer's forwarded `stateChanged` makes that immediate in the normal case; this makes it
-   * certain, because it cannot be lost.
-   *
-   * The decision itself is not re-implemented here: it is {@link refreshHeldMonitor}, the same one
-   * an event takes. Live keys are untouched — they are handled by the batch, above.
-   */
-  async #refreshPausedKeys(): Promise<void> {
-    // A snapshot, because `refreshHeldMonitor` may remove the key it is looking at.
-    for (const held of this.keys.all()) {
-      if (held.phase !== "paused") continue;
-      await this.refreshHeldMonitor(held);
-    }
   }
 
   /**
@@ -527,10 +494,6 @@ export class MonitorNode {
         this.#dropKey(held, "not-found");
         return undefined;
       }
-      if (err instanceof MonitorRevokedError) {
-        this.#dropKey(held, "revoked");
-        return undefined;
-      }
       throw err;
     }
   }
@@ -558,7 +521,7 @@ export class MonitorNode {
       } catch {
         // Fenced or gone underneath us: the next turn re-reads it.
       }
-      held.phase = "paused";
+      held.phase = "failed";
     }
   }
 
@@ -597,8 +560,8 @@ export class MonitorNode {
 
   async runQueueBJob(job: QueueBJob): Promise<void> {
     const held = this.keys.get(job.fingerprintHex);
-    // The key was revoked, deleted or dropped while the job waited. Nothing to do, and nothing to
-    // report: the job is the only thing that referenced it.
+    // The key was deleted or dropped while the job waited. Nothing to do, and nothing to report:
+    // the job is the only thing that referenced it.
     if (held === undefined) return;
     if (job.kind === "sync-key") await this.#syncKey(held);
     else await this.#backSync(held, job.from, job.to);
@@ -635,12 +598,12 @@ export class MonitorNode {
     const run = await scanner.scanToTip(held.monitorId);
     if (run.last.kind === "fenced") {
       // A lifecycle change landed under the sync. Ask the store what it was rather than guessing:
-      // paused keeps the key, revoked and deleted clear it.
+      // a stopped monitor keeps its key, a deleted one clears it.
       await this.refreshHeldMonitor(held);
       return;
     }
     if (run.last.kind === "failed" || run.last.kind === "stale-source") {
-      held.phase = "paused";
+      held.phase = "failed";
       return;
     }
     held.phase = "live";
@@ -712,7 +675,7 @@ export class MonitorNode {
           associations: byKey.get(held.fingerprintHex) ?? [],
         });
       } catch (err) {
-        if (err instanceof MonitorFencedError || err instanceof MonitorRevokedError || err instanceof MonitorNotFoundError) {
+        if (err instanceof MonitorFencedError || err instanceof MonitorNotFoundError) {
           await this.refreshHeldMonitor(held);
           return;
         }

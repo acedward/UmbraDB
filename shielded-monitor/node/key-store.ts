@@ -24,12 +24,14 @@ import type { ShieldedViewingKey } from "../viewing-key.js";
  *   so Queue A skips it: a key whose history is still being read must not also be fed new blocks,
  *   or its coverage would move forward past a range it never read.
  * - `live` — in the block-centric pass. Every new block is committed for it.
- * - `paused` — the monitor was paused. **The key stays in RAM** (OP-3), so a resume needs no
- *   re-send; it is simply skipped. A revoked or deleted monitor's key is cleared instead, because
- *   there is nothing left to resume.
+ * - `failed` — the monitor STOPPED: an undecodable transaction, an unsupported protocol version,
+ *   or an archive that was rebuilt underneath it. The key stays in RAM and is skipped, because
+ *   the monitor's matches stay readable and nothing about a stopped scan is a reason to destroy a
+ *   key its owner has not asked to delete. A DELETED monitor's key is cleared instead — that is
+ *   the one operation a consumer has, and it means "destroy it" (owner decision Q33).
  */
 
-export type KeyPhase = "syncing" | "live" | "paused";
+export type KeyPhase = "syncing" | "live" | "failed";
 
 /** One viewing key, as this node holds it. */
 export interface HeldKey {
@@ -167,7 +169,7 @@ export class MonitorKeyStore {
   }
 
   /** The keys Queue A tests against each new block: `live` only. `syncing` keys belong to Queue B
-   *  and `paused` keys are deliberately kept and skipped (OP-3). */
+   *  and `failed` keys are deliberately kept and skipped. */
   live(): HeldKey[] {
     return [...this.#keys.values()].filter((k) => k.phase === "live");
   }
@@ -185,16 +187,16 @@ export class MonitorKeyStore {
   }
 
   /** How many keys are in each phase, for `/internal/status`. */
-  counts(): { readonly live: number; readonly syncing: number; readonly paused: number } {
+  counts(): { readonly live: number; readonly syncing: number; readonly failed: number } {
     let live = 0;
     let syncing = 0;
-    let paused = 0;
+    let failed = 0;
     for (const held of this.#keys.values()) {
       if (held.phase === "live") live += 1;
       else if (held.phase === "syncing") syncing += 1;
-      else paused += 1;
+      else failed += 1;
     }
-    return { live, syncing, paused };
+    return { live, syncing, failed };
   }
 }
 

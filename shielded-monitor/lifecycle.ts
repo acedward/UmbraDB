@@ -1,7 +1,14 @@
 import { IllegalLifecycleTransitionError } from "./errors.js";
 
 /**
- * The monitor lifecycle state machine (organizer spec FR-015).
+ * The monitor lifecycle state machine (organizer spec FR-015, as simplified by owner decision
+ * Q33).
+ *
+ * **A viewing key is GIVEN or it is DELETED.** There is nothing in between: no pause, no resume,
+ * no revoke. A consumer that no longer wants a monitor deletes it, and deleting destroys the key
+ * in the holder's RAM and every row that described it. The states that remain are the ones the
+ * SYSTEM reaches on its own — converging, caught up, or stopped fail-closed — plus the tombstone
+ * `deleted`. Nothing a consumer can ask for produces a state that must later be un-asked.
  *
  * Pure: no SQL, no I/O, no key material. The store applies this table; it does not re-derive it.
  * Keeping the machine in its own dependency-free module is what makes the property test in
@@ -9,32 +16,33 @@ import { IllegalLifecycleTransitionError } from "./errors.js";
  * the shape `Formal/STORAGE_ALGEBRA.md` §5 uses for the storage laws.
  */
 
-/** Every state a monitor can occupy. Mirrors the `state` CHECK in
- *  `src/postgres/migrations/shielded_monitor/001_core.ts`. */
+/**
+ * Every state a monitor can occupy.
+ *
+ * **Narrower than the database's CHECK, deliberately.** Migration `001_core.ts` still admits
+ * `paused` and `revoked` as literals, and it is not edited (it belongs to an already-open PR, and
+ * rewriting a shipped migration is not something this repository does). The code simply never
+ * writes them: there is no event that produces one, so no row this system creates can hold one.
+ * A database upgraded from a pre-Q33 deployment may still carry such rows; they are read as they
+ * are and never scanned, because {@link isScannable} admits neither.
+ */
 export const MONITOR_STATES = [
   "backfilling",
   "live",
-  "paused",
   "failed",
   "stale_source",
-  "revoked",
   "deleted",
 ] as const;
 
 export type MonitorState = (typeof MONITOR_STATES)[number];
 
-/** Every lifecycle event. `delete` is the only one whose effect depends on more than the current
- *  state: from a non-revoked state it is applied as `revoke` then `delete` (see
- *  {@link planDelete}), so the spec's `any → revoked → deleted` path is honoured literally and a
- *  deleted monitor's audit trail always shows the revoke. */
+/** Every lifecycle event. `delete` is terminal from every state and is the only one a consumer
+ *  can ask for; the other three are the system's own. */
 export const LIFECYCLE_EVENTS = [
   "register",
   "go_live",
-  "pause",
-  "resume",
   "fail",
   "mark_stale_source",
-  "revoke",
   "delete",
 ] as const;
 
@@ -57,11 +65,10 @@ export function isScannable(state: MonitorState): boolean {
  *
  * - `applied` — a real transition; the caller bumps the epoch by one and appends a lifecycle
  *   event.
- * - `noop` — the event is admitted but changes nothing (a re-issued `pause` on an already-paused
- *   monitor, a `revoke` on an already-revoked one). The caller bumps NOTHING. This matters:
- *   organizer spec FR-016 requires revoke and delete to be idempotent, and if an idempotent
- *   re-issue bumped the epoch, a client that retries on a timeout could fence a healthy worker
- *   off its own monitor indefinitely.
+ * - `noop` — the event is admitted but changes nothing (a re-issued `delete` on a monitor that is
+ *   already gone). The caller bumps NOTHING. This matters: organizer spec FR-016 requires delete
+ *   to be idempotent, and if an idempotent re-issue bumped the epoch, a client that retries on a
+ *   timeout could fence a healthy worker off its own monitor indefinitely.
  * - `illegal` — the table does not admit the event from this state.
  */
 export type TransitionOutcome =
@@ -78,6 +85,9 @@ export type TransitionOutcome =
  *
  * `register` appears only as the initial event and is never applied to an existing state — the
  * store creates the row directly — so it is illegal from every state here.
+ *
+ * Every non-deleted state admits `delete`, which is what "a key is given or it is deleted" means
+ * as a table: there is no state a consumer can be stuck in.
  */
 const TABLE: {
   readonly [S in MonitorState]: { readonly [E in LifecycleEvent]?: MonitorState };
@@ -85,51 +95,30 @@ const TABLE: {
   // Scanning from `requestedStart` towards the tip.
   backfilling: {
     go_live: "live",
-    pause: "paused",
     fail: "failed",
     mark_stale_source: "stale_source",
-    revoke: "revoked",
+    delete: "deleted",
   },
   // Caught up with the archive tip and following it.
   live: {
     go_live: "live", // idempotent: already live
-    pause: "paused",
     fail: "failed",
     mark_stale_source: "stale_source",
-    revoke: "revoked",
-  },
-  // Coverage frozen by the consumer; matches stay readable (organizer spec US3 scenario 1).
-  paused: {
-    pause: "paused", // idempotent
-    // Resume returns to `backfilling`, never straight to `live`: whatever the pre-pause state
-    // was, the tip moved while the monitor slept, so `live` would be a claim that is false at the
-    // moment it is made. The scanner promotes it back to `live` when coverage reaches the tip.
-    // Organizer spec FR-011/FR-020 are explicit that unscanned history must never be presented
-    // as caught up.
-    resume: "backfilling",
-    fail: "failed",
-    mark_stale_source: "stale_source",
-    revoke: "revoked",
+    delete: "deleted",
   },
   // Terminal, fail-closed: an unsupported protocol version or an undecodable transaction
-  // (organizer spec's edge cases). Only revocation/deletion leaves it.
+  // (organizer spec's edge cases). Only deletion leaves it.
   failed: {
     fail: "failed", // idempotent
-    revoke: "revoked",
+    delete: "deleted",
   },
   // Terminal: the archive this monitor was bound to was rebuilt (organizer spec FR-013).
   stale_source: {
     mark_stale_source: "stale_source", // idempotent
-    revoke: "revoked",
-  },
-  // Processing stopped and reads refused; the only way out is deletion.
-  revoked: {
-    revoke: "revoked", // idempotent
     delete: "deleted",
   },
   // Absorbing.
   deleted: {
-    revoke: "deleted", // idempotent: nothing left to revoke
     delete: "deleted", // idempotent
   },
 };
@@ -151,25 +140,4 @@ export function transitionOrThrow(
   const outcome = transition(from, event);
   if (outcome.kind === "illegal") throw new IllegalLifecycleTransitionError(from, event);
   return outcome;
-}
-
-/**
- * The event sequence a `delete` expands to from a given state.
- *
- * Organizer spec FR-015 spells the deletion path as `any → revoked → deleted`. Honouring that
- * literally means a delete issued against a live monitor performs two transitions, with two epoch
- * bumps and two lifecycle events, so the fence closes at the revoke and the audit trail always
- * shows it. From `revoked` it is one event; from `deleted` it is none.
- */
-export function planDelete(from: MonitorState): readonly LifecycleEvent[] {
-  if (from === "deleted") return [];
-  if (from === "revoked") return ["delete"];
-  return ["revoke", "delete"];
-}
-
-/** True when a state must refuse consumer reads of status and associations (organizer spec
- *  FR-016, US3 scenario 3). `deleted` is handled separately as not-found, since a caller must not
- *  be able to distinguish a deleted monitor from one that never existed. */
-export function refusesReads(state: MonitorState): boolean {
-  return state === "revoked";
 }

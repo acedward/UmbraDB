@@ -16,7 +16,7 @@ import {
   type MonitorGap,
   type MonitorLastError,
   type MonitorRecord,
-  type RevocationRecord,
+  type DeletionRecord,
 } from "./store.js";
 
 /**
@@ -72,7 +72,8 @@ export const MONITOR_STORE_ROUTES = {
   health: "/v1/health",
   monitors: `${MONITOR_STORE_PREFIX}/monitors`,
   byFingerprint: `${MONITOR_STORE_PREFIX}/monitors/by-fingerprint`,
-  revocations: `${MONITOR_STORE_PREFIX}/revocations`,
+  /** The DELETION list that must survive a database restore (FR-024). */
+  deletions: `${MONITOR_STORE_PREFIX}/deletions`,
   audit: `${MONITOR_STORE_PREFIX}/audit`,
   /** 00009-09: one block, every monitor a node holds, one transaction. */
   advanceBatch: `${MONITOR_STORE_PREFIX}/advance-batch`,
@@ -96,7 +97,6 @@ export function monitorRoute(id: string, suffix?: string): string {
 export const MONITOR_STORE_ERROR_CODES = [
   "VALIDATION_FAILED",
   "MONITOR_NOT_FOUND",
-  "MONITOR_REVOKED",
   "MONITOR_FENCED",
   "MONITOR_ILLEGAL_TRANSITION",
   "INVALID_VIEWING_KEY",
@@ -261,10 +261,9 @@ export const WireLifecycleEventSchema = z.object({
   at: IsoDateSchema,
 });
 
-export const WireRevocationSchema = z.object({
+export const WireDeletionSchema = z.object({
   monitorId: z.string().min(1).max(128),
   net: z.string().min(1).max(64),
-  state: z.enum(["revoked", "deleted"]),
   epoch: BigintStringSchema,
   at: z.string().max(64),
 });
@@ -377,7 +376,7 @@ export const WireRegisterRequestSchema = z.object({
 });
 
 export const WireTransitionRequestSchema = z.object({
-  event: z.enum(["goLive", "pause", "resume", "revoke", "delete", "markFailed", "markStaleSource"]),
+  event: z.enum(["goLive", "delete", "markFailed", "markStaleSource"]),
   actor: z.string().min(1).max(128),
   expectedEpoch: BigintStringSchema.optional(),
   error: WireLastErrorSchema.optional(),
@@ -418,8 +417,8 @@ export const WireAssociationListSchema = z.object({
 export const WireLifecycleListSchema = z.object({
   events: z.array(WireLifecycleEventSchema).max(100_000),
 });
-export const WireRevocationListSchema = z.object({
-  revocations: z.array(WireRevocationSchema).max(100_000),
+export const WireDeletionListSchema = z.object({
+  deletions: z.array(WireDeletionSchema).max(100_000),
 });
 export const WireGapListSchema = z.object({ gaps: z.array(WireGapSchema).max(10_000) });
 export const WireAdvanceBatchResultSchema = z.object({
@@ -526,7 +525,7 @@ export function encodeFillGapResult(result: FillGapResult): z.infer<typeof WireF
   return { written: result.written, gaps: result.gaps.map(encodeGap) };
 }
 
-export function encodeRevocation(record: RevocationRecord): z.infer<typeof WireRevocationSchema> {
+export function encodeDeletion(record: DeletionRecord): z.infer<typeof WireDeletionSchema> {
   return { ...record };
 }
 
@@ -695,11 +694,10 @@ export function decodeLifecycleList(value: unknown): LifecycleEventRecord[] {
   }));
 }
 
-export function decodeRevocationList(value: unknown): RevocationRecord[] {
-  return decodeWith(WireRevocationListSchema, value, "revocation list").revocations.map((r) => ({
+export function decodeDeletionList(value: unknown): DeletionRecord[] {
+  return decodeWith(WireDeletionListSchema, value, "deletion list").deletions.map((r) => ({
     monitorId: r.monitorId,
     net: r.net,
-    state: r.state,
     epoch: r.epoch,
     at: r.at,
   }));

@@ -8,13 +8,10 @@ import { DEFAULT_SHIELDED_MONITOR_SCHEMA } from "./bootstrap.js";
 import {
   MonitorFencedError,
   MonitorNotFoundError,
-  MonitorRevokedError,
 } from "../shielded-monitor/errors.js";
 import {
   INITIAL_STATE,
   SCANNABLE_STATES,
-  planDelete,
-  refusesReads,
   transitionOrThrow,
   type LifecycleEvent,
   type MonitorState,
@@ -38,7 +35,7 @@ import {
   type MonitorLastError,
   type MonitorRecord,
   type RegisterMonitorInput,
-  type RevocationRecord,
+  type DeletionRecord,
   type ShieldedMonitorStore,
 } from "../shielded-monitor/store.js";
 
@@ -317,11 +314,11 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
    * just been handed a key it already knows about learns where to resume, and how a client
    * re-sending a key after a node died reaches the same monitor.
    *
-   * One case is deliberately NOT idempotent: a match in state `revoked` is refused with
-   * {@link MonitorRevokedError} instead of being returned, because returning it would hand the
-   * caller an id whose every read is refused, and minting a new one would let a blind retry undo
-   * a revocation. Re-enabling a revoked key is an explicit `delete` (which sheds the fingerprint)
-   * followed by a fresh registration. Recorded as organizer question Q11.
+   * A DELETED monitor is never in the way: `delete` sheds the fingerprint, and the unique index
+   * is partial on a non-null one, so re-registering a key that was deleted mints a FRESH monitor
+   * with no coverage and no matches — "as if the monitor never existed" (organizer spec US3
+   * scenario 4). That is the whole re-enable path since the lifecycle became give/delete (owner
+   * decision Q33); organizer question Q11's revoked case no longer exists.
    */
   async register(input: RegisterMonitorInput): Promise<MonitorRecord> {
     const validated = parse(RegisterInputSchema, {
@@ -351,10 +348,7 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
            FOR UPDATE
         `;
         const found = existing[0];
-        if (found !== undefined) {
-          if (found.state === "revoked") throw new MonitorRevokedError(found.id);
-          return toRecord(found, await this.gapsInTx(tx, found.id));
-        }
+        if (found !== undefined) return toRecord(found, await this.gapsInTx(tx, found.id));
 
         const id = randomUUID();
         // `ON CONFLICT … DO NOTHING … RETURNING` returns no row when a concurrent transaction
@@ -397,7 +391,6 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
               "PgShieldedMonitorStore.register: the insert conflicted but no monitor holds that identity",
             );
           }
-          if (raced.state === "revoked") throw new MonitorRevokedError(raced.id);
           return toRecord(raced, await this.gapsInTx(tx, raced.id));
         }
         await this.appendLifecycleEvent(tx, id, "register", undefined, INITIAL_STATE, 0n, validated.actor);
@@ -411,23 +404,21 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
   // ── Reads ──────────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Consumer-facing read. Refuses a revoked monitor (organizer spec US3 scenario 3) and reports a
-   * deleted one as not found, so a caller cannot tell a deleted monitor from one that never
-   * existed (US3 scenario 4).
+   * Consumer-facing read. A deleted monitor is reported as not found, so a caller cannot tell one
+   * from a monitor that never existed (organizer spec US3 scenario 4).
    */
   async get(id: string): Promise<MonitorRecord> {
     const row = await this.loadRow(id);
     if (row === undefined || row.state === "deleted") throw new MonitorNotFoundError(id);
-    if (refusesReads(row.state as MonitorState)) throw new MonitorRevokedError(id);
     return toRecord(row, await this.loadGaps([id]).then((m) => m.get(id) ?? []));
   }
 
   /**
-   * Internal/administrative read: returns the record whatever its state, including `revoked` and
-   * `deleted`. Used by the lifecycle operations, the trusted harness and the tests — never to
-   * serve a consumer, which is what {@link get} is for.
+   * Internal/administrative read: returns the record whatever its state, `deleted` tombstones
+   * included. Used by the deletion list, the trusted harness and the tests — never to serve a
+   * consumer, which is what {@link get} is for.
    */
-  async getIncludingRevoked(id: string): Promise<MonitorRecord | undefined> {
+  async getIncludingDeleted(id: string): Promise<MonitorRecord | undefined> {
     const row = await this.loadRow(id);
     if (row === undefined) return undefined;
     return toRecord(row, (await this.loadGaps([id])).get(id) ?? []);
@@ -576,7 +567,6 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
     );
     const row = await this.loadRow(monitorId);
     if (row === undefined || row.state === "deleted") throw new MonitorNotFoundError(monitorId);
-    if (refusesReads(row.state as MonitorState)) throw new MonitorRevokedError(monitorId);
     try {
       const rows = await this.sql<AssociationRow[]>`
         SELECT seq, net, block_height, block_hash, position, tx_hash, protocol_version,
@@ -625,7 +615,6 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
     );
     const row = await this.loadRow(monitorId);
     if (row === undefined || row.state === "deleted") throw new MonitorNotFoundError(monitorId);
-    if (refusesReads(row.state as MonitorState)) throw new MonitorRevokedError(monitorId);
     try {
       const rows = await this.sql<AssociationRow[]>`
         SELECT seq, net, block_height, block_hash, position, tx_hash, protocol_version,
@@ -966,7 +955,6 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
         `;
         const monitor = current[0];
         if (monitor === undefined || monitor.state === "deleted") throw new MonitorNotFoundError(monitorId);
-        if (refusesReads(monitor.state as MonitorState)) throw new MonitorRevokedError(monitorId);
         if (monitor.epoch !== expectedEpoch) {
           throw new MonitorFencedError(monitorId, "epoch", { epoch: monitor.epoch, state: monitor.state });
         }
@@ -1143,7 +1131,6 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
         `;
         const monitor = current[0];
         if (monitor === undefined || monitor.state === "deleted") throw new MonitorNotFoundError(monitorId);
-        if (refusesReads(monitor.state as MonitorState)) throw new MonitorRevokedError(monitorId);
         if (monitor.epoch !== expectedEpoch) {
           throw new MonitorFencedError(monitorId, "epoch", { epoch: monitor.epoch, state: monitor.state });
         }
@@ -1264,22 +1251,9 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
   // ── Lifecycle ──────────────────────────────────────────────────────────────────────────────
 
   /** `backfilling → live`: coverage has reached the archive tip. Fenced, because promoting a
-   *  monitor a consumer just paused would be as wrong as advancing its coverage. */
+   *  monitor a consumer just deleted would be as wrong as advancing its coverage. */
   async goLive(id: string, expectedEpoch: bigint, actor: string): Promise<MonitorRecord> {
     return this.applyEvent(id, "go_live", actor, expectedEpoch);
-  }
-
-  /** Freezes coverage. Matches stay readable (organizer spec US3 scenario 1). Idempotent. */
-  async pause(id: string, actor: string): Promise<MonitorRecord> {
-    return this.applyEvent(id, "pause", actor);
-  }
-
-  /** Returns a paused monitor to `backfilling`; scanning continues from the persisted
-   *  `scannedThrough` (organizer spec US3 scenario 2). Idempotent in the sense that resuming a
-   *  monitor that is not paused is an illegal transition, not a silent no-op — resuming something
-   *  that was never paused is a caller bug worth surfacing. */
-  async resume(id: string, actor: string): Promise<MonitorRecord> {
-    return this.applyEvent(id, "resume", actor);
   }
 
   /**
@@ -1288,8 +1262,8 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
    *
    * `expectedEpoch` is optional and exists for the scanner: organizer spec FR-012 fences *every*
    * worker write on the loaded epoch, and marking a monitor failed is a worker write. Without
-   * the fence, a worker that has been paused mid-batch could still stop a monitor its consumer
-   * had just taken control of. An operator acting on the current state (the harness) omits it.
+   * the fence, a worker holding a stale view could stop a monitor that has moved on underneath
+   * it. An operator acting on the current state (the harness) omits it.
    */
   async markFailed(
     id: string, actor: string, error: MonitorLastError, expectedEpoch?: bigint,
@@ -1305,21 +1279,26 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
     return this.applyEvent(id, "mark_stale_source", actor, expectedEpoch, error);
   }
 
-  /** Stops processing and refuses further reads (organizer spec FR-016). Idempotent. */
-  async revoke(id: string, actor: string): Promise<MonitorRecord> {
-    return this.applyEvent(id, "revoke", actor);
-  }
-
   /**
-   * Destroys the key and every association row, leaving a `deleted` tombstone whose fingerprint
-   * is also shed (organizer spec FR-016, US3 scenario 4).
+   * **The only lifecycle operation a consumer has** (owner decision Q33), and it takes everything
+   * with it: the registration identity, every association, every gap and every scan fact.
    *
-   * From a non-revoked state this performs `revoke` then `delete` as two transitions with two
-   * epoch bumps and two lifecycle events, so FR-015's `any → revoked → deleted` path is honoured
-   * literally and the audit trail of a deleted monitor always shows the revoke. Idempotent.
+   * What is left is a tombstone — `state = 'deleted'`, the monitor's id, its network, its epoch
+   * and its timestamps — and the lifecycle log beside it. Nothing in either says anything about a
+   * key: the fingerprint is shed in this same transaction, which is also what lets the same key
+   * be registered again afterwards as a FRESH monitor (the unique index is partial on a non-null
+   * fingerprint), exactly as organizer spec US3 scenario 4 requires.
    *
-   * The lifecycle log survives; it is the record of what was done, and a delete is one of the
-   * things that was done.
+   * **Why a tombstone rather than a `DELETE FROM monitors`.** Two things need the row. The
+   * deletion list (FR-024) is read from it — "a monitor deleted before the snapshot stays deleted
+   * after the restore" needs somewhere to read the deleted ids FROM, and a row that is gone
+   * cannot be exported. And `lifecycle_events.monitor_id` is `REFERENCES monitors(id) ON DELETE
+   * CASCADE`, so removing the row would erase the audit trail of the deletion itself, which is
+   * the one record of the act. The tombstone costs a few tens of bytes and holds nothing derived
+   * from a key.
+   *
+   * One transition, one epoch bump, one lifecycle event: since Q33 there is no `revoked` state to
+   * travel through. Idempotent — a second delete is a no-op that writes nothing at all.
    */
   async delete(id: string, actor: string): Promise<MonitorRecord | undefined> {
     parse(UuidSchema, id, "PgShieldedMonitorStore.delete");
@@ -1331,44 +1310,34 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
         `;
         const loaded = rows[0];
         if (loaded === undefined) return undefined;
-        let row: MonitorRow = loaded;
+        const from = loaded.state as MonitorState;
+        const outcome = transitionOrThrow(from, "delete");
+        if (outcome.kind === "noop") return toRecord(loaded);
 
-        for (const event of planDelete(row.state as MonitorState)) {
-          const from = row.state as MonitorState;
-          const outcome = transitionOrThrow(from, event);
-          if (outcome.kind === "noop") continue;
-          const epochAfter = row.epoch + 1n;
-          if (event === "delete") {
-            // The key and every derived row go in the same transaction as the state change, so a
-            // crash mid-delete leaves either a fully live monitor or a fully shredded one
-            // (organizer spec US3 scenario 4).
-            await tx`DELETE FROM ${tx(this.schema)}.associations WHERE monitor_id = ${id}`;
-            // 00009-09: gaps go with them. The FK's `ON DELETE CASCADE` never fires for a delete,
-            // because `delete` keeps a TOMBSTONE row rather than removing the monitor (US3
-            // scenario 4), so the shred has to be explicit — otherwise a re-registration of the
-            // same key would mint a fresh monitor while stale gap rows still described the old
-            // one's coverage.
-            await tx`DELETE FROM ${tx(this.schema)}.monitor_gaps WHERE monitor_id = ${id}`;
-            const done = await tx<MonitorRow[]>`
-              UPDATE ${tx(this.schema)}.monitors
-                 SET state = ${outcome.to}, epoch = ${epochAfter},
-                     key_serialized = NULL, fingerprint = NULL, updated_at = now()
-               WHERE id = ${id} AND epoch = ${row.epoch}
-              RETURNING *
-            `;
-            row = done[0]!;
-          } else {
-            const done = await tx<MonitorRow[]>`
-              UPDATE ${tx(this.schema)}.monitors
-                 SET state = ${outcome.to}, epoch = ${epochAfter}, updated_at = now()
-               WHERE id = ${id} AND epoch = ${row.epoch}
-              RETURNING *
-            `;
-            row = done[0]!;
-          }
-          await this.appendLifecycleEvent(tx, id, event, from, outcome.to, epochAfter, actor);
-        }
-        return toRecord(row);
+        const epochAfter = loaded.epoch + 1n;
+        // Everything goes in the SAME transaction as the state change, so a crash mid-delete
+        // leaves either a fully live monitor or a fully shredded one (US3 scenario 4).
+        await tx`DELETE FROM ${tx(this.schema)}.associations WHERE monitor_id = ${id}`;
+        // The FK's `ON DELETE CASCADE` never fires here, because the monitor row survives as a
+        // tombstone, so the gaps are shed explicitly — otherwise a re-registration of the same key
+        // would mint a fresh monitor while stale gap rows still described the old one.
+        await tx`DELETE FROM ${tx(this.schema)}.monitor_gaps WHERE monitor_id = ${id}`;
+        const done = await tx<MonitorRow[]>`
+          UPDATE ${tx(this.schema)}.monitors
+             SET state = ${outcome.to}, epoch = ${epochAfter},
+                 key_serialized = NULL, fingerprint = NULL,
+                 -- "with all the related data": the coverage claim, the archive binding and the
+                 -- last error describe a monitor that no longer exists. The requested start
+                 -- height is a NOT NULL column, so it is reset rather than dropped.
+                 requested_start_height = 0, scanned_from_height = NULL,
+                 scanned_through_height = NULL, source_genesis_hash = NULL,
+                 source_instance_id = NULL, last_error = NULL, last_assoc_seq = 0,
+                 updated_at = now()
+           WHERE id = ${id} AND epoch = ${loaded.epoch}
+          RETURNING *
+        `;
+        await this.appendLifecycleEvent(tx, id, "delete", from, outcome.to, epochAfter, actor);
+        return toRecord(done[0]!);
       });
     } catch (err) {
       throw translatePostgresError(err);
@@ -1380,10 +1349,10 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
    *
    * Loads the row `FOR UPDATE`, asks the pure state machine what the event means, and — for a
    * real transition — bumps the epoch by exactly one, writes the new state and appends the
-   * lifecycle event, all in one transaction. A no-op (a re-issued `pause` on an already-paused
-   * monitor, a `revoke` on an already-revoked one) writes nothing at all: bumping the epoch on an
-   * idempotent retry would let a client that retries on a timeout fence a healthy worker off its
-   * own monitor indefinitely.
+   * lifecycle event, all in one transaction. A no-op (a re-issued `fail` on an already-failed
+   * monitor, a second `delete`) writes nothing at all: bumping the epoch on an idempotent retry
+   * would let a client that retries on a timeout fence a healthy worker off its own monitor
+   * indefinitely.
    *
    * `expectedEpoch`, when given, fences the transition itself — used by `goLive`, which is issued
    * by a scanner holding a loaded view rather than by an operator acting on the current state.
@@ -1479,20 +1448,19 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
   }
 
   /** Every monitor whose access must stay refused after a restore (organizer spec FR-024). */
-  async listRevocations(): Promise<RevocationRecord[]> {
+  async listDeletions(): Promise<DeletionRecord[]> {
     try {
       const rows = await this.sql<
-        { id: string; net: string; state: string; epoch: bigint; updated_at: Date }[]
+        { id: string; net: string; epoch: bigint; updated_at: Date }[]
       >`
-        SELECT id, net, state, epoch, updated_at
+        SELECT id, net, epoch, updated_at
           FROM ${this.sql(this.schema)}.monitors
-         WHERE state IN ('revoked', 'deleted')
+         WHERE state = 'deleted'
          ORDER BY updated_at, id
       `;
       return rows.map((r) => ({
         monitorId: r.id,
         net: r.net,
-        state: r.state as "revoked" | "deleted",
         epoch: r.epoch.toString(),
         at: r.updated_at.toISOString(),
       }));

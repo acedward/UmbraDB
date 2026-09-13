@@ -16,7 +16,6 @@ import {
   InvalidViewingKeyError,
   MonitorFencedError,
   MonitorNotFoundError,
-  MonitorRevokedError,
 } from "../shielded-monitor/errors.js";
 import {
   MONITOR_STORE_PREFIX,
@@ -32,7 +31,7 @@ import {
   encodeGap,
   encodeLifecycleEvent,
   encodeMonitor,
-  encodeRevocation,
+  encodeDeletion,
   WireAdvanceBatchRequestSchema,
   WireAdvanceRequestSchema,
   WireAssociationDetailsRequestSchema,
@@ -209,9 +208,6 @@ function toHttpError(err: unknown): HttpError {
   if (err instanceof HttpError) return err;
   if (err instanceof MonitorNotFoundError) {
     return new HttpError(404, "MONITOR_NOT_FOUND", err.message, { monitorId: err.monitorId });
-  }
-  if (err instanceof MonitorRevokedError) {
-    return new HttpError(403, "MONITOR_REVOKED", err.message, { monitorId: err.monitorId });
   }
   if (err instanceof MonitorFencedError) {
     // 409, the status the sub-plan names for a stale epoch: the request was well-formed and the
@@ -404,10 +400,10 @@ export function createStorageApi(options: StorageApiOptions): StorageApi {
       if (third === undefined) {
         setRoute("GET /v1/monitor-store/monitors/<id>");
         requireGet(method);
-        // `includeRevoked` is the store's `getIncludingRevoked` — an administrative read used by
+        // `includeDeleted` is the store's `getIncludingDeleted` — an administrative read used by
         // the restore path and the operator harness, never to serve a consumer.
-        if (url.searchParams.get("includeRevoked") === "1") {
-          const monitor = await store.getIncludingRevoked(id);
+        if (url.searchParams.get("includeDeleted") === "1") {
+          const monitor = await store.getIncludingDeleted(id);
           return { status: 200, body: monitor === undefined ? {} : { monitor: encodeMonitor(monitor) } };
         }
         return { status: 200, body: { monitor: encodeMonitor(await store.get(id)) } };
@@ -488,12 +484,6 @@ export function createStorageApi(options: StorageApiOptions): StorageApi {
               }
               return { status: 200, body: { monitor: encodeMonitor(await store.goLive(id, epoch, input.actor)) } };
             }
-            case "pause":
-              return { status: 200, body: { monitor: encodeMonitor(await store.pause(id, input.actor)) } };
-            case "resume":
-              return { status: 200, body: { monitor: encodeMonitor(await store.resume(id, input.actor)) } };
-            case "revoke":
-              return { status: 200, body: { monitor: encodeMonitor(await store.revoke(id, input.actor)) } };
             case "delete": {
               const monitor = await store.delete(id, input.actor);
               return { status: 200, body: monitor === undefined ? {} : { monitor: encodeMonitor(monitor) } };
@@ -559,10 +549,10 @@ export function createStorageApi(options: StorageApiOptions): StorageApi {
       throw gone(LEASES_ARE_GONE);
     }
 
-    if (head === "revocations" && second === undefined) {
-      setRoute("GET /v1/monitor-store/revocations");
+    if (head === "deletions" && second === undefined) {
+      setRoute("GET /v1/monitor-store/deletions");
       requireGet(method);
-      return { status: 200, body: { revocations: (await store.listRevocations()).map(encodeRevocation) } };
+      return { status: 200, body: { deletions: (await store.listDeletions()).map(encodeDeletion) } };
     }
 
     if (head === "audit" && second === undefined) {

@@ -61,7 +61,7 @@ export interface MonitorView {
   readonly heldBy: string | null;
   /**
    * The PHASE of the key inside its holder: `syncing` while it is being caught up to the live
-   * scan, `live` once it is in it, `paused` when its monitor is. `null` when nobody holds it.
+   * scan, `live` once it is in it, `failed` when its monitor stopped. `null` when nobody holds it.
    *
    * It is not the monitor's `state` and does not duplicate it. A monitor is `backfilling` for as
    * long as its coverage is short of the tip, which is a fact about the DATABASE; the phase says
@@ -152,8 +152,8 @@ export function gapView(gap: MonitorGap): GapView {
 
 /**
  * `keyNeeded` is derived, never stored: a monitor needs a key when it is in a state that should be
- * scanning and nobody is holding one for it. A `paused` monitor whose key a node still holds is
- * not in that position, and neither is a `revoked` one, which is never going to scan again.
+ * scanning and nobody is holding one for it. A `failed` or `stale_source` monitor is not in that
+ * position — it is never going to scan again whoever holds its key.
  */
 export function keyNeededFor(state: string, heldBy: string | null): boolean {
   return heldBy === null && (state === "backfilling" || state === "live");

@@ -2,17 +2,17 @@ import { readFile, writeFile } from "node:fs/promises";
 import { createClient } from "../src/postgres/client.js";
 import { DEFAULT_SHIELDED_MONITOR_SCHEMA, bootstrapShieldedMonitorSchema } from "./bootstrap.js";
 import {
-  applyRevocationList,
-  exportRevocationList,
-  type RevocationListFile,
-} from "../shielded-monitor/revocation-list.js";
+  applyDeletionList,
+  exportDeletionList,
+  type DeletionListFile,
+} from "../shielded-monitor/deletion-list.js";
 import { type AssociationInput } from "../shielded-monitor/store.js";
 import { PgShieldedMonitorStore } from "./monitor-store-pg.js";
 import { LEDGER_BUILD_ID, parseViewingKey } from "../shielded-monitor/viewing-key.js";
 
 /**
  * The **trusted harness** for project B's store (organizer sub-plan 00009-02's exit criterion:
- * "harness can register/pause/revoke/delete/restore without scanner or API").
+ * "harness can register/delete/restore without scanner or API").
  *
  * This is deliberately not a product surface. It exists so the store's lifecycle, fencing and
  * restore behaviour can be driven and reviewed *before* a relevance scanner (Phase 3) or an HTTP
@@ -60,18 +60,18 @@ Global flags
 Commands
   bootstrap                                    apply the migration lineage
   register --key-file <path> [--start <h>]     register a viewing key read from a FILE
-  status --id <uuid>                           coverage and state (refuses a revoked monitor)
-  inspect --id <uuid>                          state incl. revoked/deleted (administrative)
+  status --id <uuid>                           coverage and state (404s a deleted monitor)
+  inspect --id <uuid>                          state incl. deleted tombstones (administrative)
   list                                         active monitors
   advance --id <uuid> --epoch <n> --through <h> [--associations <path>]
   events --id <uuid>                           the lifecycle log
   associations --id <uuid> [--after <seq>] [--limit <n>]
   go-live --id <uuid> --epoch <n>
-  pause|resume|revoke|delete --id <uuid>
+  delete --id <uuid>                           destroys the key's identity and every related row
   fail --id <uuid> --code <c> --message <m>
   stale-source --id <uuid> --code <c> --message <m>
-  export-revocations --out <path>
-  apply-revocations --in <path>
+  export-deletions --out <path>
+  apply-deletions --in <path>
 `;
 
 function parseArgs(argv: readonly string[]): ParsedArgs {
@@ -190,7 +190,7 @@ export async function runHarness(argv: readonly string[]): Promise<number> {
       }
 
       case "inspect": {
-        print(await store.getIncludingRevoked(requireFlag(flags, "id")) ?? { found: false });
+        print(await store.getIncludingDeleted(requireFlag(flags, "id")) ?? { found: false });
         return 0;
       }
 
@@ -234,16 +234,6 @@ export async function runHarness(argv: readonly string[]): Promise<number> {
         return 0;
       }
 
-      case "pause": {
-        print(await store.pause(requireFlag(flags, "id"), actor));
-        return 0;
-      }
-
-      case "resume": {
-        print(await store.resume(requireFlag(flags, "id"), actor));
-        return 0;
-      }
-
       case "fail": {
         print(await store.markFailed(requireFlag(flags, "id"), actor, {
           code: requireFlag(flags, "code"),
@@ -260,26 +250,21 @@ export async function runHarness(argv: readonly string[]): Promise<number> {
         return 0;
       }
 
-      case "revoke": {
-        print(await store.revoke(requireFlag(flags, "id"), actor));
-        return 0;
-      }
-
       case "delete": {
         print(await store.delete(requireFlag(flags, "id"), actor) ?? { found: false });
         return 0;
       }
 
-      case "export-revocations": {
-        const list = await exportRevocationList(store, schema);
+      case "export-deletions": {
+        const list = await exportDeletionList(store, schema);
         await writeFile(requireFlag(flags, "out"), JSON.stringify(list, null, 2) + "\n", "utf8");
-        print({ exported: list.revocations.length, to: requireFlag(flags, "out") });
+        print({ exported: list.deletions.length, to: requireFlag(flags, "out") });
         return 0;
       }
 
-      case "apply-revocations": {
-        const list = JSON.parse(await readFile(requireFlag(flags, "in"), "utf8")) as RevocationListFile;
-        print(await applyRevocationList(store, list, actor));
+      case "apply-deletions": {
+        const list = JSON.parse(await readFile(requireFlag(flags, "in"), "utf8")) as DeletionListFile;
+        print(await applyDeletionList(store, list, actor));
         return 0;
       }
 

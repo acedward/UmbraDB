@@ -16,7 +16,6 @@ import { StorageError } from "../src/interfaces/storage-errors.js";
 export type ShieldedMonitorErrorCode =
   | "SHIELDED_MONITOR_INVALID_VIEWING_KEY"
   | "SHIELDED_MONITOR_NOT_FOUND"
-  | "SHIELDED_MONITOR_REVOKED"
   | "SHIELDED_MONITOR_FENCED"
   | "SHIELDED_MONITOR_ILLEGAL_TRANSITION";
 
@@ -65,16 +64,6 @@ export class MonitorNotFoundError extends StorageError {
   readonly retryable = "non-retryable" as const;
   constructor(readonly monitorId: string) {
     super(`no such monitor: ${monitorId}`);
-  }
-}
-
-/** The monitor exists but has been revoked; processing has stopped and reads are refused
- *  (organizer spec FR-016). */
-export class MonitorRevokedError extends StorageError {
-  readonly code = "SHIELDED_MONITOR_REVOKED" as const;
-  readonly retryable = "non-retryable" as const;
-  constructor(readonly monitorId: string) {
-    super(`monitor is revoked: ${monitorId}`);
   }
 }
 
