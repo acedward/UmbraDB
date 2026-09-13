@@ -65,6 +65,12 @@ tr.sel td { background: #1d222c; }
 .s-paused { color: var(--warn); border-color: #78350f; background: #241a06; }
 .s-failed, .s-stale_source { color: var(--bad); border-color: #7f1d1d; background: #2a1416; }
 .s-revoked { color: var(--idle); border-color: #334155; background: #161b22; }
+/* 00009-09: a key's PHASE inside its holder, and the two states that are about custody rather
+   than about the monitor's lifecycle. */
+.s-syncing { color: var(--accent); border-color: #1e3a8a; background: #111a2e; }
+.b-keyneeded { color: var(--warn); border-color: #78350f; background: #241a06; }
+.b-gap { color: var(--bad); border-color: #7f1d1d; background: #2a1416; }
+.held { color: var(--dim); font-size: 11.5px; margin-top: 3px; white-space: nowrap; }
 .bar { position: relative; height: 8px; border-radius: 4px; background: #10141b; border: 1px solid var(--line); overflow: hidden; min-width: 130px; }
 .bar > i { display: block; height: 100%; background: var(--accent); }
 .nums { color: var(--dim); font-size: 11.5px; margin-top: 3px; white-space: nowrap; }
@@ -234,6 +240,28 @@ async function lifecycle(monitor, action) {
   await refresh();
 }
 
+/**
+ * The ranges below a monitor's coverage that were never actually read for it (00009-09).
+ *
+ * Rendered as a cell of its own rather than folded into the coverage bar, because a gap is a
+ * different KIND of statement: the bar says how far the scan got, and a gap says that a piece of
+ * what the bar covers was not looked at. Showing them together as one percentage would hide
+ * exactly the thing the gap exists to make visible. Empty is "none", not a blank cell, so an
+ * operator can tell "no holes" from "this build does not report holes".
+ */
+function gapsCell(gaps) {
+  var td = node("td");
+  if (!gaps || gaps.length === 0) { td.appendChild(node("span", "none", "nums")); return td; }
+  gaps.slice(0, 4).forEach(function (g) {
+    var label = g.from === g.to ? g.from : g.from + "-" + g.to;
+    td.appendChild(node("span", label, "badge b-gap"));
+    td.appendChild(document.createTextNode(" "));
+  });
+  if (gaps.length > 4) td.appendChild(node("span", "+" + (gaps.length - 4) + " more", "nums"));
+  td.appendChild(node("div", "back-sync in progress", "nums"));
+  return td;
+}
+
 function renderMonitors() {
   var host = el("monitors");
   host.textContent = "";
@@ -243,7 +271,7 @@ function renderMonitors() {
   }
   var table = node("table");
   var head = node("tr");
-  ["", "monitor", "state", "coverage", "last error", ""].forEach(function (h) { head.appendChild(node("th", h)); });
+  ["", "monitor", "state", "coverage", "gaps", "last error", ""].forEach(function (h) { head.appendChild(node("th", h)); });
   table.appendChild(head);
   state.monitors.forEach(function (m) {
     var tr = node("tr");
@@ -263,11 +291,21 @@ function renderMonitors() {
 
     var stateCell = node("td");
     stateCell.appendChild(node("span", m.state, "badge s-" + m.state));
+    // 00009-09: custody is a separate fact from lifecycle state. A monitor can be "live" and yet
+    // have nobody holding its key — that is exactly what a node restart leaves behind — and the
+    // dashboard has to show the two side by side or an operator reads "live" as "working".
+    if (m.keyNeeded === true) {
+      stateCell.appendChild(document.createTextNode(" "));
+      stateCell.appendChild(node("span", "key needed", "badge b-keyneeded"));
+    }
+    stateCell.appendChild(node("div", m.heldBy ? "held by " + m.heldBy : "held by nobody", "held"));
     tr.appendChild(stateCell);
 
     var cov = node("td");
     cov.appendChild(coverageCell(m.coverage));
     tr.appendChild(cov);
+
+    tr.appendChild(gapsCell(m.gaps));
 
     tr.appendChild(node("td", m.lastError ? m.lastError.code + (m.lastError.atHeight ? " @" + m.lastError.atHeight : "") : "—"));
 
