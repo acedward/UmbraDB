@@ -42,8 +42,7 @@ type Command =
   | { kind: "get" }
   | { kind: "getIncludingRevoked" }
   | { kind: "getByFingerprint" }
-  | { kind: "keyMaterial" }
-  | { kind: "advance"; through: number; matches: number; withLease: boolean }
+  | { kind: "advance"; through: number; matches: number }
   | { kind: "advanceStaleEpoch"; through: number }
   | { kind: "readAssociations"; afterSeq: number; limit: number }
   | { kind: "readMissingDetails" }
@@ -57,20 +56,18 @@ type Command =
   | { kind: "markFailed" }
   | { kind: "markStaleSource" }
   | { kind: "lifecycle" }
-  | { kind: "claimLease"; owner: string }
-  | { kind: "releaseLease"; owner: string }
-  | { kind: "readLease" };
+  | { kind: "listGaps" }
+  | { kind: "advanceBatch"; height: number; matches: number; gap: boolean }
+  | { kind: "fillGap"; from: number; to: number; matches: number };
 
 const commandArb: fc.Arbitrary<Command> = fc.oneof(
   fc.constant<Command>({ kind: "get" }),
   fc.constant<Command>({ kind: "getIncludingRevoked" }),
   fc.constant<Command>({ kind: "getByFingerprint" }),
-  fc.constant<Command>({ kind: "keyMaterial" }),
   fc.record({
     kind: fc.constant<"advance">("advance"),
     through: fc.integer({ min: 1, max: 12 }),
     matches: fc.integer({ min: 0, max: 3 }),
-    withLease: fc.boolean(),
   }),
   fc.record({ kind: fc.constant<"advanceStaleEpoch">("advanceStaleEpoch"), through: fc.integer({ min: 1, max: 12 }) }),
   fc.record({
@@ -89,9 +86,23 @@ const commandArb: fc.Arbitrary<Command> = fc.oneof(
   fc.constant<Command>({ kind: "markFailed" }),
   fc.constant<Command>({ kind: "markStaleSource" }),
   fc.constant<Command>({ kind: "lifecycle" }),
-  fc.record({ kind: fc.constant<"claimLease">("claimLease"), owner: fc.constantFrom("alpha", "beta") }),
-  fc.record({ kind: fc.constant<"releaseLease">("releaseLease"), owner: fc.constantFrom("alpha", "beta") }),
-  fc.constant<Command>({ kind: "readLease" }),
+  // 00009-09's three new commands. They belong in this sequence for the same reason `advance`
+  // does: a block-centric commit and a gap fill are the write paths a monitor-node takes, so a
+  // divergence between the two implementations in either of them is exactly the class of bug this
+  // suite exists to catch.
+  fc.constant<Command>({ kind: "listGaps" }),
+  fc.record({
+    kind: fc.constant<"advanceBatch">("advanceBatch"),
+    height: fc.integer({ min: 1, max: 12 }),
+    matches: fc.integer({ min: 0, max: 2 }),
+    gap: fc.boolean(),
+  }),
+  fc.record({
+    kind: fc.constant<"fillGap">("fillGap"),
+    from: fc.integer({ min: 1, max: 6 }),
+    to: fc.integer({ min: 1, max: 6 }),
+    matches: fc.integer({ min: 0, max: 2 }),
+  }),
 );
 
 /** Renders anything, including bigints and bytes, as a stable string. */
@@ -115,6 +126,9 @@ function normalize(value: unknown): unknown {
     for (const [key, v] of Object.entries(value)) {
       if (key === "id" || key === "monitorId" || key === "createdAt" || key === "updatedAt") continue;
       if (key === "at" || key === "claimedAt" || key === "expiresAt") continue;
+      // 00009-09: a gap's `recordedAt` is `now()` on the server, so the two sides differ by
+      // whatever the wall clock did between them — the same reason `createdAt` is excluded.
+      if (key === "recordedAt") continue;
       out[key] = normalize(v);
     }
     return out;
@@ -151,19 +165,37 @@ async function apply(world: World, command: Command): Promise<string> {
         return show(normalize(await store.getIncludingRevoked(monitorId)));
       case "getByFingerprint":
         return show(normalize(await store.getByFingerprint("undeployed", world.fingerprint)));
-      case "keyMaterial":
-        return show(normalize(await store.getKeyMaterial(monitorId)));
       case "advance": {
         const epoch = await current();
         const through = BigInt(command.through);
         const associations = Array.from({ length: command.matches }, (_, i) => association(through, i));
-        return show(
-          normalize(
-            await store.advance(monitorId, epoch, through, associations, {
-              ...(command.withLease ? { lease: { owner: "alpha", ttlMs: 30_000 } } : {}),
-            }),
-          ),
-        );
+        return show(normalize(await store.advance(monitorId, epoch, through, associations)));
+      }
+      case "listGaps":
+        return show(normalize(await store.listGaps(monitorId)));
+      case "advanceBatch": {
+        const epoch = await current();
+        const height = BigInt(command.height);
+        const associations = Array.from({ length: command.matches }, (_, i) => association(height, i));
+        // The batch's block hash is `association`'s own, so the store's cross-check between the
+        // batch and its items is exercised rather than bypassed.
+        const blockHash = association(height, 0).blockHash;
+        return show(normalize(await store.advanceBatch("undeployed", height, blockHash, [{
+          monitorId,
+          expectedEpoch: epoch,
+          associations,
+          // A gap strictly below the height, which is the only kind the store admits.
+          ...(command.gap && height > 1n ? { newGaps: [{ from: 0n, to: height - 1n }] } : {}),
+        }])));
+      }
+      case "fillGap": {
+        const epoch = await current();
+        const from = BigInt(Math.min(command.from, command.to));
+        const to = BigInt(Math.max(command.from, command.to));
+        const associations = Array.from({ length: command.matches }, (_, i) => association(from, i));
+        return show(normalize(await store.fillGap(monitorId, {
+          expectedEpoch: epoch, from, to, associations,
+        })));
       }
       case "advanceStaleEpoch": {
         // A worker whose loaded epoch is behind: the fence must refuse identically on both sides
@@ -227,14 +259,6 @@ async function apply(world: World, command: Command): Promise<string> {
         );
       case "lifecycle":
         return show(normalize(await store.listLifecycleEvents(monitorId)));
-      case "claimLease":
-        return show(normalize(await store.claimMonitorLease(monitorId, command.owner, 30_000)));
-      case "releaseLease":
-        return show(normalize(await store.releaseMonitorLease(monitorId, command.owner)));
-      case "readLease": {
-        const lease = await store.readMonitorLease(monitorId);
-        return show(lease === undefined ? null : { owner: lease.owner, live: lease.expiresAt > lease.claimedAt });
-      }
     }
   } catch (err) {
     return `THREW ${describeError(err)}`;

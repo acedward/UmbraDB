@@ -104,6 +104,7 @@ describe("the private-API balancer", () => {
     two = await startUpstream("api-2");
     balancer = createBalancer({
       upstreams: [one.base, two.base],
+      net: "undeployed",
       host: "127.0.0.1",
       port: 0,
       // Probing is driven explicitly by `probeOnce()` so the suite never sleeps for an interval.
@@ -123,7 +124,7 @@ describe("the private-API balancer", () => {
   it("[[shielded-monitor.balancer.random-selection-over-two-upstreams]] spreads 200 requests over both upstreams, near evenly, and names the one that answered", async () => {
     const counts = new Map<string, number>();
     for (let i = 0; i < 200; i++) {
-      const response = await fetch(`${base}/v1/monitors`);
+      const response = await fetch(`${base}/v1/monitors/abc/matches`);
       expect(response.status).toBe(200);
       const upstream = response.headers.get("x-upstream");
       expect(upstream, "every response must name its upstream").not.toBeNull();
@@ -149,7 +150,7 @@ describe("the private-API balancer", () => {
 
     const before = two.seen.length;
     for (let i = 0; i < 20; i++) {
-      const response = await fetch(`${base}/v1/monitors`);
+      const response = await fetch(`${base}/v1/monitors/abc/matches`);
       expect(response.headers.get("x-upstream")).toBe(one.base);
     }
     expect(two.seen.length, "an excluded upstream must receive nothing").toBe(before);
@@ -170,6 +171,7 @@ describe("the private-API balancer", () => {
   async function withFirstPicked<T>(body: (b: Balancer, url: string) => Promise<T>): Promise<T> {
     const fixed = createBalancer({
       upstreams: [one.base, two.base],
+      net: "undeployed",
       host: "127.0.0.1",
       port: 0,
       probeMs: 0,
@@ -191,7 +193,7 @@ describe("the private-API balancer", () => {
     try {
       await withFirstPicked(async (fixed, url) => {
         const before = two.seen.length;
-        const response = await fetch(`${url}/v1/monitors/abc`);
+        const response = await fetch(`${url}/v1/monitors/abc/matches`);
         expect(response.status).toBe(200);
         expect(response.headers.get("x-upstream")).toBe(two.base);
         expect(two.seen.length).toBe(before + 1);
@@ -276,6 +278,7 @@ describe("the balancer's configuration", () => {
     expect(() =>
       createBalancer({
         upstreams: ["ftp://nope"],
+        net: "undeployed",
         host: "127.0.0.1",
         port: 0,
         probeMs: 0,

@@ -532,7 +532,6 @@ describe("PgShieldedMonitorStore", () => {
 
       await expect(store.get(id)).rejects.toThrow(MonitorRevokedError);
       await expect(store.readAssociations(id, 0n, 10)).rejects.toThrow(MonitorRevokedError);
-      await expect(store.getKeyMaterial(id)).rejects.toThrow(MonitorRevokedError);
       await expect(store.advance(id, revoked.epoch, 4n, [])).rejects.toThrow(MonitorFencedError);
 
       // Idempotent: a second revoke changes nothing.
@@ -562,7 +561,6 @@ describe("PgShieldedMonitorStore", () => {
 
       // Indistinguishable from a monitor that never existed.
       await expect(store.get(id)).rejects.toThrow(MonitorNotFoundError);
-      await expect(store.getKeyMaterial(id)).rejects.toThrow(MonitorNotFoundError);
       const unknownError = await store.get(randomUUID()).catch((e: unknown) => e);
       const deletedError = await store.get(id).catch((e: unknown) => e);
       expect((deletedError as Error).constructor).toBe((unknownError as Error).constructor);
@@ -593,11 +591,28 @@ describe("PgShieldedMonitorStore", () => {
       expect(await store.delete(randomUUID(), "op")).toBeUndefined();
     });
 
-    it("getKeyMaterial returns the stored key for a scannable monitor and nothing else", async () => {
-      const { id } = await registerFixture(store, seedCounter);
-      const key = await fixtureViewingKey(seedCounter);
-      expect(Buffer.from(await store.getKeyMaterial(id)))
-        .toStrictEqual(Buffer.from(key.yesIKnowTheSecurityImplicationsOfThis_serialized()));
+    it("[[shielded-monitor.store.no-key-material-is-ever-written]] never writes key material, for any monitor, in any state (00009-09)", async () => {
+      // This case replaces `getKeyMaterial returns the stored key…`, and the inversion is the
+      // point of the phase: there is no method that could return a key, and the column that used
+      // to hold one is NULL for every row this code path can produce. The column itself survives
+      // only because dropping it would not be an additive migration (OP-4).
+      const first = await registerFixture(store, seedCounter);
+      const second = await registerFixture(store, seedCounter + 1);
+      await store.advance(first.id, first.epoch, 3n, [association(3n, 0)]);
+      await store.pause(second.id, "op");
+
+      const rows = await sql<{ id: string; key_serialized: Buffer | null; fingerprint: Buffer | null }[]>`
+        SELECT id, key_serialized, fingerprint FROM ${sql(schema)}.monitors
+      `;
+      expect(rows.length).toBeGreaterThanOrEqual(2);
+      for (const row of rows) {
+        expect(row.key_serialized, `${row.id} must hold no key material`).toBeNull();
+      }
+      // And the identity that replaced it is present, which is what makes re-sending a key find
+      // the same monitor.
+      const live = rows.find((r) => r.id === first.id)!;
+      expect(live.fingerprint).not.toBeNull();
+      expect(live.fingerprint!.length).toBe(32);
     });
   });
 

@@ -3,9 +3,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { LEDGER_BUILD_ID, MATCHING_RULE_VERSION } from "../../shielded-monitor/offers.js";
 import { ShieldedMonitorScanner } from "../../shielded-monitor/scanner.js";
 import { InMemoryScannerMetrics } from "../../shielded-monitor/scanner-metrics.js";
-import { ShieldedMonitorScannerService } from "../../shielded-monitor/scanner-service.js";
-import { pgListenWake } from "../../storage-api/pg-wake.js";
-import { createScannerWorld, destroyWorld, type ScannerWorld } from "./scanner-harness.js";
+import {
+  corpusKeyHandle, createScannerWorld, destroyWorld, type ScannerWorld,
+} from "./scanner-harness.js";
 
 /**
  * The scanner against a real archive and a real store (organizer spec SC-001, US1, US2, US3,
@@ -14,9 +14,32 @@ import { createScannerWorld, destroyWorld, type ScannerWorld } from "./scanner-h
  * Every block here was written by the archive's OWN `putBlockBundle` and is read back through
  * the `ArchiveReadContract`, so what is exercised is the production path end to end: real ledger
  * bytes, real trial decryption, real fenced commit.
+ *
+ * This is the ONE-KEY path — what a monitor-node's Queue B runs to catch a newly registered key up
+ * (00009-09). The many-key live path, the queues, the gap detection and the balancer's routing are
+ * in `monitor-node.integration.test.ts`; the scheduling suite that used to sit at the bottom of
+ * this file went with the lease-based scheduler it tested.
  */
 
 const NET = "undeployed";
+
+/**
+ * A scanner bound to ONE corpus key's handle (00009-09).
+ *
+ * The scanner no longer fetches key material — there is none to fetch — so every construction site
+ * has to say which key it is scanning with. That is the point of the change, and making it visible
+ * here is worth the extra line: a suite that reached for "the scanner" and scanned a different
+ * monitor with it would have been silently wrong before, and does not compile now.
+ */
+async function scannerFor(
+  world: ScannerWorld, keyId: string, extra: { metrics?: InMemoryScannerMetrics } = {},
+): Promise<ShieldedMonitorScanner> {
+  return new ShieldedMonitorScanner(world.archive, world.store, {
+    net: NET,
+    key: await corpusKeyHandle(world.corpus, keyId),
+    ...(extra.metrics === undefined ? {} : { metrics: extra.metrics }),
+  });
+}
 
 async function drain(scanner: ShieldedMonitorScanner, monitorId: string): Promise<void> {
   const result = await scanner.scanToTip(monitorId, { maxBatches: 64 });
@@ -28,14 +51,12 @@ async function drain(scanner: ShieldedMonitorScanner, monitorId: string): Promis
 describe("relevance scanner against a real archive (SC-001, US1, US2)", () => {
   let container: StartedPostgreSqlContainer;
   let world: ScannerWorld;
-  let scanner: ShieldedMonitorScanner;
   let metrics: InMemoryScannerMetrics;
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:17-alpine").start();
     world = await createScannerWorld(container, "scan");
     metrics = new InMemoryScannerMetrics();
-    scanner = new ShieldedMonitorScanner(world.archive, world.store, { net: NET, metrics });
   }, 300_000);
 
   afterAll(async () => {
@@ -46,7 +67,7 @@ describe("relevance scanner against a real archive (SC-001, US1, US2)", () => {
   it("[[shielded-monitor.relevance.matches-equal-the-fixture-manifest]] every monitor's associations equal the fixture manifest exactly — every positive once, no negative, correct segments (SC-001)", async () => {
     for (const key of world.corpus.manifest.keys) {
       const monitorId = world.monitors.get(key.id)!;
-      await drain(scanner, monitorId);
+      await drain(await scannerFor(world, key.id, { metrics }), monitorId);
 
       const associations = await world.store.readAssociations(monitorId, 0n, 1000);
       const expected = world.corpus.expectedMatches.get(key.id)!;
@@ -164,7 +185,7 @@ describe("relevance scanner against a real archive (SC-001, US1, US2)", () => {
       notifyChannel: "chain_archive_progress",
     });
 
-    await drain(scanner, monitorId);
+    await drain(await scannerFor(world, "K", { metrics }), monitorId);
 
     const after = await world.store.readAssociations(monitorId, lastSeq, 1000);
     expect(after).toHaveLength(1);
@@ -179,8 +200,9 @@ describe("relevance scanner against a real archive (SC-001, US1, US2)", () => {
     const monitorId = world.monitors.get("K")!;
     const before = await world.store.readAssociations(monitorId, 0n, 1000);
     // Every batch from here is "already at the tip"; nothing may be written twice.
-    await drain(scanner, monitorId);
-    await drain(scanner, monitorId);
+    const rescan = await scannerFor(world, "K", { metrics });
+    await drain(rescan, monitorId);
+    await drain(rescan, monitorId);
     const after = await world.store.readAssociations(monitorId, 0n, 1000);
     expect(after.map((a) => a.seq)).toEqual(before.map((a) => a.seq));
   }, 120_000);
@@ -212,7 +234,7 @@ describe("scanner lifecycle interaction (US3, FR-012, FR-013)", () => {
     const world = await createScannerWorld(container, "fence");
     try {
       const monitorId = world.monitors.get("K")!;
-      const scanner = new ShieldedMonitorScanner(world.archive, world.store, { net: NET });
+      const scanner = await scannerFor(world, "K");
 
       // Load the monitor the way a worker does...
       const loaded = await world.store.get(monitorId);
@@ -239,7 +261,7 @@ describe("scanner lifecycle interaction (US3, FR-012, FR-013)", () => {
     const world = await createScannerWorld(container, "revoke");
     try {
       const monitorId = world.monitors.get("K")!;
-      const scanner = new ShieldedMonitorScanner(world.archive, world.store, { net: NET });
+      const scanner = await scannerFor(world, "K");
       const loaded = await world.store.get(monitorId);
       await world.store.revoke(monitorId, "consumer");
 
@@ -257,7 +279,7 @@ describe("scanner lifecycle interaction (US3, FR-012, FR-013)", () => {
     const world = await createScannerWorld(container, "stale");
     try {
       const monitorId = world.monitors.get("K")!;
-      const scanner = new ShieldedMonitorScanner(world.archive, world.store, { net: NET });
+      const scanner = await scannerFor(world, "K");
 
       // One clean batch first, so the monitor is genuinely bound and has coverage to protect.
       const first = await scanner.scanBatch(await world.store.get(monitorId));
@@ -292,7 +314,7 @@ describe("scanner lifecycle interaction (US3, FR-012, FR-013)", () => {
     const world = await createScannerWorld(container, "failclosed", { archiveThrough: 0 });
     try {
       const monitorId = world.monitors.get("K")!;
-      const scanner = new ShieldedMonitorScanner(world.archive, world.store, { net: NET });
+      const scanner = await scannerFor(world, "K");
 
       // Height 1 carries a transaction the ledger cannot read. It is archived as `regular` with
       // a supported protocol version, so nothing but the bytes is wrong — exactly the shape a
@@ -337,7 +359,7 @@ describe("scanner lifecycle interaction (US3, FR-012, FR-013)", () => {
     const world = await createScannerWorld(container, "future", { startHeight: 1000n });
     try {
       const monitorId = world.monitors.get("K")!;
-      const scanner = new ShieldedMonitorScanner(world.archive, world.store, { net: NET });
+      const scanner = await scannerFor(world, "K");
       const result = await scanner.scanBatch(await world.store.get(monitorId));
       expect(result.kind).toBe("at-tip");
       const monitor = await world.store.get(monitorId);
@@ -353,7 +375,7 @@ describe("scanner lifecycle interaction (US3, FR-012, FR-013)", () => {
     const world = await createScannerWorld(container, "startat", { startHeight: 3n });
     try {
       const monitorId = world.monitors.get("K")!;
-      const scanner = new ShieldedMonitorScanner(world.archive, world.store, { net: NET });
+      const scanner = await scannerFor(world, "K");
       await drain(scanner, monitorId);
       const monitor = await world.store.get(monitorId);
       expect(monitor.coverage.scannedFrom).toBe(3n);
@@ -364,89 +386,6 @@ describe("scanner lifecycle interaction (US3, FR-012, FR-013)", () => {
       expect(expected.length).toBeGreaterThan(0);
       expect(world.corpus.expectedMatches.get("K")!.length).toBeGreaterThan(expected.length);
       expect(associations.map((a) => Number(a.blockHeight))).toEqual(expected.map((t) => t.blockHeight));
-    } finally {
-      await destroyWorld(world);
-    }
-  }, 300_000);
-});
-
-describe("scanner scheduling (FR-014, US2)", () => {
-  let container: StartedPostgreSqlContainer;
-
-  beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
-  }, 300_000);
-
-  afterAll(async () => { await container?.stop(); });
-
-  it("one cycle drives every active monitor to the tip, with concurrency bounded", async () => {
-    const world = await createScannerWorld(container, "sched");
-    try {
-      const scanner = new ShieldedMonitorScanner(world.archive, world.store, { net: NET });
-      const service = new ShieldedMonitorScannerService(scanner, world.store, pgListenWake(world.sql), {
-        net: NET, concurrency: 2, pollMs: 50,
-      });
-      const summary = await service.runCycle();
-      expect(summary.monitorsScanned).toBe(world.monitors.size);
-      for (const key of world.corpus.manifest.keys) {
-        const monitor = await world.store.get(world.monitors.get(key.id)!);
-        expect(monitor.state, `${key.id} should be live after one cycle`).toBe("live");
-      }
-    } finally {
-      await destroyWorld(world);
-    }
-  }, 300_000);
-
-  it("a newly archived block wakes the running scanner through LISTEN rather than only on the poll timer", async () => {
-    const world = await createScannerWorld(container, "tail");
-    try {
-      const scanner = new ShieldedMonitorScanner(world.archive, world.store, { net: NET });
-      // A poll interval far longer than the test: if the match appears, it appeared because the
-      // NOTIFY woke the loop, not because the timer fired.
-      //
-      // Deliberately NOT in the required-tests manifest, unlike this phase's other scanner ids:
-      // it is the one case whose pass/fail depends on wall-clock progress under whatever else
-      // is running on the host, and a load-sensitive entry in a fail-closed gate makes the gate
-      // less trustworthy rather than more. It still runs in every suite run.
-      const service = new ShieldedMonitorScannerService(scanner, world.store, pgListenWake(world.sql), {
-        net: NET, concurrency: 2, pollMs: 600_000,
-      });
-      const monitorId = world.monitors.get("K")!;
-      await service.start();
-      try {
-        // Wait for the first cycle to catch up to the existing tip.
-        await waitFor(async () => (await world.store.get(monitorId)).state === "live", 60_000);
-        const before = (await world.store.readAssociations(monitorId, 0n, 1000)).length;
-
-        const positive = world.corpus.transactions.find((t) => t.spec.id === "h1p0-guaranteed-to-K")!;
-        const newHeight = Math.max(...world.corpus.manifest.blocks.map((b) => b.height)) + 1;
-        const blockHash = "a".repeat(63) + "7";
-        await world.archiveStore.putBlockBundle({
-          block: {
-            net: NET, blockHash, height: newHeight,
-            parentHash: world.corpus.bundles[world.corpus.bundles.length - 1]!.block.blockHash,
-            stateRoot: "7".repeat(64), extrinsicsRoot: "8".repeat(64),
-            headerBytes: new TextEncoder().encode(`header/${newHeight}`),
-            isCanonical: true, status: "canonical", finalized: true,
-            timestampMs: 1_754_395_200_000 + newHeight * 6_000,
-          },
-          transactions: [{
-            net: NET, txHash: "9".repeat(64), blockHeight: newHeight, blockHash, position: 0,
-            kind: "regular", protocolVersion: world.corpus.manifest.protocolVersion,
-            rawBytes: positive.rawBytes,
-          }],
-          bridgeObservations: [],
-          watermark: { key: `sync_cursor:${NET}`, value: { height: newHeight } },
-          notifyChannel: "chain_archive_progress",
-        });
-
-        await waitFor(
-          async () => (await world.store.readAssociations(monitorId, 0n, 1000)).length === before + 1,
-          30_000,
-        );
-      } finally {
-        await service.stop();
-      }
     } finally {
       await destroyWorld(world);
     }

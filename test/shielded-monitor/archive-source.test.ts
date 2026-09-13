@@ -3,7 +3,7 @@ import { openArchiveSource } from "../../shielded-monitor/archive-source.js";
 import { HttpArchiveReadContract } from "../../shielded-monitor/archive-http-client.js";
 import { loadApiConfig } from "../../shielded-monitor/api/config.js";
 import { databaseVariablesIn } from "../../shielded-monitor/no-database.js";
-import { readScannerConfig } from "../../shielded-monitor/scanner-config.js";
+import { loadMonitorNodeConfig } from "../../shielded-monitor/node/config.js";
 
 /**
  * The decision that makes project B a distinct deployable: it reaches EVERYTHING over one base
@@ -43,54 +43,64 @@ describe("openArchiveSource", () => {
   });
 });
 
-describe("the scanner's storage configuration", () => {
+describe("the monitor-node's configuration (00009-09)", () => {
   const base = { STORAGE_URL: STORAGE };
 
   it("requires STORAGE_URL", () => {
-    expect(() => readScannerConfig({}, [])).toThrow(/STORAGE_URL is required/);
+    expect(() => loadMonitorNodeConfig({})).toThrow(/STORAGE_URL/);
   });
 
   it("normalises STORAGE_URL and defaults ARCHIVE_URL to it", () => {
-    const config = readScannerConfig({ STORAGE_URL: `${STORAGE}/` }, []);
-    expect(config.storageUrl).toBe(STORAGE);
-    expect(config.archiveUrl).toBe(STORAGE);
+    const config = loadMonitorNodeConfig({ STORAGE_URL: `${STORAGE}/` });
+    expect(config.api.storageUrl).toBe(STORAGE);
+    expect(config.api.archiveUrl).toBe(STORAGE);
   });
 
   it("lets ARCHIVE_URL point the archive routes at a standalone read API", () => {
-    const config = readScannerConfig({ ...base, ARCHIVE_URL: "http://archive-read-api:8790/" }, []);
-    expect(config.storageUrl).toBe(STORAGE);
-    expect(config.archiveUrl).toBe("http://archive-read-api:8790");
+    const config = loadMonitorNodeConfig({ ...base, ARCHIVE_URL: "http://archive-read-api:8790/" });
+    expect(config.api.storageUrl).toBe(STORAGE);
+    expect(config.api.archiveUrl).toBe("http://archive-read-api:8790");
   });
 
   it("refuses a URL that is not a bare base URL", () => {
-    expect(() => readScannerConfig({ STORAGE_URL: `${STORAGE}/?net=x` }, [])).toThrow(/bare base URL/);
-    expect(() => readScannerConfig({ STORAGE_URL: "not-a-url" }, [])).toThrow(/STORAGE_URL/);
+    expect(() => loadMonitorNodeConfig({ STORAGE_URL: `${STORAGE}/?net=x` })).toThrow(/bare base URL/);
+    expect(() => loadMonitorNodeConfig({ STORAGE_URL: "not-a-url" })).toThrow(/STORAGE_URL/);
   });
 
   it.each(["MONITOR_PG", "ARCHIVE_PG", "SHIELDED_MONITOR_PG", "ARCHIVE_SCHEMA", "MONITOR_SCHEMA"])(
     "REFUSES to start with %s in the environment, naming it",
     (variable) => {
-      expect(() => readScannerConfig({ ...base, [variable]: "x" }, []))
+      expect(() => loadMonitorNodeConfig({ ...base, [variable]: "x" }))
         .toThrow(new RegExp(`database configuration in its environment[\\s\\S]*${variable}`));
     },
   );
 
   it("does NOT refuse libpq's own PG* family, which is inert here", () => {
     // B ships no driver to read them, they are commonly set in a developer's shell, and failing a
-    // scanner because someone has `psql` configured would be a refusal with no security value.
+    // node because someone has `psql` configured would be a refusal with no security value.
     expect(databaseVariablesIn({ PGHOST: "localhost", PGUSER: "eddie" })).toStrictEqual([]);
-    expect(() => readScannerConfig({ ...base, PGHOST: "localhost" }, [])).not.toThrow();
+    expect(() => loadMonitorNodeConfig({ ...base, PGHOST: "localhost" })).not.toThrow();
   });
 
-  it("gives every instance a distinct lease owner by default, and honours SCAN_INSTANCE_ID", () => {
-    // Two containers started from ONE image and ONE environment must not share an owner string:
-    // each would renew the other's lease and both would scan the same monitor.
-    const a = readScannerConfig(base, []);
-    const b = readScannerConfig(base, []);
-    expect(a.instanceId).not.toBe(b.instanceId);
-    expect(readScannerConfig({ ...base, SCAN_INSTANCE_ID: "scanner-1" }, []).instanceId).toBe("scanner-1");
-    expect(readScannerConfig(base, []).leaseTtlMs).toBe(30_000);
-    expect(readScannerConfig({ ...base, SCAN_LEASE_TTL_MS: "5000" }, []).leaseTtlMs).toBe(5_000);
+  it("gives every node a distinct id by default, and honours MONITOR_NODE_ID", () => {
+    // Two containers started from ONE image and ONE environment must not claim the same identity:
+    // the balancer's hint table would then point at "one" node that is really two.
+    expect(loadMonitorNodeConfig(base).nodeId).not.toBe(loadMonitorNodeConfig(base).nodeId);
+    expect(loadMonitorNodeConfig({ ...base, MONITOR_NODE_ID: "node-1" }).nodeId).toBe("node-1");
+  });
+
+  it("takes NET or SHIELDED_MONITOR_NET, with SHIELDED_MONITOR_NET winning", () => {
+    // Both have been set by the compose overlay and the demo script since 00009-08; an operator
+    // migrating a running deployment should not have to rename a variable to start a node.
+    expect(loadMonitorNodeConfig({ ...base, NET: "preview" }).api.net).toBe("preview");
+    expect(loadMonitorNodeConfig({ ...base, NET: "preview", SHIELDED_MONITOR_NET: "undeployed" }).api.net)
+      .toBe("undeployed");
+  });
+
+  it("fails closed on a bad number rather than silently taking the default", () => {
+    expect(() => loadMonitorNodeConfig({ ...base, SCAN_POLL_MS: "soon" })).toThrow(/SCAN_POLL_MS/);
+    expect(() => loadMonitorNodeConfig({ ...base, SCAN_BATCH_BLOCKS: "0" })).toThrow(/SCAN_BATCH_BLOCKS/);
+    expect(loadMonitorNodeConfig({ ...base, SCAN_POLL_MS: "500" }).pollMs).toBe(500);
   });
 });
 

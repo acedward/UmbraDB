@@ -338,6 +338,13 @@ export function createBalancer(options: BalancerOptions): Balancer {
     if (answer === undefined || answer.status !== 200 || answer.json === undefined) return false;
 
     const body = answer.json as Record<string, unknown>;
+    // The SHAPE is checked before the fan-out, not after: an answer that is not a monitor view
+    // (an error body, a 404 envelope, a service that is not a monitor-node at all) must cost
+    // nothing extra, and this route is on the dashboard's polling path.
+    const isList = Array.isArray(body.items);
+    const isOne = typeof body.monitorId === "string";
+    if (!isList && !isOne) return false;
+
     const held = await heldMap();
     const patch = (view: Record<string, unknown>): Record<string, unknown> => {
       const monitorId = view.monitorId;
@@ -350,18 +357,15 @@ export function createBalancer(options: BalancerOptions): Balancer {
       };
     };
 
-    if (Array.isArray(body.items)) {
+    if (isList) {
       sendJson(res, 200, {
         ...body,
         items: (body.items as Record<string, unknown>[]).map(patch),
       }, upstream.base);
-      return true;
-    }
-    if (typeof body.monitorId === "string") {
+    } else {
       sendJson(res, 200, patch(body), upstream.base);
-      return true;
     }
-    return false;
+    return true;
   }
 
   // ── Transport ─────────────────────────────────────────────────────────────────────────────

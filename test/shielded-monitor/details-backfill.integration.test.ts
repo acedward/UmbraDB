@@ -3,8 +3,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ShieldedMonitorDetailsBackfill } from "../../shielded-monitor/details-backfill.js";
 import { MATCH_DETAILS_VERSION } from "../../shielded-monitor/match-details.js";
 import { LEDGER_BUILD_ID } from "../../shielded-monitor/offers.js";
+import type { EncryptionSecretKeyHandle } from "../../shielded-monitor/offers.js";
 import { ShieldedMonitorScanner } from "../../shielded-monitor/scanner.js";
-import { createScannerWorld, destroyWorld, type ScannerWorld } from "./scanner-harness.js";
+import {
+  corpusKeyHandle, corpusKeyHandles, createScannerWorld, destroyWorld, type ScannerWorld,
+} from "./scanner-harness.js";
 
 /**
  * The details backfill against a real archive and a real store (organizer sub-plan 00009-07).
@@ -22,12 +25,19 @@ describe("match-details backfill", () => {
   let container: StartedPostgreSqlContainer;
   let world: ScannerWorld;
   let scanner: ShieldedMonitorScanner;
+  /** `monitorId -> handle`: what a monitor-node's key store would hold (00009-09). */
+  let handles: Map<string, EncryptionSecretKeyHandle>;
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:17-alpine").start();
     world = await createScannerWorld(container, "backfill");
-    scanner = new ShieldedMonitorScanner(world.archive, world.store, { net: NET });
-    for (const monitorId of world.monitors.values()) {
+    handles = await corpusKeyHandles(world.corpus, world.monitors);
+    for (const [keyId, monitorId] of world.monitors) {
+      // 00009-09: one scanner per key, each holding the handle the harness kept — there is no
+      // store method that could hand one out any more.
+      scanner = new ShieldedMonitorScanner(world.archive, world.store, {
+        net: NET, key: await corpusKeyHandle(world.corpus, keyId),
+      });
       await scanner.scanToTip(monitorId, { maxBatches: 64 });
     }
   }, 300_000);
@@ -54,7 +64,9 @@ describe("match-details backfill", () => {
   }
 
   const backfill = (): ShieldedMonitorDetailsBackfill =>
-    new ShieldedMonitorDetailsBackfill(world.archive, world.store, { net: NET, batchRows: 2 });
+    new ShieldedMonitorDetailsBackfill(world.archive, world.store, {
+      net: NET, batchRows: 2, keyFor: (id) => handles.get(id),
+    });
 
   it("[[shielded-monitor.backfill.fills-existing-matches-and-is-idempotent]] fills every pre-existing match exactly once, and a second run fills nothing", async () => {
     await clearAllDetails();
@@ -191,9 +203,11 @@ describe("match-details backfill", () => {
     // monitor is that monitor's answer, never the run's.
     //
     //   Kthird — revoked BEFORE the run starts, so `runMonitor` refuses at its first read.
-    //   Kprime — revoked BETWEEN the page read and the key load, which is the narrow race the
+    //   Kprime — revoked BETWEEN the page read and the fenced write, which is the narrow race the
     //            backfill has to survive. Injected through the store seam rather than by timing,
-    //            so the case is deterministic.
+    //            so the case is deterministic. (Before 00009-09 the seam was `getKeyMaterial`;
+    //            there is no such method any more, so the injection moved to the epoch re-read
+    //            that immediately precedes the write — the same window, one call later.)
     //
     // Monitors are visited in registration order (K, Kprime, Kthird), so `refused === 2` is what
     // proves the run CONTINUED past Kprime's mid-page refusal and still reached Kthird.
@@ -210,16 +224,23 @@ describe("match-details backfill", () => {
         world.store.readAssociationsMissingDetails(id, afterSeq, limit),
       updateAssociationDetails: (id: string, epoch: bigint, updates: never) =>
         world.store.updateAssociationDetails(id, epoch, updates),
-      getKeyMaterial: async (id: string) => {
-        if (id === racedId && !raced) {
+    };
+    // `get` is called once before the first page and again before every write. The FIRST call for
+    // the raced monitor passes through; the second — the one immediately before the write — finds
+    // it revoked, which is the mid-run refusal this case is about.
+    let getsForRaced = 0;
+    (racingStore as { get: (id: string) => Promise<unknown> }).get = async (id: string) => {
+      if (id === racedId) {
+        getsForRaced += 1;
+        if (getsForRaced === 2 && !raced) {
           raced = true;
           await world.store.revoke(id, "backfill-race");
         }
-        return world.store.getKeyMaterial(id);
-      },
+      }
+      return await world.store.get(id);
     };
     const summary = await new ShieldedMonitorDetailsBackfill(
-      world.archive, racingStore as never, { net: NET, batchRows: 2 },
+      world.archive, racingStore as never, { net: NET, batchRows: 2, keyFor: (id) => handles.get(id) },
     ).runAll();
 
     expect(raced, "the race was never triggered, so this case proves nothing").toBe(true);
