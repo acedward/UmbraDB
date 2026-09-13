@@ -107,7 +107,7 @@ export interface AssociationRecord {
   readonly matchingRuleVersion: string;
   readonly ledgerBuild: string;
   /** The matched transaction's public zswap data (00009-07). **Absent** means "not recorded yet"
-   *  — a row written before migration 002, or one the details backfill has not visited. It never
+   *  — a row written before migration 002. It never
    *  means "this transaction had no outputs"; a transaction with no outputs records an empty
    *  list, which is a different, visible thing. */
   readonly details?: MatchDetails;
@@ -132,15 +132,6 @@ export interface AssociationInput {
   readonly ledgerBuild?: string;
   /** 00009-07, optional: omitting it writes exactly the pre-00009-07 row. */
   readonly details?: MatchDetails;
-  readonly blockTimestampMs?: bigint;
-}
-
-/** One row of a details backfill (00009-07). `seq` names the association; the two payload fields
- *  are the only columns the backfill may write. */
-export interface AssociationDetailsUpdate {
-  readonly seq: bigint;
-  readonly details: MatchDetails;
-  /** Absent when the ARCHIVE itself has no timestamp for that block — never a guessed value. */
   readonly blockTimestampMs?: bigint;
 }
 
@@ -288,9 +279,9 @@ export const MAX_ASSOCIATION_PAGE = 1000;
  * A side, one database transaction per method) and `HttpMonitorStore`
  * (`shielded-monitor/storage-http-client.ts`, B side, one HTTP request per method that the
  * storage API turns back into exactly that transaction). The narrow per-consumer interfaces —
- * `ScannerStore`, `ScannerServiceStore`, `DetailsBackfillStore` — are subsets of this one, and
- * stay subsets deliberately: a reader checking "what can the scanner write" reads seven method
- * names rather than this whole surface.
+ * `ScannerStore` and `ScannerServiceStore` — are subsets of this one, and stay subsets
+ * deliberately: a reader checking "what can the scanner write" reads seven method names rather
+ * than this whole surface.
  */
 export interface ShieldedMonitorStore {
   register(input: RegisterMonitorInput): Promise<MonitorRecord>;
@@ -305,9 +296,6 @@ export interface ShieldedMonitorStore {
    *  this route exists so a back-sync worker can re-read them without re-reading the monitor. */
   listGaps(monitorId: string): Promise<MonitorGap[]>;
   readAssociations(monitorId: string, afterSeq: bigint, limit: number): Promise<AssociationRecord[]>;
-  readAssociationsMissingDetails(
-    monitorId: string, afterSeq: bigint, limit: number,
-  ): Promise<AssociationRecord[]>;
   listLifecycleEvents(monitorId: string): Promise<LifecycleEventRecord[]>;
   advance(
     monitorId: string,
@@ -341,9 +329,6 @@ export interface ShieldedMonitorStore {
    * a gap row existed for it.
    */
   fillGap(monitorId: string, input: FillGapInput): Promise<FillGapResult>;
-  updateAssociationDetails(
-    monitorId: string, expectedEpoch: bigint, updates: readonly AssociationDetailsUpdate[],
-  ): Promise<{ readonly applied: number }>;
   bindArchiveSource(
     id: string,
     expectedEpoch: bigint,

@@ -4,7 +4,6 @@ import type { MatchDetails } from "./match-details.js";
 import {
   MAX_ASSOCIATION_PAGE,
   type AdvanceResult,
-  type AssociationDetailsUpdate,
   type AssociationInput,
   type AssociationRecord,
   type AdvanceBatchItem,
@@ -390,17 +389,6 @@ export const WireBindSourceRequestSchema = z.object({
   instanceId: z.string().min(1).max(256),
 });
 
-export const WireDetailsUpdateSchema = z.object({
-  seq: BigintStringSchema,
-  details: DetailsSchema,
-  blockTimestampMs: BigintStringSchema.optional(),
-});
-
-export const WireAssociationDetailsRequestSchema = z.object({
-  expectedEpoch: BigintStringSchema,
-  updates: z.array(WireDetailsUpdateSchema).max(MAX_ASSOCIATION_PAGE),
-});
-
 export const WireAuditRequestSchema = z.object({
   actor: z.string().min(1).max(128),
   action: z.string().min(1).max(64),
@@ -584,16 +572,6 @@ export function encodeAssociationInput(
   };
 }
 
-export function encodeDetailsUpdate(
-  update: AssociationDetailsUpdate,
-): z.infer<typeof WireDetailsUpdateSchema> {
-  return {
-    seq: update.seq.toString(),
-    details: update.details,
-    ...(update.blockTimestampMs === undefined ? {} : { blockTimestampMs: update.blockTimestampMs.toString() }),
-  };
-}
-
 // ── Decode ───────────────────────────────────────────────────────────────────────────────────
 
 /** A payload that does not match the schema. Fail-closed: a body that cannot be fully validated
@@ -768,12 +746,3 @@ export function decodeAssociationInput(
   };
 }
 
-export function decodeDetailsUpdate(
-  wire: z.infer<typeof WireDetailsUpdateSchema>,
-): AssociationDetailsUpdate {
-  return {
-    seq: BigInt(wire.seq),
-    details: wire.details,
-    ...(wire.blockTimestampMs === undefined ? {} : { blockTimestampMs: BigInt(wire.blockTimestampMs) }),
-  };
-}

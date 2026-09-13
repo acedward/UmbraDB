@@ -23,7 +23,6 @@ import {
   base64ToBytes,
   decodeAdvanceBatchItem,
   decodeAssociationInput,
-  decodeDetailsUpdate,
   encodeAdvanceBatchResult,
   encodeAdvanceResult,
   encodeAssociation,
@@ -34,7 +33,6 @@ import {
   encodeDeletion,
   WireAdvanceBatchRequestSchema,
   WireAdvanceRequestSchema,
-  WireAssociationDetailsRequestSchema,
   WireAuditRequestSchema,
   WireBindSourceRequestSchema,
   WireFillGapRequestSchema,
@@ -415,9 +413,7 @@ export function createStorageApi(options: StorageApiOptions): StorageApi {
           requireGet(method);
           const afterSeq = readBigint(url, "afterSeq", 0n);
           const limit = readPositiveInt(url, "limit", 100, MAX_ASSOCIATION_PAGE);
-          const rows = url.searchParams.get("missingDetails") === "1"
-            ? await store.readAssociationsMissingDetails(id, afterSeq, limit)
-            : await store.readAssociations(id, afterSeq, limit);
+          const rows = await store.readAssociations(id, afterSeq, limit);
           return { status: 200, body: { associations: rows.map(encodeAssociation) } };
         }
         case "lifecycle": {
@@ -514,17 +510,6 @@ export function createStorageApi(options: StorageApiOptions): StorageApi {
             status: 200,
             body: { applied: result.applied, monitor: encodeMonitor(result.monitor) },
           };
-        }
-        case "association-details": {
-          setRoute("POST /v1/monitor-store/monitors/<id>/association-details");
-          requirePost(method);
-          const input = await body(WireAssociationDetailsRequestSchema, "association-details");
-          const result = await store.updateAssociationDetails(
-            id,
-            BigInt(input.expectedEpoch),
-            input.updates.map(decodeDetailsUpdate),
-          );
-          return { status: 200, body: { applied: result.applied } };
         }
         default:
           throw new HttpError(404, "NOT_FOUND", `no route for ${method} ${url.pathname}`);

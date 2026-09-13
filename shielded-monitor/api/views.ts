@@ -107,15 +107,15 @@ export interface MatchView {
   readonly ledgerBuild: string;
   /** The time of the block this observation sits in, in milliseconds since the epoch, as a
    *  decimal STRING for the same reason every height is one. `null` means the value is not
-   *  recorded — a match written before 00009-07 that the backfill has not visited, or a block the
+   *  recorded — a match written before 00009-07, or a block the
    *  archive itself has no timestamp for. Never a zero, and never "now".
    *
    *  Absent entirely (not `null`) when the caller asked for `?details=0`. */
   readonly blockTimestampMs?: string | null;
   /** The transaction's PUBLIC zswap data: output commitments, input nullifiers, transients,
    *  contract addresses and a three-valued "is this one yours" per entry
-   *  (`shielded-monitor/match-details.ts`). `null` means "not recorded yet — run the backfill",
-   *  never "this transaction had no outputs".
+   *  (`shielded-monitor/match-details.ts`). `null` means "recorded before this service stored
+   *  them", never "this transaction had no outputs".
    *
    *  Absent entirely (not `null`) when the caller asked for `?details=0`. */
   readonly details?: MatchDetails | null;

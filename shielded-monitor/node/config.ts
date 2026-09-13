@@ -11,8 +11,8 @@ import { normalizeStorageBaseUrl } from "../storage-http-client.js";
  * page settings, and the scanner's batching and polling settings — minus everything that
  * described the removed shapes: no `SCAN_CONCURRENCY` (a node scans one block at a time for every
  * key at once, so there is nothing to parallelise across monitors), no `SCAN_INSTANCE_ID` /
- * `SCAN_LEASE_TTL_MS` (leases are gone), and no details-backfill mode (a backfill needs a key, and
- * a key only exists in a node that was handed one).
+ * `SCAN_LEASE_TTL_MS` (leases are gone), and no details-backfill mode (that command was removed
+ * with owner decision Q29).
  *
  * **Every numeric setting fails closed on a bad value**, as the scanner's did: a
  * `SCAN_POLL_MS=0` that silently became the default is exactly the class of bug this repository's

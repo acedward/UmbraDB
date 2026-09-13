@@ -29,7 +29,6 @@ import {
   decodeWith,
   encodeAdvanceBatchItem,
   encodeAssociationInput,
-  encodeDetailsUpdate,
   encodeFillGapRequest,
   monitorRoute,
 } from "./storage-wire.js";
@@ -37,7 +36,6 @@ import type {
   AdvanceBatchItem,
   AdvanceBatchResult,
   AdvanceResult,
-  AssociationDetailsUpdate,
   AssociationInput,
   AssociationRecord,
   FillGapInput,
@@ -240,18 +238,6 @@ export class HttpMonitorStore implements ShieldedMonitorStore {
     );
   }
 
-  async readAssociationsMissingDetails(
-    monitorId: string, afterSeq: bigint, limit: number,
-  ): Promise<AssociationRecord[]> {
-    return decodeAssociationList(
-      await this.get_(monitorRoute(monitorId, "associations"), {
-        afterSeq: afterSeq.toString(),
-        limit: String(limit),
-        missingDetails: "1",
-      }),
-    );
-  }
-
   async listLifecycleEvents(monitorId: string): Promise<LifecycleEventRecord[]> {
     return decodeLifecycleList(await this.get_(monitorRoute(monitorId, "lifecycle")));
   }
@@ -374,16 +360,6 @@ export class HttpMonitorStore implements ShieldedMonitorStore {
   async fillGap(monitorId: string, input: FillGapInput): Promise<FillGapResult> {
     const body = await this.post(monitorRoute(monitorId, "fill-gap"), encodeFillGapRequest(input));
     return decodeFillGapResult(decodeWith(WireFillGapResultSchema, body, "fill-gap result"));
-  }
-
-  async updateAssociationDetails(
-    monitorId: string, expectedEpoch: bigint, updates: readonly AssociationDetailsUpdate[],
-  ): Promise<{ readonly applied: number }> {
-    const body = await this.post(monitorRoute(monitorId, "association-details"), {
-      expectedEpoch: expectedEpoch.toString(),
-      updates: updates.map(encodeDetailsUpdate),
-    });
-    return decodeWith(WireDetailsResultSchema, body, "details result");
   }
 
   async bindArchiveSource(

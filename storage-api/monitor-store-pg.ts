@@ -25,7 +25,6 @@ import {
   type AdvanceBatchItem,
   type AdvanceBatchResult,
   type AdvanceResult,
-  type AssociationDetailsUpdate,
   type AssociationInput,
   type AssociationRecord,
   type FillGapInput,
@@ -138,12 +137,6 @@ const AssociationInputSchema = z.object({
   // 00009-07, both additive and both optional: an association written without them is exactly the
   // pre-00009-07 row, which is what keeps the migration additive in behaviour as well as in DDL.
   details: DetailsSchema.optional(),
-  blockTimestampMs: z.bigint().nonnegative().optional(),
-});
-
-const AssociationDetailsUpdateSchema = z.object({
-  seq: z.bigint().positive(),
-  details: DetailsSchema,
   blockTimestampMs: z.bigint().nonnegative().optional(),
 });
 
@@ -583,55 +576,6 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
     }
   }
 
-  /**
-   * The details backfill's work list: this monitor's associations that carry no `details` yet,
-   * oldest first (00009-07).
-   *
-   * Ordered by `seq`, which is `(blockHeight, position)` order, so a backfill that walks pages of
-   * this list visits history forwards and its progress is describable as a height. Rows already
-   * carrying details are never returned, which is what makes a re-run cheap rather than a
-   * re-scan: the partial index `associations_details_missing` shrinks to nothing as the backfill
-   * completes.
-   *
-   * `afterSeq` is an EXCLUSIVE lower bound on the sequence, exactly like
-   * {@link PgShieldedMonitorStore.readAssociations}. It exists so a backfill that legitimately
-   * cannot fill a row — a block the archive no longer holds, a re-evaluation that disagrees with
-   * the recorded match — walks PAST it instead of re-reading the same head page forever. Without
-   * it, one unfillable row would stall the whole monitor.
-   *
-   * Refuses revoked monitors and reports deleted ones as not found, exactly like
-   * {@link PgShieldedMonitorStore.readAssociations} — a backfill must not become a way to read a
-   * monitor the lifecycle has closed.
-   */
-  async readAssociationsMissingDetails(
-    monitorId: string, afterSeq: bigint, limit: number,
-  ): Promise<AssociationRecord[]> {
-    parse(UuidSchema, monitorId, "PgShieldedMonitorStore.readAssociationsMissingDetails");
-    parse(z.bigint().nonnegative(), afterSeq, "PgShieldedMonitorStore.readAssociationsMissingDetails");
-    const bounded = parse(
-      z.number().int().positive().max(MAX_ASSOCIATION_PAGE),
-      limit,
-      "PgShieldedMonitorStore.readAssociationsMissingDetails",
-    );
-    const row = await this.loadRow(monitorId);
-    if (row === undefined || row.state === "deleted") throw new MonitorNotFoundError(monitorId);
-    try {
-      const rows = await this.sql<AssociationRow[]>`
-        SELECT seq, net, block_height, block_hash, position, tx_hash, protocol_version,
-               matched_segments, applied_outcome, source_outcome, matching_rule_version,
-               ledger_build, details, block_timestamp_ms, created_at
-          FROM ${this.sql(this.schema)}.associations
-         WHERE monitor_id = ${monitorId} AND seq > ${afterSeq} AND details IS NULL
-         ORDER BY seq
-         LIMIT ${bounded}
-      `;
-      return rows.map(toAssociation);
-    } catch (err) {
-      throw translatePostgresError(err);
-    }
-  }
-
-  /** The full lifecycle log for a monitor, oldest first. Survives a delete. */
   async listLifecycleEvents(monitorId: string): Promise<LifecycleEventRecord[]> {
     parse(UuidSchema, monitorId, "PgShieldedMonitorStore.listLifecycleEvents");
     try {
@@ -1078,86 +1022,6 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
     if (!(SCANNABLE_STATES as string[]).includes(row.state)) return "state";
     if (row.epoch !== epoch) return "epoch";
     return "already-advanced";
-  }
-
-  /**
-   * Fills in `details`/`block_timestamp_ms` for associations that were written before this data
-   * existed (00009-07's backfill), for ONE monitor, in ONE transaction, fenced by `epoch`.
-   *
-   * **Fill-only, and that is what makes it idempotent.** Each row is updated under
-   * `WHERE … AND details IS NULL`, so a second run over the same range updates zero rows and
-   * reports `applied: 0` — the plan's "fills NULL rows exactly once" is a property of the
-   * predicate, not of the caller remembering where it got to. A details record whose
-   * `MATCH_DETAILS_VERSION` later changes is therefore NOT re-derived by re-running the
-   * backfill; that would be a deliberate re-derivation and needs its own opt-in, which this alpha
-   * does not ship.
-   *
-   * **What it may NOT change.** Nothing about the match itself: not the height, the position, the
-   * transaction hash, the matched segments, the outcome or the coverage. The `SET` list is two
-   * columns that were `NULL`, so a backfill cannot rewrite history even if it is wrong about the
-   * bytes — the worst it can do is record a detail row that a later fix overwrites via `NULL`ing.
-   *
-   * **The fence.** The monitor row is locked `FOR UPDATE` and its epoch compared inside the same
-   * transaction, so a pause, resume, revoke or delete landing under a running backfill either
-   * happens before the lock (and the commit is refused with {@link MonitorFencedError}) or after
-   * it (and sees a committed, consistent set of rows). Revoked and deleted monitors are refused
-   * outright — the backfill is not a hole in US3's "stop processing".
-   *
-   * Deliberately NOT restricted to {@link SCANNABLE_STATES}: a `paused`, `failed` or
-   * `stale_source` monitor's already-recorded matches are still readable through the API
-   * (FR-020), so leaving them permanently detail-less would make the placeholder the dashboard
-   * shows for them a lie about what the operator can do.
-   *
-   * @returns how many rows this call actually filled.
-   */
-  async updateAssociationDetails(
-    monitorId: string,
-    expectedEpoch: bigint,
-    updates: readonly AssociationDetailsUpdate[],
-  ): Promise<{ readonly applied: number }> {
-    parse(UuidSchema, monitorId, "PgShieldedMonitorStore.updateAssociationDetails");
-    parse(z.bigint().nonnegative(), expectedEpoch, "PgShieldedMonitorStore.updateAssociationDetails");
-    const rows = parse(
-      z.array(AssociationDetailsUpdateSchema).max(MAX_ASSOCIATION_PAGE),
-      updates,
-      "PgShieldedMonitorStore.updateAssociationDetails",
-    );
-    if (rows.length === 0) return { applied: 0 };
-
-    try {
-      return await this.sql.begin(async (tx) => {
-        const current = await tx<MonitorRow[]>`
-          SELECT * FROM ${tx(this.schema)}.monitors WHERE id = ${monitorId} FOR UPDATE
-        `;
-        const monitor = current[0];
-        if (monitor === undefined || monitor.state === "deleted") throw new MonitorNotFoundError(monitorId);
-        if (monitor.epoch !== expectedEpoch) {
-          throw new MonitorFencedError(monitorId, "epoch", { epoch: monitor.epoch, state: monitor.state });
-        }
-
-        let applied = 0;
-        for (const update of rows) {
-          const updated = await tx<{ seq: bigint }[]>`
-            UPDATE ${tx(this.schema)}.associations
-               SET details            = ${tx.json(update.details as never)},
-                   -- COALESCE, not an assignment: when the archive has no timestamp for that
-                   -- height the update carries none, and overwriting an existing value with NULL
-                   -- would DELETE a recorded fact to record a different one. A backfill may add,
-                   -- never remove.
-                   block_timestamp_ms = COALESCE(${update.blockTimestampMs ?? null}::bigint,
-                                                 block_timestamp_ms)
-             WHERE monitor_id = ${monitorId}
-               AND seq = ${update.seq}
-               AND details IS NULL
-            RETURNING seq
-          `;
-          if (updated.length > 0) applied += 1;
-        }
-        return { applied } as const;
-      });
-    } catch (err) {
-      throw translatePostgresError(err);
-    }
   }
 
   /** Reads the row that the fencing `UPDATE` failed to match and turns "zero rows" into the
