@@ -7,8 +7,6 @@ import {
   MONITOR_STATES,
   SCANNABLE_STATES,
   isScannable,
-  planDelete,
-  refusesReads,
   transition,
   transitionOrThrow,
   type LifecycleEvent,
@@ -83,24 +81,20 @@ describe("monitor lifecycle state machine", () => {
     });
   });
 
-  describe("the exact transitions FR-015 names", () => {
+  describe("the exact transitions FR-015 names, as owner decision Q33 leaves them", () => {
+    // Give or delete: the only event a CONSUMER can cause is `delete`, and it is legal from every
+    // state a monitor can be alive in. `go_live`, `fail` and `mark_stale_source` are the system's
+    // own. There is no `pause`, no `resume` and no `revoke` anywhere in this table.
     const expected: readonly (readonly [MonitorState, LifecycleEvent, MonitorState])[] = [
       ["backfilling", "go_live", "live"],
-      ["backfilling", "pause", "paused"],
-      ["live", "pause", "paused"],
-      ["paused", "resume", "backfilling"],
       ["backfilling", "fail", "failed"],
       ["live", "fail", "failed"],
-      ["paused", "fail", "failed"],
       ["backfilling", "mark_stale_source", "stale_source"],
       ["live", "mark_stale_source", "stale_source"],
-      ["paused", "mark_stale_source", "stale_source"],
-      ["backfilling", "revoke", "revoked"],
-      ["live", "revoke", "revoked"],
-      ["paused", "revoke", "revoked"],
-      ["failed", "revoke", "revoked"],
-      ["stale_source", "revoke", "revoked"],
-      ["revoked", "delete", "deleted"],
+      ["backfilling", "delete", "deleted"],
+      ["live", "delete", "deleted"],
+      ["failed", "delete", "deleted"],
+      ["stale_source", "delete", "deleted"],
     ];
 
     for (const [from, event, to] of expected) {
@@ -122,9 +116,15 @@ describe("monitor lifecycle state machine", () => {
       expect(actual.sort()).toStrictEqual(expected.map(([f, e, t]) => `${f}|${e}|${t}`).sort());
     });
 
-    it("resume never goes straight to live (the tip moved while the monitor slept)", () => {
-      const outcome = transition("paused", "resume");
-      expect(outcome.kind === "applied" ? outcome.to : undefined).toBe("backfilling");
+    it("every state a monitor can be alive in admits `delete`", () => {
+      // The property that makes "a key is GIVEN or DELETED" true as a table rather than as a
+      // slogan: there is no state a consumer can end up in that they cannot get out of.
+      for (const state of MONITOR_STATES) {
+        if (state === "deleted") continue;
+        const outcome = transition(state, "delete");
+        expect(outcome.kind, state).toBe("applied");
+        expect(outcome.kind === "applied" ? outcome.to : undefined).toBe("deleted");
+      }
     });
   });
 
@@ -177,20 +177,10 @@ describe("monitor lifecycle state machine", () => {
       );
     });
 
-    it("`revoked` only ever leads to `deleted`", () => {
+    it("once deleted, no sequence ever makes the monitor scannable again", () => {
       fc.assert(
         fc.property(fc.array(anyEvent, { maxLength: 40 }), (events) => {
-          const final = events.reduce(step, { state: "revoked", epoch: 0n });
-          expect(["revoked", "deleted"]).toContain(final.state);
-        }),
-        { numRuns: 300 },
-      );
-    });
-
-    it("once revoked, no sequence ever makes the monitor scannable again", () => {
-      fc.assert(
-        fc.property(fc.array(anyEvent, { maxLength: 40 }), (events) => {
-          let model: Model = { state: "revoked", epoch: 0n };
+          let model: Model = { state: "deleted", epoch: 0n };
           for (const event of events) {
             model = step(model, event);
             expect(isScannable(model.state)).toBe(false);
@@ -200,7 +190,7 @@ describe("monitor lifecycle state machine", () => {
       );
     });
 
-    it("a fresh monitor is scannable and stops being scannable the moment it is paused, failed, stale or revoked", () => {
+    it("a fresh monitor is scannable and stops being scannable the moment it fails, goes stale or is deleted", () => {
       fc.assert(
         fc.property(fc.array(anyEvent, { maxLength: 20 }), (events) => {
           let model: Model = { state: INITIAL_STATE, epoch: 0n };
@@ -215,39 +205,21 @@ describe("monitor lifecycle state machine", () => {
     });
   });
 
-  describe("delete travels through revoked (FR-015's `any -> revoked -> deleted`)", () => {
-    it("plans two transitions from every non-terminal state, one from revoked, none from deleted", () => {
+  describe("delete is one transition, from anywhere (owner decision Q33)", () => {
+    it("reaches `deleted` from every state in exactly one step, and bumps the epoch once", () => {
+      // Before Q33 this travelled `any -> revoked -> deleted` and bumped the epoch twice. With
+      // revoke gone there is one step and one bump — and one lifecycle event in the log, which is
+      // the act the log exists to record.
       for (const state of MONITOR_STATES) {
-        const plan = planDelete(state);
-        if (state === "deleted") expect(plan).toStrictEqual([]);
-        else if (state === "revoked") expect(plan).toStrictEqual(["delete"]);
-        else expect(plan).toStrictEqual(["revoke", "delete"]);
+        if (state === "deleted") continue;
+        const model = step({ state, epoch: 5n }, "delete");
+        expect(model).toStrictEqual({ state: "deleted", epoch: 6n });
       }
     });
 
-    it("every planned sequence actually reaches `deleted` and is legal at every step", () => {
-      for (const state of MONITOR_STATES) {
-        let model: Model = { state, epoch: 0n };
-        for (const event of planDelete(state)) {
-          expect(transition(model.state, event).kind).not.toBe("illegal");
-          model = step(model, event);
-        }
-        expect(model.state).toBe("deleted");
-      }
-    });
-
-    it("a delete from a live state bumps the epoch twice, so the fence closes at the revoke", () => {
-      let model: Model = { state: "live", epoch: 5n };
-      for (const event of planDelete(model.state)) model = step(model, event);
-      expect(model).toStrictEqual({ state: "deleted", epoch: 7n });
-    });
-  });
-
-  describe("read refusal", () => {
-    it("only `revoked` refuses reads; `deleted` is handled as not-found by the store instead", () => {
-      for (const state of MONITOR_STATES) {
-        expect(refusesReads(state)).toBe(state === "revoked");
-      }
+    it("a second delete changes nothing at all, so a retried request cannot move the fence", () => {
+      const once = step({ state: "live", epoch: 5n }, "delete");
+      expect(step(once, "delete")).toStrictEqual(once);
     });
   });
 });

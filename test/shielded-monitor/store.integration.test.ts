@@ -7,7 +7,6 @@ import type { UmbraDBSql } from "../../src/postgres/client.js";
 import {
   MonitorFencedError,
   MonitorNotFoundError,
-  MonitorRevokedError,
   IllegalLifecycleTransitionError,
 } from "../../shielded-monitor/errors.js";
 import type { MatchDetails } from "../../shielded-monitor/match-details.js";
@@ -190,7 +189,7 @@ describe("PgShieldedMonitorStore", () => {
       expect((await store.listLifecycleEvents(results[0]!.id)).map((e) => e.event)).toStrictEqual(["register"]);
     });
 
-    it("refuses re-registration of a revoked key (Q11) but allows it after a delete", async () => {
+    it("re-registering a key after a delete mints a FRESH monitor, as if the first never existed", async () => {
       const key = await fixtureViewingKey(6);
       const input = {
         fingerprint: key.fingerprint,
@@ -200,15 +199,22 @@ describe("PgShieldedMonitorStore", () => {
         ledgerBuild: TEST_LEDGER_BUILD,
         actor: "test",
       };
+      // Since owner decision Q33 this is the whole "I changed my mind" path: there is no revoke
+      // to undo, so a consumer deletes and registers again — and what they get is a new monitor
+      // with no coverage and no matches, which is what US3 scenario 4's "as if the monitor never
+      // existed" means when the same key comes back.
       const first = await store.register(input);
-      await store.revoke(first.id, "test");
-      await expect(store.register(input)).rejects.toThrow(MonitorRevokedError);
-
+      await store.advance(first.id, first.epoch, 5n, [association(5n, 0)]);
       await store.delete(first.id, "test");
+
       const reborn = await store.register(input);
       expect(reborn.id).not.toBe(first.id);
       expect(reborn.state).toBe("backfilling");
       expect(reborn.epoch).toBe(0n);
+      expect(reborn.coverage.scannedThrough, "a fresh monitor has scanned nothing").toBeUndefined();
+      expect(await store.readAssociations(reborn.id, 0n, 10)).toStrictEqual([]);
+      // And the first monitor is gone for every reader, tombstone or not.
+      await expect(store.get(first.id)).rejects.toThrow(MonitorNotFoundError);
     });
   });
 
@@ -322,7 +328,7 @@ describe("PgShieldedMonitorStore", () => {
      * must leave nothing at all behind — no association, no lifecycle event, no partially
      * advanced sequence counter.
      */
-    it("[[shielded-monitor.fencing.stale-epoch-never-commits]] a stale epoch commits nothing, and a pause mid-batch fences the in-flight worker", async () => {
+    it("[[shielded-monitor.fencing.stale-epoch-never-commits]] a stale epoch commits nothing, and a stop mid-batch fences the in-flight worker", async () => {
       const { id, epoch } = await registerFixture(store, seedCounter);
       await store.advance(id, epoch, 5n, [association(5n, 0)]);
 
@@ -330,10 +336,10 @@ describe("PgShieldedMonitorStore", () => {
       const loaded = await store.get(id);
       expect(loaded.epoch).toBe(epoch);
 
-      // …the consumer pauses it while the worker is mid-batch…
-      const paused = await store.pause(id, "consumer");
-      expect(paused.state).toBe("paused");
-      expect(paused.epoch).toBe(epoch + 1n);
+      // …the monitor stops while the worker is mid-batch…
+      const stopped = await store.markStaleSource(id, "operator");
+      expect(stopped.state).toBe("stale_source");
+      expect(stopped.epoch).toBe(epoch + 1n);
 
       const before = await schemaSnapshot(sql, schema);
 
@@ -342,31 +348,32 @@ describe("PgShieldedMonitorStore", () => {
       const fenced = await store.advance(id, loaded.epoch, 6n, [association(6n, 0)]).catch((e: unknown) => e);
       expect(fenced).toBeInstanceOf(MonitorFencedError);
       expect((fenced as MonitorFencedError).rejection).toBe("state");
-      expect((fenced as MonitorFencedError).observed.state).toBe("paused");
+      expect((fenced as MonitorFencedError).observed.state).toBe("stale_source");
 
       expect(await schemaSnapshot(sql, schema)).toBe(before);
 
-      // Resuming bumps the epoch again, so the worker's ORIGINAL epoch is still stale — this is
-      // the pure epoch-mismatch branch, with the monitor scannable again.
-      const resumed = await store.resume(id, "consumer");
-      expect(resumed.state).toBe("backfilling");
-      expect(resumed.epoch).toBe(epoch + 2n);
+      // The pure epoch-mismatch branch, on a monitor that IS scannable: a second worker advances
+      // it legitimately, and the first worker's original epoch is now stale.
+      const fresh = await registerFixture(store, seedCounter + 7000);
+      await store.advance(fresh.id, fresh.epoch, 4n, []);
+      const moved = await store.goLive(fresh.id, fresh.epoch, "scanner");
+      expect(moved.epoch).toBe(fresh.epoch + 1n);
 
       const beforeStale = await schemaSnapshot(sql, schema);
-      const stale = await store.advance(id, loaded.epoch, 6n, [association(6n, 0)]).catch((e: unknown) => e);
+      const stale = await store.advance(fresh.id, fresh.epoch, 6n, [association(6n, 0)]).catch((e: unknown) => e);
       expect(stale).toBeInstanceOf(MonitorFencedError);
       expect((stale as MonitorFencedError).rejection).toBe("epoch");
-      expect((stale as MonitorFencedError).observed.epoch).toBe(epoch + 2n);
+      expect((stale as MonitorFencedError).observed.epoch).toBe(fresh.epoch + 1n);
       expect(await schemaSnapshot(sql, schema)).toBe(beforeStale);
 
       // POSITIVE CONTROL: with the current epoch the very same batch commits, so the rejections
       // above were caused by the fence and not by a malformed batch.
-      const ok = await store.advance(id, resumed.epoch, 6n, [association(6n, 0)]);
+      const ok = await store.advance(fresh.id, moved.epoch, 6n, [association(6n, 0)]);
       expect(ok.applied).toBe(true);
-      expect((await store.get(id)).coverage.scannedThrough).toBe(6n);
-      // Scanning resumed from `scannedThrough` with no duplicate and no skip (US3 scenario 2).
-      const rows = await store.readAssociations(id, 0n, 100);
-      expect(rows.map((r) => r.blockHeight)).toStrictEqual([5n, 6n]);
+      expect((await store.get(fresh.id)).coverage.scannedThrough).toBe(6n);
+      // And it carried on from `scannedThrough` with no duplicate and no skip.
+      const rows = await store.readAssociations(fresh.id, 0n, 100);
+      expect(rows.map((r) => r.blockHeight)).toStrictEqual([6n]);
     });
 
     it("reports a replayed batch as already-advanced rather than as a fencing failure (US5 scenario 2)", async () => {
@@ -445,13 +452,13 @@ describe("PgShieldedMonitorStore", () => {
     const blockHashFor = (height: bigint): Uint8Array => association(height, 0).blockHash;
 
     it("[[shielded-monitor.store.advance-batch-reports-fenced-items-without-failing-the-block]] advances the healthy monitors of a block and REPORTS the rest, with the reason", async () => {
-      // OP-2, as a property rather than a promise: one paused wallet must not stall a block for
+      // OP-2, as a property rather than a promise: one stopped wallet must not stall a block for
       // every other wallet a node holds. Four monitors, four different answers, one transaction.
       const healthy = await registerFixture(store, seedCounter);
-      const paused = await registerFixture(store, seedCounter + 1000);
+      const stopped = await registerFixture(store, seedCounter + 1000);
       const stale = await registerFixture(store, seedCounter + 2000);
       const ahead = await registerFixture(store, seedCounter + 3000);
-      await store.pause(paused.id, "op");
+      await store.markFailed(stopped.id, "op", { code: "X", message: "stopped for this case" });
       // `ahead` is already past the batch's height, which is the idempotent-replay path.
       await store.advance(ahead.id, ahead.epoch, 9n, []);
       const aheadNow = await store.get(ahead.id);
@@ -459,7 +466,7 @@ describe("PgShieldedMonitorStore", () => {
       const height = 5n;
       const result = await store.advanceBatch(NET, height, blockHashFor(height), [
         { monitorId: healthy.id, expectedEpoch: healthy.epoch, associations: [association(height, 0)] },
-        { monitorId: paused.id, expectedEpoch: paused.epoch, associations: [association(height, 0)] },
+        { monitorId: stopped.id, expectedEpoch: stopped.epoch, associations: [association(height, 0)] },
         { monitorId: stale.id, expectedEpoch: stale.epoch + 9n, associations: [] },
         { monitorId: ahead.id, expectedEpoch: aheadNow.epoch, associations: [] },
         { monitorId: randomUUID(), expectedEpoch: 0n, associations: [] },
@@ -467,9 +474,9 @@ describe("PgShieldedMonitorStore", () => {
 
       expect(result.advanced).toStrictEqual([healthy.id]);
       expect(new Map(result.fenced.map((f) => [f.id, f.reason]))).toStrictEqual(new Map([
-        // `pause` bumps the epoch too, so the state check is what has to fire first for this to
-        // read `state` rather than `epoch` — which is the distinction a node acts on.
-        [paused.id, "state"],
+        // `markFailed` bumps the epoch too, so the state check is what has to fire first for this
+        // to read `state` rather than `epoch` — which is the distinction a node acts on.
+        [stopped.id, "state"],
         [stale.id, "epoch"],
         [ahead.id, "already-advanced"],
         [result.fenced.find((f) => f.reason === "not-found")!.id, "not-found"],
@@ -478,7 +485,7 @@ describe("PgShieldedMonitorStore", () => {
       // The healthy monitor really did land, and the fenced ones really did not.
       expect((await store.get(healthy.id)).coverage.scannedThrough).toBe(height);
       expect((await store.readAssociations(healthy.id, 0n, 10))).toHaveLength(1);
-      expect((await store.getIncludingRevoked(paused.id))!.coverage.scannedThrough).toBeUndefined();
+      expect((await store.getIncludingDeleted(stopped.id))!.coverage.scannedThrough).toBeUndefined();
       expect((await store.readAssociations(stale.id, 0n, 10))).toHaveLength(0);
     });
 
@@ -692,38 +699,39 @@ describe("PgShieldedMonitorStore", () => {
     });
 
     it("bumps the epoch and appends an event on every real transition, and on no no-op", async () => {
-      const { id } = await registerFixture(store, seedCounter);
-      const paused = await store.pause(id, "op");
-      expect(paused.epoch).toBe(1n);
+      const { id, epoch } = await registerFixture(store, seedCounter);
+      const live = await store.goLive(id, epoch, "scanner");
+      expect(live.epoch).toBe(1n);
 
-      const again = await store.pause(id, "op");
+      const again = await store.goLive(id, live.epoch, "scanner");
       expect(again.epoch).toBe(1n); // idempotent re-issue changes nothing
 
-      const resumed = await store.resume(id, "op");
-      expect(resumed).toMatchObject({ state: "backfilling", epoch: 2n });
+      const failed = await store.markFailed(id, "op", { code: "X", message: "stopped" });
+      expect(failed).toMatchObject({ state: "failed", epoch: 2n });
 
       const events = await store.listLifecycleEvents(id);
       expect(events.map((e) => [e.event, e.stateAfter, e.epochAfter])).toStrictEqual([
         ["register", "backfilling", 0n],
-        ["pause", "paused", 1n],
-        ["resume", "backfilling", 2n],
+        ["go_live", "live", 1n],
+        ["fail", "failed", 2n],
       ]);
       expect(events.map((e) => e.seq)).toStrictEqual([1n, 2n, 3n]);
-      expect(events[1]!.actor).toBe("op");
+      expect(events[1]!.actor).toBe("scanner");
     });
 
     it("go_live is fenced by the loaded epoch", async () => {
       const { id, epoch } = await registerFixture(store, seedCounter);
-      await store.pause(id, "op");
+      await store.markStaleSource(id, "op");
       await expect(store.goLive(id, epoch, "scanner")).rejects.toThrow(MonitorFencedError);
-      const resumed = await store.resume(id, "op");
-      const live = await store.goLive(id, resumed.epoch, "scanner");
-      expect(live.state).toBe("live");
     });
 
     it("refuses an illegal transition with a typed error", async () => {
+      // `failed` is terminal but for a delete: promoting one to `live` is not a thing the table
+      // admits, and the store says so with a typed error rather than silently doing nothing.
       const { id } = await registerFixture(store, seedCounter);
-      await expect(store.resume(id, "op")).rejects.toThrow(IllegalLifecycleTransitionError);
+      const failed = await store.markFailed(id, "op", { code: "X", message: "stopped" });
+      await expect(store.goLive(id, failed.epoch, "scanner"))
+        .rejects.toThrow(IllegalLifecycleTransitionError);
     });
 
     it("markFailed stores a typed, non-secret reason and stops the monitor", async () => {
@@ -745,23 +753,23 @@ describe("PgShieldedMonitorStore", () => {
       expect(JSON.stringify(stored[0]!.last_error)).not.toContain(keyHex);
 
       // A failed monitor is no longer scannable.
-      const record = await store.getIncludingRevoked(id);
+      const record = await store.getIncludingDeleted(id);
       await expect(store.advance(id, record!.epoch, 1n, [])).rejects.toThrow(MonitorFencedError);
     });
 
     it("markFailed and markStaleSource are fenceable by the worker's loaded epoch (FR-012)", async () => {
       const { id, epoch } = await registerFixture(store, seedCounter);
-      await store.pause(id, "consumer"); // the epoch moves under the worker
+      await store.goLive(id, epoch, "scanner"); // the epoch moves under the worker
       await expect(
         store.markFailed(id, "scanner", { code: "X", message: "y" }, epoch),
       ).rejects.toThrow(MonitorFencedError);
       await expect(
         store.markStaleSource(id, "scanner", { code: "X", message: "y" }, epoch),
       ).rejects.toThrow(MonitorFencedError);
-      expect((await store.getIncludingRevoked(id))!.state).toBe("paused");
+      expect((await store.getIncludingDeleted(id))!.state).toBe("live");
 
       // POSITIVE CONTROL: with the current epoch the same call is admitted.
-      const current = (await store.getIncludingRevoked(id))!;
+      const current = (await store.getIncludingDeleted(id))!;
       expect((await store.markFailed(id, "scanner", { code: "X", message: "y" }, current.epoch)).state)
         .toBe("failed");
     });
@@ -776,42 +784,27 @@ describe("PgShieldedMonitorStore", () => {
       await expect(store.advance(id, stale.epoch, 1n, [])).rejects.toThrow(MonitorFencedError);
     });
 
-    it("a pause does not erase a previously recorded lastError", async () => {
-      const { id } = await registerFixture(store, seedCounter);
-      await store.markFailed(id, "scanner", { code: "X", message: "y" });
-      await store.revoke(id, "op");
-      expect((await store.getIncludingRevoked(id))!.lastError?.code).toBe("X");
-    });
-
-    it("revoke stops processing and refuses reads (US3 scenario 3)", async () => {
+    it("a stopped monitor keeps its recorded lastError, and its matches stay readable", async () => {
+      // The reason `failed` is not a soft delete: the operator still needs to read what was found
+      // before it stopped, and the reason it stopped.
       const { id, epoch } = await registerFixture(store, seedCounter);
       await store.advance(id, epoch, 3n, [association(3n, 0)]);
-      const revoked = await store.revoke(id, "op");
-      expect(revoked.state).toBe("revoked");
-
-      await expect(store.get(id)).rejects.toThrow(MonitorRevokedError);
-      await expect(store.readAssociations(id, 0n, 10)).rejects.toThrow(MonitorRevokedError);
-      await expect(store.advance(id, revoked.epoch, 4n, [])).rejects.toThrow(MonitorFencedError);
-
-      // Idempotent: a second revoke changes nothing.
-      const again = await store.revoke(id, "op");
-      expect(again.epoch).toBe(revoked.epoch);
-
-      // The rows are still there — revoke keeps them and refuses access.
-      const rows = await sql<{ count: string }[]>`
-        SELECT count(*)::text AS count FROM ${sql(schema)}.associations WHERE monitor_id = ${id}
-      `;
-      expect(rows[0]!.count).toBe("1");
+      const current = await store.get(id);
+      await store.markFailed(id, "scanner", { code: "X", message: "y" }, current.epoch);
+      expect((await store.getIncludingDeleted(id))!.lastError?.code).toBe("X");
+      expect(await store.readAssociations(id, 0n, 10)).toHaveLength(1);
+      expect((await store.get(id)).state).toBe("failed");
     });
 
-    it("revoke is not scannable even from listActive", async () => {
+    it("a stopped monitor drops out of listActive but stays in listAll", async () => {
       const { id } = await registerFixture(store, seedCounter);
       expect((await store.listActive()).map((m) => m.id)).toContain(id);
-      await store.revoke(id, "op");
+      await store.markFailed(id, "op", { code: "X", message: "y" });
       expect((await store.listActive()).map((m) => m.id)).not.toContain(id);
+      expect((await store.listAll()).map((m) => m.id)).toContain(id);
     });
 
-    it("delete travels through revoked, destroys key and associations, and keeps the log (US3 scenario 4)", async () => {
+    it("delete destroys the key's identity, the matches and every scan fact, and keeps the log (US3 scenario 4)", async () => {
       const { id, epoch } = await registerFixture(store, seedCounter);
       await store.advance(id, epoch, 3n, [association(3n, 0), association(3n, 1)]);
 
@@ -835,15 +828,37 @@ describe("PgShieldedMonitorStore", () => {
       `;
       expect(assoc[0]!.count).toBe("0");
 
-      // The lifecycle log survives, and shows the revoke the delete travelled through.
+      // "With all the related data" (owner decision Q33): the tombstone keeps the monitor's id,
+      // its network and the fact that it is gone. Everything that described the monitor — its
+      // coverage claim, its archive binding, its last error, its requested start — is cleared.
+      const shape = await sql<{
+        requested_start_height: bigint; scanned_from_height: bigint | null;
+        scanned_through_height: bigint | null; source_genesis_hash: string | null;
+        last_error: unknown; last_assoc_seq: bigint;
+      }[]>`
+        SELECT requested_start_height, scanned_from_height, scanned_through_height,
+               source_genesis_hash, last_error, last_assoc_seq
+          FROM ${sql(schema)}.monitors WHERE id = ${id}
+      `;
+      expect(shape[0]).toMatchObject({
+        requested_start_height: 0n,
+        scanned_from_height: null,
+        scanned_through_height: null,
+        source_genesis_hash: null,
+        last_error: null,
+        last_assoc_seq: 0n,
+      });
+
+      // The lifecycle log survives — it is the record of what was done, and a delete is one of
+      // the things that was done. ONE transition since Q33, where it used to travel via revoke.
       const events = await store.listLifecycleEvents(id);
-      expect(events.map((e) => e.event)).toStrictEqual(["register", "revoke", "delete"]);
-      expect(events.map((e) => e.epochAfter)).toStrictEqual([0n, 1n, 2n]);
+      expect(events.map((e) => e.event)).toStrictEqual(["register", "delete"]);
+      expect(events.map((e) => e.epochAfter)).toStrictEqual([0n, 1n]);
 
       // Idempotent.
       const again = await store.delete(id, "op");
       expect(again?.state).toBe("deleted");
-      expect((await store.listLifecycleEvents(id)).length).toBe(3);
+      expect((await store.listLifecycleEvents(id)).length).toBe(2);
     });
 
     it("deleting an unknown monitor is a no-op, not an error", async () => {
@@ -858,7 +873,7 @@ describe("PgShieldedMonitorStore", () => {
       const first = await registerFixture(store, seedCounter);
       const second = await registerFixture(store, seedCounter + 1);
       await store.advance(first.id, first.epoch, 3n, [association(3n, 0)]);
-      await store.pause(second.id, "op");
+      await store.markFailed(second.id, "op", { code: "X", message: "y" });
 
       const rows = await sql<{ id: string; key_serialized: Buffer | null; fingerprint: Buffer | null }[]>`
         SELECT id, key_serialized, fingerprint FROM ${sql(schema)}.monitors
@@ -935,106 +950,7 @@ describe("PgShieldedMonitorStore", () => {
       expect(await store.readAssociations(id, 0n, 10)).toStrictEqual([]);
       expect((await store.get(id)).coverage.scannedThrough).toBeUndefined();
     });
-
-    it("[[shielded-monitor.backfill.fills-null-rows-once-and-is-idempotent]] fills only NULL rows, exactly once, and a second run changes nothing", async () => {
-      const { id, epoch } = await registerFixture(store, seedCounter);
-      // Three pre-00009-07 rows plus one already carrying details.
-      await store.advance(id, epoch, 4n, [
-        association(1n, 0),
-        association(2n, 0),
-        association(3n, 0),
-        association(4n, 0, { details: detailsFor("already"), blockTimestampMs: 1n }),
-      ]);
-
-      const missing = await store.readAssociationsMissingDetails(id, 0n, 100);
-      expect(missing.map((r) => r.seq)).toStrictEqual([1n, 2n, 3n]);
-
-      const first = await store.updateAssociationDetails(id, epoch, missing.map((r) => ({
-        seq: r.seq,
-        details: detailsFor(`filled-${r.seq}`),
-        blockTimestampMs: 1_000n + r.seq,
-      })));
-      expect(first.applied).toBe(3);
-
-      const afterFill = await store.readAssociations(id, 0n, 100);
-      expect(afterFill.map((r) => r.details?.segments[0]?.outputs[0]?.commitment)).toStrictEqual([
-        "filled-1", "filled-2", "filled-3", "already",
-      ]);
-      expect(afterFill.map((r) => r.blockTimestampMs)).toStrictEqual([1001n, 1002n, 1003n, 1n]);
-      expect(await store.readAssociationsMissingDetails(id, 0n, 100)).toStrictEqual([]);
-
-      // Idempotent BY PREDICATE: re-running the same updates fills nothing, and — the assertion
-      // that matters — cannot overwrite what is already there.
-      const second = await store.updateAssociationDetails(id, epoch, [
-        ...missing.map((r) => ({ seq: r.seq, details: detailsFor("second-run") })),
-        { seq: 4n, details: detailsFor("second-run") },
-      ]);
-      expect(second.applied).toBe(0);
-      const afterRerun = await store.readAssociations(id, 0n, 100);
-      expect(afterRerun.map((r) => r.details?.segments[0]?.outputs[0]?.commitment)).toStrictEqual([
-        "filled-1", "filled-2", "filled-3", "already",
-      ]);
-      expect(afterRerun.map((r) => r.blockTimestampMs)).toStrictEqual([1001n, 1002n, 1003n, 1n]);
-    });
-
-    it("pages the missing-details work list forward by seq, so an unfillable row cannot stall it", async () => {
-      const { id, epoch } = await registerFixture(store, seedCounter);
-      await store.advance(id, epoch, 3n, [association(1n, 0), association(2n, 0), association(3n, 0)]);
-      const page1 = await store.readAssociationsMissingDetails(id, 0n, 2);
-      expect(page1.map((r) => r.seq)).toStrictEqual([1n, 2n]);
-      // Nothing is filled, yet the next page moves on — the property a backfill needs when it
-      // legitimately cannot derive a row.
-      const page2 = await store.readAssociationsMissingDetails(id, page1[1]!.seq, 2);
-      expect(page2.map((r) => r.seq)).toStrictEqual([3n]);
-    });
-
-    it("rejects a stale epoch, and writes nothing when it does (FR-012)", async () => {
-      const { id, epoch } = await registerFixture(store, seedCounter);
-      await store.advance(id, epoch, 1n, [association(1n, 0)]);
-      // A lifecycle transition lands under the backfill.
-      await store.pause(id, "op");
-      await expect(
-        store.updateAssociationDetails(id, epoch, [{ seq: 1n, details: detailsFor("x") }]),
-      ).rejects.toThrow(MonitorFencedError);
-      expect((await store.readAssociations(id, 0n, 10))[0]!.details).toBeUndefined();
-
-      // With the CURRENT epoch it goes through — and a paused monitor is deliberately fillable:
-      // its matches are still readable, so leaving them detail-less would make the dashboard's
-      // "run the backfill" placeholder a lie.
-      const paused = await store.get(id);
-      const applied = await store.updateAssociationDetails(id, paused.epoch, [
-        { seq: 1n, details: detailsFor("x") },
-      ]);
-      expect(applied.applied).toBe(1);
-    });
-
-    it("refuses a revoked monitor and reports a deleted one as not found", async () => {
-      const revoked = await registerFixture(store, seedCounter);
-      await store.advance(revoked.id, revoked.epoch, 1n, [association(1n, 0)]);
-      const revokedNow = await store.revoke(revoked.id, "op");
-      await expect(store.readAssociationsMissingDetails(revoked.id, 0n, 10)).rejects.toThrow(MonitorRevokedError);
-      await expect(
-        store.updateAssociationDetails(revoked.id, revokedNow.epoch, [{ seq: 1n, details: detailsFor("x") }]),
-      ).rejects.toThrow(MonitorRevokedError);
-
-      const deletedNow = await store.delete(revoked.id, "op");
-      await expect(store.readAssociationsMissingDetails(revoked.id, 0n, 10)).rejects.toThrow(MonitorNotFoundError);
-      // The epoch is irrelevant here on purpose: a deleted monitor is "not found" BEFORE the
-      // fence is consulted, so no epoch can talk its way past US3 scenario 4.
-      await expect(
-        store.updateAssociationDetails(
-          revoked.id, deletedNow?.epoch ?? revokedNow.epoch, [{ seq: 1n, details: detailsFor("x") }],
-        ),
-      ).rejects.toThrow(MonitorNotFoundError);
-    });
-
-    it("an empty update list is a no-op that does not even open a transaction's worth of work", async () => {
-      const { id, epoch } = await registerFixture(store, seedCounter);
-      expect(await store.updateAssociationDetails(id, epoch, [])).toStrictEqual({ applied: 0 });
-    });
   });
-
-  // ── listAll: the operator read (00009-06) ─────────────────────────────────────────────────
 
   describe("listAll", () => {
     /** Its own schema, so the ordering and membership assertions below are about exactly the
@@ -1049,25 +965,24 @@ describe("PgShieldedMonitorStore", () => {
       const { sql: ownSql, store: ownStore } = await ownSchema();
       try {
         const live = await registerFixture(ownStore, 9001);
-        const paused = await registerFixture(ownStore, 9002);
+        const backfilling = await registerFixture(ownStore, 9002);
         const failed = await registerFixture(ownStore, 9003);
-        const revoked = await registerFixture(ownStore, 9004);
+        const stale = await registerFixture(ownStore, 9004);
         const deleted = await registerFixture(ownStore, 9005);
 
         await ownStore.goLive(live.id, live.epoch, "op");
-        await ownStore.pause(paused.id, "op");
         await ownStore.markFailed(failed.id, "op", { code: "UNSUPPORTED_PROTOCOL_VERSION", message: "x" });
-        await ownStore.revoke(revoked.id, "op");
+        await ownStore.markStaleSource(stale.id, "op");
         await ownStore.delete(deleted.id, "op");
 
         const all = await ownStore.listAll();
         // Order is registration order, which is what an operator's list must be: it does not
         // reshuffle when a monitor changes state under them.
-        expect(all.map((m) => m.id)).toStrictEqual([live.id, paused.id, failed.id, revoked.id]);
-        expect(all.map((m) => m.state)).toStrictEqual(["live", "paused", "failed", "revoked"]);
+        expect(all.map((m) => m.id)).toStrictEqual([live.id, backfilling.id, failed.id, stale.id]);
+        expect(all.map((m) => m.state)).toStrictEqual(["live", "backfilling", "failed", "stale_source"]);
 
-        // `listActive` answers a DIFFERENT question and still does: only the scannable two.
-        expect((await ownStore.listActive()).map((m) => m.id)).toStrictEqual([live.id]);
+        // `listActive` answers a DIFFERENT question and still does: only the scannable ones.
+        expect((await ownStore.listActive()).map((m) => m.id)).toStrictEqual([live.id, backfilling.id]);
       } finally {
         await ownSql.end({ timeout: 5 });
       }
@@ -1123,7 +1038,7 @@ describe("PgShieldedMonitorStore", () => {
       const { sql, store } = await freshStore(container, uniqueSchema("sm_idle"));
       try {
         expect(await store.listActive()).toStrictEqual([]);
-        expect(await store.listRevocations()).toStrictEqual([]);
+        expect(await store.listDeletions()).toStrictEqual([]);
         expect(await store.listAll()).toStrictEqual([]);
       } finally {
         await sql.end({ timeout: 5 });
