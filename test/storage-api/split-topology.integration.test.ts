@@ -71,6 +71,9 @@ describe("the split topology: 2 monitor-nodes + 1 balancer + 1 storage API, one 
   let nodes: RunningNode[] = [];
   let balancer: Balancer;
   let balancerUrl: string;
+  /** The highest height archived so far; `appendEmptyBlock` walks it forward, parent-linked. */
+  let tipHeight: number;
+  let tipHash: string;
 
   /** The environment a split B container really gets: one URL, and nothing else. */
   const splitEnv = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
@@ -104,6 +107,28 @@ describe("the split topology: 2 monitor-nodes + 1 balancer + 1 storage API, one 
     const address = await api.listen();
     await node.start({ loops: false });
     return { node, api, url: `http://127.0.0.1:${address.port}` };
+  }
+
+  /**
+   * Commits one more, empty, block through the archive's REAL writer, so the tip a node reads
+   * moves the way it does in a running deployment. Needed by the lifecycle case: "coverage frozen"
+   * only means something while the tip is going somewhere.
+   */
+  async function appendEmptyBlock(): Promise<bigint> {
+    const template = world.corpus.bundles.at(-1)!;
+    const height = tipHeight + 1;
+    const blockHash = `${"c".repeat(58)}${height.toString(16).padStart(6, "0")}`;
+    await world.archiveStore.putBlockBundle({
+      ...template,
+      block: { ...template.block, height, blockHash, parentHash: tipHash },
+      transactions: [],
+      bridgeObservations: [],
+      watermark: { key: `sync_cursor:${NET}`, value: { height } },
+      notifyChannel: "chain_archive_progress",
+    });
+    tipHeight = height;
+    tipHash = blockHash;
+    return BigInt(height);
   }
 
   /** Turns every node's queues until nothing is left to do. */
@@ -141,6 +166,8 @@ describe("the split topology: 2 monitor-nodes + 1 balancer + 1 storage API, one 
     // deployment is in after a restart: rows with coverage and no holder. The nodes below then
     // take custody by being SENT the keys, which is the only way a key ever enters one.
     world = await createScannerWorld(container, "split", { maxConnections: 12 });
+    tipHeight = world.corpus.bundles.at(-1)!.block.height;
+    tipHash = world.corpus.bundles.at(-1)!.block.blockHash;
 
     // ── A side: the one process with a credential ──────────────────────────────────────────
     storage = await startStorageApi(world.store, {
@@ -451,4 +478,71 @@ describe("the split topology: 2 monitor-nodes + 1 balancer + 1 storage API, one 
       await loggingNode.node.stop();
     }
   }, 180_000);
+
+  it("[[shielded-monitor.node.resume-through-the-balancer-needs-no-resend]] a pause through the balancer freezes the holder's key and its coverage, and a resume brings it back to live with no re-send", async () => {
+    // §11 check 8, and organizer question Q31, which that check found: a pause reaches the holder
+    // through the fence in its next `advance-batch`, but a RESUME has no such route — a paused key
+    // is not in the live set, so no batch item of its ever comes back fenced. Until the balancer
+    // forwarded lifecycle events and the node re-read its paused keys per block, the monitor
+    // stayed `paused` inside its holder forever while the storage record said `backfilling`.
+    const monitorId = world.monitors.get("Kthird")!;
+    const holder = nodes.find((n) => n.node.holdsMonitor(monitorId).holds)!;
+    expect(holder, "the key must be held before it can be paused").toBeDefined();
+    const associationsBefore = await world.store.readAssociations(monitorId, 0n, 100);
+    const coverageBefore = (await world.store.get(monitorId)).coverage.scannedThrough;
+
+    // ── Pause ──────────────────────────────────────────────────────────────────────────────
+    const paused = await fetch(`${balancerUrl}/v1/monitors/${monitorId}/pause`, { method: "POST" });
+    expect(paused.status).toBe(200);
+    // Nothing has been scanned since, so the ONLY thing that can have told the holder is the
+    // event the balancer forwarded after that 200.
+    await waitFor(
+      async () => holder.node.holdsMonitor(monitorId).phase === "paused",
+      10_000,
+      "the holder marks its key paused",
+    );
+    const pausedView = (await (await fetch(`${balancerUrl}/v1/monitors/${monitorId}`)).json()) as {
+      state: string; heldBy: string | null; heldPhase: string | null; keyNeeded: boolean;
+    };
+    expect(pausedView).toMatchObject({
+      state: "paused", heldBy: holder.node.nodeId, heldPhase: "paused", keyNeeded: false,
+    });
+
+    // ── The tip moves; this monitor's coverage does not ────────────────────────────────────
+    const frozenAt = await appendEmptyBlock();
+    await drainNodes();
+    expect((await world.store.get(monitorId)).coverage.scannedThrough,
+      "a paused monitor's coverage is frozen while the tip advances").toBe(coverageBefore);
+    // Non-vacuity: the block really was scanned — for every OTHER monitor the node holds.
+    const neighbour = world.monitors.get("K")!;
+    expect((await world.store.get(neighbour)).coverage.scannedThrough).toBe(frozenAt);
+    expect(holder.node.holdsMonitor(monitorId).phase, "and the key is kept, not dropped").toBe("paused");
+
+    // ── Resume, with NO re-send of the key ─────────────────────────────────────────────────
+    const resumed = await fetch(`${balancerUrl}/v1/monitors/${monitorId}/resume`, { method: "POST" });
+    expect(resumed.status).toBe(200);
+    expect((await resumed.json() as { state: string }).state).toBe("backfilling");
+    await waitFor(
+      async () => holder.node.holdsMonitor(monitorId).phase === "syncing",
+      10_000,
+      "the holder puts the resumed key back into sync",
+    );
+
+    await drainNodes();
+    expect(holder.node.holdsMonitor(monitorId).phase).toBe("live");
+    const after = await world.store.get(monitorId);
+    expect(after.coverage.scannedThrough, "coverage caught up with the tip").toBe(frozenAt);
+    expect(after.state).toBe("live");
+    expect(after.gaps, "the catch-up is a sync, not a hole").toStrictEqual([]);
+    // The matches are exactly the ones that were there: a resume re-reads the range it missed and
+    // must not double-write what it already had.
+    expect((await world.store.readAssociations(monitorId, 0n, 100))
+      .map((a) => `${a.blockHeight}/${a.position}`))
+      .toStrictEqual(associationsBefore.map((a) => `${a.blockHeight}/${a.position}`));
+
+    const liveView = (await (await fetch(`${balancerUrl}/v1/monitors/${monitorId}`)).json()) as {
+      state: string; heldPhase: string | null; keyNeeded: boolean;
+    };
+    expect(liveView).toMatchObject({ state: "live", heldPhase: "live", keyNeeded: false });
+  }, 300_000);
 });
