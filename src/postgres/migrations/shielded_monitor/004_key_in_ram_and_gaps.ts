@@ -93,10 +93,9 @@ export async function up(sql: ISql, schema: string): Promise<void> {
   // primary-key lookup.
   //
   // `ON DELETE CASCADE` for the same reason `monitor_leases` has it: `delete` leaves a tombstone
-  // row in `monitors`, and a gap outliving its monitor would be a row nothing could clean up. It
-  // also means `delete`'s own `DELETE FROM associations` needs no sibling statement here — the
-  // cascade fires when the monitor row would be removed, and the tombstone path shreds gaps
-  // explicitly (see `PgShieldedMonitorStore.delete`).
+  // row in `monitors`, and a gap outliving its monitor would be a row nothing could clean up. Note
+  // that the cascade therefore never fires for a delete — the monitor row survives — so the
+  // store's own delete path shreds these rows explicitly, alongside the associations.
   await sql`
     CREATE TABLE IF NOT EXISTS ${sql(schema)}.monitor_gaps (
       monitor_id  uuid        NOT NULL REFERENCES ${sql(schema)}.monitors (id) ON DELETE CASCADE,
