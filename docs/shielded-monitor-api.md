@@ -410,10 +410,18 @@ towards more data, never towards a silently smaller page.
   endpoint is a `400`, not a silently wrong page.
 - The **same cursor with the same `limit` returns the same page**. Associations are append-only
   under a monotone sequence, so no row can ever appear below a position you have already read.
+- The sequence behind the cursor is **monotonic, not dense**. A back-sync that re-reads a range it
+  had already recorded skips the rows it already holds and leaves their numbers unused, so there
+  are gaps in the underlying sequence. Nothing about paging changes — a page is "the next `limit`
+  rows above this cursor", and a number nobody stops at costs nothing — but do not treat a cursor
+  as a count of matches, and do not compute "how many are left" from two cursors.
 - An **empty page returns your own cursor back**, not `null`. A poller can write `nextCursor` to
   its cursor file unconditionally on every tick, including at the end of the stream.
-- Items are ordered by `(blockHeight, position)`. That ordering is structural: sequence numbers
-  are allocated in that order inside the same transaction that advances coverage.
+- Items are ordered by `(blockHeight, position)` **within a scan**: sequence numbers are allocated
+  in that order inside the same transaction that advances coverage. A match found later by a
+  back-sync over an older range is appended at the END of the sequence, above matches at greater
+  heights, which is deliberate — a poller that has already paged past that height must still be
+  handed the match. So the sequence is a delivery order, not a height order.
 
 Polling loop, in words: read your cursor file → `GET …/matches?cursor=…` → persist `nextCursor`
 → process `items` → sleep. Persisting before processing means a crash re-reads a page you have

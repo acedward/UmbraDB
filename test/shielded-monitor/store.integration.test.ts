@@ -588,10 +588,14 @@ describe("PgShieldedMonitorStore", () => {
       expect(filled.gaps, "and the gap is cleared all the same").toStrictEqual([]);
       expect(await store.listGaps(id)).toStrictEqual([]);
 
-      // Two rows, and the sequence is DENSE: allocating a `seq` for the row that was skipped
-      // would leave a hole, and a hole is a cursor step that hands a consumer nothing.
+      // Two rows, one per observation. `seq` is MONOTONIC but not dense (owner decision Q32,
+      // option B): the skipped row's number was allocated and not used, so there is a hole at 2.
+      // Safe, because `seq` is a cursor and not a count — a page asks for `seq > afterSeq` and a
+      // hole is simply a number nobody stops at.
       const rows = await store.readAssociations(id, 0n, 100);
-      expect(rows.map((r) => `${r.blockHeight}@${r.seq}`)).toStrictEqual(["5@1", "7@2"]);
+      expect(rows.map((r) => Number(r.blockHeight))).toStrictEqual([5, 7]);
+      const seqs = rows.map((r) => r.seq);
+      expect(seqs[0]! < seqs[1]!, "monotonic").toBe(true);
 
       // Idempotent from here on: the same back-sync run twice writes nothing more, which is what
       // makes a retry after a lost response safe.
