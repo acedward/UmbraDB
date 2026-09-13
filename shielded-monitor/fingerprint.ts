@@ -45,6 +45,29 @@ export function assertNetworkId(net: string): void {
   }
 }
 
+/** The Bech32m human-readable prefix for a shielded encryption secret key
+ *  (`AddressType::hrp_prefix`, `indexer-api/src/infra/api/v4.rs:160-166`). */
+export const SHIELD_ESK_HRP_PREFIX = "mn_shield-esk";
+
+/**
+ * The human-readable part a viewing key must carry on `net`.
+ *
+ * Reproduces `AddressType::hrp` (`indexer-api/src/infra/api/v4.rs:149-158`) exactly, including its
+ * case-insensitive comparison against `mainnet`: the bare prefix on mainnet, `<prefix>_<net>`
+ * everywhere else.
+ *
+ * It lives HERE rather than in `viewing-key.ts` (which re-exports it) because of 00009-09: the
+ * balancer decodes a submitted key far enough to compute its fingerprint and route the
+ * registration, and it must do that **without loading the ledger WASM**. `viewing-key.ts` reaches
+ * the ledger loader; this module reaches `node:crypto` and nothing else, so a component that only
+ * needs the HRP rule and the hash can have them without the WASM.
+ */
+export function hrpForNetwork(net: string): string {
+  assertNetworkId(net);
+  if (net.toLowerCase() === "mainnet") return SHIELD_ESK_HRP_PREFIX;
+  return `${SHIELD_ESK_HRP_PREFIX}_${net.toLowerCase()}`;
+}
+
 /**
  * Computes the 32-byte registration fingerprint for a serialized encryption secret key on one
  * network.

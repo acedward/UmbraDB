@@ -1,7 +1,7 @@
 import { loadLedgerV8 } from "../chain-archive-sync/tx-replay-decoder.js";
 import { decodeBech32m, encodeBech32m } from "./bech32m.js";
 import { InvalidViewingKeyError } from "./errors.js";
-import { assertNetworkId, monitorFingerprint } from "./fingerprint.js";
+import { assertNetworkId, hrpForNetwork, monitorFingerprint, SHIELD_ESK_HRP_PREFIX } from "./fingerprint.js";
 
 /**
  * Viewing-key intake (organizer spec FR-001/FR-002/FR-023).
@@ -45,29 +45,18 @@ import { assertNetworkId, monitorFingerprint } from "./fingerprint.js";
  *  already depends on (`vendor/ledger-v8-syshash/PROVENANCE.md`). */
 export const LEDGER_BUILD_ID = "ledger-v8@8.1.0-syshash.4";
 
-/** The Bech32m human-readable prefix for a shielded encryption secret key
- *  (`AddressType::hrp_prefix`, `indexer-api/src/infra/api/v4.rs:160-166`). */
-export const SHIELD_ESK_HRP_PREFIX = "mn_shield-esk";
-
 /** What every redacting path renders instead of the key. */
 export const REDACTED = "[ShieldedViewingKey redacted]";
 
 /**
- * The human-readable part a viewing key must carry on `net`.
+ * The HRP rule and the prefix, re-exported from `fingerprint.ts`, which is where they moved in
+ * 00009-09 so that the balancer can use them without pulling in this module's ledger loader.
  *
- * Reproduces `AddressType::hrp` (`indexer-api/src/infra/api/v4.rs:149-158`) exactly, including
- * its case-insensitive comparison against `mainnet`: the bare prefix on mainnet, `<prefix>_<net>`
- * everywhere else. The acceptance network for this project is `undeployed` (owner Q7).
- *
- * The returned HRP is lowercased, because {@link decodeBech32m} lowercases before returning and
- * the comparison in {@link parseViewingKey} is then exact. A network id containing uppercase
- * would otherwise produce an HRP that can never match anything.
+ * The acceptance network for this project is `undeployed` (owner Q7). The returned HRP is
+ * lowercased, because {@link decodeBech32m} lowercases before returning and the comparison in
+ * {@link parseViewingKey} is then exact.
  */
-export function hrpForNetwork(net: string): string {
-  assertNetworkId(net);
-  if (net.toLowerCase() === "mainnet") return SHIELD_ESK_HRP_PREFIX;
-  return `${SHIELD_ESK_HRP_PREFIX}_${net.toLowerCase()}`;
-}
+export { hrpForNetwork, SHIELD_ESK_HRP_PREFIX };
 
 /**
  * A validated shielded viewing key, held in memory.
