@@ -141,10 +141,46 @@ export function statusesFromReport(report: JsonReport): Map<string, string[]> {
  *  existing Rule B gate: a height's details must commit inside the height's own transaction, and
  *  the classifier is shown to refuse the state where they did not.
  *
+ *  50 -> 56 (00009-08 v2): six ids for project B as a distinct deployable — the store parity
+ *  across the process boundary, the 409 fence round trip, the import guard, the balancer's
+ *  selection, the lost-response protocol, and the split topology end to end.
+ *
+ *  56 -> 73 (00009-09): seventeen ids for the merged monitor-node, in four groups.
+ *
+ *  KEYS ONLY IN RAM. `…store.no-key-material-is-ever-written` and
+ *  `…migrations.live-monitor-needs-no-key` pin the database half — nothing writes a key any more,
+ *  and the CHECK that used to REQUIRE one now forbids requiring it.
+ *  `…node.key-bytes-are-zeroed-the-moment-the-handle-exists` pins the process half: the serialized
+ *  bytes are zero-filled as soon as the ledger has them, and the handle is cleared on every path a
+ *  key leaves by. `…node.scanner-never-clears-a-borrowed-key` is its inverse and is easy to get
+ *  wrong in a refactor: the scanner BORROWS the node's handle, so a `clear()` in a `finally` —
+ *  which is exactly what 00009-08's scanner did — would now destroy a key still in use.
+ *  `…node.paused-keeps-the-key-and-revoked-clears-it` pins OP-3.
+ *  `…key-never-logged-through-the-balancer-and-the-node` extends SC-004 to the two new places a
+ *  key passes through.
+ *
+ *  THE BLOCK-CENTRIC COMMIT. `…store.advance-batch-reports-fenced-items-without-failing-the-block`
+ *  pins OP-2, and `crash.shielded-monitor-batch.advance-batch-is-all-or-nothing` is the Rule B
+ *  gate GROWN to the new unit: a kill mid-transaction must not leave one monitor of a block with
+ *  the height and another without it — a property the single-monitor case cannot express at all.
+ *
+ *  GAPS AND RECOVERY. `…node.gap-detected-and-back-synced` is the HAS_SCANNED_ONCE detector, which
+ *  needs a coverage state a healthy run closes too fast to observe; `…store.fill-gap-shrinks-
+ *  splits-and-deletes` is the four shapes of a fill; `…store.register-upserts-by-fingerprint-and-
+ *  returns-coverage-and-gaps` is what makes a re-send a resume rather than a rescan; and
+ *  `…node.restart-shows-key-needed-and-a-resend-resumes` is the whole §4.6 recovery, end to end.
+ *
+ *  ROUTING. `…balancer.routing-decision-table` enumerates design §7,
+ *  `…balancer.hint-invalidated-when-a-node-goes-away` pins the one thing that makes a stale hint
+ *  harmless, `…balancer.duplicate-registration-lands-on-the-holder` is the property the whole
+ *  routing design exists for, and `…balancer.internal-routes-are-never-forwarded` is the second
+ *  lock on the nodes' private door. `storage-api.removed-routes-answer-410` pins the four routes
+ *  this phase removed as REMOVED rather than missing.
+ *
  *  UNION RULE, unchanged and still load-bearing: a branch that merges this one with any other
  *  00009 branch takes the UNION of the id sets and the count that follows from it, never one
  *  side's number. */
-export const EXPECTED_REQUIRED_COUNT = 56;
+export const EXPECTED_REQUIRED_COUNT = 73;
 
 /** The pinned count of `deferred` (WHERE-gated optional-feature) tests (BLOCK 6). Structurally PINS
  *  the deferred exemption set so deleting the sole deferred entry (a green "0 deferred" gate) fails the

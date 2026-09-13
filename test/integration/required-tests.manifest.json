@@ -278,9 +278,94 @@
       "description": "00009-08 v2 (US5 scenario 2, FR-010): an advance whose response is lost AFTER it committed is resolved by re-reading the monitor, not by a second POST; the height is observable exactly once and classifyRuleBState - the writer suite's own classifier, unrelaxed - reports all-of-height."
     },
     {
-      "id": "storage-api.split-topology.two-scanners-two-apis-one-balancer",
+      "id": "storage-api.split-topology.two-monitor-nodes-one-balancer",
       "file": "test/storage-api/split-topology.integration.test.ts",
-      "description": "00009-08 v2 (FR-025, FR-026): two scanners holding only STORAGE_URL reproduce the fixture oracle exactly once with no duplicated commit, both instances do work, and every lease is handed back - the split deployment's central claim."
+      "description": "00009-09: two real monitor-nodes behind the balancer over one storage API — every key registered through the balancer is scanned exactly once, by the node that holds it, and both nodes hold something."
+    },
+    {
+      "id": "shielded-monitor.store.no-key-material-is-ever-written",
+      "file": "test/shielded-monitor/store.integration.test.ts",
+      "description": "00009-09: no row of `monitors` holds key material in any state — the column that used to is NULL for everything this code path can produce (owner decision Q28)."
+    },
+    {
+      "id": "shielded-monitor.migrations.live-monitor-needs-no-key",
+      "file": "test/shielded-monitor/migrations.integration.test.ts",
+      "description": "00009-09: migration 004 inverts the CHECK — a live monitor with no key is now the only shape the code produces, and a deleted one still sheds its identity."
+    },
+    {
+      "id": "shielded-monitor.store.advance-batch-reports-fenced-items-without-failing-the-block",
+      "file": "test/shielded-monitor/store.integration.test.ts",
+      "description": "00009-09 (OP-2): one block, several monitors, one transaction — the healthy ones advance and the fenced ones come back with a reason instead of failing the block."
+    },
+    {
+      "id": "shielded-monitor.store.fill-gap-shrinks-splits-and-deletes",
+      "file": "test/shielded-monitor/store.integration.test.ts",
+      "description": "00009-09: a back-sync's fill shrinks, splits or deletes the gap rows it covers, keeps the original recordedAt on a remainder, and never moves coverage."
+    },
+    {
+      "id": "shielded-monitor.store.register-upserts-by-fingerprint-and-returns-coverage-and-gaps",
+      "file": "test/shielded-monitor/store.integration.test.ts",
+      "description": "00009-09: re-registering a fingerprint returns the existing monitor WITH its coverage and gaps — which is how a node resumes a key after a restart instead of rescanning."
+    },
+    {
+      "id": "crash.shielded-monitor-batch.advance-batch-is-all-or-nothing",
+      "file": "test/integration/crash/shielded-monitor-batch-atomicity.crash.test.ts",
+      "description": "00009-09: randomized PostgreSQL kills inside a BLOCK batch leave the height either absent for every monitor in it or complete for every monitor in it, with no duplicate (monitor, height, position)."
+    },
+    {
+      "id": "shielded-monitor.node.key-bytes-are-zeroed-the-moment-the-handle-exists",
+      "file": "test/shielded-monitor/monitor-node.test.ts",
+      "description": "00009-09: the serialized key is zero-filled as soon as the ledger has it, and the handle is cleared on every path a key leaves by."
+    },
+    {
+      "id": "shielded-monitor.node.gap-detected-and-back-synced",
+      "file": "test/shielded-monitor/monitor-node.test.ts",
+      "description": "00009-09: the HAS_SCANNED_ONCE check records the range a key missed on its first live block, in the same transaction that moves coverage, and the queued back-sync fills it without moving coverage."
+    },
+    {
+      "id": "shielded-monitor.node.paused-keeps-the-key-and-revoked-clears-it",
+      "file": "test/shielded-monitor/monitor-node.test.ts",
+      "description": "00009-09 (OP-3): a paused key stays in RAM so a resume needs no re-send; a revoked or deleted one is destroyed."
+    },
+    {
+      "id": "shielded-monitor.node.scanner-never-clears-a-borrowed-key",
+      "file": "test/shielded-monitor/scanner.test.ts",
+      "description": "00009-09: the scanner borrows the node's key handle and must never clear it — clearing at the end of a batch would destroy a key the node is still monitoring with."
+    },
+    {
+      "id": "shielded-monitor.balancer.routing-decision-table",
+      "file": "test/shielded-monitor/balancer-routing.test.ts",
+      "description": "00009-09 (design §7): hint verified with holds, stale hint not trusted, a holder beats any load, argmin(keysHeld then queueB) otherwise, and a node that cannot answer the fan-out is not a candidate."
+    },
+    {
+      "id": "shielded-monitor.balancer.hint-invalidated-when-a-node-goes-away",
+      "file": "test/shielded-monitor/balancer-routing.test.ts",
+      "description": "00009-09: every hint naming a node is dropped the moment that node is seen to be gone — a dead node holds nothing."
+    },
+    {
+      "id": "shielded-monitor.balancer.duplicate-registration-lands-on-the-holder",
+      "file": "test/storage-api/split-topology.integration.test.ts",
+      "description": "00009-09: re-sending a key reaches the node that already holds it, every time, and never mints a second custodian."
+    },
+    {
+      "id": "shielded-monitor.balancer.internal-routes-are-never-forwarded",
+      "file": "test/storage-api/split-topology.integration.test.ts",
+      "description": "00009-09: /internal/* is answered 404 by the balancer and never reaches a node, while the same route is served on a node directly."
+    },
+    {
+      "id": "shielded-monitor.node.restart-shows-key-needed-and-a-resend-resumes",
+      "file": "test/storage-api/split-topology.integration.test.ts",
+      "description": "00009-09 (design §4.6): killing the holder leaves the monitor reporting `key needed`, and re-sending the key routes it to the survivor, which resumes from the stored coverage with no duplicate association."
+    },
+    {
+      "id": "shielded-monitor.key-never-logged-through-the-balancer-and-the-node",
+      "file": "test/storage-api/split-topology.integration.test.ts",
+      "description": "00009-09 (SC-004 extended): a registration's viewing key reaches no log line at the balancer (which reads the body to route it) or at the node (which holds the key), with a positive control."
+    },
+    {
+      "id": "storage-api.removed-routes-answer-410",
+      "file": "test/storage-api/storage-api.test.ts",
+      "description": "00009-09: key-material and the three lease routes answer 410 GONE with a message naming the decision, not 404."
     }
   ],
   "deferred": [
