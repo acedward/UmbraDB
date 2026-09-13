@@ -1,12 +1,12 @@
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
-import { MonitorFencedError, MonitorRevokedError } from "../../shielded-monitor/errors.js";
+import { MonitorNotFoundError } from "../../shielded-monitor/errors.js";
 import {
-  applyRevocationList,
-  exportRevocationList,
-  type RevocationListFile,
-} from "../../shielded-monitor/revocation-list.js";
+  applyDeletionList,
+  exportDeletionList,
+  type DeletionListFile,
+} from "../../shielded-monitor/deletion-list.js";
 import { PgShieldedMonitorStore } from "../../storage-api/monitor-store-pg.js";
 import { bootstrapShieldedMonitorSchema } from "../../storage-api/bootstrap.js";
 import { association, registerFixture } from "./helpers.js";
@@ -17,19 +17,24 @@ import { association, registerFixture } from "./helpers.js";
  * `docs/shielded-monitor-restore.md`; this is the drill that keeps it honest.
  *
  * A real `pg_dump` and a real `psql` restore inside the container, not a simulated one — the
- * whole point of the procedure is that the snapshot genuinely does not contain the revoke, and
- * only a real round trip proves that. The revocation list lives in this test process, which is
+ * whole point of the procedure is that the snapshot genuinely does not contain the delete, and
+ * only a real round trip proves that. The deletion list lives in this test process, which is
  * exactly the "outside the snapshot's rollback domain" the requirement asks for.
  *
  * Non-vacuousness is asserted in the middle of the drill: immediately after the restore and
- * BEFORE the list is applied, the revoked monitor is readable again. If that step ever stops
- * failing-open, the drill is no longer testing anything and this test says so.
+ * BEFORE the list is applied, the deleted monitor is readable again, matches and all. If that
+ * step ever stops failing-open, the drill is no longer testing anything and this test says so.
+ *
+ * Since owner decision Q33 the mechanism protects a DELETE rather than a revoke — a key is given
+ * or it is deleted, and there is nothing in between — but the property is the same one FR-024
+ * always named: an operator's irreversible decision must not be undone by restoring a backup
+ * taken before they made it.
  */
 
 const SCHEMA = "shielded_monitor_restore";
 const DUMP_PATH = "/tmp/shielded-monitor-restore-drill.sql";
 
-describe("restore drill: a revoke that post-dates the snapshot survives it", () => {
+describe("restore drill: a delete that post-dates the snapshot survives it", () => {
   let container: StartedPostgreSqlContainer;
   let sql: UmbraDBSql;
   let store: PgShieldedMonitorStore;
@@ -63,14 +68,14 @@ describe("restore drill: a revoke that post-dates the snapshot survives it", () 
     await container?.stop();
   }, 60_000);
 
-  it("[[shielded-monitor.restore.revocation-survives-snapshot-restore]] snapshot -> revoke -> restore -> apply list -> monitor still refused", async () => {
+  it("[[shielded-monitor.restore.deletion-survives-snapshot-restore]] snapshot -> delete -> restore -> apply list -> monitor gone again", async () => {
     // ── 1. State worth restoring ──────────────────────────────────────────────────────────
     const doomed = await registerFixture(store, 9001);
     const survivor = await registerFixture(store, 9002);
     await store.advance(doomed.id, doomed.epoch, 5n, [association(5n, 0)]);
     await store.advance(survivor.id, survivor.epoch, 7n, [association(7n, 0), association(7n, 1)]);
 
-    // ── 2. The backup, taken BEFORE the revoke ────────────────────────────────────────────
+    // ── 2. The backup, taken BEFORE the delete ────────────────────────────────────────────
     await inContainer(
       `pg_dump -U ${container.getUsername()} -d ${container.getDatabase()} -n ${SCHEMA} -f ${DUMP_PATH}`,
     );
@@ -82,15 +87,15 @@ describe("restore drill: a revoke that post-dates the snapshot survives it", () 
     expect(dump.indexOf("shielded_monitor_valid_segments"))
       .toBeLessThan(dump.indexOf(`CREATE TABLE ${SCHEMA}.associations`));
 
-    // ── 3. The revoke, which the snapshot does not contain ────────────────────────────────
-    const revoked = await store.revoke(doomed.id, "operator");
-    expect(revoked.state).toBe("revoked");
-    await expect(store.get(doomed.id)).rejects.toThrow(MonitorRevokedError);
+    // ── 3. The delete, which the snapshot does not contain ────────────────────────────────
+    const deleted = await store.delete(doomed.id, "operator");
+    expect(deleted?.state).toBe("deleted");
+    await expect(store.get(doomed.id)).rejects.toThrow(MonitorNotFoundError);
 
-    // ── 4. The revocation list, exported and kept OUTSIDE the database ────────────────────
-    const list = await exportRevocationList(store, SCHEMA);
-    expect(list.version).toBe(1);
-    expect(list.revocations.map((r) => r.monitorId)).toStrictEqual([doomed.id]);
+    // ── 4. The deletion list, exported and kept OUTSIDE the database ──────────────────────
+    const list = await exportDeletionList(store, SCHEMA);
+    expect(list.version).toBe(2);
+    expect(list.deletions.map((r) => r.monitorId)).toStrictEqual([doomed.id]);
     // The list is safe to store next to the backups: no key material, no fingerprint, no
     // association content.
     const serialized = JSON.stringify(list);
@@ -110,107 +115,115 @@ describe("restore drill: a revoke that post-dates the snapshot survives it", () 
     );
     connect();
 
-    // ── 6. Non-vacuousness: the restore really did lose the revoke ────────────────────────
+    // ── 6. Non-vacuousness: the restore really did lose the delete ────────────────────────
     const resurrected = await store.get(doomed.id);
     expect(resurrected.state).toBe("backfilling");
     expect(resurrected.epoch).toBe(0n);
     expect(resurrected.coverage.scannedThrough).toBe(5n);
+    expect(await store.readAssociations(doomed.id, 0n, 10), "and its matches came back too")
+      .toHaveLength(1);
 
     // The survivor came back intact, coverage and associations included.
     const survivorAfter = await store.get(survivor.id);
     expect(survivorAfter.coverage.scannedThrough).toBe(7n);
     expect((await store.readAssociations(survivor.id, 0n, 100)).map((r) => r.seq)).toStrictEqual([1n, 2n]);
 
-    // ── 7. Re-applying the list restores the refusal ──────────────────────────────────────
-    const report = await applyRevocationList(store, list, "restore");
-    expect(report).toMatchObject({ examined: 1, reapplied: [doomed.id], alreadyRefused: [], absent: [] });
+    // ── 7. Re-applying the list deletes it again ──────────────────────────────────────────
+    const report = await applyDeletionList(store, list, "restore");
+    expect(report).toMatchObject({ examined: 1, reapplied: [doomed.id], alreadyDeleted: [], absent: [] });
 
-    await expect(store.get(doomed.id)).rejects.toThrow(MonitorRevokedError);
-    await expect(store.readAssociations(doomed.id, 0n, 10)).rejects.toThrow(MonitorRevokedError);
-    const afterRevoke = (await store.getIncludingRevoked(doomed.id))!;
-    await expect(store.advance(doomed.id, afterRevoke.epoch, 6n, [])).rejects.toThrow(MonitorFencedError);
+    await expect(store.get(doomed.id)).rejects.toThrow(MonitorNotFoundError);
+    await expect(store.readAssociations(doomed.id, 0n, 10)).rejects.toThrow(MonitorNotFoundError);
+    const afterDelete = (await store.getIncludingDeleted(doomed.id))!;
+    await expect(store.advance(doomed.id, afterDelete.epoch, 6n, [])).rejects.toThrow(MonitorNotFoundError);
     expect((await store.listActive()).map((m) => m.id)).not.toContain(doomed.id);
+    expect((await store.listAll()).map((m) => m.id)).not.toContain(doomed.id);
+    // The matches the restore resurrected are destroyed again, which is the point: the consumer
+    // asked for them to be gone, and a backup is not a reason to hand them back.
+    const rows = await sql<{ count: string }[]>`
+      SELECT count(*)::text AS count FROM ${sql(SCHEMA)}.associations WHERE monitor_id = ${doomed.id}
+    `;
+    expect(rows[0]!.count).toBe("0");
 
-    // The lifecycle log says WHY the monitor is revoked after a restore.
+    // The lifecycle log says WHY the monitor is gone after a restore.
     const events = await store.listLifecycleEvents(doomed.id);
-    expect(events.at(-1)).toMatchObject({ event: "revoke", actor: "restore" });
+    expect(events.at(-1)).toMatchObject({ event: "delete", actor: "restore" });
 
-    // ── 8. Scanning resumes from the restored coverage, without duplicates ────────────────
+    // ── 8. Scanning carries on from the restored coverage, without duplicates ─────────────
     const resumeResult = await store.advance(survivorAfter.id, survivorAfter.epoch, 8n, [association(8n, 0)]);
     expect(resumeResult.applied).toBe(true);
-    const rows = await store.readAssociations(survivor.id, 0n, 100);
-    expect(rows.map((r) => [r.blockHeight, r.position])).toStrictEqual([[7n, 0], [7n, 1], [8n, 0]]);
-    expect(rows.map((r) => r.seq)).toStrictEqual([1n, 2n, 3n]);
+    const survivorRows = await store.readAssociations(survivor.id, 0n, 100);
+    expect(survivorRows.map((r) => [r.blockHeight, r.position])).toStrictEqual([[7n, 0], [7n, 1], [8n, 0]]);
+    expect(survivorRows.map((r) => r.seq)).toStrictEqual([1n, 2n, 3n]);
 
     // ── 9. Idempotent: applying the same list again changes nothing ───────────────────────
-    const epochBefore = (await store.getIncludingRevoked(doomed.id))!.epoch;
+    const epochBefore = (await store.getIncludingDeleted(doomed.id))!.epoch;
     const eventsBefore = (await store.listLifecycleEvents(doomed.id)).length;
-    const second = await applyRevocationList(store, list, "restore");
-    expect(second).toMatchObject({ examined: 1, reapplied: [], alreadyRefused: [doomed.id], absent: [] });
-    expect((await store.getIncludingRevoked(doomed.id))!.epoch).toBe(epochBefore);
+    const second = await applyDeletionList(store, list, "restore");
+    expect(second).toMatchObject({ examined: 1, reapplied: [], alreadyDeleted: [doomed.id], absent: [] });
+    expect((await store.getIncludingDeleted(doomed.id))!.epoch).toBe(epochBefore);
     expect((await store.listLifecycleEvents(doomed.id)).length).toBe(eventsBefore);
   }, 300_000);
 
   it("reports, rather than invents, a monitor the restored database does not know", async () => {
-    const orphan: RevocationListFile = {
-      version: 1,
+    const orphan: DeletionListFile = {
+      version: 2,
       exportedAt: new Date().toISOString(),
       schema: SCHEMA,
-      revocations: [
+      deletions: [
         {
           monitorId: "00000000-0000-4000-8000-000000000000",
           net: "undeployed",
-          state: "revoked",
           epoch: "3",
           at: new Date().toISOString(),
         },
       ],
     };
-    const report = await applyRevocationList(store, orphan, "restore");
+    const report = await applyDeletionList(store, orphan, "restore");
     expect(report).toMatchObject({
-      examined: 1, reapplied: [], alreadyRefused: [], absent: ["00000000-0000-4000-8000-000000000000"],
+      examined: 1, reapplied: [], alreadyDeleted: [], absent: ["00000000-0000-4000-8000-000000000000"],
     });
   });
 
-  it("refuses a revocation list of an unknown version rather than guessing", async () => {
+  it("refuses a deletion list of an unknown version rather than guessing", async () => {
+    // Version 1 was the REVOCATION list this replaced (owner decision Q33). A file written by a
+    // pre-Q33 build is refused rather than half-understood: its entries mean "refuse reads", and
+    // this build has no such state to put a monitor into.
     await expect(
-      applyRevocationList(store, { version: 2, exportedAt: "", schema: SCHEMA, revocations: [] } as unknown as RevocationListFile),
-    ).rejects.toThrow(/unsupported revocation list version/);
+      applyDeletionList(store, { version: 1, exportedAt: "", schema: SCHEMA, deletions: [] } as unknown as DeletionListFile),
+    ).rejects.toThrow(/unsupported deletion list version/);
   });
 
-  /**
-   * A monitor exported as `deleted` is re-applied as a REVOKE, not a delete. The restored
-   * database may hold associations the original delete destroyed, and destroying them again
-   * unattended during a boot is an irreversible act; revoking stops all processing and access —
-   * the safety property the restore has to preserve — and leaves the delete to the operator.
-   */
-  it("re-applies a `deleted` export as a revoke, keeping the irreversible step in human hands", async () => {
+  it("re-applying a deletion destroys the matches the restore brought back, and says so in the audit log", async () => {
+    // The irreversible half, stated on its own: the consumer's delete destroyed these rows once,
+    // and a restore is not a reason to keep them. Before Q33 this step deliberately stopped at a
+    // revoke and left the destruction to a human; with revoke gone there is nothing softer to do,
+    // and the report plus the audit row are what make the act visible.
     const target = await registerFixture(store, 9003);
     await store.advance(target.id, target.epoch, 2n, [association(2n, 0)]);
-    const list: RevocationListFile = {
-      version: 1,
+    const list: DeletionListFile = {
+      version: 2,
       exportedAt: new Date().toISOString(),
       schema: SCHEMA,
-      revocations: [
-        { monitorId: target.id, net: "undeployed", state: "deleted", epoch: "9", at: new Date().toISOString() },
+      deletions: [
+        { monitorId: target.id, net: "undeployed", epoch: "9", at: new Date().toISOString() },
       ],
     };
-    const report = await applyRevocationList(store, list, "restore");
+    const report = await applyDeletionList(store, list, "restore");
     expect(report.reapplied).toStrictEqual([target.id]);
 
-    const after = (await store.getIncludingRevoked(target.id))!;
-    expect(after.state).toBe("revoked");
-    // The associations are still there — the operator decides whether to destroy them.
+    const after = (await store.getIncludingDeleted(target.id))!;
+    expect(after.state).toBe("deleted");
     const rows = await sql<{ count: string }[]>`
       SELECT count(*)::text AS count FROM ${sql(SCHEMA)}.associations WHERE monitor_id = ${target.id}
     `;
-    expect(rows[0]!.count).toBe("1");
+    expect(rows[0]!.count).toBe("0");
 
-    // The audit trail records what the list said, so an operator can act on it.
-    const audit = await sql<{ action: string; detail: { exportedState?: string } }[]>`
+    // The audit trail records what the list said, so an operator can reconcile it afterwards.
+    const audit = await sql<{ action: string; detail: { exportedEpoch?: string } }[]>`
       SELECT action, detail FROM ${sql(SCHEMA)}.audit_events WHERE monitor_id = ${target.id}
     `;
-    expect(audit[0]).toMatchObject({ action: "revocation-list-reapplied" });
-    expect(audit[0]!.detail.exportedState).toBe("deleted");
+    expect(audit[0]).toMatchObject({ action: "deletion-list-reapplied" });
+    expect(audit[0]!.detail.exportedEpoch).toBe("9");
   }, 120_000);
 });
