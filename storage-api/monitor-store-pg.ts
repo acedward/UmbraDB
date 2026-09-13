@@ -980,13 +980,40 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
   ): Promise<number> {
     let inserted = 0;
     for (const [index, a] of rows.entries()) {
-      const written = await tx<{ seq: bigint }[]>`
+      const seq = base + BigInt(index) + 1n;
+      // The two forms are written out separately rather than as one statement with a conditional
+      // fragment. postgres.js cannot PREPARE a query built from dynamic fragments, and this is the
+      // hottest statement in the system — the crash suite's 200-kill loop measured the difference
+      // in tens of seconds.
+      if (opts.skipExisting === true) {
+        const written = await tx<{ seq: bigint }[]>`
+          INSERT INTO ${tx(this.schema)}.associations (
+            monitor_id, seq, net, block_height, block_hash, position, tx_hash,
+            protocol_version, matched_segments, applied_outcome, source_outcome,
+            matching_rule_version, ledger_build, details, block_timestamp_ms
+          ) VALUES (
+            ${monitorId}, ${seq}, ${a.net}, ${a.blockHeight},
+            ${Buffer.from(a.blockHash)}, ${a.position}, ${Buffer.from(a.txHash)},
+            ${a.protocolVersion}, ${segmentArrayLiteral(a.matchedSegments)}::smallint[], 'unknown',
+            ${a.sourceOutcome ?? null},
+            ${a.matchingRuleVersion ?? monitor.matching_rule_version},
+            ${a.ledgerBuild ?? monitor.ledger_build},
+            ${a.details === undefined ? null : tx.json(a.details as never)},
+            ${a.blockTimestampMs ?? null}
+          )
+          ON CONFLICT ON CONSTRAINT associations_observation_key DO NOTHING
+          RETURNING seq
+        `;
+        inserted += written.length;
+        continue;
+      }
+      await tx`
         INSERT INTO ${tx(this.schema)}.associations (
           monitor_id, seq, net, block_height, block_hash, position, tx_hash,
           protocol_version, matched_segments, applied_outcome, source_outcome,
           matching_rule_version, ledger_build, details, block_timestamp_ms
         ) VALUES (
-          ${monitorId}, ${base + BigInt(index) + 1n}, ${a.net}, ${a.blockHeight},
+          ${monitorId}, ${seq}, ${a.net}, ${a.blockHeight},
           ${Buffer.from(a.blockHash)}, ${a.position}, ${Buffer.from(a.txHash)},
           ${a.protocolVersion}, ${segmentArrayLiteral(a.matchedSegments)}::smallint[], 'unknown',
           ${a.sourceOutcome ?? null},
@@ -998,12 +1025,8 @@ export class PgShieldedMonitorStore implements ShieldedMonitorStore {
           ${a.details === undefined ? null : tx.json(a.details as never)},
           ${a.blockTimestampMs ?? null}
         )
-        ${opts.skipExisting === true
-          ? tx`ON CONFLICT ON CONSTRAINT associations_observation_key DO NOTHING`
-          : tx``}
-        RETURNING seq
       `;
-      inserted += written.length;
+      inserted += 1;
     }
     return inserted;
   }
