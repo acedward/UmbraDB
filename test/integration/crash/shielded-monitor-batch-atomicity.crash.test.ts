@@ -15,6 +15,9 @@ import { encodeViewingKey, parseViewingKey } from "../../../shielded-monitor/vie
 import {
   deserializeEncryptionSecretKey, type EncryptionSecretKeyHandle,
 } from "../../../shielded-monitor/offers.js";
+import { scanBlock } from "../../../shielded-monitor/node/block-scan.js";
+import type { HeldKey } from "../../../shielded-monitor/node/key-store.js";
+import { hexToBytes } from "../../../shielded-monitor/scanner.js";
 import { buildCorpus, type BuiltCorpus } from "../../fixtures/shielded-monitor/build-corpus.js";
 import { pgTerminateBackend } from "../../postgres/setup.js";
 import { withStatementFault, type FaultState } from "./archive-fault-injection.js";
@@ -146,6 +149,131 @@ describe("Rule B: one block height, one transaction — the only observable stat
     faultPools.push(pool);
     return pool;
   };
+
+  it(
+    "[[crash.shielded-monitor-batch.advance-batch-is-all-or-nothing]] randomized PostgreSQL kills inside a BLOCK batch leave the height either absent for every monitor in it or complete for every monitor in it",
+    async () => {
+      // ── What this adds to the case above, and why it needed adding ─────────────────────────
+      // 00009-08's Rule B unit was "this monitor's batch". 00009-09's live path commits ONE BLOCK
+      // for EVERY monitor a node holds, so the atomic unit grew: a kill mid-transaction must not
+      // leave monitor A with height H and monitor B without it. That is a property the single-
+      // monitor case cannot express at all, because it only ever has one monitor to compare.
+      //
+      // Two monitors, two real keys, one `advanceBatch` per height, a kill at a random statement
+      // inside it — and the assertion is that the TWO monitors are always in the SAME state.
+      const rng = makeRng(0x5eed_ba7c);
+      const seen = { nothing: 0, all: 0 };
+
+      // Two fresh monitors on their own heights, so this case cannot disturb the one above.
+      const ids: string[] = [];
+      const held: HeldKey[] = [];
+      for (const keyId of ["K", "Kprime"] as const) {
+        const bytes = corpus.keyBytes.get(keyId)!;
+        const parsed = await parseViewingKey(encodeViewingKey(bytes, CRASH_NET), CRASH_NET);
+        const monitor = await cleanStore.register({
+          fingerprint: parsed.fingerprint, net: CRASH_NET, requestedStartHeight: 0n,
+          matchingRuleVersion: MATCHING_RULE_VERSION, ledgerBuild: LEDGER_BUILD_ID, actor: "rule-b-batch",
+        });
+        ids.push(monitor.id);
+        held.push({
+          monitorId: monitor.id,
+          fingerprintHex: `batch-${keyId}`,
+          esk: await deserializeEncryptionSecretKey(bytes),
+          phase: "live",
+          hasScannedOnce: true,
+          addedAt: new Date(),
+        });
+      }
+
+      const totals = new Map(ids.map((id) => [id, 0]));
+      const points = Math.min(24, MONITOR_CRASH_POINTS);
+      for (let height = 0; height < points; height++) {
+        const page = await archive.readBlocksSince(CRASH_NET, height - 1, 1);
+        const block = page.blocks[0]!;
+        const byKey = await scanBlock(block, held, { net: CRASH_NET, verifyTxIdentity: false });
+        const items = held.map((k) => ({
+          monitorId: k.monitorId,
+          expectedEpoch: 0n,
+          associations: byKey.get(k.fingerprintHex) ?? [],
+        }));
+        const expectedRows = new Map(items.map((i) => [i.monitorId, i.associations.length]));
+        // Statements in the transaction: per item, 1 fencing UPDATE + one INSERT per association.
+        // One index beyond the end is drawn on purpose — a control point that never interrupts
+        // anything, mixed in with the faults rather than kept as a separate, skippable test.
+        const statements = items.reduce((n, i) => n + 1 + i.associations.length, 0);
+        const killAtStatement = 1 + Math.floor(rng() * (statements + 2));
+
+        const state: FaultState = {
+          count: 0,
+          killAtStatement,
+          onReached: async (backendPid) => { await pgTerminateBackend(admin, backendPid); },
+        };
+        const pool = faultPool();
+        const store = new PgShieldedMonitorStore(withStatementFault(pool, state), monitorSchema);
+        let threw = false;
+        try {
+          const result = await store.advanceBatch(
+            CRASH_NET, BigInt(height), hexToBytes(block.hash), items,
+          );
+          if (result.advanced.length !== items.length) threw = true;
+        } catch {
+          threw = true;
+        }
+        await pool.end({ timeout: 2 }).catch(() => {});
+
+        // The classification is per monitor, and then the two are required to AGREE. A run in
+        // which one said "all" and the other "nothing" is the exact failure this case exists for.
+        const classified = new Set<RuleBState>();
+        for (const id of ids) {
+          const observation = await observeMonitorHeight(clean, monitorSchema, id, height);
+          classified.add(classifyRuleBState(observation, {
+            height,
+            associationRows: expectedRows.get(id)!,
+            totalBefore: totals.get(id)!,
+          }));
+        }
+        expect(
+          [...classified],
+          `height ${height} (kill before statement ${killAtStatement} of ${statements}): the two ` +
+            "monitors in one block batch disagree about whether the height happened",
+        ).toHaveLength(1);
+
+        const outcome = [...classified][0]!;
+        if (outcome === "all-of-height") {
+          seen.all += 1;
+          for (const id of ids) totals.set(id, totals.get(id)! + expectedRows.get(id)!);
+        } else {
+          seen.nothing += 1;
+          expect(threw, "a kill that rolled the batch back must have surfaced as a failure").toBe(true);
+          // Retry on a healthy pool: the height must then land completely, for both.
+          const retried = await cleanStore.advanceBatch(
+            CRASH_NET, BigInt(height), hexToBytes(block.hash), items,
+          );
+          expect([...retried.advanced].sort()).toStrictEqual([...ids].sort());
+          for (const id of ids) totals.set(id, totals.get(id)! + expectedRows.get(id)!);
+        }
+      }
+
+      // Non-vacuity: both outcomes were actually produced. A run that only ever committed would
+      // pass every assertion above while testing nothing about a crash.
+      expect(seen.all, `kills produced ${JSON.stringify(seen)}`).toBeGreaterThan(0);
+      expect(seen.nothing, `kills produced ${JSON.stringify(seen)}`).toBeGreaterThan(0);
+
+      // And no (monitor, height, position) was ever written twice, across every retry above.
+      for (const id of ids) {
+        const [dupes] = await clean<{ n: number }[]>`
+          SELECT count(*)::int AS n FROM (
+            SELECT block_height, position FROM ${clean(monitorSchema)}.associations
+             WHERE monitor_id = ${id}
+             GROUP BY block_height, position HAVING count(*) > 1
+          ) d
+        `;
+        expect(dupes?.n ?? 0, `${id} has duplicated (height, position) rows`).toBe(0);
+      }
+      for (const key of held) key.esk.clear();
+    },
+    900_000,
+  );
 
   it(
     `[[crash.shielded-monitor-batch.pg-kill-two-states]] ${MONITOR_CRASH_POINTS} randomized PostgreSQL kills inside the scanner's per-batch transaction leave only {no associations of H and coverage H-1, all of H and coverage H}`,

@@ -421,6 +421,206 @@ describe("PgShieldedMonitorStore", () => {
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────────────────────
 
+  // ── Block-centric commits and gaps (00009-09) ──────────────────────────────────────────────
+
+  describe("advanceBatch and fillGap: one block for every monitor, and the holes below coverage", () => {
+    let sql: UmbraDBSql;
+    let store: PgShieldedMonitorStore;
+    const schema = uniqueSchema("sm_batch");
+    let seedCounter = 900;
+    const NET = "undeployed";
+
+    beforeAll(async () => {
+      ({ sql, store } = await freshStore(container, schema));
+    }, 120_000);
+    afterAll(async () => {
+      await sql?.end({ timeout: 5 });
+    });
+
+    beforeEach(() => {
+      seedCounter += 1;
+    });
+
+    /** The block hash `association(height, …)` uses, so a batch and its items agree. */
+    const blockHashFor = (height: bigint): Uint8Array => association(height, 0).blockHash;
+
+    it("[[shielded-monitor.store.advance-batch-reports-fenced-items-without-failing-the-block]] advances the healthy monitors of a block and REPORTS the rest, with the reason", async () => {
+      // OP-2, as a property rather than a promise: one paused wallet must not stall a block for
+      // every other wallet a node holds. Four monitors, four different answers, one transaction.
+      const healthy = await registerFixture(store, seedCounter);
+      const paused = await registerFixture(store, seedCounter + 1000);
+      const stale = await registerFixture(store, seedCounter + 2000);
+      const ahead = await registerFixture(store, seedCounter + 3000);
+      await store.pause(paused.id, "op");
+      // `ahead` is already past the batch's height, which is the idempotent-replay path.
+      await store.advance(ahead.id, ahead.epoch, 9n, []);
+      const aheadNow = await store.get(ahead.id);
+
+      const height = 5n;
+      const result = await store.advanceBatch(NET, height, blockHashFor(height), [
+        { monitorId: healthy.id, expectedEpoch: healthy.epoch, associations: [association(height, 0)] },
+        { monitorId: paused.id, expectedEpoch: paused.epoch, associations: [association(height, 0)] },
+        { monitorId: stale.id, expectedEpoch: stale.epoch + 9n, associations: [] },
+        { monitorId: ahead.id, expectedEpoch: aheadNow.epoch, associations: [] },
+        { monitorId: randomUUID(), expectedEpoch: 0n, associations: [] },
+      ]);
+
+      expect(result.advanced).toStrictEqual([healthy.id]);
+      expect(new Map(result.fenced.map((f) => [f.id, f.reason]))).toStrictEqual(new Map([
+        // `pause` bumps the epoch too, so the state check is what has to fire first for this to
+        // read `state` rather than `epoch` — which is the distinction a node acts on.
+        [paused.id, "state"],
+        [stale.id, "epoch"],
+        [ahead.id, "already-advanced"],
+        [result.fenced.find((f) => f.reason === "not-found")!.id, "not-found"],
+      ]));
+
+      // The healthy monitor really did land, and the fenced ones really did not.
+      expect((await store.get(healthy.id)).coverage.scannedThrough).toBe(height);
+      expect((await store.readAssociations(healthy.id, 0n, 10))).toHaveLength(1);
+      expect((await store.getIncludingRevoked(paused.id))!.coverage.scannedThrough).toBeUndefined();
+      expect((await store.readAssociations(stale.id, 0n, 10))).toHaveLength(0);
+    });
+
+    it("refuses a batch whose items contradict the block it names", async () => {
+      // The batch's identity is the only thing tying a node's per-monitor lists together; an
+      // association for another block, or another block's hash, would write a match into the
+      // wrong row while advancing coverage as if it were right.
+      const { id, epoch } = await registerFixture(store, seedCounter);
+      await expect(store.advanceBatch(NET, 5n, blockHashFor(5n), [
+        { monitorId: id, expectedEpoch: epoch, associations: [association(4n, 0)] },
+      ])).rejects.toThrow(/belongs to that block/);
+      await expect(store.advanceBatch(NET, 5n, blockHashFor(6n), [
+        { monitorId: id, expectedEpoch: epoch, associations: [association(5n, 0)] },
+      ])).rejects.toThrow(/different block hash/);
+      // A gap is a range BELOW the coverage the batch sets; one at or above it is nonsense.
+      await expect(store.advanceBatch(NET, 5n, blockHashFor(5n), [
+        { monitorId: id, expectedEpoch: epoch, associations: [], newGaps: [{ from: 5n, to: 6n }] },
+      ])).rejects.toThrow(/BELOW the coverage/);
+      // And one monitor may appear only once: twice would allocate two overlapping `seq` ranges
+      // from one `last_assoc_seq` read.
+      await expect(store.advanceBatch(NET, 5n, blockHashFor(5n), [
+        { monitorId: id, expectedEpoch: epoch, associations: [] },
+        { monitorId: id, expectedEpoch: epoch, associations: [] },
+      ])).rejects.toThrow(/twice in one block batch/);
+    });
+
+    it("[[shielded-monitor.store.fill-gap-shrinks-splits-and-deletes]] a fill shrinks, splits or deletes the gap rows it covers, and never moves coverage", async () => {
+      const { id, epoch } = await registerFixture(store, seedCounter);
+      // Coverage jumps to 20 with the range 1..10 recorded as never read — the shape the
+      // HAS_SCANNED_ONCE check produces when a key joins the live set behind its own coverage.
+      const batch = await store.advanceBatch(NET, 20n, blockHashFor(20n), [
+        { monitorId: id, expectedEpoch: epoch, associations: [], newGaps: [{ from: 1n, to: 10n }] },
+      ]);
+      expect(batch.advanced).toStrictEqual([id]);
+      const withGap = await store.get(id);
+      expect(withGap.gaps.map((g) => `${g.from}-${g.to}`)).toStrictEqual(["1-10"]);
+      const recordedAt = withGap.gaps[0]!.recordedAt;
+
+      // 1. A fill in the MIDDLE splits it in two.
+      const split = await store.fillGap(id, {
+        expectedEpoch: withGap.epoch, from: 4n, to: 6n, associations: [association(5n, 0)],
+      });
+      expect(split.written).toBe(1);
+      expect(split.gaps.map((g) => `${g.from}-${g.to}`)).toStrictEqual(["1-3", "7-10"]);
+      // The remainder keeps the moment the hole was FOUND: a fresh timestamp would make an old
+      // unfilled range look newly discovered every time a back-sync nibbled at it.
+      expect(split.gaps[0]!.recordedAt.getTime()).toBe(recordedAt.getTime());
+
+      // 2. A fill at the FRONT of a remainder shrinks it from the left.
+      const shrunkLeft = await store.fillGap(id, {
+        expectedEpoch: withGap.epoch, from: 1n, to: 2n, associations: [],
+      });
+      expect(shrunkLeft.gaps.map((g) => `${g.from}-${g.to}`)).toStrictEqual(["3-3", "7-10"]);
+
+      // 3. A fill at the END shrinks it from the right.
+      const shrunkRight = await store.fillGap(id, {
+        expectedEpoch: withGap.epoch, from: 9n, to: 10n, associations: [],
+      });
+      expect(shrunkRight.gaps.map((g) => `${g.from}-${g.to}`)).toStrictEqual(["3-3", "7-8"]);
+
+      // 4. An EXACT fill deletes the row, and a fill spanning several rows clears them all.
+      const cleared = await store.fillGap(id, {
+        expectedEpoch: withGap.epoch, from: 3n, to: 8n, associations: [association(7n, 1)],
+      });
+      expect(cleared.gaps).toStrictEqual([]);
+      expect(await store.listGaps(id)).toStrictEqual([]);
+
+      // Coverage never moved — it was already above the range, which is why the gap existed.
+      const after = await store.get(id);
+      expect(after.coverage.scannedThrough).toBe(20n);
+      expect(after.gaps).toStrictEqual([]);
+      // The back-filled matches are there, at their real heights, with sequence numbers ABOVE the
+      // ones the live pass handed out. `seq` is the consumer's cursor, so a match discovered later
+      // must page later even though its height is older.
+      const rows = await store.readAssociations(id, 0n, 100);
+      expect(rows.map((r) => `${r.blockHeight}@${r.seq}`)).toStrictEqual(["5@1", "7@2"]);
+    });
+
+    it("a fill is fenced on the epoch, and refuses a range its associations sit outside", async () => {
+      const { id, epoch } = await registerFixture(store, seedCounter);
+      await store.advanceBatch(NET, 20n, blockHashFor(20n), [
+        { monitorId: id, expectedEpoch: epoch, associations: [], newGaps: [{ from: 1n, to: 10n }] },
+      ]);
+      const current = await store.get(id);
+      await expect(store.fillGap(id, {
+        expectedEpoch: current.epoch + 5n, from: 1n, to: 2n, associations: [],
+      })).rejects.toThrow(MonitorFencedError);
+      await expect(store.fillGap(id, {
+        expectedEpoch: current.epoch, from: 1n, to: 2n, associations: [association(9n, 0)],
+      })).rejects.toThrow(/outside the range/);
+      // Nothing was written by either refusal.
+      expect(await store.readAssociations(id, 0n, 10)).toHaveLength(0);
+      expect((await store.listGaps(id)).map((g) => `${g.from}-${g.to}`)).toStrictEqual(["1-10"]);
+    });
+
+    it("[[shielded-monitor.store.register-upserts-by-fingerprint-and-returns-coverage-and-gaps]] re-registering a fingerprint returns the existing monitor with its coverage and its gaps", async () => {
+      // This is how a monitor-node resumes: a client re-sends a key after a node died, the
+      // fingerprint finds the same row, and what comes back is where to carry on from. A register
+      // that returned a bare monitor would make the node rescan history it already has.
+      const key = await fixtureViewingKey(seedCounter + 4000);
+      const input = {
+        fingerprint: key.fingerprint,
+        net: NET,
+        requestedStartHeight: 0n,
+        matchingRuleVersion: TEST_MATCHING_RULE,
+        ledgerBuild: TEST_LEDGER_BUILD,
+        actor: "test",
+      };
+      const first = await store.register(input);
+      expect(first.coverage.scannedThrough).toBeUndefined();
+      expect(first.gaps).toStrictEqual([]);
+
+      await store.advanceBatch(NET, 12n, blockHashFor(12n), [{
+        monitorId: first.id,
+        expectedEpoch: first.epoch,
+        associations: [association(12n, 0)],
+        newGaps: [{ from: 3n, to: 5n }],
+      }]);
+
+      const again = await store.register(input);
+      expect(again.id).toBe(first.id);
+      expect(again.coverage.scannedThrough).toBe(12n);
+      expect(again.gaps.map((g) => `${g.from}-${g.to}`)).toStrictEqual(["3-5"]);
+    });
+
+    it("a delete shreds the gap rows with everything else", async () => {
+      // The FK's `ON DELETE CASCADE` never fires for a delete — the monitor row survives as a
+      // tombstone (US3 scenario 4) — so the shred has to be explicit, or re-registering the same
+      // key would mint a fresh monitor while stale gaps still described the old one.
+      const { id, epoch } = await registerFixture(store, seedCounter);
+      await store.advanceBatch(NET, 20n, blockHashFor(20n), [
+        { monitorId: id, expectedEpoch: epoch, associations: [], newGaps: [{ from: 1n, to: 4n }] },
+      ]);
+      expect(await store.listGaps(id)).toHaveLength(1);
+      await store.delete(id, "op");
+      const [row] = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM ${sql(schema)}.monitor_gaps WHERE monitor_id = ${id}
+      `;
+      expect(row?.n).toBe(0);
+    });
+  });
+
   describe("lifecycle (FR-015, FR-016)", () => {
     let sql: UmbraDBSql;
     let store: PgShieldedMonitorStore;
