@@ -56,7 +56,8 @@
     "bench:smoke": "tsx bench/smoke.ts",
     "build:cli": "tsc -p tsconfig.cli.json && node scripts/copy-cli-assets.mjs",
     "shielded-monitor:derive-key": "tsx shielded-monitor/derive-key-cli.ts",
-    "demo:shielded-monitor": "node scripts/demo-shielded-monitor.mjs"
+    "demo:shielded-monitor": "node scripts/demo-shielded-monitor.mjs",
+    "dust:sync": "tsx dust-sync-client/cli.ts"
   },
   "dependencies": {
     "@midnight-ntwrk/ledger-v8": "file:vendor/ledger-v8-syshash",
