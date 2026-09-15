@@ -9,6 +9,16 @@
 # one of the 00009 wallet demo scripts, which live in the organizer's `resources/` and are mounted
 # read-only at /app/live.
 #
+# ── Every container it starts has a NAME, and that is not cosmetic ────────────────────────────
+# On 2026-09-15 this session removed another runner's 2.5-hour measurement container by selecting
+# it with `docker ps | grep <image>` and `docker rm -f <the one id that printed>` — both containers
+# were the same image, and `docker ps`'s `{{.Command}}` truncates
+# `sh -c 'cd /app && bun run live16/<script>.ts'` to the SAME string for every script in this
+# directory, so the output could not have distinguished them (questions file Q-18). The rule that
+# would have prevented it, and the rule now: **select a container by the name you gave it or the id
+# you recorded at launch — never by image, never by a `ps | grep`.** Hence `--name`. A `--rm`
+# container needs no cleanup at all; a hung one is left to its own timeout.
+#
 # ── Custody ────────────────────────────────────────────────────────────────────────────────────
 # `--seed-file` reads a mode-600 seed and passes it through `--env-file`, NOT on the command line:
 # an `-e SEED=<hex>` would put a wallet's master seed in this host's process table for anyone to
@@ -71,7 +81,11 @@ case "${SCRIPT}" in
   *) MOUNT_POINT="live16" ;;
 esac
 
+CONTAINER_NAME="umbra-00016-devnet-sdk-$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
+echo "container ${CONTAINER_NAME} (remove it by THAT name, never by image)" >&2
+
 exec docker run --rm \
+  --name "${CONTAINER_NAME}" \
   --network "${PROJECT}_default" \
   --user "$(id -u):$(id -g)" \
   -e HOME=/tmp \
