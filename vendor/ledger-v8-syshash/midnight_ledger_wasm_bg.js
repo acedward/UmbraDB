@@ -291,6 +291,30 @@ export function partitionTranscripts(calls, params) {
 }
 
 /**
+ * @returns {DustSecretKey}
+ */
+export function sampleDustSecretKey() {
+    const ret = wasm.sampleDustSecretKey();
+    return DustSecretKey.__wrap(ret);
+}
+
+/**
+ * @param {Date} ctime
+ * @param {bigint} initial_value
+ * @param {any} gen_info
+ * @param {Date} now
+ * @param {any} params
+ * @returns {bigint}
+ */
+export function updatedValue(ctime, initial_value, gen_info, now, params) {
+    const ret = wasm.updatedValue(ctime, initial_value, gen_info, now, params);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
  * @returns {string}
  */
 export function sampleEncryptionPublicKey() {
@@ -611,30 +635,6 @@ export function coinNullifier(coin_info, coin_secret_key) {
     } finally {
         wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
-}
-
-/**
- * @returns {DustSecretKey}
- */
-export function sampleDustSecretKey() {
-    const ret = wasm.sampleDustSecretKey();
-    return DustSecretKey.__wrap(ret);
-}
-
-/**
- * @param {Date} ctime
- * @param {bigint} initial_value
- * @param {any} gen_info
- * @param {Date} now
- * @param {any} params
- * @returns {bigint}
- */
-export function updatedValue(ctime, initial_value, gen_info, now, params) {
-    const ret = wasm.updatedValue(ctime, initial_value, gen_info, now, params);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
-    }
-    return takeFromExternrefTable0(ret[0]);
 }
 
 /**
@@ -1416,15 +1416,15 @@ export function runProgram(initial, ops, cost_model, gas_limit) {
     return VmResults.__wrap(ret[0]);
 }
 
-function __wbg_adapter_18(arg0, arg1, arg2) {
+function __wbg_adapter_6(arg0, arg1, arg2) {
     wasm.closure3856_externref_shim(arg0, arg1, arg2);
 }
 
-function __wbg_adapter_812(arg0, arg1, arg2, arg3) {
+function __wbg_adapter_817(arg0, arg1, arg2, arg3) {
     wasm.closure3900_externref_shim(arg0, arg1, arg2, arg3);
 }
 
-function __wbg_adapter_907(arg0, arg1, arg2, arg3, arg4) {
+function __wbg_adapter_912(arg0, arg1, arg2, arg3, arg4) {
     wasm.closure3898_externref_shim(arg0, arg1, arg2, arg3, arg4);
 }
 
@@ -3306,6 +3306,26 @@ export class DustLocalState {
         return DustLocalState.__wrap(ret[0]);
     }
     /**
+     * The next commitment index this state will accept, i.e. the number of DUST
+     * commitments it has seen. The valid range for `collapsedCommitmentUpdate`
+     * is `[0, commitmentTreeFirstFree - 1]`.
+     * @returns {bigint}
+     */
+    get commitmentTreeFirstFree() {
+        const ret = wasm.dustlocalstate_commitment_tree_first_free(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * The next generation index this state will accept, i.e. the number of DUST
+     * generation entries it has seen. The valid range for
+     * `collapsedGenerationUpdate` is `[0, generatingTreeFirstFree - 1]`.
+     * @returns {bigint}
+     */
+    get generatingTreeFirstFree() {
+        const ret = wasm.dustlocalstate_generating_tree_first_free(this.__wbg_ptr);
+        return ret;
+    }
+    /**
      * @param {DustSecretKey} sk
      * @param {Event[]} events
      * @returns {DustLocalStateWithChanges}
@@ -3315,6 +3335,79 @@ export class DustLocalState {
         const ptr0 = passArrayJsValueToWasm0(events, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.dustlocalstate_replayEventsWithChanges(this.__wbg_ptr, sk.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return DustLocalStateWithChanges.__wrap(ret[0]);
+    }
+    /**
+     * Cuts a collapsed update covering the commitment indices
+     * `[commitment_index_start, commitment_index_end]` (inclusive) out of this
+     * state's commitment tree, for another party to apply with
+     * `applyCommitmentCollapsedUpdate`.
+     *
+     * `newFromCommitmentTree` does the same from the chain-side `DustUtxoState`;
+     * this is the counterpart for a party that only mirrors the tree in a
+     * `DustLocalState`. Throws when the range is empty, when its end is at or
+     * past `commitmentTreeFirstFree`, or when it crosses a part of the tree this
+     * state has collapsed away.
+     * @param {bigint} commitment_index_start
+     * @param {bigint} commitment_index_end
+     * @returns {DustStateMerkleTreeCollapsedUpdate}
+     */
+    collapsedCommitmentUpdate(commitment_index_start, commitment_index_end) {
+        const ret = wasm.dustlocalstate_collapsedCommitmentUpdate(this.__wbg_ptr, commitment_index_start, commitment_index_end);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return DustStateMerkleTreeCollapsedUpdate.__wrap(ret[0]);
+    }
+    /**
+     * Cuts a collapsed update covering the generation indices
+     * `[generation_index_start, generation_index_end]` (inclusive) out of this
+     * state's generating tree, for another party to apply with
+     * `applyGenerationCollapsedUpdate`.
+     *
+     * `newFromGenerationTree` does the same from the chain-side
+     * `DustGenerationState`; this is the counterpart for a party that only
+     * mirrors the tree in a `DustLocalState`. Throws when the range is empty,
+     * when its end is at or past `generatingTreeFirstFree`, or when it crosses a
+     * part of the tree this state has collapsed away.
+     * @param {bigint} generation_index_start
+     * @param {bigint} generation_index_end
+     * @returns {DustStateMerkleTreeCollapsedUpdate}
+     */
+    collapsedGenerationUpdate(generation_index_start, generation_index_end) {
+        const ret = wasm.dustlocalstate_collapsedGenerationUpdate(this.__wbg_ptr, generation_index_start, generation_index_end);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return DustStateMerkleTreeCollapsedUpdate.__wrap(ret[0]);
+    }
+    /**
+     * `replayRawEvents`, but keeping every leaf of both trees -- including the
+     * ones `sk` does not own -- so the resulting state can still cut collapsed
+     * updates for arbitrary ranges with `collapsedCommitmentUpdate` and
+     * `collapsedGenerationUpdate`.
+     *
+     * This is for a service that mirrors the chain's DUST trees in order to
+     * **serve** collapsed updates to wallets. **A wallet must not use it**: the
+     * ordinary `replayRawEvents` collapses the leaves a wallet has no use for,
+     * which is both cheaper and smaller, and a wallet never needs to cut a
+     * segment. Retaining everything keeps the interior nodes the ordinary replay
+     * discards, so the state is larger in proportion to the number of leaves.
+     *
+     * Both variants reach the same two roots and the same wallet state;
+     * collapsing only discards interior nodes.
+     * @param {DustSecretKey} sk
+     * @param {Uint8Array} raw_events
+     * @returns {DustLocalStateWithChanges}
+     */
+    replayRawEventsRetainingAll(sk, raw_events) {
+        _assertClass(sk, DustSecretKey);
+        const ptr0 = passArray8ToWasm0(raw_events, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.dustlocalstate_replayRawEventsRetainingAll(this.__wbg_ptr, sk.__wbg_ptr, ptr0, len0);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -10010,7 +10103,7 @@ export function __wbg_forEach_48feffedd75c5b94(arg0, arg1, arg2) {
             const a = state0.a;
             state0.a = 0;
             try {
-                return __wbg_adapter_907(a, state0.b, arg0, arg1, arg2);
+                return __wbg_adapter_912(a, state0.b, arg0, arg1, arg2);
             } finally {
                 state0.a = a;
             }
@@ -10028,7 +10121,7 @@ export function __wbg_forEach_859dfd887a0f866c(arg0, arg1, arg2) {
             const a = state0.a;
             state0.a = 0;
             try {
-                return __wbg_adapter_812(a, state0.b, arg0, arg1);
+                return __wbg_adapter_817(a, state0.b, arg0, arg1);
             } finally {
                 state0.a = a;
             }
@@ -10226,7 +10319,7 @@ export function __wbg_new_2e3c58a15f39f5f9(arg0, arg1) {
             const a = state0.a;
             state0.a = 0;
             try {
-                return __wbg_adapter_812(a, state0.b, arg0, arg1);
+                return __wbg_adapter_817(a, state0.b, arg0, arg1);
             } finally {
                 state0.a = a;
             }
@@ -10675,7 +10768,7 @@ export function __wbindgen_cast_e7b45dd881f38ce3(arg0, arg1) {
 
 export function __wbindgen_cast_ebdc0a010724de78(arg0, arg1) {
     // Cast intrinsic for `Closure(Closure { dtor_idx: 3855, function: Function { arguments: [Externref], shim_idx: 3856, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-    const ret = makeMutClosure(arg0, arg1, 3855, __wbg_adapter_18);
+    const ret = makeMutClosure(arg0, arg1, 3855, __wbg_adapter_6);
     return ret;
 };
 

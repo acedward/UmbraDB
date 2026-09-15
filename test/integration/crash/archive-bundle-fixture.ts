@@ -13,7 +13,7 @@ import type {
  */
 
 export const WATERMARK_KEY_PREFIX = "sync_cursor:";
-export const LEDGER_BUILD = "ledger-v8@8.1.0-syshash.4";
+export const LEDGER_BUILD = "ledger-v8@8.1.0-syshash.6";
 export const LEDGER_NETWORK_ID = "undeployed";
 
 /** The all-zero parent every archive's genesis block carries (Substrate's own convention, and

@@ -105,7 +105,7 @@ The related historical runtime methods used here are:
 - `MidnightRuntimeApi_get_network_id` via `state_call` — the runtime's SCALE string network id.
 - `system_properties.genesis_state` — the authoritative serialized genesis ledger state.
 
-The vendored runtime dependency `@midnight-ntwrk/ledger-v8@8.1.0-syshash.4` adds the minimal
+The vendored runtime dependency `@midnight-ntwrk/ledger-v8@8.1.0-syshash.6` adds the minimal
 `LedgerState.ledgerStateRoot()` export needed for an exact comparison. Its source commit, patches,
 artifact hashes and structural/native oracle evidence are recorded in
 `vendor/ledger-v8-syshash/PROVENANCE.md` and `SHA256SUMS`. `MIDNIGHT_LEDGER_WASM` is a deliberate

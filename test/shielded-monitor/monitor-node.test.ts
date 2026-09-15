@@ -99,7 +99,7 @@ class FakeStore implements ShieldedMonitorStore {
       coverage: { requestedStart: 0n },
       gaps: [],
       matchingRuleVersion: "shielded-monitor/relevance/v1",
-      ledgerBuild: "ledger-v8@8.1.0-syshash.4",
+      ledgerBuild: "ledger-v8@8.1.0-syshash.6",
       createdAt: new Date(0),
       updatedAt: new Date(0),
       ...over,

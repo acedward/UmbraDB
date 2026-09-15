@@ -288,7 +288,7 @@ describe("shielded-monitor dashboard (GET /ui)", () => {
 
     const fullDetails = {
       version: "shielded-monitor/match-details/v1",
-      ledgerBuild: "ledger-v8@8.1.0-syshash.4",
+      ledgerBuild: "ledger-v8@8.1.0-syshash.6",
       segments: [{
         segment: 0,
         matched: true,
@@ -352,7 +352,7 @@ describe("shielded-monitor dashboard (GET /ui)", () => {
       expect(rendered).toContain("?");
       expect(rendered).toContain("commitment = a new shielded coin");
       expect(rendered).toContain("only outputs encrypted to your key are yours");
-      expect(rendered).toContain("ledger-v8@8.1.0-syshash.4");
+      expect(rendered).toContain("ledger-v8@8.1.0-syshash.6");
 
       const pinned = {
         ...fullDetails,

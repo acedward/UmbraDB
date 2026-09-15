@@ -14,7 +14,7 @@ import { withStatementFault, type FaultState } from "./crash/archive-fault-injec
 
 /** Must match `LEDGER_STATE_VERSION` in the sync service -- a checkpoint row written by hand has
  *  to look valid in every respect except the one under test. */
-const LEDGER_VERSION = "ledger-v8@8.1.0-syshash.4";
+const LEDGER_VERSION = "ledger-v8@8.1.0-syshash.6";
 
 /**
  * Audit A2: ledger replay GATES ingest.
@@ -1069,7 +1069,7 @@ describe("replay validation gates ingest", () => {
     `;
     expect(rows).toHaveLength(1);
     expect(rows[0]!.h).toBe("0");
-    expect(rows[0]!.ledger_version).toContain("8.1.0-syshash.4");
+    expect(rows[0]!.ledger_version).toContain("8.1.0-syshash.6");
     // Real state, not an empty placeholder: a blank state is ~816 bytes, and genesis's five system
     // transactions take it to tens of kilobytes.
     expect(rows[0]!.n).toBeGreaterThan(1000);

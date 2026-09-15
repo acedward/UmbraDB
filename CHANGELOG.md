@@ -273,7 +273,7 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
   upgrade and coordinate readers that assumed the old key.
 - The finalized bundle writer now serializes competing `(net,height)` writes with a Postgres
   advisory lock and refuses incompatible stored history rather than permitting interleaving.
-- The runtime ledger is a checksummed vendored `8.1.0-syshash.4` build; its provenance and minimal
+- The runtime ledger is a checksummed vendored `8.1.0-syshash.6` build; its provenance and minimal
   source patches are committed under `vendor/ledger-v8-syshash/`.
 
 ### Fixed

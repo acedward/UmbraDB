@@ -43,7 +43,7 @@ import { assertNetworkId, hrpForNetwork, monitorFingerprint, SHIELD_ESK_HRP_PREF
 /** The identifier recorded on every monitor and association as the ledger build that produced
  *  the relevance verdict (organizer spec FR-009's provenance). Pinned to the vendored build PR #1
  *  already depends on (`vendor/ledger-v8-syshash/PROVENANCE.md`). */
-export const LEDGER_BUILD_ID = "ledger-v8@8.1.0-syshash.4";
+export const LEDGER_BUILD_ID = "ledger-v8@8.1.0-syshash.6";
 
 /** What every redacting path renders instead of the key. */
 export const REDACTED = "[ShieldedViewingKey redacted]";

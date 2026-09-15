@@ -33,7 +33,7 @@ import { loadLedgerV8 } from "../chain-archive-sync/tx-replay-decoder.js";
  *  `chain-archive-sync/sync-service.ts`'s `LEDGER_STATE_VERSION` -- bumping the vendored ledger
  *  MUST bump both, because a match recorded under a build identifier that did not produce it is
  *  provenance that lies. */
-export const LEDGER_BUILD_ID = "ledger-v8@8.1.0-syshash.4";
+export const LEDGER_BUILD_ID = "ledger-v8@8.1.0-syshash.6";
 
 /** Segment id the guaranteed section is recorded under.
  *

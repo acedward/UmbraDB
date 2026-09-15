@@ -145,7 +145,7 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
         epoch: 0n,
         requested_start_height: 0n,
         matching_rule_version: "v1",
-        ledger_build: "ledger-v8@8.1.0-syshash.4",
+        ledger_build: "ledger-v8@8.1.0-syshash.6",
         ...overrides,
       };
       await sql`INSERT INTO ${sql(schema)}.monitors ${sql(row as never)}`;
@@ -268,7 +268,7 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
           tx_hash: Buffer.alloc(32, 3),
           protocol_version: 1n,
           matching_rule_version: "v1",
-          ledger_build: "ledger-v8@8.1.0-syshash.4",
+          ledger_build: "ledger-v8@8.1.0-syshash.6",
           ...overrides,
         };
         await sql`
@@ -282,7 +282,7 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
             (monitor_id, seq, net, block_height, block_hash, position, tx_hash,
              protocol_version, matched_segments, matching_rule_version, ledger_build)
           VALUES (${monitorId}, ${1n}, 'undeployed', ${1n}, ${Buffer.alloc(32, 2)}, 0,
-                  ${Buffer.alloc(32, 3)}, ${1n}, '{0,2}'::smallint[], 'v1', 'ledger-v8@8.1.0-syshash.4')
+                  ${Buffer.alloc(32, 3)}, ${1n}, '{0,2}'::smallint[], 'v1', 'ledger-v8@8.1.0-syshash.6')
         `;
         const rows = await sql<{ matched_segments: number[]; applied_outcome: string }[]>`
           SELECT matched_segments, applied_outcome FROM ${sql(schema)}.associations

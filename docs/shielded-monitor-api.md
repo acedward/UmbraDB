@@ -222,7 +222,7 @@ command line and never printed.
   "heldPhase": "live",
   "keyNeeded": false,
   "matchingRuleVersion": "shielded-monitor/v1",
-  "ledgerBuild": "ledger-v8@8.1.0-syshash.4",
+  "ledgerBuild": "ledger-v8@8.1.0-syshash.6",
   "createdAt": "2026-09-10T12:00:00.000Z",
   "updatedAt": "2026-09-10T12:00:00.000Z"
 }
@@ -303,7 +303,7 @@ sourceTip` would otherwise read as *caught up*.
   "appliedOutcome": "unknown",
   "sourceOutcome": "success",
   "matchingRuleVersion": "shielded-monitor/v1",
-  "ledgerBuild": "ledger-v8@8.1.0-syshash.4"
+  "ledgerBuild": "ledger-v8@8.1.0-syshash.6"
 }
 ```
 
@@ -330,7 +330,7 @@ never means "this transaction had no outputs".
   "blockTimestampMs": "1754395200000",
   "details": {
     "version": "shielded-monitor/match-details/v1",
-    "ledgerBuild": "ledger-v8@8.1.0-syshash.4",
+    "ledgerBuild": "ledger-v8@8.1.0-syshash.6",
     "segments": [
       {
         "segment": 0,
