@@ -10,6 +10,26 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
 
 ### Added
 
+- **The monitor-node mirrors the chain's DUST trees and serves them (00016, step 2 of 3).** With
+  `DUST_DATABASE_URL` set, `umbradb-shielded-monitor-node` folds `chain_archive.dust_events` into
+  one key-less `DustLocalState` and answers five new routes —
+  `GET /v1/dust/{tip,initial-utxos,generation,segments}` and `POST /v1/dust/lookup` — which the
+  balancer forwards to a uniformly random healthy node. A wallet applies the returned collapsed
+  Merkle updates, inserts its own leaves in the gaps and compares roots; the DUST secret key never
+  leaves it. Unset, the module is off and those routes answer `503 DUST_DISABLED`; nothing else
+  about the node changes. The mirror snapshots to `DUST_STATE_SNAPSHOT_DIR` and refuses a snapshot
+  from another net or ledger build. `/internal/status` gains a `dust` block. Contracts in
+  `docs/shielded-monitor-api.md`, operation in `docs/shielded-monitor-node.md`, the role SQL in
+  `docs/shielded-monitor-deployment.md`.
+  - **A deliberate, waived exception to "project B has no database".** This is the one directory
+    (`shielded-monitor/node/dust/`) that opens a PostgreSQL connection, by the owner's decision of
+    2026-09-15 (`spec/00016-dust-wallet-sync.md` §1). It is **read-only** — the role may read
+    `dust_events` and `blocks` and nothing else — and the accepted consequence is that the database
+    can see which nullifiers a wallet asks about. The node itself never logs, persists or returns
+    them. The import guard now allow-lists exactly that directory and asserts both the two modules
+    it may reach and the three files that may import it; the schema-name literal scan, the
+    `*_PG` boot refusal and the three guards under `test/postgres/` are unchanged.
+
 - **The ingest keeps the DUST ledger events it already computes (00016, step 1 of 3).** With
   `REPLAY_VALIDATION=1`, every `dustInitialUtxo` / `dustGenerationDtimeUpdate` /
   `dustSpendProcessed` event a block produces is written to the new `chain_archive.dust_events`
@@ -197,6 +217,18 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
   `openspec/changes/00009-07-match-details/`.
 
 ### Changed
+
+- **The vendored ledger is now `@midnight-ntwrk/ledger-v8@8.1.0-syshash.6`** (was `…syshash.4`),
+  built from `acedward/midnight-ledger` branch `feat/00016-dust-collapsed-updates` at
+  `2b579359d79d59486d63440f9de39b6441aae493`. It adds four exports the node's DUST mirror needs:
+  `DustLocalState.collapsedCommitmentUpdate` / `collapsedGenerationUpdate`, the
+  `commitmentTreeFirstFree` / `generatingTreeFirstFree` getters, and
+  `replayRawEventsRetainingAll`. The former out-of-tree `SOURCE-ledger-state-root.patch` is gone:
+  it is committed in the fork.
+  - **Compatibility warning.** `LEDGER_STATE_VERSION` moves with it, so replay checkpoints written
+    under `…syshash.1` through `…syshash.5` are **refused** on resume rather than silently
+    misread — serialized ledger state is a ledger-internal encoding. Re-ingest, or start a fresh
+    archive, if you hold checkpoints from an earlier build.
 
 - **BREAKING (00009-09): `umbradb-shielded-monitor` (the scanner) and
   `umbradb-shielded-monitor-api` are REPLACED by `umbradb-shielded-monitor-node`.** Both bins and

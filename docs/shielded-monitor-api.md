@@ -431,6 +431,87 @@ Polling loop, in words: read your cursor file → `GET …/matches?cursor=…` �
 already stored rather than skipping one you have not; duplicate delivery is recoverable, a
 skipped match is not.
 
+## DUST wallet sync — `/v1/dust/*` (project 00016, optional)
+
+Five routes, served by the monitor-node and forwarded by the balancer to a uniformly random healthy
+node. They exist so a wallet can build a spend-ready DUST state in seconds instead of replaying
+1.5 M ledger events for itself: the node folds those events **once** into the chain's two DUST
+Merkle trees and hands each wallet the parts of the trees it does not own.
+
+They answer `503 DUST_DISABLED` unless the node was started with `DUST_DATABASE_URL`
+(`docs/shielded-monitor-deployment.md`). No route takes or returns a DUST secret key; the wallet
+computes its own nullifiers and successors and never sends the key anywhere.
+
+**Encodings.** Field elements (`owner`, `nonce` of an output, `commitment`, `nullifier`, both
+roots) are **decimal strings** — they are 254-bit and a JSON number cannot hold one. `backingNight`,
+a generation `nonce` and `txHash` are **lowercase hex without `0x`**. u64/u128 magnitudes, indices,
+ids and heights are decimal strings. Timestamps are integer **unix seconds**. `dtime` is `null`
+when a generation has no end time.
+
+**Two clocks, deliberately.** `atHeight`/`atEventId` (and `indexHeight`/`indexEventId` on the
+lookup) always report the **mirror's** applied tip — the trees. The three database-backed routes
+read a table that is normally *ahead* of it. So a wallet that learns about a spend from `lookup`
+can see that the commitment it now needs is not in the trees yet, and wait. A response that
+reported the table's tip instead would make that check silently useless.
+
+| Method & path | Query / body | 200 body |
+|---|---|---|
+| `GET /v1/dust/tip?net=` | — | `{ net, atHeight, atEventId, commitmentFirstFree, generationFirstFree, commitmentRoot, generationRoot, params: { nightDustRatio, generationDecayRate, dustGracePeriodSeconds } }`; both roots are `null` on a tree with no leaves |
+| `GET /v1/dust/initial-utxos?net=&owner=&afterId=&limit=` | `limit` ≤ 1 000 | `{ atHeight, atEventId, items: [ { eventId, height, txHash, output, generation } ], nextAfterId }` — `generation.dtime` is the **latest** value after every update |
+| `GET /v1/dust/generation?net=&owner=&afterIndex=&limit=` | `limit` ≤ 1 000 | `{ atHeight, atEventId, items: [ { generationIndex, value, owner, nonce, dtime } ], nextAfterIndex }` |
+| `GET /v1/dust/segments?net=&tree=commitment\|generation&ranges=s-e,s-e,…` | ≤ 256 ranges, ascending, non-overlapping, each inside `[0, firstFree−1]` | `{ atHeight, atEventId, tree, firstFree, root, segments: [ { start, end, update } ] }` — `update` is a hex `DustStateMerkleTreeCollapsedUpdate` |
+| `POST /v1/dust/lookup` | `{ net, nullifiers: [ decimal, … ≤ 1000 ] }`, ≤ 64 KiB | `{ indexHeight, indexEventId, results: [ { nullifier, spend } ] }` in request order; `spend` is `null` or a spend record |
+
+```
+GET /v1/dust/tip?net=preprod
+→ { "net":"preprod","atHeight":"853596","atEventId":"1490233","commitmentFirstFree":"1191877","generationFirstFree":"417002",
+    "commitmentRoot":"1234…","generationRoot":"5678…","params":{"nightDustRatio":"5000000000","generationDecayRate":"8267","dustGracePeriodSeconds":"10800"} }
+
+GET /v1/dust/initial-utxos?net=preprod&owner=1093…&limit=100
+→ { "atHeight":"853596","atEventId":"1490233","items":[{"eventId":"12","height":"1201","txHash":"ab…","output":{"initialValue":"5000000",
+    "owner":"1093…","nonce":"77…","seq":"0","ctime":1757900000,"backingNight":"9f…","mtIndex":"3"},
+    "generation":{"value":"5000000","owner":"1093…","nonce":"9f…","dtime":null,"generationIndex":"3"}}],"nextAfterId":null }
+
+GET /v1/dust/segments?net=preprod&tree=commitment&ranges=0-2,4-1191876
+→ { "atHeight":"853596","atEventId":"1490233","tree":"commitment","firstFree":"1191877","root":"1234…",
+    "segments":[{"start":"0","end":"2","update":"…hex…"},{"start":"4","end":"1191876","update":"…hex…"}] }
+
+POST /v1/dust/lookup   { "net":"preprod","nullifiers":["4411…","9082…"] }
+→ { "indexHeight":"853596","indexEventId":"1490233",
+    "results":[{"nullifier":"4411…","spend":{"eventId":"5010","height":"20114","txHash":"cd…","nullifier":"4411…","commitment":"31…",
+    "commitmentIndex":"58","vFee":"1200","declaredTime":1757990000,"blockTime":1757990004}},{"nullifier":"9082…","spend":null}] }
+```
+
+A wallet applies the segments of one tree in ascending order to a fresh `DustLocalState`, inserting
+its own leaves in the gaps between them, and then compares its `commitmentTreeRoot()` with the
+response's `root`. Equality is the proof: it means the Merkle paths the wallet now holds are the
+chain's.
+
+**What `/v1/dust/lookup` leaks, and to whom.** The nullifiers reach the node and one parameterised
+`SELECT`, so the DATABASE can see which nullifiers a wallet asked about. That is an accepted cost
+of this experiment, recorded in `spec/00016-dust-wallet-sync.md` §1. The node itself never logs
+them, never persists them and never returns them to anyone but the caller: its access log carries
+the route pattern, the status, the duration and a **count**, and the balancer streams the body
+without reading it.
+
+### DUST error codes
+
+| Code | Status | When |
+|---|---|---|
+| `DUST_DISABLED` | 503 | the node was started without `DUST_DATABASE_URL` |
+| `DUST_NO_PRODUCER` | 503 | the archive holds no DUST events for this net (its ingest ran without `REPLAY_VALIDATION=1`) |
+| `DUST_NOT_READY` | 503 | the mirror has not caught up with the table yet |
+| `DUST_DB_UNAVAILABLE` | 503 | the archive database could not be read |
+| `DUST_RANGE_INVALID` | 400 | `ranges` malformed, > 256, descending, overlapping, `start > end`, or past `firstFree` |
+| `DUST_LOOKUP_INVALID` | 400 | lookup body malformed, empty, over 1 000 nullifiers or over 64 KiB |
+| `DUST_BAD_PARAM` | 400 | a missing or malformed `net`, `owner`, `tree`, cursor or `limit` |
+
+A DUST error body is `{ "error": { "code", "message" } }`. The message is chosen from a fixed
+vocabulary and **never quotes the input** — not a nullifier, not an owner key, and not the database
+driver's own message, which can itself quote a bound parameter.
+
+---
+
 ## Error bodies
 
 ```json

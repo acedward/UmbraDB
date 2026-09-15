@@ -159,3 +159,69 @@ and nothing is scanning until the client re-sends the key.
 
 `failed` and `stale_source` are deliberate stops, not crashes. In both cases the monitor's
 coverage is exactly where it was, so nothing has been silently skipped.
+
+## The DUST tree mirror (optional; project 00016)
+
+Set `DUST_DATABASE_URL` and the node gains a sixth job: it folds the chain's DUST ledger events —
+the ones `chain-archive-sync` captures into `chain_archive.dust_events` — into one key-less
+`DustLocalState`, and serves the two Merkle trees to wallets through `/v1/dust/*`
+(`docs/shielded-monitor-api.md`). Leave it unset and nothing changes; those routes answer
+`503 DUST_DISABLED`.
+
+**Why it is here and not somewhere else.** A wallet that syncs its DUST from the indexer replays
+every DUST event the chain ever produced — 1.49 M of them on preprod, measured at about two hours.
+Every wallet repeats the same fold over the same public data. The node does it once, and hands each
+wallet only the parts of the trees it does not own, as collapsed Merkle updates it applies in
+seconds. The wallet still computes its own nullifiers and successors, with a key this process never
+sees.
+
+**This is the one place project B touches a database, and it is waived, read-only and confined.**
+`shielded-monitor/node/dust/` is the only directory that may import a driver
+(`spec/00016-dust-wallet-sync.md` §1, owner decision 2026-09-15). The role it connects as can read
+`dust_events` and `blocks` and nothing else — `docs/shielded-monitor-deployment.md` has the SQL,
+and `test/shielded-monitor/dust-reader-role.integration.test.ts` proves every other read and every
+write is refused. The accepted cost is that the database sees which nullifiers a wallet asks about;
+a later project replaces the query with an enclave-side copy.
+
+### What it does on start
+
+1. Loads `DUST_STATE_SNAPSHOT_DIR/<net>.dust-state` if one is there. A snapshot from another `net`
+   or another ledger build is refused — serialized ledger state is a ledger-internal encoding, and
+   a build that reads it differently produces wrong trees rather than an error — and the mirror
+   replays from zero, saying so in its log.
+2. Reads `dust_events` in batches of `DUST_REPLAY_BATCH`, folding each batch into the trees, until
+   it reaches the table's tip. Until then the DUST routes answer `503 DUST_NOT_READY`, and every
+   monitor-store route works exactly as before.
+3. Keeps following the table every `DUST_STATE_POLL_MS`, snapshotting every
+   `DUST_STATE_SNAPSHOT_EVERY` events and on a clean shutdown.
+
+### Reading `/internal/status`
+
+```json
+"dust": { "enabled": true, "producer": "ingest", "ready": true,
+          "applied": { "eventId": "1490233", "height": "853596" },
+          "snapshotEventId": "1480000", "rss": 2411724800, "externalBytes": 1984000000,
+          "parametersCheck": "skipped", "lastError": null }
+```
+
+| field | what it tells you |
+|---|---|
+| `producer: "none"` | the archive holds no DUST events for this net at all — its ingest ran with `REPLAY_VALIDATION=0`. A deployment mistake, not a transient state, and the routes say `503 DUST_NO_PRODUCER` rather than pretending to be an empty chain |
+| `ready: false` | still folding; `applied.eventId` is how far |
+| `applied` | the trees' tip. Always behind or equal to the table's — every DUST response reports this number, not the table's, so a client can tell |
+| `rss` / `externalBytes` | process memory, and Node's `external`, which is where the trees actually live. ≈ 2 KB per leaf; watch it before enabling the module on two nodes |
+| `parametersCheck` | `ok`, `mismatch`, or `skipped` when the role may not read the replay checkpoints (the default — see the deployment doc's optional GRANTs) |
+| `lastError` | the last fold or query failure, this module's own message |
+
+### If the mirror stops advancing
+
+`lastError` names it. Two shapes are worth knowing:
+
+- **a database fault** — `applied` stops, the already-folded trees keep serving `tip` and
+  `segments`, and the three table-backed routes answer `503 DUST_DB_UNAVAILABLE`. Nothing is lost;
+  the next poll resumes.
+- **a replay refusal** (`NonLinearInsertion` and friends) — the table has a hole. The ingest
+  refuses to write a discontinuous capture for exactly this reason, so a hole means the table was
+  filled some other way. `npm run dust:backfill` rebuilds it; the mirror will not advance past the
+  hole and deliberately does not skip it, because a tree missing leaves is a tree every wallet
+  would then fail to verify against.

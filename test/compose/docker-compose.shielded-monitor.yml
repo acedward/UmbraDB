@@ -47,6 +47,27 @@ x-b-environment: &b-environment
   NET: 'undeployed'
   SHIELDED_MONITOR_NET: 'undeployed'
 
+# ── The ONE exception, opt-in and read-only (project 00016) ─────────────────────────────────
+#
+# The DUST wallet-sync module opens a second connection to the ARCHIVE database, by an explicit
+# owner waiver (spec/00016-dust-wallet-sync.md §1). Unset -- the default here -- the module is off
+# and every /v1/dust/* route answers 503 DUST_DISABLED; nothing else about the node changes.
+#
+# To turn it on, create the reader role (docs/shielded-monitor-deployment.md carries the SQL) and
+# export DUST_DATABASE_URL before `up`. Note what the role must NOT be: the `umbra` superuser this
+# test stack uses for `ARCHIVE_PG`. Pointing this at a writer would make the waiver unbounded, and
+# the node would then hold a credential that can write to the archive -- the exact thing the split
+# topology exists to prevent.
+#
+# It is deliberately NOT named `*_PG`: every project-B process still refuses to start if any such
+# variable is in its environment, waiver or no waiver.
+x-dust-environment: &dust-environment
+  DUST_DATABASE_URL: '${DUST_DATABASE_URL:-}'
+  DUST_STATE_SNAPSHOT_DIR: '/var/lib/umbradb/dust-state'
+  DUST_STATE_POLL_MS: '${DUST_STATE_POLL_MS:-2000}'
+  DUST_STATE_SNAPSHOT_EVERY: '${DUST_STATE_SNAPSHOT_EVERY:-20000}'
+  DUST_REPLAY_BATCH: '${DUST_REPLAY_BATCH:-1000}'
+
 services:
   # ── Project A ─────────────────────────────────────────────────────────────────────────────
   archive-sync:
@@ -88,7 +109,14 @@ services:
   #
   # One process each: the public API, the dashboard at /ui, `/internal/*` for the balancer, and
   # both scan queues. The viewing keys they are sent live in these containers' RAM and nowhere
-  # else — there is no volume here, deliberately, because there is nothing to persist.
+  # else — no volume holds a key, deliberately, because there is nothing about a key to persist.
+  #
+  # The one volume each node does get holds the DUST mirror's snapshot, and only when the module is
+  # enabled. That file is PUBLIC CHAIN DATA — the two DUST Merkle trees as the chain committed them
+  # — plus a header naming the net, the ledger build and the event id it stopped at. It exists so a
+  # restart replays the last few thousand events instead of the whole chain; deleting it costs time
+  # and nothing else. A node that finds a snapshot from another net or another ledger build refuses
+  # it and replays from zero.
   shielded-monitor-node-1:
     <<: *monitor-image
     command: ['node']
@@ -96,12 +124,16 @@ services:
       storage-api:
         condition: service_healthy
     environment:
-      <<: *b-environment
+      # Two anchors, one merge key: YAML allows `<<` once per mapping, and a second one is a
+      # parse error rather than a second merge.
+      <<: [*b-environment, *dust-environment]
       MONITOR_NODE_ID: 'node-1'
       API_HOST: '0.0.0.0'
       API_PORT: '8787'
       SCAN_BATCH_BLOCKS: '8'
       SCAN_POLL_MS: '2000'
+    volumes:
+      - dust-state-node-1:/var/lib/umbradb/dust-state
     healthcheck:
       test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8787/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
       interval: 5s
@@ -115,12 +147,16 @@ services:
       storage-api:
         condition: service_healthy
     environment:
-      <<: *b-environment
+      # Two anchors, one merge key: YAML allows `<<` once per mapping, and a second one is a
+      # parse error rather than a second merge.
+      <<: [*b-environment, *dust-environment]
       MONITOR_NODE_ID: 'node-2'
       API_HOST: '0.0.0.0'
       API_PORT: '8787'
       SCAN_BATCH_BLOCKS: '8'
       SCAN_POLL_MS: '2000'
+    volumes:
+      - dust-state-node-2:/var/lib/umbradb/dust-state
     healthcheck:
       test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8787/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
       interval: 5s
@@ -146,3 +182,10 @@ services:
       # Loopback only, and the port is required rather than defaulted: a default would be a fixed
       # number two parallel stacks on this machine would fight over.
       - '127.0.0.1:${BALANCER_HOST_PORT}:8789'
+
+# Per-node, never shared: two nodes at different mirror tips are normal (every DUST response
+# carries `atHeight`/`atEventId` so a client can tell), and one snapshot file written by two
+# processes would not be.
+volumes:
+  dust-state-node-1:
+  dust-state-node-2:
