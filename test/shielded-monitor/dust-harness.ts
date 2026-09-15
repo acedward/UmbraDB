@@ -106,3 +106,108 @@ export function brokenDustDb(events: readonly Uint8Array[]): FakeDustDb {
     selectSpendsByNullifiers: fail,
   };
 }
+
+// ── Real preprod rows, derived from the committed fixture ────────────────────────────────────
+
+/**
+ * The fixture's events as `dust_events` ROWS, produced by project A's own mapper.
+ *
+ * WHY THE REAL MAPPER and not hand-written rows: the routes return `payload.output` and
+ * `payload.generation` almost verbatim, so a hand-written payload would be a test asserting its
+ * own fiction. Running `mapDustEvents` over the real preprod events means the shapes the routes
+ * serve are the shapes the ingest actually writes, in the encodings spec §4 fixes.
+ *
+ * `dustCommitment` is stubbed to `0n`. It is the one field of a kind-1 row no route reads (and at
+ * 804 µs per initial UTxO it is the mapper's whole cost — see question Q-13, which records exactly
+ * that trade-off), so paying it 1 381 times per suite would buy nothing.
+ *
+ * THE DTIME MERGE IS REPRODUCED HERE. `db.ts` does it in SQL (a lateral join to the newest kind-2
+ * row); this does it in TypeScript. That means a route test cannot prove the SQL — which is why
+ * `dust-db.integration.test.ts` runs the real queries against a real database over these same
+ * rows and compares.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function dustRowsFromFixture(ledger: any, events: readonly Uint8Array[]): Promise<{
+  initialUtxos: DustInitialUtxoRow[];
+  generation: DustGenerationRow[];
+  spends: DustSpendRow[];
+  /** The owner with the most initial UTxOs, for the paging cases. */
+  busiestOwner: string;
+}> {
+  const { mapDustEvents } = await import("../../chain-archive-sync/dust-events.js");
+  const records: { id: bigint; record: Awaited<ReturnType<typeof mapOne>>[number] }[] = [];
+
+  function mapOne(index: number, raw: Uint8Array) {
+    const event = ledger.Event.deserialize(raw);
+    const content = event.content;
+    const tag = typeof content?.tag === "string" ? content.tag : "";
+    const txHash = String(event.source?.transactionHash ?? "").replace(/^0x/, "").toLowerCase();
+    return mapDustEvents(
+      { net: "preprod", blockHeight: 1_000 + Math.floor(index / 7), blockHash: "ab".repeat(32) },
+      [{ txPosition: index, eventIndex: 0, txKind: "system", txHash, tag, raw, content }],
+      () => 0n,
+    );
+  }
+
+  for (const [index, raw] of events.entries()) {
+    for (const record of mapOne(index, raw)) records.push({ id: BigInt(index + 1), record });
+  }
+
+  // The latest dtime per generation entry — the merge `db.ts` expresses as a lateral join.
+  const latestDtime = new Map<string, number | null>();
+  for (const { record } of records) {
+    if (record.kind === 2 && record.generationIndex !== undefined) {
+      latestDtime.set(record.generationIndex.toString(10), record.dtime ?? null);
+    }
+  }
+
+  const initialUtxos: DustInitialUtxoRow[] = [];
+  const generation: DustGenerationRow[] = [];
+  const spends: DustSpendRow[] = [];
+  const ownerCounts = new Map<string, number>();
+
+  for (const { id, record } of records) {
+    const payload = record.payload as { output?: Record<string, unknown>; generation?: Record<string, unknown> };
+    const txHash = new Uint8Array(Buffer.from(record.txHash, "hex"));
+    if (record.kind === 1) {
+      const key = record.generationIndex!.toString(10);
+      const merged = { ...(payload.generation ?? {}) };
+      if (latestDtime.has(key)) merged.dtime = latestDtime.get(key)!;
+      initialUtxos.push({
+        id,
+        blockHeight: BigInt(record.blockHeight),
+        txHash,
+        generationIndex: record.generationIndex!,
+        output: payload.output ?? {},
+        generation: merged,
+      });
+      generation.push({
+        generationIndex: record.generationIndex!,
+        value: String(merged.value ?? "0"),
+        owner: String(merged.owner ?? "0"),
+        nonce: String(merged.nonce ?? ""),
+        dtime: merged.dtime === undefined || merged.dtime === null ? null : Number(merged.dtime),
+      });
+      const owner = String(record.owner);
+      ownerCounts.set(owner, (ownerCounts.get(owner) ?? 0) + 1);
+      continue;
+    }
+    if (record.kind === 3) {
+      spends.push({
+        id,
+        blockHeight: BigInt(record.blockHeight),
+        txHash,
+        nullifier: record.nullifier!,
+        commitment: record.commitment!,
+        commitmentIndex: record.commitmentIndex!,
+        vFee: record.vFee!,
+        declaredTime: BigInt(record.declaredTime!),
+        blockTime: BigInt(record.blockTime),
+      });
+    }
+  }
+
+  generation.sort((a, b) => (a.generationIndex < b.generationIndex ? -1 : a.generationIndex > b.generationIndex ? 1 : 0));
+  const busiestOwner = [...ownerCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "0";
+  return { initialUtxos, generation, spends, busiestOwner };
+}
