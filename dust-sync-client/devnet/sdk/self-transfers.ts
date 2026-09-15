@@ -38,7 +38,6 @@ import {
   awaitWalletReady,
   buildWallet,
   deriveUnshieldedAddressFromSeed,
-  firstSyncedState,
 } from '../test/support/wallet-builder.js';
 import { getDustBalance, getNightBalance } from '../test/support/wallet-observations.js';
 
@@ -61,14 +60,41 @@ const log = (m: string): void => {
 };
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-/** The wallet's own DUST UTxO nonces — the thing that changes when a fee is paid. */
-const dustNonces = async (ctx: any): Promise<string> => {
-  const state: any = await firstSyncedState(ctx.wallet);
-  const coins = (state.dust?.availableCoins ?? state.dust?.totalCoins ?? []) as { nonce: bigint }[];
-  return coins
-    .map((coin) => String(coin.nonce))
-    .sort()
-    .join(',');
+/**
+ * The latest wallet state, kept by a live subscription rather than fetched.
+ *
+ * ── Two traps, both hit here before this shape existed ──────────────────────────────────────
+ * 1. **Do not read the state through `firstSyncedState` inside the loop.** It waits for
+ *    `isSynced`, and a wallet with a transaction in flight may never report it again — the settle
+ *    loop then hangs *inside* an `await`, so even its own timeout never fires. (Measured: the run
+ *    stopped dead after submitting, while the transaction itself landed on chain 7 seconds later.)
+ *    A subscription that just records what arrives cannot hang.
+ * 2. **`availableCoins` excludes PENDING UTxOs**, so the spent coin leaves the set the instant the
+ *    transfer is submitted, before any block. "The set changed" is therefore a submission signal,
+ *    not a settlement one — and using it makes the NEXT transfer's `before` snapshot already
+ *    post-submission, which is how the first attempt produced two identical 30 s "settlements"
+ *    and then a 180 s timeout. Settlement is a nonce that was NOT in the set before: only a
+ *    confirmed block can add one.
+ */
+let latestState: any;
+const availableNonces = (): Set<string> => {
+  // `DustWalletState.availableCoins` is `DustFullInfo[]` = generation details PLUS `token`, which
+  // is the `Dust` UTxO itself — so the nonce is `coin.token.nonce`, not `coin.nonce`. Reading the
+  // wrong one yields `undefined` for every coin, a set of one constant, and a settle loop that can
+  // never observe a change (measured: three runs hung on exactly this).
+  const coins = (latestState?.dust?.availableCoins ?? []) as { token?: { nonce?: bigint }; nonce?: bigint }[];
+  const nonces = coins.map((coin) => coin.token?.nonce ?? coin.nonce);
+  if (nonces.length > 0 && nonces.every((nonce) => nonce === undefined)) {
+    throw new Error('availableCoins carries no nonce: the SDK shape changed, fix this script');
+  }
+  return new Set(nonces.map((nonce) => String(nonce)));
+};
+const dustNow = (): bigint => {
+  try {
+    return latestState?.dust?.balance ? (latestState.dust.balance(new Date()) as bigint) : 0n;
+  } catch {
+    return 0n;
+  }
 };
 
 async function main(): Promise<void> {
@@ -78,6 +104,13 @@ async function main(): Promise<void> {
   log(`node=${cfg.node} indexer=${cfg.indexer} proof=${cfg.proofServer} net=${cfg.networkId} count=${COUNT}`);
 
   const ctx: any = await awaitWalletReady(await buildWallet(cfg, SEED), { requireFunds: true });
+  // One live subscription for the whole run — see the note on `availableNonces`.
+  const subscription = ctx.wallet.state().subscribe({
+    next: (state: unknown) => {
+      latestState = state;
+    },
+    error: (error: unknown) => log(`state error: ${String(error)}`),
+  });
   const night = await getNightBalance(ctx);
   log(`NIGHT ${night} stars`);
 
@@ -112,12 +145,12 @@ async function main(): Promise<void> {
   let feeSeen = 0n;
   for (let i = 0; i < COUNT; i += 1) {
     const before = Date.now();
-    const dustBefore = await getDustBalance(ctx);
+    const dustBefore = dustNow();
     if (feeSeen > 0n && dustBefore < feeSeen * 2n) {
       log(`DUST ${dustBefore} is below twice the observed fee ${feeSeen}; waiting for generation…`);
       await sleep(30_000);
     }
-    const noncesBefore = await dustNonces(ctx);
+    const noncesBefore = availableNonces();
     let txId: string;
     try {
       const recipe = await wallet.transferTransaction(
@@ -143,13 +176,18 @@ async function main(): Promise<void> {
     let settled = false;
     while (Date.now() < settleDeadline) {
       await sleep(2_000);
-      if ((await dustNonces(ctx)) !== noncesBefore) {
+      const now = availableNonces();
+      // A nonce that was NOT there before: the successor (or the transfer's own new registered
+      // NIGHT UTxO) became spendable, which happens only after the block AND the indexer.
+      // "The set changed" is not enough — it changes the instant the spent coin goes pending,
+      // which is submission, not settlement.
+      if ([...now].some((nonce) => !noncesBefore.has(nonce))) {
         settled = true;
         break;
       }
     }
     const done = Date.now();
-    const dustAfter = await getDustBalance(ctx);
+    const dustAfter = dustNow();
     // DUST also GENERATES while the transfer settles, so this is a lower bound on the fee, not the
     // fee. It is recorded because it is the only figure available in the image; the exact `vFee`
     // is in the archive's own spend row.
@@ -182,11 +220,12 @@ async function main(): Promise<void> {
     elapsedMs: elapsed,
     meanMsPerTransfer: Math.round(elapsed / Math.max(1, COUNT)),
     nightStars: (await getNightBalance(ctx)).toString(),
-    dustSpecks: (await getDustBalance(ctx)).toString(),
+    dustSpecks: dustNow().toString(),
     transfers,
   };
   writeFileSync(`${OUT}/transfers.json`, `${JSON.stringify(summary, null, 2)}\n`);
   log(`DONE ${COUNT} transfers in ${elapsed} ms (${Math.round(elapsed / Math.max(1, COUNT))} ms each)`);
+  subscription.unsubscribe();
   await ctx.wallet.stop().catch(() => undefined);
 }
 
