@@ -31,6 +31,12 @@
  *   REPLAY_CHECKPOINT_INTERVAL  blocks between replay checkpoints (default 1000)
  *   MAX_BLOCKS      blocks ingested per syncOnce call (default 200)
  *
+ * DUST events (`spec/00016-dust-wallet-sync.md` FR-001) are captured into
+ * `chain_archive.dust_events` whenever REPLAY_VALIDATION is on -- there is no separate switch,
+ * because the events only exist while a block is applied to real ledger state. The status line
+ * reports `dust=capturing|off|gap`; `gap` means capture would have had to leave a hole in the
+ * table and stopped instead, and `npm run dust:backfill` is owed.
+ *
  * Run:  ARCHIVE_PG=postgres://user:pass@host:5432/db npx tsx chain-archive-sync/sync-cli.ts
  */
 import { createClient } from "../src/postgres/client.js";
@@ -114,6 +120,21 @@ if (REPLAY_VALIDATION && (LEDGER_NETWORK_ID === undefined || LEDGER_NETWORK_ID.t
 console.log(`[archive-sync] replay validation ${REPLAY_VALIDATION ? "ON" : "off"}` +
   (REPLAY_VALIDATION ? ` (ledger network ${LEDGER_NETWORK_ID}, checkpoint every ${REPLAY_CHECKPOINT_INTERVAL})` : ""));
 
+// 00016 FR-003. The DUST events only exist while a block is being applied to real ledger state,
+// so with replay off they are never computed and `chain_archive.dust_events` stays empty -- which
+// looks identical, from the table alone, to "a chain with no DUST activity". Said once here so an
+// operator who expected the DUST routes to work learns why they will not, at the moment they
+// could still change the setting, rather than from an empty table hours later.
+if (!REPLAY_VALIDATION) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[archive-sync] DUST events NOT captured (REPLAY_VALIDATION off). " +
+      "chain_archive.dust_events stays empty, so the shielded-monitor node's /v1/dust/* routes " +
+      "have nothing to serve. Set REPLAY_VALIDATION=1 (with LEDGER_NETWORK_ID) to capture them, " +
+      "or run `npm run dust:backfill` afterwards to fill the table from an existing archive.",
+  );
+}
+
 const sql = createClient({ connectionString: CONN, schema: SCHEMA });
 await bootstrapChainArchiveSchema(sql, SCHEMA, { net: NET });
 const service = new ChainArchiveSyncService({
@@ -153,7 +174,8 @@ while (!stop) {
     const height = await service.getSyncedHeight();
     // eslint-disable-next-line no-console
     console.log(
-      `${new Date().toISOString()} synced_height=${height} ingested=${r.ingestedBlocks} tip=${r.targetTipHeight}`,
+      `${new Date().toISOString()} synced_height=${height} ingested=${r.ingestedBlocks} ` +
+        `tip=${r.targetTipHeight} dust=${service.dustCaptureState}`,
     );
     if (r.ingestedBlocks === 0) await new Promise((res) => setTimeout(res, 10_000));
   } catch (e) {
