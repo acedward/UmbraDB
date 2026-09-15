@@ -1172,6 +1172,8 @@ describe("00016: the ingest keeps the DUST events", () => {
    *  a backfill/ingest handover both need more than one block above genesis. */
   const fullChainFetch = () => chainNodeFetch(GENESIS_SYSTEM_EXTRINSICS, { head: HEIGHT_3_HASH });
 
+  const DUST_TAGS = ["dustInitialUtxo", "dustGenerationDtimeUpdate", "dustSpendProcessed"];
+
   const dustService = (schema: string, opts: Record<string, unknown> = {}) =>
     new ChainArchiveSyncService({
       sql, net: NET, schema,
@@ -1259,6 +1261,85 @@ describe("00016: the ingest keeps the DUST events", () => {
     `;
     expect(orphans!.n, "every dust_events row must join a transactions row").toBe(0);
   }, 300_000);
+
+  it("harvests a genesis whose Timestamp::set comes AFTER its Midnight transactions (Q-16)", async () => {
+    // THE PREPROD SHAPE. The devnet genesis this suite otherwise uses puts `Timestamp::set` first,
+    // like every ordinary block, so the harvest's clock was right by accident. Preprod genesis has
+    // 29 extrinsics with `Timestamp::set` at index 26 — AFTER all 26 Midnight transactions — and
+    // `replayTransactionsInExecutionOrder` only advances its clock when it walks past that
+    // inherent. Seeded with `0`, every one of those transactions was applied at 1970-01-01.
+    //
+    // On preprod that was fatal twice over: the ledger refused the first regular transaction (its
+    // intents carry a TTL equal to genesis's own time, and the TTL window is 14 days), so the
+    // whole harvest failed, capture went `gap`, and with no watermark written no restart could
+    // recover it. The committed devnet genesis cannot reproduce that half — its one regular
+    // transaction carries no intent TTL — but it reproduces the CAUSE exactly, and the cause is
+    // observable in every row: an event's `blockTime` is the clock it was applied at.
+    //
+    // The fix seeds the harvest with genesis's OWN timestamp, which is also what the archive
+    // stores as `blocks.timestamp_ms` for height 0, so the two now agree instead of differing by
+    // 55 years.
+    const lateTimestampGenesis = [
+      ...FIXTURE.map((f) => bareSystemExtrinsicHex(f[3]!)),
+      bareRegularExtrinsicHex(REGULAR_TX_HEX),
+      timestampInherentHex(GENESIS_TIMESTAMP_MS),
+    ];
+    const schema = await newSchema();
+    const service = new ChainArchiveSyncService({
+      sql, net: NET, schema,
+      node: { url: "http://fake-node", fetchImpl: chainNodeFetch(lateTimestampGenesis, { head: HEIGHT_3_HASH }) },
+      replayValidation: true,
+      ledgerNetworkId: "undeployed",
+      replayCheckpointInterval: 1,
+    });
+    await service.syncOnce({ maxBlocks: 1 });
+
+    expect(service.dustCaptureState, "the harvest must not have refused this genesis").toBe("capturing");
+    const rows = await dustRows(schema);
+    expect(rows.length).toBe(78);
+    expect(rows.map((r) => Number(r.id))).toEqual(Array.from({ length: 78 }, (_, i) => i + 1));
+    for (const row of rows) expect(Number(row.block_height)).toBe(0);
+
+    // The assertion the fix is actually about: every harvested row was applied at genesis's own
+    // time. With the old hard-coded `0` seed and this extrinsic order, every one of these would
+    // read 0 — see the positive control below.
+    const times = await sql<{ block_time: string }[]>`
+      SELECT DISTINCT block_time::text FROM ${sql(schema)}.dust_events WHERE net = ${NET}
+    `;
+    expect(times.map((t) => t.block_time)).toStrictEqual([String(GENESIS_TIMESTAMP_MS / 1000)]);
+
+    // And the leaves the mirror cannot start without: the first initial UTxO sits at index 0 of
+    // both trees (Q-10). A table that began anywhere else would make the node's fold throw
+    // `NonLinearInsertion`, or silently serve roots that match nothing.
+    const [firstInitial] = await sql<{ commitment_index: string; generation_index: string }[]>`
+      SELECT commitment_index::text, generation_index::text FROM ${sql(schema)}.dust_events
+      WHERE net = ${NET} AND kind = 1 ORDER BY id LIMIT 1
+    `;
+    expect(firstInitial).toStrictEqual({ commitment_index: "0", generation_index: "0" });
+  }, 300_000);
+
+  it("POSITIVE CONTROL: the old 1970 clock is observable in the events themselves", async () => {
+    // Without this the case above would pass for any reason at all, including the clock having
+    // been right all along. The same genesis system transactions applied at the two clocks give
+    // two different `blockTime`s, which is what `dust_events.block_time` records — so the row
+    // assertion above really is about the seed the harvest passes.
+    const apply = (executionTimestampMs: number): Date => {
+      const replay = LedgerReplay.fromGenesis(ledger, "undeployed", { captureEventTags: DUST_TAGS });
+      replay.applyBlock({
+        transactions: FIXTURE.map((f) => ({
+          kind: "system" as const,
+          rawBytes: new Uint8Array(Buffer.from(f[3]!, "hex")),
+          executionTimestampMs,
+        })),
+        blockTimestampMs: GENESIS_TIMESTAMP_MS,
+        parentBlockHashHex: "00".repeat(32),
+        parentBlockTimestampMs: executionTimestampMs,
+      });
+      return replay.lastBlockEvents![0]!.content.blockTime as Date;
+    };
+    expect(apply(0).getTime(), "the old seed dates genesis's events 1970").toBe(0);
+    expect(apply(GENESIS_TIMESTAMP_MS).getTime()).toBe(GENESIS_TIMESTAMP_MS);
+  }, 120_000);
 
   it("keeps quiet blocks covered and a restart free of duplicates and gaps", async () => {
     const schema = await newSchema();

@@ -1238,14 +1238,30 @@ export class ChainArchiveSyncService {
     const harvest = LedgerReplay.fromGenesis(
       ledger, this.ledgerNetworkId!, { captureEventTags: DUST_EVENT_TAGS },
     );
+    // GENESIS IS VERIFIED AT ITS OWN TIME, NOT AT 1970 (question Q-16).
+    //
+    // `replayTransactionsInExecutionOrder` seeds its running clock with the parent's timestamp and
+    // only advances it when it walks past the block's `Timestamp::set` inherent. On every ordinary
+    // block that inherent is first, so the seed hardly matters. On PREPROD GENESIS it is extrinsic
+    // 26 of 29 — after all 26 Midnight transactions — so a seed of `0` verifies every one of them
+    // at 1970-01-01. The ledger's intent TTL window is 14 days, and genesis's own intents carry a
+    // TTL equal to genesis's own timestamp (2025-08-05), so the first regular transaction is
+    // refused as "Intent TTL is too far in the future" and the whole harvest fails: the table stays
+    // empty from genesis, capture reports `gap`, and no restart can recover it (D1.4 requires the
+    // first captured bundle to be the archive's first height).
+    //
+    // Genesis has no parent, so its own time is the only defensible substitute — and it is the
+    // value the archive already decodes and stores as `blocks.timestamp_ms` for height 0, so the
+    // harvest and the block row now agree rather than disagreeing by 55 years. With it, preprod
+    // genesis yields 71 DUST rows starting at `mtIndex 0` / `generationIndex 0`.
     const executionOrder = await this.replayTransactionsInExecutionOrder(
-      blockHash, extrinsics, protocolVersion, 0,
+      blockHash, extrinsics, protocolVersion, blockTimestampMs,
     );
     harvest.applyBlock({
       transactions: executionOrder,
       blockTimestampMs,
       parentBlockHashHex: parentHashHex,
-      parentBlockTimestampMs: 0,
+      parentBlockTimestampMs: blockTimestampMs,
     });
     return mapDustEvents(
       { net: this.net, blockHeight: height, blockHash },
