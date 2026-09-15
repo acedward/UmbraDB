@@ -47,21 +47,6 @@ export interface DustConfig {
   readonly replayBatch: number;
 }
 
-export const DUST_ENV_DOC = `
-DUST wallet sync (spec 00016; the module is OFF unless DUST_DATABASE_URL is set):
-
-  DUST_DATABASE_URL     read-only PostgreSQL connection string for the ARCHIVE database, for a
-                        role with USAGE on the archive schema and SELECT on dust_events and
-                        blocks only. Unset (the default) disables every /v1/dust/* route, which
-                        then answers 503 DUST_DISABLED; the rest of the node is unaffected.
-                        It must NOT be named *_PG: this process still refuses to start with any
-                        such variable in its environment.
-  DUST_STATE_SNAPSHOT_DIR    where the mirror writes <net>.dust-state (default ./dust-state).
-  DUST_STATE_POLL_MS         how often the mirror polls dust_events (default 2000).
-  DUST_STATE_SNAPSHOT_EVERY  events between snapshots (default 20000).
-  DUST_REPLAY_BATCH          events per replay call (default 1000).
-`.trim();
-
 /** Thrown for any invalid DUST configuration. Names the variable, never its value when the value
  *  is a connection string (which carries a password). */
 export class DustConfigError extends Error {

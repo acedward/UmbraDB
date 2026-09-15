@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { DustConfig } from "../../shielded-monitor/node/dust/config.js";
-import type { DustDb, DustRawEvent } from "../../shielded-monitor/node/dust/db.js";
 import { DustStateMirror } from "../../shielded-monitor/node/dust/mirror.js";
 import { LEDGER_BUILD_ID, loadLedger } from "../../shielded-monitor/offers.js";
 import { readDustNodeFixtureEvents, readDustNodeFixtureMeta } from "./dust-fixture.js";
+import { fakeDustDb } from "./dust-harness.js";
 
 /**
  * `DustStateMirror` over the committed 5 000-event preprod fixture — no database, no network
@@ -26,54 +26,6 @@ import { readDustNodeFixtureEvents, readDustNodeFixtureMeta } from "./dust-fixtu
 
 const meta = readDustNodeFixtureMeta();
 const NET = "preprod";
-
-/** A `DustDb` that serves the fixture and nothing else. It counts its calls, so the batching
- *  assertions observe the real query pattern rather than a proxy for it. */
-function fakeDb(events: readonly Uint8Array[], options: { failAfter?: number } = {}): DustDb & {
-  calls: number;
-  tipCalls: number;
-} {
-  const rows: DustRawEvent[] = events.map((raw, index) => ({
-    id: BigInt(index + 1),
-    // A plausible height progression: the fixture's events span real blocks, and the mirror only
-    // ever reports the last row's height, so the exact mapping does not matter — only that it is
-    // monotonic, as the archive's is.
-    blockHeight: BigInt(1_000 + Math.floor(index / 7)),
-    raw,
-  }));
-  const db = {
-    calls: 0,
-    tipCalls: 0,
-    async selectEventsAfter(_net: string, afterId: bigint, limit: number) {
-      db.calls += 1;
-      if (options.failAfter !== undefined && db.calls > options.failAfter) {
-        throw new Error("connection terminated unexpectedly");
-      }
-      return rows.filter((row) => row.id > afterId).slice(0, limit);
-    },
-    async selectTableTip(_net: string) {
-      db.tipCalls += 1;
-      if (options.failAfter !== undefined && db.calls > options.failAfter) {
-        throw new Error("connection terminated unexpectedly");
-      }
-      const last = rows[rows.length - 1];
-      return last === undefined ? undefined : { eventId: last.id, height: last.blockHeight };
-    },
-    async selectInitialUtxosByOwner() {
-      return [];
-    },
-    async selectGenerationByOwner() {
-      return [];
-    },
-    async selectSpendsByNullifiers() {
-      return [];
-    },
-    async close() {
-      /* nothing to close */
-    },
-  };
-  return db as DustDb & { calls: number; tipCalls: number };
-}
 
 function config(dir: string, overrides: Partial<DustConfig> = {}): DustConfig {
   return {
@@ -115,7 +67,7 @@ afterAll(async () => {
 describe("DustStateMirror folds the table into two trees", () => {
   it("reaches the fixture's recorded roots in batches of 1 000, one query per batch", async () => {
     const dir = path.join(root, "roots");
-    const db = fakeDb(events);
+    const db = fakeDustDb(events);
     const mirror = new DustStateMirror({ db, net: NET, config: config(dir), ledger });
     await mirror.start({ loops: false });
     try {
@@ -147,7 +99,7 @@ describe("DustStateMirror folds the table into two trees", () => {
   it("reaches the same roots at a different batch size — the boundaries are not load-bearing", async () => {
     const dir = path.join(root, "batches");
     const mirror = new DustStateMirror({
-      db: fakeDb(events),
+      db: fakeDustDb(events),
       net: NET,
       config: config(dir, { replayBatch: 333 }),
       ledger,
@@ -171,7 +123,7 @@ describe("DustStateMirror folds the table into two trees", () => {
   it("[[shielded-monitor.dust.mirror-is-cuttable]] serves the segments around a random leaf, where a stock mirror cannot", async () => {
     // THE test of this phase. See the file header: roots cannot tell the two replays apart.
     const dir = path.join(root, "cuttable");
-    const mirror = new DustStateMirror({ db: fakeDb(events), net: NET, config: config(dir), ledger });
+    const mirror = new DustStateMirror({ db: fakeDustDb(events), net: NET, config: config(dir), ledger });
     await mirror.start({ loops: false });
 
     // The negative control: the same events, the stock replay. If this ever becomes cuttable the
@@ -275,7 +227,7 @@ describe("DustStateMirror folds the table into two trees", () => {
   it("keeps a leased state alive across a swap and frees it when the last reader lets go", async () => {
     const dir = path.join(root, "lease");
     const mirror = new DustStateMirror({
-      db: fakeDb(events),
+      db: fakeDustDb(events),
       net: NET,
       config: config(dir, { replayBatch: 500 }),
       ledger,
@@ -310,7 +262,7 @@ describe("DustStateMirror snapshots (FR-012)", () => {
   it("writes one every DUST_STATE_SNAPSHOT_EVERY events and resumes from it", async () => {
     const dir = path.join(root, "snapshot");
     const first = new DustStateMirror({
-      db: fakeDb(events),
+      db: fakeDustDb(events),
       net: NET,
       config: config(dir, { replayBatch: 1_000, snapshotEvery: 2_000 }),
       ledger,
@@ -324,7 +276,7 @@ describe("DustStateMirror snapshots (FR-012)", () => {
     const snapshot = await readFile(path.join(dir, `${NET}.dust-state`));
     expect(snapshot.subarray(0, 10).toString("utf8")).toBe("UMBRADUST1");
 
-    const db = fakeDb(events);
+    const db = fakeDustDb(events);
     const second = new DustStateMirror({ db, net: NET, config: config(dir), ledger });
     await second.start({ loops: false });
     try {
@@ -386,7 +338,7 @@ describe("DustStateMirror snapshots (FR-012)", () => {
 
       const lines: string[] = [];
       const mirror = new DustStateMirror({
-        db: fakeDb(events.slice(0, 200)),
+        db: fakeDustDb(events.slice(0, 200)),
         net: NET,
         config: config(dir, { replayBatch: 200 }),
         ledger,
@@ -421,7 +373,7 @@ describe("DustStateMirror snapshots (FR-012)", () => {
 describe("DustStateMirror reports what it cannot do", () => {
   it("says producer=none for a net the table holds nothing for", async () => {
     const dir = path.join(root, "no-producer");
-    const mirror = new DustStateMirror({ db: fakeDb([]), net: NET, config: config(dir), ledger });
+    const mirror = new DustStateMirror({ db: fakeDustDb([]), net: NET, config: config(dir), ledger });
     await mirror.start({ loops: false });
     try {
       await mirror.pumpOnce();
@@ -436,7 +388,7 @@ describe("DustStateMirror reports what it cannot do", () => {
   it("records a database fault as lastError and keeps the trees it already has", async () => {
     const dir = path.join(root, "db-down");
     const mirror = new DustStateMirror({
-      db: fakeDb(events.slice(0, 600), { failAfter: 1 }),
+      db: fakeDustDb(events.slice(0, 600), { failAfter: 1 }),
       net: NET,
       config: config(dir, { replayBatch: 300 }),
       ledger,
@@ -468,7 +420,7 @@ describe("the retained mirror's memory (SC-004, question Q-14)", () => {
    */
   it("serializes to about 98 B per leaf, the retained-tree figure", async () => {
     const dir = path.join(root, "serialized");
-    const mirror = new DustStateMirror({ db: fakeDb(events), net: NET, config: config(dir), ledger });
+    const mirror = new DustStateMirror({ db: fakeDustDb(events), net: NET, config: config(dir), ledger });
     await mirror.start({ loops: false });
     try {
       await pumpToTip(mirror);

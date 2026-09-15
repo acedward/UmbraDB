@@ -3,6 +3,7 @@ import { openArchiveSource } from "./archive-source.js";
 import { createShieldedMonitorApi, stderrLogger } from "./api/server.js";
 import { archiveSourceTip, unknownSourceTip } from "./api/source-tip.js";
 import { loadMonitorNodeConfig, MONITOR_NODE_ENV_DOC } from "./node/config.js";
+import { createDustModule } from "./node/dust/index.js";
 import { MonitorNode } from "./node/monitor-node.js";
 import { HttpMonitorStore } from "./storage-http-client.js";
 
@@ -58,10 +59,19 @@ export async function runMonitorNode(env: NodeJS.ProcessEnv = process.env): Prom
     logger: (line) => process.stderr.write(`${line}\n`),
   });
 
+  // The DUST module (project 00016), or nothing when `DUST_DATABASE_URL` is unset. Built BEFORE
+  // the listener so a bad `DUST_*` value stops the process with the variable's name rather than
+  // half-starting a node whose DUST routes would answer 503 for a reason nobody can see.
+  const dust = createDustModule(env, {
+    net: config.api.net,
+    logger: (line) => process.stderr.write(`${line}\n`),
+  });
+
   const api = createShieldedMonitorApi({
     store,
     config: config.api,
     node,
+    ...(dust !== undefined ? { dust } : {}),
     sourceTipProvider: config.api.sourceTipDisabled
       ? unknownSourceTip()
       : archiveSourceTip(source.archive),
@@ -73,6 +83,10 @@ export async function runMonitorNode(env: NodeJS.ProcessEnv = process.env): Prom
   // whereas a node that is scanning but unreachable is invisible to the balancer.
   const address = await api.listen();
   await node.start();
+  // AFTER the listener: the mirror's cold fold takes minutes on a real chain, and during it the
+  // DUST routes must be reachable to answer `503 DUST_NOT_READY` (00016 Story 2 scenario 3) while
+  // every monitor-store route works as before.
+  await dust?.start();
 
   const statusTimer = config.statusLogSeconds > 0
     ? setInterval(() => {
@@ -91,6 +105,9 @@ export async function runMonitorNode(env: NodeJS.ProcessEnv = process.env): Prom
       net: config.api.net,
       nodeId: config.nodeId,
       storage: config.api.storageUrl,
+      dust: dust === undefined
+        ? "disabled (no DUST_DATABASE_URL)"
+        : "enabled — a SECOND, read-only connection to the archive database (spec 00016 §1 waiver)",
       archive: source.describe,
       wake: source.wake.describe,
       database: "none (owner decision Q25) — all state is reached through STORAGE_URL",
@@ -103,6 +120,9 @@ export async function runMonitorNode(env: NodeJS.ProcessEnv = process.env): Prom
     if (statusTimer !== undefined) clearInterval(statusTimer);
     await api.close();
     await node.stop();
+    // Last: the mirror writes its final snapshot here (FR-012), and a node that snapshotted
+    // before closing its listener could still fold a batch after the snapshot was written.
+    await dust?.stop();
   };
 }
 

@@ -191,6 +191,32 @@ export function createBalancer(options: BalancerOptions): Balancer {
       return;
     }
 
+    // ── `/v1/dust/*` (project 00016, spec §5.8 / FR-018) ───────────────────────────────────
+    //
+    // A uniformly random healthy node, with NO key affinity: the DUST routes are stateless reads
+    // of a tree every node mirrors for itself, so there is nothing to be sticky about. Two nodes
+    // may sit at different mirror tips, and that is fine — every response carries `atHeight` and
+    // `atEventId`, and the client tolerates the difference exactly as it tolerates the chain
+    // moving (spec §5.5 steps 7-9).
+    //
+    // The POST body is streamed, never read here. It carries the wallet's nullifiers, and the
+    // balancer has no reason to see them, buffer them or be able to log them. That also means the
+    // request is NOT retried against a second node on a failure, which is the correct trade: a
+    // lookup is cheap for the client to repeat and a silently duplicated one is not.
+    //
+    // Written as its own branch rather than left to the default proxy below, which would already
+    // do the right thing today: the monitor READ routes just above rewrite `/v1/...` responses,
+    // and the next person who adds such a rule should have to walk past this comment.
+    if (path === "/v1/dust" || path.startsWith("/v1/dust/")) {
+      const target = pick();
+      if (target === undefined) {
+        sendUnavailable(res, "no upstream is available");
+        return;
+      }
+      proxy(req, res, target, method === "GET" || method === "HEAD", undefined, undefined);
+      return;
+    }
+
     // ── `GET /v1/monitors/<id>/holder` (§5.3) ──────────────────────────────────────────────
     const holderMatch = /^\/v1\/monitors\/([^/]+)\/holder$/.exec(path);
     if (holderMatch !== undefined && holderMatch !== null) {
