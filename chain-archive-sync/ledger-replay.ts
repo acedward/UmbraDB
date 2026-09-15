@@ -87,6 +87,65 @@ function addCost(into: AccumulatedCost, cost: Record<string, unknown>): void {
   for (const d of COST_DIMENSIONS) into[d] += BigInt(cost[d] as bigint | number | string);
 }
 
+/**
+ * One ledger event this block produced, kept rather than dropped (`spec/00016-dust-wallet-sync.md`
+ * §5.1, FR-001).
+ *
+ * The events are already computed while a block is applied -- `TransactionResult.events` for a
+ * regular transaction, the second element of `applySystemTx`'s tuple for a system one -- and were
+ * being discarded. Keeping the three DUST tags is the "replay once" half of 00016: the node folds
+ * them into its own trees once, instead of every wallet folding the chain's whole DUST history for
+ * itself.
+ *
+ * `raw` is `Event.serialize()`, which is `tagged_serialize` in the ledger WASM
+ * (`ledger-wasm/src/events.rs`), so a plain CONCATENATION of these byte strings is exactly what
+ * `DustLocalState.replayRawEvents` consumes (FR-002 / A-3). Verified over the 78 DUST events of
+ * the committed genesis vectors: raw-concatenated replay, object replay, and batched replay all
+ * produce the same two tree roots.
+ */
+export interface LedgerEventRef {
+  /** Index into {@link ReplayBlockInput.transactions} -- the LEDGER's execution order, which is
+   *  deliberately not the archive's row order for system transactions. */
+  readonly txPosition: number;
+  /** Index within that transaction's own event list. */
+  readonly eventIndex: number;
+  readonly txKind: "regular" | "system";
+  /**
+   * `Event.source.transactionHash`: the transaction the ledger itself attributes the event to,
+   * lowercase hex without `0x`.
+   *
+   * Read from the event rather than recomputed from the transaction. The ledger builds it from
+   * the very same `TransactionHash` a caller gets out of `Transaction.transactionHash()` /
+   * `SystemTransaction.transactionHash()` (both go through `to_hex_ser`), which is the value
+   * `chain_archive.transactions.tx_hash` is keyed by -- so the two join, and a test asserts the
+   * equality rather than this code assuming it.
+   */
+  readonly txHash: string;
+  /** `Event.content.tag`, e.g. `dustInitialUtxo`. */
+  readonly tag: string;
+  /** `Event.serialize()` -- see the interface doc. */
+  readonly raw: Uint8Array;
+  /** `Event.content`, the WASM's JS projection of the event details. Read once, here, because
+   *  the getter re-converts on every access. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  readonly content: any;
+}
+
+/** How {@link LedgerReplay} is configured to keep events. */
+export interface LedgerReplayOptions {
+  /**
+   * Tags of the events to keep in {@link LedgerReplay.lastBlockEvents}. Absent or empty means
+   * KEEP NOTHING, which is what every caller that does not want DUST capture gets -- and the
+   * reason plain replay validation pays nothing for this feature.
+   *
+   * The filter lives here, not in the caller, deliberately: `Event.serialize()` copies the whole
+   * event out of WASM (a zswap output is ~750 B against a dust spend's ~140 B), so filtering
+   * afterwards would pay that cost for every event on the chain to keep the ~0.3 % that are DUST.
+   * SC-007 bounds the capture overhead at 2 % of block apply time, and this is what buys it.
+   */
+  readonly captureEventTags?: readonly string[];
+}
+
 export interface ReplayBlockInput {
   /** In ledger execution order. This may differ from archive position order, which follows the
    * reference indexer's event-first row contract. */
@@ -113,20 +172,27 @@ export class LedgerReplay {
   private state: any;
   private readonly strictness: any;
   private lastFullness: BlockFullness | undefined;
+  /** See {@link LedgerReplayOptions.captureEventTags}. Empty = capture disabled. */
+  private readonly captureEventTags: ReadonlySet<string>;
+  /** See {@link lastBlockEvents}. */
+  private lastEvents: LedgerEventRef[] | undefined;
 
-  private constructor(private readonly ledger: any, networkId: string | undefined) {
+  private constructor(
+    private readonly ledger: any, networkId: string | undefined, options?: LedgerReplayOptions,
+  ) {
     // `undefined` only from `fromSerialized`, which replaces `state` immediately.
     this.state = networkId === undefined ? undefined : ledger.LedgerState.blank(networkId);
     // The reference's STRICTNESS_V8: defaults with balancing enforcement off.
     this.strictness = new ledger.WellFormedStrictness();
     this.strictness.enforceBalancing = false;
+    this.captureEventTags = new Set(options?.captureEventTags ?? []);
   }
 
   /** Construct a blank state for isolated vectors and synthetic chain generation. Production
    * replay does not reconstruct block 0 this way: Midnight's genesis builder installs the
    * serialized `system_properties.genesis_state` snapshot without executing block-0 extrinsics. */
-  static fromGenesis(ledger: any, networkId: string): LedgerReplay {
-    return new LedgerReplay(ledger, networkId);
+  static fromGenesis(ledger: any, networkId: string, options?: LedgerReplayOptions): LedgerReplay {
+    return new LedgerReplay(ledger, networkId, options);
   }
 
   /**
@@ -137,12 +203,14 @@ export class LedgerReplay {
    * is a ledger-internal encoding, and this constructor cannot tell a foreign encoding from a
    * corrupt one.
    */
-  static fromSerialized(ledger: any, stateBytes: Uint8Array): LedgerReplay {
+  static fromSerialized(
+    ledger: any, stateBytes: Uint8Array, options?: LedgerReplayOptions,
+  ): LedgerReplay {
     // The deserialized state carries its own network id, so the constructor's `blank()` call is
     // pure waste here -- and passing a placeholder through it (this previously passed the literal
     // "unused") builds a throwaway state against a network that does not exist. Construct with the
     // deserialized state directly.
-    const replay = new LedgerReplay(ledger, undefined);
+    const replay = new LedgerReplay(ledger, undefined, options);
     replay.state = ledger.LedgerState.deserialize(stateBytes);
     return replay;
   }
@@ -159,6 +227,35 @@ export class LedgerReplay {
     // before building the Date keeps sub-second parts from leaking into the WASM conversion.
     const closeTime = new Date(Math.floor(input.blockTimestampMs / 1000) * 1000);
     const outcomes: ReplayOutcome[] = [];
+    // Cleared on ENTRY, not only on success: a refusal must not leave the previous block's events
+    // attached to this height, the way an uncleared outcome list would attach the wrong results.
+    // Re-published at the commit point below, next to `lastFullness`.
+    this.lastEvents = undefined;
+    const captured: LedgerEventRef[] = [];
+    const capture = (
+      events: unknown, txPosition: number, txKind: "regular" | "system",
+    ): void => {
+      if (this.captureEventTags.size === 0 || !Array.isArray(events)) return;
+      for (const [eventIndex, event] of (events as any[]).entries()) {
+        // `content` is a getter that re-converts the event on every access, so read it once.
+        const content = event?.content;
+        const tag = typeof content?.tag === "string" ? content.tag : "";
+        if (!this.captureEventTags.has(tag)) continue;
+        captured.push({
+          txPosition,
+          eventIndex,
+          txKind,
+          txHash: String(event.source?.transactionHash ?? "").replace(/^0x/, "").toLowerCase(),
+          tag,
+          // Serialized HERE, while the event is still owned by this code. Handing an `Event` to
+          // anything that takes it by value (`DustLocalState.replayEvents`, for one) frees the
+          // wasm-bindgen wrapper, and a later `serialize()` then throws "null pointer passed to
+          // rust" -- measured, not theorised.
+          raw: new Uint8Array(event.serialize()),
+          content,
+        });
+      }
+    };
 
     // ATOMIC (audit round 3). This used to assign `this.state` after every transaction, so a block
     // that refused at transaction 3 left the first two already applied -- and since a refusal is
@@ -186,8 +283,9 @@ export class LedgerReplay {
         // rates it installs rather than the ones in force when it ran.
         const sysCost = sysTx.cost(state.parameters);
         try {
-          const [newState] = state.applySystemTx(sysTx, tblock);
+          const [newState, events] = state.applySystemTx(sysTx, tblock);
           state = newState;
+          capture(events, position, "system");
         } catch (cause) {
           // The reference treats a system-transaction apply error as fatal to the block
           // (`Error::SystemTransaction` propagates), unlike a regular transaction's Failure.
@@ -232,6 +330,9 @@ export class LedgerReplay {
       }, undefined);
       const [newState, result] = state.apply(verified, cx);
       state = newState;
+      // A Failure carries no events at all (`TransactionResult::events` returns an empty slice
+      // for it in the ledger), so this is naturally consistent with the fullness rule below.
+      capture(result?.events, position, "regular");
       const kind = String(result?.type ?? result);
       const outcome: ReplayOutcome = /partial/i.test(kind)
         ? "partial_success"
@@ -255,7 +356,24 @@ export class LedgerReplay {
     this.lastFullness = {
       accumulated: { ...blockFullness },
     };
+    // Same commit point as the fullness: a block that threw above published nothing, so a caller
+    // can never persist events for a block the archive refused.
+    this.lastEvents = this.captureEventTags.size === 0 ? undefined : captured;
     return outcomes;
+  }
+
+  /**
+   * The captured ledger events of the last successfully applied block, in ledger execution order
+   * (`spec/00016-dust-wallet-sync.md` FR-001).
+   *
+   * `undefined` means "this replay is not capturing events" (no
+   * {@link LedgerReplayOptions.captureEventTags}) or "the last `applyBlock` refused" -- never
+   * "the block had none", which is the empty array. The distinction is load-bearing: the ingest's
+   * contiguity guard treats a block with no DUST events as covered, and a block whose events were
+   * never captured as a hole.
+   */
+  get lastBlockEvents(): readonly LedgerEventRef[] | undefined {
+    return this.lastEvents;
   }
 
   /** The raw accumulated cost the last successfully applied block was closed from, or `undefined`

@@ -1,0 +1,48 @@
+{
+  "source": "wss://indexer.preprod.midnight.network/api/v4/graphql/ws, subscription { dustLedgerEvents { id raw } }",
+  "fetchedUtc": "2026-09-15",
+  "net": "preprod",
+  "note": "A CONTIGUOUS PREFIX of the preprod DUST ledger-event stream from its first event. Contiguity is not decoration: DustLocalState inserts leaves strictly linearly, so a cherry-picked subset would throw NonLinearInsertion. Format: repeated (u32 big-endian length || Event.serialize() bytes).",
+  "events": 300,
+  "bytes": 155729,
+  "sha256": "4e46d5990fa41ba8275e794b21b22d429108cd98ff96bb63abff5a7ca5f3c664",
+  "tags": {
+    "notYetSupportedEventType": 2,
+    "dustInitialUtxo": 127,
+    "dustGenerationDtimeUpdate": 84,
+    "dustSpendProcessed": 87
+  },
+  "ledgerBuild": "ledger-v8@8.1.0-syshash.4 (vendor/ledger-v8-syshash)",
+  "rootsAfterEveryFiftyDustEvents": [
+    {
+      "dustEvents": 50,
+      "commitmentRoot": "32427771370530152857051977860418428911968251462461171809054722952530261323965",
+      "generatingRoot": "1919812579269107053303182056618363044665502249267749134466170612483051172797"
+    },
+    {
+      "dustEvents": 100,
+      "commitmentRoot": "5564879082136314726106808331528029829646093719536837118758627414650287856152",
+      "generatingRoot": "42834611271281255112106892497094917124149595428091276284073489324754270593089"
+    },
+    {
+      "dustEvents": 150,
+      "commitmentRoot": "46428827414160156591920852467113542726855275035406312508246962438565519780138",
+      "generatingRoot": "47887438735429627788972541994578573376113118703561126835392567540113601907015"
+    },
+    {
+      "dustEvents": 200,
+      "commitmentRoot": "46113556806807658328507659061285051542676321238985829130030250908975148916702",
+      "generatingRoot": "14125340860055841333408309429308215179170409424908639776560513579725709750122"
+    },
+    {
+      "dustEvents": 250,
+      "commitmentRoot": "37456484383020579414743326933580515370788932871600900696980615477763284346695",
+      "generatingRoot": "20257273577363673398258974967201762767352161443426955277648785065697766612294"
+    },
+    {
+      "dustEvents": 298,
+      "commitmentRoot": "28645117104843504169771403133672638325559154588721479394602987367825052465637",
+      "generatingRoot": "27542400465210980219975628967353735400606281087935801592806426061368307605909"
+    }
+  ]
+}
