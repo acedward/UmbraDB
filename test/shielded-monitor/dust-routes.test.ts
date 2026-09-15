@@ -346,7 +346,7 @@ describe("POST /v1/dust/lookup", () => {
     expect((await post("/v1/dust/lookup", "{")).body.error.code).toBe("DUST_LOOKUP_INVALID");
   });
 
-  it("[[shielded-monitor.dust.log-holds-no-nullifier]] logs the route, the status and a COUNT — never a nullifier", async () => {
+  it("logs the route, the status and a COUNT — never a nullifier", async () => {
     // SC-006. The access log is where a secret leaks by accident: the route pattern is chosen from
     // a fixed list, the URL is never logged, and the body is never touched by the logger.
     const secret = rows.spends[0]!.nullifier;

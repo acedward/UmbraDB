@@ -210,7 +210,7 @@ describe("project B reaches no database at all (owner Rule B / FR-025, question 
     ).toStrictEqual([]);
   });
 
-  it("[[shielded-monitor.import-boundary.dust-waiver-is-exactly-two-modules]] the 00016 waiver reaches exactly `postgres` and the archive-conventions module", () => {
+  it("the 00016 waiver reaches exactly `postgres` and the archive-conventions module", () => {
     // The waiver is asserted, not merely tolerated. These two are what spec 00016 D2.2 says the
     // DUST module needs: the driver, to open its own read-only connection, and A's published
     // schema-name constant, which exists precisely so a consumer never types `chain_archive`
@@ -226,7 +226,7 @@ describe("project B reaches no database at all (owner Rule B / FR-025, question 
     }
   });
 
-  it("[[shielded-monitor.import-boundary.dust-waiver-does-not-spread]] only three B files outside the waived directory import it", () => {
+  it("only three B files outside the waived directory import it", () => {
     // The containment that makes the waiver a waiver. Database code reaches the rest of B only by
     // someone importing this directory from it, so the import edges INTO it are the thing to pin —
     // and they are three: the CLI that builds the module, the node that owns its lifecycle, and

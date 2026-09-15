@@ -151,7 +151,7 @@ describe("the private-API balancer", () => {
     expect(first).toBeLessThan(130);
   }, 60_000);
 
-  it("[[shielded-monitor.balancer.dust-routes-are-spread-and-unread]] spreads /v1/dust/* over both upstreams and forwards a lookup body byte-identical", async () => {
+  it("spreads /v1/dust/* over both upstreams and forwards a lookup body byte-identical", async () => {
     // 00016 FR-018 / spec §5.8. Two properties, and the second is a custody property: the body of
     // `POST /v1/dust/lookup` is the wallet's nullifiers, and the balancer must stream it without
     // reading it — so it cannot log it, cannot buffer it, and cannot replay it onto a second node.

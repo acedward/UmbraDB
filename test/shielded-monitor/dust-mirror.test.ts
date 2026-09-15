@@ -120,7 +120,7 @@ describe("DustStateMirror folds the table into two trees", () => {
     }
   }, 180_000);
 
-  it("[[shielded-monitor.dust.mirror-is-cuttable]] serves the segments around a random leaf, where a stock mirror cannot", async () => {
+  it("serves the segments around a random leaf, where a stock mirror cannot", async () => {
     // THE test of this phase. See the file header: roots cannot tell the two replays apart.
     const dir = path.join(root, "cuttable");
     const mirror = new DustStateMirror({ db: fakeDustDb(events), net: NET, config: config(dir), ledger });
