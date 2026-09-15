@@ -7,6 +7,7 @@ import * as replayCheckpointBlockTime from "./005_replay_checkpoint_block_time.j
 import * as replayCheckpointLedgerNetwork from "./006_replay_checkpoint_ledger_network.js";
 import * as blobRoleGuardForwardFix from "./007_blob_role_guard_forward_fix.js";
 import * as blockTimestamp from "./008_block_timestamp.js";
+import * as dustEvents from "./009_dust_events.js";
 import type { Migration } from "../../migrate.js";
 
 /**
@@ -42,6 +43,7 @@ export const chainArchiveMigrations: Migration[] = [
   replayCheckpointLedgerNetwork,
   blobRoleGuardForwardFix,
   blockTimestamp,
+  dustEvents,
 ];
 
 // v3 note: `chainArchiveCore` now also creates `chain_archive_assert_blob_role` (a shared
@@ -67,3 +69,8 @@ export const chainArchiveMigrations: Migration[] = [
 // re-decodes a block body to date it. Additive: no existing column, constraint or row changes,
 // and pre-existing blocks keep `NULL` until `chain-archive-sync/backfill-block-timestamps.ts`
 // re-decodes their archived bodies.
+
+// 00016 note: 009 adds `dust_events`, the DUST ledger events the ingest's replay already computes
+// (`spec/00016-dust-wallet-sync.md` §5.3, FR-001), so one shared fold replaces every wallet's own.
+// Additive: a new table plus its indexes; no existing object changes, and an archive that never
+// runs replay validation simply keeps it empty.
