@@ -65,6 +65,37 @@ const BANNED_FILES = ["chain-archive-sync/sync-service.ts", "chain-archive-sync/
  *  reaching it would mean B can open a connection, which is precisely what Q25 removes. */
 const BANNED_PACKAGES = ["postgres"] as const;
 
+/**
+ * The ONE waived directory (`spec/00016-dust-wallet-sync.md` §1 "The waiver", FR-017; owner
+ * decision 2026-09-15).
+ *
+ * The TEE-side node's DUST wallet-sync module opens a second, read-only connection to the archive
+ * database. The owner accepted that for this experiment, with its consequence written down: the
+ * database can see which nullifiers a wallet asks about. A later project replaces the query with
+ * an enclave-side copy and deletes this constant.
+ *
+ * What "waived" means here is narrow, and deliberately not "skip these files": a banned module
+ * reached THROUGH a waived file is recorded as WAIVED and allowed; every other path to the same
+ * banned module is still a violation. So `shielded-monitor/node/dust/db.ts` may import `postgres`,
+ * and `scanner.ts` still may not — including via a re-export it adds inside the waived directory,
+ * because the trail is what is inspected, not the endpoint.
+ *
+ * The waived set is then ASSERTED below, exactly, rather than merely tolerated: if this directory
+ * ever reaches a third banned module, the suite says which one instead of passing.
+ */
+const WAIVED_PREFIXES = ["shielded-monitor/node/dust/"] as const;
+
+/** The only B files outside the waived directory that may import it (plan 00016 D2.5a). */
+const PERMITTED_DUST_IMPORTERS = [
+  "shielded-monitor/node-cli.ts",
+  "shielded-monitor/node/monitor-node.ts",
+  "shielded-monitor/api/server.ts",
+] as const;
+
+function isWaived(relative: string): boolean {
+  return WAIVED_PREFIXES.some((prefix) => relative.startsWith(prefix));
+}
+
 function bannedReason(relative: string): string | undefined {
   const prefix = BANNED_PREFIXES.find((p) => relative.startsWith(p));
   if (prefix !== undefined) return `under ${prefix}`;
@@ -105,6 +136,9 @@ function resolveRelative(fromFile: string, specifier: string): string | undefine
 export interface ReachResult {
   /** Banned module → the import path that reached it, repo-relative. */
   readonly violations: Map<string, string[]>;
+  /** Banned module → the import path that reached it THROUGH a waived file (00016 FR-017).
+   *  Allowed, and asserted to be exactly the expected set. */
+  readonly waived: Map<string, string[]>;
   /** Every repo file reachable statically from the entry points. */
   readonly reached: Set<string>;
 }
@@ -122,30 +156,37 @@ export function reachStatically(
 ): ReachResult {
   const reached = new Set<string>();
   const violations = new Map<string, string[]>();
+  const waived = new Map<string, string[]>();
   const queue: { file: string; path: string[] }[] = entryFiles.map((file) => ({ file, path: [file] }));
+
+  /** A reach is waived when the trail that produced it PASSED THROUGH a waived file — not when
+   *  the banned module itself happens to be listed somewhere. That is what confines the waiver to
+   *  one directory rather than to one dependency. */
+  const record = (key: string, trail: readonly string[]): void => {
+    const relativeTrail = trail.map((f) => path.relative(repoRoot, f));
+    const target = relativeTrail.some(isWaived) ? waived : violations;
+    if (!target.has(key)) target.set(key, relativeTrail);
+  };
 
   while (queue.length > 0) {
     const { file, path: trail } = queue.shift()!;
     if (reached.has(file)) continue;
     reached.add(file);
     const relative = path.relative(repoRoot, file);
-    if (bannedReason(relative) !== undefined && !violations.has(relative)) {
-      violations.set(relative, trail.map((f) => path.relative(repoRoot, f)));
+    if (bannedReason(relative) !== undefined) {
+      record(relative, trail);
       continue;
     }
     for (const specifier of staticImportSpecifiers(readFile(file))) {
       if ((BANNED_PACKAGES as readonly string[]).includes(specifier)) {
-        const key = `package:${specifier}`;
-        if (!violations.has(key)) {
-          violations.set(key, [...trail, file].map((f) => path.relative(repoRoot, f)));
-        }
+        record(`package:${specifier}`, [...trail, file]);
         continue;
       }
       const target = resolveRelative(file, specifier);
       if (target !== undefined) queue.push({ file: target, path: [...trail, target] });
     }
   }
-  return { violations, reached };
+  return { violations, waived, reached };
 }
 
 const productionFiles = walkTsFiles(path.join(repoRoot, "shielded-monitor"));
@@ -167,6 +208,60 @@ describe("project B reaches no database at all (owner Rule B / FR-025, question 
     expect(
       [...violations.entries()].map(([banned, trail]) => `${banned} via ${trail.join(" -> ")}`),
     ).toStrictEqual([]);
+  });
+
+  it("[[shielded-monitor.import-boundary.dust-waiver-is-exactly-two-modules]] the 00016 waiver reaches exactly `postgres` and the archive-conventions module", () => {
+    // The waiver is asserted, not merely tolerated. These two are what spec 00016 D2.2 says the
+    // DUST module needs: the driver, to open its own read-only connection, and A's published
+    // schema-name constant, which exists precisely so a consumer never types `chain_archive`
+    // itself (`schema-isolation.integration.test.ts` still forbids that literal, unwaived).
+    const { waived } = reachStatically(productionFiles, realRead);
+    expect([...waived.keys()].sort()).toStrictEqual([
+      "package:postgres",
+      "src/postgres/archive-conventions.ts",
+    ]);
+    // And each really did come through the waived directory.
+    for (const trail of waived.values()) {
+      expect(trail.some((file) => file.startsWith("shielded-monitor/node/dust/"))).toBe(true);
+    }
+  });
+
+  it("[[shielded-monitor.import-boundary.dust-waiver-does-not-spread]] only three B files outside the waived directory import it", () => {
+    // The containment that makes the waiver a waiver. Database code reaches the rest of B only by
+    // someone importing this directory from it, so the import edges INTO it are the thing to pin —
+    // and they are three: the CLI that builds the module, the node that owns its lifecycle, and
+    // the API that dispatches its routes.
+    const importers = productionFiles
+      .map((file) => path.relative(repoRoot, file))
+      .filter((relative) => !isWaived(relative))
+      .filter((relative) => {
+        const source = realRead(path.join(repoRoot, relative));
+        return [...staticImportSpecifiers(source), ...dynamicImportSpecifiers(source)].some((specifier) => {
+          const target = resolveRelative(path.join(repoRoot, relative), specifier);
+          return target !== undefined && isWaived(path.relative(repoRoot, target));
+        });
+      })
+      .sort();
+    for (const importer of importers) {
+      expect(PERMITTED_DUST_IMPORTERS as readonly string[], `${importer} imports the waived directory`)
+        .toContain(importer);
+    }
+    // Not vacuous: the module is actually wired in somewhere.
+    expect(importers.length).toBeGreaterThan(0);
+  });
+
+  it("POSITIVE CONTROL: the waiver does NOT cover a B file outside the directory", () => {
+    // The strongest thing to get wrong here would be a waiver that skips files rather than trails:
+    // then `scanner.ts` could import `postgres` and the walk would call it waived because the DUST
+    // directory is allowed to. It is the trail that is inspected, so this is still a violation.
+    const planted = path.join(repoRoot, "shielded-monitor", "scanner.ts");
+    const read = (file: string): string =>
+      file === planted ? `import postgres from "postgres";\n${realRead(file)}` : realRead(file);
+    const { violations, waived } = reachStatically(productionFiles, read);
+    expect(violations.has("package:postgres")).toBe(true);
+    expect(violations.get("package:postgres")!.some((f) => f.startsWith("shielded-monitor/node/dust/"))).toBe(false);
+    // And the waived reach is still recorded separately, so one does not mask the other.
+    expect(waived.has("package:postgres")).toBe(true);
   });
 
   it("POSITIVE CONTROL: a planted direct import is caught", () => {
@@ -232,6 +327,9 @@ describe("project B reaches no database at all (owner Rule B / FR-025, question 
     const dynamic = productionFiles
       .flatMap((file) => dynamicImportSpecifiers(realRead(file)).map((s) => ({ file: path.relative(repoRoot, file), s })))
       .filter(({ s }) => s.includes("src/postgres/") || s.includes("chain-archive-sync/") || s.includes("storage-api/") || s === "postgres");
+    // The 00016 waiver does not extend to dynamic imports either: the DUST module's database
+    // access is a STATIC import the walk above can see and account for, which is the only shape in
+    // which "exactly these two modules" is a checkable claim.
     expect(dynamic).toStrictEqual([]);
   });
 });

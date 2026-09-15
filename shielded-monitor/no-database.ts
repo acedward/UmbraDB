@@ -24,6 +24,24 @@
  * inert here (B ships no driver to read them), they are frequently set in a developer's shell for
  * unrelated reasons, and failing a scanner because someone has `psql` configured would be a
  * refusal with no security value.
+ *
+ * ── The one deliberate exception: `DUST_DATABASE_URL` ───────────────────────────────────────
+ * `spec/00016-dust-wallet-sync.md` §1 (owner decision, 2026-09-15) waives Rule B for exactly one
+ * directory, `shielded-monitor/node/dust/`, which opens a **second, read-only** connection to the
+ * archive database so the node can mirror the DUST trees and answer nullifier lookups. Its
+ * connection string is `DUST_DATABASE_URL`.
+ *
+ * **Nothing below changes for it, and that is the point.** The variable does not end in `_PG`, so
+ * this refusal never sees it; and the refusal keeps working exactly as before for everything that
+ * does — a `MONITOR_PG` left in a container after a migration is still a live credential for the
+ * MAIN database in the environment of a process that must not hold one, waiver or no waiver. The
+ * waiver grants a read-only role on two archive tables; it does not grant a write credential, and
+ * it must never be used to justify relaxing this check. A future DUST variable must therefore not
+ * be named `DUST_PG`: it would be refused here, correctly.
+ *
+ * The confinement of the waiver itself is checked elsewhere — `import-boundary.test.ts` pins the
+ * two banned modules that directory may reach and the three files that may import it, and
+ * `dust-reader-role.integration.test.ts` proves the role cannot write.
  */
 
 /** Schema variables that describe the removed in-process topology. */
