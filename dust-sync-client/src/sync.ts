@@ -99,6 +99,12 @@ export interface DustSyncOptions {
   readonly maxLagMs?: number;
   /** How many times the whole build may restart because the chain moved (§5.5 7–9: 3). */
   readonly maxRestarts?: number;
+  /**
+   * Prune worthless UTxOs at this instant, exactly as the SDK does — see the note in the body.
+   * Omitted, the state keeps every UTxO the chain ever gave this wallet, including ones whose
+   * value is permanently 0.
+   */
+  readonly processTtlsAt?: Date;
   readonly timeoutMs?: number;
   readonly fetchImpl?: typeof fetch;
   /** Injected in tests so a lag wait does not cost wall-clock seconds. */
@@ -309,6 +315,31 @@ export async function syncDust(options: DustSyncOptions): Promise<DustSyncResult
       if (spentMeanwhile > 0) {
         spendRestartBudget(`${spentMeanwhile} live UTxO(s) were spent while the state was being built`);
         continue;
+      }
+
+      /**
+       * ── The SDK's own last step, which §5.5 does not mention ─────────────────────────────
+       * `CoreWallet.applyEventsWithChanges` passes a timestamp, and the ledger's
+       * `process_ttls(time)` DROPS every UTxO whose updated value is 0 at that time
+       * (`ledger/src/dust.rs` 1938–1959). A DUST UTxO reaches 0 as soon as its backing NIGHT is
+       * spent and its decay finishes — which on this workload is most of them, because a transfer
+       * spends the NIGHT that backs the DUST it paid with.
+       *
+       * Measured on the devnet golden run (2026-09-15, wallet W100, 100 self-transfers): the SDK's
+       * own state held **2** UTxOs and this client's held **107**, of which **105 had value 0** —
+       * with IDENTICAL commitment and generation roots and an IDENTICAL `walletBalance`. The
+       * difference was entirely worthless entries the SDK had pruned and this client had not. So
+       * a client that wants to hand a wallet the state the SDK would have built must prune too,
+       * and `processTtls` is a standard 8.1.0 member (it is in the published declarations).
+       *
+       * It touches only `dust_utxos`, never the trees, so it runs AFTER both roots are proved and
+       * cannot invalidate them.
+       */
+      if (options.processTtlsAt !== undefined) {
+        const before = requireState().utxos.length;
+        swap(requireState().processTtls(options.processTtlsAt));
+        const after = requireState().utxos.length;
+        if (after !== before) log(`processTtls dropped ${before - after} worthless UTxO(s) of ${before}`);
       }
 
       // ── step 10: the result ──────────────────────────────────────────────────────────────

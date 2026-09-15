@@ -47,6 +47,8 @@ Options:
   --applied-index <n>  the INDEXER's dustLedgerEvents id of the last applied event; default 0,
                        which makes the SDK replay history rather than risk skipping events
   --max-lag-ms <n>     how long to wait for the mirror to catch up (default 60000)
+  --keep-worthless     do NOT prune UTxOs whose value is 0 at --balance-at (the SDK prunes them;
+                       this flag exists to inspect what the chain gave the wallet)
   --quiet              do not write phase lines to stderr
   --help
 `;
@@ -65,6 +67,7 @@ interface Args {
   readonly appliedIndex: bigint;
   readonly maxLagMs: number;
   readonly quiet: boolean;
+  readonly keepWorthless: boolean;
 }
 
 function parseArgs(argv: readonly string[]): Args | undefined {
@@ -92,6 +95,7 @@ function parseArgs(argv: readonly string[]): Args | undefined {
     appliedIndex: BigInt(value("--applied-index") ?? "0"),
     maxLagMs: Number(value("--max-lag-ms") ?? 60_000),
     quiet: argv.includes("--quiet"),
+    keepWorthless: argv.includes("--keep-worthless"),
   };
 }
 
@@ -161,6 +165,9 @@ async function main(argv: readonly string[]): Promise<number> {
       net: args.net,
       rttDelayMs: args.rttMs,
       maxLagMs: args.maxLagMs,
+      // The same instant the balance is priced at, so the reported UTxO set is the set that is
+      // worth something then — which is what the SDK's own state holds (see `sync.ts`).
+      ...(args.keepWorthless ? {} : { processTtlsAt: new Date(args.balanceAt * 1000) }),
       ...(log === undefined ? {} : { logger: log }),
     });
     last = { result, state: result.state };

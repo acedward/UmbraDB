@@ -39,6 +39,10 @@ function must(name: string): string {
 const log = (m: string): void => {
   console.log(`[sdk-dust-state] ${new Date().toISOString()} ${m}`);
 };
+/** The SDK's `progress` carries `bigint`s, which `JSON.stringify` refuses outright. Decimal
+ *  strings, the same encoding spec §4 uses for every other magnitude. */
+const json = (value: unknown): string =>
+  JSON.stringify(value, (_key, item) => (typeof item === 'bigint' ? item.toString(10) : item), 2);
 
 async function main(): Promise<void> {
   const cfg = networkFor(env);
@@ -99,13 +103,11 @@ async function main(): Promise<void> {
     utxos,
     nightStars: String(state?.unshielded?.balances?.[ledger.unshieldedToken().raw] ?? '0'),
   };
-  writeFileSync(`${OUT}/${OUT_NAME}`, `${JSON.stringify(report, null, 2)}\n`);
+  writeFileSync(`${OUT}/${OUT_NAME}`, `${json(report)}\n`);
   // The serialized wrapper itself, so the hand-off (§5.6) can be driven from a real SDK snapshot.
-  writeFileSync(`${OUT}/${OUT_NAME.replace(/\.json$/, '')}-wrapper.json`, `${JSON.stringify(serialized, null, 2)}\n`, {
-    mode: 0o600,
-  });
+  writeFileSync(`${OUT}/${OUT_NAME.replace(/\.json$/, '')}-wrapper.json`, `${json(serialized)}\n`, { mode: 0o600 });
   log(`${utxos.length} live UTxO(s); appliedIndex ${report.appliedIndex}; written to ${OUT}/${OUT_NAME}`);
-  console.log(JSON.stringify({ ...report, utxos: utxos.length }, null, 2));
+  console.log(json({ ...report, utxos: utxos.length }));
   local.free();
   await ctx.wallet.stop().catch(() => undefined);
 }

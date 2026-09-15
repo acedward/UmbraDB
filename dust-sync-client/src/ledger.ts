@@ -73,6 +73,7 @@ export interface DustLocalStateLike {
     sk: DustSecretKeyLike,
   ): DustQdo;
   walletBalance(time: Date): bigint;
+  processTtls(time: Date): DustLocalStateLike;
   serialize(): Uint8Array;
   readonly utxos: readonly DustQdo[];
   free(): void;
@@ -114,6 +115,7 @@ export const LEDGER_SURFACE = {
     "addUtxo",
     "successorUtxo",
     "walletBalance",
+    "processTtls",
     "serialize",
     "utxos",
   ],

@@ -160,6 +160,20 @@ async function main(): Promise<void> {
   const replayMs = Date.now() - replayStart;
 
   const at = new Date(BALANCE_AT * 1000);
+  // The SDK's own last step, and the reason this script must take it too: `CoreWallet` applies
+  // events WITH a timestamp, and the ledger's `process_ttls` drops every UTxO whose value is 0 at
+  // that instant (`ledger/src/dust.rs` 1938–1959). A raw replay keeps them. Measured on the devnet
+  // golden run: 107 UTxOs raw against the SDK's 2, with identical roots and an identical balance —
+  // the difference was entirely worthless entries. `KEEP_WORTHLESS=1` skips the prune when what is
+  // wanted is everything the chain gave the wallet.
+  const beforePrune = (state.utxos as any[]).length;
+  if (process.env.KEEP_WORTHLESS !== '1') {
+    const pruned = state.processTtls(at);
+    state.free();
+    state = pruned;
+  }
+  const afterPrune = (state.utxos as any[]).length;
+  if (afterPrune !== beforePrune) log(`processTtls dropped ${beforePrune - afterPrune} worthless UTxO(s) of ${beforePrune}`);
   const utxos = (state.utxos as any[])
     .map((utxo) => ({
       initialValue: String(utxo.initialValue),
@@ -186,6 +200,7 @@ async function main(): Promise<void> {
     offsetVsOurOrdinal: TARGET_ORDINAL === undefined ? null : last.id - TARGET_ORDINAL,
     streamMs,
     replayMs,
+    utxosBeforeProcessTtls: beforePrune,
     balanceAt: BALANCE_AT,
     balance: state.walletBalance(at).toString(10),
     roots: {
