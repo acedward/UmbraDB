@@ -1,0 +1,91 @@
+{
+  "source": "wss://indexer.preprod.midnight.network/api/v4/graphql/ws, subscription { dustLedgerEvents { id raw } }",
+  "fetchedUtc": "2026-09-15",
+  "net": "preprod",
+  "note": "A CONTIGUOUS PREFIX of the preprod DUST ledger-event stream from its first event, 5 000 events long -- a superset of the 300-event fixture under test/fixtures/ledger-vectors/. Contiguity is not decoration: DustLocalState inserts leaves strictly linearly, so a cherry-picked subset would throw NonLinearInsertion. Format: repeated (u32 big-endian length || Event.serialize() bytes). The roots below were produced by DustLocalState.replayRawEventsRetainingAll -- the retain-all replay the node's mirror must use -- and are IDENTICAL to what the stock replayRawEvents produces, which is exactly why root equality alone cannot catch a mirror that used the wrong one (see dust-mirror.test.ts, which cuts a single-leaf range instead).",
+  "events": 5000,
+  "bytes": 2055347,
+  "sha256": "3c4fd031b900bedaa93ac53d848cdca959225ea3558e0ee963b391b187ae00d8",
+  "tags": {
+    "notYetSupportedEventType": 2,
+    "dustInitialUtxo": 1381,
+    "dustGenerationDtimeUpdate": 1009,
+    "dustSpendProcessed": 2608
+  },
+  "ledgerBuild": "ledger-v8@8.1.0-syshash.6 (vendor/ledger-v8-syshash)",
+  "finalCommitmentFirstFree": "3989",
+  "finalGenerationFirstFree": "1381",
+  "stockReplayRootsAreIdentical": true,
+  "rootsAfterEveryFiveHundredDustEvents": [
+    {
+      "dustEvents": 500,
+      "commitmentFirstFree": "350",
+      "generationFirstFree": "196",
+      "commitmentRoot": "22103079358729966012488578441434670323920715679804536818402314913415685773907",
+      "generatingRoot": "13586832173426151424624424542882913426826080109917695053030787826274219682004"
+    },
+    {
+      "dustEvents": 1000,
+      "commitmentFirstFree": "710",
+      "generationFirstFree": "392",
+      "commitmentRoot": "14808107921881196715582585169880925956888735762302393616219953470728581456614",
+      "generatingRoot": "45231775293368426994320268505361327453241743764249192384840925619779807418260"
+    },
+    {
+      "dustEvents": 1500,
+      "commitmentFirstFree": "1089",
+      "generationFirstFree": "568",
+      "commitmentRoot": "27995219393882624209707667083840023040593037269255371835585720213014297182554",
+      "generatingRoot": "15520342077950621398829061263807877592125255975056098625359725227725770828891"
+    },
+    {
+      "dustEvents": 2000,
+      "commitmentFirstFree": "1505",
+      "generationFirstFree": "710",
+      "commitmentRoot": "33122455018147073962222265084212649451670639840609322938199698653062616866968",
+      "generatingRoot": "21081173199236116175354824557579716974023124966285787796351638376763102424141"
+    },
+    {
+      "dustEvents": 2500,
+      "commitmentFirstFree": "1926",
+      "generationFirstFree": "850",
+      "commitmentRoot": "25316156164853204346838748147108051589719131072537832193424741737632658453450",
+      "generatingRoot": "10786384004600217032598752079743576384090107090112266697078231249568694838676"
+    },
+    {
+      "dustEvents": 3000,
+      "commitmentFirstFree": "2383",
+      "generationFirstFree": "952",
+      "commitmentRoot": "7739402675070796581539878410598702009072238338457535255960706499443086506715",
+      "generatingRoot": "9631666305039067215991760394092791875273319268387130325431626999525652891520"
+    },
+    {
+      "dustEvents": 3500,
+      "commitmentFirstFree": "2842",
+      "generationFirstFree": "1021",
+      "commitmentRoot": "30396434160283273873460503625079621264353760284051705153493723251142190841968",
+      "generatingRoot": "31593429274592615657254713097393329393128330536434818338799181162232834877987"
+    },
+    {
+      "dustEvents": 4000,
+      "commitmentFirstFree": "3200",
+      "generationFirstFree": "1151",
+      "commitmentRoot": "33114950586237439543535902342281197296165917047936029158636321279567608598044",
+      "generatingRoot": "3796665947390687208898099844640454914356354963965508868390925108928745696506"
+    },
+    {
+      "dustEvents": 4500,
+      "commitmentFirstFree": "3581",
+      "generationFirstFree": "1285",
+      "commitmentRoot": "1722532463730845099899446897785365576870443968245806499249524663331718864921",
+      "generatingRoot": "20150167356585905478590137100395584048588841469408728925080570786346003338053"
+    },
+    {
+      "dustEvents": 5000,
+      "commitmentFirstFree": "3989",
+      "generationFirstFree": "1381",
+      "commitmentRoot": "4755274769347102049268469633028841818952883568126924845920059173522631588949",
+      "generatingRoot": "17921853101145089569956853890669825845848339654364525299682349825646489753971"
+    }
+  ]
+}

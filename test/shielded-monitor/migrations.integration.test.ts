@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
@@ -123,7 +123,6 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
   describe("every CHECK constraint actually fires", () => {
     let sql: UmbraDBSql;
     const schema = "shielded_monitor_checks";
-    const fingerprint = Buffer.alloc(32, 1);
 
     beforeAll(async () => {
       sql = await freshSchema(schema);
@@ -140,12 +139,18 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
       const row = {
         id,
         net: "undeployed",
-        fingerprint: Buffer.concat([fingerprint.subarray(0, 31), Buffer.of(Math.floor(Math.random() * 256))]),
+        // A FULLY random 32 bytes, not a fixed prefix plus one random byte. `(net, fingerprint)`
+        // is UNIQUE, and this helper runs about ten times per suite: one random byte is 256
+        // values, which by the birthday bound collides in roughly one run in six — and when it
+        // does, the case that happened to draw the duplicate fails with `duplicate key` instead of
+        // whatever constraint it was written to prove. Observed reddening the conformance gate on
+        // 2026-09-15; the collision has nothing to do with the constraint under test.
+        fingerprint: randomBytes(32),
         state: "backfilling",
         epoch: 0n,
         requested_start_height: 0n,
         matching_rule_version: "v1",
-        ledger_build: "ledger-v8@8.1.0-syshash.4",
+        ledger_build: "ledger-v8@8.1.0-syshash.6",
         ...overrides,
       };
       await sql`INSERT INTO ${sql(schema)}.monitors ${sql(row as never)}`;
@@ -268,7 +273,7 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
           tx_hash: Buffer.alloc(32, 3),
           protocol_version: 1n,
           matching_rule_version: "v1",
-          ledger_build: "ledger-v8@8.1.0-syshash.4",
+          ledger_build: "ledger-v8@8.1.0-syshash.6",
           ...overrides,
         };
         await sql`
@@ -282,7 +287,7 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
             (monitor_id, seq, net, block_height, block_hash, position, tx_hash,
              protocol_version, matched_segments, matching_rule_version, ledger_build)
           VALUES (${monitorId}, ${1n}, 'undeployed', ${1n}, ${Buffer.alloc(32, 2)}, 0,
-                  ${Buffer.alloc(32, 3)}, ${1n}, '{0,2}'::smallint[], 'v1', 'ledger-v8@8.1.0-syshash.4')
+                  ${Buffer.alloc(32, 3)}, ${1n}, '{0,2}'::smallint[], 'v1', 'ledger-v8@8.1.0-syshash.6')
         `;
         const rows = await sql<{ matched_segments: number[]; applied_outcome: string }[]>`
           SELECT matched_segments, applied_outcome FROM ${sql(schema)}.associations

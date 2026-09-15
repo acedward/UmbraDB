@@ -264,7 +264,7 @@ watch -n2 "curl -s http://127.0.0.1:${API_PORT}/v1/monitors | head -c 2000"
       "state": "live",
       "coverage": { "requestedStart": "0", "scannedFrom": "0", "scannedThrough": "94", "sourceTip": "94" },
       "matchingRuleVersion": "shielded-monitor/v1",
-      "ledgerBuild": "ledger-v8@8.1.0-syshash.4",
+      "ledgerBuild": "ledger-v8@8.1.0-syshash.6",
       "createdAt": "…",
       "updatedAt": "…"
     }
@@ -346,7 +346,7 @@ The match, as the page and the API show it:
   "matchedSegments": [0],
   "appliedOutcome": "unknown",
   "matchingRuleVersion": "shielded-monitor/v1",
-  "ledgerBuild": "ledger-v8@8.1.0-syshash.4"
+  "ledgerBuild": "ledger-v8@8.1.0-syshash.6"
 }
 ```
 

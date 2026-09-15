@@ -17,6 +17,9 @@
     "archive-read-api/**/*.ts",
     "storage-api/**/*.ts",
     "shielded-monitor/**/*.ts",
+    "dust-sync-client/src/**/*.ts",
+    "dust-sync-client/test/**/*.ts",
+    "dust-sync-client/cli.ts",
     "bench/**/*.ts"
   ]
 }

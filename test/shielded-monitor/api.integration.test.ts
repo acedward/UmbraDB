@@ -278,7 +278,7 @@ describe("shielded-monitor private API", () => {
       const got = await call("GET", `/v1/monitors/${id}`);
       expect(got.status).toBe(200);
       expect(got.json.monitorId).toBe(id);
-      expect(got.json.ledgerBuild).toBe("ledger-v8@8.1.0-syshash.4");
+      expect(got.json.ledgerBuild).toBe("ledger-v8@8.1.0-syshash.6");
     });
 
     it("answers 404 for an unknown id and for a malformed one, indistinguishably", async () => {
@@ -613,7 +613,7 @@ describe("shielded-monitor private API", () => {
       const monitor = await store.getIncludingDeleted(id);
       const details = {
         version: "shielded-monitor/match-details/v1",
-        ledgerBuild: "ledger-v8@8.1.0-syshash.4",
+        ledgerBuild: "ledger-v8@8.1.0-syshash.6",
         segments: [{
           segment: 0,
           matched: true,

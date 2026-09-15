@@ -105,7 +105,7 @@ The related historical runtime methods used here are:
 - `MidnightRuntimeApi_get_network_id` via `state_call` — the runtime's SCALE string network id.
 - `system_properties.genesis_state` — the authoritative serialized genesis ledger state.
 
-The vendored runtime dependency `@midnight-ntwrk/ledger-v8@8.1.0-syshash.4` adds the minimal
+The vendored runtime dependency `@midnight-ntwrk/ledger-v8@8.1.0-syshash.6` adds the minimal
 `LedgerState.ledgerStateRoot()` export needed for an exact comparison. Its source commit, patches,
 artifact hashes and structural/native oracle evidence are recorded in
 `vendor/ledger-v8-syshash/PROVENANCE.md` and `SHA256SUMS`. `MIDNIGHT_LEDGER_WASM` is a deliberate
@@ -129,6 +129,51 @@ node-only mode before connecting and states its archive-node requirement.
 
 `syncOnce` stops at the finalized head and advances a persisted watermark only after the block
 bundle and any due checkpoint are durable.
+
+## DUST ledger events (`chain_archive.dust_events`)
+
+With `REPLAY_VALIDATION=1` the ingest also KEEPS the DUST ledger events it computes while applying
+each block, in `chain_archive.dust_events` (schema and rationale: `docs/SCHEMA.md`;
+design: `spec/00016-dust-wallet-sync.md`). There is no separate switch: the events only exist while
+a block is applied to real ledger state, so a switch that could be on while replay was off would be
+a setting that silently does nothing. With replay off the CLI says so once at start, and the table
+stays empty.
+
+The status line reports the capture state:
+
+```
+2026-09-15T15:00:00.000Z synced_height=1200 ingested=200 tip=1200 dust=capturing
+```
+
+- `capturing` — every ingested height's events are written, inside that height's own transaction.
+- `off` — `REPLAY_VALIDATION` is off; nothing is written.
+- `gap` — a height's rows were refused because writing them would have left a hole in the table,
+  and capture is off for the rest of the run. The blocks keep being archived. This is deliberate: a
+  consumer folds these rows into two Merkle trees in id order, and a hole produces trees that look
+  fine and are wrong, whereas an empty range is visible. The fix is the backfill below.
+
+**Backfill** — for an archive ingested before this feature existed, or one whose capture went
+`gap`:
+
+```sh
+ARCHIVE_PG=postgres://user:pass@host:5432/db \
+NODE_URL=http://127.0.0.1:9944 \
+LEDGER_NETWORK_ID=undeployed \
+npm run dust:backfill
+```
+
+Installed as `umbradb-dust-backfill`. It is a replay over blocks the archive already holds -- the
+events are not recoverable from the archived bytes alone, since a spend's commitment index, a
+generation entry's dtime and an initial UTxO's tree position all come from the ledger state at that
+height -- so it reads each block's body and `System::Events` back from the node: **a local archive
+node**, about five JSON-RPC calls per block. Pointing it at a public endpoint will get the host
+banned rather than throttled.
+
+It resumes from the newest replay checkpoint at or below the covered height (or from genesis when
+there is none), writes nothing below that height, stops at the sync watermark, and records progress
+in the same `dust_capture:<net>` watermark the ingest advances -- so a finished backfill hands over
+to a live ingest with no gap at the seam. Re-running it is a no-op. `MAX_BLOCKS` (default 500)
+bounds one pass, not the total.
 
 ## Evidence and remaining scope
 

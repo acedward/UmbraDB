@@ -11,6 +11,12 @@ import {
 } from "../errors.js";
 import type { MonitorState } from "../lifecycle.js";
 import type { MonitorNode } from "../node/monitor-node.js";
+import {
+  DUST_ROUTE_NAMES,
+  disabledDustStatus,
+  type DustModule,
+  type DustRouteName,
+} from "../node/dust/index.js";
 import type { MonitorRecord, ShieldedMonitorStore } from "../store.js";
 import { parseViewingKey } from "../viewing-key.js";
 import { loadApiConfig, type ApiConfig } from "./config.js";
@@ -66,6 +72,15 @@ export interface ApiLogRecord {
   /** Present only for routes where a message cannot contain key material — i.e. everything
    *  except `POST /v1/monitors`. See the class note. */
   readonly errorMessage?: string;
+  /**
+   * Items returned, or nullifiers asked about, on the `/v1/dust/*` routes (00016 FR-015).
+   *
+   * A COUNT and nothing else. FR-015 allows the route pattern, the status, the duration and this
+   * number; the nullifiers themselves must reach the database query and no other place, which is
+   * why there is a dedicated numeric field here rather than a free-form bag a body could be
+   * dropped into.
+   */
+  readonly count?: number;
 }
 
 export interface ApiLogger {
@@ -207,6 +222,14 @@ export interface ShieldedMonitorApiDeps {
    * façade over the storage API, which is what the contract suites drive.
    */
   readonly node?: MonitorNode;
+  /**
+   * The DUST module (project 00016), present only when `DUST_DATABASE_URL` was set.
+   *
+   * This is one of exactly three files outside `shielded-monitor/node/dust/` that may import that
+   * directory — see its `index.ts` and `import-boundary.test.ts`. What crosses the boundary here
+   * is a handler and a status block, never a query, a connection or a schema name.
+   */
+  readonly dust?: DustModule;
 }
 
 export interface ShieldedMonitorApi {
@@ -243,6 +266,12 @@ interface Reply {
    *  module sets itself — `content-type`, `content-length`, `x-request-id`, `allow` — are not
    *  reachable through here. */
   readonly headers?: Readonly<Record<string, string>>;
+  /** Set by a handler that produced an error body ITSELF rather than throwing — the DUST routes
+   *  do, because they answer in their own code space (`DUST_NOT_READY`, …) and must not widen
+   *  {@link ApiErrorCode}. The access log still gets the code. */
+  readonly errorCode?: string;
+  /** Reaches {@link ApiLogRecord.count}. */
+  readonly count?: number;
 }
 
 export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): ShieldedMonitorApi {
@@ -252,6 +281,7 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
   const logger = deps.logger ?? stderrLogger();
   const actor = deps.actor ?? "private-api";
   const node = deps.node;
+  const dust = deps.dust;
 
   /** The source tip, or `undefined` when this deployment cannot observe it. A provider fault is
    *  never allowed to fail a request: `sourceTip` is advisory, and answering "unknown" is
@@ -422,7 +452,10 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
 
   async function internalStatus(): Promise<Reply> {
     if (node === undefined) throw notFound();
-    return { status: 200, body: node.status() };
+    // The DUST block is merged HERE rather than inside `MonitorNode.status()` so the node itself
+    // stays free of any knowledge of the waived directory: what the balancer sees is one object,
+    // what the code graph sees is two independent producers.
+    return { status: 200, body: { ...node.status(), dust: dust?.status() ?? disabledDustStatus() } };
   }
 
   /**
@@ -506,6 +539,39 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
     return { status: 302, headers: { location: "/ui" } };
   }
 
+  /**
+   * `/v1/dust/*` (00016 §4). Five fixed paths, four `GET` and one `POST`.
+   *
+   * With no module — `DUST_DATABASE_URL` unset — the paths still RESOLVE and answer
+   * `503 DUST_DISABLED` rather than 404. A 404 would be indistinguishable from an old build that
+   * has no DUST support at all, and a client cannot tell "this deployment chose not to serve DUST"
+   * from "you are talking to the wrong version" without that difference.
+   */
+  async function dustRoute(name: DustRouteName, ctx: RequestContext): Promise<Reply> {
+    if (dust === undefined) {
+      return {
+        status: 503,
+        body: {
+          error: {
+            code: "DUST_DISABLED",
+            message: "this node was started without DUST_DATABASE_URL, so it serves no DUST data",
+          },
+        },
+        errorCode: "DUST_DISABLED",
+      };
+    }
+    // Only the POST route has a body, and it is read under the SAME cap as every other body
+    // (`API_MAX_BODY_BYTES`, 64 KiB by default) — which is exactly FR-015's cap.
+    const body = name === "lookup" ? await ctx.readBody() : Buffer.alloc(0);
+    const reply = await dust.handle(name, ctx.url, body);
+    return {
+      status: reply.status,
+      body: reply.body,
+      ...(reply.errorCode !== undefined ? { errorCode: reply.errorCode } : {}),
+      ...(reply.count !== undefined ? { count: reply.count } : {}),
+    };
+  }
+
   const collectionRoutes: Record<string, Route> = {
     GET: { pattern: "GET /v1/monitors", handle: listMonitors },
     POST: { pattern: "POST /v1/monitors", handle: createMonitor },
@@ -559,6 +625,20 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
       }
       throw notFound();
     }
+    // ── /v1/dust/* (00016) ───────────────────────────────────────────────────────────────────
+    if (segments.length === 3 && segments[0] === "v1" && segments[1] === "dust") {
+      const name = segments[2] as DustRouteName;
+      if (!(DUST_ROUTE_NAMES as readonly string[]).includes(name)) throw notFound();
+      const expected = name === "lookup" ? "POST" : "GET";
+      if (method !== expected) throw methodNotAllowed([expected]);
+      return {
+        // A FIXED pattern string, as every other route has: the access log must never carry the
+        // raw URL, whose query string holds an owner's DUST public key.
+        route: { pattern: `${expected} /v1/dust/${name}`, handle: async (ctx) => await dustRoute(name, ctx) },
+        monitorId: "",
+      };
+    }
+
     if (segments[0] !== "v1" || segments[1] !== "monitors") throw notFound();
 
     if (segments.length === 2) {
@@ -607,6 +687,7 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
       readonly errorName?: string;
       readonly errorMessage?: string;
       readonly allow?: readonly string[];
+      readonly count?: number;
     }
 
     const finish = (args: FinishArgs): void => {
@@ -656,6 +737,7 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
         ...(args.errorCode !== undefined ? { errorCode: args.errorCode } : {}),
         ...(args.errorName !== undefined ? { errorName: args.errorName } : {}),
         ...(args.errorMessage !== undefined ? { errorMessage: args.errorMessage } : {}),
+        ...(args.count !== undefined ? { count: args.count } : {}),
       });
     };
 
@@ -683,6 +765,8 @@ export function createShieldedMonitorApi(deps: ShieldedMonitorApiDeps): Shielded
           body: reply.body,
           ...(reply.text !== undefined ? { text: reply.text } : {}),
           ...(reply.headers !== undefined ? { headers: reply.headers } : {}),
+          ...(reply.errorCode !== undefined ? { errorCode: reply.errorCode } : {}),
+          ...(reply.count !== undefined ? { count: reply.count } : {}),
         });
       } catch (err) {
         // `route` is already the matched pattern when the failure happened inside a handler, and

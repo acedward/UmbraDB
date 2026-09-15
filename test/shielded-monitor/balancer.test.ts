@@ -33,6 +33,9 @@ interface FakeUpstream {
   readonly server: Server;
   /** Requests this instance actually served, as `METHOD path`. */
   readonly seen: string[];
+  /** Request bodies this instance received, verbatim. Used by the DUST-lookup case, which has to
+   *  prove the balancer forwards the bytes rather than re-encoding or truncating them. */
+  readonly bodies: string[];
   /** When true, every request is destroyed without a response — a crashed instance. */
   broken: boolean;
   /** When true, `/v1/health` answers 503 — an instance that is up but not ready. */
@@ -42,6 +45,7 @@ interface FakeUpstream {
 
 async function startUpstream(name: string): Promise<FakeUpstream> {
   const seen: string[] = [];
+  const bodies: string[] = [];
   const state = { broken: false, unhealthy: false };
   const server = createServer((req, res) => {
     const path = req.url ?? "/";
@@ -59,9 +63,12 @@ async function startUpstream(name: string): Promise<FakeUpstream> {
       return;
     }
     seen.push(`${req.method ?? "GET"} ${path}`);
-    // Drain the body so a POST completes; the payload is irrelevant to the balancer.
-    req.resume();
+    // The body is drained so a POST completes, and KEPT so the DUST-lookup case can compare it
+    // byte for byte with what the client sent.
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
+      bodies.push(Buffer.concat(chunks).toString("utf8"));
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ served: name, path }));
     });
   });
@@ -72,6 +79,7 @@ async function startUpstream(name: string): Promise<FakeUpstream> {
     base: `http://127.0.0.1:${port}`,
     server,
     seen,
+    bodies,
     get broken() {
       return state.broken;
     },
@@ -142,6 +150,52 @@ describe("the private-API balancer", () => {
     expect(first, `api-1 served ${first}/200`).toBeGreaterThan(70);
     expect(first).toBeLessThan(130);
   }, 60_000);
+
+  it("spreads /v1/dust/* over both upstreams and forwards a lookup body byte-identical", async () => {
+    // 00016 FR-018 / spec §5.8. Two properties, and the second is a custody property: the body of
+    // `POST /v1/dust/lookup` is the wallet's nullifiers, and the balancer must stream it without
+    // reading it — so it cannot log it, cannot buffer it, and cannot replay it onto a second node.
+    const served = new Set<string>();
+    for (let i = 0; i < 60; i++) {
+      const response = await fetch(`${base}/v1/dust/tip?net=undeployed`);
+      expect(response.status).toBe(200);
+      served.add(((await response.json()) as { served: string }).served);
+    }
+    expect([...served].sort()).toStrictEqual(["api-1", "api-2"]);
+
+    const before = one.bodies.length + two.bodies.length;
+    // A body with awkward bytes on purpose: a balancer that re-encoded or re-serialized would
+    // change the whitespace, and one that decoded and re-encoded the JSON would reorder nothing
+    // here but would lose the exact string a byte comparison catches.
+    const payload = JSON.stringify({ net: "undeployed", nullifiers: ["4411", "9082"] }, null, 2) + "\n";
+    const response = await fetch(`${base}/v1/dust/lookup`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: payload,
+    });
+    expect(response.status).toBe(200);
+    // Whichever upstream was picked: the arrays are per-instance, so "the last element" of their
+    // concatenation is NOT the last request chronologically — a comparison that made that mistake
+    // would pass or fail on the coin flip.
+    const bodies = [...one.bodies, ...two.bodies];
+    expect(bodies.length).toBe(before + 1);
+    expect(bodies.filter((body) => body === payload)).toHaveLength(1);
+    // Exactly one upstream saw it: a POST is never replayed (property 3 above), and a lookup that
+    // silently reached two nodes would double the leak this design already accepts once.
+    expect(one.seen.filter((line) => line.startsWith("POST /v1/dust/lookup")).length
+      + two.seen.filter((line) => line.startsWith("POST /v1/dust/lookup")).length).toBe(1);
+  }, 60_000);
+
+  it("does not forward /internal/*, DUST or not", async () => {
+    // Unchanged behaviour, asserted next to the DUST case because `/internal/status` now carries
+    // the DUST block: it is the one place a node's mirror state is visible, and it stays private
+    // to the balancer.
+    const before = one.seen.length + two.seen.length;
+    const response = await fetch(`${base}/internal/status`);
+    expect(response.status).toBe(404);
+    expect(((await response.json()) as any).error.code).toBe("NOT_FOUND");
+    expect(one.seen.length + two.seen.length).toBe(before);
+  });
 
   it("excludes an unhealthy upstream within one probe and reinstates it when it recovers", async () => {
     two.unhealthy = true;

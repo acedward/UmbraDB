@@ -46,6 +46,7 @@
     "test:live": "UMBRADB_LIVE_PREPROD=1 vitest run test/integration/preprod-db-sync.integration.test.ts test/integration/cold-boot-recovery.integration.test.ts",
     "test:smoke": "npm run build && node test/smoke/pack-install.mjs",
     "archive:sync": "tsx chain-archive-sync/sync-cli.ts",
+    "dust:backfill": "tsx chain-archive-sync/dust-backfill-cli.ts",
     "archive:read-api": "tsx archive-read-api/server-cli.ts",
     "storage-api": "tsx storage-api/server-cli.ts",
     "shielded-monitor:balancer": "tsx shielded-monitor/balancer/balancer-cli.ts",
@@ -55,7 +56,8 @@
     "bench:smoke": "tsx bench/smoke.ts",
     "build:cli": "tsc -p tsconfig.cli.json && node scripts/copy-cli-assets.mjs",
     "shielded-monitor:derive-key": "tsx shielded-monitor/derive-key-cli.ts",
-    "demo:shielded-monitor": "node scripts/demo-shielded-monitor.mjs"
+    "demo:shielded-monitor": "node scripts/demo-shielded-monitor.mjs",
+    "dust:sync": "tsx dust-sync-client/cli.ts"
   },
   "dependencies": {
     "@midnight-ntwrk/ledger-v8": "file:vendor/ledger-v8-syshash",
@@ -82,6 +84,7 @@
   "bin": {
     "umbradb-archive-sync": "dist-cli/chain-archive-sync/sync-cli.js",
     "umbradb-archive-backfill-timestamps": "dist-cli/chain-archive-sync/backfill-timestamps-cli.js",
+    "umbradb-dust-backfill": "dist-cli/chain-archive-sync/dust-backfill-cli.js",
     "umbradb-archive-read-api": "dist-cli/archive-read-api/server-cli.js",
     "umbradb-storage-api": "dist-cli/storage-api/server-cli.js",
     "umbradb-shielded-monitor-node": "dist-cli/shielded-monitor/node-cli.js",

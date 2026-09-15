@@ -37,7 +37,7 @@ const MONITOR: MonitorRecord = {
   coverage: { requestedStart: 0n, scannedFrom: 0n, scannedThrough: 41n },
   gaps: [],
   matchingRuleVersion: "shielded-monitor/v1",
-  ledgerBuild: "ledger-v8@8.1.0-syshash.4",
+  ledgerBuild: "ledger-v8@8.1.0-syshash.6",
   createdAt: new Date("2026-09-11T10:00:00.000Z"),
   updatedAt: new Date("2026-09-11T10:05:00.000Z"),
 };

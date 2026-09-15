@@ -348,6 +348,16 @@ admission controls are a request-body size cap and a page-size cap.
   unencrypted in this alpha: a registration carries a viewing key over it in the clear, so it too
   must be kept on loopback or a private network.
 
+- **Optional: DUST wallet sync (00016).** A node started with `DUST_DATABASE_URL` also mirrors the
+  chain's two DUST Merkle trees — folded once from the ledger events `umbradb-archive-sync`
+  captures — and serves them at `/v1/dust/*`, so a wallet builds a spend-ready DUST state in
+  seconds instead of replaying 1.5 M events for itself. The wallet keeps its DUST secret key and
+  computes its own nullifiers; the node holds only public data. **This is the one place project B
+  opens a database connection**, by an explicit owner waiver, read-only and confined to a single
+  directory — with the accepted consequence that the database can see which nullifiers a wallet
+  asks about. Unset, the module is off. See
+  [`docs/shielded-monitor-node.md`](docs/shielded-monitor-node.md).
+
 Endpoint reference, coverage and cursor contracts, and every environment variable:
 [`docs/shielded-monitor-api.md`](docs/shielded-monitor-api.md). The deployment topology, the full
 environment matrix, how to scale scanners and API instances, and what the TEE step adds:
@@ -356,6 +366,13 @@ walk-through on this repository's own Compose devnet, ending with the dashboard:
 [`docs/shielded-monitor-demo.md`](docs/shielded-monitor-demo.md) (`npm run demo:shielded-monitor`
 runs its wallet-free half; `-- --split` runs the 2×2 topology). Backup/restore:
 [`docs/shielded-monitor-restore.md`](docs/shielded-monitor-restore.md).
+
+The wallet side of the DUST routes lives in [`dust-sync-client/`](dust-sync-client/README.md)
+(`npm run dust:sync`): given a DUST secret key and a balancer URL it rebuilds the wallet's
+`DustLocalState` from those routes in a handful of round trips, verifies it against the node's two
+Merkle roots, and refuses to return a state whose roots do not match. The key never leaves the
+wallet, and the client uses only the standard published ledger package — the vendored fork's extra
+exports are the node's.
 
 ## What UmbraDB is not
 

@@ -94,6 +94,61 @@ Give every node its own `MONITOR_NODE_ID`. The default is a random UUID per proc
 two containers started from one image and one environment do not claim one identity — the
 balancer's hint table would then point at "one" node that is really two.
 
+#### DUST wallet sync (optional; project 00016)
+
+Off unless `DUST_DATABASE_URL` is set. With it unset the node behaves exactly as it did before and
+every `/v1/dust/*` route answers `503 DUST_DISABLED`.
+
+| variable | default | meaning |
+|---|---|---|
+| `DUST_DATABASE_URL` | unset (module off) | **read-only** connection string for the ARCHIVE database |
+| `DUST_STATE_SNAPSHOT_DIR` | `./dust-state` | where `<net>.dust-state` is written |
+| `DUST_STATE_POLL_MS` | `2000` | how often the mirror polls `dust_events` |
+| `DUST_STATE_SNAPSHOT_EVERY` | `20000` | events between snapshots |
+| `DUST_REPLAY_BATCH` | `1000` | events per replay call (the ledger's per-call rehash amortises here) |
+
+**This is a deliberate, waived exception to "project B has no database"**
+(`spec/00016-dust-wallet-sync.md` §1, owner decision 2026-09-15). The node opens a SECOND
+connection, used only by `shielded-monitor/node/dust/`, so it can mirror the chain's two DUST
+Merkle trees and answer nullifier lookups. The consequence is written down and accepted for this
+experiment: **the database sees which nullifiers a wallet asks about**. A later project replaces
+the query with an enclave-side copy.
+
+What is not waived: the role must not be able to write, and must not be able to read anything else.
+
+```sql
+-- As the archive owner. The password belongs in your secret store, not in a compose file.
+CREATE ROLE dust_reader LOGIN PASSWORD '…';
+REVOKE ALL ON SCHEMA public FROM dust_reader;
+GRANT USAGE ON SCHEMA chain_archive TO dust_reader;
+GRANT SELECT ON chain_archive.dust_events, chain_archive.blocks TO dust_reader;
+
+-- OPTIONAL, and only if you want the node's start-up DUST-parameter check to actually run.
+-- It compares the parameters the mirror uses against the ones the chain committed, which needs a
+-- serialized ledger state -- and those live in `replay_checkpoints` joined to `chain_blobs`.
+-- Without these two grants the node reports `parametersCheck: "skipped"` and everything else
+-- works; with them it reports `ok` or, loudly, `mismatch`. Weigh it: `chain_blobs` is the
+-- archive's whole raw-bytes store, so granting it widens what this credential can read from
+-- "the DUST events" to "every block body and transaction the archive holds".
+-- GRANT SELECT ON chain_archive.replay_checkpoints, chain_archive.chain_blobs TO dust_reader;
+```
+
+`DUST_DATABASE_URL` is deliberately **not** named `*_PG`: every project-B process still refuses to
+start if any `*_PG` variable is in its environment, and that refusal is what catches a `MONITOR_PG`
+left behind by a migration.
+
+**The snapshot volume.** `DUST_STATE_SNAPSHOT_DIR` wants a small persistent volume, **per node,
+never shared**. The file holds the two DUST trees as the chain committed them — public chain data,
+no key, no nullifier — plus a header naming the net, the ledger build and the event id it stopped
+at. It exists so a restart replays the last few thousand events rather than the whole chain
+(≈ 150 MiB for preprod's 1.6 M leaves). Deleting it costs start-up time and nothing else, and a
+snapshot from another net or another ledger build is refused and replayed from zero.
+
+**Memory.** The mirror keeps both trees uncollapsed in the WebAssembly heap, ≈ 2 KB per leaf. For
+preprod that projects to ≈ 2.4 GB of RSS, over the 1.5 GB this project set as its target — measure
+it on your own chain from `/internal/status`'s `dust.rss` and `dust.externalBytes` before running
+two nodes with the module enabled.
+
 ### `umbradb-shielded-monitor-balancer`
 
 | variable | default | meaning |
