@@ -1168,17 +1168,33 @@ describe("00016: the ingest keeps the DUST events", () => {
     return schema;
   }
 
+  /** The synthetic chain's full four heights (0..3), not the two-block default: quiet blocks and
+   *  a backfill/ingest handover both need more than one block above genesis. */
+  const fullChainFetch = () => chainNodeFetch(GENESIS_SYSTEM_EXTRINSICS, { head: HEIGHT_3_HASH });
+
   const dustService = (schema: string, opts: Record<string, unknown> = {}) =>
     new ChainArchiveSyncService({
       sql, net: NET, schema,
-      node: {
-        url: "http://fake-node",
-        fetchImpl: chainNodeFetch(GENESIS_SYSTEM_EXTRINSICS),
-      },
+      node: { url: "http://fake-node", fetchImpl: fullChainFetch() },
       replayValidation: true,
       ledgerNetworkId: "undeployed",
       replayCheckpointInterval: 1,
       ...opts,
+    });
+
+  /** The same chain ingested WITHOUT replay: blocks archived, DUST table empty -- the shape of
+   *  every archive that existed before 00016. */
+  const plainService = (schema: string) =>
+    new ChainArchiveSyncService({
+      sql, net: NET, schema,
+      node: { url: "http://fake-node", fetchImpl: fullChainFetch() },
+    });
+
+  const backfillService = (schema: string, fetchImpl = fullChainFetch()) =>
+    new ChainArchiveSyncService({
+      sql, net: NET, schema,
+      node: { url: "http://fake-node", fetchImpl },
+      ledgerNetworkId: "undeployed",
     });
 
   /** The events an INDEPENDENT replay produces for the same genesis body -- the comparand the
@@ -1274,10 +1290,7 @@ describe("00016: the ingest keeps the DUST events", () => {
 
   it("writes nothing and reports dust=off when replay validation is off (FR-003)", async () => {
     const schema = await newSchema();
-    const service = new ChainArchiveSyncService({
-      sql, net: NET, schema,
-      node: { url: "http://fake-node", fetchImpl: chainNodeFetch(GENESIS_SYSTEM_EXTRINSICS) },
-    });
+    const service = plainService(schema);
     expect(service.dustCaptureState).toBe("off");
     await service.syncOnce({ maxBlocks: 2 });
     expect((await dustRows(schema)).length).toBe(0);
@@ -1377,4 +1390,122 @@ describe("00016: the ingest keeps the DUST events", () => {
       await admin.end({ timeout: 5 });
     }
   }, 600_000);
+
+  it("backfills an archive ingested without replay to exactly what a replay-on ingest would have written (FR-004)", async () => {
+    // The reference: a replay-on ingest over the same four heights.
+    const reference = await newSchema();
+    await dustService(reference).syncOnce({ maxBlocks: 4 });
+    const referenceRows = (await dustRows(reference)).map((r) => ({
+      id: Number(r.id), height: Number(r.block_height), txPosition: r.tx_position,
+      eventIndex: r.event_index, kind: r.kind, txHash: r.tx_hash.toString("hex"),
+      raw: r.raw.toString("hex"),
+    }));
+    expect(referenceRows.length).toBe(78);
+
+    // The subject: the same four heights ingested with replay OFF, so the blocks are archived and
+    // the DUST table is empty -- exactly the shape of every archive that existed before 00016.
+    const schema = await newSchema();
+    await plainService(schema).syncOnce({ maxBlocks: 4 });
+    expect((await dustRows(schema)).length).toBe(0);
+
+    const backfill = backfillService(schema);
+    const pass = await backfill.backfillDustEvents({ maxBlocks: 100 });
+    expect(pass.done).toBe(true);
+    expect(pass.rows).toBe(78);
+
+    const filled = (await dustRows(schema)).map((r) => ({
+      id: Number(r.id), height: Number(r.block_height), txPosition: r.tx_position,
+      eventIndex: r.event_index, kind: r.kind, txHash: r.tx_hash.toString("hex"),
+      raw: r.raw.toString("hex"),
+    }));
+    expect(filled).toEqual(referenceRows);
+
+    // Running it again is a no-op, not a second copy.
+    const second = await backfill.backfillDustEvents({ maxBlocks: 100 });
+    expect(second).toEqual({
+      fromHeight: undefined, toHeight: undefined, blocks: 0, rows: 0, done: true,
+    });
+    expect((await dustRows(schema)).length).toBe(78);
+  }, 300_000);
+
+  it("resumes a killed backfill at the capture watermark and hands over to a live ingest", async () => {
+    const schema = await newSchema();
+    // Heights 0..2 with replay ON -- so the archive has the checkpoints a later live ingest needs
+    // -- and then the DUST table emptied, which is what an archive whose capture went `gap` looks
+    // like. (A replay-OFF archive cannot hand over to a live replay-on ingest at all: that path
+    // refuses to start mid-chain without a checkpoint, by design.)
+    await dustService(schema, {
+      node: {
+        url: "http://fake-node",
+        fetchImpl: chainNodeFetch(GENESIS_SYSTEM_EXTRINSICS, { head: HEIGHT_2_HASH }),
+      },
+    }).syncOnce({ maxBlocks: 3 });
+    await sql`DELETE FROM ${sql(schema)}.dust_events WHERE net = ${NET}`;
+    await sql`
+      DELETE FROM ${sql(schema)}.watermarks
+      WHERE kind = 'chain_archive' AND key = ${`dust_capture:${NET}`}
+    `;
+
+    // One height per pass, each from a FRESH service -- a kill between passes loses the in-memory
+    // fold, which is the case the watermark exists for.
+    let passes = 0;
+    for (;;) {
+      const pass = await backfillService(
+        schema, chainNodeFetch(GENESIS_SYSTEM_EXTRINSICS, { head: HEIGHT_2_HASH }),
+      ).backfillDustEvents({ maxBlocks: 1 });
+      passes += 1;
+      if (pass.done) break;
+      expect(passes, "the backfill must terminate").toBeLessThan(10);
+    }
+    expect(passes).toBeGreaterThan(1);
+    const rows = await dustRows(schema);
+    expect(rows.map((r) => Number(r.id))).toEqual(Array.from({ length: 78 }, (_, i) => i + 1));
+
+    const [covered] = await sql<{ height: string }[]>`
+      SELECT value ->> 'height' AS height FROM ${sql(schema)}.watermarks
+      WHERE kind = 'chain_archive' AND key = ${`dust_capture:${NET}`}
+    `;
+    const [tip] = await sql<{ h: string }[]>`
+      SELECT max(height)::text AS h FROM ${sql(schema)}.blocks WHERE net = ${NET}
+    `;
+    expect(covered!.height).toBe(tip!.h);
+
+    // The seam: a live replay-on ingest continues above the backfilled range with no gap, which
+    // is what sharing one watermark between the two writers buys.
+    const live = dustService(schema);
+    await live.syncOnce({ maxBlocks: 2 });
+    expect(live.dustCaptureState).toBe("capturing");
+    const [coveredAfter] = await sql<{ height: string }[]>`
+      SELECT value ->> 'height' AS height FROM ${sql(schema)}.watermarks
+      WHERE kind = 'chain_archive' AND key = ${`dust_capture:${NET}`}
+    `;
+    expect(Number(coveredAfter!.height)).toBeGreaterThan(Number(covered!.height));
+  }, 300_000);
+
+  it("resumes from a replay checkpoint rather than re-folding from genesis", async () => {
+    // The other resume shape (§5.4(a)): the table is partly filled and the archive has
+    // checkpoints. The fold must restart from the newest checkpoint at or below the covered
+    // height, not from block 0 -- on a real chain that difference is hours.
+    const schema = await newSchema();
+    await dustService(schema).syncOnce({ maxBlocks: 4 });
+    await sql`DELETE FROM ${sql(schema)}.dust_events WHERE net = ${NET} AND block_height > 1`;
+    await sql`
+      UPDATE ${sql(schema)}.watermarks SET value = ${sql.json({ height: 1 })}
+      WHERE kind = 'chain_archive' AND key = ${`dust_capture:${NET}`}
+    `;
+    const [checkpoints] = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM ${sql(schema)}.replay_checkpoints WHERE net = ${NET}
+    `;
+    expect(checkpoints!.n, "this archive must actually have checkpoints to resume from")
+      .toBeGreaterThan(1);
+
+    // A node that refuses to serve genesis: only a fold that really started at the checkpoint can
+    // finish. A cold start would call `system_properties` for the genesis state and fail here.
+    const noGenesisFetch = chainNodeFetch(GENESIS_SYSTEM_EXTRINSICS, {
+      head: HEIGHT_3_HASH, fault: { failGetBlockFor: BLOCK_HASH },
+    });
+    const pass = await backfillService(schema, noGenesisFetch).backfillDustEvents({ maxBlocks: 100 });
+    expect(pass.done).toBe(true);
+    expect(pass.fromHeight).toBe(2);
+  }, 300_000);
 });

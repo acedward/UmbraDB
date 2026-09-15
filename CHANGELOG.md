@@ -10,6 +10,31 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
 
 ### Added
 
+- **The ingest keeps the DUST ledger events it already computes (00016, step 1 of 3).** With
+  `REPLAY_VALIDATION=1`, every `dustInitialUtxo` / `dustGenerationDtimeUpdate` /
+  `dustSpendProcessed` event a block produces is written to the new `chain_archive.dust_events`
+  (migration `009_dust_events`) **inside that block's own transaction**, with a dense per-net id in
+  ledger execution order and the raw `Event.serialize()` bytes. Nothing else changes: it is a new
+  table plus its indexes, and an archive that never runs replay validation simply keeps it empty.
+  Why it exists: replaying preprod's ~1.49 M DUST events is what costs a wallet roughly two hours
+  of sync today, once per wallet — and the ingest was computing those events and throwing them
+  away. Written down once, they let a consumer fold the two DUST Merkle trees once and serve every
+  wallet from them (`spec/00016-dust-wallet-sync.md`).
+  Three details worth knowing before relying on the table. **Genesis is included**: replay installs
+  the node's ready-made genesis state rather than executing block 0, but genesis is where the
+  chain's DUST trees get leaves 0..N, so the ingest harvests those events by applying the genesis
+  body to a throwaway blank state — which is exactly what the reference indexer does. **Density is
+  tracked by a watermark**, `dust_capture:<net>`, advanced in the same transaction even for the
+  many blocks that produce no DUST event at all; a height whose rows would leave a hole commits
+  WITHOUT them and the ingest's status line turns to `dust=gap`, because a partially filled table
+  would make a consumer build trees that look fine and are wrong. **With replay off** the CLI says
+  once at start that the events are not captured, and the table stays empty.
+  New CLI `umbradb-dust-backfill` (`npm run dust:backfill`) fills the table for an archive ingested
+  before this change: a replay over blocks the archive already holds, reading each block's body and
+  `System::Events` back from a **local** archive node, resuming from the newest replay checkpoint
+  at or below the covered height, stopping at the sync watermark, and sharing the ingest's
+  watermark so the two hand over with no gap at the seam.
+
 - **The merged monitor-node: viewing keys live only in RAM (00009-09).** A new process,
   `umbradb-shielded-monitor-node`, is project B: it serves the public API and the `/ui` dashboard,
   runs both scan queues, and is the **sole custodian of every viewing key it is sent**. A key is

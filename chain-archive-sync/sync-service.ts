@@ -1226,6 +1226,34 @@ export class ChainArchiveSyncService {
    * A failure here costs the DUST table, never the block: capture goes `gap`, the operator is
    * told once, and the archive keeps ingesting.
    */
+  private async harvestGenesisDustEvents(
+    height: number,
+    blockHash: Hex32,
+    parentHashHex: string,
+    extrinsics: readonly string[],
+    protocolVersion: number,
+    blockTimestampMs: number,
+  ): Promise<DustEventRecord[]> {
+    const ledger = await this.ledger();
+    const harvest = LedgerReplay.fromGenesis(
+      ledger, this.ledgerNetworkId!, { captureEventTags: DUST_EVENT_TAGS },
+    );
+    const executionOrder = await this.replayTransactionsInExecutionOrder(
+      blockHash, extrinsics, protocolVersion, 0,
+    );
+    harvest.applyBlock({
+      transactions: executionOrder,
+      blockTimestampMs,
+      parentBlockHashHex: parentHashHex,
+      parentBlockTimestampMs: 0,
+    });
+    return mapDustEvents(
+      { net: this.net, blockHeight: height, blockHash },
+      harvest.lastBlockEvents ?? [],
+      ledger.dustCommitment,
+    );
+  }
+
   private async captureGenesisDustEvents(
     height: number,
     blockHash: Hex32,
@@ -1235,23 +1263,9 @@ export class ChainArchiveSyncService {
     blockTimestampMs: number,
   ): Promise<void> {
     try {
-      const ledger = await this.ledger();
-      const harvest = LedgerReplay.fromGenesis(
-        ledger, this.ledgerNetworkId!, { captureEventTags: DUST_EVENT_TAGS },
-      );
-      const executionOrder = await this.replayTransactionsInExecutionOrder(
-        blockHash, extrinsics, protocolVersion, 0,
-      );
-      harvest.applyBlock({
-        transactions: executionOrder,
+      this.lastBlockDustEvents = await this.harvestGenesisDustEvents(
+        height, blockHash, hexNoPrefix(header.parentHash), extrinsics, protocolVersion,
         blockTimestampMs,
-        parentBlockHashHex: hexNoPrefix(header.parentHash),
-        parentBlockTimestampMs: 0,
-      });
-      this.lastBlockDustEvents = mapDustEvents(
-        { net: this.net, blockHeight: height, blockHash },
-        harvest.lastBlockEvents ?? [],
-        ledger.dustCommitment,
       );
     } catch (err) {
       this.dustCapture = "gap";
@@ -1264,6 +1278,210 @@ export class ChainArchiveSyncService {
           "produce a table the node cannot fold. Fix the cause and run `npm run dust:backfill`.",
       );
     }
+  }
+
+  /**
+   * Fill `chain_archive.dust_events` for blocks this archive already holds
+   * (`spec/00016-dust-wallet-sync.md` FR-004, §5.4). Resumable, idempotent, bounded per call.
+   *
+   * WHY IT IS A REPLAY AND NOT A DECODE. The events are not in the archived bytes: a DUST spend's
+   * commitment index, a generation entry's dtime, an initial UTxO's tree position -- all of them
+   * come from applying the block to the ledger state as it stood at that height. So the backfill
+   * does what the ingest would have done, over the blocks the archive already has, reading each
+   * block's body and `System::Events` back from the node to reconstruct EXECUTION order (the
+   * archive stores reference-compatible ROW order, which is a different sequence for system
+   * transactions).
+   *
+   * RESUME, in three cases:
+   *   - nothing captured yet -> start at the archive's genesis, whose events are harvested from
+   *     its body exactly as the ingest does (see {@link harvestGenesisDustEvents});
+   *   - captured up to `h0`, with a replay checkpoint at or below it -> resume the fold from that
+   *     checkpoint and re-apply forward to `h0` WITHOUT writing (those rows exist), then write;
+   *   - captured up to `h0` with no checkpoint -> fold from genesis to `h0` without writing.
+   * The re-applied prefix is the price of a fold; it is bounded by the checkpoint interval
+   * whenever checkpoints exist.
+   *
+   * It stops at the sync watermark: a height the ingest has not committed has no block row for the
+   * rows' foreign key, and racing the ingest for the tip would mean two writers assigning ids.
+   *
+   * Runs on its own `LedgerReplay`, never `this.replay`, so a service instance used for backfill
+   * cannot disturb an ingest -- but one instance should still do one job at a time, and the CLI
+   * gives it a dedicated one.
+   */
+  async backfillDustEvents(opts: { maxBlocks?: number } = {}): Promise<{
+    /** First height this call wrote, or `undefined` if it wrote none. */
+    fromHeight: number | undefined;
+    /** Last height this call wrote. */
+    toHeight: number | undefined;
+    /** Heights covered by this call (written; a height with no DUST events still counts). */
+    blocks: number;
+    /** Rows inserted. */
+    rows: number;
+    /** Whether the table has reached the sync watermark. */
+    done: boolean;
+  }> {
+    if (this.ledgerNetworkId === undefined) {
+      throw new Error(
+        "the DUST backfill needs LEDGER_NETWORK_ID (the LEDGER's network id, e.g. \"undeployed\"). " +
+          "It is not derivable from `net`, which is this archive's row-scope label, and folding " +
+          "against the wrong network produces a different state rather than an error.",
+      );
+    }
+    const maxBlocks = opts.maxBlocks ?? 500;
+    const syncedHeight = await this.getSyncedHeight();
+    if (syncedHeight === undefined) {
+      return { fromHeight: undefined, toHeight: undefined, blocks: 0, rows: 0, done: true };
+    }
+    const covered = await this.store.getDustCaptureHeight(this.net);
+    const startWrite = covered === undefined ? 0 : covered + 1;
+    if (startWrite > syncedHeight) {
+      return { fromHeight: undefined, toHeight: undefined, blocks: 0, rows: 0, done: true };
+    }
+
+    const ledger = await this.ledger();
+    const options = { captureEventTags: DUST_EVENT_TAGS };
+    let replay: LedgerReplay;
+    let foldedTo: number | undefined;
+    let parentTimestampMs = 0;
+    let parentHash: Hex32 | undefined;
+    /** Genesis is written outside the loop below (its events are harvested, not folded), so its
+     *  contribution is carried here rather than being silently dropped from the report. */
+    let genesisBlocks = 0;
+    let genesisRows = 0;
+
+    const checkpoint = startWrite === 0
+      ? undefined
+      : await this.store.getLatestReplayCheckpoint(this.net, startWrite - 1);
+    if (checkpoint !== undefined && checkpoint.ledgerVersion === LEDGER_STATE_VERSION &&
+        checkpoint.ledgerNetworkId === this.ledgerNetworkId) {
+      replay = LedgerReplay.fromSerialized(ledger, checkpoint.stateBytes, options);
+      foldedTo = checkpoint.blockHeight;
+      parentTimestampMs = checkpoint.blockTimestampMs;
+      parentHash = checkpoint.blockHash;
+    } else {
+      // Cold: the node's genesis snapshot, exactly as the ingest's own cold start builds it.
+      const genesis = await this.store.getCanonicalBlockAtHeight(this.net, 0);
+      if (genesis === undefined) {
+        throw new Error(
+          `the DUST backfill found no canonical block at height 0 for net ${this.net}. The events ` +
+            "are a fold from genesis, so there is nowhere to start.",
+        );
+      }
+      const [genesisState, nodeLedgerNetworkId] = await Promise.all([
+        this.node.genesisLedgerState(),
+        this.node.ledgerNetworkId(`0x${genesis.blockHash}`),
+      ]);
+      if (nodeLedgerNetworkId !== this.ledgerNetworkId) {
+        throw new Error(
+          `the DUST backfill is configured for ledger network "${this.ledgerNetworkId}" but the ` +
+            `node reports "${nodeLedgerNetworkId}". Folding this chain onto another network's ` +
+            "state produces wrong events rather than an error.",
+        );
+      }
+      replay = LedgerReplay.fromSerialized(ledger, genesisState, options);
+      const { block: nodeGenesis } = await this.node.getBlock(`0x${genesis.blockHash}`);
+      const genesisProtocol = decodeProtocolVersionFromDigest(nodeGenesis.header.digest.logs) ?? 0;
+      const resolved = await this.metadata.forBlock(`0x${genesis.blockHash}`, genesisProtocol);
+      const genesisTimestampMs = decodeBlockTimestampMs(resolved, nodeGenesis.extrinsics);
+      if (genesisTimestampMs === undefined) {
+        throw new Error(
+          "the DUST backfill could not decode genesis's Timestamp::set inherent. Replay is " +
+            "time-dependent and substituting zero would produce a different fold.",
+        );
+      }
+      foldedTo = 0;
+      parentTimestampMs = genesisTimestampMs;
+      parentHash = genesis.blockHash;
+      if (startWrite === 0) {
+        const rows = await this.harvestGenesisDustEvents(
+          0, genesis.blockHash, hexNoPrefix(nodeGenesis.header.parentHash), nodeGenesis.extrinsics,
+          genesisProtocol, genesisTimestampMs,
+        );
+        const outcome = await this.store.putDustEventsForHeight({
+          net: this.net, blockHeight: 0, blockHash: genesis.blockHash, events: rows,
+        });
+        if (outcome.outcome === "gap") throw new Error(`DUST backfill refused at genesis: ${outcome.reason}`);
+        genesisBlocks = 1;
+        genesisRows = outcome.rows;
+        if (syncedHeight === 0) {
+          return { fromHeight: 0, toHeight: 0, blocks: 1, rows: outcome.rows, done: true };
+        }
+      }
+    }
+
+    /** Apply one already-archived height to the local fold; write its rows only above `h0`. */
+    const applyHeight = async (height: number, write: boolean): Promise<number> => {
+      const block = await this.store.getCanonicalBlockAtHeight(this.net, height);
+      if (block === undefined) {
+        throw new Error(
+          `the DUST backfill found no canonical block at height ${height} for net ${this.net}, ` +
+            "between the resume point and the sync watermark. The archive has a hole, so the fold " +
+            "cannot reach the next block's state.",
+        );
+      }
+      if (parentHash !== undefined && block.parentHash !== parentHash) {
+        throw new Error(
+          `the DUST backfill hit an ancestry mismatch at height ${height}: this block names parent ` +
+            `${block.parentHash}, but the block just folded was ${parentHash}. Refusing to splice ` +
+            "disconnected canonical rows.",
+        );
+      }
+      const { block: nodeBlock } = await this.node.getBlock(`0x${block.blockHash}`);
+      const protocolVersion = decodeProtocolVersionFromDigest(nodeBlock.header.digest.logs) ?? 0;
+      const resolved = await this.metadata.forBlock(`0x${block.blockHash}`, protocolVersion);
+      const blockTimestampMs = decodeBlockTimestampMs(resolved, nodeBlock.extrinsics);
+      if (blockTimestampMs === undefined) {
+        throw new Error(
+          `the DUST backfill could not decode the Timestamp::set inherent at height ${height}. ` +
+            "Replay is time-dependent and substituting zero would produce a different fold.",
+        );
+      }
+      replay.applyBlock({
+        transactions: await this.replayTransactionsInExecutionOrder(
+          block.blockHash, nodeBlock.extrinsics, protocolVersion, parentTimestampMs,
+        ),
+        blockTimestampMs,
+        parentBlockHashHex: hexNoPrefix(nodeBlock.header.parentHash),
+        parentBlockTimestampMs: parentTimestampMs,
+      });
+      parentTimestampMs = blockTimestampMs;
+      parentHash = block.blockHash;
+      if (!write) return 0;
+      const rows = mapDustEvents(
+        { net: this.net, blockHeight: height, blockHash: block.blockHash },
+        replay.lastBlockEvents ?? [],
+        ledger.dustCommitment,
+      );
+      const outcome = await this.store.putDustEventsForHeight({
+        net: this.net, blockHeight: height, blockHash: block.blockHash, events: rows,
+      });
+      if (outcome.outcome === "gap") {
+        throw new Error(`DUST backfill refused at height ${height}: ${outcome.reason}`);
+      }
+      return outcome.rows;
+    };
+
+    // Re-fold the already-captured prefix without writing: those rows exist, and re-writing them
+    // would be a no-op that still has to be paid for.
+    for (let height = (foldedTo ?? -1) + 1; height < startWrite; height++) {
+      await applyHeight(height, false);
+    }
+
+    const first = Math.max(startWrite, (foldedTo ?? -1) + 1);
+    const last = Math.min(syncedHeight, first + maxBlocks - 1 - genesisBlocks);
+    let rows = genesisRows;
+    let blocks = genesisBlocks;
+    for (let height = first; height <= last; height++) {
+      rows += await applyHeight(height, true);
+      blocks += 1;
+    }
+    return {
+      fromHeight: blocks === 0 ? undefined : (genesisBlocks > 0 ? 0 : first),
+      toHeight: blocks === 0 ? undefined : (last >= first ? last : 0),
+      blocks,
+      rows,
+      done: last >= syncedHeight,
+    };
   }
 
   /** Compare the replay engine with the root committed by the Midnight pallet at this exact
