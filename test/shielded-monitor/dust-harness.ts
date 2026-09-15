@@ -1,3 +1,4 @@
+import type { DustEventRecord } from "../../src/interfaces/chain-archive-store.js";
 import type {
   DustCheckpointProbe,
   DustDb,
@@ -127,15 +128,31 @@ export function brokenDustDb(events: readonly Uint8Array[]): FakeDustDb {
  * rows and compares.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function dustRowsFromFixture(ledger: any, events: readonly Uint8Array[]): Promise<{
+export async function dustRowsFromFixture(
+  ledger: any,
+  events: readonly Uint8Array[],
+  /** How many fixture events share one synthetic block. Only the integration suite cares: it
+   *  writes one `putBlockBundle` per block, so 7 events per block means 715 transactions for the
+   *  whole fixture. */
+  eventsPerBlock = 7,
+): Promise<{
   initialUtxos: DustInitialUtxoRow[];
   generation: DustGenerationRow[];
   spends: DustSpendRow[];
   /** The owner with the most initial UTxOs, for the paging cases. */
   busiestOwner: string;
+  /** The same events as the rows project A's ingest would write, grouped by synthetic block —
+   *  what `dust-db.integration.test.ts` seeds a real database with. */
+  records: { readonly id: bigint; readonly record: DustEventRecord }[];
 }> {
   const { mapDustEvents } = await import("../../chain-archive-sync/dust-events.js");
   const records: { id: bigint; record: Awaited<ReturnType<typeof mapOne>>[number] }[] = [];
+
+  /** One distinct 32-byte hash per synthetic block, so the archive's `(net, height, hash)` key
+   *  and the FK from `dust_events` both hold. */
+  function blockHashFor(index: number): string {
+    return (1_000 + Math.floor(index / eventsPerBlock)).toString(16).padStart(64, "0");
+  }
 
   function mapOne(index: number, raw: Uint8Array) {
     const event = ledger.Event.deserialize(raw);
@@ -143,14 +160,22 @@ export async function dustRowsFromFixture(ledger: any, events: readonly Uint8Arr
     const tag = typeof content?.tag === "string" ? content.tag : "";
     const txHash = String(event.source?.transactionHash ?? "").replace(/^0x/, "").toLowerCase();
     return mapDustEvents(
-      { net: "preprod", blockHeight: 1_000 + Math.floor(index / 7), blockHash: "ab".repeat(32) },
+      { net: "preprod", blockHeight: 1_000 + Math.floor(index / eventsPerBlock), blockHash: blockHashFor(index) },
       [{ txPosition: index, eventIndex: 0, txKind: "system", txHash, tag, raw, content }],
       () => 0n,
     );
   }
 
+  // Ids are DENSE OVER THE MAPPED ROWS, which is how the archive numbers them: `dust_events`
+  // holds only the three DUST kinds, so the two `notYetSupportedEventType` events in this sample
+  // occupy no id. That makes these ids comparable with a real database's, which is what
+  // `dust-db.integration.test.ts` needs.
+  //
+  // It also means they are NOT the ids `fakeDustDb` hands out for the replay stream, which are the
+  // fixture's own indices — the committed roots were recorded over all 5 000 events, so the mirror
+  // suites fold all 5 000. Nothing compares the two spaces, and each is right about its own thing.
   for (const [index, raw] of events.entries()) {
-    for (const record of mapOne(index, raw)) records.push({ id: BigInt(index + 1), record });
+    for (const record of mapOne(index, raw)) records.push({ id: BigInt(records.length + 1), record });
   }
 
   // The latest dtime per generation entry — the merge `db.ts` expresses as a lateral join.
@@ -209,5 +234,5 @@ export async function dustRowsFromFixture(ledger: any, events: readonly Uint8Arr
 
   generation.sort((a, b) => (a.generationIndex < b.generationIndex ? -1 : a.generationIndex > b.generationIndex ? 1 : 0));
   const busiestOwner = [...ownerCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "0";
-  return { initialUtxos, generation, spends, busiestOwner };
+  return { initialUtxos, generation, spends, busiestOwner, records };
 }
