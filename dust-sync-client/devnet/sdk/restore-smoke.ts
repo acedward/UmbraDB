@@ -29,7 +29,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import * as ledger from '@midnight-ntwrk/ledger-v8';
 import { Buffer } from 'buffer';
-import { makeDefaultV1SerializationCapability } from '@midnightntwrk/wallet-sdk-dust-wallet/dist/v1/Serialization.js';
 
 const OUT = process.env.OUT_DIR ?? '/out';
 const OUT_NAME = process.env.OUT_NAME ?? 'restore-smoke.json';
@@ -40,7 +39,16 @@ const log = (m: string): void => {
   console.log(`[restore-smoke] ${new Date().toISOString()} ${m}`);
 };
 
-function main(): void {
+/**
+ * `Serialization.js` is not re-exported from the package's `./v1` entry (checked: `dist/v1/index.js`
+ * exports CoreWallet, DustWallet, Keys, Sync, Transacting, … but not it), so it is imported by its
+ * absolute path inside the image. That is deliberate rather than a workaround: this script's whole
+ * point is to run the SDK's OWN deserializer, and reimplementing it here would test nothing.
+ */
+const SERIALIZATION = '/app/node_modules/@midnightntwrk/wallet-sdk-dust-wallet/dist/v1/Serialization.js';
+
+async function main(): Promise<void> {
+  const { makeDefaultV1SerializationCapability } = (await import(SERIALIZATION)) as any;
   mkdirSync(OUT, { recursive: true });
   const text = readFileSync(WRAPPER, 'utf8');
   const wrapper = JSON.parse(text);
@@ -90,10 +98,10 @@ function main(): void {
   log('the SDK accepted the wrapper, kept both roots and took our appliedIndex');
 }
 
-try {
-  main();
-  process.exit(0);
-} catch (error) {
-  console.error('[restore-smoke] FAILED:', error instanceof Error ? (error.stack ?? error.message) : error);
-  process.exit(1);
-}
+main().then(
+  () => process.exit(0),
+  (error: unknown) => {
+    console.error('[restore-smoke] FAILED:', error instanceof Error ? (error.stack ?? error.message) : error);
+    process.exit(1);
+  },
+);
