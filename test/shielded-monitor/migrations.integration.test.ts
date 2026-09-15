@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
@@ -123,7 +123,6 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
   describe("every CHECK constraint actually fires", () => {
     let sql: UmbraDBSql;
     const schema = "shielded_monitor_checks";
-    const fingerprint = Buffer.alloc(32, 1);
 
     beforeAll(async () => {
       sql = await freshSchema(schema);
@@ -140,7 +139,13 @@ describe("shieldedMonitorMigrations (project B, organizer spec FR-025)", () => {
       const row = {
         id,
         net: "undeployed",
-        fingerprint: Buffer.concat([fingerprint.subarray(0, 31), Buffer.of(Math.floor(Math.random() * 256))]),
+        // A FULLY random 32 bytes, not a fixed prefix plus one random byte. `(net, fingerprint)`
+        // is UNIQUE, and this helper runs about ten times per suite: one random byte is 256
+        // values, which by the birthday bound collides in roughly one run in six — and when it
+        // does, the case that happened to draw the duplicate fails with `duplicate key` instead of
+        // whatever constraint it was written to prove. Observed reddening the conformance gate on
+        // 2026-09-15; the collision has nothing to do with the constraint under test.
+        fingerprint: randomBytes(32),
         state: "backfilling",
         epoch: 0n,
         requested_start_height: 0n,
