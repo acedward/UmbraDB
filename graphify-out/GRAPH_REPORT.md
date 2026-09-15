@@ -1,23 +1,23 @@
-# Graph Report - 00002-indexer-independent-ingest  (2026-08-15)
+# Graph Report - 00016-dust-wallet-sync  (2026-09-15)
 
 ## Corpus Check
-- 350 files · ~652,330 words
+- 562 files · ~994,883 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 3073 nodes · 5262 edges · 258 communities (186 shown, 72 thin omitted)
-- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 39 edges (avg confidence: 0.74)
+- 5739 nodes · 10611 edges · 413 communities (272 shown, 141 thin omitted)
+- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 116 edges (avg confidence: 0.72)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `f164b460`
+- Built from commit: `464fd391`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
 - ADDED Requirements
-- src/index.ts
-- frozen-types.test.ts
+- StorageError
+- published-ledger-v8-8.1.0.d.ts
 - ADDED Requirements
 - scoped-review-manifest
 - Storage Algebra Lean Formalization — Approved Design and Status
@@ -25,7 +25,7 @@
 - postgres.js driver choice
 - openspec-explore/SKILL.md
 - Tier 1 / Tier 2 Postgres schema split
-- compilerOptions
+- include
 - kv_current/kv_history temporal-table design
 - Throw-typed-error idiom unification across modules
 - Transaction/Lease layer interface (STALE, superseded)
@@ -83,7 +83,7 @@
 - Top-level null value application-level guard
 - Proposal — Sprint 7: Transaction History Storage (Wallet Integration Surface)
 - complete flag explicit-write requirement
-- TransactionHistoryEntry
+- postgres/transaction-history-storage.ts
 - CheckpointStore cancellation scope decision (pre-check only)
 - setup.ts
 - ADDED Requirements
@@ -99,7 +99,7 @@
 - compilerOptions
 - ADDED Requirements
 - interfaces/temporal-kv.ts
-- postgres/watermarks.ts
+- shielded-monitor/helpers.ts
 - ADDED Requirements
 - ADDED Requirements
 - Storage Algebra Lean M3a Watermarks Sprint
@@ -111,7 +111,7 @@
 - Proposal — Sprint 8: WalletState Envelope + Live Preprod DB-Sync + Cold-Boot Recovery
 - Preprod connection — endpoints, wallet, faucet
 - Environment changelog
-- checkpoint-store.test.ts
+- storage-http-client.ts
 - UmbraDB third-party component inventory (SBOM)
 - Proposal — Sprint 5: Lean M3a Watermarks W1
 - Tasks — Sprint 5: Lean M3a Watermarks W1
@@ -120,7 +120,7 @@
 - Full-Chain Storage — Design
 - postgres/transaction-lease.ts
 - Design — v1.0.0-durable-checkpoint-cursor
-- ValidationError
+- src/index.ts
 - Plan: finish replacing the indexer with the node as the archive ingest source
 - chain_archive lineage
 - ADDED Requirements
@@ -130,10 +130,10 @@
 - Design — v1.0.0 API Surface & Release Contract
 - NodeRpcClient
 - ChainArchiveStore
-- watermarks.test.ts
+- storage-wire.ts
 - tx-replay-decoder.ts
-- postgres/chain-archive-store.ts
-- sync-service.ts
+- monitor-node.ts
+- chain-archive-preprod-cloud-crossval.integration.test.ts
 - UmbraDB v1.0.0 — Resume-From-Home Checkpoint (2026-07-23)
 - Tasks — v1.0.0: Recovery, Crash-Injection & Soak Testing (`recovery-testing`)
 - UmbraDB
@@ -150,7 +150,7 @@
 - Acceptance criteria — v1.0.0: Recovery, Crash-Injection & Soak Testing (`recovery-testing`)
 - extrinsic-decoder.ts
 - UmbraDB 1.0.0 Release Contracts
-- ChainArchiveSyncService
+- sync-service.ts
 - Design — v1.0.0-infosec-signoff
 - Roadmap
 - Feasibility: TLS for the Cardano db-sync database (Midnight partner-chain follower)
@@ -161,10 +161,10 @@
 - UmbraDB v0.9.5 "Penumbra" — Release Record
 - check-required-tests.ts
 - stryker.conf.json
-- client.ts
+- chain-archive-sync-retry.integration.test.ts
 - Acceptance criteria — v1.0.0-infosec-signoff
 - Tasks — v1.0.0-infosec-signoff
-- registerSuiteLifecycle
+- cold-boot-recovery.integration.test.ts
 - UmbraDB V1.0.0 Implementation Guideline — the release constitution
 - Acceptance — v1.0.0-durable-checkpoint-cursor
 - Tasks — v1.0.0-durable-checkpoint-cursor
@@ -175,7 +175,7 @@
 - UmbraDB 0.9.5 "Penumbra"
 - crash-worker.ts
 - mutation-per-adapter.mjs
-- load-under-prune.integration.test.ts
+- monitor-store-pg.ts
 - Proposal — v1.0.0 API Surface & Release Contract
 - Proposal — v1.0.0-durable-checkpoint-cursor
 - Proposal — v1.0.0-infosec-signoff
@@ -188,11 +188,11 @@
 - pack-install.mjs
 - Acceptance criteria — v1.0.0-perf-baseline
 - Tasks — v1.0.0: Formal completion (`formal-completion`)
-- transaction-history-storage.test.ts
+- MonitorRecord
 - README.md
 - midnight-wallet-sdk-loader.ts
 - start-stack.sh
-- assertValidSchemaName
+- client.ts
 - conformance-gate.mjs
 - withSuiteWatchdog
 - compilerOptions
@@ -206,7 +206,7 @@
 - enable-db-sync-tls.sh
 - restore-state.sh
 - stop-stack.sh
-- postgres/transaction-history-storage.ts
+- ADDED Requirements
 - dependencies
 - storage-errors.ts
 - Gate notes — Task 6: differential state-equivalence gate (G11)
@@ -236,60 +236,214 @@
 - Audit record — `v1.1.0-formal-completion` roadmap (v1 → v2)
 - Spec — capability `formal-completion`
 - Captured runtime metadata
-- TransactionHandle
+- Requirements
 - generate-test-wallet.sh
 - chain-archive-replay-validation.integration.test.ts
 - 5. Blocking correctness gaps
-- Test wallets
-- chain-archive-sync-retry.integration.test.ts
+- shielded-monitor-batch-atomicity.crash.test.ts
+- sync.ts
 - Re-audit brief — audit round 2 remediation
 - 13. Stage 2b — metadata availability (owner-approved, 2026-08-10)
 - 8a. Dissent: concerns with revision 7, from the implementing author
-- errors.ts
+- api/server.ts
 - 12. Blockers and unknowns
 - 4. What is genuinely demonstrated
 - 10. Parallel track — upstream the ledger WASM export (not a goal of this plan)
 - 11. Staged execution plan (owner, 2026-08-08)
 - 1. Goal and scope
 - Re-audit brief — audit round 3
-- chain-archive-event-guard.integration.test.ts
+- Requirements
 - CrashWorkerHandle
-- checkpoint-store-cotx.test.ts
-- transaction-lease.test.ts
+- Requirements
+- Requirements
 - liveServicesRequired
-- TransactionLeaseLayer
-- LedgerReplay
-- watermarks.property.test.ts
+- derive-key-cli.ts
+- ledger-replay.ts
+- ShieldedMonitorStore
 - copy-cli-assets.mjs
-- temporal-kv.property.test.ts
+- shielded-monitor/errors.ts
 - 15. Audit round 3 — register (2026-08-13)
-- tinybench
+- golden.mjs
 - verify-compose-image-pins.sh
 - compose-image-pins.sh
+- scanner.test.ts
+- ArchiveReadContract
+- archive-height-atomicity.crash.test.ts
+- Requirement: The service lists every monitor it holds
+- fake-node.ts
+- DustLocalState
+- api/config.ts
+- MonitorNode
+- archive-read-wire.ts
+- dust/index.ts
+- ledger.ts
+- Transaction
+- Design — 00009-02: shielded monitor store, key intake and lifecycle
+- dust-routes.test.ts
+- The shielded-monitor private API
+- split-topology.integration.test.ts
+- archive-read-api.integration.test.ts
+- FakeStore
+- routes.ts
+- devnet.mjs
+- client/cli.ts
+- dust-sync-client/cli.ts
+- ZswapLocalState
+- handoff-ids.mjs
+- bech32m.ts
+- StateValue
+- wake.ts
+- InMemoryScannerMetrics
+- import-boundary.test.ts
+- balancer-routing.test.ts
+- Demo runbook — watch the shielded monitor work
+- LedgerState
+- demo-shielded-monitor.mjs
+- createShieldedMonitorApi
+- DustStateMirror
+- archive-read-api/server.ts
+- dust-events.test.ts
+- src/errors.ts
+- Intent
+- Design — 00009-01: archive read contract, block timestamp, per-height atomic commit
+- Design — 00009-03: the shielded viewing-key relevance scanner
+- server.test.ts
+- Tasks — 00009-02: shielded monitor store, key intake and lifecycle
+- Tasks — 00009-03: the shielded viewing-key relevance scanner
+- Design — 00009-04: the private shielded-monitor HTTP API and its reference consumer
+- api-ui.test.ts
+- MonitorKeyStore
+- backfill-block-timestamps.ts
+- dust-events.ts
+- dust-capture-overhead.ts
+- Running the shielded-monitor node
+- self-transfers.ts
+- FakeDustNode
+- archive-http-client.ts
+- routing.ts
+- Deploying the shielded monitor: one database, one storage process, N monitor-nodes
+- compare.mjs
+- Tasks — 00009-01: archive read contract, block timestamp, per-height atomic commit
+- Tasks — 00009-04: the private shielded-monitor HTTP API and its reference consumer
+- Tasks — 00009-06: dashboard, list endpoint, key derivation, demo runbook
+- Tasks — 00009-07: match details
+- Tasks — 00009-08: project B as a distinct deployable
+- Tasks — 00009-09: the merged monitor-node
+- runtime-metadata.test.ts
+- Backup and restore — `shielded_monitor` (project B)
+- bin
+- dust-harness.ts
+- node-rpc-client.ts
+- sdk-dust-state.ts
+- ContractState
+- StateBoundedMerkleTree
+- ZswapChainState
+- ZswapOffer
+- Design — 00009-07: match details
+- DustDb
+- DustModule
+- ShieldedViewingKey
+- pg-tx-history-adapter.test.ts
+- dust-backfill-cli.ts
+- `dust-sync-client` — a wallet builds its DUST state in seconds
+- ClaimRewardsTransaction
+- EncryptionSecretKey
+- LedgerParameters
+- QueryContext
+- VmStack
+- Design — 00009-06: dashboard, list endpoint, key derivation
+- Design — 00009-08: the storage boundary
+- Design — 00009-09: the merged monitor-node
+- DustStateMerkleTreeCollapsedUpdate
+- StateMap
+- ZswapOutput
+- Proposal — 00009-01: archive read contract, block timestamp, per-height atomic commit
+- Proposal — 00009-09: the merged monitor-node, with viewing keys only in RAM
+- Spec — the merged monitor-node (EARS)
+- TransactionCostModel
+- UnshieldedOffer
+- ZswapInput
+- ZswapTransient
+- Proposal — 00009-02: shielded monitor store, key intake and lifecycle (project B core)
+- Proposal — 00009-04: the private shielded-monitor HTTP API and its reference consumer
+- Proposal — 00009-06: a dashboard for the shielded monitor, a list endpoint, and a key-derivation command
+- Proposal — 00009-07: record and show each match's public zswap data
+- Proposal — 00009-08: project B as a distinct deployable, with no database of its own
+- Spec — the shielded-monitor storage boundary (EARS)
+- mutate
+- viewing-key.test.ts
+- Binding
+- CoinSecretKey
+- ContractMaintenanceAuthority
+- ContractOperation
+- DustActions
+- DustGenerationState
+- DustParameters
+- DustRegistration
+- DustSecretKey
+- DustSpend
+- DustState
+- DustUtxoState
+- Event
+- MerkleTreeCollapsedUpdate
+- NoBinding
+- PreBinding
+- PreProof
+- Proof
+- SignatureEnabled
+- SystemTransaction
+- UtxoState
+- ZswapSecretKeys
+- Proposal — 00009-03: the shielded viewing-key relevance scanner (project B's worker)
+- dust-public-key.ts
+- indexer-event-ids.ts
+- ContractCallPrototype
+- CostModel
+- MaintenanceUpdate
+- restore-smoke.ts
+- sdk-run.sh
+- ChargedState
+- ContractCall
+- ContractDeploy
+- ContractOperationVersion
+- ContractOperationVersionedVerifierKey
+- NoProof
+- PrePartitionContractCall
+- PreTranscript
+- QueryResults
+- ReplaceAuthority
+- SignatureErased
+- TransactionContext
+- TransactionResult
+- VerifierKeyInsert
+- VerifierKeyRemove
+- VmResults
+- shielded-monitor-entrypoint.sh
+- CHAIN_ARCHIVE_PROGRESS_CHANNEL
 
 ## God Nodes (most connected - your core abstractions)
-1. `UmbraDBSql` - 92 edges
-2. `createClient()` - 64 edges
-3. `withSuiteWatchdog()` - 55 edges
-4. `translatePostgresError()` - 54 edges
-5. `PgTransactionLeaseLayer` - 45 edges
-6. `TransactionHandle` - 44 edges
-7. `ChainArchiveSyncService` - 41 edges
-8. `PgCheckpointStore` - 37 edges
-9. `StorageError` - 34 edges
-10. `ValidationError` - 32 edges
+1. `UmbraDBSql` - 137 edges
+2. `createClient()` - 98 edges
+3. `translatePostgresError()` - 78 edges
+4. `MonitorRecord` - 71 edges
+5. `PgChainArchiveStore` - 56 edges
+6. `ChainArchiveSyncService` - 55 edges
+7. `withSuiteWatchdog()` - 55 edges
+8. `PgShieldedMonitorStore` - 50 edges
+9. `PgTransactionLeaseLayer` - 45 edges
+10. `StorageError` - 44 edges
 
 ## Surprising Connections (you probably didn't know these)
+- `readBody()` --indirect_call--> `chunk()`  [INFERRED]
+  storage-api/server.ts → dust-sync-client/src/encode.ts
+- `startUpstream()` --indirect_call--> `chunk()`  [INFERRED]
+  test/shielded-monitor/balancer.test.ts → dust-sync-client/src/encode.ts
 - `BenchEnv` --references--> `UmbraDBSql`  [EXTRACTED]
   bench/environment.ts → src/postgres/client.ts
 - `tinybenchSamples()` --references--> `bench`  [EXTRACTED]
   bench/stats.ts → package.json
-- `FakeChainBlock` --references--> `Hex32`  [EXTRACTED]
-  test/integration/chain-archive-sync-retry.integration.test.ts → src/interfaces/chain-archive-store.ts
-- `assertSaveNotAutoRetriedUnderRetriableFault()` --indirect_call--> `TransactionFaultError`  [INFERRED]
-  test/integration/crash/pg-kill-save.crash.test.ts → src/interfaces/transaction-lease.ts
-- `spyPool()` --references--> `UmbraDBSql`  [EXTRACTED]
-  test/postgres/checkpoint-store-cotx.test.ts → src/postgres/client.ts
+- `syncDust()` --indirect_call--> `index()`  [INFERRED]
+  dust-sync-client/src/sync.ts → chain-archive-sync/dust-events.ts
 
 ## Import Cycles
 - None detected.
@@ -300,19 +454,19 @@
 - **Modules composing the Sprint 2 transaction-handle registry** — sprint2_design_transaction_handle_registry, sprint1_design_pgtemporalkv_put, sprint3_design_torn_read_fix, sprint4_design_composing_txlease [EXTRACTED 1.00]
 - **Pre-check-only withAbort cancellation pattern across sprints** — sprint1_design_listkeys_cursor, sprint2_design_withtransaction, sprint3_design_cancellation_scope_decision, sprint4_design_cancellation [INFERRED 0.85]
 
-## Communities (258 total, 72 thin omitted)
+## Communities (413 total, 141 thin omitted)
 
 ### Community 0 - "ADDED Requirements"
 Cohesion: 0.04
 Nodes (45): ADDED Requirements, release-contract, Requirement: A cancellation contract states the abort guarantee as public behavior, Requirement: A CHANGELOG records the 1.0.0 surface, Requirement: A durability contract states the ordering guarantee and its binding precondition, Requirement: A format-headroom note reserves keyed/encrypted chunk modes for 1.1, Requirement: A forward-only migration contract states there is no supported downgrade, Requirement: A lease-limitation contract states the single-process boundary (+37 more)
 
-### Community 1 - "src/index.ts"
-Cohesion: 0.07
-Nodes (39): CheckpointNotFoundError, CheckpointStoreError, ChunkIntegrityError, ChunkMissingError, ManifestCorruptError, ConnectionError, Retryability, SerializationFailedError (+31 more)
+### Community 1 - "StorageError"
+Cohesion: 0.06
+Nodes (41): CheckpointNotFoundError, CheckpointStoreError, ChunkIntegrityError, ChunkMissingError, ManifestCorruptError, ConnectionError, Retryability, SerializationFailedError (+33 more)
 
-### Community 2 - "frozen-types.test.ts"
-Cohesion: 0.09
-Nodes (21): CheckpointStoreErrorCode, exceedsMaxDepth(), TemporalKVErrorCode, EntryContentSchema, EntryLifecycleSchema, EntryLifecycleStatus, EntrySectionsSchema, FinalizedLifecycle (+13 more)
+### Community 2 - "published-ledger-v8-8.1.0.d.ts"
+Cohesion: 0.02
+Nodes (86): AlignedValue, Alignment, AlignmentAtom, AlignmentSegment, Bindingish, BlockContext, CallContext, ClaimKind (+78 more)
 
 ### Community 3 - "ADDED Requirements"
 Cohesion: 0.08
@@ -328,15 +482,15 @@ Nodes (44): 10. Sprint 2 transaction/lease proposal, 11.1 Repository evidence, 1
 
 ### Community 6 - "devDependencies"
 Cohesion: 0.07
-Nodes (27): effect, fast-check, ledger-v8-stock, @midnightntwrk/wallet-sdk-abstractions, devDependencies, effect, fast-check, ledger-v8-stock (+19 more)
+Nodes (29): effect, fast-check, ledger-v8-stock, @midnightntwrk/wallet-sdk-abstractions, devDependencies, effect, fast-check, ledger-v8-stock (+21 more)
 
 ### Community 8 - "openspec-explore/SKILL.md"
 Cohesion: 0.12
 Nodes (16): Check for context, Ending Discovery, Guardrails, Handling Different Entry Points, OpenSpec Awareness, The Stance, What You Don't Have To Do, What You Might Do (+8 more)
 
-### Community 10 - "compilerOptions"
-Cohesion: 0.12
-Nodes (15): bench/**/*.ts, compilerOptions, declaration, esModuleInterop, module, moduleResolution, noEmit, noUncheckedIndexedAccess (+7 more)
+### Community 10 - "include"
+Cohesion: 0.09
+Nodes (21): bench/**/*.ts, dust-sync-client/cli.ts, dust-sync-client/src/**/*.ts, dust-sync-client/test/**/*.ts, compilerOptions, declaration, esModuleInterop, module (+13 more)
 
 ### Community 11 - "kv_current/kv_history temporal-table design"
 Cohesion: 0.05
@@ -378,9 +532,9 @@ Nodes (3): prune retainCount validation requirement, Top-level null value applic
 Cohesion: 0.29
 Nodes (6): Impact, Non-goals, Proposal — Sprint 7: Transaction History Storage (Wallet Integration Surface), What changes, Why, Why this sprint is numbered 7, not 5
 
-### Community 69 - "TransactionHistoryEntry"
-Cohesion: 0.20
-Nodes (6): TransactionHistoryEntry, TransactionHistoryStorage, PgTransactionHistoryStorage, abortErrorLike(), capitalize(), InMemoryTransactionHistoryStorage
+### Community 69 - "postgres/transaction-history-storage.ts"
+Cohesion: 0.06
+Nodes (31): TemporalKV, MergeEntriesFn, TransactionHistoryEntry, TransactionHistoryEntrySchema, TransactionHistoryWriter, TransactionHandle, assertStoredEntryShape(), capitalize() (+23 more)
 
 ### Community 70 - "CheckpointStore cancellation scope decision (pre-check only)"
 Cohesion: 0.06
@@ -388,7 +542,7 @@ Nodes (32): Advisory-lock class registry (classes 1/2/3), Module → Postgres mo
 
 ### Community 71 - "setup.ts"
 Cohesion: 0.10
-Nodes (22): class2AdvisoryLockCountForHash(), liveWorkers, manifestCount(), openPools, pool(), { sql: getSql, connectionUri }, watermarkCount(), worker() (+14 more)
+Nodes (20): class2AdvisoryLockCountForHash(), liveWorkers, manifestCount(), openPools, pool(), { sql: getSql, connectionUri }, watermarkCount(), Cancellable (+12 more)
 
 ### Community 72 - "ADDED Requirements"
 Cohesion: 0.11
@@ -399,8 +553,8 @@ Cohesion: 0.50
 Nodes (3): Change summary, Mandatory Codex audit, Validation
 
 ### Community 75 - "ledger-replay.test.ts"
-Cohesion: 0.09
-Nodes (20): AccumulatedCost, addCost(), BlockFullness, COST_DIMENSIONS, CostDimension, ReplayBlockInput, ReplayOutcome, ReplayRefusalError (+12 more)
+Cohesion: 0.14
+Nodes (12): ReplayRefusalError, CLOSE_ORACLE_ROWS, CLOSE_ORACLES, CORRUPTED_REGULAR_HEX, Cost, Dimension, FIXTURE, GENESIS_PARENT (+4 more)
 
 ### Community 76 - "ADDED Requirements"
 Cohesion: 0.05
@@ -411,8 +565,8 @@ Cohesion: 0.04
 Nodes (45): ADDED Requirements, durable-composition (implementation), Requirement: a conforming composition keeps the durable cursor from ever being ahead of durable checkpoint data, Requirement: a durability probe asserts the server's crash-safety settings at client bootstrap, Requirement: a transaction-pooling proxy is detected and refused, Requirement: JsonValueSchema rejects values exceeding the maximum nesting depth, Requirement: migration advisory-lock acquisition is bounded and fails fast, Requirement: PgCheckpointStore validates walletId and networkId at every entry point (+37 more)
 
 ### Community 78 - "runtime-metadata.ts"
-Cohesion: 0.12
-Nodes (17): RuntimeCallIndices, captureForProtocolVersion(), METADATA_CAPTURES, MetadataCapture, BlockScopedMetadata, callIndex(), decodeEventSystemTransactions(), eventsTypeId() (+9 more)
+Cohesion: 0.14
+Nodes (13): RuntimeCallIndices, BlockScopedMetadata, callIndex(), eventsTypeId(), EventSystemTransaction, findPallet(), hexToBytes(), isHistoricalStateUnavailable() (+5 more)
 
 ### Community 79 - "transaction-history-storage.property.test.ts"
 Cohesion: 0.12
@@ -436,11 +590,11 @@ Nodes (43): ADDED Requirements, Requirement: A real VerifyFull/--ca path is prov
 
 ### Community 84 - "interfaces/temporal-kv.ts"
 Cohesion: 0.16
-Nodes (23): AsOf, AssertExact, ExpectedVersionSchema, jsonValueHasUnsafeText(), JsonValueInnerSchema, JsonValueSchema, Key, KeySchema (+15 more)
+Nodes (21): AsOf, AssertExact, exceedsMaxDepth(), ExpectedVersionSchema, JsonValueInnerSchema, JsonValueSchema, Key, KeySchema (+13 more)
 
-### Community 85 - "postgres/watermarks.ts"
-Cohesion: 0.16
-Nodes (14): RFC-8259, WatermarkKey, WatermarkKind, Watermarks, WatermarkValue, WatermarkValueSchema, NOTE: as of the api-surface change (G1), this primitive IS part of the frozen 1., SaveAndAdvanceCursor (+6 more)
+### Community 85 - "shielded-monitor/helpers.ts"
+Cohesion: 0.06
+Nodes (50): benchHash(), benchSeed(), envInt(), KeyResult, main(), serializeKeyFromSeed(), deserialize(), disposeQuietly() (+42 more)
 
 ### Community 86 - "ADDED Requirements"
 Cohesion: 0.05
@@ -482,6 +636,10 @@ Nodes (6): Impact, Non-goals (explicitly out of scope), Proposal — Sprint 8: W
 Cohesion: 0.33
 Nodes (5): Faucet (get tNIGHT), Our preprod wallet, Preprod connection — endpoints, wallet, faucet, Public preprod endpoints (all verified live), Sync cost (CORRECTED — no block-height "birthday" for the unshielded wallet)
 
+### Community 98 - "storage-http-client.ts"
+Cohesion: 0.08
+Nodes (33): bytesToBase64Url(), HttpMonitorStore, safeJson(), StorageHttpError, StorageUnreachableError, toStoreError(), unwrapMonitor(), bytesToBase64() (+25 more)
+
 ### Community 99 - "UmbraDB third-party component inventory (SBOM)"
 Cohesion: 0.06
 Nodes (28): 1. npm — runtime dependencies, 2. npm — direct dev dependencies, 3. Nix — flake inputs (git-pinned), 4. Nix — pinned release binaries (`fetchurl` + sha256), 5. Docker images (digest-pinned), 6. Nix — nixpkgs packages (from the locked nixpkgs), 7. Lean / mathlib toolchain, 8. Host / toolchain dependencies (+20 more)
@@ -507,16 +665,16 @@ Cohesion: 0.06
 Nodes (31): 10. Residual limitations and open questions for the design council, 11. Phasing table, 1. Problem and core principle, 2. Source grounding, 3.1 Block header, 3.2 Raw transaction blob (opaque SCALE-wrapped ledger tx), 3.3 Transactions / regular_transactions (queryable metadata split), 3.4 Unshielded UTXOs (+23 more)
 
 ### Community 105 - "postgres/transaction-lease.ts"
-Cohesion: 0.10
-Nodes (23): Lease, LeaseAcquireOptions, LeaseAcquireOptionsSchema, TransactionOptions, TransactionOptionsSchema, abortError(), withAbort(), isStatementTimeout() (+15 more)
+Cohesion: 0.09
+Nodes (22): Lease, LeaseAcquireOptions, LeaseAcquireOptionsSchema, TransactionOptionsSchema, abortError(), activeTransactions, HeldLease, PgTransactionLeaseLayer (+14 more)
 
 ### Community 106 - "Design — v1.0.0-durable-checkpoint-cursor"
 Cohesion: 0.07
 Nodes (26): 0. Package layout, 1.1 The gap, confirmed in source, 1.2 Change `save` to accept a caller transaction, 1.3 The `saveAndAdvance` combinator, 1.4 The ordering contract (for callers composing manually), 1. G5 — Co-transactional watermark + checkpoint data, 2.1 Where the probe runs (the one real design decision), 2.2 The three durability settings (+18 more)
 
-### Community 107 - "ValidationError"
-Cohesion: 0.10
-Nodes (21): CheckpointStore, SaveCheckpointOptions, ValidationError, hasPostgresUnsafeText(), decode(), encode(), ENVELOPE_VERSION, EnvelopeCorruptError (+13 more)
+### Community 107 - "src/index.ts"
+Cohesion: 0.06
+Nodes (59): CheckpointRecord, CheckpointSequence, CheckpointStore, CheckpointStoreErrorCode, CheckpointSummary, ContentHash, HistoryOptions, PruneResult (+51 more)
 
 ### Community 108 - "Plan: finish replacing the indexer with the node as the archive ingest source"
 Cohesion: 0.13
@@ -524,7 +682,7 @@ Nodes (14): 0. Decisions made by revision 7 (historical; later registers superse
 
 ### Community 109 - "chain_archive lineage"
 Cohesion: 0.10
-Nodes (20): `blocks`, Boundary enforcement, `bridge_observations`, chain_archive lineage, `chain_archive.watermarks`, `chain_blobs` / `chain_blob_roles`, CheckpointStore tables, How the two lineages coexist (+12 more)
+Nodes (21): `blocks`, Boundary enforcement, `bridge_observations`, chain_archive lineage, `chain_archive.watermarks`, `chain_blobs` / `chain_blob_roles`, CheckpointStore tables, `dust_events` (+13 more)
 
 ### Community 110 - "ADDED Requirements"
 Cohesion: 0.12
@@ -535,32 +693,32 @@ Cohesion: 0.11
 Nodes (18): 0. Test-infrastructure layout, 1.1 Skip-enforcement mechanism — the anti-self-skip guarantee, made a named check, 1. Crash harness — deterministic faults, not timing races (`council/B` §3 tooling ruling), 2.1 Process-kill mid-save (T1) — `02` §"Fault-injection test plan" T1; `council/B` §3 item 1, 2.2 Postgres-kill mid-save + retry-duplication contract (T2) — `02`-T2; `council/B` §3 item 2, 2.3 Crash between data and cursor — the keystone (T5) — `02`-T5; `council/B` §3 item 3; §5 item 1, 2.4 Lease non-wedge cold start (T3) — `02`-T3; `council/B` §3 item 4, 2. G9 — the four crash tests (+10 more)
 
 ### Community 112 - "chain-archive-rollover.ts"
-Cohesion: 0.19
+Cohesion: 0.24
 Nodes (12): AnySql, assertDefaultSpanFitsOneBucket(), assertValidBucketBounds(), assertValidPartitionSuffix(), attachedPartitionBound(), getFkConstraintName(), quoteIdent(), ROLLOVER_TABLES (+4 more)
 
 ### Community 113 - "UmbraDBSql"
-Cohesion: 0.15
-Nodes (14): BlockMeta, ReplayCheckpointRecord, TransactionMeta, assertHex32(), bufToHex(), hexToBuf(), PgChainArchiveStore, sha256Hex() (+6 more)
+Cohesion: 0.07
+Nodes (41): BlobIntegrityError, BlobMissingError, BlobRole, BlockBundle, BlockMeta, BlockNotFoundError, BlockRecord, BlockStatus (+33 more)
 
 ### Community 114 - "Design — v1.0.0 API Surface & Release Contract"
 Cohesion: 0.12
 Nodes (15): 0. Ordering constraint (why this change is Phase 2, not Phase 1), 1.1 The barrel: `src/index.ts`, 1.2 `package.json` — make it publishable with a strict `exports`, 1.3 Packed-tarball install smoke test, 1. G1 — Public API surface, 2. G2 — SemVer stability policy + CHANGELOG, 3.1 The frozen catalog (the machine-facing API), 3.2 Promote retryability to a machine-readable field (+7 more)
 
-### Community 115 - "NodeRpcClient"
-Cohesion: 0.13
-Nodes (5): NodeRpcClient, NodeRpcError, NodeRpcInvalidHeightError, NodeRpcParseError, SubstrateBlock
+### Community 117 - "storage-wire.ts"
+Cohesion: 0.05
+Nodes (50): associationFromWire(), Base64Schema, base64ToBuffer(), base64ToBytes(), BigintStringSchema, decodeAdvanceBatchItem(), decodeAssociationInput(), DetailsSchema (+42 more)
 
 ### Community 118 - "tx-replay-decoder.ts"
-Cohesion: 0.10
+Cohesion: 0.09
 Nodes (26): decodeArchivedTransaction(), DecodedArchivedTransaction, DecodedDustRegistration, DecodedDustSpend, DecodedUnshieldedOutput, DecodedZswapInput, DecodedZswapOutput, hexNoPrefixLower() (+18 more)
 
-### Community 119 - "postgres/chain-archive-store.ts"
-Cohesion: 0.10
-Nodes (27): BlobIntegrityError, BlobMissingError, BlobRole, BlockBundle, BlockNotFoundError, BlockRecord, BlockStatus, BridgeObservationKind (+19 more)
+### Community 119 - "monitor-node.ts"
+Cohesion: 0.05
+Nodes (60): buildMatchDetails(), isolateAndTest(), MatchInputDetail, MatchOutputDetail, MatchSegmentDetail, MatchTransientDetail, MineAttribution, optionalString() (+52 more)
 
-### Community 120 - "sync-service.ts"
-Cohesion: 0.10
-Nodes (15): IndexerClient, IndexerClientError, IndexerClientOptions, IndexerClientParseError, IndexerTransaction, NodeRpcClientOptions, assertNoDuplicateTransactionKeys(), ChainArchiveSyncServiceOptions (+7 more)
+### Community 120 - "chain-archive-preprod-cloud-crossval.integration.test.ts"
+Cohesion: 0.15
+Nodes (5): IndexerClient, IndexerClientError, IndexerClientParseError, IndexerTransaction, MAX
 
 ### Community 121 - "UmbraDB v1.0.0 — Resume-From-Home Checkpoint (2026-07-23)"
 Cohesion: 0.20
@@ -571,12 +729,12 @@ Cohesion: 0.17
 Nodes (11): 0. Crash harness (foundation), 1. Process-kill mid-save (G9 / 02-T1), 2. Postgres-kill mid-save + retry-duplication contract (G9 / 02-T2), 3. Crash between data and cursor — the keystone (G9 / 02-T5)  ⟵ depends on G5, 4. Lease non-wedge cold start (G9 / 02-T3), 5. Full-sync soak + load-under-concurrent-prune (G10), 6. Differential state-equivalence gate, rescoped in-repo (G11)  ⟵ fault-schedule half depends on G5, 7. CI gate wiring (+3 more)
 
 ### Community 123 - "UmbraDB"
-Cohesion: 0.11
-Nodes (19): CheckpointStore: content-addressed snapshots, Contents, Durability and crash semantics, Errors and retryability, License, Performance and ceilings, Schema and migrations, Security (+11 more)
+Cohesion: 0.10
+Nodes (20): CheckpointStore: content-addressed snapshots, Contents, Durability and crash semantics, Errors and retryability, License, Performance and ceilings, Schema and migrations, Security (+12 more)
 
 ### Community 124 - "Full-chain storage"
-Cohesion: 0.25
-Nodes (7): Evidence and remaining scope, Full-chain storage, Indexer-independent ingest, Purpose and boundary, Replay validation and committed roots, Running the service, Schema and write contract
+Cohesion: 0.22
+Nodes (8): DUST ledger events (`chain_archive.dust_events`), Evidence and remaining scope, Full-chain storage, Indexer-independent ingest, Purpose and boundary, Replay validation and committed roots, Running the service, Schema and write contract
 
 ### Community 125 - "Storage Algebra Lean M3b CheckpointStore C1 Sprint"
 Cohesion: 0.22
@@ -619,16 +777,16 @@ Cohesion: 0.18
 Nodes (10): Acceptance criteria — v1.0.0: Recovery, Crash-Injection & Soak Testing (`recovery-testing`), Boundary / scope guardrails (council rulings honored), Crash between data and cursor — keystone (G9 / T5, depends on G5), Differential state-equivalence, in-repo (G11, fault-schedule half depends on G5), Full-sync soak + load-under-prune (G10), Lease non-wedge cold start (G9 / T3), Manual pre-tag Preprod evidence run (G12, release step 7, against the RC), Postgres-kill mid-save + retry contract (G9 / T2) (+2 more)
 
 ### Community 135 - "extrinsic-decoder.ts"
-Cohesion: 0.17
-Nodes (19): assertSupportedProtocolVersion(), CALL_INDICES_BY_PROTOCOL, callIndicesForProtocolVersion(), classifyExtrinsic(), decodeCompactU32(), DecodedMidnightExtrinsic, decodeMidnightExtrinsic(), decodeProtocolVersionFromDigest() (+11 more)
+Cohesion: 0.25
+Nodes (14): assertSupportedProtocolVersion(), CALL_INDICES_BY_PROTOCOL, callIndicesForProtocolVersion(), classifyExtrinsic(), decodeCompactU32(), DecodedMidnightExtrinsic, decodeMidnightExtrinsic(), decodeProtocolVersionFromDigest() (+6 more)
 
 ### Community 136 - "UmbraDB 1.0.0 Release Contracts"
 Cohesion: 0.22
 Nodes (9): 1. Durability contract, 2. Forward-only / no-downgrade migration contract, 3. Cancellation semantics, 4. Save-retry caveat, 5. Lease limitation, 6. Backup/restore guidance, 7. Threat-model pointer, 8. Format headroom (reserved for 1.1) (+1 more)
 
-### Community 137 - "ChainArchiveSyncService"
-Cohesion: 0.16
-Nodes (10): IndexerBlock, SubstrateHeader, decodeBlockTimestampMs(), decodeExtrinsicWithMetadata(), ChainArchiveSyncService, hexNoPrefix(), hexToBytes(), Hex32 (+2 more)
+### Community 137 - "sync-service.ts"
+Cohesion: 0.08
+Nodes (26): IndexerBlock, IndexerClientOptions, ReplayOutcome, NodeRpcClientOptions, SubstrateHeader, mapReplayOutcomes(), RegularReplayOutcome, ReplayOutcomeMapping (+18 more)
 
 ### Community 138 - "Design — v1.0.0-infosec-signoff"
 Cohesion: 0.20
@@ -663,12 +821,12 @@ Cohesion: 0.14
 Nodes (20): cli(), DEFAULT_MANIFEST, extractIds(), fileMatches(), filesFromReport(), JsonReport, JsonReportAssertion, JsonReportFile (+12 more)
 
 ### Community 148 - "stryker.conf.json"
-Cohesion: 0.08
-Nodes (24): clear-text, html, json, src/postgres/checkpoint-store.ts, src/postgres/save-and-advance.ts, src/postgres/temporal-kv.ts, src/postgres/transaction-lease.ts, src/postgres/watermarks.ts (+16 more)
+Cohesion: 0.11
+Nodes (18): clear-text, html, json, cleanTempDir, _comment, concurrency, coverageAnalysis, reporters (+10 more)
 
-### Community 149 - "client.ts"
-Cohesion: 0.10
-Nodes (16): bootstrapChainArchiveSchema(), MAX_BLOCKS, REPLAY_CHECKPOINT_INTERVAL, service, sql, assertNoConflictingSearchPath(), createClient(), UmbraDBConnectionOptions (+8 more)
+### Community 149 - "chain-archive-sync-retry.integration.test.ts"
+Cohesion: 0.08
+Nodes (32): bootstrapChainArchiveSchema(), MAX_BLOCKS, REPLAY_CHECKPOINT_INTERVAL, service, sql, bareSystemExtrinsicHex(), compactU32Hex(), EVENT_TX_HASH (+24 more)
 
 ### Community 150 - "Acceptance criteria — v1.0.0-infosec-signoff"
 Cohesion: 0.25
@@ -678,9 +836,9 @@ Nodes (7): Acceptance criteria — v1.0.0-infosec-signoff, Cross-cutting council
 Cohesion: 0.22
 Nodes (8): 0. Threat-model documentation hub (G15), 1. CheckpointStore interface-doc rewrite (G16) — depends on 0.3, 2. TLS caveat + VerifyFull de-stub (G17) — independent, 3. Supply-chain CI gate (G18) — 3.5 depends on 4.1, 4. Committed-secret remediation (G19) — mutually dependent with 3.5, 4b. Release-publication artifact (R7) — found missing during the release run, 5. Change close-out, Tasks — v1.0.0-infosec-signoff
 
-### Community 152 - "registerSuiteLifecycle"
-Cohesion: 0.17
-Nodes (17): $schema, phaseA_syncAndPersistEnvelope(), phaseB_freshProcessRestoreAndVerify(), deriveUnshieldedSeed(), buildUnshieldedConfig(), firstStateWhere(), assertSchemaValidSdkEntry(), makeAdapter() (+9 more)
+### Community 152 - "cold-boot-recovery.integration.test.ts"
+Cohesion: 0.34
+Nodes (10): phaseA_syncAndPersistEnvelope(), phaseB_freshProcessRestoreAndVerify(), deriveUnshieldedSeed(), buildUnshieldedConfig(), firstStateWhere(), isPlainObject(), mergeSections(), referenceMergeEntries() (+2 more)
 
 ### Community 153 - "UmbraDB V1.0.0 Implementation Guideline — the release constitution"
 Cohesion: 0.12
@@ -707,24 +865,24 @@ Cohesion: 0.11
 Nodes (18): assertSaveNotAutoRetriedUnderRetriableFault(), assertSaveNotInAnyAutoRetryAllowlist(), C5AnyFn, completeManifestCount(), completeManifestCountAtSeq(), danglingChunkCount(), IDEMPOTENCY_KEY_FEATURE, listSrcTsFiles() (+10 more)
 
 ### Community 159 - "postgres/checkpoint-store.ts"
-Cohesion: 0.16
-Nodes (22): assertValidCheckpointIds(), CheckpointIdSchema, CheckpointRecord, CheckpointSequence, CheckpointSummary, ContentHash, HistoryOptions, HistoryOptionsSchema (+14 more)
+Cohesion: 0.07
+Nodes (31): assertValidCheckpointIds(), CheckpointIdSchema, HistoryOptionsSchema, SaveCheckpointOptionsSchema, TransactionLeaseLayer, withAbort(), AggregateRow, ChunkJoinRow (+23 more)
 
 ### Community 160 - "UmbraDB 0.9.5 "Penumbra""
 Cohesion: 0.15
 Nodes (12): Benchmarks, Compatibility, and what 1.0.0 needs, Durability, Errors, If you build from source, Installing, Security, The fix this release exists for (+4 more)
 
 ### Community 161 - "crash-worker.ts"
-Cohesion: 0.20
-Nodes (15): saveAndAdvance(), ALL_HOOKS, CoTxCallable, CoTxPauseInfo, CrashHook, describeCaughtError(), main(), observeClientPauseBeforeCursor() (+7 more)
+Cohesion: 0.10
+Nodes (24): RFC-8259, WatermarkKey, WatermarkKind, saveAndAdvance(), resolveTransaction(), PgWatermarks, ALL_HOOKS, CoTxCallable (+16 more)
 
 ### Community 162 - "mutation-per-adapter.mjs"
 Cohesion: 0.17
 Nodes (11): gateAdapters(), tallyMutants(), adapters, conf, gate, JSON_REPORT, PER_ADAPTER_CONF, results (+3 more)
 
-### Community 163 - "load-under-prune.integration.test.ts"
-Cohesion: 0.14
-Nodes (12): backdatePastGraceWindow(), Callable, { connectionUri }, Deferred, LoadInterleaveObserver, newClient(), openPools, runUnSnapshottedReadUnderPrune() (+4 more)
+### Community 163 - "monitor-store-pg.ts"
+Cohesion: 0.07
+Nodes (46): IllegalLifecycleTransitionError, isScannable(), LIFECYCLE_EVENTS, LifecycleEvent, MONITOR_STATES, MonitorState, SCANNABLE_STATES, TABLE (+38 more)
 
 ### Community 164 - "Proposal — v1.0.0 API Surface & Release Contract"
 Cohesion: 0.33
@@ -751,16 +909,16 @@ Cohesion: 0.12
 Nodes (16): A. Preventative actions to land or re-defer before iteration 2 begins, B. Named consumption targets (guideline §5.5) — record the actual edit made, C. Trend analysis (across events, not per-incident), Capture rules, D. Retro review sign-off, Entry template (copy per event), Event log (append-only; newest at bottom), Iteration-2 intake (+8 more)
 
 ### Community 170 - "no-chain-sync-import-guard.test.ts"
-Cohesion: 0.53
-Nodes (5): extractStringLiterals(), findChainSyncViolations(), GuardViolation, scanDirectory(), walkTsFiles()
+Cohesion: 0.31
+Nodes (9): extractStringLiterals(), findChainSyncViolations(), GuardViolation, scanDirectory(), walkTsFiles(), findShieldedMonitorViolations(), GuardViolation, scanDirectory() (+1 more)
 
 ### Community 171 - "lease-nonwedge.crash.test.ts"
-Cohesion: 0.21
-Nodes (11): class2AdvisoryLockCountForHash(), liveWorkers, openPools, pollForLockGone(), pool(), sleep(), { sql: getSql, connectionUri }, worker() (+3 more)
+Cohesion: 0.18
+Nodes (13): worker(), class2AdvisoryLockCountForHash(), liveWorkers, openPools, pollForLockGone(), pool(), sleep(), { sql: getSql, connectionUri } (+5 more)
 
 ### Community 172 - "scripts"
-Cohesion: 0.12
-Nodes (16): scripts, archive:sync, bench, bench:smoke, build, build:cli, docs:storage, docs:storage:check (+8 more)
+Cohesion: 0.08
+Nodes (25): scripts, archive:read-api, archive:sync, bench, bench:smoke, build, build:cli, demo:shielded-monitor (+17 more)
 
 ### Community 173 - "pack-install.mjs"
 Cohesion: 0.42
@@ -774,33 +932,33 @@ Nodes (4): Acceptance criteria — v1.0.0-perf-baseline, Boundary / non-goal ass
 Cohesion: 0.15
 Nodes (12): 0. Scaffolding + Trust reach, 1. C2a — GC-safety (release-blocking; start now), 2. C2b — eventual collection (DEFERRED), 3. L1 — lease mutual exclusion (release-blocking; start now), 4. Multi-key TemporalKV lift — FRAMING ONLY (DEFERRED), 5. Ordered chunk reconstruction (DEFERRED), 6. C1 collision hygiene (release-blocking rider), 7. Transaction-envelope composition (DEFERRED) (+4 more)
 
-### Community 176 - "transaction-history-storage.test.ts"
-Cohesion: 0.20
-Nodes (5): decodeSerializedContent(), decodeSerializedEntry(), FAKE_TX, insertRawRow(), { sql: getSql }
+### Community 176 - "MonitorRecord"
+Cohesion: 0.12
+Nodes (14): MonitorGap, MonitorLastError, MonitorRecord, runHarness(), MonitorRow, MonitorTx, parse(), PgShieldedMonitorStore (+6 more)
 
 ### Community 177 - "README.md"
-Cohesion: 0.35
-Nodes (4): Scope and pre-1.0 note, The three commitments, UmbraDB Stability Policy (SemVer), OpenSpec Change
+Cohesion: 0.19
+Nodes (7): Scope and pre-1.0 note, The three commitments, UmbraDB Stability Policy (SemVer), Generate your local wallet, Test wallets, Why this is not just a committed key anymore, OpenSpec Change
 
 ### Community 178 - "midnight-wallet-sdk-loader.ts"
 Cohesion: 0.36
 Nodes (8): facadeDistIndexPath(), facadeMergeAvailable(), loadFacadeMerge(), unshieldedWalletDistIndexPath(), ledgerV8NodeEntry(), loadMidnightWalletSdk(), midnightWalletRepoRoot(), packageDistFile()
 
-### Community 180 - "assertValidSchemaName"
-Cohesion: 0.15
-Nodes (10): assertValidSchemaName(), createHeightPartitions(), up(), up(), up(), up(), up(), up() (+2 more)
+### Community 180 - "client.ts"
+Cohesion: 0.07
+Nodes (30): assertNoConflictingSearchPath(), assertValidSchemaName(), createClient(), createHeightPartitions(), up(), up(), up(), up() (+22 more)
 
 ### Community 181 - "conformance-gate.mjs"
-Cohesion: 0.25
-Nodes (7): check, checker, env, forwarded, repoRoot, reportPath, vitest
+Cohesion: 0.22
+Nodes (8): check, checker, env, forwarded, maxWorkers, repoRoot, reportPath, vitest
 
 ### Community 182 - "withSuiteWatchdog"
 Cohesion: 0.13
-Nodes (20): completeManifestCount(), completeManifestCountAtSeq(), danglingChunkCount(), junctionRowCount(), liveWorkers, manifestRowCountAtSeq(), openPools, orphanJunctionCount() (+12 more)
+Nodes (19): completeManifestCount(), completeManifestCountAtSeq(), danglingChunkCount(), junctionRowCount(), liveWorkers, manifestRowCountAtSeq(), openPools, orphanJunctionCount() (+11 more)
 
 ### Community 183 - "compilerOptions"
-Cohesion: 0.10
-Nodes (19): compilerOptions, declaration, declarationMap, noEmit, outDir, rootDir, sourceMap, exclude (+11 more)
+Cohesion: 0.09
+Nodes (22): compilerOptions, declaration, declarationMap, noEmit, outDir, rootDir, sourceMap, exclude (+14 more)
 
 ### Community 184 - "UmbraDB Frozen Error-Code Catalog"
 Cohesion: 0.29
@@ -811,8 +969,8 @@ Cohesion: 0.29
 Nodes (6): 1. Executive verdict, 2. Ranked root causes, evidence, and council challenges resolved, 3. THE recommended action, 4. Decisive validation experiment, 5. Residual risk and confidence, ASSESSMENT — `midnight-node-archive` Peer Flapping (Midnight Preprod, WSL2 Docker Host)
 
 ### Community 186 - "package.json"
-Cohesion: 0.11
-Nodes (18): bin, umbradb-archive-sync, bugs, url, description, engines, node, exports (+10 more)
+Cohesion: 0.12
+Nodes (16): bugs, url, description, engines, node, exports, homepage, license (+8 more)
 
 ### Community 187 - "mutation-evidence.d.mts"
 Cohesion: 0.29
@@ -823,20 +981,20 @@ Cohesion: 0.33
 Nodes (5): 1. Is there a known resolution — bounded-constant statement count, unbounded rows, no bind-param cap, no V8 string limit?, 2. Best candidate — COPY-BINARY into temp + INSERT-SELECT-ON-CONFLICT, 3. Recommendation for UmbraDB, 4. Migration/rollout note (if/when adopted), Research Assessment: Single-Statement Unbounded `bytea` Inserts via postgres.js
 
 ### Community 189 - "[0.9.5] - 2026-07-25 — "Penumbra""
-Cohesion: 0.22
-Nodes (9): [0.9.5] - 2026-07-25 — "Penumbra", [1.0.0] - unreleased — "Totality", Added, Added, Changed, Changelog, Contract documents, Deferred to a 1.1 fast-follow (explicitly outside the frozen 1.0 surface) (+1 more)
-
-### Community 194 - "postgres/transaction-history-storage.ts"
 Cohesion: 0.20
-Nodes (17): EntryLifecycle, TransactionHistoryEntrySchema, assertStoredEntryShape(), capitalize(), decodeContent(), decodeRow(), decodeSections(), encodeContent() (+9 more)
+Nodes (10): [0.9.5] - 2026-07-25 — "Penumbra", [1.0.0] - unreleased — "Totality", Added, Added, Changed, Changelog, Contract documents, Deferred to a 1.1 fast-follow (explicitly outside the frozen 1.0 surface) (+2 more)
+
+### Community 194 - "ADDED Requirements"
+Cohesion: 0.04
+Nodes (47): ADDED Requirements, chain-archive-read-contract (implementation), Requirement: a block carries its own timestamp, Requirement: a discontinuity in canonical history is refused, never smoothed over, Requirement: a page and the tip it is compared against are one observation, Requirement: everything the archive writes for one block height commits together, Requirement: history is paged as whole blocks, in commit order, from a remembered height, Requirement: offers are extracted only under a ledger build that can read them (+39 more)
 
 ### Community 195 - "dependencies"
 Cohesion: 0.22
 Nodes (9): @midnight-ntwrk/ledger-v8, dependencies, @midnight-ntwrk/ledger-v8, @polkadot/types, postgres, zod, @polkadot/types, postgres (+1 more)
 
 ### Community 196 - "storage-errors.ts"
-Cohesion: 0.12
-Nodes (7): SharedStorageErrorCode, Method, METHODS, OVERLONG_ID, { sql: getSql }, FAKE_TX, { sql: getSql }
+Cohesion: 0.06
+Nodes (17): ValidationError, WatermarkValueSchema, WatermarkRow, Method, METHODS, OVERLONG_ID, { sql: getSql }, { sql: getSql, connectionUri } (+9 more)
 
 ### Community 197 - "Gate notes — Task 6: differential state-equivalence gate (G11)"
 Cohesion: 0.50
@@ -847,8 +1005,8 @@ Cohesion: 0.11
 Nodes (18): 0. Specification freeze, 10.13 Targeted re-audit findings T1–T8 (plan §16) — the open merge-gating work, 10. Audit round 3 remediation (plan §15) — gates PR #1, 11. Formal T1–T8 audit outcome (plan §17) — gates PR #1, 12. Round-5 re-audit outcome (plan §18), 13. O1–O5 — the last merge gate before final PASS×3, 1. Ground-truth capture — TIME-CRITICAL, do first, 2. System-transaction exclusion (owner decision — no investigation needed) (+10 more)
 
 ### Community 199 - "migrate.ts"
-Cohesion: 0.10
-Nodes (16): assertNoTransactionPooler(), classifyFsync(), classifyFullPageWrites(), classifySynchronousCommit(), DurabilityProbeOptions, DurabilityViolation, DurabilityWarning, probeAdvisoryLockVisibility() (+8 more)
+Cohesion: 0.06
+Nodes (30): assertNoTransactionPooler(), classifyFsync(), classifyFullPageWrites(), classifySynchronousCommit(), DurabilityProbeOptions, DurabilityViolation, DurabilityWarning, probeAdvisoryLockVisibility() (+22 more)
 
 ### Community 200 - "Checkpoint-store composition contract — cursor ordering and replay"
 Cohesion: 0.25
@@ -871,8 +1029,8 @@ Cohesion: 0.20
 Nodes (9): 1. Scope and honesty, 2. Faithfulness to the algebra, 3. C2a — GC reachability safety, 4. C2b — eventual collection (liveness), 5. L1 — lease mutual exclusion, 6. T1 cross-writer, 7. CI integration, 8. Documentation (+1 more)
 
 ### Community 205 - "harness.ts"
-Cohesion: 0.11
-Nodes (42): BenchEnv, PG_SETTINGS, startBenchEnv(), fmtRatio(), main(), parseNums(), printSummary(), BaselineLoad (+34 more)
+Cohesion: 0.10
+Nodes (43): BenchEnv, PG_SETTINGS, startBenchEnv(), fmtRatio(), main(), parseNums(), printSummary(), BaselineLoad (+35 more)
 
 ### Community 206 - "Tasks — v1.1.0: Quint model checking"
 Cohesion: 0.20
@@ -883,8 +1041,8 @@ Cohesion: 0.25
 Nodes (8): files, dist, dist-cli, CHANGELOG.md, LICENSE, NOTICE, README.md, vendor
 
 ### Community 208 - "Security policy & threat model"
-Cohesion: 0.20
-Nodes (10): Commit policy — what may and may not go into git, Data at rest — NO encryption is provided (a binding deployer precondition), Reporting a vulnerability, `schema` is namespacing, NOT a security or tenant boundary, Scope — documented preconditions vs. implemented controls (1.0.0), Security policy & threat model, T-A1 — Single trusted writer, one trust domain, T-A2 — Trusted Postgres, disk, backups, and operator (+2 more)
+Cohesion: 0.18
+Nodes (11): Commit policy — what may and may not go into git, Data at rest — NO encryption is provided (a binding deployer precondition), Reporting a vulnerability, `schema` is namespacing, NOT a security or tenant boundary, Scope — documented preconditions vs. implemented controls (1.0.0), Security policy & threat model, Shielded monitors (`shielded_monitor` schema) — alpha trust model, T-A1 — Single trusted writer, one trust domain (+3 more)
 
 ### Community 215 - "Design — Sprint 9: Indexer Independence"
 Cohesion: 0.22
@@ -938,25 +1096,25 @@ Nodes (3): Governed by, Requirements (EARS), Spec — capability `formal-complet
 Cohesion: 0.50
 Nodes (3): Captured runtime metadata, How it was captured, What this fixture does and does not cover
 
-### Community 228 - "TransactionHandle"
-Cohesion: 0.18
-Nodes (4): TemporalKV, TransactionHistoryReader, TransactionHistoryWriter, TransactionHandle
+### Community 228 - "Requirements"
+Cohesion: 0.04
+Nodes (45): Purpose, Requirement: A block height's associations and its coverage advance commit together, fenced by the epoch, Requirement: A restore keeps revoked monitors refused, Requirement: Associations carry full provenance and never assert an applied outcome, Requirement: At-rest protection of key material is deferred, Requirement: Coverage is expressed in block heights and never presents unscanned history as empty, Requirement: Key material redacts itself and is never logged, Requirement: Monitor state follows an explicit, total transition table with a monotone epoch (+37 more)
 
 ### Community 230 - "chain-archive-replay-validation.integration.test.ts"
-Cohesion: 0.11
-Nodes (24): bareSystemExtrinsicHex(), compactU32Hex(), fakeNodeFetch(), require_, bareRegularExtrinsicHex(), bareSystemExtrinsicHex(), chainNodeFetch(), compactU32Hex() (+16 more)
+Cohesion: 0.13
+Nodes (18): bareRegularExtrinsicHex(), bareSystemExtrinsicHex(), chainNodeFetch(), compactU32Hex(), fakeNodeFetch(), FIXTURE, GENESIS_SYSTEM_EXTRINSICS, LedgerRoots (+10 more)
 
 ### Community 231 - "5. Blocking correctness gaps"
 Cohesion: 0.22
 Nodes (9): 5.1 Raw event-tag counting has a false-negative combination, 5.2 Signed/general detection is incomplete and heuristic, 5.3 Runtime metadata and supported versions, 5.4 The successful ledger dependency is not deliverable yet, 5.5 Existing incomplete archives and source switching, 5.6 The current tests are evidence, not release gates, 5.7 Specifications and release records are not yet closed out, 5.7a Ledger patch: published to a fork, not yet upstream (+1 more)
 
-### Community 232 - "Test wallets"
-Cohesion: 0.50
-Nodes (3): Generate your local wallet, Test wallets, Why this is not just a committed key anymore
+### Community 232 - "shielded-monitor-batch-atomicity.crash.test.ts"
+Cohesion: 0.06
+Nodes (26): ArchiveDiscontinuityError, ArchiveTip, assertPagingArguments(), bufToHex(), PageBlockRow, PageTxRow, PgArchiveReadContract, sha256Hex() (+18 more)
 
-### Community 233 - "chain-archive-sync-retry.integration.test.ts"
-Cohesion: 0.33
-Nodes (8): bareMidnightExtrinsicHex(), compactU32Hex(), fakeChain(), FakeChainBlock, fakeIndexerFetch(), fakeNodeFetch(), hx(), newService()
+### Community 233 - "sync.ts"
+Cohesion: 0.12
+Nodes (38): bytesFromHex(), chunk(), dateFromSeconds(), gapRanges(), generationFromWire(), qdoFromWire(), Range, rangesParam() (+30 more)
 
 ### Community 234 - "Re-audit brief — audit round 2 remediation"
 Cohesion: 0.22
@@ -970,9 +1128,9 @@ Nodes (6): 13.1 The `runtime_metadata` table — each archive carries its own ca
 Cohesion: 0.33
 Nodes (6): 8a.1 One §7 row silently requires a ledger replay engine, 8a.2 Several merge-blocking rows have no stated fallback if the population cannot be found, 8a.3 There is no position on the indexer disappearing first, 8a.4 The plan should separate "safe to merge" from "safe to cut over", 8a.5 One fix is available now and is being deferred, 8a. Dissent: concerns with revision 7, from the implementing author
 
-### Community 237 - "errors.ts"
-Cohesion: 0.23
-Nodes (8): CHAIN_ARCHIVE_CHECK_TABLE_PREFIXES, ChainArchiveCheckViolationError, ChainArchiveInvariantError, CONNECTION_FAILURE_CODES, isChainArchiveCheckConstraintName(), isConnectionFailure(), isPgDriverError(), PgDriverError
+### Community 237 - "api/server.ts"
+Cohesion: 0.07
+Nodes (31): CursorError, CursorRejection, decodeCursor(), encodeCursor(), ApiErrorCode, bigintSafe(), CreateMonitorBodySchema, HttpError (+23 more)
 
 ### Community 238 - "12. Blockers and unknowns"
 Cohesion: 0.33
@@ -998,45 +1156,381 @@ Nodes (3): 1. Goal and scope, In scope — the minimum source substitution, Out 
 Cohesion: 0.22
 Nodes (8): Fixed in `1d4bb36`, Other fixed findings, Re-audit brief — audit round 3, Replay was not reference-equivalent, Still open at the round-3 head — historical, not current status, Validation on this head, What this re-audit is asked to check, Why round 2's remediation failed, in one paragraph
 
-### Community 244 - "chain-archive-event-guard.integration.test.ts"
-Cohesion: 0.31
-Nodes (8): bareSystemExtrinsicHex(), compactU32Hex(), EVENT_TX_HASH, eventsBlobHex(), EXTRINSIC_TX_HASH, fakeNodeFetch(), FIXTURE, ingest()
+### Community 244 - "Requirements"
+Cohesion: 0.05
+Nodes (40): Purpose, Requirement: A batch is whole block heights, committed with its coverage advance in one transaction, Requirement: A crash during a batch leaves either none of a height or all of it, Requirement: An unreadable transaction stops the monitor at its position and claims no coverage, Requirement: Every association carries provenance and an unknown applied outcome, Requirement: Every worker write is fenced by the monitor's lifecycle epoch, Requirement: Key material lives for exactly one batch, Requirement: Relevance is the ledger's own trial decryption over the guaranteed offer and every fallible segment (+32 more)
 
-### Community 246 - "checkpoint-store-cotx.test.ts"
-Cohesion: 0.25
-Nodes (3): FAKE_TX, spyPool(), { sql: getSql, connectionUri }
+### Community 246 - "Requirements"
+Cohesion: 0.05
+Nodes (38): Purpose, Requirement: A reference consumer completes the whole flow over HTTP alone, Requirement: Every status and matches response carries coverage as block heights, Requirement: Matches are paged by an opaque cursor bound to its monitor, Requirement: No viewing key appears in a log record or an error body, Requirement: The alpha API has no authentication and binds to loopback, Requirement: The API and the client are entry points of the same package, Requirement: The API caps request body size and page size (+30 more)
 
-### Community 247 - "transaction-lease.test.ts"
-Cohesion: 0.25
-Nodes (3): ApplicationError, FAKE_TX, { sql: getSql, connectionUri }
+### Community 247 - "Requirements"
+Cohesion: 0.05
+Nodes (37): Purpose, Requirement: A match records the time of its block, Requirement: A match records the transaction's public zswap data, Requirement: Attribution states only what the ledger entails, Requirement: Details and coverage commit together, Requirement: Existing matches can be filled in without re-scanning, Requirement: The API exposes the details and the block time, Requirement: The dashboard shows a match's contents on demand (+29 more)
+
+### Community 249 - "derive-key-cli.ts"
+Cohesion: 0.11
+Nodes (28): DerivedKey, deriveViewingKey(), fromSeed(), LedgerKeysApi, parseArgs(), Parsed, readIndex(), readSeed() (+20 more)
+
+### Community 250 - "ledger-replay.ts"
+Cohesion: 0.15
+Nodes (9): AccumulatedCost, addCost(), BlockFullness, COST_DIMENSIONS, CostDimension, LedgerReplay, LedgerReplayOptions, ReplayBlockInput (+1 more)
+
+### Community 251 - "ShieldedMonitorStore"
+Cohesion: 0.07
+Nodes (13): applyDeletionList(), DeletionApplyReport, DeletionListFile, exportDeletionList(), DeletionRecord, ShieldedMonitorStore, AssociationFileEntry, jsonSafe() (+5 more)
 
 ### Community 252 - "copy-cli-assets.mjs"
 Cohesion: 0.50
 Nodes (3): from, repoRoot, to
 
+### Community 253 - "shielded-monitor/errors.ts"
+Cohesion: 0.09
+Nodes (23): ArchiveReadApiLogger, ArchiveRouterOptions, FenceRejection, MonitorFencedError, MonitorNotFoundError, ShieldedMonitorErrorCode, ViewingKeyRejection, StorageApiConfig (+15 more)
+
 ### Community 254 - "15. Audit round 3 — register (2026-08-13)"
 Cohesion: 0.67
 Nodes (3): 15. Audit round 3 — register (2026-08-13), Fixed in `1d4bb36`, Open
 
+### Community 255 - "golden.mjs"
+Cohesion: 0.07
+Nodes (28): atEvent, balanceAt, clientOut, clientReport, log(), name, out, repeat (+20 more)
+
+### Community 258 - "scanner.test.ts"
+Cohesion: 0.11
+Nodes (11): ScannerStore, ShieldedMonitorScanner, AdvanceResult, AssociationInput, ArchivedBlock, drain(), Advance, block() (+3 more)
+
+### Community 259 - "ArchiveReadContract"
+Cohesion: 0.10
+Nodes (14): FetchLike, ArchiveSource, OpenArchiveSourceOptions, HttpMonitorStoreOptions, ArchiveWakeSource, SseWakeOptions, ArchiveBlockPage, ArchiveIdentity (+6 more)
+
+### Community 260 - "archive-height-atomicity.crash.test.ts"
+Cohesion: 0.12
+Nodes (22): blockHashFor(), buildHeightBundle(), GENESIS_PARENT_HASH, HeightBundleSpec, hex32(), main(), pauseUntilKilled(), requireEnv() (+14 more)
+
+### Community 261 - "Requirement: The service lists every monitor it holds"
+Cohesion: 0.07
+Nodes (26): Purpose, Requirement: A viewing key can be derived from a seed by a shipped command, Requirement: The dashboard handles the viewing key exactly as the API does, Requirement: The demonstration is runnable from a document, Requirement: The service lists every monitor it holds, Requirement: The service serves a self-contained dashboard, Requirements, Scenario: A deleted monitor is not listed (+18 more)
+
+### Community 262 - "fake-node.ts"
+Cohesion: 0.14
+Nodes (12): FakeChain, FakeNodeCalls, FakeNodeOptions, FakeQdo, FakeWallet, InitialRow, loadLedger(), makeWallet() (+4 more)
+
+### Community 264 - "api/config.ts"
+Cohesion: 0.15
+Nodes (17): ApiConfig, ApiConfigError, loadApiConfig(), normalize(), readInt(), readStorageAccess(), assertNoDatabaseEnvironment(), DatabaseEnvironmentError (+9 more)
+
+### Community 266 - "archive-read-wire.ts"
+Cohesion: 0.12
+Nodes (23): ArchiveReadApiError, ArchiveWireError, Base64Schema, base64ToBytes(), bytesToBase64(), decode(), decodeBlockPage(), decodeIdentity() (+15 more)
+
+### Community 267 - "dust/index.ts"
+Cohesion: 0.12
+Nodes (18): DustConfig, DustConfigError, loadDustConfig(), readInt(), openDustDb(), createDustModule(), CreateDustModuleOptions, DustMirrorApplied (+10 more)
+
+### Community 268 - "ledger.ts"
+Cohesion: 0.09
+Nodes (7): CollapsedUpdateLike, DustLocalStateLike, LEDGER_SURFACE, WASM_BINDGEN_UNIVERSALS, DustSdkWrapper, DustSdkWrapperOptions, published
+
+### Community 270 - "Design — 00009-02: shielded monitor store, key intake and lifecycle"
+Cohesion: 0.08
+Nodes (23): 10. Restore, and why the revocation list lives outside the database, 11. Testing strategy, 12. Deferred, and where the seams are, 1. Tier placement: a third lineage, not a third home for wallet data, 2. Where the module lives: outside `src/`, like `chain-archive-sync/`, 3. Error idiom and validation, 4.1 Bech32m is implemented here, not imported, 4.2 HRP rule (+15 more)
+
+### Community 271 - "dust-routes.test.ts"
+Cohesion: 0.12
+Nodes (16): ApiLogRecord, DustNodeFixtureMeta, FIXTURE_URL, META_URL, readDustNodeFixtureBlob(), readDustNodeFixtureEvents(), readDustNodeFixtureMeta(), meta (+8 more)
+
+### Community 272 - "The shielded-monitor private API"
+Cohesion: 0.09
+Nodes (23): `DELETE /v1/monitors/:id`, Deriving a key to register, `?details=0`, DUST error codes, DUST wallet sync — `/v1/dust/*` (project 00016, optional), Endpoints, Error bodies, `GET /ui` — the dashboard (+15 more)
+
+### Community 273 - "split-topology.integration.test.ts"
+Cohesion: 0.13
+Nodes (10): Balancer, BALANCER_ENV_DOC, loadBalancerConfig(), readInt(), runBalancer(), createBalancer(), FakeUpstream, startUpstream() (+2 more)
+
+### Community 274 - "archive-read-api.integration.test.ts"
+Cohesion: 0.14
+Nodes (11): ARCHIVE_READ_ENV_DOC, ArchiveReadApiConfigError, loadArchiveReadApiConfig(), readInt(), ArchiveProgressEvent, ArchiveProgressSubscription, parseProgressPayload(), pgArchiveProgressEvents() (+3 more)
+
+### Community 276 - "routes.ts"
+Cohesion: 0.20
+Nodes (15): assertRangesWithin(), decimalOf(), dustErrorBody(), DustErrorCode, DustHttpError, DustLookupRequest, DustRange, hexOf() (+7 more)
+
+### Community 277 - "devnet.mjs"
+Cohesion: 0.22
+Nodes (19): alive(), argv, availableMb(), compose(), COMPOSE_FILES, down(), freePort(), json() (+11 more)
+
+### Community 278 - "client/cli.ts"
+Cohesion: 0.14
+Nodes (17): ApiRefusal, Args, Coverage, MatchItem, MatchPage, MonitorView, parseArgs(), readCursorFile() (+9 more)
+
+### Community 279 - "dust-sync-client/cli.ts"
+Cohesion: 0.19
+Nodes (15): Args, main(), parseArgs(), report(), utxoView(), DustSecretKeyFactory, dustSecretKeyFromSeed(), fromSeed() (+7 more)
+
+### Community 281 - "handoff-ids.mjs"
+Cohesion: 0.11
+Nodes (15): atBlockEnds, extra, heights, indexer, indexerByHash, offsets, ourHashes, ours (+7 more)
+
+### Community 282 - "bech32m.ts"
+Cohesion: 0.19
+Nodes (14): Bech32mDecoded, Bech32mDecodeFailure, Bech32mError, Bech32mWords, CHARSET_REV, convertBits(), decodeBech32m(), decodeBech32mWords() (+6 more)
+
+### Community 284 - "wake.ts"
+Cohesion: 0.18
+Nodes (9): normalizeArchiveBaseUrl(), ArchiveWakeSubscription, handleFrame(), NO_WAKE, readEventStream(), sseWake(), decodeProgressEvent(), ListenCapable (+1 more)
+
+### Community 285 - "InMemoryScannerMetrics"
+Cohesion: 0.17
+Nodes (6): InMemoryScannerMetrics, ZERO_BATCHES(), corpusKeyHandle(), corpusKeyHandles(), destroyWorld(), scannerFor()
+
+### Community 286 - "import-boundary.test.ts"
+Cohesion: 0.16
+Nodes (13): BANNED_FILES, BANNED_PACKAGES, BANNED_PREFIXES, bannedReason(), isWaived(), PERMITTED_DUST_IMPORTERS, productionFiles, ReachResult (+5 more)
+
+### Community 287 - "balancer-routing.test.ts"
+Cohesion: 0.15
+Nodes (8): BalancerOptions, NodeAnswer, Upstream, fingerprintHexToBase64Url(), FingerprintLocks, FakeNode, monitorIdFor(), startFakeNode()
+
+### Community 288 - "Demo runbook — watch the shielded monitor work"
+Cohesion: 0.13
+Nodes (15): 0. Pick a project name and a port block, 1. Bring the devnet up, 2. Ingest, node-only, 3. Derive a viewing key, 4. Start the storage API, then the monitor-node, 5. Open the dashboard, 6. Drive the lifecycle, 7. Optional: a real shielded transaction (needs a wallet, out of tree) (+7 more)
+
+### Community 290 - "demo-shielded-monitor.mjs"
+Cohesion: 0.27
+Nodes (14): compose(), COMPOSE_FILES, composeEnv(), down(), json(), log(), main(), randomPort() (+6 more)
+
+### Community 291 - "createShieldedMonitorApi"
+Cohesion: 0.27
+Nodes (10): ApiLogger, createShieldedMonitorApi(), stderrLogger(), archiveSourceTip(), staticSourceTip(), unknownSourceTip(), openArchiveSource(), runMonitorNode() (+2 more)
+
+### Community 293 - "archive-read-api/server.ts"
+Cohesion: 0.18
+Nodes (7): ArchiveReadApiConfig, ArchiveProgressEvents, ArchiveReadApiLogRecord, ArchiveReadApiOptions, ArchiveRouter, HttpError, ArchiveReadApiErrorCode
+
+### Community 294 - "dust-events.test.ts"
+Cohesion: 0.22
+Nodes (12): DUST_EVENT_KIND_BY_TAG, LedgerEventRef, BLOCK, GENESIS_SYSTEM_TXS, GENESIS_TX_HASHES, DustFixtureMeta, FIXTURE_URL, META_URL (+4 more)
+
+### Community 295 - "src/errors.ts"
+Cohesion: 0.22
+Nodes (6): asNonLinear(), DustSyncError, DustSyncErrorCode, delay(), DustHttpClient, DustHttpOptions
+
+### Community 297 - "Design — 00009-01: archive read contract, block timestamp, per-height atomic commit"
+Cohesion: 0.14
+Nodes (13): Decision 10 — `NOTIFY` is an optimisation with no contract, Decision 1 — a separate read interface, not more methods on `ChainArchiveStore`, Decision 2 — the page unit is a whole block height, and only ever that, Decision 3 — one snapshot per page, and it includes `sourceTip`, Decision 4 — a discontinuity is refused, not returned, Decision 5 — the identity is "all of it or none of it", Decision 6 — the Rule A fold, and why the FK no longer forces a second transaction, Decision 7 — `blocks.timestamp_ms` is nullable, and `NULL` means "not decoded" (+5 more)
+
+### Community 298 - "Design — 00009-03: the shielded viewing-key relevance scanner"
+Cohesion: 0.14
+Nodes (13): 10. Error idiom, 11. Fixture fidelity: what the corpus proves, and what it does not, 12. Throughput, honestly scoped, 1. Where the scanner sits, and what it is allowed to touch, 2. The batch, and why it is shaped exactly like the archive's height transaction, 3. The fence, and every place a worker write can be refused, 4. Archive identity: read every batch, bind first-write-wins, 5. The predicate: what is examined, and the false negatives we accept and name (+5 more)
+
+### Community 299 - "server.test.ts"
+Cohesion: 0.23
+Nodes (8): createArchiveReadApi(), createArchiveRouter(), silentLogger(), ArchiveHttpError, ArchiveUnreachableError, createStorageApi(), serve(), started
+
+### Community 300 - "Tasks — 00009-02: shielded monitor store, key intake and lifecycle"
+Cohesion: 0.15
+Nodes (12): 10. Guards, typechecking and the gate, 11. Close-out, 1. Migration lineage `shielded_monitor`, 2. Bech32m codec, 3. Fingerprint, 4. Key intake, 5. Lifecycle state machine, 6. Store (+4 more)
+
+### Community 301 - "Tasks — 00009-03: the shielded viewing-key relevance scanner"
+Cohesion: 0.15
+Nodes (12): 10. SC-006 first measurement, 11. Close-out, 1. The relevance predicate, 2. The batch: one page of whole blocks, one commit, 3. Archive identity binding and the stale-source stop, 4. Fail-closed on an unreadable transaction, 5. Owner Rule B: crash safety and the write-set audit, 6. Fencing and lifecycle interaction (+4 more)
+
+### Community 302 - "Design — 00009-04: the private shielded-monitor HTTP API and its reference consumer"
+Cohesion: 0.15
+Nodes (12): 10. What the API does *not* do to the database, 11. Bin entries and the published surface, 1. No HTTP framework: Node's built-in `http`, and why that is not asceticism, 2. Where the code lives, and what it may import, 3. The cursor: an opaque encoding of `(monitorId, seq)`, 4. Admission control: exactly two caps, and both fail with 400, 5. Coverage on the wire, and the `sourceTip` seam, 6. Error mapping: one idiom in, HTTP statuses out (+4 more)
+
+### Community 303 - "api-ui.test.ts"
+Cohesion: 0.18
+Nodes (7): ShieldedMonitorApi, silentLogger(), DASHBOARD_CSP, loadScript(), makeNode(), StubNode, RunningNode
+
+### Community 305 - "backfill-block-timestamps.ts"
+Cohesion: 0.21
+Nodes (9): ArchivedCaptureRow, backfillBlockTimestamps(), BackfillBlockTimestampsOptions, BackfillBlockTimestampsResult, decodeArchivedExtrinsics(), decodeArchivedHeaderDigestLogs(), PendingBlockRow, MAX_BLOCKS (+1 more)
+
+### Community 306 - "dust-events.ts"
+Cohesion: 0.39
+Nodes (11): decimal(), DustEventBlockContext, generationIndexFromInsertionPath(), generationPayload(), hex(), index(), mapDustEvents(), optionalUnixSeconds() (+3 more)
+
+### Community 307 - "dust-capture-overhead.ts"
+Cohesion: 0.18
+Nodes (10): DUST_EVENT_TAGS, BLOCK, FIXTURE, ITERATIONS, main(), stats(), SYSTEM_TXS, genesisCapture() (+2 more)
+
+### Community 308 - "Running the shielded-monitor node"
+Cohesion: 0.17
+Nodes (12): Configuration, Gaps, and what clears them, How one block behaves (the live pass), If the mirror stops advancing, Match details, Monitor states you may see, Reading `/internal/status`, Running the shielded-monitor node (+4 more)
+
+### Community 309 - "self-transfers.ts"
+Cohesion: 0.24
+Nodes (10): AMOUNT, availableNonces(), COUNT, DUST_WAIT_TIMEOUT_MS, dustNow(), log(), main(), SEED (+2 more)
+
+### Community 311 - "archive-http-client.ts"
+Cohesion: 0.26
+Nodes (6): HttpArchiveReadContract, HttpArchiveReadContractOptions, safeJson(), StorageClients, ARCHIVE_READ_ROUTES, ArchiveReadApiErrorSchema
+
+### Community 312 - "routing.ts"
+Cohesion: 0.30
+Nodes (8): RoutingKey, routingKeyFor(), RoutingKeyRejection, assertNetworkId(), hrpForNetwork(), monitorFingerprint(), fingerprintHexOf(), REFERENCE_KEY_BYTES
+
+### Community 313 - "Deploying the shielded monitor: one database, one storage process, N monitor-nodes"
+Cohesion: 0.18
+Nodes (11): Deploying the shielded monitor: one database, one storage process, N monitor-nodes, DUST wallet sync (optional; project 00016), Environment matrix, Migrating from the 00009-08 deployment (BREAKING), Running it, Scaling, The shape, `umbradb-shielded-monitor-balancer` (+3 more)
+
+### Community 314 - "compare.mjs"
+Cohesion: 0.18
+Nodes (7): client, clientUtxos, FIELDS, golden, goldenUtxos, rows, widths
+
+### Community 315 - "Tasks — 00009-01: archive read contract, block timestamp, per-height atomic commit"
+Cohesion: 0.18
+Nodes (10): 1. `ArchiveReadContract` (the interface), 2. `PgArchiveReadContract` (the PostgreSQL implementation), 3. Migration 008 — `blocks.timestamp_ms`, 4. Rule A fold — one height, one transaction, 5. Archive identity, 6. Replay outcome → `transactions.result`, 7. Backfill for pre-008 rows, 8. `shielded-monitor/offers.ts` (+2 more)
+
+### Community 316 - "Tasks — 00009-04: the private shielded-monitor HTTP API and its reference consumer"
+Cohesion: 0.18
+Nodes (10): 1. Cursor codec, 2. HTTP server, 3. Coverage in every response, 4. Cursor paging over associations, 5. Key hygiene, 6. Reference consumer CLI, 7. Bin entries, docs and README, 8. Required-tests manifest (+2 more)
+
+### Community 317 - "Tasks — 00009-06: dashboard, list endpoint, key derivation, demo runbook"
+Cohesion: 0.18
+Nodes (10): 1. `PgShieldedMonitorStore.listAll(limit)`, 2. `GET /v1/monitors`, 3. `GET /ui`, `GET /ui/`, `GET /` → 302, 4. Key hygiene on the dashboard's path, 5. `shielded-monitor/hd.ts` — BIP32 `m/44'/2400'/account'/role/index`, 6. `umbradb-shielded-monitor-derive-key`, 7. `docs/shielded-monitor-demo.md` and `npm run demo:shielded-monitor`, 8. Docs and change records (+2 more)
+
+### Community 318 - "Tasks — 00009-07: match details"
+Cohesion: 0.18
+Nodes (10): 1. `shielded-monitor/match-details.ts` — the extractor, 2. Migration `shielded_monitor/002_association_details`, 3. Store: write, read and the backfill's write path, 4. Scanner: details at match time, inside the height's transaction, 5. `--backfill-details`, 6. API: `blockTimestampMs`, `details`, `?details=0`, 7. Dashboard: the expandable row, 8. Docs, CHANGELOG and the required-test manifest (+2 more)
+
+### Community 319 - "Tasks — 00009-08: project B as a distinct deployable"
+Cohesion: 0.18
+Nodes (10): 1. Split the monitor store into a contract and an implementation, 2. `umbradb-storage-api`, 3. `HttpMonitorStore`, 4. No database in project B, 5. `umbradb-shielded-monitor-balancer`, 6. Rule B across the boundary, 7. The 2×2 deployment, 8. Documentation and gates (+2 more)
+
+### Community 320 - "Tasks — 00009-09: the merged monitor-node"
+Cohesion: 0.18
+Nodes (10): 1. Migration and the store contract, 2. The storage API, 3. The monitor-node, 4. The balancer, 5. Dashboard, compose overlay and demo, 6. End to end, 7. Documentation and gates, 7a. The two defects the live end-to-end run found (organizer questions Q31 and Q32) (+2 more)
+
+### Community 321 - "runtime-metadata.test.ts"
+Cohesion: 0.27
+Nodes (8): captureForProtocolVersion(), METADATA_CAPTURES, MetadataCapture, compact(), eventsBlobWithSystemTransaction(), IDENTITY, METADATA, REAL_EVENTS
+
+### Community 322 - "Backup and restore — `shielded_monitor` (project B)"
+Cohesion: 0.20
+Nodes (10): 1. Read this first: what a restore cannot recover on its own, 2. What is in the schema, 3. Taking a backup, 4.1 Restore the schema, 4.2 Re-apply the deletion list — before anything else connects, 4.3 Restart the nodes, 4. Restoring, 5. Verifying a restore (+2 more)
+
+### Community 323 - "bin"
+Cohesion: 0.20
+Nodes (10): bin, umbradb-archive-backfill-timestamps, umbradb-archive-read-api, umbradb-archive-sync, umbradb-dust-backfill, umbradb-shielded-monitor-balancer, umbradb-shielded-monitor-client, umbradb-shielded-monitor-derive-key (+2 more)
+
+### Community 324 - "dust-harness.ts"
+Cohesion: 0.40
+Nodes (8): DustCheckpointProbe, DustGenerationRow, DustInitialUtxoRow, DustRawEvent, DustSpendRow, DustTableTip, PayloadShape, FakeDustDbOptions
+
+### Community 325 - "node-rpc-client.ts"
+Cohesion: 0.28
+Nodes (4): NodeRpcError, NodeRpcInvalidHeightError, NodeRpcParseError, SubstrateBlock
+
+### Community 326 - "sdk-dust-state.ts"
+Cohesion: 0.31
+Nodes (7): BALANCE_AT, json(), log(), main(), SEED, SYNC_TIMEOUT_MS, utxosOrTree()
+
+### Community 331 - "Design — 00009-07: match details"
+Cohesion: 0.22
+Nodes (8): 1. Why the details are produced by the scanner, in the same pass, and not by a second reader, 2. `mine` is three-valued because the ledger permits nothing stronger, 3. Why `jsonb`, why nullable, and why a second bound at the store, 4. Rule B: the details are part of the height, so they commit with it, 5. The backfill: fill-only, fenced, and unable to lie, 6. `?details=0` is an opt-OUT, and it removes both fields, 7. The page: an expandable row, and a bound that moved deliberately, Design — 00009-07: match details
+
+### Community 333 - "DustModule"
+Cohesion: 0.22
+Nodes (4): DustModule, DustReply, DustRouteName, dustStatusBlock
+
+### Community 335 - "pg-tx-history-adapter.test.ts"
+Cohesion: 0.22
+Nodes (6): $schema, assertSchemaValidSdkEntry(), makeAdapter(), { sql: getSql }, TestEntry, TestSection
+
+### Community 336 - "dust-backfill-cli.ts"
+Cohesion: 0.25
+Nodes (5): conn, ledgerNetworkId, nodeUrl, service, sql
+
+### Community 337 - "`dust-sync-client` — a wallet builds its DUST state in seconds"
+Cohesion: 0.25
+Nodes (7): `dust-sync-client` — a wallet builds its DUST state in seconds, Hand-off to the SDK (§5.6), The CLI, The devnet golden run, The ledger, and why it is a parameter, Use it, What it does, in order (spec §5.5)
+
+### Community 343 - "Design — 00009-06: dashboard, list endpoint, key derivation"
+Cohesion: 0.25
+Nodes (7): 1. Why the dashboard is served by the API process, and why it is one file, 2. `GET /v1/monitors`: what the list shows, and the one asymmetry it creates, 3. The viewing key on the dashboard's path, 4. `derive-viewing-key`: what it computes, and what proves it, 5. Auto-refresh, and why the page must never present a gap as emptiness, 6. What this change does not touch, Design — 00009-06: dashboard, list endpoint, key derivation
+
+### Community 344 - "Design — 00009-08: the storage boundary"
+Cohesion: 0.25
+Nodes (7): 1. Why a command-shaped API rather than a row-shaped one, 2. The error round trip, 3. The lost response, 4. Why the balancer is allowed to be random, 5. What the import guard proves, and what it does not, 6. Deviations from the sub-plan, recorded, Design — 00009-08: the storage boundary
+
+### Community 345 - "Design — 00009-09: the merged monitor-node"
+Cohesion: 0.25
+Nodes (7): 1. Why one process rather than two that share a key, 2. Why the scan loop inverted, 3. Why fenced items are reported, not thrown (OP-2), 4. Why gaps are rows, 5. Why the balancer routes, and why it may compute a fingerprint, 6. What was removed outright (OP-4, decided 2026-09-13), Design — 00009-09: the merged monitor-node
+
+### Community 349 - "Proposal — 00009-01: archive read contract, block timestamp, per-height atomic commit"
+Cohesion: 0.29
+Nodes (6): Breaking-change assessment: none, Non-goals, Prior art this builds on, and does not contradict, Proposal — 00009-01: archive read contract, block timestamp, per-height atomic commit, What this change delivers, Why this change exists
+
+### Community 350 - "Proposal — 00009-09: the merged monitor-node, with viewing keys only in RAM"
+Cohesion: 0.29
+Nodes (6): Amendment — owner decisions Q33, Q29 and Q32 (2026-09-13), Breaking changes, Non-goals, Proposal — 00009-09: the merged monitor-node, with viewing keys only in RAM, What this change delivers, Why this change exists
+
+### Community 351 - "Spec — the merged monitor-node (EARS)"
+Cohesion: 0.29
+Nodes (6): Key custody, Routing, Scanning, Spec — the merged monitor-node (EARS), The lifecycle (owner decision Q33), The storage API
+
+### Community 356 - "Proposal — 00009-02: shielded monitor store, key intake and lifecycle (project B core)"
+Cohesion: 0.33
+Nodes (5): Impact, Proposal — 00009-02: shielded monitor store, key intake and lifecycle (project B core), What this change delivers, What this change explicitly does NOT cover (non-goals), Why this change exists
+
+### Community 357 - "Proposal — 00009-04: the private shielded-monitor HTTP API and its reference consumer"
+Cohesion: 0.33
+Nodes (5): Impact, Proposal — 00009-04: the private shielded-monitor HTTP API and its reference consumer, What this change delivers, What this change explicitly does NOT cover (non-goals), Why this change exists
+
+### Community 358 - "Proposal — 00009-06: a dashboard for the shielded monitor, a list endpoint, and a key-derivation command"
+Cohesion: 0.33
+Nodes (5): Impact, Proposal — 00009-06: a dashboard for the shielded monitor, a list endpoint, and a key-derivation command, What this change delivers, What this change explicitly does NOT cover, Why this change exists
+
+### Community 359 - "Proposal — 00009-07: record and show each match's public zswap data"
+Cohesion: 0.33
+Nodes (5): Impact, Proposal — 00009-07: record and show each match's public zswap data, What this change delivers, What this change explicitly does NOT cover, Why this change exists
+
+### Community 360 - "Proposal — 00009-08: project B as a distinct deployable, with no database of its own"
+Cohesion: 0.33
+Nodes (5): Breaking change, Proposal — 00009-08: project B as a distinct deployable, with no database of its own, What it deliberately does not deliver, What this change delivers, Why this change exists
+
+### Community 361 - "Spec — the shielded-monitor storage boundary (EARS)"
+Cohesion: 0.33
+Nodes (5): Project-B processes, Spec — the shielded-monitor storage boundary (EARS), The balancer, The client, The storage API
+
+### Community 362 - "mutate"
+Cohesion: 0.33
+Nodes (6): src/postgres/checkpoint-store.ts, src/postgres/save-and-advance.ts, src/postgres/temporal-kv.ts, src/postgres/transaction-lease.ts, src/postgres/watermarks.ts, mutate
+
+### Community 363 - "viewing-key.test.ts"
+Cohesion: 0.47
+Nodes (3): InvalidViewingKeyError, expectRejected(), rejectionOf()
+
+### Community 386 - "Proposal — 00009-03: the shielded viewing-key relevance scanner (project B's worker)"
+Cohesion: 0.40
+Nodes (4): Proposal — 00009-03: the shielded viewing-key relevance scanner (project B's worker), What this change delivers, What this change explicitly does NOT cover (non-goals), Why this change exists
+
+### Community 388 - "indexer-event-ids.ts"
+Cohesion: 0.67
+Nodes (3): log(), main(), STREAM_TIMEOUT_MS
+
 ## Knowledge Gaps
-- **1459 isolated node(s):** `BaselineLoad`, `TinybenchOpts`, `EnvironmentBlock`, `GcScaleOpts`, `DecodedMidnightExtrinsic` (+1454 more)
+- **2268 isolated node(s):** `ArchiveProgressEvent`, `ArchiveReadApiLogRecord`, `KeyResult`, `BaselineLoad`, `TinybenchOpts` (+2263 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **72 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **141 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `UmbraDBSql` connect `UmbraDBSql` to `src/index.ts`, `frozen-types.test.ts`, `full-sync-soak.integration.test.ts`, `differential-equivalence.test.ts`, `client.ts`, `registerSuiteLifecycle`, `pg-tx-history-adapter.ts`, `pg-kill-save.crash.test.ts`, `postgres/checkpoint-store.ts`, `crash-worker.ts`, `load-under-prune.integration.test.ts`, `lease-nonwedge.crash.test.ts`, `transaction-history-storage.test.ts`, `assertValidSchemaName`, `withSuiteWatchdog`, `postgres/transaction-history-storage.ts`, `storage-errors.ts`, `setup.ts`, `migrate.ts`, `harness.ts`, `interfaces/temporal-kv.ts`, `postgres/watermarks.ts`, `transaction-lease.test.ts`, `checkpoint-store.test.ts`, `chain-archive-replay-validation.integration.test.ts`, `cursor-durability.crash.test.ts`, `postgres/transaction-lease.ts`, `chain-archive-sync-retry.integration.test.ts`, `ValidationError`, `chain-archive-rollover.ts`, `chain-archive-event-guard.integration.test.ts`, `watermarks.test.ts`, `tx-replay-decoder.ts`, `postgres/chain-archive-store.ts`, `sync-service.ts`, `TransactionLeaseLayer`, `checkpoint-store-cotx.test.ts`?**
-  _High betweenness centrality (0.036) - this node is a cross-community bridge._
-- **Why does `tinybenchSamples()` connect `harness.ts` to `scripts`?**
-  _High betweenness centrality (0.019) - this node is a cross-community bridge._
-- **Why does `bench` connect `scripts` to `harness.ts`?**
-  _High betweenness centrality (0.019) - this node is a cross-community bridge._
-- **What connects `BaselineLoad`, `TinybenchOpts`, `EnvironmentBlock` to the rest of the system?**
-  _1459 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Why does `StateMap` connect `StateMap` to `published-ledger-v8-8.1.0.d.ts`?**
+  _High betweenness centrality (0.054) - this node is a cross-community bridge._
+- **Why does `main()` connect `shielded-monitor/helpers.ts` to `migrate.ts`, `shielded-monitor-batch-atomicity.crash.test.ts`, `MonitorRecord`, `UmbraDBSql`, `client.ts`, `monitor-node.ts`, `StateMap`?**
+  _High betweenness centrality (0.054) - this node is a cross-community bridge._
+- **Why does `UmbraDBSql` connect `UmbraDBSql` to `StorageError`, `archive-height-atomicity.crash.test.ts`, `sync-service.ts`, `full-sync-soak.integration.test.ts`, `differential-equivalence.test.ts`, `archive-read-api.integration.test.ts`, `chain-archive-sync-retry.integration.test.ts`, `cold-boot-recovery.integration.test.ts`, `pg-tx-history-adapter.ts`, `pg-kill-save.crash.test.ts`, `postgres/checkpoint-store.ts`, `crash-worker.ts`, `monitor-store-pg.ts`, `lease-nonwedge.crash.test.ts`, `MonitorRecord`, `backfill-block-timestamps.ts`, `client.ts`, `withSuiteWatchdog`, `storage-errors.ts`, `postgres/transaction-history-storage.ts`, `migrate.ts`, `setup.ts`, `harness.ts`, `interfaces/temporal-kv.ts`, `shielded-monitor/helpers.ts`, `chain-archive-replay-validation.integration.test.ts`, `cursor-durability.crash.test.ts`, `shielded-monitor-batch-atomicity.crash.test.ts`, `postgres/transaction-lease.ts`, `src/index.ts`, `chain-archive-rollover.ts`, `tx-replay-decoder.ts`, `chain-archive-preprod-cloud-crossval.integration.test.ts`, `shielded-monitor/errors.ts`?**
+  _High betweenness centrality (0.042) - this node is a cross-community bridge._
+- **What connects `ArchiveProgressEvent`, `ArchiveReadApiLogRecord`, `KeyResult` to the rest of the system?**
+  _2268 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `ADDED Requirements` be split into smaller, more focused modules?**
   _Cohesion score 0.043478260869565216 - nodes in this community are weakly interconnected._
-- **Should `src/index.ts` be split into smaller, more focused modules?**
-  _Cohesion score 0.07246376811594203 - nodes in this community are weakly interconnected._
-- **Should `frozen-types.test.ts` be split into smaller, more focused modules?**
-  _Cohesion score 0.09116809116809117 - nodes in this community are weakly interconnected._
+- **Should `StorageError` be split into smaller, more focused modules?**
+  _Cohesion score 0.05693693693693694 - nodes in this community are weakly interconnected._
+- **Should `published-ledger-v8-8.1.0.d.ts` be split into smaller, more focused modules?**
+  _Cohesion score 0.02127659574468085 - nodes in this community are weakly interconnected._
