@@ -367,6 +367,13 @@ walk-through on this repository's own Compose devnet, ending with the dashboard:
 runs its wallet-free half; `-- --split` runs the 2×2 topology). Backup/restore:
 [`docs/shielded-monitor-restore.md`](docs/shielded-monitor-restore.md).
 
+The wallet side of the DUST routes lives in [`dust-sync-client/`](dust-sync-client/README.md)
+(`npm run dust:sync`): given a DUST secret key and a balancer URL it rebuilds the wallet's
+`DustLocalState` from those routes in a handful of round trips, verifies it against the node's two
+Merkle roots, and refuses to return a state whose roots do not match. The key never leaves the
+wallet, and the client uses only the standard published ledger package — the vendored fork's extra
+exports are the node's.
+
 ## What UmbraDB is not
 
 - **Not an ORM or query builder.** Five narrow interfaces, not "do anything with Postgres".

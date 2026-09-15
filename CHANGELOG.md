@@ -10,6 +10,30 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
 
 ### Added
 
+- **A wallet builds its DUST state from the node in seconds (00016, step 3 of 3).** New
+  `dust-sync-client/` and `npm run dust:sync`: from a DUST secret key and a balancer URL it
+  produces a spend-ready `DustLocalState` whose two Merkle roots equal the node's at one mirror
+  tip, in a handful of round trips instead of the wallet SDK's ~123-minute replay of every DUST
+  event on the chain. It follows its own spend chains (one request per *generation* of a chain,
+  not per spend), applies the collapsed Merkle updates the node cuts, inserts its own leaves in the
+  gaps, and **throws rather than returning a state it cannot prove** — a wrong root means wrong
+  Merkle paths, and a wallet would only discover that after paying for a proof.
+  - The **DUST secret key never leaves the process**: it reaches two ledger calls (`dustNullifier`,
+    `successorUtxo`) and is never serialized, logged or returned. The CLI refuses a seed file that
+    is not mode 600. What the node sees is the wallet's nullifiers — the leak the owner accepted
+    for this project — and its DUST public key.
+  - The client uses **only the standard published `@midnight-ntwrk/ledger-v8` 8.1.0 surface**, so a
+    real wallet can run it against the package it already ships: the three fork exports this
+    repository vendors are the NODE's, and a test checks every ledger member the client touches
+    against the published declaration file (committed at
+    `dust-sync-client/test/published-ledger-v8-8.1.0.d.ts`).
+  - `--sdk-wrapper` emits the JSON `DustWallet.restore` consumes, so a state built in seconds can
+    be handed to the SDK. Its `offset` is the INDEXER's event id and defaults to `0` (replay
+    history) rather than to our own numbering — too high an offset makes the SDK skip events.
+  - `dust-sync-client/devnet/` scripts the whole golden environment (compose devnet, replay-on
+    ingest, `dust_reader` role, monitor-node, balancer) and compares the client's state with the
+    SDK's own field by field.
+
 - **The monitor-node mirrors the chain's DUST trees and serves them (00016, step 2 of 3).** With
   `DUST_DATABASE_URL` set, `umbradb-shielded-monitor-node` folds `chain_archive.dust_events` into
   one key-less `DustLocalState` and answers five new routes —

@@ -41,7 +41,9 @@ Options:
   --out <path>         write the JSON report here as well as to stdout
   --sdk-wrapper <path> also write the SDK's serialized DUST wallet (§5.6) here, mode 600
   --network-id <id>    SDK networkId for the wrapper (default: --net)
-  --protocol-version <n>  SDK protocolVersion for the wrapper (default 1)
+  --protocol-version <n>  SDK protocolVersion for the wrapper (default 0 =
+                       ProtocolVersion.MinSupportedVersion; pass the value the SDK's own
+                       serialized state reports for this chain when you have it)
   --applied-index <n>  the INDEXER's dustLedgerEvents id of the last applied event; default 0,
                        which makes the SDK replay history rather than risk skipping events
   --max-lag-ms <n>     how long to wait for the mirror to catch up (default 60000)
@@ -86,7 +88,7 @@ function parseArgs(argv: readonly string[]): Args | undefined {
     out: value("--out"),
     wrapperOut: value("--sdk-wrapper"),
     networkId: value("--network-id"),
-    protocolVersion: BigInt(value("--protocol-version") ?? "1"),
+    protocolVersion: BigInt(value("--protocol-version") ?? "0"),
     appliedIndex: BigInt(value("--applied-index") ?? "0"),
     maxLagMs: Number(value("--max-lag-ms") ?? 60_000),
     quiet: argv.includes("--quiet"),

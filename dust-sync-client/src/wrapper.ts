@@ -41,7 +41,12 @@ export interface DustSdkWrapperOptions {
   /** The SDK's `networkId` — `undeployed`, `preprod`, … (NOT our archive `net`, though the two
    *  happen to spell devnet and preprod the same way). */
   readonly networkId: string;
-  /** The SDK's protocol version for a wallet of this line. */
+  /**
+   * The SDK's protocol version for this chain. `ProtocolVersion.MinSupportedVersion` is `0n`
+   * (`@midnightntwrk/wallet-sdk-abstractions/dist/ProtocolVersion.js:52`), which is what a fresh
+   * wallet starts at; when a real SDK snapshot of the same chain is available, take ITS value —
+   * the indexer reports a `protocolVersion` per event and the SDK carries it forward.
+   */
   readonly protocolVersion: bigint;
   /**
    * The INDEXER's `dustLedgerEvents.id` of the last applied event, or `0n` to make the SDK replay
