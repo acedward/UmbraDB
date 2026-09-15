@@ -9,6 +9,8 @@ import { PgChainArchiveStore } from "../../src/postgres/chain-archive-store.js";
 import { LedgerReplay } from "../../chain-archive-sync/ledger-replay.js";
 import { loadLedgerV8 } from "../../chain-archive-sync/tx-replay-decoder.js";
 import { metadataRpcResult } from "./fake-node-metadata.js";
+import { pgTerminateBackend } from "../postgres/setup.js";
+import { withStatementFault, type FaultState } from "./crash/archive-fault-injection.js";
 
 /** Must match `LEDGER_STATE_VERSION` in the sync service -- a checkpoint row written by hand has
  *  to look valid in every respect except the one under test. */
@@ -1129,4 +1131,250 @@ describe("replay validation gates ingest", () => {
     `;
     expect(rows!.n).toBe(1);
   }, 180_000);
+});
+
+/**
+ * 00016 FR-001 (plan test T1.4): the DUST events a replay-on ingest computes end up in
+ * `chain_archive.dust_events`, densely, in execution order, once.
+ *
+ * Runs against the same fake node and the same synthetic chain as the suite above -- deliberately,
+ * because the properties under test are about the INGEST, not about a chain: what it writes, in
+ * what order, what it does on a restart, and what survives a crash inside the height's own
+ * transaction. The synthetic genesis block carries the five real genesis system transactions,
+ * which between them produce 78 DUST events (65 `dustInitialUtxo`, 13 `dustGenerationDtimeUpdate`)
+ * -- far more than any ordinary block, which makes it the right block to assert order and density
+ * on. `dustSpendProcessed` rows have their own coverage against real preprod events in
+ * `test/chain-archive-sync/dust-events.test.ts`; no reachable synthetic chain produces a DUST
+ * spend, because one needs a fee-paying transaction built against live state.
+ */
+describe("00016: the ingest keeps the DUST events", () => {
+  let container: StartedPostgreSqlContainer;
+  let sql: UmbraDBSql;
+  let counter = 0;
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer("postgres:17-alpine").start();
+  }, 180_000);
+
+  afterAll(async () => {
+    await sql?.end({ timeout: 5 });
+    await container?.stop();
+  }, 60_000);
+
+  async function newSchema(): Promise<string> {
+    const schema = `dust_capture_${counter++}`;
+    sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    await bootstrapChainArchiveSchema(sql, schema);
+    return schema;
+  }
+
+  const dustService = (schema: string, opts: Record<string, unknown> = {}) =>
+    new ChainArchiveSyncService({
+      sql, net: NET, schema,
+      node: {
+        url: "http://fake-node",
+        fetchImpl: chainNodeFetch(GENESIS_SYSTEM_EXTRINSICS),
+      },
+      replayValidation: true,
+      ledgerNetworkId: "undeployed",
+      replayCheckpointInterval: 1,
+      ...opts,
+    });
+
+  /** The events an INDEPENDENT replay produces for the same genesis body -- the comparand the
+   *  plan's T1.4 asks for, computed in the test rather than read back from the thing under test. */
+  function independentGenesisEvents(): { tag: string; txHash: string; rawHex: string }[] {
+    const replay = LedgerReplay.fromGenesis(ledger, "undeployed", {
+      captureEventTags: ["dustInitialUtxo", "dustGenerationDtimeUpdate", "dustSpendProcessed"],
+    });
+    replay.applyBlock({
+      transactions: FIXTURE.map((f) => ({
+        kind: "system" as const,
+        rawBytes: new Uint8Array(Buffer.from(f[3]!, "hex")),
+      })),
+      blockTimestampMs: GENESIS_TIMESTAMP_MS,
+      parentBlockHashHex: "00".repeat(32),
+      parentBlockTimestampMs: 0,
+    });
+    return replay.lastBlockEvents!.map((e) => ({
+      tag: e.tag, txHash: e.txHash, rawHex: Buffer.from(e.raw).toString("hex"),
+    }));
+  }
+
+  const dustRows = (schema: string) => sql<{
+    id: bigint; block_height: bigint; tx_position: number; event_index: number;
+    tx_hash: Buffer; kind: number; raw: Buffer;
+  }[]>`
+    SELECT id, block_height, tx_position, event_index, tx_hash, kind, raw
+    FROM ${sql(schema)}.dust_events WHERE net = ${NET} ORDER BY id
+  `;
+
+  it("archives genesis's own DUST events, dense from id 1 and equal to an independent replay", async () => {
+    // Genesis is the case the plan did not foresee: replay INSTALLS the genesis snapshot instead
+    // of executing block 0, so the events have to be harvested from the body -- which is what the
+    // reference indexer does, and why its own stream starts with them. Without this the table
+    // would start at a leaf index the node's mirror cannot insert into an empty tree.
+    const schema = await newSchema();
+    const service = dustService(schema);
+    await service.syncOnce({ maxBlocks: 1 });
+    expect(service.dustCaptureState).toBe("capturing");
+
+    const expected = independentGenesisEvents();
+    expect(expected.length).toBe(78);
+    const rows = await dustRows(schema);
+    expect(rows.map((r) => Number(r.id))).toEqual(
+      Array.from({ length: expected.length }, (_, i) => i + 1),
+    );
+    expect(rows.map((r) => ({
+      tag: r.kind === 1 ? "dustInitialUtxo" : r.kind === 2 ? "dustGenerationDtimeUpdate" : "dustSpendProcessed",
+      txHash: r.tx_hash.toString("hex"),
+      rawHex: r.raw.toString("hex"),
+    }))).toEqual(expected);
+    for (const row of rows) expect(Number(row.block_height)).toBe(0);
+
+    // Every row's tx_hash must JOIN the transaction row the archive keyed independently.
+    const [orphans] = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM ${sql(schema)}.dust_events d
+      WHERE d.net = ${NET} AND NOT EXISTS (
+        SELECT 1 FROM ${sql(schema)}.transactions t
+        WHERE t.net = d.net AND t.block_height = d.block_height
+          AND t.block_hash = d.block_hash AND t.tx_hash = d.tx_hash
+      )
+    `;
+    expect(orphans!.n, "every dust_events row must join a transactions row").toBe(0);
+  }, 300_000);
+
+  it("keeps quiet blocks covered and a restart free of duplicates and gaps", async () => {
+    const schema = await newSchema();
+    await dustService(schema).syncOnce({ maxBlocks: 4 });
+    const first = await dustRows(schema);
+    expect(first.length).toBe(78);
+
+    const [covered] = await sql<{ height: string }[]>`
+      SELECT value ->> 'height' AS height FROM ${sql(schema)}.watermarks
+      WHERE kind = 'chain_archive' AND key = ${`dust_capture:${NET}`}
+    `;
+    // Heights 1..3 carry only a timestamp inherent and produce no DUST event at all. They must
+    // still count as COVERED -- if an empty block did not advance the watermark, the next block
+    // with an event would look like a hole and capture would stop for the whole run.
+    const [tip] = await sql<{ h: string }[]>`
+      SELECT max(height)::text AS h FROM ${sql(schema)}.blocks WHERE net = ${NET}
+    `;
+    expect(covered!.height).toBe(tip!.h);
+    expect(Number(covered!.height)).toBeGreaterThan(0);
+
+    // A restart: a brand-new service over the same archive, re-ingesting the same heights.
+    const restarted = dustService(schema);
+    await restarted.syncOnce({ maxBlocks: 4 });
+    expect(restarted.dustCaptureState).toBe("capturing");
+    const second = await dustRows(schema);
+    expect(second.map((r) => Number(r.id))).toEqual(first.map((r) => Number(r.id)));
+    expect(second.map((r) => r.raw.toString("hex"))).toEqual(first.map((r) => r.raw.toString("hex")));
+  }, 300_000);
+
+  it("writes nothing and reports dust=off when replay validation is off (FR-003)", async () => {
+    const schema = await newSchema();
+    const service = new ChainArchiveSyncService({
+      sql, net: NET, schema,
+      node: { url: "http://fake-node", fetchImpl: chainNodeFetch(GENESIS_SYSTEM_EXTRINSICS) },
+    });
+    expect(service.dustCaptureState).toBe("off");
+    await service.syncOnce({ maxBlocks: 2 });
+    expect((await dustRows(schema)).length).toBe(0);
+    // And the capture watermark is absent, not zero: nothing was ever covered.
+    const [covered] = await sql<{ height: string }[]>`
+      SELECT value ->> 'height' AS height FROM ${sql(schema)}.watermarks
+      WHERE kind = 'chain_archive' AND key = ${`dust_capture:${NET}`}
+    `;
+    expect(covered).toBeUndefined();
+  }, 300_000);
+
+  it("survives a crash inside the height's transaction with no duplicate and no gap", async () => {
+    // The DUST rows ride in the same BEGIN…COMMIT as the block itself, so the only two states a
+    // crash may leave are 'nothing of the height' and 'all of it'. A third -- the block archived
+    // without its events -- would be a hole the node cannot see, which is the whole reason the
+    // rows are in this transaction rather than a second one.
+    const schema = await newSchema();
+    const admin = createClient({ connectionString: container.getConnectionUri(), schema });
+    const retired: UmbraDBSql[] = [];
+    try {
+      // Statement indices inside the bundle transaction, chosen to straddle the DUST insert: the
+      // bundle issues ~20 statements for genesis and the DUST insert is one of the last few.
+      for (const killAt of [2, 8, 14, 18, 20, 22]) {
+        const faultSchema = await newSchema();
+        // One pool per kill: postgres.js keeps a shared reconnect-backoff counter that poisons a
+        // reused pool after a few terminations (see archive-height-atomicity.crash.test.ts).
+        const pool = createClient({
+          connectionString: container.getConnectionUri(), schema: faultSchema,
+          maxConnections: 1, connectTimeout: 10,
+        });
+        retired.push(pool);
+        const faultAdmin = createClient({
+          connectionString: container.getConnectionUri(), schema: faultSchema,
+        });
+        retired.push(faultAdmin);
+        const state: FaultState = {
+          count: 0,
+          killAtStatement: killAt,
+          onReached: async (pid) => { await pgTerminateBackend(faultAdmin, pid); },
+        };
+        const faulted = new ChainArchiveSyncService({
+          sql: withStatementFault(pool, state), net: NET, schema: faultSchema,
+          node: { url: "http://fake-node", fetchImpl: chainNodeFetch(GENESIS_SYSTEM_EXTRINSICS) },
+          replayValidation: true,
+          ledgerNetworkId: "undeployed",
+          replayCheckpointInterval: 1,
+        });
+        await expect(faulted.syncOnce({ maxBlocks: 1 })).rejects.toThrow();
+        // Retired IMMEDIATELY, not at the end of the sweep: postgres.js keeps trying to reconnect
+        // a pool whose backend was terminated, and a queued statement landing on the dead socket
+        // surfaces as an unhandled rejection long after the test that caused it.
+        await pool.end({ timeout: 2 }).catch(() => undefined);
+
+        const [observed] = await faultAdmin<{ blocks: number; events: number; covered: string | null }[]>`
+          SELECT
+            (SELECT count(*)::int FROM ${faultAdmin(faultSchema)}.blocks
+             WHERE net = ${NET} AND height = 0) AS blocks,
+            (SELECT count(*)::int FROM ${faultAdmin(faultSchema)}.dust_events
+             WHERE net = ${NET}) AS events,
+            (SELECT value ->> 'height' FROM ${faultAdmin(faultSchema)}.watermarks
+             WHERE kind = 'chain_archive' AND key = ${`dust_capture:${NET}`}) AS covered
+        `;
+        // Every one of these points is INSIDE the transaction (statement 1 is the advisory lock),
+        // so the backend dying can only roll it back -- 'nothing of the height' is the single
+        // acceptable observation, and asserting the disjunction 'nothing OR all' instead would be
+        // a condition this sweep cannot fail. What must not appear is the third state: the block
+        // archived while its DUST events, or the capture watermark, are missing.
+        expect(
+          observed,
+          `kill at statement ${killAt} left a PARTIAL height. A block archived without its DUST ` +
+            "events is a hole the node cannot detect.",
+        ).toEqual({ blocks: 0, events: 0, covered: null });
+
+        // The retry, on a healthy connection: the height completes exactly once, with ids dense
+        // from 1 -- neither duplicated by the partial attempt nor renumbered past it.
+        const healthy = createClient({
+          connectionString: container.getConnectionUri(), schema: faultSchema,
+        });
+        retired.push(healthy);
+        await new ChainArchiveSyncService({
+          sql: healthy, net: NET, schema: faultSchema,
+          node: { url: "http://fake-node", fetchImpl: chainNodeFetch(GENESIS_SYSTEM_EXTRINSICS) },
+          replayValidation: true,
+          ledgerNetworkId: "undeployed",
+          replayCheckpointInterval: 1,
+        }).syncOnce({ maxBlocks: 1 });
+        const ids = await healthy<{ id: bigint }[]>`
+          SELECT id FROM ${healthy(faultSchema)}.dust_events WHERE net = ${NET} ORDER BY id
+        `;
+        expect(
+          ids.map((r) => Number(r.id)),
+          `kill at statement ${killAt}: ids after the retry`,
+        ).toEqual(Array.from({ length: 78 }, (_, i) => i + 1));
+      }
+    } finally {
+      await Promise.allSettled(retired.map((p) => p.end({ timeout: 2 })));
+      await admin.end({ timeout: 5 });
+    }
+  }, 600_000);
 });
