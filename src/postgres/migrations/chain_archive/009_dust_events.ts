@@ -72,8 +72,9 @@ export async function up(sql: ISql, schema: string): Promise<void> {
   await sql`
     CREATE TABLE ${sql(schema)}.dust_events (
       net              text     NOT NULL,
-      -- Dense per net, in ledger EXECUTION order (which is not the archive's row order for
-      -- system transactions -- see chain-archive-sync/sync-service.ts's own note on the two).
+      -- Dense per net, in ledger EXECUTION order, which is NOT the archive's row order: the
+      -- reference indexer lists a block's system transactions first, while the ledger executes
+      -- them in Substrate phase order.
       id               bigint   NOT NULL CHECK (id > 0),
       block_height     bigint   NOT NULL CHECK (block_height >= 0),
       block_hash       bytea    NOT NULL CHECK (octet_length(block_hash) = 32),
