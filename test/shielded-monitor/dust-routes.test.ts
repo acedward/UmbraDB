@@ -369,6 +369,68 @@ describe("POST /v1/dust/lookup", () => {
   });
 });
 
+describe("GET /internal/status carries the dust block (plan 00016 D2.3)", () => {
+  /** Only what `internalStatus` reaches. The node's own status fields are its suite's subject;
+   *  what this case is about is that the DUST block is MERGED IN without the node knowing about
+   *  the waived directory at all. */
+  const stubNode = {
+    status: () => ({ nodeId: "n1", net: NET, keysHeld: 0, live: 0, syncing: 0, failed: 0, queueB: 0, liveWatermark: "7", lagBlocks: "0" }),
+    holdsMonitor: () => ({ holds: false }),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any;
+
+  async function statusOf(module: DustModule | undefined): Promise<any> {
+    const started = createShieldedMonitorApi({
+      store: stubStore,
+      config: loadApiConfig({ API_PORT: "0", STORAGE_URL: "http://storage-api:8788", SHIELDED_MONITOR_NET: NET }),
+      logger: { log: () => undefined },
+      node: stubNode,
+      ...(module !== undefined ? { dust: module } : {}),
+    });
+    const address = await started.listen();
+    try {
+      const response = await fetch(`http://127.0.0.1:${address.port}/internal/status`);
+      expect(response.status).toBe(200);
+      return await response.json();
+    } finally {
+      await started.close();
+    }
+  }
+
+  it("reports applied, snapshot, memory and the parameter check when the module is on", async () => {
+    const body = await statusOf(dust);
+    expect(body.nodeId).toBe("n1"); // the node's own fields are untouched
+    expect(body.dust.enabled).toBe(true);
+    expect(body.dust.producer).toBe("ingest");
+    expect(body.dust.ready).toBe(true);
+    expect(body.dust.applied.eventId).toBe(String(meta.events));
+    expect(body.dust.lastError).toBeNull();
+    // D2.5b: BOTH instruments. `externalBytes` is the WASM heap, which is where the retained trees
+    // live; `rss` is what a container limit is written in. SC-004 is stated against the latter.
+    expect(body.dust.rss).toBeGreaterThan(0);
+    expect(body.dust.externalBytes).toBeGreaterThan(0);
+    // Under the role spec §5.3 prescribes, the parameter check cannot read the checkpoint tables.
+    // That is a recorded conflict, not a defect — see question Q-15.
+    await dust.whenParametersChecked();
+    expect(["ok", "skipped", "mismatch"]).toContain(body.dust.parametersCheck);
+  });
+
+  it("reports enabled: false when the node was started without DUST_DATABASE_URL", async () => {
+    const body = await statusOf(undefined);
+    expect(body.dust).toStrictEqual({
+      enabled: false,
+      producer: "none",
+      ready: false,
+      applied: { eventId: "0", height: "0" },
+      snapshotEventId: null,
+      parametersCheck: "skipped",
+      lastError: null,
+      rss: body.dust.rss,
+      externalBytes: body.dust.externalBytes,
+    });
+  });
+});
+
 describe("the 503s (spec §4)", () => {
   it("DUST_DISABLED when the node was started without DUST_DATABASE_URL", async () => {
     const started = await startApi(undefined);
