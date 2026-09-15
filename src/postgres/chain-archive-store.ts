@@ -347,11 +347,15 @@ export class PgChainArchiveStore implements ChainArchiveStore {
       // Never captured for this net. The only honest place to start is the archive's own first
       // block: starting anywhere above it means every earlier block's events are missing, which
       // is precisely the hole above.
-      const [earlier] = await tx<{ n: number }[]>`
-        SELECT count(*)::int AS n FROM ${tx(this.schema)}.blocks
-        WHERE net = ${net} AND height < ${height} AND is_canonical
+      // `EXISTS`, not `count(*)`: on an archive of millions of blocks this is the one query the
+      // guard can run against a large range, and it only has to find ONE row to answer.
+      const [earlier] = await tx<{ present: boolean }[]>`
+        SELECT EXISTS (
+          SELECT 1 FROM ${tx(this.schema)}.blocks
+          WHERE net = ${net} AND height < ${height} AND is_canonical
+        ) AS present
       `;
-      if ((earlier?.n ?? 0) > 0) {
+      if (earlier?.present === true) {
         return (
           `DUST capture has never run for net ${net}, but this archive already holds canonical ` +
           `blocks below height ${height}. Their DUST events are not in the table and starting ` +
