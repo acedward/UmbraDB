@@ -128,10 +128,12 @@ console.log(`[archive-sync] replay validation ${REPLAY_VALIDATION ? "ON" : "off"
 if (!REPLAY_VALIDATION) {
   // eslint-disable-next-line no-console
   console.warn(
-    "[archive-sync] DUST events NOT captured (REPLAY_VALIDATION off). " +
-      "chain_archive.dust_events stays empty, so the shielded-monitor node's /v1/dust/* routes " +
-      "have nothing to serve. Set REPLAY_VALIDATION=1 (with LEDGER_NETWORK_ID) to capture them, " +
-      "or run `npm run dust:backfill` afterwards to fill the table from an existing archive.",
+    "[archive-sync] DUST events and parameters NOT captured (REPLAY_VALIDATION off). " +
+      "chain_archive.dust_events and chain_archive.dust_parameters stay empty, so the " +
+      "shielded-monitor node's /v1/dust/* routes have nothing to serve and its mirror falls back " +
+      "to the ledger's initial DUST parameters (reporting parametersSource=\"unknown\"). Set " +
+      "REPLAY_VALIDATION=1 (with LEDGER_NETWORK_ID) to capture them, or run " +
+      "`npm run dust:backfill` afterwards to fill both tables from an existing archive.",
   );
 }
 

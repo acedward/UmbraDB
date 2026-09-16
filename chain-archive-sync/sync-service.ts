@@ -6,6 +6,8 @@ import type {
   BridgeObservationRecord,
   ChainArchiveStore,
   DustEventRecord,
+  DustParametersReason,
+  DustParametersRecord,
   Hex32,
   ReplayCheckpointRecord,
   TransactionRecord,
@@ -21,7 +23,7 @@ import {
   requireCallIndices,
 } from "./extrinsic-decoder.js";
 import { decodeArchivedTransaction, loadLedgerV8 } from "./tx-replay-decoder.js";
-import { LedgerReplay } from "./ledger-replay.js";
+import { LedgerReplay, dustParametersEqual, type DustParameterValues } from "./ledger-replay.js";
 import { mapReplayOutcomes, type RegularReplayOutcome } from "./replay-outcome-mapping.js";
 import {
   BlockScopedMetadata,
@@ -848,6 +850,12 @@ export class ChainArchiveSyncService {
         ...(this.dustCapture === "capturing" && this.lastBlockDustEvents !== undefined
           ? { dustEvents: this.lastBlockDustEvents }
           : {}),
+        // Q-22 option C: `undefined` on almost every block — only genesis, a block that changed a
+        // value, and a resume point owe a row. Written in THIS transaction so a height is either
+        // wholly in the archive or wholly absent, exactly like the events and the checkpoint.
+        ...(this.lastBlockDustParameters !== undefined
+          ? { dustParameters: this.lastBlockDustParameters }
+          : {}),
       });
     } catch (err) {
       // T3. Replay is atomic INSIDE the engine but was not atomic across the ingest block: the
@@ -876,6 +884,19 @@ export class ChainArchiveSyncService {
           `${bundleResult.dustCapture.reason} Blocks keep being archived; ` +
           "`chain_archive.dust_events` is incomplete until `npm run dust:backfill` has run.",
       );
+    }
+
+    // Q-22 option C: the in-memory DUST-parameter cursor advances only now, for exactly the reason
+    // the two cursors around it do — a failed write that had already advanced it would make the
+    // next block agree with a row that is not in the archive, and the change would be lost for the
+    // life of the run.
+    if (this.lastBlockDustParameters !== undefined) {
+      const written = this.lastBlockDustParameters;
+      this.dustParametersKnown = {
+        nightDustRatio: written.nightDustRatio,
+        generationDecayRate: written.generationDecayRate,
+        dustGracePeriodSeconds: written.dustGracePeriodSeconds,
+      };
     }
 
     // Only remember this block as the continuity anchor once it is durably written -- same
@@ -1005,6 +1026,10 @@ export class ChainArchiveSyncService {
     // with them, for the same reason and with the same consequence if they did not.
     this.lastBlockRegularOutcomes = undefined;
     this.lastBlockDustEvents = undefined;
+    // Q-22 option C: same rule, same reason. A refused block must not leave the previous block's
+    // parameters row attached to this height, which would file a parameter change under a block
+    // that did not make one.
+    this.lastBlockDustParameters = undefined;
     if (!this.replayValidation) return;
     const ledger = await this.ledger();
     let initializedFromGenesisSnapshot = false;
@@ -1184,6 +1209,13 @@ export class ChainArchiveSyncService {
           height, blockHash, header, extrinsics, protocolVersion, blockTimestampMs,
         );
       }
+      // Q-22 option C. INSIDE this try, so a failure to read the table discards the advanced fold
+      // and the height retries cleanly, instead of wedging the consecutive-height guard (T3). The
+      // fold has advanced over this block by now — or, at genesis, holds the snapshot the whole
+      // chain is folded from, which is the only state the `genesis` row can come from.
+      this.lastBlockDustParameters = await this.dustParametersForBlock(
+        height, blockHash, initializedFromGenesisSnapshot,
+      );
       await this.assertReplayedLedgerRoot(height, blockHash);
     } catch (err) {
       // `applyBlock` commits its in-memory state before the asynchronous RPC comparison. A root
@@ -1333,6 +1365,9 @@ export class ChainArchiveSyncService {
     blocks: number;
     /** Rows inserted. */
     rows: number;
+    /** `dust_parameters` rows this call wrote (question Q-22 option C). Usually 0 or 1: one at
+     *  genesis or at the resume point, and one more per parameter change the fold walked past. */
+    parameterRows: number;
     /** Whether the table has reached the sync watermark. */
     done: boolean;
   }> {
@@ -1346,12 +1381,16 @@ export class ChainArchiveSyncService {
     const maxBlocks = opts.maxBlocks ?? 500;
     const syncedHeight = await this.getSyncedHeight();
     if (syncedHeight === undefined) {
-      return { fromHeight: undefined, toHeight: undefined, blocks: 0, rows: 0, done: true };
+      return {
+        fromHeight: undefined, toHeight: undefined, blocks: 0, rows: 0, parameterRows: 0, done: true,
+      };
     }
     const covered = await this.store.getDustCaptureHeight(this.net);
     const startWrite = covered === undefined ? 0 : covered + 1;
     if (startWrite > syncedHeight) {
-      return { fromHeight: undefined, toHeight: undefined, blocks: 0, rows: 0, done: true };
+      return {
+        fromHeight: undefined, toHeight: undefined, blocks: 0, rows: 0, parameterRows: 0, done: true,
+      };
     }
 
     const ledger = await this.ledger();
@@ -1364,6 +1403,18 @@ export class ChainArchiveSyncService {
      *  contribution is carried here rather than being silently dropped from the report. */
     let genesisBlocks = 0;
     let genesisRows = 0;
+    /** Question Q-22 option C: the backfill's own DUST-parameter cursor, seeded from whatever the
+     *  archive already records so a second pass over the same history writes nothing. */
+    const knownParameters: { value: DustParameterValues | undefined } = { value: undefined };
+    const existingParameters = await this.store.getDustParametersAtOrBelow(this.net);
+    if (existingParameters !== undefined) {
+      knownParameters.value = {
+        nightDustRatio: existingParameters.nightDustRatio,
+        generationDecayRate: existingParameters.generationDecayRate,
+        dustGracePeriodSeconds: existingParameters.dustGracePeriodSeconds,
+      };
+    }
+    let parameterRows = 0;
 
     const checkpoint = startWrite === 0
       ? undefined
@@ -1408,6 +1459,14 @@ export class ChainArchiveSyncService {
       foldedTo = 0;
       parentTimestampMs = genesisTimestampMs;
       parentHash = genesis.blockHash;
+      // Question Q-22 option C: the genesis row, written whether or not genesis's EVENTS are owed.
+      // The events at height 0 may already be captured while the parameters never were (an archive
+      // ingested before migration 010), and the row describes height 0, which the archive holds.
+      // `genesis` is the honest reason here for the same argument the ingest uses: this is the
+      // state the whole fold starts from, not the result of executing block 0's body.
+      parameterRows += await this.writeDustParametersIfChanged(
+        replay, knownParameters, 0, genesis.blockHash, "genesis",
+      );
       if (startWrite === 0) {
         const rows = await this.harvestGenesisDustEvents(
           0, genesis.blockHash, hexNoPrefix(nodeGenesis.header.parentHash), nodeGenesis.extrinsics,
@@ -1420,7 +1479,9 @@ export class ChainArchiveSyncService {
         genesisBlocks = 1;
         genesisRows = outcome.rows;
         if (syncedHeight === 0) {
-          return { fromHeight: 0, toHeight: 0, blocks: 1, rows: outcome.rows, done: true };
+          return {
+            fromHeight: 0, toHeight: 0, blocks: 1, rows: outcome.rows, parameterRows, done: true,
+          };
         }
       }
     }
@@ -1462,6 +1523,15 @@ export class ChainArchiveSyncService {
       });
       parentTimestampMs = blockTimestampMs;
       parentHash = block.blockHash;
+      // Question Q-22 option C, and deliberately BEFORE the `write` gate: the `write` flag exists
+      // to avoid re-inserting event rows the archive already has, but a parameters row is
+      // `ON CONFLICT DO NOTHING` on its own key, so checking it over the re-folded prefix costs a
+      // comparison and catches a change that happened inside it. `resume` is the first-row reason
+      // on this path: the fold started from a checkpoint, so nothing is known about earlier
+      // heights.
+      parameterRows += await this.writeDustParametersIfChanged(
+        replay, knownParameters, height, block.blockHash, "resume",
+      );
       if (!write) return 0;
       const rows = mapDustEvents(
         { net: this.net, blockHeight: height, blockHash: block.blockHash },
@@ -1496,6 +1566,7 @@ export class ChainArchiveSyncService {
       toHeight: blocks === 0 ? undefined : (last >= first ? last : 0),
       blocks,
       rows,
+      parameterRows,
       done: last >= syncedHeight,
     };
   }
@@ -1655,6 +1726,7 @@ export class ChainArchiveSyncService {
     this.lastReplayedBlockTimestampMs = undefined;
     this.lastBlockRegularOutcomes = undefined;
     this.lastBlockDustEvents = undefined;
+    this.lastBlockDustParameters = undefined;
   }
 
   /** This block's DUST event rows, mapped from the replay's captured events and consumed by the
@@ -1662,6 +1734,101 @@ export class ChainArchiveSyncService {
    *  run has gone `gap`, replay refused, or this is a catch-up block whose rows the archive
    *  already holds. Cleared with {@link lastBlockRegularOutcomes}, for the same reason. */
   private lastBlockDustEvents: DustEventRecord[] | undefined;
+
+  /**
+   * This block's `dust_parameters` row, when this block needs one (question Q-22 option C).
+   * `undefined` on almost every block — a row is written only at genesis, at a block whose replay
+   * moved a value, and once at a resume point. Cleared on entry to
+   * {@link replayBlockIfEnabled} exactly like the two fields above.
+   */
+  private lastBlockDustParameters: DustParametersRecord | undefined;
+
+  /**
+   * The parameters the archive already records, as this process best knows them: the values of the
+   * newest `dust_parameters` row, loaded once and then advanced in memory.
+   *
+   * `undefined` means BOTH "not loaded yet" and "the table holds no row for this net" —
+   * {@link dustParametersLoaded} is what separates them, because "no row" is the state that makes
+   * the very next block write one.
+   */
+  private dustParametersKnown: DustParameterValues | undefined;
+
+  /** Whether {@link dustParametersKnown} has been read from the table yet. One query per process. */
+  private dustParametersLoaded = false;
+
+  /**
+   * The `dust_parameters` row this block owes, or `undefined` (question Q-22 option C).
+   *
+   * Called with the fold already advanced over this block — or, at genesis, with the fold holding
+   * the node's genesis snapshot, which is the state everything else is folded from and therefore
+   * the only defensible source for the `genesis` row (block 0's body is never executed; see
+   * {@link harvestGenesisDustEvents}).
+   *
+   * Gated on REPLAY VALIDATION, not on {@link dustCapture}: a `gap` in `dust_events` says the
+   * event table is not dense, which has nothing to do with whether the parameters this fold
+   * observed are true. Replay off writes nothing at all (FR-003), because with no fold there is
+   * no state to read them from.
+   *
+   * ── The one approximation, stated ───────────────────────────────────────────────────────────
+   * On an archive whose blocks were ingested BEFORE migration 010 existed, a parameter change in
+   * that history was never recorded, and the catch-up path (which re-folds already-archived blocks
+   * and deliberately writes nothing) will not record it either. That is exactly what the `resume`
+   * reason exists to say: the values are true from this height, and nothing is claimed about
+   * earlier ones. On an archive that has always had this table, a change is recorded at the block
+   * that made it, because the row written then is the one this method loads on the next start.
+   */
+  private async dustParametersForBlock(
+    height: number, blockHash: Hex32, fromGenesisSnapshot: boolean,
+  ): Promise<DustParametersRecord | undefined> {
+    if (!this.replayValidation || this.replay === undefined) return undefined;
+    if (!this.dustParametersLoaded) {
+      const existing = await this.store.getDustParametersAtOrBelow(this.net);
+      this.dustParametersKnown = existing === undefined ? undefined : {
+        nightDustRatio: existing.nightDustRatio,
+        generationDecayRate: existing.generationDecayRate,
+        dustGracePeriodSeconds: existing.dustGracePeriodSeconds,
+      };
+      this.dustParametersLoaded = true;
+    }
+    const current = this.replay.dustParameters();
+    if (dustParametersEqual(this.dustParametersKnown, current)) return undefined;
+    const reason: DustParametersReason = this.dustParametersKnown !== undefined
+      ? "change"
+      : fromGenesisSnapshot && height === 0
+        ? "genesis"
+        : "resume";
+    return { net: this.net, blockHeight: height, blockHash, ...current, reason };
+  }
+
+  /**
+   * The BACKFILL's parameter write (question Q-22 option C): compare the fold's current DUST
+   * parameters with what `known` holds and, when they differ, write the row and advance `known`.
+   *
+   * A separate transaction per row rather than part of a bundle, because the backfill works over
+   * blocks the archive already committed — the twin of `putDustEventsForHeight` against
+   * `putBlockBundle`'s `dustEvents`. Idempotent: the row collides on its primary key and is
+   * dropped, so re-running a backfill over the same history writes nothing and still leaves
+   * `known` correct.
+   *
+   * `known` is a box rather than a value so the two call sites (the genesis write and the per-height
+   * loop) share one cursor without this method having to own the backfill's state.
+   */
+  private async writeDustParametersIfChanged(
+    replay: LedgerReplay,
+    known: { value: DustParameterValues | undefined },
+    height: number,
+    blockHash: Hex32,
+    firstReason: DustParametersReason,
+  ): Promise<number> {
+    const current = replay.dustParameters();
+    if (dustParametersEqual(known.value, current)) return 0;
+    const reason: DustParametersReason = known.value !== undefined ? "change" : firstReason;
+    const { written } = await this.store.putDustParameters({
+      net: this.net, blockHeight: height, blockHash, ...current, reason,
+    });
+    known.value = current;
+    return written ? 1 : 0;
+  }
 
   /** The regular transactions' replay outcomes for the block currently being ingested, in
    *  execution order (which for regular transactions is body order). `undefined` when replay

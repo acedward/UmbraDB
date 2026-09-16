@@ -211,6 +211,40 @@ export interface DustEventRawRow {
   raw: Uint8Array;
 }
 
+/**
+ * Why a `dust_parameters` row exists (migration 010, question Q-22 option C).
+ *
+ *   - `genesis` -- the state the fold starts from. On Midnight that is the node's genesis ledger
+ *     snapshot, not the result of executing block 0's body, so this is read off the deserialized
+ *     snapshot rather than off an `applyBlock`.
+ *   - `change`  -- this block's replay moved at least one of the three values (an
+ *     `OverwriteParameters` system transaction).
+ *   - `resume`  -- written ONCE, on an archive that already holds blocks but no rows yet, at the
+ *     first height the ingest writes after the table appears. The values are true as of that
+ *     height; nothing is claimed about earlier ones, which is exactly why this is its own reason
+ *     and not a fake `genesis`.
+ */
+export type DustParametersReason = "genesis" | "change" | "resume";
+
+/**
+ * The three chain DUST parameters in force at a height
+ * (`spec/00016-dust-wallet-sync.md` §4 `params`; plan 00016 §7b).
+ *
+ * Decimal strings, not `bigint`, deliberately: they are `u128` in the ledger, they arrive from the
+ * WASM as `BigInt`, they are stored as `numeric(39)`, and they are served verbatim as decimal
+ * strings on `GET /v1/dust/tip`. Carrying them as strings end to end means the value the chain set
+ * is the value a wallet sees, with no representation that could round it.
+ */
+export interface DustParametersRecord {
+  net: string;
+  blockHeight: number;
+  blockHash: Hex32;
+  nightDustRatio: string;
+  generationDecayRate: string;
+  dustGracePeriodSeconds: string;
+  reason: DustParametersReason;
+}
+
 /** Everything one call to `putBlockBundle` needs to ingest a single block atomically: the block
  *  row itself plus every transaction/bridge-observation row that belongs to it. `transactions`/
  *  `bridgeObservations` may be empty (e.g. a block with no `pallet_midnight` transactions, or no
@@ -232,6 +266,18 @@ export interface BlockBundle {
    *   - non-empty -- the rows, in ledger execution order.
    */
   dustEvents?: readonly DustEventRecord[];
+  /**
+   * The DUST parameters row for THIS height, when this block is one that needs one (question Q-22
+   * option C) — written inside the SAME transaction as the block itself, for the same reason the
+   * checkpoint and the watermark are: a height is either wholly in the archive or wholly absent.
+   *
+   * `undefined` on almost every block, and that is the point: a row is written only at genesis, at
+   * a block that actually changed a value, and once at a resume point. MUST describe this bundle's
+   * own block — `net`, `blockHeight` and `blockHash` are checked against `block` and a mismatch is
+   * refused, because a row filed under another block would tell the node the parameters changed
+   * somewhere they did not.
+   */
+  dustParameters?: DustParametersRecord;
   /**
    * Owner **Rule A** (`spec/00009` User Story 5, FR-029): the replay checkpoint for THIS height,
    * when one is due, written inside the SAME transaction as everything else about the height.
@@ -454,6 +500,34 @@ export interface ChainArchiveStore {
    * the backfill resumes from; the row tip is what a reader has actually consumed.
    */
   getDustCaptureHeight(net: string): Promise<number | undefined>;
+
+  /**
+   * Write one `dust_parameters` row on its own (question Q-22 option C). One transaction per call.
+   *
+   * This is the BACKFILL's write path, the twin of {@link ChainArchiveStore.putDustEventsForHeight}
+   * — the live ingest writes its row inside the block's own bundle instead
+   * (`BlockBundle.dustParameters`).
+   *
+   * Idempotent: the row collides on `PRIMARY KEY (net, block_height, block_hash)` and is dropped.
+   * `written` is false for a collision, which is how a caller can tell "I wrote the genesis row"
+   * from "it was already there".
+   */
+  putDustParameters(row: DustParametersRecord): Promise<{ written: boolean }>;
+
+  /**
+   * The parameters in force at `atHeight`: the newest row at or below it for this net, or
+   * `undefined` when the archive holds none (an ingest that ran before migration 010, or one that
+   * never ran replay validation).
+   *
+   * `atHeight` is `undefined` for "the newest row overall", which is what a consumer starting up
+   * against an archive it has not folded yet asks for.
+   *
+   * At or BELOW, never the nearest: parameters are in force from the block that set them until the
+   * block that changes them, so the newest row not above the reader's own height is the answer.
+   */
+  getDustParametersAtOrBelow(
+    net: string, atHeight?: number,
+  ): Promise<DustParametersRecord | undefined>;
 
   /**
    * This archive database's own identity for `net` (`spec/00009` FR-028): 32 lowercase hex

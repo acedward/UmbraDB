@@ -168,6 +168,32 @@ export interface BlockFullness {
   readonly accumulated: Readonly<AccumulatedCost>;
 }
 
+/**
+ * The three DUST parameters this replay's ledger state currently holds
+ * (`LedgerState.parameters.dust`, i.e. `DustParameters`'s own three constructor arguments).
+ *
+ * DECIMAL STRINGS, not `bigint`: they are `u128` in the ledger, they are stored as `numeric(39)`,
+ * and they are served verbatim on `GET /v1/dust/tip`. Carrying them as strings the whole way means
+ * the value the chain set is the value a wallet reads, with no intermediate representation that
+ * could round it. `timeToCapSeconds` is deliberately absent — it is derived from the other three,
+ * so recording it would create a second place for one fact to be wrong.
+ */
+export interface DustParameterValues {
+  readonly nightDustRatio: string;
+  readonly generationDecayRate: string;
+  readonly dustGracePeriodSeconds: string;
+}
+
+/** True when two parameter readings are the same chain configuration. */
+export function dustParametersEqual(
+  a: DustParameterValues | undefined, b: DustParameterValues | undefined,
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return a.nightDustRatio === b.nightDustRatio &&
+    a.generationDecayRate === b.generationDecayRate &&
+    a.dustGracePeriodSeconds === b.dustGracePeriodSeconds;
+}
+
 export class LedgerReplay {
   private state: any;
   private readonly strictness: any;
@@ -381,6 +407,47 @@ export class LedgerReplay {
    *  JavaScript would recreate the precision boundary the atomic export exists to remove. */
   get lastBlockFullness(): BlockFullness | undefined {
     return this.lastFullness;
+  }
+
+  /**
+   * The DUST parameters this replay's state holds RIGHT NOW
+   * (`spec/00016-dust-wallet-sync.md` §4 `params`; question Q-22 option C).
+   *
+   * Valid at every point of the fold, not only after an `applyBlock`, and that is what the ingest
+   * needs: on Midnight the genesis state is a snapshot installed by `fromSerialized`, never a
+   * block that was applied, so the `genesis` parameters row can only be read straight off the
+   * state the fold starts from.
+   *
+   * A parameter change arrives as an `OverwriteParameters` SYSTEM transaction, which `applyBlock`
+   * applies like any other, so reading this after a block is what detects one. Nothing is cached:
+   * `state.parameters` is a live view of the current state, and a stale copy would report the old
+   * values for the block that changed them.
+   *
+   * The wasm-bindgen handles the two getters mint are freed here rather than left to a garbage
+   * collection this process cannot schedule — this runs once per block on the ingest's hot path.
+   * Both getters CLONE out of the state (verified: freeing them leaves `this.state` usable and its
+   * next reading identical), so the free is a release of a copy, not of the state's own field.
+   * A `free()` that throws is swallowed: a handle this method could not release is a leak, and a
+   * leak must not refuse a block.
+   */
+  dustParameters(): DustParameterValues {
+    const parameters = this.state.parameters;
+    const dust = parameters.dust;
+    try {
+      return {
+        nightDustRatio: String(dust.nightDustRatio),
+        generationDecayRate: String(dust.generationDecayRate),
+        dustGracePeriodSeconds: String(dust.dustGracePeriodSeconds),
+      };
+    } finally {
+      for (const handle of [dust, parameters]) {
+        try {
+          handle?.free?.();
+        } catch {
+          // Already freed, or a build whose getters do not hand back owned handles.
+        }
+      }
+    }
   }
 
   /** The node-comparable post-block ledger root: the untagged serialized typed arena key exposed

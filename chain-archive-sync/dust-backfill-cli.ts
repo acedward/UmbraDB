@@ -96,17 +96,23 @@ let exitCode = 0;
 try {
   let totalBlocks = 0;
   let totalRows = 0;
+  // Question Q-22 option C: the backfill fills `dust_parameters` on the same pass, so the run
+  // reports both. Usually 1 (the genesis or resume row) plus one per parameter change it walked
+  // past -- a number that stays 1 on every chain that has never changed its DUST parameters.
+  let totalParameterRows = 0;
   const startedAt = Date.now();
   while (!stop) {
     const pass = await service.backfillDustEvents({ maxBlocks });
     totalBlocks += pass.blocks;
     totalRows += pass.rows;
-    if (pass.blocks > 0) {
+    totalParameterRows += pass.parameterRows;
+    if (pass.blocks > 0 || pass.parameterRows > 0) {
       const elapsed = (Date.now() - startedAt) / 1000;
       // eslint-disable-next-line no-console
       console.log(
         `${new Date().toISOString()} heights ${pass.fromHeight}..${pass.toHeight} ` +
-          `rows=${pass.rows} total_blocks=${totalBlocks} total_rows=${totalRows} ` +
+          `rows=${pass.rows} params=${pass.parameterRows} total_blocks=${totalBlocks} ` +
+          `total_rows=${totalRows} total_params=${totalParameterRows} ` +
           `blocks_per_s=${(totalBlocks / Math.max(elapsed, 0.001)).toFixed(1)}`,
       );
     }
@@ -114,7 +120,8 @@ try {
       // eslint-disable-next-line no-console
       console.log(
         `[dust-backfill] DONE: dust_events now covers every archived height for net ${NET} ` +
-          `(this run: ${totalBlocks} heights, ${totalRows} rows).`,
+          `(this run: ${totalBlocks} heights, ${totalRows} rows, ` +
+          `${totalParameterRows} dust_parameters rows).`,
       );
       break;
     }

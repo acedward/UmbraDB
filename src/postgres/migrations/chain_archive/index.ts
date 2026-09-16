@@ -8,6 +8,7 @@ import * as replayCheckpointLedgerNetwork from "./006_replay_checkpoint_ledger_n
 import * as blobRoleGuardForwardFix from "./007_blob_role_guard_forward_fix.js";
 import * as blockTimestamp from "./008_block_timestamp.js";
 import * as dustEvents from "./009_dust_events.js";
+import * as dustParameters from "./010_dust_parameters.js";
 import type { Migration } from "../../migrate.js";
 
 /**
@@ -44,6 +45,7 @@ export const chainArchiveMigrations: Migration[] = [
   blobRoleGuardForwardFix,
   blockTimestamp,
   dustEvents,
+  dustParameters,
 ];
 
 // v3 note: `chainArchiveCore` now also creates `chain_archive_assert_blob_role` (a shared
@@ -74,3 +76,11 @@ export const chainArchiveMigrations: Migration[] = [
 // (`spec/00016-dust-wallet-sync.md` §5.3, FR-001), so one shared fold replaces every wallet's own.
 // Additive: a new table plus its indexes; no existing object changes, and an archive that never
 // runs replay validation simply keeps it empty.
+//
+// 00016 note: 010 adds `dust_parameters`, the three chain DUST parameters in force at a height
+// (question Q-22 option C, owner 2026-09-16). The node needs them to construct its mirror and to
+// serve `GET /v1/dust/tip`; it used to get them by deserializing a whole `LedgerState` out of the
+// newest replay checkpoint, which on a real archive is a 31 MB blob and minutes of synchronous
+// WASM on the node's only thread. The ingest already holds the parsed state, so it writes the
+// three values here instead. Additive: one table plus one index; no existing object changes, and
+// an archive that never runs replay validation keeps it empty.

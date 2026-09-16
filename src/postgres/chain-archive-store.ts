@@ -13,6 +13,8 @@ import {
   type DustCaptureOutcome,
   type DustEventRawRow,
   type DustEventRecord,
+  type DustParametersReason,
+  type DustParametersRecord,
   type ReplayCheckpointRecord,
   type RuntimeMetadataRecord,
   type ChainArchiveStore,
@@ -105,6 +107,18 @@ interface BridgeObservationRow {
   observation_index: number;
   kind: BridgeObservationKind;
   raw_blob_hash: Buffer;
+}
+
+/** `dust_parameters` as the driver hands it back: `numeric` columns arrive as strings, which is
+ *  exactly what {@link DustParametersRecord} wants (migration 010). */
+interface DustParametersRow {
+  net: string;
+  block_height: bigint;
+  block_hash: Buffer;
+  night_dust_ratio: string;
+  generation_decay_rate: string;
+  dust_grace_period_seconds: bigint;
+  reason: DustParametersReason;
 }
 
 function toBlockMeta(row: BlockRow): BlockMeta {
@@ -468,6 +482,101 @@ export class PgChainArchiveStore implements ChainArchiveStore {
     return { outcome: "written", rows: inserted };
   }
 
+  /**
+   * Insert one `dust_parameters` row (migration 010, question Q-22 option C) inside the caller's
+   * transaction. `ON CONFLICT DO NOTHING` on the primary key, so a re-ingested height is a no-op
+   * and `written` says which it was.
+   *
+   * The values travel as DECIMAL STRINGS and are cast to `numeric`/`bigint` in SQL rather than
+   * being bound as JavaScript numbers: `nightDustRatio` is a `u128` in the ledger and the values
+   * seen on preprod (5 000 000 000) already exceed what a `float8` round-trip can be trusted with
+   * once the chain raises them.
+   */
+  private async insertDustParametersRow(
+    tx: ChainArchiveTx, row: DustParametersRecord,
+  ): Promise<{ written: boolean }> {
+    assertHex32(row.blockHash, "putDustParameters.blockHash");
+    for (const [field, value] of [
+      ["nightDustRatio", row.nightDustRatio],
+      ["generationDecayRate", row.generationDecayRate],
+      ["dustGracePeriodSeconds", row.dustGracePeriodSeconds],
+    ] as const) {
+      // A non-decimal here would reach PostgreSQL as a cast error deep inside a block's own
+      // transaction and take the whole height down with it. Refused at the boundary, named.
+      if (!/^\d{1,39}$/.test(value)) {
+        throw new ValidationError(
+          "invalid input at PgChainArchiveStore.putDustParameters",
+          [{
+            path: field,
+            message:
+              `a DUST parameter must be a non-negative decimal integer of at most 39 digits, ` +
+              `but ${field} is ${JSON.stringify(value)}. These are u128 chain values carried as ` +
+              "strings precisely so nothing rounds them.",
+          }],
+        );
+      }
+    }
+    const result = await tx`
+      INSERT INTO ${tx(this.schema)}.dust_parameters
+        (net, block_height, block_hash, night_dust_ratio, generation_decay_rate,
+         dust_grace_period_seconds, reason)
+      VALUES (${row.net}, ${row.blockHeight}, ${hexToBuf(row.blockHash)},
+              ${row.nightDustRatio}::numeric, ${row.generationDecayRate}::numeric,
+              ${row.dustGracePeriodSeconds}::bigint, ${row.reason})
+      ON CONFLICT (net, block_height, block_hash) DO NOTHING
+    `;
+    return { written: (result.count ?? 0) > 0 };
+  }
+
+  async putDustParameters(row: DustParametersRecord): Promise<{ written: boolean }> {
+    try {
+      return await this.sql.begin(async (tx) => await this.insertDustParametersRow(tx, row));
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  async getDustParametersAtOrBelow(
+    net: string, atHeight?: number,
+  ): Promise<DustParametersRecord | undefined> {
+    try {
+      // One index scan over `dust_parameters_at_or_below (net, block_height DESC)`. The height
+      // bound is a separate branch rather than a `COALESCE(..., 2^63)` so the planner sees a plain
+      // range scan in both shapes.
+      const rows = atHeight === undefined
+        ? await this.sql<DustParametersRow[]>`
+            SELECT net, block_height, block_hash, night_dust_ratio, generation_decay_rate,
+                   dust_grace_period_seconds, reason
+            FROM ${this.sql(this.schema)}.dust_parameters
+            WHERE net = ${net}
+            ORDER BY block_height DESC
+            LIMIT 1
+          `
+        : await this.sql<DustParametersRow[]>`
+            SELECT net, block_height, block_hash, night_dust_ratio, generation_decay_rate,
+                   dust_grace_period_seconds, reason
+            FROM ${this.sql(this.schema)}.dust_parameters
+            WHERE net = ${net} AND block_height <= ${atHeight}
+            ORDER BY block_height DESC
+            LIMIT 1
+          `;
+      const row = rows[0];
+      return row === undefined ? undefined : {
+        net: row.net,
+        blockHeight: Number(row.block_height),
+        blockHash: bufToHex(row.block_hash),
+        // `numeric` comes back as a string from this driver, which is what this interface wants;
+        // `String()` is the belt to that braces, not a conversion that could lose a digit.
+        nightDustRatio: String(row.night_dust_ratio),
+        generationDecayRate: String(row.generation_decay_rate),
+        dustGracePeriodSeconds: String(row.dust_grace_period_seconds),
+        reason: row.reason,
+      };
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
   async putDustEventsForHeight(args: {
     net: string;
     blockHeight: number;
@@ -689,6 +798,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
   ): Promise<{ headerBlobHash: Hex32; bodyBlobHash?: Hex32; dustCapture?: DustCaptureOutcome }> {
     const { block, transactions: txs, bridgeObservations: obs } = bundle;
     const checkpoint = bundle.replayCheckpoint;
+    const parameters = bundle.dustParameters;
     assertHex32(block.blockHash, "putBlockBundle.blockHash");
     assertHex32(block.parentHash, "putBlockBundle.parentHash");
     assertHex32(block.stateRoot, "putBlockBundle.stateRoot");
@@ -717,6 +827,28 @@ export class PgChainArchiveStore implements ChainArchiveStore {
               `(${checkpoint.blockHash}) but the bundle writes ${block.net}#${block.height} ` +
               `(${block.blockHash}). A checkpoint committed with a block it does not describe ` +
               "would be resumed against the wrong state.",
+          }],
+        );
+      }
+    }
+    // Same rule for the parameters row, and the same reason: a row filed under a block it did not
+    // come from puts a parameter change at a height the chain never changed them, and the node
+    // would price every wallet's balance with those values from that height onward.
+    if (parameters !== undefined) {
+      assertHex32(parameters.blockHash, "putBlockBundle.dustParameters.blockHash");
+      if (
+        parameters.net !== block.net || parameters.blockHeight !== block.height ||
+        parameters.blockHash !== block.blockHash
+      ) {
+        throw new ValidationError(
+          "invalid input at PgChainArchiveStore.putBlockBundle.dustParameters",
+          [{
+            path: "dustParameters",
+            message:
+              `the bundled DUST parameters describe ${parameters.net}#${parameters.blockHeight} ` +
+              `(${parameters.blockHash}) but the bundle writes ${block.net}#${block.height} ` +
+              `(${block.blockHash}). A parameters row committed with a block it does not describe ` +
+              "would put a parameter change at a height the chain never had one.",
           }],
         );
       }
@@ -785,6 +917,14 @@ export class PgChainArchiveStore implements ChainArchiveStore {
             { net: block.net, blockHeight: block.height, blockHash: block.blockHash },
             bundle.dustEvents,
           );
+        }
+        // Q-22 option C: the DUST parameters row, in this height's transaction for the same reason
+        // as everything above it -- and after the block row, whose FK it carries. Unlike the
+        // events there is no contiguity notion here: the row is a POINT fact ("from this height
+        // the chain uses these values"), so a missing earlier row makes a later one less
+        // informative, never wrong.
+        if (bundle.dustParameters !== undefined) {
+          await this.insertDustParametersRow(tx, bundle.dustParameters);
         }
         if (bundle.watermark !== undefined) {
           await this.upsertWatermarkRow(tx, bundle.watermark.key, bundle.watermark.value);
