@@ -1,22 +1,23 @@
+import { PgChainArchiveStore } from "../src/postgres/chain-archive-store.js";
 import { runMigrations } from "../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../src/postgres/migrations/chain_archive/index.js";
 import type { UmbraDBSql } from "../src/postgres/client.js";
 
 /**
- * The real invocation path `chainArchiveMigrations` was missing (`src/postgres/migrate.ts`'s own
- * doc: "nothing in this repo's application code passes this today"). Mirrors how the Tier-1
- * lineage is actually invoked in this codebase: there is no dedicated CLI entry point or npm
- * script for `tier1WalletMigrations` either (checked -- `package.json` has no `migrate` script,
- * and the only real callers of `runMigrations` anywhere in this repo are test setup helpers,
- * `test/postgres/setup.ts:26` and `test/postgres/chain-archive-migrate.test.ts`'s own direct
- * calls) -- this codebase's established pattern is "the consuming module bootstraps its own
- * schema on startup," not a separate migration-runner binary. `bootstrapChainArchiveSchema` is
- * that pattern's Tier-1.5 equivalent: the one real, non-test call site a production caller (or
- * this directory's own sync service / integration tests) uses before ingesting anything, and it
- * IS exercised for real against a live Postgres instance by
- * `test/integration/chain-archive-sync.integration.test.ts` (not just the already-existing
- * `test/postgres/chain-archive-migrate.test.ts` unit-level migration test).
+ * Tier-1.5 bootstrap used by the packaged archive-sync CLI before ingest. It applies the complete
+ * independent lineage through the shared migration runner; integration and migration tests invoke
+ * this same path against real PostgreSQL rather than maintaining a test-only schema setup.
+ *
+ * `net` is optional and, when given, additionally mints this archive's instance identity for that
+ * net (spec/00009 FR-028) so it exists from bootstrap rather than from the first ingested block.
+ * Minting is idempotent -- an archive already carrying an identity keeps it -- so passing `net` on
+ * every boot is safe and is what the CLI does.
  */
-export async function bootstrapChainArchiveSchema(sql: UmbraDBSql, schema = "chain_archive"): Promise<void> {
+export async function bootstrapChainArchiveSchema(
+  sql: UmbraDBSql, schema = "chain_archive", opts?: { net?: string },
+): Promise<void> {
   await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
+  if (opts?.net !== undefined) {
+    await new PgChainArchiveStore(sql, schema).ensureArchiveInstanceId(opts.net);
+  }
 }

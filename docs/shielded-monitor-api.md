@@ -1,0 +1,488 @@
+# The shielded-monitor private API
+
+> Change: `openspec/changes/00009-04-private-api-cli/`. Storage and lifecycle semantics:
+> `openspec/changes/00009-02-monitor-store/`. Backup and restore:
+> [`shielded-monitor-restore.md`](shielded-monitor-restore.md).
+
+`umbradb-shielded-monitor-node` is the HTTP/JSON surface over the `shielded_monitor` schema — and,
+since 00009-09, the same process that does the scanning and holds the viewing keys. One consumer
+application registers a Midnight shielded viewing key, watches the scan coverage advance, and pages
+the matching transactions with an opaque cursor. In a multi-node deployment the client talks to
+`umbradb-shielded-monitor-balancer`, which routes each registration to the node holding that key.
+
+---
+
+## Read this before you deploy it
+
+**This API has no authentication.** No tokens, no passwords, no mutual TLS, no tenant scoping, no
+rate limiting, no quotas. That is a deliberate alpha decision (owner, 2026-09-10), recorded in the
+change proposal's non-goals, and it has a hard consequence:
+
+> **Anyone who can open a TCP connection to this port can register a viewing key, read every
+> monitor's matches, and delete any monitor — destroying its matches and the key held for it. The
+> deployment — not this service — is responsible for making sure nobody can.**
+
+Bind loopback (the default) and reach it from the same host, or put it behind something that
+authenticates. Do not expose the port.
+
+Two further facts about the alpha's trust model, both inherited from the store:
+
+- Registered viewing keys are **not stored at all** (00009-09): a key lives in the RAM of the one
+  monitor-node it was sent to, and the database keeps only its SHA-256 fingerprint. The
+  wallet↔transaction associations ARE stored in plaintext in `shielded_monitor.associations`, so
+  anyone with database access learns the linkage even though they cannot decrypt anything.
+  Encryption of the associations is deferred.
+- A node that restarts holds no keys. Its monitors then report `"keyNeeded": true` with
+  `"heldBy": null`, and the remedy is to `POST /v1/monitors` the same key again — it reaches the
+  same monitor and resumes from the coverage already recorded.
+- The cursor is opaque but **unsigned**. A caller can forge one. Because there is no
+  authentication, this grants nothing a caller does not already have: a forged cursor can only
+  reposition a caller within a monitor it can already read in full.
+
+What the service **does** guarantee about key handling:
+
+- A viewing key is accepted only in the body of `POST /v1/monitors`. No other endpoint takes one,
+  in any position; no endpoint ever returns one.
+- No log record and no error body contains a viewing key in any encoding. Request logging never
+  sees a body, logs the matched *route pattern* rather than the raw URL, and logs no error message
+  at all on the create route. A test asserts this with a positive control.
+- Every key-intake failure — malformed Bech32m, wrong network, non-canonical payload, ledger
+  rejection — answers with one identical generic error, so a caller cannot learn which check
+  failed.
+
+---
+
+## Running it
+
+```
+STORAGE_URL=http://127.0.0.1:8788 \
+SHIELDED_MONITOR_NET=undeployed \
+MONITOR_NODE_ID=node-1 \
+umbradb-shielded-monitor-node
+```
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `STORAGE_URL` | — (**required**) | base URL of the `umbradb-storage-api`. **This process has no database connection** (00009-08 v2, owner Q25); it refuses to start if any `*_PG` variable is in its environment |
+| `ARCHIVE_URL` | `STORAGE_URL` | where `/v1/archive/*` is served, for `sourceTip` |
+| `SHIELDED_MONITOR_NET` | `undeployed` | the one network this deployment serves; a key's Bech32m HRP must match it |
+| `SOURCE_TIP` | unset | `off` disables the tip reader, so `sourceTip` is always `null` — for an API deployed with no archive access |
+| `API_HOST` | `127.0.0.1` | bind address |
+| `API_PORT` | `8787` | bind port; `0` asks the kernel for a free one |
+| `API_MAX_BODY_BYTES` | `65536` | request body cap; exceeding it is `400 BODY_TOO_LARGE` |
+| `API_MAX_PAGE` | `200` | matches page cap; may not exceed the store's own cap of 1000, and a value above it fails at boot |
+| `API_DEFAULT_PAGE` | `50` | page size when the caller does not ask for one |
+| `MONITOR_NODE_ID` | random UUID | this node's name, returned as `heldBy` |
+| `SCAN_POLL_MS` | `2000` | fallback wake-up interval for the live scan |
+| `SCAN_BATCH_BLOCKS` | `8` | whole blocks per catch-up page (the live pass is always one block per commit) |
+
+The service is a **separate process** from the archive ingester (`umbradb-archive-sync`) and from
+the storage API. It holds no database connection; see
+[`shielded-monitor-deployment.md`](shielded-monitor-deployment.md) for the full topology.
+
+It also serves `/internal/status`, `/internal/holds` and `/internal/events` **for the balancer
+only**. Those routes return counts, heights, this node's name and booleans — never a key, a
+fingerprint, or anything derived from one — and the balancer answers 404 to any client that asks
+for them. A node should be reachable only from the balancer.
+
+---
+
+## Endpoints
+
+All requests and responses are JSON. `POST` with a body requires
+`content-type: application/json`. Every response carries an `x-request-id` header, echoed in
+error bodies.
+
+### `POST /v1/monitors` — register a viewing key
+
+```json
+{ "viewingKey": "mn_shield-esk_undeployed1…", "startHeight": "earliest" }
+```
+
+`startHeight` accepts `"earliest"`, a JSON number, or a decimal string (use the string form above
+2^53). It defaults to `"earliest"`.
+
+- `201` — a monitor was created. Body: the monitor view.
+- `200` — this key was already registered on this network; the body is the **existing** monitor
+  (registration is idempotent per network and key).
+- `400 INVALID_VIEWING_KEY` — one generic error for every intake failure.
+- `400 VALIDATION_FAILED` — the body did not match the schema.
+- `415` — the content type was not `application/json`.
+
+### `GET /v1/monitors` — list monitors
+
+```json
+{
+  "items": [ { "monitorId": "…", "state": "live", "coverage": { … }, … } ],
+  "sourceTip": "1204",
+  "net": "undeployed"
+}
+```
+
+Every monitor this deployment holds, **in creation order**, each item in exactly the shape
+`GET /v1/monitors/:id` returns — the same builder, so the two cannot drift. `?limit=` is bounded by
+`API_MAX_PAGE` and defaults to `API_DEFAULT_PAGE`; `400 VALIDATION_FAILED` outside that range.
+`sourceTip` and `net` are repeated at the top level because they belong to the *deployment*, not to
+any monitor, and an empty `items` would otherwise hide them.
+
+**One exclusion, and it is not negotiable.** A **deleted** monitor is never listed — the contract
+is that it is indistinguishable from one that never existed. Everything else is: a monitor that
+STOPPED (`failed`, `stale_source`) stays on the list with its `lastError`, and its own routes keep
+answering, because an operator who cannot see a stopped monitor cannot act on it.
+
+A **deleted** monitor is never listed. That half is not negotiable: a deleted monitor must be
+indistinguishable from one that never existed, and a tombstone in the list would break that
+literally.
+
+### `GET /ui` — the dashboard
+
+A single self-contained HTML page, served by this same process. `GET /ui/` serves the same page;
+`GET /` answers `302` to `/ui`. It loads **nothing** from any other origin — no framework, no CDN,
+no font, no icon — and is served with `Content-Security-Policy: default-src 'self'` plus SHA-256
+hashes of its own inline script and style, `form-action 'none'`, `frame-ancestors 'none'`,
+`x-content-type-options: nosniff` and `referrer-policy: no-referrer`.
+
+It shows health and the archive tip, a monitor table with state badges and a coverage bar, a
+registration form, and the selected monitor's matches newest-first with cursor paging; it refreshes
+every 3 seconds and the refresh can be paused. Coverage that is unknown renders as *not scanned* or
+*unknown* — never as `0`.
+
+A viewing key typed into the registration form is sent only in the `POST /v1/monitors` body. It is
+never placed in a URL, never stored in the browser, never rendered back into the page, and never
+written to a server log — registering through the page produces the same log record as registering
+with `curl`, which the required test `shielded-monitor.api.key-never-logged` asserts over the page's
+own request shape.
+
+**The dashboard grants a browser exactly what `curl` already had.** It is the same unauthenticated
+surface; see the deployment warning at the top of this document.
+
+Walk-through: [`shielded-monitor-demo.md`](shielded-monitor-demo.md).
+
+### `GET /v1/monitors/:id` — status
+
+`200` with the monitor view; `404` if the id names nothing **or names a deleted monitor**. A
+monitor that merely stopped (`failed`, `stale_source`) answers `200` with its `lastError`.
+
+### `GET /v1/monitors/:id/matches?cursor=…&limit=…` — page matches
+
+```json
+{
+  "items": [ … ],
+  "nextCursor": "…",
+  "coverage": { "requestedStart": "0", "scannedFrom": "0", "scannedThrough": "1204", "sourceTip": null }
+}
+```
+
+`400` for a malformed cursor, a cursor minted for a different monitor, or a `limit` outside
+`1..API_MAX_PAGE`. `404` as above.
+
+### `DELETE /v1/monitors/:id`
+
+**The only lifecycle operation there is** (owner decision Q33): a viewing key is GIVEN with
+`POST /v1/monitors` or DELETED with this route, and there is nothing in between. `pause`, `resume`
+and `revoke` were removed; a client still calling one gets the `404` any other unknown path gets.
+
+`204` when the monitor was deleted — its registration identity, every association row and every
+gap row go in one transaction, and the key held for it is destroyed in its node's RAM (the
+balancer forwards the delete to the holder; the holder's next block would fence it anyway).
+`404` when the id names nothing, **including an id that was already deleted**: after a delete,
+every endpoint for that id answers `404`, because the contract is that a deleted monitor is
+indistinguishable from one that never existed.
+
+Registering the same viewing key afterwards creates a **fresh** monitor, with a new id, no
+coverage and no matches — the identity was shed with the delete. That is the whole "I changed my
+mind" path, and it is a re-send of the key rather than an un-delete.
+
+### `GET /v1/health`
+
+`200 {"status":"ok","net":"…"}`. Touches no table, so it stays green on an empty deployment with
+zero monitors.
+
+### Deriving a key to register
+
+`umbradb-shielded-monitor-derive-key --seed-file <path> [--hd] [--net <id>] [--quiet]` turns a
+32-byte hex seed **held in a file** into the Bech32m `mn_shield-esk_<net>` string this API accepts,
+and prints the coin public key and encryption public key — the two public halves of the shielded
+address to fund. `--hd` applies the wallet's own derivation, BIP-0032 `m/44'/2400'/<account>'/3/<index>`
+over secp256k1, which is what `@midnightntwrk/wallet-sdk-hd` does. The seed is never read from the
+command line and never printed.
+
+---
+
+## The monitor view
+
+```json
+{
+  "monitorId": "9f0f…",
+  "net": "undeployed",
+  "state": "backfilling",
+  "coverage": { "requestedStart": "0", "scannedFrom": null, "scannedThrough": null, "sourceTip": null },
+  "gaps": [],
+  "heldBy": "node-1",
+  "heldPhase": "live",
+  "keyNeeded": false,
+  "matchingRuleVersion": "shielded-monitor/v1",
+  "ledgerBuild": "ledger-v8@8.1.0-syshash.4",
+  "createdAt": "2026-09-10T12:00:00.000Z",
+  "updatedAt": "2026-09-10T12:00:00.000Z"
+}
+```
+
+States: `backfilling` → `live`, either of which the SYSTEM may stop at `failed` or
+`stale_source`, and any of the four → `deleted` when the consumer asks. There is no `paused` and
+no `revoked` (owner decision Q33). A `failed` or `stale_source` monitor additionally carries
+`lastError: { code, atHeight? }` — the failure **class** only, never a driver message and never
+caller input — and its matches stay readable, which is the difference between a monitor that
+stopped and one that is gone.
+
+**`heldBy` and `keyNeeded` are about CUSTODY, which is a different fact from `state`** (00009-09).
+`heldBy` names the monitor-node currently holding this monitor's viewing key in RAM, or `null`
+when none is; `keyNeeded` is `true` when nobody holds the key and the monitor is in a state that
+should be scanning (`backfilling` or `live`). A monitor can therefore read `"state": "live"` and
+`"keyNeeded": true` at the same time, and that pair is exactly what a node restart leaves behind:
+the monitor is fine, its history is intact, and nothing is scanning for it until the client sends
+the key again.
+
+`heldPhase` is the key's phase INSIDE its holder — `syncing` while the node is catching it up to
+the live scan, `live` once it is in it, `failed` when its monitor stopped — and `null` when nobody
+holds the key. It is not the monitor's `state`: `state` is a fact about the database ("has coverage
+reached the tip?"), `heldPhase` is a fact about the node ("which of its two queues has this key?").
+A monitor can read `"state": "backfilling"` with `"heldPhase": "syncing"` (being caught up) or with
+`"heldPhase": "live"` (in the live pass, with coverage still climbing).
+
+Through the **balancer**, `heldBy` is the deployment's answer — a fan-out across every healthy
+node. Asking a node directly gives that node's own answer only: it cannot see its peers, so it
+reports `null` for a monitor one of them holds. `GET /v1/monitors/<id>/holder` on the balancer
+returns `{"heldBy": …}` on its own.
+
+**`gaps`** lists the ranges below `scannedThrough` that were never actually read for this monitor,
+lowest first (`[{"from":"120","to":"125","recordedAt":"…"}]`). Empty is the healthy shape. A gap
+appears when a key joins the live scan behind its own coverage, and a back-sync job clears it; the
+monitor is **complete** when `scannedThrough === sourceTip` AND `gaps` is empty.
+
+The view carries **no viewing key and no fingerprint**, by construction.
+
+## The coverage object
+
+Every status and every matches response carries all four fields:
+
+| Field | Meaning |
+|---|---|
+| `requestedStart` | the height the consumer asked to start from |
+| `scannedFrom` | the first height actually covered; `null` until the first advance |
+| `scannedThrough` | the last height actually covered; `null` until the first advance |
+| `sourceTip` | the archive's current tip; `null` when this deployment cannot observe it |
+
+**Heights are decimal strings, never JSON numbers.** A block height above 2^53 would round
+silently through a JSON number; a string cannot.
+
+**`null` never means zero.** `scannedFrom: null` means *nothing has been scanned yet*, which is
+different in kind from an empty `items` array — that distinction is the whole point of the
+coverage object. A consumer that sees `items: []` with `scannedThrough: null` has learned "nobody
+has looked", not "there is nothing there".
+
+`sourceTip` is the archive's real current tip wherever the API can reach the archive — which is
+the normal deployment, since both schemas live in one database. The tip is read through the
+archive read contract only (two `SELECT`s, no write method in reach), so project B still never
+writes to an archive table. On a deployment where the API has no archive access, set
+`SOURCE_TIP=off` and the field is always `null`; it is also `null` while the archive holds no
+block at all. It is reported as `null` rather than `0` precisely because `scannedThrough >=
+sourceTip` would otherwise read as *caught up*.
+
+## The match item
+
+```json
+{
+  "cursor": "OWYwZj…",
+  "blockHeight": "1204",
+  "blockHash": "ab12…",
+  "position": 3,
+  "txHash": "cd34…",
+  "protocolVersion": "1",
+  "matchedSegments": [0, 2],
+  "appliedOutcome": "unknown",
+  "sourceOutcome": "success",
+  "matchingRuleVersion": "shielded-monitor/v1",
+  "ledgerBuild": "ledger-v8@8.1.0-syshash.4"
+}
+```
+
+`appliedOutcome` is **always** `"unknown"`. The service detects that a transaction is *relevant to
+your key*; it does not compute whether the transaction applied, and it never claims funds were
+received. `sourceOutcome`, when present, is the **archive's** own replay verdict for that
+transaction — advisory provenance, not a statement about your wallet, and it never replaces
+`appliedOutcome`.
+
+`matchedSegments` names every segment whose offer matched, including fallible segments. A match
+in a fallible segment is still just a match: the segment may have failed.
+
+## Match details (`blockTimestampMs`, `details`)
+
+Each item also carries the transaction's **public zswap data** and the time of the block it sat
+in. Both are `null` when the match was recorded before this service stored them — a monitor
+scanned by an older build. There is no backfill command to fill them in: re-deriving a match's
+details needs the viewing key, which lives only in a node's RAM, and the owner's decision (Q29)
+was to ship the fix forward rather than carry a repair tool. `null` here means *not recorded*; it
+never means "this transaction had no outputs".
+
+```json
+{
+  "blockTimestampMs": "1754395200000",
+  "details": {
+    "version": "shielded-monitor/match-details/v1",
+    "ledgerBuild": "ledger-v8@8.1.0-syshash.4",
+    "segments": [
+      {
+        "segment": 0,
+        "matched": true,
+        "outputs": [
+          { "index": 0, "commitment": "854e92…", "mine": null },
+          { "index": 1, "commitment": "92e368…", "mine": null },
+          { "index": 2, "commitment": "f42b14…", "contractAddress": "cc8321…", "mine": false }
+        ],
+        "inputs": [{ "index": 0, "nullifier": "695481…" }],
+        "transients": [
+          { "index": 0, "commitment": "f42b14…", "nullifier": "695481…", "contractAddress": "cc8321…", "mine": false }
+        ],
+        "counts": { "outputs": 3, "inputs": 1, "transients": 1 },
+        "mineAmong": 2
+      }
+    ],
+    "totals": { "outputs": 3, "inputs": 1, "transients": 1, "mine": 0, "unattributed": 2 }
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `blockTimestampMs` | the block's own `Timestamp::set` value, milliseconds, as a decimal string (never a JSON number, for the reason heights are strings) |
+| `segments[].segment` | `0` is the guaranteed section — the ledger's own numbering; every other id is a fallible segment |
+| `segments[].matched` | the very `EncryptionSecretKey.test(offer)` result that decided the match |
+| `outputs[].commitment` | a **new shielded coin** created by this transaction |
+| `inputs[].nullifier` | a coin this transaction **spent** |
+| `transients[]` | a coin created *and* spent in the same transaction, so it has both |
+| `contractAddress` | present when the entry is delivered to a contract rather than encrypted to a user key |
+| `counts` | the TRUE list sizes, before truncation |
+| `segments[].truncated` / `truncated` | present when a list was capped at 256 entries; `counts` still reports the real size |
+| `totals.mine` / `totals.unattributed` | how many entries are provably yours, and how many could not be attributed |
+
+### `mine` is three-valued, and every value is entailed by the ledger
+
+| value | meaning |
+|---|---|
+| `true` | this entry **is** yours |
+| `false` | this entry is **not** yours |
+| `null` | **not attributable** with a viewing key alone |
+
+The ledger's relevance predicate, `EncryptionSecretKey.test(offer)`, answers "does *anything* in
+this offer decrypt under this key" — it is an `any()` over every output and transient ciphertext,
+and the vendored ledger v8 build exposes no per-entry variant. Isolating one output into its own
+offer (`ZswapOffer.fromOutput`) is refused for a value read out of an archived, proven
+transaction, and the only per-coin API needs the full `ZswapSecretKeys` a viewing-key monitor does
+not hold. So the service reports what it can prove:
+
+- a segment whose `matched` is `false` gives **`mine: false` for every entry in it** — `test`
+  returning false means *no* ciphertext decrypted;
+- an entry with a `contractAddress` is **`mine: false`** — it carries no user ciphertext at all;
+- in a matched segment, if exactly one candidate remains it is **`mine: true`** — something
+  decrypted and there is nothing else it could have been;
+- otherwise every candidate is **`null`**, and the segment carries `mineAmong: <n>`, i.e. *at
+  least one of these n is yours*.
+
+Both of those last two deductions are about the **whole** segment, so both go silent when a list
+was truncated at the 256-entry cap: the entry that decrypted may sit past the cap, so nothing is
+pinned and no `mineAmong` is published. The two negatives are unaffected — `test` returning false
+is a fact about every ciphertext in the offer, seen or not, and a contract-owned entry carries
+none either way.
+
+Amounts, balances and spend detection are **out of scope** (they need the full key pair);
+`appliedOutcome` stays `"unknown"` regardless of what `details` shows.
+
+### `?details=0`
+
+`GET /v1/monitors/:id/matches?details=0` omits **both** `blockTimestampMs` and `details`,
+reproducing the pre-00009-07 item exactly — for a consumer paging a long history that does not
+want the payload. Any other value, including an absent parameter, includes them: a typo fails
+towards more data, never towards a silently smaller page.
+
+## The cursor contract
+
+- The cursor is **opaque**. Do not parse it, do not do arithmetic on it. Send back the
+  `nextCursor` you were given.
+- A cursor is **bound to its monitor**. Submitting monitor A's cursor on monitor B's matches
+  endpoint is a `400`, not a silently wrong page.
+- The **same cursor with the same `limit` returns the same page**. Associations are append-only
+  under a monotone sequence, so no row can ever appear below a position you have already read.
+- The sequence behind the cursor is **monotonic, not dense**. A back-sync that re-reads a range it
+  had already recorded skips the rows it already holds and leaves their numbers unused, so there
+  are gaps in the underlying sequence. Nothing about paging changes — a page is "the next `limit`
+  rows above this cursor", and a number nobody stops at costs nothing — but do not treat a cursor
+  as a count of matches, and do not compute "how many are left" from two cursors.
+- An **empty page returns your own cursor back**, not `null`. A poller can write `nextCursor` to
+  its cursor file unconditionally on every tick, including at the end of the stream.
+- Items are ordered by `(blockHeight, position)` **within a scan**: sequence numbers are allocated
+  in that order inside the same transaction that advances coverage. A match found later by a
+  back-sync over an older range is appended at the END of the sequence, above matches at greater
+  heights, which is deliberate — a poller that has already paged past that height must still be
+  handed the match. So the sequence is a delivery order, not a height order.
+
+Polling loop, in words: read your cursor file → `GET …/matches?cursor=…` → persist `nextCursor`
+→ process `items` → sleep. Persisting before processing means a crash re-reads a page you have
+already stored rather than skipping one you have not; duplicate delivery is recoverable, a
+skipped match is not.
+
+## Error bodies
+
+```json
+{ "error": { "code": "MONITOR_NOT_FOUND", "message": "no such monitor", "requestId": "…" } }
+```
+
+`code` is the contract; `message` is for humans and may change. A `400 VALIDATION_FAILED` may
+carry `issues: [{path, message}]` — with any issue on the `viewingKey` path reduced to
+`"invalid"`, so the field that holds a secret can never carry one into an error body.
+
+| Code | Status | When |
+|---|---|---|
+| `VALIDATION_FAILED` | 400 | body or query parameter failed its schema; page size out of range |
+| `INVALID_VIEWING_KEY` | 400 | any key-intake failure (one generic message for all of them) |
+| `INVALID_CURSOR` | 400 | malformed cursor, or one minted for another monitor |
+| `BODY_TOO_LARGE` | 400 | request body exceeded `API_MAX_BODY_BYTES` |
+| `NOT_FOUND` | 404 | no such route |
+| `MONITOR_NOT_FOUND` | 404 | no such monitor, or a deleted one |
+| `METHOD_NOT_ALLOWED` | 405 | route exists, verb does not (an `allow` header lists the verbs) |
+| `ILLEGAL_TRANSITION` | 409 | the lifecycle does not admit that transition from the current state |
+| `MONITOR_FENCED` | 409 | the monitor changed under the request; reload and retry |
+| `UNSUPPORTED_MEDIA_TYPE` | 415 | `content-type` was not `application/json` |
+| `INTERNAL_ERROR` | 500 / 503 | an unmapped fault, or storage unavailable |
+
+A `500` never forwards the underlying message. An unexpected error's message is the one string
+nobody has reviewed for what it might contain, and on the create route a driver message could
+quote a bound parameter — which on that route is a viewing key.
+
+---
+
+## The reference consumer
+
+`umbradb-shielded-monitor-client` is a minimal CLI that speaks only HTTP — it holds no database
+credentials, imports no driver and knows no schema name.
+
+```
+umbradb-shielded-monitor-client register --key-file ./viewing.key --start earliest
+umbradb-shielded-monitor-client status  --id <uuid>
+umbradb-shielded-monitor-client poll    --id <uuid> --cursor-file ./monitor.cursor
+umbradb-shielded-monitor-client delete  --id <uuid>
+```
+
+`--api <url>` (or `UMBRADB_API`) selects the service; the default is
+`http://127.0.0.1:8787`.
+
+The viewing key is read **only from a file**, never from `argv` — a key on a command line lands in
+the shell history and in every `ps` listing on a shared host, and neither can be un-written.
+
+`poll` persists `nextCursor` to `--cursor-file` with a temp-file-plus-rename, so an interrupted
+run leaves either the old cursor or the new one, never an empty file that would replay the
+consumer's whole history. Running `poll` twice with no new matches prints nothing new and leaves
+the cursor file unchanged.
+
+The client prints monitor ids, coverage, and per match the block height, position, transaction
+hash, matched segments and `appliedOutcome`. Nothing else — and never a key.

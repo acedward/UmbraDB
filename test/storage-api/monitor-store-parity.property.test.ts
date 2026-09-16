@@ -1,0 +1,333 @@
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import fc from "fast-check";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  MonitorFencedError,
+  MonitorNotFoundError,
+} from "../../shielded-monitor/errors.js";
+import type { ShieldedMonitorStore } from "../../shielded-monitor/store.js";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
+import { association, fixtureViewingKey, freshStore, TEST_LEDGER_BUILD, TEST_MATCHING_RULE, uniqueSchema } from "../shielded-monitor/helpers.js";
+import { startStorageApi, type StartedStorageApi } from "./helpers.js";
+
+/**
+ * **The substitutability property**: `HttpMonitorStore` and `PgShieldedMonitorStore` are the same
+ * store (sub-plan 00009-08 v2; owner question Q25; `spec/00009` FR-025).
+ *
+ * Project B used to hold a PostgreSQL store and now holds an HTTP client. Everything above that
+ * line — the scanner, the scheduler, the private API, the details backfill, the dashboard — is
+ * unchanged, and is correct only if the two implementations are indistinguishable through the
+ * interface they share. This suite is that claim, checked rather than asserted:
+ *
+ * - the SAME randomly generated command sequence is applied to both, on two schemas of one
+ *   PostgreSQL, one directly and one through a real HTTP server;
+ * - every return value and every thrown error is normalised (ids and timestamps dropped, bigints
+ *   rendered, errors reduced to class + discriminants) and the two transcripts must be EQUAL;
+ * - afterwards the two schemas' full observable state — monitors, associations, lifecycle logs,
+ *   revocations — must be equal as well, so a difference that happened to produce the same
+ *   return values still fails.
+ *
+ * The sequences are generated with `fast-check` and sampled with a FIXED seed, so the suite is
+ * deterministic on CI and on a laptop while still covering command interleavings nobody would
+ * have written by hand — including the ones that matter most here: an advance fenced by a
+ * lifecycle transition that landed between the read and the write, a replayed advance, a delete
+ * followed by a read, and a delete followed by everything.
+ *
+ * What it deliberately does NOT do is compare ids or timestamps: the two sides register different
+ * monitors and `now()` differs by milliseconds. Structure and values are the subject.
+ */
+
+type Command =
+  | { kind: "get" }
+  | { kind: "getIncludingDeleted" }
+  | { kind: "getByFingerprint" }
+  | { kind: "advance"; through: number; matches: number }
+  | { kind: "advanceStaleEpoch"; through: number }
+  | { kind: "readAssociations"; afterSeq: number; limit: number }
+  | { kind: "bindSource" }
+  | { kind: "goLive" }
+  | { kind: "delete" }
+  | { kind: "markFailed" }
+  | { kind: "markStaleSource" }
+  | { kind: "lifecycle" }
+  | { kind: "listGaps" }
+  | { kind: "advanceBatch"; height: number; matches: number; gap: boolean }
+  | { kind: "fillGap"; from: number; to: number; matches: number };
+
+const commandArb: fc.Arbitrary<Command> = fc.oneof(
+  fc.constant<Command>({ kind: "get" }),
+  fc.constant<Command>({ kind: "getIncludingDeleted" }),
+  fc.constant<Command>({ kind: "getByFingerprint" }),
+  fc.record({
+    kind: fc.constant<"advance">("advance"),
+    through: fc.integer({ min: 1, max: 12 }),
+    matches: fc.integer({ min: 0, max: 3 }),
+  }),
+  fc.record({ kind: fc.constant<"advanceStaleEpoch">("advanceStaleEpoch"), through: fc.integer({ min: 1, max: 12 }) }),
+  fc.record({
+    kind: fc.constant<"readAssociations">("readAssociations"),
+    afterSeq: fc.integer({ min: 0, max: 4 }),
+    limit: fc.integer({ min: 1, max: 10 }),
+  }),
+  fc.constant<Command>({ kind: "bindSource" }),
+  fc.constant<Command>({ kind: "goLive" }),
+  fc.constant<Command>({ kind: "delete" }),
+  fc.constant<Command>({ kind: "markFailed" }),
+  fc.constant<Command>({ kind: "markStaleSource" }),
+  fc.constant<Command>({ kind: "lifecycle" }),
+  // 00009-09's three new commands. They belong in this sequence for the same reason `advance`
+  // does: a block-centric commit and a gap fill are the write paths a monitor-node takes, so a
+  // divergence between the two implementations in either of them is exactly the class of bug this
+  // suite exists to catch.
+  fc.constant<Command>({ kind: "listGaps" }),
+  fc.record({
+    kind: fc.constant<"advanceBatch">("advanceBatch"),
+    height: fc.integer({ min: 1, max: 12 }),
+    matches: fc.integer({ min: 0, max: 2 }),
+    gap: fc.boolean(),
+  }),
+  fc.record({
+    kind: fc.constant<"fillGap">("fillGap"),
+    from: fc.integer({ min: 1, max: 6 }),
+    to: fc.integer({ min: 1, max: 6 }),
+    matches: fc.integer({ min: 0, max: 2 }),
+  }),
+);
+
+/** Renders anything, including bigints and bytes, as a stable string. */
+function show(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) => {
+    if (typeof v === "bigint") return `${v.toString()}n`;
+    if (v instanceof Uint8Array) return `bytes:${Buffer.from(v).toString("hex")}`;
+    return v;
+  });
+}
+
+/** The fields two implementations must agree on. Ids and timestamps are excluded because the two
+ *  sides register different monitors at different milliseconds; everything else is compared. */
+function normalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalize);
+  if (value instanceof Date) return "<date>";
+  if (value instanceof Uint8Array) return `bytes:${Buffer.from(value).toString("hex")}`;
+  if (typeof value === "bigint") return `${value.toString()}n`;
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, v] of Object.entries(value)) {
+      if (key === "id" || key === "monitorId" || key === "createdAt" || key === "updatedAt") continue;
+      if (key === "at" || key === "claimedAt" || key === "expiresAt") continue;
+      // 00009-09: a gap's `recordedAt` is `now()` on the server, so the two sides differ by
+      // whatever the wall clock did between them — the same reason `createdAt` is excluded.
+      if (key === "recordedAt") continue;
+      out[key] = normalize(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+/** An error reduced to exactly what a caller may switch on. */
+function describeError(err: unknown): string {
+  if (err instanceof MonitorFencedError) {
+    return `MonitorFencedError(${err.rejection}, epoch=${err.observed.epoch}, state=${err.observed.state})`;
+  }
+  if (err instanceof MonitorNotFoundError) return "MonitorNotFoundError";
+  if (err instanceof Error) return `${err.name}(${String((err as { code?: unknown }).code ?? "")})`;
+  return `unknown(${String(err)})`;
+}
+
+interface World {
+  readonly store: ShieldedMonitorStore;
+  readonly monitorId: string;
+  readonly fingerprint: Uint8Array;
+}
+
+/** Applies one command and returns its normalised transcript line. */
+async function apply(world: World, command: Command): Promise<string> {
+  const { store, monitorId } = world;
+  const current = async (): Promise<bigint> => (await store.getIncludingDeleted(monitorId))?.epoch ?? 0n;
+  try {
+    switch (command.kind) {
+      case "get":
+        return show(normalize(await store.get(monitorId)));
+      case "getIncludingDeleted":
+        return show(normalize(await store.getIncludingDeleted(monitorId)));
+      case "getByFingerprint":
+        return show(normalize(await store.getByFingerprint("undeployed", world.fingerprint)));
+      case "advance": {
+        const epoch = await current();
+        const through = BigInt(command.through);
+        const associations = Array.from({ length: command.matches }, (_, i) => association(through, i));
+        return show(normalize(await store.advance(monitorId, epoch, through, associations)));
+      }
+      case "listGaps":
+        return show(normalize(await store.listGaps(monitorId)));
+      case "advanceBatch": {
+        const epoch = await current();
+        const height = BigInt(command.height);
+        const associations = Array.from({ length: command.matches }, (_, i) => association(height, i));
+        // The batch's block hash is `association`'s own, so the store's cross-check between the
+        // batch and its items is exercised rather than bypassed.
+        const blockHash = association(height, 0).blockHash;
+        const result = await store.advanceBatch("undeployed", height, blockHash, [{
+          monitorId,
+          expectedEpoch: epoch,
+          associations,
+          // A gap strictly below the height, which is the only kind the store admits.
+          ...(command.gap && height > 1n ? { newGaps: [{ from: 0n, to: height - 1n }] } : {}),
+        }]);
+        // The ids are the two sides' OWN monitor uuids, which differ by construction — the same
+        // reason `normalize` drops an `id` field. What is compared is the decision: how many were
+        // advanced, and with what reason the rest were refused.
+        return show({
+          advanced: result.advanced.length,
+          fenced: result.fenced.map((f) => f.reason),
+        });
+      }
+      case "fillGap": {
+        const epoch = await current();
+        const from = BigInt(Math.min(command.from, command.to));
+        const to = BigInt(Math.max(command.from, command.to));
+        const associations = Array.from({ length: command.matches }, (_, i) => association(from, i));
+        return show(normalize(await store.fillGap(monitorId, {
+          expectedEpoch: epoch, from, to, associations,
+        })));
+      }
+      case "advanceStaleEpoch": {
+        // A worker whose loaded epoch is behind: the fence must refuse identically on both sides
+        // (organizer spec FR-012), with the same rejection and the same observed epoch/state.
+        const epoch = (await current()) + 7n;
+        return show(normalize(await store.advance(monitorId, epoch, BigInt(command.through), [])));
+      }
+      case "readAssociations":
+        return show(
+          normalize(await store.readAssociations(monitorId, BigInt(command.afterSeq), command.limit)),
+        );
+      case "bindSource":
+        return show(
+          normalize(
+            await store.bindArchiveSource(monitorId, await current(), {
+              genesisHash: "genesis-1",
+              instanceId: "instance-1",
+            }),
+          ),
+        );
+      case "goLive":
+        return show(normalize(await store.goLive(monitorId, await current(), "parity")));
+      case "delete":
+        return show(normalize(await store.delete(monitorId, "parity")));
+      case "markFailed":
+        return show(
+          normalize(
+            await store.markFailed(monitorId, "parity", { code: "TEST", message: "parity" }, await current()),
+          ),
+        );
+      case "markStaleSource":
+        return show(
+          normalize(
+            await store.markStaleSource(monitorId, "parity", { code: "STALE", message: "parity" }, await current()),
+          ),
+        );
+      case "lifecycle":
+        return show(normalize(await store.listLifecycleEvents(monitorId)));
+    }
+  } catch (err) {
+    return `THREW ${describeError(err)}`;
+  }
+}
+
+describe("HttpMonitorStore and PgShieldedMonitorStore are the same store (FR-025, Q25)", () => {
+  let container: StartedPostgreSqlContainer;
+  let directSql: UmbraDBSql;
+  let servedSql: UmbraDBSql;
+  let direct: ShieldedMonitorStore;
+  let served: StartedStorageApi;
+  const directSchema = uniqueSchema("parity_direct");
+  const servedSchema = uniqueSchema("parity_served");
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer("postgres:17-alpine").start();
+    const a = await freshStore(container, directSchema);
+    const b = await freshStore(container, servedSchema);
+    directSql = a.sql;
+    servedSql = b.sql;
+    direct = a.store;
+    served = await startStorageApi(b.store, { config: { monitorSchema: servedSchema } });
+  }, 240_000);
+
+  afterAll(async () => {
+    await served?.close();
+    await directSql?.end({ timeout: 5 });
+    await servedSql?.end({ timeout: 5 });
+    await container?.stop();
+  });
+
+  // Sampled rather than driven by `fc.assert`, so each sequence gets its OWN monitor on both
+  // sides and the (expensive) container is started once. The seed is fixed: a parity failure must
+  // be reproducible from the test name alone.
+  const sequences = fc.sample(fc.array(commandArb, { minLength: 8, maxLength: 22 }), {
+    numRuns: 8,
+    seed: 0x00009_08,
+  });
+
+  it.each(sequences.map((commands, index) => [index, commands] as const))(
+    "sequence %i produces an identical transcript on both implementations",
+    async (index, commands) => {
+      const seed = 900 + index;
+      const key = await fixtureViewingKey(seed);
+      const registration = {
+        fingerprint: key.fingerprint,
+        net: "undeployed",
+        requestedStartHeight: 0n,
+        matchingRuleVersion: TEST_MATCHING_RULE,
+        ledgerBuild: TEST_LEDGER_BUILD,
+        actor: "parity",
+      };
+      const directMonitor = await direct.register(registration);
+      const servedMonitor = await served.client.register(registration);
+      // Registration itself is part of the property: the two sides must agree on everything but
+      // the id, which is a UUID minted per row.
+      expect(show(normalize(servedMonitor))).toBe(show(normalize(directMonitor)));
+
+      const directWorld: World = { store: direct, monitorId: directMonitor.id, fingerprint: key.fingerprint };
+      const servedWorld: World = { store: served.client, monitorId: servedMonitor.id, fingerprint: key.fingerprint };
+
+      for (const [step, command] of commands.entries()) {
+        const expected = await apply(directWorld, command);
+        const actual = await apply(servedWorld, command);
+        expect(actual, `step ${step}: ${JSON.stringify(command)}`).toBe(expected);
+      }
+
+      // Final state, independently of what the transcript happened to show.
+      const finalDirect = await direct.getIncludingDeleted(directMonitor.id);
+      const finalServed = await served.client.getIncludingDeleted(servedMonitor.id);
+      expect(show(normalize(finalServed))).toBe(show(normalize(finalDirect)));
+      expect(show(normalize(await served.client.listLifecycleEvents(servedMonitor.id)))).toBe(
+        show(normalize(await direct.listLifecycleEvents(directMonitor.id))),
+      );
+      // Associations are read administratively (a deleted monitor answers not-found), so the
+      // comparison covers the sequences that ended in a refusal too.
+      const directRows = await directSql`
+        SELECT seq, block_height, position, encode(tx_hash, 'hex') AS tx, details IS NOT NULL AS has_details
+          FROM ${directSql(directSchema)}.associations WHERE monitor_id = ${directMonitor.id} ORDER BY seq
+      `;
+      const servedRows = await servedSql`
+        SELECT seq, block_height, position, encode(tx_hash, 'hex') AS tx, details IS NOT NULL AS has_details
+          FROM ${servedSql(servedSchema)}.associations WHERE monitor_id = ${servedMonitor.id} ORDER BY seq
+      `;
+      expect(show([...servedRows])).toBe(show([...directRows]));
+    },
+    120_000,
+  );
+
+  it("[[storage-api.parity.http-store-matches-pg-store]] the global list surfaces agree once every sequence has run", async () => {
+    const strip = (rows: readonly { id: string }[]): unknown =>
+      normalize(rows.map((r) => ({ ...r, id: undefined })));
+    expect(show(strip(await served.client.listAll(500)))).toBe(show(strip(await direct.listAll(500))));
+    expect(show(strip(await served.client.listActive(500)))).toBe(show(strip(await direct.listActive(500))));
+    const deletions = (rows: readonly { monitorId: string; epoch: string; at: string }[]): unknown =>
+      rows.map((r) => ({ ...r, monitorId: "<id>", at: "<date>" }));
+    expect(show(deletions(await served.client.listDeletions()))).toBe(
+      show(deletions(await direct.listDeletions())),
+    );
+  }, 60_000);
+});

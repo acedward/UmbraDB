@@ -1,0 +1,15 @@
+# Excluded from the knowledge graph. `.graphifyignore` can only ever exclude MORE than
+# `.gitignore`, never re-include, so entries here are purely subtractive.
+#
+# The graph exists to answer "what does the spec say" and "where is this called from" about THIS
+# repo's own code, and it scopes the review pipeline's blast-radius manifests (CLAUDE.md,
+# "Graph-scoped review policy"). Third-party artifacts that happen to be committed are noise in
+# both roles: they inflate the node count, dilute clustering, and can pull unrelated internals
+# into a reviewer's reading list.
+
+# Vendored build of the Midnight ledger WASM (see vendor/ledger-v8-syshash/PROVENANCE.md).
+# Committed because the build is not bit-reproducible, so the verified bytes cannot be
+# regenerated -- but it is a third-party binary artifact, not our source. Left in, its generated
+# `.d.ts` and glue `.js` contributed 1738 of 4552 nodes (38% of the graph) on the first run after
+# vendoring. Deleted along with the directory when the export ships upstream.
+vendor/

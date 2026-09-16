@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   BlobIntegrityError,
   BlobMissingError,
@@ -7,7 +7,11 @@ import {
   type BlockBundle,
   type BlockMeta,
   type BlockRecord,
+  type BridgeObservationKind,
+  type BridgeObservationMeta,
   type BridgeObservationRecord,
+  type ReplayCheckpointRecord,
+  type RuntimeMetadataRecord,
   type ChainArchiveStore,
   type Hex32,
   type TransactionMeta,
@@ -37,6 +41,11 @@ function bufToHex(buf: Buffer): Hex32 {
   return buf.toString("hex");
 }
 
+/** The `watermarks` key this archive keeps its own instance identity under, per net
+ *  (`spec/00009` FR-028). Exported so the read contract and the sync bootstrap agree on it
+ *  without either re-deriving the string. */
+export const ARCHIVE_IDENTITY_KEY_PREFIX = "archive_identity:";
+
 function assertHex32(value: string, field: string): void {
   const parsed = Hex32Schema.safeParse(value);
   if (!parsed.success) throw ValidationError.fromZod(`PgChainArchiveStore.${field}`, parsed.error);
@@ -55,6 +64,8 @@ interface BlockRow {
   is_canonical: boolean;
   status: string;
   finalized: boolean;
+  /** Migration 008. `null` for rows archived before it, or not yet backfilled. */
+  timestamp_ms: bigint | null;
 }
 
 interface TxRow {
@@ -66,6 +77,15 @@ interface TxRow {
   kind: string;
   protocol_version: number;
   result: string | null;
+  raw_blob_hash: Buffer;
+}
+
+interface BridgeObservationRow {
+  net: string;
+  block_height: bigint;
+  block_hash: Buffer;
+  observation_index: number;
+  kind: BridgeObservationKind;
   raw_blob_hash: Buffer;
 }
 
@@ -83,6 +103,9 @@ function toBlockMeta(row: BlockRow): BlockMeta {
     isCanonical: row.is_canonical,
     status: row.status as BlockMeta["status"],
     finalized: row.finalized,
+    // `null` (not decoded / archived before migration 008) becomes `undefined`, never 0 -- the
+    // whole point of the nullable column is that "unknown" and "the epoch" stay distinguishable.
+    timestampMs: row.timestamp_ms === null ? undefined : Number(row.timestamp_ms),
   };
 }
 
@@ -96,6 +119,17 @@ function toTxMeta(row: TxRow): TransactionMeta {
     kind: row.kind as TransactionMeta["kind"],
     protocolVersion: row.protocol_version,
     result: (row.result ?? undefined) as TransactionMeta["result"],
+    rawBlobHash: bufToHex(row.raw_blob_hash),
+  };
+}
+
+function toBridgeObservationMeta(row: BridgeObservationRow): BridgeObservationMeta {
+  return {
+    net: row.net,
+    blockHeight: Number(row.block_height),
+    blockHash: bufToHex(row.block_hash),
+    observationIndex: row.observation_index,
+    kind: row.kind,
     rawBlobHash: bufToHex(row.raw_blob_hash),
   };
 }
@@ -188,15 +222,26 @@ export class PgChainArchiveStore implements ChainArchiveStore {
       `;
     }
 
+    // `timestamp_ms` (migration 008) is written HERE, inside the same statement as the rest of
+    // the block row and therefore inside `putBlockBundle`'s one transaction (owner Rule A). It is
+    // `NULL` when the caller has none: the value lives in the block body, and a caller that has
+    // not decoded it must be able to archive the block rather than invent a time.
+    //
+    // The conflict clause stays `DO NOTHING`, unchanged. A re-ingest of an already-archived block
+    // therefore does NOT retro-fill a `NULL` timestamp -- deliberately, so this method keeps its
+    // established "byte-identical retry is a silent no-op" contract and never rewrites a
+    // committed row. Filling in pre-008 rows is the backfill's job
+    // (`chain-archive-sync/backfill-block-timestamps.ts`), which is explicit about it.
     await tx`
       INSERT INTO ${tx(this.schema)}.blocks
         (net, block_hash, height, parent_hash, state_root, extrinsics_root, author,
-         header_blob_hash, body_blob_hash, is_canonical, status, finalized)
+         header_blob_hash, body_blob_hash, is_canonical, status, finalized, timestamp_ms)
       VALUES
         (${block.net}, ${hexToBuf(block.blockHash)}, ${block.height},
          ${hexToBuf(block.parentHash)}, ${hexToBuf(block.stateRoot)},
          ${hexToBuf(block.extrinsicsRoot)}, ${block.author ? hexToBuf(block.author) : null},
-         ${headerHash}, ${bodyHash}, ${block.isCanonical}, ${block.status}, ${block.finalized})
+         ${headerHash}, ${bodyHash}, ${block.isCanonical}, ${block.status}, ${block.finalized},
+         ${block.timestampMs ?? null})
       ON CONFLICT (net, height, block_hash) DO NOTHING
     `;
 
@@ -297,12 +342,122 @@ export class PgChainArchiveStore implements ChainArchiveStore {
     }
   }
 
+  async getLatestBridgeObservation(
+    net: string, kind: BridgeObservationKind, maxHeight: number,
+  ): Promise<BridgeObservationMeta | undefined> {
+    try {
+      const [row] = await this.sql<BridgeObservationRow[]>`
+        SELECT o.net, o.block_height, o.block_hash, o.observation_index, o.kind, o.raw_blob_hash
+        FROM ${this.sql(this.schema)}.bridge_observations o
+        JOIN ${this.sql(this.schema)}.blocks b
+          ON b.net = o.net AND b.height = o.block_height AND b.block_hash = o.block_hash
+        WHERE o.net = ${net} AND o.kind = ${kind} AND o.block_height <= ${maxHeight}
+          AND b.is_canonical AND b.finalized
+        ORDER BY o.block_height DESC, o.observation_index DESC
+        LIMIT 1
+      `;
+      return row === undefined ? undefined : toBridgeObservationMeta(row);
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /** Compare the transaction-history shape while the caller holds this height's advisory lock.
+   * The service's earlier read is useful for a fast refusal, but cannot be authoritative: two
+   * processes can both read the old snapshot before either writes. */
+  private async assertBundleTransactionHistoryAgrees(
+    tx: ChainArchiveTx, bundle: BlockBundle,
+  ): Promise<void> {
+    const { block, transactions: incoming } = bundle;
+    const existing = await tx<TxRow[]>`
+      SELECT net, tx_hash, block_height, block_hash, position, kind, protocol_version, result,
+             raw_blob_hash
+      FROM ${tx(this.schema)}.transactions
+      WHERE net = ${block.net} AND block_height = ${block.height}
+        AND block_hash = ${hexToBuf(block.blockHash)}
+      ORDER BY position ASC
+    `;
+    if (existing.length === 0) return;
+
+    const shape = (rows: readonly { position: number; txHash: string; kind: string }[]) =>
+      [...rows]
+        .sort((a, b) => a.position - b.position)
+        .map((row) => `${row.position}:${row.txHash.toLowerCase()}:${row.kind}`)
+        .join(" ");
+    const before = shape(existing.map(toTxMeta));
+    const after = shape(incoming);
+    if (before === after) return;
+
+    throw new Error(
+      `height ${block.height}: this block is already archived with different contents under the ` +
+        `database ingest lock. Stored: [${before}]. Re-ingest would write: [${after}]. ` +
+        "Concurrent or historical writers must either agree byte-for-byte on the archive's " +
+        "(position, tx_hash, kind) contract or refuse; silently interleaving/keeping one side is " +
+        "not an idempotent retry.",
+    );
+  }
+
+  /** Shared by `putReplayCheckpoint` (standalone) and `putBlockBundle` (owner Rule A: composed
+   *  into the ONE per-height transaction). `replay_checkpoints` carries a real FK to `blocks`, so
+   *  inside the bundle this must run AFTER `insertBlockRow` -- ordinary same-transaction MVCC
+   *  visibility then satisfies the FK even though the block row has not committed yet, which is
+   *  exactly the mechanism the transactions/bridge-observations inserts already rely on. */
+  private async insertReplayCheckpointRows(
+    tx: ChainArchiveTx, record: ReplayCheckpointRecord,
+  ): Promise<void> {
+    const hashHex = sha256Hex(record.stateBytes);
+    const hash = hexToBuf(hashHex);
+    await tx`
+      INSERT INTO ${tx(this.schema)}.chain_blobs (hash, data)
+      VALUES (${hash}, ${Buffer.from(record.stateBytes)})
+      ON CONFLICT (hash) DO NOTHING
+    `;
+    await tx`
+      INSERT INTO ${tx(this.schema)}.chain_blob_roles (blob_hash, role)
+      VALUES (${hash}, 'ledger_state')
+      ON CONFLICT (blob_hash, role) DO NOTHING
+    `;
+    await tx`
+      INSERT INTO ${tx(this.schema)}.replay_checkpoints
+        (net, block_height, block_hash, state_blob_hash, ledger_version, block_timestamp_ms,
+         ledger_network_id)
+      VALUES (${record.net}, ${record.blockHeight}, ${hexToBuf(record.blockHash)},
+              ${hash}, ${record.ledgerVersion}, ${record.blockTimestampMs},
+              ${record.ledgerNetworkId})
+      ON CONFLICT (net, block_height, block_hash) DO NOTHING
+    `;
+  }
+
+  /** Shared by `setWatermark` (standalone) and `putBlockBundle` (owner Rule A). The monotonic
+   *  guard is part of the STATEMENT, not of the calling method, so folding the watermark advance
+   *  into the per-height transaction keeps it -- a regressed height still cannot overwrite a
+   *  higher one. See `setWatermark`'s own doc for why the guard is scoped to `{height}`-shaped
+   *  values only. */
+  private async upsertWatermarkRow(
+    tx: ChainArchiveTx, key: string, value: unknown,
+  ): Promise<void> {
+    await tx`
+      INSERT INTO ${tx(this.schema)}.watermarks AS w (kind, key, value, updated_at)
+      VALUES ('chain_archive', ${key}, ${tx.json(value as JSONValue)}, now())
+      ON CONFLICT (kind, key) DO UPDATE
+      SET value = EXCLUDED.value, updated_at = now()
+      WHERE jsonb_typeof(w.value -> 'height') IS DISTINCT FROM 'number'
+         OR jsonb_typeof(EXCLUDED.value -> 'height') IS DISTINCT FROM 'number'
+         OR (EXCLUDED.value ->> 'height')::numeric > (w.value ->> 'height')::numeric
+    `;
+  }
+
   /** Fix 1 (sprint-fix round, HIGH): collapses the block + transactions + bridge-observations
    *  writes for one block into ONE Postgres transaction, so a partial block can never be
    *  committed at all -- see this method's own doc on `ChainArchiveStore` for the full
-   *  before/after failure-mode writeup. */
+   *  before/after failure-mode writeup.
+   *
+   *  O2: the advisory xact lock and repeated history check belong INSIDE this transaction. A
+   *  service-layer `SELECT` followed by this call has a race window; a database transaction guard
+   *  serializes independent Node processes as well as independent service instances. */
   async putBlockBundle(bundle: BlockBundle): Promise<{ headerBlobHash: Hex32; bodyBlobHash?: Hex32 }> {
     const { block, transactions: txs, bridgeObservations: obs } = bundle;
+    const checkpoint = bundle.replayCheckpoint;
     assertHex32(block.blockHash, "putBlockBundle.blockHash");
     assertHex32(block.parentHash, "putBlockBundle.parentHash");
     assertHex32(block.stateRoot, "putBlockBundle.stateRoot");
@@ -312,9 +467,58 @@ export class PgChainArchiveStore implements ChainArchiveStore {
       assertHex32(t.txHash, "putBlockBundle.transactions.txHash");
       assertHex32(t.blockHash, "putBlockBundle.transactions.blockHash");
     }
+    // Rule A: a checkpoint folded into this height's transaction must describe THIS height. A
+    // checkpoint naming another block would make resume fold this chain onto a state that is not
+    // its own -- silent, permanent divergence -- and inside one transaction there is no later
+    // step where the mismatch could still be noticed. Rejected before anything is written.
+    if (checkpoint !== undefined) {
+      assertHex32(checkpoint.blockHash, "putBlockBundle.replayCheckpoint.blockHash");
+      if (
+        checkpoint.net !== block.net || checkpoint.blockHeight !== block.height ||
+        checkpoint.blockHash !== block.blockHash
+      ) {
+        throw new ValidationError(
+          "invalid input at PgChainArchiveStore.putBlockBundle.replayCheckpoint",
+          [{
+            path: "replayCheckpoint",
+            message:
+              `the bundled replay checkpoint describes ${checkpoint.net}#${checkpoint.blockHeight} ` +
+              `(${checkpoint.blockHash}) but the bundle writes ${block.net}#${block.height} ` +
+              `(${block.blockHash}). A checkpoint committed with a block it does not describe ` +
+              "would be resumed against the wrong state.",
+          }],
+        );
+      }
+    }
 
     try {
       return await this.sql.begin(async (tx) => {
+        // One unambiguous text key is hashed to PostgreSQL's 64-bit advisory-lock namespace. JSON
+        // array encoding prevents concatenation ambiguities (`["a:1",2]` vs `["a",1:2]`). The
+        // lock is transaction-scoped, so commit/rollback releases it even on every error path.
+        await tx`
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${JSON.stringify([block.net, block.height])}, ${0}::bigint)
+          )
+        `;
+
+        // The production writer is finalized-only. If another finalized canonical block already
+        // owns this height, a different hash is not an idempotent agreement and must be named as a
+        // refusal rather than disappearing under the partial unique index's ON CONFLICT handling.
+        const [canonical] = await tx<{ block_hash: Buffer }[]>`
+          SELECT block_hash FROM ${tx(this.schema)}.blocks
+          WHERE net = ${block.net} AND height = ${block.height} AND is_canonical AND finalized
+          LIMIT 1
+        `;
+        if (canonical !== undefined && bufToHex(canonical.block_hash) !== block.blockHash) {
+          throw new Error(
+            `height ${block.height}: finalized-only ingest is racing/stitching two canonical ` +
+              `blocks for net=${block.net}. Stored hash ${bufToHex(canonical.block_hash)} differs ` +
+              `from incoming ${block.blockHash}; refusing the second writer.`,
+          );
+        }
+
+        await this.assertBundleTransactionHistoryAgrees(tx, bundle);
         const result = await this.insertBlockRow(tx, block);
         // FK-ordering note: `transactions`/`bridge_observations` both carry a real FK back to
         // `blocks (net, height, block_hash)` (001_chain_archive_core.ts) -- inserting the block
@@ -323,6 +527,30 @@ export class PgChainArchiveStore implements ChainArchiveStore {
         // the referenced row hasn't committed yet.
         if (txs.length > 0) await this.insertTransactionRows(tx, txs);
         if (obs.length > 0) await this.insertBridgeObservationRows(tx, obs);
+
+        // ── Owner Rule A (spec/00009 FR-029): everything else this height produces, HERE ──
+        //
+        // Both of the writes below used to be separate, independently committed transactions
+        // issued by `chain-archive-sync/sync-service.ts` after this method returned. Each gap
+        // between them was an observable durable state -- height without checkpoint, height
+        // without watermark -- and recovery had to reason about all of them. Inside this
+        // transaction there is nothing between them to crash in: the height commits whole or not
+        // at all.
+        //
+        // ORDER MATTERS and is not arbitrary: the checkpoint's FK to `blocks` is satisfied by the
+        // block row inserted above being visible to this same transaction, which is why the
+        // checkpoint could not simply have been written first in the old two-transaction shape.
+        if (checkpoint !== undefined) await this.insertReplayCheckpointRows(tx, checkpoint);
+        if (bundle.watermark !== undefined) {
+          await this.upsertWatermarkRow(tx, bundle.watermark.key, bundle.watermark.value);
+        }
+        // Transactional NOTIFY: PostgreSQL queues it and delivers it only if this transaction
+        // commits, so a listener is never woken for a height that did not land. A listener that
+        // misses it loses nothing -- polling is still the contract (`spec/00009`, wake-up hook is
+        // an optimisation).
+        if (bundle.notifyChannel !== undefined) {
+          await tx`SELECT pg_notify(${bundle.notifyChannel}, ${`${block.net}:${block.height}`})`;
+        }
         return result;
       });
     } catch (err) {
@@ -404,7 +632,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
     try {
       const rows = await this.sql<BlockRow[]>`
         SELECT net, block_hash, height, parent_hash, state_root, extrinsics_root, author,
-               header_blob_hash, body_blob_hash, is_canonical, status, finalized
+               header_blob_hash, body_blob_hash, is_canonical, status, finalized, timestamp_ms
         FROM ${this.sql(this.schema)}.blocks
         WHERE net = ${net} AND height = ${height}
         ORDER BY block_hash
@@ -419,7 +647,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
     try {
       const rows = await this.sql<BlockRow[]>`
         SELECT net, block_hash, height, parent_hash, state_root, extrinsics_root, author,
-               header_blob_hash, body_blob_hash, is_canonical, status, finalized
+               header_blob_hash, body_blob_hash, is_canonical, status, finalized, timestamp_ms
         FROM ${this.sql(this.schema)}.blocks
         WHERE net = ${net} AND height = ${height} AND is_canonical
       `;
@@ -463,7 +691,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
     try {
       const rows = await this.sql<BlockRow[]>`
         SELECT net, block_hash, height, parent_hash, state_root, extrinsics_root, author,
-               header_blob_hash, body_blob_hash, is_canonical, status, finalized
+               header_blob_hash, body_blob_hash, is_canonical, status, finalized, timestamp_ms
         FROM ${this.sql(this.schema)}.blocks
         WHERE net = ${net} AND height BETWEEN ${fromHeight} AND ${toHeight} AND is_canonical
         ORDER BY height ASC
@@ -526,15 +754,156 @@ export class PgChainArchiveStore implements ChainArchiveStore {
    *  height-cursor convention. */
   async setWatermark(key: string, value: unknown): Promise<void> {
     try {
-      await this.sql`
-        INSERT INTO ${this.sql(this.schema)}.watermarks AS w (kind, key, value, updated_at)
-        VALUES ('chain_archive', ${key}, ${this.sql.json(value as JSONValue)}, now())
-        ON CONFLICT (kind, key) DO UPDATE
-        SET value = EXCLUDED.value, updated_at = now()
-        WHERE jsonb_typeof(w.value -> 'height') IS DISTINCT FROM 'number'
-           OR jsonb_typeof(EXCLUDED.value -> 'height') IS DISTINCT FROM 'number'
-           OR (EXCLUDED.value ->> 'height')::numeric > (w.value ->> 'height')::numeric
+      // Delegates to the shared statement `putBlockBundle` also issues, so the standalone path
+      // and the folded Rule A path cannot drift apart in their monotonic guard. `begin` around a
+      // single statement is not overhead worth avoiding: `postgres.js` would wrap it in an
+      // implicit transaction anyway.
+      await this.sql.begin(async (tx) => this.upsertWatermarkRow(tx, key, value));
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /**
+   * @inheritdoc
+   *
+   * Stored as its own `watermarks` row (`kind = 'chain_archive'`, `key = 'archive_identity:<net>'`)
+   * rather than through {@link setWatermark}: that method's guard only protects `{height}`-shaped
+   * values and otherwise takes the last write, which for an identity means a second bootstrap
+   * could silently replace the id every consumer has already bound to. `ON CONFLICT DO NOTHING`
+   * plus a read-back gives the opposite property -- first writer wins, every later caller
+   * observes that same value, and two concurrent bootstraps agree without coordinating.
+   */
+  async ensureArchiveInstanceId(net: string): Promise<string> {
+    const key = `${ARCHIVE_IDENTITY_KEY_PREFIX}${net}`;
+    try {
+      return await this.sql.begin(async (tx) => {
+        // 16 bytes of CSPRNG output. Hex rather than base64url so the value survives every
+        // transport a future RPC implementation of the read contract might use unchanged, and so
+        // it reads the same in a psql session as it does in a log line.
+        const candidate = randomBytes(16).toString("hex");
+        await tx`
+          INSERT INTO ${tx(this.schema)}.watermarks (kind, key, value, updated_at)
+          VALUES ('chain_archive', ${key}, ${tx.json({ archiveInstanceId: candidate })}, now())
+          ON CONFLICT (kind, key) DO NOTHING
+        `;
+        const [row] = await tx<{ value: { archiveInstanceId?: unknown } }[]>`
+          SELECT value FROM ${tx(this.schema)}.watermarks
+          WHERE kind = 'chain_archive' AND key = ${key}
+        `;
+        const stored = row?.value?.archiveInstanceId;
+        if (typeof stored !== "string" || !/^[0-9a-f]{32}$/.test(stored)) {
+          // Reachable only if something outside this method wrote the identity row. Refusing is
+          // the point: a consumer binding to a malformed identity cannot detect a re-synced
+          // archive afterwards, and that failure would be silent.
+          throw new Error(
+            `${this.schema}.watermarks holds a malformed archive identity at key "${key}": ` +
+              `${JSON.stringify(row?.value)}. Expected {"archiveInstanceId": "<32 hex chars>"}. ` +
+              "Refusing rather than minting a second identity over it.",
+          );
+        }
+        return stored;
+      });
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /** @inheritdoc */
+  async getRuntimeMetadata(
+    net: string, specName: string, specVersion: number,
+  ): Promise<Uint8Array | undefined> {
+    try {
+      const [row] = await this.sql<{ hash: Buffer }[]>`
+        SELECT metadata_blob_hash AS hash FROM ${this.sql(this.schema)}.runtime_metadata
+        WHERE net = ${net} AND spec_name = ${specName} AND spec_version = ${specVersion}
       `;
+      if (row === undefined) return undefined;
+      // Through getBlob, so the capture is rehashed before use like every other archived blob.
+      // Metadata that silently rotted would misdecode every block of its runtime.
+      return await this.getBlob(bufToHex(row.hash) as Hex32);
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /** @inheritdoc */
+  async getLatestReplayCheckpoint(
+    net: string, maxHeight: number,
+  ): Promise<ReplayCheckpointRecord | undefined> {
+    try {
+      // The join to `blocks` on the FULL key -- including `block_hash` -- plus `is_canonical`
+      // excludes an already-orphaned checkpoint. Under the finalized-only writer, catch-up then
+      // verifies every successor's parent hash. This does NOT claim sound selection during an
+      // arbitrary partially-applied height-at-a-time `setCanonical` reorg (T5a's explicit scope).
+      const [row] = await this.sql<
+        {
+          height: string; block_hash: Buffer; hash: Buffer; ledger_version: string;
+          block_timestamp_ms: string; ledger_network_id: string;
+        }[]
+      >`
+        SELECT c.block_height::text AS height, c.block_hash, c.state_blob_hash AS hash,
+               c.ledger_version, c.block_timestamp_ms::text AS block_timestamp_ms,
+               c.ledger_network_id
+        FROM ${this.sql(this.schema)}.replay_checkpoints c
+        JOIN ${this.sql(this.schema)}.blocks b
+          ON b.net = c.net AND b.height = c.block_height AND b.block_hash = c.block_hash
+        WHERE c.net = ${net} AND c.block_height <= ${maxHeight} AND b.is_canonical
+        ORDER BY c.block_height DESC
+        LIMIT 1
+      `;
+      if (row === undefined) return undefined;
+      return {
+        net,
+        blockHeight: Number(row.height),
+        blockHash: bufToHex(row.block_hash),
+        // Through getBlob, so the state is rehashed before a replay trusts it. Silently corrupted
+        // state would produce wrong replay outcomes rather than an error.
+        stateBytes: await this.getBlob(bufToHex(row.hash)),
+        ledgerVersion: row.ledger_version,
+        blockTimestampMs: Number(row.block_timestamp_ms),
+        ledgerNetworkId: row.ledger_network_id,
+      };
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /** @inheritdoc */
+  async putReplayCheckpoint(record: ReplayCheckpointRecord): Promise<void> {
+    try {
+      await this.sql.begin(async (tx) => this.insertReplayCheckpointRows(tx, record));
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  /** @inheritdoc */
+  async putRuntimeMetadata(record: RuntimeMetadataRecord): Promise<void> {
+    try {
+      const hashHex = sha256Hex(record.metadataBytes);
+      const hash = hexToBuf(hashHex);
+      await this.sql.begin(async (tx) => {
+        await tx`
+          INSERT INTO ${tx(this.schema)}.chain_blobs (hash, data)
+          VALUES (${hash}, ${Buffer.from(record.metadataBytes)})
+          ON CONFLICT (hash) DO NOTHING
+        `;
+        await tx`
+          INSERT INTO ${tx(this.schema)}.chain_blob_roles (blob_hash, role)
+          VALUES (${hash}, 'runtime_metadata')
+          ON CONFLICT (blob_hash, role) DO NOTHING
+        `;
+        // DO NOTHING, not DO UPDATE: the first capture wins, so `first_seen_height` keeps naming
+        // the block that genuinely introduced the runtime rather than the most recent re-sync.
+        await tx`
+          INSERT INTO ${tx(this.schema)}.runtime_metadata
+            (net, spec_name, spec_version, first_seen_height, metadata_blob_hash)
+          VALUES (${record.net}, ${record.specName}, ${record.specVersion},
+                  ${record.firstSeenHeight}, ${hash})
+          ON CONFLICT (net, spec_name, spec_version) DO NOTHING
+        `;
+      });
     } catch (err) {
       throw translatePostgresError(err);
     }

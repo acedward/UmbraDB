@@ -3,7 +3,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
+import { metadataRpcResult } from "./fake-node-metadata.js";
 import { NodeRpcInvalidHeightError } from "../../chain-archive-sync/node-rpc-client.js";
+import { ledgerV8EntryPath } from "../../chain-archive-sync/tx-replay-decoder.js";
 import type { BlockBundle, Hex32 } from "../../src/interfaces/chain-archive-store.js";
 
 /**
@@ -26,24 +28,59 @@ interface FakeChainBlock {
   parentHash: Hex32;
   stateRoot: Hex32;
   extrinsicsRoot: Hex32;
-  /** hex, no 0x prefix -- must CONTAIN the indexer's reported tx raw hex as a substring, matching
-   *  the real node/indexer byte-relationship `sync-service.ts` cross-checks. */
+  /** hex, no 0x prefix -- a VALIDLY SCALE-FRAMED bare extrinsic wrapping `txRawHex[i]` as its
+   *  single `Vec<u8>` argument. Sprint 9's node-derived ingest path decodes every extrinsic's
+   *  envelope for real (`extrinsic-decoder.ts`) and oracle-cross-checks the extracted payload
+   *  against the indexer's reported raw, so a fake chain must reproduce the real byte
+   *  relationship, not merely substring containment. */
   extrinsics: string[];
   txHashes: Hex32[];
   txRawHex: string[];
   dParameter: { numPermissionedCandidates: number; numRegisteredCandidates: number };
 }
 
+/** SCALE compact-u32 encode (the two modes these small fixtures can need). */
+function compactU32Hex(value: number): string {
+  if (value < 64) return ((value << 2) >>> 0).toString(16).padStart(2, "0");
+  if (value < 16_384) {
+    const v = ((value << 2) | 0b01) >>> 0;
+    return Buffer.from([v & 0xff, (v >> 8) & 0xff]).toString("hex");
+  }
+  throw new Error("fixture compactU32Hex: value out of supported fixture range");
+}
+
+/** Wraps `payloadHex` exactly the way the real node frames a bare
+ *  `pallet_midnight::send_mn_transaction` extrinsic (verified live in
+ *  `test/chain-archive-sync/extrinsic-decoder.test.ts`): compact total length | version 0x05
+ *  (bare v5) | pallet 5 | call 0 | compact arg length | payload. */
+function bareMidnightExtrinsicHex(payloadHex: string): string {
+  const payloadLen = payloadHex.length / 2;
+  const inner = "05" + "05" + "00" + compactU32Hex(payloadLen) + payloadHex;
+  return compactU32Hex(inner.length / 2) + inner;
+}
+
+/** The real MNSV consensus digest item (Consensus | "MNSV" | compact 4 | u32 LE), carrying
+ *  1_000_000 -- node 1.0.x. This is the ACTUAL genesis digest captured from a live devnet, and it
+ *  must stay a supported version: ingest now rejects protocol versions outside the ranges whose
+ *  ledger codec the archive implements, so a made-up version (this fixture previously used 1)
+ *  is correctly refused rather than silently decoded with the v8 codec. */
+const MNSV_DIGEST_V1 = "0x044d4e53561040420f00";
+const FIXTURE_PROTOCOL_VERSION = 1_000_000;
+
 function fakeChain(blocks: { height: number; dParamSeed: number }[]): FakeChainBlock[] {
   return blocks.map(({ height, dParamSeed }) => {
-    const txRaw = Buffer.from(`tx-raw-${height}`, "utf8").toString("hex");
+    // The payload must carry the real `midnight:transaction` self-tag: both the envelope
+    // decoder's midnight-or-null classification and `sync-service.ts`'s own kind field key off
+    // it (design.md §6.1 -- classification is byte-derived, so a fake payload without the tag is
+    // not a regular transaction anywhere in the pipeline).
+    const txRaw = Buffer.from(`midnight:transaction-fake-tx-raw-${height}`, "utf8").toString("hex");
     return {
       height,
       hash: hx(height, 0xa),
       parentHash: height === 0 ? hx(0, 0x00) : hx(height - 1, 0xa),
       stateRoot: hx(height, 0xb),
       extrinsicsRoot: hx(height, 0xc),
-      extrinsics: [txRaw],
+      extrinsics: [bareMidnightExtrinsicHex(txRaw)],
       txHashes: [hx(height, 0xd)],
       txRawHex: [txRaw],
       dParameter: { numPermissionedCandidates: dParamSeed, numRegisteredCandidates: dParamSeed + 1 },
@@ -56,6 +93,23 @@ function fakeNodeFetch(blocks: FakeChainBlock[], finalizedHeight: number, badHea
     const body = JSON.parse((init as RequestInit).body as string) as { id: number; method: string; params: unknown[] };
     const { id, method, params } = body;
     let result: unknown;
+    // Node-only ingest resolves the block's runtime metadata before it can classify a call, so a
+    // fake node must answer these two or every node-only test fails on metadata rather than on
+    // whatever it meant to exercise.
+    // This fake chain's blocks carry no events. Answering null (rather than leaving the method
+    // unhandled) is what a real node returns for an unset storage key, and node-only ingest now
+    // reads System::Events on every block to recover runtime-generated system transactions.
+    if (method === "state_getStorageAt") {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: null }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    }
+    const metaResult = metadataRpcResult(method);
+    if (metaResult !== undefined) {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: metaResult }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    }
     switch (method) {
       case "chain_getFinalizedHead":
         result = "0x" + blocks[finalizedHeight]!.hash;
@@ -68,7 +122,7 @@ function fakeNodeFetch(blocks: FakeChainBlock[], finalizedHeight: number, badHea
           const blk = blocks.find((b) => b.hash === hash)!;
           result = {
             parentHash: "0x" + blk.parentHash, number: "0x" + blk.height.toString(16),
-            stateRoot: "0x" + blk.stateRoot, extrinsicsRoot: "0x" + blk.extrinsicsRoot, digest: { logs: [] },
+            stateRoot: "0x" + blk.stateRoot, extrinsicsRoot: "0x" + blk.extrinsicsRoot, digest: { logs: [MNSV_DIGEST_V1] },
           };
         }
         break;
@@ -85,7 +139,7 @@ function fakeNodeFetch(blocks: FakeChainBlock[], finalizedHeight: number, badHea
           block: {
             header: {
               parentHash: "0x" + blk.parentHash, number: "0x" + blk.height.toString(16),
-              stateRoot: "0x" + blk.stateRoot, extrinsicsRoot: "0x" + blk.extrinsicsRoot, digest: { logs: [] },
+              stateRoot: "0x" + blk.stateRoot, extrinsicsRoot: "0x" + blk.extrinsicsRoot, digest: { logs: [MNSV_DIGEST_V1] },
             },
             extrinsics: blk.extrinsics.map((e) => "0x" + e),
           },
@@ -93,6 +147,19 @@ function fakeNodeFetch(blocks: FakeChainBlock[], finalizedHeight: number, badHea
         };
         break;
       }
+      case "state_call": {
+        // SystemParametersApi_get_d_parameter -> SCALE `DParameter { u16, u16 }`, little-endian,
+        // matching what the live node returned (0x0a000000 == {10, 0}) and what the fake
+        // indexer reports for the same block, so node-only and oracle modes agree.
+        const at = (params[2] as string | undefined)?.replace(/^0x/, "");
+        const blk = at === undefined ? blocks[finalizedHeight]! : blocks.find((b) => b.hash === at)!;
+        const buf = Buffer.alloc(4);
+        buf.writeUInt16LE(blk.dParameter.numPermissionedCandidates, 0);
+        buf.writeUInt16LE(blk.dParameter.numRegisteredCandidates, 2);
+        result = "0x" + buf.toString("hex");
+        break;
+      }
+
       default:
         throw new Error(`fakeNodeFetch: unhandled method ${method}`);
     }
@@ -110,7 +177,7 @@ function fakeIndexerFetch(blocks: FakeChainBlock[]): typeof fetch {
         block: blk === undefined ? null : {
           hash: "0x" + blk.hash,
           height: blk.height,
-          transactions: blk.txHashes.map((hash, i) => ({ hash: "0x" + hash, protocolVersion: 1, raw: blk.txRawHex[i] })),
+          transactions: blk.txHashes.map((hash, i) => ({ hash: "0x" + hash, protocolVersion: FIXTURE_PROTOCOL_VERSION, raw: blk.txRawHex[i] })),
           systemParameters: { dParameter: blk.dParameter },
         },
       };
@@ -149,6 +216,191 @@ describe("ChainArchiveSyncService retry safety (sprint-fix round Fixes 1-3)", ()
     });
     return { service, schema };
   }
+
+  // Node-only mode needs the installed vendored ledger WASM to hash payloads. Report a genuinely
+  // missing package as SKIPPED rather than turning this into a vacuous pass; a fresh `npm ci`
+  // supplies it, so the regression is enforced in CI without an external checkout.
+  it.skipIf(ledgerV8EntryPath() === undefined)(
+    "audit F2/F3: forged midnight-tagged bytes under a foreign call are IGNORED, not fatal", async () => {
+    // The denial of service this closes: the envelope decoder classifies by the payload's
+    // `midnight:` self-tag, which anyone can forge. A bare System::remark(Vec<u8>) whose bytes
+    // merely START with that tag was accepted, then failed to deserialize as a transaction, and
+    // that failure aborted the block. Because the watermark only advances on success, ingest
+    // retried the same height forever -- a permanent stall for the price of one remark.
+    const blocks = fakeChain([{ height: 0, dParamSeed: 1 }]);
+    // The block carries one GENUINE transaction plus midnight-tagged bytes riding a DIFFERENT
+    // call (pallet 0). Note this shape is not user-reachable on the 1.0 runtime -- pallet_midnight
+    // holds the only ValidateUnsigned and admits only its own call, so a bare foreign call is
+    // refused by the node and a signed one is refused by the decoder before classification. It is
+    // constructed directly here to exercise the classifier, and it is exactly the shape a runtime
+    // renumbering would produce from GENUINE transactions.
+    //
+    // The genuine one must be a real serialized Midnight transaction, because node-only mode
+    // classifies with the ledger itself -- the fake chain's synthetic payloads deliberately are
+    // not, so they would be skipped too and the test would prove nothing. This is the real
+    // genesis regular-transaction extrinsic captured from a 1.0.0 devnet.
+    const REAL_TX_EXTRINSIC =
+      "81030505006d036d69646e696768743a7472616e73616374696f6e5b76395d287369676e61747572655b76315d2c70726f6f662c706564657273656e2d7363686e6f72725b76315d293a040051020128756e6465706c6f7965640b00203d88792d86f71b8a7a21bfe16a2bb2eab74475073fa5b773854f151ed548dba77a2c58157815f0843fc0701ec174828174fbc4e03d122b40fe97741dd131c92658f533496e48e284ce47644a1d68449ce51b8e20a4c624566827c2f437120e31ec4e628b94c4bcb7dec5a1dbd186677de26fdcacb19130f4126359efe37f471bb9c2496900";
+    // A System::remark (pallet 0, call 1) carrying a forged `midnight:` tag over bytes that are
+    // NOT a serializable transaction -- the attack.
+    const forged = Buffer.from(
+      "midnight:transaction[v9](signature[v1],proof,pedersen-schnorr[v1]):NOT-A-TRANSACTION",
+      "latin1",
+    ).toString("hex");
+    const inner = "05" + "00" + "01" + compactU32Hex(forged.length / 2) + forged;
+    blocks[0]!.extrinsics = [REAL_TX_EXTRINSIC, compactU32Hex(inner.length / 2) + inner];
+
+    const schema = `retry_test_${schemaCounter++}`;
+    sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    await bootstrapChainArchiveSchema(sql, schema);
+    // NODE-ONLY: no indexer option at all, which is the mode the forged payload attacks.
+    const service = new ChainArchiveSyncService({
+      sql, net: NET, schema,
+      node: { url: "http://fake-node", fetchImpl: fakeNodeFetch(blocks, 0) },
+    });
+
+    // Must REFUSE the block, not complete it. The shape being detected -- midnight-tagged bytes
+    // under a call this build does not recognize as a Midnight call -- is exactly what a runtime
+    // that renumbered its pallets produces from GENUINE transactions. Counting it and writing the
+    // block anyway (an earlier revision did) would persist a silently incomplete archive and
+    // advance the watermark past the gap. It is safe to fail closed here precisely because a user
+    // cannot produce this shape: pallet_midnight holds the only ValidateUnsigned and admits only
+    // its own call, so a bare foreign call is refused by the node and a signed one is refused by
+    // the decoder before classification.
+    // Metadata decoding changed the right answer here, and for the better.
+    //
+    // The refusal this test used to assert existed because classification keyed off the payload's
+    // forgeable `midnight:` tag plus PINNED pallet indices: tagged bytes under an unrecognized
+    // call were indistinguishable from a runtime that had renumbered its pallets, i.e. from
+    // genuine transactions about to vanish, so failing closed was the only safe response.
+    //
+    // Classifying by the runtime's OWN indices removes that ambiguity. Renumbering is now followed
+    // rather than detected, and a System::remark carrying forged tag bytes is simply not a
+    // Midnight call -- exactly what the reference indexer concludes, since it extracts only
+    // send_mn_transaction and send_mn_system_transaction from the decoded call and ignores
+    // everything else regardless of payload content.
+    //
+    // The denial of service in the test's name is closed more thoroughly than before: the forged
+    // remark is skipped without ever being handed to the ledger, so there is no deserialization
+    // failure to abort the block and no permanent stall -- and, unlike a refusal, the genuine
+    // transaction sharing the block is still archived.
+    await service.syncOnce({ maxBlocks: 10 });
+    expect(await service.getSyncedHeight()).toBe(0);
+    const rows = await sql<{ n: number; kind: string }[]>`
+      SELECT count(*)::int AS n, min(kind) AS kind FROM ${sql(schema)}.transactions WHERE net = ${NET}
+    `;
+    // Exactly one: the genuine transaction. The forged remark contributed nothing.
+    expect(rows[0]!.n).toBe(1);
+    expect(rows[0]!.kind).toBe("regular");
+  }, 60_000);
+
+  it("audit F3: a block whose parent is not the archived block below it is rejected, not spliced", async () => {
+    // Archive heights 0 and 1 normally, then hand the service a height-2 block whose parentHash
+    // points at a DIFFERENT hash -- exactly what a reorg below the finalized head, or an operator
+    // repointing NODE_URL at another chain, would produce. Before the continuity check this was
+    // archived silently and the cursor advanced over it.
+    const blocks = fakeChain([
+      { height: 0, dParamSeed: 1 },
+      { height: 1, dParamSeed: 1 },
+      { height: 2, dParamSeed: 1 },
+    ]);
+    const { service } = await newService(blocks, 1);
+    await service.syncOnce({ maxBlocks: 10 });
+    expect(await service.getSyncedHeight()).toBe(1);
+
+    // Rewrite height 2's parent to a foreign hash and extend the finalized head to it.
+    blocks[2]!.parentHash = hx(999, 0xf);
+    const { service: spliced } = await newService(blocks, 2);
+    // Reuse the SAME schema is not possible via the helper, so drive continuity from the store:
+    // re-sync from scratch reaches height 2 and must reject it on its parent.
+    await expect(spliced.syncOnce({ maxBlocks: 10 })).rejects.toThrow(/chain continuity BROKEN at height 2/);
+  }, 60_000);
+
+  it("audit F4: a misdirected first sync cannot poison an empty archive's identity", async () => {
+    // The failure the previous implementation had: identity was RECORDED on first sync, so an
+    // empty archive pointed at the wrong node once carried that foreign identity permanently --
+    // and returning to the correct node was then rejected forever. Anchoring on the archive's own
+    // genesis block instead means an empty archive has nothing to poison.
+    const chainWrong = fakeChain([{ height: 0, dParamSeed: 1 }]);
+    chainWrong[0]!.hash = hx(7777, 0xc);
+    const schema = `retry_test_${schemaCounter++}`;
+    sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    await bootstrapChainArchiveSchema(sql, schema);
+    const mk = (b: FakeChainBlock[]): ChainArchiveSyncService =>
+      new ChainArchiveSyncService({
+        sql: sql!, net: NET, schema,
+        node: { url: "http://fake-node", fetchImpl: fakeNodeFetch(b, 0) },
+        indexer: { url: "http://fake-indexer", fetchImpl: fakeIndexerFetch(b) },
+      });
+
+    // Point at the WRONG chain first and let it write.
+    await mk(chainWrong).syncOnce({ maxBlocks: 10 });
+
+    // Now the CORRECT chain. Under the old watermark scheme this was refused forever; the archive
+    // must simply reject the mismatch against what it actually holds, in the right direction.
+    const chainRight = fakeChain([{ height: 0, dParamSeed: 1 }]);
+    await expect(mk(chainRight).syncOnce({ maxBlocks: 10 })).rejects.toThrow(
+      /chain identity mismatch/,
+    );
+    // ...and the archive still holds the chain it actually ingested, not a metadata claim about
+    // some other one -- so recovery is "use a different NET or a clean schema", never
+    // "hand-edit a watermark row".
+    const rows = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM ${sql(schema)}.blocks WHERE net = ${NET}
+    `;
+    expect(rows[0]!.n).toBe(1);
+  }, 60_000);
+
+  it("audit F3 (restart): continuity is re-checked from the STORE, not just in-memory", async () => {
+    // The in-run path keeps the previous block hash in memory. After a restart that anchor is
+    // gone and the check must fall back to the archived block at height-1 -- a different code
+    // path, and the one a real deployment actually exercises on every start. The earlier test
+    // covered only the in-memory path.
+    const blocks = fakeChain([
+      { height: 0, dParamSeed: 1 },
+      { height: 1, dParamSeed: 1 },
+      { height: 2, dParamSeed: 1 },
+    ]);
+    const schema = `retry_test_${schemaCounter++}`;
+    sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    await bootstrapChainArchiveSchema(sql, schema);
+    const mk = (b: FakeChainBlock[], tip: number): ChainArchiveSyncService =>
+      new ChainArchiveSyncService({
+        sql: sql!, net: NET, schema,
+        node: { url: "http://fake-node", fetchImpl: fakeNodeFetch(b, tip) },
+        indexer: { url: "http://fake-indexer", fetchImpl: fakeIndexerFetch(b) },
+      });
+
+    // First process: archive heights 0-1, then go away.
+    await mk(blocks, 1).syncOnce({ maxBlocks: 10 });
+
+    // Second process, SAME archive, fresh instance so nothing is remembered. Height 2 now claims
+    // a foreign parent; only a store lookup can catch it.
+    blocks[2]!.parentHash = hx(999, 0xf);
+    const restarted = mk(blocks, 2);
+    await expect(restarted.syncOnce({ maxBlocks: 10 })).rejects.toThrow(
+      /chain continuity BROKEN at height 2/,
+    );
+    // The cursor did not advance past the last good block.
+    expect(await restarted.getSyncedHeight()).toBe(1);
+  }, 60_000);
+
+  it("audit F3: an archive built from one genesis refuses a node serving a different genesis", async () => {
+    const chainA = fakeChain([{ height: 0, dParamSeed: 1 }]);
+    const { service: a, schema } = await newService(chainA, 0);
+    await a.syncOnce({ maxBlocks: 10 });
+    expect(await a.getSyncedHeight()).toBe(0);
+
+    // A different chain: same net label, same schema, different genesis hash.
+    const chainB = fakeChain([{ height: 0, dParamSeed: 1 }]);
+    chainB[0]!.hash = hx(4242, 0xb);
+    const foreign = new ChainArchiveSyncService({
+      sql: sql!, net: NET, schema,
+      node: { url: "http://fake-node-b", fetchImpl: fakeNodeFetch(chainB, 0) },
+      indexer: { url: "http://fake-indexer-b", fetchImpl: fakeIndexerFetch(chainB) },
+    });
+    await expect(foreign.syncOnce({ maxBlocks: 10 })).rejects.toThrow(/chain identity mismatch/);
+  }, 60_000);
 
   it("Fix 1: retrying after a partial legacy-style write (block row already present, transactions/bridge_observations missing) succeeds instead of duplicate-key-erroring", async () => {
     const blocks = fakeChain([{ height: 0, dParamSeed: 1 }]);
@@ -266,6 +518,182 @@ describe("ChainArchiveSyncService retry safety (sprint-fix round Fixes 1-3)", ()
     expect(JSON.parse(Buffer.from(changed).toString("utf8"))).toEqual({
       numPermissionedCandidates: 42, numRegisteredCandidates: 43,
     });
+  }, 60_000);
+
+  it("O1: stopping exactly after a D-parameter change and restarting from the watermark preserves the byte-identical observation sequence", async () => {
+    // The boundary is height 2. Stopping at height 2 and resuming at height 3 is load-bearing:
+    // height 3 still carries the NEW value, so a process-local-only cursor emits a duplicate there.
+    // Stopping before height 2 would let both the broken and fixed implementations emit the change
+    // at height 2 and would therefore prove nothing about restart continuity.
+    const blocks = fakeChain([
+      { height: 0, dParamSeed: 7 }, { height: 1, dParamSeed: 7 },
+      { height: 2, dParamSeed: 42 }, { height: 3, dParamSeed: 42 },
+    ]);
+    const unbrokenSchema = `retry_test_${schemaCounter++}`;
+    const restartedSchema = `retry_test_${schemaCounter++}`;
+    sql = createClient({ connectionString: container.getConnectionUri(), schema: unbrokenSchema });
+    await bootstrapChainArchiveSchema(sql, unbrokenSchema);
+    await bootstrapChainArchiveSchema(sql, restartedSchema);
+
+    const make = (schema: string) => new ChainArchiveSyncService({
+      sql, net: NET, schema,
+      node: { url: "http://fake-node", fetchImpl: fakeNodeFetch(blocks, 3) },
+      indexer: { url: "http://fake-indexer", fetchImpl: fakeIndexerFetch(blocks) },
+    });
+
+    await make(unbrokenSchema).syncOnce({ maxBlocks: 4 });
+    await make(restartedSchema).syncOnce({ maxBlocks: 3 }); // includes the change at height 2
+    await make(restartedSchema).syncOnce({ maxBlocks: 1 }); // a genuinely fresh process instance
+
+    const sequenceBytes = async (schema: string): Promise<Buffer> => {
+      const rows = await sql<{
+        height: string; block_hash: Buffer; observation_index: number; kind: string; raw: Buffer;
+      }[]>`
+        SELECT o.block_height::text AS height, o.block_hash, o.observation_index, o.kind, b.data AS raw
+        FROM ${sql(schema)}.bridge_observations o
+        JOIN ${sql(schema)}.chain_blobs b ON b.hash = o.raw_blob_hash
+        WHERE o.net = ${NET} AND o.kind = 'system_parameters_d'
+        ORDER BY o.block_height, o.observation_index
+      `;
+      // Serialize every ordered identity field plus the raw archived bytes. Equal row counts alone
+      // would miss reordering or a duplicate whose content happened to match another observation.
+      return Buffer.from(JSON.stringify(rows.map((row) => ({
+        height: row.height,
+        blockHash: row.block_hash.toString("hex"),
+        observationIndex: row.observation_index,
+        kind: row.kind,
+        rawHex: row.raw.toString("hex"),
+      }))));
+    };
+
+    const unbroken = await sequenceBytes(unbrokenSchema);
+    const restarted = await sequenceBytes(restartedSchema);
+    expect(restarted.equals(unbroken), restarted.toString()).toBe(true);
+    expect(JSON.parse(restarted.toString()).map((row: { height: string }) => row.height))
+      .toEqual(["0", "2"]);
+  }, 60_000);
+
+  /**
+   * F4 (final-review finding): the O1 scenario above restarts one height too LATE to constrain
+   * where the resumed cursor is seeded FROM. There, the first post-restart height (3) carries an
+   * unchanged value, so the archive's last stored observation and the node's current head value
+   * are both `42` and agree -- every seed source produces the same answer, and the test cannot
+   * tell them apart.
+   *
+   * This scenario moves the restart boundary one height earlier so the change lands exactly ON
+   * the first post-restart height, and the two candidate seed sources DISAGREE: the archive's
+   * last stored observation is `7` (height 0), while the node's current value at resume is `42`
+   * (the finalized head already carries the change). Production hydrates from the archive
+   * (`hydrateDParameterCursor` -> `getLatestBridgeObservation`), which is correct and is what
+   * this pins: a wrong implementation seeding from the node's current value would compare `42`
+   * against `42`, dedup the change away, and silently lose a real D-parameter transition that no
+   * later block ever re-announces -- with no error and no second chance, since heights above 3
+   * keep the same value.
+   */
+  it("F4: a D-parameter change landing exactly at the first post-restart height is still recorded -- the resumed cursor comes from the archive's last stored observation, not the node's current value", async () => {
+    const blocks = fakeChain([
+      { height: 0, dParamSeed: 7 }, { height: 1, dParamSeed: 7 },
+      { height: 2, dParamSeed: 42 }, { height: 3, dParamSeed: 42 },
+    ]);
+    const schema = `retry_test_${schemaCounter++}`;
+    sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    await bootstrapChainArchiveSchema(sql, schema);
+
+    const make = () => new ChainArchiveSyncService({
+      sql, net: NET, schema,
+      node: { url: "http://fake-node", fetchImpl: fakeNodeFetch(blocks, 3) },
+      indexer: { url: "http://fake-indexer", fetchImpl: fakeIndexerFetch(blocks) },
+    });
+
+    // Stop immediately BEFORE the change: heights 0-1 only. The archive's newest stored
+    // observation is therefore height 0's value (7), two heights behind the chain head's 42.
+    const first = await make().syncOnce({ maxBlocks: 2 });
+    expect(first.ingestedBlocks).toBe(2);
+
+    // A genuinely fresh instance -- no process-local cursor survives, so the resumed value can
+    // only come from whatever the implementation chooses to hydrate from.
+    const resumed = await make().syncOnce({ maxBlocks: 2 });
+    expect(resumed.ingestedBlocks).toBe(2);
+
+    const obs = await sql<{ block_height: bigint; raw_blob_hash: Buffer }[]>`
+      SELECT block_height, raw_blob_hash FROM ${sql(schema)}.bridge_observations
+      WHERE net = ${NET} AND kind = 'system_parameters_d' ORDER BY block_height
+    `;
+    // The change at height 2 must be present. Height 3 repeats the changed value and must NOT
+    // produce a near-duplicate -- so this asserts the restart neither swallows the transition
+    // (seeding from the node's current value) nor re-emits it (seeding from nothing at all).
+    expect(obs.map((o) => Number(o.block_height))).toEqual([0, 2]);
+
+    // Content, not just position: the archived height-2 bytes are the real changed value.
+    const blob = await sql<{ data: Buffer }[]>`
+      SELECT data FROM ${sql(schema)}.chain_blobs WHERE hash = ${obs[1]!.raw_blob_hash}
+    `;
+    expect(JSON.parse(blob[0]!.data.toString("utf8")))
+      .toEqual({ numPermissionedCandidates: 42, numRegisteredCandidates: 43 });
+  }, 60_000);
+
+  it("O2: two services racing one height cannot both report success for incompatible transaction histories", async () => {
+    const left = fakeChain([{ height: 0, dParamSeed: 7 }]);
+    const right = fakeChain([{ height: 0, dParamSeed: 7 }]);
+    const leftRaw = [0, 1].map((i) =>
+      Buffer.from(`midnight:transaction-o2-left-${i}`, "utf8").toString("hex"));
+    const rightRaw = [0, 1].map((i) =>
+      Buffer.from(`midnight:transaction-o2-right-${i}`, "utf8").toString("hex"));
+    // Both nodes expose the same block identity/body population; their indexer views disagree on
+    // which two transaction rows belong to it. This models two implementation generations racing
+    // to fill historical rows, without making containment fail before the conflict guard.
+    const allExtrinsics = [...leftRaw, ...rightRaw].map(bareMidnightExtrinsicHex);
+    left[0]!.extrinsics = allExtrinsics;
+    right[0]!.extrinsics = allExtrinsics;
+    left[0]!.txRawHex = leftRaw;
+    left[0]!.txHashes = [hx(10, 0xd), hx(11, 0xd)];
+    right[0]!.txRawHex = rightRaw;
+    right[0]!.txHashes = [hx(20, 0xd), hx(21, 0xd)];
+
+    const schema = `retry_test_${schemaCounter++}`;
+    sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    await bootstrapChainArchiveSchema(sql, schema);
+    const make = (blocks: FakeChainBlock[]) => new ChainArchiveSyncService({
+      sql, net: NET, schema,
+      node: { url: "http://fake-node", fetchImpl: fakeNodeFetch(blocks, 0) },
+      indexer: { url: "http://fake-indexer", fetchImpl: fakeIndexerFetch(blocks) },
+    });
+    const a = make(left);
+    const b = make(right);
+
+    // Force BOTH service-level preflight reads to see the same empty snapshot. Without the store's
+    // transaction-scoped re-check, both calls then resolve successfully: one history wins the
+    // unique constraints and the other is silently discarded by ON CONFLICT DO NOTHING.
+    let preflightReaders = 0;
+    let releasePreflights!: () => void;
+    const bothPreflights = new Promise<void>((resolve) => { releasePreflights = resolve; });
+    const originals = [a, b].map((svc) => svc.store.getTransactionsForBlock.bind(svc.store));
+    for (const [i, svc] of [a, b].entries()) {
+      svc.store.getTransactionsForBlock = async (...args) => {
+        const rows = await originals[i]!(...args);
+        preflightReaders++;
+        if (preflightReaders === 2) releasePreflights();
+        await bothPreflights;
+        return rows;
+      };
+    }
+
+    const outcomes = await Promise.allSettled([
+      a.syncOnce({ maxBlocks: 1 }), b.syncOnce({ maxBlocks: 1 }),
+    ]);
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    const rejected = outcomes.find((outcome) => outcome.status === "rejected") as
+      PromiseRejectedResult | undefined;
+    expect(String(rejected?.reason)).toMatch(/database ingest lock|different contents/);
+
+    // The surviving archive must be one COMPLETE candidate, never a position-by-position mixture.
+    const stored = await sql<{ position: number; tx_hash: Buffer }[]>`
+      SELECT position, tx_hash FROM ${sql(schema)}.transactions
+      WHERE net = ${NET} AND block_height = 0 ORDER BY position
+    `;
+    const got = stored.map((row) => row.tx_hash.toString("hex"));
+    expect([left[0]!.txHashes, right[0]!.txHashes]).toContainEqual(got);
+    expect(got).toHaveLength(2);
   }, 60_000);
 
   it("Fix 3 (syncOnce-level consequence): a malformed node-reported block number surfaces a typed error from syncOnce instead of silently no-oping with a reported success", async () => {

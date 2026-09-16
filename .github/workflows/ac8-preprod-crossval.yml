@@ -1,0 +1,120 @@
+name: AC-8 live Preprod cross-validation
+
+permissions:
+  contents: read
+
+# MANUAL TRIGGER ONLY, deliberately (F7 follow-up; owner decision 2026-08-17).
+#
+# This job ingests from Midnight's REAL hosted Preprod endpoints. It is deliberately not on
+# `pull_request` and not on a schedule:
+#
+#   - As a PR check it would couple every merge to third-party uptime. A red run would usually
+#     mean "Preprod was down", not "the archive is wrong" -- the failure mode that teaches people
+#     to ignore a gate.
+#   - On a schedule it would spend live-network minutes continuously for a signal nobody is
+#     waiting on, and a periodically-red non-required job decays into noise just as fast.
+#
+# `workflow_dispatch` keeps the suite runnable on demand -- before a release, or after touching
+# ingest -- at zero standing cost. Being dispatch-only, it can never appear as a required PR
+# check, which is the intended property, not a limitation.
+#
+# The suite is `describe.skipIf`-gated on `UMBRADB_LIVE_PREPROD_CLOUD`, so this workflow is the
+# only automated path that executes it at all. See the CI STATUS block in
+# `test/integration/chain-archive-preprod-cloud-crossval.integration.test.ts`.
+on:
+  workflow_dispatch:
+    inputs:
+      max_blocks:
+        description: 'Contiguous heights to ingest from genesis (default 30)'
+        required: false
+        default: '30'
+      node_url:
+        description: 'Override the Preprod node RPC URL'
+        required: false
+        default: ''
+      indexer_url:
+        description: 'Override the Preprod indexer GraphQL URL'
+        required: false
+        default: ''
+
+concurrency:
+  group: ac8-preprod-crossval-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  crossval:
+    runs-on: ubuntu-24.04
+    # The suite itself sets an 8-minute per-test timeout and ingests over the public internet;
+    # this bounds the whole job including npm ci and Testcontainers startup.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Fail fast and loudly if the endpoints are unreachable, so an infrastructure outage is
+      # distinguishable from a cross-validation mismatch in the run log. This does NOT gate the
+      # step below -- the suite must still hard-fail on a real mismatch; this only labels the
+      # cause when the network is the problem.
+      - name: Probe the Preprod endpoints
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          node_url="${{ inputs.node_url }}"
+          indexer_url="${{ inputs.indexer_url }}"
+          : "${node_url:=https://rpc.preprod.midnight.network}"
+          : "${indexer_url:=https://indexer.preprod.midnight.network/api/v4/graphql}"
+          echo "node:    $node_url"
+          echo "indexer: $indexer_url"
+          curl -s -m 15 -o /dev/null -w 'node http status: %{http_code}\n' -X POST "$node_url" \
+            -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"system_chain","params":[]}' \
+            || echo 'node probe failed -- Preprod may be unreachable from this runner'
+          curl -s -m 15 -o /dev/null -w 'indexer http status: %{http_code}\n' -X POST "$indexer_url" \
+            -H 'Content-Type: application/json' \
+            -d '{"query":"{ block { height } }"}' \
+            || echo 'indexer probe failed -- Preprod may be unreachable from this runner'
+
+      # A mismatch is a HARD failure -- that is AC-8's whole requirement. The suite provisions its
+      # own Postgres via Testcontainers, so no service container is declared here.
+      #
+      # Both reporters in ONE run: the default reporter for a readable log, and the JSON report
+      # for the non-vacuousness assertion below. Running the suite twice to get both would double
+      # the live-network cost, which is the very thing this workflow's trigger choice exists to
+      # avoid.
+      - name: AC-8 cross-validation against live Preprod
+        env:
+          UMBRADB_LIVE_PREPROD_CLOUD: '1'
+          UMBRADB_AC8_MAXBLOCKS: ${{ inputs.max_blocks }}
+          UMBRADB_PREPROD_NODE_URL: ${{ inputs.node_url }}
+          UMBRADB_PREPROD_INDEXER_URL: ${{ inputs.indexer_url }}
+        run: |
+          npx vitest run \
+            test/integration/chain-archive-preprod-cloud-crossval.integration.test.ts \
+            --maxWorkers=1 \
+            --reporter=default --reporter=json --outputFile=ac8-report.json
+
+      # The suite self-skips when its env gate is unset. That cannot happen here (the step above
+      # sets it unconditionally), but a future edit that broke the gate would otherwise produce a
+      # GREEN run in which nothing executed -- the exact vacuous-pass shape F7 was about. `always()`
+      # so this still reports when the run above failed.
+      - name: Assert the suite actually executed
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f ac8-report.json ]; then
+            echo 'no vitest JSON report -- cannot prove the suite executed' >&2
+            exit 1
+          fi
+          passed=$(node -p "require('./ac8-report.json').numPassedTests ?? 0")
+          total=$(node -p "require('./ac8-report.json').numTotalTests ?? 0")
+          echo "AC-8 tests: ${passed} passed of ${total} total"
+          if [ "$total" -lt 1 ]; then
+            echo 'AC-8 reported zero tests -- the suite SKIPPED rather than ran' >&2
+            exit 1
+          fi

@@ -1,0 +1,34 @@
+# Optional override: publish the test stack's services on the host.
+#
+# The base file deliberately publishes nothing, so several stacks can coexist on one machine
+# (see its header). Layer this file only when you actually need host access -- a psql GUI, a
+# browser on the indexer, or running a CLI from the host rather than inside the network:
+#
+#   docker compose -f test/compose/docker-compose.yml \
+#                  -f test/compose/docker-compose.hostports.yml up -d
+#
+# Every host port is env-overridable and defaults OFF the canonical numbers, so this does not
+# collide with a stack someone else is running on 9944 / 8088 / 6300 / 5432. If you are sharing
+# the machine, set your own block:
+#
+#   NODE_HOST_PORT=29944 INDEXER_HOST_PORT=29088 docker compose -f ... -f ... up -d
+#
+# Binding is 127.0.0.1-only: a dev chain with a genesis-funded wallet must never be reachable
+# off-host.
+
+services:
+  node:
+    ports:
+      - '127.0.0.1:${NODE_HOST_PORT:-19944}:9944'
+
+  indexer:
+    ports:
+      - '127.0.0.1:${INDEXER_HOST_PORT:-19088}:8088'
+
+  proof-server:
+    ports:
+      - '127.0.0.1:${PROOF_HOST_PORT:-16300}:6300'
+
+  postgres:
+    ports:
+      - '127.0.0.1:${POSTGRES_HOST_PORT:-15432}:5432'

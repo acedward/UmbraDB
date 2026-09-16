@@ -9,7 +9,7 @@ UmbraDB itself is licensed **Apache-2.0** (`LICENSE`, `NOTICE`; Copyright 2026 C
 ## Why this exists
 
 UmbraDB is the Postgres persistence layer for a Midnight/Cardano dependency chain. Its trust
-surface is not just its own two runtime npm packages — it is the full transitive npm graph used
+surface is not just its four direct runtime npm packages — it is the full transitive npm graph used
 to build and test it, the pinned Cardano/Midnight release binaries and Docker images the dev
 environment runs, and the Lean/mathlib toolchain that checks the formal proofs. This directory
 makes that surface explicit so it can be watched, audited, and updated deliberately.
@@ -39,14 +39,15 @@ Every entry is grounded in a real manifest in this repo. The authoritative sourc
 
 The governing rule differs by ecosystem, because the *security value* of each pin differs.
 
-- **npm runtime deps (`postgres`, `zod`)** — carry caret ranges in `package.json`, but the
-  **resolved version + integrity hash in `package-lock.json` is the real pin**. Bump by editing
-  the range (or `npm update` within range) and committing the regenerated lockfile. Runtime scope
-  is deliberately tiny (2 packages, both zero-dependency) so `npm audit --omit=dev` stays quiet and
-  fast. Watch: GitHub advisories / `npm audit` for `postgres` and `zod`.
-- **npm dev deps + transitive graph (307 packages total)** — `npm ci` reinstalls the exact locked
+- **npm runtime deps** — `postgres`, `zod`, `@polkadot/types`, and the local
+  `@midnight-ntwrk/ledger-v8` build. Registry dependencies are fixed by the resolved version and
+  integrity hash in `package-lock.json`; the vendored ledger is fixed by its source commit,
+  committed patches, provenance record and 32-file `SHA256SUMS`. Bump either class deliberately
+  and commit its verification metadata.
+- **npm dev deps + transitive graph (493 package entries total)** — `npm ci` reinstalls the exact locked
   tree; never `npm install` in CI. Bump dev tooling (vitest, tsx, typedoc, typescript,
-  Testcontainers, `@types/node`, effect, fast-check, the wallet-sdk canary) deliberately, run the
+  Testcontainers, coverage, mutation tools, `@types/node`, effect, fast-check, tinybench, the stock
+  ledger refusal oracle, and the wallet-sdk canary) deliberately, run the
   conformance suite, and commit the new lockfile. A non-blocking full `npm audit` gives dev-graph
   visibility without gating merges on the large dev tree.
 - **Nix pins (`flake.lock`)** — updated **deliberately, never via a blind `nix flake update`**.
@@ -59,9 +60,11 @@ The governing rule differs by ecosystem, because the *security value* of each pi
   `fetchurl` URL + `sha256` in `flake.nix` together; a mismatched sha256 hard-fails the build.
   Watch upstream releases: IntersectMBO/cardano-node, IntersectMBO/cardano-db-sync,
   midnightntwrk/midnight-node.
-- **Docker images (indexer-standalone, proof-server)** — pinned by `@sha256:` digest. Digest
-  pinning gives immutability, **not** freedom from CVEs, so the images are watched by a scheduled
-  Trivy scan (G18) rather than by version bumps alone. Bump = replace the digest, re-verify.
+- **Docker images** — the two Nix-stack images and all five Compose declarations are pinned by
+  `@sha256:` digest. Digest pinning gives immutability, **not** freedom from CVEs: the Nix images
+  are watched by scheduled Trivy, and the parity workflow parses resolved Compose image refs so
+  quoting, indentation or interpolation cannot evade the pin gate. Bump = replace the digest and
+  re-verify the relevant stack.
 - **Lean toolchain + mathlib (`lean-toolchain`, `lake-manifest.json`)** — bump the Lean version
   and re-run `lake update` to a mathlib tag matching that toolchain; the transitive Lake deps
   (batteries, aesop, Qq, …) move with mathlib and are recorded as exact git revs in the manifest.
@@ -69,11 +72,20 @@ The governing rule differs by ecosystem, because the *security value* of each pi
 
 ## Security process — the CI gates
 
-Today the one merge gate is **`.github/workflows/conformance.yml`**: it already installs with
-`npm ci` (enforcing the lockfile + integrity hashes) and pins every GitHub Action by commit SHA,
-but it runs *tests only*. The **G18 supply-chain gate** (`.github/workflows/supply-chain.yml`,
-from `openspec/changes/v1.0.0-infosec-signoff/`) — **landed in this change** — adds six
-blocking/scheduled sub-gates:
+Seven workflows now run on `pull_request`, not one — `conformance.yml` (tests),
+`chain-archive-parity.yml` (live node-vs-indexer parity), `vendored-ledger.yml` (vendored-artifact
+integrity + export presence), `pack-smoke.yml` (packed-tarball consumability), `supply-chain.yml`
+(this gate), `bench-smoke.yml`, and `lean.yml`. Each installs with `npm ci` (enforcing the lockfile
++ integrity hashes) and pins every GitHub Action by commit SHA. Note that several are
+path-filtered, so a given PR runs a subset: "runs on `pull_request`" is not the same as "runs on
+every PR", and which of these are *required* to merge is branch-protection configuration, not
+something this file can assert. (`.github/workflows/` holds one more file than that —
+`ac8-preprod-crossval.yml` is `workflow_dispatch`-only and never runs on a PR by design, so it is
+not part of this count.)
+
+`conformance.yml` remains the broadest tests-only gate. The **G18 supply-chain gate**
+(`.github/workflows/supply-chain.yml`, from `openspec/changes/v1.0.0-infosec-signoff/`) —
+**landed in this change** — adds six blocking/scheduled sub-gates:
 
 1. **`npm ci` everywhere** (never `npm install`) — a tampered tarball fails the integrity check.
 2. **Blocking `npm audit --audit-level=high --omit=dev`** on the tiny runtime scope, plus a
@@ -83,7 +95,7 @@ blocking/scheduled sub-gates:
    hooks, so any needed build/typecheck must be an explicit CI step — it already is.)
 4. **`gitleaks`** full git-history secret scan, allowlisting exactly the one valueless Preview
    testnet wallet path + its `.example` template.
-5. **`trivy image --severity HIGH,CRITICAL`** on **both** digest-pinned images, on a schedule, with
+5. **`trivy image --severity HIGH,CRITICAL`** on both Nix-stack digest-pinned images, on a schedule, with
    the scan targets asserted equal to the `flake.nix` digests so a bump cannot silently diverge.
 6. **`flake.lock` change-control** — fail any PR that changes `flake.lock` unless it carries an
    explicit `flake-lock-update` label, so an unreviewed `nix flake update` cannot land.
@@ -97,7 +109,8 @@ blocking/scheduled sub-gates:
 SLSA v1.0 defines a **Build track** (levels L1–L3) certifying that an artifact's build is
 tamper-evident via signed **provenance**. UmbraDB is not yet published as a build artifact, so its
 current Build level is effectively **L0–L1**: builds are scripted (`npm`, Nix) and inputs are
-strongly pinned (307/307 npm packages with integrity hashes, exact Nix revs, sha256 binaries,
+strongly pinned (491/491 registry package entries with integrity hashes plus a checksummed vendored
+ledger, exact Nix revs, sha256 binaries,
 digest-pinned images), which is excellent *input* hygiene but produces no signed provenance yet.
 The realistic **target is SLSA Build L2**, reached the moment a release workflow publishes with
 GitHub Actions OIDC + npm `--provenance` (Sigstore-signed, transparency-logged provenance tied to
@@ -108,4 +121,5 @@ per-track assessment, level estimate, and gap-to-roadmap mapping.
 
 The markdown `inventory.md` is the deliverable here. A machine-readable SBOM is a good next step:
 `npm sbom --sbom-format cyclonedx` for the npm graph, and/or [`syft`](https://github.com/anchore/syft)
-over the built artifact and the two Docker images, emitted as CycloneDX and attached to releases.
+over the built artifact and the six unique Docker image references, emitted as CycloneDX and
+attached to releases.

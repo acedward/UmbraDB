@@ -83,11 +83,10 @@ import { CHAIN_ARCHIVE_HEIGHT_PARTITION_SIZE, CHAIN_ARCHIVE_PRECREATED_PARTITION
  * every migration in this repo, this file is schema-qualified via `sql(schema)` and does not
  * hardcode a schema name.
  *
- * **Not wired into any runner path that would execute it.** `chainArchiveMigrations` is a
- * plain exported array — nothing in this repo's actual application code calls
- * `runMigrations(sql, { schema: "chain_archive", migrations: chainArchiveMigrations })` today.
- * This remains a design-stage artifact exactly as `005_chain_archive.ts` was before it, per the
- * task's explicit scope.
+ * This file is the immutable 001 baseline. The final schema is obtained by applying the complete
+ * 001–007 lineage: in particular 002 replaces the transaction hash key below with a position key,
+ * and 003–006 add runtime metadata and replay checkpoints. `chain-archive-sync/bootstrap.ts`
+ * executes that lineage for the packaged archive-sync CLI.
  */
 export const name = "001_chain_archive_core";
 
@@ -243,8 +242,7 @@ export async function up(sql: ISql, schema: string): Promise<void> {
   // `parent_hash` remains without an FK (documented rationale unchanged from the original: a
   // self-referencing FK across range partitions complicates out-of-order reorg backfill,
   // parent-link integrity is an application-level invariant). `body_blob_hash` remains nullable
-  // pending body/extrinsics sync (unchanged) — see the design doc §6 for why this no longer
-  // blocks bridge-data archival despite that.
+  // for storage callers that only possess a header; the production sync writer supplies it.
   // ---------------------------------------------------------------------------------------
   await sql`
     CREATE TABLE ${sql(schema)}.blocks (

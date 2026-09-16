@@ -96,8 +96,119 @@ export function statusesFromReport(report: JsonReport): Map<string, string[]> {
 /** The pinned count of `required` tests (change-level audit BLOCK 9(b)). Structurally PINS the
  *  manifest so silently deleting (or adding) a required entry fails the gate: {@link loadManifest}
  *  rejects a manifest whose `required` length drifts from this constant. Bump it deliberately when
- *  a required test is genuinely added/removed. */
-export const EXPECTED_REQUIRED_COUNT = 25;
+ *  a required test is genuinely added/removed.
+ *
+ *  25 -> 29 (00009-01): the four `crash.archive-height.*` ids covering the owner's Rule A -- one
+ *  block height, one `BEGIN…COMMIT` (`spec/00009` FR-029). They belong in the REQUIRED set by the
+ *  manifest's own rule (every non-live crash test whose skipping must fail the gate), and the
+ *  set includes the suite's own negative control deliberately: a two-state result proven by
+ *  assertions that cannot fail is worth nothing, so the control that shows the pre-fold shape
+ *  DOES produce a partial height must not be skippable either.
+ *
+ *  29 -> 32 (merge of 00009-01 + 00009-02): 00009-02 added three `shielded-monitor.*` ids (fencing,
+ *  schema isolation, restore) on its own branch (25 -> 28); the merged set is the UNION of both
+ *  branches, never one side.
+ *
+ *  32 -> 39 (00009-03): the four `crash.shielded-monitor-batch.*` ids covering the owner's Rule B
+ *  -- one block height's associations and its coverage advance, one `BEGIN…COMMIT` (`spec/00009`
+ *  FR-010) -- plus three `shielded-monitor.*` scanner ids (SC-001 manifest equality, FR-013 stale
+ *  source, FR-007 fail-closed). The crash set again INCLUDES its own negative control and its
+ *  write-set audit deliberately: a two-state result proven by assertions that cannot fail is
+ *  worth nothing, so the control that shows the UNFOLDED shape DOES produce a partial batch must
+ *  not be skippable either.
+ *
+ *  39 -> 42 (merge of all four 00009 branches: 01+02 -> 32, 03 -> 39, 04 adds three API/client ids
+ *  on top of 02's 28): the pinned set is the UNION of every branch's ids, never one side.
+ *
+ *  42 -> 45 (00009-06): three ids for the OPERATOR surface. `…api.list-includes-revoked-excludes-deleted`
+ *  pins the one deliberate asymmetry the list route introduces (a revoked monitor is listed even
+ *  though its own reads answer 410; a deleted one never is) — both halves fail silently if broken,
+ *  which is exactly what the required set is for. `…ui.self-contained-no-external-resources` turns
+ *  "the dashboard adds no runtime dependency and loads nothing from the network" from a review
+ *  habit into an assertion with a positive control. `…derive-key.matches-the-service-encoding`
+ *  pins the derive command's output to the repository's own key-encoding path, so the command and
+ *  the service's intake cannot drift apart without a red gate.
+ *
+ *  45 -> 50 (00009-07): five ids for MATCH DETAILS. Two pin the attribution rule and the ledger
+ *  fact that forces its shape — `…match-details.attribution-is-sound-on-the-fixture-manifest`
+ *  (every `mine` value is one the ledger entails, over the whole SC-001 corpus, with non-vacuity
+ *  assertions that each branch occurred) and
+ *  `…match-details.per-output-isolation-is-refused-for-archived-bytes` (the measured refusal
+ *  behind organizer question Q22, with a positive control). Two pin the backfill's idempotence at
+ *  both levels — the store predicate (`…backfill.fills-null-rows-once-and-is-idempotent`) and the
+ *  end-to-end run (`…backfill.fills-existing-matches-and-is-idempotent`). The fifth,
+ *  `crash.shielded-monitor-batch.details-commit-with-the-height`, is a STRENGTHENING of the
+ *  existing Rule B gate: a height's details must commit inside the height's own transaction, and
+ *  the classifier is shown to refuse the state where they did not.
+ *
+ *  50 -> 56 (00009-08 v2): six ids for project B as a distinct deployable — the store parity
+ *  across the process boundary, the 409 fence round trip, the import guard, the balancer's
+ *  selection, the lost-response protocol, and the split topology end to end.
+ *
+ *  56 -> 73 (00009-09): seventeen ids for the merged monitor-node, in four groups.
+ *
+ *  KEYS ONLY IN RAM. `…store.no-key-material-is-ever-written` and
+ *  `…migrations.live-monitor-needs-no-key` pin the database half — nothing writes a key any more,
+ *  and the CHECK that used to REQUIRE one now forbids requiring it.
+ *  `…node.key-bytes-are-zeroed-the-moment-the-handle-exists` pins the process half: the serialized
+ *  bytes are zero-filled as soon as the ledger has them, and the handle is cleared on every path a
+ *  key leaves by. `…node.scanner-never-clears-a-borrowed-key` is its inverse and is easy to get
+ *  wrong in a refactor: the scanner BORROWS the node's handle, so a `clear()` in a `finally` —
+ *  which is exactly what 00009-08's scanner did — would now destroy a key still in use.
+ *  `…node.paused-keeps-the-key-and-revoked-clears-it` pins OP-3.
+ *  `…key-never-logged-through-the-balancer-and-the-node` extends SC-004 to the two new places a
+ *  key passes through.
+ *
+ *  THE BLOCK-CENTRIC COMMIT. `…store.advance-batch-reports-fenced-items-without-failing-the-block`
+ *  pins OP-2, and `crash.shielded-monitor-batch.advance-batch-is-all-or-nothing` is the Rule B
+ *  gate GROWN to the new unit: a kill mid-transaction must not leave one monitor of a block with
+ *  the height and another without it — a property the single-monitor case cannot express at all.
+ *
+ *  GAPS AND RECOVERY. `…node.gap-detected-and-back-synced` is the HAS_SCANNED_ONCE detector, which
+ *  needs a coverage state a healthy run closes too fast to observe; `…store.fill-gap-shrinks-
+ *  splits-and-deletes` is the four shapes of a fill; `…store.register-upserts-by-fingerprint-and-
+ *  returns-coverage-and-gaps` is what makes a re-send a resume rather than a rescan; and
+ *  `…node.restart-shows-key-needed-and-a-resend-resumes` is the whole §4.6 recovery, end to end.
+ *
+ *  ROUTING. `…balancer.routing-decision-table` enumerates design §7,
+ *  `…balancer.hint-invalidated-when-a-node-goes-away` pins the one thing that makes a stale hint
+ *  harmless, `…balancer.duplicate-registration-lands-on-the-holder` is the property the whole
+ *  routing design exists for, and `…balancer.internal-routes-are-never-forwarded` is the second
+ *  lock on the nodes' private door. `storage-api.removed-routes-answer-410` pins the four routes
+ *  this phase removed as REMOVED rather than missing.
+ *
+ *  73 -> 76 (00009-09, after the live end-to-end run and owner decisions Q33/Q29/Q32). The count
+ *  moved twice and the SET moved more than the count does: five ids were added for the two
+ *  defects the live run found (Q31, Q32), then the lifecycle itself was simplified and four of
+ *  those, plus four older ones, went away.
+ *
+ *  A BACK-SYNC RE-READS A RANGE (Q32). `…store.fill-gap-skips-rows-it-already-holds` pins the
+ *  idempotence the live run's 500 proved missing — the only writer with no coverage fence to
+ *  protect it from a replay — and `…node.sync-key-queues-a-back-sync-for-a-recorded-gap` pins the
+ *  retry path a stuck gap had none of.
+ *
+ *  GIVE OR DELETE (owner decision Q33). Pause, resume and revoke left the product, so the ids
+ *  that pinned them are gone or restated: `…api.list-includes-revoked-excludes-deleted` ->
+ *  `…list-includes-stopped-excludes-deleted`, `…node.paused-keeps-the-key-and-revoked-clears-it`
+ *  -> `…node.stopped-keeps-the-key-and-deleted-clears-it`,
+ *  `…restore.revocation-survives-snapshot-restore` -> `…restore.deletion-survives-snapshot-restore`
+ *  (the same FR-024 property over the operation that still exists), and the balancer's
+ *  lifecycle-forward id -> `…balancer.delete-is-forwarded-to-the-holder`. Two ids are NEW, because
+ *  destroying a key is now the whole consumer-facing lifecycle and deserves to be pinned at both
+ *  levels: `…node.delete-destroys-the-key-on-the-holder` (both routes a delete can reach a holder
+ *  by) and `…node.delete-through-the-balancer-destroys-the-key-and-the-rows` (end to end: 404
+ *  afterwards, no rows left, and the same key starts a fresh monitor). The two Q31 resume ids are
+ *  REMOVED: there is no resume to notice.
+ *
+ *  THE DETAILS BACKFILL IS GONE (owner decision Q29, option A). `…backfill.fills-null-rows-once-
+ *  and-is-idempotent` and `…backfill.fills-existing-matches-and-is-idempotent` are removed with
+ *  the command they governed; the `details` column and the live path that writes it stay, and the
+ *  match-details ids that cover THAT are untouched.
+ *
+ *  UNION RULE, unchanged and still load-bearing: a branch that merges this one with any other
+ *  00009 branch takes the UNION of the id sets and the count that follows from it, never one
+ *  side's number. */
+export const EXPECTED_REQUIRED_COUNT = 76;
 
 /** The pinned count of `deferred` (WHERE-gated optional-feature) tests (BLOCK 6). Structurally PINS
  *  the deferred exemption set so deleting the sole deferred entry (a green "0 deferred" gate) fails the

@@ -49,7 +49,7 @@ export const SaveCheckpointOptionsSchema = z.object({
 export type SaveCheckpointOptions = z.infer<typeof SaveCheckpointOptionsSchema> & {
   signal?: AbortSignal;
   /**
-   * An in-flight transaction handle (from {@link TransactionLeaseLayer.withTransaction}) to run
+   * An in-flight transaction handle (from the transaction layer's `withTransaction` method) to run
    * this `save` inside. When supplied, `save` issues every one of its statements on that
    * transaction instead of opening its own, so the checkpoint commits or rolls back atomically
    * with everything else the caller wrote in it (co-transactional composition — see

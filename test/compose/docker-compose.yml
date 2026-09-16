@@ -1,0 +1,174 @@
+# Midnight test stack for the chain-archive suites.
+#
+# IMAGE PINNING (audit A5). Every image is pinned by DIGEST, not only by tag. A tag is mutable:
+# `midnight-node:1.0.0` can be repointed at different bytes at any time, and this stack is the
+# oracle for the archive's source-parity gate -- if the node or indexer silently changed underneath
+# it, the gate would compare against something other than what it claims and report success either
+# way. The digest makes the comparison reproducible.
+#
+# The `${VAR:-default}` form is kept so a developer can still override a whole reference
+# (`NODE_TAG=1.1.0` overrides tag AND digest together, which is the correct granularity -- a tag
+# without its digest would silently unpin). Refresh a pin by pulling the tag and reading
+# `docker image inspect <image> --format '{{index .RepoDigests 0}}'`.
+# A self-contained Midnight stack (node + indexer + proof server) plus Postgres, for running
+# this repo's live-devnet integration tests and for driving real transactions against a real
+# chain during development.
+#
+# ── No host ports, deliberately ──────────────────────────────────────────────────────────────
+# Nothing here publishes to the host. Every service is reachable only on the compose network,
+# under its CANONICAL port (node 9944, indexer 8088, proof server 6300, postgres 5432), which
+# means:
+#
+#   - several of these stacks can run side by side on one machine with zero port collisions,
+#     as long as each uses its own project name (`docker compose -p <name> ...`). Docker gives
+#     each project its own network, so `node:9944` in one is a different container than
+#     `node:9944` in another.
+#   - no agent or developer sharing the machine has to negotiate a host port range, and no
+#     test can accidentally bind to a DIFFERENT stack that happens to occupy the port it
+#     expected. (That mis-binding is real: this repo's live-devnet suite probes a node URL and
+#     runs against whatever answers, so on a shared machine it could silently test against an
+#     unrelated devnet and fail on foreign data.)
+#
+# If you DO want host access -- psql from a GUI, a browser on the indexer -- layer the optional
+# override, which publishes the same services on a configurable, non-default host port block:
+#
+#   docker compose -f test/compose/docker-compose.yml \
+#                  -f test/compose/docker-compose.hostports.yml up -d
+#
+# ── Running the tests inside the network ─────────────────────────────────────────────────────
+#   docker compose -f test/compose/docker-compose.yml up -d node indexer proof-server postgres
+#   docker compose -f test/compose/docker-compose.yml run --rm tests
+#
+# The `tests` service runs the suite from inside the compose network, so the live-devnet tests
+# reach `http://node:9944` / `http://indexer:8088` with no host involvement at all.
+#
+# Versions pin the proven midnight-1.0.0 set; override with NODE_TAG / INDEXER_TAG / PROOF_TAG.
+
+name: umbradb-test
+
+services:
+  node:
+    restart: unless-stopped
+    image: 'midnightntwrk/midnight-node:${NODE_TAG:-1.0.0@sha256:ede01da35e982b6a4b85461ad8492ae2753ef14246fba33c8039b782aa8e39fb}'
+    environment:
+      CFG_PRESET: 'dev'
+      SIDECHAIN_BLOCK_BENEFICIARY: '04bcf7ad3be7a5c790460be82a713af570f22e0f801f6659ab8e84a52be6969e'
+    healthcheck:
+      test:
+        - 'CMD-SHELL'
+        - >
+          curl -fs -H 'Content-Type: application/json' -d
+          '{"id":1,"jsonrpc":"2.0","method":"chain_getBlockHash","params":[1]}' http://localhost:9944 | grep -q
+          '"result":"0x'
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  indexer:
+    restart: unless-stopped
+    image: 'midnightntwrk/indexer-standalone:${INDEXER_TAG:-4.3.2@sha256:a769f7f2eaf34ba7ecaea19e878112d9a4686c5aa9a1d3dce86a42086a9a6444}'
+    environment:
+      RUST_LOG: 'indexer=info,chain_indexer=info,indexer_api=info,wallet_indexer=info,indexer_common=info,fastrace_opentelemetry=off,info'
+      APP__APPLICATION__NETWORK_ID: 'undeployed'
+      APP__INFRA__NODE__URL: 'ws://node:9944'
+      APP__INFRA__STORAGE__PASSWORD: 'indexer'
+      APP__INFRA__PUB_SUB__PASSWORD: 'indexer'
+      APP__INFRA__LEDGER_STATE_STORAGE__PASSWORD: 'indexer'
+      APP__INFRA__SECRET: '303132333435363738393031323334353637383930313233343536373839303132'
+      APP__INFRA__SPO_NODE__URL: 'ws://node:9944'
+      APP__INFRA__SPO_NODE__BLOCKFROST_ID: 'umbradb-test-dummy-id'
+    healthcheck:
+      # image has neither curl nor wget -- probe the file the indexer writes when running
+      test: ['CMD-SHELL', 'cat /var/run/indexer-standalone/running']
+      interval: 5s
+      timeout: 5s
+      retries: 36
+      start_period: 60s
+    depends_on:
+      node:
+        condition: service_healthy
+
+  proof-server:
+    restart: unless-stopped
+    image: 'midnightntwrk/proof-server:${PROOF_TAG:-8.1.0@sha256:801bbc0340e9e96f16735f77b523f23c7459e3359842f7c79c2c53f4e994d531}'
+    environment:
+      RUST_BACKTRACE: 'full'
+      EXTRA_ARGS: '-v'
+    # distroless image: no shell, so no healthcheck -- consumers retry on the port
+
+  # UmbraDB supplies no database of its own: "You supply the database; UmbraDB owns a schema
+  # inside it" (README). This is that database -- for manual/CLI use. The automated suite does
+  # NOT use it: 15 test files provision their own ephemeral Postgres via Testcontainers, so
+  # each suite gets a pristine database and they cannot interfere with one another.
+  postgres:
+    restart: unless-stopped
+    image: 'postgres:17@sha256:0027bef26712baaee437a4ea48fdf3d2d2e2bc5f0d81615374408ca320f3c7e3'
+    environment:
+      POSTGRES_USER: 'umbra'
+      POSTGRES_PASSWORD: 'umbra'
+      POSTGRES_DB: 'umbra'
+    # UmbraDB's durability probe REFUSES to migrate when fsync or full_page_writes are off, and
+    # warns on synchronous_commit=off. Postgres 17 defaults satisfy all three; they are set
+    # explicitly so a future edit that breaks the contract fails loudly here rather than at
+    # migration time.
+    command:
+      - 'postgres'
+      - '-c'
+      - 'fsync=on'
+      - '-c'
+      - 'full_page_writes=on'
+      - '-c'
+      - 'synchronous_commit=on'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U umbra -d umbra']
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # The test runner, inside the network. `run --rm tests` executes the suite with the live
+  # devnet endpoints pointing at this project's own node/indexer.
+  #
+  # Testcontainers still needs the Docker daemon to provision each suite's Postgres, hence the
+  # socket mount. Those containers are siblings on the HOST's daemon, not children of this one,
+  # so their mapped ports are host ports -- TESTCONTAINERS_HOST_OVERRIDE + the host-gateway
+  # alias are what let this container reach them.
+  tests:
+    image: 'node:${NODE_IMAGE_TAG:-24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584}'
+    working_dir: /repo
+    volumes:
+      - '../..:/repo'
+      - '/var/run/docker.sock:/var/run/docker.sock'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    environment:
+      MIDNIGHT_TEST_NODE_URL: 'http://node:9944'
+      MIDNIGHT_TEST_INDEXER_URL: 'http://indexer:8088/api/v3/graphql'
+      TESTCONTAINERS_HOST_OVERRIDE: 'host.docker.internal'
+      # Testcontainers' own reaper connects back to the daemon the same way.
+      TESTCONTAINERS_RYUK_DISABLED: '${TESTCONTAINERS_RYUK_DISABLED:-false}'
+    # Worker cap, and why it is not a detail. Vitest fans out across test files, and ~15 of this
+    # repo's files provision their own Postgres via Testcontainers -- so an uncapped run asks a
+    # shared machine for a dozen-plus database containers at once. Measured here, on a box also
+    # running several unrelated stacks: uncapped produced 2, then 3, then 10 failures across
+    # three runs, a DIFFERENT random subset each time, all of them container-startup timeouts
+    # rather than assertion failures. Capped at 2 the same suite passed clean -- 535 passed, 0
+    # failed -- and took no longer in wall-clock (338s vs 344s), because the parallelism was
+    # buying nothing once the machine was saturated.
+    #
+    # Raise it on a big idle runner (VITEST_MAX_WORKERS=8); leave it alone anywhere shared.
+    command: ['sh', '-c', 'npx vitest run --maxWorkers=${VITEST_MAX_WORKERS:-2}']
+    # Depends on the NODE only. It deliberately does NOT wait on the indexer: this repo's headline
+    # claim is that the archive can be built from the node alone, and a test runner that cannot
+    # start until an indexer is healthy quietly contradicts it -- the node-only suite would have
+    # been passing inside a stack that could not come up without the very service it claims not to
+    # need. Suites that DO want an indexer are guarded on reaching it and skip when it is absent
+    # (`chain-archive-sync.integration.test.ts`), which is the honest way to express that.
+    #
+    #   docker compose -f test/compose/docker-compose.yml up -d node postgres
+    #   docker compose -f test/compose/docker-compose.yml run --rm tests
+    #
+    # brings up NO indexer at all, and the node-only gate below runs green in that stack.
+    depends_on:
+      node:
+        condition: service_healthy

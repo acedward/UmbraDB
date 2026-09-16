@@ -315,12 +315,57 @@ Read [`SECURITY.md`](SECURITY.md) before deploying. The load-bearing points:
   whether an identical chunk already exists. Under the single-writer model both channels require
   already being the writer; per-wallet keyed chunking is a 1.1 item.
 
+### The shielded-monitor private API is unauthenticated by design (alpha)
+
+`umbradb-shielded-monitor-api` serves the shielded viewing-key monitors of the
+`shielded_monitor` schema. In this alpha it has **no authentication, no authorization, no tenant
+scoping, no rate limiting and no quotas** — a recorded decision, not an oversight. Its only
+admission controls are a request-body size cap and a page-size cap.
+
+- It binds **`127.0.0.1`** by default (`API_HOST`, `API_PORT`).
+- **A deployment MUST restrict network access to this port.** Anyone who can open a connection to
+  it can register a viewing key, read every monitor's matches, and delete any monitor — destroying
+  its matches and the key held for it.
+- Registered viewing keys and wallet↔transaction associations are stored **in plaintext** in the
+  `shielded_monitor` schema; anyone with database access can read them.
+- The service never returns or logs a viewing key, and the key is accepted only in the body of
+  `POST /v1/monitors`.
+- The same process also serves a **dashboard at `/ui`** (`GET /` redirects to it). It is one
+  self-contained HTML page with no framework, no build step and no external resource, served under
+  `Content-Security-Policy: default-src 'self'`. **It grants a browser exactly what `curl` already
+  had** — it does not add a login, and it says so on the page.
+- Each match carries the transaction's **public zswap data** — output commitments, spent
+  nullifiers, transients, contract addresses — and the block's time, expandable per match on the
+  dashboard. Whether a given output is *yours* is reported as `true`, `false` or `null`: a viewing
+  key answers "did anything here decrypt", not "which one", so the service never claims more than
+  the ledger entails. Balances, amounts and spend detection remain out of scope.
+
+- Since 00009-08 the API, the scanner and the dashboard hold **no database connection at all**:
+  they take one `STORAGE_URL` and reach everything through `umbradb-storage-api`, the single
+  process that owns the main database — and they refuse to start if any `*_PG` variable is in
+  their environment. Several API instances run behind `umbradb-shielded-monitor-balancer`, which
+  picks one uniformly at random per request. That storage API is itself unauthenticated and
+  unencrypted in this alpha: a registration carries a viewing key over it in the clear, so it too
+  must be kept on loopback or a private network.
+
+Endpoint reference, coverage and cursor contracts, and every environment variable:
+[`docs/shielded-monitor-api.md`](docs/shielded-monitor-api.md). The deployment topology, the full
+environment matrix, how to scale scanners and API instances, and what the TEE step adds:
+[`docs/shielded-monitor-deployment.md`](docs/shielded-monitor-deployment.md). A start-to-finish
+walk-through on this repository's own Compose devnet, ending with the dashboard:
+[`docs/shielded-monitor-demo.md`](docs/shielded-monitor-demo.md) (`npm run demo:shielded-monitor`
+runs its wallet-free half; `-- --split` runs the 2×2 topology). Backup/restore:
+[`docs/shielded-monitor-restore.md`](docs/shielded-monitor-restore.md).
+
 ## What UmbraDB is not
 
 - **Not an ORM or query builder.** Five narrow interfaces, not "do anything with Postgres".
 - **Not distributed or multi-node.** Single writer, single Postgres instance.
 - **Not multi-tenant.** See the schema/dedup caveats above.
-- **Not a chain indexer.** It stores what a client gives it and stays indexer-agnostic.
+- **Not a general-purpose chain query indexer.** The frozen wallet-storage surface stays
+  indexer-agnostic. The separate, unfrozen `umbradb-archive-sync` utility can ingest the finalized
+  Midnight chain directly from an archive node into `chain_archive`; it is an archival writer, not
+  an indexer-compatible query API.
 - **Not encrypted at rest.**
 
 ---
@@ -343,6 +388,11 @@ indexer we call. Progress and rationale: [`ROADMAP.md`](ROADMAP.md) § "What blo
 
 **Next:** [Quint model checking](openspec/changes/v1.1.0-quint-model-checking/) for C2a, C2b, L1 and
 cross-writer T1, the concurrency and liveness laws a sequential proof model handles badly.
+
+**Chain-archive preview:** `feat/indexer-independent-ingest` / PR #1 adds finalized node-only ingest,
+durable D-parameter change observations, runtime metadata capture, replay checkpoints with
+per-block committed ledger-state-root validation, and a packaged CLI. Its current contract and
+limitations are documented in [`docs/features/full-chain-storage.md`](docs/features/full-chain-storage.md).
 
 - Roadmap: [`ROADMAP.md`](ROADMAP.md) · Stability policy: [`docs/STABILITY.md`](docs/STABILITY.md)
 - Changelog: [`CHANGELOG.md`](CHANGELOG.md) · Release records: [`docs/releases/`](docs/releases/)

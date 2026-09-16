@@ -112,6 +112,22 @@ export class NodeRpcClient {
     if (body.error !== undefined) {
       throw new NodeRpcError(`${method}: RPC error ${body.error.code}: ${body.error.message}`);
     }
+    // A JSON-RPC response carries `result` OR `error`. One with neither is malformed, and this
+    // used to return `undefined` cast to `T` -- so a caller expecting a header, a block or a hex
+    // payload received `undefined` with no error, and the failure surfaced far away as a property
+    // read on undefined, or not at all (audit T7).
+    //
+    // `in` rather than a truthiness or `!== undefined` check, deliberately: `result: null` is a
+    // LEGITIMATE answer for several of these calls -- `chain_getBlockHash` for a height the node
+    // does not have, `state_getStorageAt` for an empty key -- and callers handle it. What is not
+    // legitimate is the key being absent altogether.
+    if (!("result" in body)) {
+      throw new NodeRpcError(
+        `${method}: malformed JSON-RPC response from ${this.url} -- it carried neither "result" ` +
+          "nor \"error\". Treating this as a successful empty answer would hand the caller " +
+          "undefined in place of data it requires.",
+      );
+    }
     return body.result as T;
   }
 
@@ -130,6 +146,172 @@ export class NodeRpcClient {
 
   async getFinalizedHead(): Promise<string> {
     return this.call<string>("chain_getFinalizedHead", []);
+  }
+
+  /**
+   * Midnight's committed post-block ledger root at one historical block.
+   *
+   * This is the custom pallet RPC (`midnight_ledgerStateRoot`), not the Substrate header's
+   * `stateRoot`. Node 1.0 returns the untagged serialized typed arena key as a JSON byte array.
+   * Refuse malformed values here so replay cannot compare coerced/truncated data and call that a
+   * state-root check.
+   */
+  async ledgerStateRoot(at: string): Promise<Uint8Array> {
+    const value = await this.call<unknown>("midnight_ledgerStateRoot", [at]);
+    if (
+      !Array.isArray(value) || value.length === 0 ||
+      value.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)
+    ) {
+      throw new NodeRpcError(
+        `midnight_ledgerStateRoot at ${at} returned ${JSON.stringify(value)} instead of a ` +
+          "non-empty serialized typed arena key. Replay cannot verify the chain commitment without the " +
+          "exact root, so this block is refused.",
+      );
+    }
+    return Uint8Array.from(value as number[]);
+  }
+
+  /**
+   * Ledger state embedded in the chain specification and installed directly at genesis.
+   *
+   * Midnight's custom genesis block builder puts `genesis_extrinsics` in block 0 without
+   * executing them. The actual ledger state is the serialized snapshot in
+   * `system_properties.genesis_state`, which is also what the node toolkit's historical fetcher
+   * returns for block 0. Reconstructing it from the block body therefore double-applies data that
+   * the runtime never executed.
+   */
+  async genesisLedgerState(): Promise<Uint8Array> {
+    const properties = await this.call<unknown>("system_properties", []);
+    if (properties === null || typeof properties !== "object" || Array.isArray(properties)) {
+      throw new NodeRpcError(
+        "system_properties returned no object; replay cannot initialize the authoritative " +
+          "Midnight genesis ledger state",
+      );
+    }
+    const raw = (properties as Record<string, unknown>).genesis_state;
+    if (typeof raw !== "string") {
+      throw new NodeRpcError(
+        "system_properties.genesis_state is missing or is not a string; replay cannot " +
+          "reconstruct the ledger state installed by the genesis builder",
+      );
+    }
+    const hex = raw.startsWith("0x") ? raw.slice(2) : raw;
+    if (hex.length === 0 || hex.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(hex)) {
+      throw new NodeRpcError(
+        "system_properties.genesis_state is not non-empty, even-length hexadecimal; replay " +
+          "refuses to guess the genesis ledger state",
+      );
+    }
+    return new Uint8Array(Buffer.from(hex, "hex"));
+  }
+
+  /** Runtime ledger network id at a historical block, decoded from SCALE `String`. */
+  async ledgerNetworkId(at: string): Promise<string> {
+    const encoded = await this.stateCall("MidnightRuntimeApi_get_network_id", "0x", at);
+    if (typeof encoded !== "string" || !/^0x[0-9a-fA-F]+$/.test(encoded)) {
+      throw new NodeRpcError(
+        `MidnightRuntimeApi_get_network_id at ${at} returned malformed SCALE bytes`,
+      );
+    }
+    const bytes = Buffer.from(encoded.slice(2), "hex");
+    if (bytes.length === 0) {
+      throw new NodeRpcError(`MidnightRuntimeApi_get_network_id at ${at} returned an empty value`);
+    }
+    const mode = bytes[0]! & 0b11;
+    let prefixBytes: number;
+    let length: number;
+    if (mode === 0) {
+      prefixBytes = 1;
+      length = bytes[0]! >>> 2;
+    } else if (mode === 1 && bytes.length >= 2) {
+      prefixBytes = 2;
+      length = (bytes.readUInt16LE(0) >>> 2);
+    } else {
+      throw new NodeRpcError(
+        `MidnightRuntimeApi_get_network_id at ${at} used an invalid SCALE string length prefix`,
+      );
+    }
+    if (length === 0 || length > 64 || bytes.length !== prefixBytes + length) {
+      throw new NodeRpcError(
+        `MidnightRuntimeApi_get_network_id at ${at} returned an invalid ${length}-byte SCALE string`,
+      );
+    }
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(prefixBytes));
+    } catch (cause) {
+      throw new NodeRpcError(
+        `MidnightRuntimeApi_get_network_id at ${at} was not valid UTF-8`, cause,
+      );
+    }
+  }
+
+  /**
+   * Raw value of a storage key at a block, or `undefined` when the key is unset.
+   *
+   * Used to read `System::Events`, which is where the runtime records what it DID -- including
+   * system transactions it generated rather than received as extrinsics. Those never appear in
+   * `chain_getBlock.extrinsics` at all.
+   */
+  async storageAt(keyHex: string, at: string): Promise<string | undefined> {
+    const value = await this.call<string | null>("state_getStorageAt", [keyHex, at]);
+    return value ?? undefined;
+  }
+
+  /**
+   * Substrate `state_call`: invoke a runtime API at a block. `method` is the
+   * `TraitName_method_name` string (e.g. `SystemParametersApi_get_d_parameter`), `dataHex` the
+   * 0x-hex SCALE-encoded arguments (`0x` for no-arg calls); returns 0x-hex SCALE-encoded result
+   * bytes. Node-only replacement for data the indexer used to compute from its own runtime-API
+   * calls (`midnight-indexer/chain-indexer/src/infra/subxt_node/runtimes/v1_0_0.rs`).
+   */
+  async stateCall(method: string, dataHex: string, at?: string): Promise<string> {
+    const params: unknown[] = at === undefined ? [method, dataHex] : [method, dataHex, at];
+    return this.call<string>("state_call", params);
+  }
+
+  /**
+   * SCALE-encoded runtime metadata AT a block.
+   *
+   * The `at` parameter is what makes block-scoped decoding possible: metadata must describe the
+   * runtime that produced the block being decoded, not the chain tip. Resolving at the tip means a
+   * block from before a runtime upgrade is decoded against the wrong pallet indices, and the
+   * failure is SILENT -- genuine transactions are simply classified as something else.
+   *
+   * Pruning is reported as a JSON-RPC error and classified by the caller. A successful response
+   * with `result: null` is not pruning evidence and is refused here; returning `undefined` would
+   * let it silently enter the committed-registry fallback.
+   */
+  async metadataAt(at: string): Promise<string> {
+    const value = await this.call<unknown>("state_getMetadata", [at]);
+    if (typeof value !== "string") {
+      throw new Error(
+        `state_getMetadata at ${at} returned ${value === null ? "null" : typeof value} instead ` +
+          "of SCALE metadata. A missing historical response is not proof of pruning, so registry " +
+          "fallback is refused.",
+      );
+    }
+    return value;
+  }
+
+  /**
+   * The runtime's own identity at a block: `specName` and `specVersion`.
+   *
+   * This is the cache key for metadata. `specVersion` is exactly what a runtime upgrade bumps, so
+   * keying on it means the metadata cache invalidates precisely at upgrade boundaries -- whereas
+   * keying on anything coarser (protocol-version range, node version) would serve one runtime's
+   * layout for another runtime's blocks.
+   */
+  async runtimeVersionAt(at: string): Promise<{ specName: string; specVersion: number }> {
+    const v = await this.call<{ specName: string; specVersion: number }>(
+      "state_getRuntimeVersion", [at],
+    );
+    if (typeof v?.specName !== "string" || typeof v?.specVersion !== "number") {
+      throw new Error(
+        `state_getRuntimeVersion at ${at} returned no usable specName/specVersion. Without the ` +
+          "runtime's identity, metadata cannot be cached safely across a runtime upgrade.",
+      );
+    }
+    return { specName: v.specName, specVersion: v.specVersion };
   }
 
   /** Convenience: resolves a hash to its height via `getHeader` -- the RPC surface has no
