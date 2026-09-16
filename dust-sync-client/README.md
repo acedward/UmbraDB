@@ -62,7 +62,7 @@ priced a minute apart have different balances. Pass the same instant to both sid
 
 | step | what | why in this order |
 |---|---|---|
-| 1 | `GET /v1/dust/tip` | the chain's DUST parameters, so the local state is built with them |
+| 1 | `GET /v1/dust/tip` | the chain's DUST parameters, so the local state is built with them. They are the values in force **at the mirror's height** — the node reads them from `chain_archive.dust_parameters`, which the ingest writes, and reports where they came from as `parametersSource` on `/internal/status` (`chain`, or `unknown` when that archive never recorded them and the ledger's initial parameters are being used) |
 | 2 | `initial-utxos`, `generation` by DUST public key | the wallet's own rows |
 | 3 | build the **generation** tree | `successorUtxo` looks `backingNight` up in `night_indices`, which only `insertGenerationInfo(…, initialNonce)` fills — step 5 cannot run before this |
 | 4–5 | follow the spend chains | a successor's nonce is `hash(backingNight, seq+1, sk)` and its value depends on the fee, so it is computable only after its predecessor's spend row is known. One round per *generation* of the chain, not per spend — the whole frontier goes in one request |
