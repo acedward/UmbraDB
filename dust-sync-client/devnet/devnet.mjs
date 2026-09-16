@@ -302,7 +302,9 @@ async function up(argv) {
         "CREATE ROLE dust_reader LOGIN PASSWORD 'dust_reader';",
         "REVOKE ALL ON SCHEMA public FROM dust_reader;",
         "GRANT USAGE ON SCHEMA chain_archive TO dust_reader;",
-        "GRANT SELECT ON chain_archive.dust_events, chain_archive.blocks TO dust_reader;",
+        // Three tables, and deliberately not `replay_checkpoints`/`chain_blobs` (question Q-22).
+        "GRANT SELECT ON chain_archive.dust_events, chain_archive.dust_parameters, " +
+          "chain_archive.blocks TO dust_reader;",
       ].join("\n"),
     );
     if (grant.status !== 0) throw new Error(`granting dust_reader failed: ${grant.stderr}`);

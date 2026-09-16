@@ -64,15 +64,23 @@ Environment (umbradb-shielded-monitor-node):
 DUST wallet sync (spec 00016; the module is OFF unless DUST_DATABASE_URL is set):
 
   DUST_DATABASE_URL     read-only PostgreSQL connection string for the ARCHIVE database, for a
-                        role with USAGE on the archive schema and SELECT on dust_events and
-                        blocks only. Unset (the default) disables every /v1/dust/* route, which
-                        then answers 503 DUST_DISABLED; the rest of the node is unaffected.
+                        role with USAGE on the archive schema and SELECT on dust_events,
+                        dust_parameters and blocks only -- and NOT on replay_checkpoints or
+                        chain_blobs (question Q-22: the check that wanted them deserialized a
+                        31 MB ledger state on this process's only thread). Unset (the default)
+                        disables every /v1/dust/* route, which then answers 503 DUST_DISABLED;
+                        the rest of the node is unaffected.
                         It must NOT be named *_PG: this process still refuses to start with any
                         such variable in its environment, waiver or no waiver.
   DUST_STATE_SNAPSHOT_DIR    where the mirror writes <net>.dust-state (default ./dust-state).
   DUST_STATE_POLL_MS         how often the mirror polls dust_events (default 2000).
   DUST_STATE_SNAPSHOT_EVERY  events between snapshots (default 20000).
   DUST_REPLAY_BATCH          events per replay call (default 1000).
+  DUST_STATE_SNAPSHOT_MAX_BYTES  largest snapshot the node will RESTORE (default 2097152). Above
+                        it the file is left alone and the mirror folds from the table instead:
+                        measured on preprod, restoring a 13.5 MB snapshot cost 639 s of one
+                        synchronous WASM call with the node answering nothing, against 154 s to
+                        re-fold while staying responsive (question Q-23).
 
 This second connection is the ONE place project B touches a database, and it exists by an
 explicit owner waiver for the DUST wallet-sync experiment (spec/00016-dust-wallet-sync.md §1).

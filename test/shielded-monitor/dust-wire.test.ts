@@ -52,6 +52,9 @@ describe("DUST configuration (FR-010)", () => {
     expect(config.pollMs).toBe(2_000);
     expect(config.snapshotEvery).toBe(20_000);
     expect(config.replayBatch).toBe(1_000);
+    // Question Q-23 option A: 2 MiB. At the measured ~112 B per event that is ~18 700 events,
+    // i.e. ~20 s of replay -- inside the regime where restoring is the cheaper of the two.
+    expect(config.snapshotMaxBytes).toBe(2_097_152);
   });
 
   it("reads every override", () => {
@@ -61,6 +64,7 @@ describe("DUST configuration (FR-010)", () => {
       DUST_STATE_POLL_MS: "500",
       DUST_STATE_SNAPSHOT_EVERY: "5000",
       DUST_REPLAY_BATCH: "250",
+      DUST_STATE_SNAPSHOT_MAX_BYTES: "4194304",
     })!;
     expect(config).toStrictEqual({
       databaseUrl: "postgresql://r@h/db",
@@ -68,6 +72,7 @@ describe("DUST configuration (FR-010)", () => {
       pollMs: 500,
       snapshotEvery: 5_000,
       replayBatch: 250,
+      snapshotMaxBytes: 4_194_304,
     });
   });
 
@@ -109,6 +114,7 @@ describe("DUST configuration (FR-010)", () => {
       "DUST_STATE_POLL_MS",
       "DUST_STATE_SNAPSHOT_EVERY",
       "DUST_REPLAY_BATCH",
+      "DUST_STATE_SNAPSHOT_MAX_BYTES",
     ];
     expect(names.filter((n) => n.endsWith("_PG"))).toStrictEqual([]);
   });

@@ -67,6 +67,9 @@ x-dust-environment: &dust-environment
   DUST_STATE_POLL_MS: '${DUST_STATE_POLL_MS:-2000}'
   DUST_STATE_SNAPSHOT_EVERY: '${DUST_STATE_SNAPSHOT_EVERY:-20000}'
   DUST_REPLAY_BATCH: '${DUST_REPLAY_BATCH:-1000}'
+  # Question Q-23: above this the node skips the snapshot and folds from the table instead, which
+  # on a large chain is both faster and the path that keeps the rest of the node answering.
+  DUST_STATE_SNAPSHOT_MAX_BYTES: '${DUST_STATE_SNAPSHOT_MAX_BYTES:-2097152}'
 
 services:
   # ── Project A ─────────────────────────────────────────────────────────────────────────────
