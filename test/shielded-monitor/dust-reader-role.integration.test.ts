@@ -19,7 +19,13 @@ import { dustRowsFromFixture } from "./dust-harness.js";
  *
  * The waiver lets one directory of project B open a database connection. It does NOT let it hold
  * a credential that can do anything: the role is `USAGE` on the archive schema plus `SELECT` on
- * `dust_events` and `blocks`, and nothing else anywhere in the cluster.
+ * `dust_events`, `dust_parameters` and `blocks`, and nothing else anywhere in the cluster.
+ *
+ * `replay_checkpoints` and `chain_blobs` are the two the role must NOT have, and they have their
+ * own assertion below. They used to be an OPTIONAL stanza in the deployment doc, for a start-up
+ * check that deserialized a whole `LedgerState`; on a real archive that blob is 31 MB and the node
+ * stopped answering for minutes (question Q-22). Option C replaced the check with one small table,
+ * and the stanza is gone — so an operator following the recipe cannot re-create the outage.
  *
  * As with `schema-isolation.integration.test.ts`, the proof is a **privilege boundary, not a code
  * review**: every query in `db.ts` runs as that exact role, so a query that ever read another
@@ -47,6 +53,7 @@ describe("the DUST reader role can read the two tables it is granted and nothing
   let readerUri: string;
   let owner: string;
   let nullifier: string;
+  let parametersHeight: number;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let ledger: any;
 
@@ -84,7 +91,19 @@ describe("the DUST reader role can read the two tables it is granted and nothing
       transactions: [],
       bridgeObservations: [],
       dustEvents: records,
+      // Question Q-22 option C: the ingest writes this row for the block it is committing, so the
+      // node can read the chain's DUST parameters without deserializing anything.
+      dustParameters: {
+        net: NET,
+        blockHeight: height,
+        blockHash: records[0]!.blockHash,
+        nightDustRatio: "5000000000",
+        generationDecayRate: "8267",
+        dustGracePeriodSeconds: "10800",
+        reason: "genesis",
+      },
     });
+    parametersHeight = height;
 
     // ── The operator recipe from docs/shielded-monitor-deployment.md ─────────────────────────
     await admin.unsafe(`DROP ROLE IF EXISTS ${READER}`);
@@ -92,7 +111,8 @@ describe("the DUST reader role can read the two tables it is granted and nothing
     await admin.unsafe(`REVOKE ALL ON SCHEMA public FROM ${READER}`);
     await admin.unsafe(`GRANT USAGE ON SCHEMA ${DEFAULT_ARCHIVE_SCHEMA} TO ${READER}`);
     await admin.unsafe(
-      `GRANT SELECT ON ${DEFAULT_ARCHIVE_SCHEMA}.dust_events, ${DEFAULT_ARCHIVE_SCHEMA}.blocks TO ${READER}`,
+      `GRANT SELECT ON ${DEFAULT_ARCHIVE_SCHEMA}.dust_events, ` +
+        `${DEFAULT_ARCHIVE_SCHEMA}.dust_parameters, ${DEFAULT_ARCHIVE_SCHEMA}.blocks TO ${READER}`,
     );
 
     const uri = new URL(container.getConnectionUri());
@@ -126,6 +146,10 @@ describe("the DUST reader role can read the two tables it is granted and nothing
     expect((await reader.selectInitialUtxosByOwner(NET, owner, 0n, 10)).length).toBeGreaterThan(0);
     expect((await reader.selectGenerationByOwner(NET, owner, 0n, 10)).length).toBeGreaterThan(0);
     expect(await reader.selectSpendsByNullifiers(NET, [nullifier])).toHaveLength(1);
+    // Question Q-22 option C: the sixth query, and the one that replaced the checkpoint probe.
+    const parameters = await reader.selectDustParametersAtOrBelow(NET);
+    expect(parameters?.nightDustRatio).toBe("5000000000");
+    expect(parameters?.blockHeight).toBe(BigInt(parametersHeight));
   });
 
   it("POSITIVE CONTROL: cannot write to dust_events", async () => {
@@ -165,79 +189,67 @@ describe("the DUST reader role can read the two tables it is granted and nothing
     });
   });
 
-  describe("the start-up DUST-parameter check (D2.6, question Q-15)", () => {
-    it("reports `skipped` under the role spec §5.3 prescribes, because the checkpoint tables are not granted", async () => {
-      const probe = await reader.selectLatestCheckpoint(NET);
-      expect(probe.status).toBe("unavailable");
-      // The CODE, not the driver's sentence: `42501` is insufficient_privilege.
-      expect(probe.status === "unavailable" ? probe.reason : "").toBe("42501");
+  describe("the DUST parameters the node serves (question Q-22 option C)", () => {
+    it("reads chain_archive.dust_parameters under the prescribed role, while the two checkpoint tables stay denied", async () => {
+      // The whole point of option C in one assertion pair: the table the node now needs is
+      // readable, and the two it used to need are not. The `permission denied` half is asserted
+      // in the positive-control case above; here is the readable half, through `db.ts` itself.
+      const row = await reader.selectDustParametersAtOrBelow(NET, BigInt(parametersHeight));
+      expect(row).toStrictEqual({
+        blockHeight: BigInt(parametersHeight),
+        nightDustRatio: "5000000000",
+        generationDecayRate: "8267",
+        dustGracePeriodSeconds: "10800",
+        reason: "genesis",
+      });
+      // A height BELOW the row's: "in force at or below" must not return a row from the future.
+      expect(await reader.selectDustParametersAtOrBelow(NET, BigInt(parametersHeight) - 1n))
+        .toBeUndefined();
+    });
 
+    it("builds the mirror from the row and reports parametersSource: chain", async () => {
       const lines: string[] = [];
       const module = createDustModule(
         { DUST_DATABASE_URL: readerUri },
         { net: NET, ledger, db: reader, logger: (line) => lines.push(line) },
       )!;
       await module.start();
-      await module.whenParametersChecked();
       try {
-        expect(module.status().parametersCheck).toBe("skipped");
-        expect(lines.join("\n")).toContain("Q-15");
+        const status = module.status();
+        expect(status.parametersSource).toBe("chain");
+        expect(status.parametersHeight).toBe(String(parametersHeight));
+        expect(status.parameters).toStrictEqual({
+          nightDustRatio: "5000000000",
+          generationDecayRate: "8267",
+          dustGracePeriodSeconds: "10800",
+        });
+        expect(lines.join("\n")).toContain("DUST parameters from the archive at height");
       } finally {
         // `stop()` would close the shared reader connection the rest of this suite uses, so the
-        // mirror is stopped without it.
+        // module is stopped in a way that tolerates that.
         await module.stop().catch(() => undefined);
       }
     }, 120_000);
 
-    it("compares the parameters for real when the operator grants the two optional tables", async () => {
-      await admin.unsafe(
-        `GRANT SELECT ON ${DEFAULT_ARCHIVE_SCHEMA}.replay_checkpoints, ${DEFAULT_ARCHIVE_SCHEMA}.chain_blobs TO ${READER}`,
-      );
-      // A real checkpoint, written through A's own store, carrying a real serialized LedgerState.
-      const blank = ledger.LedgerState.blank("local-test");
-      const stateBytes: Uint8Array = blank.serialize();
-      blank.free();
-      const store = new PgChainArchiveStore(admin, DEFAULT_ARCHIVE_SCHEMA);
-      const [row] = await admin<{ height: string; block_hash: Uint8Array }[]>`
-        SELECT height::text, block_hash FROM ${admin(DEFAULT_ARCHIVE_SCHEMA)}.blocks
-        WHERE net = ${NET} ORDER BY height DESC LIMIT 1
-      `;
-      await store.putReplayCheckpoint({
-        net: NET,
-        blockHeight: Number(row!.height),
-        blockHash: Buffer.from(row!.block_hash).toString("hex"),
-        stateBytes,
-        ledgerVersion: "ledger-v8@8.1.0-syshash.6",
-        // Non-zero: 004 checks `block_timestamp_ms > 0`, because a checkpoint dated 1970 is the
-        // shape of a resume that folded its first block against a parent with no time (T1).
-        blockTimestampMs: 1_757_900_000_000,
-        ledgerNetworkId: "local-test",
-      });
-
-      const granted = openDustDb(readerUri);
+    it("falls back to the ledger's initial parameters, and SAYS so, for a net with no row", async () => {
+      // A different net rather than a second container: the query is per-net, so this is exactly
+      // the shape of an archive ingested before migration 010 existed.
+      const module = createDustModule(
+        { DUST_DATABASE_URL: readerUri },
+        { net: "a-net-with-no-parameters-row", ledger, db: reader },
+      )!;
+      await module.start();
       try {
-        const probe = await granted.selectLatestCheckpoint(NET);
-        expect(probe.status).toBe("ok");
-
-        const lines: string[] = [];
-        const module = createDustModule(
-          { DUST_DATABASE_URL: readerUri },
-          { net: NET, ledger, db: granted, logger: (line) => lines.push(line) },
-        )!;
-        await module.start();
-        await module.whenParametersChecked();
-        try {
-          // A blank `LedgerState` carries the ledger's initial parameters, which is exactly what
-          // the mirror constructs itself — so this is the agreement case, and the one an operator
-          // will normally see. A real disagreement would be reported as `mismatch`.
-          expect(module.status().parametersCheck).toBe("ok");
-          expect(lines.join("\n")).toContain("parameter check ok");
-        } finally {
-          await module.stop().catch(() => undefined);
-        }
+        const status = module.status();
+        expect(status.parametersSource).toBe("unknown");
+        expect(status.parametersHeight).toBeNull();
+        // The values are still the right ones -- they have been the same on every Midnight network
+        // so far -- which is exactly why "probably right" must not read the same as "read off the
+        // chain".
+        expect(status.parameters.nightDustRatio).toBe("5000000000");
       } finally {
-        await granted.close().catch(() => undefined);
+        await module.stop().catch(() => undefined);
       }
-    }, 180_000);
+    }, 120_000);
   });
 });

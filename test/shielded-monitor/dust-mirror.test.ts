@@ -34,6 +34,9 @@ function config(dir: string, overrides: Partial<DustConfig> = {}): DustConfig {
     pollMs: 10,
     snapshotEvery: 20_000,
     replayBatch: 1_000,
+    // Question Q-23 option A: the suites' fixture snapshots are ~0.5 MB, so the default 2 MiB
+    // gate would restore them -- which is what most cases want. The gate's own case overrides it.
+    snapshotMaxBytes: 2_097_152,
     ...overrides,
   };
 }

@@ -144,7 +144,12 @@ export function createDustRoutes(deps: DustRoutesDeps) {
     try {
       const commitmentFirstFree = BigInt(held.state.commitmentTreeFirstFree);
       const generationFirstFree = BigInt(held.state.generatingTreeFirstFree);
-      const params = held.state.params;
+      // The ARCHIVE's row, not `held.state.params` (question Q-22 option C). Two reasons: the row
+      // is the chain's own record of what it uses, written by the ingest from the ledger state it
+      // was holding; and `state.params` is a wasm-bindgen getter that mints a handle on every
+      // access, which this route leaked once per request. The mirror's state is CONSTRUCTED from
+      // the same row, so the two agree by construction rather than by coincidence.
+      const params = mirror.parameters;
       return {
         status: 200,
         body: {

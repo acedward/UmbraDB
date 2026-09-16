@@ -20,8 +20,9 @@ import { DEFAULT_ARCHIVE_SCHEMA } from "../../../src/postgres/archive-convention
  * source outside a comment, and it is NOT waived.
  *
  * **The role cannot write.** `DUST_DATABASE_URL` names a role with `USAGE` on the archive schema
- * and `SELECT` on `dust_events` and `blocks` — nothing else, and nothing at all in
- * `shielded_monitor`. `dust-reader-role.integration.test.ts` runs every query below as exactly
+ * and `SELECT` on `dust_events`, `dust_parameters` and `blocks` — nothing else, and nothing at all
+ * in `shielded_monitor`. In particular NOT `replay_checkpoints` and NOT `chain_blobs`: question
+ * Q-22 replaced the only query that wanted them. `dust-reader-role.integration.test.ts` runs every query below as exactly
  * that role and proves each write and each out-of-scope read is denied. That is the part of the
  * boundary that survives the waiver, and it is a privilege check rather than a code review.
  *
@@ -80,23 +81,41 @@ export interface DustSpendRow {
 }
 
 /**
- * What the start-up parameter check (D2.6) could learn.
+ * The chain's DUST parameters at a height, as the ingest recorded them
+ * (`chain_archive.dust_parameters`, migration 010; question **Q-22 option C**).
  *
- * `unavailable` is the ORDINARY answer under the role spec §5.3 defines: it grants `SELECT` on
- * `dust_events` and `blocks` and nothing else, while a replay checkpoint's serialized ledger
- * state lives in `replay_checkpoints` joined to `chain_blobs`. The check is therefore best-effort
- * by construction — see `index.ts` and question Q-15.
+ * ── What this replaced, and why ─────────────────────────────────────────────────────────────
+ * This module used to answer the same question by reading the newest `replay_checkpoints` blob and
+ * calling `LedgerState.deserialize` on it. On a real archive that blob is **31 MB**, the
+ * deserialize is minutes of synchronous WASM on the node's only thread, and the node answered
+ * nothing at all while it ran (measured on preprod: question Q-22). It also needed `SELECT` on
+ * `replay_checkpoints` AND `chain_blobs` — the archive's entire raw-bytes store — which is the
+ * conflict question Q-15 was about.
+ *
+ * One row of three numbers replaces both problems: the ingest already holds the parsed ledger
+ * state, so it writes them down, and the reader role needs `SELECT` on one more small table. No
+ * ledger state is deserialized anywhere in project B any more.
+ *
+ * Decimal strings, not `bigint`: they are `u128` on chain, `numeric(39)` in the table, and decimal
+ * strings on `GET /v1/dust/tip`. Nothing in the path can round them.
  */
-export type DustCheckpointProbe =
-  | { readonly status: "ok"; readonly state: Uint8Array; readonly height: bigint; readonly ledgerVersion: string }
-  | { readonly status: "none" }
-  | { readonly status: "unavailable"; readonly reason: string };
+export interface DustParametersRow {
+  readonly blockHeight: bigint;
+  readonly nightDustRatio: string;
+  readonly generationDecayRate: string;
+  readonly dustGracePeriodSeconds: string;
+  readonly reason: string;
+}
 
 export interface DustDb {
   /** The events after `afterId`, ascending, at most `limit` of them. */
   selectEventsAfter(net: string, afterId: bigint, limit: number): Promise<DustRawEvent[]>;
-  /** The newest replay checkpoint's serialized ledger state, when this role may read it. */
-  selectLatestCheckpoint(net: string): Promise<DustCheckpointProbe>;
+  /**
+   * The DUST parameters in force at `atHeight` — the newest row at or below it — or `undefined`
+   * when the archive records none. `atHeight` omitted means "the newest row overall", which is
+   * what a mirror asks before it has folded anything.
+   */
+  selectDustParametersAtOrBelow(net: string, atHeight?: bigint): Promise<DustParametersRow | undefined>;
   /** The table's newest event, or `undefined` when the table holds nothing for this net. */
   selectTableTip(net: string): Promise<DustTableTip | undefined>;
   selectInitialUtxosByOwner(
@@ -113,6 +132,16 @@ export interface DustDb {
   ): Promise<DustGenerationRow[]>;
   selectSpendsByNullifiers(net: string, nullifiers: readonly string[]): Promise<DustSpendRow[]>;
   close(): Promise<void>;
+}
+
+/** What the driver hands back for a `dust_parameters` row: `numeric` as a string, `bigint` as a
+ *  `bigint` (the pool sets `types.bigint`). */
+interface DustParametersSqlRow {
+  block_height: bigint;
+  night_dust_ratio: string;
+  generation_decay_rate: string;
+  dust_grace_period_seconds: bigint;
+  reason: string;
 }
 
 /** What the driver hands back for a `jsonb` payload column. */
@@ -152,6 +181,7 @@ export function openDustDb(
     types: { bigint: postgres.BigInt },
   });
   const table = sql(`${schema}.dust_events`);
+  const parametersTable = sql(`${schema}.dust_parameters`);
 
   /**
    * The latest end time of a generation entry, as a lateral join.
@@ -197,31 +227,38 @@ export function openDustDb(
       return rows.map((row) => ({ id: row.id, blockHeight: row.block_height, raw: row.raw }));
     },
 
-    async selectLatestCheckpoint(net) {
-      try {
-        const rows = await sql<{ block_height: bigint; ledger_version: string; data: Uint8Array }[]>`
-          SELECT rc.block_height, rc.ledger_version, blob.data
-          FROM ${sql(`${schema}.replay_checkpoints`)} rc
-          JOIN ${sql(`${schema}.chain_blobs`)} blob ON blob.hash = rc.state_blob_hash
-          WHERE rc.net = ${net}
-          ORDER BY rc.block_height DESC
-          LIMIT 1
-        `;
-        const row = rows[0];
-        if (row === undefined) return { status: "none" as const };
-        return {
-          status: "ok" as const,
-          state: row.data,
-          height: row.block_height,
-          ledgerVersion: row.ledger_version,
-        };
-      } catch (err) {
-        // The CODE, never the driver's message: this is the one query in the module that can be
-        // refused for an ordinary, expected reason (`42501 insufficient_privilege` under the
-        // minimal reader role), and a refusal must read as a fact rather than as an incident.
-        const code = (err as { code?: string }).code;
-        return { status: "unavailable" as const, reason: code ?? "unknown" };
-      }
+    async selectDustParametersAtOrBelow(net, atHeight) {
+      // One index scan over `dust_parameters_at_or_below (net, block_height DESC)`. The height
+      // bound is a separate branch rather than a synthetic upper bound so the planner sees a plain
+      // range scan either way -- and so that "no height given" cannot accidentally become
+      // "height 0".
+      const rows = atHeight === undefined
+        ? await sql<DustParametersSqlRow[]>`
+            SELECT block_height, night_dust_ratio, generation_decay_rate,
+                   dust_grace_period_seconds, reason
+            FROM ${parametersTable}
+            WHERE net = ${net}
+            ORDER BY block_height DESC
+            LIMIT 1
+          `
+        : await sql<DustParametersSqlRow[]>`
+            SELECT block_height, night_dust_ratio, generation_decay_rate,
+                   dust_grace_period_seconds, reason
+            FROM ${parametersTable}
+            WHERE net = ${net} AND block_height <= ${atHeight}
+            ORDER BY block_height DESC
+            LIMIT 1
+          `;
+      const row = rows[0];
+      return row === undefined ? undefined : {
+        blockHeight: row.block_height,
+        // `numeric` arrives as a string from this driver, which is the representation this
+        // interface wants all the way to the wire; `String()` is belt to that braces.
+        nightDustRatio: String(row.night_dust_ratio),
+        generationDecayRate: String(row.generation_decay_rate),
+        dustGracePeriodSeconds: String(row.dust_grace_period_seconds),
+        reason: String(row.reason),
+      };
     },
 
     async selectTableTip(net) {

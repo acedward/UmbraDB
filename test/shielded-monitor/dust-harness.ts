@@ -1,9 +1,9 @@
 import type { DustEventRecord } from "../../src/interfaces/chain-archive-store.js";
 import type {
-  DustCheckpointProbe,
   DustDb,
   DustGenerationRow,
   DustInitialUtxoRow,
+  DustParametersRow,
   DustRawEvent,
   DustSpendRow,
 } from "../../shielded-monitor/node/dust/db.js";
@@ -28,12 +28,20 @@ export interface FakeDustDbOptions {
   readonly initialUtxos?: readonly DustInitialUtxoRow[];
   readonly generation?: readonly DustGenerationRow[];
   readonly spends?: readonly DustSpendRow[];
-  readonly checkpoint?: DustCheckpointProbe;
+  /**
+   * What `selectDustParametersAtOrBelow` answers (question Q-22 option C). A function so a test
+   * can make a NEW row appear mid-run, which is how the mirror's parameter-change rebuild is
+   * driven without a database.
+   */
+  readonly parameters?:
+    | DustParametersRow
+    | ((atHeight: bigint | undefined) => DustParametersRow | undefined);
 }
 
 export interface FakeDustDb extends DustDb {
   calls: number;
   tipCalls: number;
+  parameterCalls: number;
   /** Every batch of nullifiers the routes asked about, so a custody test can prove what was sent
    *  reached the query — and, in the log assertions, that it reached nothing else. */
   lookedUp: string[][];
@@ -51,6 +59,7 @@ export function fakeDustDb(events: readonly Uint8Array[], options: FakeDustDbOpt
   const db: FakeDustDb = {
     calls: 0,
     tipCalls: 0,
+    parameterCalls: 0,
     lookedUp: [],
     async selectEventsAfter(_net, afterId, limit) {
       db.calls += 1;
@@ -67,8 +76,11 @@ export function fakeDustDb(events: readonly Uint8Array[], options: FakeDustDbOpt
       const last = rows[rows.length - 1];
       return last === undefined ? undefined : { eventId: last.id, height: last.blockHeight };
     },
-    async selectLatestCheckpoint(_net) {
-      return options.checkpoint ?? { status: "unavailable", reason: "42501" };
+    async selectDustParametersAtOrBelow(_net, atHeight) {
+      db.parameterCalls += 1;
+      const source = options.parameters;
+      if (source === undefined) return undefined;
+      return typeof source === "function" ? source(atHeight) : source;
     },
     async selectInitialUtxosByOwner(_net, owner, afterId, limit) {
       const all = (options.initialUtxos ?? []).filter(

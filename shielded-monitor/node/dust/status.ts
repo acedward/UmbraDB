@@ -1,4 +1,4 @@
-import type { DustMirrorStatus } from "./mirror.js";
+import type { DustMirrorStatus, DustServedParameters } from "./mirror.js";
 
 /**
  * The `dust` block of `GET /internal/status` (`spec/00016-dust-wallet-sync.md` §4; plan 00016
@@ -31,8 +31,37 @@ export interface DustStatusBlock {
   readonly rss: number;
   /** Node's `external` — the WebAssembly heap plus other off-heap buffers, bytes. */
   readonly externalBytes: number;
-  /** What the start-up DUST-parameter comparison (D2.6) could conclude. */
-  readonly parametersCheck: "ok" | "skipped" | "mismatch";
+  /**
+   * Where the DUST parameters this node serves came from (question **Q-22 option C**):
+   *
+   *   - `chain` — a `chain_archive.dust_parameters` row, written by the ingest from the ledger
+   *     state it was already holding. This is the ordinary answer on an archive ingested with
+   *     replay validation on.
+   *   - `unknown` — the archive records none (ingested before migration 010, or with replay
+   *     validation off), so the ledger's INITIAL DUST parameters are in use. They have been the
+   *     right values on every Midnight network so far, but a guess that happens to be right must
+   *     not read the same as a fact.
+   *   - `changed-at-<height>` — a row appeared above the one the mirror's state was built from,
+   *     i.e. the chain changed its DUST parameters mid-chain, and the mirror rebuilt from zero for
+   *     it (a `DustLocalState`'s parameters cannot be swapped in place).
+   *
+   * This REPLACED `parametersCheck`, whose `"ok" | "skipped" | "mismatch"` could not distinguish
+   * "skipped" from "still running" and whose implementation is what question Q-22 is about.
+   */
+  readonly parametersSource: string;
+  /** Height of the row above, or `null` under `unknown`. */
+  readonly parametersHeight: string | null;
+  /** The three values `GET /v1/dust/tip` serves, decimal strings (spec §4 `params`). */
+  readonly parameters: DustServedParameters;
+  /**
+   * Which path this mirror's start took (question **Q-23 option A**): `snapshot` when the file was
+   * small enough to restore, `replay` when there was none or it exceeded
+   * `DUST_STATE_SNAPSHOT_MAX_BYTES` and folding from zero was the faster and the responsive path.
+   */
+  readonly startPath: "snapshot" | "replay";
+  /** Milliseconds from the mirror's start to the first time it was caught up, or `null` while it
+   *  still is not. The number SC-003 is stated against. */
+  readonly startMs: number | null;
   readonly lastError: string | null;
 }
 
@@ -47,15 +76,18 @@ export function disabledDustStatus(): DustStatusBlock {
     snapshotEventId: null,
     rss: memory.rss,
     externalBytes: memory.external,
-    parametersCheck: "skipped",
+    parametersSource: "unknown",
+    parametersHeight: null,
+    // Zeros, not the ledger's initial values: a disabled module has loaded no WASM and must not
+    // load any to answer a status request. `enabled: false` is what a reader goes by.
+    parameters: { nightDustRatio: "0", generationDecayRate: "0", dustGracePeriodSeconds: "0" },
+    startPath: "replay",
+    startMs: null,
     lastError: null,
   };
 }
 
-export function dustStatusBlock(
-  mirror: DustMirrorStatus,
-  parametersCheck: DustStatusBlock["parametersCheck"],
-): DustStatusBlock {
+export function dustStatusBlock(mirror: DustMirrorStatus): DustStatusBlock {
   const memory = process.memoryUsage();
   return {
     enabled: true,
@@ -65,7 +97,11 @@ export function dustStatusBlock(
     snapshotEventId: mirror.snapshotEventId,
     rss: memory.rss,
     externalBytes: memory.external,
-    parametersCheck,
+    parametersSource: mirror.parametersSource,
+    parametersHeight: mirror.parametersHeight,
+    parameters: mirror.parameters,
+    startPath: mirror.startPath,
+    startMs: mirror.startMs,
     lastError: mirror.lastError,
   };
 }

@@ -179,10 +179,58 @@ describe("the DUST module's database queries", () => {
     expect(text).not.toMatch(/Seq Scan/);
   });
 
-  it("reports the parameter-check probe honestly when there is no checkpoint (question Q-15)", async () => {
-    // This role CAN read the checkpoint tables — it is the admin. There is simply no checkpoint,
-    // which is `none`, not `unavailable`: the two mean different things and the mirror logs a
-    // different line for each.
-    expect(await db.selectLatestCheckpoint(NET)).toStrictEqual({ status: "none" });
+  it("answers `undefined` for a net whose DUST parameters were never recorded (question Q-22)", async () => {
+    // The honest answer, and the one that makes the mirror report `parametersSource: "unknown"`
+    // rather than pretending the ledger's initial values were read off this chain. This replaced
+    // the old checkpoint probe, whose `unavailable`/`none`/`ok` triple existed only because the
+    // check needed two tables the reader role is not granted (questions Q-15 and Q-22).
+    expect(await db.selectDustParametersAtOrBelow("a-net-nobody-ingested")).toBeUndefined();
+  });
+
+  it("selects the newest DUST parameters row at or below a height, and finds the indexed plan", async () => {
+    const store = new PgChainArchiveStore(sql, DEFAULT_ARCHIVE_SCHEMA);
+    const heights = await sql<{ height: string; block_hash: Uint8Array }[]>`
+      SELECT height::text, block_hash FROM ${sql(DEFAULT_ARCHIVE_SCHEMA)}.blocks
+      WHERE net = ${NET} ORDER BY height ASC
+    `;
+    expect(heights.length).toBeGreaterThan(2);
+    const low = heights[0]!;
+    const high = heights[heights.length - 1]!;
+    await store.putDustParameters({
+      net: NET,
+      blockHeight: Number(low.height),
+      blockHash: Buffer.from(low.block_hash).toString("hex"),
+      nightDustRatio: "5000000000",
+      generationDecayRate: "8267",
+      dustGracePeriodSeconds: "10800",
+      reason: "genesis",
+    });
+    await store.putDustParameters({
+      net: NET,
+      blockHeight: Number(high.height),
+      blockHash: Buffer.from(high.block_hash).toString("hex"),
+      // A DIFFERENT value, so "newest at or below" is testing an ordering rather than agreeing
+      // with itself.
+      nightDustRatio: "6000000000",
+      generationDecayRate: "8267",
+      dustGracePeriodSeconds: "10800",
+      reason: "change",
+    });
+
+    expect((await db.selectDustParametersAtOrBelow(NET))?.nightDustRatio).toBe("6000000000");
+    expect((await db.selectDustParametersAtOrBelow(NET, BigInt(high.height)))?.nightDustRatio)
+      .toBe("6000000000");
+    expect((await db.selectDustParametersAtOrBelow(NET, BigInt(high.height) - 1n))?.nightDustRatio)
+      .toBe("5000000000");
+    expect(await db.selectDustParametersAtOrBelow(NET, BigInt(low.height) - 1n)).toBeUndefined();
+
+    // The node runs this once per batch on a cold fold of a million events, so it must be an
+    // index scan and not a table scan.
+    const plan = await sql.unsafe(
+      `EXPLAIN SELECT block_height FROM ${DEFAULT_ARCHIVE_SCHEMA}.dust_parameters ` +
+        `WHERE net = '${NET}' AND block_height <= 999999999 ORDER BY block_height DESC LIMIT 1`,
+    );
+    const text = (plan as unknown as { "QUERY PLAN": string }[]).map((r) => r["QUERY PLAN"]).join("\n");
+    expect(text).not.toMatch(/Seq Scan/);
   });
 });

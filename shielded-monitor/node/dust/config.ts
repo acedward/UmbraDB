@@ -45,6 +45,23 @@ export interface DustConfig {
   /** Events per replay call (FR-011). 1 000 is where the ledger's per-call rehash amortises —
    *  21.5 ms/event at 1, 1.72 ms at 1 000 (spec §0). */
   readonly replayBatch: number;
+  /**
+   * The largest snapshot file the mirror will RESTORE, in bytes (question **Q-23 option A**,
+   * 2026-09-16). Above it the file is left alone and the mirror replays from zero instead.
+   *
+   * ── Why a mirror refuses its own snapshot ───────────────────────────────────────────────────
+   * Measured on the real preprod archive at 146 253 retained leaves: restoring a 13 506 592 B
+   * snapshot took **639 s**, against **154 s** to fold the identical state out of PostgreSQL from
+   * nothing. `DustLocalState.deserialize` of a retained state is superlinear in its size, and it is
+   * ONE synchronous WASM call, so for those 639 s the node answered no request at all — not
+   * `/v1/health`, not the monitor-store routes. The replay path folds in batches with awaits
+   * between them, so the process stays responsive throughout.
+   *
+   * The snapshot is still WRITTEN (it costs ≈ 0.2 s per 20 000 events and it is the fast path on
+   * devnet and on any small chain, where a restore really is milliseconds). This setting is the
+   * line between the two regimes. Raising it past a few MB re-acquires the outage.
+   */
+  readonly snapshotMaxBytes: number;
 }
 
 /** Thrown for any invalid DUST configuration. Names the variable, never its value when the value
@@ -101,5 +118,8 @@ export function loadDustConfig(env: NodeJS.ProcessEnv = process.env): DustConfig
     pollMs: readInt(env, "DUST_STATE_POLL_MS", 2_000, 10, 3_600_000),
     snapshotEvery: readInt(env, "DUST_STATE_SNAPSHOT_EVERY", 20_000, 1, 100_000_000),
     replayBatch: readInt(env, "DUST_REPLAY_BATCH", 1_000, 1, 100_000),
+    // 2 MiB. At the measured ≈ 112 B per event this is ≈ 18 700 events, i.e. ≈ 20 s of replay --
+    // comfortably inside the regime where restoring is the cheaper of the two.
+    snapshotMaxBytes: readInt(env, "DUST_STATE_SNAPSHOT_MAX_BYTES", 2_097_152, 0, 68_719_476_736),
   };
 }

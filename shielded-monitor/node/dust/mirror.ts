@@ -1,8 +1,8 @@
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { LEDGER_BUILD_ID, loadLedger } from "../../offers.js";
 import type { DustConfig } from "./config.js";
-import type { DustDb } from "./db.js";
+import type { DustDb, DustParametersRow } from "./db.js";
 
 /**
  * `DustStateMirror` — one key-less `DustLocalState` holding the chain's two DUST trees, folded
@@ -47,6 +47,34 @@ import type { DustDb } from "./db.js";
  * answer `503 DUST_NOT_READY` (Story 2 scenario 3) — serving a tree that is missing the last
  * hundred thousand leaves would hand a wallet segments that cannot reproduce the chain's root,
  * which is worse than saying "not yet".
+ *
+ * ── Where the DUST parameters come from (question Q-22 option C) ────────────────────────────
+ * From `chain_archive.dust_parameters`, written by the ingest — never from a ledger state this
+ * process deserializes. A `DustLocalState` takes its parameters from its constructor and ignores
+ * parameter events entirely (Q-9), so the mirror has to be told, and the cheapest true source is
+ * the row the ingest wrote while it already held the state.
+ *
+ * With no row (an archive whose ingest predates migration 010, or one that never ran replay
+ * validation) the mirror falls back to `LedgerParameters.initialParameters().dust` and says so:
+ * `parametersSource: "unknown"`. That fallback is right far more often than not — the values have
+ * never changed on any Midnight network so far — but "probably right" and "read off the chain"
+ * must not look the same on `/internal/status`.
+ *
+ * A row appearing ABOVE the one the state was built from is a real mid-chain parameter change, and
+ * the only way to honour it is a REBUILD: `DustLocalState.params` is `readonly` in the WASM
+ * bindings (verified against the vendored `.d.ts`), so there is no way to swap them in place. The
+ * mirror therefore drops its trees and re-folds from zero — expensive, documented, and reserved
+ * for an event that is a governance action rather than a routine one.
+ *
+ * ── Why a big snapshot is REFUSED rather than restored (question Q-23 option A) ──────────────
+ * Measured on the real preprod archive at 146 253 retained leaves: restoring a 13 506 592 B
+ * snapshot cost **639 s** of one synchronous WASM call — during which this process answered no
+ * HTTP request at all — against **154 s** to fold the same state out of PostgreSQL from nothing,
+ * staying responsive throughout. `DustLocalState.deserialize` of a retained state is superlinear
+ * in its size, so the snapshot is a pessimisation in exactly the regime it was meant to help.
+ *
+ * Snapshots are still WRITTEN (≈ 0.2 s per 20 000 events, and on devnet or any small chain the
+ * restore really is milliseconds). They are only RESTORED below `DUST_STATE_SNAPSHOT_MAX_BYTES`.
  */
 
 /** How far the mirror's trees have been folded (FR-013). */
@@ -55,12 +83,32 @@ export interface DustMirrorApplied {
   readonly height: bigint;
 }
 
-/** What is written at the head of a snapshot file (FR-012). */
+/**
+ * What is written at the head of a snapshot file (FR-012).
+ *
+ * `parameters` (question Q-22 option C) records the DUST parameters the serialized state was
+ * CONSTRUCTED with, because they are baked into it and cannot be changed afterwards. On load they
+ * are compared with the archive's current row and a disagreement refuses the snapshot — the same
+ * "refuse rather than migrate" discipline `net` and `ledgerVersion` already get. `null` means the
+ * state was built from the ledger's initial parameters because the archive recorded none.
+ *
+ * A snapshot written before this field existed has it `undefined`, which is neither `null` nor a
+ * match, so it is refused and replayed from zero. That is the correct, self-healing outcome.
+ */
 export interface DustSnapshotHeader {
   readonly net: string;
   readonly ledgerVersion: string;
   readonly eventId: string;
   readonly height: string;
+  readonly parameters?: DustSnapshotParameters | null;
+}
+
+/** The identity of a `dust_parameters` row, as recorded in a snapshot header. */
+export interface DustSnapshotParameters {
+  readonly blockHeight: string;
+  readonly nightDustRatio: string;
+  readonly generationDecayRate: string;
+  readonly dustGracePeriodSeconds: string;
 }
 
 /**
@@ -83,6 +131,28 @@ export interface DustMirrorStatus {
   readonly applied: { readonly eventId: string; readonly height: string };
   readonly snapshotEventId: string | null;
   readonly lastError: string | null;
+  /**
+   * `chain` — built from a `dust_parameters` row; `unknown` — the archive records none, so the
+   * ledger's initial parameters are in use; `changed-at-<height>` — a row appeared above the one
+   * the state was built from and the mirror rebuilt for it (question Q-22 option C).
+   */
+  readonly parametersSource: string;
+  /** The height of the row the state was built from, or `null` under `unknown`. */
+  readonly parametersHeight: string | null;
+  /** The three values the mirror was built with and `GET /v1/dust/tip` serves. */
+  readonly parameters: DustServedParameters;
+  /** Which path this start took (question Q-23 option A). */
+  readonly startPath: "snapshot" | "replay";
+  /** Milliseconds from `start()` to the first time the mirror was caught up, or `null` while it
+   *  still is not. This is the number SC-003 is stated against. */
+  readonly startMs: number | null;
+}
+
+/** The three DUST parameters as they go on the wire: decimal strings, spec §4 `params`. */
+export interface DustServedParameters {
+  readonly nightDustRatio: string;
+  readonly generationDecayRate: string;
+  readonly dustGracePeriodSeconds: string;
 }
 
 export interface DustStateMirrorDeps {
@@ -131,6 +201,14 @@ export class DustStateMirror {
   #eventsSinceSnapshot = 0n;
   #running = false;
   #loop: Promise<void> | undefined;
+  /** The `dust_parameters` row this state was CONSTRUCTED from, or `undefined` when the archive
+   *  records none and the ledger's initial parameters are in use (question Q-22 option C). */
+  #parameters: DustParametersRow | undefined;
+  #parametersSource = "unknown";
+  /** Question Q-23 option A. */
+  #startPath: "snapshot" | "replay" = "replay";
+  #startedAt = 0;
+  #startMs: number | undefined;
 
   constructor(deps: DustStateMirrorDeps) {
     this.#deps = deps;
@@ -149,12 +227,40 @@ export class DustStateMirror {
   async start(opts: { readonly loops?: boolean } = {}): Promise<void> {
     if (this.#running) return;
     this.#running = true;
+    this.#startedAt = Date.now();
+    this.#startMs = undefined;
     this.#ledger = this.#deps.ledger ?? (await loadLedger());
     this.#key = this.#ledger.sampleDustSecretKey();
+    // The parameters come FIRST: they decide what a blank state is constructed with, and what a
+    // snapshot has to agree with to be usable. A read failure here is not fatal -- it leaves the
+    // mirror on the ledger's initial parameters with `parametersSource: "unknown"`, which is the
+    // same honest state as an archive that records none, and the routes still work.
+    try {
+      this.#parameters = await this.#deps.db.selectDustParametersAtOrBelow(this.#deps.net);
+    } catch (err) {
+      this.#parameters = undefined;
+      this.#log(
+        `[dust] could not read chain_archive.dust_parameters ` +
+          `(${err instanceof Error ? err.message : String(err)}); using the ledger's initial DUST ` +
+          "parameters and reporting parametersSource=unknown",
+      );
+    }
+    this.#parametersSource = this.#parameters === undefined ? "unknown" : "chain";
+    if (this.#parameters !== undefined) {
+      this.#log(
+        `[dust] DUST parameters from the archive at height ` +
+          `${this.#parameters.blockHeight.toString(10)} (${this.#parameters.reason}): ` +
+          `nightDustRatio=${this.#parameters.nightDustRatio} ` +
+          `generationDecayRate=${this.#parameters.generationDecayRate} ` +
+          `dustGracePeriodSeconds=${this.#parameters.dustGracePeriodSeconds}`,
+      );
+    }
     const restored = await this.#loadSnapshot();
     if (restored === undefined) {
+      this.#startPath = "replay";
       this.#publish(this.#blankState(), { eventId: 0n, height: 0n });
     } else {
+      this.#startPath = "snapshot";
       this.#publish(restored.state, restored.applied);
       this.#snapshotEventId = restored.applied.eventId;
     }
@@ -201,7 +307,34 @@ export class DustStateMirror {
       applied: { eventId: applied.eventId.toString(10), height: applied.height.toString(10) },
       snapshotEventId: this.#snapshotEventId === undefined ? null : this.#snapshotEventId.toString(10),
       lastError: this.#lastError ?? null,
+      parametersSource: this.#parametersSource,
+      parametersHeight: this.#parameters === undefined
+        ? null
+        : this.#parameters.blockHeight.toString(10),
+      parameters: this.parameters,
+      startPath: this.#startPath,
+      startMs: this.#startMs ?? null,
     };
+  }
+
+  /**
+   * The three DUST parameters this mirror was built with — what `GET /v1/dust/tip` serves
+   * (question Q-22 option C).
+   *
+   * Read from the ROW, never from `state.params`. Two reasons: the row is the chain's own record,
+   * and `state.params` is a wasm-bindgen getter that mints a handle on every access (the previous
+   * implementation leaked one per `/v1/dust/tip` request). Under `parametersSource: "unknown"`
+   * these are the ledger's initial parameters, which the status block says plainly.
+   */
+  get parameters(): DustServedParameters {
+    if (this.#parameters !== undefined) {
+      return {
+        nightDustRatio: this.#parameters.nightDustRatio,
+        generationDecayRate: this.#parameters.generationDecayRate,
+        dustGracePeriodSeconds: this.#parameters.dustGracePeriodSeconds,
+      };
+    }
+    return this.#initialParameters();
   }
 
   get producer(): DustProducer {
@@ -253,8 +386,12 @@ export class DustStateMirror {
         // never captured anything) from "we are at the tip", because the two answer differently.
         const tip = await db.selectTableTip(net);
         this.#producer = tip === undefined ? "none" : "ingest";
-        if (tip !== undefined) this.#ready = true;
+        if (tip !== undefined) this.#markReady();
         this.#lastError = undefined;
+        // Caught up is exactly when a parameter change is worth looking for: the applied height is
+        // the chain's, so a row above the one this state was built from is a real change rather
+        // than the fold walking through history it has not reached yet.
+        if (tip !== undefined) await this.#checkParametersChanged(held.applied.height);
         return 0;
       }
       this.#producer = "ingest";
@@ -284,6 +421,10 @@ export class DustStateMirror {
     this.#publish(next, { eventId: last.id, height: last.blockHeight });
     this.#lastError = undefined;
     this.#eventsSinceSnapshot += BigInt(events.length);
+    // A parameter change the fold just walked past (question Q-22 option C). Checked per BATCH,
+    // not per event: it is one single-row index scan next to a thousand-event replay, so it is
+    // noise against the ≈ 1 s the batch itself costs.
+    if (await this.#checkParametersChanged(last.blockHeight)) return events.length;
 
     if (this.#eventsSinceSnapshot >= BigInt(config.snapshotEvery)) {
       this.#eventsSinceSnapshot = 0n;
@@ -300,11 +441,147 @@ export class DustStateMirror {
 
   // ── Internals ──────────────────────────────────────────────────────────────────────────────
 
+  /** First time the mirror is caught up, record how long getting there took (question Q-23). */
+  #markReady(): void {
+    if (this.#ready) return;
+    this.#ready = true;
+    this.#startMs = Date.now() - this.#startedAt;
+    this.#log(
+      `[dust] ready after ${this.#startMs} ms via the ${this.#startPath} path ` +
+        `(${this.#held?.applied.eventId.toString(10) ?? "0"} events, height ` +
+        `${this.#held?.applied.height.toString(10) ?? "0"})`,
+    );
+  }
+
+  /**
+   * Look for a `dust_parameters` row above the one this state was built from, and rebuild if there
+   * is one (question Q-22 option C). Returns whether a rebuild happened.
+   *
+   * "At or below the applied height" is what makes this safe during a cold fold: while the mirror
+   * is folding old history its applied height is low, so the newest row it can see is an OLD one,
+   * which is never above the row it started from (that row is the newest in the table at start).
+   * Only a row written AFTER this mirror started can trip it.
+   *
+   * A read failure is recorded and ignored: failing to notice a parameter change must not stop the
+   * fold, and the next batch asks again.
+   */
+  async #checkParametersChanged(appliedHeight: bigint): Promise<boolean> {
+    let row: DustParametersRow | undefined;
+    try {
+      row = await this.#deps.db.selectDustParametersAtOrBelow(this.#deps.net, appliedHeight);
+    } catch {
+      return false;
+    }
+    if (row === undefined) return false;
+    if (this.#parameters !== undefined && row.blockHeight <= this.#parameters.blockHeight) return false;
+    if (this.#parameters === undefined) {
+      // The archive recorded NO parameters when this mirror started and now records some. The
+      // state was built from the ledger's initial values; if the chain agrees with them, adopt the
+      // row (it turns `unknown` into `chain`) without paying for a rebuild that would produce a
+      // byte-identical state.
+      const initial = this.#initialParameters();
+      if (
+        row.nightDustRatio === initial.nightDustRatio &&
+        row.generationDecayRate === initial.generationDecayRate &&
+        row.dustGracePeriodSeconds === initial.dustGracePeriodSeconds
+      ) {
+        this.#parameters = row;
+        this.#parametersSource = "chain";
+        this.#log(
+          `[dust] DUST parameters now recorded by the archive at height ` +
+            `${row.blockHeight.toString(10)} and equal to the ledger's initial values; ` +
+            "parametersSource=chain, no rebuild needed",
+        );
+        return false;
+      }
+    }
+    this.#rebuildForChangedParameters(row);
+    return true;
+  }
+
+  /** The ledger's own initial DUST parameters, as decimal strings. The fallback when the archive
+   *  records none — and the values every Midnight network has used so far. */
+  #initialParameters(): DustServedParameters {
+    const params = this.#ledger.LedgerParameters.initialParameters();
+    const dust = params.dust;
+    try {
+      return {
+        nightDustRatio: String(dust.nightDustRatio),
+        generationDecayRate: String(dust.generationDecayRate),
+        dustGracePeriodSeconds: String(dust.dustGracePeriodSeconds),
+      };
+    } finally {
+      for (const handle of [dust, params]) {
+        try {
+          handle?.free?.();
+        } catch {
+          // Already freed; a status read must not fail on a handle it could not release.
+        }
+      }
+    }
+  }
+
+  /**
+   * A fresh, empty state carrying the parameters this mirror is configured for
+   * (question Q-22 option C).
+   *
+   * They do not affect the TREES — a `DustLocalState` ignores parameter events entirely (Q-9) — so
+   * this cannot change a root. It matters because the parameters are baked into the state at
+   * construction and there is no setter, so building it with the chain's values is the only way a
+   * state and the `params` this node serves can be the same configuration.
+   */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   #blankState(): any {
-    // D2.6: the mirror's parameters are the ledger's own initial DUST parameters, asserted against
-    // the archive's at start-up by the module (see `index.ts`).
-    return new this.#ledger.DustLocalState(this.#ledger.LedgerParameters.initialParameters().dust);
+    const wanted = this.parameters;
+    const params = new this.#ledger.DustParameters(
+      BigInt(wanted.nightDustRatio),
+      BigInt(wanted.generationDecayRate),
+      BigInt(wanted.dustGracePeriodSeconds),
+    );
+    try {
+      return new this.#ledger.DustLocalState(params);
+    } finally {
+      try {
+        params.free?.();
+      } catch {
+        // `DustLocalState`'s constructor may take the handle by value; freeing an already-consumed
+        // one throws and is nothing to report.
+      }
+    }
+  }
+
+  /**
+   * A `dust_parameters` row has appeared ABOVE the one this state was built from: the chain
+   * changed its DUST parameters mid-chain (question Q-22 option C).
+   *
+   * The only correct response is a REBUILD FROM ZERO. `DustLocalState.params` is `readonly` in the
+   * WASM bindings and the sole way parameters enter a state is its constructor, so they cannot be
+   * swapped in place; and the snapshot on disk holds a state built with the OLD parameters, so
+   * restoring it would reinstate exactly what is being replaced. Re-folding costs one cold start
+   * (measured: 154 s at 134 667 events) and happens only when a governance action changes the
+   * parameters, which has never yet happened on any Midnight network.
+   *
+   * The trees the re-fold produces are identical either way — parameters do not touch them — so
+   * the cost buys consistency of the `params` a wallet is handed, not correctness of its segments.
+   */
+  #rebuildForChangedParameters(row: DustParametersRow): void {
+    this.#log(
+      `[dust] DUST parameters CHANGED at height ${row.blockHeight.toString(10)} ` +
+        `(was height ${this.#parameters?.blockHeight.toString(10) ?? "none"}): ` +
+        `nightDustRatio=${row.nightDustRatio} generationDecayRate=${row.generationDecayRate} ` +
+        `dustGracePeriodSeconds=${row.dustGracePeriodSeconds}. A DustLocalState's parameters ` +
+        "cannot be swapped in place, so the mirror rebuilds from zero; DUST routes answer " +
+        "503 DUST_NOT_READY until it has caught up. See docs/shielded-monitor-node.md.",
+    );
+    this.#parameters = row;
+    this.#parametersSource = `changed-at-${row.blockHeight.toString(10)}`;
+    this.#ready = false;
+    this.#eventsSinceSnapshot = 0n;
+    this.#snapshotEventId = undefined;
+    this.#startPath = "replay";
+    this.#startedAt = Date.now();
+    this.#startMs = undefined;
+    this.#publish(this.#blankState(), { eventId: 0n, height: 0n });
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -324,7 +601,17 @@ export class DustStateMirror {
         const applied = await this.pumpOnce();
         // A full batch means there is almost certainly more: keep folding rather than sleeping a
         // poll interval per 1 000 events, which would make a cold start take days.
-        if (applied >= this.#deps.config.replayBatch) continue;
+        if (applied >= this.#deps.config.replayBatch) {
+          // ONE MACROTASK between batches, and it is not decoration (question Q-23 option A).
+          // Each batch is ≈ 1 s of synchronous WASM; between them this process must actually let
+          // its HTTP server answer, or a cold fold is indistinguishable from the multi-minute
+          // deserialize stall Q-23 exists to remove. `await` alone does not guarantee it: against
+          // a database client that resolves synchronously (a test's fake, a fully buffered pool)
+          // the loop would be a chain of MICROTASKS, which starve I/O callbacks completely. A
+          // zero-delay timer is a macrotask, so pending sockets are served before the next batch.
+          await this.#sleep(0);
+          continue;
+        }
       } catch (err) {
         this.#lastError = err instanceof Error ? err.message : String(err);
       }
@@ -352,6 +639,16 @@ export class DustStateMirror {
       ledgerVersion: LEDGER_BUILD_ID,
       eventId: held.applied.eventId.toString(10),
       height: held.applied.height.toString(10),
+      // The parameters are BAKED INTO the serialized state and cannot be changed on load, so the
+      // header records which ones, and `#loadSnapshot` refuses a snapshot that disagrees with the
+      // archive's current row (question Q-22 option C). `null` = built from the ledger's initial
+      // parameters because the archive recorded none.
+      parameters: this.#parameters === undefined ? null : {
+        blockHeight: this.#parameters.blockHeight.toString(10),
+        nightDustRatio: this.#parameters.nightDustRatio,
+        generationDecayRate: this.#parameters.generationDecayRate,
+        dustGracePeriodSeconds: this.#parameters.dustGracePeriodSeconds,
+      },
     };
     const headerBytes = Buffer.from(JSON.stringify(header), "utf8");
     const length = Buffer.alloc(4);
@@ -382,16 +679,38 @@ export class DustStateMirror {
    */
   async #loadSnapshot(): Promise<{ state: unknown; applied: DustMirrorApplied } | undefined> {
     const target = this.#snapshotPath();
-    let file: Buffer;
-    try {
-      file = await readFile(target);
-    } catch {
-      return undefined; // no snapshot yet: the ordinary first start
-    }
     const refuse = (reason: string): undefined => {
       this.#log(`[dust] ignoring ${target}: ${reason}; replaying from zero`);
       return undefined;
     };
+    // ── The size gate (question Q-23 option A) ────────────────────────────────────────────────
+    // Checked with `stat` BEFORE the file is read, because reading a 165 MB snapshot only to throw
+    // it away would itself be the cost this avoids. Measured on preprod: restoring 13 506 592 B
+    // took 639 s of one synchronous WASM call with the node answering nothing, against 154 s to
+    // fold the same state out of PostgreSQL while staying responsive.
+    let size: number;
+    try {
+      size = (await stat(target)).size;
+    } catch {
+      return undefined; // no snapshot yet: the ordinary first start
+    }
+    const max = this.#deps.config.snapshotMaxBytes;
+    if (size > max) {
+      this.#log(
+        `[dust] snapshot skipped (${size} bytes > max ${max}): replaying from zero. ` +
+          "Restoring a retained DustLocalState of this size is one multi-minute synchronous WASM " +
+          "call during which this node answers nothing, and it is slower than re-folding the " +
+          "events (question Q-23). Raise DUST_STATE_SNAPSHOT_MAX_BYTES only if you have measured " +
+          "the restore on your own chain.",
+      );
+      return undefined;
+    }
+    let file: Buffer;
+    try {
+      file = await readFile(target);
+    } catch {
+      return undefined; // raced away between the stat and the read
+    }
     if (file.byteLength < SNAPSHOT_MAGIC.byteLength + 4) return refuse("truncated");
     if (!file.subarray(0, SNAPSHOT_MAGIC.byteLength).equals(SNAPSHOT_MAGIC)) return refuse("not a DUST snapshot");
     const headerLength = file.readUInt32BE(SNAPSHOT_MAGIC.byteLength);
@@ -406,6 +725,32 @@ export class DustStateMirror {
     if (header.net !== this.#deps.net) return refuse(`net ${String(header.net)} is not ${this.#deps.net}`);
     if (header.ledgerVersion !== LEDGER_BUILD_ID) {
       return refuse(`ledgerVersion ${String(header.ledgerVersion)} is not ${LEDGER_BUILD_ID}`);
+    }
+    // Question Q-22 option C: the serialized state carries the parameters it was BUILT with and
+    // they cannot be changed on load, so a snapshot that disagrees with what this mirror is
+    // configured for is refused rather than restored into a state whose `params` this node would
+    // then misreport. `undefined` (a snapshot written before this field existed) is a disagreement
+    // too -- self-healing, since the next write records it.
+    const wanted = this.#parameters;
+    const recorded = header.parameters;
+    const parametersAgree = recorded === undefined
+      ? false
+      : recorded === null
+        ? wanted === undefined
+        : wanted !== undefined &&
+          recorded.blockHeight === wanted.blockHeight.toString(10) &&
+          recorded.nightDustRatio === wanted.nightDustRatio &&
+          recorded.generationDecayRate === wanted.generationDecayRate &&
+          recorded.dustGracePeriodSeconds === wanted.dustGracePeriodSeconds;
+    if (!parametersAgree) {
+      return refuse(
+        recorded === undefined
+          ? "it records no DUST parameters (written before they were tracked)"
+          : `its DUST parameters are not the archive's current ones ` +
+            `(snapshot ${JSON.stringify(recorded)}, archive ${
+              wanted === undefined ? "none recorded" : `height ${wanted.blockHeight.toString(10)}`
+            })`,
+      );
     }
     try {
       const state = this.#ledger.DustLocalState.deserialize(

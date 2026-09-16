@@ -102,6 +102,7 @@ beforeAll(async () => {
         pollMs: 5,
         snapshotEvery: 1_000_000,
         replayBatch: 1_000,
+        snapshotMaxBytes: 2_097_152,
       },
     },
   )!;
@@ -409,10 +410,15 @@ describe("GET /internal/status carries the dust block (plan 00016 D2.3)", () => 
     // live; `rss` is what a container limit is written in. SC-004 is stated against the latter.
     expect(body.dust.rss).toBeGreaterThan(0);
     expect(body.dust.externalBytes).toBeGreaterThan(0);
-    // Under the role spec §5.3 prescribes, the parameter check cannot read the checkpoint tables.
-    // That is a recorded conflict, not a defect — see question Q-15.
-    await dust.whenParametersChecked();
-    expect(["ok", "skipped", "mismatch"]).toContain(body.dust.parametersCheck);
+    // Question Q-22 option C: no row exists for this fake db, so the mirror says `unknown` and
+    // serves the ledger's initial parameters — and it SAYS `unknown` rather than passing them off
+    // as the chain's.
+    expect(body.dust.parametersSource).toBe("unknown");
+    expect(body.dust.parametersHeight).toBeNull();
+    expect(body.dust.parameters.nightDustRatio).toBe("5000000000");
+    // Question Q-23 option A: which start path this mirror took, and how long it took to catch up.
+    expect(["snapshot", "replay"]).toContain(body.dust.startPath);
+    expect(body.dust.startMs).toBeGreaterThanOrEqual(0);
   });
 
   it("reports enabled: false when the node was started without DUST_DATABASE_URL", async () => {
@@ -423,7 +429,12 @@ describe("GET /internal/status carries the dust block (plan 00016 D2.3)", () => 
       ready: false,
       applied: { eventId: "0", height: "0" },
       snapshotEventId: null,
-      parametersCheck: "skipped",
+      parametersSource: "unknown",
+      parametersHeight: null,
+      // Zeros, not the ledger's values: a disabled module loads no WASM to answer a status read.
+      parameters: { nightDustRatio: "0", generationDecayRate: "0", dustGracePeriodSeconds: "0" },
+      startPath: "replay",
+      startMs: null,
       lastError: null,
       rss: body.dust.rss,
       externalBytes: body.dust.externalBytes,
@@ -461,6 +472,7 @@ describe("the 503s (spec §4)", () => {
           pollMs: 5,
           snapshotEvery: 1_000_000,
           replayBatch: 1_000,
+          snapshotMaxBytes: 2_097_152,
         },
       },
     )!;
@@ -490,6 +502,7 @@ describe("the 503s (spec §4)", () => {
           pollMs: 3_600_000, // never polls on its own inside this test
           snapshotEvery: 1_000_000,
           replayBatch: 1_000,
+          snapshotMaxBytes: 2_097_152,
         },
       },
     )!;
@@ -517,6 +530,7 @@ describe("the 503s (spec §4)", () => {
           pollMs: 5,
           snapshotEvery: 1_000_000,
           replayBatch: 1_000,
+          snapshotMaxBytes: 2_097_152,
         },
       },
     )!;
