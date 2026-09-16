@@ -250,6 +250,42 @@ describe("project B reaches no database at all (owner Rule B / FR-025, question 
     expect(importers.length).toBeGreaterThan(0);
   });
 
+  it("the waived directory deserializes no ledger state (question Q-22)", () => {
+    // T6.5. The start-up parameter check used to call `ledger.LedgerState.deserialize` on the
+    // newest replay checkpoint's blob. On a real archive that blob is 31 229 296 B and the call is
+    // MINUTES of one synchronous WASM invocation on this process's only thread — the node accepted
+    // connections and answered nothing at all while it ran, and the balancer marked it unhealthy
+    // (question Q-22, measured on preprod 2026-09-16).
+    //
+    // Option C removed the call: the three DUST parameters are a row the ingest writes
+    // (`chain_archive.dust_parameters`, migration 010) and the node reads one index scan of it.
+    // This guard is what keeps it removed — a re-introduction would look perfectly reasonable in
+    // review and would only show up as a multi-minute hang on a chain nobody tests against.
+    //
+    // COMMENTS ARE STRIPPED FIRST, exactly as `schema-isolation.integration.test.ts` does for the
+    // archive schema name: the rationale above legitimately names the thing it forbids, and a scan
+    // that could not tell prose from code would make this file unwritable.
+    const dustDir = path.join(repoRoot, "shielded-monitor", "node", "dust");
+    const files = (readdirSync(dustDir, { recursive: true }) as string[])
+      .filter((entry) => entry.endsWith(".ts"))
+      .map((entry) => path.join(dustDir, entry));
+    expect(files.length, "the scan must actually see the waived directory").toBeGreaterThan(4);
+
+    const stripComments = (source: string): string =>
+      source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+
+    const offenders = files.filter((file) => /LedgerState/.test(stripComments(readFileSync(file, "utf8"))));
+    expect(offenders.map((f) => path.relative(repoRoot, f))).toStrictEqual([]);
+
+    // NOT VACUOUS: the same scan over a file that does name it in code must find it. `db.ts` is
+    // the waived directory's own database module, and planting the reference in a copy of its
+    // source proves the regex and the comment-stripping both work on real code.
+    const planted = stripComments(
+      readFileSync(path.join(dustDir, "db.ts"), "utf8"),
+    ) + "\nconst probe = ledger.LedgerState.deserialize(bytes);\n";
+    expect(/LedgerState/.test(planted)).toBe(true);
+  });
+
   it("POSITIVE CONTROL: the waiver does NOT cover a B file outside the directory", () => {
     // The strongest thing to get wrong here would be a waiver that skips files rather than trails:
     // then `scanner.ts` could import `postgres` and the walk would call it waived because the DUST

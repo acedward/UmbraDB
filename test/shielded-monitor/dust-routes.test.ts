@@ -140,12 +140,68 @@ describe("GET /v1/dust/tip", () => {
       expect(typeof value).toBe("string");
       expect(value).toMatch(/^[0-9]+$/);
     }
+    // This fake archive records no `dust_parameters` row, so these are the ledger's initial
+    // values and `/internal/status` says `parametersSource: "unknown"`. The case below is the one
+    // that proves the route serves the ARCHIVE's row when there is one.
     expect(body.params).toStrictEqual({
       nightDustRatio: "5000000000",
       generationDecayRate: "8267",
       dustGracePeriodSeconds: "10800",
     });
   });
+
+  it("serves the archive's recorded DUST parameters, not the ledger's defaults (question Q-22)", async () => {
+    // The route used to read `held.state.params` — the mirror's own constructor arguments — which
+    // is only right if something proved they were the chain's. Option C makes the row the source:
+    // the mirror is built from it AND the route serves it, so the two cannot drift apart.
+    const withRow = createDustModule(
+      {},
+      {
+        net: NET,
+        ledger,
+        db: fakeDustDb(events.slice(0, 500), {
+          parameters: {
+            blockHeight: 4_242n,
+            // Values the ledger's initial parameters do NOT have, so agreement cannot be an
+            // accident of the default.
+            nightDustRatio: "777000000",
+            generationDecayRate: "9999",
+            dustGracePeriodSeconds: "12345",
+            reason: "change",
+          },
+        }),
+        config: {
+          databaseUrl: "postgres://unused@localhost/unused",
+          snapshotDir: path.join(snapshotDir, "with-row"),
+          pollMs: 5,
+          snapshotEvery: 1_000_000,
+          replayBatch: 500,
+          snapshotMaxBytes: 2_097_152,
+        },
+      },
+    )!;
+    await withRow.start();
+    try {
+      for (let i = 0; i < 50 && !withRow.status().ready; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      const reply = await withRow.handle("tip", new URL(`http://x/v1/dust/tip?net=${NET}`), Buffer.alloc(0));
+      expect(reply.status).toBe(200);
+      expect((reply.body as { params: unknown }).params).toStrictEqual({
+        nightDustRatio: "777000000",
+        generationDecayRate: "9999",
+        dustGracePeriodSeconds: "12345",
+      });
+      const status = withRow.status();
+      expect(status.parametersSource).toBe("chain");
+      expect(status.parametersHeight).toBe("4242");
+      // Identical values on both surfaces: `/v1/dust/tip` and `/internal/status` must not be able
+      // to disagree about what this node is pricing balances with.
+      expect(status.parameters).toStrictEqual((reply.body as { params: unknown }).params);
+    } finally {
+      await withRow.stop();
+    }
+  }, 120_000);
 
   it("refuses a missing or foreign net", async () => {
     expect((await get("/v1/dust/tip")).body.error.code).toBe("DUST_BAD_PARAM");
@@ -553,4 +609,80 @@ describe("the 503s (spec §4)", () => {
       await broken.stop();
     }
   }, 300_000);
+});
+
+describe("the node keeps answering while the DUST mirror is folding (question Q-23 option A)", () => {
+  it("answers /v1/health throughout a cold replay of the whole fixture", async () => {
+    // WHAT THIS IS ABOUT. Restoring a large snapshot is ONE synchronous WASM call, and on preprod
+    // it ran for 639 s during which this process answered nothing at all — not `/v1/health`, not
+    // `/internal/status`, not the monitor-store routes (question Q-23; same shape as Q-22's
+    // 31 MB `LedgerState.deserialize`). The replacement path folds in batches, so this asserts the
+    // property that makes it acceptable: the rest of the node stays alive while it works.
+    //
+    // The fake database resolves SYNCHRONOUSLY, which is the hard case and the reason the mirror's
+    // loop yields on a real macrotask between batches rather than relying on `await`. A chain of
+    // microtasks would starve the HTTP server completely and every probe below would time out.
+    const cold = createDustModule(
+      {},
+      {
+        net: NET,
+        ledger,
+        db: fakeDustDb(events),
+        config: {
+          databaseUrl: "postgres://unused@localhost/unused",
+          snapshotDir: path.join(snapshotDir, "cold-replay"),
+          pollMs: 5,
+          snapshotEvery: 1_000_000,
+          // Small batches so the fold takes many turns, which is what makes "answers throughout"
+          // a real question rather than a race the test happens to win.
+          replayBatch: 250,
+          snapshotMaxBytes: 2_097_152,
+        },
+      },
+    )!;
+    const started = await startApi(cold);
+    try {
+      await cold.start();
+      expect(cold.status().ready).toBe(false);
+
+      const latencies: number[] = [];
+      let probesWhileFolding = 0;
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline) {
+        const folding = !cold.status().ready;
+        const at = Date.now();
+        const response = await fetch(`${started.base}/v1/health`);
+        const took = Date.now() - at;
+        expect(response.status).toBe(200);
+        if (folding) {
+          probesWhileFolding += 1;
+          latencies.push(took);
+        }
+        if (cold.status().ready) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+
+      expect(cold.status().ready, "the mirror must actually finish folding").toBe(true);
+      // Many probes, not one lucky one: the fold is 20 batches of 250 events and the loop is
+      // driving it the whole time.
+      expect(probesWhileFolding).toBeGreaterThan(3);
+      // A generous bound on purpose. One batch of 250 events is a few hundred ms of synchronous
+      // WASM and a probe can land inside one, so this is not a latency budget — it is the
+      // difference between "waits for a batch" and "waits for the entire replay", which is what
+      // the snapshot path did.
+      const worst = Math.max(...latencies);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[dust-routes] ${probesWhileFolding} health probes during the fold, worst ${worst} ms`,
+      );
+      expect(worst).toBeLessThan(10_000);
+      // And the start path and duration are reported, which is how an operator sees which of the
+      // two regimes a restart took.
+      expect(cold.status().startPath).toBe("replay");
+      expect(cold.status().startMs).toBeGreaterThan(0);
+    } finally {
+      await started.api.close();
+      await cold.stop();
+    }
+  }, 180_000);
 });

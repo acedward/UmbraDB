@@ -309,13 +309,19 @@ describe("DustStateMirror snapshots (FR-012)", () => {
       {
         name: "wrong-net",
         write: async (file) => {
-          await writeSnapshot(file, { net: "devnet", ledgerVersion: LEDGER_BUILD_ID, eventId: "9", height: "9" });
+          await writeSnapshot(file, {
+            net: "devnet", ledgerVersion: LEDGER_BUILD_ID, eventId: "9", height: "9",
+            parameters: null,
+          });
         },
       },
       {
         name: "wrong-build",
         write: async (file) => {
-          await writeSnapshot(file, { net: NET, ledgerVersion: "ledger-v8@8.1.0-syshash.1", eventId: "9", height: "9" });
+          await writeSnapshot(file, {
+            net: NET, ledgerVersion: "ledger-v8@8.1.0-syshash.1", eventId: "9", height: "9",
+            parameters: null,
+          });
         },
       },
       {
@@ -362,7 +368,144 @@ describe("DustStateMirror snapshots (FR-012)", () => {
     }
   }, 300_000);
 
-  async function writeSnapshot(file: string, header: Record<string, string>): Promise<void> {
+  it("refuses a snapshot whose recorded DUST parameters are not the archive's (question Q-22)", async () => {
+    // The parameters are BAKED INTO the serialized state -- `DustLocalState.params` is readonly in
+    // the WASM bindings and the constructor is the only way in -- so a snapshot that disagrees
+    // cannot be adapted on load. Refusing it is the same "refuse rather than migrate" rule `net`
+    // and `ledgerVersion` already get, and the next write records the right ones.
+    const { mkdir } = await import("node:fs/promises");
+    const chainRow = {
+      blockHeight: 1_000n,
+      nightDustRatio: "5000000000",
+      generationDecayRate: "8267",
+      dustGracePeriodSeconds: "10800",
+      reason: "genesis",
+    };
+    const cases: { name: string; parameters: unknown }[] = [
+      // Written before the field existed at all: neither `null` nor a match.
+      { name: "no-parameters-field", parameters: undefined },
+      // Built with the ledger's initial parameters while the archive now records a row.
+      { name: "built-without-a-row", parameters: null },
+      // A real disagreement on a value.
+      {
+        name: "different-values",
+        parameters: {
+          blockHeight: "1000", nightDustRatio: "6000000000",
+          generationDecayRate: "8267", dustGracePeriodSeconds: "10800",
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const dir = path.join(root, `refuse-params-${testCase.name}`);
+      await rm(dir, { recursive: true, force: true });
+      await mkdir(dir, { recursive: true });
+      const header: Record<string, unknown> = {
+        net: NET, ledgerVersion: LEDGER_BUILD_ID, eventId: "9", height: "9",
+      };
+      if (testCase.parameters !== undefined) header.parameters = testCase.parameters;
+      await writeSnapshot(path.join(dir, `${NET}.dust-state`), header);
+
+      const lines: string[] = [];
+      const mirror = new DustStateMirror({
+        db: fakeDustDb(events.slice(0, 200), { parameters: chainRow }),
+        net: NET,
+        config: config(dir, { replayBatch: 200 }),
+        ledger,
+        logger: (line) => lines.push(line),
+      });
+      await mirror.start({ loops: false });
+      try {
+        const lease = mirror.acquire()!;
+        expect(lease.applied.eventId, testCase.name).toBe(0n);
+        lease.release();
+        expect(lines.join("\n"), testCase.name).toContain("replaying from zero");
+        expect(mirror.status().startPath, testCase.name).toBe("replay");
+      } finally {
+        await mirror.stop();
+      }
+    }
+  }, 300_000);
+
+  it("skips a snapshot larger than DUST_STATE_SNAPSHOT_MAX_BYTES and replays instead (question Q-23)", async () => {
+    // WHY A SIZE GATE AT ALL. Measured on the real preprod archive at 146 253 retained leaves:
+    // restoring a 13 506 592 B snapshot took 639 s of ONE synchronous WASM call, with the node
+    // answering nothing at all, against 154 s to fold the same state out of PostgreSQL while
+    // staying responsive. The snapshot is a pessimisation in exactly the regime it was for.
+    const { mkdir } = await import("node:fs/promises");
+    const dir = path.join(root, "snapshot-too-big");
+    const write = new DustStateMirror({
+      db: fakeDustDb(events),
+      net: NET,
+      config: config(dir, { replayBatch: 1_000, snapshotEvery: 2_000 }),
+      ledger,
+    });
+    await write.start({ loops: false });
+    await write.pumpOnce();
+    await write.pumpOnce();
+    await write.stop();
+    const written = await readFile(path.join(dir, `${NET}.dust-state`));
+    expect(written.byteLength).toBeGreaterThan(1_000);
+
+    // A gate BELOW this real snapshot's size: the file is untouched and the mirror folds from zero.
+    const lines: string[] = [];
+    const skipping = new DustStateMirror({
+      db: fakeDustDb(events),
+      net: NET,
+      config: config(dir, { replayBatch: 1_000, snapshotMaxBytes: written.byteLength - 1 }),
+      ledger,
+      logger: (line) => lines.push(line),
+    });
+    await skipping.start({ loops: false });
+    try {
+      expect(skipping.acquire()!.applied.eventId).toBe(0n);
+      expect(skipping.status().startPath).toBe("replay");
+      expect(lines.join("\n")).toContain(
+        `snapshot skipped (${written.byteLength} bytes > max ${written.byteLength - 1})`,
+      );
+      // And it really does catch up, so "skipped" is a slower start rather than a broken one.
+      await pumpToTip(skipping);
+      const lease = skipping.acquire()!;
+      try {
+        expect(String(lease.state.commitmentTreeRoot())).toBe(
+          meta.rootsAfterEveryFiveHundredDustEvents.at(-1)!.commitmentRoot,
+        );
+      } finally {
+        lease.release();
+      }
+      expect(skipping.status().ready).toBe(true);
+      expect(skipping.status().startMs).toBeGreaterThanOrEqual(0);
+    } finally {
+      await skipping.stop();
+    }
+    // The file was left ALONE -- skipping is not deleting, and an operator who lowers the gate by
+    // mistake must not lose the snapshot. (`skipping.stop()` then wrote its own, larger, final
+    // snapshot over it, which is why the assertion is a lower bound and why the restore case
+    // below runs against a COPY of the original file rather than this directory.)
+    expect((await readFile(path.join(dir, `${NET}.dust-state`))).byteLength)
+      .toBeGreaterThanOrEqual(written.byteLength);
+
+    // The same snapshot under a gate ABOVE its size restores, so the gate is a threshold and not
+    // a disablement.
+    const restoreDir = path.join(root, "snapshot-big-enough");
+    await mkdir(restoreDir, { recursive: true });
+    await writeFile(path.join(restoreDir, `${NET}.dust-state`), written);
+    const restoring = new DustStateMirror({
+      db: fakeDustDb(events),
+      net: NET,
+      config: config(restoreDir, { replayBatch: 1_000, snapshotMaxBytes: written.byteLength + 1 }),
+      ledger,
+    });
+    await restoring.start({ loops: false });
+    try {
+      expect(restoring.acquire()!.applied.eventId).toBeGreaterThan(0n);
+      expect(restoring.status().startPath).toBe("snapshot");
+    } finally {
+      await restoring.stop();
+    }
+  }, 300_000);
+
+  async function writeSnapshot(file: string, header: Record<string, unknown>): Promise<void> {
     const blank = new ledger.DustLocalState(ledger.LedgerParameters.initialParameters().dust);
     const body = Buffer.from(blank.serialize() as Uint8Array);
     blank.free();
@@ -371,6 +514,185 @@ describe("DustStateMirror snapshots (FR-012)", () => {
     length.writeUInt32BE(headerBytes.byteLength, 0);
     await writeFile(file, Buffer.concat([Buffer.from("UMBRADUST1", "utf8"), length, headerBytes, body]));
   }
+});
+
+describe("DustStateMirror takes its DUST parameters from the archive (question Q-22 option C)", () => {
+  /** The three values as a `dust_parameters` row, as `db.ts` hands them over. */
+  const row = (blockHeight: bigint, nightDustRatio: string) => ({
+    blockHeight,
+    nightDustRatio,
+    generationDecayRate: "8267",
+    dustGracePeriodSeconds: "10800",
+    reason: "genesis",
+  });
+
+  /** What the state itself was CONSTRUCTED with -- read out of the WASM, not out of our own
+   *  bookkeeping, so the two cannot agree by accident. */
+  function stateParametersOf(mirror: DustStateMirror): Record<string, string> {
+    const lease = mirror.acquire()!;
+    try {
+      const params = lease.state.params;
+      try {
+        return {
+          nightDustRatio: String(params.nightDustRatio),
+          generationDecayRate: String(params.generationDecayRate),
+          dustGracePeriodSeconds: String(params.dustGracePeriodSeconds),
+        };
+      } finally {
+        params.free?.();
+      }
+    } finally {
+      lease.release();
+    }
+  }
+
+  it("builds its state from the row and reports parametersSource: chain", async () => {
+    const dir = path.join(root, "params-chain");
+    const mirror = new DustStateMirror({
+      // A value the ledger's initial parameters do NOT have, so "the state carries the row's
+      // values" cannot pass by agreeing with the default.
+      db: fakeDustDb(events.slice(0, 500), { parameters: row(1_000n, "777000000") }),
+      net: NET,
+      config: config(dir, { replayBatch: 500 }),
+      ledger,
+    });
+    await mirror.start({ loops: false });
+    try {
+      const status = mirror.status();
+      expect(status.parametersSource).toBe("chain");
+      expect(status.parametersHeight).toBe("1000");
+      expect(status.parameters).toStrictEqual({
+        nightDustRatio: "777000000",
+        generationDecayRate: "8267",
+        dustGracePeriodSeconds: "10800",
+      });
+      // The state itself, not just the status block.
+      expect(stateParametersOf(mirror).nightDustRatio).toBe("777000000");
+      // And the parameters do not touch the TREES: the fold still reaches the fixture's roots.
+      await pumpToTip(mirror);
+      const lease = mirror.acquire()!;
+      try {
+        expect(String(lease.state.commitmentTreeRoot())).toBe(
+          meta.rootsAfterEveryFiveHundredDustEvents[0]!.commitmentRoot,
+        );
+      } finally {
+        lease.release();
+      }
+    } finally {
+      await mirror.stop();
+    }
+  }, 300_000);
+
+  it("falls back to the ledger's initial parameters, and SAYS unknown, when the archive records none", async () => {
+    const dir = path.join(root, "params-unknown");
+    const mirror = new DustStateMirror({
+      db: fakeDustDb(events.slice(0, 200)),
+      net: NET,
+      config: config(dir, { replayBatch: 200 }),
+      ledger,
+    });
+    await mirror.start({ loops: false });
+    try {
+      const status = mirror.status();
+      expect(status.parametersSource).toBe("unknown");
+      expect(status.parametersHeight).toBeNull();
+      // The values are still the right ones for every Midnight network so far -- which is exactly
+      // why a guess that happens to be right must not read the same as a fact read off the chain.
+      const initial = ledger.LedgerParameters.initialParameters().dust;
+      expect(status.parameters.nightDustRatio).toBe(String(initial.nightDustRatio));
+      expect(stateParametersOf(mirror)).toStrictEqual(status.parameters);
+    } finally {
+      await mirror.stop();
+    }
+  }, 300_000);
+
+  it("rebuilds from zero when a row appears above the one it was built from", async () => {
+    // A mid-chain parameter change. `DustLocalState.params` is readonly in the WASM bindings and
+    // the constructor is the only way parameters enter a state, so there is no swap -- the mirror
+    // drops its trees and re-folds. Expensive and documented; a governance action, not a routine.
+    const dir = path.join(root, "params-changed");
+    let changed = false;
+    const db = fakeDustDb(events, {
+      parameters: () => (changed ? row(1_100n, "6000000000") : row(1_000n, "5000000000")),
+    });
+    const lines: string[] = [];
+    const mirror = new DustStateMirror({
+      db, net: NET, config: config(dir, { replayBatch: 1_000 }), ledger,
+      logger: (line) => lines.push(line),
+    });
+    await mirror.start({ loops: false });
+    try {
+      await mirror.pumpOnce();
+      // An OLD row (height 1 000) while the fold is already above it changes nothing: only a row
+      // ABOVE the one the state was built from is a change.
+      expect(mirror.status().parametersSource).toBe("chain");
+      expect(mirror.acquire()!.applied.eventId).toBe(1_000n);
+
+      changed = true;
+      await mirror.pumpOnce();
+      const status = mirror.status();
+      expect(status.parametersSource).toBe("changed-at-1100");
+      expect(status.parametersHeight).toBe("1100");
+      expect(status.parameters.nightDustRatio).toBe("6000000000");
+      expect(stateParametersOf(mirror).nightDustRatio).toBe("6000000000");
+      // Rebuilt FROM ZERO, and honest about it: not ready, applied back at 0.
+      expect(status.ready).toBe(false);
+      expect(status.applied).toStrictEqual({ eventId: "0", height: "0" });
+      expect(status.startPath).toBe("replay");
+      expect(status.startMs).toBeNull();
+      expect(lines.join("\n")).toContain("DUST parameters CHANGED at height 1100");
+
+      // It really does catch up again, and to the same roots -- parameters do not touch the trees.
+      await pumpToTip(mirror);
+      const lease = mirror.acquire()!;
+      try {
+        expect(String(lease.state.commitmentTreeRoot())).toBe(
+          meta.rootsAfterEveryFiveHundredDustEvents.at(-1)!.commitmentRoot,
+        );
+      } finally {
+        lease.release();
+      }
+      expect(mirror.status().ready).toBe(true);
+      expect(mirror.status().startMs).toBeGreaterThanOrEqual(0);
+      // And it does NOT rebuild again: the constructed height is the new row's, so the check is
+      // satisfied rather than looping.
+      expect(mirror.status().parametersSource).toBe("changed-at-1100");
+    } finally {
+      await mirror.stop();
+    }
+  }, 300_000);
+
+  it("adopts a row that appears later and agrees with the initial parameters, without a rebuild", async () => {
+    // The ordinary operational case: a node started against an archive whose ingest had not yet
+    // written its `resume` row. Once the row appears and says what the mirror already assumed,
+    // turning `unknown` into `chain` is a relabelling, and paying for a re-fold to produce a
+    // byte-identical state would be waste.
+    const dir = path.join(root, "params-adopted");
+    let appeared = false;
+    const initial = ledger.LedgerParameters.initialParameters().dust;
+    const db = fakeDustDb(events, {
+      parameters: () => (appeared
+        ? row(1_100n, String(initial.nightDustRatio))
+        : undefined),
+    });
+    const mirror = new DustStateMirror({
+      db, net: NET, config: config(dir, { replayBatch: 1_000 }), ledger,
+    });
+    await mirror.start({ loops: false });
+    try {
+      expect(mirror.status().parametersSource).toBe("unknown");
+      await mirror.pumpOnce();
+      appeared = true;
+      await mirror.pumpOnce();
+      const status = mirror.status();
+      expect(status.parametersSource).toBe("chain");
+      expect(status.parametersHeight).toBe("1100");
+      // NOT rebuilt: the fold kept its progress.
+      expect(BigInt(status.applied.eventId)).toBeGreaterThan(1_000n);
+    } finally {
+      await mirror.stop();
+    }
+  }, 300_000);
 });
 
 describe("DustStateMirror reports what it cannot do", () => {
