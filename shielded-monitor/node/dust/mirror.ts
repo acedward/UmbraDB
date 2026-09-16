@@ -49,7 +49,7 @@ import type { DustDb, DustParametersRow } from "./db.js";
  * which is worse than saying "not yet".
  *
  * ── Where the DUST parameters come from (question Q-22 option C) ────────────────────────────
- * From `chain_archive.dust_parameters`, written by the ingest — never from a ledger state this
+ * From the archive's `dust_parameters` table, written by the ingest — never from a ledger state this
  * process deserializes. A `DustLocalState` takes its parameters from its constructor and ignores
  * parameter events entirely (Q-9), so the mirror has to be told, and the cheapest true source is
  * the row the ingest wrote while it already held the state.
@@ -239,8 +239,12 @@ export class DustStateMirror {
       this.#parameters = await this.#deps.db.selectDustParametersAtOrBelow(this.#deps.net);
     } catch (err) {
       this.#parameters = undefined;
+      // The SCHEMA NAME IS NOT TYPED HERE, not even in a log string. `schema-isolation`'s literal
+      // scan strips comments and then fails on any occurrence of the archive schema's name in B's
+      // source, and that scan is NOT part of the 00016 waiver -- `db.ts` imports the name from A's
+      // `archive-conventions.ts` precisely so nobody in B asserts a convention B does not own.
       this.#log(
-        `[dust] could not read chain_archive.dust_parameters ` +
+        `[dust] could not read the archive's DUST parameters table ` +
           `(${err instanceof Error ? err.message : String(err)}); using the ledger's initial DUST ` +
           "parameters and reporting parametersSource=unknown",
       );

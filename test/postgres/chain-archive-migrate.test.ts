@@ -44,6 +44,7 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
         "003_runtime_metadata", "004_replay_checkpoints",
         "005_replay_checkpoint_block_time", "006_replay_checkpoint_ledger_network",
         "007_blob_role_guard_forward_fix", "008_block_timestamp", "009_dust_events",
+        "010_dust_parameters",
       ]);
 
       // --- 008 is ADDITIVE: `blocks.timestamp_ms` exists, is NULLABLE, and reaches every
