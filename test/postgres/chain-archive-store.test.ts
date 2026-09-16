@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { PgChainArchiveStore } from "../../src/postgres/chain-archive-store.js";
 import {
-  BlobIntegrityError, BlobMissingError, type BlockBundle,
+  BlobIntegrityError, BlobMissingError, type BlockBundle, type DustEventRecord,
 } from "../../src/interfaces/chain-archive-store.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_archive/index.js";
@@ -700,6 +700,425 @@ describe("PgChainArchiveStore", () => {
       );
       const text = (plan as unknown as { "QUERY PLAN": string }[]).map((r) => r["QUERY PLAN"]).join("\n");
       expect(text).not.toMatch(/Seq Scan/);
+    });
+  });
+  /**
+   * 00016 FR-001 (plan test T1.3): `dust_events` rows are written inside the block's own
+   * transaction, with a dense per-net id, in ledger execution order, and only where the capture
+   * is CONTIGUOUS.
+   *
+   * The density rule is the one worth testing hardest. A hole in this table does not make the
+   * node's fold fail -- it makes it build two Merkle trees that look fine and are wrong, against
+   * which every wallet would then verify its own state. So a block that would open one commits
+   * WITHOUT its DUST rows and says so, rather than writing them and leaving the archive quietly
+   * unusable.
+   */
+  describe("00016: dust_events capture", () => {
+    const dustBlock = (net: string, height: number, blockHash: string, parentHash: string, tag: number) => ({
+      ...makeBlock(net, height, blockHash, parentHash, tag),
+      isCanonical: true, status: "canonical" as const, finalized: true,
+    });
+
+    /** A kind-3 row: the shape with the most columns, so the encodings are exercised. */
+    const spendRow = (
+      net: string, height: number, blockHash: string, txPosition: number, eventIndex: number,
+      seed: number,
+    ): DustEventRecord => ({
+      net, blockHeight: height, blockHash, txPosition, eventIndex,
+      txHash: h(height, 0x9),
+      kind: 3,
+      commitment: String(1000n + BigInt(seed)),
+      commitmentIndex: BigInt(seed),
+      nullifier: String(2000n + BigInt(seed)),
+      vFee: "7",
+      declaredTime: 1757990000 + seed,
+      blockTime: 1757990004 + seed,
+      payload: {},
+      raw: new Uint8Array([seed & 0xff, 1, 2, 3]),
+    });
+
+    const idsFor = async (net: string): Promise<{ id: number; tx_position: number; event_index: number }[]> =>
+      (await sql<{ id: bigint; tx_position: number; event_index: number }[]>`
+        SELECT id, tx_position, event_index FROM ${sql(schema)}.dust_events
+        WHERE net = ${net} ORDER BY id
+      `).map((r) => ({ id: Number(r.id), tx_position: r.tx_position, event_index: r.event_index }));
+
+    it("gives two consecutive bundles a dense id run and keeps the rows in execution order", async () => {
+      const net = "dust_dense_net";
+      await store.putBlockBundle({
+        block: dustBlock(net, 0, h(0, 0xd1), h(0), 0xd1),
+        transactions: [], bridgeObservations: [],
+        dustEvents: [
+          spendRow(net, 0, h(0, 0xd1), 0, 0, 1),
+          spendRow(net, 0, h(0, 0xd1), 0, 1, 2),
+          spendRow(net, 0, h(0, 0xd1), 1, 0, 3),
+        ],
+      });
+      const second = await store.putBlockBundle({
+        block: dustBlock(net, 1, h(1, 0xd1), h(0, 0xd1), 0xd1),
+        transactions: [], bridgeObservations: [],
+        dustEvents: [spendRow(net, 1, h(1, 0xd1), 0, 0, 4), spendRow(net, 1, h(1, 0xd1), 0, 1, 5)],
+      });
+      expect(second.dustCapture).toEqual({ outcome: "written", rows: 2 });
+
+      const rows = await idsFor(net);
+      expect(rows.map((r) => r.id)).toEqual([1, 2, 3, 4, 5]);
+      expect(rows.map((r) => [r.tx_position, r.event_index])).toEqual([
+        [0, 0], [0, 1], [1, 0], [0, 0], [0, 1],
+      ]);
+      const tip = await store.getDustEventsTip(net);
+      expect(tip).toEqual({ eventId: 5n, blockHeight: 1 });
+      expect(await store.getDustCaptureHeight(net)).toBe(1);
+    });
+
+    it("re-putting a committed bundle inserts nothing and leaves the ids exactly as they were", async () => {
+      const net = "dust_idempotent_net";
+      const bundle = {
+        block: dustBlock(net, 0, h(0, 0xd2), h(0), 0xd2),
+        transactions: [], bridgeObservations: [],
+        dustEvents: [spendRow(net, 0, h(0, 0xd2), 0, 0, 1), spendRow(net, 0, h(0, 0xd2), 0, 1, 2)],
+      };
+      await store.putBlockBundle(bundle);
+      const before = await idsFor(net);
+      // The retry shape that matters: the height committed, the caller crashed before recording
+      // it, and the same bundle arrives again. Re-assigning ids here would renumber rows the node
+      // has already paged past.
+      const again = await store.putBlockBundle(bundle);
+      expect(again.dustCapture).toEqual({ outcome: "written", rows: 0 });
+      expect(await idsFor(net)).toEqual(before);
+      expect(before.map((r) => r.id)).toEqual([1, 2]);
+    });
+
+    it("advances the capture watermark for a block that produced no DUST events", async () => {
+      // Almost every block is this one. If an empty block did not count as covered, the next
+      // block carrying an event would look like a hole and capture would stop for the whole run.
+      const net = "dust_quiet_net";
+      await store.putBlockBundle({
+        block: dustBlock(net, 0, h(0, 0xd3), h(0), 0xd3),
+        transactions: [], bridgeObservations: [], dustEvents: [],
+      });
+      expect(await store.getDustCaptureHeight(net)).toBe(0);
+      expect(await store.getDustEventsTip(net)).toBeUndefined();
+
+      for (let height = 1; height <= 3; height++) {
+        await store.putBlockBundle({
+          block: dustBlock(net, height, h(height, 0xd3), h(height - 1, 0xd3), 0xd3),
+          transactions: [], bridgeObservations: [], dustEvents: [],
+        });
+      }
+      const withEvent = await store.putBlockBundle({
+        block: dustBlock(net, 4, h(4, 0xd3), h(3, 0xd3), 0xd3),
+        transactions: [], bridgeObservations: [],
+        dustEvents: [spendRow(net, 4, h(4, 0xd3), 0, 0, 1)],
+      });
+      expect(withEvent.dustCapture).toEqual({ outcome: "written", rows: 1 });
+      expect((await idsFor(net)).map((r) => r.id)).toEqual([1]);
+    });
+
+    it("commits without rows and reports a gap when capture starts above the archive's first block", async () => {
+      const net = "dust_late_start_net";
+      await store.putBlockBundle({
+        block: dustBlock(net, 0, h(0, 0xd4), h(0), 0xd4),
+        transactions: [], bridgeObservations: [],
+      });
+      const late = await store.putBlockBundle({
+        block: dustBlock(net, 1, h(1, 0xd4), h(0, 0xd4), 0xd4),
+        transactions: [], bridgeObservations: [],
+        dustEvents: [spendRow(net, 1, h(1, 0xd4), 0, 0, 1)],
+      });
+      expect(late.dustCapture?.outcome).toBe("gap");
+      expect(late.dustCapture?.rows).toBe(0);
+      expect(late.dustCapture?.reason).toMatch(/dust:backfill/);
+      // The block itself IS archived -- the refusal costs the DUST rows, never the height.
+      expect(await store.getBlocksAtHeight(net, 1)).toHaveLength(1);
+      expect(await idsFor(net)).toEqual([]);
+      expect(await store.getDustCaptureHeight(net)).toBeUndefined();
+    });
+
+    it("commits without rows and reports a gap when a covered run skips a height", async () => {
+      const net = "dust_gap_net";
+      await store.putBlockBundle({
+        block: dustBlock(net, 0, h(0, 0xd5), h(0), 0xd5),
+        transactions: [], bridgeObservations: [],
+        dustEvents: [spendRow(net, 0, h(0, 0xd5), 0, 0, 1)],
+      });
+      // Height 1 archived with capture OFF (replay disabled for a while, say), then capture
+      // resumes at 2. The table would be dense in ids and wrong about the chain.
+      await store.putBlockBundle({
+        block: dustBlock(net, 1, h(1, 0xd5), h(0, 0xd5), 0xd5),
+        transactions: [], bridgeObservations: [],
+      });
+      const resumed = await store.putBlockBundle({
+        block: dustBlock(net, 2, h(2, 0xd5), h(1, 0xd5), 0xd5),
+        transactions: [], bridgeObservations: [],
+        dustEvents: [spendRow(net, 2, h(2, 0xd5), 0, 0, 2)],
+      });
+      expect(resumed.dustCapture?.outcome).toBe("gap");
+      expect(resumed.dustCapture?.reason).toMatch(/covers up to height 0.*is 2/s);
+      expect((await idsFor(net)).map((r) => r.id)).toEqual([1]);
+      expect(await store.getDustCaptureHeight(net)).toBe(0);
+    });
+
+    it("pages events by id for a consumer and refuses a row filed under another block", async () => {
+      const net = "dust_read_net";
+      await store.putBlockBundle({
+        block: dustBlock(net, 0, h(0, 0xd6), h(0), 0xd6),
+        transactions: [], bridgeObservations: [],
+        dustEvents: [0, 1, 2, 3].map((i) => spendRow(net, 0, h(0, 0xd6), 0, i, i + 1)),
+      });
+      const firstPage = await store.getDustEventsAfter(net, 0n, 3);
+      expect(firstPage.map((r) => r.id)).toEqual([1n, 2n, 3n]);
+      expect(firstPage[0]!.blockHeight).toBe(0);
+      expect(Buffer.from(firstPage[0]!.raw)).toEqual(Buffer.from([1, 1, 2, 3]));
+      const secondPage = await store.getDustEventsAfter(net, 3n, 3);
+      expect(secondPage.map((r) => r.id)).toEqual([4n]);
+      expect(await store.getDustEventsAfter(net, 4n, 3)).toEqual([]);
+      // Another net's rows are invisible, the way every other read path here is net-scoped.
+      expect(await store.getDustEventsAfter("dust_read_other_net", 0n, 3)).toEqual([]);
+
+      await expect(store.putDustEventsForHeight({
+        net, blockHeight: 0, blockHash: h(0, 0xd6),
+        events: [spendRow(net, 1, h(1, 0xd6), 0, 0, 9)],
+      })).rejects.toMatchObject({
+        code: "VALIDATION_FAILED",
+        issues: [{ message: expect.stringMatching(/did not come from/) }],
+      });
+    });
+
+    it("putDustEventsForHeight fills an archive the ingest never captured, sharing the ingest's guard", async () => {
+      // The backfill's write path (FR-004). It must continue the same id run and leave behind the
+      // same watermark, so a live ingest can take over at the next height without a gap.
+      const net = "dust_backfill_net";
+      for (let height = 0; height <= 2; height++) {
+        await store.putBlockBundle({
+          block: dustBlock(net, height, h(height, 0xd7), h(height - 1 < 0 ? 0 : height - 1, height === 0 ? 0 : 0xd7), 0xd7),
+          transactions: [], bridgeObservations: [],
+        });
+      }
+      expect(await store.getDustCaptureHeight(net)).toBeUndefined();
+
+      expect(await store.putDustEventsForHeight({
+        net, blockHeight: 0, blockHash: h(0, 0xd7),
+        events: [spendRow(net, 0, h(0, 0xd7), 0, 0, 1)],
+      })).toEqual({ outcome: "written", rows: 1 });
+      expect(await store.putDustEventsForHeight({
+        net, blockHeight: 1, blockHash: h(1, 0xd7), events: [],
+      })).toEqual({ outcome: "written", rows: 0 });
+      expect(await store.putDustEventsForHeight({
+        net, blockHeight: 2, blockHash: h(2, 0xd7),
+        events: [spendRow(net, 2, h(2, 0xd7), 0, 0, 2), spendRow(net, 2, h(2, 0xd7), 0, 1, 3)],
+      })).toEqual({ outcome: "written", rows: 2 });
+      expect((await idsFor(net)).map((r) => r.id)).toEqual([1, 2, 3]);
+
+      // Resuming after a kill: the same call again writes nothing and does not renumber.
+      expect(await store.putDustEventsForHeight({
+        net, blockHeight: 2, blockHash: h(2, 0xd7),
+        events: [spendRow(net, 2, h(2, 0xd7), 0, 0, 2), spendRow(net, 2, h(2, 0xd7), 0, 1, 3)],
+      })).toEqual({ outcome: "written", rows: 0 });
+      expect((await idsFor(net)).map((r) => r.id)).toEqual([1, 2, 3]);
+      expect(await store.getDustCaptureHeight(net)).toBe(2);
+
+      // And a live ingest continues from there with no gap.
+      const handover = await store.putBlockBundle({
+        block: dustBlock(net, 3, h(3, 0xd7), h(2, 0xd7), 0xd7),
+        transactions: [], bridgeObservations: [],
+        dustEvents: [spendRow(net, 3, h(3, 0xd7), 0, 0, 4)],
+      });
+      expect(handover.dustCapture).toEqual({ outcome: "written", rows: 1 });
+      expect((await idsFor(net)).map((r) => r.id)).toEqual([1, 2, 3, 4]);
+    });
+
+    it("keeps every kind's columns, and the ids, scoped to one net", async () => {
+      // Two nets writing the same heights must not share an id run: the node pages one net's
+      // events, and an interleaved sequence would hand it another chain's leaves.
+      const netA = "dust_scope_a";
+      const netB = "dust_scope_b";
+      for (const net of [netA, netB]) {
+        await store.putBlockBundle({
+          block: dustBlock(net, 0, h(0, 0xd8), h(0), 0xd8),
+          transactions: [], bridgeObservations: [],
+          dustEvents: [
+            {
+              net, blockHeight: 0, blockHash: h(0, 0xd8), txPosition: 0, eventIndex: 0,
+              txHash: h(0, 0x9), kind: 1,
+              owner: "10915411993629246420145161170853502166684546078270619457109051450369971691916",
+              commitment: "1644052097882842360448151121410743747460829090321424853686894149302301479399",
+              commitmentIndex: 0n, generationIndex: 0n, blockTime: 1754395200,
+              payload: { output: { mtIndex: "0" }, generation: { dtime: null } },
+              raw: new Uint8Array([9, 9]),
+            },
+            {
+              net, blockHeight: 0, blockHash: h(0, 0xd8), txPosition: 0, eventIndex: 1,
+              txHash: h(0, 0x9), kind: 2, generationIndex: 0n, blockTime: 1754395200,
+              dtime: 1769015351, payload: { pathLength: 32 }, raw: new Uint8Array([8, 8]),
+            },
+            spendRow(net, 0, h(0, 0xd8), 1, 0, 1),
+          ],
+        });
+      }
+      expect((await idsFor(netA)).map((r) => r.id)).toEqual([1, 2, 3]);
+      expect((await idsFor(netB)).map((r) => r.id)).toEqual([1, 2, 3]);
+
+      const rows = await sql<{
+        kind: number; owner: string | null; commitment: string | null;
+        commitment_index: bigint | null; generation_index: bigint | null;
+        nullifier: string | null; v_fee: string | null; declared_time: bigint | null;
+        dtime: bigint | null; payload: unknown;
+      }[]>`
+        SELECT kind, owner, commitment, commitment_index, generation_index, nullifier, v_fee,
+               declared_time, dtime, payload
+        FROM ${sql(schema)}.dust_events WHERE net = ${netA} ORDER BY id
+      `;
+      // numeric(78) must hand a 77-digit field element back unchanged -- a float round-trip
+      // would quietly return a different owner key.
+      expect(rows[0]!.owner)
+        .toBe("10915411993629246420145161170853502166684546078270619457109051450369971691916");
+      expect(Number(rows[0]!.commitment_index)).toBe(0);
+      expect(rows[0]!.dtime).toBeNull();
+      expect(rows[1]!.kind).toBe(2);
+      expect(Number(rows[1]!.dtime)).toBe(1769015351);
+      expect(rows[1]!.owner).toBeNull();
+      expect(rows[2]!.kind).toBe(3);
+      expect(rows[2]!.nullifier).toBe("2001");
+      expect(Number(rows[2]!.declared_time)).toBe(1757990001);
+      expect(rows[2]!.payload).toEqual({});
+    });
+  });
+
+  describe("00016: dust_parameters (question Q-22 option C)", () => {
+    const paramBlock = (net: string, height: number, blockHash: string, parentHash: string, tag: number) => ({
+      ...makeBlock(net, height, blockHash, parentHash, tag),
+      isCanonical: true, status: "canonical" as const, finalized: true,
+    });
+
+    const paramRows = async (net: string): Promise<{
+      block_height: bigint; night_dust_ratio: string; reason: string;
+    }[]> => await sql`
+      SELECT block_height, night_dust_ratio, reason
+      FROM ${sql(schema)}.dust_parameters WHERE net = ${net} ORDER BY block_height
+    `;
+
+    it("writes the bundled row in the block's own transaction, and nothing for a bundle without one", async () => {
+      // T6.2. A row is a POINT fact -- "from this height the chain uses these values" -- so almost
+      // every block carries none, and the absence must write nothing rather than repeat the last.
+      const net = "dust_params_bundle";
+      await store.putBlockBundle({
+        block: paramBlock(net, 0, h(0, 0xe1), h(0), 0xe1),
+        transactions: [], bridgeObservations: [],
+        dustParameters: {
+          net, blockHeight: 0, blockHash: h(0, 0xe1),
+          nightDustRatio: "5000000000", generationDecayRate: "8267",
+          dustGracePeriodSeconds: "10800", reason: "genesis",
+        },
+      });
+      await store.putBlockBundle({
+        block: paramBlock(net, 1, h(1, 0xe1), h(0, 0xe1), 0xe1),
+        transactions: [], bridgeObservations: [],
+      });
+      expect(await paramRows(net)).toEqual([
+        { block_height: 0n, night_dust_ratio: "5000000000", reason: "genesis" },
+      ]);
+
+      // A later change writes a SECOND row rather than replacing the first: the history of what
+      // the chain used at each height is the whole value of the table.
+      await store.putBlockBundle({
+        block: paramBlock(net, 2, h(2, 0xe1), h(1, 0xe1), 0xe1),
+        transactions: [], bridgeObservations: [],
+        dustParameters: {
+          net, blockHeight: 2, blockHash: h(2, 0xe1),
+          nightDustRatio: "6000000000", generationDecayRate: "8267",
+          dustGracePeriodSeconds: "10800", reason: "change",
+        },
+      });
+      expect((await paramRows(net)).map((r) => Number(r.block_height))).toEqual([0, 2]);
+    });
+
+    it("is idempotent on a re-put and refuses a row filed under another block", async () => {
+      const net = "dust_params_idem";
+      const row = {
+        net, blockHeight: 0, blockHash: h(0, 0xe2),
+        nightDustRatio: "5000000000", generationDecayRate: "8267",
+        dustGracePeriodSeconds: "10800", reason: "genesis" as const,
+      };
+      const block = paramBlock(net, 0, h(0, 0xe2), h(0), 0xe2);
+      await store.putBlockBundle({ block, transactions: [], bridgeObservations: [], dustParameters: row });
+      // The same bundle again: `ON CONFLICT DO NOTHING` on the primary key, so a re-ingested
+      // height is a no-op and not a duplicate-key error that would take the whole block down.
+      await store.putBlockBundle({ block, transactions: [], bridgeObservations: [], dustParameters: row });
+      expect(await paramRows(net)).toHaveLength(1);
+      expect(await store.putDustParameters(row)).toEqual({ written: false });
+
+      // A row naming another block would put a parameter change at a height the chain never had
+      // one, and the node would price every balance with it from there on.
+      await expect(store.putBlockBundle({
+        block: paramBlock(net, 1, h(1, 0xe2), h(0, 0xe2), 0xe2),
+        transactions: [], bridgeObservations: [],
+        dustParameters: { ...row, blockHeight: 0, blockHash: h(0, 0xe2) },
+      })).rejects.toThrow(/dustParameters/);
+      // The refusal happens before anything is written, so height 1 is not in the archive either.
+      const [after] = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM ${sql(schema)}.blocks WHERE net = ${net} AND height = 1
+      `;
+      expect(after?.n).toBe(0);
+    });
+
+    it("refuses a parameter value that is not a decimal integer, naming the field", async () => {
+      // These are u128 chain values carried as strings precisely so nothing rounds them. A bad one
+      // must be refused at the boundary rather than reaching PostgreSQL as a cast error deep
+      // inside a block's transaction, where it would cost the whole height.
+      const net = "dust_params_bad";
+      await store.putBlockBundle({
+        block: paramBlock(net, 0, h(0, 0xe3), h(0), 0xe3),
+        transactions: [], bridgeObservations: [],
+      });
+      await expect(store.putDustParameters({
+        net, blockHeight: 0, blockHash: h(0, 0xe3),
+        // `Number("5e9")` is 5 000 000 000, which is why a bare Number() check would let this
+        // through and PostgreSQL would reject it far from here.
+        nightDustRatio: "5e9", generationDecayRate: "8267",
+        dustGracePeriodSeconds: "10800", reason: "genesis",
+      })).rejects.toMatchObject({
+        code: "VALIDATION_FAILED",
+        issues: [{ path: "nightDustRatio" }],
+      });
+      // Nothing was written: the refusal is at the boundary, before the transaction opens.
+      const [none] = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM ${sql(schema)}.dust_parameters WHERE net = ${net}
+      `;
+      expect(none?.n).toBe(0);
+    });
+
+    it("getDustParametersAtOrBelow returns the newest row not above the asked height", async () => {
+      const net = "dust_params_read";
+      for (const height of [0, 1, 2, 3]) {
+        await store.putBlockBundle({
+          block: paramBlock(net, height, h(height, 0xe4), height === 0 ? h(0) : h(height - 1, 0xe4), 0xe4),
+          transactions: [], bridgeObservations: [],
+        });
+      }
+      await store.putDustParameters({
+        net, blockHeight: 0, blockHash: h(0, 0xe4),
+        nightDustRatio: "5000000000", generationDecayRate: "8267",
+        dustGracePeriodSeconds: "10800", reason: "genesis",
+      });
+      await store.putDustParameters({
+        net, blockHeight: 2, blockHash: h(2, 0xe4),
+        nightDustRatio: "6000000000", generationDecayRate: "9000",
+        dustGracePeriodSeconds: "10800", reason: "change",
+      });
+
+      expect(await store.getDustParametersAtOrBelow(net)).toEqual({
+        net, blockHeight: 2, blockHash: h(2, 0xe4),
+        nightDustRatio: "6000000000", generationDecayRate: "9000",
+        dustGracePeriodSeconds: "10800", reason: "change",
+      });
+      expect((await store.getDustParametersAtOrBelow(net, 3))?.blockHeight).toBe(2);
+      expect((await store.getDustParametersAtOrBelow(net, 2))?.blockHeight).toBe(2);
+      // AT OR BELOW, never the nearest: at height 1 the chain was still using the genesis values,
+      // and returning the height-2 row would price a balance with parameters that do not exist yet.
+      expect((await store.getDustParametersAtOrBelow(net, 1))?.blockHeight).toBe(0);
+      expect((await store.getDustParametersAtOrBelow(net, 0))?.nightDustRatio).toBe("5000000000");
+      expect(await store.getDustParametersAtOrBelow("a-net-nobody-ingested")).toBeUndefined();
     });
   });
 });

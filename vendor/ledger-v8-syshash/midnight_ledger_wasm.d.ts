@@ -2,6 +2,8 @@
 /* eslint-disable */
 export function createCoinInfo(type_: string, value: any): any;
 export function partitionTranscripts(calls: any[], params: LedgerParameters): Array<any>;
+export function sampleDustSecretKey(): DustSecretKey;
+export function updatedValue(ctime: Date, initial_value: bigint, gen_info: any, now: Date, params: any): bigint;
 export function sampleEncryptionPublicKey(): string;
 export function createCheckPayload(serialized_preimage: Uint8Array, ir?: Uint8Array | null): Uint8Array;
 export function feeToken(): any;
@@ -21,8 +23,6 @@ export function createProvingTransactionPayload(tx: Transaction, proving_data: M
 export function nativeToken(): any;
 export function sampleIntentHash(): string;
 export function coinNullifier(coin_info: any, coin_secret_key: CoinSecretKey): string;
-export function sampleDustSecretKey(): DustSecretKey;
-export function updatedValue(ctime: Date, initial_value: bigint, gen_info: any, now: Date, params: any): bigint;
 export function encodeUserAddress(addr: string): Uint8Array;
 export function encodeContractAddress(addr: string): Uint8Array;
 export function decodeRawTokenType(tt: Uint8Array): string;
@@ -254,6 +254,49 @@ export class DustLocalState {
   collapseCommitmentTree(commitment_index_start: bigint, commitment_index_end: bigint): DustLocalState;
   collapseGenerationTree(generation_index_start: bigint, generation_index_end: bigint): DustLocalState;
   replayEventsWithChanges(sk: DustSecretKey, events: Event[]): DustLocalStateWithChanges;
+  /**
+   * Cuts a collapsed update covering the commitment indices
+   * `[commitment_index_start, commitment_index_end]` (inclusive) out of this
+   * state's commitment tree, for another party to apply with
+   * `applyCommitmentCollapsedUpdate`.
+   *
+   * `newFromCommitmentTree` does the same from the chain-side `DustUtxoState`;
+   * this is the counterpart for a party that only mirrors the tree in a
+   * `DustLocalState`. Throws when the range is empty, when its end is at or
+   * past `commitmentTreeFirstFree`, or when it crosses a part of the tree this
+   * state has collapsed away.
+   */
+  collapsedCommitmentUpdate(commitment_index_start: bigint, commitment_index_end: bigint): DustStateMerkleTreeCollapsedUpdate;
+  /**
+   * Cuts a collapsed update covering the generation indices
+   * `[generation_index_start, generation_index_end]` (inclusive) out of this
+   * state's generating tree, for another party to apply with
+   * `applyGenerationCollapsedUpdate`.
+   *
+   * `newFromGenerationTree` does the same from the chain-side
+   * `DustGenerationState`; this is the counterpart for a party that only
+   * mirrors the tree in a `DustLocalState`. Throws when the range is empty,
+   * when its end is at or past `generatingTreeFirstFree`, or when it crosses a
+   * part of the tree this state has collapsed away.
+   */
+  collapsedGenerationUpdate(generation_index_start: bigint, generation_index_end: bigint): DustStateMerkleTreeCollapsedUpdate;
+  /**
+   * `replayRawEvents`, but keeping every leaf of both trees -- including the
+   * ones `sk` does not own -- so the resulting state can still cut collapsed
+   * updates for arbitrary ranges with `collapsedCommitmentUpdate` and
+   * `collapsedGenerationUpdate`.
+   *
+   * This is for a service that mirrors the chain's DUST trees in order to
+   * **serve** collapsed updates to wallets. **A wallet must not use it**: the
+   * ordinary `replayRawEvents` collapses the leaves a wallet has no use for,
+   * which is both cheaper and smaller, and a wallet never needs to cut a
+   * segment. Retaining everything keeps the interior nodes the ordinary replay
+   * discards, so the state is larger in proportion to the number of leaves.
+   *
+   * Both variants reach the same two roots and the same wallet state;
+   * collapsing only discards interior nodes.
+   */
+  replayRawEventsRetainingAll(sk: DustSecretKey, raw_events: Uint8Array): DustLocalStateWithChanges;
   applyCommitmentCollapsedUpdate(update: DustStateMerkleTreeCollapsedUpdate): DustLocalState;
   applyGenerationCollapsedUpdate(update: DustStateMerkleTreeCollapsedUpdate): DustLocalState;
   constructor(params: DustParameters);
@@ -261,6 +304,18 @@ export class DustLocalState {
   addUtxo(nullifier: bigint, utxo: any, pending_until?: Date | null): DustLocalState;
   serialize(): Uint8Array;
   toString(compact?: boolean | null): string;
+  /**
+   * The next commitment index this state will accept, i.e. the number of DUST
+   * commitments it has seen. The valid range for `collapsedCommitmentUpdate`
+   * is `[0, commitmentTreeFirstFree - 1]`.
+   */
+  readonly commitmentTreeFirstFree: bigint;
+  /**
+   * The next generation index this state will accept, i.e. the number of DUST
+   * generation entries it has seen. The valid range for
+   * `collapsedGenerationUpdate` is `[0, generatingTreeFirstFree - 1]`.
+   */
+  readonly generatingTreeFirstFree: bigint;
   readonly utxos: any[];
   readonly params: DustParameters;
   readonly syncTime: Date;

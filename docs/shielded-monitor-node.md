@@ -159,3 +159,105 @@ and nothing is scanning until the client re-sends the key.
 
 `failed` and `stale_source` are deliberate stops, not crashes. In both cases the monitor's
 coverage is exactly where it was, so nothing has been silently skipped.
+
+## The DUST tree mirror (optional; project 00016)
+
+Set `DUST_DATABASE_URL` and the node gains a sixth job: it folds the chain's DUST ledger events —
+the ones `chain-archive-sync` captures into `chain_archive.dust_events` — into one key-less
+`DustLocalState`, and serves the two Merkle trees to wallets through `/v1/dust/*`
+(`docs/shielded-monitor-api.md`). Leave it unset and nothing changes; those routes answer
+`503 DUST_DISABLED`.
+
+**Why it is here and not somewhere else.** A wallet that syncs its DUST from the indexer replays
+every DUST event the chain ever produced — 1.49 M of them on preprod, measured at about two hours.
+Every wallet repeats the same fold over the same public data. The node does it once, and hands each
+wallet only the parts of the trees it does not own, as collapsed Merkle updates it applies in
+seconds. The wallet still computes its own nullifiers and successors, with a key this process never
+sees.
+
+**This is the one place project B touches a database, and it is waived, read-only and confined.**
+`shielded-monitor/node/dust/` is the only directory that may import a driver
+(`spec/00016-dust-wallet-sync.md` §1, owner decision 2026-09-15). The role it connects as can read
+`dust_events`, `dust_parameters` and `blocks` and nothing else — `docs/shielded-monitor-deployment.md` has the SQL,
+and `test/shielded-monitor/dust-reader-role.integration.test.ts` proves every other read and every
+write is refused. The accepted cost is that the database sees which nullifiers a wallet asks about;
+a later project replaces the query with an enclave-side copy.
+
+### What it does on start
+
+1. Reads the newest `dust_parameters` row for its net — the chain's three DUST parameters, written
+   by the ingest (migration 010). They are what the mirror's `DustLocalState` is CONSTRUCTED with
+   and what `GET /v1/dust/tip` serves. No row means `parametersSource: "unknown"` and the ledger's
+   initial parameters; see **DUST parameters** below.
+2. Loads `DUST_STATE_SNAPSHOT_DIR/<net>.dust-state` if one is there **and it is at most
+   `DUST_STATE_SNAPSHOT_MAX_BYTES`**. A snapshot from another `net`, another ledger build, or one
+   built with different DUST parameters is refused — serialized ledger state is a ledger-internal
+   encoding and its parameters cannot be changed on load — and the mirror replays from zero, saying
+   so in its log. A snapshot over the size limit is also skipped; see **Why a big snapshot is
+   skipped** in the deployment doc, and `startPath` below.
+3. Reads `dust_events` in batches of `DUST_REPLAY_BATCH`, folding each batch into the trees, until
+   it reaches the table's tip. Until then the DUST routes answer `503 DUST_NOT_READY`, and every
+   monitor-store route works exactly as before — the fold yields between batches, deliberately, so
+   the rest of the node keeps answering throughout.
+4. Keeps following the table every `DUST_STATE_POLL_MS`, snapshotting every
+   `DUST_STATE_SNAPSHOT_EVERY` events and on a clean shutdown.
+
+### DUST parameters
+
+A `DustLocalState` takes its parameters from its constructor and ignores parameter events
+entirely, so the mirror has to be **told** which ones the chain uses. It is told by
+`chain_archive.dust_parameters`: one row at genesis, one per change, and one at a resume point on
+an archive that gained the table late. The ingest writes them from the ledger state it is already
+holding.
+
+The node **never deserializes a ledger state** to find this out. It used to — reading the newest
+replay checkpoint and calling `LedgerState.deserialize` on a 31 MB blob, which is minutes of one
+synchronous WebAssembly call during which the node answers nothing (project 00016, question Q-22).
+That is why the reader role is not granted `replay_checkpoints` or `chain_blobs`.
+
+**A mid-chain parameter change costs a full re-fold.** `DustLocalState.params` is read-only in the
+WASM bindings and the constructor is the only way parameters enter a state, so they cannot be
+swapped in place — and the snapshot on disk holds a state built with the old ones. When a row
+appears above the one the mirror's state was built from, the mirror logs it, reports
+`parametersSource: "changed-at-<height>"`, and rebuilds from zero. The DUST routes answer
+`503 DUST_NOT_READY` until it catches up; everything else keeps working. The resulting trees are
+identical either way — parameters do not touch them — so what the re-fold buys is that the `params`
+a wallet is handed match the state it is served segments from. A DUST parameter change is a
+governance action and has not happened on any Midnight network to date.
+
+### Reading `/internal/status`
+
+```json
+"dust": { "enabled": true, "producer": "ingest", "ready": true,
+          "applied": { "eventId": "1490233", "height": "853596" },
+          "snapshotEventId": "1480000", "rss": 2411724800, "externalBytes": 1984000000,
+          "parametersSource": "chain", "parametersHeight": "0",
+          "parameters": { "nightDustRatio": "5000000000", "generationDecayRate": "8267",
+                          "dustGracePeriodSeconds": "10800" },
+          "startPath": "replay", "startMs": 154300, "lastError": null }
+```
+
+| field | what it tells you |
+|---|---|
+| `producer: "none"` | the archive holds no DUST events for this net at all — its ingest ran with `REPLAY_VALIDATION=0`. A deployment mistake, not a transient state, and the routes say `503 DUST_NO_PRODUCER` rather than pretending to be an empty chain |
+| `ready: false` | still folding; `applied.eventId` is how far |
+| `applied` | the trees' tip. Always behind or equal to the table's — every DUST response reports this number, not the table's, so a client can tell |
+| `rss` / `externalBytes` | process memory, and Node's `external`, which is where the trees actually live. ≈ 2 KB per leaf; watch it before enabling the module on two nodes |
+| `parametersSource` | `chain` — read from a `dust_parameters` row; `unknown` — the archive records none, so the ledger's initial parameters are in use (right on every Midnight network so far, but a guess must not read like a fact); `changed-at-<height>` — a row appeared above the one the state was built from and the mirror rebuilt for it |
+| `parametersHeight` / `parameters` | the row's height, and the three values this node serves on `GET /v1/dust/tip`. `null` height under `unknown` |
+| `startPath` | `snapshot` if the snapshot was small enough to restore, `replay` if there was none or it was over `DUST_STATE_SNAPSHOT_MAX_BYTES`. On a large chain `replay` is the faster **and** the responsive path — see the deployment doc |
+| `startMs` | how long this mirror took to catch up, or `null` while it still has not |
+| `lastError` | the last fold or query failure, this module's own message |
+
+### If the mirror stops advancing
+
+`lastError` names it. Two shapes are worth knowing:
+
+- **a database fault** — `applied` stops, the already-folded trees keep serving `tip` and
+  `segments`, and the three table-backed routes answer `503 DUST_DB_UNAVAILABLE`. Nothing is lost;
+  the next poll resumes.
+- **a replay refusal** (`NonLinearInsertion` and friends) — the table has a hole. The ingest
+  refuses to write a discontinuous capture for exactly this reason, so a hole means the table was
+  filled some other way. `npm run dust:backfill` rebuilds it; the mirror will not advance past the
+  hole and deliberately does not skip it, because a tree missing leaves is a tree every wallet
+  would then fail to verify against.

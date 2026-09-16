@@ -38,7 +38,7 @@ function monitorRecord(over: Partial<MonitorRecord> = {}): MonitorRecord {
     sourceGenesisHash: hex(0),
     sourceInstanceId: "a".repeat(32),
     matchingRuleVersion: "shielded-monitor/relevance/v1",
-    ledgerBuild: "ledger-v8@8.1.0-syshash.4",
+    ledgerBuild: "ledger-v8@8.1.0-syshash.6",
     createdAt: new Date(0),
     updatedAt: new Date(0),
     ...over,

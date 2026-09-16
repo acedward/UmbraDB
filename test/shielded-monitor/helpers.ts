@@ -55,7 +55,7 @@ export async function fixtureViewingKeyEncoded(n: number, net = "undeployed"): P
   return encodeViewingKey(key.yesIKnowTheSecurityImplicationsOfThis_serialized(), net);
 }
 
-export const TEST_LEDGER_BUILD = "ledger-v8@8.1.0-syshash.4";
+export const TEST_LEDGER_BUILD = "ledger-v8@8.1.0-syshash.6";
 export const TEST_MATCHING_RULE = "shielded-monitor/v1";
 
 /** A store over a freshly bootstrapped schema in `container`'s database. */

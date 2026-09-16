@@ -10,6 +10,11 @@ import {
   type BridgeObservationKind,
   type BridgeObservationMeta,
   type BridgeObservationRecord,
+  type DustCaptureOutcome,
+  type DustEventRawRow,
+  type DustEventRecord,
+  type DustParametersReason,
+  type DustParametersRecord,
   type ReplayCheckpointRecord,
   type RuntimeMetadataRecord,
   type ChainArchiveStore,
@@ -45,6 +50,21 @@ function bufToHex(buf: Buffer): Hex32 {
  *  (`spec/00009` FR-028). Exported so the read contract and the sync bootstrap agree on it
  *  without either re-deriving the string. */
 export const ARCHIVE_IDENTITY_KEY_PREFIX = "archive_identity:";
+
+/**
+ * The `watermarks` key under which DUST capture records how far it has COVERED a net
+ * (`spec/00016-dust-wallet-sync.md` FR-001's "dense from genesis").
+ *
+ * A watermark rather than `max(block_height)` of `dust_events`, and the reason is the shape of the
+ * data: the overwhelming majority of blocks produce no DUST event at all, so the newest row sits
+ * far below the newest covered block and comparing the two would report a gap after the first
+ * quiet block. What must be contiguous is the CAPTURE, not the rows.
+ *
+ * The ingest and the backfill write the same key, which is what lets a finished backfill hand over
+ * to a live ingest: the height the backfill leaves behind is exactly the one the ingest's next
+ * block expects to follow.
+ */
+export const DUST_CAPTURE_WATERMARK_PREFIX = "dust_capture:";
 
 function assertHex32(value: string, field: string): void {
   const parsed = Hex32Schema.safeParse(value);
@@ -87,6 +107,18 @@ interface BridgeObservationRow {
   observation_index: number;
   kind: BridgeObservationKind;
   raw_blob_hash: Buffer;
+}
+
+/** `dust_parameters` as the driver hands it back: `numeric` columns arrive as strings, which is
+ *  exactly what {@link DustParametersRecord} wants (migration 010). */
+interface DustParametersRow {
+  net: string;
+  block_height: bigint;
+  block_hash: Buffer;
+  night_dust_ratio: string;
+  generation_decay_rate: string;
+  dust_grace_period_seconds: bigint;
+  reason: DustParametersReason;
 }
 
 function toBlockMeta(row: BlockRow): BlockMeta {
@@ -306,6 +338,312 @@ export class PgChainArchiveStore implements ChainArchiveStore {
     }
   }
 
+  /**
+   * FR-001's contiguity rule, enforced INSIDE the height's own transaction.
+   *
+   * The node folds `dust_events` into two Merkle trees by inserting leaves in id order. A hole --
+   * one stretch of blocks whose events were never captured -- does not make that fold fail; it
+   * makes it produce trees that look fine and are wrong, and every wallet that verified its roots
+   * against them would then be verifying against a fiction. So a block whose DUST capture would
+   * not continue the covered range is committed WITHOUT its DUST rows, and the caller is told.
+   *
+   * Returns `undefined` when the block may be captured, or the reason it may not.
+   */
+  private async dustContiguityRefusal(
+    tx: ChainArchiveTx, net: string, height: number,
+  ): Promise<string | undefined> {
+    const [row] = await tx<{ value: { height?: unknown } }[]>`
+      SELECT value FROM ${tx(this.schema)}.watermarks
+      WHERE kind = 'chain_archive' AND key = ${DUST_CAPTURE_WATERMARK_PREFIX + net}
+    `;
+    const covered = typeof row?.value?.height === "number" ? row.value.height : undefined;
+    if (covered === undefined) {
+      // Never captured for this net. The only honest place to start is the archive's own first
+      // block: starting anywhere above it means every earlier block's events are missing, which
+      // is precisely the hole above.
+      // `EXISTS`, not `count(*)`: on an archive of millions of blocks this is the one query the
+      // guard can run against a large range, and it only has to find ONE row to answer.
+      const [earlier] = await tx<{ present: boolean }[]>`
+        SELECT EXISTS (
+          SELECT 1 FROM ${tx(this.schema)}.blocks
+          WHERE net = ${net} AND height < ${height} AND is_canonical
+        ) AS present
+      `;
+      if (earlier?.present === true) {
+        return (
+          `DUST capture has never run for net ${net}, but this archive already holds canonical ` +
+          `blocks below height ${height}. Their DUST events are not in the table and starting ` +
+          "here would leave a hole the node cannot see. Run `npm run dust:backfill` to fill the " +
+          "history first."
+        );
+      }
+      return undefined;
+    }
+    // `covered === height` is an idempotent retry of a height already captured (a crash between
+    // the commit and the caller's own bookkeeping); the rows collide and are dropped.
+    if (covered === height || covered === height - 1) return undefined;
+    return (
+      `DUST capture for net ${net} covers up to height ${covered}, but this block is ${height}. ` +
+      `Heights ${covered + 1}..${height - 1} produced no captured events, so writing this block's ` +
+      "would leave a hole. Run `npm run dust:backfill` to fill it."
+    );
+  }
+
+  /**
+   * Insert one block's DUST event rows and advance the capture watermark, inside the caller's
+   * transaction (`spec/00016-dust-wallet-sync.md` §5.1 step 2).
+   *
+   * ONE STATEMENT, and `id` is assigned by it. The contract is a dense per-net sequence in ledger
+   * execution order, which an `IDENTITY` column cannot give (it allocates per insert ATTEMPT, so
+   * conflicts and rollbacks burn ids). `COALESCE(max(id), 0) + ordinality` over the array is
+   * exact here because the archive has one writer per net and it holds this height's advisory
+   * lock; `ON CONFLICT DO NOTHING` on the event's natural key makes a repeat a no-op that keeps
+   * the ids already assigned.
+   *
+   * The rows travel as ONE jsonb parameter rather than fifteen typed arrays: `numeric[]` and
+   * `bytea[]` parameters are bound by inferring an element type from the first value, which for a
+   * column that is `NULL` in every row of a batch (every kind-3 batch's `owner`, say) infers the
+   * wrong one. Extracting from jsonb and casting per column has no such ambiguity, and byte
+   * columns go through `decode(..., 'hex')`.
+   */
+  private async insertDustEventRows(
+    tx: ChainArchiveTx,
+    block: { net: string; blockHeight: number; blockHash: Hex32 },
+    events: readonly DustEventRecord[],
+  ): Promise<DustCaptureOutcome> {
+    const refusal = await this.dustContiguityRefusal(tx, block.net, block.blockHeight);
+    if (refusal !== undefined) return { outcome: "gap", rows: 0, reason: refusal };
+
+    let inserted = 0;
+    if (events.length > 0) {
+      const payload = events.map((e) => {
+        if (e.net !== block.net || e.blockHeight !== block.blockHeight ||
+            e.blockHash !== block.blockHash) {
+          throw new ValidationError(
+            "invalid input at PgChainArchiveStore.putDustEvents.row",
+            [{
+              path: "dustEvents",
+              message:
+                `a DUST event row describes ${e.net}#${e.blockHeight} (${e.blockHash}) but is ` +
+                `being written with ${block.net}#${block.blockHeight} (${block.blockHash}). A row ` +
+                "filed under a block it did not come from would be replayed in the wrong order.",
+            }],
+          );
+        }
+        assertHex32(e.txHash, "putDustEvents.txHash");
+        return {
+          txPosition: String(e.txPosition),
+          eventIndex: String(e.eventIndex),
+          txHash: e.txHash,
+          kind: String(e.kind),
+          owner: e.owner ?? null,
+          commitment: e.commitment ?? null,
+          commitmentIndex: e.commitmentIndex === undefined ? null : e.commitmentIndex.toString(10),
+          generationIndex: e.generationIndex === undefined ? null : e.generationIndex.toString(10),
+          nullifier: e.nullifier ?? null,
+          vFee: e.vFee ?? null,
+          declaredTime: e.declaredTime === undefined ? null : String(e.declaredTime),
+          blockTime: String(e.blockTime),
+          dtime: e.dtime === undefined ? null : String(e.dtime),
+          payload: e.payload ?? {},
+          raw: Buffer.from(e.raw).toString("hex"),
+        };
+      });
+      const result = await tx`
+        INSERT INTO ${tx(this.schema)}.dust_events
+          (net, id, block_height, block_hash, tx_position, event_index, tx_hash, kind, owner,
+           commitment, commitment_index, generation_index, nullifier, v_fee, declared_time,
+           block_time, dtime, payload, raw)
+        SELECT ${block.net}, base.max_id + e.ord, ${block.blockHeight},
+               ${hexToBuf(block.blockHash)},
+               (e.v ->> 'txPosition')::int, (e.v ->> 'eventIndex')::int,
+               decode(e.v ->> 'txHash', 'hex'), (e.v ->> 'kind')::smallint,
+               (e.v ->> 'owner')::numeric, (e.v ->> 'commitment')::numeric,
+               (e.v ->> 'commitmentIndex')::bigint, (e.v ->> 'generationIndex')::bigint,
+               (e.v ->> 'nullifier')::numeric, (e.v ->> 'vFee')::numeric,
+               (e.v ->> 'declaredTime')::bigint, (e.v ->> 'blockTime')::bigint,
+               (e.v ->> 'dtime')::bigint, e.v -> 'payload', decode(e.v ->> 'raw', 'hex')
+        FROM (
+          SELECT COALESCE(max(id), 0) AS max_id
+          FROM ${tx(this.schema)}.dust_events WHERE net = ${block.net}
+        ) base,
+        jsonb_array_elements(${tx.json(payload as unknown as JSONValue)}) WITH ORDINALITY AS e(v, ord)
+        ON CONFLICT (net, block_height, block_hash, tx_position, event_index) DO NOTHING
+      `;
+      inserted = result.count ?? 0;
+    }
+
+    // Advanced even for a block that produced NO events: the watermark records coverage, not
+    // rows, and a quiet block is covered. Reuses the same monotonic `{height}` guard as the sync
+    // cursor, so a retry of an older height cannot walk it backwards.
+    await this.upsertWatermarkRow(
+      tx, DUST_CAPTURE_WATERMARK_PREFIX + block.net, { height: block.blockHeight },
+    );
+    return { outcome: "written", rows: inserted };
+  }
+
+  /**
+   * Insert one `dust_parameters` row (migration 010, question Q-22 option C) inside the caller's
+   * transaction. `ON CONFLICT DO NOTHING` on the primary key, so a re-ingested height is a no-op
+   * and `written` says which it was.
+   *
+   * The values travel as DECIMAL STRINGS and are cast to `numeric`/`bigint` in SQL rather than
+   * being bound as JavaScript numbers: `nightDustRatio` is a `u128` in the ledger and the values
+   * seen on preprod (5 000 000 000) already exceed what a `float8` round-trip can be trusted with
+   * once the chain raises them.
+   */
+  private async insertDustParametersRow(
+    tx: ChainArchiveTx, row: DustParametersRecord,
+  ): Promise<{ written: boolean }> {
+    assertHex32(row.blockHash, "putDustParameters.blockHash");
+    for (const [field, value] of [
+      ["nightDustRatio", row.nightDustRatio],
+      ["generationDecayRate", row.generationDecayRate],
+      ["dustGracePeriodSeconds", row.dustGracePeriodSeconds],
+    ] as const) {
+      // A non-decimal here would reach PostgreSQL as a cast error deep inside a block's own
+      // transaction and take the whole height down with it. Refused at the boundary, named.
+      if (!/^\d{1,39}$/.test(value)) {
+        throw new ValidationError(
+          "invalid input at PgChainArchiveStore.putDustParameters",
+          [{
+            path: field,
+            message:
+              `a DUST parameter must be a non-negative decimal integer of at most 39 digits, ` +
+              `but ${field} is ${JSON.stringify(value)}. These are u128 chain values carried as ` +
+              "strings precisely so nothing rounds them.",
+          }],
+        );
+      }
+    }
+    const result = await tx`
+      INSERT INTO ${tx(this.schema)}.dust_parameters
+        (net, block_height, block_hash, night_dust_ratio, generation_decay_rate,
+         dust_grace_period_seconds, reason)
+      VALUES (${row.net}, ${row.blockHeight}, ${hexToBuf(row.blockHash)},
+              ${row.nightDustRatio}::numeric, ${row.generationDecayRate}::numeric,
+              ${row.dustGracePeriodSeconds}::bigint, ${row.reason})
+      ON CONFLICT (net, block_height, block_hash) DO NOTHING
+    `;
+    return { written: (result.count ?? 0) > 0 };
+  }
+
+  async putDustParameters(row: DustParametersRecord): Promise<{ written: boolean }> {
+    try {
+      return await this.sql.begin(async (tx) => await this.insertDustParametersRow(tx, row));
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  async getDustParametersAtOrBelow(
+    net: string, atHeight?: number,
+  ): Promise<DustParametersRecord | undefined> {
+    try {
+      // One index scan over `dust_parameters_at_or_below (net, block_height DESC)`. The height
+      // bound is a separate branch rather than a `COALESCE(..., 2^63)` so the planner sees a plain
+      // range scan in both shapes.
+      const rows = atHeight === undefined
+        ? await this.sql<DustParametersRow[]>`
+            SELECT net, block_height, block_hash, night_dust_ratio, generation_decay_rate,
+                   dust_grace_period_seconds, reason
+            FROM ${this.sql(this.schema)}.dust_parameters
+            WHERE net = ${net}
+            ORDER BY block_height DESC
+            LIMIT 1
+          `
+        : await this.sql<DustParametersRow[]>`
+            SELECT net, block_height, block_hash, night_dust_ratio, generation_decay_rate,
+                   dust_grace_period_seconds, reason
+            FROM ${this.sql(this.schema)}.dust_parameters
+            WHERE net = ${net} AND block_height <= ${atHeight}
+            ORDER BY block_height DESC
+            LIMIT 1
+          `;
+      const row = rows[0];
+      return row === undefined ? undefined : {
+        net: row.net,
+        blockHeight: Number(row.block_height),
+        blockHash: bufToHex(row.block_hash),
+        // `numeric` comes back as a string from this driver, which is what this interface wants;
+        // `String()` is the belt to that braces, not a conversion that could lose a digit.
+        nightDustRatio: String(row.night_dust_ratio),
+        generationDecayRate: String(row.generation_decay_rate),
+        dustGracePeriodSeconds: String(row.dust_grace_period_seconds),
+        reason: row.reason,
+      };
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  async putDustEventsForHeight(args: {
+    net: string;
+    blockHeight: number;
+    blockHash: Hex32;
+    events: readonly DustEventRecord[];
+  }): Promise<DustCaptureOutcome> {
+    assertHex32(args.blockHash, "putDustEventsForHeight.blockHash");
+    try {
+      return await this.sql.begin(async (tx) => {
+        // The same per-height advisory lock the bundle takes, so a backfill and a live ingest
+        // cannot both decide this height is theirs to write.
+        await tx`
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${JSON.stringify([args.net, args.blockHeight])}, ${0}::bigint)
+          )
+        `;
+        return await this.insertDustEventRows(tx, args, args.events);
+      });
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  async getDustEventsAfter(
+    net: string, afterId: bigint, limit: number,
+  ): Promise<DustEventRawRow[]> {
+    try {
+      const rows = await this.sql<{ id: bigint; block_height: bigint; raw: Buffer }[]>`
+        SELECT id, block_height, raw FROM ${this.sql(this.schema)}.dust_events
+        WHERE net = ${net} AND id > ${afterId}
+        ORDER BY id ASC
+        LIMIT ${limit}
+      `;
+      return rows.map((r) => ({
+        id: BigInt(r.id),
+        blockHeight: Number(r.block_height),
+        raw: new Uint8Array(r.raw),
+      }));
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  async getDustEventsTip(
+    net: string,
+  ): Promise<{ eventId: bigint; blockHeight: number } | undefined> {
+    try {
+      const [row] = await this.sql<{ id: bigint; block_height: bigint }[]>`
+        SELECT id, block_height FROM ${this.sql(this.schema)}.dust_events
+        WHERE net = ${net}
+        ORDER BY id DESC
+        LIMIT 1
+      `;
+      return row === undefined
+        ? undefined
+        : { eventId: BigInt(row.id), blockHeight: Number(row.block_height) };
+    } catch (err) {
+      throw translatePostgresError(err);
+    }
+  }
+
+  async getDustCaptureHeight(net: string): Promise<number | undefined> {
+    const value = await this.getWatermark(DUST_CAPTURE_WATERMARK_PREFIX + net);
+    const height = (value as { height?: unknown } | undefined)?.height;
+    return typeof height === "number" ? height : undefined;
+  }
+
   async putBlock(block: BlockRecord): Promise<{ headerBlobHash: Hex32; bodyBlobHash?: Hex32 }> {
     assertHex32(block.blockHash, "putBlock.blockHash");
     assertHex32(block.parentHash, "putBlock.parentHash");
@@ -455,9 +793,12 @@ export class PgChainArchiveStore implements ChainArchiveStore {
    *  O2: the advisory xact lock and repeated history check belong INSIDE this transaction. A
    *  service-layer `SELECT` followed by this call has a race window; a database transaction guard
    *  serializes independent Node processes as well as independent service instances. */
-  async putBlockBundle(bundle: BlockBundle): Promise<{ headerBlobHash: Hex32; bodyBlobHash?: Hex32 }> {
+  async putBlockBundle(
+    bundle: BlockBundle,
+  ): Promise<{ headerBlobHash: Hex32; bodyBlobHash?: Hex32; dustCapture?: DustCaptureOutcome }> {
     const { block, transactions: txs, bridgeObservations: obs } = bundle;
     const checkpoint = bundle.replayCheckpoint;
+    const parameters = bundle.dustParameters;
     assertHex32(block.blockHash, "putBlockBundle.blockHash");
     assertHex32(block.parentHash, "putBlockBundle.parentHash");
     assertHex32(block.stateRoot, "putBlockBundle.stateRoot");
@@ -486,6 +827,28 @@ export class PgChainArchiveStore implements ChainArchiveStore {
               `(${checkpoint.blockHash}) but the bundle writes ${block.net}#${block.height} ` +
               `(${block.blockHash}). A checkpoint committed with a block it does not describe ` +
               "would be resumed against the wrong state.",
+          }],
+        );
+      }
+    }
+    // Same rule for the parameters row, and the same reason: a row filed under a block it did not
+    // come from puts a parameter change at a height the chain never changed them, and the node
+    // would price every wallet's balance with those values from that height onward.
+    if (parameters !== undefined) {
+      assertHex32(parameters.blockHash, "putBlockBundle.dustParameters.blockHash");
+      if (
+        parameters.net !== block.net || parameters.blockHeight !== block.height ||
+        parameters.blockHash !== block.blockHash
+      ) {
+        throw new ValidationError(
+          "invalid input at PgChainArchiveStore.putBlockBundle.dustParameters",
+          [{
+            path: "dustParameters",
+            message:
+              `the bundled DUST parameters describe ${parameters.net}#${parameters.blockHeight} ` +
+              `(${parameters.blockHash}) but the bundle writes ${block.net}#${block.height} ` +
+              `(${block.blockHash}). A parameters row committed with a block it does not describe ` +
+              "would put a parameter change at a height the chain never had one.",
           }],
         );
       }
@@ -519,7 +882,9 @@ export class PgChainArchiveStore implements ChainArchiveStore {
         }
 
         await this.assertBundleTransactionHistoryAgrees(tx, bundle);
-        const result = await this.insertBlockRow(tx, block);
+        const result: {
+          headerBlobHash: Hex32; bodyBlobHash?: Hex32; dustCapture?: DustCaptureOutcome;
+        } = await this.insertBlockRow(tx, block);
         // FK-ordering note: `transactions`/`bridge_observations` both carry a real FK back to
         // `blocks (net, height, block_hash)` (001_chain_archive_core.ts) -- inserting the block
         // row first, in the SAME transaction, makes it visible to these later statements' own FK
@@ -541,6 +906,26 @@ export class PgChainArchiveStore implements ChainArchiveStore {
         // block row inserted above being visible to this same transaction, which is why the
         // checkpoint could not simply have been written first in the old two-transaction shape.
         if (checkpoint !== undefined) await this.insertReplayCheckpointRows(tx, checkpoint);
+        // 00016 FR-001: the DUST events belong to this height's transaction for exactly the same
+        // reason the checkpoint does -- a crash must leave either all of the height or none of
+        // it, never a block whose events are missing. They go after the block row because they
+        // carry the same FK to it. A contiguity refusal is NOT an error: the bundle still
+        // commits, without the rows, and the caller is told so it can say so.
+        if (bundle.dustEvents !== undefined) {
+          result.dustCapture = await this.insertDustEventRows(
+            tx,
+            { net: block.net, blockHeight: block.height, blockHash: block.blockHash },
+            bundle.dustEvents,
+          );
+        }
+        // Q-22 option C: the DUST parameters row, in this height's transaction for the same reason
+        // as everything above it -- and after the block row, whose FK it carries. Unlike the
+        // events there is no contiguity notion here: the row is a POINT fact ("from this height
+        // the chain uses these values"), so a missing earlier row makes a later one less
+        // informative, never wrong.
+        if (bundle.dustParameters !== undefined) {
+          await this.insertDustParametersRow(tx, bundle.dustParameters);
+        }
         if (bundle.watermark !== undefined) {
           await this.upsertWatermarkRow(tx, bundle.watermark.key, bundle.watermark.value);
         }

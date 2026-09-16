@@ -23,6 +23,15 @@ concurrency:
 # keeps exact Q64 block-close math inside Rust; and `LedgerState.ledgerStateRoot()`, which emits the
 # node-comparable committed ledger root. Its correctness is load-bearing for the archive.
 #
+# `…syshash.6` adds four more, for the shielded-monitor node's DUST tree mirror (project 00016):
+# `DustLocalState.collapsedCommitmentUpdate()` / `collapsedGenerationUpdate()`, which cut a
+# collapsed update out of a *local* state's trees (8.1.0 can only cut from the chain-side state);
+# the `commitmentTreeFirstFree` / `generatingTreeFirstFree` getters, without which JavaScript
+# cannot form a valid range; and `replayRawEventsRetainingAll()`, a replay that skips every
+# collapse, without which the mirror's trees collapse into aligned subtrees no cut can descend
+# into. The last one is the dangerous absence: a stock replay reaches identical roots, so its use
+# would fail only when a wallet asks for a segment.
+#
 # This gate deliberately does NOT rebuild and compare bytes. The build is not bit-reproducible:
 # the same commit, `wasm-pack 0.15.0` and `rustc 1.93.0` produce a different `.wasm` hash on each
 # run (measured 2026-08-08). A byte comparison against a rebuild would fail every time while saying
@@ -61,7 +70,7 @@ jobs:
           set -euo pipefail
           version="$(node -e "console.log(JSON.parse(require('fs').readFileSync('node_modules/@midnight-ntwrk/ledger-v8/package.json','utf8')).version)")"
           echo "resolved ledger version: $version"
-          test "$version" = "8.1.0-syshash.4"
+          test "$version" = "8.1.0-syshash.6"
 
       # Layer 2, the meaningful one: behavioural equivalence with an INDEPENDENT implementation.
       # The five system transactions of a 1.0.0 devnet genesis block, as archived by
@@ -95,6 +104,13 @@ jobs:
               'LedgerParameters.clampAndNormalizeFullness': typeof m.LedgerParameters?.prototype?.clampAndNormalizeFullness === 'function',
               'LedgerState.closeBlock': typeof m.LedgerState?.prototype?.closeBlock === 'function',
               'LedgerState.ledgerStateRoot': typeof m.LedgerState?.prototype?.ledgerStateRoot === 'function',
+              'DustLocalState.collapsedCommitmentUpdate': typeof m.DustLocalState?.prototype?.collapsedCommitmentUpdate === 'function',
+              'DustLocalState.collapsedGenerationUpdate': typeof m.DustLocalState?.prototype?.collapsedGenerationUpdate === 'function',
+              'DustLocalState.replayRawEventsRetainingAll': typeof m.DustLocalState?.prototype?.replayRawEventsRetainingAll === 'function',
+              // Getters, not methods: a \`typeof prototype.x === 'function'\` probe reads them as
+              // undefined even when present, so ask the descriptor instead.
+              'DustLocalState.commitmentTreeFirstFree': typeof Object.getOwnPropertyDescriptor(m.DustLocalState?.prototype ?? {}, 'commitmentTreeFirstFree')?.get === 'function',
+              'DustLocalState.generatingTreeFirstFree': typeof Object.getOwnPropertyDescriptor(m.DustLocalState?.prototype ?? {}, 'generatingTreeFirstFree')?.get === 'function',
             };
             let ok = true;
             for (const [name, present] of Object.entries(checks)) {

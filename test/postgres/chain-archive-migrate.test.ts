@@ -43,7 +43,8 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
         "000_schema", "001_chain_archive_core", "002_transaction_position_key",
         "003_runtime_metadata", "004_replay_checkpoints",
         "005_replay_checkpoint_block_time", "006_replay_checkpoint_ledger_network",
-        "007_blob_role_guard_forward_fix", "008_block_timestamp",
+        "007_blob_role_guard_forward_fix", "008_block_timestamp", "009_dust_events",
+        "010_dust_parameters",
       ]);
 
       // --- 008 is ADDITIVE: `blocks.timestamp_ms` exists, is NULLABLE, and reaches every
@@ -144,6 +145,258 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
       await sql.end({ timeout: 5 });
     }
   }, 60_000);
+
+  it("009 adds dust_events with its keys, partial indexes, per-kind column rule and block FK", async () => {
+    // T1.2 (`plans/00016-dust-wallet-sync.md`). Applied TWICE from different starting points --
+    // a fresh database and one already at 008 -- because the two are genuinely different paths:
+    // a fresh apply runs 009 against a schema 001 has just built, while the upgrade path runs it
+    // against a schema that has been written to. An archive in the wild is always the second.
+    const check = async (schema: string, upgradeFrom008: boolean): Promise<void> => {
+      const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+      try {
+        if (upgradeFrom008) {
+          await runMigrations(sql, { schema, migrations: chainArchiveMigrations.slice(0, 9) });
+          const [absent] = await sql<{ n: number }[]>`
+            SELECT count(*)::int AS n FROM information_schema.tables
+            WHERE table_schema = ${schema} AND table_name = 'dust_events'
+          `;
+          expect(absent?.n, "dust_events must not exist before 009").toBe(0);
+        }
+        await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
+
+        // Columns and nullability, as spec/00016 §5.3 defines them.
+        const columns = await sql<{ column_name: string; data_type: string; is_nullable: string }[]>`
+          SELECT column_name, data_type, is_nullable FROM information_schema.columns
+          WHERE table_schema = ${schema} AND table_name = 'dust_events'
+          ORDER BY ordinal_position
+        `;
+        expect(columns.map((c) => c.column_name)).toEqual([
+          "net", "id", "block_height", "block_hash", "tx_position", "event_index", "tx_hash",
+          "kind", "owner", "commitment", "commitment_index", "generation_index", "nullifier",
+          "v_fee", "declared_time", "block_time", "dtime", "payload", "raw",
+        ]);
+        const notNull = columns.filter((c) => c.is_nullable === "NO").map((c) => c.column_name);
+        expect(notNull).toEqual([
+          "net", "id", "block_height", "block_hash", "tx_position", "event_index", "tx_hash",
+          "kind", "block_time", "payload", "raw",
+        ]);
+
+        // The PK is what the node pages on, and the UNIQUE key is what makes a re-ingest a
+        // no-op rather than a duplicate -- both are contract, not decoration.
+        const keys = await sql<{ contype: string; def: string }[]>`
+          SELECT c.contype::text AS contype, pg_get_constraintdef(c.oid) AS def
+          FROM pg_constraint c
+          JOIN pg_class t ON t.oid = c.conrelid
+          JOIN pg_namespace ns ON ns.oid = t.relnamespace
+          WHERE ns.nspname = ${schema} AND t.relname = 'dust_events' AND c.contype IN ('p','u','f')
+          ORDER BY c.contype, def
+        `;
+        expect(keys.find((k) => k.contype === "p")?.def).toBe("PRIMARY KEY (net, id)");
+        expect(keys.find((k) => k.contype === "u")?.def)
+          .toBe("UNIQUE (net, block_height, block_hash, tx_position, event_index)");
+        // `pg_get_constraintdef` omits the schema qualifier when the referenced table is on the
+        // session search_path, which `createClient` sets to this schema -- so the FK is matched
+        // on its shape, and the schema binding is proven by the refusal below instead.
+        expect(keys.find((k) => k.contype === "f")?.def).toMatch(
+          /^FOREIGN KEY \(net, block_height, block_hash\) REFERENCES (\w+\.)?blocks\(net, height, block_hash\)$/,
+        );
+
+        // The four partial/plain indexes the node's five routes read through.
+        const indexes = await sql<{ indexname: string; indexdef: string }[]>`
+          SELECT indexname, indexdef FROM pg_indexes
+          WHERE schemaname = ${schema} AND tablename = 'dust_events'
+          ORDER BY indexname
+        `;
+        const byName = new Map(indexes.map((i) => [i.indexname, i.indexdef]));
+        expect([...byName.keys()]).toEqual([
+          "dust_events_gen_idx", "dust_events_height_idx", "dust_events_nullifier_idx",
+          "dust_events_owner_idx", "dust_events_pkey",
+          "dust_events_net_block_height_block_hash_tx_position_event_i_key",
+        ].sort());
+        expect(byName.get("dust_events_owner_idx")).toContain("WHERE (kind = 1)");
+        expect(byName.get("dust_events_nullifier_idx")).toContain("WHERE (kind = 3)");
+        expect(byName.get("dust_events_gen_idx")).toContain("WHERE (kind = ANY (ARRAY[1, 2]))");
+
+        // --- behaviour, not just catalogue: a row for an unknown block must fail on the FK ---
+        const hx = (n: number): Buffer => Buffer.from(n.toString(16).padStart(64, "0"), "hex");
+        const dustNet = `dust_migration_${upgradeFrom008 ? "upgrade" : "fresh"}`;
+        await sql`
+          INSERT INTO ${sql(schema)}.chain_blobs (hash, data) VALUES (${hx(0x51)}, ${Buffer.from("h")})
+        `;
+        await sql`
+          INSERT INTO ${sql(schema)}.chain_blob_roles (blob_hash, role) VALUES (${hx(0x51)}, 'block_header')
+        `;
+        await sql`
+          INSERT INTO ${sql(schema)}.blocks
+            (net, block_hash, height, parent_hash, state_root, extrinsics_root, header_blob_hash,
+             is_canonical, status, finalized)
+          VALUES (${dustNet}, ${hx(0x60)}, 7, ${hx(0)}, ${hx(0x61)}, ${hx(0x62)}, ${hx(0x51)},
+                  true, 'canonical', true)
+        `;
+        const insertSpend = (blockHash: Buffer) => sql`
+          INSERT INTO ${sql(schema)}.dust_events
+            (net, id, block_height, block_hash, tx_position, event_index, tx_hash, kind,
+             commitment, commitment_index, nullifier, v_fee, declared_time, block_time,
+             payload, raw)
+          VALUES (${dustNet}, 1, 7, ${blockHash}, 0, 0, ${hx(0x70)}, 3,
+                  ${"11"}, 3, ${"22"}, ${"5"}, 1757990000, 1757990004, ${sql.json({})},
+                  ${Buffer.from([1, 2, 3])})
+        `;
+        await expect(insertSpend(hx(0x99)), "an event for a block this archive does not hold")
+          .rejects.toMatchObject({ code: "23503" });
+        await insertSpend(hx(0x60));
+
+        // The per-kind column rule: a kind-3 row carrying an owner is a mis-mapped event, and a
+        // row of NULLs would be invisible to every route that filters on these columns.
+        await expect(sql`
+          INSERT INTO ${sql(schema)}.dust_events
+            (net, id, block_height, block_hash, tx_position, event_index, tx_hash, kind,
+             owner, commitment, commitment_index, nullifier, v_fee, declared_time, block_time,
+             payload, raw)
+          VALUES (${dustNet}, 2, 7, ${hx(0x60)}, 0, 1, ${hx(0x70)}, 3,
+                  ${"9"}, ${"11"}, 3, ${"22"}, ${"5"}, 1757990000, 1757990004, ${sql.json({})},
+                  ${Buffer.from([1])})
+        `).rejects.toMatchObject({ code: "23514" });
+        await expect(sql`
+          INSERT INTO ${sql(schema)}.dust_events
+            (net, id, block_height, block_hash, tx_position, event_index, tx_hash, kind,
+             block_time, payload, raw)
+          VALUES (${dustNet}, 3, 7, ${hx(0x60)}, 0, 2, ${hx(0x70)}, 1,
+                  1757990004, ${sql.json({})}, ${Buffer.from([1])})
+        `).rejects.toMatchObject({ code: "23514" });
+
+        // The UNIQUE key, not the PK, is what an idempotent re-ingest collides on.
+        await expect(sql`
+          INSERT INTO ${sql(schema)}.dust_events
+            (net, id, block_height, block_hash, tx_position, event_index, tx_hash, kind,
+             commitment, commitment_index, nullifier, v_fee, declared_time, block_time,
+             payload, raw)
+          VALUES (${dustNet}, 99, 7, ${hx(0x60)}, 0, 0, ${hx(0x70)}, 3,
+                  ${"11"}, 3, ${"22"}, ${"5"}, 1757990000, 1757990004, ${sql.json({})},
+                  ${Buffer.from([1, 2, 3])})
+        `).rejects.toMatchObject({ code: "23505" });
+      } finally {
+        await sql.end({ timeout: 5 });
+      }
+    };
+
+    await check("chain_archive_dust_fresh_test", false);
+    await check("chain_archive_dust_upgrade_test", true);
+  }, 120_000);
+
+  it("010 adds dust_parameters with its key, reason CHECK, resume index and block FK", async () => {
+    // T6.1 (`plans/00016-dust-wallet-sync.md` §7b). Applied from BOTH starting points for the same
+    // reason 009's case gives: a fresh database exercises 010 against a schema 001 just built,
+    // while the upgrade path exercises it against one that has already been written to, which is
+    // what every archive in the wild is.
+    const check = async (schema: string, upgradeFrom009: boolean): Promise<void> => {
+      const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+      try {
+        if (upgradeFrom009) {
+          await runMigrations(sql, { schema, migrations: chainArchiveMigrations.slice(0, 10) });
+          const [absent] = await sql<{ n: number }[]>`
+            SELECT count(*)::int AS n FROM information_schema.tables
+            WHERE table_schema = ${schema} AND table_name = 'dust_parameters'
+          `;
+          expect(absent?.n, "dust_parameters must not exist before 010").toBe(0);
+        }
+        await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
+
+        const columns = await sql<{ column_name: string; data_type: string; is_nullable: string }[]>`
+          SELECT column_name, data_type, is_nullable FROM information_schema.columns
+          WHERE table_schema = ${schema} AND table_name = 'dust_parameters'
+          ORDER BY ordinal_position
+        `;
+        expect(columns.map((c) => c.column_name)).toEqual([
+          "net", "block_height", "block_hash", "night_dust_ratio", "generation_decay_rate",
+          "dust_grace_period_seconds", "reason", "created_at",
+        ]);
+        // Every column is NOT NULL: a parameters row with a missing value is not a partial fact,
+        // it is an unusable one.
+        expect(columns.filter((c) => c.is_nullable === "YES")).toEqual([]);
+        // u128 needs 39 digits; a narrower numeric would silently refuse a value the chain set.
+        const ratio = columns.find((c) => c.column_name === "night_dust_ratio");
+        expect(ratio?.data_type).toBe("numeric");
+        const [precision] = await sql<{ numeric_precision: number }[]>`
+          SELECT numeric_precision FROM information_schema.columns
+          WHERE table_schema = ${schema} AND table_name = 'dust_parameters'
+            AND column_name = 'night_dust_ratio'
+        `;
+        expect(precision?.numeric_precision).toBe(39);
+
+        const [pk] = await sql<{ def: string }[]>`
+          SELECT pg_get_constraintdef(c.oid) AS def
+          FROM pg_constraint c
+          JOIN pg_class t ON t.oid = c.conrelid
+          JOIN pg_namespace n ON n.oid = t.relnamespace
+          WHERE n.nspname = ${schema} AND t.relname = 'dust_parameters' AND c.contype = 'p'
+        `;
+        expect(pk?.def).toBe("PRIMARY KEY (net, block_height, block_hash)");
+
+        const [fk] = await sql<{ def: string }[]>`
+          SELECT pg_get_constraintdef(c.oid) AS def
+          FROM pg_constraint c
+          JOIN pg_class t ON t.oid = c.conrelid
+          JOIN pg_namespace n ON n.oid = t.relnamespace
+          WHERE n.nspname = ${schema} AND t.relname = 'dust_parameters' AND c.contype = 'f'
+        `;
+        expect(fk?.def).toContain("REFERENCES");
+        expect(fk?.def).toContain("blocks(net, height, block_hash)");
+
+        const indexes = await sql<{ indexname: string }[]>`
+          SELECT indexname FROM pg_indexes
+          WHERE schemaname = ${schema} AND tablename = 'dust_parameters'
+          ORDER BY indexname
+        `;
+        expect(indexes.map((i) => i.indexname)).toContain("dust_parameters_at_or_below");
+
+        // --- behaviour, not just catalogue --- a block to hang the rows off, built exactly the
+        // way 009's own FK case builds one, so the failures below are about this table's
+        // constraints and not about a missing parent.
+        const hx = (n: number): Buffer => Buffer.from(n.toString(16).padStart(64, "0"), "hex");
+        const pNet = `dust_params_${upgradeFrom009 ? "upgrade" : "fresh"}`;
+        await sql`
+          INSERT INTO ${sql(schema)}.chain_blobs (hash, data) VALUES (${hx(0x81)}, ${Buffer.from("h")})
+        `;
+        await sql`
+          INSERT INTO ${sql(schema)}.chain_blob_roles (blob_hash, role) VALUES (${hx(0x81)}, 'block_header')
+        `;
+        await sql`
+          INSERT INTO ${sql(schema)}.blocks
+            (net, block_hash, height, parent_hash, state_root, extrinsics_root, header_blob_hash,
+             is_canonical, status, finalized)
+          VALUES (${pNet}, ${hx(0x90)}, 7, ${hx(0)}, ${hx(0x91)}, ${hx(0x92)}, ${hx(0x81)},
+                  true, 'canonical', true)
+        `;
+
+        const insertParams = (blockHash: Buffer, reason: string, height = 7) => sql`
+          INSERT INTO ${sql(schema)}.dust_parameters
+            (net, block_height, block_hash, night_dust_ratio, generation_decay_rate,
+             dust_grace_period_seconds, reason)
+          VALUES (${pNet}, ${height}, ${blockHash}, ${"5000000000"}::numeric, ${"8267"}::numeric,
+                  ${10800}, ${reason})
+        `;
+
+        await insertParams(hx(0x90), "genesis");
+        // The reason CHECK: only the three vocabulary words, so a typo is an error rather than a
+        // value nothing will ever match.
+        await expect(insertParams(hx(0x90), "guess", 8), "an unknown reason")
+          .rejects.toMatchObject({ code: "23514" });
+        // The FK: a parameters row for a block this archive does not hold is unstorable, exactly
+        // as 004's and 009's are.
+        await expect(insertParams(hx(0x99), "change", 9), "a block this archive does not hold")
+          .rejects.toMatchObject({ code: "23503" });
+        // The PK: one block cannot carry two different parameter facts.
+        await expect(insertParams(hx(0x90), "change"), "a second row for the same block")
+          .rejects.toMatchObject({ code: "23505" });
+      } finally {
+        await sql.end({ timeout: 5 });
+      }
+    };
+
+    await check(`m010_fresh_${Math.floor(Math.random() * 1e6)}`, false);
+    await check(`m010_upgrade_${Math.floor(Math.random() * 1e6)}`, true);
+  }, 300_000);
 
   it("invalidates populated legacy checkpoints across the 004 -> 005 -> 006 upgrade", async () => {
     // A fresh full-lineage test starts with an empty replay_checkpoints table, so both migration

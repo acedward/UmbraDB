@@ -130,6 +130,121 @@ export interface BridgeObservationMeta {
   rawBlobHash: Hex32;
 }
 
+/** Which DUST ledger event a `dust_events` row holds: 1 = `dustInitialUtxo`,
+ *  2 = `dustGenerationDtimeUpdate`, 3 = `dustSpendProcessed`
+ *  (`spec/00016-dust-wallet-sync.md` §5.2). */
+export type DustEventKind = 1 | 2 | 3;
+
+/**
+ * One DUST ledger event, parsed into the columns of `chain_archive.dust_events` (migration 009,
+ * `spec/00016-dust-wallet-sync.md` §5.2/§5.3) plus the raw bytes a replay consumes.
+ *
+ * ENCODINGS are the spec's (§4), fixed here so the ingest, the node and the wallet client cannot
+ * each pick their own: field elements (`owner`, `commitment`, `nullifier`) are DECIMAL strings
+ * because the WASM hands them over as `BigInt` and `numeric(78)` is what stores them losslessly;
+ * u64/u128 magnitudes (`vFee`) are decimal strings for the same reason; tree indices are
+ * `bigint` (they are ledger `u64`s and must not round through a `number`); times are INTEGER UNIX
+ * SECONDS, never `Date` and never milliseconds.
+ *
+ * `payload` carries what has no column of its own -- notably the full `QualifiedDustOutput`
+ * (including `backingNight`) a wallet needs to insert the leaf into its own tree.
+ */
+export interface DustEventRecord {
+  net: string;
+  blockHeight: number;
+  blockHash: Hex32;
+  /** Position in the ledger's execution order for this block. */
+  txPosition: number;
+  /** Index within that transaction's own event list. */
+  eventIndex: number;
+  /** Joins `transactions.tx_hash`. */
+  txHash: Hex32;
+  kind: DustEventKind;
+  /** kind 1: the DUST public key that owns the initial UTxO, decimal. */
+  owner?: string;
+  /** kinds 1 and 3, decimal. */
+  commitment?: string;
+  /** kinds 1 and 3: the leaf index in the commitment tree. */
+  commitmentIndex?: bigint;
+  /** kinds 1 and 2: the leaf index in the generating tree. */
+  generationIndex?: bigint;
+  /** kind 3, decimal. */
+  nullifier?: string;
+  /** kind 3: the fee this spend paid, decimal (u128). */
+  vFee?: string;
+  /** kind 3: unix seconds. */
+  declaredTime?: number;
+  /** unix seconds. */
+  blockTime: number;
+  /** The generation entry's end time in unix seconds, or `undefined` for "no end time". kind 2
+   *  carries the new value; kind 1 carries the initial one, which is usually absent. */
+  dtime?: number;
+  /** JSON-encodable; the shape is per kind, see `spec/00016-dust-wallet-sync.md` §5.2. */
+  payload: unknown;
+  /** `Event.serialize()`; a concatenation of these replays unchanged (FR-002). */
+  raw: Uint8Array;
+}
+
+/**
+ * What a DUST-capture write did, so the ingest can say so in its status line rather than
+ * pretending the table is complete.
+ *
+ * `gap` is the contiguity refusal of FR-001's "dense from genesis" rule: the block committed, its
+ * DUST rows did not, and the table is still exactly as dense as it was. A partially filled table
+ * would make the node build wrong trees and say nothing; an honestly incomplete one sends the
+ * operator to `npm run dust:backfill`.
+ */
+export interface DustCaptureOutcome {
+  outcome: "written" | "gap";
+  /** Rows actually inserted. Zero both for a block that produced no DUST events and for a
+   *  refusal -- `outcome` is what distinguishes them. */
+  rows: number;
+  /** Only for `gap`: what the guard saw, in words an operator can act on. */
+  reason?: string;
+}
+
+/** A `dust_events` row as the node's mirror reads it: the id it pages on, the height it belongs
+ *  to, and the bytes to replay. */
+export interface DustEventRawRow {
+  id: bigint;
+  blockHeight: number;
+  raw: Uint8Array;
+}
+
+/**
+ * Why a `dust_parameters` row exists (migration 010, question Q-22 option C).
+ *
+ *   - `genesis` -- the state the fold starts from. On Midnight that is the node's genesis ledger
+ *     snapshot, not the result of executing block 0's body, so this is read off the deserialized
+ *     snapshot rather than off an `applyBlock`.
+ *   - `change`  -- this block's replay moved at least one of the three values (an
+ *     `OverwriteParameters` system transaction).
+ *   - `resume`  -- written ONCE, on an archive that already holds blocks but no rows yet, at the
+ *     first height the ingest writes after the table appears. The values are true as of that
+ *     height; nothing is claimed about earlier ones, which is exactly why this is its own reason
+ *     and not a fake `genesis`.
+ */
+export type DustParametersReason = "genesis" | "change" | "resume";
+
+/**
+ * The three chain DUST parameters in force at a height
+ * (`spec/00016-dust-wallet-sync.md` §4 `params`; plan 00016 §7b).
+ *
+ * Decimal strings, not `bigint`, deliberately: they are `u128` in the ledger, they arrive from the
+ * WASM as `BigInt`, they are stored as `numeric(39)`, and they are served verbatim as decimal
+ * strings on `GET /v1/dust/tip`. Carrying them as strings end to end means the value the chain set
+ * is the value a wallet sees, with no representation that could round it.
+ */
+export interface DustParametersRecord {
+  net: string;
+  blockHeight: number;
+  blockHash: Hex32;
+  nightDustRatio: string;
+  generationDecayRate: string;
+  dustGracePeriodSeconds: string;
+  reason: DustParametersReason;
+}
+
 /** Everything one call to `putBlockBundle` needs to ingest a single block atomically: the block
  *  row itself plus every transaction/bridge-observation row that belongs to it. `transactions`/
  *  `bridgeObservations` may be empty (e.g. a block with no `pallet_midnight` transactions, or no
@@ -139,6 +254,30 @@ export interface BlockBundle {
   block: BlockRecord;
   transactions: readonly TransactionRecord[];
   bridgeObservations: readonly BridgeObservationRecord[];
+  /**
+   * The DUST ledger events this block produced (`spec/00016-dust-wallet-sync.md` FR-001), written
+   * inside the SAME transaction as the block itself.
+   *
+   * Three distinguishable states, and the difference matters:
+   *   - `undefined` -- this ingest is not capturing DUST events (replay validation off, or the
+   *     capture has already gone `gap` for this run). Nothing is written and no watermark moves.
+   *   - `[]` -- capture is on and this block produced none. No rows, but the per-net capture
+   *     watermark still advances, because the block IS covered. Most blocks are this.
+   *   - non-empty -- the rows, in ledger execution order.
+   */
+  dustEvents?: readonly DustEventRecord[];
+  /**
+   * The DUST parameters row for THIS height, when this block is one that needs one (question Q-22
+   * option C) — written inside the SAME transaction as the block itself, for the same reason the
+   * checkpoint and the watermark are: a height is either wholly in the archive or wholly absent.
+   *
+   * `undefined` on almost every block, and that is the point: a row is written only at genesis, at
+   * a block that actually changed a value, and once at a resume point. MUST describe this bundle's
+   * own block — `net`, `blockHeight` and `blockHash` are checked against `block` and a mismatch is
+   * refused, because a row filed under another block would tell the node the parameters changed
+   * somewhere they did not.
+   */
+  dustParameters?: DustParametersRecord;
   /**
    * Owner **Rule A** (`spec/00009` User Story 5, FR-029): the replay checkpoint for THIS height,
    * when one is due, written inside the SAME transaction as everything else about the height.
@@ -312,7 +451,83 @@ export interface ChainArchiveStore {
    * the height or all of it including the watermark -- there is no third state to recover from,
    * and recovery is "continue from the last committed height".
    */
-  putBlockBundle(bundle: BlockBundle): Promise<{ headerBlobHash: Hex32; bodyBlobHash?: Hex32 }>;
+  putBlockBundle(
+    bundle: BlockBundle,
+  ): Promise<{ headerBlobHash: Hex32; bodyBlobHash?: Hex32; dustCapture?: DustCaptureOutcome }>;
+
+  /**
+   * Write one block's DUST events on their own, with the same contiguity guard and the same
+   * per-net capture watermark `putBlockBundle` applies (`spec/00016-dust-wallet-sync.md` FR-001,
+   * FR-004). One transaction per call.
+   *
+   * This is the BACKFILL's write path (`chain-archive-sync/dust-backfill-cli.ts`): an archive
+   * ingested before 00016 has the blocks but not the events, and filling them in is a separate
+   * pass over already-committed history rather than part of a block's own bundle. Sharing the
+   * guard with the ingest is what lets a completed backfill hand over to a live ingest -- the
+   * watermark the backfill leaves behind is exactly the one the ingest's next block expects.
+   *
+   * Idempotent: the rows collide on `UNIQUE (net, block_height, block_hash, tx_position,
+   * event_index)` and are dropped, the ids already assigned are kept, and the watermark's
+   * monotonic guard refuses to move backwards.
+   */
+  putDustEventsForHeight(args: {
+    net: string;
+    blockHeight: number;
+    blockHash: Hex32;
+    events: readonly DustEventRecord[];
+  }): Promise<DustCaptureOutcome>;
+
+  /**
+   * The next page of DUST events in id order, for a consumer folding them into its own state
+   * (`spec/00016-dust-wallet-sync.md` §5.7). `afterId` is exclusive; pass `0n` to start.
+   *
+   * Returns only what a replay needs -- the id to resume from, the height to report as the
+   * applied tip, and the bytes. The parsed columns are read by the node's own queries, which are
+   * project B's and deliberately not part of this interface.
+   */
+  getDustEventsAfter(net: string, afterId: bigint, limit: number): Promise<DustEventRawRow[]>;
+
+  /** The highest DUST event id for `net` and the height it belongs to, or `undefined` when the
+   *  table holds nothing for this net. */
+  getDustEventsTip(net: string): Promise<{ eventId: bigint; blockHeight: number } | undefined>;
+
+  /**
+   * The height up to which DUST capture has run for `net`, or `undefined` if it never has.
+   *
+   * Not the same as `getDustEventsTip`'s height, and the difference is the whole point: most
+   * blocks produce no DUST events at all, so the newest ROW can be thousands of blocks below the
+   * newest COVERED block. The watermark is what the contiguity guard compares against and what
+   * the backfill resumes from; the row tip is what a reader has actually consumed.
+   */
+  getDustCaptureHeight(net: string): Promise<number | undefined>;
+
+  /**
+   * Write one `dust_parameters` row on its own (question Q-22 option C). One transaction per call.
+   *
+   * This is the BACKFILL's write path, the twin of {@link ChainArchiveStore.putDustEventsForHeight}
+   * — the live ingest writes its row inside the block's own bundle instead
+   * (`BlockBundle.dustParameters`).
+   *
+   * Idempotent: the row collides on `PRIMARY KEY (net, block_height, block_hash)` and is dropped.
+   * `written` is false for a collision, which is how a caller can tell "I wrote the genesis row"
+   * from "it was already there".
+   */
+  putDustParameters(row: DustParametersRecord): Promise<{ written: boolean }>;
+
+  /**
+   * The parameters in force at `atHeight`: the newest row at or below it for this net, or
+   * `undefined` when the archive holds none (an ingest that ran before migration 010, or one that
+   * never ran replay validation).
+   *
+   * `atHeight` is `undefined` for "the newest row overall", which is what a consumer starting up
+   * against an archive it has not folded yet asks for.
+   *
+   * At or BELOW, never the nearest: parameters are in force from the block that set them until the
+   * block that changes them, so the newest row not above the reader's own height is the answer.
+   */
+  getDustParametersAtOrBelow(
+    net: string, atHeight?: number,
+  ): Promise<DustParametersRecord | undefined>;
 
   /**
    * This archive database's own identity for `net` (`spec/00009` FR-028): 32 lowercase hex

@@ -48,6 +48,8 @@ the Tier-2 indexer fork.
   - [`chain_archive.watermarks`](#chain_archivewatermarks)
   - [`runtime_metadata`](#runtime_metadata)
   - [`replay_checkpoints`](#replay_checkpoints)
+  - [`dust_events`](#dust_events)
+  - [`dust_parameters`](#dust_parameters)
   - [Partition rollover design](#partition-rollover-design)
 - [How the two lineages coexist](#how-the-two-lineages-coexist)
 - [Boundary enforcement](#boundary-enforcement)
@@ -405,7 +407,7 @@ while its embedded identity claims another.
 
 Source (see the [provenance note](#chain_archive-lineage) above for which branch this reflects):
 `src/postgres/migrations/chain_archive/001_chain_archive_core.ts` through
-`007_blob_role_guard_forward_fix.ts`,
+`009_dust_events.ts`,
 `src/postgres/migrations/chain_archive/index.ts` (the `chainArchiveMigrations` lineage array),
 `src/postgres/migrations/chain_archive/partition-config.ts` (partition sizing constants),
 `src/interfaces/chain-archive-store.ts` (the storage contract),
@@ -734,6 +736,158 @@ below the watermark and catches up consecutively, checking parent hashes and the
 `midnight_ledgerStateRoot` at every block. Migrations 005/006 delete legacy derived checkpoints
 instead of inventing missing time/network values. Migration 007 forward-fixes role-removal guards
 for databases that already recorded the draft 003/004 bodies.
+
+### `dust_events`
+
+Migration 009 (`spec/00016-dust-wallet-sync.md` §5.3) keeps the DUST ledger events the ingest's
+replay already computes and used to discard:
+
+```sql
+CREATE TABLE dust_events (
+  net              text     NOT NULL,
+  id               bigint   NOT NULL CHECK (id > 0),      -- dense per net, execution order
+  block_height     bigint   NOT NULL CHECK (block_height >= 0),
+  block_hash       bytea    NOT NULL CHECK (octet_length(block_hash) = 32),
+  tx_position      integer  NOT NULL CHECK (tx_position >= 0),
+  event_index      integer  NOT NULL CHECK (event_index >= 0),
+  tx_hash          bytea    NOT NULL CHECK (octet_length(tx_hash) = 32),
+  kind             smallint NOT NULL CHECK (kind IN (1,2,3)),
+  owner            numeric(78),   -- kind 1
+  commitment       numeric(78),   -- kinds 1, 3
+  commitment_index bigint,        -- kinds 1, 3
+  generation_index bigint,        -- kinds 1, 2
+  nullifier        numeric(78),   -- kind 3
+  v_fee            numeric(39),   -- kind 3
+  declared_time    bigint,        -- kind 3, unix seconds
+  block_time       bigint   NOT NULL,
+  dtime            bigint,        -- kind 2 new end time; kind 1 initial, usually absent
+  payload          jsonb    NOT NULL,
+  raw              bytea    NOT NULL CHECK (octet_length(raw) > 0),  -- Event.serialize()
+  PRIMARY KEY (net, id),
+  UNIQUE (net, block_height, block_hash, tx_position, event_index),
+  FOREIGN KEY (net, block_height, block_hash) REFERENCES blocks (net, height, block_hash),
+  CONSTRAINT dust_events_kind_columns CHECK (...)   -- per-kind column presence
+)
+```
+
+**Kinds:** 1 = `dustInitialUtxo`, 2 = `dustGenerationDtimeUpdate`, 3 = `dustSpendProcessed`.
+Every other ledger event is dropped.
+
+**Why the events are worth storing:** replaying preprod's ~1.49 M DUST events is what costs a
+wallet roughly two hours of sync today, one wallet at a time. They are already produced while each
+block is applied (`TransactionResult.events`, and the second element of `applySystemTx`), so this
+table is that work written down once; a consumer folds it into the two DUST Merkle trees once and
+serves every wallet from them.
+
+**`raw` is a plain `bytea`, not a `chain_blobs` role.** A serialized `Event` is ~140–1300 bytes and
+unique by construction (it carries its own transaction hash and tree position), so content
+addressing would add a blob row, a role row and a trigger round-trip per event for no
+deduplication. The bytes are `Event.serialize()` — `tagged_serialize` — so a plain concatenation of
+them is exactly what `DustLocalState.replayRawEvents` consumes.
+
+**`id` is assigned by the insert, not by an `IDENTITY` column.** The consumer contract is a dense
+per-net sequence in execution order (`WHERE id > $1 ORDER BY id`), and a sequence allocates on
+insert ATTEMPT, so every conflicting or rolled-back block would burn ids and leave holes. The
+writer computes `COALESCE(max(id), 0) + ordinality` inside the block's own transaction, which is
+exact because the archive has one writer per net holding that height's advisory lock.
+
+**Not partitioned**, unlike `transactions` / `bridge_observations`: the primary key is `(net, id)`,
+and a partitioned table must carry its partition key in every unique key — partitioning by height
+would force `block_height` into the PK and break the dense-id read path. Preprod's entire DUST
+history is ~1.49 M rows (~1 GB with indexes).
+
+**Density is a watermark, not a row count.** `chain_archive.watermarks` gains `dust_capture:<net>`
+(`{"height": H}`), advanced inside the same transaction as the block — including for a block that
+produced no DUST events, which is most of them. A block whose capture would not continue the
+covered range commits WITHOUT its DUST rows and the ingest reports `dust=gap`; a partially filled
+table would make a consumer build two Merkle trees that look fine and are wrong.
+
+**Genesis is included.** The ingest never executes block 0 (the node installs a ready-made ledger
+state), but genesis is where the chain's DUST trees get leaves 0..N, so the ingest harvests those
+events by applying the genesis body to a throwaway blank state — which is exactly what the
+reference indexer does, and why its own event stream starts with them.
+
+**Read-only role** for a consumer that must not write or see anything else (created by the
+operator, never by a migration):
+
+```sql
+CREATE ROLE dust_reader LOGIN PASSWORD '…';
+GRANT USAGE ON SCHEMA chain_archive TO dust_reader;
+GRANT SELECT ON chain_archive.dust_events,
+                chain_archive.dust_parameters,
+                chain_archive.blocks
+  TO dust_reader;
+```
+
+Three tables, and deliberately **not** `replay_checkpoints` or `chain_blobs` — see
+`dust_parameters` below for why that matters.
+
+### `dust_parameters`
+
+**Migration 010.** The chain's three DUST parameters as they stood at a height, written by the
+ingest while it already holds the parsed `LedgerState`.
+
+```sql
+CREATE TABLE dust_parameters (
+  net                       text        NOT NULL,
+  block_height              bigint      NOT NULL CHECK (block_height >= 0),
+  block_hash                bytea       NOT NULL CHECK (octet_length(block_hash) = 32),
+  night_dust_ratio          numeric(39) NOT NULL CHECK (night_dust_ratio >= 0),
+  generation_decay_rate     numeric(39) NOT NULL CHECK (generation_decay_rate >= 0),
+  dust_grace_period_seconds bigint      NOT NULL CHECK (dust_grace_period_seconds >= 0),
+  reason                    text        NOT NULL CHECK (reason IN ('genesis','change','resume')),
+  created_at                timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (net, block_height, block_hash),
+  FOREIGN KEY (net, block_height, block_hash) REFERENCES blocks (net, height, block_hash)
+);
+CREATE INDEX dust_parameters_at_or_below ON dust_parameters (net, block_height DESC);
+```
+
+**Why it exists.** A `DustLocalState` takes its parameters from its constructor and ignores
+parameter events entirely, so a consumer mirroring the chain's DUST trees has to be told which
+parameters the chain uses — it cannot derive them from the events it folds. The previous answer
+was for the consumer to read the newest `replay_checkpoints` blob and deserialize the
+`LedgerState` in it. On a real archive that blob is **31 MB**, the deserialize is **minutes of one
+synchronous WebAssembly call**, and the reading process answers nothing at all while it runs
+(measured on preprod, project 00016 question Q-22). Three numbers do not need a whole ledger state
+to travel in, and the ingest has already paid for parsing one.
+
+**Sparse by design — one row per change, not per block.** DUST parameters move only through an
+`OverwriteParameters` system transaction, which is a governance action. `reason` says which kind
+of row it is:
+
+| `reason` | when it is written | what it claims |
+|---|---|---|
+| `genesis` | the state the fold starts from (height 0; on Midnight that is the node's genesis snapshot, which replay installs rather than executing block 0) | these values are in force from genesis |
+| `change` | a block whose replay moved at least one of the three values | they changed **at this block** |
+| `resume` | once, on an archive that already holds blocks but no rows yet (it was ingested before this migration) | they are in force **from this height**; nothing is claimed about earlier ones |
+
+**`numeric(39)`** because `night_dust_ratio` and `generation_decay_rate` are `u128` in the ledger
+and 2^128 has 39 decimal digits. They travel as decimal strings from the WASM to the wire, so no
+representation in the path can round them.
+
+**The FK targets the partitioned parent** `blocks (net, height, block_hash)`, exactly as `004` and
+`009` do, so a row for a block the archive does not hold is unstorable and a fork's rows stay
+distinguishable. **No blob**, so unlike `004` this migration does not touch the `chain_blob_roles`
+vocabulary or the role-removal guard.
+
+**Read path**, and the only one that matters: the newest row at or below the reader's own height.
+
+```sql
+SELECT night_dust_ratio, generation_decay_rate, dust_grace_period_seconds, reason
+FROM dust_parameters
+WHERE net = $1 AND block_height <= $2
+ORDER BY block_height DESC
+LIMIT 1;
+```
+
+At or **below**, never nearest: parameters are in force from the block that sets them until the
+block that changes them. An empty answer is honest — it means this archive never recorded them
+(ingested before migration 010, or with replay validation off) — and a consumer should say so
+rather than pass its own defaults off as the chain's.
+
+**Replay off ⇒ empty**, exactly like `dust_events`: with no fold there is no state to read the
+parameters from. `npm run dust:backfill` fills both tables in one pass.
 
 ### Partition rollover design
 

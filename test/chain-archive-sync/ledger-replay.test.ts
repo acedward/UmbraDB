@@ -144,6 +144,124 @@ describe("ledger replay: the reference's row-versus-refusal classification", () 
   });
 });
 
+/**
+ * 00016 FR-001: the DUST events a block produces are kept rather than dropped.
+ *
+ * All real: the five genesis system transactions below produce 78 DUST events between them (65
+ * `dustInitialUtxo`, 13 `dustGenerationDtimeUpdate`), which is what makes these assertions about
+ * the ledger's behaviour rather than about a fake.
+ */
+describe("ledger replay: DUST event capture (00016 FR-001)", () => {
+  const DUST_TAGS = ["dustInitialUtxo", "dustGenerationDtimeUpdate", "dustSpendProcessed"];
+
+  it("captures nothing at all unless capture tags were configured", async () => {
+    // The default must cost an ordinary replay-validating ingest nothing: no serialization, no
+    // array, and a distinguishable `undefined` rather than an empty list that would read as "this
+    // block had no DUST events".
+    const replay = LedgerReplay.fromGenesis(await loadLedgerV8(), "undeployed");
+    replay.applyBlock({
+      transactions: [...SYSTEM_TXS, regular(GOOD_REGULAR_HEX)],
+      blockTimestampMs: 1754395200000,
+      parentBlockHashHex: GENESIS_PARENT,
+      parentBlockTimestampMs: 0,
+    });
+    expect(replay.lastBlockEvents).toBeUndefined();
+  });
+
+  it("captures the configured tags in execution order, with the event's own transaction hash", async () => {
+    const replay = LedgerReplay.fromGenesis(await loadLedgerV8(), "undeployed", {
+      captureEventTags: DUST_TAGS,
+    });
+    replay.applyBlock({
+      transactions: SYSTEM_TXS,
+      blockTimestampMs: 1754395200000,
+      parentBlockHashHex: GENESIS_PARENT,
+      parentBlockTimestampMs: 0,
+    });
+    const events = replay.lastBlockEvents!;
+    expect(events.length).toBe(78);
+    expect(new Set(events.map((e) => e.tag))).toEqual(
+      new Set(["dustInitialUtxo", "dustGenerationDtimeUpdate"]),
+    );
+    // Every captured event names the system transaction it came from, and `txPosition` indexes
+    // the list that was applied -- both of which the archive's rows are keyed on.
+    for (const event of events) {
+      expect(event.txKind).toBe("system");
+      expect(event.txPosition).toBeGreaterThanOrEqual(0);
+      expect(event.txPosition).toBeLessThan(SYSTEM_TXS.length);
+      expect(event.raw.length).toBeGreaterThan(0);
+    }
+    for (let i = 1; i < events.length; i++) {
+      const a = events[i - 1]!;
+      const b = events[i]!;
+      expect(a.txPosition < b.txPosition ||
+        (a.txPosition === b.txPosition && a.eventIndex + 1 === b.eventIndex)).toBe(true);
+    }
+  });
+
+  it("gives each event the same transaction hash the archive keys that transaction by (D1.2)", async () => {
+    // `dust_events.tx_hash` must JOIN `transactions.tx_hash`, and the archive's writer takes the
+    // latter from `SystemTransaction.transactionHash()`. The event carries its own
+    // `EventSource.transaction_hash`; this asserts the two are the same value rather than
+    // assuming it -- which is what lets the capture read the cheaper one.
+    const ledger = await loadLedgerV8();
+    const replay = LedgerReplay.fromGenesis(ledger, "undeployed", { captureEventTags: DUST_TAGS });
+    replay.applyBlock({
+      transactions: SYSTEM_TXS,
+      blockTimestampMs: 1754395200000,
+      parentBlockHashHex: GENESIS_PARENT,
+      parentBlockTimestampMs: 0,
+    });
+    const events = replay.lastBlockEvents!;
+    const archiveHashes = SYSTEM_TXS.map((tx) =>
+      String(ledger.SystemTransaction.deserialize(tx.rawBytes).transactionHash())
+        .replace(/^0x/, "").toLowerCase());
+    // The committed fixture records the hashes `midnight-indexer 4.3.2` archived, so this chains
+    // all the way out to an independent implementation rather than stopping at our own build.
+    expect(archiveHashes).toEqual(FIXTURE.map((f) => f[2]!.toLowerCase()));
+    for (const event of events) {
+      expect(event.txHash).toBe(archiveHashes[event.txPosition]);
+    }
+  });
+
+  it("publishes nothing when the block refuses", async () => {
+    // Capture is published at the same commit point as the fullness. A refused block must not
+    // leave the previous block's events attached to this height -- the ingest would then write
+    // them under the wrong block and the node would fold them twice.
+    const ledger = await loadLedgerV8();
+    const replay = LedgerReplay.fromGenesis(ledger, "undeployed", { captureEventTags: DUST_TAGS });
+    replay.applyBlock({
+      transactions: SYSTEM_TXS,
+      blockTimestampMs: 1754395200000,
+      parentBlockHashHex: GENESIS_PARENT,
+      parentBlockTimestampMs: 0,
+    });
+    expect(replay.lastBlockEvents!.length).toBe(78);
+    expect(() => replay.applyBlock({
+      transactions: [{ kind: "regular", rawBytes: new Uint8Array([1, 2, 3]) }],
+      blockTimestampMs: 1754395206000,
+      parentBlockHashHex: "aa".repeat(32),
+      parentBlockTimestampMs: 1754395200000,
+    })).toThrow(ReplayRefusalError);
+    expect(replay.lastBlockEvents).toBeUndefined();
+  });
+
+  it("reports an empty list, not undefined, for a block that produced no DUST events", async () => {
+    // The ingest's contiguity guard treats "covered, nothing to write" and "not captured" as
+    // different things, so the replay must too.
+    const replay = LedgerReplay.fromGenesis(await loadLedgerV8(), "undeployed", {
+      captureEventTags: DUST_TAGS,
+    });
+    replay.applyBlock({
+      transactions: [],
+      blockTimestampMs: 1754395200000,
+      parentBlockHashHex: GENESIS_PARENT,
+      parentBlockTimestampMs: 0,
+    });
+    expect(replay.lastBlockEvents).toEqual([]);
+  });
+});
+
 describe("ledger replay: block time is load-bearing (T1)", () => {
   it("folds a different state for a different block timestamp", async () => {
     // The premise of T1's refusal-rather-than-guess rule, stated as a fact rather than assumed.

@@ -85,13 +85,14 @@ describe("shielded-monitor CLI entry points (FR-026)", () => {
       const contents = readFileSync(fileURLToPath(new URL(source, repoRoot)), "utf8");
       expect(contents.startsWith("#!/usr/bin/env node"), `${source} must be runnable`).toBe(true);
     }
-    // Non-vacuity: the loop must actually have examined the eight bins this package ships.
+    // Non-vacuity: the loop must actually have examined the nine bins this package ships.
     // 5 -> 6 (00009-06): `umbradb-shielded-monitor-derive-key`. 6 -> 9 (00009-08 v2):
     // `umbradb-storage-api` and `umbradb-shielded-monitor-balancer`. 9 -> 8 (00009-09): the
-    // scanner and API bins are replaced by the single `umbradb-shielded-monitor-node`. The pin is
-    // bumped deliberately, which is the whole point of having one — an accidental bin, and an
-    // accidental REMOVAL, both still fail here.
-    expect(Object.keys(pkg.bin).length).toBe(8);
+    // scanner and API bins are replaced by the single `umbradb-shielded-monitor-node`. 8 -> 9
+    // (00016): `umbradb-dust-backfill`, which fills `chain_archive.dust_events` for an archive
+    // ingested before that table existed. The pin is bumped deliberately, which is the whole
+    // point of having one — an accidental bin, and an accidental REMOVAL, both still fail here.
+    expect(Object.keys(pkg.bin).length).toBe(9);
     expect(pkg.bin["umbradb-shielded-monitor"], "the scanner bin is gone (00009-09, OP-5)").toBeUndefined();
     expect(pkg.bin["umbradb-shielded-monitor-api"], "the API bin is gone (00009-09, OP-5)").toBeUndefined();
   });

@@ -1,11 +1,13 @@
-# `@midnight-ntwrk/ledger-v8` @ 8.1.0-syshash.4 — vendored build
+# `@midnight-ntwrk/ledger-v8` @ 8.1.0-syshash.6 — vendored build
 
 This directory is a **built** `ledger-wasm` package, committed as binary. It is the ledger UmbraDB
 loads at runtime, replacing the published `@midnight-ntwrk/ledger-v8@8.0.3`.
 
 ## Why it exists
 
-The published package is missing five things a node-only consumer needs to reproduce a block.
+The published package is missing five things a node-only consumer needs to reproduce a block, and
+— since `syshash.6` — four more that a node-side **DUST tree mirror** needs to serve wallets
+(project 00016; see "What `.6` adds" below).
 
 **`SystemTransaction.transactionHash()`.** The method exists on the Rust ledger and the reference
 indexer calls it directly to key the system transactions it archives, but the `wasm-bindgen`
@@ -50,7 +52,37 @@ chain committed. Node 1.0 stores the untagged serialized typed arena key returne
 binding serializes the identical `Sp<LedgerState>::as_typed_key()` representation so ingest can
 refuse a mismatched block before writing it.
 
-These are being upstreamed separately (see the sprint plan's §10); when they ship in a published
+## What `.6` adds over `.4` (project 00016 — DUST wallet sync)
+
+A wallet that wants a spend-ready `DustLocalState` in seconds needs the shared part of the two DUST
+Merkle trees from somewhere that already replayed them. The node can hold a key-less
+`DustLocalState` mirror, but 8.1.0 gives JavaScript no way to *cut* a collapsed update out of one:
+`MerkleTreeCollapsedUpdate::new` is only reachable through the **chain-side** `DustUtxoState`.
+
+**`DustLocalState.collapsedCommitmentUpdate(start, end)`** and
+**`DustLocalState.collapsedGenerationUpdate(start, end)`** expose exactly that constructor over a
+local state's own two trees. Both validate `start ≤ end` **and** `end < first_free` in Rust and
+return an error rather than panicking, so the range a caller may ask for is exactly `[0, firstFree−1]`.
+
+**`DustLocalState.commitmentTreeFirstFree`** and **`DustLocalState.generatingTreeFirstFree`**
+(read-only getters). The Rust fields are private and had no accessor, so without them JavaScript
+cannot form a valid range at all, and a mirror cannot report the trees' bounds from the trees
+themselves rather than from a second data source.
+
+**`DustLocalState.replayRawEventsRetainingAll(sk, raw)`** — the same replay as `replayRawEvents`
+with a core `retain_all` flag that skips every `collapse` call. This is the one a **mirror** must
+use and a **wallet** must not. The stock replay collapses each foreign leaf, and
+`MerkleTreeNode::collapse` merges collapsed siblings upward, so a key-less mirror's trees keep only
+large aligned collapsed subtrees and `MerkleTreeCollapsedUpdate::new` cannot descend into one.
+Measured on the first 5 000 preprod DUST events (3 989 commitment leaves): a stock mirror can serve
+the segments around a uniformly random wallet leaf in **0 of 200** draws, a retained mirror in
+**200 of 200**, and both reach identical roots — so the wrong choice here fails only when a wallet
+asks for a segment. The price is memory: ≈ 2 032 B of WebAssembly heap per leaf for a retained
+tree against ≈ 855 B for a collapsed one (both measured as peak `external` delta over the same
+5 370 leaves).
+
+These are being upstreamed separately (see the sprint plan's §10 and, for the four DUST exports,
+`ledger-wasm/UPSTREAM-PR-00016.md` on the fork branch below); when they ship in a published
 release, **this directory is deleted** and `package.json` points at the published version again.
 
 ## Source
@@ -58,16 +90,18 @@ release, **this directory is deleted** and `package.json` points at the publishe
 | | |
 |---|---|
 | Repository | `git@github.com:acedward/midnight-ledger.git` |
-| Branch | `feat/expose-system-transaction-hash` |
-| Source commit | `6aa21d1b637c8307a1e83a887160b4bd28c05e22` |
-| Applied source patch | `SOURCE-ledger-state-root.patch` (SHA-256 pinned in `SHA256SUMS`) |
+| Branch | `feat/00016-dust-collapsed-updates` (a fast-forward of the owner's `feat/expose-system-transaction-hash`, which is untouched at `ebe6aa53271c7465a67bae0150f7ac4d85200de9`) |
+| Source commit | `2b579359d79d59486d63440f9de39b6441aae493` (branch head) |
+| Bytes built from | `6f4acdb9` — the commits between it and the head touch only `ledger-wasm/verification/verify-dust-collapsed-update.mts` and `UPSTREAM-PR-00016.md`, no Rust and no Cargo manifest, so the head builds the same artifact |
+| Applied source patch | **none** — the former `SOURCE-ledger-state-root.patch` is now in the fork tree, hand-merged and committed as `9d76f2ef` |
 | Base | ledger 8.1.0 (`d89e0b6`, the reference `midnight-reference-mainnet/v1.0.0` checkout) |
-| Built with | `wasm-pack 0.15.0`, `rustc 1.93.0 (254b59607 2026-01-19)`, `--target bundler` |
+| Built with | `wasm-pack 0.15.0`, `rustc 1.93.0 (254b59607 2026-01-19)`, `cargo 1.93.0`, `--target bundler` (7 m 01 s) |
 | Post-build | snippet-directory rewrite + `#self` Node import mapping (see the sprint plan's §8) |
+| `midnight_ledger_wasm_bg.wasm` | `c07cff68561dd51748ffd07c91f5e64236f45c9e7f542c2cf93e8a66d4918552` |
 
-The source tree was checked out at the exact source commit above, then the committed root-export
-patch was applied before building. The only source differences from the 8.1.0 base are the five
-added exports, their generated declarations, and native-oracle verification fixtures.
+The source tree was checked out at the exact source commit above and built with no out-of-tree
+patch. The only source differences from the 8.1.0 base are the nine added exports, their generated
+declarations, and native-oracle verification fixtures.
 
 ## What guarantees this artifact is correct
 
@@ -77,9 +111,9 @@ added exports, their generated declarations, and native-oracle verification fixt
 rebuild can attest these exact bytes, and these exact bytes cannot be regenerated. That is
 precisely why the artifact is committed rather than rebuilt on demand.
 
-(The current bytes hash `2c3cec6c404ad25e6983e0a5f0287d8c1845b3b19341d53dcdf9f3d548032080`.
-That differs from the 2026-08-08 pair because the source differs — it is not a further
-reproducibility measurement.)
+(The current bytes hash `c07cff68561dd51748ffd07c91f5e64236f45c9e7f542c2cf93e8a66d4918552`.
+That differs from the 2026-08-08 pair, and from `.4`'s `2c3cec6c…` and `.5`'s `54edd6d4…`, because
+the source differs — it is not a further reproducibility measurement.)
 
 What *is* checked, and is the meaningful property, is **behavioural equivalence against an
 independent implementation**: the five system transactions of a 1.0.0 devnet's genesis block, as
@@ -106,7 +140,17 @@ trap in which actual and expected state shared the rounded binding and the per-d
 coverage gap. The five test-only additions were assembled at ledger-fork
 `ebe6aa53271c7465a67bae0150f7ac4d85200de9`; they do not alter the artifact source commit or bytes.
 
-The ledger-root export has a structural native-Rust oracle in the committed patch: for an actual
+The four DUST exports are checked by a fourth script against **real preprod data** rather than a
+synthetic tree: 5 000 DUST ledger events fetched once from the public indexer are replayed into a
+retained mirror; both roots must equal the stock replay's; segments cut around three real own
+leaves must apply to a blank `DustLocalState` and, after the own leaves are inserted, reproduce the
+mirror's roots; the generating tree rebuilt independently from the *parsed* initial-UTxO entries
+and their latest dtime annotations must reach the same root the ledger's own replay does; every
+out-of-range cut must throw; and the 200 random-wallet draws above must be 200/200 on the retained
+mirror and pinned at 0/200 on the stock one. 26/26 checks pass on these exact bytes (2026-09-15).
+
+The ledger-root export has a structural native-Rust oracle in the fork tree (commit `9d76f2ef`,
+formerly the vendored patch): for an actual
 `LedgerState<InMemoryDB>`, it independently constructs `Sp::new(state.clone()).as_typed_key()`,
 serializes that key, and requires the helper to return byte-identical output. This rejects tagged
 state serialization, full-state bytes, and the unrelated Substrate header root. UmbraDB then
@@ -121,7 +165,7 @@ Integrity of the committed files:
 cd vendor/ledger-v8-syshash && sha256sum -c SHA256SUMS
 ```
 
-The three behaviour checks below run **from the repo root**. They live in the ledger fork, which is a
+The four behaviour checks below run **from the repo root**. They live in the ledger fork, which is a
 separate checkout and not part of this repo — point `LEDGER_FORK` at wherever you cloned it (see
 "Rebuilding from source" below for what that fork is):
 
@@ -147,14 +191,23 @@ Atomic close behaviour, against committed native-Rust state hashes:
 ./node_modules/.bin/tsx "$LEDGER_FORK/ledger-wasm/verification/verify-close-block.mts" "$PWD/vendor/ledger-v8-syshash/midnight_ledger_wasm_fs.js"
 ```
 
-All three scripts take an **absolute** path for the artifact: the argument is passed to `import()`,
+The DUST collapsed-update exports, against real preprod events (this one caches its indexer fetch
+under `/media/eddie/mn-nvme/00016/samples/`; it re-fetches only if the cache is gone):
+
+```bash
+./node_modules/.bin/tsx "$LEDGER_FORK/ledger-wasm/verification/verify-dust-collapsed-update.mts" "$PWD/vendor/ledger-v8-syshash/midnight_ledger_wasm_fs.js"
+```
+
+All four scripts take an **absolute** path for the artifact: the argument is passed to `import()`,
 which resolves a relative specifier against the script's own location rather than the working
 directory. `$PWD` supplies that absolute path when you run from the repo root, which is why these
 are written that way rather than as a bare `vendor/...` path.
 
-Equivalent assertions for all four behaviour groups run in CI against the installed vendored package.
-The standalone ground-truth scripts live in the ledger fork alongside the source; the independent
-close hashes are also copied into UmbraDB's test fixtures.
+Equivalent assertions for the hash, cost, close and root behaviour groups run in CI against the
+installed vendored package; the DUST group is covered in CI by the node-side mirror and segment
+tests (`test/shielded-monitor/dust-*.test.ts`), which cut and re-apply segments over a committed
+preprod event fixture. The standalone ground-truth scripts live in the ledger fork alongside the
+source; the independent close hashes are also copied into UmbraDB's test fixtures.
 
 ## Rebuilding from source
 
@@ -164,5 +217,6 @@ known-vector check above, not with `sha256sum` against this directory.
 Bumping this directory **must** bump `LEDGER_STATE_VERSION` in `chain-archive-sync/sync-service.ts`.
 Checkpoints store serialized ledger state, which is a ledger-internal encoding; resuming one under
 a build that reads it differently produces wrong replay outcomes rather than an error. This build
-is `ledger-v8@8.1.0-syshash.4`, which invalidates checkpoints written by `…syshash.1`,
-`…syshash.2`, and `…syshash.3`.
+is `ledger-v8@8.1.0-syshash.6`, which invalidates checkpoints written by `…syshash.1` through
+`…syshash.5`. (`.5` was staged on 2026-09-15 with the collapsed-update pair and the two getters but
+never vendored: without `replayRawEventsRetainingAll` the node's mirror cannot serve segments.)

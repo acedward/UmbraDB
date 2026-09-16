@@ -10,6 +10,110 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
 
 ### Added
 
+- **The archive records the chain's DUST parameters, so the node never deserializes a ledger state
+  (00016).** New migration `010_dust_parameters` and table `chain_archive.dust_parameters`: three
+  numeric columns plus a `reason` (`genesis` | `change` | `resume`), written by the replay-on ingest
+  and by `npm run dust:backfill` from the `LedgerState` they already hold — one row at genesis, one
+  per parameter change, and one at a resume point on an archive that gained the table late. The
+  shielded-monitor node reads that row to construct its DUST mirror and to answer
+  `GET /v1/dust/tip`, and `/internal/status.dust` now reports `parametersSource`
+  (`chain` | `unknown` | `changed-at-<height>`), `parametersHeight` and the three values.
+
+  **This replaces a start-up check that could hang a node for minutes.** The previous
+  implementation read the newest replay checkpoint and called `LedgerState.deserialize` on it; on a
+  preprod-sized archive that blob is 31 MB, the call is minutes of one synchronous WebAssembly
+  invocation, and for the whole of it the node answered no HTTP request at all — not `/v1/health`,
+  not the monitor-store routes — so a load balancer marked it unhealthy with nothing in the log to
+  explain it. **Operators: `dust_reader` now needs `GRANT SELECT` on
+  `chain_archive.dust_parameters`, and must NOT be granted `replay_checkpoints` or `chain_blobs`**
+  — the optional stanza offering those has been removed from
+  `docs/shielded-monitor-deployment.md`. An archive that records no row still works: the mirror
+  falls back to the ledger's initial DUST parameters and says `parametersSource: "unknown"` rather
+  than passing a default off as the chain's. A mid-chain parameter change makes the mirror rebuild
+  from zero, because a `DustLocalState`'s parameters are fixed at construction in the WASM
+  bindings; that is documented in `docs/shielded-monitor-node.md`.
+
+- **The DUST mirror skips a snapshot that would cost more than replaying (00016).** New
+  `DUST_STATE_SNAPSHOT_MAX_BYTES` (default 2 MiB): above it the node leaves the snapshot file alone
+  and folds from `dust_events` instead, logging `snapshot skipped (N bytes > max): replaying from
+  zero`. Measured on a preprod archive at 146 253 retained leaves, restoring a 13.5 MB snapshot took
+  **639 s** of one synchronous WebAssembly call with the node answering nothing, against **154 s**
+  to fold the same state out of PostgreSQL while staying responsive — `DustLocalState.deserialize`
+  of a retained state grows faster than the file does. Snapshots are still written and are still the
+  fast path on devnet and small chains. `/internal/status.dust` gains `startPath`
+  (`snapshot` | `replay`) and `startMs` so an operator can see which regime a restart took, and a
+  snapshot whose recorded DUST parameters disagree with the archive's is now refused the same way a
+  wrong-`net` or wrong-ledger-build one already was.
+
+- **A wallet builds its DUST state from the node in seconds (00016, step 3 of 3).** New
+  `dust-sync-client/` and `npm run dust:sync`: from a DUST secret key and a balancer URL it
+  produces a spend-ready `DustLocalState` whose two Merkle roots equal the node's at one mirror
+  tip, in a handful of round trips instead of the wallet SDK's ~123-minute replay of every DUST
+  event on the chain. It follows its own spend chains (one request per *generation* of a chain,
+  not per spend), applies the collapsed Merkle updates the node cuts, inserts its own leaves in the
+  gaps, and **throws rather than returning a state it cannot prove** — a wrong root means wrong
+  Merkle paths, and a wallet would only discover that after paying for a proof.
+  - The **DUST secret key never leaves the process**: it reaches two ledger calls (`dustNullifier`,
+    `successorUtxo`) and is never serialized, logged or returned. The CLI refuses a seed file that
+    is not mode 600. What the node sees is the wallet's nullifiers — the leak the owner accepted
+    for this project — and its DUST public key.
+  - The client uses **only the standard published `@midnight-ntwrk/ledger-v8` 8.1.0 surface**, so a
+    real wallet can run it against the package it already ships: the three fork exports this
+    repository vendors are the NODE's, and a test checks every ledger member the client touches
+    against the published declaration file (committed at
+    `dust-sync-client/test/published-ledger-v8-8.1.0.d.ts`).
+  - `--sdk-wrapper` emits the JSON `DustWallet.restore` consumes, so a state built in seconds can
+    be handed to the SDK. Its `offset` is the INDEXER's event id and defaults to `0` (replay
+    history) rather than to our own numbering — too high an offset makes the SDK skip events.
+  - `dust-sync-client/devnet/` scripts the whole golden environment (compose devnet, replay-on
+    ingest, `dust_reader` role, monitor-node, balancer) and compares the client's state with the
+    SDK's own field by field.
+
+- **The monitor-node mirrors the chain's DUST trees and serves them (00016, step 2 of 3).** With
+  `DUST_DATABASE_URL` set, `umbradb-shielded-monitor-node` folds `chain_archive.dust_events` into
+  one key-less `DustLocalState` and answers five new routes —
+  `GET /v1/dust/{tip,initial-utxos,generation,segments}` and `POST /v1/dust/lookup` — which the
+  balancer forwards to a uniformly random healthy node. A wallet applies the returned collapsed
+  Merkle updates, inserts its own leaves in the gaps and compares roots; the DUST secret key never
+  leaves it. Unset, the module is off and those routes answer `503 DUST_DISABLED`; nothing else
+  about the node changes. The mirror snapshots to `DUST_STATE_SNAPSHOT_DIR` and refuses a snapshot
+  from another net or ledger build. `/internal/status` gains a `dust` block. Contracts in
+  `docs/shielded-monitor-api.md`, operation in `docs/shielded-monitor-node.md`, the role SQL in
+  `docs/shielded-monitor-deployment.md`.
+  - **A deliberate, waived exception to "project B has no database".** This is the one directory
+    (`shielded-monitor/node/dust/`) that opens a PostgreSQL connection, by the owner's decision of
+    2026-09-15 (`spec/00016-dust-wallet-sync.md` §1). It is **read-only** — the role may read
+    `dust_events` and `blocks` and nothing else — and the accepted consequence is that the database
+    can see which nullifiers a wallet asks about. The node itself never logs, persists or returns
+    them. The import guard now allow-lists exactly that directory and asserts both the two modules
+    it may reach and the three files that may import it; the schema-name literal scan, the
+    `*_PG` boot refusal and the three guards under `test/postgres/` are unchanged.
+
+- **The ingest keeps the DUST ledger events it already computes (00016, step 1 of 3).** With
+  `REPLAY_VALIDATION=1`, every `dustInitialUtxo` / `dustGenerationDtimeUpdate` /
+  `dustSpendProcessed` event a block produces is written to the new `chain_archive.dust_events`
+  (migration `009_dust_events`) **inside that block's own transaction**, with a dense per-net id in
+  ledger execution order and the raw `Event.serialize()` bytes. Nothing else changes: it is a new
+  table plus its indexes, and an archive that never runs replay validation simply keeps it empty.
+  Why it exists: replaying preprod's ~1.49 M DUST events is what costs a wallet roughly two hours
+  of sync today, once per wallet — and the ingest was computing those events and throwing them
+  away. Written down once, they let a consumer fold the two DUST Merkle trees once and serve every
+  wallet from them (`spec/00016-dust-wallet-sync.md`).
+  Three details worth knowing before relying on the table. **Genesis is included**: replay installs
+  the node's ready-made genesis state rather than executing block 0, but genesis is where the
+  chain's DUST trees get leaves 0..N, so the ingest harvests those events by applying the genesis
+  body to a throwaway blank state — which is exactly what the reference indexer does. **Density is
+  tracked by a watermark**, `dust_capture:<net>`, advanced in the same transaction even for the
+  many blocks that produce no DUST event at all; a height whose rows would leave a hole commits
+  WITHOUT them and the ingest's status line turns to `dust=gap`, because a partially filled table
+  would make a consumer build trees that look fine and are wrong. **With replay off** the CLI says
+  once at start that the events are not captured, and the table stays empty.
+  New CLI `umbradb-dust-backfill` (`npm run dust:backfill`) fills the table for an archive ingested
+  before this change: a replay over blocks the archive already holds, reading each block's body and
+  `System::Events` back from a **local** archive node, resuming from the newest replay checkpoint
+  at or below the covered height, stopping at the sync watermark, and sharing the ingest's
+  watermark so the two hand over with no gap at the seam.
+
 - **The merged monitor-node: viewing keys live only in RAM (00009-09).** A new process,
   `umbradb-shielded-monitor-node`, is project B: it serves the public API and the `/ui` dashboard,
   runs both scan queues, and is the **sole custodian of every viewing key it is sent**. A key is
@@ -173,6 +277,29 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
 
 ### Changed
 
+- **A replay-on ingest resuming from a checkpoint now says so, with the blob size, before it goes
+  quiet (00016).** `chain-archive-sync` logs `resuming ledger replay from checkpoint at height H:
+  deserializing N bytes — on a large archive this takes many minutes` before the
+  `LedgerState.deserialize` call that both the ingest's own resume and `npm run dust:backfill`'s
+  resume make, and `checkpoint deserialized in T s` after it. Measured on a preprod archive at
+  height 375 199, that call held one core at 100 % for **more than 73 minutes without finishing** on
+  a 52 882 323 B checkpoint — no block committed, the database connection idle, and previously not
+  one line of output to distinguish it from a hang. The log lines do not make it faster: the cost is
+  in the ledger's WebAssembly deserializer and is tracked as issue `00019`. Cold starts, which
+  deserialize the small genesis snapshot, are unaffected and unchanged.
+
+- **The vendored ledger is now `@midnight-ntwrk/ledger-v8@8.1.0-syshash.6`** (was `…syshash.4`),
+  built from `acedward/midnight-ledger` branch `feat/00016-dust-collapsed-updates` at
+  `2b579359d79d59486d63440f9de39b6441aae493`. It adds four exports the node's DUST mirror needs:
+  `DustLocalState.collapsedCommitmentUpdate` / `collapsedGenerationUpdate`, the
+  `commitmentTreeFirstFree` / `generatingTreeFirstFree` getters, and
+  `replayRawEventsRetainingAll`. The former out-of-tree `SOURCE-ledger-state-root.patch` is gone:
+  it is committed in the fork.
+  - **Compatibility warning.** `LEDGER_STATE_VERSION` moves with it, so replay checkpoints written
+    under `…syshash.1` through `…syshash.5` are **refused** on resume rather than silently
+    misread — serialized ledger state is a ledger-internal encoding. Re-ingest, or start a fresh
+    archive, if you hold checkpoints from an earlier build.
+
 - **BREAKING (00009-09): `umbradb-shielded-monitor` (the scanner) and
   `umbradb-shielded-monitor-api` are REPLACED by `umbradb-shielded-monitor-node`.** Both bins and
   both image commands (`scanner`, `api`) are gone; the image's commands are now `node`,
@@ -248,7 +375,7 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
   upgrade and coordinate readers that assumed the old key.
 - The finalized bundle writer now serializes competing `(net,height)` writes with a Postgres
   advisory lock and refuses incompatible stored history rather than permitting interleaving.
-- The runtime ledger is a checksummed vendored `8.1.0-syshash.4` build; its provenance and minimal
+- The runtime ledger is a checksummed vendored `8.1.0-syshash.6` build; its provenance and minimal
   source patches are committed under `vendor/ledger-v8-syshash/`.
 
 ### Fixed

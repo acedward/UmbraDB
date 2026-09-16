@@ -118,7 +118,7 @@ describe("viewing-key intake", () => {
     });
 
     it("pins the ledger build identifier recorded as provenance", () => {
-      expect(LEDGER_BUILD_ID).toBe("ledger-v8@8.1.0-syshash.4");
+      expect(LEDGER_BUILD_ID).toBe("ledger-v8@8.1.0-syshash.6");
     });
   });
 
