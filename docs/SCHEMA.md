@@ -49,6 +49,7 @@ the Tier-2 indexer fork.
   - [`runtime_metadata`](#runtime_metadata)
   - [`replay_checkpoints`](#replay_checkpoints)
   - [`dust_events`](#dust_events)
+  - [`dust_parameters`](#dust_parameters)
   - [Partition rollover design](#partition-rollover-design)
 - [How the two lineages coexist](#how-the-two-lineages-coexist)
 - [Boundary enforcement](#boundary-enforcement)
@@ -812,8 +813,81 @@ operator, never by a migration):
 ```sql
 CREATE ROLE dust_reader LOGIN PASSWORD '…';
 GRANT USAGE ON SCHEMA chain_archive TO dust_reader;
-GRANT SELECT ON chain_archive.dust_events, chain_archive.blocks TO dust_reader;
+GRANT SELECT ON chain_archive.dust_events,
+                chain_archive.dust_parameters,
+                chain_archive.blocks
+  TO dust_reader;
 ```
+
+Three tables, and deliberately **not** `replay_checkpoints` or `chain_blobs` — see
+`dust_parameters` below for why that matters.
+
+### `dust_parameters`
+
+**Migration 010.** The chain's three DUST parameters as they stood at a height, written by the
+ingest while it already holds the parsed `LedgerState`.
+
+```sql
+CREATE TABLE dust_parameters (
+  net                       text        NOT NULL,
+  block_height              bigint      NOT NULL CHECK (block_height >= 0),
+  block_hash                bytea       NOT NULL CHECK (octet_length(block_hash) = 32),
+  night_dust_ratio          numeric(39) NOT NULL CHECK (night_dust_ratio >= 0),
+  generation_decay_rate     numeric(39) NOT NULL CHECK (generation_decay_rate >= 0),
+  dust_grace_period_seconds bigint      NOT NULL CHECK (dust_grace_period_seconds >= 0),
+  reason                    text        NOT NULL CHECK (reason IN ('genesis','change','resume')),
+  created_at                timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (net, block_height, block_hash),
+  FOREIGN KEY (net, block_height, block_hash) REFERENCES blocks (net, height, block_hash)
+);
+CREATE INDEX dust_parameters_at_or_below ON dust_parameters (net, block_height DESC);
+```
+
+**Why it exists.** A `DustLocalState` takes its parameters from its constructor and ignores
+parameter events entirely, so a consumer mirroring the chain's DUST trees has to be told which
+parameters the chain uses — it cannot derive them from the events it folds. The previous answer
+was for the consumer to read the newest `replay_checkpoints` blob and deserialize the
+`LedgerState` in it. On a real archive that blob is **31 MB**, the deserialize is **minutes of one
+synchronous WebAssembly call**, and the reading process answers nothing at all while it runs
+(measured on preprod, project 00016 question Q-22). Three numbers do not need a whole ledger state
+to travel in, and the ingest has already paid for parsing one.
+
+**Sparse by design — one row per change, not per block.** DUST parameters move only through an
+`OverwriteParameters` system transaction, which is a governance action. `reason` says which kind
+of row it is:
+
+| `reason` | when it is written | what it claims |
+|---|---|---|
+| `genesis` | the state the fold starts from (height 0; on Midnight that is the node's genesis snapshot, which replay installs rather than executing block 0) | these values are in force from genesis |
+| `change` | a block whose replay moved at least one of the three values | they changed **at this block** |
+| `resume` | once, on an archive that already holds blocks but no rows yet (it was ingested before this migration) | they are in force **from this height**; nothing is claimed about earlier ones |
+
+**`numeric(39)`** because `night_dust_ratio` and `generation_decay_rate` are `u128` in the ledger
+and 2^128 has 39 decimal digits. They travel as decimal strings from the WASM to the wire, so no
+representation in the path can round them.
+
+**The FK targets the partitioned parent** `blocks (net, height, block_hash)`, exactly as `004` and
+`009` do, so a row for a block the archive does not hold is unstorable and a fork's rows stay
+distinguishable. **No blob**, so unlike `004` this migration does not touch the `chain_blob_roles`
+vocabulary or the role-removal guard.
+
+**Read path**, and the only one that matters: the newest row at or below the reader's own height.
+
+```sql
+SELECT night_dust_ratio, generation_decay_rate, dust_grace_period_seconds, reason
+FROM dust_parameters
+WHERE net = $1 AND block_height <= $2
+ORDER BY block_height DESC
+LIMIT 1;
+```
+
+At or **below**, never nearest: parameters are in force from the block that sets them until the
+block that changes them. An empty answer is honest — it means this archive never recorded them
+(ingested before migration 010, or with replay validation off) — and a consumer should say so
+rather than pass its own defaults off as the chain's.
+
+**Replay off ⇒ empty**, exactly like `dust_events`: with no fold there is no state to read the
+parameters from. `npm run dust:backfill` fills both tables in one pass.
 
 ### Partition rollover design
 

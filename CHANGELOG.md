@@ -10,6 +10,41 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
 
 ### Added
 
+- **The archive records the chain's DUST parameters, so the node never deserializes a ledger state
+  (00016).** New migration `010_dust_parameters` and table `chain_archive.dust_parameters`: three
+  numeric columns plus a `reason` (`genesis` | `change` | `resume`), written by the replay-on ingest
+  and by `npm run dust:backfill` from the `LedgerState` they already hold — one row at genesis, one
+  per parameter change, and one at a resume point on an archive that gained the table late. The
+  shielded-monitor node reads that row to construct its DUST mirror and to answer
+  `GET /v1/dust/tip`, and `/internal/status.dust` now reports `parametersSource`
+  (`chain` | `unknown` | `changed-at-<height>`), `parametersHeight` and the three values.
+
+  **This replaces a start-up check that could hang a node for minutes.** The previous
+  implementation read the newest replay checkpoint and called `LedgerState.deserialize` on it; on a
+  preprod-sized archive that blob is 31 MB, the call is minutes of one synchronous WebAssembly
+  invocation, and for the whole of it the node answered no HTTP request at all — not `/v1/health`,
+  not the monitor-store routes — so a load balancer marked it unhealthy with nothing in the log to
+  explain it. **Operators: `dust_reader` now needs `GRANT SELECT` on
+  `chain_archive.dust_parameters`, and must NOT be granted `replay_checkpoints` or `chain_blobs`**
+  — the optional stanza offering those has been removed from
+  `docs/shielded-monitor-deployment.md`. An archive that records no row still works: the mirror
+  falls back to the ledger's initial DUST parameters and says `parametersSource: "unknown"` rather
+  than passing a default off as the chain's. A mid-chain parameter change makes the mirror rebuild
+  from zero, because a `DustLocalState`'s parameters are fixed at construction in the WASM
+  bindings; that is documented in `docs/shielded-monitor-node.md`.
+
+- **The DUST mirror skips a snapshot that would cost more than replaying (00016).** New
+  `DUST_STATE_SNAPSHOT_MAX_BYTES` (default 2 MiB): above it the node leaves the snapshot file alone
+  and folds from `dust_events` instead, logging `snapshot skipped (N bytes > max): replaying from
+  zero`. Measured on a preprod archive at 146 253 retained leaves, restoring a 13.5 MB snapshot took
+  **639 s** of one synchronous WebAssembly call with the node answering nothing, against **154 s**
+  to fold the same state out of PostgreSQL while staying responsive — `DustLocalState.deserialize`
+  of a retained state grows faster than the file does. Snapshots are still written and are still the
+  fast path on devnet and small chains. `/internal/status.dust` gains `startPath`
+  (`snapshot` | `replay`) and `startMs` so an operator can see which regime a restart took, and a
+  snapshot whose recorded DUST parameters disagree with the archive's is now refused the same way a
+  wrong-`net` or wrong-ledger-build one already was.
+
 - **A wallet builds its DUST state from the node in seconds (00016, step 3 of 3).** New
   `dust-sync-client/` and `npm run dust:sync`: from a DUST secret key and a balancer URL it
   produces a spend-ready `DustLocalState` whose two Merkle roots equal the node's at one mirror

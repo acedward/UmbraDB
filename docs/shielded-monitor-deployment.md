@@ -106,6 +106,7 @@ every `/v1/dust/*` route answers `503 DUST_DISABLED`.
 | `DUST_STATE_POLL_MS` | `2000` | how often the mirror polls `dust_events` |
 | `DUST_STATE_SNAPSHOT_EVERY` | `20000` | events between snapshots |
 | `DUST_REPLAY_BATCH` | `1000` | events per replay call (the ledger's per-call rehash amortises here) |
+| `DUST_STATE_SNAPSHOT_MAX_BYTES` | `2097152` | the largest snapshot the node will RESTORE; above it, replay from zero instead (see **Why a big snapshot is skipped** below) |
 
 **This is a deliberate, waived exception to "project B has no database"**
 (`spec/00016-dust-wallet-sync.md` §1, owner decision 2026-09-15). The node opens a SECOND
@@ -121,17 +122,26 @@ What is not waived: the role must not be able to write, and must not be able to 
 CREATE ROLE dust_reader LOGIN PASSWORD '…';
 REVOKE ALL ON SCHEMA public FROM dust_reader;
 GRANT USAGE ON SCHEMA chain_archive TO dust_reader;
-GRANT SELECT ON chain_archive.dust_events, chain_archive.blocks TO dust_reader;
-
--- OPTIONAL, and only if you want the node's start-up DUST-parameter check to actually run.
--- It compares the parameters the mirror uses against the ones the chain committed, which needs a
--- serialized ledger state -- and those live in `replay_checkpoints` joined to `chain_blobs`.
--- Without these two grants the node reports `parametersCheck: "skipped"` and everything else
--- works; with them it reports `ok` or, loudly, `mismatch`. Weigh it: `chain_blobs` is the
--- archive's whole raw-bytes store, so granting it widens what this credential can read from
--- "the DUST events" to "every block body and transaction the archive holds".
--- GRANT SELECT ON chain_archive.replay_checkpoints, chain_archive.chain_blobs TO dust_reader;
+GRANT SELECT ON chain_archive.dust_events,
+                chain_archive.dust_parameters,
+                chain_archive.blocks
+  TO dust_reader;
 ```
+
+**Three tables, and no more.** `dust_parameters` (migration 010) is one small row per parameter
+change, written by the ingest: it is how the node learns the DUST parameters the chain uses,
+which it serves on `GET /v1/dust/tip` and builds its mirror from.
+
+**Do NOT grant `replay_checkpoints` or `chain_blobs`.** An earlier version of this file offered
+them as an optional stanza, for a start-up check that read the newest checkpoint and deserialized
+the `LedgerState` inside it. On a real archive that blob is **31 MB**, deserializing it is
+**minutes of one synchronous WebAssembly call**, and for the whole of that time the node accepts
+connections and answers nothing at all — not `/v1/health`, not `/internal/status`, not the
+monitor-store routes — so a load balancer marks it unhealthy with no log line saying why. It was
+measured on preprod on 2026-09-16 and the check was removed (project 00016, question Q-22); the
+node no longer deserializes any ledger state anywhere. The two tables are also the archive's whole
+raw-bytes store, so not granting them keeps this credential's reach at "the DUST events and the
+parameters" rather than "every block body and transaction the archive holds".
 
 `DUST_DATABASE_URL` is deliberately **not** named `*_PG`: every project-B process still refuses to
 start if any `*_PG` variable is in its environment, and that refusal is what catches a `MONITOR_PG`
@@ -142,7 +152,24 @@ never shared**. The file holds the two DUST trees as the chain committed them �
 no key, no nullifier — plus a header naming the net, the ledger build and the event id it stopped
 at. It exists so a restart replays the last few thousand events rather than the whole chain
 (≈ 150 MiB for preprod's 1.6 M leaves). Deleting it costs start-up time and nothing else, and a
-snapshot from another net or another ledger build is refused and replayed from zero.
+snapshot from another net, another ledger build, or built with different DUST parameters is
+refused and replayed from zero.
+
+**Why a big snapshot is skipped** (`DUST_STATE_SNAPSHOT_MAX_BYTES`). Restoring a snapshot is one
+synchronous `DustLocalState.deserialize`, and its cost grows faster than the file does. Measured
+on a preprod archive at 146 253 retained leaves:
+
+| start | wall time until the DUST routes answer | other routes during that time |
+|---|---|---|
+| restore a 13 506 592 B snapshot | **639 s** | **nothing answered at all** |
+| fold the same state out of PostgreSQL | **154 s** | answered throughout |
+
+So above the threshold the node leaves the file alone and folds from the table instead, logging
+`snapshot skipped (N bytes > max): replaying from zero`. Below it — devnet, a small chain, an early
+archive — restoring really is milliseconds and is still the fast path, which is why snapshots are
+still written (≈ 0.2 s per 20 000 events). `/internal/status.dust` reports which path a start took
+(`startPath`) and how long it took (`startMs`). Raise the threshold only if you have measured the
+restore on your own chain; the cost is an outage, not a slow start.
 
 **Memory.** The mirror keeps both trees uncollapsed in the WebAssembly heap, ≈ 2 KB per leaf. For
 preprod that projects to ≈ 2.4 GB of RSS, over the 1.5 GB this project set as its target — measure
