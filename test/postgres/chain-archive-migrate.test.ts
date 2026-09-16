@@ -283,6 +283,120 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
     await check("chain_archive_dust_upgrade_test", true);
   }, 120_000);
 
+  it("010 adds dust_parameters with its key, reason CHECK, resume index and block FK", async () => {
+    // T6.1 (`plans/00016-dust-wallet-sync.md` §7b). Applied from BOTH starting points for the same
+    // reason 009's case gives: a fresh database exercises 010 against a schema 001 just built,
+    // while the upgrade path exercises it against one that has already been written to, which is
+    // what every archive in the wild is.
+    const check = async (schema: string, upgradeFrom009: boolean): Promise<void> => {
+      const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+      try {
+        if (upgradeFrom009) {
+          await runMigrations(sql, { schema, migrations: chainArchiveMigrations.slice(0, 10) });
+          const [absent] = await sql<{ n: number }[]>`
+            SELECT count(*)::int AS n FROM information_schema.tables
+            WHERE table_schema = ${schema} AND table_name = 'dust_parameters'
+          `;
+          expect(absent?.n, "dust_parameters must not exist before 010").toBe(0);
+        }
+        await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
+
+        const columns = await sql<{ column_name: string; data_type: string; is_nullable: string }[]>`
+          SELECT column_name, data_type, is_nullable FROM information_schema.columns
+          WHERE table_schema = ${schema} AND table_name = 'dust_parameters'
+          ORDER BY ordinal_position
+        `;
+        expect(columns.map((c) => c.column_name)).toEqual([
+          "net", "block_height", "block_hash", "night_dust_ratio", "generation_decay_rate",
+          "dust_grace_period_seconds", "reason", "created_at",
+        ]);
+        // Every column is NOT NULL: a parameters row with a missing value is not a partial fact,
+        // it is an unusable one.
+        expect(columns.filter((c) => c.is_nullable === "YES")).toEqual([]);
+        // u128 needs 39 digits; a narrower numeric would silently refuse a value the chain set.
+        const ratio = columns.find((c) => c.column_name === "night_dust_ratio");
+        expect(ratio?.data_type).toBe("numeric");
+        const [precision] = await sql<{ numeric_precision: number }[]>`
+          SELECT numeric_precision FROM information_schema.columns
+          WHERE table_schema = ${schema} AND table_name = 'dust_parameters'
+            AND column_name = 'night_dust_ratio'
+        `;
+        expect(precision?.numeric_precision).toBe(39);
+
+        const [pk] = await sql<{ def: string }[]>`
+          SELECT pg_get_constraintdef(c.oid) AS def
+          FROM pg_constraint c
+          JOIN pg_class t ON t.oid = c.conrelid
+          JOIN pg_namespace n ON n.oid = t.relnamespace
+          WHERE n.nspname = ${schema} AND t.relname = 'dust_parameters' AND c.contype = 'p'
+        `;
+        expect(pk?.def).toBe("PRIMARY KEY (net, block_height, block_hash)");
+
+        const [fk] = await sql<{ def: string }[]>`
+          SELECT pg_get_constraintdef(c.oid) AS def
+          FROM pg_constraint c
+          JOIN pg_class t ON t.oid = c.conrelid
+          JOIN pg_namespace n ON n.oid = t.relnamespace
+          WHERE n.nspname = ${schema} AND t.relname = 'dust_parameters' AND c.contype = 'f'
+        `;
+        expect(fk?.def).toContain("REFERENCES");
+        expect(fk?.def).toContain("blocks(net, height, block_hash)");
+
+        const indexes = await sql<{ indexname: string }[]>`
+          SELECT indexname FROM pg_indexes
+          WHERE schemaname = ${schema} AND tablename = 'dust_parameters'
+          ORDER BY indexname
+        `;
+        expect(indexes.map((i) => i.indexname)).toContain("dust_parameters_at_or_below");
+
+        // --- behaviour, not just catalogue --- a block to hang the rows off, built exactly the
+        // way 009's own FK case builds one, so the failures below are about this table's
+        // constraints and not about a missing parent.
+        const hx = (n: number): Buffer => Buffer.from(n.toString(16).padStart(64, "0"), "hex");
+        const pNet = `dust_params_${upgradeFrom009 ? "upgrade" : "fresh"}`;
+        await sql`
+          INSERT INTO ${sql(schema)}.chain_blobs (hash, data) VALUES (${hx(0x81)}, ${Buffer.from("h")})
+        `;
+        await sql`
+          INSERT INTO ${sql(schema)}.chain_blob_roles (blob_hash, role) VALUES (${hx(0x81)}, 'block_header')
+        `;
+        await sql`
+          INSERT INTO ${sql(schema)}.blocks
+            (net, block_hash, height, parent_hash, state_root, extrinsics_root, header_blob_hash,
+             is_canonical, status, finalized)
+          VALUES (${pNet}, ${hx(0x90)}, 7, ${hx(0)}, ${hx(0x91)}, ${hx(0x92)}, ${hx(0x81)},
+                  true, 'canonical', true)
+        `;
+
+        const insertParams = (blockHash: Buffer, reason: string, height = 7) => sql`
+          INSERT INTO ${sql(schema)}.dust_parameters
+            (net, block_height, block_hash, night_dust_ratio, generation_decay_rate,
+             dust_grace_period_seconds, reason)
+          VALUES (${pNet}, ${height}, ${blockHash}, ${"5000000000"}::numeric, ${"8267"}::numeric,
+                  ${10800}, ${reason})
+        `;
+
+        await insertParams(hx(0x90), "genesis");
+        // The reason CHECK: only the three vocabulary words, so a typo is an error rather than a
+        // value nothing will ever match.
+        await expect(insertParams(hx(0x90), "guess", 8), "an unknown reason")
+          .rejects.toMatchObject({ code: "23514" });
+        // The FK: a parameters row for a block this archive does not hold is unstorable, exactly
+        // as 004's and 009's are.
+        await expect(insertParams(hx(0x99), "change", 9), "a block this archive does not hold")
+          .rejects.toMatchObject({ code: "23503" });
+        // The PK: one block cannot carry two different parameter facts.
+        await expect(insertParams(hx(0x90), "change"), "a second row for the same block")
+          .rejects.toMatchObject({ code: "23505" });
+      } finally {
+        await sql.end({ timeout: 5 });
+      }
+    };
+
+    await check(`m010_fresh_${Math.floor(Math.random() * 1e6)}`, false);
+    await check(`m010_upgrade_${Math.floor(Math.random() * 1e6)}`, true);
+  }, 300_000);
+
   it("invalidates populated legacy checkpoints across the 004 -> 005 -> 006 upgrade", async () => {
     // A fresh full-lineage test starts with an empty replay_checkpoints table, so both migration
     // DELETEs are vacuous. Populate the exact schema each migration inherits: 005 must discard a

@@ -984,4 +984,141 @@ describe("PgChainArchiveStore", () => {
       expect(rows[2]!.payload).toEqual({});
     });
   });
+
+  describe("00016: dust_parameters (question Q-22 option C)", () => {
+    const paramBlock = (net: string, height: number, blockHash: string, parentHash: string, tag: number) => ({
+      ...makeBlock(net, height, blockHash, parentHash, tag),
+      isCanonical: true, status: "canonical" as const, finalized: true,
+    });
+
+    const paramRows = async (net: string): Promise<{
+      block_height: bigint; night_dust_ratio: string; reason: string;
+    }[]> => await sql`
+      SELECT block_height, night_dust_ratio, reason
+      FROM ${sql(schema)}.dust_parameters WHERE net = ${net} ORDER BY block_height
+    `;
+
+    it("writes the bundled row in the block's own transaction, and nothing for a bundle without one", async () => {
+      // T6.2. A row is a POINT fact -- "from this height the chain uses these values" -- so almost
+      // every block carries none, and the absence must write nothing rather than repeat the last.
+      const net = "dust_params_bundle";
+      await store.putBlockBundle({
+        block: paramBlock(net, 0, h(0, 0xe1), h(0), 0xe1),
+        transactions: [], bridgeObservations: [],
+        dustParameters: {
+          net, blockHeight: 0, blockHash: h(0, 0xe1),
+          nightDustRatio: "5000000000", generationDecayRate: "8267",
+          dustGracePeriodSeconds: "10800", reason: "genesis",
+        },
+      });
+      await store.putBlockBundle({
+        block: paramBlock(net, 1, h(1, 0xe1), h(0, 0xe1), 0xe1),
+        transactions: [], bridgeObservations: [],
+      });
+      expect(await paramRows(net)).toEqual([
+        { block_height: 0n, night_dust_ratio: "5000000000", reason: "genesis" },
+      ]);
+
+      // A later change writes a SECOND row rather than replacing the first: the history of what
+      // the chain used at each height is the whole value of the table.
+      await store.putBlockBundle({
+        block: paramBlock(net, 2, h(2, 0xe1), h(1, 0xe1), 0xe1),
+        transactions: [], bridgeObservations: [],
+        dustParameters: {
+          net, blockHeight: 2, blockHash: h(2, 0xe1),
+          nightDustRatio: "6000000000", generationDecayRate: "8267",
+          dustGracePeriodSeconds: "10800", reason: "change",
+        },
+      });
+      expect((await paramRows(net)).map((r) => Number(r.block_height))).toEqual([0, 2]);
+    });
+
+    it("is idempotent on a re-put and refuses a row filed under another block", async () => {
+      const net = "dust_params_idem";
+      const row = {
+        net, blockHeight: 0, blockHash: h(0, 0xe2),
+        nightDustRatio: "5000000000", generationDecayRate: "8267",
+        dustGracePeriodSeconds: "10800", reason: "genesis" as const,
+      };
+      const block = paramBlock(net, 0, h(0, 0xe2), h(0), 0xe2);
+      await store.putBlockBundle({ block, transactions: [], bridgeObservations: [], dustParameters: row });
+      // The same bundle again: `ON CONFLICT DO NOTHING` on the primary key, so a re-ingested
+      // height is a no-op and not a duplicate-key error that would take the whole block down.
+      await store.putBlockBundle({ block, transactions: [], bridgeObservations: [], dustParameters: row });
+      expect(await paramRows(net)).toHaveLength(1);
+      expect(await store.putDustParameters(row)).toEqual({ written: false });
+
+      // A row naming another block would put a parameter change at a height the chain never had
+      // one, and the node would price every balance with it from there on.
+      await expect(store.putBlockBundle({
+        block: paramBlock(net, 1, h(1, 0xe2), h(0, 0xe2), 0xe2),
+        transactions: [], bridgeObservations: [],
+        dustParameters: { ...row, blockHeight: 0, blockHash: h(0, 0xe2) },
+      })).rejects.toThrow(/dustParameters/);
+      // The refusal happens before anything is written, so height 1 is not in the archive either.
+      const [after] = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM ${sql(schema)}.blocks WHERE net = ${net} AND height = 1
+      `;
+      expect(after?.n).toBe(0);
+    });
+
+    it("refuses a parameter value that is not a decimal integer, naming the field", async () => {
+      // These are u128 chain values carried as strings precisely so nothing rounds them. A bad one
+      // must be refused at the boundary rather than reaching PostgreSQL as a cast error deep
+      // inside a block's transaction, where it would cost the whole height.
+      const net = "dust_params_bad";
+      await store.putBlockBundle({
+        block: paramBlock(net, 0, h(0, 0xe3), h(0), 0xe3),
+        transactions: [], bridgeObservations: [],
+      });
+      await expect(store.putDustParameters({
+        net, blockHeight: 0, blockHash: h(0, 0xe3),
+        // `Number("5e9")` is 5 000 000 000, which is why a bare Number() check would let this
+        // through and PostgreSQL would reject it far from here.
+        nightDustRatio: "5e9", generationDecayRate: "8267",
+        dustGracePeriodSeconds: "10800", reason: "genesis",
+      })).rejects.toMatchObject({
+        code: "VALIDATION_FAILED",
+        issues: [{ path: "nightDustRatio" }],
+      });
+      // Nothing was written: the refusal is at the boundary, before the transaction opens.
+      const [none] = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM ${sql(schema)}.dust_parameters WHERE net = ${net}
+      `;
+      expect(none?.n).toBe(0);
+    });
+
+    it("getDustParametersAtOrBelow returns the newest row not above the asked height", async () => {
+      const net = "dust_params_read";
+      for (const height of [0, 1, 2, 3]) {
+        await store.putBlockBundle({
+          block: paramBlock(net, height, h(height, 0xe4), height === 0 ? h(0) : h(height - 1, 0xe4), 0xe4),
+          transactions: [], bridgeObservations: [],
+        });
+      }
+      await store.putDustParameters({
+        net, blockHeight: 0, blockHash: h(0, 0xe4),
+        nightDustRatio: "5000000000", generationDecayRate: "8267",
+        dustGracePeriodSeconds: "10800", reason: "genesis",
+      });
+      await store.putDustParameters({
+        net, blockHeight: 2, blockHash: h(2, 0xe4),
+        nightDustRatio: "6000000000", generationDecayRate: "9000",
+        dustGracePeriodSeconds: "10800", reason: "change",
+      });
+
+      expect(await store.getDustParametersAtOrBelow(net)).toEqual({
+        net, blockHeight: 2, blockHash: h(2, 0xe4),
+        nightDustRatio: "6000000000", generationDecayRate: "9000",
+        dustGracePeriodSeconds: "10800", reason: "change",
+      });
+      expect((await store.getDustParametersAtOrBelow(net, 3))?.blockHeight).toBe(2);
+      expect((await store.getDustParametersAtOrBelow(net, 2))?.blockHeight).toBe(2);
+      // AT OR BELOW, never the nearest: at height 1 the chain was still using the genesis values,
+      // and returning the height-2 row would price a balance with parameters that do not exist yet.
+      expect((await store.getDustParametersAtOrBelow(net, 1))?.blockHeight).toBe(0);
+      expect((await store.getDustParametersAtOrBelow(net, 0))?.nightDustRatio).toBe("5000000000");
+      expect(await store.getDustParametersAtOrBelow("a-net-nobody-ingested")).toBeUndefined();
+    });
+  });
 });
