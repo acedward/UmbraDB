@@ -1,0 +1,231 @@
+import type { MatchDetails } from "../match-details.js";
+import type { AssociationRecord, MonitorCoverage, MonitorGap, MonitorRecord } from "../store.js";
+import { encodeCursor } from "./cursor.js";
+
+/**
+ * The wire shapes of the private API (organizer spec FR-017, FR-019, FR-020).
+ *
+ * Two rules govern every field below.
+ *
+ * **Heights are decimal strings, never JSON numbers.** Block heights, protocol versions and
+ * association sequences are `bigint` throughout this repository (`src/postgres/client.ts`
+ * configures `types.bigint` on the connection). JSON numbers are IEEE-754 doubles, so a value
+ * above 2^53 rounds silently — a corruption that appears only on a long-lived chain and only in
+ * the high bits, which is the worst possible time and place to discover it. A string cannot
+ * round, and every consumer language can parse one into its own big integer.
+ *
+ * **Nothing derived from key material is ever present.** The monitor view carries no viewing key
+ * and no fingerprint; `MonitorRecord` (00009-02) already excludes both by construction, and this
+ * module builds views by naming fields explicitly rather than by spreading a record, so a future
+ * field added to the store cannot reach the wire by accident.
+ */
+
+/** Coverage as four block heights (organizer spec FR-011). `null` means *not known*, which for
+ *  `scannedFrom`/`scannedThrough` means "not scanned yet" and for `sourceTip` means "this
+ *  deployment cannot observe the archive" (organizer question Q14). It never means zero. */
+export interface CoverageView {
+  readonly requestedStart: string;
+  readonly scannedFrom: string | null;
+  readonly scannedThrough: string | null;
+  readonly sourceTip: string | null;
+}
+
+/** One hole in a monitor's coverage (00009-09), as heights a consumer can render. */
+export interface GapView {
+  readonly from: string;
+  readonly to: string;
+  readonly recordedAt: string;
+}
+
+/** A monitor as a consumer sees it. */
+export interface MonitorView {
+  readonly monitorId: string;
+  readonly net: string;
+  readonly state: string;
+  readonly coverage: CoverageView;
+  /**
+   * The ranges below `coverage.scannedThrough` that were never actually read for this monitor
+   * (00009-09). Empty is the healthy shape; "complete" is `scannedThrough === sourceTip` AND an
+   * empty list, which is why this travels with the coverage rather than beside it.
+   */
+  readonly gaps: readonly GapView[];
+  /**
+   * The monitor-node currently holding this monitor's viewing key in RAM, or `null` when none is
+   * (00009-09).
+   *
+   * A node answers `null` for a monitor it does not hold, because that is all it can honestly
+   * say — it cannot see its peers. The BALANCER is the component that can, and it overwrites this
+   * field with the answer of a fan-out before the response reaches a client. So a `null` from a
+   * balancer means "nobody holds it"; a `null` from a node reached directly means "not me".
+   */
+  readonly heldBy: string | null;
+  /**
+   * The PHASE of the key inside its holder: `syncing` while it is being caught up to the live
+   * scan, `live` once it is in it, `failed` when its monitor stopped. `null` when nobody holds it.
+   *
+   * It is not the monitor's `state` and does not duplicate it. A monitor is `backfilling` for as
+   * long as its coverage is short of the tip, which is a fact about the DATABASE; the phase says
+   * which of the holder's two queues is working on it, which is a fact about the node — and the
+   * two answer different operator questions ("is this wallet caught up?" versus "is anything
+   * happening right now?").
+   */
+  readonly heldPhase: string | null;
+  /**
+   * `true` when this monitor is in a state that should be scanning but no node holds its key —
+   * the shape a restart leaves behind (§4.6). The client's remedy is to re-send the key, which
+   * reaches the same monitor because the fingerprint is the identity.
+   */
+  readonly keyNeeded: boolean;
+  readonly matchingRuleVersion: string;
+  readonly ledgerBuild: string;
+  /** Present only for `failed`/`stale_source`. Carries the failure CLASS and a non-secret
+   *  message written by this repository — never a driver message and never caller input
+   *  (organizer sub-plan: "failed/stale → status carries `lastError` class only"). */
+  readonly lastError?: { readonly code: string; readonly atHeight?: string };
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+/** One relevant transaction observation (organizer spec FR-009). */
+export interface MatchView {
+  readonly cursor: string;
+  readonly blockHeight: string;
+  readonly blockHash: string;
+  readonly position: number;
+  readonly txHash: string;
+  readonly protocolVersion: string;
+  readonly matchedSegments: readonly number[];
+  /** Always `"unknown"` in this project (organizer spec FR-009, assumption "applied outcomes are
+   *  unknown"). Present as a literal rather than omitted, because a consumer must be able to see
+   *  that the service is *not* claiming the transaction applied. */
+  readonly appliedOutcome: "unknown";
+  /** The archive's own replay verdict, when the archive recorded one. Advisory: it is the
+   *  ARCHIVE's outcome for the transaction, not this monitor's, and it never replaces
+   *  `appliedOutcome`. */
+  readonly sourceOutcome?: string;
+  readonly matchingRuleVersion: string;
+  readonly ledgerBuild: string;
+  /** The time of the block this observation sits in, in milliseconds since the epoch, as a
+   *  decimal STRING for the same reason every height is one. `null` means the value is not
+   *  recorded — a match written before 00009-07, or a block the
+   *  archive itself has no timestamp for. Never a zero, and never "now".
+   *
+   *  Absent entirely (not `null`) when the caller asked for `?details=0`. */
+  readonly blockTimestampMs?: string | null;
+  /** The transaction's PUBLIC zswap data: output commitments, input nullifiers, transients,
+   *  contract addresses and a three-valued "is this one yours" per entry
+   *  (`shielded-monitor/match-details.ts`). `null` means "recorded before this service stored
+   *  them", never "this transaction had no outputs".
+   *
+   *  Absent entirely (not `null`) when the caller asked for `?details=0`. */
+  readonly details?: MatchDetails | null;
+}
+
+/** A page of matches (organizer spec FR-019, FR-020). `coverage` travels with every page so a
+ *  consumer can never read an empty `items` without also seeing how far the scan actually got. */
+export interface MatchPageView {
+  readonly items: readonly MatchView[];
+  readonly nextCursor: string;
+  readonly coverage: CoverageView;
+}
+
+function heightOrNull(value: bigint | undefined): string | null {
+  return value === undefined ? null : value.toString(10);
+}
+
+export function coverageView(coverage: MonitorCoverage, sourceTip: bigint | undefined): CoverageView {
+  return {
+    requestedStart: coverage.requestedStart.toString(10),
+    scannedFrom: heightOrNull(coverage.scannedFrom),
+    scannedThrough: heightOrNull(coverage.scannedThrough),
+    sourceTip: heightOrNull(sourceTip),
+  };
+}
+
+export function gapView(gap: MonitorGap): GapView {
+  return {
+    from: gap.from.toString(10),
+    to: gap.to.toString(10),
+    recordedAt: gap.recordedAt.toISOString(),
+  };
+}
+
+/**
+ * `keyNeeded` is derived, never stored: a monitor needs a key when it is in a state that should be
+ * scanning and nobody is holding one for it. A `failed` or `stale_source` monitor is not in that
+ * position — it is never going to scan again whoever holds its key.
+ */
+export function keyNeededFor(state: string, heldBy: string | null): boolean {
+  return heldBy === null && (state === "backfilling" || state === "live");
+}
+
+export function monitorView(
+  record: MonitorRecord,
+  sourceTip: bigint | undefined,
+  heldBy: string | null = null,
+  heldPhase: string | null = null,
+): MonitorView {
+  return {
+    monitorId: record.id,
+    net: record.net,
+    state: record.state,
+    coverage: coverageView(record.coverage, sourceTip),
+    gaps: record.gaps.map(gapView),
+    heldBy,
+    heldPhase: heldBy === null ? null : heldPhase,
+    keyNeeded: keyNeededFor(record.state, heldBy),
+    matchingRuleVersion: record.matchingRuleVersion,
+    ledgerBuild: record.ledgerBuild,
+    // Only the CLASS and the position reach the wire. `MonitorLastError.message` is written by
+    // this repository and is not secret, but it is also not part of the contract, and the one
+    // thing a consumer can act on is the code.
+    ...(record.lastError !== undefined
+      ? {
+          lastError: {
+            code: record.lastError.code,
+            ...(record.lastError.atHeight !== undefined ? { atHeight: record.lastError.atHeight } : {}),
+          },
+        }
+      : {}),
+    createdAt: record.createdAt.toISOString(),
+    updatedAt: record.updatedAt.toISOString(),
+  };
+}
+
+/** Options for {@link matchView}. */
+export interface MatchViewOptions {
+  /** `false` reproduces the pre-00009-07 item exactly: no `blockTimestampMs`, no `details`. That
+   *  is what `?details=0` asks for — "give me the small shape" — so both fields go, not just the
+   *  large one; a consumer that wants one of them is asking for the feature. */
+  readonly details?: boolean;
+}
+
+export function matchView(
+  monitorId: string, record: AssociationRecord, options: MatchViewOptions = {},
+): MatchView {
+  const withDetails = options.details !== false;
+  return {
+    cursor: encodeCursor(monitorId, record.seq),
+    blockHeight: record.blockHeight.toString(10),
+    blockHash: record.blockHash.toString("hex"),
+    position: record.position,
+    txHash: record.txHash.toString("hex"),
+    protocolVersion: record.protocolVersion.toString(10),
+    matchedSegments: [...record.matchedSegments],
+    appliedOutcome: "unknown",
+    ...(record.sourceOutcome !== undefined ? { sourceOutcome: record.sourceOutcome } : {}),
+    matchingRuleVersion: record.matchingRuleVersion,
+    ledgerBuild: record.ledgerBuild,
+    ...(withDetails
+      ? {
+          // `null`, explicitly, rather than an omitted field: a consumer must be able to tell
+          // "this deployment does not send details" from "this match has none recorded yet", and
+          // an absent key cannot express the second.
+          blockTimestampMs: record.blockTimestampMs === undefined
+            ? null
+            : record.blockTimestampMs.toString(10),
+          details: record.details ?? null,
+        }
+      : {}),
+  };
+}

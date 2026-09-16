@@ -941,8 +941,22 @@ describe("replay validation gates ingest", () => {
   it("recovers on the SAME service after the watermark insert fails (T3a)", async () => {
     // The earlier T3 regression faults `blocks`, which is inside the original catch. It therefore
     // remains green if `setWatermark` sits outside that recovery boundary -- exactly the audited
-    // wedge. Fault the real watermarks INSERT after bundle/checkpoint persistence, then retry the
-    // same long-lived service so constructing a fresh engine cannot hide stale in-memory replay.
+    // wedge. Fault the real watermarks INSERT, then retry the same long-lived service so
+    // constructing a fresh engine cannot hide stale in-memory replay.
+    //
+    // 00009-01 (owner Rule A, `spec/00009` FR-029) CHANGED WHAT THIS FAULT DESTROYS, and the
+    // assertion below moved with it. The watermark advance is now written inside the height's
+    // own transaction rather than in a third one after it, so faulting the watermark INSERT no
+    // longer leaves the block and its checkpoint durable with the cursor behind -- it aborts the
+    // whole height. That is strictly stronger than what this test used to observe (2 blocks, 2
+    // checkpoints, watermark 0 -- a partial height), and it is the property Rule A exists to
+    // provide: after any failure the observable states are exactly "none of height H" and "all
+    // of H including the watermark".
+    //
+    // What this test still proves is unchanged and is the reason it exists: the IN-MEMORY replay
+    // engine must be discarded when a durable write for the height fails, or the same long-lived
+    // service wedges forever on "replay validation is at height 1 but this block is 1". The
+    // retry below runs on the SAME service instance precisely so a fresh engine cannot mask it.
     const schema = await newSchema();
     const node = { url: "http://fake-node", fetchImpl: twoBlockNodeFetch(GENESIS_SYSTEM_EXTRINSICS) };
     const svc = new ChainArchiveSyncService({
@@ -978,7 +992,9 @@ describe("replay validation gates ingest", () => {
         (SELECT ((value->>'height')::int) FROM ${sql(schema)}.watermarks
           WHERE kind = 'chain_archive' AND key = ${`sync_cursor:${NET}`}) AS watermark
     `;
-    expect(failed).toEqual({ blocks: 2, checkpoints: 2, watermark: 0 });
+    // Rule A: height 1 left NOTHING behind. Only genesis (height 0, committed by the successful
+    // first `syncOnce`) is present, and the watermark still names it.
+    expect(failed).toEqual({ blocks: 1, checkpoints: 1, watermark: 0 });
 
     await sql`DROP TRIGGER fail_watermark_insert_trigger ON ${sql(schema)}.watermarks`;
 
