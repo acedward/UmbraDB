@@ -130,6 +130,27 @@ node-only mode before connecting and states its archive-node requirement.
 `syncOnce` stops at the finalized head and advances a persisted watermark only after the block
 bundle and any due checkpoint are durable.
 
+**Restarting a replay-on ingest on a large chain is not instant, and it is not proportional to
+`REPLAY_CHECKPOINT_INTERVAL`.** Resuming reads the newest checkpoint blob and calls
+`LedgerState.deserialize` on it — one synchronous WebAssembly call whose cost grows with the chain
+state inside the blob, not with the number of blocks that have to be re-folded afterwards. Measured
+on a preprod archive at height 375 199, a 52 882 323 B checkpoint kept one core at 100 % for more
+than 73 minutes **without finishing**, while the re-fold it was preparing for would have taken
+seconds. The ingest now announces this before it happens:
+
+```
+[archive-sync] resuming ledger replay from checkpoint at height 375000: deserializing 52882323 bytes
+  — on a large archive this takes many minutes …
+[archive-sync] checkpoint deserialized in 41.2 s (52882323 bytes, height 375000).
+```
+
+Between those two lines the process commits no block and logs nothing else; it is computing, not
+hung. `npm run dust:backfill` resumes the same way and logs the same pair. Cold starts deserialize
+the node's (small) genesis snapshot and are unaffected. Lowering `REPLAY_CHECKPOINT_INTERVAL` does
+not help — it shortens the re-fold, which is already the cheap half. The underlying cost is tracked
+as issue `00019`; until it is fixed upstream, prefer keeping a long-running ingest alive over
+configurations that restart it.
+
 ## DUST ledger events (`chain_archive.dust_events`)
 
 With `REPLAY_VALIDATION=1` the ingest also KEEPS the DUST ledger events it computes while applying

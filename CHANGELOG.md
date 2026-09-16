@@ -277,6 +277,17 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
 
 ### Changed
 
+- **A replay-on ingest resuming from a checkpoint now says so, with the blob size, before it goes
+  quiet (00016).** `chain-archive-sync` logs `resuming ledger replay from checkpoint at height H:
+  deserializing N bytes — on a large archive this takes many minutes` before the
+  `LedgerState.deserialize` call that both the ingest's own resume and `npm run dust:backfill`'s
+  resume make, and `checkpoint deserialized in T s` after it. Measured on a preprod archive at
+  height 375 199, that call held one core at 100 % for **more than 73 minutes without finishing** on
+  a 52 882 323 B checkpoint — no block committed, the database connection idle, and previously not
+  one line of output to distinguish it from a hang. The log lines do not make it faster: the cost is
+  in the ledger's WebAssembly deserializer and is tracked as issue `00019`. Cold starts, which
+  deserialize the small genesis snapshot, are unaffected and unchanged.
+
 - **The vendored ledger is now `@midnight-ntwrk/ledger-v8@8.1.0-syshash.6`** (was `…syshash.4`),
   built from `acedward/midnight-ledger` branch `feat/00016-dust-collapsed-updates` at
   `2b579359d79d59486d63440f9de39b6441aae493`. It adds four exports the node's DUST mirror needs:

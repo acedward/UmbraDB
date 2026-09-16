@@ -154,6 +154,50 @@ export function assertNoDuplicateTransactionKeys(
   }
 }
 
+/**
+ * Resume replay from a checkpoint blob, saying out loud how big it is and how long it took.
+ *
+ * WHY THIS EXISTS AS A NAMED FUNCTION rather than two inline `LedgerReplay.fromSerialized` calls.
+ * `ledger.LedgerState.deserialize` is a single synchronous WASM call whose cost grows with the
+ * chain state inside the blob, and on a real archive it is not "a moment": measured on preprod at
+ * height 375 199 (issue `00019`, question Q-24), a **52 882 323 B** checkpoint kept one core at
+ * 100 % for **more than 73 minutes without finishing** -- no block committed, the PostgreSQL
+ * connection idle the whole time, and nothing at all on stdout. An operator watching that sees a
+ * process that looks hung, with no way to tell it apart from one that is.
+ *
+ * So the two lines below are the whole point of the function: the size and the warning BEFORE the
+ * call (the only moment at which they can still be printed -- the call does not yield), and the
+ * elapsed time AFTER it. This does not make the deserialize faster; that is the upstream fix
+ * (Q-24 option E / Q-23 option C). It makes the wait an explained one.
+ *
+ * `now` is the injectable clock the scanner uses for the same reason: the elapsed field is part of
+ * the contract, so a test has to be able to state what it should say.
+ */
+export function resumeReplayFromCheckpoint(
+  ledger: unknown,
+  stateBytes: Uint8Array,
+  blockHeight: number,
+  options?: { captureEventTags?: readonly string[] },
+  now: () => number = Date.now,
+): LedgerReplay {
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[archive-sync] resuming ledger replay from checkpoint at height ${blockHeight}: ` +
+      `deserializing ${stateBytes.length} bytes — on a large archive this takes many minutes ` +
+      "(issue 00019: 52.9 MB ran over 73 minutes without finishing). No block is committed and " +
+      "nothing else is logged until it returns.",
+  );
+  const startedAt = now();
+  const replay = LedgerReplay.fromSerialized(ledger, stateBytes, options);
+  const elapsedSeconds = (now() - startedAt) / 1000;
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[archive-sync] checkpoint deserialized in ${elapsedSeconds.toFixed(1)} s ` +
+      `(${stateBytes.length} bytes, height ${blockHeight}).`,
+  );
+  return replay;
+}
+
 export interface ChainArchiveSyncServiceOptions {
   sql: UmbraDBSql;
   net: string;
@@ -1074,7 +1118,11 @@ export class ChainArchiveSyncService {
               "schema, or correct LEDGER_NETWORK_ID.",
           );
         }
-        this.replay = LedgerReplay.fromSerialized(ledger, resumeFrom.stateBytes, this.replayOptions());
+        // Q-24 option B: never silently. See `resumeReplayFromCheckpoint` -- this is the call that
+        // ran 73 minutes on preprod without finishing, and the operator gets told so.
+        this.replay = resumeReplayFromCheckpoint(
+          ledger, resumeFrom.stateBytes, resumeFrom.blockHeight, this.replayOptions(),
+        );
         this.replayHeight = resumeFrom.blockHeight;
         this.lastReplayedBlockHash = resumeFrom.blockHash;
         // The checkpointed block's own time becomes the parent time for the block after it (T1).
@@ -1421,7 +1469,10 @@ export class ChainArchiveSyncService {
       : await this.store.getLatestReplayCheckpoint(this.net, startWrite - 1);
     if (checkpoint !== undefined && checkpoint.ledgerVersion === LEDGER_STATE_VERSION &&
         checkpoint.ledgerNetworkId === this.ledgerNetworkId) {
-      replay = LedgerReplay.fromSerialized(ledger, checkpoint.stateBytes, options);
+      // Q-24 option B: the backfill has its own resume, and it pays exactly the same cost.
+      replay = resumeReplayFromCheckpoint(
+        ledger, checkpoint.stateBytes, checkpoint.blockHeight, options,
+      );
       foldedTo = checkpoint.blockHeight;
       parentTimestampMs = checkpoint.blockTimestampMs;
       parentHash = checkpoint.blockHash;
