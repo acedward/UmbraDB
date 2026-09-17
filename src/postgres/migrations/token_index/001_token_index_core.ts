@@ -226,38 +226,11 @@ export async function up(sql: ISql, schema: string): Promise<void> {
 }
 
 /**
- * The two built-in rows (owner decision Q7). Not part of `up()` because they are **per-net**
- * data, not schema: one migration run serves every `net` the same database might hold, and the
- * net a process works on only becomes known when it is configured. `token-indexer/migrate.ts`
- * calls this right after `runMigrations`, and `rebuild` calls it again after truncating.
- * Idempotent: re-running inserts nothing and overwrites nothing.
+ * The two built-in rows (owner decision Q7) used to live here. They are per-`net` DATA rather than
+ * schema, so they are not part of any migration's `up()` — and because they are written against
+ * whatever shape the lineage currently ends in, they moved to `002_mip_xxxx_layout.ts` when 002
+ * recreated `tokens` with the MIP's `kind` byte. Nothing in this file is reachable except `up()`,
+ * which is history and must not change: a database that already applied `001` must be able to apply
+ * `002` on top of exactly these tables.
  */
-export async function seedBuiltinTokens(sql: ISql, schema: string, net: string): Promise<void> {
-  // NIGHT — the unshielded native token whose type is 32 zero bytes. Colour and key coincide,
-  // which is exactly what the chain says: there is no contract and no domain separator.
-  await sql`
-    INSERT INTO ${sql(schema)}.tokens
-      (net, address, domain_sep, kind, storage, color, name, symbol, decimals, status, first_seen_height)
-    VALUES
-      (${net}, ${Buffer.from(ZERO32, "hex")}, ${Buffer.from(ZERO32, "hex")}, 'unshielded', 'native',
-       ${Buffer.from(ZERO32, "hex")}, 'NIGHT', 'NIGHT', 6, 'builtin', 0)
-    ON CONFLICT (net, address, domain_sep, kind) DO NOTHING
-  `;
-  // DUST — the fee token. `color` stays NULL: the ledger's DUST token type is a unit variant with
-  // no bytes (Q30). The sentinel `domain_sep` only separates this row from NIGHT's key.
-  await sql`
-    INSERT INTO ${sql(schema)}.tokens
-      (net, address, domain_sep, kind, storage, color, name, symbol, decimals, status, first_seen_height)
-    VALUES
-      (${net}, ${Buffer.from(ZERO32, "hex")}, ${Buffer.from(pad32Hex("dust"), "hex")}, 'unshielded', 'native',
-       NULL, 'DUST', 'DUST', 15, 'builtin', 0)
-    ON CONFLICT (net, address, domain_sep, kind) DO NOTHING
-  `;
-}
-
-/** The sentinel keys the two built-in rows use, exported so tests and the API can name them
- *  without re-deriving the bytes. Hex, lowercase, unprefixed — the repo's convention. */
-export const BUILTIN_KEYS = {
-  night: { address: ZERO32, domainSep: ZERO32, kind: "unshielded" as const },
-  dust: { address: ZERO32, domainSep: pad32Hex("dust"), kind: "unshielded" as const },
-};
+export const SEEDS_MOVED_TO = "002_mip_xxxx_layout.ts";
