@@ -59,7 +59,7 @@ describe("token colour derivation (spec §6.4)", () => {
     expect(fixture.vectors.filter((v) => v.kind === "unshielded")).toHaveLength(2);
   });
 
-  it("[[token-color-derivation]] NIGHT is 32 zero bytes by definition and is never derived; one changed byte changes the colour", () => {
+  it("[[token-color-night]] NIGHT is 32 zero bytes by definition and is never derived; one changed byte changes the colour", () => {
     expect(NIGHT_COLOR_HEX).toBe("0".repeat(64));
     const ledger = { nativeToken: (): { raw: string } => ({ raw: NIGHT_COLOR_HEX }) };
     expect(ledger.nativeToken().raw).toBe(NIGHT_COLOR_HEX);
@@ -80,7 +80,7 @@ describe("token colour derivation (spec §6.4)", () => {
     expect(tokenColorHex(v.address, v.domainSep)).not.toBe(v.expectedColor);
   });
 
-  it("[[token-color-derivation]] the helpers refuse malformed input rather than deriving a plausible wrong colour", () => {
+  it("[[token-color-guards]] the helpers refuse malformed input rather than deriving a plausible wrong colour", () => {
     expect(() => tokenColor(new Uint8Array(31), new Uint8Array(32))).toThrow(/domainSep must be exactly 32 bytes/);
     expect(() => tokenColor(new Uint8Array(32), new Uint8Array(33))).toThrow(/address must be exactly 32 bytes/);
     // Buffer.from(s, "hex") truncates silently at the first bad nibble; hexToBytes must not.

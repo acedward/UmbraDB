@@ -114,7 +114,7 @@ describe("TokenMetadata payload (spec §4.2)", () => {
     expect(Buffer.from(parsedFull.valueBytes).toString("hex")).toBe(Buffer.from(full).toString("hex"));
   });
 
-  it("[[token-payload-golden]] rejects every §4.2 violation with its own reason and never throws (except on a wrong-size payload)", () => {
+  it("[[token-payload-rejections]] rejects every §4.2 violation with its own reason and never throws (except on a wrong-size payload)", () => {
     // size — the one failure that leaves nothing storable.
     expect(() => decodeTokenMetadata(new Uint8Array(255))).toThrow(PayloadSizeError);
     expect(() => parseTokenMetadata(new Uint8Array(257))).toThrow(/exactly 256 bytes, got 257/);
@@ -165,7 +165,7 @@ describe("TokenMetadata payload (spec §4.2)", () => {
     expectReject(payload("tokenUri", "javascript:alert(1)"), "token_uri_not_absolute_http");
   });
 
-  it("[[token-payload-golden]] the key helpers behave exactly as the standard describes", () => {
+  it("[[token-payload-keys]] the key helpers behave exactly as the standard describes", () => {
     expect(metadataPartIndex("metadata/0")).toBe(0);
     expect(metadataPartIndex("metadata/15")).toBe(15);
     expect(metadataPartIndex("metadata/01")).toBeUndefined();

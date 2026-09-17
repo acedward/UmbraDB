@@ -154,7 +154,7 @@ describe("token scanner over recorded Stagenet transactions", () => {
     expect(after[0]).toEqual({ tokens: "8", mints: "6" }); // 6 + the two built-in seeds
   }, 300_000);
 
-  it("[[token-scan-mints]] a FAILED transaction's mint is not counted, and a non-canonical block is not scanned at all", async () => {
+  it("[[token-scan-not-counted]] a FAILED transaction's mint is not counted, and a non-canonical block is not scanned at all", async () => {
     const db = await freshDb();
     const utwBtc = loadScanFixture("mint-utwBTC");
     const utwUsdc = loadScanFixture("mint-utwUSDC");
@@ -178,7 +178,7 @@ describe("token scanner over recorded Stagenet transactions", () => {
     expect(tokens[0]!.n).toBe("0");
   }, 180_000);
 
-  it("[[token-scan-mints]] a transaction whose archived result is unknown BLOCKS the cursor instead of being guessed at or skipped", async () => {
+  it("[[token-scan-unknown-result]] a transaction whose archived result is unknown BLOCKS the cursor instead of being guessed at or skipped", async () => {
     const db = await freshDb();
     const fixture = loadScanFixture("mint-utwBTC");
     await seedArchive(db.sql, db.archiveSchema, NET, [fixture], {
@@ -202,7 +202,7 @@ describe("token scanner over recorded Stagenet transactions", () => {
     expect(after.mints).toBe(1);
   }, 180_000);
 
-  it("[[token-scan-mints]] the batch is atomic: a failure inside it leaves no rows and does not move the cursor", async () => {
+  it("[[token-scan-atomic]] the batch is atomic: a failure inside it leaves no rows and does not move the cursor", async () => {
     const db = await freshDb();
     const fixtures = loadScanFixtures();
     await seedArchive(db.sql, db.archiveSchema, NET, fixtures);
@@ -243,7 +243,7 @@ describe("token scanner over recorded Stagenet transactions", () => {
     expect(clean.mints).toBe(6);
   }, 300_000);
 
-  it("[[token-scan-mints]] the cursor walks over transaction-free blocks, so a quiet chain still shows the decoder keeping up", async () => {
+  it("[[token-scan-idle-cursor]] the cursor walks over transaction-free blocks, so a quiet chain still shows the decoder keeping up", async () => {
     const db = await freshDb();
     // A quiet chain: blocks 1000-1004 with nothing in them at all.
     for (let h = 1000; h <= 1004; h++) await seedEmptyBlock(db.sql, db.archiveSchema, NET, h);
@@ -267,7 +267,7 @@ describe("token scanner over recorded Stagenet transactions", () => {
     expect(idle.cursor).toEqual({ height: fixture.blockHeight, position: 0 });
   }, 180_000);
 
-  it("[[token-scan-mints]] the FR-002 counting rule, exhaustively, on synthetic transcripts", () => {
+  it("[[token-scan-counting-rule]] the FR-002 counting rule, exhaustively, on synthetic transcripts", () => {
     // No transaction in the recorded Stagenet set has a FALLIBLE mint (all six issuers mint in the
     // guaranteed transcript), and fabricating one would mean forging proven transaction bytes. The
     // rule is therefore proven here, directly, over the decoded shape the walk produces — and the

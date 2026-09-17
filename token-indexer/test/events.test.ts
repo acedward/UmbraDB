@@ -149,7 +149,7 @@ describe("token metadata event lookup", () => {
     expect(eventCount[0]!.n).toBe("3");
   }, 300_000);
 
-  it("[[token-event-lookup]] MORE events than log ops is a hard error, and it aborts the whole scan batch", async () => {
+  it("[[token-event-overcount]] MORE events than log ops is a hard error, and it aborts the whole scan batch", async () => {
     const db = await freshDb();
     indexer.events.set(`${TX}:${ADDRESS}`, [metadataEvent(10, "name", "A"), metadataEvent(11, "symbol", "B")]);
     await seedSyntheticTransaction(db.sql, db.archiveSchema, NET, { txHash: TX, blockHeight: 100 });
@@ -167,7 +167,7 @@ describe("token metadata event lookup", () => {
     expect(state[0]).toEqual({ tokens: "0", events: "0", cursors: "0" });
   }, 180_000);
 
-  it("[[token-event-lookup]] a transport failure during the drain keeps the pair queued with its error, and the queue gives up loudly rather than looping forever", async () => {
+  it("[[token-event-retry-budget]] a transport failure during the drain keeps the pair queued with its error, and the queue gives up loudly rather than looping forever", async () => {
     const db = await freshDb();
     indexer.events.set(`${TX}:${ADDRESS}`, [metadataEvent(20, "name", "A")]);
     await seedSyntheticTransaction(db.sql, db.archiveSchema, NET, { txHash: TX, blockHeight: 100 });
@@ -196,7 +196,7 @@ describe("token metadata event lookup", () => {
     expect([1, 2, 3, 4, 10, 20].map(lookupBackoffMs)).toEqual([1_000, 2_000, 4_000, 8_000, 60_000, 60_000]);
   }, 180_000);
 
-  it("[[token-event-lookup]] events of other types and other names are counted but never stored, and paging fetches everything", async () => {
+  it("[[token-event-filtering]] events of other types and other names are counted but never stored, and paging fetches everything", async () => {
     const db = await freshDb();
     const many = [
       { ...metadataEvent(30, "name", "Paged"), typename: "MiscContractEvent" },

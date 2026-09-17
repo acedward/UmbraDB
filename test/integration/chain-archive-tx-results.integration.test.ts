@@ -171,7 +171,7 @@ describe("chain_archive transaction results and segments (00020 FR-002)", () => 
     expect(again[1]!.segments).toEqual(rows[1]!.segments);
   }, 180_000);
 
-  it("[[archive-tx-results]] backfill-results repairs an archive synced before this change, is idempotent, and is bounded", async () => {
+  it("[[archive-tx-results-backfill]] backfill-results repairs an archive synced before this change, is idempotent, and is bounded", async () => {
     const blocks = chain();
     const { sql, schema } = await newSchema();
     // Sync with the OLD query shape: no transactionResult is ever selected, so every row lands NULL.
@@ -216,7 +216,7 @@ describe("chain_archive transaction results and segments (00020 FR-002)", () => 
     expect(third).toMatchObject({ blocksExamined: 0, transactionsUpdated: 0 });
   }, 180_000);
 
-  it("[[archive-tx-results]] the 002 migration is additive: an archive on the old lineage upgrades in place, keeps its rows, and rejects a non-array segments value", async () => {
+  it("[[archive-tx-results-migration]] the 002 migration is additive: an archive on the old lineage upgrades in place, keeps its rows, and rejects a non-array segments value", async () => {
     const { sql, schema } = await newSchema(false);
     // Bootstrap the OLD lineage only — exactly what an archive created before 00020 has.
     await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
@@ -260,7 +260,7 @@ describe("chain_archive transaction results and segments (00020 FR-002)", () => 
     `;
   }, 180_000);
 
-  it("[[archive-tx-results]] the status mapping is exact and an unknown status is a hard error, never a silent NULL", () => {
+  it("[[archive-tx-results-mapping]] the status mapping is exact and an unknown status is a hard error, never a silent NULL", () => {
     expect(mapTransactionResult({ status: "SUCCESS" })).toBe("success");
     expect(mapTransactionResult({ status: "PARTIAL_SUCCESS" })).toBe("partial_success");
     expect(mapTransactionResult({ status: "FAILURE" })).toBe("failure");

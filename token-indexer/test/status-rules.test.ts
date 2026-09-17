@@ -128,7 +128,7 @@ describe("token status rules (spec §6.2, FR-017)", () => {
     });
   }, 120_000);
 
-  it("[[token-status-rules]] a declaration of LEDGER for a natively-minted token is inconsistent: the mint's facts stand, the claim is kept and shown", async () => {
+  it("[[token-status-inconsistent]] a declaration of LEDGER for a natively-minted token is inconsistent: the mint's facts stand, the claim is kept and shown", async () => {
     const liar = newAddress();
     await emit(liar, KIND.unshieldedLedger, "name", "Ledger Liar", 20);
     await emit(liar, KIND.unshieldedLedger, "symbol", "LLIAR", 20);
@@ -152,7 +152,7 @@ describe("token status rules (spec §6.2, FR-017)", () => {
     expect(await row(liar, "unshielded")).toMatchObject({ status: "inconsistent", name: "Ledger Liar (renamed)" });
   }, 120_000);
 
-  it("[[token-status-rules]] the arrival order of a mint and its declaration is irrelevant", async () => {
+  it("[[token-status-order]] the arrival order of a mint and its declaration is irrelevant", async () => {
     const mintFirst = newAddress();
     await mint(mintFirst, "shielded", 7n, 30);
     await emit(mintFirst, KIND.shieldedNative, "name", "Same", 31);
@@ -169,7 +169,7 @@ describe("token status rules (spec §6.2, FR-017)", () => {
     expect(a.status).toBe("described");
   }, 120_000);
 
-  it("[[token-status-rules]] one colour, two kinds: bit 0 selects the row, so a declaration for the other kind is a different token and not a contradiction", async () => {
+  it("[[token-status-dual-kind]] one colour, two kinds: bit 0 selects the row, so a declaration for the other kind is a different token and not a contradiction", async () => {
     const dual = newAddress();
     await mint(dual, "shielded", 1n, 40);
     await mint(dual, "unshielded", 2n, 40);
@@ -186,7 +186,7 @@ describe("token status rules (spec §6.2, FR-017)", () => {
     expect([shielded.totalMinted, unshielded.totalMinted]).toEqual(["1", "2"]);
   }, 120_000);
 
-  it("[[token-status-rules]] last write wins by (block height, event id), including two events in one transaction", async () => {
+  it("[[token-status-last-write]] last write wins by (block height, event id), including two events in one transaction", async () => {
     const renamed = newAddress();
     await emit(renamed, KIND.shieldedNative, "name", "First", 50, { eventId: 900 });
     expect((await row(renamed, "shielded")).name).toBe("First");
@@ -210,7 +210,7 @@ describe("token status rules (spec §6.2, FR-017)", () => {
     expect(history[0]!.n).toBe("5");
   }, 120_000);
 
-  it("[[token-status-rules]] a rejected event is stored with its reason and changes nothing about the token", async () => {
+  it("[[token-status-rejected]] a rejected event is stored with its reason and changes nothing about the token", async () => {
     const strict = newAddress();
     await emit(strict, KIND.shieldedNative, "name", "Good", 60);
     const before = await row(strict, "shielded");
@@ -229,7 +229,7 @@ describe("token status rules (spec §6.2, FR-017)", () => {
     expect(rejected.map((r) => r.reject_reason)).toEqual(["decimals_range", "symbol_too_long", "kind_reserved_bits"]);
   }, 120_000);
 
-  it("[[token-status-rules]] a split metadata document projects only when every part is present, and tokenUri is projected as text", async () => {
+  it("[[token-status-metadata-parts]] a split metadata document projects only when every part is present, and tokenUri is projected as text", async () => {
     const split = newAddress();
     const document = JSON.stringify({ description: "A nebula", website: "https://example.test", image: "data:image/svg+xml,<svg/>" });
     const chunks: string[] = [];
@@ -261,7 +261,7 @@ describe("token status rules (spec §6.2, FR-017)", () => {
     expect((await row(split, "shielded")).metadata).toEqual(JSON.parse(document));
   }, 120_000);
 
-  it("[[token-status-rules]] the built-in rows are never touched by the fold", async () => {
+  it("[[token-status-builtin]] the built-in rows are never touched by the fold", async () => {
     const zero = "0".repeat(64);
     const before = await sql<{ symbol: string; status: string; decimals: number }[]>`
       SELECT symbol, status, decimals FROM ${sql(schema)}.tokens WHERE net = ${NET} AND status = 'builtin' ORDER BY symbol`;

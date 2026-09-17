@@ -173,7 +173,7 @@ describe("token API (spec §5)", () => {
     expect(new Set(seen).size).toBe(9);
   }, 60_000);
 
-  it("[[token-api-contract]] the per-token routes serve the token, its traits with provenance, and its mints", async () => {
+  it("[[token-api-token-routes]] the per-token routes serve the token, its traits with provenance, and its mints", async () => {
     const domain = piece("orion");
     const token = await get(`/v1/contracts/${CNST}/tokens/${domain}/shielded`);
     expect(token.status).toBe(200);
@@ -207,7 +207,7 @@ describe("token API (spec §5)", () => {
     expect(lsun.body).toMatchObject({ storage: "ledger", color: null, status: "declared", mintCount: 0 });
   }, 60_000);
 
-  it("[[token-api-contract]] the contract, by-color, events and registry routes", async () => {
+  it("[[token-api-contract-routes]] the contract, by-color, events and registry routes", async () => {
     const contract = await get(`/v1/contracts/${CNST}`);
     expect(contract.body).toMatchObject({ address: CNST, deployHeight: 500, lastCallHeight: 540 });
     expect(contract.body.deployTxHash).toBe("cc".repeat(32));
@@ -246,7 +246,7 @@ describe("token API (spec §5)", () => {
     expect(status.body.counters.eventsRejected).toBe(1);
   }, 60_000);
 
-  it("[[token-api-contract]] the tokenUri resolver answers to all three spellings, 404s an unknown id and 409s a genuine ambiguity", async () => {
+  it("[[token-api-resolver]] the tokenUri resolver answers to all three spellings, 404s an unknown id and 409s a genuine ambiguity", async () => {
     const byName = await get("/constellations/orion");
     const bySymbol = await get("/cnst/orion");
     const byHex = await get(`/${CNST}/${piece("orion")}`);
@@ -284,7 +284,7 @@ describe("token API (spec §5)", () => {
     expect(html.headers.get("location")).toBe(`/ui#/token/${CNST}/${piece("orion")}/shielded`);
   }, 60_000);
 
-  it("[[token-api-contract]] error codes, the page routes and the resolver helpers", async () => {
+  it("[[token-api-errors]] error codes, the page routes and the resolver helpers", async () => {
     expect((await get("/v1/contracts/nothex")).status).toBe(400);
     expect((await get("/v1/contracts/nothex")).body.error.code).toBe("TOKEN_BAD_REQUEST");
     expect((await get(`/v1/contracts/${CNST}/tokens/${piece("orion")}/sideways`)).status).toBe(400);

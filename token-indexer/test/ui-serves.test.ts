@@ -48,7 +48,7 @@ async function listenOnFreePort(server: Server): Promise<number> {
   throw new Error("no free port >= 10000 found after 40 attempts");
 }
 
-describe("[[token-ui-serves]] the token explorer page", () => {
+describe("the token explorer page", () => {
   let server: Server;
   let base: string;
 
