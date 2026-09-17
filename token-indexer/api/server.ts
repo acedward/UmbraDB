@@ -293,16 +293,10 @@ export function createTokenApi(opts: TokenApiOptions): Server {
     }
     const token = candidates[0]!;
 
-    // A browser following the link from the page gets the page's own token view.
-    const accept = String(req.headers.accept ?? "");
-    if (accept.includes("text/html")) {
-      res.writeHead(302, {
-        location: `/ui#/token/${token.address}/${token.domainSep}/${token.kind}`,
-        "cache-control": "no-store", "content-length": "0",
-      });
-      res.end();
-      return;
-    }
+    // The resolver always answers with the metadata document itself, also to a browser: the whole
+    // point of a tokenUri is to open it and read what the token declared (owner, 2026-09-17 — the
+    // earlier Accept: text/html redirect to the page's token view made the link look inert). The
+    // page opens these links in a new tab, so the explorer stays where it was.
 
     const keys = await queries.metadataKeys(token.address, token.domainSep, token.kind);
     const traits: Record<string, { value: string; text: string | null; updatedHeight: number; eventId: number }> = {};

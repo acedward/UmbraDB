@@ -278,10 +278,12 @@ describe("token API (spec §5)", () => {
     // The hex form disambiguates, which is what the 409 tells the caller to do.
     expect((await get(`/${TWIN_A}/${Buffer.from(pad32("twin:alpha")).toString("hex")}`)).status).toBe(200);
 
-    // A browser following the on-chain link lands on the page's own token view.
-    const html = await get("/constellations/orion", { accept: "text/html,application/xhtml+xml" });
-    expect(html.status).toBe(302);
-    expect(html.headers.get("location")).toBe(`/ui#/token/${CNST}/${piece("orion")}/shielded`);
+    // A browser following the on-chain link gets the document itself (Q65: the earlier redirect to
+    // the page's token view made the link look inert from that very view).
+    const html = await get("/constellations/orion", { accept: "text/html,application/xhtml+xml,*/*;q=0.8" });
+    expect(html.status).toBe(200);
+    expect(String(html.headers.get("content-type"))).toContain("application/json");
+    expect(html.body).toEqual(byName.body);
   }, 60_000);
 
   it("[[token-api-errors]] error codes, the page routes and the resolver helpers", async () => {

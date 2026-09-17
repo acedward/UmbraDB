@@ -387,7 +387,10 @@ function uriLink(uri) {
   var a = node("a", parsed.label);
   a.href = parsed.href;
   a.rel = "noreferrer noopener";
-  a.title = parsed.local ? "rewritten to this origin: " + parsed.href : parsed.label;
+  a.target = "_blank";
+  a.title = (parsed.local ? "rewritten to this origin: " + parsed.href : parsed.label) + " — opens the metadata document in a new tab";
+  // A row click navigates to the token view; a click on the link itself must only open the document.
+  a.addEventListener("click", function (ev) { ev.stopPropagation(); });
   return a;
 }
 // The page's own resolver link, GET /{token-name}/{id} (spec §5). The pretty form uses the
@@ -727,8 +730,9 @@ function renderToken(main) {
     links.appendChild(node("span", paths[i].label, "note"));
     var a = node("a", paths[i].short);
     a.href = paths[i].path;
-    a.title = paths[i].path;
+    a.title = paths[i].path + " — opens the metadata document in a new tab";
     a.rel = "noreferrer noopener";
+    a.target = "_blank";
     links.appendChild(a);
   }
   head.appendChild(links);
