@@ -5,6 +5,16 @@ standard, §5 the API, §6 the internals). This directory is the whole deliverab
 untouched apart from two additive migration files (`src/postgres/migrations/token_index/` and
 `src/postgres/migrations/chain_archive/002_tx_result_segments.ts`).
 
+## The standard this reads (normative, pinned)
+
+**[`TOKEN-METADATA.md` @ `71c5b0b`](https://github.com/acedward/mip-erc7496-midnight-contracts/blob/71c5b0b/TOKEN-METADATA.md)**
+in `acedward/mip-erc7496-midnight-contracts` — the canonical text of the `TokenMetadata` `Misc`
+event: the 256-byte payload layout, the kind byte, the key registry, the ordering and authority
+rules, and a complete conforming contract. That commit is the one whose reference set is deployed on
+Stagenet. The parser here implements exactly it, and the golden fixtures below pin the bytes;
+`test/fixtures/contracts/SOURCE.md` records the (slightly earlier) commit the fixture corpus itself
+was exported from — the standard text is identical in both apart from a later appendix.
+
 ## What it does
 
 Two sources, nothing else:
