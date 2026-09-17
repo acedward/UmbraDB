@@ -158,7 +158,12 @@ export function normalizeEvent(raw: Record<string, unknown>): IndexerContractEve
   };
 }
 
-/** A `MiscContractEvent` named `pad(32, "TokenMetadata")` — everything else is counted only. */
+/**
+ * A `MiscContractEvent` named `pad(32, "mip-xxxx:token-metadata[v1]")` with a payload — everything
+ * else is COUNTED and then discarded, which is exactly MIP §1's "Any other event MUST be ignored":
+ * an event of another type, of another name (including the pre-MIP `TokenMetadata` this project
+ * shipped in 00020), or with no payload is not stored, not rejected and not evidence of anything.
+ */
 export function isTokenMetadataEvent(event: IndexerContractEvent): boolean {
   return event.typename === "MiscContractEvent"
     && event.nameHex !== undefined

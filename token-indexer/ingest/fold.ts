@@ -128,7 +128,7 @@ export interface RawContractEvent {
   contractAddress: string;
   txHash: string;
   blockHeight: number;
-  /** `pad(32, "TokenMetadata")` as hex, for a `MiscContractEvent`. */
+  /** `pad(32, "mip-xxxx:token-metadata[v1]")` as hex, for a `MiscContractEvent`. */
   nameHex: string;
   /** The 256-byte payload, hex. */
   payloadHex: string;
