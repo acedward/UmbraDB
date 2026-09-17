@@ -433,9 +433,27 @@ function domainCell(d) {
   if (text !== null) return copyable(d, text, "txt");
   return copyable(d, shortHex(d, 8, 6), "hex");
 }
-function colorCell(c) {
-  if (!c) return node("span", "— (ledger)", "no");
+// A colour is absent for exactly two reasons, and they are different facts: a ledger token never
+// has one (nothing is minted, so nothing is derived), and DUST has none at all — the ledger types
+// it as a unit variant, not as 32 bytes. Neither is rendered as an empty cell.
+function colorCell(c, storage) {
+  if (!c) {
+    if (storage === "ledger") return node("span", "— ledger token", "no");
+    return node("span", "— none", "no");
+  }
   return copyable(c, shortHex(c, 8, 6), "hex");
+}
+function isZeroHex(s) {
+  if (!isHex(s)) return false;
+  for (var i = 0; i < s.length; i++) if (s.charAt(i) !== "0") return false;
+  return true;
+}
+// NIGHT and DUST are seeded rows with no contract behind them: their "address" is a sentinel of
+// 32 zero bytes, and printing 64 zeros as if it were a deployment would be a lie in 64 characters.
+function addressCell(t) {
+  if (!t.address) return node("span", "— built-in", "no");
+  if (isZeroHex(t.address)) return node("span", "— built-in", "no");
+  return copyable(t.address, shortHex(t.address, 8, 6), "hex");
 }
 function mintsCell(t) {
   var wrap = node("span");
@@ -592,11 +610,11 @@ function renderList(main) {
     var t = items[i];
     var tr = document.createElement("tr");
     tr.className = t.status === "builtin" ? "pick built" : "pick";
-    cell(tr, t.address ? copyable(t.address, shortHex(t.address, 8, 6), "hex") : node("span", "— (built-in)", "no"));
+    cell(tr, addressCell(t));
     cell(tr, domainCell(t.domainSep));
     cell(tr, orDash(t.kind));
     cell(tr, orDash(t.storage));
-    cell(tr, colorCell(t.color));
+    cell(tr, colorCell(t.color, t.storage));
     cell(tr, nameCell(t));
     cell(tr, orDash(t.symbol));
     cell(tr, t.decimals === null || t.decimals === undefined ? "-" : String(t.decimals), "num");
@@ -703,12 +721,14 @@ function renderToken(main) {
   var facts = node("section");
   facts.appendChild(node("h2", "token"));
   kvInto(facts, [
-    ["address", copyable(t.address, t.address ? String(t.address) : "-", "hex")],
+    ["address", isZeroHex(t.address) ? node("span", "— built-in row, no contract", "no")
+      : copyable(t.address, t.address ? String(t.address) : "-", "hex")],
     ["domainSep", domainCell(t.domainSep)],
     ["domainSep (hex)", copyable(t.domainSep, t.domainSep ? String(t.domainSep) : "-", "hex")],
     ["kind", orDash(t.kind)],
     ["storage", orDash(t.storage)],
-    ["colour", t.color ? copyable(t.color, String(t.color), "hex") : node("span", "— not derived for a ledger token", "no")],
+    ["colour", t.color ? copyable(t.color, String(t.color), "hex")
+      : node("span", t.storage === "ledger" ? "— ledger tokens have no derived colour" : "— none", "no")],
     ["name", orDash(t.name)],
     ["symbol", orDash(t.symbol)],
     ["decimals", t.decimals === null || t.decimals === undefined ? "-" : String(t.decimals)],
@@ -870,7 +890,7 @@ function renderContract(main) {
       cell(tr, domainCell(t.domainSep));
       cell(tr, orDash(t.kind));
       cell(tr, orDash(t.storage));
-      cell(tr, colorCell(t.color));
+      cell(tr, colorCell(t.color, t.storage));
       cell(tr, nameCell(t));
       cell(tr, orDash(t.symbol));
       cell(tr, t.decimals === null || t.decimals === undefined ? "-" : String(t.decimals), "num");
