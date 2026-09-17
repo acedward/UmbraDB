@@ -99,14 +99,13 @@ tr.mark td { background: #1d2430; }
 .st-observed { color: var(--accent); border-color: #1e3a8a; background: #111a2e; }
 .st-declared { color: var(--warn); border-color: #78350f; background: #241a06; }
 .st-described { color: var(--ok); border-color: #14532d; background: #0d2318; }
-.st-inconsistent { color: var(--bad); border-color: #7f1d1d; background: #2a1416; }
 .st-unknown { color: var(--idle); border-color: var(--line); background: var(--panel2); }
 .fam { display: inline-block; min-width: 0; padding: 0 6px; margin-right: 6px; border-radius: 4px;
   font-size: 10.5px; border: 1px solid var(--line); color: var(--dim); }
 .fam-ledger { color: #fdba74; border-color: #7c2d12; }
 .fam-shielded { color: #5eead4; border-color: #115e59; }
 .fam-unshielded { color: #93c5fd; border-color: #1e3a8a; }
-.fam-constellations { color: var(--violet); border-color: #4c1d95; }
+.fam-collection { color: var(--violet); border-color: #4c1d95; }
 .fam-dual { color: #f0abfc; border-color: #701a75; }
 .cp { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
 .cp.copied { color: var(--ok); text-decoration: none; }
@@ -116,6 +115,10 @@ tr.mark td { background: #1d2430; }
 .err { color: var(--bad); font-size: 12px; }
 .empty { color: var(--dim); padding: 10px 2px; font-size: 12.5px; }
 .txt { color: var(--ink); }
+/* A projection that Appendix A refused: the trait is real and kept, the column it would feed is
+   not written. Shown as a warning, never as an error — the event itself was applied. */
+.perr { color: var(--warn); }
+.vtype { color: var(--dim); font-size: 11px; }
 .hex { color: var(--dim); }
 .no { color: var(--dim); }
 pre { margin: 0; padding: 10px; background: var(--panel2); border: 1px solid var(--line);
@@ -425,26 +428,99 @@ function resolverPaths(t) {
 
 // ── Token cells ─────────────────────────────────────────────────────────────────────────────
 
+// MIP section 7.2 has three consumer states; builtin is this indexer's own fourth, for the two
+// seeded rows. There is no state for a self-contradicting row: a declaration and a mint populate
+// different rows, so a row has nothing to contradict.
 function statusBadge(s) {
   var v = s ? String(s) : "unknown";
-  var known = ["builtin", "observed", "declared", "described", "inconsistent"];
+  var known = ["builtin", "observed", "declared", "described"];
   var cls = known.indexOf(v) < 0 ? "st-unknown" : "st-" + v;
   return node("span", v, "badge " + cls);
 }
-// The reference set names its families in the first word of the name and the first letter of the
-// symbol (spec §7.1), so the page can label them without knowing anything about the deployment.
-function familyOf(t) {
-  var first = String(t.name || "").split(" ")[0].toLowerCase();
-  var known = ["ledger", "shielded", "unshielded", "constellations", "dual"];
-  if (known.indexOf(first) >= 0) return first;
-  return null;
+// The kind byte (MIP section 3) as the two words it encodes. The byte itself goes in the title,
+// because it is the identity and a reader copying a URL needs it.
+function kindLabel(t) {
+  if (!t) return "-";
+  var privacy = t.privacy ? String(t.privacy) : "?";
+  var storage = t.storage ? String(t.storage) : "?";
+  return privacy + " " + String.fromCharCode(183) + " " + storage;
 }
-function nameCell(t) {
+function kindCell(t) {
+  var s = node("span", kindLabel(t));
+  if (t.kind !== null && t.kind !== undefined) s.title = "kind byte " + String(t.kind);
+  return s;
+}
+// The family chip is DERIVED from the rows themselves, never from the name's first word: the
+// indexer sees every contract on the chain, and most of them are not this project's reference set.
+//
+//   ledger      the row's storage is ledger (MIP kinds 2 and 3): no colour, never minted
+//   dual        the same domain separator exists as BOTH native kinds, sharing one colour
+//   collection  the contract has several native domain separators, one per piece (ERC-1155 shape)
+//   shielded /
+//   unshielded  a plain native token, labelled by its privacy tag
+//
+// Built-in rows get no chip: NIGHT and DUST share a sentinel address and are already labelled.
+// The index covers the rows currently on screen, which is the whole list page in practice.
+function familyIndex(items) {
+  var domains = {};
+  var kinds = {};
+  for (var i = 0; i < (items || []).length; i++) {
+    var t = items[i];
+    if (!t || t.status === "builtin" || t.storage !== "native") continue;
+    var a = String(t.address);
+    var d = String(t.domainSep);
+    if (!domains[a]) domains[a] = {};
+    domains[a][d] = true;
+    var pair = a + "/" + d;
+    if (!kinds[pair]) kinds[pair] = {};
+    kinds[pair][String(t.kind)] = true;
+  }
+  return { domains: domains, kinds: kinds };
+}
+function countKeys(o) {
+  var n = 0;
+  for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) n++;
+  return n;
+}
+function familyOf(t, index) {
+  if (!t || t.status === "builtin") return null;
+  if (t.storage === "ledger") return "ledger";
+  var pair = String(t.address) + "/" + String(t.domainSep);
+  var kinds = index && index.kinds ? index.kinds[pair] : null;
+  if (kinds && kinds["0"] && kinds["1"]) return "dual";
+  var domains = index && index.domains ? index.domains[String(t.address)] : null;
+  if (domains && countKeys(domains) > 1) return "collection";
+  return t.privacy ? String(t.privacy) : null;
+}
+function nameCell(t, index) {
   var wrap = node("span");
-  var fam = familyOf(t);
+  var fam = familyOf(t, index);
   if (fam) wrap.appendChild(node("span", fam, "fam fam-" + fam));
   wrap.appendChild(node("span", t.name ? String(t.name) : "(undescribed)", t.name ? "txt" : "no"));
   return wrap;
+}
+// One trait's value, rendered by its declared type (MIP section 2.1): text for 1/3/4, the decimal
+// integer for 2, hex for opaque bytes and for anything that did not decode.
+function typeLabel(vt) {
+  var names = ["opaque", "text", "integer", "JSON", "URI"];
+  if (vt === null || vt === undefined) return "-";
+  var n = Number(vt);
+  return n >= 0 && n < names.length ? String(n) + " " + names[n] : String(n) + " reserved";
+}
+function traitValueCell(tr) {
+  if (Number(tr.valType) === 2 && tr.integer !== null && tr.integer !== undefined) {
+    return node("span", String(tr.integer), "txt");
+  }
+  if (tr.text !== null && tr.text !== undefined) return node("span", String(tr.text), "txt wrapv");
+  if (tr.value) return copyable(tr.value, shortHex(String(tr.value), 10, 8), "hex");
+  return node("span", "(empty)", "no");
+}
+function traitKeyCell(tr) {
+  if (tr.key !== null && tr.key !== undefined) return node("span", String(tr.key), "txt");
+  // MIP section 5.1: a key that is not valid UTF-8 is still a key. It is shown as its bytes.
+  var s = copyable(tr.keyHex, "0x" + shortHex(String(tr.keyHex), 8, 6), "hex");
+  s.title = "this key is not valid UTF-8 and is shown as its bytes";
+  return s;
 }
 function domainCell(d) {
   var text = hexText(d);
@@ -520,7 +596,7 @@ function contractEventsPath(address) {
   return P_CONTRACTS + "/" + enc(address) + "/events?applied=false";
 }
 async function loadToken(r) {
-  var d = { token: null, keys: [], mints: [], events: [], notes: [] };
+  var d = { token: null, keys: [], mints: [], events: [], siblings: [], notes: [] };
   d.token = await api(tokenBase(r));
   await Promise.all([
     api(tokenBase(r) + "/metadata").then(
@@ -531,7 +607,15 @@ async function loadToken(r) {
       function (e) { d.notes.push("mint history unavailable: " + e.message); }),
     api(contractEventsPath(r.address)).then(
       function (p) { d.events = itemsOf(p); },
-      function (e) { d.notes.push("raw events unavailable: " + e.message); })
+      function (e) { d.notes.push("raw events unavailable: " + e.message); }),
+    // Every token row of this contract. Two things come out of it: the rows sharing this token's
+    // domain separator, which the MIP (section 4) lets a consumer link as one asset's several
+    // representations, and the family chip, which is derived from how the contract's rows relate.
+    // The dedicated route GET /v1/contracts/:address/tokens/:domainSep serves the first alone; the
+    // contract route serves both in one request, which is why the page asks for it instead.
+    api(P_CONTRACTS + "/" + enc(r.address)).then(
+      function (p) { d.siblings = itemsOf(p && p.tokens ? { items: p.tokens } : null); },
+      function (e) { d.notes.push("related rows unavailable: " + e.message); })
   ]);
   state.detail = d;
 }
@@ -617,12 +701,13 @@ function renderList(main) {
   }
   if (items.length === 0) {
     sec.appendChild(node("div",
-      "no token matches. The indexer creates a row from an observed mint or an emitted TokenMetadata event — "
+      "no token matches. The indexer creates a row from an observed mint or an emitted token-metadata event — "
       + "on a quiet chain the built-in NIGHT and DUST rows are all there is.", "empty"));
     main.appendChild(sec);
     return;
   }
-  var tbody = tableIn(sec, ["address", "domainSep", "kind", "storage", "colour", "name", "symbol",
+  var index = familyIndex(items);
+  var tbody = tableIn(sec, ["address", "domainSep", "kind", "colour", "name", "symbol",
     "dec", "mints", "first … last", "status", "tokenUri"]);
   for (var i = 0; i < items.length; i++) {
     var t = items[i];
@@ -630,10 +715,9 @@ function renderList(main) {
     tr.className = t.status === "builtin" ? "pick built" : "pick";
     cell(tr, addressCell(t));
     cell(tr, domainCell(t.domainSep));
-    cell(tr, orDash(t.kind));
-    cell(tr, orDash(t.storage));
+    cell(tr, kindCell(t));
     cell(tr, colorCell(t.color, t.storage));
-    cell(tr, nameCell(t));
+    cell(tr, nameCell(t, index));
     cell(tr, orDash(t.symbol));
     cell(tr, t.decimals === null || t.decimals === undefined ? "-" : String(t.decimals), "num");
     cell(tr, mintsCell(t), "num");
@@ -661,7 +745,9 @@ function renderList(main) {
   }
   sec.appendChild(node("div",
     "click a row for the token view · click a hex value to copy it · rows with status builtin are the "
-    + "hardcoded NIGHT and DUST entries, every other row comes from an observed mint or an emitted event",
+    + "hardcoded NIGHT and DUST entries, every other row comes from an observed mint or an emitted event "
+    + "· a token is (contract, domainSep, kind) with the whole kind byte, so one domain separator can "
+    + "hold up to four rows",
     "note"));
   main.appendChild(sec);
 }
@@ -706,20 +792,24 @@ function renderToken(main) {
   }
   var t = d.token;
 
+  var index = familyIndex(d.siblings && d.siblings.length ? d.siblings : [t]);
   var head = node("section");
   var title = node("h3");
-  title.appendChild(nameCell(t));
+  title.appendChild(nameCell(t, index));
   head.appendChild(title);
   var sub = node("div", null, "row");
   sub.appendChild(statusBadge(t.status));
   sub.appendChild(node("span", (t.symbol ? String(t.symbol) : "no symbol")
-    + " · " + orDash(t.kind) + " · " + orDash(t.storage)
+    + " · kind " + orDash(t.kind) + " " + kindLabel(t)
     + " · decimals " + (t.decimals === null || t.decimals === undefined ? "-" : t.decimals), "note"));
   head.appendChild(sub);
-  if (t.status === "inconsistent") {
+  if (t.status === "declared") {
     head.appendChild(node("div",
-      "This contract declared something its own mints contradict (spec §6.2): the observed mint decides "
-      + "kind and storage, the declared fields are still shown.", "err"));
+      t.storage === "ledger"
+        ? "A ledger token is a claim the chain cannot corroborate: nothing is ever minted for it, so "
+          + "this row stays declared for good (MIP 7.2)."
+        : "Described but not yet minted: the chain has not seen this token, only the contract's claim "
+          + "about it (MIP 7.2).", "note"));
   }
   var links = node("div", null, "row");
   links.style.marginTop = "8px";
@@ -745,7 +835,8 @@ function renderToken(main) {
       : copyable(t.address, t.address ? String(t.address) : "-", "hex")],
     ["domainSep", domainCell(t.domainSep)],
     ["domainSep (hex)", copyable(t.domainSep, t.domainSep ? String(t.domainSep) : "-", "hex")],
-    ["kind", orDash(t.kind)],
+    ["kind", orDash(t.kind) + "  (" + kindLabel(t) + ")"],
+    ["privacy", orDash(t.privacy)],
     ["storage", orDash(t.storage)],
     ["colour", t.color ? copyable(t.color, String(t.color), "hex")
       : node("span", t.storage === "ledger" ? "— ledger tokens have no derived colour" : "— none", "no")],
@@ -781,23 +872,73 @@ function renderToken(main) {
   if (d.keys.length === 0) {
     traits.appendChild(node("div", "no key/value pairs recorded for this token", "empty"));
   } else {
-    var tb = tableIn(traits, ["key", "text", "value (hex)", "len", "block", "tx", "event id"]);
+    var tb = tableIn(traits, ["key", "type", "value", "len", "projection", "block", "tx", "event id"]);
+    var anyError = false;
     for (var k = 0; k < d.keys.length; k++) {
       var kv = d.keys[k];
       var row = document.createElement("tr");
-      cell(row, orDash(kv.key && !isHex(kv.key) ? kv.key : (hexText(kv.key) || kv.key)));
-      cell(row, kv.text === null || kv.text === undefined
-        ? node("span", "not UTF-8", "no")
-        : node("span", String(kv.text), "txt wrapv"));
-      cell(row, copyable(kv.value, shortHex(kv.value, 10, 8), "hex"));
-      cell(row, orDash(kv.len), "num");
+      cell(row, traitKeyCell(kv));
+      cell(row, node("span", typeLabel(kv.valType), "vtype"));
+      cell(row, traitValueCell(kv));
+      cell(row, orDash(kv.valLen), "num");
+      if (kv.projectionError) {
+        anyError = true;
+        cell(row, node("span", String(kv.projectionError), "perr wrapv"));
+      } else {
+        cell(row, node("span", "-", "no"));
+      }
       cell(row, orDash(kv.updatedHeight), "num");
       cell(row, copyable(kv.updatedTxHash, shortHex(kv.updatedTxHash, 8, 6), "hex"));
       cell(row, orDash(kv.eventId), "num");
       tb.appendChild(row);
     }
+    if (anyError) {
+      traits.appendChild(node("div",
+        "a value in the projection column is a well-known key whose value does not follow the "
+        + "standard's appendix A rule for it — the event was accepted and the trait is kept, only "
+        + "the column it would have filled was not written",
+        "note"));
+    }
   }
   main.appendChild(traits);
+
+  // The other representations of the same asset: MIP section 4 lets a consumer link the rows that
+  // share (contract address, domain separator). This is where a contract that declares a ledger
+  // book and mints native UTXOs reads as one asset in two forms rather than as a contradiction.
+  var others = [];
+  for (var sIdx = 0; sIdx < (d.siblings || []).length; sIdx++) {
+    var sib = d.siblings[sIdx];
+    if (sib && String(sib.domainSep) === String(t.domainSep) && Number(sib.kind) !== Number(t.kind)) {
+      others.push(sib);
+    }
+  }
+  if (others.length > 0) {
+    var linked = node("section");
+    linked.appendChild(node("h2", "other rows under this domain separator"));
+    linked.appendChild(node("div",
+      "the same contract and the same domain separator under another kind byte: the standard treats "
+      + "each as its own token and lets a consumer show them as representations of one asset",
+      "note"));
+    var lb = tableIn(linked, ["kind", "colour", "name", "symbol", "mints", "status"]);
+    for (var o = 0; o < others.length; o++) {
+      var ot = others[o];
+      var lr = document.createElement("tr");
+      lr.className = "pick";
+      cell(lr, kindCell(ot));
+      cell(lr, colorCell(ot.color, ot.storage));
+      cell(lr, nameCell(ot, index));
+      cell(lr, orDash(ot.symbol));
+      cell(lr, mintsCell(ot), "num");
+      cell(lr, statusBadge(ot.status));
+      (function (token) {
+        lr.addEventListener("click", function () {
+          go(hashToken({ address: t.address, domainSep: token.domainSep, kind: token.kind }));
+        });
+      })(ot);
+      lb.appendChild(lr);
+    }
+    main.appendChild(linked);
+  }
 
   var mints = node("section");
   mints.appendChild(node("h2", "mint history"));
@@ -815,14 +956,14 @@ function renderToken(main) {
       cell(mr, orDash(mi.segment), "num");
       cell(mr, orDash(mi.callIndex), "num");
       cell(mr, orDash(mi.entryPoint));
-      cell(mr, orDash(mi.kind));
+      cell(mr, orDash(mi.kind) + (mi.privacy ? " " + String(mi.privacy) : ""));
       cell(mr, orDash(mi.amount), "num");
       mb.appendChild(mr);
     }
   }
   main.appendChild(mints);
 
-  main.appendChild(eventsSection(d.events, t.domainSep, "raw TokenMetadata events of this contract (rejected ones included)"));
+  main.appendChild(eventsSection(d.events, t.domainSep, "raw token-metadata events of this contract (rejected ones included)"));
 
   if (d.notes.length > 0) {
     var notes = node("section");
@@ -856,7 +997,7 @@ function eventsSection(events, markDomain, heading) {
   var sec = node("section");
   sec.appendChild(node("h2", heading));
   if (!events || events.length === 0) {
-    sec.appendChild(node("div", "no TokenMetadata event from this contract", "empty"));
+    sec.appendChild(node("div", "no token-metadata event from this contract", "empty"));
     return sec;
   }
   if (markDomain) {
@@ -865,7 +1006,7 @@ function eventsSection(events, markDomain, heading) {
       + "order — which is the order the fold applies them in, so the last row of a key is the value in force",
       "note"));
   }
-  var tb = tableIn(sec, ["event id", "block", "tx", "domainSep", "kind byte", "key", "len",
+  var tb = tableIn(sec, ["event id", "block", "tx", "domainSep", "kind", "key", "type", "len",
     "value", "applied", "reject reason"]);
   var ordered = orderEvents(events, markDomain);
   for (var i = 0; i < ordered.length; i++) {
@@ -880,7 +1021,8 @@ function eventsSection(events, markDomain, heading) {
     cell(tr, orDash(e.kindByte === undefined ? e.kind_byte : e.kindByte), "num");
     var key = e.keyText || (e.key ? hexText(e.key) : null) || e.key;
     cell(tr, orDash(key));
-    cell(tr, orDash(e.len), "num");
+    cell(tr, node("span", typeLabel(e.valType), "vtype"));
+    cell(tr, orDash(e.valLen === undefined ? e.len : e.valLen), "num");
     var value = e.text !== undefined && e.text !== null ? String(e.text)
       : (e.value ? (hexText(e.value) || shortHex(e.value, 10, 8)) : null);
     cell(tr, value === null ? node("span", "-", "no") : node("span", value, "wrapv"));
@@ -926,17 +1068,17 @@ function renderContract(main) {
   if (list.length === 0) {
     toks.appendChild(node("div", "no token row for this contract yet", "empty"));
   } else {
-    var tb = tableIn(toks, ["domainSep", "kind", "storage", "colour", "name", "symbol", "dec",
+    var index = familyIndex(list);
+    var tb = tableIn(toks, ["domainSep", "kind", "colour", "name", "symbol", "dec",
       "mints", "status"]);
     for (var i = 0; i < list.length; i++) {
       var t = list[i];
       var tr = document.createElement("tr");
       tr.className = "pick";
       cell(tr, domainCell(t.domainSep));
-      cell(tr, orDash(t.kind));
-      cell(tr, orDash(t.storage));
+      cell(tr, kindCell(t));
       cell(tr, colorCell(t.color, t.storage));
-      cell(tr, nameCell(t));
+      cell(tr, nameCell(t, index));
       cell(tr, orDash(t.symbol));
       cell(tr, t.decimals === null || t.decimals === undefined ? "-" : String(t.decimals), "num");
       cell(tr, mintsCell(t), "num");
@@ -961,7 +1103,7 @@ function renderContract(main) {
   }
   main.appendChild(pend);
 
-  main.appendChild(eventsSection(c.events, null, "raw TokenMetadata events of this contract (rejected ones included)"));
+  main.appendChild(eventsSection(c.events, null, "raw token-metadata events of this contract (rejected ones included)"));
 
   if (c.notes.length > 0) {
     var notes = node("section");
@@ -1112,7 +1254,8 @@ window.addEventListener("DOMContentLoaded", function () {
 const BODY = `<header>
   <h1>Midnight token explorer</h1>
   <div class="sub">every token the indexer has seen &mdash; what was <em>observed</em> on chain (mints)
-    beside what each contract <em>declared</em> about itself (<code>TokenMetadata</code> events)</div>
+    beside what each contract <em>declared</em> about itself
+    (<code>mip-xxxx:token-metadata[v1]</code> events)</div>
   <nav class="tabs">
     <a id="nav-list" href="#/">tokens</a>
     <a id="nav-status" href="#/status">status</a>
@@ -1132,8 +1275,10 @@ const BODY = `<header>
   <label>kind
     <select id="f-kind">
       <option value="">any</option>
-      <option value="shielded">shielded</option>
-      <option value="unshielded">unshielded</option>
+      <option value="0">0 &middot; unshielded &middot; native</option>
+      <option value="1">1 &middot; shielded &middot; native</option>
+      <option value="2">2 &middot; unshielded &middot; ledger</option>
+      <option value="3">3 &middot; shielded &middot; ledger</option>
     </select>
   </label>
   <label>storage
@@ -1150,7 +1295,6 @@ const BODY = `<header>
       <option value="observed">observed</option>
       <option value="declared">declared</option>
       <option value="described">described</option>
-      <option value="inconsistent">inconsistent</option>
     </select>
   </label>
   <button id="clear">clear</button>

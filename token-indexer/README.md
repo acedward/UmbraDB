@@ -1,19 +1,34 @@
 # token-indexer — every Midnight token, its colour and its on-chain metadata
 
-Project 00020. Spec: `spec/00020-token-indexer.md` in the planning workspace (§4 is the on-chain
-standard, §5 the API, §6 the internals). This directory is the whole deliverable; `src/` is
-untouched apart from two additive migration files (`src/postgres/migrations/token_index/` and
+Projects 00020 and 00021. Specs: `spec/00020-token-indexer.md` (§5 the API, §6 the internals) and
+`spec/00021-mip-315-alignment.md` (the delta that put this on the MIP draft) in the planning
+workspace. This directory is the whole deliverable; `src/` is untouched apart from three additive
+migration files (`src/postgres/migrations/token_index/` and
 `src/postgres/migrations/chain_archive/002_tx_result_segments.ts`).
 
-## The standard this reads (normative, pinned)
+## The standard this reads (normative)
 
-**[`TOKEN-METADATA.md` @ `71c5b0b`](https://github.com/acedward/mip-erc7496-midnight-contracts/blob/71c5b0b/TOKEN-METADATA.md)**
-in `acedward/mip-erc7496-midnight-contracts` — the canonical text of the `TokenMetadata` `Misc`
-event: the 256-byte payload layout, the kind byte, the key registry, the ordering and authority
-rules, and a complete conforming contract. That commit is the one whose reference set is deployed on
-Stagenet. The parser here implements exactly it, and the golden fixtures below pin the bytes;
-`test/fixtures/contracts/SOURCE.md` records the (slightly earlier) commit the fixture corpus itself
-was exported from — the standard text is identical in both apart from a later appendix.
+**MIP PR #315, `mips/mip-xxxx-on-chain-token-metadata.md`** in
+`midnightntwrk/midnight-improvement-proposals` (head `f433056`, branch
+`mip-on-chain-token-metadata`) — "On-Chain Token Metadata Emission". Normative there are the event
+envelope [1], the payload layout [2], the `kind` byte [3], token identity [4], key/value handling
+[5], emission rules [6], consumer rules [7] and versioning [8]; Appendix A's well-known keys are
+informative but SHOULD-level for interoperability, and this indexer follows them.
+
+The MIP is the text; `acedward/mip-erc7496-midnight-contracts` is the reference implementation whose
+compiled contracts produce the golden corpus below. This consumer implements the MIP directly and
+deliberately shares no code with the contracts.
+
+**Two consequences worth stating out loud.**
+
+* The event name is `pad(32, "mip-xxxx:token-metadata[v1]")`, and `xxxx` is a placeholder until the
+  MIP is assigned its number. The name is spelled once, in
+  `ingest/payload.ts`'s `TOKEN_METADATA_EVENT_NAME`; when the number is assigned that line changes
+  and every emitting contract has to be redeployed, because on their side the name is a circuit
+  literal.
+* The pre-MIP name `TokenMetadata` that project 00020 shipped is **ignored** — not stored, not
+  rejected, not evidence of anything (MIP §1: "Any other event MUST be ignored"). Contracts deployed
+  under the old name keep whatever rows their mints created, as `observed`.
 
 ## What it does
 
@@ -31,16 +46,33 @@ Two sources, nothing else:
    come from the transactions themselves.
 
 A token row is created or changed by exactly those two kinds of evidence — an observed mint, or an
-emitted `TokenMetadata` event in the documented format — plus the two built-in rows below.
+applied metadata event — plus the two built-in rows below.
 
-## Row sources (normative, spec §3 / FR-017)
+## Token identity and row sources (MIP §3, §4, §6.3, §7.2)
 
-- **Minting is always native.** A mint effect exists only for UTxO tokens, so an observed mint sets
-  `storage = native` unconditionally and `kind` from the map it came from. No event can change
-  either afterwards; a contradicting event marks the row `inconsistent` and is kept as evidence.
-- **Only emitted metadata can describe a ledger token**, and emitted metadata may also describe a
-  native one.
-- Nothing declared ever overwrites something observed.
+A token is **`(contract address, domainSep, kind)`** with the WHOLE kind byte:
+
+| `kind` | privacy | storage | has a colour? |
+|---|---|---|---|
+| 0 | unshielded | native | yes |
+| 1 | shielded | native | yes |
+| 2 | unshielded | ledger | no |
+| 3 | shielded | ledger | no (purely informative label) |
+
+`privacy` and `storage` are generated columns of that byte, so they can never disagree with it.
+
+- **A mint is always native**, so it lands on kind 0 or kind 1 by the effect map it came from, and
+  on no other row.
+- **A declaration populates exactly its own kind's row.** Declaring kind 2 says nothing about kind 0.
+  A contract that describes its balance book and mints UTXOs therefore produces two rows — an
+  `observed` kind-0 row without a name and a `declared` kind-2 row with one. That is the accurate
+  picture, not an error, and the MIP chose it explicitly over flagging a contradiction.
+- Rows sharing `(address, domainSep)` may be linked as one asset's several representations:
+  `GET /v1/contracts/:address/tokens/:domainSep` returns exactly that set.
+- The states are `observed`, `declared`, `described` (MIP §7.2) plus `builtin` for the two seeds.
+- An Appendix A key whose value breaks Appendix A's rule (wrong `val-type`, a `decimals` above 36, a
+  `tokenUri` that is not an absolute http(s) URL) does **not** reject the event: the trait is stored
+  with a `projection_error` and the column it would have filled is not written.
 
 ## Built-in rows (owner decision Q7)
 
@@ -81,11 +113,29 @@ from the public indexer with their `raw` bytes, `transactionResult` and created 
 runs against those bytes through the real store and the real ledger-v9 decoder.
 
 `test/fixtures/contracts/` holds the golden corpus emitted by the **reference contracts** of
-`acedward/mip-erc7496-midnight-contracts` — 69 `TokenMetadata` payloads, 16 mints, 15 colour vectors,
-16 expected rows covering all four `status` values and 7 deliberately malformed payloads, produced by
-the real compiled Compact templates in the Compact simulator. `test/fixtures/contracts/SOURCE.md`
-pins the exact repository, branch and commit. The hand-built negatives in `test/payload.test.ts` are
-kept alongside it, not replaced by it.
+`acedward/mip-erc7496-midnight-contracts`, produced by the real compiled Compact templates in the
+Compact simulator; `test/fixtures/contracts/SOURCE.md` pins the exact repository, branch and commit.
+The corpus is currently the **pre-MIP (00020) one**, so `test/contract-fixtures.test.ts` is skipped
+until the regenerated corpus lands — see the skip reason in that file. The hand-built payloads in
+`test/payload.test.ts` and `test/status-rules.test.ts` are kept alongside it, not replaced by it.
+
+## The payload
+
+```
+ offset  size  field
+      0    32  domainSep
+     32     1  kind        0 unshielded native, 1 shielded native, 2 unshielded ledger, 3 shielded ledger
+     33    32  key         UTF-8, NUL-padded; compared after trimming TRAILING NULs, and a key that is
+                           not valid UTF-8 is kept as bytes rather than rejected (MIP §5.1)
+     65     1  val-type    0 opaque, 1 UTF-8 string, 2 unsigned big-endian integer, 3 UTF-8 JSON,
+                           4 UTF-8 URI, 5..255 reserved → reject
+     66     1  val-len     meaningful bytes of `value`, 0..189; 0 means "present, empty"
+     67   189  value
+```
+
+One stable reject reason per transport rule: `kind_unknown`, `key_empty`, `val_type_reserved`,
+`val_len_too_long`, `val_type_rule`, `payload_size`. Rejected events are stored with their reason —
+a contract's malformed claim is evidence about that contract.
 
 ## A note on payload width
 

@@ -5,12 +5,18 @@ import type { TokenIndexerConfig } from "../config.js";
 import { readStatus } from "../ingest/store.js";
 import { DASHBOARD_CSP, serveUi } from "../ui/page.js";
 import {
-  TokenIndexQueries, decodeCursor, type TokenCursor, type TokenJson,
+  TokenIndexQueries, decodeCursor, type TokenCursor, type TokenJson, type TraitJson,
 } from "./queries.js";
 
 /**
  * Project 00020 — the read-only JSON API (spec §5), on Node's own `http`, no framework, in the
  * style of `evm-rpc/server.ts`.
+ *
+ * Amended by project 00021 (FR-106): `Token.kind` is the MIP's byte 0–3 with `privacy`/`storage`
+ * beside it, `:kind` path segments take `0`–`3` (and, for one release, the old words mapped to the
+ * two native kinds), traits carry their `val-type`/`val-len` and any projection error, and
+ * `GET /v1/contracts/:address/tokens/:domainSep` lists the rows sharing that pair — the MIP's
+ * "a consumer MAY link rows that share `(contractAddress, domainSep)`" (§4).
  *
  * Route order matters and is deliberate:
  *
@@ -44,11 +50,22 @@ function hex32(value: string, what: string): string {
   return v.toLowerCase();
 }
 
-function kindParam(value: string): string {
-  if (value !== "shielded" && value !== "unshielded") {
-    throw badRequest(`kind must be "shielded" or "unshielded", got ${JSON.stringify(value)}`);
-  }
-  return value;
+/**
+ * The `:kind` path segment and the `kind=` filter (FR-106, spec Q2).
+ *
+ * The MIP's identity carries the kind BYTE, so `0`–`3` is the spelling. The 00020 words `shielded`
+ * and `unshielded` are accepted for one release and mapped to the two NATIVE kinds (1 and 0) — the
+ * only ones they could ever have meant, since 00020 had no ledger rows keyed by kind. Anything else
+ * is a 400 that says both spellings out loud rather than guessing.
+ */
+export function kindParam(value: string): number {
+  if (value === "0" || value === "1" || value === "2" || value === "3") return Number(value);
+  if (value === "shielded") return 1;
+  if (value === "unshielded") return 0;
+  throw badRequest(
+    `kind must be 0, 1, 2 or 3 (or, for one release, "shielded"/"unshielded" for the native kinds), `
+    + `got ${JSON.stringify(value)}`,
+  );
 }
 
 function limitParam(raw: string | null): number {
@@ -180,10 +197,15 @@ export function createTokenApi(opts: TokenApiOptions): Server {
   async function handleV1(segments: string[], query: URLSearchParams, res: ServerResponse): Promise<void> {
     // /v1/tokens
     if (segments[0] === "tokens" && segments.length === 1) {
+      const rawKind = query.get("kind");
       const page = await queries.listTokens({
-        kind: enumParam(query.get("kind"), ["shielded", "unshielded"], "kind"),
+        kind: rawKind === null || rawKind === "" ? undefined : kindParam(rawKind),
+        privacy: enumParam(query.get("privacy"), ["shielded", "unshielded"], "privacy"),
         storage: enumParam(query.get("storage"), ["native", "ledger"], "storage"),
-        status: enumParam(query.get("status"), ["observed", "declared", "described", "inconsistent", "builtin"], "status"),
+        // MIP §7.2's three consumer states plus this repository's `builtin`. The 00020 status for
+        // a self-contradicting row no longer exists, so asking for it is a 400 rather than an empty
+        // page that looks like an answer.
+        status: enumParam(query.get("status"), ["observed", "declared", "described", "builtin"], "status"),
         q: query.get("q") ?? undefined,
         limit: limitParam(query.get("limit")),
         cursor: cursorParam<TokenCursor>(query.get("cursor")),
@@ -246,6 +268,19 @@ export function createTokenApi(opts: TokenApiOptions): Server {
         return;
       }
 
+      // /v1/contracts/:address/tokens/:domainSep — every row sharing that pair (MIP §4's "a
+      // consumer MAY link rows that share (contractAddress, domainSep)"; FR-106). This is how the
+      // Ledger Liar's two rows are shown as one asset in two representations rather than as a
+      // contradiction, and how a dual-minted domain separator shows its shielded and unshielded
+      // halves side by side.
+      if (segments[2] === "tokens" && segments.length === 4) {
+        const domainSep = hex32(segments[3]!, "domainSep");
+        const tokens = await queries.tokensOfContractDomain(address, domainSep);
+        if (tokens.length === 0) throw notFound(`no token ${address}/${domainSep}`);
+        sendJson(res, 200, { address, domainSep, domainSepText: domainText(domainSep), tokens });
+        return;
+      }
+
       // /v1/contracts/:address/tokens/:domainSep/:kind[/metadata|/mints]
       if (segments[2] === "tokens" && segments.length >= 5) {
         const domainSep = hex32(segments[3]!, "domainSep");
@@ -299,13 +334,21 @@ export function createTokenApi(opts: TokenApiOptions): Server {
     // page opens these links in a new tab, so the explorer stays where it was.
 
     const keys = await queries.metadataKeys(token.address, token.domainSep, token.kind);
-    const traits: Record<string, { value: string; text: string | null; updatedHeight: number; eventId: number }> = {};
+    // Keyed by the key's TEXT where it has one and by `hex:<bytes>` where it does not: MIP §5.1
+    // allows a key that is not UTF-8 at all, and a JSON object still has to name it somehow.
+    const traits: Record<string, Omit<TraitJson, "key" | "updatedTxHash">> = {};
     for (const key of keys) {
-      traits[key.key] = {
-        value: key.value, text: key.text, updatedHeight: key.updatedHeight, eventId: key.eventId,
-      };
+      const { key: text, updatedTxHash: _tx, ...rest } = key;
+      traits[text ?? `hex:${key.keyHex}`] = rest;
     }
     const metadata = (token.metadata ?? null) as Record<string, unknown> | null;
+    // The other representations of this asset (MIP §4): the rows sharing (address, domainSep).
+    const linked = (await queries.tokensOfContractDomain(token.address, token.domainSep))
+      .filter((t) => t.kind !== token.kind)
+      .map((t) => ({
+        kind: t.kind, privacy: t.privacy, storage: t.storage, status: t.status,
+        name: t.name, symbol: t.symbol, color: t.color,
+      }));
     sendJson(res, 200, {
       name: token.name,
       symbol: token.symbol,
@@ -319,7 +362,9 @@ export function createTokenApi(opts: TokenApiOptions): Server {
       domainSep: token.domainSep,
       domainSepText: domainText(token.domainSep),
       kind: token.kind,
+      privacy: token.privacy,
       storage: token.storage,
+      linked,
       color: token.color,
       status: token.status,
       mints: {
