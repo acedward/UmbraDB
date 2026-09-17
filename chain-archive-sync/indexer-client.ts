@@ -1,4 +1,7 @@
 import { publicEndpoint, publicErrorCause, publicErrorMessage } from "../wallet-monitor/log.js";
+// Shared HTTP helper, imported from the peer module it was first written in (no cycle:
+// `node-rpc-client.ts` imports nothing from here).
+import { parseRetryAfterMs } from "./node-rpc-client.js";
 
 /**
  * Minimal Midnight indexer GraphQL client -- plain `fetch`, no SDK dependency. Grounded against
@@ -14,7 +17,11 @@ import { publicEndpoint, publicErrorCause, publicErrorMessage } from "../wallet-
  */
 
 export class IndexerClientError extends Error {
-  constructor(message: string, readonly cause?: unknown) {
+  /** `httpStatus`/`retryAfterMs` (project 00020, spec FR-016) -- same contract as
+   *  `NodeRpcError`'s: `httpStatus` set ⇒ the transport completed with a non-2xx status (429/403/
+   *  5xx are the public endpoint's throttling/outage signals the sync backs off on); `cause` set ⇒
+   *  the transport itself failed; neither ⇒ a GraphQL protocol error, which is NOT retryable. */
+  constructor(message: string, readonly cause?: unknown, readonly httpStatus?: number, readonly retryAfterMs?: number) {
     super(message);
     this.name = "IndexerClientError";
   }
@@ -82,7 +89,10 @@ export class IndexerClient {
       );
     }
     if (!res.ok) {
-      throw new IndexerClientError(`GraphQL HTTP ${res.status} from ${this.publicUrl}`);
+      throw new IndexerClientError(
+        `GraphQL HTTP ${res.status} from ${this.publicUrl}`,
+        undefined, res.status, parseRetryAfterMs(res.headers.get("retry-after")),
+      );
     }
     let body: { data?: T; errors?: { message: string }[] };
     try {
