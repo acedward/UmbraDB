@@ -138,8 +138,9 @@ export interface AppliedEventOutcome {
   stored: boolean;
   applied: boolean;
   rejectReason: string | undefined;
-  /** The payload was not 256 bytes, so the schema's own CHECK makes it unstorable (question Q31):
-   *  counted and logged, never padded, truncated or silently dropped. */
+  /** The payload was LONGER than 256 bytes, so the column's own CHECK makes it unstorable
+   *  (question Q31): counted and logged, never truncated or silently dropped. A payload SHORTER
+   *  than 256 is not unstorable — it is zero-extended, because the VM trims trailing NULs. */
   unstorable: boolean;
 }
 
@@ -152,10 +153,9 @@ export interface AppliedEventOutcome {
 export async function applyMetadataEvent(
   sql: ISql, schema: string, net: string, event: RawContractEvent,
 ): Promise<AppliedEventOutcome> {
-  const payload = Buffer.from(event.payloadHex, "hex");
   let parsed: ParsedTokenMetadata;
   try {
-    parsed = parseTokenMetadata(new Uint8Array(payload));
+    parsed = parseTokenMetadata(new Uint8Array(Buffer.from(event.payloadHex, "hex")));
   } catch (error) {
     // A payload that is not 256 bytes cannot be stored at all (the column's CHECK) — question Q31.
     // It is counted and surfaced by the caller rather than crashing the scan batch.
@@ -165,6 +165,9 @@ export async function applyMetadataEvent(
     };
   }
 
+  // The PADDED 256 bytes, never the (possibly NUL-trimmed) wire form: the column's CHECK requires
+  // exactly 256, and the two differ only in trailing zeros the VM removed (see payload.ts).
+  const payload = Buffer.from(parsed.payload);
   const domainSep = Buffer.from(parsed.domainSep);
   const inserted = await sql`
     INSERT INTO ${sql(schema)}.token_metadata_events

@@ -22,13 +22,25 @@ import { pad32 } from "../color.js";
  * That is what lets a REJECTED event still be stored with all of its fields (`domain_sep`,
  * `kind_byte`, `key`, `len`, `value` are `NOT NULL` in `token_metadata_events`) plus a
  * `reject_reason` — a contract's malformed claim is evidence about that contract, and the page
- * shows it. Only a payload that is not 256 bytes cannot be decoded at all.
+ * shows it. Only a payload LONGER than 256 bytes cannot be decoded at all.
  *
  * ── Deliberate leniency, recorded ──────────────────────────────────────────────────────────────
  * Bytes of `value` at or after `len` are NOT checked for being NUL. Spec §4.2 says the value is
  * "NUL-padded after `len`" but does not make padding junk a rejection rule, and rejecting it would
  * turn a harmless encoder quirk into a lost description. Everything downstream uses
  * `value.subarray(0, len)` only, so trailing junk can never reach a projected field.
+ *
+ * ── Trailing-NUL trimming, and why a SHORT payload is padded rather than rejected ──────────────
+ * The on-chain VM hands a `Log` event's bytes out with **trailing NULs trimmed**, while the event
+ * itself declares its serialized length (288 for a `Misc`, i.e. 32 name + 256 payload). Since the
+ * payload's `value` field is NUL-padded after `len` by construction, a real event whose value does
+ * not fill 190 bytes arrives SHORT — it is not malformed, it is the same bytes with zeros removed.
+ * The indexer's GraphQL `payload` field re-pads to exactly 256 (`take_bytes(b, 32, 256)`), so this
+ * does not arise through that source, but the second `EventSource` the owner has planned (reading
+ * the node directly) sees the untrimmed form. `decodeTokenMetadata` therefore **zero-extends** a
+ * short payload to 256 and records how short it was, and only a payload LONGER than 256 is an
+ * error. Whatever is stored in `token_metadata_events.payload` is the padded 256 bytes, which is
+ * what the column's own CHECK requires and what re-encoding reproduces.
  *
  * ── Deliberate strictness, recorded ────────────────────────────────────────────────────────────
  * A key whose bytes are not valid UTF-8, or which contains an interior NUL, is REJECTED
@@ -51,6 +63,12 @@ export type TokenKind = "shielded" | "unshielded";
 export type TokenStorage = "native" | "ledger";
 
 export interface DecodedTokenMetadata {
+  /** The payload as decoded: exactly 256 bytes, zero-extended if the source delivered it with its
+   *  trailing NULs trimmed. This is what gets stored. */
+  payload: Uint8Array;
+  /** The length the source actually delivered, when it was shorter than 256 — evidence that the
+   *  trailing-NUL trimming happened, and `undefined` for a full-width payload. */
+  paddedFrom: number | undefined;
   /** 32 bytes. */
   domainSep: Uint8Array;
   kindByte: number;
@@ -94,7 +112,7 @@ export type RejectReason =
 export class PayloadSizeError extends Error {
   readonly reason = "payload_size" as const;
   constructor(readonly size: number) {
-    super(`TokenMetadata payload must be exactly ${PAYLOAD_SIZE} bytes, got ${size}`);
+    super(`TokenMetadata payload must be at most ${PAYLOAD_SIZE} bytes, got ${size}`);
     this.name = "PayloadSizeError";
   }
 }
@@ -105,19 +123,29 @@ export function isTokenMetadataName(nameHex: string): boolean {
 }
 
 /**
- * Structural decode. Throws {@link PayloadSizeError} — and only that — for a payload of the wrong
- * length, which is the one failure that leaves nothing storable (`token_metadata_events.payload`
- * is `CHECK (octet_length(payload) = 256)`). The indexer itself always serves exactly 256 bytes
- * (`take_bytes(b, 32, 256)` in `indexer-common`), so this is a defensive check, not a live case.
+ * Structural decode. A payload SHORTER than 256 bytes is zero-extended (see the header: the VM
+ * trims trailing NULs, and every short payload is a full one with zeros removed). A payload LONGER
+ * than 256 throws {@link PayloadSizeError} — the one failure that leaves nothing storable, since
+ * `token_metadata_events.payload` is `CHECK (octet_length(payload) = 256)` and truncating would
+ * store bytes the chain never carried.
  */
-export function decodeTokenMetadata(payload: Uint8Array): DecodedTokenMetadata {
-  if (payload.length !== PAYLOAD_SIZE) throw new PayloadSizeError(payload.length);
+export function decodeTokenMetadata(raw: Uint8Array): DecodedTokenMetadata {
+  if (raw.length > PAYLOAD_SIZE) throw new PayloadSizeError(raw.length);
+  let payload = raw;
+  let paddedFrom: number | undefined;
+  if (raw.length < PAYLOAD_SIZE) {
+    paddedFrom = raw.length;
+    payload = new Uint8Array(PAYLOAD_SIZE);
+    payload.set(raw, 0);
+  }
   const domainSep = payload.subarray(0, 32);
   const kindByte = payload[32]!;
   const key = payload.subarray(33, 65);
   const len = payload[65]!;
   const value = payload.subarray(66, 256);
   return {
+    payload,
+    paddedFrom,
     domainSep,
     kindByte,
     key,

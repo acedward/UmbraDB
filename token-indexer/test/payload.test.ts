@@ -115,9 +115,18 @@ describe("TokenMetadata payload (spec §4.2)", () => {
   });
 
   it("[[token-payload-rejections]] rejects every §4.2 violation with its own reason and never throws (except on a wrong-size payload)", () => {
-    // size — the one failure that leaves nothing storable.
-    expect(() => decodeTokenMetadata(new Uint8Array(255))).toThrow(PayloadSizeError);
-    expect(() => parseTokenMetadata(new Uint8Array(257))).toThrow(/exactly 256 bytes, got 257/);
+    // Size: only a payload LONGER than 256 leaves nothing storable. A SHORT one is the same bytes
+    // with their trailing NULs trimmed by the VM, so it is zero-extended (see payload.ts's header).
+    expect(() => parseTokenMetadata(new Uint8Array(257))).toThrow(PayloadSizeError);
+    expect(() => parseTokenMetadata(new Uint8Array(257))).toThrow(/at most 256 bytes, got 257/);
+    const trimmed = payload("name", "ok").subarray(0, 68); // everything after byte 68 is NUL anyway
+    const padded = parseTokenMetadata(trimmed);
+    expect(padded.applied).toBe(true);
+    expect(padded.paddedFrom).toBe(68);
+    expect(padded.payload).toHaveLength(256);
+    expect(padded.valueText).toBe("ok");
+    expect(Buffer.from(padded.payload).toString("hex")).toBe(Buffer.from(payload("name", "ok")).toString("hex"));
+    expect(decodeTokenMetadata(payload("name", "ok")).paddedFrom).toBeUndefined();
 
     // reserved kind bits (spec: bits 2-7 MUST be zero)
     expectReject(payload("name", "x", 0b0000_0100), "kind_reserved_bits");

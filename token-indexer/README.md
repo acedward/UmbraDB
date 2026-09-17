@@ -63,6 +63,29 @@ npm run token-indexer -- rebuild                              drop this net's de
 npm run token-indexer -- derive-color <addressHex> <domainSepHex>
 ```
 
+## Recorded fixtures
+
+`test/fixtures/scan/` holds twelve REAL Stagenet transactions (the six `effectstream/mint-test-tokens`
+issuers' deploys at heights 360 721–360 737 and their mint calls at 364 875–364 934), fetched by hash
+from the public indexer with their `raw` bytes, `transactionResult` and created outputs. The scanner
+runs against those bytes through the real store and the real ledger-v9 decoder.
+
+`test/fixtures/contracts/` holds the golden corpus emitted by the **reference contracts** of
+`acedward/mip-erc7496-midnight-contracts` — 69 `TokenMetadata` payloads, 16 mints, 15 colour vectors,
+16 expected rows covering all four `status` values and 7 deliberately malformed payloads, produced by
+the real compiled Compact templates in the Compact simulator. `test/fixtures/contracts/SOURCE.md`
+pins the exact repository, branch and commit. The hand-built negatives in `test/payload.test.ts` are
+kept alongside it, not replaced by it.
+
+## A note on payload width
+
+The on-chain VM hands a `Log` event's bytes out with **trailing NULs trimmed**, while the event
+declares its full serialized length. The indexer's GraphQL `payload` field re-pads to exactly 256
+bytes, so this does not show through that source — but the node-direct event source the owner plans
+next sees the untrimmed form. The parser therefore **zero-extends** a short payload to 256 and
+records how short it arrived; only a payload longer than 256 is an error. The bytes stored in
+`token_metadata_events.payload` are always the padded 256.
+
 ## Colour derivation
 
 `color = persistentCommit(Vector<2, Bytes<32>>([domainSep, address]), pad(32, "midnight:derive_token"))`,
