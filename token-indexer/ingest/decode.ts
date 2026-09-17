@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { isSystemTransaction } from "../../chain-archive-sync/tx-replay-decoder.js";
-import type { TokenKind } from "./payload.js";
+import { KIND_SHIELDED_NATIVE, KIND_UNSHIELDED_NATIVE, type NativeKindByte } from "./payload.js";
 
 /**
  * Project 00020 — what one archived transaction says about contracts and minting (spec §6.3,
@@ -167,7 +167,10 @@ export interface ObservedMint {
   callIndex: number;
   address: string;
   domainSep: string;
-  kind: TokenKind;
+  /** The MIP §3 kind byte this mint effect maps to: 0 unshielded native from `unshieldedMints`,
+   *  1 shielded native from `shieldedMints`. A mint is native by definition (MIP §6.3), so the two
+   *  ledger kinds can never come from here. */
+  kind: NativeKindByte;
   amount: bigint;
   entryPoint: string | undefined;
   section: "guaranteed" | "fallible";
@@ -236,11 +239,11 @@ export function countedEffects(
       }
       for (const [domainSep, amount] of facts.shieldedMints) {
         mints.push({ segment: action.segment, callIndex: action.callIndex, address: action.address,
-          domainSep, kind: "shielded", amount, entryPoint: action.entryPoint, section });
+          domainSep, kind: KIND_SHIELDED_NATIVE, amount, entryPoint: action.entryPoint, section });
       }
       for (const [domainSep, amount] of facts.unshieldedMints) {
         mints.push({ segment: action.segment, callIndex: action.callIndex, address: action.address,
-          domainSep, kind: "unshielded", amount, entryPoint: action.entryPoint, section });
+          domainSep, kind: KIND_UNSHIELDED_NATIVE, amount, entryPoint: action.entryPoint, section });
       }
     }
   }
