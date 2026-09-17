@@ -1,5 +1,5 @@
 {
-  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 25) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
+  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 65: the 25 v1.0.0-recovery-testing ids plus the 40 token-indexer / chain-archive-result ids added by project 00020, sub-plan 01 Phase 7) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
   "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` — those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early — that would re-open the exact self-skip hole this manifest closes.",
   "required": [
     {
@@ -126,6 +126,206 @@
       "id": "differential.reference.import-clean",
       "file": "test/postgres/differential-equivalence.test.ts",
       "description": "Differential reference import-cleanliness (change-level round-3 BLOCK 4): a static audit that the in-repo reference imports nothing outside the repo - directly AND through its relative-import closure - catching bare import, dynamic import() and require(), and rejecting any @midnightntwrk/indexer/consumer/wallet specifier. Required-enforced so skipping/removing it turns the gate red by id."
+    },
+    {
+      "id": "token-migrate-seeds",
+      "file": "token-indexer/test/migrate.test.ts",
+      "description": "00020 Phase 1 (spec §6.1, FR-008): the token_index lineage applies on a fresh database, is a no-op on re-run, and seeds exactly the two built-in rows — NIGHT (colour 32 zero bytes, 6 decimals) and DUST (colour NULL, domain_sep pad32(\"dust\"), 15 decimals) — with the exact bytes, asserted against ledger-v9 itself (nativeToken().raw, and that no DUST colour exists) so the seeds cannot drift from the chain."
+    },
+    {
+      "id": "token-migrate-checks",
+      "file": "token-indexer/test/migrate.test.ts",
+      "description": "00020 Phase 1 (spec §6.1): every CHECK and key constraint of the token_index DDL is enforced by the database — byte lengths on address/domain_sep/color/payload, the kind/storage/status enumerations — and `rebuild` empties the tables and re-seeds the built-in rows."
+    },
+    {
+      "id": "token-payload-golden",
+      "file": "token-indexer/test/payload.test.ts",
+      "description": "00020 Phase 5 / spec §4.2 (SC-004): byte-exact parse of a 256-byte TokenMetadata payload at literal offsets (domainSep 0, kind 32, key 33, len 65, value 66), all four kind bytes, an empty and a full 190-byte value, and encode/decode round-tripping through the module's own encoder."
+    },
+    {
+      "id": "token-payload-rejections",
+      "file": "token-indexer/test/payload.test.ts",
+      "description": "00020 Phase 5 / spec §4.2 (SC-004): one negative fixture per rejection rule — all 18 stable RejectReason tokens — each rejected with the expected reason and in the specified order; a rejected event is still fully decodable so it can be stored as evidence."
+    },
+    {
+      "id": "token-payload-keys",
+      "file": "token-indexer/test/payload.test.ts",
+      "description": "00020 Phase 5 / spec §4.2: the well-known key registry — name, symbol, decimals, metadata, metadata/<n> part indices, tokenUri — with their per-key validation (UTF-8, length bounds, decimals ≤ 36, absolute http(s) tokenUri) and the strict treatment of malformed keys (not UTF-8, interior NUL, malformed metadata part index)."
+    },
+    {
+      "id": "token-color-derivation",
+      "file": "token-indexer/test/color.test.ts",
+      "description": "00020 Phase 3 / spec §6.4 (SC-003): the derived colour persistentCommit([domainSep, address], pad32(\"midnight:derive_token\")) reproduces all six colours RECORDED FROM LIVE STAGENET, each cross-checked against the published mint-test-tokens registry tokenId and, for the two unshielded issuers, against the tokenType of the UTXO the mint actually created."
+    },
+    {
+      "id": "token-color-night",
+      "file": "token-indexer/test/color.test.ts",
+      "description": "00020 Phase 3 / spec §0, FR-008: NIGHT is 32 zero bytes by definition and is never derived — pinned against ledger-v9's nativeToken().raw — and the all-zero (address, domainSep) pair does NOT derive to it, which is exactly why NIGHT is seeded rather than derived."
+    },
+    {
+      "id": "token-color-guards",
+      "file": "token-indexer/test/color.test.ts",
+      "description": "00020 Phase 3: the colour helpers refuse malformed input instead of deriving a plausible wrong colour — non-32-byte arguments throw, the two arguments are not interchangeable, and the strict hex decoder throws where Buffer.from(s, \"hex\") would silently truncate at the first bad nibble."
+    },
+    {
+      "id": "token-scan-mints",
+      "file": "token-indexer/test/scan.test.ts",
+      "description": "00020 Phase 4 / spec §6.3, FR-001/FR-003 (SC-002): 12 REAL Stagenet transactions in a real chain_archive decode to exactly 6 contracts with their deploy heights, 6 observed/native token rows whose colour equals tokenColor(domainSep, address) and, for the unshielded issuers, the tokenType of the created UTXO, and 6 token_mints rows; a second scan writes nothing and reports atTip."
+    },
+    {
+      "id": "token-scan-not-counted",
+      "file": "token-indexer/test/scan.test.ts",
+      "description": "00020 Phase 4 / spec FR-002: a transaction whose archived result is `failure` yields a contract row but no token and no mint, and a non-canonical block is invisible to the scanner — nothing the ledger rejected ever becomes a token."
+    },
+    {
+      "id": "token-scan-unknown-result",
+      "file": "token-indexer/test/scan.test.ts",
+      "description": "00020 Phase 4 / question Q33(b): a transaction whose archived `result` is NULL BLOCKS the decode cursor rather than being guessed at or skipped, and the scan proceeds unchanged once the result is backfilled — bounded by the UNKNOWN_RESULT_GRACE_MS grace so an unresolvable transaction cannot wedge the pipeline."
+    },
+    {
+      "id": "token-scan-atomic",
+      "file": "token-indexer/test/scan.test.ts",
+      "description": "00020 Phase 4 / FR-014 (SC-005): a simulated crash mid-batch leaves contracts=0, mints=0, cursors=0 — rows and cursor are written in ONE database transaction — and a clean re-scan afterwards produces the full, identical result."
+    },
+    {
+      "id": "token-scan-idle-cursor",
+      "file": "token-indexer/test/scan.test.ts",
+      "description": "00020 Phase 6: the decode cursor walks over transaction-free blocks up to the archive's canonical tip (read BEFORE the batch that proves the range empty), so on a quiet chain /internal/status still shows the decoder keeping up instead of appearing stalled."
+    },
+    {
+      "id": "token-scan-counting-rule",
+      "file": "token-indexer/test/scan.test.ts",
+      "description": "00020 Phase 4 / spec FR-002: the countedEffects rule exhaustively — a guaranteed-transcript mint counts on success and partial_success, a fallible mint counts only when its own intent segment succeeded, a segment absent from a PARTIAL_SUCCESS list counts as failed, and a partial_success transaction with no archived segments is an explicit error naming the transaction."
+    },
+    {
+      "id": "token-event-lookup",
+      "file": "token-indexer/test/events.test.ts",
+      "description": "00020 Phase 5 / spec §6.5, FR-004: against a fake HTTP indexer, a short delivery queues the (contract, transaction) pair in pending_event_lookups while the scan cursor still advances, the drain completes it, and the end state is BYTE-EQUAL to a one-shot run; a duplicated delivery applies nothing new; paging by offset is exercised."
+    },
+    {
+      "id": "token-event-overcount",
+      "file": "token-indexer/test/events.test.ts",
+      "description": "00020 Phase 5 / spec §6.5: more events returned than the transcript's log-op count is a HARD error (the model would be wrong) — it throws and leaves tokens=0, events=0, cursors=0, i.e. the batch is aborted rather than partially applied."
+    },
+    {
+      "id": "token-event-retry-budget",
+      "file": "token-indexer/test/events.test.ts",
+      "description": "00020 Phase 5 / spec §6.5: a 503 mid-drain records attempts and the HTTP error on the pending row with exponential backoff, and a row that has exhausted its 30-attempt budget is skipped by the drain but KEPT and visible in /internal/status rather than retried forever or deleted."
+    },
+    {
+      "id": "token-event-filtering",
+      "file": "token-indexer/test/events.test.ts",
+      "description": "00020 Phase 5 / spec FR-005: events that are not MiscContractEvent, and Misc events whose name is not pad32(\"TokenMetadata\"), are counted against the log-op total but NEVER stored — only the standard's own events reach token_metadata_events."
+    },
+    {
+      "id": "token-status-rules",
+      "file": "token-indexer/test/status-rules.test.ts",
+      "description": "00020 Phase 5 / spec §6.2, FR-007 (the status table row by row): observed (mint only), declared (event only), described (mint + agreeing event), inconsistent (event declaring ledger over an observed native mint) and builtin — recomputed from the stored evidence, never incremented."
+    },
+    {
+      "id": "token-status-inconsistent",
+      "file": "token-indexer/test/status-rules.test.ts",
+      "description": "00020 Phase 5 / spec FR-017(c), §7.1 row 12 (Ledger Liar): a declaration of kind byte 2 over an observed native mint sets status=inconsistent, keeps storage=native and the mint counters, still projects the declared fields, and STAYS inconsistent even after a later well-formed native declaration — the evidence is never erased."
+    },
+    {
+      "id": "token-status-order",
+      "file": "token-indexer/test/status-rules.test.ts",
+      "description": "00020 Phase 5 / FR-006: arrival order is irrelevant — mint-then-event and event-then-mint converge to the identical row, because status/storage/color are re-derived from stored evidence rather than accumulated."
+    },
+    {
+      "id": "token-status-dual-kind",
+      "file": "token-indexer/test/status-rules.test.ts",
+      "description": "00020 Phase 5 / spec Edge Cases, §7.1 row 10 (Dual Aurora): one colour with two kinds is TWO clean described rows keyed (net, address, domain_sep, kind), not one row and not an inconsistency."
+    },
+    {
+      "id": "token-status-last-write",
+      "file": "token-indexer/test/status-rules.test.ts",
+      "description": "00020 Phase 5 / spec §4.2 rule (b), FR-006: last write wins ordered by (block height, indexer event id) — including two events in one block — and a late-DELIVERED older event must not win; the superseded events stay in token_metadata_events as history."
+    },
+    {
+      "id": "token-status-rejected",
+      "file": "token-indexer/test/status-rules.test.ts",
+      "description": "00020 Phase 5 / spec FR-005 (SC-004): a rejected event is stored with applied=false and its reject_reason and changes NOTHING about the token row — the evidence is visible through the API while the table stays clean."
+    },
+    {
+      "id": "token-status-metadata-parts",
+      "file": "token-indexer/test/status-rules.test.ts",
+      "description": "00020 Phase 5 / spec §4.2 metadata/<n>: split JSON projects only when parts 0..max are ALL present and the concatenation parses as a JSON object; a missing or invalidating part clears the projection to NULL while the parts themselves stay in token_metadata_kv."
+    },
+    {
+      "id": "token-status-builtin",
+      "file": "token-indexer/test/status-rules.test.ts",
+      "description": "00020 Phase 5 / FR-008, question Q30: the seeded NIGHT and DUST rows are untouched by the fold — no event and no mint can overwrite a builtin row."
+    },
+    {
+      "id": "token-api-contract",
+      "file": "token-indexer/test/api.test.ts",
+      "description": "00020 Phase 6 / spec §5 (FR-009): GET /v1/tokens over a REAL http server — the kind/storage/status filters, `q` by name prefix, symbol prefix and exact colour, and KEYSET pagination that walks every row exactly once (so a row inserted by the live scanner between two pages cannot make a reader skip or repeat a token)."
+    },
+    {
+      "id": "token-api-token-routes",
+      "file": "token-indexer/test/api.test.ts",
+      "description": "00020 Phase 6 / spec §5: the per-token routes — the Token object, its key/value traits with full provenance (updatedHeight, updatedTxHash, eventId) and its mint history — with last-write-wins visible through the API."
+    },
+    {
+      "id": "token-api-contract-routes",
+      "file": "token-indexer/test/api.test.ts",
+      "description": "00020 Phase 6 / spec §5, question Q51: the contract route, by-color, the raw events route ({ items, nextCursor }, ?applied=false, ?domainSep=) and GET /v1/registry.json keyed by colour for described native tokens."
+    },
+    {
+      "id": "token-api-resolver",
+      "file": "token-indexer/test/api.test.ts",
+      "description": "00020 Phase 6 / spec §5 tokenUri resolver: /{token-name}/{id} answers identically in all three spellings (symbol, name slug, 64-hex) case-insensitively, 404s an unknown id, returns 409 TOKEN_AMBIGUOUS with candidates when two tokens share a symbol, and redirects an Accept: text/html request to the page's token view."
+    },
+    {
+      "id": "token-api-errors",
+      "file": "token-indexer/test/api.test.ts",
+      "description": "00020 Phase 6 / spec §5: the error contract — 400 TOKEN_BAD_REQUEST, 404 TOKEN_NOT_FOUND, 503 TOKEN_DB_UNAVAILABLE — plus the page routes (/ → 302 /ui, /ui → 200 with its CSP) and the resolver's matching helpers."
+    },
+    {
+      "id": "token-contract-golden",
+      "file": "token-indexer/test/contract-fixtures.test.ts",
+      "description": "00020 master Phase C.1 (SC-004): all 69 payloads RECORDED FROM THE REAL COMPILED REFERENCE CONTRACTS (acedward/mip-erc7496-midnight-contracts, pinned in token-indexer/test/fixtures/contracts/SOURCE.md) parse byte for byte through the same parser the live indexer uses — the standard's bytes are pinned to an independent implementation, not to this repo's own encoder."
+    },
+    {
+      "id": "token-contract-negatives",
+      "file": "token-indexer/test/contract-fixtures.test.ts",
+      "description": "00020 master Phase C.1 (SC-004): the 7 negative payloads the reference contracts emit on purpose behave exactly as intended — including the one that is deliberately VALID (kind 0x03, shielded ledger) — so a rejection rule cannot quietly become a rejection of something legitimate."
+    },
+    {
+      "id": "token-contract-colors",
+      "file": "token-indexer/test/contract-fixtures.test.ts",
+      "description": "00020 master Phase C.1 (SC-003): all 15 recorded colour vectors and all 16 recorded mint colours are reproduced by this repo's own derivation — the contract's tokenColor() circuit and the indexer agree on every byte."
+    },
+    {
+      "id": "token-contract-rows",
+      "file": "token-indexer/test/contract-fixtures.test.ts",
+      "description": "00020 master Phase C.1: replaying the whole recorded corpus through the fold produces EXACTLY the 16 expected token rows across all four status values, including Ledger Liar collapsing onto ONE inconsistent row and Dual Aurora as two rows sharing one colour."
+    },
+    {
+      "id": "archive-tx-results",
+      "file": "test/integration/chain-archive-tx-results.integration.test.ts",
+      "description": "00020 Phase 2 / spec FR-002, question Q8: chain-archive-sync writes transactions.result and the new segments jsonb from the same block query, inside storeFetchedBlock and BEFORE the watermark advances, so a crash in between re-runs it; a re-ingest REPAIRS result, which the store's bare ON CONFLICT DO NOTHING cannot."
+    },
+    {
+      "id": "archive-tx-results-backfill",
+      "file": "test/integration/chain-archive-tx-results.integration.test.ts",
+      "description": "00020 Phase 2 / spec FR-002: the backfill-results command fills result/segments for blocks archived before this change by re-querying the indexer per block, is idempotent (UPDATE … WHERE result IS NULL), is safe against a live growing archive, and leaves system transactions' correct NULL alone."
+    },
+    {
+      "id": "archive-tx-results-migration",
+      "file": "test/integration/chain-archive-tx-results.integration.test.ts",
+      "description": "00020 Phase 2 / question Q32: the additive chain_archive/002_tx_result_segments migration adds segments jsonb to the RANGE-partitioned parent (metadata-only, no rewrite) with its jsonb_typeof array CHECK, upgrades an existing archive in place by migration name, and is applied WITHOUT any edit under src/."
+    },
+    {
+      "id": "archive-tx-results-mapping",
+      "file": "test/integration/chain-archive-tx-results.integration.test.ts",
+      "description": "00020 Phase 2: mapTransactionResult maps SUCCESS|PARTIAL_SUCCESS|FAILURE to the archive's enum, returns undefined for \"the source said nothing\" (a system transaction) and THROWS on an unknown status rather than inventing one."
+    },
+    {
+      "id": "token-ui-serves",
+      "file": "token-indexer/test/ui-serves.test.ts",
+      "description": "00020 sub-plan 03 / spec §8, US4 (SC-006): serveUi answers GET|HEAD /ui with 200, text/html and the page's hash-based CSP, redirects / to /ui, and returns false for every other path AND method without touching the response (proved by a Proxy that throws on any access); the served HTML contains no external resource URL."
     }
   ],
   "deferred": [
