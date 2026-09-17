@@ -428,12 +428,15 @@ export class ChainArchiveSyncService {
         }
       }
     } catch (error) {
-      if (ingested === 0) throw error;
-      // Some of this batch is durably archived; report the partial progress through the same
-      // error the caller would have seen anyway, with the committed range attached.
-      (error as { partialSync?: unknown }).partialSync = {
-        ingestedBlocks: ingested, fromHeight: startHeight, toHeight: lastIngested,
-      };
+      // Some of this batch may already be durably archived; report that progress through the same
+      // error the caller would have seen anyway, with the committed range attached. Guarded:
+      // a rejection reason is not necessarily an object (`Promise.allSettled` hands back whatever
+      // was thrown), and attaching a property to a string or null would itself throw.
+      if (ingested > 0 && (typeof error === "object" || typeof error === "function") && error !== null) {
+        (error as { partialSync?: unknown }).partialSync = {
+          ingestedBlocks: ingested, fromHeight: startHeight, toHeight: lastIngested,
+        };
+      }
       throw error;
     }
     return finish({
