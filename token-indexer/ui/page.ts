@@ -53,6 +53,9 @@ const STYLE = `
   --idle: #94a3b8; --violet: #c4b5fd;
 }
 * { box-sizing: border-box; }
+/* A display rule on an element beats the user agent's [hidden] rule, and the filter bar is a
+   flex container that the token/contract/status views hide — so say it once, loudly. */
+[hidden] { display: none !important; }
 body {
   margin: 0; background: var(--bg); color: var(--ink);
   font: 13.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -399,9 +402,21 @@ function resolverPaths(t) {
     if (text !== null && text.toLowerCase().indexOf(sym + ":") === 0) id = text.slice(sym.length + 1);
     else if (t.name) id = slug(t.name);
     else if (text !== null) id = text;
-    if (id) out.push("/" + enc(sym) + "/" + enc(id));
+    if (id) {
+      var pretty = "/" + enc(sym) + "/" + enc(id);
+      out.push({ label: "resolver", path: pretty, short: pretty });
+    }
   }
-  if (t.address && t.domainSep) out.push("/" + enc(t.address) + "/" + enc(t.domainSep));
+  // The hex form always resolves (spec §5 accepts the 64-hex address and domain separator), so it
+  // is offered beside the pretty one — with a short label, because 130 characters of hex in a link
+  // is not a link, it is a wall.
+  if (t.address && t.domainSep) {
+    out.push({
+      label: "resolver (hex form)",
+      path: "/" + enc(t.address) + "/" + enc(t.domainSep),
+      short: "/" + shortHex(t.address, 6, 4) + "/" + shortHex(t.domainSep, 6, 4)
+    });
+  }
   return out;
 }
 
@@ -709,9 +724,10 @@ function renderToken(main) {
   links.appendChild(uriLink(t.tokenUri));
   var paths = resolverPaths(t);
   for (var i = 0; i < paths.length; i++) {
-    links.appendChild(node("span", "resolver", "note"));
-    var a = node("a", paths[i]);
-    a.href = paths[i];
+    links.appendChild(node("span", paths[i].label, "note"));
+    var a = node("a", paths[i].short);
+    a.href = paths[i].path;
+    a.title = paths[i].path;
     a.rel = "noreferrer noopener";
     links.appendChild(a);
   }
@@ -814,6 +830,24 @@ function renderToken(main) {
 
 // ── Raw events (shared by the token and contract views) ─────────────────────────────────────
 
+// Events of the whole contract, with this token's own lifted to the top: a five-piece collection
+// emits five keys per piece, and hunting one piece's rename in 27 rows is not reading, it is work.
+function orderEvents(events, markDomain) {
+  var byId = events.slice().sort(function (a, b) {
+    var x = Number(a.eventId === undefined ? a.id : a.eventId);
+    var y = Number(b.eventId === undefined ? b.id : b.eventId);
+    return (isNaN(x) ? 0 : x) - (isNaN(y) ? 0 : y);
+  });
+  if (!markDomain) return byId;
+  var mine = [];
+  var others = [];
+  for (var i = 0; i < byId.length; i++) {
+    var dom = byId[i].domainSep || byId[i].domain_sep;
+    if (dom === markDomain) mine.push(byId[i]); else others.push(byId[i]);
+  }
+  return mine.concat(others);
+}
+
 function eventsSection(events, markDomain, heading) {
   var sec = node("section");
   sec.appendChild(node("h2", heading));
@@ -821,10 +855,17 @@ function eventsSection(events, markDomain, heading) {
     sec.appendChild(node("div", "no TokenMetadata event from this contract", "empty"));
     return sec;
   }
+  if (markDomain) {
+    sec.appendChild(node("div",
+      "this token's own events first (highlighted), then the rest of the contract's, each in event-id "
+      + "order — which is the order the fold applies them in, so the last row of a key is the value in force",
+      "note"));
+  }
   var tb = tableIn(sec, ["event id", "block", "tx", "domainSep", "kind byte", "key", "len",
     "value", "applied", "reject reason"]);
-  for (var i = 0; i < events.length; i++) {
-    var e = events[i];
+  var ordered = orderEvents(events, markDomain);
+  for (var i = 0; i < ordered.length; i++) {
+    var e = ordered[i];
     var tr = document.createElement("tr");
     var dom = e.domainSep || e.domain_sep;
     if (markDomain && dom === markDomain) tr.className = "mark";
