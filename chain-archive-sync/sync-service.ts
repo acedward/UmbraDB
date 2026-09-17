@@ -6,6 +6,7 @@ import type {
   ChainArchiveStore,
   Hex32,
   TransactionRecord,
+  TransactionResult,
 } from "../src/interfaces/chain-archive-store.js";
 import { IndexerClient, IndexerClientError, IndexerClientParseError, type IndexerBlock, type IndexerClientOptions } from "./indexer-client.js";
 import { NodeRpcClient, NodeRpcError, NodeRpcParseError, type NodeRpcClientOptions, type SubstrateHeader } from "./node-rpc-client.js";
@@ -101,6 +102,35 @@ export type SyncStartHeight = number | "head";
 /** Why `fromHeight` is what it is -- carried out of `syncOnce` so the CLI can log the start
  *  height and its provenance once, instead of the service depending on a logger. */
 export type StartHeightSource = "watermark" | "configured" | "head" | "genesis";
+
+/**
+ * Project 00020, spec FR-002: the indexer's `TransactionResultStatus` enum (`SUCCESS`,
+ * `PARTIAL_SUCCESS`, `FAILURE`) mapped onto the archive's own
+ * `transactions.result CHECK (result IN ('success','partial_success','failure'))`.
+ *
+ * `undefined` means "the source said nothing" -- a `SystemTransaction` or `BridgeClaimTransaction`,
+ * neither of which declares `transactionResult` in the v4 SDL. That is a real absence, not a
+ * failure, and it must stay NULL in the archive rather than being defaulted to `success`: a
+ * consumer that cannot tell "succeeded" from "unknown" would count mints the ledger rejected.
+ *
+ * An unrecognised status is a hard error, not a silent NULL -- a new enum member in a future
+ * indexer must surface here rather than silently disarm the segment logic downstream.
+ */
+export function mapTransactionResult(
+  result: { status: string } | null | undefined,
+): TransactionResult | undefined {
+  if (result === null || result === undefined) return undefined;
+  switch (result.status) {
+    case "SUCCESS": return "success";
+    case "PARTIAL_SUCCESS": return "partial_success";
+    case "FAILURE": return "failure";
+    default:
+      throw new Error(
+        `unknown indexer TransactionResultStatus ${JSON.stringify(result.status)} -- the archive's ` +
+        "result column has no mapping for it; update mapTransactionResult before ingesting further",
+      );
+  }
+}
 
 /**
  * Exponential back-off for the PUBLIC endpoints (spec FR-016). Applied per network call inside
@@ -528,6 +558,9 @@ export class ChainArchiveSyncService {
 
     await this.store.putBlockBundle({ block: blockRecord, transactions, bridgeObservations });
 
+    // Project 00020 (FR-002) -- before the watermark advances, so a crash in between re-runs it.
+    await this.storeTransactionResults(height, blockHash, indexerBlock);
+
     // Fix 2 (sprint-fix round, HIGH): only advance the in-memory D-parameter dedup cursor AFTER
     // the durable write above has succeeded -- see `buildBridgeObservationRecords`'s own doc for
     // why updating it any earlier silently drops observations on retry.
@@ -615,9 +648,50 @@ export class ChainArchiveSyncService {
         position,
         kind,
         protocolVersion: tx.protocolVersion,
+        // Project 00020, spec FR-002: the column existed but was never written. A system
+        // transaction has no `transactionResult` in the SDL at all, so it stays undefined (NULL).
+        ...(mapTransactionResult(tx.transactionResult) !== undefined
+          ? { result: mapTransactionResult(tx.transactionResult)! }
+          : {}),
         rawBytes,
       };
     });
+  }
+
+  /**
+   * Project 00020, spec FR-002. `putBlockBundle` writes `result` on INSERT but is a bare
+   * `ON CONFLICT DO NOTHING`, and the archive schema's `segments` column is not part of
+   * `TransactionRecord` (nothing under `src/` may change). So the per-segment detail — and, on a
+   * re-ingest of an already-present block, the status too — is written here, by one statement per
+   * block, against the same connection the store uses.
+   *
+   * **Crash safety**: this runs INSIDE `storeFetchedBlock`, i.e. BEFORE `syncOnce` advances the
+   * watermark for that height. A crash between the bundle commit and this update therefore leaves
+   * the watermark below the block, the block is re-ingested on the next run, and this update runs
+   * again — idempotent by construction (it sets absolute values, never increments).
+   *
+   * Only rows whose value actually changes are touched (`IS DISTINCT FROM`), so a steady-state
+   * re-ingest writes nothing.
+   */
+  private async storeTransactionResults(
+    height: number, blockHash: Hex32, indexerBlock: IndexerBlock,
+  ): Promise<void> {
+    for (const tx of indexerBlock.transactions) {
+      const result = mapTransactionResult(tx.transactionResult);
+      if (result === undefined) continue;
+      const segments = tx.transactionResult?.segments ?? null;
+      await this.sql`
+        UPDATE ${this.sql(this.schema)}.transactions
+        SET result = ${result},
+            segments = ${segments === null ? null : this.sql.json(segments.map((s) => ({ id: s.id, success: s.success })))}
+        WHERE net = ${this.net}
+          AND block_height = ${height}
+          AND block_hash = ${Buffer.from(blockHash, "hex")}
+          AND tx_hash = ${Buffer.from(hexNoPrefix(tx.hash), "hex")}
+          AND (result IS DISTINCT FROM ${result}
+               OR segments IS DISTINCT FROM ${segments === null ? null : this.sql.json(segments.map((s) => ({ id: s.id, success: s.success })))})
+      `;
+    }
   }
 
   /**

@@ -7,19 +7,22 @@
  * npm run token-indexer -- rebuild                       drop this net's derived rows and re-seed
  * npm run token-indexer -- derive-color <address> <domainSep>
  *                                                        debug: the colour of one (address, domainSep)
+ * npm run token-indexer -- backfill-results [--from H] [--to H] [--max-blocks N]
+ *                                                        fill chain_archive result/segments for a
+ *                                                        pre-existing archive (spec FR-002)
  * ```
  *
- * `backfill-results` (spec FR-002) and `serve` (spec §5/§6.6) are added by this sub-plan's
- * Phases 2 and 6 respectively; every command is dispatched from `runCli` so the tests drive the
- * same code path the binary does.
+ * `serve` (spec §5/§6.6) is added by this sub-plan's Phase 6; every command is dispatched from
+ * `runCli` so the tests drive the same code path the binary does.
  *
  * Environment: see `token-indexer/config.ts`. `derive-color` needs no database at all.
  */
 import { pathToFileURL } from "node:url";
 import { createClient } from "../src/postgres/client.js";
 import { jsonLog } from "../wallet-monitor/log.js";
+import { backfillTransactionResults } from "../chain-archive-sync/backfill-results.js";
 import { bootstrapTokenIndexSchema, rebuildTokenIndex } from "./bootstrap.js";
-import { loadConfig, type TokenIndexerConfig } from "./config.js";
+import { loadConfig, requireIndexerHttp, type TokenIndexerConfig } from "./config.js";
 import { tokenColorHex } from "./color.js";
 import { readStatus } from "./ingest/store.js";
 
@@ -30,8 +33,21 @@ const USAGE = [
   "  status                               print cursors, counters and the archive tip",
   "  rebuild                              delete this net's derived rows and re-seed the built-ins",
   "  derive-color <addressHex> <domainSepHex>",
+  "  backfill-results [--from H] [--to H] [--max-blocks N]",
+  "                                       fill chain_archive.transactions.result/segments",
   "",
 ].join("\n");
+
+function numericFlag(argv: readonly string[], flag: string): number | undefined {
+  const at = argv.indexOf(flag);
+  if (at < 0) return undefined;
+  const raw = argv[at + 1];
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${flag} needs a non-negative integer, got ${JSON.stringify(raw)}`);
+  }
+  return value;
+}
 
 /** One client, one schema — `search_path` is set to the token schema so an unqualified name in a
  *  future query cannot silently resolve against `public`. Every statement in this project is
@@ -85,6 +101,25 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       try {
         await rebuildTokenIndex(sql, { schema: config.schema, net: config.net });
         jsonLog("token-indexer", "rebuilt", { schema: config.schema, net: config.net });
+      } finally {
+        await sql.end({ timeout: 5 });
+      }
+      return 0;
+    }
+    case "backfill-results": {
+      // Writes to the ARCHIVE schema, not the token schema — hence its own client.
+      const sql = createClient({ connectionString: config.pgUrl, schema: config.archiveSchema });
+      try {
+        const outcome = await backfillTransactionResults({
+          sql,
+          schema: config.archiveSchema,
+          net: config.net,
+          indexerUrl: requireIndexerHttp(config, "backfill-results"),
+          fromHeight: numericFlag(rest, "--from"),
+          toHeight: numericFlag(rest, "--to"),
+          maxBlocks: numericFlag(rest, "--max-blocks"),
+        });
+        jsonLog("token-indexer", "backfill-results.done", { ...outcome });
       } finally {
         await sql.end({ timeout: 5 });
       }

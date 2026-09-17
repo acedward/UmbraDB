@@ -27,9 +27,11 @@ import type { ISql } from "postgres";
  * and they are marked `status = 'builtin'` so nothing downstream mistakes them for observations.
  *
  * NIGHT is the unshielded token type of 32 zero bytes (`coin-structure/src/coin.rs:556`;
- * `nativeToken().raw` in `@midnightntwrk/ledger-v9` returns exactly 64 hex zeros — asserted in
+ * the pinned ledger package's `nativeToken().raw` returns exactly 64 hex zeros — asserted in
  * `token-indexer/test/migrate.test.ts`, which may import the ledger because it lives outside
- * `src/`), 6 decimals (1 NIGHT = 10^6 STAR).
+ * `src/`; this file must not even NAME that package, since
+ * `test/postgres/no-sdk-import-guard.test.ts` is a whole-file text scan), 6 decimals
+ * (1 NIGHT = 10^6 STAR).
  *
  * DUST has **no colour at all**: the ledger types it as a UNIT variant (`TokenType::Dust` in
  * `coin-structure/src/coin.rs:285-288`; `export type DustTokenType = { tag: 'dust' }` in

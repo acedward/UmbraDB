@@ -63,7 +63,8 @@ describe("token_index migration lineage and built-in rows", () => {
       FROM ${sql(schema)}.tokens WHERE net = ${net} ORDER BY symbol
     `;
     expect(seeds).toHaveLength(2);
-    const [dust, night] = seeds as [typeof seeds[0], typeof seeds[0]];
+    const dust = seeds[0]!;
+    const night = seeds[1]!;
 
     expect(night.symbol).toBe("NIGHT");
     expect(night.name).toBe("NIGHT");

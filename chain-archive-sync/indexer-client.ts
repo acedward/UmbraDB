@@ -38,10 +38,29 @@ export class IndexerClientParseError extends Error {
   }
 }
 
+/** One entry of `TransactionResult.segments` — an intent segment's own outcome inside a
+ *  `PARTIAL_SUCCESS` transaction. */
+export interface IndexerSegmentResult {
+  id: number;
+  success: boolean;
+}
+
+/** `RegularTransaction.transactionResult` (project 00020, spec FR-002). `segments` is `null` for a
+ *  `SUCCESS` or `FAILURE` transaction — the indexer only populates it for `PARTIAL_SUCCESS`. */
+export interface IndexerTransactionResult {
+  status: "SUCCESS" | "PARTIAL_SUCCESS" | "FAILURE";
+  segments: IndexerSegmentResult[] | null;
+}
+
 export interface IndexerTransaction {
   hash: string;
   protocolVersion: number;
   raw: string; // 0x-free hex (indexer's HexEncoded scalar has no 0x prefix, confirmed live)
+  /** Project 00020 (spec FR-002): present only on `RegularTransaction` -- `transactionResult` is
+   *  declared on that concrete type, NOT on the `Transaction` interface (verified in the v4 SDL:
+   *  `SystemTransaction` and `BridgeClaimTransaction` do not have it), so the query asks for it
+   *  through an inline fragment and a system transaction legitimately comes back without one. */
+  transactionResult?: IndexerTransactionResult | null;
 }
 
 export interface IndexerBlock {
@@ -127,7 +146,10 @@ export class IndexerClient {
       `query($height: Int!) {
         block(offset: { height: $height }) {
           hash height
-          transactions { hash protocolVersion raw }
+          transactions {
+            hash protocolVersion raw
+            ... on RegularTransaction { transactionResult { status segments { id success } } }
+          }
           systemParameters { dParameter { numPermissionedCandidates numRegisteredCandidates } }
         }
       }`,
