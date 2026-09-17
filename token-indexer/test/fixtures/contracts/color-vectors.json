@@ -1,7 +1,8 @@
 {
+  "standard": "MIP PR #315, mips/mip-xxxx-on-chain-token-metadata.md @ f433056; event name \"mip-xxxx:token-metadata[v1]\" (the pre-MIP \"TokenMetadata\" is ignored, MIP section 1)",
   "source": "Compact simulator (@midnight-ntwrk/compact-runtime 0.19.0), compactc 0.34.0",
   "producedBy": "scripts/export-simulator-fixtures.ts",
-  "note": "Real compiled-contract output, executed in process. Contract addresses are sha256(\"umbra:00020:<row id>\") so everything here is reproducible; there are no block heights, transaction hashes or indexer event ids, and `eventId` is simply the emission order across the whole corpus.",
+  "note": "Real compiled-contract output, executed in process. Contract addresses are sha256(\"umbra:00020:<row id>\") so everything here is reproducible; there are no block heights, transaction hashes or indexer event ids, and `eventId` is simply the emission order across the whole corpus. Token rows are keyed by the MIP's identity `(contractAddress, domainSep, kind 0..3)`; `privacy` and `storage` are derived from the kind byte and `status` is one of observed | declared | described (MIP section 7.2).",
   "count": 15,
   "vectors": [
     {

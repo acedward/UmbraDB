@@ -413,14 +413,17 @@ function resolverPaths(t) {
       out.push({ label: "resolver", path: pretty, short: pretty });
     }
   }
-  // The hex form always resolves (spec §5 accepts the 64-hex address and domain separator), so it
-  // is offered beside the pretty one — with a short label, because 130 characters of hex in a link
-  // is not a link, it is a wall.
+  // The hex form always resolves (the resolver accepts the 64-hex address and domain separator), so
+  // it is offered beside the pretty one — with a short label, because 130 characters of hex in a
+  // link is not a link, it is a wall. It carries the KIND BYTE as a third segment: since the kind
+  // is part of the identity, two rows can share an address and a domain separator, and the two
+  // segment form would answer 409 for both of them.
   if (t.address && t.domainSep) {
+    var kindPart = t.kind === null || t.kind === undefined ? "" : "/" + enc(t.kind);
     out.push({
       label: "resolver (hex form)",
-      path: "/" + enc(t.address) + "/" + enc(t.domainSep),
-      short: "/" + shortHex(t.address, 6, 4) + "/" + shortHex(t.domainSep, 6, 4)
+      path: "/" + enc(t.address) + "/" + enc(t.domainSep) + kindPart,
+      short: "/" + shortHex(t.address, 6, 4) + "/" + shortHex(t.domainSep, 6, 4) + kindPart
     });
   }
   return out;

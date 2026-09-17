@@ -94,19 +94,26 @@ export function fakeLedger(specs: { calls?: FakeCallSpec[]; deploys?: FakeDeploy
   };
 }
 
-/** A 256-byte `TokenMetadata` payload as hex — the encoder the parser module itself exports, so the
- *  fixtures and the production parser can never drift apart. */
+/**
+ * A 256-byte `mip-xxxx:token-metadata[v1]` payload as hex — built with the encoder the parser module
+ * itself exports, so the fixtures and the production parser can never drift apart.
+ *
+ * `valType` defaults to 1 (UTF-8 string), which is what most of the hand-built cases want; every
+ * test that exercises a type rule passes it explicitly.
+ */
 export function metadataPayloadHex(fields: {
   domainSep: string | Uint8Array;
   kindByte: number;
-  key: string;
+  key: string | Uint8Array;
   value: string | Uint8Array;
-  len?: number;
+  valType?: number;
+  valLen?: number;
 }): string {
   const domainSep = typeof fields.domainSep === "string"
     ? (fields.domainSep.length === 64 ? new Uint8Array(Buffer.from(fields.domainSep, "hex")) : pad32(fields.domainSep))
     : fields.domainSep;
   return Buffer.from(encodeTokenMetadata({
-    domainSep, kindByte: fields.kindByte, key: fields.key, value: fields.value, len: fields.len,
+    domainSep, kindByte: fields.kindByte, key: fields.key, valType: fields.valType ?? 1,
+    value: fields.value, valLen: fields.valLen,
   })).toString("hex");
 }

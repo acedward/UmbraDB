@@ -395,9 +395,13 @@ export async function projectedFields(
   const decimalsRow = byKey.get("decimals");
 
   // --- the split document -----------------------------------------------------------------
+  // `max` is taken over EVERY part that exists, projectable or not: a part carried with the wrong
+  // `val-type` is still a part the contract emitted, and the MIP's rule is that the assembly waits
+  // for it rather than quietly publishing the document without it (spec §2 edge cases, MIP §5.3).
   let maxPart = -1;
-  for (const k of byKey.keys()) {
-    const index = metadataPartIndex(k);
+  for (const row of rows) {
+    if (row.key_text === null) continue;
+    const index = metadataPartIndex(row.key_text);
     if (index !== undefined && index < MAX_METADATA_PARTS) maxPart = Math.max(maxPart, index);
   }
   let assembled: { document: string; eventId: bigint } | null = null;

@@ -108,6 +108,8 @@ export type TokenPrivacy = "shielded" | "unshielded";
 export type TokenStorage = "native" | "ledger";
 /** The four values MIP §3 defines; anything else rejects the event. */
 export type TokenKindByte = 0 | 1 | 2 | 3;
+/** The two kinds a MINT can ever produce — a mint effect is native by definition (MIP §6.3). */
+export type NativeKindByte = 0 | 1;
 /** MIP §2.1's closed enum. 5..255 are reserved and reject. */
 export type ValType = 0 | 1 | 2 | 3 | 4;
 

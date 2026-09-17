@@ -310,21 +310,36 @@ export function createTokenApi(opts: TokenApiOptions): Server {
   }
 
   /**
-   * `GET /{token-name}/{id}` — the tokenUri resolver (spec §5). One match answers with the token's
-   * metadata document; none is a 404; several is a `409 TOKEN_AMBIGUOUS` carrying the candidates,
-   * because symbols are not unique on a public chain and guessing would be worse than asking.
+   * `GET /{token-name}/{id}` and `GET /{token-name}/{id}/{kind}` — the tokenUri resolver (spec §5).
+   * One match answers with the token's metadata document; none is a 404; several is a
+   * `409 TOKEN_AMBIGUOUS` carrying the candidates, because symbols are not unique on a public chain
+   * and guessing would be worse than asking.
+   *
+   * **The optional third segment is 00021's doing** (question Q11). Under MIP §4 the kind byte is
+   * part of the identity, so a two-segment path can now name two real tokens: a domain separator
+   * minted both shielded and unshielded, or a contract that declares a ledger book and mints
+   * natively. The two-segment form is left exactly as it was — it is what contracts bake into their
+   * `tokenUri` — and a caller that hits the 409 can append the kind the 409 just told it about.
    */
   async function handleResolver(segments: string[], req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (segments.length !== 2) {
+    if (segments.length !== 2 && segments.length !== 3) {
       throw notFound(`no route /${segments.join("/")}`);
     }
     const [name, id] = segments as [string, string];
-    const candidates = (await queries.resolverCandidates(name)).filter((t) => resolverMatches(t, name, id));
+    const kind = segments.length === 3 ? kindParam(segments[2]!) : undefined;
+    const candidates = (await queries.resolverCandidates(name))
+      .filter((t) => resolverMatches(t, name, id))
+      .filter((t) => kind === undefined || t.kind === kind);
 
-    if (candidates.length === 0) throw notFound(`nothing resolves /${name}/${id}`);
+    const path = segments.map((s) => `/${s}`).join("");
+    if (candidates.length === 0) throw notFound(`nothing resolves ${path}`);
     if (candidates.length > 1) {
-      throw new ApiError(409, "TOKEN_AMBIGUOUS", `/${name}/${id} matches ${candidates.length} tokens`,
-        candidates.map((t) => ({ address: t.address, domainSep: t.domainSep, kind: t.kind })));
+      throw new ApiError(409, "TOKEN_AMBIGUOUS",
+        `${path} matches ${candidates.length} tokens — append the kind byte to choose one`,
+        candidates.map((t) => ({
+          address: t.address, domainSep: t.domainSep, kind: t.kind,
+          privacy: t.privacy, storage: t.storage, path: `${path}/${t.kind}`,
+        })));
     }
     const token = candidates[0]!;
 

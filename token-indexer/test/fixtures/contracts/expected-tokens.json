@@ -1,24 +1,32 @@
 {
+  "standard": "MIP PR #315, mips/mip-xxxx-on-chain-token-metadata.md @ f433056; event name \"mip-xxxx:token-metadata[v1]\" (the pre-MIP \"TokenMetadata\" is ignored, MIP section 1)",
   "source": "Compact simulator (@midnight-ntwrk/compact-runtime 0.19.0), compactc 0.34.0",
   "producedBy": "scripts/export-simulator-fixtures.ts",
-  "note": "Real compiled-contract output, executed in process. Contract addresses are sha256(\"umbra:00020:<row id>\") so everything here is reproducible; there are no block heights, transaction hashes or indexer event ids, and `eventId` is simply the emission order across the whole corpus.",
-  "count": 16,
+  "note": "Real compiled-contract output, executed in process. Contract addresses are sha256(\"umbra:00020:<row id>\") so everything here is reproducible; there are no block heights, transaction hashes or indexer event ids, and `eventId` is simply the emission order across the whole corpus. Token rows are keyed by the MIP's identity `(contractAddress, domainSep, kind 0..3)`; `privacy` and `storage` are derived from the kind byte and `status` is one of observed | declared | described (MIP section 7.2).",
+  "count": 17,
+  "identities": 17,
+  "addressDomainPairs": 15,
+  "statusCounts": {
+    "declared": 4,
+    "described": 11,
+    "observed": 2
+  },
   "tokens": [
     {
       "row": "LSUN",
       "contractAddress": "167d799a5be996c45174fc90c0ca1dbad27f0ba53cca4049d20a952d92481fa4",
       "domainSepHex": "756d6272613a6c73756e00000000000000000000000000000000000000000000",
       "domainSepText": "umbra:lsun",
-      "kind": "unshielded",
-      "declaredKindByte": 2,
+      "kind": 2,
+      "privacy": "unshielded",
       "storage": "ledger",
       "colorHex": null,
       "traits": {},
+      "mintCount": 0,
+      "totalMinted": "0",
       "name": "Ledger Sun",
       "symbol": "LSUN",
       "decimals": 6,
-      "mintCount": 0,
-      "totalMinted": "0",
       "status": "declared"
     },
     {
@@ -26,18 +34,23 @@
       "contractAddress": "edd0173d57a2af1076f7cf53165aa4e17afa821c2629127bb30dacc99c6f06ea",
       "domainSepHex": "756d6272613a6c6d6f6f6e000000000000000000000000000000000000000000",
       "domainSepText": "umbra:lmoon",
-      "kind": "unshielded",
-      "declaredKindByte": 2,
+      "kind": 2,
+      "privacy": "unshielded",
       "storage": "ledger",
       "colorHex": null,
       "traits": {
-        "description": "A ledger token that renamed itself in a later block."
+        "description": {
+          "valType": 1,
+          "valLen": 52,
+          "valueHex": "41206c656467657220746f6b656e20746861742072656e616d656420697473656c6620696e2061206c6174657220626c6f636b2e",
+          "text": "A ledger token that renamed itself in a later block."
+        }
       },
+      "mintCount": 0,
+      "totalMinted": "0",
       "name": "Ledger Moon (renamed)",
       "symbol": "LMOON",
       "decimals": 8,
-      "mintCount": 0,
-      "totalMinted": "0",
       "status": "declared"
     },
     {
@@ -45,17 +58,16 @@
       "contractAddress": "0b119a29fbda7ff687822ec73cb12aaa1b8db47221ebf454959d7b35973804da",
       "domainSepHex": "756d6272613a7373746172000000000000000000000000000000000000000000",
       "domainSepText": "umbra:sstar",
-      "kind": "shielded",
-      "declaredKindByte": 1,
+      "kind": 1,
+      "privacy": "shielded",
       "storage": "native",
       "colorHex": "78b0493921643a05b2a5eba717c3b61e1fccca13d7bcde0a96f30067253127e3",
       "traits": {},
+      "mintCount": 1,
+      "totalMinted": "5000000",
       "name": "Shielded Star",
       "symbol": "SSTAR",
       "decimals": 6,
-      "observedKind": "shielded",
-      "mintCount": 1,
-      "totalMinted": "5000000",
       "status": "described"
     },
     {
@@ -63,24 +75,53 @@
       "contractAddress": "94d81144f07b38817ad6521692e6b31af589171ad29fb68696646bc8ae698f21",
       "domainSepHex": "756d6272613a736e656200000000000000000000000000000000000000000000",
       "domainSepText": "umbra:sneb",
-      "kind": "shielded",
-      "declaredKindByte": 1,
+      "kind": 1,
+      "privacy": "shielded",
       "storage": "native",
       "colorHex": "58e5b2d090d59b65d28af6654ab3962e6e4b7b2588c7d853a9dc25a1ebc23ab3",
       "traits": {
-        "metadata/0": "{\"description\":\"A nebula published in parts, because one TokenMetadata eve",
-        "metadata/1": "nt carries at most 190 bytes of value and this JSON does not fit in one.",
-        "metadata/2": "\",\"website\":\"https://example.invalid/nebula\",\"image\":\"data:image/svg+xml",
-        "metadata/3": ";utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'><circle ",
-        "metadata/4": "cx='4' cy='4' r='3' fill='%236b4fa0'/></svg>\",\"collection\":\"Umbra refere",
-        "metadata/5": "nce set\"}"
+        "metadata/0": {
+          "valType": 3,
+          "valLen": 74,
+          "valueHex": "7b226465736372697074696f6e223a2241206e6562756c61207075626c697368656420696e2070617274732c2062656361757365206f6e6520546f6b656e4d6574616461746120657665",
+          "text": "{\"description\":\"A nebula published in parts, because one TokenMetadata eve"
+        },
+        "metadata/1": {
+          "valType": 3,
+          "valLen": 72,
+          "valueHex": "6e742063617272696573206174206d6f737420313839206279746573206f662076616c756520616e642074686973204a534f4e20646f6573206e6f742066697420696e206f6e652e",
+          "text": "nt carries at most 189 bytes of value and this JSON does not fit in one."
+        },
+        "metadata/2": {
+          "valType": 3,
+          "valLen": 72,
+          "valueHex": "222c2277656273697465223a2268747470733a2f2f6578616d706c652e696e76616c69642f6e6562756c61222c22696d616765223a22646174613a696d6167652f7376672b786d6c",
+          "text": "\",\"website\":\"https://example.invalid/nebula\",\"image\":\"data:image/svg+xml"
+        },
+        "metadata/3": {
+          "valType": 3,
+          "valLen": 72,
+          "valueHex": "3b757466382c3c73766720786d6c6e733d27687474703a2f2f7777772e77332e6f72672f323030302f737667272076696577426f783d2730203020382038273e3c636972636c6520",
+          "text": ";utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'><circle "
+        },
+        "metadata/4": {
+          "valType": 3,
+          "valLen": 72,
+          "valueHex": "63783d2734272063793d27342720723d2733272066696c6c3d27253233366234666130272f3e3c2f7376673e222c22636f6c6c656374696f6e223a22556d62726120726566657265",
+          "text": "cx='4' cy='4' r='3' fill='%236b4fa0'/></svg>\",\"collection\":\"Umbra refere"
+        },
+        "metadata/5": {
+          "valType": 3,
+          "valLen": 9,
+          "valueHex": "6e636520736574227d",
+          "text": "nce set\"}"
+        }
       },
+      "mintCount": 2,
+      "totalMinted": "3",
       "name": "Shielded Nebula",
       "symbol": "SNEB",
       "decimals": 0,
-      "observedKind": "shielded",
-      "mintCount": 2,
-      "totalMinted": "3",
       "status": "described"
     },
     {
@@ -88,11 +129,11 @@
       "contractAddress": "6d22f8c6a2755c2358c1bd38cb205a33c2142eb0951de4a882b7c169e177522c",
       "domainSepHex": "756d6272613a7367686f73740000000000000000000000000000000000000000",
       "domainSepText": "umbra:sghost",
-      "kind": "shielded",
+      "kind": 1,
+      "privacy": "shielded",
       "storage": "native",
       "colorHex": "7d0695f966a9ff4c7b8ab9a72719f28ed5fd7d7344f022a318b8b2064372ab61",
       "traits": {},
-      "observedKind": "shielded",
       "mintCount": 1,
       "totalMinted": "13",
       "status": "observed"
@@ -102,17 +143,16 @@
       "contractAddress": "5e130ecc7279239557ff2c9c7d460f87b60b0346b1675394851dd97a3a26fdd7",
       "domainSepHex": "756d6272613a75636f6d00000000000000000000000000000000000000000000",
       "domainSepText": "umbra:ucom",
-      "kind": "unshielded",
-      "declaredKindByte": 0,
+      "kind": 0,
+      "privacy": "unshielded",
       "storage": "native",
       "colorHex": "6fca1c97e05eb5e0977d970fbf9bf3dd80ed479ac4ce0667cd20e33fede3b4c0",
       "traits": {},
+      "mintCount": 1,
+      "totalMinted": "2500000",
       "name": "Unshielded Comet",
       "symbol": "UCOM",
       "decimals": 6,
-      "observedKind": "unshielded",
-      "mintCount": 1,
-      "totalMinted": "2500000",
       "status": "described"
     },
     {
@@ -120,17 +160,16 @@
       "contractAddress": "1106c11c709b9f5dba076862120fbb4cc58d6f2e1282559768d9d43ca01951fb",
       "domainSepHex": "756d6272613a756d657400000000000000000000000000000000000000000000",
       "domainSepText": "umbra:umet",
-      "kind": "unshielded",
-      "declaredKindByte": 0,
+      "kind": 0,
+      "privacy": "unshielded",
       "storage": "native",
       "colorHex": "f11f726d0855332a31b3adf139a2a30fa371045a663b26e2437ddc73a39d02c5",
       "traits": {},
+      "mintCount": 3,
+      "totalMinted": "600",
       "name": "Unshielded Meteor",
       "symbol": "UMET",
       "decimals": 2,
-      "observedKind": "unshielded",
-      "mintCount": 3,
-      "totalMinted": "600",
       "status": "described"
     },
     {
@@ -138,16 +177,16 @@
       "contractAddress": "a8cad42f2881ce0d5efe1401675809c5bc87fc840f8776ff8569308c676ef5f6",
       "domainSepHex": "756d6272613a7570726f6d000000000000000000000000000000000000000000",
       "domainSepText": "umbra:uprom",
-      "kind": "unshielded",
-      "declaredKindByte": 0,
+      "kind": 0,
+      "privacy": "unshielded",
       "storage": "native",
       "colorHex": "48e8b148a20025d9d07b87e85f212286a113a409ca0736e74ec3afe8310655d5",
       "traits": {},
+      "mintCount": 0,
+      "totalMinted": "0",
       "name": "Unshielded Promise",
       "symbol": "UPROM",
       "decimals": 6,
-      "mintCount": 0,
-      "totalMinted": "0",
       "status": "declared"
     },
     {
@@ -155,17 +194,16 @@
       "contractAddress": "1f32a738d0234d55bce8414d4ea86a4614847b0c4aa2548a840f37e612782cb4",
       "domainSepHex": "756d6272613a6461757200000000000000000000000000000000000000000000",
       "domainSepText": "umbra:daur",
-      "kind": "unshielded",
-      "declaredKindByte": 0,
+      "kind": 0,
+      "privacy": "unshielded",
       "storage": "native",
       "colorHex": "e0386485c175ffe2bf128922293b78ab799e465af7529a84379f1c02eb79afc2",
       "traits": {},
+      "mintCount": 1,
+      "totalMinted": "2000",
       "name": "Dual Aurora",
       "symbol": "DAUR",
       "decimals": 6,
-      "observedKind": "unshielded",
-      "mintCount": 1,
-      "totalMinted": "2000",
       "status": "described"
     },
     {
@@ -173,17 +211,16 @@
       "contractAddress": "1f32a738d0234d55bce8414d4ea86a4614847b0c4aa2548a840f37e612782cb4",
       "domainSepHex": "756d6272613a6461757200000000000000000000000000000000000000000000",
       "domainSepText": "umbra:daur",
-      "kind": "shielded",
-      "declaredKindByte": 1,
+      "kind": 1,
+      "privacy": "shielded",
       "storage": "native",
       "colorHex": "e0386485c175ffe2bf128922293b78ab799e465af7529a84379f1c02eb79afc2",
       "traits": {},
+      "mintCount": 1,
+      "totalMinted": "1000",
       "name": "Dual Aurora",
       "symbol": "DAUR",
       "decimals": 6,
-      "observedKind": "shielded",
-      "mintCount": 1,
-      "totalMinted": "1000",
       "status": "described"
     },
     {
@@ -191,22 +228,36 @@
       "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
       "domainSepHex": "636e73743a6f72696f6e00000000000000000000000000000000000000000000",
       "domainSepText": "cnst:orion",
-      "kind": "shielded",
-      "declaredKindByte": 1,
+      "kind": 1,
+      "privacy": "shielded",
       "storage": "native",
       "colorHex": "46ab4b3dde60180f97e18bf190cb97c007c965b4384bb6e1f742695e0550d672",
       "traits": {
-        "hemisphere": "equatorial",
-        "magnitude": "1.25",
-        "metadata": "{\"collection\":\"Constellations\",\"image\":\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 4 4'><path d='M0 4 L2 0 L4 4' stroke='%23fff'/></svg>\"}"
+        "hemisphere": {
+          "valType": 1,
+          "valLen": 10,
+          "valueHex": "65717561746f7269616c",
+          "text": "equatorial"
+        },
+        "magnitude": {
+          "valType": 1,
+          "valLen": 4,
+          "valueHex": "312e3235",
+          "text": "1.25"
+        },
+        "metadata": {
+          "valType": 3,
+          "valLen": 172,
+          "valueHex": "7b22636f6c6c656374696f6e223a22436f6e7374656c6c6174696f6e73222c22696d616765223a22646174613a696d6167652f7376672b786d6c3b757466382c3c73766720786d6c6e733d27687474703a2f2f7777772e77332e6f72672f323030302f737667272076696577426f783d2730203020342034273e3c7061746820643d274d302034204c322030204c34203427207374726f6b653d27253233666666272f3e3c2f7376673e227d",
+          "text": "{\"collection\":\"Constellations\",\"image\":\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 4 4'><path d='M0 4 L2 0 L4 4' stroke='%23fff'/></svg>\"}"
+        }
       },
+      "mintCount": 1,
+      "totalMinted": "1",
       "name": "Constellations · Orion",
       "symbol": "CNST",
       "decimals": 0,
       "tokenUri": "http://localhost:10020/constellations/orion",
-      "observedKind": "shielded",
-      "mintCount": 1,
-      "totalMinted": "1",
       "status": "described"
     },
     {
@@ -214,21 +265,30 @@
       "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
       "domainSepHex": "636e73743a6c7972610000000000000000000000000000000000000000000000",
       "domainSepText": "cnst:lyra",
-      "kind": "shielded",
-      "declaredKindByte": 1,
+      "kind": 1,
+      "privacy": "shielded",
       "storage": "native",
       "colorHex": "e7365e10713862aaec94986702bdaecf42604e2a2049363eb889fdfe884ce28e",
       "traits": {
-        "hemisphere": "northern",
-        "magnitude": "0.03"
+        "hemisphere": {
+          "valType": 1,
+          "valLen": 8,
+          "valueHex": "6e6f72746865726e",
+          "text": "northern"
+        },
+        "magnitude": {
+          "valType": 1,
+          "valLen": 4,
+          "valueHex": "302e3033",
+          "text": "0.03"
+        }
       },
+      "mintCount": 1,
+      "totalMinted": "1",
       "name": "Constellations · Lyra",
       "symbol": "CNST",
       "decimals": 0,
       "tokenUri": "http://localhost:10020/constellations/lyra",
-      "observedKind": "shielded",
-      "mintCount": 1,
-      "totalMinted": "1",
       "status": "described"
     },
     {
@@ -236,21 +296,30 @@
       "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
       "domainSepHex": "636e73743a6379676e7573000000000000000000000000000000000000000000",
       "domainSepText": "cnst:cygnus",
-      "kind": "shielded",
-      "declaredKindByte": 1,
+      "kind": 1,
+      "privacy": "shielded",
       "storage": "native",
       "colorHex": "97fec186b8ae9ebc65e1640a14791942473dbf07377e1483ccd43759c64adcfb",
       "traits": {
-        "hemisphere": "northern",
-        "magnitude": "1.25"
+        "hemisphere": {
+          "valType": 1,
+          "valLen": 8,
+          "valueHex": "6e6f72746865726e",
+          "text": "northern"
+        },
+        "magnitude": {
+          "valType": 1,
+          "valLen": 4,
+          "valueHex": "312e3235",
+          "text": "1.25"
+        }
       },
+      "mintCount": 1,
+      "totalMinted": "1",
       "name": "Constellations · Cygnus",
       "symbol": "CNST",
       "decimals": 0,
       "tokenUri": "http://localhost:10020/constellations/cygnus",
-      "observedKind": "shielded",
-      "mintCount": 1,
-      "totalMinted": "1",
       "status": "described"
     },
     {
@@ -258,20 +327,24 @@
       "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
       "domainSepHex": "636e73743a766567610000000000000000000000000000000000000000000000",
       "domainSepText": "cnst:vega",
-      "kind": "shielded",
-      "declaredKindByte": 1,
+      "kind": 1,
+      "privacy": "shielded",
       "storage": "native",
       "colorHex": "8107e2d2796fee3fe97a75c24763f9746e30b4129e02b287f2c1fd346648b0d7",
       "traits": {
-        "hemisphere": "northern"
+        "hemisphere": {
+          "valType": 1,
+          "valLen": 8,
+          "valueHex": "6e6f72746865726e",
+          "text": "northern"
+        }
       },
+      "mintCount": 1,
+      "totalMinted": "1",
       "name": "Constellations · Vega",
       "symbol": "CNST",
       "decimals": 0,
       "tokenUri": "http://localhost:10020/constellations/vega",
-      "observedKind": "shielded",
-      "mintCount": 1,
-      "totalMinted": "1",
       "status": "described"
     },
     {
@@ -279,20 +352,24 @@
       "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
       "domainSepHex": "636e73743a616c74616972000000000000000000000000000000000000000000",
       "domainSepText": "cnst:altair",
-      "kind": "shielded",
-      "declaredKindByte": 1,
+      "kind": 1,
+      "privacy": "shielded",
       "storage": "native",
       "colorHex": "d820d1e3aa89eb73987637d78590edcc17c05de43d60af0efb4ac61080e1b47d",
       "traits": {
-        "hemisphere": "equatorial"
+        "hemisphere": {
+          "valType": 1,
+          "valLen": 10,
+          "valueHex": "65717561746f7269616c",
+          "text": "equatorial"
+        }
       },
+      "mintCount": 1,
+      "totalMinted": "1",
       "name": "Constellations · Altair",
       "symbol": "CNST",
       "decimals": 0,
       "tokenUri": "http://localhost:10020/constellations/altair",
-      "observedKind": "shielded",
-      "mintCount": 1,
-      "totalMinted": "1",
       "status": "described"
     },
     {
@@ -300,18 +377,31 @@
       "contractAddress": "4df9f4f86ce86e972a411f125610555589bd2480a8dd4d390e8f205cc49fa377",
       "domainSepHex": "756d6272613a6c6c696172000000000000000000000000000000000000000000",
       "domainSepText": "umbra:lliar",
-      "kind": "unshielded",
-      "declaredKindByte": 2,
+      "kind": 0,
+      "privacy": "unshielded",
       "storage": "native",
       "colorHex": "da1238dce2d8d92f3707cfde043b33461283c736b4e0f82e57a3ee569efb1283",
       "traits": {},
+      "mintCount": 1,
+      "totalMinted": "7",
+      "status": "observed"
+    },
+    {
+      "row": "LLIAR",
+      "contractAddress": "4df9f4f86ce86e972a411f125610555589bd2480a8dd4d390e8f205cc49fa377",
+      "domainSepHex": "756d6272613a6c6c696172000000000000000000000000000000000000000000",
+      "domainSepText": "umbra:lliar",
+      "kind": 2,
+      "privacy": "unshielded",
+      "storage": "ledger",
+      "colorHex": null,
+      "traits": {},
+      "mintCount": 0,
+      "totalMinted": "0",
       "name": "Ledger Liar",
       "symbol": "LLIAR",
       "decimals": 6,
-      "observedKind": "unshielded",
-      "mintCount": 1,
-      "totalMinted": "7",
-      "status": "inconsistent"
+      "status": "declared"
     }
   ]
 }

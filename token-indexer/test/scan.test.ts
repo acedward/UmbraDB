@@ -99,11 +99,11 @@ describe("token scanner over recorded Stagenet transactions", () => {
 
     // --- tokens: one row per issuer, colour derived, storage native, status observed ---------
     const tokens = await db.sql<{
-      address: Buffer; domain_sep: Buffer; kind: string; storage: string; color: Buffer | null;
-      status: string; mint_count: string; total_minted: string; name: string | null;
-      first_mint_height: string; last_mint_height: string;
+      address: Buffer; domain_sep: Buffer; kind: number; privacy: string; storage: string;
+      color: Buffer | null; status: string; mint_count: string; total_minted: string;
+      name: string | null; first_mint_height: string; last_mint_height: string;
     }[]>`
-      SELECT address, domain_sep, kind, storage, color, status, mint_count, total_minted, name,
+      SELECT address, domain_sep, kind, privacy, storage, color, status, mint_count, total_minted, name,
              first_mint_height, last_mint_height
       FROM ${db.sql(db.schema)}.tokens WHERE net = ${NET} AND status <> 'builtin'
       ORDER BY first_mint_height
@@ -112,7 +112,11 @@ describe("token scanner over recorded Stagenet transactions", () => {
     for (const row of tokens) {
       const address = row.address.toString("hex");
       const domainSep = row.domain_sep.toString("hex");
+      // Every one of these rows came from a MINT, so it is a native kind (MIP §6.3) and its
+      // privacy comes from the effect map the mint was declared in.
       expect(row.storage).toBe("native");
+      expect([0, 1]).toContain(row.kind);
+      expect(row.privacy).toBe(row.kind === 1 ? "shielded" : "unshielded");
       expect(row.status).toBe("observed"); // nothing described itself
       expect(row.name).toBeNull();
       expect(Number(row.mint_count)).toBe(1);
@@ -129,10 +133,10 @@ describe("token scanner over recorded Stagenet transactions", () => {
       const observed = fixture.unshieldedCreatedOutputs[0]!.tokenType;
       const match = tokens.find((t) => t.color?.toString("hex") === observed);
       expect(match, `no token row for observed token type ${observed}`).toBeDefined();
-      expect(match!.kind).toBe("unshielded");
+      expect(match!.kind).toBe(0); // unshielded native
       expect(match!.total_minted).toBe(fixture.unshieldedCreatedOutputs[0]!.value);
     }
-    expect(tokens.filter((t) => t.kind === "shielded")).toHaveLength(4);
+    expect(tokens.filter((t) => t.kind === 1)).toHaveLength(4); // shielded native
 
     // --- mints: one row each, keyed by the real transaction ---------------------------------
     const mints = await db.sql<{ tx_hash: Buffer; amount: string; entry_point: string | null; segment: number }[]>`

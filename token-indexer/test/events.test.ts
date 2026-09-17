@@ -13,7 +13,9 @@ import {
   type EventSource,
   type IndexerContractEvent,
 } from "../ingest/events.js";
-import { TOKEN_METADATA_NAME_HEX } from "../ingest/payload.js";
+import {
+  TOKEN_METADATA_NAME_HEX, encodeInteger, isTokenMetadataName, parseTokenMetadata,
+} from "../ingest/payload.js";
 import { TokenScanner } from "../ingest/scan.js";
 import { readDecodeCursor } from "../ingest/store.js";
 import { seedSyntheticTransaction } from "./helpers/synthetic-archive.js";
@@ -73,13 +75,19 @@ describe("token metadata event lookup", () => {
     return new IndexerEventSource({ url: indexer.url, pageSize: 500 });
   }
 
-  function metadataEvent(id: number, key: string, value: string | Uint8Array, len?: number): {
+  function metadataEvent(
+    id: number, key: string, value: string | Uint8Array,
+    opts: { valType?: number; valLen?: number; nameHex?: string } = {},
+  ): {
     id: number; contractAddress: string; txHash: string; blockHeight: number; nameHex: string; payloadHex: string;
   } {
     return {
       id, contractAddress: ADDRESS, txHash: TX, blockHeight: 100,
-      nameHex: TOKEN_METADATA_NAME_HEX,
-      payloadHex: metadataPayloadHex({ domainSep: DOMAIN, kindByte: KIND_SHIELDED_NATIVE, key, value, len }),
+      nameHex: opts.nameHex ?? TOKEN_METADATA_NAME_HEX,
+      payloadHex: metadataPayloadHex({
+        domainSep: DOMAIN, kindByte: KIND_SHIELDED_NATIVE, key, value,
+        valType: opts.valType, valLen: opts.valLen,
+      }),
     };
   }
 
@@ -87,7 +95,7 @@ describe("token metadata event lookup", () => {
     const complete = [
       metadataEvent(1, "name", "Shielded Star"),
       metadataEvent(2, "symbol", "SSTAR"),
-      metadataEvent(3, "decimals", new Uint8Array([6])),
+      metadataEvent(3, "decimals", encodeInteger(6), { valType: 2 }),
     ];
 
     // --- the short-then-complete run --------------------------------------------------------
@@ -123,7 +131,10 @@ describe("token metadata event lookup", () => {
     expect(await db.sql`SELECT * FROM ${db.sql(db.schema)}.pending_event_lookups WHERE net = ${NET}`).toHaveLength(0);
 
     const retried = await tokenRow(db);
-    expect(retried).toMatchObject({ name: "Shielded Star", symbol: "SSTAR", decimals: 6, status: "declared", storage: "native" });
+    expect(retried).toMatchObject({
+      name: "Shielded Star", symbol: "SSTAR", decimals: 6, status: "declared",
+      kind: 1, privacy: "shielded", storage: "native",
+    });
     expect(retried.color).toBe(tokenColorHex(DOMAIN, ADDRESS));
 
     // --- the one-shot reference run ---------------------------------------------------------
@@ -227,6 +238,42 @@ describe("token metadata event lookup", () => {
     expect((await tokenRow(db)).name).toBe("Paged");
   }, 180_000);
 
+  it("[[token-legacy-name-ignored]] an event under the pre-MIP name `TokenMetadata` is IGNORED — counted, never stored, never rejected (MIP §1)", async () => {
+    const db = await freshDb();
+    // The very same payload bytes under two names. Only the name differs, and only the name decides.
+    const legacyNameHex = Buffer.from(pad32("TokenMetadata")).toString("hex");
+    const legacy = metadataEvent(40, "name", "Old Name", { nameHex: legacyNameHex });
+    const current = metadataEvent(41, "name", "New Name");
+    indexer.events.set(`${TX}:${ADDRESS}`, [legacy, current]);
+    await seedSyntheticTransaction(db.sql, db.archiveSchema, NET, { txHash: TX, blockHeight: 100 });
+
+    const scanner = new TokenScanner({
+      sql: db.sql, schema: db.schema, archiveSchema: db.archiveSchema, net: NET,
+      eventSource: source(),
+      // TWO log ops: the transcript counts the legacy emission as well, because the VM ran it. The
+      // count assertion is about `log` ops, not about names.
+      ledger: fakeLedger({ calls: [{ address: ADDRESS, entryPoint: "publishMetadata", guaranteed: { logOps: 2 } }] }),
+    });
+    const outcome = await scanner.scanOnce();
+    // Counted (so the lookup is COMPLETE, not short) and applied exactly once.
+    expect(outcome).toMatchObject({ lookups: 1, lookupsShort: 0, eventsApplied: 1, eventsRejected: 0 });
+
+    // Not stored: an ignored event is not evidence of anything, and in particular is NOT a rejection
+    // — `/internal/status`'s rejected counter must stay at zero.
+    const stored = await db.sql<{ event_id: string }[]>`
+      SELECT event_id::text FROM ${db.sql(db.schema)}.token_metadata_events WHERE net = ${NET} ORDER BY event_id`;
+    expect(stored.map((r) => r.event_id)).toEqual(["41"]);
+    expect(await tokenRow(db)).toMatchObject({ name: "New Name", status: "declared" });
+
+    // …and the bytes themselves were perfectly valid, which is what makes this a NAME decision:
+    // the parser would have applied them had the event carried this MIP's name.
+    const parsed = parseTokenMetadata(new Uint8Array(Buffer.from(legacy.payloadHex, "hex")));
+    expect(parsed.applied).toBe(true);
+    expect(parsed.valueText).toBe("Old Name");
+    expect(isTokenMetadataName(legacyNameHex)).toBe(false);
+    expect(isTokenMetadataName(TOKEN_METADATA_NAME_HEX)).toBe(true);
+  }, 180_000);
+
   async function lookupOnce(
     db: { sql: UmbraDBSql; schema: string }, eventSource: EventSource,
   ): ReturnType<typeof lookupEventsFor> {
@@ -236,13 +283,13 @@ describe("token metadata event lookup", () => {
 
   async function tokenRow(db: { sql: UmbraDBSql; schema: string }): Promise<{
     name: string | null; symbol: string | null; decimals: number | null; status: string;
-    storage: string | null; color: string | null; kind: string;
+    privacy: string; storage: string; color: string | null; kind: number;
   }> {
     const rows = await db.sql<{
       name: string | null; symbol: string | null; decimals: number | null; status: string;
-      storage: string | null; color: Buffer | null; kind: string;
+      privacy: string; storage: string; color: Buffer | null; kind: number;
     }[]>`
-      SELECT name, symbol, decimals, status, storage, color, kind FROM ${db.sql(db.schema)}.tokens
+      SELECT name, symbol, decimals, status, privacy, storage, color, kind FROM ${db.sql(db.schema)}.tokens
       WHERE net = ${NET} AND status <> 'builtin'`;
     expect(rows).toHaveLength(1);
     const row = rows[0]!;

@@ -127,6 +127,14 @@ describe("the token explorer page", () => {
     expect(script ?? "").toContain('"/internal/status"');
     // Every value that reaches the document goes through textContent.
     expect(script ?? "").not.toContain("innerHTML");
+
+    // 00021: the kind filter offers the MIP's four kind bytes, and the 00020 status for a
+    // self-contradicting row is gone from the whole document — the option, the badge class and the
+    // warning text alike.
+    for (const kind of ["0", "1", "2", "3"]) {
+      expect(body, `the kind filter must offer ${kind}`).toContain(`<option value="${kind}">`);
+    }
+    expect(body).not.toContain("inconsistent");
   });
 
   it("redirects GET / to /ui", async () => {
