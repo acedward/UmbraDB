@@ -50,3 +50,27 @@ export async function seedSyntheticTransaction(
     WHERE net = ${net} AND tx_hash = ${Buffer.from(opts.txHash, "hex")}
   `;
 }
+
+/** A canonical block with NO transactions — what a quiet chain is almost entirely made of, and
+ *  what the scanner's idle cursor advance has to be able to walk over. */
+export async function seedEmptyBlock(
+  sql: UmbraDBSql, schema: string, net: string, height: number,
+): Promise<void> {
+  const store = new PgChainArchiveStore(sql, schema);
+  const blockHash = (height.toString(16).padStart(8, "0") + "ab".repeat(28)).slice(0, 64) as Hex32;
+  const pad = (n: number, tag: number): Hex32 =>
+    (tag.toString(16).padStart(2, "0") + n.toString(16)).padStart(64, "0") as Hex32;
+  await store.putBlockBundle({
+    block: {
+      net, blockHash, height,
+      parentHash: pad(height - 1, 0xaa),
+      stateRoot: pad(height, 0xbb),
+      extrinsicsRoot: pad(height, 0xcc),
+      headerBytes: Buffer.from(`header-${height}`),
+      bodyBytes: Buffer.from(`body-${height}`),
+      isCanonical: true, status: "canonical", finalized: true,
+    },
+    transactions: [],
+    bridgeObservations: [],
+  });
+}

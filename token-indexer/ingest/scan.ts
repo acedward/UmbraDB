@@ -93,6 +93,12 @@ export class TokenScanner {
   async scanOnce(): Promise<ScanBatchOutcome> {
     const { sql, schema, archiveSchema, net } = this.opts;
     const cursor = await readDecodeCursor(sql, schema, net);
+    // Read the archive's canonical tip BEFORE the batch, never after. The archive commits a block
+    // together with all of its transactions and strictly in ascending height order, so a block that
+    // appears after this read necessarily has a HIGHER height than it — which makes it safe to
+    // advance the cursor over a run of transaction-free blocks up to this height once the batch
+    // below has proven there is nothing in them. Reading it afterwards would not be safe.
+    const tipAtStart = await this.readCanonicalTip();
     const rows = await this.readArchiveBatch(cursor);
 
     const outcome: ScanBatchOutcome = {
@@ -100,7 +106,10 @@ export class TokenScanner {
       eventsApplied: 0, eventsRejected: 0, skippedUnknownResult: 0,
       cursor, atTip: rows.length === 0, waitingForResult: undefined,
     };
-    if (rows.length === 0) return outcome;
+    if (rows.length === 0) {
+      await this.advanceOverEmptyBlocks(outcome, tipAtStart);
+      return outcome;
+    }
 
     await sql.begin(async (tx) => {
       for (const row of rows) {
@@ -170,8 +179,40 @@ export class TokenScanner {
 
     // `atTip` only when the batch was not cut short and the archive had fewer rows than asked for.
     outcome.atTip = outcome.waitingForResult === undefined && rows.length < this.opts.batchSize;
+    if (outcome.atTip) await this.advanceOverEmptyBlocks(outcome, tipAtStart);
     void archiveSchema;
     return outcome;
+  }
+
+  /**
+   * Moves the cursor forward over archived blocks that hold no transaction at all.
+   *
+   * Without this the cursor would sit at `{0, -1}` forever on a quiet chain — every block empty,
+   * nothing to record — and `/internal/status` could not show whether the decoder is keeping up.
+   * The advance is safe only because `tip` was read BEFORE the batch query that proved there is
+   * nothing above the cursor: any block committed in between has a higher height (the archive
+   * writes blocks in ascending order, each with its own transactions in one transaction), so no
+   * transaction at or below `tip` can still be waiting to appear.
+   */
+  private async advanceOverEmptyBlocks(outcome: ScanBatchOutcome, tip: number | null): Promise<void> {
+    if (tip === null || outcome.waitingForResult !== undefined) return;
+    if (tip <= outcome.cursor.height) return;
+    const next: DecodeCursor = { height: tip, position: -1 };
+    await this.opts.sql.begin(async (tx) => {
+      await writeDecodeCursor(tx, this.opts.schema, this.opts.net, next);
+    });
+    outcome.cursor = next;
+  }
+
+  /** The archive's highest canonical block height for this net, or `null` when it holds none. */
+  private async readCanonicalTip(): Promise<number | null> {
+    const { sql, archiveSchema, net } = this.opts;
+    const rows = await sql<{ tip: string | null }[]>`
+      SELECT max(height)::text AS tip FROM ${sql(archiveSchema)}.blocks
+      WHERE net = ${net} AND is_canonical
+    `;
+    const tip = rows[0]?.tip;
+    return tip === null || tip === undefined ? null : Number(tip);
   }
 
   /** True once the scanner has been stuck on the same transaction for longer than the grace. */

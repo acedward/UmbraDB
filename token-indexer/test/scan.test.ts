@@ -10,6 +10,7 @@ import type { EventSource, IndexerContractEvent } from "../ingest/events.js";
 import { TokenScanner } from "../ingest/scan.js";
 import { readDecodeCursor } from "../ingest/store.js";
 import { loadScanFixture, loadScanFixtures, seedArchive } from "./helpers/archive-fixture.js";
+import { seedEmptyBlock } from "./helpers/synthetic-archive.js";
 
 /**
  * Project 00020, sub-plan 01 Phase 4 — `[[token-scan-mints]]`.
@@ -241,6 +242,30 @@ describe("token scanner over recorded Stagenet transactions", () => {
     const clean = await scanner(db, new NeverCalledEventSource()).scanOnce();
     expect(clean.mints).toBe(6);
   }, 300_000);
+
+  it("[[token-scan-mints]] the cursor walks over transaction-free blocks, so a quiet chain still shows the decoder keeping up", async () => {
+    const db = await freshDb();
+    // A quiet chain: blocks 1000-1004 with nothing in them at all.
+    for (let h = 1000; h <= 1004; h++) await seedEmptyBlock(db.sql, db.archiveSchema, NET, h);
+
+    const scan = scanner(db, new NeverCalledEventSource());
+    const empty = await scan.scanOnce();
+    expect(empty).toMatchObject({ transactionsScanned: 0, mints: 0, atTip: true });
+    expect(empty.cursor).toEqual({ height: 1004, position: -1 });
+    expect(await readDecodeCursor(db.sql, db.schema, NET)).toEqual({ height: 1004, position: -1 });
+
+    // A transaction arriving in a LATER block is still picked up — the advance never runs ahead of
+    // the archive, only up to the tip it read before proving the range was empty.
+    const fixture = loadScanFixture("mint-utwBTC");
+    await seedArchive(db.sql, db.archiveSchema, NET, [fixture]);
+    const after = await scan.scanOnce();
+    expect(after.mints).toBe(1);
+    expect(after.cursor).toEqual({ height: fixture.blockHeight, position: 0 });
+
+    // Idling again at the new tip is a no-op, not a rewind.
+    const idle = await scan.scanOnce();
+    expect(idle.cursor).toEqual({ height: fixture.blockHeight, position: 0 });
+  }, 180_000);
 
   it("[[token-scan-mints]] the FR-002 counting rule, exhaustively, on synthetic transcripts", () => {
     // No transaction in the recorded Stagenet set has a FALLIBLE mint (all six issuers mint in the
