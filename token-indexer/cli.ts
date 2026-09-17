@@ -7,13 +7,14 @@
  * npm run token-indexer -- rebuild                       drop this net's derived rows and re-seed
  * npm run token-indexer -- derive-color <address> <domainSep>
  *                                                        debug: the colour of one (address, domainSep)
+ * npm run token-indexer -- serve [--api-only|--ingest-only]
+ *                                                        scanner + lookup drain + the API and page
  * npm run token-indexer -- backfill-results [--from H] [--to H] [--max-blocks N]
  *                                                        fill chain_archive result/segments for a
  *                                                        pre-existing archive (spec FR-002)
  * ```
  *
- * `serve` (spec §5/§6.6) is added by this sub-plan's Phase 6; every command is dispatched from
- * `runCli` so the tests drive the same code path the binary does.
+ * Every command is dispatched from `runCli`, so the tests drive the same code path the binary does.
  *
  * Environment: see `token-indexer/config.ts`. `derive-color` needs no database at all.
  */
@@ -25,6 +26,7 @@ import { bootstrapTokenIndexSchema, rebuildTokenIndex } from "./bootstrap.js";
 import { loadConfig, requireIndexerHttp, type TokenIndexerConfig } from "./config.js";
 import { tokenColorHex } from "./color.js";
 import { readStatus } from "./ingest/store.js";
+import { serve, type ServeMode } from "./serve.js";
 
 const USAGE = [
   "usage: token-indexer <command>",
@@ -33,6 +35,7 @@ const USAGE = [
   "  status                               print cursors, counters and the archive tip",
   "  rebuild                              delete this net's derived rows and re-seed the built-ins",
   "  derive-color <addressHex> <domainSepHex>",
+  "  serve [--api-only|--ingest-only]     scanner + event-lookup drain + the JSON API and page",
   "  backfill-results [--from H] [--to H] [--max-blocks N]",
   "                                       fill chain_archive.transactions.result/segments",
   "",
@@ -104,6 +107,15 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       } finally {
         await sql.end({ timeout: 5 });
       }
+      return 0;
+    }
+    case "serve": {
+      const mode: ServeMode = rest.includes("--api-only")
+        ? "api-only"
+        : rest.includes("--ingest-only") ? "ingest-only" : "both";
+      await serve(config, mode);
+      // `serve` keeps the process alive through its own loops and signal handlers; returning here
+      // does not end it, and the exit code is set by the shutdown handler.
       return 0;
     }
     case "backfill-results": {
