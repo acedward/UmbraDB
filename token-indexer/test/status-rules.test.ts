@@ -342,7 +342,7 @@ describe("token status rules (MIP §4, §6.3, §7.2)", () => {
     });
   }, 120_000);
 
-  it("[[token-key-nonutf8]] a key that is not valid UTF-8 is stored under its bytes and never rejected", async () => {
+  it("[[token-key-nonutf8-stored]] a key that is not valid UTF-8 is stored under its bytes and never rejected", async () => {
     const odd = newAddress();
     const badKey = new Uint8Array(32);
     badKey.set([0xff, 0xfe, 0x01], 0);
