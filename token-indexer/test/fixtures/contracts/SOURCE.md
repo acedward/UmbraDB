@@ -13,6 +13,7 @@ not written by hand.
 | Toolchain | compactc 0.34.0, `@midnight-ntwrk/compact-runtime` 0.19.0 |
 | Standard | MIP PR #315, `mips/mip-xxxx-on-chain-token-metadata.md` @ `f433056` |
 | Copied on | 2026-09-17 (project 00021, Phase A task A5) |
+| Re-pin check, Phase D | 2026-09-18: the branch head moved to `1721636` (the Stagenet redeploy — new `fixtures/stagenet/`, `deployments/stagenet-deployment.json`, key-generated `managed/` trees). **`fixtures/simulator/` is byte-identical at that head** — `git diff 5cf46f4 1721636 -- fixtures/simulator/` is empty and all five files still `diff` clean against the copies here — so nothing was re-pinned and `contract-fixtures.test.ts` needed no re-run. |
 
 **Re-pin if runner H regenerates the corpus.** Phase D's check is a diff of these five files against
 `fixtures/simulator/` at whatever head the contracts PR settles on:
