@@ -51,9 +51,11 @@
     "evm-rpc:live-smoke": "tsx evm-rpc/live-smoke.ts",
     "bench": "tsx bench/harness.ts",
     "bench:smoke": "tsx bench/smoke.ts",
-    "evm-rpc:all": "tsx evm-rpc/serve-all.ts"
+    "evm-rpc:all": "tsx evm-rpc/serve-all.ts",
+    "token-indexer": "tsx token-indexer/cli.ts"
   },
   "dependencies": {
+    "@midnight-ntwrk/compact-runtime": "^0.19.0",
     "postgres": "^3.4.9",
     "zod": "^4.0.0"
   },

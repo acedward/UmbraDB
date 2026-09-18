@@ -34,10 +34,30 @@ export interface SubstrateBlock {
 }
 
 export class NodeRpcError extends Error {
-  constructor(message: string, readonly cause?: unknown) {
+  /**
+   * `httpStatus`/`retryAfterMs` (project 00020, spec FR-016): the sync service backs off and
+   * resumes by itself on the throttling/outage statuses a PUBLIC endpoint returns (429, 403,
+   * 5xx), and must NOT retry a genuine protocol error (a JSON-RPC `error` object) or a malformed
+   * response. Previously the only signal was the message string `"...: HTTP 429 from ..."`, which
+   * a caller could classify only by parsing prose. `httpStatus` is set exactly when the transport
+   * completed and returned a non-2xx status; `cause` is set exactly when the transport itself
+   * failed (DNS/connection/abort). An error with neither is a protocol-level error the caller
+   * must surface, not retry.
+   */
+  constructor(message: string, readonly cause?: unknown, readonly httpStatus?: number, readonly retryAfterMs?: number) {
     super(message);
     this.name = "NodeRpcError";
   }
+}
+
+/** Parses an HTTP `Retry-After` header (delta-seconds form only; the HTTP-date form is ignored --
+ *  the public Midnight endpoints send delta-seconds). Returns `undefined` when absent or
+ *  unparseable, so the caller falls back to its own exponential schedule. */
+export function parseRetryAfterMs(headerValue: string | null): number | undefined {
+  if (headerValue === null) return undefined;
+  const seconds = Number(headerValue.trim());
+  if (!Number.isFinite(seconds) || seconds < 0) return undefined;
+  return Math.min(seconds * 1000, 600_000);
 }
 
 /** Fix 3 (sprint-fix round, MEDIUM): a typed error for the specific "HTTP 200 but the body isn't
@@ -105,7 +125,10 @@ export class NodeRpcClient {
       );
     }
     if (!res.ok) {
-      throw new NodeRpcError(`${method}: HTTP ${res.status} from ${this.publicUrl}`);
+      throw new NodeRpcError(
+        `${method}: HTTP ${res.status} from ${this.publicUrl}`,
+        undefined, res.status, parseRetryAfterMs(res.headers.get("retry-after")),
+      );
     }
     let body: { result?: T; error?: { code: number; message: string } };
     try {
