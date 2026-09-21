@@ -2010,6 +2010,7 @@ function actionBlock(action) {
     var line = node("div", null, "row");
     line.appendChild(node("div", transcripts[i][0] + " transcript · " + orDash(t.ops) + " ops · "
       + orDash(t.logOps) + " log", "h"));
+    line.appendChild(node("span", "gas", "note"));
     line.appendChild(gasCell(t.gas));
     line.appendChild(countedChip(t.counted));
     block.appendChild(line);
