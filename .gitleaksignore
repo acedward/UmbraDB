@@ -24,3 +24,22 @@ be646fcff58052a77e848914a79ccef2279cf78f:nix/midnight-env/test-wallets/preview-t
 # The current list separates the literals and leaves `eth_createAccessList` last in its group to
 # avoid creating the same adjacency when this test is next changed.
 e5f53f5122c973556531ce07c696a32e9f911b5f:evm-rpc/test/not-implemented.test.ts:generic-api-key:31
+
+# Projects 00020/00021 (token indexer). Commits 4e06464 and 7b03bc4 recorded real Stagenet colour
+# vectors: `registryTokenId`, `observedUtxoTokenType` and `tokenType` fields (and one doc comment
+# in color.ts) holding 64-hex TOKEN COLOURS. A colour is public chain data -- it is printed on
+# every UTXO and served by this indexer's own API -- but the stock `generic-api-key` rule reads
+# the word "token" in the field name as credential context and the hex as a high-entropy value.
+# Suppressed by exact fingerprint, as above: a new vector line, or a real key pasted into any of
+# these files, is a different fingerprint and still fails the gate.
+7b03bc4cb9f0e1448860ca9dfebdc6951f1b6a57:token-indexer/color.ts:generic-api-key:34
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/color-vectors.json:generic-api-key:17
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/color-vectors.json:generic-api-key:29
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/color-vectors.json:generic-api-key:41
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/color-vectors.json:generic-api-key:53
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/color-vectors.json:generic-api-key:65
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/color-vectors.json:generic-api-key:66
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/color-vectors.json:generic-api-key:77
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/color-vectors.json:generic-api-key:78
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/scan/mint-utwBTC.raw.json:generic-api-key:26
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/scan/mint-utwUSDC.raw.json:generic-api-key:26
