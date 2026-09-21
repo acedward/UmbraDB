@@ -71,6 +71,11 @@ export async function serve(
           mints: outcome.mints, lookups: outcome.lookups, lookupsShort: outcome.lookupsShort,
           eventsApplied: outcome.eventsApplied, eventsRejected: outcome.eventsRejected,
           skippedUnknownResult: outcome.skippedUnknownResult,
+          // Project 00023's five (FR-013), so a live `serve` shows the activity index filling.
+          activityRows: outcome.activityRows, seenTokens: outcome.seenTokens,
+          shieldedOffers: outcome.shieldedOffers,
+          undisclosedShieldedOffers: outcome.undisclosedShieldedOffers,
+          contractCalls: outcome.contractCalls,
           height: outcome.cursor.height, position: outcome.cursor.position,
           waitingForResult: outcome.waitingForResult?.txHash,
         });

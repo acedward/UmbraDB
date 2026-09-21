@@ -464,6 +464,15 @@ export interface DecodedTokenFlows {
   offers: OfferRecord[];
   calls: CallRecord[];
   view: PublicTransactionView;
+  /** The 00020 facts, from the SAME deserialisation — `Transaction.deserialize` costs ≈ 6 ms on
+   *  this host (measured over 200 archived transactions, 2026-09-21), so the scanner does it once
+   *  and reads everything off one walk rather than paying twice per transaction. These four are
+   *  exactly what {@link countedEffects} produces, and that function stays as the unit-testable
+   *  statement of FR-002's rule. */
+  mints: ObservedMint[];
+  deployAddresses: Set<string>;
+  callAddresses: Set<string>;
+  logOpsByAddress: Map<string, number>;
 }
 
 /**
@@ -570,12 +579,37 @@ function sizeOf(value: unknown): number {
   return typeof size === "number" ? size : 0;
 }
 
+/**
+ * ── Why every set-derived list below is SORTED (measured 2026-09-21) ───────────────────────────
+ *
+ * The ledger's `Effects` are Rust **sets and maps**, and the WASM hands their contents back in an
+ * order that is not stable: deserialising the *same bytes twice in the same process* produced
+ * `claimedNullifiers` in two different orders (caught by `[[token-activity-rebuild-equal]]` before
+ * this sort existed). The typings say `Nullifier[]`, which hides it.
+ *
+ * That order is not information — a set has none — but three things of ours depend on it:
+ *
+ *  1. `token_activity.item_index` is a per-`(segment, section, role)` counter, so an unsorted mint
+ *     or flow map would give the SAME row a different primary key on a re-scan, and
+ *     `ON CONFLICT DO NOTHING` would then insert a duplicate instead of doing nothing (FR-004);
+ *  2. `rebuild` must reproduce a live run byte-for-byte (FR-005), `contract_calls.guaranteed`
+ *     jsonb included;
+ *  3. the goldens must be a function of the transaction, or they flake.
+ *
+ * So each list is ordered by its own content: a colour, a domain separator, a commitment. Lists
+ * that are genuinely ORDERED on chain — an offer's inputs/outputs/transients, an intent's actions
+ * and its unshielded outputs, whose positions ARE their identity — are never reordered.
+ */
+const byString = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
 function effectsView(effects: unknown, txHashHex: string): EffectsView {
   const e = (effects ?? {}) as Record<string, any>;
   const pairs = (source: unknown): [unknown, bigint][] =>
     source === undefined || source === null ? [] : [...(source as Iterable<[unknown, bigint]>)];
   const named = (source: unknown): { domainSep: string; amount: string }[] =>
-    pairs(source).map(([key, amount]) => ({ domainSep: hex(key), amount: big(amount) }));
+    pairs(source)
+      .map(([key, amount]) => ({ domainSep: hex(key), amount: big(amount) }))
+      .sort((a, b) => byString(a.domainSep, b.domainSep));
   const coloured = (source: unknown, where: string): { color: string; amount: string }[] => {
     const out: { color: string; amount: string }[] = [];
     for (const [key, amount] of pairs(source)) {
@@ -583,10 +617,10 @@ function effectsView(effects: unknown, txHashHex: string): EffectsView {
       if (color === undefined) continue; // a DUST key — not tracked (Q13)
       out.push({ color, amount: big(amount) });
     }
-    return out;
+    return out.sort((a, b) => byString(a.color, b.color));
   };
   const list = (source: unknown): string[] =>
-    source === undefined || source === null ? [] : [...(source as Iterable<unknown>)].map(hex);
+    (source === undefined || source === null ? [] : [...(source as Iterable<unknown>)].map(hex)).sort(byString);
   return {
     shieldedMints: named(e.shieldedMints),
     unshieldedMints: named(e.unshieldedMints),
@@ -603,7 +637,10 @@ function effectsView(effects: unknown, txHashHex: string): EffectsView {
       address: hex(entry[1]),
       entryPoint: entryPointOf(entry[2]) ?? "",
       commitment: hex(entry[3]),
-    })),
+    })).sort((a, b) => byString(
+      `${a.sequence.padStart(20, "0")}|${a.address}|${a.entryPoint}|${a.commitment}`,
+      `${b.sequence.padStart(20, "0")}|${b.address}|${b.entryPoint}|${b.commitment}`,
+    )),
     claimedUnshieldedSpends: sizeOf(e.claimedUnshieldedSpends),
   };
 }
@@ -661,7 +698,10 @@ export function decodeTokenFlows(
   // holds none on Stagenet, and the owner put them out of scope (Q11). It is reported as what it
   // is rather than decoded as something it is not.
   if (isSystemTransaction(rawBytes)) {
-    return { activity: [], offers: [], calls: [], view: emptyView };
+    return {
+      activity: [], offers: [], calls: [], view: emptyView,
+      mints: [], deployAddresses: new Set(), callAddresses: new Set(), logOpsByAddress: new Map(),
+    };
   }
 
   const tx = ledger.Transaction.deserialize("signature", "proof", "binding", rawBytes);
@@ -672,6 +712,10 @@ export function decodeTokenFlows(
   const calls: CallRecord[] = [];
   const offerViews: OfferView[] = [];
   const intentViews: IntentView[] = [];
+  const mints: ObservedMint[] = [];
+  const deployAddresses = new Set<string>();
+  const callAddresses = new Set<string>();
+  const logOpsByAddress = new Map<string, number>();
   let feeSpeck = 0n;
 
   // `item_index` is the position within its own `(segment, section, role)` list — which is exactly
@@ -726,9 +770,14 @@ export function decodeTokenFlows(
   // 0 (spec §6.1); a fallible offer is recorded under its own segment.
   const walkOffer = (offer: any, section: ActivitySection, segment: number, counted: boolean): void => {
     if (offer === undefined || offer === null) return;
-    const deltaPairs: [string, bigint][] = offer.deltas === undefined || offer.deltas === null
+    // The ledger stores deltas sorted and the verifier rejects an unsorted set
+    // (`zswap/src/verify.rs:323-326`), so this sort changes nothing on a valid offer — it is here
+    // so `item_index` is a function of the colour rather than of the WASM's iteration order, for
+    // the same reason the effect lists above are sorted.
+    const deltaPairs: [string, bigint][] = (offer.deltas === undefined || offer.deltas === null
       ? []
-      : [...(offer.deltas as Iterable<[unknown, bigint]>)].map(([k, v]) => [hex(k), BigInt(v)] as [string, bigint]);
+      : [...(offer.deltas as Iterable<[unknown, bigint]>)].map(([k, v]) => [hex(k), BigInt(v)] as [string, bigint])
+    ).sort((a, b) => byString(a[0], b[0]));
     const inputs: any[] = offer.inputs ?? [];
     const outputs: any[] = offer.outputs ?? [];
     const transients: any[] = offer.transients ?? [];
@@ -873,7 +922,9 @@ export function decodeTokenFlows(
         fallible: fallible ?? null,
       });
 
+      if (kind === "deploy") deployAddresses.add(address);
       if (kind !== "call") continue;
+      callAddresses.add(address);
       calls.push({ segment, callIndex, address, entryPoint, guaranteed, fallible });
 
       for (const [section, transcript] of [
@@ -881,6 +932,9 @@ export function decodeTokenFlows(
       ]) {
         if (transcript === undefined) continue;
         const counted = transcript.counted;
+        if (counted && transcript.logOps > 0) {
+          logOpsByAddress.set(address, (logOpsByAddress.get(address) ?? 0) + transcript.logOps);
+        }
         // A mint effect is a protocol-level mint, so it lands on a NATIVE kind and the map it came
         // from decides which (MIP §6.3). Its colour is derived from `(domainSep, address)` — the
         // same derivation `token_mints` already uses, repeated here so ONE list carries everything
@@ -897,6 +951,13 @@ export function decodeTokenFlows(
               owner: undefined, ownerKey: undefined, intentHash: undefined, outputNo: undefined,
               address, entryPoint, callIndex, domainSep: entry.domainSep,
             });
+            // The same fact in the 00020 shape, for `token_mints` and its counters.
+            if (counted) {
+              mints.push({
+                segment, callIndex, address, domainSep: entry.domainSep, kind: mintKind,
+                amount: BigInt(entry.amount), entryPoint, section,
+              });
+            }
           }
         }
         for (const [role, direction, entries] of [
@@ -934,6 +995,7 @@ export function decodeTokenFlows(
 
   return {
     activity, offers, calls,
+    mints, deployAddresses, callAddresses, logOpsByAddress,
     view: {
       txHash: txHashHex,
       selfReportedTxHash,

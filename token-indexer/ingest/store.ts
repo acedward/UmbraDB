@@ -1,6 +1,7 @@
 import type { ISql } from "postgres";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import type { TokenIndexerConfig } from "../config.js";
+import type { ActivityRecord, CallRecord, OfferRecord } from "./decode.js";
 
 /**
  * Project 00020 — every read and write of `token_index.*` that is not a single route's own query.
@@ -193,4 +194,85 @@ export async function readPendingLookups(
     nextAttemptAt: r.next_attempt_at.toISOString(),
     lastError: r.last_error,
   }));
+}
+
+/* ────────────────────────────────────────────────────────────────────────────────────────────
+ * Project 00023 — the three activity tables (spec §6.1/§6.3, FR-001/FR-004/FR-018/FR-020).
+ *
+ * All three are written by `TokenScanner.scanOnce` inside the SAME database transaction as the
+ * mints and the cursor, so the 00020 crash-safety argument holds unchanged: a `kill -9` at any
+ * point leaves the cursor exactly where the last committed rows end.
+ *
+ * Every insert is `ON CONFLICT DO NOTHING` on the row's NATURAL key, which is what makes
+ * re-scanning a block change nothing (FR-004) and what makes `rebuild` reproduce a live run
+ * byte-for-byte (FR-005). Each returns whether it actually inserted, so the scan outcome can count
+ * new rows rather than attempted ones.
+ * ──────────────────────────────────────────────────────────────────────────────────────────── */
+
+/** Where in the archive a decoded record sat. */
+export interface ActivityContext {
+  txHash: string;
+  blockHeight: number;
+  txPosition: number;
+}
+
+const bufOf = (hex: string): Buffer => Buffer.from(hex, "hex");
+const bufOrNull = (hex: string | undefined): Buffer | null => (hex === undefined ? null : bufOf(hex));
+
+/** One `token_activity` row. Returns `true` when it was new. */
+export async function insertActivityRow(
+  sql: ISql, schema: string, net: string, row: ActivityRecord, ctx: ActivityContext,
+): Promise<boolean> {
+  const inserted = await sql`
+    INSERT INTO ${sql(schema)}.token_activity
+      (net, tx_hash, block_height, tx_position, segment, section, role, item_index,
+       color, kind, amount, direction, owner, owner_key, intent_hash, output_no,
+       address, entry_point, call_index, domain_sep)
+    VALUES
+      (${net}, ${bufOf(ctx.txHash)}, ${ctx.blockHeight}, ${ctx.txPosition},
+       ${row.segment}, ${row.section}, ${row.role}, ${row.itemIndex},
+       ${bufOf(row.color)}, ${row.kind}, ${row.amount.toString()}, ${row.direction},
+       ${bufOrNull(row.owner)}, ${row.ownerKey ?? null}, ${bufOrNull(row.intentHash)},
+       ${row.outputNo ?? null},
+       ${bufOrNull(row.address)}, ${row.entryPoint ?? null}, ${row.callIndex ?? null},
+       ${bufOrNull(row.domainSep)})
+    ON CONFLICT (net, tx_hash, segment, section, role, item_index) DO NOTHING
+  `;
+  return inserted.count > 0;
+}
+
+/** One `shielded_offers` row — recorded whether or not its section counted, because the privacy
+ *  figure is about what the CHAIN carries, not about what took effect (FR-018). */
+export async function insertShieldedOffer(
+  sql: ISql, schema: string, net: string, offer: OfferRecord, ctx: ActivityContext,
+): Promise<boolean> {
+  const inserted = await sql`
+    INSERT INTO ${sql(schema)}.shielded_offers
+      (net, tx_hash, section, segment, block_height, tx_position,
+       inputs, outputs, transients, deltas, counted)
+    VALUES
+      (${net}, ${bufOf(ctx.txHash)}, ${offer.section}, ${offer.segment},
+       ${ctx.blockHeight}, ${ctx.txPosition},
+       ${offer.inputs}, ${offer.outputs}, ${offer.transients}, ${offer.deltas}, ${offer.counted})
+    ON CONFLICT (net, tx_hash, section, segment) DO NOTHING
+  `;
+  return inserted.count > 0;
+}
+
+/** One `contract_calls` row, with each transcript as a jsonb document (FR-020, US7). */
+export async function insertContractCall(
+  sql: ISql, schema: string, net: string, call: CallRecord, ctx: ActivityContext,
+): Promise<boolean> {
+  const inserted = await sql`
+    INSERT INTO ${sql(schema)}.contract_calls
+      (net, tx_hash, segment, call_index, address, entry_point, block_height, tx_position,
+       guaranteed, fallible)
+    VALUES
+      (${net}, ${bufOf(ctx.txHash)}, ${call.segment}, ${call.callIndex},
+       ${bufOf(call.address)}, ${call.entryPoint ?? null}, ${ctx.blockHeight}, ${ctx.txPosition},
+       ${call.guaranteed === undefined ? null : sql.json(call.guaranteed as never)},
+       ${call.fallible === undefined ? null : sql.json(call.fallible as never)})
+    ON CONFLICT (net, tx_hash, segment, call_index) DO NOTHING
+  `;
+  return inserted.count > 0;
 }
