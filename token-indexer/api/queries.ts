@@ -1,5 +1,6 @@
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { decodeUtf8, integerOfValue, valueTextOf } from "../ingest/payload.js";
+import { ownerAddress } from "./bech32m.js";
 
 /**
  * Projects 00020/00021 — every read the API makes (spec 00020 §5 as amended by 00021 FR-106). One
@@ -33,6 +34,15 @@ export interface TokenJson {
   tokenUri: string | null;
   metadata: unknown;
   status: string;
+  /** What the ledger lets anyone read about this token's movements (00023 §5, US4/US7):
+   *   - `full`                 kind 0 — every unshielded UTXO and contract flow is public;
+   *   - `disclosed-imbalances` kind 1 — only an offer's NET imbalance is public; a balanced
+   *                            shielded transfer publishes no colour at all (spec §0);
+   *   - `calls-only`           kinds 2/3 — no colour and no UTXOs; the contract's calls are the
+   *                            only public trace, and the code they execute is not available to us;
+   *   - `not-tracked`          the built-in DUST row — every transaction pays a fee, so DUST is
+   *                            deliberately not indexed per token (owner decision Q13). */
+  shieldedVisibility: "full" | "disclosed-imbalances" | "calls-only" | "not-tracked";
   mintCount: number;
   totalMinted: string;
   firstMintHeight: number | null;
@@ -66,6 +76,17 @@ interface TokenRow {
 
 const num = (value: string | null): number | null => (value === null ? null : Number(value));
 
+/** DUST is the one row with a native kind and no colour at all — the ledger types it as a unit
+ *  variant (00020 Q30) — and it is also the one token this indexer deliberately does not track
+ *  (owner decision Q13). Every other row's visibility follows from its kind alone. */
+function shieldedVisibilityOf(
+  kind: number, color: Buffer | null, status: string,
+): TokenJson["shieldedVisibility"] {
+  if (status === "builtin" && color === null) return "not-tracked";
+  if (kind >= 2) return "calls-only";
+  return kind === 1 ? "disclosed-imbalances" : "full";
+}
+
 function toToken(row: TokenRow): TokenJson {
   return {
     address: row.address === null ? null : row.address.toString("hex"),
@@ -80,6 +101,7 @@ function toToken(row: TokenRow): TokenJson {
     tokenUri: row.token_uri,
     metadata: row.metadata ?? null,
     status: row.status,
+    shieldedVisibility: shieldedVisibilityOf(row.kind, row.color, row.status),
     mintCount: Number(row.mint_count),
     totalMinted: row.total_minted,
     firstMintHeight: num(row.first_mint_height),
@@ -162,9 +184,15 @@ export class TokenIndexQueries {
     private readonly sql: UmbraDBSql,
     private readonly schema: string,
     private readonly net: string,
+    /** The archive schema, for the `result` every activity row is served with and for the
+     *  on-request transaction decode (00023 §6.4). Defaults to the conventional name so the
+     *  00020/00021 call sites need no change. */
+    private readonly archiveSchema: string = "chain_archive",
   ) {}
 
   private get s(): string { return this.schema; }
+
+  private get a(): string { return this.archiveSchema; }
 
   async listTokens(filters: TokenListFilters): Promise<Page<TokenListItemJson>> {
     const sql = this.sql;
@@ -556,6 +584,442 @@ export class TokenIndexQueries {
     `;
     return rows.map(toToken);
   }
+
+  /* ── project 00023: the activity reads (spec §5) ────────────────────────────────────────── */
+
+  private toActivity(row: ActivityRow): ActivityJson {
+    const ownerHex = row.owner === null ? null : row.owner.toString("hex");
+    return {
+      txHash: row.tx_hash.toString("hex"),
+      blockHeight: Number(row.block_height),
+      txPosition: row.tx_position,
+      result: row.result,
+      segment: row.segment,
+      section: row.section,
+      role: row.role,
+      itemIndex: row.item_index,
+      color: row.color.toString("hex"),
+      kind: row.kind,
+      amount: row.amount,
+      direction: row.direction,
+      // Bech32m REPLACES the hex on the page (Q9); `ownerHex` stays for machine consumers.
+      owner: ownerHex === null ? null : ownerAddress(this.net, ownerHex),
+      ownerHex,
+      ownerKey: row.owner_key,
+      intentHash: row.intent_hash === null ? null : row.intent_hash.toString("hex"),
+      outputNo: row.output_no,
+      address: row.address === null ? null : row.address.toString("hex"),
+      entryPoint: row.entry_point,
+      callIndex: row.call_index,
+      domainSep: row.domain_sep === null ? null : row.domain_sep.toString("hex"),
+      token: row.t_kind === null ? null : {
+        address: row.t_address === null ? null : row.t_address.toString("hex"),
+        domainSep: row.t_domain_sep === null ? null : row.t_domain_sep.toString("hex"),
+        kind: row.t_kind,
+        name: row.t_name,
+        symbol: row.t_symbol,
+        decimals: row.t_decimals,
+        status: row.t_status ?? "seen",
+      },
+    };
+  }
+
+  /**
+   * One colour's activity, newest first (FR-006/FR-008).
+   *
+   * For the two NATIVE kinds a token's physical key IS its colour, so this one query serves both
+   * `GET /v1/colors/:color/transactions` and `GET /v1/contracts/:a/tokens/:d/:kind/transactions`.
+   * A LEDGER kind has no colour at all and therefore no activity row — the route answers an empty
+   * page and the page shows the contract's calls instead (US7).
+   */
+  async activityOfColor(color: string, filters: ActivityFilters): Promise<Page<ActivityJson>> {
+    const sql = this.sql;
+    const c = filters.cursor;
+    const rows = await sql<ActivityRow[]>`
+      SELECT a.tx_hash, a.block_height::text, a.tx_position, tx.result,
+             a.segment, a.section, a.role, a.item_index, a.color, a.kind, a.amount::text,
+             a.direction, a.owner, a.owner_key, a.intent_hash, a.output_no, a.address,
+             a.entry_point, a.call_index, a.domain_sep,
+             t.address AS t_address, t.domain_sep AS t_domain_sep, t.kind AS t_kind,
+             t.name AS t_name, t.symbol AS t_symbol, t.decimals AS t_decimals, t.status AS t_status
+      FROM ${sql(this.s)}.token_activity a
+      LEFT JOIN ${sql(this.s)}.tokens t
+        ON t.net = a.net AND t.token_key = a.color AND t.kind = a.kind
+      LEFT JOIN ${sql(this.a)}.transactions tx
+        ON tx.net = a.net AND tx.tx_hash = a.tx_hash AND tx.block_height = a.block_height
+      WHERE a.net = ${this.net} AND a.color = ${Buffer.from(color, "hex")}
+        AND (${filters.kind ?? null}::smallint IS NULL OR a.kind = ${filters.kind ?? null})
+        AND (${filters.role ?? null}::text IS NULL OR a.role = ${filters.role ?? null})
+        -- Height is DESCENDING, so the row comparison carries it negated.
+        AND (${c === undefined ? null : c.blockHeight}::bigint IS NULL
+             OR (-a.block_height, a.tx_hash, a.segment, a.section, a.role, a.item_index)
+                > (-${c?.blockHeight ?? 0}::bigint,
+                   ${c === undefined ? Buffer.alloc(0) : Buffer.from(c.txHash, "hex")},
+                   ${c?.segment ?? 0}::int, ${c?.section ?? ""}::text, ${c?.role ?? ""}::text,
+                   ${c?.itemIndex ?? 0}::int))
+      ORDER BY a.block_height DESC, a.tx_hash, a.segment, a.section, a.role, a.item_index
+      LIMIT ${filters.limit + 1}
+    `;
+    return this.paginate(rows.map((r) => this.toActivity(r)), filters.limit, (last) => encodeCursor({
+      blockHeight: last.blockHeight, txHash: last.txHash, segment: last.segment,
+      section: last.section, role: last.role, itemIndex: last.itemIndex,
+    } satisfies ActivityCursor));
+  }
+
+  /** One token's activity. `tokenKey` is the row's physical key, which for a native kind is its
+   *  colour — see {@link activityOfColor}. */
+  async activityOfToken(
+    tokenKey: string, kind: number, filters: Omit<ActivityFilters, "kind">,
+  ): Promise<Page<ActivityJson>> {
+    return this.activityOfColor(tokenKey, { ...filters, kind });
+  }
+
+  /** Every stored row of one transaction, for the transaction view's "Activity" section (§4). */
+  async activityOfTx(txHash: string): Promise<ActivityJson[]> {
+    const sql = this.sql;
+    const rows = await sql<ActivityRow[]>`
+      SELECT a.tx_hash, a.block_height::text, a.tx_position, tx.result,
+             a.segment, a.section, a.role, a.item_index, a.color, a.kind, a.amount::text,
+             a.direction, a.owner, a.owner_key, a.intent_hash, a.output_no, a.address,
+             a.entry_point, a.call_index, a.domain_sep,
+             t.address AS t_address, t.domain_sep AS t_domain_sep, t.kind AS t_kind,
+             t.name AS t_name, t.symbol AS t_symbol, t.decimals AS t_decimals, t.status AS t_status
+      FROM ${sql(this.s)}.token_activity a
+      LEFT JOIN ${sql(this.s)}.tokens t
+        ON t.net = a.net AND t.token_key = a.color AND t.kind = a.kind
+      LEFT JOIN ${sql(this.a)}.transactions tx
+        ON tx.net = a.net AND tx.tx_hash = a.tx_hash AND tx.block_height = a.block_height
+      WHERE a.net = ${this.net} AND a.tx_hash = ${Buffer.from(txHash, "hex")}
+      ORDER BY a.segment, a.section, a.role, a.item_index
+    `;
+    return rows.map((r) => this.toActivity(r));
+  }
+
+  /** Every zswap offer on the chain, newest first; `undisclosed` narrows to the ones whose colour
+   *  the ledger does not publish (FR-018, US4's chain-wide figure). */
+  async shieldedOffers(
+    opts: { undisclosed?: boolean; limit: number; cursor?: ShieldedOfferCursor },
+  ): Promise<Page<ShieldedOfferJson>> {
+    const sql = this.sql;
+    const c = opts.cursor;
+    const rows = await sql<{
+      tx_hash: Buffer; block_height: string; tx_position: number; section: string; segment: number;
+      inputs: number; outputs: number; transients: number; deltas: number;
+      undisclosed: boolean; counted: boolean;
+    }[]>`
+      SELECT tx_hash, block_height::text, tx_position, section, segment,
+             inputs, outputs, transients, deltas, undisclosed, counted
+      FROM ${sql(this.s)}.shielded_offers
+      WHERE net = ${this.net}
+        AND (${opts.undisclosed === undefined ? null : opts.undisclosed}::boolean IS NULL
+             OR undisclosed = ${opts.undisclosed ?? false})
+        AND (${c === undefined ? null : c.blockHeight}::bigint IS NULL
+             OR (-block_height, tx_hash, section, segment)
+                > (-${c?.blockHeight ?? 0}::bigint,
+                   ${c === undefined ? Buffer.alloc(0) : Buffer.from(c.txHash, "hex")},
+                   ${c?.section ?? ""}::text, ${c?.segment ?? 0}::int))
+      ORDER BY block_height DESC, tx_hash, section, segment
+      LIMIT ${opts.limit + 1}
+    `;
+    const items: ShieldedOfferJson[] = rows.map((r) => ({
+      txHash: r.tx_hash.toString("hex"),
+      blockHeight: Number(r.block_height),
+      txPosition: r.tx_position,
+      section: r.section,
+      segment: r.segment,
+      inputs: r.inputs,
+      outputs: r.outputs,
+      transients: r.transients,
+      deltas: r.deltas,
+      undisclosed: r.undisclosed,
+      counted: r.counted,
+    }));
+    return this.paginate(items, opts.limit, (last) => encodeCursor({
+      blockHeight: last.blockHeight, txHash: last.txHash, section: last.section, segment: last.segment,
+    } satisfies ShieldedOfferCursor));
+  }
+
+  /** Every call of one contract, newest first, with every public field of each transcript — the
+   *  only activity a LEDGER token has, listed under the owner's public-data note (Q4, US7). */
+  async callsOfContract(
+    address: string, opts: { limit: number; cursor?: ContractCallCursor },
+  ): Promise<Page<ContractCallJson>> {
+    const sql = this.sql;
+    const c = opts.cursor;
+    const rows = await sql<{
+      tx_hash: Buffer; block_height: string; tx_position: number; segment: number;
+      call_index: number; address: Buffer; entry_point: string | null;
+      guaranteed: unknown; fallible: unknown;
+    }[]>`
+      SELECT tx_hash, block_height::text, tx_position, segment, call_index, address, entry_point,
+             guaranteed, fallible
+      FROM ${sql(this.s)}.contract_calls
+      WHERE net = ${this.net} AND address = ${Buffer.from(address, "hex")}
+        AND (${c === undefined ? null : c.blockHeight}::bigint IS NULL
+             OR (-block_height, tx_hash, segment, call_index)
+                > (-${c?.blockHeight ?? 0}::bigint,
+                   ${c === undefined ? Buffer.alloc(0) : Buffer.from(c.txHash, "hex")},
+                   ${c?.segment ?? 0}::int, ${c?.callIndex ?? 0}::int))
+      ORDER BY block_height DESC, tx_hash, segment, call_index
+      LIMIT ${opts.limit + 1}
+    `;
+    const items: ContractCallJson[] = rows.map((r) => ({
+      txHash: r.tx_hash.toString("hex"),
+      blockHeight: Number(r.block_height),
+      txPosition: r.tx_position,
+      segment: r.segment,
+      callIndex: r.call_index,
+      address: r.address.toString("hex"),
+      entryPoint: r.entry_point,
+      guaranteed: r.guaranteed ?? null,
+      fallible: r.fallible ?? null,
+    }));
+    return this.paginate(items, opts.limit, (last) => encodeCursor({
+      blockHeight: last.blockHeight, txHash: last.txHash, segment: last.segment, callIndex: last.callIndex,
+    } satisfies ContractCallCursor));
+  }
+
+  /**
+   * Names for a set of colours, at one kind — what spec §5's `deltas[] {color, delta, tokenName?}`
+   * needs. Resolved at read time like every other identity in this API: a delta names a colour, and
+   * whether anyone has named that colour is a separate, later fact.
+   */
+  async tokenNamesOfColors(
+    colors: readonly string[], kind: number,
+  ): Promise<Record<string, { name: string | null; symbol: string | null; status: string }>> {
+    if (colors.length === 0) return {};
+    const sql = this.sql;
+    const keys = colors.map((c) => Buffer.from(c, "hex"));
+    const rows = await sql<{ token_key: Buffer; name: string | null; symbol: string | null; status: string }[]>`
+      SELECT token_key, name, symbol, status FROM ${sql(this.s)}.tokens
+      WHERE net = ${this.net} AND kind = ${kind} AND token_key IN ${sql(keys)}
+    `;
+    const out: Record<string, { name: string | null; symbol: string | null; status: string }> = {};
+    for (const row of rows) {
+      out[row.token_key.toString("hex")] = { name: row.name, symbol: row.symbol, status: row.status };
+    }
+    return out;
+  }
+
+  /** The read-time counts spec §5 adds to a `Token`. Computed rather than stored, so they can
+   *  never disagree with the rows they count. */
+  async tokenCounts(tokenKey: string, kind: number): Promise<TokenActivityCounts> {
+    const sql = this.sql;
+    const key = Buffer.from(tokenKey, "hex");
+    const rows = await sql<{
+      activity_count: string; last_height: string | null; disclosed: string; undisclosed: string;
+    }[]>`
+      SELECT
+        (SELECT count(*) FROM ${sql(this.s)}.token_activity
+          WHERE net = ${this.net} AND color = ${key} AND kind = ${kind})            AS activity_count,
+        (SELECT max(block_height)::text FROM ${sql(this.s)}.token_activity
+          WHERE net = ${this.net} AND color = ${key} AND kind = ${kind})            AS last_height,
+        (SELECT count(DISTINCT tx_hash) FROM ${sql(this.s)}.token_activity
+          WHERE net = ${this.net} AND color = ${key} AND kind = ${kind}
+            AND role = 'shielded_delta')                                            AS disclosed,
+        (SELECT count(*) FROM ${sql(this.s)}.shielded_offers
+          WHERE net = ${this.net} AND undisclosed)                                  AS undisclosed
+    `;
+    const row = rows[0]!;
+    const counts: TokenActivityCounts = {
+      activityCount: Number(row.activity_count),
+      lastActivityHeight: row.last_height === null ? null : Number(row.last_height),
+    };
+    // Only a SHIELDED native token has a disclosure story to tell: the transactions whose offer
+    // delta named its colour, against the chain-wide number of offers that named none (US4).
+    if (kind === 1) {
+      counts.disclosedTransactions = Number(row.disclosed);
+      counts.undisclosedShieldedOffers = Number(row.undisclosed);
+    }
+    return counts;
+  }
+
+  /**
+   * One archived transaction's bytes and archived facts, by hash (FR-007).
+   *
+   * Canonical blocks only, exactly like the scanner's own batch query: a transaction that only
+   * ever existed on an orphaned block is not part of the chain this index describes.
+   */
+  async archivedTransaction(txHash: string): Promise<{
+    txHash: string; blockHeight: number; blockHash: string; txPosition: number;
+    kind: string; protocolVersion: number;
+    result: "success" | "partial_success" | "failure" | null;
+    segments: { id: number; success: boolean }[] | null;
+    raw: Buffer;
+  } | undefined> {
+    const sql = this.sql;
+    const rows = await sql<{
+      tx_hash: Buffer; block_height: string; block_hash: Buffer; position: number; kind: string;
+      protocol_version: number; result: string | null;
+      segments: { id: number; success: boolean }[] | null; data: Buffer;
+    }[]>`
+      SELECT t.tx_hash, t.block_height::text, t.block_hash, t.position, t.kind, t.protocol_version,
+             t.result, t.segments, b.data
+      FROM ${sql(this.a)}.transactions t
+      JOIN ${sql(this.a)}.blocks bl
+        ON bl.net = t.net AND bl.height = t.block_height AND bl.block_hash = t.block_hash
+      JOIN ${sql(this.a)}.chain_blobs b ON b.hash = t.raw_blob_hash
+      WHERE t.net = ${this.net} AND t.tx_hash = ${Buffer.from(txHash, "hex")} AND bl.is_canonical
+      ORDER BY t.block_height
+      LIMIT 1
+    `;
+    const row = rows[0];
+    if (row === undefined) return undefined;
+    return {
+      txHash: row.tx_hash.toString("hex"),
+      blockHeight: Number(row.block_height),
+      blockHash: row.block_hash.toString("hex"),
+      txPosition: row.position,
+      kind: row.kind,
+      protocolVersion: row.protocol_version,
+      result: row.result as "success" | "partial_success" | "failure" | null,
+      segments: row.segments,
+      raw: row.data,
+    };
+  }
+}
+
+
+/* ────────────────────────────────────────────────────────────────────────────────────────────
+ * Project 00023 — the activity reads (spec §5, §6.4).
+ *
+ * Every list is newest first and keyset-paged on the row's own natural order,
+ * `(block_height DESC, tx_hash, segment, section, role, item_index)`, so a row the live scanner
+ * inserts between two pages cannot make a reader skip or repeat one.
+ *
+ * Each row is served with two things it does not itself store: the transaction's `result`, joined
+ * from the ARCHIVE (the archive stays the only source of facts — spec §1), and the token identity,
+ * joined from `tokens` on `(token_key, kind)`. Because every colour public data proves exists now
+ * has a row (`seen` at worst, US5), that second join effectively always hits — and the colour route
+ * and the token route can never disagree (FR-008).
+ * ──────────────────────────────────────────────────────────────────────────────────────────── */
+
+/** The token an activity row belongs to, as §4's "resolved token" (plus `status`, so a page can
+ *  badge a `seen` row without a second request). */
+export interface ActivityTokenJson {
+  address: string | null;
+  domainSep: string | null;
+  kind: number;
+  name: string | null;
+  symbol: string | null;
+  decimals: number | null;
+  status: string;
+}
+
+/** One `token_activity` row on the wire (spec §5's `Activity`). */
+export interface ActivityJson {
+  txHash: string;
+  blockHeight: number;
+  txPosition: number;
+  /** The archived transaction result. Always `success` or `partial_success` for a STORED row —
+   *  only counted rows are stored (Q10) — and `null` only if the archive lost the transaction. */
+  result: string | null;
+  segment: number;
+  section: string;
+  role: string;
+  itemIndex: number;
+  color: string;
+  kind: number;
+  /** Decimal string, UNSIGNED: `direction` carries the sign (FR-014). */
+  amount: string;
+  direction: string;
+  /** The owner as a wallet shows it — Bech32m, REPLACING the hex (owner decision Q9). */
+  owner: string | null;
+  /** The same 32 bytes as hex, for machine consumers that join by address. The page never shows
+   *  it (Q9); it is here so a consumer never has to decode Bech32m to match a row. */
+  ownerHex: string | null;
+  ownerKey: string | null;
+  intentHash: string | null;
+  outputNo: number | null;
+  /** A CONTRACT address — hex, never Bech32m (owner decision Q9). */
+  address: string | null;
+  entryPoint: string | null;
+  callIndex: number | null;
+  domainSep: string | null;
+  token: ActivityTokenJson | null;
+}
+
+/** The ordering key of the last activity row served. */
+export interface ActivityCursor {
+  blockHeight: number;
+  txHash: string;
+  segment: number;
+  section: string;
+  role: string;
+  itemIndex: number;
+}
+
+export interface ActivityFilters {
+  role?: string;
+  kind?: number;
+  limit: number;
+  cursor?: ActivityCursor;
+}
+
+/** One `shielded_offers` row on the wire (FR-018). */
+export interface ShieldedOfferJson {
+  txHash: string;
+  blockHeight: number;
+  txPosition: number;
+  section: string;
+  segment: number;
+  inputs: number;
+  outputs: number;
+  transients: number;
+  deltas: number;
+  /** `true` when the offer is BALANCED and the ledger therefore publishes no colour for it at
+   *  all — "any of these may be this token; the ledger does not say" (US4). */
+  undisclosed: boolean;
+  counted: boolean;
+}
+
+export interface ShieldedOfferCursor {
+  blockHeight: number;
+  txHash: string;
+  section: string;
+  segment: number;
+}
+
+/** One `contract_calls` row on the wire (FR-020, US7). */
+export interface ContractCallJson {
+  txHash: string;
+  blockHeight: number;
+  txPosition: number;
+  segment: number;
+  callIndex: number;
+  address: string;
+  entryPoint: string | null;
+  guaranteed: unknown;
+  fallible: unknown;
+}
+
+export interface ContractCallCursor {
+  blockHeight: number;
+  txHash: string;
+  segment: number;
+  callIndex: number;
+}
+
+/** The read-time counts spec §5 adds to a `Token`. */
+export interface TokenActivityCounts {
+  activityCount: number;
+  lastActivityHeight: number | null;
+  /** Kind 1 only: how many transactions published this colour through an offer delta, and how
+   *  many shielded offers CHAIN-WIDE publish no colour at all. The second number is the honest
+   *  denominator beside the first — "these are the ones the ledger does not name" (US4). */
+  disclosedTransactions?: number;
+  undisclosedShieldedOffers?: number;
+}
+
+interface ActivityRow {
+  tx_hash: Buffer; block_height: string; tx_position: number; result: string | null;
+  segment: number; section: string; role: string; item_index: number;
+  color: Buffer; kind: number; amount: string; direction: string;
+  owner: Buffer | null; owner_key: string | null; intent_hash: Buffer | null; output_no: number | null;
+  address: Buffer | null; entry_point: string | null; call_index: number | null;
+  domain_sep: Buffer | null;
+  t_address: Buffer | null; t_domain_sep: Buffer | null; t_kind: number | null;
+  t_name: string | null; t_symbol: string | null; t_decimals: number | null; t_status: string | null;
 }
 
 export function utf8OrNull(bytes: Buffer | Uint8Array): string | null {

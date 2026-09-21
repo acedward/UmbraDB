@@ -1,11 +1,15 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
+import { loadLedgerV9 } from "../../chain-archive-sync/tx-replay-decoder.js";
 import type { TokenIndexerConfig } from "../config.js";
+import { decodeTokenFlows } from "../ingest/decode.js";
 import { readStatus } from "../ingest/store.js";
 import { DASHBOARD_CSP, serveUi } from "../ui/page.js";
 import {
-  TokenIndexQueries, decodeCursor, type TokenCursor, type TokenJson, type TraitJson,
+  TokenIndexQueries, decodeCursor,
+  type ActivityCursor, type ContractCallCursor, type ShieldedOfferCursor,
+  type TokenCursor, type TokenJson, type TraitJson,
 } from "./queries.js";
 
 /**
@@ -32,6 +36,12 @@ import {
 
 export const MAX_LIMIT = 500;
 export const DEFAULT_LIMIT = 100;
+
+/** Spec FR-001's seven roles, for the `?role=` filter. A typo is a 400 naming all seven rather
+ *  than an empty page that reads as "there are none". */
+export const ACTIVITY_ROLES = [
+  "utxo_out", "utxo_in", "contract_in", "contract_out", "mint", "shielded_delta", "reward",
+] as const;
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string, readonly details?: unknown) {
@@ -163,10 +173,23 @@ export function resolverMatches(token: TokenJson, name: string, id: string): tok
 export interface TokenApiOptions {
   sql: UmbraDBSql;
   config: TokenIndexerConfig;
+  /** The loaded ledger module, for `GET /v1/transactions/:hash`, which decodes on request (Q5).
+   *  `serve` passes the one it already loaded; when it is absent — `serve --api-only`, or a test
+   *  that never calls the route — it is loaded lazily on the first request and cached, so no
+   *  process pays for the WASM until something actually needs a decode. */
+  ledger?: unknown;
 }
 
 export function createTokenApi(opts: TokenApiOptions): Server {
-  const queries = new TokenIndexQueries(opts.sql, opts.config.schema, opts.config.net);
+  const queries = new TokenIndexQueries(
+    opts.sql, opts.config.schema, opts.config.net, opts.config.archiveSchema,
+  );
+  let ledgerPromise: Promise<unknown> | undefined =
+    opts.ledger === undefined ? undefined : Promise.resolve(opts.ledger);
+  const ledgerOf = async (): Promise<unknown> => {
+    ledgerPromise ??= loadLedgerV9();
+    return ledgerPromise;
+  };
 
   return createServer((req, res) => {
     void handle(req, res).catch((error: unknown) => {
@@ -199,6 +222,17 @@ export function createTokenApi(opts: TokenApiOptions): Server {
 
     // 3. Everything else is the tokenUri resolver.
     await handleResolver(segments, req, res);
+  }
+
+  /** Spec §5's read-time `Token` counts. A LEDGER kind has no colour and therefore no activity
+   *  row; its physical key is a private digest that never leaves the schema, so the counts are
+   *  zeros rather than a query that could never match. */
+  async function countsOf(token: TokenJson): Promise<{
+    activityCount: number; lastActivityHeight: number | null;
+    disclosedTransactions?: number; undisclosedShieldedOffers?: number;
+  }> {
+    if (token.color === null) return { activityCount: 0, lastActivityHeight: null };
+    return queries.tokenCounts(token.color, token.kind);
   }
 
   async function handleV1(segments: string[], query: URLSearchParams, res: ServerResponse): Promise<void> {
@@ -256,14 +290,15 @@ export function createTokenApi(opts: TokenApiOptions): Server {
           : queries.tokensOfContractDomain(address, domainSep),
       ]);
       const tokens = await Promise.all(rows.map(async (token) => {
+        const counts = await countsOf(token);
         if (token.address === null || token.domainSep === null) {
-          return { ...token, traits: [], mints: { items: [], nextCursor: null } };
+          return { ...token, ...counts, traits: [], mints: { items: [], nextCursor: null } };
         }
         const [traits, mints] = await Promise.all([
           queries.metadataKeys(token.address, token.domainSep, token.kind),
           queries.mints(token.address, token.domainSep, token.kind, { limit }),
         ]);
-        return { ...token, traits, mints };
+        return { ...token, ...counts, traits, mints };
       }));
       const carried = new Set(rows.map((t) => t.kind));
       sendJson(res, 200, {
@@ -276,6 +311,80 @@ export function createTokenApi(opts: TokenApiOptions): Server {
         tokens,
         related: pair.filter((t) => !carried.has(t.kind)),
       });
+      return;
+    }
+
+    // /v1/colors/:color/transactions — one colour's activity, both kinds unless narrowed (FR-008).
+    // This is the route a `seen` row's page uses: a colour whose issuer is not knowable has no
+    // `(address, domainSep)` to build the token route from (US5).
+    if (segments[0] === "colors" && segments[2] === "transactions" && segments.length === 3) {
+      const color = hex32(segments[1]!, "color");
+      const rawKind = query.get("kind");
+      sendJson(res, 200, await queries.activityOfColor(color, {
+        kind: rawKind === null || rawKind === "" ? undefined : kindParam(rawKind),
+        role: enumParam(query.get("role"), ACTIVITY_ROLES, "role"),
+        limit: limitParam(query.get("limit")),
+        cursor: cursorParam<ActivityCursor>(query.get("cursor")),
+      }));
+      return;
+    }
+
+    // /v1/transactions/:hash — the full public decode of §4, computed from the ARCHIVED BYTES on
+    // request (owner decision Q5): no stored document to go stale, and a decoder fix needs no
+    // rebuild. The stored activity rows come with it, each with its token resolved.
+    if (segments[0] === "transactions" && segments.length === 2) {
+      const hash = hex32(segments[1]!, "hash");
+      const archived = await queries.archivedTransaction(hash);
+      if (archived === undefined) throw notFound(`no archived transaction ${hash}`);
+      const flows = decodeTokenFlows(
+        await ledgerOf(), new Uint8Array(archived.raw),
+        // A transaction the archive has not resolved yet cannot be attributed; the view still
+        // decodes in full, with every section marked uncounted rather than silently counted.
+        archived.result ?? "failure", archived.segments, archived.txHash,
+      );
+      const activity = await queries.activityOfTx(hash);
+      // Spec §5's `deltas[] {color, delta, tokenName?}`: a delta names a SHIELDED colour (kind 1),
+      // so the name beside it is that row's — resolved here rather than stored, like every other
+      // identity in this API.
+      const deltaColors = new Set<string>();
+      for (const offer of flows.view.offers) for (const d of offer.deltas) deltaColors.add(d.color);
+      const names = await queries.tokenNamesOfColors([...deltaColors], 1);
+      const offers = flows.view.offers.map((offer) => ({
+        ...offer,
+        deltas: offer.deltas.map((d) => ({ ...d, tokenName: names[d.color]?.name ?? null })),
+      }));
+      sendJson(res, 200, {
+        ...flows.view,
+        offers,
+        // The archive's own facts about where and how it landed (no wall-clock time — Q1).
+        blockHeight: archived.blockHeight,
+        blockHash: archived.blockHash,
+        txPosition: archived.txPosition,
+        protocolVersion: archived.protocolVersion,
+        transactionKind: archived.kind,
+        result: archived.result,
+        segments: archived.segments,
+        activity,
+      });
+      return;
+    }
+
+    // /v1/shielded-offers — every zswap offer on the chain; `undisclosed=true` is the list behind
+    // the disclosure panel's chain-wide figure (FR-018, US4): "any of these may be this token; the
+    // ledger does not say".
+    if (segments[0] === "shielded-offers" && segments.length === 1) {
+      const raw = query.get("undisclosed");
+      const undisclosed = raw === null || raw === ""
+        ? undefined
+        : raw === "true" ? true : raw === "false" ? false : undefined;
+      if (raw !== null && raw !== "" && undisclosed === undefined) {
+        throw badRequest('undisclosed must be "true" or "false"');
+      }
+      sendJson(res, 200, await queries.shieldedOffers({
+        undisclosed,
+        limit: limitParam(query.get("limit")),
+        cursor: cursorParam<ShieldedOfferCursor>(query.get("cursor")),
+      }));
       return;
     }
 
@@ -327,6 +436,19 @@ export function createTokenApi(opts: TokenApiOptions): Server {
         return;
       }
 
+      // /v1/contracts/:address/calls — every call of this contract with every public field of
+      // each transcript (FR-020, US7). This is a LEDGER token's only activity, and the page lists
+      // it under the owner's note: only public data is listed; we do not have access to the code
+      // this executes, so what a call means for balances is defined by the contract and is not
+      // readable here (Q4).
+      if (segments[2] === "calls" && segments.length === 3) {
+        sendJson(res, 200, await queries.callsOfContract(address, {
+          limit: limitParam(query.get("limit")),
+          cursor: cursorParam<ContractCallCursor>(query.get("cursor")),
+        }));
+        return;
+      }
+
       // /v1/contracts/:address/tokens/:domainSep — every row sharing that pair (MIP §4's "a
       // consumer MAY link rows that share (contractAddress, domainSep)"; FR-106). This is how the
       // Ledger Liar's two rows are shown as one asset in two representations rather than as a
@@ -348,7 +470,10 @@ export function createTokenApi(opts: TokenApiOptions): Server {
         if (segments.length === 5) {
           const token = await queries.token(address, domainSep, kind);
           if (token === undefined) throw notFound(`no token ${address}/${domainSep}/${kind}`);
-          sendJson(res, 200, token);
+          // The read-time counts spec §5 adds (00023): how much activity this token has, where it
+          // last moved, and — for a shielded native token — how many transactions published its
+          // colour against how many offers chain-wide published none (US4).
+          sendJson(res, 200, { ...token, ...await countsOf(token) });
           return;
         }
         if (segments[5] === "metadata" && segments.length === 6) {
@@ -359,6 +484,26 @@ export function createTokenApi(opts: TokenApiOptions): Server {
           sendJson(res, 200, await queries.mints(address, domainSep, kind, {
             limit: limitParam(query.get("limit")),
             cursor: cursorParam(query.get("cursor")),
+          }));
+          return;
+        }
+        // /v1/contracts/:address/tokens/:domainSep/:kind/transactions (FR-006)
+        if (segments[5] === "transactions" && segments.length === 6) {
+          const token = await queries.token(address, domainSep, kind);
+          if (token === undefined) throw notFound(`no token ${address}/${domainSep}/${kind}`);
+          // For the two NATIVE kinds the physical key IS the colour, so the token route and the
+          // colour route are the same query. A LEDGER kind has no colour and therefore no activity
+          // row at all: the answer is an empty page, and `shieldedVisibility: "calls-only"` on the
+          // token tells the page to show `/calls` instead (US7).
+          const tokenKey = token.color ?? undefined;
+          if (tokenKey === undefined) {
+            sendJson(res, 200, { items: [], nextCursor: null });
+            return;
+          }
+          sendJson(res, 200, await queries.activityOfToken(tokenKey, kind, {
+            role: enumParam(query.get("role"), ACTIVITY_ROLES, "role"),
+            limit: limitParam(query.get("limit")),
+            cursor: cursorParam<ActivityCursor>(query.get("cursor")),
           }));
           return;
         }
