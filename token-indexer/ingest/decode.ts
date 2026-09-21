@@ -832,7 +832,22 @@ export function decodeTokenFlows(
 
   // ── intents ───────────────────────────────────────────────────────────────────────────────
   for (const [segment, intent] of sortedEntries(tx.intents)) {
+    // An intent's hash is a function of the SEGMENT it is evaluated in, and an intent is evaluated
+    // in two: its guaranteed part runs in segment 0, its fallible part in its own segment. The UTXO
+    // a created output becomes is therefore identified by `intentHash(0)` when the output sat in the
+    // guaranteed unshielded offer and by `intentHash(segment)` when it sat in the fallible one.
+    // Measured against the indexer's own `unshieldedCreatedOutputs[].intentHash` on three recorded
+    // transactions (00023 task C5): `ucom-transfer` (guaranteed) → `intentHash(0) = d3fe93c4…`,
+    // which is what the indexer filed it under, while `intentHash(1) = 566e2053…` is not;
+    // `night-transfer` (fallible, segment 1) and `night-passthrough` (fallible, segment 15274) →
+    // `intentHash(segment)`, again exactly the indexer's value. The intent's own identity in the
+    // §4 view stays `intentHash(segment)` — that is the hash of the intent in the segment it is
+    // keyed by.
     const intentHash = hex(intent.intentHash(segment));
+    const utxoIntentHash: Record<ActivitySection, string> = {
+      guaranteed: hex(intent.intentHash(0)),
+      fallible: intentHash,
+    };
     const sections: Record<ActivitySection, UnshieldedOfferView | null> =
       { guaranteed: null, fallible: null };
     // The indexer numbers `output_index` across the intent's FULL output list, guaranteed section
@@ -874,7 +889,7 @@ export function decodeTokenFlows(
           color: hex(output.type), kind: KIND_UNSHIELDED_NATIVE,
           amount: BigInt(output.value), direction: "in",
           owner: hex(output.owner), ownerKey: undefined,
-          intentHash, outputNo: index,
+          intentHash: utxoIntentHash[section], outputNo: index,
           address: undefined, entryPoint: undefined, callIndex: undefined, domainSep: undefined,
         });
       }

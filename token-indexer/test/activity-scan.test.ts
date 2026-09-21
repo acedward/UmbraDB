@@ -260,28 +260,36 @@ describe("activity rows, counters and seen tokens", () => {
     `).rejects.toThrow(/tokens_seen_has_no_contract|violates check constraint/i);
   }, 180_000);
 
-  it("[[token-activity-scan-rows]] the four recorded transactions produce exactly the golden rows, offers, calls and seen tokens", async () => {
+  it("[[token-activity-scan-rows]] the seven recorded transactions produce exactly the golden rows, offers, calls and seen tokens", async () => {
     const db = await freshDb();
     const fixtures = loadActivityFixtures();
+    // Four third-party transactions from the archive, then the three this project made on Stagenet
+    // on 2026-09-21 (task C4): a UCOM transfer, a NIGHT transfer and a balanced SSTAR self-transfer.
     expect(fixtures.map((f) => f.label)).toEqual([
       "shielded-mint-delta", "balanced-offer-contract", "night-passthrough", "deposit-toMap",
+      "ucom-transfer", "night-transfer", "sstar-balanced-transfer",
     ]);
     await seedArchive(db.sql, db.archiveSchema, NET, fixtures);
 
     const events = new EmptyEventSource();
     const outcome = await scanner(db, events).scanOnce();
 
-    expect(outcome.transactionsScanned).toBe(4);
-    // deposit-toMap 2 + night-passthrough 4 + shielded-mint-delta 2 + balanced-offer-contract 0.
-    expect(outcome.activityRows).toBe(8);
-    // One zswap offer in the mint, one in the balanced deposit; the balanced one is undisclosed.
-    expect(outcome.shieldedOffers).toBe(2);
-    expect(outcome.undisclosedShieldedOffers).toBe(1);
+    expect(outcome.transactionsScanned).toBe(7);
+    // deposit-toMap 2 + night-passthrough 4 + shielded-mint-delta 2 + balanced-offer-contract 0
+    // + ucom-transfer 3 (a spend, a payment and the change) + night-transfer 3 + sstar 0.
+    expect(outcome.activityRows).toBe(14);
+    // One zswap offer in the mint, one in the balanced deposit, one in the balanced SSTAR
+    // self-transfer; the two balanced ones are undisclosed.
+    expect(outcome.shieldedOffers).toBe(3);
+    expect(outcome.undisclosedShieldedOffers).toBe(2);
+    // The three live transfers are plain intents: no contract call in any of them.
     expect(outcome.contractCalls).toBe(4);
     expect(outcome.mints).toBe(1);
-    // Exactly ONE colour in this set has no row of its own: `254fc193…`, whose mint predates the
-    // archive. NIGHT already has its built-in row, and the shielded mint creates its own.
-    expect(outcome.seenTokens).toBe(1);
+    // TWO colours in this set have no row of their own: `254fc193…`, whose mint predates the
+    // archive, and UCOM's `10dbdaf2…`, whose mint is a real Stagenet transaction that simply is not
+    // in this fixture set. NIGHT has its built-in row, the shielded mint creates its own, and the
+    // balanced SSTAR transfer names no colour at all, so it creates nothing.
+    expect(outcome.seenTokens).toBe(2);
     // The one call with a `log` op really did make the scanner ask the indexer (deposit-toMap).
     expect(events.calls).toBe(1);
 
@@ -293,19 +301,21 @@ describe("activity rows, counters and seen tokens", () => {
 
     // --- the seen row, and the rows that resolve through it ----------------------------------
     const DEPOSIT_COLOR = "254fc19366d929e7a5813f04a89fbc68195046f5261428e721e5d16daca8bc47";
+    const UCOM_COLOR = "10dbdaf2b0b0aee765b3a83517f63a0371088565aa1d4cf89ccdc1c70b298269";
     const seen = await db.sql<{ token_key: Buffer; status: string; address: Buffer | null; first_seen_height: string }[]>`
       SELECT token_key, status, address, first_seen_height::text FROM ${db.sql(db.schema)}.tokens
-      WHERE net = ${NET} AND status = 'seen'`;
-    expect(seen).toHaveLength(1);
-    expect(seen[0]!.token_key.toString("hex")).toBe(DEPOSIT_COLOR);
-    expect(seen[0]!.address).toBeNull();
-    expect(seen[0]!.first_seen_height).toBe("500750");
+      WHERE net = ${NET} AND status = 'seen' ORDER BY first_seen_height`;
+    expect(seen.map((r) => [r.token_key.toString("hex"), r.address, r.first_seen_height])).toEqual([
+      [DEPOSIT_COLOR, null, "500750"],
+      [UCOM_COLOR, null, "565368"],
+    ]);
 
-    // NIGHT's four rows resolve to the BUILT-IN row, not to a new `seen` one.
+    // NIGHT's rows — four from the pass-through, three from the live transfer — resolve to the
+    // BUILT-IN row, not to a new `seen` one.
     const night = await db.sql<{ n: string }[]>`
       SELECT count(*)::text AS n FROM ${db.sql(db.schema)}.token_activity
       WHERE net = ${NET} AND color = ${Buffer.from(NIGHT_COLOR_HEX, "hex")}`;
-    expect(night[0]!.n).toBe("4");
+    expect(night[0]!.n).toBe("7");
     // …and the shielded mint's colour became an `observed` row through the mint itself.
     const minted = await db.sql<{ status: string; address: Buffer }[]>`
       SELECT status, address FROM ${db.sql(db.schema)}.tokens
@@ -332,6 +342,7 @@ describe("activity rows, counters and seen tokens", () => {
     expect(offers.map((o) => [o.inputs, o.outputs, o.transients, o.deltas, o.undisclosed, o.counted])).toEqual([
       [0, 1, 0, 1, false, true],  // the mint: one delta, so the colour IS public
       [2, 1, 1, 0, true, true],   // the balanced deposit: no delta at all, so it is not
+      [1, 2, 0, 0, true, true],   // the live SSTAR self-transfer: the same, between users only
     ]);
     const calls = await db.sql<{ entry_point: string; guaranteed: unknown; fallible: unknown }[]>`
       SELECT entry_point, guaranteed, fallible FROM ${db.sql(db.schema)}.contract_calls
@@ -349,10 +360,17 @@ describe("activity rows, counters and seen tokens", () => {
     // `deposit-toMap` carries its rows in a FALLIBLE section (segment 63196); `shielded-mint-delta`
     // carries both of its rows in GUARANTEED ones. Failing every fixture's own segment therefore
     // separates the two rules in one batch.
+    // The three live transfers (C4) all keep their offer in intent segment 1 and their DUST in
+    // segment 2, so failing segment 1 separates them by SECTION alone: `ucom-transfer` carries its
+    // three rows in the GUARANTEED unshielded offer and keeps them; `night-transfer` carries its
+    // three in the FALLIBLE one and loses them; `sstar-balanced-transfer` has no row either way and
+    // its guaranteed zswap offer still counts.
     const failedSegment = (f: ScanFixture): { id: number; success: boolean }[] =>
       f.label === "deposit-toMap" ? [{ id: 63196, success: false }, { id: 1, success: true }]
         : f.label === "night-passthrough" ? [{ id: 15274, success: false }, { id: 1, success: true }]
-          : [{ id: 40256, success: false }, { id: 25074, success: false }, { id: 1, success: true }];
+          : f.label === "ucom-transfer" || f.label === "night-transfer" || f.label === "sstar-balanced-transfer"
+            ? [{ id: 1, success: false }, { id: 2, success: true }]
+            : [{ id: 40256, success: false }, { id: 25074, success: false }, { id: 1, success: true }];
     await seedArchive(db.sql, db.archiveSchema, NET, fixtures, {
       resultOverride: (f) => f.label === "balanced-offer-contract"
         // The whole transaction failed: not even its guaranteed section counts.
@@ -361,20 +379,30 @@ describe("activity rows, counters and seen tokens", () => {
     });
 
     const outcome = await scanner(db, new EmptyEventSource()).scanOnce();
-    expect(outcome.transactionsScanned).toBe(4);
+    expect(outcome.transactionsScanned).toBe(7);
 
-    // The two fallible-carried transactions lost every row; the guaranteed-carried one kept both.
+    // The three fallible-carried transactions lost every row; the guaranteed-carried ones kept theirs.
     expect(await rowsOfTx(db, loadActivityFixtures().find((f) => f.label === "deposit-toMap")!.transaction.hash))
       .toEqual([]);
     expect(await rowsOfTx(db, loadActivityFixtures().find((f) => f.label === "night-passthrough")!.transaction.hash))
       .toEqual([]);
+    expect(await rowsOfTx(db, loadActivityFixtures().find((f) => f.label === "night-transfer")!.transaction.hash))
+      .toEqual([]);
+    // …while the GUARANTEED unshielded offer of the UCOM transfer survives its own segment failing,
+    // which is FR-002's rule read the other way round.
+    expect((await rowsOfTx(db, loadActivityFixtures().find((f) => f.label === "ucom-transfer")!.transaction.hash))
+      .map((r) => [r.role, r.section, r.amount])).toEqual([
+      ["utxo_in", "guaranteed", "1500000"],
+      ["utxo_out", "guaranteed", "500000"],
+      ["utxo_out", "guaranteed", "1000000"],
+    ]);
     const mintRows = await rowsOfTx(db, loadActivityFixtures().find((f) => f.label === "shielded-mint-delta")!.transaction.hash);
     // The transaction-level guaranteed offer sits at segment 0; the mint is in intent 40256.
     expect(mintRows.map((r) => [r.role, r.section, r.amount, r.segment])).toEqual([
       ["shielded_delta", "guaranteed", "1", 0],
       ["mint", "guaranteed", "1", 40256],
     ]);
-    expect(outcome.activityRows).toBe(2);
+    expect(outcome.activityRows).toBe(5);
     // A guaranteed mint in a partially failed transaction still counts (FR-002), so `token_mints`
     // keeps it too — the two lists agree.
     expect(outcome.mints).toBe(1);
@@ -384,9 +412,10 @@ describe("activity rows, counters and seen tokens", () => {
     const offers = await db.sql<{ counted: boolean; undisclosed: boolean; deltas: number }[]>`
       SELECT counted, undisclosed, deltas FROM ${db.sql(db.schema)}.shielded_offers
       WHERE net = ${NET} ORDER BY block_height`;
-    expect(offers).toHaveLength(2);
-    expect(offers.map((o) => [o.counted, o.undisclosed])).toEqual([[true, false], [false, true]]);
-    expect(outcome.shieldedOffers).toBe(2);
+    expect(offers).toHaveLength(3);
+    expect(offers.map((o) => [o.counted, o.undisclosed]))
+      .toEqual([[true, false], [false, true], [true, true]]);
+    expect(outcome.shieldedOffers).toBe(3);
 
     // Every call is recorded, each transcript carrying whether its own section counted (US7's rule:
     // this table is introspection, not attribution).
@@ -406,8 +435,10 @@ describe("activity rows, counters and seen tokens", () => {
     const statuses = await db.sql<{ status: string; n: string }[]>`
       SELECT status, count(*)::text AS n FROM ${db.sql(db.schema)}.tokens
       WHERE net = ${NET} GROUP BY status ORDER BY status`;
-    expect(statuses.map((s) => [s.status, s.n])).toEqual([["builtin", "2"], ["observed", "1"]]);
-    expect(outcome.seenTokens).toBe(0);
+    // UCOM's colour DOES become a `seen` row here: its three guaranteed rows counted.
+    expect(statuses.map((s) => [s.status, s.n]))
+      .toEqual([["builtin", "2"], ["observed", "1"], ["seen", "1"]]);
+    expect(outcome.seenTokens).toBe(1);
   }, 300_000);
 
   it("[[token-activity-idempotent]] a second scan of the same archive changes no row and reports no new one", async () => {
@@ -416,14 +447,14 @@ describe("activity rows, counters and seen tokens", () => {
 
     const scan = scanner(db, new EmptyEventSource());
     const first = await scan.scanOnce();
-    expect(first.activityRows).toBe(8);
+    expect(first.activityRows).toBe(14);
     const before = await dump(db);
 
     // Rewind the cursor so the very same transactions are decoded and written again — which is
     // exactly what a crash mid-batch, or a restart, makes the scanner do (FR-004).
     await db.sql`DELETE FROM ${db.sql(db.schema)}.cursors WHERE net = ${NET}`;
     const second = await scanner(db, new EmptyEventSource()).scanOnce();
-    expect(second.transactionsScanned).toBe(4);
+    expect(second.transactionsScanned).toBe(7);
     expect({
       activityRows: second.activityRows, shieldedOffers: second.shieldedOffers,
       undisclosedShieldedOffers: second.undisclosedShieldedOffers,
@@ -459,9 +490,9 @@ describe("activity rows, counters and seen tokens", () => {
     expect(emptied[0]).toEqual({ activity: "0", offers: "0", calls: "0", tokens: "2" });
 
     const rebuilt = await scanner(db, new EmptyEventSource()).scanOnce();
-    expect(rebuilt.transactionsScanned).toBe(4);
-    expect(rebuilt.activityRows).toBe(8);
-    expect(rebuilt.seenTokens).toBe(1);
+    expect(rebuilt.transactionsScanned).toBe(7);
+    expect(rebuilt.activityRows).toBe(14);
+    expect(rebuilt.seenTokens).toBe(2);
     // FR-005: byte-equal, not merely equivalent.
     expect(await dump(db)).toBe(live);
   }, 300_000);

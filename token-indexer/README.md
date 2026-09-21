@@ -206,7 +206,7 @@ One `token_activity` row per **public occurrence** of a colour in one archived t
 
 | `role` | where it comes from | `direction` |
 |---|---|---|
-| `utxo_out` | an intent's unshielded offer **output** — value, colour, owner | `in` |
+| `utxo_out` | an intent's unshielded offer **output** — value, colour, owner, and the UTXO's own identity (`intentHash` + `outputNo`, see below) | `in` |
 | `utxo_in` | an unshielded offer **input** — value, colour, the spender's address (`addressFromKey`), and the identity of the UTXO being spent (`intentHash` + `outputNo`) | `out` |
 | `contract_in` | a transcript's `effects.unshieldedInputs` — what the contract received, per colour | `in` |
 | `contract_out` | `effects.unshieldedOutputs` — what it paid out | `out` |
@@ -216,6 +216,19 @@ One `token_activity` row per **public occurrence** of a colour in one archived t
 
 `amount` is **unsigned**; `direction` carries the sign. Amounts are `numeric(39,0)` in the database
 and decimal **strings** on the wire, so nothing is ever a lossy JSON number.
+
+**A created UTXO's `intentHash` depends on the section, not on the intent's segment key.** An intent
+is evaluated in two segments — its guaranteed part in segment 0, its fallible part in its own — so
+`Intent.intentHash(segment)` has two answers and only one of them identifies the UTXO. A `utxo_out`
+row therefore carries `intentHash(0)` when the output sat in the **guaranteed** unshielded offer and
+`intentHash(<segment>)` when it sat in the **fallible** one. This is measured, not assumed: on the
+`ucom-transfer` fixture (a guaranteed offer in intent segment 1) the indexer files both created
+UTXOs under `d3fe93c4…`, which is `intentHash(0)`, while `intentHash(1)` is `566e2053…`; on
+`night-transfer` and `night-passthrough` (fallible offers) the indexer's value is
+`intentHash(<segment>)`. Getting this wrong is invisible until a later transaction spends the UTXO
+and its `utxo_in.intentHash` matches nothing. The §4 transaction view keeps each intent's own
+`intentHash(segment)` beside it — that is the intent's identity in the segment it is keyed by, a
+different fact from the UTXO's.
 
 **Only counted rows are stored** (owner decision Q10). A guaranteed section counts unless the whole
 transaction failed; a fallible section counts only if its intent segment succeeded. A movement that

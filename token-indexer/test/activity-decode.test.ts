@@ -115,7 +115,82 @@ describe("decodeTokenFlows over recorded Stagenet transactions", () => {
     expect(out.view.selfReportedTxHash).toBe(fixture.transaction.hash);
     golden("deposit-toMap", "rows", out.activity);
     golden("deposit-toMap", "view", out.view);
-  }, 60_000);
+
+    // ══ the same id, continued: a USER-TO-USER transfer ═══════════════════════════════════════
+    // (one `it` per id — `check-required-tests.ts` rejects an id carried by two tests, however
+    //  green both are.)
+    //
+    // Project 00023 task C4/C5: two transactions this project made on Stagenet on 2026-09-21 from
+    // the recorded test wallet, index 0 → index 1. They are the only user-to-user transfers of a
+    // NAMED token in evidence — every third-party spend in the archive is a deposit into a
+    // contract — and they are the reason the bug below was found.
+    const SENDER = "dd50c29512c58c68a36384b6c47004f27824a5b2d9c5eb5251e10d854ffa89ad";
+    const RECIPIENT = "e25bbbcdbf50f71282626f03e2b55b289cc6a860a520a1f7567bccd93476066e";
+    const UCOM = "10dbdaf2b0b0aee765b3a83517f63a0371088565aa1d4cf89ccdc1c70b298269";
+
+    // ── (a) UCOM, carried in the intent's GUARANTEED unshielded offer ────────────────────────
+    const ucom = flowsOf("ucom-transfer");
+    expect(ucom.offers).toEqual([]);   // an unshielded transfer has no zswap offer at all
+    expect(ucom.calls).toEqual([]);    // and no contract call: nothing but the intent
+    expect(ucom.activity.map((a) => [a.role, a.section, a.amount, a.owner, a.outputNo])).toEqual([
+      ["utxo_in", "guaranteed", 1500000n, SENDER, 0],
+      ["utxo_out", "guaranteed", 500000n, SENDER, 0],     // the change, back to the sender
+      ["utxo_out", "guaranteed", 1000000n, RECIPIENT, 1], // the payment
+    ]);
+    expect(ucom.activity.every((a) => a.color === UCOM && a.kind === 0)).toBe(true);
+
+    // ── (b) NIGHT, carried in the FALLIBLE one — the same shape, the other section ───────────
+    const night = flowsOf("night-transfer");
+    expect(night.offers).toEqual([]);
+    expect(night.calls).toEqual([]);
+    expect(night.activity.map((a) => [a.role, a.section, a.amount, a.owner, a.outputNo])).toEqual([
+      ["utxo_in", "fallible", 5000000000n, SENDER, 0],
+      ["utxo_out", "fallible", 1000000n, RECIPIENT, 0],
+      ["utxo_out", "fallible", 4999000000n, SENDER, 1],
+    ]);
+    expect(night.activity.every((a) => a.color === NIGHT_COLOR_HEX)).toBe(true);
+
+    // ── the intent hash of a CREATED UTXO depends on the SECTION, not on the intent's key ────
+    // An intent is evaluated in two segments: its guaranteed part in segment 0, its fallible part
+    // in its own. Both transactions keep their offer in intent segment 1, so the two cases differ
+    // only by section — and the chain files their outputs under different hashes. The indexer's own
+    // `unshieldedCreatedOutputs[].intentHash` is the referee here; it is recorded in the fixture and
+    // never computed by us. Until these two fixtures existed, every recorded created output was
+    // fallible, so a decoder that always used `intentHash(segment)` looked correct.
+    const createdIntentHash = (label: string): string[] =>
+      (loadActivityFixture(label).unshieldedCreatedOutputs ?? []).map((o) => o.intentHash!);
+    expect(new Set(createdIntentHash("ucom-transfer")).size).toBe(1);
+    expect(ucom.activity.filter((a) => a.role === "utxo_out").map((a) => a.intentHash))
+      .toEqual(createdIntentHash("ucom-transfer"));
+    expect(night.activity.filter((a) => a.role === "utxo_out").map((a) => a.intentHash))
+      .toEqual(createdIntentHash("night-transfer"));
+    // …and the two hashes really are different values, so the assertion above has teeth.
+    expect(createdIntentHash("ucom-transfer")[0]).not.toBe(createdIntentHash("night-transfer")[0]);
+    // The §4 view keeps the intent's OWN hash — the hash in the segment it is keyed by — which for
+    // the guaranteed case is deliberately NOT the hash its outputs are filed under.
+    const ucomIntent = ucom.view.intents.find((i) => i.segment === 1)!;
+    expect(ucomIntent.guaranteedUnshieldedOffer).not.toBeNull();
+    expect(ucomIntent.intentHash).not.toBe(createdIntentHash("ucom-transfer")[0]);
+    const nightIntent = night.view.intents.find((i) => i.segment === 1)!;
+    expect(nightIntent.fallibleUnshieldedOffer).not.toBeNull();
+    expect(nightIntent.intentHash).toBe(createdIntentHash("night-transfer")[0]);
+
+    // Both spends name a UTXO the chain agrees was spent, with the same hash and index.
+    for (const [label, flows] of [["ucom-transfer", ucom], ["night-transfer", night]] as const) {
+      const spent = loadActivityFixture(label).unshieldedSpentOutputs ?? [];
+      expect(spent, label).toHaveLength(1);
+      const row = flows.activity.find((a) => a.role === "utxo_in")!;
+      expect([row.intentHash, row.outputNo], label).toEqual([spent[0]!.intentHash, spent[0]!.outputIndex]);
+      expect(spent[0]!.owner, label).toMatch(/^mn_addr_stagenet1/);
+      // Every owner the indexer publishes as Bech32m is one of the two addresses of this wallet.
+      expect(flows.view.selfReportedTxHash, label).toBe(loadActivityFixture(label).transaction.hash);
+    }
+
+    golden("ucom-transfer", "rows", ucom.activity);
+    golden("ucom-transfer", "view", ucom.view);
+    golden("night-transfer", "rows", night.activity);
+    golden("night-transfer", "view", night.view);
+  }, 120_000);
 
   it("[[token-activity-decode-delta]] a shielded mint publishes its colour and exact amount through the offer delta, and the mint effect derives the same colour", () => {
     const out = flowsOf("shielded-mint-delta");
@@ -340,7 +415,42 @@ describe("decodeTokenFlows over recorded Stagenet transactions", () => {
     expect(out.calls[0]!.guaranteed!.effects.claimedNullifiers).toHaveLength(2);
     golden("balanced-offer-contract", "rows", out.activity);
     golden("balanced-offer-contract", "view", out.view);
-  }, 60_000);
+
+    // ══ the same id, continued: the REAL balanced transfer (00023 task C4(c), spec US6) ═══════
+    // `balanced-offer-contract` is a third party's contract deposit and most of its coins are
+    // contract-owned. This one is the case the disclosure panel is actually about: a plain shielded
+    // transfer between users, made by this project on Stagenet on 2026-09-21 — 1.000000 SSTAR
+    // (colour 3248c456…5553) from the test wallet's shielded address TO ITSELF. Inputs of SSTAR
+    // equal outputs of SSTAR, so `normalize_deltas` keeps nothing and the offer names no colour.
+    const live = flowsOf("sstar-balanced-transfer");
+    const SSTAR = "3248c456d02ce8a8c2b42541488add504152f745e168d139934c637339c55553";
+
+    // Not one activity row, for SSTAR or for anything else — spec SC-003 and US1 scenario 4.
+    expect(live.activity).toEqual([]);
+    expect(JSON.stringify(live.view).includes(SSTAR)).toBe(false);
+    // One offer, recorded and undisclosed; the transaction is not a contract call at all.
+    expect(live.offers).toEqual([{
+      section: "guaranteed", segment: 0, inputs: 1, outputs: 2, transients: 0, deltas: 0, counted: true,
+    }]);
+    expect(live.calls).toEqual([]);
+    const liveOffer = live.view.offers[0]!;
+    expect(liveOffer.deltas).toEqual([]);
+    expect(liveOffer.deltaCount).toBe(0);
+    // Every coin in it is USER-owned: no contract address anywhere, unlike the fixture above. The
+    // commitments and the nullifier are the entire public record of a 1 SSTAR movement.
+    expect(liveOffer.inputs.map((i) => i.contractAddress)).toEqual([null]);
+    expect(liveOffer.outputs.map((o) => o.contractAddress)).toEqual([null, null]);
+    expect(liveOffer.transients).toEqual([]);
+    expect(liveOffer.inputs[0]!.nullifier).toMatch(/^[0-9a-f]{64}$/);
+    expect(new Set(liveOffer.outputs.map((o) => o.commitment)).size).toBe(2);
+    // The chain agrees the transaction created and spent no unshielded UTXO at all.
+    const liveFixture = loadActivityFixture("sstar-balanced-transfer");
+    expect(liveFixture.unshieldedCreatedOutputs ?? []).toEqual([]);
+    expect(liveFixture.unshieldedSpentOutputs ?? []).toEqual([]);
+    expect(live.view.selfReportedTxHash).toBe(liveFixture.transaction.hash);
+    golden("sstar-balanced-transfer", "rows", live.activity);
+    golden("sstar-balanced-transfer", "view", live.view);
+  }, 120_000);
 
   it("[[token-activity-unknown-shape-throws]] an effect key of an unrecognised shape throws, naming the transaction — while the chain's two real key shapes, and a DUST key, do not", () => {
     const CONTRACT = "ab".repeat(32);

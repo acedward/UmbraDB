@@ -65,7 +65,7 @@ describe("activity API (spec §5)", () => {
     const outcome = await new TokenScanner({
       sql, schema, archiveSchema, net: NET, eventSource: new EmptyEventSource(), ledger,
     }).scanOnce();
-    expect(outcome.activityRows).toBe(8);
+    expect(outcome.activityRows).toBe(14);
 
     // A LEDGER token (kind 2) declared by the contract `deposit-toMap` called. It has no colour
     // and no UTXOs by construction (MIP §3), so its only public activity is that contract's calls.
@@ -100,17 +100,30 @@ describe("activity API (spec §5)", () => {
     JSON.parse(readFileSync(new URL(`./fixtures/activity/${label}.rows.json`, import.meta.url), "utf8"));
 
   it("[[token-activity-api-list]] a token's transactions come newest first, page by cursor, filter by role, and render owners as Bech32m beside the hex", async () => {
-    // NIGHT is the one token in this set with four rows — and the built-in row addressed by the
+    // NIGHT is the token in this set with the most rows — four from the contract pass-through and
+    // three from the live transfer of 2026-09-21 — and it is the built-in row addressed by the
     // 00020 sentinel key, so the contract-addressed route still reaches it.
+    const PASSTHROUGH = "69ea91eb4bf6346c1dcc0dab326740baa876664b20140c09a5df4af3f68385ca";
+    const NIGHT_TRANSFER = "b6c1fb95f8495557b682bd3259ecebc9e5e99e4cd6aea50ba26adf5b1cca0120";
     const path = `/v1/contracts/${"00".repeat(32)}/tokens/${"00".repeat(32)}/0/transactions`;
     const all = await get(path);
     expect(all.status).toBe(200);
-    expect(all.body.items).toHaveLength(4);
+    expect(all.body.items).toHaveLength(7);
     expect(all.body.nextCursor).toBeNull();
-    expect(all.body.items.map((a: any) => a.role))
-      .toEqual(["contract_in", "contract_out", "utxo_in", "utxo_out"]);
+    // Newest first (US3): block 565 372's three rows, then block 500 257's four.
+    expect(all.body.items.map((a: any) => [a.blockHeight, a.role])).toEqual([
+      [565372, "utxo_in"], [565372, "utxo_out"], [565372, "utxo_out"],
+      [500257, "contract_in"], [500257, "contract_out"], [500257, "utxo_in"], [500257, "utxo_out"],
+    ]);
+    expect(all.body.items.slice(0, 3).every((a: any) => a.txHash === NIGHT_TRANSFER)).toBe(true);
+    // The live transfer's own two outputs: 1 NIGHT to the second address, the rest back as change.
+    expect(all.body.items.slice(0, 3).map((a: any) => [a.amount, a.direction])).toEqual([
+      ["5000000000", "out"], ["1000000", "in"], ["4999000000", "in"],
+    ]);
+    expect(all.body.items[1]!.owner).toBe("mn_addr_stagenet1ufdmhndl2rm39qnzdup79d2m9zwvd2rq55s2ra6k00xdjdrkqehqgx5glx");
+    expect(all.body.items[2]!.owner).toBe("mn_addr_stagenet1m4gv99gjckxx3gmrsjmvguqy7fuzffdjm8z7k5j3uyxc2nl63xksrda9fm");
 
-    const utxoOut = all.body.items.find((a: any) => a.role === "utxo_out");
+    const utxoOut = all.body.items.find((a: any) => a.role === "utxo_out" && a.txHash === PASSTHROUGH);
     expect(utxoOut).toMatchObject({
       txHash: "69ea91eb4bf6346c1dcc0dab326740baa876664b20140c09a5df4af3f68385ca",
       blockHeight: 500257, txPosition: 0, result: "success",
@@ -139,14 +152,14 @@ describe("activity API (spec §5)", () => {
 
     // --- the role filter ---------------------------------------------------------------------
     const spent = await get(`${path}?role=utxo_in`);
-    expect(spent.body.items.map((a: any) => a.role)).toEqual(["utxo_in"]);
+    expect(spent.body.items.map((a: any) => a.role)).toEqual(["utxo_in", "utxo_in"]);
     expect((await get(`${path}?role=mint`)).body.items).toEqual([]);
     expect((await get(`${path}?role=sideways`)).status).toBe(400);
 
     // --- keyset paging across a two-row page --------------------------------------------------
     const seen: string[] = [];
     let cursor: string | null = null;
-    for (let page = 0; page < 10; page++) {
+    for (let page = 0; page < 20; page++) {
       const url: string = `${path}?limit=2${cursor === null ? "" : `&cursor=${encodeURIComponent(cursor)}`}`;
       const res: { body: any } = await get(url);
       expect(res.body.items.length).toBeLessThanOrEqual(2);
@@ -154,8 +167,8 @@ describe("activity API (spec §5)", () => {
       cursor = res.body.nextCursor;
       if (cursor === null) break;
     }
-    expect(seen).toHaveLength(4);
-    expect(new Set(seen).size).toBe(4);
+    expect(seen).toHaveLength(7);
+    expect(new Set(seen).size).toBe(7);
     expect(seen).toEqual(all.body.items.map((a: any) => `${a.segment}|${a.section}|${a.role}|${a.itemIndex}`));
     expect((await get(`${path}?cursor=not-a-cursor`)).status).toBe(400);
     expect((await get(`${path}?limit=0`)).status).toBe(400);
@@ -164,7 +177,7 @@ describe("activity API (spec §5)", () => {
     const night = await get(`/v1/contracts/${"00".repeat(32)}/tokens/${"00".repeat(32)}/0`);
     expect(night.body).toMatchObject({
       symbol: "NIGHT", status: "builtin", shieldedVisibility: "full",
-      activityCount: 4, lastActivityHeight: 500257,
+      activityCount: 7, lastActivityHeight: 565372,
     });
     // Only a kind-1 token has a disclosure story, so NIGHT carries neither of those two numbers.
     expect(night.body.disclosedTransactions).toBeUndefined();
@@ -176,7 +189,10 @@ describe("activity API (spec §5)", () => {
     expect(shielded.body.tokens[0]).toMatchObject({
       kind: 1, status: "observed", shieldedVisibility: "disclosed-imbalances",
       activityCount: 2, lastActivityHeight: 497182,
-      disclosedTransactions: 1, undisclosedShieldedOffers: 1,
+      // The chain-wide figure the disclosure panel prints: BOTH balanced offers in this set could
+      // be this colour and the ledger does not say — the contract deposit and the live SSTAR
+      // self-transfer alike.
+      disclosedTransactions: 1, undisclosedShieldedOffers: 2,
     });
   }, 60_000);
 
@@ -218,10 +234,15 @@ describe("activity API (spec §5)", () => {
     });
     expect(doc.body.tokens[0].mints.items).toEqual([]);
 
-    // …and the same rows are reachable through `/v1/tokens?status=seen`.
+    // …and the same rows are reachable through `/v1/tokens?status=seen`. Two colours in this set
+    // have no row of their own: this one, and UCOM's — whose mint is a real Stagenet transaction
+    // that simply is not among these seven fixtures.
     const seenList = await get("/v1/tokens?status=seen");
-    expect(seenList.body.items).toHaveLength(1);
-    expect(seenList.body.items[0]).toMatchObject({
+    expect(seenList.body.items).toHaveLength(2);
+    expect(seenList.body.items.map((t: any) => t.color).sort()).toEqual(
+      ["10dbdaf2b0b0aee765b3a83517f63a0371088565aa1d4cf89ccdc1c70b298269", DEPOSIT_COLOR].sort(),
+    );
+    expect(seenList.body.items.find((t: any) => t.color === DEPOSIT_COLOR)).toMatchObject({
       status: "seen", address: null, domainSep: null, color: DEPOSIT_COLOR,
       contractDomainSeps: null,
     });
@@ -294,16 +315,24 @@ describe("activity API (spec §5)", () => {
   it("[[token-activity-shielded-offers]] every zswap offer is listed, the balanced one is undisclosed, and the counts are the ones the panel shows", async () => {
     const all = await get("/v1/shielded-offers");
     expect(all.status).toBe(200);
-    expect(all.body.items).toHaveLength(2);
+    expect(all.body.items).toHaveLength(3);
     // Newest first.
-    expect(all.body.items.map((o: any) => o.blockHeight)).toEqual([497189, 497182]);
+    expect(all.body.items.map((o: any) => o.blockHeight)).toEqual([565376, 497189, 497182]);
 
     const undisclosed = await get("/v1/shielded-offers?undisclosed=true");
-    expect(undisclosed.body.items).toHaveLength(1);
-    expect(undisclosed.body.items[0]).toMatchObject({
-      txHash: "c235e6b20f5c66771719ec5235d109ea664eb6dd576fe6396ccbfaed80fa6036",
+    expect(undisclosed.body.items).toHaveLength(2);
+    const contractOffer = undisclosed.body.items.find((o: any) =>
+      o.txHash === "c235e6b20f5c66771719ec5235d109ea664eb6dd576fe6396ccbfaed80fa6036");
+    expect(contractOffer).toMatchObject({
       blockHeight: 497189, section: "guaranteed", segment: 0,
       inputs: 2, outputs: 1, transients: 1, deltas: 0, undisclosed: true, counted: true,
+    });
+    // The live user-to-user balanced transfer of 1.000000 SSTAR (task C4(c), spec US6/SC-003) is in
+    // this list and in no token's list: one input, two outputs, and no delta to name a colour.
+    expect(undisclosed.body.items.find((o: any) =>
+      o.txHash === "9b9254f4710e6a1893f30d3d396dd07336d190851961a526b106202d273eed75")).toMatchObject({
+      blockHeight: 565376, section: "guaranteed", segment: 0,
+      inputs: 1, outputs: 2, transients: 0, deltas: 0, undisclosed: true, counted: true,
     });
     // The MINT's offer is never in this list: its colour is public, exactly, in its delta.
     const disclosed = await get("/v1/shielded-offers?undisclosed=false");
@@ -312,11 +341,19 @@ describe("activity API (spec §5)", () => {
       txHash: "bd0360d461843d2c337b04b9353c8b95833dc1d60780e28a62530a53abe024f9",
       deltas: 1, undisclosed: false,
     });
-    // …and no activity row anywhere names the balanced transaction, for any colour.
-    for (const color of [DEPOSIT_COLOR, MINT_COLOR, NIGHT_COLOR_HEX]) {
-      const rows = await get(`/v1/colors/${color}/transactions`);
-      expect(rows.body.items.every((a: any) => a.txHash !== undisclosed.body.items[0].txHash)).toBe(true);
+    // …and no activity row anywhere names either balanced transaction, for any colour — including
+    // SSTAR's own, which is exactly what SC-003 asks for.
+    const SSTAR_COLOR = "3248c456d02ce8a8c2b42541488add504152f745e168d139934c637339c55553";
+    const UCOM_COLOR = "10dbdaf2b0b0aee765b3a83517f63a0371088565aa1d4cf89ccdc1c70b298269";
+    for (const color of [DEPOSIT_COLOR, MINT_COLOR, NIGHT_COLOR_HEX, SSTAR_COLOR, UCOM_COLOR]) {
+      for (const kind of ["", "?kind=0", "?kind=1"]) {
+        const rows = await get(`/v1/colors/${color}/transactions${kind}`);
+        expect(rows.body.items.every((a: any) =>
+          !undisclosed.body.items.some((o: any) => o.txHash === a.txHash)), `${color}${kind}`).toBe(true);
+      }
     }
+    // SSTAR's colour has no activity row of any kind: the transfer left no public trace of it.
+    expect((await get(`/v1/colors/${SSTAR_COLOR}/transactions`)).body.items).toEqual([]);
 
     // The number the disclosure panel prints is the length of this very list.
     const status = await get("/internal/status");
@@ -379,10 +416,10 @@ describe("activity API (spec §5)", () => {
     const status = await get("/internal/status");
     expect(status.status).toBe(200);
     expect(status.body.counters).toMatchObject({
-      activityRows: 8,
-      seenTokens: 1,
-      shieldedOffers: 2,
-      undisclosedShieldedOffers: 1,
+      activityRows: 14,
+      seenTokens: 2,
+      shieldedOffers: 3,
+      undisclosedShieldedOffers: 2,
       contractCalls: 4,
       // 00020's counters are untouched beside them.
       mints: 1,
@@ -405,7 +442,7 @@ describe("activity API (spec §5)", () => {
     expect(Number(unresolved[0]!.n)).toBe(status.body.counters.seenTokens);
 
     // The archive tip is real here, and no counter carries a time (Q1).
-    expect(status.body.archiveTip).toBe(500750);
+    expect(status.body.archiveTip).toBe(565376);
     expect(JSON.stringify(status.body.counters)).not.toMatch(/time|date/i);
   }, 60_000);
 });
