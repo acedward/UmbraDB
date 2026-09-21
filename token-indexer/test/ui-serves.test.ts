@@ -87,12 +87,14 @@ describe("the token explorer page", () => {
   it("serves a page with no external resource of any kind", async () => {
     const body = await (await fetch(`${base}/ui`)).text();
 
-    // No absolute URL except the notice's two outbound links: not in a tag, not in a comment, not
-    // in a string the script builds a link from. Those two are <a> navigations a person follows,
+    // No absolute URL except the notice's four outbound links: not in a tag, not in a comment, not
+    // in a string the script builds a link from. Those four are <a> navigations a person follows,
     // opened in a new tab without an opener or referrer — never a resource the page loads.
     const OUTBOUND = [
       "https://github.com/midnightntwrk/midnight-improvement-proposals/pull/315",
       "https://github.com/acedward/UmbraDB/pull/19",
+      "https://github.com/acedward/mip-erc7496-midnight-contracts",
+      "https://github.com/effectstream/staging-tokens-addresses",
     ];
     const anchors = [...body.matchAll(/<a href="(https:[^"]*)"([^>]*)>/g)];
     expect(anchors.map((m) => m[1]).sort()).toEqual([...OUTBOUND].sort());

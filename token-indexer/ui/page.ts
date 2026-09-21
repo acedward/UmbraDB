@@ -21,8 +21,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
  * template, p.28 colours, p.32 logo). If the font file is missing the page falls back to the
  * system sans stack and nothing else changes.
  *
- * The proof-of-concept notice at the top links out to two GitHub pages (the MIP's PR and this
- * indexer's PR). Those are plain `<a>` navigations a person chooses to follow, not resources the
+ * The proof-of-concept notice at the top links out to four GitHub pages (the MIP's PR, this
+ * indexer's PR, the example contracts and the deployed token addresses). Those are plain `<a>` navigations a person chooses to follow, not resources the
  * page loads: `default-src 'none'` still stops the page from fetching anything off its origin.
  *
  * ── What it talks to ────────────────────────────────────────────────────────────────────────
@@ -94,7 +94,6 @@ header { padding: 22px 28px 0; border-bottom: 1px solid var(--rule); }
 .brand svg { height: 22px; width: auto; display: block; }
 .brand .rule { width: 1px; height: 22px; background: var(--rule); }
 h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.015em; }
-.sub { color: var(--dim); font-size: 13px; margin-top: 8px; max-width: 90ch; }
 nav.tabs { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 18px 0 0; }
 nav.tabs a { padding: 8px 16px; color: var(--dim); text-decoration: none; font-weight: 500;
   border-bottom: 2px solid transparent; margin-bottom: -1px; }
@@ -112,7 +111,12 @@ nav.tabs .sep { flex: 1 1 auto; }
 .poc a { color: var(--md-black); text-decoration-color: var(--accent); text-decoration-thickness: 2px; }
 .poc a:hover { color: var(--accent); }
 .poc code { background: rgba(0, 0, 0, 0.07); padding: 0 4px; }
-.poc-src { font-weight: 500; }
+.poc { position: relative; padding-right: 90px; }
+.poc-x { position: absolute; top: 10px; right: 12px; padding: 3px 10px; font-size: 11.5px;
+  font-weight: 600; letter-spacing: 0.06em; color: var(--md-black); border-color: var(--md-black); }
+.poc-x:hover:enabled { background: var(--md-black); color: var(--md-white); border-color: var(--md-black); }
+.poc-links { list-style: none; margin: 10px 0 0; padding: 0; font-weight: 500; display: flex;
+  flex-wrap: wrap; gap: 2px 24px; margin-right: -72px; }
 .banner { margin: 14px 28px 0; padding: 10px 14px; border: 1px solid var(--bad);
   background: #1a0d0d; color: #ffd6d6; font-size: 13px; white-space: pre-wrap; }
 .filters { display: flex; gap: 14px; align-items: end; flex-wrap: wrap; padding: 18px 28px 0; }
@@ -846,7 +850,7 @@ function renderList(main) {
   }
   var index = familyIndex(items);
   var tbody = tableIn(sec, ["colour", "domainSep", "address", "kind", "name", "symbol",
-    "dec", "#mints (#tokens)", "first … last", "status", "tokenUri", "API"]);
+    "dec", "#mints (#tokens)", "first … last block", "status", "tokenUri", "API"]);
   for (var i = 0; i < items.length; i++) {
     var t = items[i];
     var tr = document.createElement("tr");
@@ -1362,8 +1366,26 @@ function schedule() {
 }
 function toggle() { state.paused = !state.paused; schedule(); if (!state.paused) refresh(); }
 
+// The proof-of-concept notice can be hidden. The choice is kept in localStorage when the browser
+// allows it (a private window may not), and an "about" button in the tab bar brings it back.
+var POC_KEY = "umbra.poc.hidden";
+function pocHidden() {
+  try { return window.localStorage.getItem(POC_KEY) === "1"; } catch (e) { return false; }
+}
+function setPoc(hidden) {
+  el("poc").hidden = hidden;
+  el("poc-show").hidden = !hidden;
+  try {
+    if (hidden) window.localStorage.setItem(POC_KEY, "1");
+    else window.localStorage.removeItem(POC_KEY);
+  } catch (e) { /* not persisted; still applied for this visit */ }
+}
+
 window.addEventListener("DOMContentLoaded", function () {
   state.route = parseHash();
+  setPoc(pocHidden());
+  el("poc-hide").addEventListener("click", function () { setPoc(true); });
+  el("poc-show").addEventListener("click", function () { setPoc(false); });
   el("now").addEventListener("click", function () { refresh(); });
   el("toggle").addEventListener("click", toggle);
   el("clear").addEventListener("click", function () {
@@ -1391,18 +1413,24 @@ window.addEventListener("DOMContentLoaded", function () {
 
 // ── The document ─────────────────────────────────────────────────────────────────────────────
 
-const BODY = `<aside class="poc" role="note">
+const BODY = `<aside id="poc" class="poc" role="note">
+  <button id="poc-hide" class="poc-x" type="button" aria-controls="poc">HIDE</button>
   <div class="poc-h">Proof of concept</div>
-  <p>This indexer implements <b>MIP-XXXX, On-Chain Token Metadata Emission</b>, the draft
-    specification in
-    <a href="https://github.com/midnightntwrk/midnight-improvement-proposals/pull/315" target="_blank" rel="noopener noreferrer">midnight-improvement-proposals PR&nbsp;#315</a>.
-    The MIP number is not assigned yet.</p>
-  <p>The specification is built on contract <b>events</b>: a contract publishes its token
-    metadata by emitting <code>mip-xxxx:token-metadata[v1]</code> events, and this page shows
-    what those events declared beside the mints observed on chain. A deployed contract can adopt
-    the specification by adding a circuit that emits the metadata.</p>
-  <p class="poc-src">Source of this indexer:
-    <a href="https://github.com/acedward/UmbraDB/pull/19" target="_blank" rel="noopener noreferrer">acedward/UmbraDB PR&nbsp;#19</a></p>
+  <p><b>This explorer lists every token on Midnight Stagenet</b>, with the name, symbol and
+    decimals of each token whose contract publishes them.</p>
+  <p>Midnight has no standard way for a token to publish its name, symbol or decimals. The draft
+    standard <b>MIP-XXXX, On-Chain Token Metadata Emission</b>
+    (<a href="https://github.com/midnightntwrk/midnight-improvement-proposals/pull/315" target="_blank" rel="noopener noreferrer">midnight-improvement-proposals PR&nbsp;#315</a>)
+    adds one: a contract announces its token's metadata by emitting <b>events</b>, and an indexer
+    like this one collects them.</p>
+  <ul class="poc-links">
+    <li>Indexer:
+      <a href="https://github.com/acedward/UmbraDB/pull/19" target="_blank" rel="noopener noreferrer">UmbraDB PR&nbsp;#19</a></li>
+    <li>Contracts:
+      <a href="https://github.com/acedward/mip-erc7496-midnight-contracts" target="_blank" rel="noopener noreferrer">mip-erc7496-midnight-contracts</a></li>
+    <li>Token addresses:
+      <a href="https://github.com/effectstream/staging-tokens-addresses" target="_blank" rel="noopener noreferrer">staging-tokens-addresses</a></li>
+  </ul>
 </aside>
 <header>
   <div class="brand">
@@ -1410,14 +1438,12 @@ const BODY = `<aside class="poc" role="note">
     <span class="rule"></span>
     <h1>Token explorer</h1>
   </div>
-  <div class="sub">every token the indexer has seen: what was <em>observed</em> on chain (mints)
-    beside what each contract <em>declared</em> about itself
-    (<code>mip-xxxx:token-metadata[v1]</code> events)</div>
   <nav class="tabs">
     <a id="nav-list" href="#/">tokens</a>
     <a id="nav-status" href="#/status">status</a>
     <span class="sep"></span>
     <span id="strip" class="strip"></span>
+    <button id="poc-show" type="button" aria-controls="poc" hidden>about</button>
     <button id="now">refresh now</button>
     <button id="toggle">pause auto-refresh</button>
     <span class="note">every 10&nbsp;s</span>
