@@ -844,10 +844,13 @@ export function decodeTokenFlows(
     // §4 view stays `intentHash(segment)` — that is the hash of the intent in the segment it is
     // keyed by.
     const intentHash = hex(intent.intentHash(segment));
-    const utxoIntentHash: Record<ActivitySection, string> = {
-      guaranteed: hex(intent.intentHash(0)),
-      fallible: intentHash,
-    };
+    let guaranteedIntentHash: string | undefined;
+    // Computed only when a guaranteed unshielded offer really has outputs, so an intent without one
+    // never pays for a second WASM hash it would not use.
+    const utxoIntentHash = (section: ActivitySection): string =>
+      section === "fallible"
+        ? intentHash
+        : (guaranteedIntentHash ??= hex(intent.intentHash(0)));
     const sections: Record<ActivitySection, UnshieldedOfferView | null> =
       { guaranteed: null, fallible: null };
     // The indexer numbers `output_index` across the intent's FULL output list, guaranteed section
@@ -889,7 +892,7 @@ export function decodeTokenFlows(
           color: hex(output.type), kind: KIND_UNSHIELDED_NATIVE,
           amount: BigInt(output.value), direction: "in",
           owner: hex(output.owner), ownerKey: undefined,
-          intentHash: utxoIntentHash[section], outputNo: index,
+          intentHash: utxoIntentHash(section), outputNo: index,
           address: undefined, entryPoint: undefined, callIndex: undefined, domainSep: undefined,
         });
       }
