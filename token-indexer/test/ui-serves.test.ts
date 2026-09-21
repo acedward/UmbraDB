@@ -271,6 +271,11 @@ describe("the token explorer page", () => {
     // Q10: an uncounted section is shown and marked, never silently dropped.
     expect(body).toContain("not counted");
 
+    // Q18: the transaction view names the number it actually has — the DUST the wallet offered,
+    // not the fee the ledger charged (which is not derivable from the archived bytes).
+    expect(body).toContain("DUST offered for fees");
+    expect(body).toContain("not the fee the ledger charged");
+
     // Q1: heights and positions, never a wall-clock time — the two wallet-set values inside a
     // transaction are labelled as such so they cannot be read as the block's time (US3).
     expect(body).toContain("wallet-set, not the block time");

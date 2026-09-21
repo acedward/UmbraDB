@@ -1781,6 +1781,16 @@ function normUnshielded(o, section) {
     inputs: arr(v.inputs), outputs: arr(v.outputs)
   };
 }
+function feeCell(feeSpeck) {
+  var wrap = node("span");
+  var value = node("span", orDash(feeSpeck) + " SPECK  ·  " + formatUnits(feeSpeck, 15) + " DUST", "amt");
+  value.title = "the sum of this transaction's DUST spends (vFee): what the wallet offered for "
+    + "fees, which is more than the ledger charged. The charged fee is not in the archived bytes.";
+  wrap.appendChild(value);
+  wrap.appendChild(node("span",
+    "  offered by the wallet, not the fee the ledger charged", "note"));
+  return wrap;
+}
 function segmentsText(segments) {
   var list = arr(segments);
   if (list.length === 0) return "-";
@@ -1823,7 +1833,11 @@ function renderTx(main) {
     ["segments", segmentsText(d.segments)],
     ["raw bytes", orDash(d.rawBytes)],
     ["identifiers", hexListCell(d.identifiers)],
-    ["fee", node("span", orDash(feeSpeck) + " SPECK  ·  " + formatUnits(feeSpeck, 15) + " DUST", "amt")],
+    // Question Q18 (runner A, measured on four fixtures): this is the sum of the DUST spends'
+    // vFee — what the wallet OFFERED, which runs about 1.25-1.5x what the ledger charged. The
+    // number the ledger required is not derivable from the archived bytes, so the page names the
+    // number it has rather than calling it "the fee" and disagreeing with every block explorer.
+    ["DUST offered for fees", feeCell(feeSpeck)],
     ["binding randomness", d.bindingRandomness === undefined ? "-" : (d.bindingRandomness ? "present" : "absent")]
   ]);
   main.appendChild(head);
