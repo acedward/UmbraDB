@@ -2,7 +2,7 @@
   "txHash": "c235e6b20f5c66771719ec5235d109ea664eb6dd576fe6396ccbfaed80fa6036",
   "selfReportedTxHash": "c235e6b20f5c66771719ec5235d109ea664eb6dd576fe6396ccbfaed80fa6036",
   "isSystem": false,
-  "rawByteLength": 34092,
+  "rawBytes": 34092,
   "identifiers": [
     "005d8394318b01cd0430c01436b932c0edb181a4c56ea877a89d66c4437dbb8882",
     "002ca1124189d563802cd284533100ae3480977712742b252b509925f150631552",

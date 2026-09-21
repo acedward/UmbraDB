@@ -2,7 +2,7 @@
   "txHash": "f5033d4f20e8419921f4633eee0e021017ab5b6bb07f9efb2ecad91959a40396",
   "selfReportedTxHash": "f5033d4f20e8419921f4633eee0e021017ab5b6bb07f9efb2ecad91959a40396",
   "isSystem": false,
-  "rawByteLength": 10434,
+  "rawBytes": 10434,
   "identifiers": [
     "000bd901dbd1d06ec77dab95bbe12ba2daa2e4468e50b0a1566b5363bbdb95bf6a",
     "00da72d1e220e7f84afb3d30de9f035c49159e371a7998704b84cf830c67949756"
@@ -41,7 +41,10 @@
           {
             "value": "200000",
             "color": "254fc19366d929e7a5813f04a89fbc68195046f5261428e721e5d16daca8bc47",
-            "ownerKey": "schnorr:68e8d35974b5b8999722d88ef1bd6d4118dcbfaf882e623f186683d3aa19020e",
+            "ownerKey": {
+              "tag": "schnorr",
+              "value": "68e8d35974b5b8999722d88ef1bd6d4118dcbfaf882e623f186683d3aa19020e"
+            },
             "ownerAddress": "db563c77b3b6ab6702720f7c1d9e2d0bfd4204c3f841460b6d03cb0079af585f",
             "spentIntentHash": "61cfd2c6bcfb2ab52404f9e7f6a5bcb19171e56feaa0decad41ba25b87ea9c78",
             "spentOutputNo": 0

@@ -384,7 +384,11 @@ export interface OfferView {
 export interface UnshieldedOfferView {
   counted: boolean;
   inputs: {
-    value: string; color: string; ownerKey: string; ownerAddress: string;
+    value: string; color: string;
+    /** Spec §4 spells this one as the ledger's own `{tag, value}` pair, unlike the `<tag>:<hex>`
+     *  string an {@link ActivityRecord} carries — a row is a table cell, this is a document. */
+    ownerKey: { tag: string; value: string };
+    ownerAddress: string;
     spentIntentHash: string; spentOutputNo: number;
   }[];
   outputs: { index: number; value: string; color: string; owner: string }[];
@@ -436,7 +440,8 @@ export interface PublicTransactionView {
    *  measured on 2026-09-21; carried so a disagreement would be visible rather than silent. */
   selfReportedTxHash: string | null;
   isSystem: boolean;
-  rawByteLength: number;
+  /** The transaction's own byte length — spec §4's "`rawBytes` (length)". */
+  rawBytes: number;
   identifiers: string[];
   /** The sum of `vFee` over every DUST spend — what the transaction OFFERS for its fee.
    *
@@ -445,7 +450,7 @@ export interface PublicTransactionView {
    *  248 379 650 240 359 vs 162 873 142 857 143 on `deposit-toMap`), which is what a wallet's fee
    *  margin looks like: `Transaction.feesWithMargin` offers more than `Transaction.fees` requires.
    *  The archive stores neither number, so this field is the only one derivable from the bytes.
-   *  Recorded as question Q15. */
+   *  Recorded as question Q18. */
   feeSpeck: string;
   bindingRandomness: boolean;
   offers: OfferView[];
@@ -529,13 +534,21 @@ function colorOfEffectKey(key: unknown, txHashHex: string, where: string): strin
   );
 }
 
-/** `<tag>:<hex>` for a `SignatureVerifyingKey`, which the ledger carries as `{tag, value}`. */
-function ownerKeyOf(key: unknown): string {
+/** A `SignatureVerifyingKey` as the ledger carries it: `{tag, value}` (`{tag:'schnorr', value}` on
+ *  chain today). Spec §4 renders it in this shape inside the transaction view. */
+function ownerKeyPair(key: unknown): { tag: string; value: string } {
   if (typeof key === "object" && key !== null && "tag" in key) {
     const k = key as { tag: unknown; value?: unknown };
-    return `${String(k.tag)}:${hex(k.value)}`;
+    return { tag: String(k.tag), value: hex(k.value) };
   }
-  return hex(key);
+  return { tag: "unknown", value: hex(key) };
+}
+
+/** The same key as one string, `<tag>:<hex>` — what an {@link ActivityRecord} and the
+ *  `token_activity.owner_key` column carry, because a row is one cell wide. */
+function ownerKeyOf(key: unknown): string {
+  const pair = ownerKeyPair(key);
+  return `${pair.tag}:${pair.value}`;
 }
 
 function gasView(gas: unknown): GasView {
@@ -641,7 +654,7 @@ export function decodeTokenFlows(
   txHashHex: string,
 ): DecodedTokenFlows {
   const emptyView: PublicTransactionView = {
-    txHash: txHashHex, selfReportedTxHash: null, isSystem: true, rawByteLength: rawBytes.length,
+    txHash: txHashHex, selfReportedTxHash: null, isSystem: true, rawBytes: rawBytes.length,
     identifiers: [], feeSpeck: "0", bindingRandomness: false, offers: [], intents: [], rewards: null,
   };
   // A system transaction exposes only `serialize/deserialize/toString` in the WASM, the archive
@@ -790,7 +803,7 @@ export function decodeTokenFlows(
         const ownerAddress = hex(ledger.addressFromKey(input.owner));
         view.inputs.push({
           value: big(input.value), color: hex(input.type),
-          ownerKey: ownerKeyOf(input.owner), ownerAddress,
+          ownerKey: ownerKeyPair(input.owner), ownerAddress,
           spentIntentHash: hex(input.intentHash), spentOutputNo: Number(input.outputNo),
         });
         push(counted, {
@@ -925,7 +938,7 @@ export function decodeTokenFlows(
       txHash: txHashHex,
       selfReportedTxHash,
       isSystem: false,
-      rawByteLength: rawBytes.length,
+      rawBytes: rawBytes.length,
       identifiers: identifiersOf(tx),
       feeSpeck: feeSpeck.toString(),
       bindingRandomness,

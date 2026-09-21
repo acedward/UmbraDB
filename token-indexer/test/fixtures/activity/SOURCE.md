@@ -35,7 +35,7 @@ silently.
 - The indexer's `fee` is **not** the sum of the transaction's DUST `vFee` spends. Measured on all
   four: `vFee` exceeds it by 25–53 % (`deposit-toMap`: 248 379 650 240 359 vs 162 873 142 857 143),
   which is what a wallet's fee margin looks like (`feesWithMargin` offers more than `fees` requires).
-  Spec §4 asked for this to be verified; the answer is no. Question Q15.
+  Spec §4 asked for this to be verified; the answer is no. Question Q18.
 - `unshieldedCreatedOutputs[].owner` / `unshieldedSpentOutputs[].owner` are **Bech32m**
   (`mn_addr_stagenet1…`) and decode to exactly the 32 bytes the ledger reports as the `UtxoOutput`
   owner / `addressFromKey(spend.owner)` — no version byte, no prefix. That is the verification spec
