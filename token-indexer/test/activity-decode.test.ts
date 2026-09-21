@@ -206,6 +206,60 @@ describe("decodeTokenFlows over recorded Stagenet transactions", () => {
     expect(out.calls[0]!.fallible!.effects.unshieldedOutputs).toEqual([{ color: NIGHT_COLOR_HEX, amount: "10" }]);
     golden("night-passthrough", "rows", out.activity);
     golden("night-passthrough", "view", out.view);
+
+    // ---- the two roles no archived transaction carries -------------------------------------
+    // Neither shape exists in the archive (0 ClaimRewards transactions in 13 471 blocks, and no
+    // archived intent carries unshielded outputs in BOTH sections), so both are proven on the
+    // injected ledger seam rather than left untested. They belong to this id because they are the
+    // same requirement — FR-001's roles — on the cases the chain has not produced yet.
+    // Neither shape exists in the archive (0 ClaimRewards transactions in 13 471 blocks, and no
+    // archived intent carries unshielded outputs in BOTH sections), so both are proven here on the
+    // injected ledger seam rather than left untested. Same id as the fixture-driven effects test
+    // above: it is the same requirement (FR-001's roles), proven on the cases the chain has not
+    // produced yet.
+    const raw = new Uint8Array(fakeRawTransaction("rewards"));
+    const OWNER_KEY = "11".repeat(32);
+    const FAKE_OWNER = "22".repeat(32);
+    const FAKE_COLOR = "33".repeat(32);
+
+    const rewarded = decodeTokenFlows(fakeLedger({
+      rewards: { value: 5_000_000n, ownerKey: OWNER_KEY, nonce: "44".repeat(32), kind: "Reward" },
+      addresses: { [OWNER_KEY]: FAKE_OWNER },
+      identifiers: [`01${"55".repeat(32)}`, `00${"66".repeat(32)}`],
+    }), raw, "success", null, "aa".repeat(32));
+    expect(rewarded.activity).toEqual([{
+      segment: 0, section: "guaranteed", role: "reward", itemIndex: 0,
+      color: NIGHT_COLOR_HEX, kind: 0, amount: 5_000_000n, direction: "in",
+      owner: FAKE_OWNER, ownerKey: `schnorr:${OWNER_KEY}`,
+      intentHash: "55".repeat(32), outputNo: 0,
+      address: undefined, entryPoint: undefined, callIndex: undefined, domainSep: undefined,
+    }]);
+    expect(rewarded.view.rewards).toEqual({
+      value: "5000000", owner: FAKE_OWNER, ownerKey: `schnorr:${OWNER_KEY}`,
+      nonce: "44".repeat(32), kind: "Reward",
+    });
+    // A failed transaction rewards nobody.
+    expect(decodeTokenFlows(fakeLedger({
+      rewards: { value: 5_000_000n, ownerKey: OWNER_KEY, nonce: "44".repeat(32) },
+      addresses: { [OWNER_KEY]: FAKE_OWNER },
+    }), raw, "failure", null, "aa".repeat(32)).activity).toEqual([]);
+
+    // The intent-wide output index runs guaranteed-first, then fallible — one counter across both
+    // sections, as the indexer numbers `unshielded_created_outputs`.
+    const twoSections = decodeTokenFlows(fakeLedger({
+      unshielded: [
+        { segment: 9, section: "guaranteed", outputs: [{ value: 1n, type: FAKE_COLOR, owner: FAKE_OWNER }] },
+        {
+          segment: 9, section: "fallible",
+          outputs: [{ value: 2n, type: FAKE_COLOR, owner: FAKE_OWNER }, { value: 3n, type: FAKE_COLOR, owner: FAKE_OWNER }],
+        },
+      ],
+    }), raw, "success", null, "bb".repeat(32));
+    expect(twoSections.activity.map((a) => [a.section, a.itemIndex, a.outputNo, a.amount])).toEqual([
+      ["guaranteed", 0, 0, 1n],
+      ["fallible", 0, 1, 2n],
+      ["fallible", 1, 2, 3n],
+    ]);
   }, 60_000);
 
   it("[[token-activity-dust-not-tracked]] a transaction that pays a DUST fee produces no DUST row of any kind, while its view lists the spend in full", () => {
@@ -325,54 +379,4 @@ describe("decodeTokenFlows over recorded Stagenet transactions", () => {
     }))).toThrow(/effects\.unshieldedInputs/);
   });
 
-  it("[[token-activity-decode-effects]] the two roles no archived transaction carries — a NIGHT reward, and outputs numbered across both sections of one intent — behave as the ledger defines them", () => {
-    // Neither shape exists in the archive (0 ClaimRewards transactions in 13 471 blocks, and no
-    // archived intent carries unshielded outputs in BOTH sections), so both are proven here on the
-    // injected ledger seam rather than left untested. Same id as the fixture-driven effects test
-    // above: it is the same requirement (FR-001's roles), proven on the cases the chain has not
-    // produced yet.
-    const raw = new Uint8Array(fakeRawTransaction("rewards"));
-    const OWNER_KEY = "11".repeat(32);
-    const OWNER = "22".repeat(32);
-    const COLOR = "33".repeat(32);
-
-    const rewarded = decodeTokenFlows(fakeLedger({
-      rewards: { value: 5_000_000n, ownerKey: OWNER_KEY, nonce: "44".repeat(32), kind: "Reward" },
-      addresses: { [OWNER_KEY]: OWNER },
-      identifiers: [`01${"55".repeat(32)}`, `00${"66".repeat(32)}`],
-    }), raw, "success", null, "aa".repeat(32));
-    expect(rewarded.activity).toEqual([{
-      segment: 0, section: "guaranteed", role: "reward", itemIndex: 0,
-      color: NIGHT_COLOR_HEX, kind: 0, amount: 5_000_000n, direction: "in",
-      owner: OWNER, ownerKey: `schnorr:${OWNER_KEY}`,
-      intentHash: "55".repeat(32), outputNo: 0,
-      address: undefined, entryPoint: undefined, callIndex: undefined, domainSep: undefined,
-    }]);
-    expect(rewarded.view.rewards).toEqual({
-      value: "5000000", owner: OWNER, ownerKey: `schnorr:${OWNER_KEY}`,
-      nonce: "44".repeat(32), kind: "Reward",
-    });
-    // A failed transaction rewards nobody.
-    expect(decodeTokenFlows(fakeLedger({
-      rewards: { value: 5_000_000n, ownerKey: OWNER_KEY, nonce: "44".repeat(32) },
-      addresses: { [OWNER_KEY]: OWNER },
-    }), raw, "failure", null, "aa".repeat(32)).activity).toEqual([]);
-
-    // The intent-wide output index runs guaranteed-first, then fallible — one counter across both
-    // sections, as the indexer numbers `unshielded_created_outputs`.
-    const twoSections = decodeTokenFlows(fakeLedger({
-      unshielded: [
-        { segment: 9, section: "guaranteed", outputs: [{ value: 1n, type: COLOR, owner: OWNER }] },
-        {
-          segment: 9, section: "fallible",
-          outputs: [{ value: 2n, type: COLOR, owner: OWNER }, { value: 3n, type: COLOR, owner: OWNER }],
-        },
-      ],
-    }), raw, "success", null, "bb".repeat(32));
-    expect(twoSections.activity.map((a) => [a.section, a.itemIndex, a.outputNo, a.amount])).toEqual([
-      ["guaranteed", 0, 0, 1n],
-      ["fallible", 0, 1, 2n],
-      ["fallible", 1, 2, 3n],
-    ]);
-  });
 });
