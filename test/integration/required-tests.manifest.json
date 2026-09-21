@@ -1,5 +1,5 @@
 {
-  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 72: the 25 v1.0.0-recovery-testing ids, plus the 40 token-indexer / chain-archive-result ids added by project 00020 sub-plan 01 Phase 7, plus project 00021 Phase D dropping token-status-inconsistent — the status the MIP removes — and adding 8 ids for the MIP PR #315 layout: token-payload-valtype, token-key-nonutf8, token-payload-projection, token-legacy-name-ignored, token-two-rows-liar, token-projection-error, token-key-nonutf8-stored and token-api-linked-rows) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
+  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 90: the 25 v1.0.0-recovery-testing ids, plus the 40 token-indexer / chain-archive-result ids added by project 00020 sub-plan 01 Phase 7, plus project 00021 Phase D dropping token-status-inconsistent — the status the MIP removes — and adding 8 ids for the MIP PR #315 layout: token-payload-valtype, token-key-nonutf8, token-payload-projection, token-legacy-name-ignored, token-two-rows-liar, token-projection-error, token-key-nonutf8-stored and token-api-linked-rows), plus project 00023 Phase C2 adding the 18 token-activity ids of spec 00023 §7 (six decoder ids in activity-decode.test.ts, five scanner ids in activity-scan.test.ts, six API ids in activity-api.test.ts and token-activity-bech32m in bech32m.test.ts) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
   "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` — those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early — that would re-open the exact self-skip hole this manifest closes.",
   "required": [
     {
@@ -361,6 +361,96 @@
       "id": "token-ui-serves",
       "file": "token-indexer/test/ui-serves.test.ts",
       "description": "00020 sub-plan 03 / spec §8, US4 (SC-006): serveUi answers GET|HEAD /ui with 200, text/html and the page's hash-based CSP, redirects / to /ui, and returns false for every other path AND method without touching the response (proved by a Proxy that throws on any access); the served HTML contains no external resource URL."
+    },
+    {
+      "id": "token-activity-decode-utxo",
+      "file": "token-indexer/test/activity-decode.test.ts",
+      "description": "00023 A2/FR-001: decodeTokenFlows turns an unshielded offer into utxo_in/utxo_out rows — the deposit-toMap fixture yields exactly one utxo_in (200000, owner db563c77…585f, spending 61cfd2c6…/0, fallible) plus one contract_in, and nothing else."
+    },
+    {
+      "id": "token-activity-decode-delta",
+      "file": "token-indexer/test/activity-decode.test.ts",
+      "description": "00023 A2/FR-001: a zswap offer delta becomes a shielded_delta row — the shielded-mint-delta fixture yields delta -1 (direction pool_in) on colour d086a9e2…2cea plus the mint row of the same colour."
+    },
+    {
+      "id": "token-activity-decode-effects",
+      "file": "token-indexer/test/activity-decode.test.ts",
+      "description": "00023 A2/FR-001: a contract transcript's unshieldedInputs/unshieldedOutputs effect maps become contract_in/contract_out rows ({tag,raw} keys read via .raw), plus the reward role and the intent-wide output numbering."
+    },
+    {
+      "id": "token-activity-dust-not-tracked",
+      "file": "token-indexer/test/activity-decode.test.ts",
+      "description": "00023/Q13: a transaction with DUST spends and registrations yields ZERO DUST activity rows while its §4 view still lists them; also pins that feeSpeck (Σ vFee) is NOT the indexer's fee (Q18)."
+    },
+    {
+      "id": "token-activity-balanced-invisible",
+      "file": "token-indexer/test/activity-decode.test.ts",
+      "description": "00023/SC-003: a balanced zswap offer publishes no colour — the balanced fixture yields deltas = 0, undisclosed = true and zero shielded_delta rows."
+    },
+    {
+      "id": "token-activity-unknown-shape-throws",
+      "file": "token-indexer/test/activity-decode.test.ts",
+      "description": "00023/FR-015: an effect key that is neither an object carrying `raw` nor a hex string makes the decoder THROW naming the transaction, instead of silently dropping the flow."
+    },
+    {
+      "id": "token-activity-seen-row",
+      "file": "token-indexer/test/activity-scan.test.ts",
+      "description": "00023/US5/FR-019: a colour with no tokens row creates a `seen` row (address/domainSep null, firstSeenHeight = that block); a later mint of the same colour completes that row IN PLACE (status observed) with COUNT(*) unchanged."
+    },
+    {
+      "id": "token-activity-scan-rows",
+      "file": "token-indexer/test/activity-scan.test.ts",
+      "description": "00023 A3/FR-001: scanning the four recorded fixtures writes the golden token_activity, shielded_offers and contract_calls rows (8 activity rows, 2 offers of which 1 undisclosed, 4 calls, 1 seen token, 0 rows without a colour)."
+    },
+    {
+      "id": "token-activity-counting",
+      "file": "token-indexer/test/activity-scan.test.ts",
+      "description": "00023/FR-002/Q10: counting follows the 00020 rule — a failure transaction stores no row, a partial_success drops the failed fallible section's rows and keeps the guaranteed ones, and shielded_offers/contract_calls carry the per-section counted flag."
+    },
+    {
+      "id": "token-activity-idempotent",
+      "file": "token-indexer/test/activity-scan.test.ts",
+      "description": "00023/FR-004: re-scanning the same blocks changes nothing — the five new counters are all 0 on the second pass and the dump of the three tables is byte-equal."
+    },
+    {
+      "id": "token-activity-rebuild-equal",
+      "file": "token-indexer/test/activity-scan.test.ts",
+      "description": "00023/FR-005: `rebuild` empties the three new tables, re-seeds the built-ins and regenerates token_activity/shielded_offers/contract_calls byte-for-byte equal to the live run."
+    },
+    {
+      "id": "token-activity-api-list",
+      "file": "token-indexer/test/activity-api.test.ts",
+      "description": "00023/FR-006: GET /v1/contracts/:a/tokens/:d/:k/transactions returns rows newest first with the role filter and cursor paging, amounts as decimal strings, owner as Bech32m plus ownerHex, and NO time/timestamp/date key anywhere (FR-012)."
+    },
+    {
+      "id": "token-activity-api-color",
+      "file": "token-indexer/test/activity-api.test.ts",
+      "description": "00023/FR-008/US5: GET /v1/colors/:color[/transactions] serves a `seen` colour (address null) for both kinds, and GET /v1/tokens?status=seen lists it."
+    },
+    {
+      "id": "token-activity-api-tx",
+      "file": "token-indexer/test/activity-api.test.ts",
+      "description": "00023/FR-007: GET /v1/transactions/:hash returns the spec §4 document, golden-equal for each recorded fixture, decoded from the archived bytes on request; 404 TOKEN_NOT_FOUND for an unknown hash."
+    },
+    {
+      "id": "token-activity-shielded-offers",
+      "file": "token-indexer/test/activity-api.test.ts",
+      "description": "00023/FR-018/Q14: every zswap offer is recorded; GET /v1/shielded-offers?undisclosed=true lists the balanced one and never the mint, no activity row of any colour names the balanced transaction, and the panel's count is the length of that list."
+    },
+    {
+      "id": "token-activity-api-calls",
+      "file": "token-indexer/test/activity-api.test.ts",
+      "description": "00023/FR-020/Q4: GET /v1/contracts/:address/calls lists every call with its public fields (entry point, op/log counts, gas, effect maps, counted), and a kind-2/3 token answers shieldedVisibility = calls-only with an empty transactions page."
+    },
+    {
+      "id": "token-activity-status-counters",
+      "file": "token-indexer/test/activity-api.test.ts",
+      "description": "00023/FR-013: /internal/status carries activityRows, seenTokens, shieldedOffers, undisclosedShieldedOffers and contractCalls, equal to the seeded numbers; seenTokens is re-derived from SQL (SC-009)."
+    },
+    {
+      "id": "token-activity-bech32m",
+      "file": "token-indexer/test/bech32m.test.ts",
+      "description": "00023/Q9/SC-008: the ported dependency-free Bech32m encoder reproduces the chain's own mn_addr_stagenet1… strings from the ledger's 32-byte hex and decodes them back (raw 32 bytes, no version byte); mainnet uses the bare mn_addr HRP."
     }
   ],
   "deferred": [

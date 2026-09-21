@@ -63,7 +63,19 @@ describe("the token explorer page", () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
-  it("[[token-ui-serves]] GET /ui answers 200 with the page and its CSP header", async () => {
+  /**
+   * ONE test carries `[[token-ui-serves]]`, deliberately: `check-required-tests.ts:165` treats an
+   * id reported by more than one test as an `ambiguous` GATE VIOLATION — with every test green.
+   * Project 00023 sub-plan 01 hit the same trap on `[[token-activity-decode-effects]]` and folded
+   * two tests into one for the same reason. The 00023 page assertions below (sub-plan 02, task
+   * B3.1) therefore live in this test's body rather than in five `it`s of their own; the file's
+   * other, untagged tests are unaffected.
+   *
+   * They are string checks on the served document because that is what a browser gets; the
+   * behaviour behind them was verified in a real browser against a throwaway fixture API (B2.5)
+   * and, in master Phase C3, against the live API on `127.0.0.1:10020`.
+   */
+  it("[[token-ui-serves]] GET /ui answers 200 with the page, its CSP header and the 00023 contract", async () => {
     const res = await fetch(`${base}/ui`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
@@ -83,6 +95,82 @@ describe("the token explorer page", () => {
     // …and it must admit this page's own inline blocks by hash, so they still run.
     expect(DASHBOARD_CSP).toMatch(/script-src 'sha256-[A-Za-z0-9+/]+=*'/);
     expect(DASHBOARD_CSP).toMatch(/style-src 'sha256-[A-Za-z0-9+/]+=*'/);
+
+    const script = /<script>([\s\S]*?)<\/script>/.exec(body)?.[1] ?? "";
+    const style = /<style>([\s\S]*?)<\/style>/.exec(body)?.[1] ?? "";
+
+    // ── 00023: it reads only the relative API routes of spec §5 ──────────────────────────────
+    // The route bases, spelled as literals so this test can read them off the document.
+    expect(script).toContain('"/v1/transactions"');
+    expect(script).toContain('"/v1/shielded-offers"');
+    // …and the paths built from them.
+    expect(script).toContain('"/transactions?limit="');
+    expect(script).toContain('"/calls?limit="');
+    expect(script).toContain('"&role="');
+    expect(script).toContain('"&cursor="');
+    expect(script).toContain('"&kind="');
+    expect(script).toContain('"&undisclosed="');
+
+    // Still no absolute URL anywhere in the script, and still nothing built into markup.
+    expect(script).not.toContain("http://");
+    expect(script).not.toContain("https://");
+    expect(script).not.toContain("innerHTML");
+
+    // ── 00023: the three new hash routes ─────────────────────────────────────────────────────
+    // #/tx/<hash> (US2), #/shielded-offers (FR-018) and #/color/<color>/<kind> (US5, the page of
+    // a colour whose mint predates the archive and which therefore has no contract route).
+    expect(body).toContain('"#/tx/"');
+    expect(body).toContain('"#/shielded-offers"');
+    expect(body).toContain('"#/color/"');
+    // The offers view is reachable from the chrome, not only from the disclosure panel.
+    expect(body).toContain('<a id="nav-offers" href="#/shielded-offers">');
+    // US5: the list can be filtered down to the colours no contract has named yet.
+    expect(body).toContain('<option value="seen">seen</option>');
+
+    // ── 00023: it states, in the owner's words, what is public and what is private ────────────
+    // US4: the two columns of the disclosure panel. The wording is the point of the screen.
+    expect(body).toContain("public: what anyone can read from the ledger");
+    expect(body).toContain("private: what the ledger never reveals");
+    expect(body).toContain("a transfer between two users: a balanced offer carries no colour at all");
+    expect(body).toContain("who received a coin");
+    // …and the chain-wide figure behind it (FR-018) with its explanation.
+    expect(body).toContain("these shielded offers carry no colour: the ledger does not say which token moved");
+
+    // US7 / Q4: the note above a ledger token's calls table, verbatim.
+    expect(body).toContain("only public data is listed — we do not have access to the code this executes");
+    expect(body).toContain("is defined by the contract and is not readable here");
+
+    // Q13: DUST has no per-token list and says so.
+    expect(body).toContain("fees are not tracked per token");
+
+    // Q10: an uncounted section is shown and marked, never silently dropped.
+    expect(body).toContain("not counted");
+
+    // Q18: the transaction view names the number it actually has — the DUST the wallet offered,
+    // not the fee the ledger charged (which is not derivable from the archived bytes).
+    expect(body).toContain("DUST offered for fees");
+    expect(body).toContain("not the fee the ledger charged");
+
+    // Q1: heights and positions, never a wall-clock time — the two wallet-set values inside a
+    // transaction are labelled as such so they cannot be read as the block's time (US3).
+    expect(body).toContain("wallet-set, not the block time");
+
+    // ── 00023 / Q9: wallet addresses are shown as Bech32m only ───────────────────────────────
+    // The API sends `ownerHex` for machine consumers; the page must never read it.
+    expect(script).not.toContain(".ownerHex");
+    // The Bech32m short form keeps the human-readable part whole and elides the data part.
+    expect(script).toContain("function shortAddr(");
+    expect(script).toContain("lastIndexOf");
+
+    // ── 00023: the CSP hashes are the hashes of the bytes it serves ──────────────────────────
+    const csp = res.headers.get("content-security-policy") ?? "";
+    const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("base64");
+    // Not "a hash is present" but "this hash is of this block": a policy that drifted from the
+    // code it authorises would leave the page blank in a browser and green in every other test.
+    expect(csp).toContain(`script-src 'sha256-${sha256(script)}'`);
+    expect(csp).toContain(`style-src 'sha256-${sha256(style)}'`);
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).toContain("connect-src 'self'");
   });
 
   it("serves a page with no external resource of any kind", async () => {
@@ -206,106 +294,6 @@ describe("the token explorer page", () => {
     // A non-GET method on /ui is the API router's 405 to give, not the page's.
     const posted = await fetch(`${base}/ui`, { method: "POST" });
     expect(posted.status).toBe(404);
-  });
-
-  // ── 00023: the transactions section, the transaction view, the disclosure panel ───────────
-  //
-  // These assertions are about the page's *contract with the reader*: the routes it calls, the
-  // words the owner decided on (Q4, Q13), and the two headings that make the privacy claim
-  // legible. They are string checks on the served document because that is what a browser gets;
-  // the behaviour behind them was verified in a browser against the throwaway fixture API
-  // (sub-plan 00023-02, task B2.5).
-
-  it("[[token-ui-serves]] reads only the relative API routes of spec 00023 section 5", async () => {
-    const body = await (await fetch(`${base}/ui`)).text();
-    const script = /<script>([\s\S]*?)<\/script>/.exec(body)?.[1] ?? "";
-
-    // The route bases, spelled as literals so this test can read them off the document.
-    expect(script).toContain('"/v1/transactions"');
-    expect(script).toContain('"/v1/shielded-offers"');
-    // …and the paths built from them.
-    expect(script).toContain('"/transactions?limit="');
-    expect(script).toContain('"/calls?limit="');
-    expect(script).toContain('"&role="');
-    expect(script).toContain('"&cursor="');
-    expect(script).toContain('"&kind="');
-    expect(script).toContain('"&undisclosed="');
-
-    // Still no absolute URL anywhere in the script, and still nothing built into markup.
-    expect(script).not.toContain("http://");
-    expect(script).not.toContain("https://");
-    expect(script).not.toContain("innerHTML");
-  });
-
-  it("[[token-ui-serves]] carries the three new hash routes", async () => {
-    const body = await (await fetch(`${base}/ui`)).text();
-    // #/tx/<hash> (US2), #/shielded-offers (FR-018) and #/color/<color>/<kind> (US5, the page of
-    // a colour whose mint predates the archive and which therefore has no contract route).
-    expect(body).toContain('"#/tx/"');
-    expect(body).toContain('"#/shielded-offers"');
-    expect(body).toContain('"#/color/"');
-    // The offers view is reachable from the chrome, not only from the disclosure panel.
-    expect(body).toContain('<a id="nav-offers" href="#/shielded-offers">');
-    // US5: the list can be filtered down to the colours no contract has named yet.
-    expect(body).toContain('<option value="seen">seen</option>');
-  });
-
-  it("[[token-ui-serves]] states, in the owner's words, what is public and what is private", async () => {
-    const body = await (await fetch(`${base}/ui`)).text();
-
-    // US4: the two columns of the disclosure panel. The wording is the point of the screen.
-    expect(body).toContain("public: what anyone can read from the ledger");
-    expect(body).toContain("private: what the ledger never reveals");
-    expect(body).toContain("a transfer between two users: a balanced offer carries no colour at all");
-    expect(body).toContain("who received a coin");
-    // …and the chain-wide figure behind it (FR-018) with its explanation.
-    expect(body).toContain("these shielded offers carry no colour: the ledger does not say which token moved");
-
-    // US7 / Q4: the note above a ledger token's calls table, verbatim.
-    expect(body).toContain("only public data is listed — we do not have access to the code this executes");
-    expect(body).toContain("is defined by the contract and is not readable here");
-
-    // Q13: DUST has no per-token list and says so.
-    expect(body).toContain("fees are not tracked per token");
-
-    // Q10: an uncounted section is shown and marked, never silently dropped.
-    expect(body).toContain("not counted");
-
-    // Q18: the transaction view names the number it actually has — the DUST the wallet offered,
-    // not the fee the ledger charged (which is not derivable from the archived bytes).
-    expect(body).toContain("DUST offered for fees");
-    expect(body).toContain("not the fee the ledger charged");
-
-    // Q1: heights and positions, never a wall-clock time — the two wallet-set values inside a
-    // transaction are labelled as such so they cannot be read as the block's time (US3).
-    expect(body).toContain("wallet-set, not the block time");
-  });
-
-  it("[[token-ui-serves]] shows wallet addresses as Bech32m only (Q9)", async () => {
-    const body = await (await fetch(`${base}/ui`)).text();
-    const script = /<script>([\s\S]*?)<\/script>/.exec(body)?.[1] ?? "";
-    // The API sends `ownerHex` for machine consumers; the page must never read it.
-    expect(script).not.toContain(".ownerHex");
-    // The Bech32m short form keeps the human-readable part whole and elides the data part.
-    expect(script).toContain("function shortAddr(");
-    expect(script).toContain("lastIndexOf");
-  });
-
-  it("[[token-ui-serves]] the CSP hashes are the hashes of the bytes it serves", async () => {
-    const res = await fetch(`${base}/ui`);
-    const csp = res.headers.get("content-security-policy") ?? "";
-    const body = await res.text();
-
-    const script = /<script>([\s\S]*?)<\/script>/.exec(body)?.[1] ?? "";
-    const style = /<style>([\s\S]*?)<\/style>/.exec(body)?.[1] ?? "";
-    const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("base64");
-
-    // Not "a hash is present" but "this hash is of this block": a policy that drifted from the
-    // code it authorises would leave the page blank in a browser and green in every other test.
-    expect(csp).toContain(`script-src 'sha256-${sha256(script)}'`);
-    expect(csp).toContain(`style-src 'sha256-${sha256(style)}'`);
-    expect(csp).toContain("default-src 'none'");
-    expect(csp).toContain("connect-src 'self'");
   });
 
   it("does not touch the response object for a route it declines", () => {
