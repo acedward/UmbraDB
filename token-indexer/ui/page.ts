@@ -37,6 +37,17 @@ import type { IncomingMessage, ServerResponse } from "node:http";
  *   GET /v1/contracts/:address/tokens/:domainSep/:kind/mints?limit&cursor
  *   GET /internal/status
  *
+ * and, since 00023 (spec `00023-token-transactions` §5, US1/US2/US4/US5/US7):
+ *
+ *   GET /v1/contracts/:address/tokens/:domainSep/:kind/transactions?role&limit&cursor
+ *   GET /v1/colors/:color/transactions?kind&role&limit&cursor   (a colour with no contract yet)
+ *   GET /v1/contracts/:address/calls?limit&cursor               (a ledger token's public activity)
+ *   GET /v1/transactions/:hash                                  (the whole public decode)
+ *   GET /v1/shielded-offers?undisclosed&limit&cursor            (what the ledger does not say)
+ *
+ * with four hash routes on top of the three it had: `#/tx/<hash>`, `#/shielded-offers` and
+ * `#/color/<color>/<kind>` (the page of a colour whose mint predates the archive, US5).
+ *
  * A `tokenUri` that points at `localhost:<any port>` is rewritten to this page's own origin
  * before it is rendered (spec §8 and FR-013: the reference Constellations pieces bake
  * `localhost:10020` into their metadata, and the API may well be listening somewhere else), so
@@ -199,6 +210,41 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .crumb { color: var(--dim); font-size: 13px; margin-bottom: 10px; }
 .wrapv { white-space: normal; word-break: break-word; max-width: 46ch; }
+/* ── 00023: activity rows, the disclosure panel, the calls note, the transaction view ───────
+   A colour seen in public data before any mint named it (status seen, US5) is marked with a
+   dashed badge: the row is real, the contract behind it is not known. */
+.st-seen { color: var(--md-white); border-color: var(--md-grey); border-style: dashed;
+  background: transparent; }
+.pill { display: inline-block; margin-left: 8px; padding: 0 7px; font-size: 11px; font-weight: 500;
+  color: var(--md-grey); border: 1px dashed var(--rule); }
+/* The disclosure panel (US4): two columns, public on the brand blue rule, private on grey. It is
+   the screen the owner wants to show, so it is the one place a section carries real prose. */
+.disc { display: grid; grid-template-columns: 1fr 1fr; gap: 0 26px; }
+.disc > div { border-top: 2px solid var(--rule); padding-top: 10px; }
+.disc .pub { border-top-color: var(--accent); }
+.disc h4 { margin: 0 0 8px; font-size: 13px; font-weight: 700; letter-spacing: 0.01em; }
+.disc ul { margin: 0; padding-left: 18px; }
+.disc li { margin: 4px 0; font-size: 13px; }
+.disc .pri li { color: var(--md-grey); }
+.counts { display: flex; gap: 26px; flex-wrap: wrap; margin-top: 14px; padding-top: 12px;
+  border-top: 1px solid var(--line); align-items: baseline; }
+.counts b { font-family: var(--mono); font-size: 16px; color: var(--ink); }
+.warnnote { margin: 0 0 12px; padding: 11px 14px; border-left: 4px solid var(--accent);
+  background: var(--panel2); color: var(--md-grey-light); font-size: 13px; line-height: 1.6; }
+.warnnote b { color: var(--md-white); }
+.chip { display: inline-block; padding: 0 7px; font-size: 11px; font-weight: 500;
+  border: 1px solid var(--rule); color: var(--dim); }
+.chip.nocount { color: var(--bad); border-color: var(--bad); }
+tr.det td { background: #0c0c0c; white-space: normal; }
+.det-grid { display: grid; grid-template-columns: max-content 1fr; gap: 5px 18px; font-size: 12.5px;
+  margin: 6px 0 4px; }
+.det-grid .k { color: var(--dim); }
+.amt { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.expand { padding: 1px 9px; font-size: 11.5px; }
+.txsec { margin-top: 14px; }
+.txsec:first-child { margin-top: 0; }
+.txsec > .h { color: var(--dim); font-size: 12px; margin-bottom: 6px; }
+@media (max-width: 880px) { .disc { grid-template-columns: 1fr; } }
 `;
 
 // ── Behaviour ────────────────────────────────────────────────────────────────────────────────
@@ -218,15 +264,25 @@ const SCRIPT = `
 //   GET /v1/contracts/:address/tokens/:domainSep/:kind
 //   GET /v1/contracts/:address/tokens/:domainSep/:kind/metadata
 //   GET /v1/contracts/:address/tokens/:domainSep/:kind/mints
+//   GET /v1/contracts/:address/tokens/:domainSep/:kind/transactions   (00023, FR-006)
+//   GET /v1/colors/:color/transactions                                (00023, FR-008)
+//   GET /v1/contracts/:address/calls                                  (00023, FR-020)
+//   GET /v1/transactions/:hash                                        (00023, FR-007)
+//   GET /v1/shielded-offers                                           (00023, FR-018)
 //   GET /internal/status
 var P_TOKENS = "/v1/tokens";
 var P_COLORS = "/v1/colors";
 var P_CONTRACTS = "/v1/contracts";
+var P_TXS = "/v1/transactions";
+var P_OFFERS = "/v1/shielded-offers";
 var P_STATUS = "/internal/status";
 
 var REFRESH_MS = 10000;
 var LIST_LIMIT = 200;
 var MINT_LIMIT = 200;
+var ACT_LIMIT = 200;
+var CALL_LIMIT = 200;
+var OFFER_LIMIT = 200;
 
 var state = {
   route: { view: "list" },
@@ -235,6 +291,12 @@ var state = {
   detail: null,
   contract: null,
   status: null,
+  // 00023: the transactions section's own controls, kept outside "detail" so a 10 s refresh does
+  // not throw away a role filter, a loaded page or an opened offer.
+  act: { role: "", pages: 1, expand: {} },
+  tx: null,
+  offers: { items: [], nextCursor: null, loaded: false, undisclosed: "true", pages: 1 },
+  scrollTo: null,
   errors: [],
   lastOk: null,
   paused: false,
@@ -401,6 +463,165 @@ function itemsOf(payload) {
   if (payload.tokens && Object.prototype.toString.call(payload.tokens) === "[object Array]") return payload.tokens;
   return [];
 }
+function isArray(v) { return Object.prototype.toString.call(v) === "[object Array]"; }
+function arr(v) { return isArray(v) ? v : []; }
+// A collection the API may send either as an array or as a map keyed by segment (spec §4 names
+// "fallibleOffer: Map<segment, ZswapOffer>" and "intents: Map<segment, Intent>"; question Q15).
+// Either way this hands back a list whose items carry their segment.
+function segList(v) {
+  if (isArray(v)) return v;
+  if (!v || typeof v !== "object") return [];
+  var out = [];
+  for (var k in v) {
+    if (!Object.prototype.hasOwnProperty.call(v, k)) continue;
+    var item = v[k];
+    if (!item || typeof item !== "object") continue;
+    var copy = {};
+    for (var p in item) if (Object.prototype.hasOwnProperty.call(item, p)) copy[p] = item[p];
+    if (copy.segment === undefined || copy.segment === null) copy.segment = Number(k);
+    out.push(copy);
+  }
+  return out;
+}
+function count(v) { return isArray(v) ? v.length : (v === null || v === undefined ? 0 : Number(v)); }
+
+// ── 00023: amounts, roles, wallet addresses ─────────────────────────────────────────────────
+
+// Exact by construction (FR-014): the API sends the raw integer as a decimal string and the token
+// its decimals, so the point is placed by hand. No Number(), no rounding, no locale — a token with
+// 18 decimals would lose its low digits to a float before it ever reached the screen.
+function formatUnits(amount, decimals) {
+  var s = String(amount === null || amount === undefined ? "" : amount);
+  if (s === "") return "-";
+  var sign = "";
+  if (s.charAt(0) === "-") { sign = "-"; s = s.slice(1); }
+  var d = decimals === null || decimals === undefined ? 0 : Number(decimals);
+  if (!(d > 0)) return sign + s;
+  while (s.length <= d) s = "0" + s;
+  return sign + s.slice(0, s.length - d) + "." + s.slice(s.length - d);
+}
+function decimalsOf(a, t) {
+  if (t && t.decimals !== null && t.decimals !== undefined) return t.decimals;
+  if (a && a.token && a.token.decimals !== null && a.token.decimals !== undefined) return a.token.decimals;
+  return null;
+}
+// The row's amount in the token's decimals; the raw units are on hover (FR-009). A shielded delta
+// is stored unsigned with a direction, and the ledger's own sign is restored here: value entering
+// the pool is a negative delta (spec §0), which is what a reader comparing with the chain expects.
+function amountCell(a, t) {
+  var dec = decimalsOf(a, t);
+  var sign = a.direction === "pool_in" ? "-" : (a.direction === "pool_out" ? "+" : "");
+  var s = node("span", sign + formatUnits(a.amount, dec), "amt");
+  var title = String(a.amount) + " raw units";
+  if (dec !== null && dec !== undefined) title += "  ·  decimals " + dec;
+  if (a.role === "shielded_delta") title += "  ·  offer delta " + sign + String(a.amount);
+  s.title = title;
+  return s;
+}
+var ROLES = [
+  ["", "all"],
+  ["utxo_out", "UTXO created"],
+  ["utxo_in", "UTXO spent"],
+  ["contract_in", "received by contract"],
+  ["contract_out", "paid by contract"],
+  ["mint", "minted"],
+  ["shielded_delta", "shielded pool delta"],
+  ["reward", "reward"]
+];
+function roleLabel(a) {
+  if (a.role === "shielded_delta") {
+    return a.direction === "pool_out" ? "out of the shielded pool" : "into the shielded pool";
+  }
+  for (var i = 1; i < ROLES.length; i++) if (ROLES[i][0] === a.role) return ROLES[i][1];
+  return String(a.role);
+}
+// Q9: a wallet address is shown as Bech32m and only as Bech32m. The human-readable part names the
+// network and is kept whole; the data part is elided in the middle. The API also sends "ownerHex",
+// which this page never displays.
+function shortAddr(s) {
+  var v = String(s === null || s === undefined ? "" : s);
+  if (v === "") return "-";
+  var cut = v.lastIndexOf("1");
+  if (cut < 1 || v.length - cut < 16) return v;
+  return v.slice(0, cut + 1) + v.slice(cut + 1, cut + 6) + "…" + v.slice(v.length - 5);
+}
+function ownerCell(owner) {
+  if (!owner) return node("span", "-", "no");
+  return copyable(owner, shortAddr(owner), "hex");
+}
+function contractLink(address, label) {
+  if (!address) return node("span", "-", "no");
+  var a = node("a", label === undefined || label === null ? shortHex(address, 8, 6) : label, "hex");
+  a.href = hashContract(address);
+  a.title = address + " (open the contract)";
+  a.addEventListener("click", function (ev) { ev.stopPropagation(); });
+  return a;
+}
+function txLink(hash) {
+  if (!hash) return node("span", "-", "no");
+  var a = node("a", shortHex(hash, 8, 6), "hex");
+  a.href = hashTx(hash);
+  a.title = hash + " (open the whole transaction)";
+  a.addEventListener("click", function (ev) { ev.stopPropagation(); });
+  return a;
+}
+function colorLink(color, kind) {
+  if (!color) return node("span", "-", "no");
+  var a = node("a", shortHex(color, 8, 6), "hex");
+  a.href = hashColor(color, kind === null || kind === undefined ? 0 : kind);
+  a.title = color + " (open the token of this colour)";
+  a.addEventListener("click", function (ev) { ev.stopPropagation(); });
+  return a;
+}
+function hexListCell(values, key) {
+  var list = arr(values);
+  if (list.length === 0) return node("span", "none", "no");
+  var wrap = node("span");
+  for (var i = 0; i < list.length; i++) {
+    var v = key === undefined ? list[i] : list[i][key];
+    if (i > 0) wrap.appendChild(node("span", "  "));
+    if (!v) wrap.appendChild(node("span", "-", "no"));
+    else wrap.appendChild(copyable(v, shortHex(String(v), 8, 6), "hex"));
+  }
+  return wrap;
+}
+function countedChip(counted) {
+  if (counted === false) {
+    var c = node("span", "not counted", "chip nocount");
+    c.title = "this section did not count: the transaction failed or its fallible segment did "
+      + "(spec FR-002, Q10). No activity row is stored for it; the transaction is shown whole.";
+    return c;
+  }
+  return node("span", "counted", "chip");
+}
+// Spec §5: the API states what a token's page can honestly show. The fallback derives the same
+// answer from the row itself, so the page still renders against an API that has not caught up.
+function visibilityOf(t) {
+  if (!t) return "full";
+  if (t.shieldedVisibility) return String(t.shieldedVisibility);
+  if (t.storage === "ledger") return "calls-only";
+  if (t.status === "builtin" && !t.color) return "not-tracked";
+  return Number(t.kind) === 1 ? "disclosed-imbalances" : "full";
+}
+var VISIBILITY = {
+  "full": "everything: every UTXO and every contract flow of this colour is public",
+  "disclosed-imbalances": "the offers whose imbalance names this colour, and nothing about the coins",
+  "calls-only": "its contract's calls; balances live in contract state this indexer does not read",
+  "not-tracked": "not tracked per token: every transaction pays a DUST fee"
+};
+function visibilityCell(t) {
+  var v = visibilityOf(t);
+  var s = node("span", v + " — " + (VISIBILITY[v] ? VISIBILITY[v] : "unknown"), "wrapv");
+  return s;
+}
+// FR-013's five counters: read from "counters" first, then from the top level (question Q16).
+function counterOf(st, name) {
+  if (!st) return null;
+  var c = st.counters || {};
+  if (c[name] !== undefined && c[name] !== null) return c[name];
+  if (st[name] !== undefined && st[name] !== null) return st[name];
+  return null;
+}
 
 // ── Routing (hash only: the page is one document and every view is bookmarkable) ────────────
 
@@ -415,16 +636,29 @@ function parseHash() {
   }
   if (parts.length === 0) return { view: "list" };
   if (parts[0] === "status") return { view: "status" };
+  if (parts[0] === "shielded-offers") return { view: "offers" };
+  if (parts[0] === "tx" && parts.length >= 2) return { view: "tx", hash: parts[1] };
   if (parts[0] === "contract" && parts.length >= 2) return { view: "contract", address: parts[1] };
   if (parts[0] === "token" && parts.length >= 4) {
     return { view: "token", address: parts[1], domainSep: parts[2], kind: parts[3] };
   }
+  // US5: a colour whose mint predates the archive has no (address, domainSep) to route by, so its
+  // page is the colour and the kind. When a later mint names it, the token route works as well.
+  if (parts[0] === "color" && parts.length >= 3) {
+    return { view: "token", color: parts[1], kind: parts[2] };
+  }
   return { view: "list" };
 }
 function hashToken(t) {
+  if (!t.address || !t.domainSep) return t.color ? hashColor(t.color, t.kind) : "#/";
   return "#/token/" + enc(t.address) + "/" + enc(t.domainSep) + "/" + enc(t.kind);
 }
+function hashColor(color, kind) { return "#/color/" + enc(color) + "/" + enc(kind); }
+function hashTx(h) { return "#/tx/" + enc(h); }
 function hashContract(a) { return "#/contract/" + enc(a); }
+function routeKey(r) {
+  return [r.view, r.address, r.domainSep, r.kind, r.color, r.hash].join("|");
+}
 function go(hash) { window.location.hash = hash; }
 
 // ── tokenUri and the resolver ───────────────────────────────────────────────────────────────
@@ -503,7 +737,9 @@ function resolverPaths(t) {
 // different rows, so a row has nothing to contradict.
 function statusBadge(s) {
   var v = s ? String(s) : "unknown";
-  var known = ["builtin", "observed", "declared", "described"];
+  // 00023 adds the fourth row source: a colour seen in public data whose contract is not known
+  // yet (US5). It is a real row with real transactions and no name.
+  var known = ["builtin", "observed", "declared", "described", "seen"];
   var cls = known.indexOf(v) < 0 ? "st-unknown" : "st-" + v;
   return node("span", v, "badge " + cls);
 }
@@ -566,7 +802,18 @@ function nameCell(t, index) {
   var wrap = node("span");
   var fam = familyOf(t, index);
   if (fam) wrap.appendChild(node("span", fam, "fam fam-" + fam));
-  wrap.appendChild(node("span", t.name ? String(t.name) : "(undescribed)", t.name ? "txt" : "no"));
+  var seen = t.status === "seen";
+  wrap.appendChild(node("span",
+    t.name ? String(t.name) : (seen ? "colour " + shortHex(t.color, 8, 6) : "(undescribed)"),
+    t.name ? "txt" : (seen ? "hex" : "no")));
+  if (seen) {
+    // US5: the row exists because the colour was seen moving, not because a contract said so.
+    var pill = node("span", "unknown contract", "pill");
+    pill.title = "this colour was seen in public transaction data before any mint or metadata "
+      + "event named it: its contract and domain separator are not known (its mint predates the "
+      + "archive). A later mint or metadata event completes this row in place.";
+    wrap.appendChild(pill);
+  }
   return wrap;
 }
 // One trait's value, rendered by its declared type (MIP section 2.1): text for 1/3/4, the decimal
@@ -665,7 +912,9 @@ function isZeroHex(s) {
 // NIGHT and DUST are seeded rows with no contract behind them: their "address" is a sentinel of
 // 32 zero bytes, and printing 64 zeros as if it were a deployment would be a lie in 64 characters.
 function addressCell(t) {
-  if (!t.address) return node("span", "built-in", "no");
+  // Two different absences, and neither is an empty cell: a built-in row has a zero sentinel
+  // instead of a contract, a "seen" row has none yet (US5).
+  if (!t.address) return node("span", t.status === "seen" ? "unknown contract" : "built-in", "no");
   if (isZeroHex(t.address)) return node("span", "built-in", "no");
   return copyable(t.address, shortHex(t.address, 8, 6), "hex");
 }
@@ -681,14 +930,21 @@ function heightsCell(t) {
   if (t.firstMintHeight === null || t.firstMintHeight === undefined) return node("span", "-", "no");
   return node("span", String(t.firstMintHeight) + " … " + orDash(t.lastMintHeight));
 }
+// NIGHT and DUST first, then every named row, then the colours nobody has named yet (US5
+// scenario 3: "seen" rows sort after named rows — they are the ones a reader can say least about).
 function sortTokens(items) {
   var built = [];
   var rest = [];
+  var seen = [];
   for (var i = 0; i < items.length; i++) {
-    if (items[i] && items[i].status === "builtin") built.push(items[i]); else rest.push(items[i]);
+    var t = items[i];
+    if (!t) continue;
+    if (t.status === "builtin") built.push(t);
+    else if (t.status === "seen") seen.push(t);
+    else rest.push(t);
   }
   built.sort(function (a, b) { return String(a.symbol) < String(b.symbol) ? 1 : -1; });  // NIGHT, then DUST
-  return built.concat(rest);
+  return built.concat(rest).concat(seen);
 }
 
 // ── Loaders ─────────────────────────────────────────────────────────────────────────────────
@@ -715,8 +971,77 @@ function tokenBase(r) {
 function contractEventsPath(address) {
   return P_CONTRACTS + "/" + enc(address) + "/events?applied=false";
 }
+// FR-006 by (address, domainSep, kind); FR-008 by colour for a row that has no address yet (US5).
+function activityPath(t, cursor) {
+  var p;
+  if (t.address && t.domainSep) p = tokenBase(t) + "/transactions?limit=" + ACT_LIMIT;
+  else p = P_COLORS + "/" + enc(t.color) + "/transactions?limit=" + ACT_LIMIT + "&kind=" + enc(t.kind);
+  if (state.act.role) p += "&role=" + enc(state.act.role);
+  if (cursor) p += "&cursor=" + enc(cursor);
+  return p;
+}
+function callsPath(address, cursor) {
+  var p = P_CONTRACTS + "/" + enc(address) + "/calls?limit=" + CALL_LIMIT;
+  if (cursor) p += "&cursor=" + enc(cursor);
+  return p;
+}
+// "load more" is a page count, not a saved cursor: the 10 s refresh re-reads the same number of
+// pages, so a reader who asked for 600 NIGHT rows still has them after it fires.
+async function loadPages(pathOf, pages) {
+  var items = [];
+  var cursor = null;
+  var next = null;
+  for (var i = 0; i < (pages > 0 ? pages : 1); i++) {
+    var payload = await api(pathOf(cursor));
+    items = items.concat(itemsOf(payload));
+    next = payload && payload.nextCursor ? payload.nextCursor : null;
+    if (!next) break;
+    cursor = next;
+  }
+  return { items: items, nextCursor: next };
+}
 async function loadToken(r) {
-  var d = { token: null, keys: [], mints: [], events: [], siblings: [], notes: [] };
+  var d = { token: null, keys: [], mints: [], events: [], siblings: [], activity: null,
+    calls: null, notes: [] };
+  if (r.color) {
+    await loadSeenToken(r, d);
+  } else {
+    await loadNamedToken(r, d);
+  }
+  await loadTokenActivity(d);
+  state.detail = d;
+}
+// A "seen" row (US5) has no token route to ask, so the colour document answers for it and the row
+// of the route's kind is the one shown; its traits and mints travel with it (question Q17).
+async function loadSeenToken(r, d) {
+  var doc = await api(P_COLORS + "/" + enc(r.color));
+  var rows = itemsOf(doc && doc.tokens ? { items: doc.tokens } : null);
+  for (var i = 0; i < rows.length; i++) {
+    if (String(rows[i].kind) === String(r.kind)) d.token = rows[i];
+  }
+  if (d.token === null && rows.length > 0) d.token = rows[0];
+  if (d.token === null) throw new Error("404 TOKEN_NOT_FOUND: no row for colour " + r.color);
+  d.keys = itemsOf(d.token.traits ? { items: d.token.traits } : null);
+  d.mints = itemsOf(d.token.mints);
+  d.siblings = rows;
+}
+async function loadTokenActivity(d) {
+  var t = d.token;
+  var vis = visibilityOf(t);
+  // DUST (Q13) asks for nothing: every transaction pays a fee, so there is no per-token list.
+  if (vis === "not-tracked") return;
+  if (vis === "calls-only") {
+    if (!t.address) return;
+    await loadPages(function (c) { return callsPath(t.address, c); }, state.act.pages).then(
+      function (p) { d.calls = p; },
+      function (e) { d.notes.push("contract calls unavailable: " + e.message); });
+    return;
+  }
+  await loadPages(function (c) { return activityPath(t, c); }, state.act.pages).then(
+    function (p) { d.activity = p; },
+    function (e) { d.notes.push("transactions unavailable: " + e.message); });
+}
+async function loadNamedToken(r, d) {
   d.token = await api(tokenBase(r));
   await Promise.all([
     api(tokenBase(r) + "/metadata").then(
@@ -737,15 +1062,41 @@ async function loadToken(r) {
       function (p) { d.siblings = itemsOf(p && p.tokens ? { items: p.tokens } : null); },
       function (e) { d.notes.push("related rows unavailable: " + e.message); })
   ]);
-  state.detail = d;
 }
 async function loadContract(address) {
-  var c = { contract: null, events: [], notes: [] };
+  var c = { contract: null, events: [], calls: null, notes: [] };
   c.contract = await api(P_CONTRACTS + "/" + enc(address));
-  await api(contractEventsPath(address)).then(
-    function (p) { c.events = itemsOf(p); },
-    function (e) { c.notes.push("raw events unavailable: " + e.message); });
+  await Promise.all([
+    api(contractEventsPath(address)).then(
+      function (p) { c.events = itemsOf(p); },
+      function (e) { c.notes.push("raw events unavailable: " + e.message); }),
+    // US7: the same calls table the ledger-token page shows, under the same note.
+    loadPages(function (cur) { return callsPath(address, cur); }, state.act.pages).then(
+      function (p) { c.calls = p; },
+      function (e) { c.notes.push("contract calls unavailable: " + e.message); })
+  ]);
   state.contract = c;
+}
+// FR-007: the whole public decode of one transaction, computed on request from the archived bytes.
+async function loadTx(hash) {
+  var keep = state.tx && state.tx.hash === hash ? state.tx.raw : false;
+  var doc = await api(P_TXS + "/" + enc(hash));
+  state.tx = { hash: hash, doc: doc, raw: keep };
+}
+// FR-018: the chain-wide list behind the disclosure panel's number.
+function offersPath(cursor) {
+  var p = P_OFFERS + "?limit=" + OFFER_LIMIT;
+  if (state.offers.undisclosed === "true" || state.offers.undisclosed === "false") {
+    p += "&undisclosed=" + enc(state.offers.undisclosed);
+  }
+  if (cursor) p += "&cursor=" + enc(cursor);
+  return p;
+}
+async function loadOffers() {
+  var page = await loadPages(offersPath, state.offers.pages);
+  state.offers.items = page.items;
+  state.offers.nextCursor = page.nextCursor;
+  state.offers.loaded = true;
 }
 async function loadStatus() { state.status = await api(P_STATUS); }
 
@@ -761,6 +1112,8 @@ async function refresh() {
     if (route.view === "list") await loadList(null);
     else if (route.view === "token") await loadToken(route);
     else if (route.view === "contract") await loadContract(route.address);
+    else if (route.view === "tx") await loadTx(route.hash);
+    else if (route.view === "offers") await loadOffers();
   } catch (e) {
     errors.push(route.view + ": " + e.message);
   }
@@ -800,9 +1153,11 @@ function renderStrip() {
   s.appendChild(node("span", state.lastOk ? "updated " + state.lastOk.toLocaleTimeString() : "never updated"));
 }
 function renderTabs() {
-  el("nav-list").className = state.route.view === "status" ? "" : "on";
-  el("nav-status").className = state.route.view === "status" ? "on" : "";
-  el("filters").hidden = state.route.view !== "list";
+  var v = state.route.view;
+  el("nav-list").className = v === "status" || v === "offers" ? "" : "on";
+  el("nav-offers").className = v === "offers" ? "on" : "";
+  el("nav-status").className = v === "status" ? "on" : "";
+  el("filters").hidden = v !== "list";
 }
 
 // ── View: list ──────────────────────────────────────────────────────────────────────────────
@@ -888,10 +1243,911 @@ function renderList(main) {
   }
   sec.appendChild(node("div",
     "click a row for the token view · click a hex value to copy it · rows with status builtin are the "
-    + "hardcoded NIGHT and DUST entries, every other row comes from an observed mint or an emitted event "
+    + "hardcoded NIGHT and DUST entries, rows with status seen are colours this indexer watched move "
+    + "before any contract named them, every other row comes from an observed mint or an emitted event "
     + "· a token is (contract, domainSep, kind) with the whole kind byte, so one domain separator can "
     + "hold up to four rows",
     "note"));
+  main.appendChild(sec);
+}
+
+// ── 00023: the transactions section, the disclosure panel and the contract calls ────────────
+
+// One row per public occurrence of the token in an archived transaction (US1, FR-009). Heights and
+// positions only: the archive holds no wall-clock time and the owner asked for none (Q1).
+function activitySection(t, d) {
+  var sec = node("section");
+  sec.id = "activity";
+  sec.appendChild(node("h2", "transactions: every public occurrence of this token"));
+  var vis = visibilityOf(t);
+
+  var bar = node("div", null, "row");
+  bar.appendChild(node("span", "what happened", "note"));
+  var sel = document.createElement("select");
+  for (var i = 0; i < ROLES.length; i++) {
+    var opt = document.createElement("option");
+    opt.value = ROLES[i][0];
+    opt.textContent = ROLES[i][1];
+    if (ROLES[i][0] === state.act.role) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  sel.addEventListener("change", function () {
+    state.act.role = sel.value;
+    state.act.pages = 1;
+    refresh();
+  });
+  bar.appendChild(sel);
+  var rows = d.activity ? d.activity.items : [];
+  bar.appendChild(node("span",
+    (d.activity ? rows.length + " row" + (rows.length === 1 ? "" : "s") : "loading…")
+    + (d.activity && d.activity.nextCursor ? " (more available)" : "")
+    + (t.activityCount === null || t.activityCount === undefined ? "" : "  ·  " + t.activityCount + " in the index"),
+    "note"));
+  sec.appendChild(bar);
+
+  if (!d.activity) {
+    sec.appendChild(node("div", "not loaded (see the banner above)", "empty"));
+    return sec;
+  }
+  if (rows.length === 0) {
+    sec.appendChild(node("div", state.act.role
+      ? "no row of this kind for this token; clear the filter to see the rest"
+      : (vis === "disclosed-imbalances"
+        ? "no transaction has published this colour yet. That is not proof that nothing moved: a "
+          + "balanced shielded transfer publishes no colour at all (see the panel above)."
+        : "no archived transaction has touched this token yet"), "empty"));
+    return sec;
+  }
+  var tb = tableIn(sec, ["block", "pos", "tx", "what", "amount", "counterparty", "section", ""]);
+  for (var r = 0; r < rows.length; r++) {
+    var a = rows[r];
+    var key = String(a.txHash) + "|" + String(a.segment) + "|" + String(a.section) + "|"
+      + String(a.role) + "|" + String(a.itemIndex);
+    var tr = document.createElement("tr");
+    cell(tr, orDash(a.blockHeight), "num");
+    cell(tr, orDash(a.txPosition), "num");
+    cell(tr, txLink(a.txHash));
+    cell(tr, node("span", roleLabel(a)));
+    cell(tr, amountCell(a, t), "num");
+    cell(tr, counterpartyCell(a));
+    cell(tr, node("span", String(a.section) + " · segment " + orDash(a.segment), "note"));
+    if (a.role === "shielded_delta") {
+      var open = state.act.expand[key] !== undefined && state.act.expand[key] !== null;
+      var btn = node("button", open ? "hide offer" : "offer", "expand");
+      (function (row, k) {
+        btn.addEventListener("click", function (ev) { ev.stopPropagation(); toggleOffer(row, k); });
+      })(a, key);
+      cell(tr, btn);
+    } else {
+      cell(tr, node("span", "", "no"));
+    }
+    tb.appendChild(tr);
+    if (a.role === "shielded_delta" && state.act.expand[key]) tb.appendChild(offerDetailRow(a, key, 8));
+  }
+  if (d.activity.nextCursor) {
+    var more = node("button", "load more");
+    more.addEventListener("click", function () {
+      more.disabled = true;
+      state.act.pages = state.act.pages + 1;
+      refresh();
+    });
+    var holder = node("div", null, "row");
+    holder.style.marginTop = "10px";
+    holder.appendChild(more);
+    holder.appendChild(node("span", "500 rows at most per request; NIGHT's list is long by design (Q2)", "note"));
+    sec.appendChild(holder);
+  }
+  sec.appendChild(node("div", activityHint(vis), "note"));
+  return sec;
+}
+function activityHint(vis) {
+  if (vis === "disclosed-imbalances") {
+    return "a shielded token's list holds exactly what the ledger publishes about its colour: the "
+      + "offers whose net imbalance names it (mints, burns, a contract paying into or out of the "
+      + "pool) and its mints. A balanced transfer between two users names no colour and cannot "
+      + "appear here — open the offer of a row to see what the ledger does publish.";
+  }
+  return "one row per public occurrence of this token in an archived transaction, newest first · "
+    + "block height and position in the block, never a wall-clock time (the archive stores none) · "
+    + "amounts are shown in the token's decimals, the raw units are on hover · an owner is shown as "
+    + "its Bech32m address, which is what a wallet shows";
+}
+function counterpartyCell(a) {
+  if (a.address) {
+    var wrap = node("span");
+    wrap.appendChild(contractLink(a.address));
+    if (a.entryPoint) {
+      wrap.appendChild(node("span", " · "));
+      wrap.appendChild(node("span", String(a.entryPoint)));
+    }
+    return wrap;
+  }
+  if (a.owner) {
+    var holder = node("span");
+    holder.appendChild(ownerCell(a.owner));
+    if (a.role === "utxo_in" && a.intentHash) {
+      var spent = node("span", " spends " + shortHex(String(a.intentHash), 6, 4)
+        + "/" + orDash(a.outputNo), "note");
+      spent.title = "the UTXO being spent: intent hash " + a.intentHash + ", output " + orDash(a.outputNo);
+      holder.appendChild(spent);
+    }
+    return holder;
+  }
+  if (a.role === "shielded_delta") {
+    return node("span", "a commitment, not an address", "no");
+  }
+  return node("span", "-", "no");
+}
+// FR-011: a delta row opens the offer the ledger published — its commitments, nullifiers,
+// transients and contract addresses, fetched from the transaction route when it is opened.
+function toggleOffer(a, key) {
+  if (state.act.expand[key]) {
+    state.act.expand[key] = null;
+    render();
+    return;
+  }
+  state.act.expand[key] = { loading: true, doc: null, error: null };
+  render();
+  api(P_TXS + "/" + enc(a.txHash)).then(function (doc) {
+    var cur = state.act.expand[key];
+    if (!cur) return;
+    cur.loading = false;
+    cur.doc = doc;
+    render();
+  }, function (e) {
+    var cur = state.act.expand[key];
+    if (!cur) return;
+    cur.loading = false;
+    cur.error = "offer detail unavailable: " + e.message;
+    render();
+  });
+}
+function offerDetailRow(a, key, span) {
+  var tr = document.createElement("tr");
+  tr.className = "det";
+  var td = document.createElement("td");
+  td.colSpan = span;
+  var st = state.act.expand[key];
+  if (!st || st.loading) td.appendChild(node("div", "reading the transaction…", "note"));
+  else if (st.error) td.appendChild(node("div", st.error, "err"));
+  else td.appendChild(offerDetail(st.doc, a));
+  tr.appendChild(td);
+  return tr;
+}
+function offerDetail(doc, a) {
+  var wrap = node("div");
+  var tx = normalizeTx(doc);
+  var mine = [];
+  for (var i = 0; i < tx.offers.length; i++) {
+    var o = tx.offers[i];
+    for (var j = 0; j < o.deltas.length; j++) {
+      if (String(o.deltas[j].color) === String(a.color)) { mine.push(o); break; }
+    }
+  }
+  if (mine.length === 0) mine = tx.offers;
+  if (mine.length === 0) {
+    wrap.appendChild(node("div", "this transaction carries no zswap offer", "note"));
+    return wrap;
+  }
+  for (var k = 0; k < mine.length; k++) {
+    var offer = mine[k];
+    var head = node("div", null, "row");
+    head.appendChild(node("div", "zswap offer · " + offer.section + " · segment " + orDash(offer.segment), "note"));
+    head.appendChild(countedChip(offer.counted));
+    wrap.appendChild(head);
+    var grid = node("div", null, "det-grid");
+    var deltas = node("span");
+    if (offer.deltas.length === 0) deltas.appendChild(node("span", "none — this offer is balanced and names no colour", "no"));
+    for (var dd = 0; dd < offer.deltas.length; dd++) {
+      if (dd > 0) deltas.appendChild(node("span", "  "));
+      deltas.appendChild(colorLink(offer.deltas[dd].color, 1));
+      deltas.appendChild(node("span", " " + orDash(offer.deltas[dd].delta), "amt"));
+    }
+    detRow(grid, "deltas (colour and net amount)", deltas);
+    detRow(grid, "inputs · nullifiers", hexListCell(offer.inputs, "nullifier"));
+    detRow(grid, "outputs · commitments", hexListCell(offer.outputs, "commitment"));
+    detRow(grid, "transients · commitments", hexListCell(offer.transients, "commitment"));
+    detRow(grid, "contract addresses on this offer", contractsOfOffer(offer));
+    wrap.appendChild(grid);
+  }
+  wrap.appendChild(node("div",
+    "a commitment names a coin without naming its colour, its value or its owner; a nullifier "
+    + "proves a coin was spent without naming which one. Only the deltas above are attributable.",
+    "note"));
+  return wrap;
+}
+function detRow(grid, label, valueNode) {
+  grid.appendChild(node("div", label, "k"));
+  var holder = node("div");
+  holder.appendChild(valueNode);
+  grid.appendChild(holder);
+}
+function contractsOfOffer(offer) {
+  var seen = {};
+  var list = [];
+  var groups = [offer.inputs, offer.outputs, offer.transients];
+  for (var g = 0; g < groups.length; g++) {
+    for (var i = 0; i < groups[g].length; i++) {
+      var addr = groups[g][i] ? groups[g][i].contractAddress : null;
+      if (!addr || seen[addr]) continue;
+      seen[addr] = true;
+      list.push(addr);
+    }
+  }
+  if (list.length === 0) return node("span", "none — every coin in this offer is user-owned", "no");
+  var wrap = node("span");
+  for (var k = 0; k < list.length; k++) {
+    if (k > 0) wrap.appendChild(node("span", "  "));
+    wrap.appendChild(contractLink(list[k]));
+  }
+  return wrap;
+}
+
+// US4: the panel that says, in words and in numbers, what this shielded token's page can and
+// cannot show. The text is fixed (it is a property of the ledger, not of this index); the two
+// counts come from the API.
+function disclosureSection(t) {
+  var sec = node("section");
+  sec.appendChild(node("h2", "what this shielded token discloses"));
+  sec.appendChild(node("div",
+    "a zswap offer publishes its net imbalance per colour and nothing else about the coins inside "
+    + "it, so an unbalanced offer — a mint, a burn, a contract paying into or out of the pool — "
+    + "names this colour and its exact amount, while a balanced one names nothing at all. "
+    + "Everything below is read from the ledger, not asserted by this indexer.", "note"));
+  var grid = node("div", null, "disc");
+
+  var pub = node("div", null, "pub");
+  pub.appendChild(node("h4", "public: what anyone can read from the ledger"));
+  var pubList = document.createElement("ul");
+  var publics = [
+    "this token's colour — the same 32 bytes in every transaction that names it",
+    "every mint of this colour, with its amount, and the total ever minted",
+    "every offer whose net imbalance names this colour, with the exact amount and its sign",
+    "every commitment and every nullifier in those offers",
+    "a contract address attached to an offer's input, output or transient",
+    "the DUST fee each of those transactions paid, and the block it landed in"
+  ];
+  for (var p = 0; p < publics.length; p++) pubList.appendChild(node("li", publics[p]));
+  pub.appendChild(pubList);
+
+  var pri = node("div", null, "pri");
+  pri.appendChild(node("h4", "private: what the ledger never reveals"));
+  var priList = document.createElement("ul");
+  var privates = [
+    "who received a coin — an output is a commitment, not an address",
+    "who holds how much of this token",
+    "a transfer between two users: a balanced offer carries no colour at all",
+    "which commitment or nullifier belongs to this colour rather than another",
+    "the value of any single coin"
+  ];
+  for (var q = 0; q < privates.length; q++) priList.appendChild(node("li", privates[q]));
+  pri.appendChild(priList);
+
+  grid.appendChild(pub);
+  grid.appendChild(pri);
+  sec.appendChild(grid);
+
+  var counts = node("div", null, "counts");
+  var disclosed = t.disclosedTransactions;
+  var undisclosed = t.undisclosedShieldedOffers;
+  if (undisclosed === null || undisclosed === undefined) undisclosed = counterOf(state.status, "undisclosedShieldedOffers");
+  var one = node("div");
+  one.appendChild(node("b", disclosed === null || disclosed === undefined ? "-" : String(disclosed)));
+  one.appendChild(node("span", "  transactions disclose this colour", "note"));
+  counts.appendChild(one);
+  var two = node("div");
+  two.appendChild(node("b", undisclosed === null || undisclosed === undefined ? "-" : String(undisclosed)));
+  two.appendChild(node("span", "  shielded offers on this chain publish no colour at all — any of "
+    + "them may be this token  ", "note"));
+  var link = node("a", "list them");
+  link.href = "#/shielded-offers";
+  two.appendChild(link);
+  counts.appendChild(two);
+  sec.appendChild(counts);
+  return sec;
+}
+
+// Q13: DUST is the fee token, so it has no per-token list at all — and says so instead of
+// showing an empty table that would read as "nothing happened".
+function dustSection() {
+  var sec = node("section");
+  sec.appendChild(node("h2", "transactions"));
+  var box = node("div", null, "warnnote");
+  box.appendChild(node("b", "fees are not tracked per token"));
+  box.appendChild(node("span",
+    ". Every transaction on the chain pays a DUST fee, so a DUST activity list would be a list of "
+    + "the whole chain. A transaction's own DUST spends and registrations are shown in its view, "
+    + "where they belong."));
+  sec.appendChild(box);
+  return sec;
+}
+
+// US7 / Q4: for a ledger token there is no colour and no UTXO — its balances live in contract
+// state this indexer cannot read. What is public is every call of its contract, listed here under
+// the note the owner asked for.
+function callsNote() {
+  var box = node("div", null, "warnnote");
+  box.appendChild(node("b", "only public data is listed — we do not have access to the code this executes"));
+  box.appendChild(node("span",
+    "; what a call means for this token's balances is defined by the contract and is not readable here."));
+  return box;
+}
+function callsSection(page, heading, notes) {
+  var sec = node("section");
+  sec.id = "calls";
+  sec.appendChild(node("h2", heading));
+  sec.appendChild(callsNote());
+  if (!page) {
+    sec.appendChild(node("div", "not loaded (see the banner above)", "empty"));
+    return sec;
+  }
+  var items = page.items;
+  if (items.length === 0) {
+    sec.appendChild(node("div", "no call of this contract is archived yet", "empty"));
+    return sec;
+  }
+  var tb = tableIn(sec, ["block", "pos", "tx", "segment", "call", "entry point", "section",
+    "ops", "log", "gas (compute)", "effects", ""]);
+  for (var i = 0; i < items.length; i++) {
+    var c = items[i];
+    var sections = [["guaranteed", c.guaranteed], ["fallible", c.fallible]];
+    var any = false;
+    for (var s = 0; s < sections.length; s++) {
+      var tr2 = sections[s][1];
+      if (!tr2) continue;
+      any = true;
+      tb.appendChild(callRow(c, sections[s][0], tr2));
+    }
+    if (!any) tb.appendChild(callRow(c, "-", null));
+  }
+  if (page.nextCursor) {
+    var more = node("button", "load more");
+    more.addEventListener("click", function () {
+      more.disabled = true;
+      state.act.pages = state.act.pages + 1;
+      refresh();
+    });
+    var holder = node("div", null, "row");
+    holder.style.marginTop = "10px";
+    holder.appendChild(more);
+    sec.appendChild(holder);
+  }
+  sec.appendChild(node("div",
+    "one row per transcript: a call may carry a guaranteed one, a fallible one or both · a row "
+    + "marked not counted ran in a section that failed · click the transaction for the whole decode",
+    "note"));
+  if (notes) sec.appendChild(node("div", notes, "note"));
+  return sec;
+}
+function callRow(c, section, transcript) {
+  var tr = document.createElement("tr");
+  cell(tr, orDash(c.blockHeight), "num");
+  cell(tr, orDash(c.txPosition), "num");
+  cell(tr, txLink(c.txHash));
+  cell(tr, orDash(c.segment), "num");
+  cell(tr, orDash(c.callIndex), "num");
+  cell(tr, orDash(c.entryPoint));
+  cell(tr, node("span", section, "note"));
+  cell(tr, transcript ? orDash(transcript.ops) : "-", "num");
+  cell(tr, transcript ? orDash(transcript.logOps) : "-", "num");
+  cell(tr, gasCell(transcript ? transcript.gas : null), "num");
+  cell(tr, node("span", effectsSummary(transcript ? transcript.effects : null), "wrapv"));
+  cell(tr, countedChip(transcript ? transcript.counted : undefined));
+  return tr;
+}
+function gasCell(g) {
+  if (!g) return node("span", "-", "no");
+  var s = node("span", orDash(g.computeTime), "amt");
+  s.title = "read " + orDash(g.readTime) + "  ·  compute " + orDash(g.computeTime)
+    + "  ·  bytes written " + orDash(g.bytesWritten) + "  ·  bytes deleted " + orDash(g.bytesDeleted);
+  return s;
+}
+// An effect map may arrive as a list of {color|domainSep, amount} or as a plain object keyed by
+// hex; both read the same here, and neither is dropped silently (FR-015 is the decoder's rule, and
+// this is its counterpart on screen).
+function mapEntries(v) {
+  var out = [];
+  if (isArray(v)) {
+    for (var i = 0; i < v.length; i++) {
+      var e = v[i] || {};
+      out.push({
+        key: e.color || e.domainSep || e.token || e.type || null,
+        text: e.domainSepText || e.tokenName || e.name || null,
+        value: e.amount === undefined ? e.value : e.amount,
+        isColor: e.color ? true : false
+      });
+    }
+    return out;
+  }
+  if (v && typeof v === "object") {
+    for (var k in v) {
+      if (!Object.prototype.hasOwnProperty.call(v, k)) continue;
+      out.push({ key: k, text: null, value: v[k], isColor: false });
+    }
+  }
+  return out;
+}
+var EFFECT_MAPS = [["shieldedMints", "shielded mints"], ["unshieldedMints", "unshielded mints"],
+  ["unshieldedInputs", "received by the contract"], ["unshieldedOutputs", "paid by the contract"]];
+var EFFECT_COUNTS = [["claimedShieldedReceives", "claimed shielded receives"],
+  ["claimedShieldedSpends", "claimed shielded spends"], ["claimedNullifiers", "claimed nullifiers"],
+  ["claimedContractCalls", "claimed contract calls"]];
+function effectsSummary(e) {
+  if (!e) return "-";
+  var parts = [];
+  for (var i = 0; i < EFFECT_MAPS.length; i++) {
+    var n = mapEntries(e[EFFECT_MAPS[i][0]]).length;
+    if (n > 0) parts.push(EFFECT_MAPS[i][1] + " " + n);
+  }
+  for (var j = 0; j < EFFECT_COUNTS.length; j++) {
+    var c = count(e[EFFECT_COUNTS[j][0]]);
+    if (c > 0) parts.push(EFFECT_COUNTS[j][1] + " " + c);
+  }
+  return parts.length === 0 ? "none" : parts.join(" · ");
+}
+function effectsBlock(e) {
+  var wrap = node("div");
+  if (!e) { wrap.appendChild(node("span", "-", "no")); return wrap; }
+  var grid = node("div", null, "det-grid");
+  var any = false;
+  for (var i = 0; i < EFFECT_MAPS.length; i++) {
+    var entries = mapEntries(e[EFFECT_MAPS[i][0]]);
+    if (entries.length === 0) continue;
+    any = true;
+    var holder = node("span");
+    for (var k = 0; k < entries.length; k++) {
+      if (k > 0) holder.appendChild(node("span", "  "));
+      var entry = entries[k];
+      if (entry.isColor) holder.appendChild(colorLink(entry.key, 0));
+      else if (entry.text) holder.appendChild(copyable(entry.key, entry.text, "txt"));
+      else holder.appendChild(copyable(entry.key, shortHex(String(entry.key), 8, 6), "hex"));
+      holder.appendChild(node("span", " " + orDash(entry.value), "amt"));
+    }
+    detRow(grid, EFFECT_MAPS[i][1], holder);
+  }
+  for (var j = 0; j < EFFECT_COUNTS.length; j++) {
+    var c = count(e[EFFECT_COUNTS[j][0]]);
+    if (c === 0) continue;
+    any = true;
+    detRow(grid, EFFECT_COUNTS[j][1], node("span", String(c), "amt"));
+  }
+  if (!any) { wrap.appendChild(node("span", "no effect declared by this transcript", "no")); return wrap; }
+  wrap.appendChild(grid);
+  return wrap;
+}
+
+// ── View: one transaction (US2, FR-010) ─────────────────────────────────────────────────────
+//
+// The document of spec §4, whatever spelling the API chose for its containers (question Q15): the
+// shapes below are normalised once, here, so every renderer downstream reads one shape.
+
+function normOffer(o, section, segment) {
+  var v = o || {};
+  return {
+    section: v.section ? String(v.section) : section,
+    segment: v.segment === undefined || v.segment === null ? segment : v.segment,
+    counted: v.counted === undefined ? true : v.counted,
+    deltas: arr(v.deltas), inputs: arr(v.inputs), outputs: arr(v.outputs), transients: arr(v.transients)
+  };
+}
+function normalizeTx(doc) {
+  var d = doc || {};
+  var offers = [];
+  var listed = arr(d.offers);
+  if (listed.length > 0) {
+    for (var i = 0; i < listed.length; i++) offers.push(normOffer(listed[i], "guaranteed", 0));
+  } else {
+    if (d.guaranteedOffer) offers.push(normOffer(d.guaranteedOffer, "guaranteed", 0));
+    var fallible = segList(d.fallibleOffers === undefined ? d.fallibleOffer : d.fallibleOffers);
+    for (var f = 0; f < fallible.length; f++) offers.push(normOffer(fallible[f], "fallible", fallible[f].segment));
+  }
+  var intents = [];
+  var rawIntents = segList(d.intents);
+  for (var n = 0; n < rawIntents.length; n++) {
+    var it = rawIntents[n];
+    var unshielded = arr(it.unshieldedOffers);
+    if (unshielded.length === 0) {
+      if (it.guaranteedUnshieldedOffer) unshielded.push(normUnshielded(it.guaranteedUnshieldedOffer, "guaranteed"));
+      if (it.fallibleUnshieldedOffer) unshielded.push(normUnshielded(it.fallibleUnshieldedOffer, "fallible"));
+    } else {
+      var fixed = [];
+      for (var u = 0; u < unshielded.length; u++) fixed.push(normUnshielded(unshielded[u], "guaranteed"));
+      unshielded = fixed;
+    }
+    intents.push({
+      segment: it.segment, ttl: it.ttl, intentHash: it.intentHash,
+      unshieldedOffers: unshielded,
+      dustActions: it.dustActions || null,
+      actions: arr(it.actions === undefined ? it.contractActions : it.actions)
+    });
+  }
+  var rewards = [];
+  if (d.rewards) rewards = isArray(d.rewards) ? d.rewards : [d.rewards];
+  return {
+    head: d, offers: offers, intents: intents, dustActions: d.dustActions || null,
+    rewards: rewards, activity: arr(d.activity)
+  };
+}
+function normUnshielded(o, section) {
+  var v = o || {};
+  return {
+    section: v.section ? String(v.section) : section,
+    counted: v.counted === undefined ? true : v.counted,
+    signatures: v.signatures === undefined ? null : v.signatures,
+    inputs: arr(v.inputs), outputs: arr(v.outputs)
+  };
+}
+function segmentsText(segments) {
+  var list = arr(segments);
+  if (list.length === 0) return "-";
+  var out = [];
+  for (var i = 0; i < list.length; i++) {
+    out.push(String(list[i].id === undefined ? list[i].segment : list[i].id)
+      + (list[i].success === false ? " failed" : " ok"));
+  }
+  return out.join(" · ");
+}
+function renderTx(main) {
+  var crumb = node("div", null, "crumb");
+  var back = node("a", "← all tokens");
+  back.href = "#/";
+  crumb.appendChild(back);
+  main.appendChild(crumb);
+
+  var holder = state.tx;
+  if (!holder || !holder.doc) {
+    var miss = node("section");
+    miss.appendChild(node("h2", "transaction"));
+    miss.appendChild(node("div", "not loaded (see the banner above). The hash is "
+      + String(state.route.hash), "empty"));
+    main.appendChild(miss);
+    return;
+  }
+  var tx = normalizeTx(holder.doc);
+  var d = tx.head;
+
+  var head = node("section");
+  head.appendChild(node("h2", "transaction · decoded from the archived bytes on request"));
+  var feeSpeck = d.feeSpeck === undefined ? d.fee : d.feeSpeck;
+  kvInto(head, [
+    ["hash", copyable(d.txHash, d.txHash ? String(d.txHash) : "-", "hex")],
+    ["block height", orDash(d.blockHeight)],
+    ["block hash", copyable(d.blockHash, d.blockHash ? shortHex(String(d.blockHash), 12, 10) : "-", "hex")],
+    ["position in block", orDash(d.txPosition)],
+    ["protocol version", orDash(d.protocolVersion)],
+    ["result", node("span", orDash(d.result), d.result === "success" ? "txt" : "err")],
+    ["segments", segmentsText(d.segments)],
+    ["raw bytes", orDash(d.rawBytes)],
+    ["identifiers", hexListCell(d.identifiers)],
+    ["fee", node("span", orDash(feeSpeck) + " SPECK  ·  " + formatUnits(feeSpeck, 15) + " DUST", "amt")],
+    ["binding randomness", d.bindingRandomness === undefined ? "-" : (d.bindingRandomness ? "present" : "absent")]
+  ]);
+  main.appendChild(head);
+
+  // zswap offers
+  var offers = node("section");
+  offers.appendChild(node("h2", "zswap offers"));
+  if (tx.offers.length === 0) {
+    offers.appendChild(node("div", "this transaction carries no zswap offer", "empty"));
+  } else {
+    for (var i = 0; i < tx.offers.length; i++) {
+      var o = tx.offers[i];
+      var block = node("div", null, "txsec");
+      var title = node("div", null, "row");
+      title.appendChild(node("div", o.section + " offer · segment " + orDash(o.segment), "h"));
+      title.appendChild(countedChip(o.counted));
+      block.appendChild(title);
+      var grid = node("div", null, "det-grid");
+      var deltas = node("span");
+      if (o.deltas.length === 0) {
+        deltas.appendChild(node("span",
+          "none — this offer is balanced, so the ledger does not say which colour moved", "no"));
+      }
+      for (var dd = 0; dd < o.deltas.length; dd++) {
+        if (dd > 0) deltas.appendChild(node("span", "  "));
+        deltas.appendChild(colorLink(o.deltas[dd].color, 1));
+        deltas.appendChild(node("span", " " + orDash(o.deltas[dd].delta), "amt"));
+        if (o.deltas[dd].tokenName) deltas.appendChild(node("span", " " + String(o.deltas[dd].tokenName), "txt"));
+      }
+      detRow(grid, "deltas", deltas);
+      detRow(grid, "inputs · nullifiers", hexListCell(o.inputs, "nullifier"));
+      detRow(grid, "outputs · commitments", hexListCell(o.outputs, "commitment"));
+      detRow(grid, "transients · commitments", hexListCell(o.transients, "commitment"));
+      detRow(grid, "contract addresses", contractsOfOffer(o));
+      block.appendChild(grid);
+      offers.appendChild(block);
+    }
+  }
+  main.appendChild(offers);
+
+  // intents
+  for (var n = 0; n < tx.intents.length; n++) main.appendChild(intentSection(tx.intents[n]));
+  if (tx.dustActions) main.appendChild(dustActionsSection(tx.dustActions, null));
+
+  // rewards
+  if (tx.rewards.length > 0) {
+    var rw = node("section");
+    rw.appendChild(node("h2", "rewards"));
+    var rb = tableIn(rw, ["kind", "value", "owner", "nonce"]);
+    for (var r = 0; r < tx.rewards.length; r++) {
+      var reward = tx.rewards[r];
+      var rr = document.createElement("tr");
+      cell(rr, orDash(reward.kind));
+      cell(rr, node("span", formatUnits(reward.value, 6), "amt"), "num");
+      cell(rr, ownerCell(reward.owner));
+      cell(rr, copyable(reward.nonce, shortHex(String(reward.nonce), 8, 6), "hex"));
+      rb.appendChild(rr);
+    }
+    main.appendChild(rw);
+  }
+
+  // this transaction's stored activity rows
+  var act = node("section");
+  act.appendChild(node("h2", "what this transaction did to tracked tokens"));
+  if (tx.activity.length === 0) {
+    act.appendChild(node("div",
+      "no activity row: either nothing public in this transaction names a tracked colour, or the "
+      + "sections that would have produced rows did not count (Q10).", "empty"));
+  } else {
+    var ab = tableIn(act, ["token", "what", "amount", "counterparty", "section"]);
+    for (var a = 0; a < tx.activity.length; a++) {
+      var row = tx.activity[a];
+      var ar = document.createElement("tr");
+      cell(ar, txTokenCell(row));
+      cell(ar, node("span", roleLabel(row)));
+      cell(ar, amountCell(row, row.token), "num");
+      cell(ar, counterpartyCell(row));
+      cell(ar, node("span", String(row.section) + " · segment " + orDash(row.segment), "note"));
+      ab.appendChild(ar);
+    }
+  }
+  main.appendChild(act);
+
+  // the document as it arrived
+  var raw = node("section");
+  var bar = node("div", null, "row");
+  var toggleRaw = node("button", holder.raw ? "hide raw JSON" : "raw JSON");
+  toggleRaw.addEventListener("click", function () { holder.raw = !holder.raw; render(); });
+  bar.appendChild(node("div", "the document this page rendered, exactly as the API returned it", "note"));
+  bar.appendChild(toggleRaw);
+  raw.appendChild(bar);
+  if (holder.raw) {
+    var pre = node("pre");
+    try { pre.textContent = JSON.stringify(holder.doc, null, 2); } catch (e) { pre.textContent = String(holder.doc); }
+    raw.appendChild(pre);
+  }
+  main.appendChild(raw);
+}
+function txTokenCell(a) {
+  var t = a.token;
+  var label = t && t.name ? String(t.name)
+    : (t && t.symbol ? String(t.symbol) : "colour " + shortHex(String(a.color), 8, 6));
+  var link = node("a", label);
+  link.href = t && t.address && t.domainSep ? hashToken(t) : hashColor(a.color, a.kind);
+  link.title = "open this token with its transactions";
+  link.addEventListener("click", function () { state.scrollTo = "activity"; });
+  var wrap = node("span");
+  wrap.appendChild(link);
+  if (!t) wrap.appendChild(node("span", "unknown contract", "pill"));
+  return wrap;
+}
+function intentSection(it) {
+  var sec = node("section");
+  sec.appendChild(node("h2", "intent · segment " + orDash(it.segment)));
+  var ttl = node("span", orDash(it.ttl));
+  ttl.title = "the wallet's own time-to-live for this intent — a value inside the transaction, "
+    + "never the block's time (the archive stores no block time)";
+  kvInto(sec, [
+    ["intent hash", copyable(it.intentHash, it.intentHash ? String(it.intentHash) : "-", "hex")],
+    ["ttl (wallet-set, not the block time)", ttl]
+  ]);
+  for (var i = 0; i < it.unshieldedOffers.length; i++) {
+    var offer = it.unshieldedOffers[i];
+    var block = node("div", null, "txsec");
+    var title = node("div", null, "row");
+    title.appendChild(node("div", offer.section + " unshielded offer"
+      + (offer.signatures === null ? "" : " · " + offer.signatures + " signature"
+        + (Number(offer.signatures) === 1 ? "" : "s")), "h"));
+    title.appendChild(countedChip(offer.counted));
+    block.appendChild(title);
+    if (offer.inputs.length > 0) {
+      var ib = tableIn(block, ["input", "value", "colour", "owner", "spends intent", "out #"]);
+      for (var n = 0; n < offer.inputs.length; n++) {
+        var input = offer.inputs[n];
+        var ir = document.createElement("tr");
+        cell(ir, String(n), "num");
+        cell(ir, node("span", orDash(input.value), "amt"), "num");
+        cell(ir, colorLink(input.color === undefined ? input.type : input.color, 0));
+        cell(ir, ownerCell(input.ownerAddress === undefined ? input.owner : input.ownerAddress));
+        cell(ir, copyable(input.spentIntentHash, shortHex(String(input.spentIntentHash), 8, 6), "hex"));
+        cell(ir, orDash(input.spentOutputNo === undefined ? input.outputNo : input.spentOutputNo), "num");
+        ib.appendChild(ir);
+      }
+    }
+    if (offer.outputs.length > 0) {
+      var ob = tableIn(block, ["output", "value", "colour", "owner"]);
+      for (var m = 0; m < offer.outputs.length; m++) {
+        var output = offer.outputs[m];
+        var or = document.createElement("tr");
+        cell(or, orDash(output.index === undefined ? m : output.index), "num");
+        cell(or, node("span", orDash(output.value), "amt"), "num");
+        cell(or, colorLink(output.color === undefined ? output.type : output.color, 0));
+        cell(or, ownerCell(output.owner));
+        ob.appendChild(or);
+      }
+    }
+    if (offer.inputs.length === 0 && offer.outputs.length === 0) {
+      block.appendChild(node("div", "no input and no output", "empty"));
+    }
+    sec.appendChild(block);
+  }
+  for (var c = 0; c < it.actions.length; c++) sec.appendChild(actionBlock(it.actions[c]));
+  if (it.dustActions) sec.appendChild(dustActionsBlock(it.dustActions));
+  return sec;
+}
+function actionBlock(action) {
+  var block = node("div", null, "txsec");
+  var title = node("div", null, "row");
+  title.appendChild(node("div", "contract " + (action.kind ? String(action.kind) : "action")
+    + " · index " + orDash(action.index), "h"));
+  block.appendChild(title);
+  var grid = node("div", null, "det-grid");
+  detRow(grid, "address", contractLink(action.address, action.address ? String(action.address) : null));
+  if (action.entryPoint) detRow(grid, "entry point", node("span", String(action.entryPoint)));
+  if (action.communicationCommitment) {
+    detRow(grid, "communication commitment",
+      copyable(action.communicationCommitment, shortHex(String(action.communicationCommitment), 10, 8), "hex"));
+  }
+  block.appendChild(grid);
+  var transcripts = [["guaranteed", action.guaranteed], ["fallible", action.fallible]];
+  for (var i = 0; i < transcripts.length; i++) {
+    var t = transcripts[i][1];
+    if (!t) continue;
+    var line = node("div", null, "row");
+    line.appendChild(node("div", transcripts[i][0] + " transcript · " + orDash(t.ops) + " ops · "
+      + orDash(t.logOps) + " log", "h"));
+    line.appendChild(gasCell(t.gas));
+    line.appendChild(countedChip(t.counted));
+    block.appendChild(line);
+    block.appendChild(effectsBlock(t.effects));
+  }
+  return block;
+}
+function dustActionsBlock(dust) {
+  var block = node("div", null, "txsec");
+  block.appendChild(node("div",
+    "DUST actions — inside the transaction; not tracked per token (Q13)", "h"));
+  var ctime = node("span", orDash(dust.ctime));
+  ctime.title = "the wallet's own creation time for the DUST it spends — a value inside the "
+    + "transaction, never the block's time";
+  var grid = node("div", null, "det-grid");
+  detRow(grid, "ctime (wallet-set, not the block time)", ctime);
+  block.appendChild(grid);
+  var spends = arr(dust.spends);
+  if (spends.length > 0) {
+    var sb = tableIn(block, ["spend", "vFee (SPECK)", "old nullifier", "new commitment"]);
+    for (var i = 0; i < spends.length; i++) {
+      var s = spends[i];
+      var tr = document.createElement("tr");
+      cell(tr, String(i), "num");
+      cell(tr, node("span", orDash(s.vFee), "amt"), "num");
+      cell(tr, copyable(s.oldNullifier, shortHex(String(s.oldNullifier), 8, 6), "hex"));
+      cell(tr, copyable(s.newCommitment, shortHex(String(s.newCommitment), 8, 6), "hex"));
+      sb.appendChild(tr);
+    }
+  }
+  var regs = arr(dust.registrations);
+  if (regs.length > 0) {
+    var rb = tableIn(block, ["registration", "night key", "DUST address", "may pay fees"]);
+    for (var r = 0; r < regs.length; r++) {
+      var g = regs[r];
+      var rr = document.createElement("tr");
+      cell(rr, String(r), "num");
+      cell(rr, copyable(g.nightKey, shortHex(String(g.nightKey), 8, 6), "hex"));
+      cell(rr, ownerCell(g.dustAddress));
+      cell(rr, g.allowFeePayment === true ? "yes" : (g.allowFeePayment === false ? "no" : "-"));
+      rb.appendChild(rr);
+    }
+  }
+  if (spends.length === 0 && regs.length === 0) {
+    block.appendChild(node("div", "no DUST spend and no registration in this intent", "empty"));
+  }
+  return block;
+}
+function dustActionsSection(dust) {
+  var sec = node("section");
+  sec.appendChild(node("h2", "DUST actions"));
+  sec.appendChild(dustActionsBlock(dust));
+  return sec;
+}
+
+// ── View: the shielded offers whose colour is undisclosed (FR-018, Q14) ─────────────────────
+
+function renderOffers(main) {
+  var crumb = node("div", null, "crumb");
+  var back = node("a", "← all tokens");
+  back.href = "#/";
+  crumb.appendChild(back);
+  main.appendChild(crumb);
+
+  var sec = node("section");
+  sec.appendChild(node("h2", "shielded offers whose colour is undisclosed"));
+  sec.appendChild(node("div",
+    "these shielded offers carry no colour: the ledger does not say which token moved. A zswap "
+    + "offer publishes only its net imbalance per colour, and a balanced offer — a plain transfer "
+    + "between two users — has none, so any of these may be any shielded token. This is the "
+    + "measured form of the claim that Midnight is private: a number that comes from the chain.",
+    "note"));
+  var bar = node("div", null, "row");
+  bar.appendChild(node("span", "show", "note"));
+  var sel = document.createElement("select");
+  var choices = [["true", "undisclosed only (no colour)"], ["false", "disclosed only (a colour and an amount)"],
+    ["", "every zswap offer"]];
+  for (var i = 0; i < choices.length; i++) {
+    var opt = document.createElement("option");
+    opt.value = choices[i][0];
+    opt.textContent = choices[i][1];
+    if (choices[i][0] === state.offers.undisclosed) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  sel.addEventListener("change", function () {
+    state.offers.undisclosed = sel.value;
+    state.offers.pages = 1;
+    state.offers.loaded = false;
+    refresh();
+  });
+  bar.appendChild(sel);
+  var items = state.offers.items;
+  bar.appendChild(node("span", state.offers.loaded
+    ? items.length + " offer" + (items.length === 1 ? "" : "s")
+      + (state.offers.nextCursor ? " (more available)" : "")
+    : "loading…", "note"));
+  sec.appendChild(bar);
+
+  if (!state.offers.loaded) {
+    sec.appendChild(node("div", "loading…", "empty"));
+    main.appendChild(sec);
+    return;
+  }
+  if (items.length === 0) {
+    sec.appendChild(node("div", "no offer matches", "empty"));
+    main.appendChild(sec);
+    return;
+  }
+  var tb = tableIn(sec, ["block", "pos", "tx", "section", "segment", "inputs", "outputs",
+    "transients", "deltas", "colour"]);
+  for (var r = 0; r < items.length; r++) {
+    var o = items[r];
+    var tr = document.createElement("tr");
+    cell(tr, orDash(o.blockHeight), "num");
+    cell(tr, orDash(o.txPosition), "num");
+    cell(tr, txLink(o.txHash));
+    cell(tr, node("span", orDash(o.section), "note"));
+    cell(tr, orDash(o.segment), "num");
+    cell(tr, orDash(o.inputs), "num");
+    cell(tr, orDash(o.outputs), "num");
+    cell(tr, orDash(o.transients), "num");
+    cell(tr, orDash(o.deltas), "num");
+    cell(tr, o.undisclosed === false
+      ? node("span", "published", "txt")
+      : node("span", "not published", "no"));
+    tb.appendChild(tr);
+  }
+  if (state.offers.nextCursor) {
+    var more = node("button", "load more");
+    more.addEventListener("click", function () {
+      more.disabled = true;
+      state.offers.pages = state.offers.pages + 1;
+      refresh();
+    });
+    var holder = node("div", null, "row");
+    holder.style.marginTop = "10px";
+    holder.appendChild(more);
+    sec.appendChild(holder);
+  }
+  sec.appendChild(node("div",
+    "one row per zswap offer on the chain · inputs are nullifiers, outputs are commitments, and "
+    + "neither carries a colour or a value · click a transaction to see the offer itself", "note"));
   main.appendChild(sec);
 }
 
@@ -919,17 +2175,24 @@ function renderToken(main) {
   var back = node("a", "← all tokens");
   back.href = "#/";
   crumb.appendChild(back);
-  crumb.appendChild(node("span", "  ·  "));
-  var toContract = node("a", "contract " + shortHex(r.address, 8, 6));
-  toContract.href = hashContract(r.address);
-  crumb.appendChild(toContract);
+  // A colour route (US5) has no contract to point at — that is the whole reason it exists.
+  if (r.address && !isZeroHex(r.address)) {
+    crumb.appendChild(node("span", "  ·  "));
+    var toContract = node("a", "contract " + shortHex(r.address, 8, 6));
+    toContract.href = hashContract(r.address);
+    crumb.appendChild(toContract);
+  } else if (r.color) {
+    crumb.appendChild(node("span", "  ·  colour " + shortHex(r.color, 10, 8)
+      + " · kind " + orDash(r.kind)));
+  }
   main.appendChild(crumb);
 
   if (!d || !d.token) {
     var miss = node("section");
     miss.appendChild(node("h2", "token"));
     miss.appendChild(node("div", "not loaded (see the banner above). The route is "
-      + r.address + " / " + r.domainSep + " / " + r.kind, "empty"));
+      + (r.color ? "colour " + r.color + " / kind " + r.kind
+        : r.address + " / " + r.domainSep + " / " + r.kind), "empty"));
     main.appendChild(miss);
     return;
   }
@@ -946,6 +2209,14 @@ function renderToken(main) {
     + " · kind " + orDash(t.kind) + " " + kindLabel(t)
     + " · decimals " + (t.decimals === null || t.decimals === undefined ? "-" : t.decimals), "note"));
   head.appendChild(sub);
+  if (t.status === "seen") {
+    head.appendChild(node("div",
+      "This row exists because this colour was seen moving in public transaction data, not because "
+      + "a contract named it: its mint predates the archive's first block, and a colour is a "
+      + "commitment — the contract address and domain separator behind it cannot be recovered from "
+      + "it. Everything below is what the chain itself shows. A later mint or metadata event for "
+      + "this colour completes this row in place (US5).", "note"));
+  }
   if (t.status === "declared") {
     head.appendChild(node("div",
       t.storage === "ledger"
@@ -974,9 +2245,12 @@ function renderToken(main) {
   var facts = node("section");
   facts.appendChild(node("h2", "token"));
   kvInto(facts, [
-    ["address", isZeroHex(t.address) ? node("span", "built-in row, no contract", "no")
-      : copyable(t.address, t.address ? String(t.address) : "-", "hex")],
-    ["domainSep", domainCell(t.domainSep)],
+    ["address", !t.address ? node("span", t.status === "seen"
+        ? "unknown: no mint or metadata event has named this colour's contract"
+        : "built-in row, no contract", "no")
+      : (isZeroHex(t.address) ? node("span", "built-in row, no contract", "no")
+        : copyable(t.address, String(t.address), "hex"))],
+    ["domainSep", t.domainSep ? domainCell(t.domainSep) : node("span", "unknown", "no")],
     ["domainSep (hex)", copyable(t.domainSep, t.domainSep ? String(t.domainSep) : "-", "hex")],
     ["kind", orDash(t.kind) + "  (" + kindLabel(t) + ")"],
     ["privacy", orDash(t.privacy)],
@@ -993,7 +2267,10 @@ function renderToken(main) {
     ["last mint height", orDash(t.lastMintHeight)],
     ["first seen height", orDash(t.firstSeenHeight)],
     ["metadata updated height", orDash(t.metadataUpdatedHeight)],
-    ["deploy height", orDash(t.deployHeight)]
+    ["deploy height", orDash(t.deployHeight)],
+    ["activity rows", orDash(t.activityCount)],
+    ["last activity height", orDash(t.lastActivityHeight)],
+    ["what the chain lets this page show", visibilityCell(t)]
   ]);
   main.appendChild(facts);
 
@@ -1106,7 +2383,25 @@ function renderToken(main) {
   }
   main.appendChild(mints);
 
-  main.appendChild(eventsSection(d.events, t.domainSep, "raw token-metadata events of this contract (rejected ones included)"));
+  // Q12: the mint table stays and the transactions table joins it — one list carries everything,
+  // and the mint history the owner has seen is still where it was. What follows the mints depends
+  // on what the chain publishes about this token: a shielded row gets the disclosure panel above
+  // its table (US4), a ledger row gets its contract's calls under the public-data note (US7), and
+  // DUST gets the note alone (Q13).
+  var vis = visibilityOf(t);
+  if (vis === "disclosed-imbalances") main.appendChild(disclosureSection(t));
+  if (vis === "not-tracked") main.appendChild(dustSection());
+  else if (vis === "calls-only") {
+    main.appendChild(callsSection(d.calls, "contract calls · this is what a ledger token publishes",
+      "a ledger token has no colour and no UTXO: its balances live in its contract's state, which "
+      + "this indexer does not read. What is public is every call of the contract, listed above."));
+  } else {
+    main.appendChild(activitySection(t, d));
+  }
+
+  if (t.address) {
+    main.appendChild(eventsSection(d.events, t.domainSep, "raw token-metadata events of this contract (rejected ones included)"));
+  }
 
   if (d.notes.length > 0) {
     var notes = node("section");
@@ -1246,6 +2541,10 @@ function renderContract(main) {
   }
   main.appendChild(pend);
 
+  // US7: the same table a ledger token's page shows, under the same note — a contract's calls are
+  // public whatever kind of token it issues.
+  main.appendChild(callsSection(c.calls, "calls of this contract", null));
+
   main.appendChild(eventsSection(c.events, null, "raw token-metadata events of this contract (rejected ones included)"));
 
   if (c.notes.length > 0) {
@@ -1275,6 +2574,14 @@ function pendingTable(plist) {
 
 // ── View: status ────────────────────────────────────────────────────────────────────────────
 
+function undisclosedCell(st) {
+  var wrap = node("span");
+  wrap.appendChild(node("span", orDash(counterOf(st, "undisclosedShieldedOffers")) + "  "));
+  var link = node("a", "list them");
+  link.href = "#/shielded-offers";
+  wrap.appendChild(link);
+  return wrap;
+}
 function renderStatus(main) {
   var st = state.status;
   var sec = node("section");
@@ -1296,7 +2603,13 @@ function renderStatus(main) {
     ["events applied", orDash(counters.eventsApplied)],
     ["events rejected", orDash(counters.eventsRejected)],
     ["lookups ok", orDash(counters.lookupsOk)],
-    ["lookups short", orDash(counters.lookupsShort)]
+    ["lookups short", orDash(counters.lookupsShort)],
+    // 00023, FR-013
+    ["activity rows", orDash(counterOf(st, "activityRows"))],
+    ["seen tokens (colours no contract has named)", orDash(counterOf(st, "seenTokens"))],
+    ["shielded offers", orDash(counterOf(st, "shieldedOffers"))],
+    ["undisclosed shielded offers", undisclosedCell(st)],
+    ["contract calls", orDash(counterOf(st, "contractCalls"))]
   ]);
   main.appendChild(sec);
 
@@ -1331,19 +2644,32 @@ function render() {
   if (state.route.view === "token") renderToken(main);
   else if (state.route.view === "contract") renderContract(main);
   else if (state.route.view === "status") renderStatus(main);
+  else if (state.route.view === "tx") renderTx(main);
+  else if (state.route.view === "offers") renderOffers(main);
   else renderList(main);
+  // US2 scenario 3: a token opened from a transaction's activity list lands on its transactions.
+  if (state.scrollTo) {
+    var target = document.getElementById(state.scrollTo);
+    state.scrollTo = null;
+    if (target && target.scrollIntoView) target.scrollIntoView();
+  }
 }
 
 // ── Wiring ──────────────────────────────────────────────────────────────────────────────────
 
 function onHashChange() {
   var next = parseHash();
-  var same = next.view === state.route.view && next.address === state.route.address
-    && next.domainSep === state.route.domainSep && next.kind === state.route.kind;
+  var same = routeKey(next) === routeKey(state.route);
   state.route = next;
   if (!same) {
-    if (next.view === "token") state.detail = null;
-    if (next.view === "contract") state.contract = null;
+    if (next.view === "token") {
+      state.detail = null;
+      // A different token starts with an unfiltered, one-page, all-collapsed transactions section.
+      state.act = { role: "", pages: 1, expand: {} };
+    }
+    if (next.view === "contract") { state.contract = null; state.act.pages = 1; }
+    if (next.view === "tx") state.tx = null;
+    if (next.view === "offers") { state.offers.loaded = false; state.offers.pages = 1; }
     if (next.view === "list") state.list.loaded = false;
   }
   render();
@@ -1440,6 +2766,7 @@ const BODY = `<aside id="poc" class="poc" role="note">
   </div>
   <nav class="tabs">
     <a id="nav-list" href="#/">tokens</a>
+    <a id="nav-offers" href="#/shielded-offers">shielded offers</a>
     <a id="nav-status" href="#/status">status</a>
     <span class="sep"></span>
     <span id="strip" class="strip"></span>
@@ -1475,6 +2802,7 @@ const BODY = `<aside id="poc" class="poc" role="note">
     <select id="f-status">
       <option value="">any</option>
       <option value="builtin">builtin</option>
+      <option value="seen">seen</option>
       <option value="observed">observed</option>
       <option value="declared">declared</option>
       <option value="described">described</option>
