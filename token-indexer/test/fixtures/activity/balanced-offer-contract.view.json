@@ -1,0 +1,122 @@
+{
+  "txHash": "c235e6b20f5c66771719ec5235d109ea664eb6dd576fe6396ccbfaed80fa6036",
+  "selfReportedTxHash": "c235e6b20f5c66771719ec5235d109ea664eb6dd576fe6396ccbfaed80fa6036",
+  "isSystem": false,
+  "rawByteLength": 34092,
+  "identifiers": [
+    "005d8394318b01cd0430c01436b932c0edb181a4c56ea877a89d66c4437dbb8882",
+    "002ca1124189d563802cd284533100ae3480977712742b252b509925f150631552",
+    "00de4a2b6a24a79de500589747871e4a24c3a65c103b2eb583214e613532cb962d",
+    "007054f11e9de0b52d1a90eecb6b5b7fedce244f3c96f421554d0f61f79b4de6a7",
+    "00c0d035fedb5d9776d5cd415ebd52cb166a020dd636145221938a5010ee0740db",
+    "00c56a61de3462b59f74e8a7c33775cb310ade8ac219f66e394bc2abc2ecc75508",
+    "001c5a85b2607bc14fc7ee78e21634d72d527a0b8a094573cd19e67dffec27a711"
+  ],
+  "feeSpeck": "636487845285207",
+  "bindingRandomness": true,
+  "offers": [
+    {
+      "section": "guaranteed",
+      "segment": 0,
+      "counted": true,
+      "inputCount": 2,
+      "outputCount": 1,
+      "transientCount": 1,
+      "deltaCount": 0,
+      "deltas": [],
+      "inputs": [
+        {
+          "nullifier": "95856af4bb2d18f5524d103df01b83774c594bdf9037afed460423e9b5b57f7b",
+          "contractAddress": "ef8b7033a24a0efd823320cda6c241ce59c52845a176ea90a872615fbc677c8d"
+        },
+        {
+          "nullifier": "a55d4320626cf3fffaeccad26fe0b07a18b2333def3e167a739119365d2ba935",
+          "contractAddress": null
+        }
+      ],
+      "outputs": [
+        {
+          "commitment": "9cc1e90e50d2704d6e1bd7b5c17956286c4cca1b731d58e8d81faac5cd1bb165",
+          "contractAddress": "ef8b7033a24a0efd823320cda6c241ce59c52845a176ea90a872615fbc677c8d"
+        }
+      ],
+      "transients": [
+        {
+          "commitment": "61a11b053dd1b37484a55fe3c6ba3530c5ecd0f23917badb7ecdbee12d8433c7",
+          "nullifier": "88848cb452d2ee1ad07a1ac5524c494e142380b9a588eece328cd9f86c2bbad7",
+          "contractAddress": "ef8b7033a24a0efd823320cda6c241ce59c52845a176ea90a872615fbc677c8d"
+        }
+      ]
+    }
+  ],
+  "intents": [
+    {
+      "segment": 1,
+      "ttl": "2026-09-17T06:12:34.000Z",
+      "intentHash": "19a9aef49d6a0998efb3f038da1e19c239d3e85519b4b2df1688ac5cd5d3ffd6",
+      "guaranteedUnshieldedOffer": null,
+      "fallibleUnshieldedOffer": null,
+      "dustActions": {
+        "ctime": "2026-09-17T05:42:18.000Z",
+        "spends": [
+          {
+            "vFee": "636487845285207",
+            "oldNullifier": "45857170683561950907487100150347461842943067225484963215228253546319337553070",
+            "newCommitment": "20534579504467046617035949237923314732955050031299528645743785344528379642691"
+          }
+        ],
+        "registrations": []
+      },
+      "actions": []
+    },
+    {
+      "segment": 25074,
+      "ttl": "2026-09-17T06:42:15.000Z",
+      "intentHash": "bdfcda2404544a49c8b24797fa8a6244380edca60d4861a54dad8a688aa14686",
+      "guaranteedUnshieldedOffer": null,
+      "fallibleUnshieldedOffer": null,
+      "dustActions": null,
+      "actions": [
+        {
+          "index": 0,
+          "kind": "call",
+          "address": "ef8b7033a24a0efd823320cda6c241ce59c52845a176ea90a872615fbc677c8d",
+          "entryPoint": "deposit_shielded",
+          "communicationCommitment": "737573c37f44a18d0cbe04c322386516a9e428eb230982ba7dbe00c5788062d067",
+          "guaranteed": {
+            "ops": 59,
+            "logOps": 0,
+            "gas": {
+              "readTime": "1020000000",
+              "computeTime": "3973245747",
+              "bytesWritten": "788",
+              "bytesDeleted": "788"
+            },
+            "effects": {
+              "shieldedMints": [],
+              "unshieldedMints": [],
+              "unshieldedInputs": [],
+              "unshieldedOutputs": [],
+              "claimedShieldedReceives": [
+                "61a11b053dd1b37484a55fe3c6ba3530c5ecd0f23917badb7ecdbee12d8433c7",
+                "9cc1e90e50d2704d6e1bd7b5c17956286c4cca1b731d58e8d81faac5cd1bb165"
+              ],
+              "claimedShieldedSpends": [
+                "9cc1e90e50d2704d6e1bd7b5c17956286c4cca1b731d58e8d81faac5cd1bb165"
+              ],
+              "claimedNullifiers": [
+                "88848cb452d2ee1ad07a1ac5524c494e142380b9a588eece328cd9f86c2bbad7",
+                "95856af4bb2d18f5524d103df01b83774c594bdf9037afed460423e9b5b57f7b"
+              ],
+              "claimedContractCalls": [],
+              "claimedUnshieldedSpends": 0
+            },
+            "counted": true
+          },
+          "fallible": null
+        }
+      ]
+    }
+  ],
+  "rewards": null
+}

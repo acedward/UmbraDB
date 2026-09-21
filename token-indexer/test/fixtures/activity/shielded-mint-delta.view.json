@@ -1,0 +1,108 @@
+{
+  "txHash": "bd0360d461843d2c337b04b9353c8b95833dc1d60780e28a62530a53abe024f9",
+  "selfReportedTxHash": "bd0360d461843d2c337b04b9353c8b95833dc1d60780e28a62530a53abe024f9",
+  "isSystem": false,
+  "rawByteLength": 13819,
+  "identifiers": [
+    "00129d568b2850bfd49955c2961722fa6ca293cfe75957aadf83b3320978ffa61e",
+    "00166605d100f88ad514fab9e79901dfa1aaee7396148c260ee75a22ec605c54cc",
+    "00fb8b0d43e6153622442bccf110550aacc3e191f6210c66cf09e750b906e7caa2"
+  ],
+  "feeSpeck": "332966033915711",
+  "bindingRandomness": true,
+  "offers": [
+    {
+      "section": "guaranteed",
+      "segment": 0,
+      "counted": true,
+      "inputCount": 0,
+      "outputCount": 1,
+      "transientCount": 0,
+      "deltaCount": 1,
+      "deltas": [
+        {
+          "color": "d086a9e29154d03f507a589c89ea61a453f444c2881b8d0d88192f2965fa2cea",
+          "delta": "-1",
+          "direction": "pool_in"
+        }
+      ],
+      "inputs": [],
+      "outputs": [
+        {
+          "commitment": "a94f9761201cc907466b20f2944b5372fcdc2068f352c2a43bdafd3838ab27f6",
+          "contractAddress": null
+        }
+      ],
+      "transients": []
+    }
+  ],
+  "intents": [
+    {
+      "segment": 1,
+      "ttl": "2026-09-17T06:11:58.000Z",
+      "intentHash": "cde1125a2743761dc931f91d064f39a01e5093a6701e93c37685096f923923af",
+      "guaranteedUnshieldedOffer": null,
+      "fallibleUnshieldedOffer": null,
+      "dustActions": {
+        "ctime": "2026-09-17T05:41:42.000Z",
+        "spends": [
+          {
+            "vFee": "332966033915711",
+            "oldNullifier": "7362612025968400802666380505837785960921151627335364608098546079599540862685",
+            "newCommitment": "49483026790277055962686353641203711894562066481133007455453059494892168707848"
+          }
+        ],
+        "registrations": []
+      },
+      "actions": []
+    },
+    {
+      "segment": 40256,
+      "ttl": "2026-09-17T06:41:54.000Z",
+      "intentHash": "f469c772a280425ea301c2a76edfe08e38d08ce42d1c7de9c6554fc8e50840b6",
+      "guaranteedUnshieldedOffer": null,
+      "fallibleUnshieldedOffer": null,
+      "dustActions": null,
+      "actions": [
+        {
+          "index": 0,
+          "kind": "call",
+          "address": "4fc92e152e8d854ef9337275504244e18bd6e3d7d41fd81ed2dabf62be78e92f",
+          "entryPoint": "mint_shielded",
+          "communicationCommitment": "7300dd7e773b946ed308db4731aa2ebd15c5cd933045d2b29d6790cc9bb3346260",
+          "guaranteed": {
+            "ops": 25,
+            "logOps": 0,
+            "gas": {
+              "readTime": "0",
+              "computeTime": "1534960246",
+              "bytesWritten": "0",
+              "bytesDeleted": "0"
+            },
+            "effects": {
+              "shieldedMints": [
+                {
+                  "domainSep": "6f747269782d6c6f79616c74792d726577617264000000000000000000000000",
+                  "amount": "1"
+                }
+              ],
+              "unshieldedMints": [],
+              "unshieldedInputs": [],
+              "unshieldedOutputs": [],
+              "claimedShieldedReceives": [],
+              "claimedShieldedSpends": [
+                "a94f9761201cc907466b20f2944b5372fcdc2068f352c2a43bdafd3838ab27f6"
+              ],
+              "claimedNullifiers": [],
+              "claimedContractCalls": [],
+              "claimedUnshieldedSpends": 0
+            },
+            "counted": true
+          },
+          "fallible": null
+        }
+      ]
+    }
+  ],
+  "rewards": null
+}

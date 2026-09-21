@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { isSystemTransaction } from "../../chain-archive-sync/tx-replay-decoder.js";
+import { NIGHT_COLOR_HEX, tokenColorHex } from "../color.js";
 import { KIND_SHIELDED_NATIVE, KIND_UNSHIELDED_NATIVE, type NativeKindByte } from "./payload.js";
 
 /**
@@ -202,23 +203,7 @@ export function countedEffects(
     return { mints, logOpsByAddress, callAddresses, deployAddresses };
   }
 
-  const guaranteedCounts = result !== "failure";
-  const segmentSucceeded = (segment: number): boolean => {
-    if (result === "failure") return false;
-    if (result === "success") return true;
-    if (segments === null || segments === undefined) {
-      throw new Error(
-        `transaction ${txHashHex} is partial_success but the archive has no segments for it — ` +
-        "run `token-indexer backfill-results` for its block; refusing to guess which segment applied",
-      );
-    }
-    const entry = segments.find((s) => s.id === segment);
-    if (entry === undefined) {
-      // A segment the indexer did not report inside a PARTIAL_SUCCESS result did not succeed.
-      return false;
-    }
-    return entry.success;
-  };
+  const { guaranteedCounts, segmentSucceeded } = countingRule(result, segments, txHashHex);
 
   for (const action of decoded.actions) {
     if (action.kind === "deploy") {
@@ -248,4 +233,714 @@ export function countedEffects(
     }
   }
   return { mints, logOpsByAddress, callAddresses, deployAddresses };
+}
+
+/* ────────────────────────────────────────────────────────────────────────────────────────────
+ * Project 00023 — every PUBLIC occurrence of a token in one transaction (spec §6.2, FR-001).
+ *
+ * `decodeTransactionActions` above answers "what did this transaction mint?". `decodeTokenFlows`
+ * below answers the owner's question: "where did this token move, and what does the chain let
+ * anyone see about it?". One pass over the same deserialised transaction produces four things:
+ *
+ *  - `activity` — the rows the scanner stores. **Counted only** (owner decision Q10, "skip
+ *    failed"): a movement that did not happen must never appear in a token's list.
+ *  - `offers`   — one record per zswap offer, counted or not. This is the privacy measurement: an
+ *    offer whose `deltas` map is EMPTY is balanced, and a balanced offer publishes nothing about
+ *    which colour moved (ledger `normalize_deltas` drops every zero; the verifier rejects a stored
+ *    zero — spec §0). 64 of the archive's 117 offers are of that kind.
+ *  - `calls`    — one record per contract call, with every public field of each transcript. A
+ *    LEDGER token's only visible activity, listed under the owner's note that the executing code
+ *    is not available to us (Q4).
+ *  - `view`     — the spec §4 document minus the block fields, for `GET /v1/transactions/:hash`,
+ *    which decodes on request (Q5). It carries the UNCOUNTED sections too, marked, so nothing is
+ *    hidden — it is simply not attributed to a token.
+ *
+ * **DUST produces no activity row, ever** (owner decision Q13): 681 of 683 archived transactions
+ * pay a DUST fee, so a DUST list would be a list of the whole chain. Its spends and registrations
+ * appear in `view` and nowhere else.
+ *
+ * The ledger module stays INJECTED, exactly as above, so this walk is unit-testable against the
+ * fake ledger and typechecks without the WASM package loaded.
+ * ──────────────────────────────────────────────────────────────────────────────────────────── */
+
+export type ActivitySection = "guaranteed" | "fallible";
+
+/** The seven ways a colour can appear in public data (spec FR-001). */
+export type ActivityRole =
+  | "utxo_out" | "utxo_in" | "contract_in" | "contract_out" | "mint" | "shielded_delta" | "reward";
+
+/** The sign, carried beside an UNSIGNED amount (the plan's "Amounts" decision). `mint` is in the
+ *  union because spec §5 declares it; no row is written with it — the ROLE already says a mint is
+ *  a mint, and its direction is `in` like every other arrival. */
+export type ActivityDirection = "in" | "out" | "mint" | "pool_in" | "pool_out";
+
+/** One row of `token_index.token_activity`, before the block fields the scanner adds. */
+export interface ActivityRecord {
+  segment: number;
+  section: ActivitySection;
+  role: ActivityRole;
+  itemIndex: number;
+  /** 32-byte colour, lowercase hex. Never absent — DUST is not tracked. */
+  color: string;
+  /** 0 unshielded native, 1 shielded native — decided by the EVIDENCE's privacy (FR-003). */
+  kind: NativeKindByte;
+  /** Unsigned; `direction` carries the sign. */
+  amount: bigint;
+  direction: ActivityDirection;
+  /** 32-byte `UserAddress`, hex — `utxo_out`, `utxo_in` (via `addressFromKey`) and `reward`. */
+  owner: string | undefined;
+  /** `<tag>:<hex>` of the `SignatureVerifyingKey` — `utxo_in` and `reward`. */
+  ownerKey: string | undefined;
+  /** `utxo_out`: the intent hash this output belongs to. `utxo_in`: the intent hash of the UTXO
+   *  being SPENT. `reward`: the `01`-prefixed identifier's payload, the ledger's own name for the
+   *  reward output. */
+  intentHash: string | undefined;
+  /** `utxo_out`: the intent-wide output index the indexer uses — guaranteed outputs first, then
+   *  fallible (`chain-archive-sync/tx-replay-decoder.ts` established it against real rows).
+   *  `utxo_in`: the output number of the UTXO being spent. */
+  outputNo: number | undefined;
+  /** Contract address — `contract_in`, `contract_out`, `mint`. */
+  address: string | undefined;
+  entryPoint: string | undefined;
+  callIndex: number | undefined;
+  /** `mint` rows only: the key of the mint map. */
+  domainSep: string | undefined;
+}
+
+/** One row of `token_index.shielded_offers` — the privacy measurement (FR-018). */
+export interface OfferRecord {
+  section: ActivitySection;
+  /** The intent segment for a fallible offer; 0 for the transaction-level guaranteed offer. */
+  segment: number;
+  inputs: number;
+  outputs: number;
+  transients: number;
+  /** Number of colours whose net imbalance this offer publishes. 0 = balanced = undisclosed. */
+  deltas: number;
+  counted: boolean;
+}
+
+/** Gas as the ledger reports it; decimal strings because every component is a `bigint`. */
+export interface GasView {
+  readTime: string;
+  computeTime: string;
+  bytesWritten: string;
+  bytesDeleted: string;
+}
+
+/** A transcript's `effects`, every map rendered (spec §4). */
+export interface EffectsView {
+  shieldedMints: { domainSep: string; amount: string }[];
+  unshieldedMints: { domainSep: string; amount: string }[];
+  unshieldedInputs: { color: string; amount: string }[];
+  unshieldedOutputs: { color: string; amount: string }[];
+  claimedShieldedReceives: string[];
+  claimedShieldedSpends: string[];
+  claimedNullifiers: string[];
+  claimedContractCalls: { sequence: string; address: string; entryPoint: string; commitment: string }[];
+  /** Count only: its map key is a `(TokenType, PublicAddress)` tuple, no archived transaction
+   *  carries one, and inventing a rendering for a shape nobody has seen would be a guess. */
+  claimedUnshieldedSpends: number;
+}
+
+export interface TranscriptView {
+  ops: number;
+  logOps: number;
+  gas: GasView;
+  effects: EffectsView;
+  /** Did this section count under FR-002? The row it would have produced exists only if it did. */
+  counted: boolean;
+}
+
+/** One row of `token_index.contract_calls` (FR-020, US7). */
+export interface CallRecord {
+  segment: number;
+  callIndex: number;
+  address: string;
+  entryPoint: string | undefined;
+  guaranteed: TranscriptView | undefined;
+  fallible: TranscriptView | undefined;
+}
+
+/** The same offer as {@link OfferRecord}, with the contents the transaction view prints. The
+ *  counts stay beside the lists on purpose: `deltaCount` 0 is the whole privacy statement, and a
+ *  reader should be able to see it without counting an array. */
+export interface OfferView {
+  section: ActivitySection;
+  segment: number;
+  counted: boolean;
+  inputCount: number;
+  outputCount: number;
+  transientCount: number;
+  deltaCount: number;
+  /** Every colour whose net imbalance is public, with the exact amount (spec §0). Empty means the
+   *  offer is BALANCED and the ledger says nothing at all about which colour moved. */
+  deltas: { color: string; delta: string; direction: "pool_in" | "pool_out" }[];
+  inputs: { nullifier: string; contractAddress: string | null }[];
+  outputs: { commitment: string; contractAddress: string | null }[];
+  transients: { commitment: string; nullifier: string; contractAddress: string | null }[];
+}
+
+export interface UnshieldedOfferView {
+  counted: boolean;
+  inputs: {
+    value: string; color: string; ownerKey: string; ownerAddress: string;
+    spentIntentHash: string; spentOutputNo: number;
+  }[];
+  outputs: { index: number; value: string; color: string; owner: string }[];
+  signatures: number;
+}
+
+export interface DustActionsView {
+  /** A WALLET-set time inside the transaction, not the block time (spec US3 scenario 2). */
+  ctime: string | null;
+  spends: { vFee: string; oldNullifier: string; newCommitment: string }[];
+  registrations: { nightKey: string; dustAddress: string | null; allowFeePayment: string }[];
+}
+
+export interface ActionView {
+  index: number;
+  kind: "deploy" | "call" | "maintenance";
+  address: string;
+  entryPoint: string | null;
+  communicationCommitment: string | null;
+  guaranteed: TranscriptView | null;
+  fallible: TranscriptView | null;
+}
+
+export interface IntentView {
+  segment: number;
+  /** A WALLET-set expiry inside the transaction, never the block time (US3 scenario 2). */
+  ttl: string | null;
+  intentHash: string;
+  guaranteedUnshieldedOffer: UnshieldedOfferView | null;
+  fallibleUnshieldedOffer: UnshieldedOfferView | null;
+  dustActions: DustActionsView | null;
+  actions: ActionView[];
+}
+
+export interface RewardsView {
+  value: string;
+  owner: string;
+  ownerKey: string;
+  nonce: string;
+  kind: string;
+}
+
+/** The spec §4 document, minus the fields that come from the archive rather than from the bytes
+ *  (`blockHeight`, `blockHash`, `txPosition`, `protocolVersion`, `result`, `segments`) and minus
+ *  the stored activity rows — the API route adds both. */
+export interface PublicTransactionView {
+  txHash: string;
+  /** What the transaction says its own hash is. Equal to `txHash` for every archived transaction
+   *  measured on 2026-09-21; carried so a disagreement would be visible rather than silent. */
+  selfReportedTxHash: string | null;
+  isSystem: boolean;
+  rawByteLength: number;
+  identifiers: string[];
+  /** The sum of `vFee` over every DUST spend — what the transaction OFFERS for its fee.
+   *
+   *  **Measured 2026-09-21 (spec §4's VERIFY): this is NOT equal to the indexer's `fee`.** On all
+   *  four recorded fixtures the offered amount exceeds the indexer's number by 25–53 % (e.g.
+   *  248 379 650 240 359 vs 162 873 142 857 143 on `deposit-toMap`), which is what a wallet's fee
+   *  margin looks like: `Transaction.feesWithMargin` offers more than `Transaction.fees` requires.
+   *  The archive stores neither number, so this field is the only one derivable from the bytes.
+   *  Recorded as question Q15. */
+  feeSpeck: string;
+  bindingRandomness: boolean;
+  offers: OfferView[];
+  intents: IntentView[];
+  rewards: RewardsView | null;
+}
+
+export interface DecodedTokenFlows {
+  /** COUNTED rows only (FR-002, Q10). */
+  activity: ActivityRecord[];
+  offers: OfferRecord[];
+  calls: CallRecord[];
+  view: PublicTransactionView;
+}
+
+/**
+ * FR-002's counting rule, in one place: a GUARANTEED section counts unless the whole transaction
+ * failed; a FALLIBLE section counts only if its intent SEGMENT succeeded.
+ *
+ * Shared by {@link countedEffects} (mints, 00020) and {@link decodeTokenFlows} (everything else),
+ * so the two can never drift into two different notions of "it happened".
+ */
+export function countingRule(
+  result: "success" | "partial_success" | "failure",
+  segments: readonly { id: number; success: boolean }[] | null,
+  txHashHex: string,
+): { guaranteedCounts: boolean; segmentSucceeded: (segment: number) => boolean } {
+  const guaranteedCounts = result !== "failure";
+  const segmentSucceeded = (segment: number): boolean => {
+    if (result === "failure") return false;
+    if (result === "success") return true;
+    if (segments === null || segments === undefined) {
+      throw new Error(
+        `transaction ${txHashHex} is partial_success but the archive has no segments for it — ` +
+        "run `token-indexer backfill-results` for its block; refusing to guess which segment applied",
+      );
+    }
+    const entry = segments.find((s) => s.id === segment);
+    // A segment the indexer did not report inside a PARTIAL_SUCCESS result did not succeed.
+    if (entry === undefined) return false;
+    return entry.success;
+  };
+  return { guaranteedCounts, segmentSucceeded };
+}
+
+const big = (value: unknown): string => BigInt(value as bigint).toString();
+
+/** A `Date` the ledger hands back (`Intent.ttl`, `DustActions.ctime`) as an ISO string. These are
+ *  values the WALLET put inside the transaction, and the view labels them as such — they are never
+ *  the block's time, which this lineage's archive does not have at all (Q1). */
+function isoOrNull(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (value instanceof Date) return value.toISOString();
+  const asDate = new Date(String(value));
+  return Number.isNaN(asDate.getTime()) ? String(value) : asDate.toISOString();
+}
+
+/**
+ * The raw 32-byte colour behind a contract effect map's key.
+ *
+ * The mint maps are keyed by a hex STRING; `unshieldedInputs` / `unshieldedOutputs` are keyed by a
+ * `TokenType` OBJECT (`{tag: 'unshielded', raw}`) — spec §0's edge case, observed live. A DUST key
+ * (`{tag: 'dust'}`, a unit variant with no bytes) is the one shape that is legitimately skipped
+ * rather than decoded: DUST is not tracked (Q13). Anything else THROWS naming the transaction,
+ * because a silently dropped flow loses a token movement with no signal (FR-015).
+ */
+function colorOfEffectKey(key: unknown, txHashHex: string, where: string): string | undefined {
+  if (typeof key === "string") return key.toLowerCase();
+  if (key instanceof Uint8Array) return Buffer.from(key).toString("hex");
+  if (typeof key === "object" && key !== null) {
+    const tag = (key as { tag?: unknown }).tag;
+    if (tag === "dust") return undefined; // never tracked, never an error
+    const raw = (key as { raw?: unknown }).raw;
+    if (typeof raw === "string") return raw.toLowerCase();
+    if (raw instanceof Uint8Array) return Buffer.from(raw).toString("hex");
+  }
+  throw new Error(
+    `decodeTokenFlows: transaction ${txHashHex} has a ${where} key of an unrecognised shape ` +
+    `(${JSON.stringify(key, (_k, v: unknown) => (typeof v === "bigint" ? String(v) : v))}) — ` +
+    "refusing to skip it, because a silently dropped flow loses a token movement with no signal",
+  );
+}
+
+/** `<tag>:<hex>` for a `SignatureVerifyingKey`, which the ledger carries as `{tag, value}`. */
+function ownerKeyOf(key: unknown): string {
+  if (typeof key === "object" && key !== null && "tag" in key) {
+    const k = key as { tag: unknown; value?: unknown };
+    return `${String(k.tag)}:${hex(k.value)}`;
+  }
+  return hex(key);
+}
+
+function gasView(gas: unknown): GasView {
+  const g = (gas ?? {}) as Record<string, unknown>;
+  const at = (name: string): string => (g[name] === undefined || g[name] === null ? "0" : big(g[name]));
+  return {
+    readTime: at("readTime"),
+    computeTime: at("computeTime"),
+    bytesWritten: at("bytesWritten"),
+    bytesDeleted: at("bytesDeleted"),
+  };
+}
+
+function sizeOf(value: unknown): number {
+  if (value === undefined || value === null) return 0;
+  if (Array.isArray(value)) return value.length;
+  if (value instanceof Map || value instanceof Set) return value.size;
+  const size = (value as { size?: unknown }).size;
+  return typeof size === "number" ? size : 0;
+}
+
+function effectsView(effects: unknown, txHashHex: string): EffectsView {
+  const e = (effects ?? {}) as Record<string, any>;
+  const pairs = (source: unknown): [unknown, bigint][] =>
+    source === undefined || source === null ? [] : [...(source as Iterable<[unknown, bigint]>)];
+  const named = (source: unknown): { domainSep: string; amount: string }[] =>
+    pairs(source).map(([key, amount]) => ({ domainSep: hex(key), amount: big(amount) }));
+  const coloured = (source: unknown, where: string): { color: string; amount: string }[] => {
+    const out: { color: string; amount: string }[] = [];
+    for (const [key, amount] of pairs(source)) {
+      const color = colorOfEffectKey(key, txHashHex, where);
+      if (color === undefined) continue; // a DUST key — not tracked (Q13)
+      out.push({ color, amount: big(amount) });
+    }
+    return out;
+  };
+  const list = (source: unknown): string[] =>
+    source === undefined || source === null ? [] : [...(source as Iterable<unknown>)].map(hex);
+  return {
+    shieldedMints: named(e.shieldedMints),
+    unshieldedMints: named(e.unshieldedMints),
+    unshieldedInputs: coloured(e.unshieldedInputs, "effects.unshieldedInputs"),
+    unshieldedOutputs: coloured(e.unshieldedOutputs, "effects.unshieldedOutputs"),
+    claimedShieldedReceives: list(e.claimedShieldedReceives),
+    claimedShieldedSpends: list(e.claimedShieldedSpends),
+    claimedNullifiers: list(e.claimedNullifiers),
+    claimedContractCalls: (e.claimedContractCalls === undefined || e.claimedContractCalls === null
+      ? []
+      : [...(e.claimedContractCalls as Iterable<unknown[]>)]
+    ).map((entry) => ({
+      sequence: entry[0] === undefined ? "0" : big(entry[0]),
+      address: hex(entry[1]),
+      entryPoint: entryPointOf(entry[2]) ?? "",
+      commitment: hex(entry[3]),
+    })),
+    claimedUnshieldedSpends: sizeOf(e.claimedUnshieldedSpends),
+  };
+}
+
+function transcriptView(transcript: unknown, counted: boolean, txHashHex: string): TranscriptView | undefined {
+  if (transcript === undefined || transcript === null) return undefined;
+  const t = transcript as { program?: unknown[]; gas?: unknown; effects?: unknown };
+  const program: unknown[] = t.program ?? [];
+  let logOps = 0;
+  for (const op of program) if (op === "log") logOps++;
+  return {
+    ops: program.length,
+    logOps,
+    gas: gasView(t.gas),
+    effects: effectsView(t.effects, txHashHex),
+    counted,
+  };
+}
+
+/** The intent segments in ascending order. The ledger hands back a `Map`, whose iteration order is
+ *  insertion order; sorting makes the walk — and therefore every `item_index` and every golden —
+ *  a function of the transaction alone, which is what makes `rebuild` byte-equal (FR-005). */
+function sortedEntries(map: unknown): [number, any][] {
+  if (map === undefined || map === null) return [];
+  const out: [number, any][] = [...(map as Iterable<[unknown, unknown]>)]
+    .map(([key, value]) => [Number(key), value] as [number, any]);
+  out.sort((a, b) => a[0] - b[0]);
+  return out;
+}
+
+/**
+ * Every public occurrence of a token in one archived transaction.
+ *
+ * @param ledger the loaded ledger module (`loadLedgerV9()`), injected.
+ * @param rawBytes exactly the bytes the archive stores (role `tx_raw`).
+ * @param result the archived transaction result (FR-002).
+ * @param segments the archived per-segment outcomes; required for `partial_success`.
+ * @param txHashHex the archive's own hash for the transaction — used in every error message and as
+ *   the view's identity.
+ * @throws if the bytes are not a Midnight transaction payload, or if an effect key has a shape this
+ *   walk does not recognise (FR-015).
+ */
+export function decodeTokenFlows(
+  ledger: any,
+  rawBytes: Uint8Array,
+  result: "success" | "partial_success" | "failure",
+  segments: readonly { id: number; success: boolean }[] | null,
+  txHashHex: string,
+): DecodedTokenFlows {
+  const emptyView: PublicTransactionView = {
+    txHash: txHashHex, selfReportedTxHash: null, isSystem: true, rawByteLength: rawBytes.length,
+    identifiers: [], feeSpeck: "0", bindingRandomness: false, offers: [], intents: [], rewards: null,
+  };
+  // A system transaction exposes only `serialize/deserialize/toString` in the WASM, the archive
+  // holds none on Stagenet, and the owner put them out of scope (Q11). It is reported as what it
+  // is rather than decoded as something it is not.
+  if (isSystemTransaction(rawBytes)) {
+    return { activity: [], offers: [], calls: [], view: emptyView };
+  }
+
+  const tx = ledger.Transaction.deserialize("signature", "proof", "binding", rawBytes);
+  const { guaranteedCounts, segmentSucceeded } = countingRule(result, segments, txHashHex);
+
+  const activity: ActivityRecord[] = [];
+  const offers: OfferRecord[] = [];
+  const calls: CallRecord[] = [];
+  const offerViews: OfferView[] = [];
+  const intentViews: IntentView[] = [];
+  let feeSpeck = 0n;
+
+  // `item_index` is the position within its own `(segment, section, role)` list — which is exactly
+  // what the primary key needs to be total, and what makes a re-scan idempotent (FR-004).
+  const nextIndex = new Map<string, number>();
+  const take = (segment: number, section: ActivitySection, role: ActivityRole): number => {
+    const key = `${segment}|${section}|${role}`;
+    const at = nextIndex.get(key) ?? 0;
+    nextIndex.set(key, at + 1);
+    return at;
+  };
+  const push = (
+    counted: boolean,
+    row: Omit<ActivityRecord, "itemIndex"> & { itemIndex?: number },
+  ): void => {
+    // Only counted rows are stored (Q10). The index is consumed either way, so the numbering of a
+    // transaction's rows does not depend on which of its segments happened to succeed.
+    const itemIndex = take(row.segment, row.section, row.role);
+    if (!counted) return;
+    activity.push({ ...row, itemIndex });
+  };
+
+  // ── rewards (NIGHT) ───────────────────────────────────────────────────────────────────────
+  // The archive holds none on Stagenet; the path exists because a `ClaimRewards` transaction is
+  // how NIGHT is distributed, and dropping it would lose every allocation on a chain that has one.
+  let rewardsView: RewardsView | null = null;
+  if (tx.rewards !== undefined && tx.rewards !== null) {
+    const ownerAddress = hex(ledger.addressFromKey(tx.rewards.owner));
+    // The ledger names the reward output through the transaction's `01`-prefixed identifier, the
+    // same convention `chain-archive-sync/tx-replay-decoder.ts` established against real rows.
+    const rewardIdentifier = identifiersOf(tx).find((id) => /^01[0-9a-f]{64}$/i.test(id));
+    rewardsView = {
+      value: big(tx.rewards.value),
+      owner: ownerAddress,
+      ownerKey: ownerKeyOf(tx.rewards.owner),
+      nonce: hex(tx.rewards.nonce),
+      kind: String(tx.rewards.kind ?? "Reward"),
+    };
+    push(guaranteedCounts, {
+      segment: 0, section: "guaranteed", role: "reward",
+      color: NIGHT_COLOR_HEX, kind: KIND_UNSHIELDED_NATIVE, amount: BigInt(tx.rewards.value),
+      direction: "in",
+      owner: ownerAddress, ownerKey: ownerKeyOf(tx.rewards.owner),
+      intentHash: rewardIdentifier === undefined ? undefined : rewardIdentifier.slice(2),
+      outputNo: 0,
+      address: undefined, entryPoint: undefined, callIndex: undefined, domainSep: undefined,
+    });
+  }
+
+  // ── zswap offers ──────────────────────────────────────────────────────────────────────────
+  // The transaction-level GUARANTEED offer sits outside every intent and is recorded under segment
+  // 0 (spec §6.1); a fallible offer is recorded under its own segment.
+  const walkOffer = (offer: any, section: ActivitySection, segment: number, counted: boolean): void => {
+    if (offer === undefined || offer === null) return;
+    const deltaPairs: [string, bigint][] = offer.deltas === undefined || offer.deltas === null
+      ? []
+      : [...(offer.deltas as Iterable<[unknown, bigint]>)].map(([k, v]) => [hex(k), BigInt(v)] as [string, bigint]);
+    const inputs: any[] = offer.inputs ?? [];
+    const outputs: any[] = offer.outputs ?? [];
+    const transients: any[] = offer.transients ?? [];
+
+    const record: OfferRecord = {
+      section, segment,
+      inputs: inputs.length, outputs: outputs.length, transients: transients.length,
+      deltas: deltaPairs.length, counted,
+    };
+    offers.push(record);
+    offerViews.push({
+      section, segment, counted,
+      inputCount: inputs.length, outputCount: outputs.length,
+      transientCount: transients.length, deltaCount: deltaPairs.length,
+      // A NEGATIVE delta means value entered the shielded pool (a mint, a contract paying in); a
+      // positive one means it left. The amount is exact and public either way (spec §0).
+      deltas: deltaPairs.map(([color, delta]) => ({
+        color,
+        delta: delta.toString(),
+        direction: delta < 0n ? "pool_in" as const : "pool_out" as const,
+      })),
+      inputs: inputs.map((i) => ({
+        nullifier: hex(i.nullifier),
+        contractAddress: i.contractAddress === undefined || i.contractAddress === null ? null : hex(i.contractAddress),
+      })),
+      outputs: outputs.map((o) => ({
+        commitment: hex(o.commitment),
+        contractAddress: o.contractAddress === undefined || o.contractAddress === null ? null : hex(o.contractAddress),
+      })),
+      transients: transients.map((t) => ({
+        commitment: hex(t.commitment),
+        nullifier: hex(t.nullifier),
+        contractAddress: t.contractAddress === undefined || t.contractAddress === null ? null : hex(t.contractAddress),
+      })),
+    });
+
+    for (const [color, delta] of deltaPairs) {
+      push(counted, {
+        segment, section, role: "shielded_delta",
+        color, kind: KIND_SHIELDED_NATIVE,
+        amount: delta < 0n ? -delta : delta,
+        direction: delta < 0n ? "pool_in" : "pool_out",
+        owner: undefined, ownerKey: undefined, intentHash: undefined, outputNo: undefined,
+        address: undefined, entryPoint: undefined, callIndex: undefined, domainSep: undefined,
+      });
+    }
+  };
+  walkOffer(tx.guaranteedOffer, "guaranteed", 0, guaranteedCounts);
+  for (const [segment, offer] of sortedEntries(tx.fallibleOffer)) {
+    walkOffer(offer, "fallible", segment, segmentSucceeded(segment));
+  }
+
+  // ── intents ───────────────────────────────────────────────────────────────────────────────
+  for (const [segment, intent] of sortedEntries(tx.intents)) {
+    const intentHash = hex(intent.intentHash(segment));
+    const sections: Record<ActivitySection, UnshieldedOfferView | null> =
+      { guaranteed: null, fallible: null };
+    // The indexer numbers `output_index` across the intent's FULL output list, guaranteed section
+    // first, then fallible. One shared counter reproduces that numbering — and it advances over an
+    // uncounted section too, because the numbering is a property of the transaction, not of what
+    // took effect.
+    let outputNo = 0;
+    for (const section of ["guaranteed", "fallible"] as const) {
+      const offer = section === "guaranteed" ? intent.guaranteedUnshieldedOffer : intent.fallibleUnshieldedOffer;
+      if (offer === undefined || offer === null) continue;
+      const counted = section === "guaranteed" ? guaranteedCounts : segmentSucceeded(segment);
+      const inputs: any[] = offer.inputs ?? [];
+      const outputs: any[] = offer.outputs ?? [];
+      const view: UnshieldedOfferView = { counted, inputs: [], outputs: [], signatures: (offer.signatures ?? []).length };
+
+      for (const input of inputs) {
+        const ownerAddress = hex(ledger.addressFromKey(input.owner));
+        view.inputs.push({
+          value: big(input.value), color: hex(input.type),
+          ownerKey: ownerKeyOf(input.owner), ownerAddress,
+          spentIntentHash: hex(input.intentHash), spentOutputNo: Number(input.outputNo),
+        });
+        push(counted, {
+          segment, section, role: "utxo_in",
+          color: hex(input.type), kind: KIND_UNSHIELDED_NATIVE,
+          amount: BigInt(input.value), direction: "out",
+          owner: ownerAddress, ownerKey: ownerKeyOf(input.owner),
+          intentHash: hex(input.intentHash), outputNo: Number(input.outputNo),
+          address: undefined, entryPoint: undefined, callIndex: undefined, domainSep: undefined,
+        });
+      }
+      for (const output of outputs) {
+        const index = outputNo++;
+        view.outputs.push({
+          index, value: big(output.value), color: hex(output.type), owner: hex(output.owner),
+        });
+        push(counted, {
+          segment, section, role: "utxo_out",
+          color: hex(output.type), kind: KIND_UNSHIELDED_NATIVE,
+          amount: BigInt(output.value), direction: "in",
+          owner: hex(output.owner), ownerKey: undefined,
+          intentHash, outputNo: index,
+          address: undefined, entryPoint: undefined, callIndex: undefined, domainSep: undefined,
+        });
+      }
+      sections[section] = view;
+    }
+
+    // DUST: decoded for the view, summed into `feeSpeck`, and never turned into a row (Q13).
+    const dust = intent.dustActions;
+    let dustView: DustActionsView | null = null;
+    if (dust !== undefined && dust !== null) {
+      const spends: any[] = dust.spends ?? [];
+      const registrations: any[] = dust.registrations ?? [];
+      for (const spend of spends) feeSpeck += BigInt(spend.vFee);
+      dustView = {
+        ctime: isoOrNull(dust.ctime),
+        spends: spends.map((s) => ({
+          vFee: big(s.vFee), oldNullifier: hex(s.oldNullifier), newCommitment: hex(s.newCommitment),
+        })),
+        registrations: registrations.map((r) => ({
+          nightKey: ownerKeyOf(r.nightKey),
+          dustAddress: r.dustAddress === undefined || r.dustAddress === null ? null : hex(r.dustAddress),
+          allowFeePayment: big(r.allowFeePayment ?? 0n),
+        })),
+      };
+    }
+
+    const actionViews: ActionView[] = [];
+    const list: any[] = intent.actions ?? [];
+    for (let callIndex = 0; callIndex < list.length; callIndex++) {
+      const action = list[callIndex];
+      const kind = classify(ledger, action);
+      const address = hex(action.address);
+      const entryPoint = kind === "call" ? entryPointOf(action.entryPoint) : undefined;
+      const guaranteed = kind === "call"
+        ? transcriptView(action.guaranteedTranscript, guaranteedCounts, txHashHex) : undefined;
+      const fallible = kind === "call"
+        ? transcriptView(action.fallibleTranscript, segmentSucceeded(segment), txHashHex) : undefined;
+
+      actionViews.push({
+        index: callIndex, kind, address,
+        entryPoint: entryPoint ?? null,
+        communicationCommitment: kind === "call" && action.communicationCommitment !== undefined
+          ? hex(action.communicationCommitment) : null,
+        guaranteed: guaranteed ?? null,
+        fallible: fallible ?? null,
+      });
+
+      if (kind !== "call") continue;
+      calls.push({ segment, callIndex, address, entryPoint, guaranteed, fallible });
+
+      for (const [section, transcript] of [
+        ["guaranteed", guaranteed] as const, ["fallible", fallible] as const,
+      ]) {
+        if (transcript === undefined) continue;
+        const counted = transcript.counted;
+        // A mint effect is a protocol-level mint, so it lands on a NATIVE kind and the map it came
+        // from decides which (MIP §6.3). Its colour is derived from `(domainSep, address)` — the
+        // same derivation `token_mints` already uses, repeated here so ONE list carries everything
+        // (FR-001).
+        for (const [mintKind, entries] of [
+          [KIND_SHIELDED_NATIVE, transcript.effects.shieldedMints] as const,
+          [KIND_UNSHIELDED_NATIVE, transcript.effects.unshieldedMints] as const,
+        ]) {
+          for (const entry of entries) {
+            push(counted, {
+              segment, section, role: "mint",
+              color: tokenColorHex(entry.domainSep, address), kind: mintKind,
+              amount: BigInt(entry.amount), direction: "in",
+              owner: undefined, ownerKey: undefined, intentHash: undefined, outputNo: undefined,
+              address, entryPoint, callIndex, domainSep: entry.domainSep,
+            });
+          }
+        }
+        for (const [role, direction, entries] of [
+          ["contract_in", "in", transcript.effects.unshieldedInputs] as const,
+          ["contract_out", "out", transcript.effects.unshieldedOutputs] as const,
+        ]) {
+          for (const entry of entries) {
+            push(counted, {
+              segment, section, role,
+              color: entry.color, kind: KIND_UNSHIELDED_NATIVE,
+              amount: BigInt(entry.amount), direction,
+              owner: undefined, ownerKey: undefined, intentHash: undefined, outputNo: undefined,
+              address, entryPoint, callIndex, domainSep: undefined,
+            });
+          }
+        }
+      }
+    }
+
+    intentViews.push({
+      segment,
+      ttl: isoOrNull(intent.ttl),
+      intentHash,
+      guaranteedUnshieldedOffer: sections.guaranteed,
+      fallibleUnshieldedOffer: sections.fallible,
+      dustActions: dustView,
+      actions: actionViews,
+    });
+  }
+
+  let bindingRandomness = false;
+  try { bindingRandomness = typeof tx.bindingRandomness === "bigint"; } catch { bindingRandomness = false; }
+  let selfReportedTxHash: string | null = null;
+  try { selfReportedTxHash = hex(tx.transactionHash()); } catch { selfReportedTxHash = null; }
+
+  return {
+    activity, offers, calls,
+    view: {
+      txHash: txHashHex,
+      selfReportedTxHash,
+      isSystem: false,
+      rawByteLength: rawBytes.length,
+      identifiers: identifiersOf(tx),
+      feeSpeck: feeSpeck.toString(),
+      bindingRandomness,
+      offers: offerViews,
+      intents: intentViews,
+      rewards: rewardsView,
+    },
+  };
+}
+
+function identifiersOf(tx: any): string[] {
+  try {
+    const ids = tx.identifiers();
+    return ids === undefined || ids === null ? [] : [...(ids as Iterable<unknown>)].map((id) => String(id).toLowerCase());
+  } catch {
+    return [];
+  }
 }

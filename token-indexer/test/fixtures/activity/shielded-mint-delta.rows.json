@@ -1,0 +1,26 @@
+[
+  {
+    "segment": 0,
+    "section": "guaranteed",
+    "role": "shielded_delta",
+    "color": "d086a9e29154d03f507a589c89ea61a453f444c2881b8d0d88192f2965fa2cea",
+    "kind": 1,
+    "amount": "1",
+    "direction": "pool_in",
+    "itemIndex": 0
+  },
+  {
+    "segment": 40256,
+    "section": "guaranteed",
+    "role": "mint",
+    "color": "d086a9e29154d03f507a589c89ea61a453f444c2881b8d0d88192f2965fa2cea",
+    "kind": 1,
+    "amount": "1",
+    "direction": "in",
+    "address": "4fc92e152e8d854ef9337275504244e18bd6e3d7d41fd81ed2dabf62be78e92f",
+    "entryPoint": "mint_shielded",
+    "callIndex": 0,
+    "domainSep": "6f747269782d6c6f79616c74792d726577617264000000000000000000000000",
+    "itemIndex": 0
+  }
+]

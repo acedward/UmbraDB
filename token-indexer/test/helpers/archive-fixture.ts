@@ -18,6 +18,17 @@ import type { Hex32 } from "../../../src/interfaces/chain-archive-store.js";
  * The transaction bytes — the only thing under test — are the chain's own.
  */
 
+/** One unshielded UTXO as the indexer reports it. `owner` is **Bech32m** (`mn_addr_<net>1…`),
+ *  which is what makes these fixtures a cross-check for the encoder the API ships (Q9). */
+export interface FixtureUtxo {
+  owner: string;
+  tokenType: string;
+  value: string;
+  outputIndex: number;
+  /** Absent on the 00020 fixtures, which were recorded before the field was wanted. */
+  intentHash?: string;
+}
+
 export interface ScanFixture {
   label: string;
   net: string;
@@ -30,24 +41,53 @@ export interface ScanFixture {
     protocolVersion: number;
     raw: string;
     transactionResult: { status: string; segments: { id: number; success: boolean }[] | null } | null;
+    /** The indexer's own `fee`, in SPECK. Recorded on the 00023 fixtures only. It is NOT the sum
+     *  of the transaction's DUST `vFee` spends — see `decode.ts`'s `feeSpeck` and question Q15. */
+    fee?: string | null;
   };
   contractActions: { __typename: string; address: string }[];
-  unshieldedCreatedOutputs: { owner: string; tokenType: string; value: string; outputIndex: number }[];
+  unshieldedCreatedOutputs: FixtureUtxo[];
+  /** Recorded on the 00023 fixtures only. */
+  unshieldedSpentOutputs?: FixtureUtxo[];
 }
 
 const FIXTURE_DIR = new URL("../fixtures/scan/", import.meta.url);
+/** Project 00023's own recorded transactions, kept in their own directory so the 00020 scan
+ *  fixtures — whose count `[[token-scan-mints]]` pins at exactly twelve — stay untouched. */
+const ACTIVITY_DIR = new URL("../fixtures/activity/", import.meta.url);
+
+function loadFrom(dir: URL): ScanFixture[] {
+  return readdirSync(dir)
+    .filter((f) => f.endsWith(".raw.json"))
+    .map((f) => JSON.parse(readFileSync(new URL(f, dir), "utf8")) as ScanFixture)
+    .sort((a, b) => a.blockHeight - b.blockHeight);
+}
 
 export function loadScanFixtures(): ScanFixture[] {
-  return readdirSync(FIXTURE_DIR)
-    .filter((f) => f.endsWith(".raw.json"))
-    .map((f) => JSON.parse(readFileSync(new URL(f, FIXTURE_DIR), "utf8")) as ScanFixture)
-    .sort((a, b) => a.blockHeight - b.blockHeight);
+  return loadFrom(FIXTURE_DIR);
 }
 
 export function loadScanFixture(label: string): ScanFixture {
   const found = loadScanFixtures().find((f) => f.label === label);
   if (found === undefined) throw new Error(`no scan fixture labelled ${label}`);
   return found;
+}
+
+/** The project-00023 activity fixtures, oldest block first. */
+export function loadActivityFixtures(): ScanFixture[] {
+  return loadFrom(ACTIVITY_DIR);
+}
+
+export function loadActivityFixture(label: string): ScanFixture {
+  const found = loadActivityFixtures().find((f) => f.label === label);
+  if (found === undefined) throw new Error(`no activity fixture labelled ${label}`);
+  return found;
+}
+
+/** The archived `result` a fixture's recorded `transactionResult.status` maps to. */
+export function fixtureResult(fixture: ScanFixture): "success" | "partial_success" | "failure" {
+  const status = fixture.transaction.transactionResult?.status ?? "SUCCESS";
+  return status === "PARTIAL_SUCCESS" ? "partial_success" : status === "FAILURE" ? "failure" : "success";
 }
 
 const pad32 = (n: number, tag: number): Hex32 =>

@@ -17,17 +17,88 @@ import { pad32 } from "../../color.js";
  * WASM decoder over the real recorded transactions.
  */
 
+/**
+ * One transcript of a fake call. Project 00023 widened it past the two mint maps: the whole point
+ * of the flow maps here is that their keys are `{tag: 'unshielded', raw}` OBJECTS on chain (unlike
+ * the mint maps, whose keys are hex strings — spec §0), and that a key of any OTHER shape must
+ * make the decoder throw rather than silently drop a token movement (FR-015). No real Stagenet
+ * transaction can produce a malformed key, so this seam is the only way to prove it.
+ */
+export interface FakeTranscriptSpec {
+  logOps?: number;
+  /** Non-`log` ops, added so `ops` and `logOps` can differ as they do on chain. */
+  ops?: number;
+  /** `effects.shieldedMints`, keyed by domain separator hex (as the ledger does). */
+  shielded?: Record<string, bigint>;
+  /** `effects.unshieldedMints`. */
+  unshielded?: Record<string, bigint>;
+  /** `effects.unshieldedInputs`, keyed by COLOUR hex; wrapped as `{tag:'unshielded', raw}`. */
+  inFlows?: Record<string, bigint>;
+  /** `effects.unshieldedOutputs`, same keying. */
+  outFlows?: Record<string, bigint>;
+  /** Emit the flow keys as bare hex STRINGS instead — the "future build" shape the spec's edge
+   *  case says must also be accepted. */
+  stringFlowKeys?: boolean;
+  /** Add one `effects.unshieldedInputs` entry under a key of this exact shape. Anything that is
+   *  neither a string, a `Uint8Array` nor an object carrying `raw` must make the decoder throw. */
+  brokenFlowKey?: unknown;
+  /** Add one `effects.unshieldedInputs` entry under `{tag:'dust'}` — the one unrecognised-looking
+   *  key that is legitimately SKIPPED rather than thrown on, because DUST is not tracked (Q13). */
+  dustFlowKey?: boolean;
+  gas?: { readTime?: bigint; computeTime?: bigint; bytesWritten?: bigint; bytesDeleted?: bigint };
+  claimedNullifiers?: string[];
+  claimedShieldedReceives?: string[];
+  claimedShieldedSpends?: string[];
+}
+
 export interface FakeCallSpec {
   address: string;
   entryPoint?: string;
   segment?: number;
-  guaranteed?: { logOps?: number; shielded?: Record<string, bigint>; unshielded?: Record<string, bigint> };
-  fallible?: { logOps?: number; shielded?: Record<string, bigint>; unshielded?: Record<string, bigint> };
+  communicationCommitment?: string;
+  guaranteed?: FakeTranscriptSpec;
+  fallible?: FakeTranscriptSpec;
 }
 
 export interface FakeDeploySpec {
   address: string;
   segment?: number;
+}
+
+/** An intent's unshielded offer — the public half of an unshielded token transfer. */
+export interface FakeUnshieldedOfferSpec {
+  segment?: number;
+  section?: "guaranteed" | "fallible";
+  inputs?: { value: bigint; type: string; ownerKey: string; intentHash: string; outputNo: number }[];
+  outputs?: { value: bigint; type: string; owner: string }[];
+  signatures?: number;
+}
+
+/** `Intent.dustActions` — decoded for the transaction view and never for a row (Q13). */
+export interface FakeDustSpec {
+  segment?: number;
+  ctime?: Date;
+  spends?: { vFee: bigint; oldNullifier?: string; newCommitment?: string }[];
+  registrations?: { nightKey: string; dustAddress?: string; allowFeePayment?: bigint }[];
+}
+
+/** A zswap offer. `deltas` empty = BALANCED = the colour is not public (spec §0). */
+export interface FakeZswapSpec {
+  section?: "guaranteed" | "fallible";
+  segment?: number;
+  deltas?: Record<string, bigint>;
+  inputs?: { nullifier: string; contractAddress?: string }[];
+  outputs?: { commitment: string; contractAddress?: string }[];
+  transients?: { commitment: string; nullifier: string; contractAddress?: string }[];
+}
+
+/** `Transaction.rewards` — a `ClaimRewards` transaction. The archive holds none on Stagenet, so
+ *  this is the only way the `reward` role is exercised at all. */
+export interface FakeRewardsSpec {
+  value: bigint;
+  ownerKey: string;
+  nonce: string;
+  kind?: string;
 }
 
 class FakeContractCall {
@@ -36,6 +107,7 @@ class FakeContractCall {
     readonly entryPoint: string | undefined,
     readonly guaranteedTranscript: unknown,
     readonly fallibleTranscript: unknown,
+    readonly communicationCommitment: string | undefined,
   ) {}
 }
 class FakeContractDeploy {
@@ -46,13 +118,44 @@ class FakeMaintenanceUpdate {
   constructor(readonly address: string) {}
 }
 
-function transcript(spec: FakeCallSpec["guaranteed"]): unknown {
+/** The chain's own key shape for the two FLOW maps: an object, not a string (spec §0). */
+const flowKey = (color: string, asString: boolean): unknown =>
+  asString ? color : { tag: "unshielded", raw: color };
+
+function transcript(spec: FakeTranscriptSpec | undefined): unknown {
   if (spec === undefined) return undefined;
+  const program: string[] = [
+    ...Array.from({ length: spec.logOps ?? 0 }, () => "log"),
+    ...Array.from({ length: spec.ops ?? 0 }, () => "noop"),
+  ];
+  const inFlows = new Map<unknown, bigint>();
+  for (const [color, amount] of Object.entries(spec.inFlows ?? {})) {
+    inFlows.set(flowKey(color, spec.stringFlowKeys === true), amount);
+  }
+  if (spec.dustFlowKey === true) inFlows.set({ tag: "dust" }, 7n);
+  if (spec.brokenFlowKey !== undefined) inFlows.set(spec.brokenFlowKey, 13n);
+  const outFlows = new Map<unknown, bigint>();
+  for (const [color, amount] of Object.entries(spec.outFlows ?? {})) {
+    outFlows.set(flowKey(color, spec.stringFlowKeys === true), amount);
+  }
   return {
-    program: Array.from({ length: spec.logOps ?? 0 }, () => "log"),
+    program,
+    gas: {
+      readTime: spec.gas?.readTime ?? 0n,
+      computeTime: spec.gas?.computeTime ?? 0n,
+      bytesWritten: spec.gas?.bytesWritten ?? 0n,
+      bytesDeleted: spec.gas?.bytesDeleted ?? 0n,
+    },
     effects: {
       shieldedMints: new Map(Object.entries(spec.shielded ?? {})),
       unshieldedMints: new Map(Object.entries(spec.unshielded ?? {})),
+      unshieldedInputs: inFlows,
+      unshieldedOutputs: outFlows,
+      claimedNullifiers: spec.claimedNullifiers ?? [],
+      claimedShieldedReceives: spec.claimedShieldedReceives ?? [],
+      claimedShieldedSpends: spec.claimedShieldedSpends ?? [],
+      claimedContractCalls: [],
+      claimedUnshieldedSpends: new Map(),
     },
   };
 }
@@ -63,32 +166,122 @@ export function fakeRawTransaction(marker: string): Buffer {
   return Buffer.from(`midnight:transaction[v9](signature[v1],proof,pedersen-schnorr[v1]):${marker}`, "utf8");
 }
 
+export interface FakeLedgerSpecs {
+  calls?: FakeCallSpec[];
+  deploys?: FakeDeploySpec[];
+  maintenance?: FakeDeploySpec[];
+  /** 00023: intents' unshielded offers, DUST actions, zswap offers and rewards. */
+  unshielded?: FakeUnshieldedOfferSpec[];
+  dust?: FakeDustSpec[];
+  zswap?: FakeZswapSpec[];
+  rewards?: FakeRewardsSpec;
+  identifiers?: string[];
+  txHash?: string;
+  /** `addressFromKey` on the real ledger maps a `SignatureVerifyingKey` to a `UserAddress`. The
+   *  fake maps the key's hex VALUE through this table, defaulting to the value itself — so a test
+   *  that does not care about the distinction can use one hex string for both. */
+  addresses?: Record<string, string>;
+}
+
 /**
- * A module object shaped like the parts of ledger-v9 the decoder touches. `deserialize` ignores the
- * bytes and returns the actions this factory was built with — the transaction bytes exist only to
+ * A module object shaped like the parts of ledger-v9 the decoders touch. `deserialize` ignores the
+ * bytes and returns the structure this factory was built with — the transaction bytes exist only to
  * satisfy the archive's own schema.
  */
-export function fakeLedger(specs: { calls?: FakeCallSpec[]; deploys?: FakeDeploySpec[]; maintenance?: FakeDeploySpec[] }): any {
-  const bySegment = new Map<number, unknown[]>();
-  const push = (segment: number, action: unknown): void => {
-    const list = bySegment.get(segment) ?? [];
-    list.push(action);
-    bySegment.set(segment, list);
+export function fakeLedger(specs: FakeLedgerSpecs): any {
+  interface FakeIntent {
+    actions: unknown[];
+    guaranteedUnshieldedOffer: unknown;
+    fallibleUnshieldedOffer: unknown;
+    dustActions: unknown;
+    ttl: Date | undefined;
+    intentHash: (segment: number) => string;
+  }
+  const bySegment = new Map<number, FakeIntent>();
+  const intentAt = (segment: number): FakeIntent => {
+    let intent = bySegment.get(segment);
+    if (intent === undefined) {
+      intent = {
+        actions: [], guaranteedUnshieldedOffer: undefined, fallibleUnshieldedOffer: undefined,
+        dustActions: undefined, ttl: new Date("2026-09-21T00:00:00.000Z"),
+        intentHash: (seg: number) => seg.toString(16).padStart(64, "e"),
+      };
+      bySegment.set(segment, intent);
+    }
+    return intent;
   };
+  const push = (segment: number, action: unknown): void => { intentAt(segment).actions.push(action); };
+
   for (const d of specs.deploys ?? []) push(d.segment ?? 0, new FakeContractDeploy(d.address));
   for (const m of specs.maintenance ?? []) push(m.segment ?? 0, new FakeMaintenanceUpdate(m.address));
   for (const c of specs.calls ?? []) {
     push(c.segment ?? 0, new FakeContractCall(
       c.address, c.entryPoint ?? "call", transcript(c.guaranteed), transcript(c.fallible),
+      c.communicationCommitment,
     ));
   }
+  for (const u of specs.unshielded ?? []) {
+    const offer = {
+      inputs: (u.inputs ?? []).map((i) => ({
+        value: i.value, type: i.type, owner: { tag: "schnorr", value: i.ownerKey },
+        intentHash: i.intentHash, outputNo: i.outputNo,
+      })),
+      outputs: (u.outputs ?? []).map((o) => ({ value: o.value, type: o.type, owner: o.owner })),
+      signatures: Array.from({ length: u.signatures ?? 0 }, (_v, i) => i),
+    };
+    const intent = intentAt(u.segment ?? 0);
+    if ((u.section ?? "fallible") === "guaranteed") intent.guaranteedUnshieldedOffer = offer;
+    else intent.fallibleUnshieldedOffer = offer;
+  }
+  for (const d of specs.dust ?? []) {
+    intentAt(d.segment ?? 0).dustActions = {
+      ctime: d.ctime ?? new Date("2026-09-21T00:00:00.000Z"),
+      spends: (d.spends ?? []).map((s) => ({
+        vFee: s.vFee, oldNullifier: s.oldNullifier ?? "aa".repeat(32),
+        newCommitment: s.newCommitment ?? "bb".repeat(32),
+      })),
+      registrations: (d.registrations ?? []).map((r) => ({
+        nightKey: { tag: "schnorr", value: r.nightKey },
+        dustAddress: r.dustAddress, allowFeePayment: r.allowFeePayment ?? 0n,
+      })),
+    };
+  }
+
+  const zswapOffer = (z: FakeZswapSpec): unknown => ({
+    deltas: new Map(Object.entries(z.deltas ?? {})),
+    inputs: (z.inputs ?? []).map((i) => ({ nullifier: i.nullifier, contractAddress: i.contractAddress })),
+    outputs: (z.outputs ?? []).map((o) => ({ commitment: o.commitment, contractAddress: o.contractAddress })),
+    transients: (z.transients ?? []).map((t) => ({
+      commitment: t.commitment, nullifier: t.nullifier, contractAddress: t.contractAddress,
+    })),
+  });
+  const guaranteedZswap = (specs.zswap ?? []).find((z) => (z.section ?? "guaranteed") === "guaranteed");
+  const fallibleZswap = (specs.zswap ?? []).filter((z) => z.section === "fallible");
+
   return {
     ContractCall: FakeContractCall,
     ContractDeploy: FakeContractDeploy,
     MaintenanceUpdate: FakeMaintenanceUpdate,
+    addressFromKey: (key: { value?: string } | string) => {
+      const value = typeof key === "string" ? key : String(key.value);
+      return specs.addresses?.[value] ?? value;
+    },
     Transaction: {
       deserialize: () => ({
-        intents: [...bySegment.entries()].map(([segment, actions]) => [segment, { actions }] as const),
+        intents: [...bySegment.entries()].map(([segment, intent]) => [segment, intent] as const),
+        guaranteedOffer: guaranteedZswap === undefined ? undefined : zswapOffer(guaranteedZswap),
+        fallibleOffer: fallibleZswap.length === 0
+          ? undefined
+          : fallibleZswap.map((z) => [z.segment ?? 0, zswapOffer(z)] as const),
+        rewards: specs.rewards === undefined ? undefined : {
+          value: specs.rewards.value,
+          owner: { tag: "schnorr", value: specs.rewards.ownerKey },
+          nonce: specs.rewards.nonce,
+          kind: specs.rewards.kind ?? "Reward",
+        },
+        bindingRandomness: 1n,
+        identifiers: () => specs.identifiers ?? [],
+        transactionHash: () => specs.txHash ?? "ff".repeat(32),
       }),
     },
   };
