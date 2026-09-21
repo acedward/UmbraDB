@@ -87,13 +87,25 @@ describe("the token explorer page", () => {
   it("serves a page with no external resource of any kind", async () => {
     const body = await (await fetch(`${base}/ui`)).text();
 
-    // No absolute URL at all: not in a tag, not in a comment, not in a string the script builds
-    // a link from. The page talks to relative §5 routes on its own origin and to nothing else.
-    expect(body).not.toContain("http://");
-    expect(body).not.toContain("https://");
+    // No absolute URL except the notice's two outbound links: not in a tag, not in a comment, not
+    // in a string the script builds a link from. Those two are <a> navigations a person follows,
+    // opened in a new tab without an opener or referrer — never a resource the page loads.
+    const OUTBOUND = [
+      "https://github.com/midnightntwrk/midnight-improvement-proposals/pull/315",
+      "https://github.com/acedward/UmbraDB/pull/19",
+    ];
+    const anchors = [...body.matchAll(/<a href="(https:[^"]*)"([^>]*)>/g)];
+    expect(anchors.map((m) => m[1]).sort()).toEqual([...OUTBOUND].sort());
+    for (const m of anchors) {
+      expect(m[2]).toContain('target="_blank"');
+      expect(m[2]).toContain('rel="noopener noreferrer"');
+    }
+    const rest = OUTBOUND.reduce((text, url) => text.split(`href="${url}"`).join('href="#"'), body);
+    expect(rest).not.toContain("http://");
+    expect(rest).not.toContain("https://");
 
-    // Every `src`/`href` in the document is relative (the page's own hash routes).
-    const attributes = [...body.matchAll(/\b(?:src|href)\s*=\s*"([^"]*)"/g)].map((m) => m[1] ?? "");
+    // Every other `src`/`href` in the document is relative (the page's own hash routes).
+    const attributes = [...rest.matchAll(/\b(?:src|href)\s*=\s*"([^"]*)"/g)].map((m) => m[1] ?? "");
     expect(attributes.length).toBeGreaterThan(0);
     for (const value of attributes) {
       expect(value.startsWith("//")).toBe(false);
@@ -101,7 +113,11 @@ describe("the token explorer page", () => {
     }
 
     // The tags and CSS constructs that fetch from elsewhere are simply absent.
-    expect(body).not.toContain("<link");
+    // The only <link>s are the two favicons, both on this origin (their hrefs pass the relative
+    // check above). A stylesheet or preload link would fetch code or content, so none exists.
+    const links = [...body.matchAll(/<link\b[^>]*>/g)].map((m) => m[0]);
+    expect(links).toHaveLength(2);
+    for (const link of links) expect(link).toMatch(/\brel="icon"/);
     expect(body).not.toContain("<img");
     expect(body).not.toContain("<iframe");
     expect(body).not.toContain("@import");
@@ -125,6 +141,9 @@ describe("the token explorer page", () => {
     expect(script ?? "").toContain('"/v1/tokens"');
     expect(script ?? "").toContain('"/v1/contracts"');
     expect(script ?? "").toContain('"/internal/status"');
+    // The list's "API" column links each row to its raw JSON; the icon is a <template> in the markup.
+    expect(script ?? "").toContain('"/v1/colors"');
+    expect(body).toContain('<template id="icon-link"><svg ');
     // Every value that reaches the document goes through textContent.
     expect(script ?? "").not.toContain("innerHTML");
 
@@ -135,6 +154,31 @@ describe("the token explorer page", () => {
       expect(body, `the kind filter must offer ${kind}`).toContain(`<option value="${kind}">`);
     }
     expect(body).not.toContain("inconsistent");
+  });
+
+  it("serves the vendored brand font from its own origin", async () => {
+    const res = await fetch(`${base}/ui/outfit.woff2`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("font/woff2");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    const bytes = Buffer.from(await res.arrayBuffer());
+    expect(bytes.subarray(0, 4).toString("latin1")).toBe("wOF2");
+    expect(DASHBOARD_CSP).toContain("font-src 'self'");
+    const body = await (await fetch(`${base}/ui`)).text();
+    expect(body).toContain('url("/ui/outfit.woff2")');
+  });
+
+  it("serves the favicon, as SVG and as ICO, from its own origin", async () => {
+    const svg = await fetch(`${base}/ui/favicon.svg`);
+    expect(svg.status).toBe(200);
+    expect(svg.headers.get("content-type")).toBe("image/svg+xml");
+    expect(await svg.text()).toMatch(/^<svg\b[\s\S]*<\/svg>$/);
+    const ico = await fetch(`${base}/favicon.ico`);
+    expect(ico.status).toBe(200);
+    expect(ico.headers.get("content-type")).toBe("image/x-icon");
+    // ICONDIR: reserved 0, type 1 (icon), three images.
+    const head = Buffer.from(await ico.arrayBuffer()).subarray(0, 6);
+    expect([...head]).toEqual([0, 0, 1, 0, 3, 0]);
   });
 
   it("redirects GET / to /ui", async () => {
