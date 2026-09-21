@@ -71,6 +71,17 @@ export interface TokenIndexStatus {
     eventsRejected: number;
     lookupsOk: number;
     lookupsShort: number;
+    /** Project 00023, FR-013 — the five activity counters. Every one is a COUNT over the stored
+     *  rows rather than an in-memory tally, so a restart does not reset them and `rebuild` makes
+     *  them agree with a live run by construction. */
+    activityRows: number;
+    /** Rows of status `seen`: colours public data proves exist whose issuer is not knowable (US5).
+     *  SC-009 is that this equals the number of distinct unresolved colours in `token_activity`. */
+    seenTokens: number;
+    shieldedOffers: number;
+    /** …of which the colour is NOT public, because the offer is balanced (spec §0, FR-018). */
+    undisclosedShieldedOffers: number;
+    contractCalls: number;
   };
 }
 
@@ -97,6 +108,8 @@ export async function readStatus(
     sql<{
       contracts: string; tokens: string; mints: string;
       events_applied: string; events_rejected: string; lookups_ok: string;
+      activity_rows: string; seen_tokens: string; shielded_offers: string;
+      undisclosed_shielded_offers: string; contract_calls: string;
     }[]>`
       SELECT
         (SELECT count(*) FROM ${sql(schema)}.contracts WHERE net = ${net})                       AS contracts,
@@ -107,7 +120,12 @@ export async function readStatus(
         (SELECT count(*) FROM (
            SELECT 1 FROM ${sql(schema)}.token_metadata_events WHERE net = ${net}
            GROUP BY tx_hash, address
-         ) pairs)                                                                                AS lookups_ok
+         ) pairs)                                                                                AS lookups_ok,
+        (SELECT count(*) FROM ${sql(schema)}.token_activity  WHERE net = ${net})                 AS activity_rows,
+        (SELECT count(*) FROM ${sql(schema)}.tokens WHERE net = ${net} AND status = 'seen')       AS seen_tokens,
+        (SELECT count(*) FROM ${sql(schema)}.shielded_offers WHERE net = ${net})                 AS shielded_offers,
+        (SELECT count(*) FROM ${sql(schema)}.shielded_offers WHERE net = ${net} AND undisclosed) AS undisclosed_shielded_offers,
+        (SELECT count(*) FROM ${sql(schema)}.contract_calls  WHERE net = ${net})                 AS contract_calls
     `,
     readPendingLookups(sql, schema, net, 50),
   ]);
@@ -125,6 +143,11 @@ export async function readStatus(
       eventsRejected: Number(row.events_rejected),
       lookupsOk: Number(row.lookups_ok),
       lookupsShort: pending.length,
+      activityRows: Number(row.activity_rows),
+      seenTokens: Number(row.seen_tokens),
+      shieldedOffers: Number(row.shielded_offers),
+      undisclosedShieldedOffers: Number(row.undisclosed_shielded_offers),
+      contractCalls: Number(row.contract_calls),
     },
   };
 }

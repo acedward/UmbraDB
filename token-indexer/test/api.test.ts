@@ -246,9 +246,14 @@ describe("token API (spec §5, FR-106)", () => {
     const seps = Array.from({ length: 7 }, (_, i) => Buffer.from(pad32(`many:${i}`)).toString("hex"));
     try {
       for (let i = 0; i < seps.length; i++) {
+        // 00023: a native row is keyed by its colour, and the colour is what the chain would have
+        // derived from this very `(domainSep, address)` pair — so the fixture derives it too.
+        const color = Buffer.from(tokenColorHex(seps[i]!, MANY), "hex");
         await sql`
-          INSERT INTO ${sql(schema)}.tokens (net, address, domain_sep, kind, status, first_seen_height)
-          VALUES (${MANY_NET}, ${Buffer.from(MANY, "hex")}, ${Buffer.from(seps[i]!, "hex")}, 0, 'observed', ${700 + i})
+          INSERT INTO ${sql(schema)}.tokens
+            (net, token_key, kind, address, domain_sep, color, status, first_seen_height)
+          VALUES (${MANY_NET}, ${color}, 0, ${Buffer.from(MANY, "hex")},
+                  ${Buffer.from(seps[i]!, "hex")}, ${color}, 'observed', ${700 + i})
         `;
       }
       const many = await new TokenIndexQueries(sql, schema, MANY_NET).listTokens({ limit: 50 });

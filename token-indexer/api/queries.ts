@@ -18,8 +18,10 @@ import { decodeUtf8, integerOfValue, valueTextOf } from "../ingest/payload.js";
  */
 
 export interface TokenJson {
-  address: string;
-  domainSep: string;
+  /** `null` while the row's status is `seen`: a colour proves a token exists, and a colour is a
+   *  commitment — the contract behind it is not recoverable from it (00023 US5, FR-019). */
+  address: string | null;
+  domainSep: string | null;
   /** MIP §3's byte: 0 unshielded native, 1 shielded native, 2 unshielded ledger, 3 shielded ledger. */
   kind: number;
   privacy: string;
@@ -54,7 +56,7 @@ export interface TokenListItemJson extends TokenJson {
 }
 
 interface TokenRow {
-  address: Buffer; domain_sep: Buffer; kind: number; privacy: string; storage: string;
+  address: Buffer | null; domain_sep: Buffer | null; kind: number; privacy: string; storage: string;
   color: Buffer | null;
   name: string | null; symbol: string | null; decimals: number | null; token_uri: string | null;
   metadata: unknown; status: string; mint_count: string; total_minted: string;
@@ -66,8 +68,8 @@ const num = (value: string | null): number | null => (value === null ? null : Nu
 
 function toToken(row: TokenRow): TokenJson {
   return {
-    address: row.address.toString("hex"),
-    domainSep: row.domain_sep.toString("hex"),
+    address: row.address === null ? null : row.address.toString("hex"),
+    domainSep: row.domain_sep === null ? null : row.domain_sep.toString("hex"),
     kind: row.kind,
     privacy: row.privacy,
     storage: row.storage,
@@ -128,13 +130,17 @@ export interface TokenListFilters {
  *
  *  The order is: the built-in rows first, then newest first by the height of the token's first
  *  mint — or, for a row that has never been minted (a declared ledger token), the height it was
- *  first seen — then `(address, domainSep, kind)` so ties are total. `builtin` is 0 for the
- *  built-ins and 1 otherwise; `height` is that sort height. */
+ *  first seen — then the row's PHYSICAL key `(tokenKey, kind)` so ties are total. `builtin` is 0
+ *  for the built-ins and 1 otherwise; `height` is that sort height.
+ *
+ *  The tie-break moved from `(address, domainSep, kind)` to `(tokenKey, kind)` in 00023: a `seen`
+ *  row has no contract address to break a tie on, while `token_key` is the primary key and
+ *  therefore total over every row. Cursors issued by a 00021 build are not accepted — the index is
+ *  reindexed from scratch anyway (owner decision Q3). */
 export interface TokenCursor {
   builtin: 0 | 1;
   height: number;
-  address: string;
-  domainSep: string;
+  tokenKey: string;
   kind: number;
 }
 
@@ -168,10 +174,12 @@ export class TokenIndexQueries {
     const q = filters.q?.trim() ?? "";
     const qHex = /^[0-9a-fA-F]{64}$/.test(q) ? Buffer.from(q.toLowerCase(), "hex") : null;
     const rows = await sql<(TokenRow & {
-      ds_count: number | null; ds_first: string[] | null; sort_group: number; sort_height: string;
+      token_key: Buffer; ds_count: number | null; ds_first: string[] | null;
+      sort_group: number; sort_height: string;
     })[]>`
-      SELECT t.address, t.domain_sep, t.kind, t.privacy, t.storage, t.color, t.name, t.symbol,
-             t.decimals, t.token_uri, t.metadata, t.status, t.mint_count::text, t.total_minted::text,
+      SELECT t.token_key, t.address, t.domain_sep, t.kind, t.privacy, t.storage, t.color, t.name,
+             t.symbol, t.decimals, t.token_uri, t.metadata, t.status, t.mint_count::text,
+             t.total_minted::text,
              t.first_mint_height::text, t.last_mint_height::text, t.first_seen_height::text,
              t.metadata_updated_height::text, c.deploy_height::text,
              d.n AS ds_count, d.first5 AS ds_first,
@@ -181,7 +189,7 @@ export class TokenIndexQueries {
       LEFT JOIN ${sql(this.s)}.contracts c ON c.net = t.net AND c.address = t.address
       -- The contract's distinct domain separators, ordered by when each was first seen. Served by
       -- the (net, address, domain_sep) index; skipped for the built-ins, whose zero address is a
-      -- sentinel and not a contract.
+      -- sentinel and not a contract, and for seen rows, which have no contract at all.
       LEFT JOIN LATERAL (
         SELECT count(*)::int AS n,
                (array_agg(encode(x.domain_sep, 'hex') ORDER BY x.fs, x.domain_sep))[1:5] AS first5
@@ -191,7 +199,7 @@ export class TokenIndexQueries {
           WHERE o.net = t.net AND o.address = t.address AND o.status <> 'builtin'
           GROUP BY o.domain_sep
         ) x
-      ) d ON t.status <> 'builtin'
+      ) d ON t.status <> 'builtin' AND t.address IS NOT NULL
       WHERE t.net = ${this.net}
         AND (${filters.kind ?? null}::smallint IS NULL OR t.kind = ${filters.kind ?? null})
         AND (${filters.privacy ?? null}::text IS NULL OR t.privacy = ${filters.privacy ?? null})
@@ -206,18 +214,17 @@ export class TokenIndexQueries {
         -- Height is DESCENDING, so the row comparison carries it negated.
         AND (${cursor === undefined ? null : cursor.height}::bigint IS NULL
              OR ((t.status <> 'builtin')::int, -COALESCE(t.first_mint_height, t.first_seen_height),
-                 t.address, t.domain_sep, t.kind)
+                 t.token_key, t.kind)
                 > (${cursor?.builtin ?? 0}::int,
                    -${cursor?.height ?? 0}::bigint,
-                   ${cursor === undefined ? Buffer.alloc(0) : Buffer.from(cursor.address, "hex")},
-                   ${cursor === undefined ? Buffer.alloc(0) : Buffer.from(cursor.domainSep, "hex")},
+                   ${cursor === undefined ? Buffer.alloc(0) : Buffer.from(cursor.tokenKey, "hex")},
                    ${cursor?.kind ?? 0}::smallint))
       ORDER BY (t.status <> 'builtin')::int,
                COALESCE(t.first_mint_height, t.first_seen_height) DESC,
-               t.address, t.domain_sep, t.kind
+               t.token_key, t.kind
       LIMIT ${filters.limit + 1}
     `;
-    const keys = new Map<TokenListItemJson, Pick<TokenCursor, "builtin" | "height">>();
+    const keys = new Map<TokenListItemJson, Omit<TokenCursor, "kind">>();
     const items: TokenListItemJson[] = rows.map((row) => {
       const item: TokenListItemJson = {
         ...toToken(row),
@@ -225,11 +232,15 @@ export class TokenIndexQueries {
           ? null
           : { count: row.ds_count, first: row.ds_first ?? [] },
       };
-      keys.set(item, { builtin: row.sort_group === 0 ? 0 : 1, height: Number(row.sort_height) });
+      keys.set(item, {
+        builtin: row.sort_group === 0 ? 0 : 1,
+        height: Number(row.sort_height),
+        tokenKey: row.token_key.toString("hex"),
+      });
       return item;
     });
     return this.paginate(items, filters.limit, (last) => encodeCursor({
-      ...keys.get(last)!, address: last.address, domainSep: last.domainSep, kind: last.kind,
+      ...keys.get(last)!, kind: last.kind,
     } satisfies TokenCursor));
   }
 
@@ -511,7 +522,10 @@ export class TokenIndexQueries {
       symbol: string | null; decimals: number | null; metadata: unknown;
     }> = {};
     for (const row of rows.map(toToken)) {
-      if (row.color === null) continue;
+      // A registry entry is a wallet's re-derivation check: colour ⇒ `(address, domainSep, kind)`.
+      // A row that has no contract behind it (00023's `seen`) has nothing to check against, and the
+      // status filter above already excludes it — this guard is what says so in the type system.
+      if (row.color === null || row.address === null || row.domainSep === null) continue;
       out[row.color] = {
         address: row.address, domainSep: row.domainSep, kind: row.kind, privacy: row.privacy,
         name: row.name, symbol: row.symbol, decimals: row.decimals, metadata: row.metadata,

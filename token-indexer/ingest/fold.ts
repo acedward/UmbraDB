@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import type { ISql } from "postgres";
-import { tokenColor } from "../color.js";
+import { tokenColor, tokenColorHex } from "../color.js";
 import type { ObservedMint } from "./decode.js";
 import {
   MAX_METADATA_BYTES,
@@ -56,8 +57,26 @@ import {
  * then refuses to project that row into its `tokens` column, and the event still counts as a
  * declaration. Rejection is reserved for the transport rules of MIP §2.2/§3, which `payload.ts`
  * owns.
+ *
+ * ── Project 00023: the row is keyed by its COLOUR, and a colour can exist alone ────────────────
+ * A UTXO, a contract effect or a zswap delta proves that a colour exists without saying whose it
+ * is, and a colour is a commitment — the `(contractAddress, domainSep)` behind it is NOT
+ * recoverable from it. The physical key of `tokens` is therefore {@link tokenKeyOf}: the colour
+ * itself for the two native kinds, a digest of the MIP identity for the two ledger kinds (which
+ * have no colour at all). Three consequences live in this file:
+ *
+ *  4. {@link ensureSeenToken} is the FOURTH row source: a colour with no row gets one with status
+ *     `seen`, `address`/`domainSep` NULL, named only by its own bytes (spec 00023 US5, FR-019).
+ *  5. A mint or a declaration for that colour **completes the same row in place** — the key does
+ *     not move, because the colour does not — and `COALESCE` is what fills the contract in without
+ *     ever overwriting one that is already known.
+ *  6. {@link recomputeToken} therefore works from `(tokenKey, kind)` and reads the contract off the
+ *     row; a row that has none has no metadata either, and is `seen` by definition.
  */
 
+/** The MIP §4 identity of a token: the contract that issued it, the separator it named it by, and
+ *  the kind byte. Every row EXCEPT a `seen` one has it; `token_key` is what a `seen` row has
+ *  instead, and what all four kinds are physically keyed by. */
 export interface TokenKey {
   address: string;
   domainSep: string;
@@ -65,7 +84,52 @@ export interface TokenKey {
   kind: number;
 }
 
+/** The physical identity of a `tokens` row: `(token_key, kind)` within a net. */
+export interface TokenIdentity {
+  /** 32 bytes as lowercase hex — see {@link tokenKeyOf}. */
+  tokenKey: string;
+  kind: number;
+}
+
+/** The domain separation of the ledger-kind key digest. It never leaves this schema — no consumer
+ *  sees it, no route serves it — so it only has to be stable and collision-free against a colour,
+ *  which a different hash function over a different input length already is. */
+const LEDGER_KEY_DOMAIN = "umbra:ledger";
+
 const hexBuf = (hex: string): Buffer => Buffer.from(hex, "hex");
+
+/**
+ * The physical key of a `tokens` row (spec 00023 FR-019; the plan's "Design decisions" table).
+ *
+ *  - **kinds 0 and 1 (native)**: the key IS the colour. A colour is `persistentCommit` over
+ *    `(domainSep, address)`, so keying on it loses nothing that the MIP identity carried — and it
+ *    gains the one thing the MIP identity cannot express: a colour whose issuer is unknown.
+ *  - **kinds 2 and 3 (ledger)**: no colour exists (MIP §3 forbids deriving one), so the key is
+ *    `sha256(LEDGER_KEY_DOMAIN || address || domainSep || kind)`. The kind byte is inside the
+ *    digest so the two ledger kinds of one separator stay two rows.
+ *
+ * This is the ONLY place either is computed.
+ */
+export function tokenKeyOf(
+  kind: number,
+  source: { color: string } | { address: string; domainSep: string },
+): string {
+  if (isNativeKind(kind)) {
+    if ("color" in source) return source.color.toLowerCase();
+    return tokenColorHex(source.domainSep, source.address);
+  }
+  if ("color" in source) {
+    throw new Error(
+      `tokenKeyOf: kind ${kind} is a LEDGER kind and has no colour (MIP §3) — key it by its contract`,
+    );
+  }
+  return createHash("sha256")
+    .update(Buffer.from(LEDGER_KEY_DOMAIN, "utf8"))
+    .update(hexBuf(source.address))
+    .update(hexBuf(source.domainSep))
+    .update(Buffer.from([kind]))
+    .digest("hex");
+}
 
 /** Upserts `contracts` for an address the scanner has just seen. `deployHeight`/`deployTxHash` are
  *  set only by a real `ContractDeploy`; a call on a contract deployed before the archive's first
@@ -118,14 +182,24 @@ export async function applyMint(
   if (inserted.count === 0) return false;
 
   const color = Buffer.from(tokenColor(hexBuf(mint.domainSep), hexBuf(mint.address)));
+  const tokenKey = tokenKeyOf(mint.kind, { color: color.toString("hex") });
+  // `COALESCE` on the contract pair is how a `seen` row is COMPLETED IN PLACE (US5 scenario 2):
+  // the colour keyed it before anyone knew who minted it, and this mint is the answer. `status` is
+  // lifted off `seen` in the same statement because the schema forbids a `seen` row with a
+  // contract (`tokens_seen_has_no_contract`); `recomputeToken` below then decides the real value.
   await sql`
     INSERT INTO ${sql(schema)}.tokens
-      (net, address, domain_sep, kind, color, status,
+      (net, token_key, kind, address, domain_sep, color, status,
        mint_count, total_minted, first_mint_height, last_mint_height, first_seen_height)
     VALUES
-      (${net}, ${hexBuf(mint.address)}, ${hexBuf(mint.domainSep)}, ${mint.kind}, ${color}, 'observed',
+      (${net}, ${hexBuf(tokenKey)}, ${mint.kind}, ${hexBuf(mint.address)}, ${hexBuf(mint.domainSep)},
+       ${color}, 'observed',
        1, ${mint.amount.toString()}, ${ctx.blockHeight}, ${ctx.blockHeight}, ${ctx.blockHeight})
-    ON CONFLICT (net, address, domain_sep, kind) DO UPDATE SET
+    ON CONFLICT (net, token_key, kind) DO UPDATE SET
+      address           = COALESCE(${sql(schema)}.tokens.address, EXCLUDED.address),
+      domain_sep        = COALESCE(${sql(schema)}.tokens.domain_sep, EXCLUDED.domain_sep),
+      status            = CASE WHEN ${sql(schema)}.tokens.status = 'seen'
+                               THEN 'observed' ELSE ${sql(schema)}.tokens.status END,
       color             = EXCLUDED.color,
       mint_count        = ${sql(schema)}.tokens.mint_count + 1,
       total_minted      = ${sql(schema)}.tokens.total_minted + EXCLUDED.total_minted,
@@ -133,8 +207,38 @@ export async function applyMint(
       last_mint_height  = GREATEST(COALESCE(${sql(schema)}.tokens.last_mint_height, EXCLUDED.last_mint_height), EXCLUDED.last_mint_height),
       first_seen_height = LEAST(${sql(schema)}.tokens.first_seen_height, EXCLUDED.first_seen_height)
   `;
-  await recomputeToken(sql, schema, net, { address: mint.address, domainSep: mint.domainSep, kind: mint.kind });
+  await recomputeToken(sql, schema, net, { tokenKey, kind: mint.kind });
   return true;
+}
+
+/**
+ * The FOURTH row source (spec 00023 US5, FR-019): a colour that public data proves exists, with no
+ * row yet and nothing to say whose it is.
+ *
+ * Called by the scanner immediately before the `token_activity` row that references the colour, so
+ * the colour route and the token route can never disagree (FR-008). Never downgrades: an existing
+ * row — `observed`, `declared`, `described` or `builtin` — is left exactly as it is, because a
+ * colour being seen again says nothing new about it.
+ *
+ * @returns `true` when a new `seen` row was created, which is what `/internal/status`'s
+ *   `seenTokens` counter and the scan outcome count.
+ */
+export async function ensureSeenToken(
+  sql: ISql, schema: string, net: string, color: string, kind: number, height: number,
+): Promise<boolean> {
+  if (!isNativeKind(kind)) {
+    // Unreachable from the scanner: only a native kind has a colour at all, and only a colour can
+    // be seen in public data. Stated as an error rather than a silent no-op, per the 00020 rule.
+    throw new Error(`ensureSeenToken: kind ${kind} is a LEDGER kind and can never be seen as a colour`);
+  }
+  const inserted = await sql`
+    INSERT INTO ${sql(schema)}.tokens
+      (net, token_key, kind, address, domain_sep, color, status, first_seen_height)
+    VALUES
+      (${net}, ${hexBuf(color)}, ${kind}, NULL, NULL, ${hexBuf(color)}, 'seen', ${height})
+    ON CONFLICT (net, token_key, kind) DO NOTHING
+  `;
+  return inserted.count > 0;
 }
 
 /** One contract event as the lookup delivers it, before parsing. */
@@ -245,22 +349,32 @@ export async function applyMetadataEvent(
   `;
 
   // The event creates the row if no mint has — for ITS OWN kind byte and no other. A ledger kind
-  // has no colour at all (MIP §3), which the schema also enforces.
+  // has no colour at all (MIP §3), which the schema also enforces; a native kind's colour IS its
+  // physical key, so a declaration about a colour already `seen` completes that very row (US5).
+  const color = isNativeKind(key.kind)
+    ? Buffer.from(tokenColor(parsed.domainSep, hexBuf(key.address)))
+    : null;
+  const tokenKey = color === null
+    ? tokenKeyOf(key.kind, { address: key.address, domainSep: key.domainSep })
+    : tokenKeyOf(key.kind, { color: color.toString("hex") });
   await sql`
     INSERT INTO ${sql(schema)}.tokens
-      (net, address, domain_sep, kind, color, status, first_seen_height,
+      (net, token_key, kind, address, domain_sep, color, status, first_seen_height,
        metadata_updated_height, metadata_updated_event_id)
     VALUES
-      (${net}, ${hexBuf(key.address)}, ${hexBuf(key.domainSep)}, ${key.kind},
-       ${isNativeKind(key.kind) ? Buffer.from(tokenColor(parsed.domainSep, hexBuf(key.address))) : null},
-       'declared', ${event.blockHeight}, ${event.blockHeight}, ${event.eventId})
-    ON CONFLICT (net, address, domain_sep, kind) DO UPDATE SET
+      (${net}, ${hexBuf(tokenKey)}, ${key.kind}, ${hexBuf(key.address)}, ${hexBuf(key.domainSep)},
+       ${color}, 'declared', ${event.blockHeight}, ${event.blockHeight}, ${event.eventId})
+    ON CONFLICT (net, token_key, kind) DO UPDATE SET
+      address                   = COALESCE(${sql(schema)}.tokens.address, EXCLUDED.address),
+      domain_sep                = COALESCE(${sql(schema)}.tokens.domain_sep, EXCLUDED.domain_sep),
+      status                    = CASE WHEN ${sql(schema)}.tokens.status = 'seen'
+                                       THEN 'observed' ELSE ${sql(schema)}.tokens.status END,
       first_seen_height         = LEAST(${sql(schema)}.tokens.first_seen_height, EXCLUDED.first_seen_height),
       metadata_updated_height   = GREATEST(COALESCE(${sql(schema)}.tokens.metadata_updated_height, EXCLUDED.metadata_updated_height), EXCLUDED.metadata_updated_height),
       metadata_updated_event_id = GREATEST(COALESCE(${sql(schema)}.tokens.metadata_updated_event_id, EXCLUDED.metadata_updated_event_id), EXCLUDED.metadata_updated_event_id)
   `;
 
-  await recomputeToken(sql, schema, net, key);
+  await recomputeToken(sql, schema, net, { tokenKey, kind: key.kind });
   return {
     stored: true, applied: true, rejectReason: undefined,
     projectionError: parsed.projectionError, unstorable: false,
@@ -273,46 +387,69 @@ export async function applyMetadataEvent(
  * `rebuild`.
  *
  * `privacy` and `storage` are NOT recomputed — they are generated columns of the kind byte, so
- * there is nothing to decide. Neither is the colour a matter of opinion: a native kind derives it
- * from `(domainSep, address)` and a ledger kind has none (MIP §3, §4).
+ * there is nothing to decide. Neither is the colour a matter of opinion: for a native kind it IS
+ * the row's physical key, and a ledger kind has none (MIP §3, §4).
  *
- * Never touches a `builtin` row — NIGHT and DUST have no contract and no evidence, and a row at the
- * all-zero address can never be produced by the scanner anyway.
+ * ── The status rule, extended by project 00023 (US5) ───────────────────────────────────────────
+ * |  mint | metadata | contract known | status      |
+ * |-------|----------|----------------|-------------|
+ * |  yes  |   no     |      yes       | `observed`  |
+ * |  yes  |   yes    |      yes       | `described` |
+ * |  no   |   yes    |      yes       | `declared`  |
+ * |  no   |   no     |      **no**    | `seen`      |
+ *
+ * The last row is the new one, and it is the ONLY way a row can have no contract: a mint and a
+ * metadata event both carry one, so "no evidence but the colour itself" is exactly what `seen`
+ * means. "No mint, no metadata, contract known" is unreachable — nothing else writes a contract —
+ * and falls back to `observed` rather than inventing a fifth state.
+ *
+ * Never touches a `builtin` row — NIGHT and DUST have no contract and no evidence, and their
+ * `token_key`s are the ledger's own facts, which no derivation can collide with.
  */
 export async function recomputeToken(
-  sql: ISql, schema: string, net: string, key: TokenKey,
+  sql: ISql, schema: string, net: string, identity: TokenIdentity,
 ): Promise<void> {
-  const address = hexBuf(key.address);
-  const domainSep = hexBuf(key.domainSep);
+  const tokenKey = hexBuf(identity.tokenKey);
 
-  const rows = await sql<{ mint_count: string; status: string }[]>`
-    SELECT mint_count::text, status FROM ${sql(schema)}.tokens
-    WHERE net = ${net} AND address = ${address} AND domain_sep = ${domainSep} AND kind = ${key.kind}
+  const rows = await sql<{
+    mint_count: string; status: string; address: Buffer | null; domain_sep: Buffer | null;
+  }[]>`
+    SELECT mint_count::text, status, address, domain_sep FROM ${sql(schema)}.tokens
+    WHERE net = ${net} AND token_key = ${tokenKey} AND kind = ${identity.kind}
   `;
   const row = rows[0];
   if (row === undefined || row.status === "builtin") return;
   const hasMint = BigInt(row.mint_count) > 0n;
 
+  // A row with no contract behind it can have no metadata event either: an event is emitted BY a
+  // contract, about its own `(domainSep, kind)`. So the two queries below are skipped entirely for
+  // a `seen` row rather than run with NULL parameters that could never match.
+  const key: TokenKey | undefined = row.address === null || row.domain_sep === null
+    ? undefined
+    : { address: row.address.toString("hex"), domainSep: row.domain_sep.toString("hex"), kind: identity.kind };
+
   // The evidence: every APPLIED event for THIS kind byte, newest last. An event for another kind is
   // another token's business entirely (MIP §6.3) — that is the whole of the D4 change.
-  const events = await sql<{ event_id: string; block_height: string }[]>`
+  const events = key === undefined ? [] : await sql<{ event_id: string; block_height: string }[]>`
     SELECT event_id::text, block_height::text
     FROM ${sql(schema)}.token_metadata_events
-    WHERE net = ${net} AND address = ${address} AND domain_sep = ${domainSep}
-      AND applied AND kind_byte = ${key.kind}
+    WHERE net = ${net} AND address = ${hexBuf(key.address)} AND domain_sep = ${hexBuf(key.domainSep)}
+      AND applied AND kind_byte = ${identity.kind}
     ORDER BY block_height, event_id
   `;
   const hasMetadata = events.length > 0;
   const latest = events[events.length - 1];
 
-  // MIP §7.2's three states. `builtin` is handled above and never reaches here.
-  const status = hasMint ? (hasMetadata ? "described" : "observed") : (hasMetadata ? "declared" : "observed");
+  const status = hasMint
+    ? (hasMetadata ? "described" : "observed")
+    : (hasMetadata ? "declared" : (key === undefined ? "seen" : "observed"));
 
-  const color = isNativeKind(key.kind)
-    ? Buffer.from(tokenColor(new Uint8Array(domainSep), new Uint8Array(address)))
-    : null;
+  // For a native kind the key IS the colour (`tokens_color_is_key`); a ledger kind has none.
+  const color = isNativeKind(identity.kind) ? tokenKey : null;
 
-  const projected = await projectedFields(sql, schema, net, key);
+  const projected = key === undefined
+    ? { name: null, symbol: null, decimals: null, tokenUri: null, metadata: null }
+    : await projectedFields(sql, schema, net, key);
 
   await sql`
     UPDATE ${sql(schema)}.tokens SET
@@ -325,7 +462,7 @@ export async function recomputeToken(
       metadata                  = ${projected.metadata === null ? null : sql.json(projected.metadata as never)},
       metadata_updated_height   = ${latest === undefined ? null : Number(latest.block_height)},
       metadata_updated_event_id = ${latest === undefined ? null : Number(latest.event_id)}
-    WHERE net = ${net} AND address = ${address} AND domain_sep = ${domainSep} AND kind = ${key.kind}
+    WHERE net = ${net} AND token_key = ${tokenKey} AND kind = ${identity.kind}
   `;
 }
 

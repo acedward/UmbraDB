@@ -129,9 +129,16 @@ export function domainText(domainSepHex: string): string | null {
  * (`orion` ↔ `cnst:orion`), the whole domain text, the token's own name slug, or the 64-hex domain
  * separator. All comparisons are case-insensitive, because a URL in a document is typed by hand.
  */
-export function resolverMatches(token: TokenJson, name: string, id: string): boolean {
+/** A token the `/{name}/{id}` resolver can answer for: one whose contract is known. */
+export type ResolvableToken = TokenJson & { address: string; domainSep: string };
+
+export function resolverMatches(token: TokenJson, name: string, id: string): token is ResolvableToken {
   const n = name.toLowerCase();
   const i = id.toLowerCase();
+
+  // A `seen` row has no contract and no separator, so no `/{name}/{id}` path can name it: it is
+  // reachable by colour alone (00023 US5). Bail out before every comparison below assumes a string.
+  if (token.address === null || token.domainSep === null) return false;
 
   const nameMatches = token.address === n
     || token.symbol?.toLowerCase() === n
@@ -202,10 +209,11 @@ export function createTokenApi(opts: TokenApiOptions): Server {
         kind: rawKind === null || rawKind === "" ? undefined : kindParam(rawKind),
         privacy: enumParam(query.get("privacy"), ["shielded", "unshielded"], "privacy"),
         storage: enumParam(query.get("storage"), ["native", "ledger"], "storage"),
-        // MIP §7.2's three consumer states plus this repository's `builtin`. The 00020 status for
+        // MIP §7.2's three consumer states, this repository's `builtin`, and 00023's `seen` — a
+        // colour public data proves exists whose issuer is not knowable (US5). The 00020 status for
         // a self-contradicting row no longer exists, so asking for it is a 400 rather than an empty
         // page that looks like an answer.
-        status: enumParam(query.get("status"), ["observed", "declared", "described", "builtin"], "status"),
+        status: enumParam(query.get("status"), ["seen", "observed", "declared", "described", "builtin"], "status"),
         q: query.get("q") ?? undefined,
         limit: limitParam(query.get("limit")),
         cursor: cursorParam<TokenCursor>(query.get("cursor")),
@@ -234,13 +242,23 @@ export function createTokenApi(opts: TokenApiOptions): Server {
       const limit = limitParam(query.get("limit"));
       const rows = await queries.tokensByColor(color);
       if (rows.length === 0) throw notFound(`no token has colour ${color}`);
-      const { address, domainSep } = rows[0]!;
+      // A `seen` row (00023 US5) has no contract at all: the colour is public, the issuer is not.
+      // The document then carries `address: null`, no contract, no traits and no mints — which is
+      // exactly what is known — rather than inventing a contract the chain never revealed.
+      const withContract = rows.find((t) => t.address !== null && t.domainSep !== null);
+      const address = withContract?.address ?? null;
+      const domainSep = withContract?.domainSep ?? null;
       const builtin = rows.every((t) => t.status === "builtin");
       const [contract, pair] = await Promise.all([
-        builtin ? Promise.resolve(undefined) : queries.contract(address),
-        builtin ? Promise.resolve(rows) : queries.tokensOfContractDomain(address, domainSep),
+        builtin || address === null ? Promise.resolve(undefined) : queries.contract(address),
+        builtin || address === null || domainSep === null
+          ? Promise.resolve(rows)
+          : queries.tokensOfContractDomain(address, domainSep),
       ]);
       const tokens = await Promise.all(rows.map(async (token) => {
+        if (token.address === null || token.domainSep === null) {
+          return { ...token, traits: [], mints: { items: [], nextCursor: null } };
+        }
         const [traits, mints] = await Promise.all([
           queries.metadataKeys(token.address, token.domainSep, token.kind),
           queries.mints(token.address, token.domainSep, token.kind, { limit }),
@@ -252,7 +270,7 @@ export function createTokenApi(opts: TokenApiOptions): Server {
         color,
         address,
         domainSep,
-        domainSepText: domainText(domainSep),
+        domainSepText: domainSep === null ? null : domainText(domainSep),
         builtin,
         contract: contract ?? null,
         tokens,
@@ -369,7 +387,7 @@ export function createTokenApi(opts: TokenApiOptions): Server {
     const [name, id] = segments as [string, string];
     const kind = segments.length === 3 ? kindParam(segments[2]!) : undefined;
     const candidates = (await queries.resolverCandidates(name))
-      .filter((t) => resolverMatches(t, name, id))
+      .filter((t): t is ResolvableToken => resolverMatches(t, name, id))
       .filter((t) => kind === undefined || t.kind === kind);
 
     const path = segments.map((s) => `/${s}`).join("");

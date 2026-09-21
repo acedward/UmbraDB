@@ -422,9 +422,27 @@ describe("token status rules (MIP §4, §6.3, §7.2)", () => {
     const after = await sql<{ symbol: string; status: string; decimals: number }[]>`
       SELECT symbol, status, decimals FROM ${sql(schema)}.tokens WHERE net = ${NET} AND status = 'builtin' ORDER BY symbol`;
     expect(after).toEqual(before);
-    const night = await sql<{ name: string; status: string }[]>`
-      SELECT name, status FROM ${sql(schema)}.tokens
-      WHERE net = ${NET} AND address = ${Buffer.from(zero, "hex")} AND domain_sep = ${Buffer.from(zero, "hex")}`;
-    expect(night[0]).toEqual({ name: "NIGHT", status: "builtin" });
+    // 00023 made this stronger rather than weaker: NIGHT's row is keyed by its COLOUR (32 zero
+    // bytes, the ledger's own `nativeToken().raw`), while the event's claim is keyed by the colour
+    // its sentinel `(address, domainSep)` derives — which is not the zero colour. The declaration
+    // therefore lands on its own row and cannot reach NIGHT at all, not even to bump a height.
+    // `token_key` is what the query names, because `address` alone now matches both rows.
+    const night = await sql<{ name: string; status: string; address: Buffer | null }[]>`
+      SELECT name, status, address FROM ${sql(schema)}.tokens
+      WHERE net = ${NET} AND token_key = ${Buffer.from(zero, "hex")} AND kind = ${KIND.unshieldedNative}`;
+    expect(night).toHaveLength(1);
+    expect(night[0]).toMatchObject({ name: "NIGHT", status: "builtin" });
+    expect(night[0]!.address!.toString("hex")).toBe(zero);
+
+    // The claim itself became a row of its own — an ordinary `declared` token of the colour the
+    // sentinel pair derives. Two rows now share the sentinel `(address, domainSep, kind)`, which is
+    // precisely why `tokens_by_identity` excludes the built-ins.
+    const claimed = await sql<{ name: string; status: string; token_key: Buffer }[]>`
+      SELECT name, status, token_key FROM ${sql(schema)}.tokens
+      WHERE net = ${NET} AND address = ${Buffer.from(zero, "hex")} AND domain_sep = ${Buffer.from(zero, "hex")}
+        AND status <> 'builtin'`;
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]).toMatchObject({ name: "NotNight", status: "declared" });
+    expect(claimed[0]!.token_key.toString("hex")).toBe(tokenColorHex(zero, zero));
   }, 120_000);
 });
