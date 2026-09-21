@@ -2,6 +2,7 @@ import type { Server } from "node:http";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import { TokenIndexQueries } from "../api/queries.js";
 import { createTokenApi, domainText, kindParam, listen, resolverMatches, slugOfFirstWord } from "../api/server.js";
 import { bootstrapTokenIndexSchema } from "../bootstrap.js";
 import { pad32, tokenColorHex } from "../color.js";
@@ -209,6 +210,55 @@ describe("token API (spec §5, FR-106)", () => {
     }
     expect(seen).toHaveLength(11);
     expect(new Set(seen).size).toBe(11);
+
+    // Order: the built-ins first, then newest first by first-mint height (first-seen height for a
+    // row that was never minted), ties by (address, domainSep, kind). Paging walks that same order.
+    const ids = all.body.items.map((t: any) => `${t.address}/${t.domainSep}/${t.kind}`);
+    expect(seen).toEqual(ids);
+    expect(all.body.items.slice(0, 2).map((t: any) => t.symbol)).toEqual(["NIGHT", "DUST"]);
+    const heights = all.body.items.slice(2).map((t: any) => t.firstMintHeight ?? t.firstSeenHeight);
+    expect(heights).toEqual([...heights].sort((a: number, b: number) => b - a));
+
+    // Each list item summarises its contract's distinct domain separators, so the page can flag a
+    // contract that issues several tokens. The built-ins have no contract, hence `null`.
+    const byAddress = (a: string) => all.body.items.filter((t: any) => t.address === a);
+    for (const t of all.body.items.filter((t: any) => t.status === "builtin")) {
+      expect(t.contractDomainSeps).toBeNull();
+    }
+    for (const t of byAddress(CNST)) {
+      expect(t.contractDomainSeps.count).toBe(3);
+      expect([...t.contractDomainSeps.first].sort())
+        .toEqual(["orion", "lyra", "vega"].map(piece).sort());
+    }
+    // Two kinds under ONE domain separator are still one separator.
+    for (const t of all.body.items.filter((t: any) => t.domainSep === LIAR_DOMAIN)) {
+      expect(t.contractDomainSeps.count).toBe(1);
+    }
+    // Twins share a separator across two contracts: each contract has one.
+    for (const t of all.body.items.filter((t: any) => t.symbol === "TWIN")) {
+      expect(t.contractDomainSeps).toEqual({ count: 1, first: [t.domainSep] });
+    }
+
+    // More than five: the first five by first-seen height, and the full count. Seeded under its
+    // own `net` so the shared fixture's row counts are untouched.
+    const MANY_NET = "test-many-domainseps";
+    const MANY = "ab".repeat(32);
+    const seps = Array.from({ length: 7 }, (_, i) => Buffer.from(pad32(`many:${i}`)).toString("hex"));
+    try {
+      for (let i = 0; i < seps.length; i++) {
+        await sql`
+          INSERT INTO ${sql(schema)}.tokens (net, address, domain_sep, kind, status, first_seen_height)
+          VALUES (${MANY_NET}, ${Buffer.from(MANY, "hex")}, ${Buffer.from(seps[i]!, "hex")}, 0, 'observed', ${700 + i})
+        `;
+      }
+      const many = await new TokenIndexQueries(sql, schema, MANY_NET).listTokens({ limit: 50 });
+      expect(many.items).toHaveLength(7);
+      for (const t of many.items) {
+        expect(t.contractDomainSeps).toEqual({ count: 7, first: seps.slice(0, 5) });
+      }
+    } finally {
+      await sql`DELETE FROM ${sql(schema)}.tokens WHERE net = ${MANY_NET}`;
+    }
   }, 60_000);
 
   it("[[token-api-token-routes]] the per-token routes serve the token, its typed traits with provenance, and its mints", async () => {
@@ -290,6 +340,31 @@ describe("token API (spec §5, FR-106)", () => {
     expect(contract.body.deployTxHash).toBe("cc".repeat(32));
     expect(contract.body.tokens).toHaveLength(3);
     expect(contract.body.pendingLookups).toEqual([]);
+
+    // /v1/colors/:color — one document: contract, domainSep, the coloured row(s) with traits and
+    // mints, and the pair's other (colourless, ledger) rows.
+    const lyra = await get(`/v1/colors/${tokenColorHex(piece("lyra"), CNST)}`);
+    expect(lyra.status).toBe(200);
+    expect(lyra.body).toMatchObject({
+      address: CNST, domainSep: piece("lyra"), domainSepText: "cnst:lyra", builtin: false,
+      contract: { address: CNST, deployHeight: 500, deployTxHash: "cc".repeat(32), lastCallHeight: 540 },
+      related: [],
+    });
+    expect(lyra.body.tokens).toHaveLength(1);
+    expect(lyra.body.tokens[0]).toMatchObject({ kind: 1, name: "Constellations · Lyra", symbol: "CNST" });
+    expect(lyra.body.tokens[0].traits.map((t: any) => t.key)).toContain("name");
+    expect(lyra.body.tokens[0].mints.items).toHaveLength(1);
+    expect(lyra.body.tokens[0].mints.nextCursor).toBeNull();
+    // The Liar: its kind-0 mint carries the colour, its declared kind-2 ledger row does not.
+    const liar = await get(`/v1/colors/${tokenColorHex(LIAR_DOMAIN, LIAR)}`);
+    expect(liar.body.tokens.map((t: any) => t.kind)).toEqual([0]);
+    expect(liar.body.related.map((t: any) => [t.kind, t.symbol])).toEqual([[2, "LLIAR"]]);
+    // NIGHT: a built-in, no contract behind it.
+    const night = await get(`/v1/colors/${"00".repeat(32)}`);
+    expect(night.body).toMatchObject({ builtin: true, contract: null, related: [] });
+    expect(night.body.tokens.map((t: any) => t.symbol)).toEqual(["NIGHT"]);
+    expect((await get(`/v1/colors/${"ff".repeat(32)}`)).status).toBe(404);
+    expect((await get("/v1/colors/xyz")).status).toBe(400);
 
     const color = tokenColorHex(piece("lyra"), CNST);
     const byColor = await get(`/v1/tokens/by-color/${color}`);

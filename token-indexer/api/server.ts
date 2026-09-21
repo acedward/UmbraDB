@@ -220,6 +220,47 @@ export function createTokenApi(opts: TokenApiOptions): Server {
       return;
     }
 
+    // /v1/colors/:color — everything this index knows about one colour, in one document: the
+    // contract behind it, the domain separator, the native row(s) carrying the colour with their
+    // typed traits and mint history, and the other rows under the same (contract, domainSep).
+    //
+    // A colour is derived from (domainSep, address) alone, so it does not pin the kind: an
+    // unshielded and a shielded mint under one domain separator share it, and both rows are
+    // returned under `tokens`. Ledger rows (kind 2/3) never have a colour; when one shares the
+    // pair it is listed under `related`. `mints` is the first page (`?limit=`, oldest first); its
+    // `nextCursor` continues on the per-token `/mints` route.
+    if (segments[0] === "colors" && segments.length === 2) {
+      const color = hex32(segments[1]!, "color");
+      const limit = limitParam(query.get("limit"));
+      const rows = await queries.tokensByColor(color);
+      if (rows.length === 0) throw notFound(`no token has colour ${color}`);
+      const { address, domainSep } = rows[0]!;
+      const builtin = rows.every((t) => t.status === "builtin");
+      const [contract, pair] = await Promise.all([
+        builtin ? Promise.resolve(undefined) : queries.contract(address),
+        builtin ? Promise.resolve(rows) : queries.tokensOfContractDomain(address, domainSep),
+      ]);
+      const tokens = await Promise.all(rows.map(async (token) => {
+        const [traits, mints] = await Promise.all([
+          queries.metadataKeys(token.address, token.domainSep, token.kind),
+          queries.mints(token.address, token.domainSep, token.kind, { limit }),
+        ]);
+        return { ...token, traits, mints };
+      }));
+      const carried = new Set(rows.map((t) => t.kind));
+      sendJson(res, 200, {
+        color,
+        address,
+        domainSep,
+        domainSepText: domainText(domainSep),
+        builtin,
+        contract: contract ?? null,
+        tokens,
+        related: pair.filter((t) => !carried.has(t.kind)),
+      });
+      return;
+    }
+
     // /v1/registry.json
     if (segments[0] === "registry.json" && segments.length === 1) {
       sendJson(res, 200, {

@@ -40,6 +40,19 @@ export interface TokenJson {
   deployHeight: number | null;
 }
 
+/** How many distinct domain separators the row's contract has, and the first five of them (by
+ *  first-seen height), so a list can flag a contract that issues several tokens without a second
+ *  request per row. `null` on the built-in rows, which have no contract behind them. */
+export interface ContractDomainSepsJson {
+  count: number;
+  first: string[];
+}
+
+/** A `/v1/tokens` item: the token, plus a summary of its contract's other domain separators. */
+export interface TokenListItemJson extends TokenJson {
+  contractDomainSeps: ContractDomainSepsJson | null;
+}
+
 interface TokenRow {
   address: Buffer; domain_sep: Buffer; kind: number; privacy: string; storage: string;
   color: Buffer | null;
@@ -111,9 +124,15 @@ export interface TokenListFilters {
 
 /** Keyset cursor for `/v1/tokens`: the ordering key of the last row served. Keyset rather than
  *  `OFFSET` so a row inserted by the live scanner between two pages cannot make the reader skip or
- *  repeat a token. */
+ *  repeat a token.
+ *
+ *  The order is: the built-in rows first, then newest first by the height of the token's first
+ *  mint — or, for a row that has never been minted (a declared ledger token), the height it was
+ *  first seen — then `(address, domainSep, kind)` so ties are total. `builtin` is 0 for the
+ *  built-ins and 1 otherwise; `height` is that sort height. */
 export interface TokenCursor {
-  firstSeenHeight: number;
+  builtin: 0 | 1;
+  height: number;
   address: string;
   domainSep: string;
   kind: number;
@@ -141,20 +160,38 @@ export class TokenIndexQueries {
 
   private get s(): string { return this.schema; }
 
-  async listTokens(filters: TokenListFilters): Promise<Page<TokenJson>> {
+  async listTokens(filters: TokenListFilters): Promise<Page<TokenListItemJson>> {
     const sql = this.sql;
     const cursor = filters.cursor;
     // `q` matches a name or symbol prefix (case-insensitively) or an EXACT colour/address hex —
     // the exact forms are what a wallet pastes, the prefix is what a person types.
     const q = filters.q?.trim() ?? "";
     const qHex = /^[0-9a-fA-F]{64}$/.test(q) ? Buffer.from(q.toLowerCase(), "hex") : null;
-    const rows = await sql<TokenRow[]>`
+    const rows = await sql<(TokenRow & {
+      ds_count: number | null; ds_first: string[] | null; sort_group: number; sort_height: string;
+    })[]>`
       SELECT t.address, t.domain_sep, t.kind, t.privacy, t.storage, t.color, t.name, t.symbol,
              t.decimals, t.token_uri, t.metadata, t.status, t.mint_count::text, t.total_minted::text,
              t.first_mint_height::text, t.last_mint_height::text, t.first_seen_height::text,
-             t.metadata_updated_height::text, c.deploy_height::text
+             t.metadata_updated_height::text, c.deploy_height::text,
+             d.n AS ds_count, d.first5 AS ds_first,
+             (t.status <> 'builtin')::int AS sort_group,
+             COALESCE(t.first_mint_height, t.first_seen_height)::text AS sort_height
       FROM ${sql(this.s)}.tokens t
       LEFT JOIN ${sql(this.s)}.contracts c ON c.net = t.net AND c.address = t.address
+      -- The contract's distinct domain separators, ordered by when each was first seen. Served by
+      -- the (net, address, domain_sep) index; skipped for the built-ins, whose zero address is a
+      -- sentinel and not a contract.
+      LEFT JOIN LATERAL (
+        SELECT count(*)::int AS n,
+               (array_agg(encode(x.domain_sep, 'hex') ORDER BY x.fs, x.domain_sep))[1:5] AS first5
+        FROM (
+          SELECT o.domain_sep, min(o.first_seen_height) AS fs
+          FROM ${sql(this.s)}.tokens o
+          WHERE o.net = t.net AND o.address = t.address AND o.status <> 'builtin'
+          GROUP BY o.domain_sep
+        ) x
+      ) d ON t.status <> 'builtin'
       WHERE t.net = ${this.net}
         AND (${filters.kind ?? null}::smallint IS NULL OR t.kind = ${filters.kind ?? null})
         AND (${filters.privacy ?? null}::text IS NULL OR t.privacy = ${filters.privacy ?? null})
@@ -166,18 +203,33 @@ export class TokenIndexQueries {
              OR t.color = ${qHex}
              OR t.address = ${qHex}
              OR t.domain_sep = ${qHex})
-        AND (${cursor === undefined ? null : cursor.firstSeenHeight}::bigint IS NULL
-             OR (t.first_seen_height, t.address, t.domain_sep, t.kind)
-                > (${cursor?.firstSeenHeight ?? 0}::bigint,
+        -- Height is DESCENDING, so the row comparison carries it negated.
+        AND (${cursor === undefined ? null : cursor.height}::bigint IS NULL
+             OR ((t.status <> 'builtin')::int, -COALESCE(t.first_mint_height, t.first_seen_height),
+                 t.address, t.domain_sep, t.kind)
+                > (${cursor?.builtin ?? 0}::int,
+                   -${cursor?.height ?? 0}::bigint,
                    ${cursor === undefined ? Buffer.alloc(0) : Buffer.from(cursor.address, "hex")},
                    ${cursor === undefined ? Buffer.alloc(0) : Buffer.from(cursor.domainSep, "hex")},
                    ${cursor?.kind ?? 0}::smallint))
-      ORDER BY t.first_seen_height, t.address, t.domain_sep, t.kind
+      ORDER BY (t.status <> 'builtin')::int,
+               COALESCE(t.first_mint_height, t.first_seen_height) DESC,
+               t.address, t.domain_sep, t.kind
       LIMIT ${filters.limit + 1}
     `;
-    return this.paginate(rows.map(toToken), filters.limit, (last) => encodeCursor({
-      firstSeenHeight: last.firstSeenHeight, address: last.address,
-      domainSep: last.domainSep, kind: last.kind,
+    const keys = new Map<TokenListItemJson, Pick<TokenCursor, "builtin" | "height">>();
+    const items: TokenListItemJson[] = rows.map((row) => {
+      const item: TokenListItemJson = {
+        ...toToken(row),
+        contractDomainSeps: row.ds_count === null
+          ? null
+          : { count: row.ds_count, first: row.ds_first ?? [] },
+      };
+      keys.set(item, { builtin: row.sort_group === 0 ? 0 : 1, height: Number(row.sort_height) });
+      return item;
+    });
+    return this.paginate(items, filters.limit, (last) => encodeCursor({
+      ...keys.get(last)!, address: last.address, domainSep: last.domainSep, kind: last.kind,
     } satisfies TokenCursor));
   }
 
