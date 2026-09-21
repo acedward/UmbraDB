@@ -219,7 +219,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   color: var(--md-grey); border: 1px dashed var(--rule); }
 /* The disclosure panel (US4): two columns, public on the brand blue rule, private on grey. It is
    the screen the owner wants to show, so it is the one place a section carries real prose. */
-.disc { display: grid; grid-template-columns: 1fr 1fr; gap: 0 26px; }
+.disc { display: grid; grid-template-columns: 1fr 1fr; gap: 0 26px; margin-top: 14px; }
 .disc > div { border-top: 2px solid var(--rule); padding-top: 10px; }
 .disc .pub { border-top-color: var(--accent); }
 .disc h4 { margin: 0 0 8px; font-size: 13px; font-weight: 700; letter-spacing: 0.01em; }
@@ -773,6 +773,9 @@ function familyIndex(items) {
   for (var i = 0; i < (items || []).length; i++) {
     var t = items[i];
     if (!t || t.status === "builtin" || t.storage !== "native") continue;
+    // A "seen" row has no contract and no domain separator (US5): it cannot take part in a family,
+    // and two of them would otherwise look like one asset minted under two kinds.
+    if (!t.address || !t.domainSep) continue;
     var a = String(t.address);
     var d = String(t.domainSep);
     if (!domains[a]) domains[a] = {};
@@ -790,6 +793,7 @@ function countKeys(o) {
 }
 function familyOf(t, index) {
   if (!t || t.status === "builtin") return null;
+  if (!t.address || !t.domainSep) return null;
   if (t.storage === "ledger") return "ledger";
   var pair = String(t.address) + "/" + String(t.domainSep);
   var kinds = index && index.kinds ? index.kinds[pair] : null;
