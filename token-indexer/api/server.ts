@@ -37,6 +37,67 @@ import {
 export const MAX_LIMIT = 500;
 export const DEFAULT_LIMIT = 100;
 
+/** How long a chain-head reading is reused before another is fetched (owner decision Q21). The
+ *  status view auto-refreshes every 10 s, so one cached reading per refresh is the point. */
+export const CHAIN_HEAD_TTL_MS = 10_000;
+/** …and how long the fetch itself may take before the status route gives up on it and answers
+ *  without a head. The archive is the source of facts; the head is a convenience. */
+const CHAIN_HEAD_TIMEOUT_MS = 2_500;
+
+/**
+ * Reads the chain's own head from the public indexer, at most once per {@link CHAIN_HEAD_TTL_MS}.
+ *
+ * Every failure mode ends in `null` rather than an exception: no indexer configured, a network
+ * error, a non-200, a GraphQL error, a body that is not a number, or a call that takes longer than
+ * {@link CHAIN_HEAD_TIMEOUT_MS}. `GET /internal/status` must answer from the database alone; this
+ * number is the one thing in it the database cannot know, and it is never allowed to hold the
+ * route up or break it. A reading already in flight is shared rather than duplicated.
+ */
+export function makeChainHeadReader(
+  indexerHttp: string | undefined,
+  fetchImpl: typeof fetch = fetch,
+): () => Promise<number | null> {
+  if (indexerHttp === undefined || indexerHttp === "") return async () => null;
+  let cachedAt = 0;
+  let cached: number | null = null;
+  let inFlight: Promise<number | null> | null = null;
+
+  const readOnce = async (): Promise<number | null> => {
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), CHAIN_HEAD_TIMEOUT_MS);
+    try {
+      const res = await fetchImpl(indexerHttp, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "{ block { height } }" }),
+        signal: abort.signal,
+      });
+      if (!res.ok) return null;
+      const body = await res.json() as { data?: { block?: { height?: unknown } | null } };
+      const height = body.data?.block?.height;
+      return typeof height === "number" && Number.isFinite(height) ? height : null;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  return async () => {
+    const now = Date.now();
+    if (now - cachedAt < CHAIN_HEAD_TTL_MS) return cached;
+    if (inFlight !== null) return inFlight;
+    inFlight = readOnce().then((value) => {
+      // A failed reading is cached too, so a dead indexer costs one call per TTL, not one per hit.
+      cached = value;
+      cachedAt = Date.now();
+      inFlight = null;
+      return value;
+    });
+    return inFlight;
+  };
+}
+
 /** Spec FR-001's seven roles, for the `?role=` filter. A typo is a 400 naming all seven rather
  *  than an empty page that reads as "there are none". */
 export const ACTIVITY_ROLES = [
@@ -184,6 +245,7 @@ export function createTokenApi(opts: TokenApiOptions): Server {
   const queries = new TokenIndexQueries(
     opts.sql, opts.config.schema, opts.config.net, opts.config.archiveSchema,
   );
+  const chainHead = makeChainHeadReader(opts.config.indexerHttp);
   let ledgerPromise: Promise<unknown> | undefined =
     opts.ledger === undefined ? undefined : Promise.resolve(opts.ledger);
   const ledgerOf = async (): Promise<unknown> => {
@@ -211,7 +273,7 @@ export function createTokenApi(opts: TokenApiOptions): Server {
     const query = url.searchParams;
 
     if (segments[0] === "internal" && segments[1] === "status" && segments.length === 2) {
-      sendJson(res, 200, await readStatus(opts.sql, opts.config));
+      sendJson(res, 200, await readStatus(opts.sql, opts.config, chainHead));
       return;
     }
 

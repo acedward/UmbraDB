@@ -6,7 +6,7 @@ import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { loadLedgerV9 } from "../../chain-archive-sync/tx-replay-decoder.js";
 import { decodeOwnerAddress, ownerAddress } from "../api/bech32m.js";
-import { createTokenApi, listen } from "../api/server.js";
+import { createTokenApi, listen, makeChainHeadReader } from "../api/server.js";
 import { bootstrapTokenIndexSchema } from "../bootstrap.js";
 import { NIGHT_COLOR_HEX, pad32 } from "../color.js";
 import type { TokenIndexerConfig } from "../config.js";
@@ -440,6 +440,43 @@ describe("activity API (spec §5)", () => {
       LEFT JOIN ${sql(schema)}.tokens t ON t.net = a.net AND t.token_key = a.color AND t.kind = a.kind
       WHERE a.net = ${NET} AND (t.token_key IS NULL OR t.status = 'seen')`;
     expect(Number(unresolved[0]!.n)).toBe(status.body.counters.seenTokens);
+
+    // ── Q21: the chain's own head sits beside the index's position ──────────────────────────
+    // This API is configured with no indexer, so the head is `null` — and the route still answers
+    // 200 with every other field intact. That is the contract: the status document is produced
+    // from the database, and the one number the database cannot know may never break it.
+    expect(status.body).toHaveProperty("chainHead");
+    expect(status.body.chainHead).toBeNull();
+
+    // The reader itself: one call per TTL, a shared in-flight promise, and `null` for every
+    // failure mode rather than a throw.
+    let calls = 0;
+    const okFetch = (async () => {
+      calls += 1;
+      return { ok: true, json: async () => ({ data: { block: { height: 566_035 } } }) };
+    }) as unknown as typeof fetch;
+    const reader = makeChainHeadReader("http://indexer.invalid/graphql", okFetch);
+    expect(await reader()).toBe(566_035);
+    expect(await reader()).toBe(566_035);
+    expect(calls).toBe(1);                       // the second read came from the cache
+    const [a, b] = await Promise.all([reader(), reader()]);
+    expect([a, b]).toEqual([566_035, 566_035]);
+    expect(calls).toBe(1);
+
+    // Every failure ends in null, and a failed reading is cached too, so a dead indexer costs one
+    // call per TTL rather than one per request.
+    for (const bad of [
+      (async () => { throw new Error("network down"); }),
+      (async () => ({ ok: false, json: async () => ({}) })),
+      (async () => ({ ok: true, json: async () => ({ errors: [{ message: "boom" }] }) })),
+      (async () => ({ ok: true, json: async () => ({ data: { block: null } }) })),
+      (async () => ({ ok: true, json: async () => ({ data: { block: { height: "not a number" } } }) })),
+    ] as unknown as typeof fetch[]) {
+      expect(await makeChainHeadReader("http://indexer.invalid/graphql", bad)()).toBeNull();
+    }
+    // …and with no indexer configured at all it never even tries.
+    expect(await makeChainHeadReader(undefined)()).toBeNull();
+    expect(await makeChainHeadReader("")()).toBeNull();
 
     // The archive tip is real here, and no counter carries a time (Q1).
     expect(status.body.archiveTip).toBe(565376);

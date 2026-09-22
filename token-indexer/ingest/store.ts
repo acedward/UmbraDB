@@ -62,6 +62,12 @@ export interface PendingLookupRow {
 export interface TokenIndexStatus {
   net: string;
   archiveTip: number | null;
+  /** The chain's own head, read from the public indexer rather than from anything we store — the
+   *  one number in this document that says how far behind the WHOLE pipeline is, not just how far
+   *  the decoder trails the archive. `null` whenever it could not be read (no indexer configured,
+   *  the call failed, the call was slow): the status route never waits on the network and never
+   *  fails because of it. Project 00023, owner decision Q21. */
+  chainHead: number | null;
   decodeCursor: DecodeCursor;
   contracts: number;
   tokens: number;
@@ -101,6 +107,10 @@ export interface TokenIndexStatus {
  */
 export async function readStatus(
   sql: UmbraDBSql, config: TokenIndexerConfig,
+  /** Supplies `chainHead`. The caller owns the network call and its caching, so this function
+   *  stays pure database I/O and the CLI can answer without touching the network at all. It must
+   *  never throw and never block: a resolver that cannot answer returns `null`. */
+  chainHead?: () => Promise<number | null>,
 ): Promise<TokenIndexStatus> {
   const { schema, archiveSchema, net } = config;
   const [cursor, archiveTip, counts, pending] = await Promise.all([
@@ -130,10 +140,12 @@ export async function readStatus(
     `,
     readPendingLookups(sql, schema, net, 50),
   ]);
+  const head = chainHead === undefined ? null : await chainHead().catch(() => null);
   const row = counts[0]!;
   return {
     net,
     archiveTip,
+    chainHead: head,
     decodeCursor: cursor,
     contracts: Number(row.contracts),
     tokens: Number(row.tokens),

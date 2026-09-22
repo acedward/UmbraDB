@@ -217,15 +217,9 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   background: transparent; }
 .pill { display: inline-block; margin-left: 8px; padding: 0 7px; font-size: 11px; font-weight: 500;
   color: var(--md-grey); border: 1px dashed var(--rule); }
-/* The disclosure panel (US4): two columns, public on the brand blue rule, private on grey. It is
-   the screen the owner wants to show, so it is the one place a section carries real prose. */
-.disc { display: grid; grid-template-columns: 1fr 1fr; gap: 0 26px; margin-top: 14px; }
-.disc > div { border-top: 2px solid var(--rule); padding-top: 10px; }
-.disc .pub { border-top-color: var(--accent); }
-.disc h4 { margin: 0 0 8px; font-size: 13px; font-weight: 700; letter-spacing: 0.01em; }
-.disc ul { margin: 0; padding-left: 18px; }
-.disc li { margin: 4px 0; font-size: 13px; }
-.disc .pri li { color: var(--md-grey); }
+/* What a shielded token discloses, in numbers (US4 as the owner settled it in Q22: the static
+   public/private columns are gone — the reader is an advanced user — and only the two live counts
+   and their link remain). */
 .counts { display: flex; gap: 26px; flex-wrap: wrap; margin-top: 14px; padding-top: 12px;
   border-top: 1px solid var(--line); align-items: baseline; }
 .counts b { font-family: var(--mono); font-size: 16px; color: var(--ink); }
@@ -244,7 +238,6 @@ tr.det td { background: #0c0c0c; white-space: normal; }
 .txsec { margin-top: 14px; }
 .txsec:first-child { margin-top: 0; }
 .txsec > .h { color: var(--dim); font-size: 12px; margin-bottom: 6px; }
-@media (max-width: 880px) { .disc { grid-template-columns: 1fr; } }
 `;
 
 // ── Behaviour ────────────────────────────────────────────────────────────────────────────────
@@ -1175,6 +1168,51 @@ function renderBanner() {
   for (var i = 0; i < state.errors.length; i++) b.appendChild(node("div", "• " + state.errors[i]));
   if (state.lastOk) b.appendChild(node("div", "last complete refresh: " + state.lastOk.toLocaleTimeString(), "note"));
 }
+// The strip answers one question — is what I am looking at current? — so it carries ONE height
+// for this index and the chain's own head beside it (owner decision Q21). "indexed" is the decode
+// cursor: the position of the index itself, which is the number a reader of this page is actually
+// looking at. The archive tip used to sit beside it and meant something different (how far the
+// raw bytes have been fetched), which made two numbers for one question; it is only shown now when
+// it is meaningfully AHEAD of the index, because that gap is the one thing the cursor alone cannot
+// show — a stalled decoder behind a healthy sync.
+var ARCHIVE_LEAD_NOTE = 5;
+function cursorHeight(st) {
+  var cur = st.decodeCursor || {};
+  return cur.height === undefined || cur.height === null ? null : Number(cur.height);
+}
+function archiveHeight(st) {
+  return st.archiveTip === undefined || st.archiveTip === null ? null : Number(st.archiveTip);
+}
+// "indexed" is the SMALLER of the two positions this pipeline has — how far the raw bytes have
+// been fetched, and how far they have been decoded. Taking the minimum is what makes one number
+// honest: after a rebuild the cursor is 0 while the archive still holds half a million blocks, and
+// a strip that showed the archive's number would claim to be in sync while the index was empty.
+// The gap between the two is surfaced separately, by archiveLeadNote below.
+function indexedHeight(st) {
+  var cur = cursorHeight(st);
+  var tip = archiveHeight(st);
+  if (cur === null) return tip;
+  if (tip === null) return cur;
+  return tip < cur ? tip : cur;
+}
+function behindHead(st) {
+  var head = st.chainHead === undefined ? null : st.chainHead;
+  var indexed = indexedHeight(st);
+  if (head === null || indexed === null) return null;
+  return Number(head) - indexed;
+}
+function behindText(st) {
+  var b = behindHead(st);
+  if (b === null) return "chain head unavailable";
+  if (b <= 0) return "in sync";
+  return String(b);
+}
+function archiveLeadNote(st) {
+  var cur = cursorHeight(st);
+  var tip = archiveHeight(st);
+  if (cur === null || tip === null) return null;
+  return tip - cur > ARCHIVE_LEAD_NOTE ? "(archive " + String(tip) + ")" : null;
+}
 function renderStrip() {
   var s = el("strip");
   clear(s);
@@ -1186,9 +1224,17 @@ function renderStrip() {
     s.appendChild(node("span", "  ·  "));
   }
   pair("net", st.net);
-  pair("archive tip", st.archiveTip);
-  var cur = st.decodeCursor || {};
-  pair("decode cursor", (cur.height === undefined ? "-" : cur.height) + "/" + (cur.position === undefined ? "-" : cur.position));
+  pair("indexed", indexedHeight(st));
+  var lead = archiveLeadNote(st);
+  if (lead !== null) {
+    s.appendChild(node("span", lead, "note"));
+    s.appendChild(node("span", "  ·  "));
+  }
+  pair("chain head", st.chainHead === undefined ? null : st.chainHead);
+  var b = behindHead(st);
+  s.appendChild(node("span", "behind "));
+  s.appendChild(node("b", behindText(st)));
+  s.appendChild(node("span", "  ·  "));
   var pend = st.pendingLookups ? st.pendingLookups.length : 0;
   pair("pending lookups", pend);
   s.appendChild(node("span", state.lastOk ? "updated " + state.lastOk.toLocaleTimeString() : "never updated"));
@@ -1525,66 +1571,27 @@ function contractsOfOffer(offer) {
   return wrap;
 }
 
-// US4: the panel that says, in words and in numbers, what this shielded token's page can and
-// cannot show. The text is fixed (it is a property of the ledger, not of this index); the two
-// counts come from the API.
+// US4, as the owner settled it: the reader of this page is an advanced user who already knows what
+// a zswap offer does and does not publish, so the static two-column lecture is gone. What is left
+// is the part only this index can supply — the two live counts, and the link that turns the second
+// one into a list you can open. The per-delta "offer" expansion under each row and the one-line
+// note under the transactions table carry the rest.
 function disclosureSection(t) {
   var sec = node("section");
-  sec.appendChild(node("h2", "what this shielded token discloses"));
-  sec.appendChild(node("div",
-    "a zswap offer publishes its net imbalance per colour and nothing else about the coins inside "
-    + "it, so an unbalanced offer — a mint, a burn, a contract paying into or out of the pool — "
-    + "names this colour and its exact amount, while a balanced one names nothing at all. "
-    + "Everything below is read from the ledger, not asserted by this indexer.", "note"));
-  var grid = node("div", null, "disc");
-
-  var pub = node("div", null, "pub");
-  pub.appendChild(node("h4", "public: what anyone can read from the ledger"));
-  var pubList = document.createElement("ul");
-  var publics = [
-    "this token's colour — the same 32 bytes in every transaction that names it",
-    "every mint of this colour, with its amount, and the total ever minted",
-    "every offer whose net imbalance names this colour, with the exact amount and its sign",
-    "every commitment and every nullifier in those offers",
-    "a contract address attached to an offer's input, output or transient",
-    "the DUST fee each of those transactions paid, and the block it landed in"
-  ];
-  for (var p = 0; p < publics.length; p++) pubList.appendChild(node("li", publics[p]));
-  pub.appendChild(pubList);
-
-  var pri = node("div", null, "pri");
-  pri.appendChild(node("h4", "private: what the ledger never reveals"));
-  var priList = document.createElement("ul");
-  var privates = [
-    "who received a coin — an output is a commitment, not an address",
-    "who holds how much of this token",
-    "a transfer between two users: a balanced offer carries no colour at all",
-    "which commitment or nullifier belongs to this colour rather than another",
-    "the value of any single coin"
-  ];
-  for (var q = 0; q < privates.length; q++) priList.appendChild(node("li", privates[q]));
-  pri.appendChild(priList);
-
-  grid.appendChild(pub);
-  grid.appendChild(pri);
-  sec.appendChild(grid);
-
   var counts = node("div", null, "counts");
   var disclosed = t.disclosedTransactions;
   var undisclosed = t.undisclosedShieldedOffers;
   if (undisclosed === null || undisclosed === undefined) undisclosed = counterOf(state.status, "undisclosedShieldedOffers");
-  var one = node("div");
-  one.appendChild(node("b", disclosed === null || disclosed === undefined ? "-" : String(disclosed)));
-  one.appendChild(node("span", "  transactions disclose this colour", "note"));
-  counts.appendChild(one);
-  var two = node("div");
-  two.appendChild(node("b", undisclosed === null || undisclosed === undefined ? "-" : String(undisclosed)));
-  two.appendChild(node("span", "  shielded offers on this chain publish no colour at all — any of "
+  var line = node("div");
+  line.appendChild(node("b", disclosed === null || disclosed === undefined ? "-" : String(disclosed)));
+  line.appendChild(node("span", "  transactions disclose this colour  ·  ", "note"));
+  line.appendChild(node("b", undisclosed === null || undisclosed === undefined ? "-" : String(undisclosed)));
+  line.appendChild(node("span", "  shielded offers on this chain publish no colour at all — any of "
     + "them may be this token  ", "note"));
   var link = node("a", "list them");
   link.href = "#/shielded-offers";
-  two.appendChild(link);
-  counts.appendChild(two);
+  line.appendChild(link);
+  counts.appendChild(line);
   sec.appendChild(counts);
   return sec;
 }
@@ -2653,8 +2660,14 @@ function renderStatus(main) {
   var counters = st.counters || {};
   kvInto(sec, [
     ["net", orDash(st.net)],
-    ["archive tip", orDash(st.archiveTip)],
-    ["decode cursor height", orDash(cur.height)],
+    // The same three numbers the strip carries, in the same words (Q21).
+    ["indexed", orDash(indexedHeight(st))],
+    ["chain head", st.chainHead === undefined || st.chainHead === null
+      ? "unavailable — the indexer did not answer" : String(st.chainHead)],
+    ["behind", behindText(st)],
+    ["archive tip — raw bytes fetched", orDash(st.archiveTip)],
+    ["decode cursor height — bytes decoded; indexed above is the smaller of these two",
+      orDash(cur.height)],
     ["decode cursor position", orDash(cur.position)],
     ["contracts", orDash(st.contracts)],
     ["mints", orDash(counters.mints)],

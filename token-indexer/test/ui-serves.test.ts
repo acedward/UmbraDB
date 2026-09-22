@@ -127,13 +127,44 @@ describe("the token explorer page", () => {
     // US5: the list can be filtered down to the colours no contract has named yet.
     expect(body).toContain('<option value="seen">seen</option>');
 
-    // ── 00023: it states, in the owner's words, what is public and what is private ────────────
-    // US4: the two columns of the disclosure panel. The wording is the point of the screen.
-    expect(body).toContain("public: what anyone can read from the ledger");
-    expect(body).toContain("private: what the ledger never reveals");
-    expect(body).toContain("a transfer between two users: a balanced offer carries no colour at all");
-    expect(body).toContain("who received a coin");
-    // …and the chain-wide figure behind it (FR-018) with its explanation.
+    // ── 00023 / Q21: ONE indexed height, the chain's own head, and the distance between ──────
+    // The strip used to carry two numbers for one question — an archive tip and a decode cursor —
+    // and neither of them said how far behind the CHAIN the page was. It now carries the index's
+    // own position, the chain head read from the public indexer, and the gap.
+    expect(script).toContain('pair("indexed"');
+    expect(script).toContain('pair("chain head"');
+    expect(script).toContain('"behind "');
+    expect(script).toContain('"in sync"');
+    // A head that could not be read is said out loud rather than shown as a dash or a zero gap.
+    expect(script).toContain('"chain head unavailable"');
+    expect(script).toContain("st.chainHead");
+    // "indexed" is the SMALLER of the two positions, so a rebuilt-but-unscanned index cannot look
+    // in sync: after `rebuild` the cursor is 0 while the archive still holds half a million blocks.
+    expect(script).toContain("function indexedHeight(");
+    expect(script).toContain("tip < cur ? tip : cur");
+    // …and the archive's lead over the decoder is still visible when it is real, so a stalled
+    // decoder behind a healthy sync shows up.
+    expect(script).toContain('"(archive "');
+    expect(script).toContain("ARCHIVE_LEAD_NOTE");
+    // The two retired strip labels are gone from the strip itself.
+    expect(script).not.toContain('pair("archive tip"');
+    expect(script).not.toContain('pair("decode cursor"');
+
+    // ── 00023 / Q22: a shielded token discloses its numbers, not a lecture ───────────────────
+    // The owner removed the static two-column public/private panel: the reader is an advanced user
+    // who already knows what a zswap offer publishes. What must survive is the part only this index
+    // can supply — the two live counts and the link that turns the second into a real list.
+    expect(body).toContain("transactions disclose this colour");
+    // (the sentence is a two-part concatenation in the source, so it is read in its two halves)
+    expect(body).toContain("shielded offers on this chain publish no colour at all — any of ");
+    expect(body).toContain("them may be this token");
+    expect(body).toContain('<a id="nav-offers" href="#/shielded-offers">');
+    // …and the retired panel is really gone, not merely hidden.
+    expect(body).not.toContain("public: what anyone can read from the ledger");
+    expect(body).not.toContain("private: what the ledger never reveals");
+    expect(body).not.toContain("who received a coin");
+    expect(body).not.toContain("what this shielded token discloses");
+    // The chain-wide list behind the second count keeps its own explanation on its own page.
     expect(body).toContain("these shielded offers carry no colour: the ledger does not say which token moved");
 
     // US7 / Q4: the note above a ledger token's calls table, verbatim.
