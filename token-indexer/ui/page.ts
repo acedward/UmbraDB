@@ -505,18 +505,55 @@ function decimalsOf(a, t) {
   if (a && a.token && a.token.decimals !== null && a.token.decimals !== undefined) return a.token.decimals;
   return null;
 }
-// The row's amount in the token's decimals; the raw units are on hover (FR-009). A shielded delta
-// is stored unsigned with a direction, and the ledger's own sign is restored here: value entering
-// the pool is a negative delta (spec §0), which is what a reader comparing with the chain expects.
+// A shielded delta is stored unsigned with a direction, and the sign is put back here FROM THE
+// POOL'S PERSPECTIVE: value entering the shielded pool reads "+", value leaving it reads "-". The
+// ledger publishes the opposite number — its delta is inputs minus outputs, so a mint is negative
+// there — and that raw value stays on hover and in the raw JSON, where a reader comparing with the
+// chain will look for it. Printing the ledger's sign in a column headed by "into the shielded pool"
+// contradicted the words beside it.
+function poolSign(direction) {
+  return direction === "pool_in" ? "+" : (direction === "pool_out" ? "-" : "");
+}
+// The row's amount in the token's decimals; the raw units are on hover (FR-009).
 function amountCell(a, t) {
   var dec = decimalsOf(a, t);
-  var sign = a.direction === "pool_in" ? "-" : (a.direction === "pool_out" ? "+" : "");
+  var sign = poolSign(a.direction);
   var s = node("span", sign + formatUnits(a.amount, dec), "amt");
   var title = String(a.amount) + " raw units";
   if (dec !== null && dec !== undefined) title += "  ·  decimals " + dec;
-  if (a.role === "shielded_delta") title += "  ·  offer delta " + sign + String(a.amount);
+  if (a.role === "shielded_delta") {
+    title += "  ·  the ledger's own offer delta is "
+      + (a.direction === "pool_in" ? "-" : "+") + String(a.amount) + " (inputs - outputs)";
+  }
   s.title = title;
   return s;
+}
+// An offer delta straight from the §4 document, which carries the LEDGER's signed value. Shown the
+// same way round as the rows above, with the ledger's own number on hover.
+function poolDeltaCell(delta) {
+  var raw = String(delta === null || delta === undefined ? "" : delta);
+  if (raw === "") return node("span", "-", "amt");
+  var magnitude = raw.charAt(0) === "-" ? raw.slice(1) : raw;
+  var shown = raw.charAt(0) === "-" ? "+" + magnitude : "-" + magnitude;
+  var s = node("span", shown, "amt");
+  s.title = "the ledger's own offer delta is " + raw + " (inputs - outputs); shown here from the "
+    + "shielded pool's perspective";
+  return s;
+}
+// The transaction-level guaranteed zswap offer is stored under segment 0 because the table needs a
+// key, not because the chain calls it that: the guaranteed section IS segment 0. Printing
+// "segment 0" beside it shows a reader a storage detail and sends them looking for an intent that
+// does not exist. Only intent-carried sections get a number.
+function isTxLevelOffer(section, segment) {
+  return String(section) === "guaranteed" && (segment === 0 || segment === "0");
+}
+function sectionLabel(section, segment) {
+  if (isTxLevelOffer(section, segment)) return "guaranteed offer";
+  return String(section) + " · segment " + orDash(segment);
+}
+function offerHeading(section, segment) {
+  if (isTxLevelOffer(section, segment)) return "guaranteed offer";
+  return String(section) + " offer · segment " + orDash(segment);
 }
 var ROLES = [
   ["", "all"],
@@ -1314,7 +1351,7 @@ function activitySection(t, d) {
     cell(tr, node("span", roleLabel(a)));
     cell(tr, amountCell(a, t), "num");
     cell(tr, counterpartyCell(a));
-    cell(tr, node("span", String(a.section) + " · segment " + orDash(a.segment), "note"));
+    cell(tr, node("span", sectionLabel(a.section, a.segment), "note"));
     if (a.role === "shielded_delta") {
       var open = state.act.expand[key] !== undefined && state.act.expand[key] !== null;
       var btn = node("button", open ? "hide offer" : "offer", "expand");
@@ -1436,7 +1473,7 @@ function offerDetail(doc, a) {
   for (var k = 0; k < mine.length; k++) {
     var offer = mine[k];
     var head = node("div", null, "row");
-    head.appendChild(node("div", "zswap offer · " + offer.section + " · segment " + orDash(offer.segment), "note"));
+    head.appendChild(node("div", "zswap offer · " + sectionLabel(offer.section, offer.segment), "note"));
     head.appendChild(countedChip(offer.counted));
     wrap.appendChild(head);
     var grid = node("div", null, "det-grid");
@@ -1445,9 +1482,10 @@ function offerDetail(doc, a) {
     for (var dd = 0; dd < offer.deltas.length; dd++) {
       if (dd > 0) deltas.appendChild(node("span", "  "));
       deltas.appendChild(colorLink(offer.deltas[dd].color, 1));
-      deltas.appendChild(node("span", " " + orDash(offer.deltas[dd].delta), "amt"));
+      deltas.appendChild(node("span", " "));
+      deltas.appendChild(poolDeltaCell(offer.deltas[dd].delta));
     }
-    detRow(grid, "deltas (colour and net amount)", deltas);
+    detRow(grid, "deltas (colour and net amount; + enters the shielded pool)", deltas);
     detRow(grid, "inputs · nullifiers", hexListCell(offer.inputs, "nullifier"));
     detRow(grid, "outputs · commitments", hexListCell(offer.outputs, "commitment"));
     detRow(grid, "transients · commitments", hexListCell(offer.transients, "commitment"));
@@ -1852,7 +1890,7 @@ function renderTx(main) {
       var o = tx.offers[i];
       var block = node("div", null, "txsec");
       var title = node("div", null, "row");
-      title.appendChild(node("div", o.section + " offer · segment " + orDash(o.segment), "h"));
+      title.appendChild(node("div", offerHeading(o.section, o.segment), "h"));
       title.appendChild(countedChip(o.counted));
       block.appendChild(title);
       var grid = node("div", null, "det-grid");
@@ -1864,10 +1902,11 @@ function renderTx(main) {
       for (var dd = 0; dd < o.deltas.length; dd++) {
         if (dd > 0) deltas.appendChild(node("span", "  "));
         deltas.appendChild(colorLink(o.deltas[dd].color, 1));
-        deltas.appendChild(node("span", " " + orDash(o.deltas[dd].delta), "amt"));
+        deltas.appendChild(node("span", " "));
+        deltas.appendChild(poolDeltaCell(o.deltas[dd].delta));
         if (o.deltas[dd].tokenName) deltas.appendChild(node("span", " " + String(o.deltas[dd].tokenName), "txt"));
       }
-      detRow(grid, "deltas", deltas);
+      detRow(grid, "deltas (+ enters the shielded pool)", deltas);
       detRow(grid, "inputs · nullifiers", hexListCell(o.inputs, "nullifier"));
       detRow(grid, "outputs · commitments", hexListCell(o.outputs, "commitment"));
       detRow(grid, "transients · commitments", hexListCell(o.transients, "commitment"));
@@ -1915,7 +1954,7 @@ function renderTx(main) {
       cell(ar, node("span", roleLabel(row)));
       cell(ar, amountCell(row, row.token), "num");
       cell(ar, counterpartyCell(row));
-      cell(ar, node("span", String(row.section) + " · segment " + orDash(row.segment), "note"));
+      cell(ar, node("span", sectionLabel(row.section, row.segment), "note"));
       ab.appendChild(ar);
     }
   }
