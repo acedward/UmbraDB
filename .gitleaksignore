@@ -43,3 +43,12 @@ e5f53f5122c973556531ce07c696a32e9f911b5f:evm-rpc/test/not-implemented.test.ts:ge
 4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/color-vectors.json:generic-api-key:78
 4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/scan/mint-utwBTC.raw.json:generic-api-key:26
 4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/scan/mint-utwUSDC.raw.json:generic-api-key:26
+# Project 00023 (PR #21): the live-transfer fixtures recorded from Stagenet carry the PUBLIC 32-byte
+# token colour of each unshielded output (`unshieldedCreatedOutputs[].tokenType`) — the same class
+# of false positive as the colour vectors above. A colour is a commitment anyone can derive from the
+# contract address and the domain separator; nothing here is a credential. Fingerprints are pinned
+# per commit, so a re-recorded fixture still fails the gate until it is reviewed.
+dfe1917f17b145fe21ff97752631552fe26c28c7:token-indexer/test/fixtures/activity/ucom-transfer.raw.json:generic-api-key:22
+dfe1917f17b145fe21ff97752631552fe26c28c7:token-indexer/test/fixtures/activity/ucom-transfer.raw.json:generic-api-key:29
+dfe1917f17b145fe21ff97752631552fe26c28c7:token-indexer/test/fixtures/activity/ucom-transfer.raw.json:generic-api-key:38
+bd2fa466b4a30a590f77734179ad97d7db6c078c:token-indexer/test/fixtures/activity/deposit-toMap.raw.json:generic-api-key:28
