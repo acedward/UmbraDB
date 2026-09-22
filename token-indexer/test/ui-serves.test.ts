@@ -233,6 +233,35 @@ describe("the token explorer page", () => {
     expect(script).toContain("function shortAddr(");
     expect(script).toContain("lastIndexOf");
 
+    // ── F1.4: MIP-0018 is the standard, and a draft-name value says so ──────────────────────
+    // The notice names the standard and its own PR, not the draft's.
+    expect(body).toContain("<b>MIP-0018, On-Chain Token Metadata Emission</b>");
+    expect(body).toContain("midnight-improvement-proposals PR&nbsp;#325");
+    expect(body).not.toContain("MIP-XXXX");
+    expect(body).not.toContain("pull/315");
+    // The badge: one hue, one wording, and it appears wherever a draft-name value does — beside a
+    // trait's key, in the events table's own `name` column, and in the notice that explains it.
+    expect(style).toContain("--tag-premip-bg:");
+    expect(style).toContain(".premip {");
+    expect(script).toContain("function preMipBadge(");
+    expect(script).toContain('node("span", "pre-MIP name", "premip")');
+    expect(body).toContain('<span class="premip">pre-MIP name</span>');
+    // …and only a draft-name value is marked: the standard's own name is the expected case.
+    expect(script).toContain('if (variant !== "legacy-mip-xxxx") return null;');
+    expect(script).toContain("function variantLabel(");
+    expect(script).toContain('"MIP-0018"');
+    // The events table gained a `name` column, between the block and the transaction.
+    expect(script).toContain('["event id", "block", "name", "tx", "domainSep", "kind", "key", "type"');
+    // A trait is badged by the variant of the event that SET it, never by the token's.
+    expect(script).toContain("preMipBadge(tr.nameVariant)");
+    expect(script).toContain('if (kv.nameVariant === "legacy-mip-xxxx") anyPreMip = true;');
+    expect(script).toContain('if (e.nameVariant === "legacy-mip-xxxx") {');
+    // MIP-0018 section 2.1's sixth type has a name on the page: Null is not "5 reserved" any more.
+    expect(script).toContain('var names = ["opaque", "text", "integer", "JSON", "URI", "Null"];');
+    // Both explanatory notes are present, each under the table it explains.
+    expect(script).toContain("a key marked pre-MIP name was set by an event carrying the superseded draft name ");
+    expect(script).toContain("an event marked pre-MIP name carried the superseded draft name ");
+
     // ── 00023: the CSP hashes are the hashes of the bytes it serves ──────────────────────────
     const csp = res.headers.get("content-security-policy") ?? "";
     const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("base64");
@@ -251,7 +280,7 @@ describe("the token explorer page", () => {
     // in a string the script builds a link from. Those four are <a> navigations a person follows,
     // opened in a new tab without an opener or referrer — never a resource the page loads.
     const OUTBOUND = [
-      "https://github.com/midnightntwrk/midnight-improvement-proposals/pull/315",
+      "https://github.com/midnightntwrk/midnight-improvement-proposals/pull/325",
       "https://github.com/acedward/UmbraDB/pull/19",
       "https://github.com/acedward/mip-erc7496-midnight-contracts",
       "https://github.com/effectstream/staging-tokens-addresses",

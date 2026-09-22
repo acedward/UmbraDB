@@ -5,16 +5,23 @@ import { bootstrapTokenIndexSchema } from "../bootstrap.js";
 import { pad32, tokenColorHex } from "../color.js";
 import type { ObservedMint } from "../ingest/decode.js";
 import { applyMetadataEvent, applyMint, type RawContractEvent } from "../ingest/fold.js";
-import { LEGACY_NAME_HEX, encodeInteger } from "../ingest/payload.js";
+import {
+  LEGACY_NAME_HEX, MIP_0018_NAME_HEX, encodeCompactUint, encodeInteger,
+} from "../ingest/payload.js";
 import { metadataPayloadHex } from "./helpers/fake-ledger.js";
 
 /**
- * Project 00021, Phase A task A5 — the fold's rules, on MIP PR #315.
+ * The fold's rules — MIP §7.2's three states row by row, plus the parts of §4/§6.3 that only show
+ * up when a mint and a declaration meet: the arrival order must not matter, a declaration must
+ * never touch a row that is not its own kind, and a contract that describes one kind while minting
+ * another must produce TWO rows rather than one flagged one.
  *
- * MIP §7.2's three states row by row, plus the parts of §4/§6.3 that only show up when a mint and a
- * declaration meet: the arrival order must not matter, a declaration must never touch a row that is
- * not its own kind, and a contract that describes one kind while minting another must produce TWO
- * rows rather than one flagged one.
+ * Written by project 00021 (Phase A task A5) against MIP PR #315; extended by project 00023 Phase F
+ * with the three fold rules the FINAL MIP-0018 text changed — Null clearing a key, the absence of
+ * any multipart convention, and an integer width the draft could not carry. **The `emit` helper
+ * defaults to the SUPERSEDED draft name**, because that is what the contracts deployed on Stagenet
+ * emit and what every test written before Phase F asserts; `emit0018` is the standard's name, and
+ * the three F1.5 tests at the end of this file use it.
  *
  * The fold is driven directly here rather than through the scanner: these are rules about evidence,
  * not about decoding, and `scan.test.ts` / `events.test.ts` already prove the paths that deliver it.
@@ -81,6 +88,38 @@ describe("token status rules (MIP §4, §6.3, §7.2)", () => {
       }),
     };
     return sql.begin(async (tx) => applyMetadataEvent(tx, schema, NET, event));
+  }
+
+  /** The same emission under the FINAL standard's event name. Everything else is identical: the
+   *  256-byte layout is the one thing the two names share, so only the rules change. */
+  async function emit0018(
+    address: string, kindByte: number, key: string | Uint8Array, value: string | Uint8Array, height: number,
+    opts: { eventId?: number; valType?: number; valLen?: number; domainSep?: string } = {},
+  ): Promise<{ applied: boolean; rejectReason: string | undefined; projectionError: string | undefined }> {
+    return emit(address, kindByte, key, value, height, { ...opts, nameHex: MIP_0018_NAME_HEX });
+  }
+
+  /** One kv row as the fold left it, by key text — including a Null tombstone, which is what makes
+   *  "the row is still there and the column is empty" a thing this file can assert. */
+  async function kv(address: string, keyText: string): Promise<{
+    name_variant: string; val_type: number; val_len: number; value_hex: string;
+    projection_error: string | null; updated_event_id: string;
+  } | undefined> {
+    const rows = await sql<{
+      name_variant: string; val_type: number; val_len: number; value: Buffer;
+      projection_error: string | null; updated_event_id: string;
+    }[]>`
+      SELECT name_variant, val_type, val_len, value, projection_error, updated_event_id::text
+      FROM ${sql(schema)}.token_metadata_kv
+      WHERE net = ${NET} AND address = ${Buffer.from(address, "hex")} AND key_text = ${keyText}
+    `;
+    const r = rows[0];
+    if (r === undefined) return undefined;
+    return {
+      name_variant: r.name_variant, val_type: r.val_type, val_len: r.val_len,
+      value_hex: r.value.toString("hex"), projection_error: r.projection_error,
+      updated_event_id: r.updated_event_id,
+    };
   }
 
   interface Row {
@@ -444,5 +483,213 @@ describe("token status rules (MIP §4, §6.3, §7.2)", () => {
     expect(claimed).toHaveLength(1);
     expect(claimed[0]).toMatchObject({ name: "NotNight", status: "declared" });
     expect(claimed[0]!.token_key.toString("hex")).toBe(tokenColorHex(zero, zero));
+  }, 120_000);
+  // ── Project 00023 Phase F: the three fold rules the FINAL MIP-0018 text changed ────────────
+  //
+  // These three tests need EXPLICIT event ids, because the whole point of two of them is what the
+  // last-write-wins comparison does with an out-of-order arrival. The ids below live in the 1899+
+  // block: this file shares one schema across its tests, `token_metadata_events` is keyed on
+  // `(net, event_id)`, and `[[token-status-last-write]]` above already owns 899-911 — a reused id
+  // is silently NOT stored (`ON CONFLICT DO NOTHING`) and the fold then never runs, which reads as
+  // a projection bug rather than as a collision. Keep new blocks disjoint.
+
+  it("[[token-0018-null-clears]] a Null event empties the column and leaves a tombstone, which is what stops a late older event resurrecting the value", async () => {
+    const address = newAddress();
+    await emit0018(address, KIND.shieldedNative, "name", "Nova", 100, { eventId: 1900 });
+    await emit0018(address, KIND.shieldedNative, "symbol", "NOVA", 100, { eventId: 1901 });
+    await emit0018(address, KIND.shieldedNative, "decimals", encodeCompactUint(6, 16), 100,
+      { eventId: 1902, valType: 2 });
+    expect(await row(address, KIND.shieldedNative)).toMatchObject({
+      status: "declared", name: "Nova", symbol: "NOVA", decimals: 6,
+    });
+
+    // MIP §2.1 type 5 / §6.2: "Null changes the current value of the exact key without erasing
+    // history." So the column goes empty…
+    expect(await emit0018(address, KIND.shieldedNative, "name", new Uint8Array(0), 101,
+      { eventId: 1903, valType: 5 })).toMatchObject({ applied: true, projectionError: undefined });
+    expect(await row(address, KIND.shieldedNative)).toMatchObject({
+      name: null, symbol: "NOVA", decimals: 6,
+    });
+    // …the token is STILL a declaration (a Null is an accepted event, not the absence of one)…
+    expect((await row(address, KIND.shieldedNative)).status).toBe("declared");
+    // …the key keeps its place in the table as a tombstone with the event that cleared it…
+    expect(await kv(address, "name")).toEqual({
+      name_variant: "mip-0018", val_type: 5, val_len: 0, value_hex: "",
+      projection_error: null, updated_event_id: "1903",
+    });
+    // …and the history is untouched: all four events are still stored, the Null included.
+    const history = await sql<{ event_id: string; val_type: number; applied: boolean }[]>`
+      SELECT event_id::text, val_type, applied FROM ${sql(schema)}.token_metadata_events
+      WHERE net = ${NET} AND address = ${Buffer.from(address, "hex")} ORDER BY event_id`;
+    expect(history.map((r) => [r.event_id, r.val_type, r.applied]))
+      .toEqual([["1900", 1, true], ["1901", 1, true], ["1902", 2, true], ["1903", 5, true]]);
+
+    // ── Why a tombstone and not a DELETE ─────────────────────────────────────────────────────
+    // An OLDER event can arrive after a newer one: a short lookup retried from
+    // `pending_event_lookups`, a redelivery, a rebuild mid-flight. The last-write-wins guard is a
+    // comparison against the row that is there — with no row there is nothing to compare, and this
+    // event would put "Nova" back. It must not.
+    expect(await emit0018(address, KIND.shieldedNative, "name", "Nova (late duplicate)", 100,
+      { eventId: 1899 })).toMatchObject({ applied: true });
+    expect((await row(address, KIND.shieldedNative)).name).toBeNull();
+    expect(await kv(address, "name")).toMatchObject({ val_type: 5, updated_event_id: "1903" });
+
+    // A NEWER event sets the key again — a Null is not a gravestone, it is the current value.
+    await emit0018(address, KIND.shieldedNative, "name", "Nova II", 102, { eventId: 1904 });
+    expect((await row(address, KIND.shieldedNative)).name).toBe("Nova II");
+    expect(await kv(address, "name")).toMatchObject({ val_type: 1, updated_event_id: "1904" });
+
+    // Null works on every column this explorer projects, including the two that are not text.
+    await emit0018(address, KIND.shieldedNative, "metadata", '{"a":1}', 103, { eventId: 1905, valType: 3 });
+    await emit0018(address, KIND.shieldedNative, "tokenUri", "https://example.test/n.json", 103,
+      { eventId: 1906, valType: 4 });
+    expect(await row(address, KIND.shieldedNative)).toMatchObject({
+      metadata: { a: 1 }, tokenUri: "https://example.test/n.json",
+    });
+    for (const [key, eventId] of [["decimals", 1907], ["metadata", 1908], ["tokenUri", 1909], ["symbol", 1910]] as const) {
+      await emit0018(address, KIND.shieldedNative, key, new Uint8Array(0), 104,
+        { eventId, valType: 5 });
+    }
+    expect(await row(address, KIND.shieldedNative)).toMatchObject({
+      name: "Nova II", symbol: null, decimals: null, tokenUri: null, metadata: null,
+    });
+    // …and the row is still a declaration, with five keys on file and four of them Null.
+    expect((await row(address, KIND.shieldedNative)).status).toBe("declared");
+    const tombstones = await sql<{ n: string }[]>`
+      SELECT count(*)::text AS n FROM ${sql(schema)}.token_metadata_kv
+      WHERE net = ${NET} AND address = ${Buffer.from(address, "hex")} AND val_type = 5`;
+    expect(tombstones[0]!.n).toBe("4");
+
+    // An empty STRING is not a Null (MIP §6.2: "present and empty"), and the difference is visible
+    // in the column: "" is a value, Null is no value.
+    await emit0018(address, KIND.shieldedNative, "symbol", new Uint8Array(0), 105,
+      { eventId: 1911, valType: 1, valLen: 0 });
+    expect((await row(address, KIND.shieldedNative)).symbol).toBeNull(); // the projection refuses "" as a symbol
+    expect(await kv(address, "symbol")).toMatchObject({ val_type: 1, projection_error: "symbol_len" });
+  }, 120_000);
+
+  it("[[token-0018-no-multipart]] MIP-0018 defines no multipart representation: metadata/<n> stays a trait under the standard's name while the same parts still assemble under the draft's", async () => {
+    const document = JSON.stringify({ description: "A nebula in two halves", website: "https://example.test" });
+    const halves = [document.slice(0, 40), document.slice(40)];
+    expect(halves.join("")).toBe(document);
+
+    // ── Under the standard: no assembly, and a fragment cannot even be stored ────────────────
+    const final = newAddress();
+    // Part 0 happens to be a JSON fragment, which MIP §2.1 type 3 rejects outright — the rule that
+    // makes the draft's convention impossible rather than merely unimplemented.
+    expect(await emit0018(final, KIND.shieldedNative, "metadata/0", halves[0]!, 200,
+      { eventId: 1920, valType: 3 })).toMatchObject({ applied: false, rejectReason: "val_type_rule" });
+    // Two parts that ARE each complete JSON values are stored — as two independent traits. Nothing
+    // is concatenated, because §5.4 defines nothing to concatenate.
+    await emit0018(final, KIND.shieldedNative, "metadata/0", '{"half":"one"}', 201,
+      { eventId: 1921, valType: 3 });
+    await emit0018(final, KIND.shieldedNative, "metadata/1", '{"half":"two"}', 201,
+      { eventId: 1922, valType: 3 });
+    expect((await row(final, KIND.shieldedNative)).metadata).toBeNull();
+    // …and neither is flagged: under the standard these are ordinary keys with no rule to break.
+    expect(await kv(final, "metadata/0")).toMatchObject({ name_variant: "mip-0018", projection_error: null });
+    expect(await kv(final, "metadata/1")).toMatchObject({ name_variant: "mip-0018", projection_error: null });
+    // The only way to a `metadata` column under the standard is one complete value ≤ 189 bytes.
+    await emit0018(final, KIND.shieldedNative, "metadata", document, 202, { eventId: 1923, valType: 3 });
+    expect((await row(final, KIND.shieldedNative)).metadata).toEqual(JSON.parse(document));
+    expect(Buffer.byteLength(document, "utf8")).toBeLessThanOrEqual(189);
+
+    // ── Under the draft name: the deployed contracts' documents still assemble ───────────────
+    const draft = newAddress();
+    await emit(draft, KIND.shieldedNative, "metadata/1", halves[1]!, 210, { eventId: 1930, valType: 3 });
+    expect((await row(draft, KIND.shieldedNative)).metadata).toBeNull(); // part 0 is missing
+    await emit(draft, KIND.shieldedNative, "metadata/0", halves[0]!, 211, { eventId: 1931, valType: 3 });
+    expect((await row(draft, KIND.shieldedNative)).metadata).toEqual(JSON.parse(document));
+    expect(await kv(draft, "metadata/0")).toMatchObject({ name_variant: "legacy-mip-xxxx" });
+
+    // ── And the two conventions do not contaminate one another ───────────────────────────────
+    // A standard-name part landing in the middle of a draft-name document does NOT complete it and
+    // does not corrupt it: the assembly waits for a draft-name part, exactly as for a missing one.
+    const mixed = newAddress();
+    await emit(mixed, KIND.shieldedNative, "metadata/0", halves[0]!, 220, { eventId: 1940, valType: 3 });
+    await emit0018(mixed, KIND.shieldedNative, "metadata/1", '{"x":1}', 221, { eventId: 1941, valType: 3 });
+    expect((await row(mixed, KIND.shieldedNative)).metadata).toBeNull();
+    expect(await kv(mixed, "metadata/1")).toMatchObject({ name_variant: "mip-0018" });
+    // Re-sent under the draft name, the document completes — the part was never the problem, the
+    // name was.
+    await emit(mixed, KIND.shieldedNative, "metadata/1", halves[1]!, 222, { eventId: 1942, valType: 3 });
+    expect((await row(mixed, KIND.shieldedNative)).metadata).toEqual(JSON.parse(document));
+    expect(await kv(mixed, "metadata/1")).toMatchObject({ name_variant: "legacy-mip-xxxx" });
+
+    // A pointer key is not an assembly instruction either (MIP §5.1: "pointer syntax does not
+    // require JSON assembly, nested updates, prefix replacement or concatenation").
+    await emit0018(final, KIND.shieldedNative, "/metadata/description", "A nebula", 230,
+      { eventId: 1950, valType: 1 });
+    expect((await row(final, KIND.shieldedNative)).metadata).toEqual(JSON.parse(document));
+    expect(await kv(final, "/metadata/description")).toMatchObject({ val_type: 1, projection_error: null });
+  }, 120_000);
+
+  it("[[token-0018-decimals-width]] one token can hold keys set under both names, each read under its own rules, and each trait says which", async () => {
+    const address = newAddress();
+    // The recommended emitter default: `decimals` as `Uint<128>`. Sixteen bytes, little-endian.
+    await emit0018(address, KIND.shieldedNative, "decimals", encodeCompactUint(6, 16), 300,
+      { eventId: 1960, valType: 2 });
+    expect((await row(address, KIND.shieldedNative)).decimals).toBe(6);
+    expect(await kv(address, "decimals")).toMatchObject({
+      name_variant: "mip-0018", val_type: 2, val_len: 16,
+      value_hex: "06000000000000000000000000000000", projection_error: null,
+    });
+
+    // The SAME sixteen bytes under the draft name are a number the draft's one-byte rule refuses to
+    // project — so the column empties rather than showing 6·2^120, and the trait is kept and
+    // flagged. A projection failure is never a rejection (MIP §5.2).
+    await emit(address, KIND.shieldedNative, "decimals", encodeCompactUint(6, 16), 301,
+      { eventId: 1961, valType: 2 });
+    expect((await row(address, KIND.shieldedNative)).decimals).toBeNull();
+    expect(await kv(address, "decimals")).toMatchObject({
+      name_variant: "legacy-mip-xxxx", val_type: 2, val_len: 16, projection_error: "decimals_len",
+    });
+
+    // The draft's own encoding — one big-endian byte — still projects, which is what keeps the
+    // deployed reference contracts reading correctly.
+    await emit(address, KIND.shieldedNative, "decimals", encodeInteger(6, 1), 302,
+      { eventId: 1962, valType: 2 });
+    expect((await row(address, KIND.shieldedNative)).decimals).toBe(6);
+    expect(await kv(address, "decimals")).toMatchObject({
+      name_variant: "legacy-mip-xxxx", val_len: 1, value_hex: "06", projection_error: null,
+    });
+
+    // A width only the standard permits, at the far end of the range: 31 bytes, and the number is
+    // read from its own low byte.
+    await emit0018(address, KIND.shieldedNative, "decimals", encodeCompactUint(18, 31), 303,
+      { eventId: 1963, valType: 2 });
+    expect((await row(address, KIND.shieldedNative)).decimals).toBe(18);
+    expect(await kv(address, "decimals")).toMatchObject({ name_variant: "mip-0018", val_len: 31 });
+    // …while the draft name refuses that width at the transport, so the value in force does not
+    // move and the rejected event is still recorded as evidence about the contract.
+    expect(await emit(address, KIND.shieldedNative, "decimals", encodeCompactUint(18, 31), 304,
+      { eventId: 1964, valType: 2 })).toMatchObject({ applied: false, rejectReason: "val_type_rule" });
+    expect((await row(address, KIND.shieldedNative)).decimals).toBe(18);
+    expect(await kv(address, "decimals")).toMatchObject({ updated_event_id: "1963" });
+
+    // Keys set under different names sit side by side on one token, each carrying its own variant —
+    // which is what the page badges.
+    await emit(address, KIND.shieldedNative, "name", "Draft Name", 305, { eventId: 1965 });
+    await emit0018(address, KIND.shieldedNative, "symbol", "FINAL", 306, { eventId: 1966 });
+    expect(await row(address, KIND.shieldedNative)).toMatchObject({
+      name: "Draft Name", symbol: "FINAL", decimals: 18, status: "declared",
+    });
+    const variants = await sql<{ key_text: string; name_variant: string }[]>`
+      SELECT key_text, name_variant FROM ${sql(schema)}.token_metadata_kv
+      WHERE net = ${NET} AND address = ${Buffer.from(address, "hex")} ORDER BY key_text`;
+    expect(variants).toEqual([
+      { key_text: "decimals", name_variant: "mip-0018" },
+      { key_text: "name", name_variant: "legacy-mip-xxxx" },
+      { key_text: "symbol", name_variant: "mip-0018" },
+    ]);
+    // Every event of both names is stored with its own variant, rejected ones included.
+    const byVariant = await sql<{ name_variant: string; n: string }[]>`
+      SELECT name_variant, count(*)::text AS n FROM ${sql(schema)}.token_metadata_events
+      WHERE net = ${NET} AND address = ${Buffer.from(address, "hex")}
+      GROUP BY name_variant ORDER BY name_variant`;
+    expect(byVariant).toEqual([
+      { name_variant: "legacy-mip-xxxx", n: "4" },
+      { name_variant: "mip-0018", n: "3" },
+    ]);
   }, 120_000);
 });

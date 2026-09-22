@@ -125,6 +125,12 @@ const STYLE = `
   --tag-collection-fg: var(--md-blue);
   --tag-dual-bg: #fdeee0; --tag-dual-bd: #e9a870; --tag-dual-fg: #a14400;
   --tag-bad-bg: var(--bad-bg); --tag-bad-bd: #e3a29f; --tag-bad-fg: var(--bad-fg);
+  /* One more meaning, one more hue (F1.4): an event that arrived under the SUPERSEDED draft event
+     name rather than the standard's. Rose — the only hue left unused by the eleven above, so the
+     badge cannot be mistaken for a status, a family or a direction. Text 7.81:1 on its own ground;
+     the border's 2.34:1 sits mid-band among the eleven existing tag borders (2.04-2.50:1), which
+     is the band this palette already holds a decorative edge to. */
+  --tag-premip-bg: #fcebf3; --tag-premip-bd: #dd94b4; --tag-premip-fg: #8a1a50;
 }
 * { box-sizing: border-box; }
 /* A display rule on an element beats the user agent's [hidden] rule, and the filter bar is a
@@ -286,6 +292,13 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   background: var(--tag-unknown-bg); }
 .chip.nocount { color: var(--tag-bad-fg); border-color: var(--tag-bad-bd);
   background: var(--tag-bad-bg); }
+/* The "pre-MIP name" badge (F1.4). The event name IS the standard's version (MIP-0018 section 8),
+   so a value that arrived under the superseded draft name was judged by different rules, and a
+   reader comparing two tokens has to be able to see which. One hue, one shape, everywhere it
+   appears: beside a trait's key and in the events table's own name column. */
+.premip { display: inline-block; margin-left: 8px; padding: 0 6px; font-size: 10.5px;
+  font-weight: 500; letter-spacing: 0.02em; color: var(--tag-premip-fg);
+  border: 1px solid var(--tag-premip-bd); background: var(--tag-premip-bg); }
 tr.det td { background: var(--det); white-space: normal; }
 .det-grid { display: grid; grid-template-columns: max-content 1fr; gap: 5px 18px; font-size: 12.5px;
   margin: 6px 0 4px; }
@@ -937,10 +950,33 @@ function nameCell(t, index) {
 // One trait's value, rendered by its declared type (MIP section 2.1): text for 1/3/4, the decimal
 // integer for 2, hex for opaque bytes and for anything that did not decode.
 function typeLabel(vt) {
-  var names = ["opaque", "text", "integer", "JSON", "URI"];
+  // MIP-0018 section 2.1's six types. 5 is Null - an explicit "this key has no value", distinct
+  // from an empty string and from the JSON literal null - and it exists under the standard's name
+  // only: under the superseded draft name 5 is reserved and the event is rejected outright.
+  var names = ["opaque", "text", "integer", "JSON", "URI", "Null"];
   if (vt === null || vt === undefined) return "-";
   var n = Number(vt);
   return n >= 0 && n < names.length ? String(n) + " " + names[n] : String(n) + " reserved";
+}
+// The "pre-MIP name" badge: a node for a value that arrived under the SUPERSEDED draft event name,
+// and null for the standard's own name, which needs no marking because it is the expected case.
+// The reference contracts on Stagenet were deployed with the draft name and are not being
+// redeployed, so their traits keep this badge for as long as they are the demonstration.
+function preMipBadge(variant) {
+  if (variant !== "legacy-mip-xxxx") return null;
+  var b = node("span", "pre-MIP name", "premip");
+  b.title = "this value arrived under the superseded draft event name "
+    + "mip-xxxx:token-metadata[v1], not the standard's mip-0018:token-metadata[v1]. The event name "
+    + "is the layout version, so it was validated under the draft's own rules: integers big-endian "
+    + "and at most 16 bytes, no Null type, and a metadata document assembled from metadata/<n> "
+    + "parts. Kept so the already-deployed reference contracts keep displaying correctly.";
+  return b;
+}
+// The name an event carried, as the events table prints it.
+function variantLabel(variant) {
+  if (variant === "mip-0018") return "MIP-0018";
+  if (variant === "legacy-mip-xxxx") return "pre-MIP";
+  return "-";
 }
 function traitValueCell(tr) {
   if (Number(tr.valType) === 2 && tr.integer !== null && tr.integer !== undefined) {
@@ -951,11 +987,20 @@ function traitValueCell(tr) {
   return node("span", "(empty)", "no");
 }
 function traitKeyCell(tr) {
-  if (tr.key !== null && tr.key !== undefined) return node("span", String(tr.key), "txt");
-  // MIP section 5.1: a key that is not valid UTF-8 is still a key. It is shown as its bytes.
-  var s = copyable(tr.keyHex, "0x" + shortHex(String(tr.keyHex), 8, 6), "hex");
-  s.title = "this key is not valid UTF-8 and is shown as its bytes";
-  return s;
+  var wrap = node("span");
+  if (tr.key !== null && tr.key !== undefined) {
+    wrap.appendChild(node("span", String(tr.key), "txt"));
+  } else {
+    // MIP section 5.1: a key that is not valid UTF-8 is still a key. It is shown as its bytes.
+    var hexKey = copyable(tr.keyHex, "0x" + shortHex(String(tr.keyHex), 8, 6), "hex");
+    hexKey.title = "this key is not valid UTF-8 and is shown as its bytes";
+    wrap.appendChild(hexKey);
+  }
+  // A trait carries the name variant of the event that SET it, not of the token: one token can
+  // hold keys set under both names, and which rules read a value is a property of the value.
+  var badge = preMipBadge(tr.nameVariant);
+  if (badge) wrap.appendChild(badge);
+  return wrap;
 }
 function domainCell(d) {
   var text = hexText(d);
@@ -2479,8 +2524,10 @@ function renderToken(main) {
   } else {
     var tb = tableIn(traits, ["key", "type", "value", "len", "projection", "block", "tx", "event id"]);
     var anyError = false;
+    var anyPreMip = false;
     for (var k = 0; k < d.keys.length; k++) {
       var kv = d.keys[k];
+      if (kv.nameVariant === "legacy-mip-xxxx") anyPreMip = true;
       var row = document.createElement("tr");
       cell(row, traitKeyCell(kv));
       cell(row, node("span", typeLabel(kv.valType), "vtype"));
@@ -2499,9 +2546,20 @@ function renderToken(main) {
     }
     if (anyError) {
       traits.appendChild(node("div",
-        "a value in the projection column is a well-known key whose value does not follow the "
-        + "standard's appendix A rule for it. The event was accepted and the trait is kept, only "
-        + "the column it would have filled was not written",
+        "a value in the projection column is a key this explorer projects into a column of its own "
+        + "whose value the column cannot hold. The event was accepted and the trait is kept, only "
+        + "the column it would have filled was not written - the standard's appendix A is "
+        + "informative and a projection is this explorer's convention, never a verdict on the "
+        + "contract",
+        "note"));
+    }
+    if (anyPreMip) {
+      traits.appendChild(node("div",
+        "a key marked pre-MIP name was set by an event carrying the superseded draft name "
+        + "mip-xxxx:token-metadata[v1] rather than mip-0018:token-metadata[v1]. The event name is "
+        + "the layout version, so those values were read under the draft's rules; they are shown "
+        + "so that the reference contracts already deployed under that name keep displaying "
+        + "correctly",
         "note"));
     }
   }
@@ -2629,9 +2687,10 @@ function eventsSection(events, markDomain, heading) {
       + "order, which is the order the fold applies them in, so the last row of a key is the value in force",
       "note"));
   }
-  var tb = tableIn(sec, ["event id", "block", "tx", "domainSep", "kind", "key", "type", "len",
-    "value", "applied", "reject reason"]);
+  var tb = tableIn(sec, ["event id", "block", "name", "tx", "domainSep", "kind", "key", "type",
+    "len", "value", "applied", "reject reason"]);
   var ordered = orderEvents(events, markDomain);
+  var anyPreMipEvent = false;
   for (var i = 0; i < ordered.length; i++) {
     var e = ordered[i];
     var tr = document.createElement("tr");
@@ -2639,6 +2698,20 @@ function eventsSection(events, markDomain, heading) {
     if (markDomain && dom === markDomain) tr.className = "mark";
     cell(tr, orDash(e.eventId === undefined ? e.id : e.eventId), "num");
     cell(tr, orDash(e.blockHeight), "num");
+    // Which of the two event names this event carried, and therefore which rules judged it
+    // (MIP-0018 section 8: the event name is the version). The standard's name reads as plain
+    // text; the superseded draft name gets the badge, because that is the one a reader must
+    // notice.
+    if (e.nameVariant === "legacy-mip-xxxx") {
+      anyPreMipEvent = true;
+      var nameCell = node("span");
+      var nameBadge = preMipBadge(e.nameVariant);
+      nameCell.appendChild(nameBadge);
+      nameBadge.style.marginLeft = "0";
+      cell(tr, nameCell);
+    } else {
+      cell(tr, node("span", variantLabel(e.nameVariant), "vtype"));
+    }
     cell(tr, copyable(e.txHash, shortHex(e.txHash, 8, 6), "hex"));
     cell(tr, domainCell(dom));
     cell(tr, orDash(e.kindByte === undefined ? e.kind_byte : e.kindByte), "num");
@@ -2653,6 +2726,15 @@ function eventsSection(events, markDomain, heading) {
       : (e.applied === false ? node("span", "no", "err") : "-"));
     cell(tr, e.rejectReason ? node("span", String(e.rejectReason), "err wrapv") : node("span", "-", "no"));
     tb.appendChild(tr);
+  }
+  if (anyPreMipEvent) {
+    sec.appendChild(node("div",
+      "an event marked pre-MIP name carried the superseded draft name "
+      + "mip-xxxx:token-metadata[v1]. It was validated under that draft's rules - integers "
+      + "big-endian and at most 16 bytes, no Null type, metadata assembled from metadata/<n> "
+      + "parts - because the event name is the layout version. The reference contracts on this "
+      + "network were deployed with that name and are not being redeployed",
+      "note"));
   }
   return sec;
 }
@@ -2942,11 +3024,15 @@ const BODY = `<aside id="poc" class="poc" role="note">
   <div class="poc-h">Proof of concept</div>
   <p><b>This explorer lists every token on Midnight Stagenet</b>, with the name, symbol and
     decimals of each token whose contract publishes them.</p>
-  <p>Midnight has no standard way for a token to publish its name, symbol or decimals. The draft
-    standard <b>MIP-XXXX, On-Chain Token Metadata Emission</b>
-    (<a href="https://github.com/midnightntwrk/midnight-improvement-proposals/pull/315" target="_blank" rel="noopener noreferrer">midnight-improvement-proposals PR&nbsp;#315</a>)
+  <p>Midnight has no standard way for a token to publish its name, symbol or decimals.
+    <b>MIP-0018, On-Chain Token Metadata Emission</b>
+    (<a href="https://github.com/midnightntwrk/midnight-improvement-proposals/pull/325" target="_blank" rel="noopener noreferrer">midnight-improvement-proposals PR&nbsp;#325</a>)
     adds one: a contract announces its token's metadata by emitting <b>events</b>, and an indexer
     like this one collects them.</p>
+  <p>The reference contracts on this network were deployed while that proposal still carried its
+    placeholder number, so their events arrive under the earlier name and are marked
+    <span class="premip">pre-MIP name</span> wherever they are shown. They are read under the rules
+    they were emitted with, which is why they still display correctly.</p>
   <ul class="poc-links">
     <li>Indexer:
       <a href="https://github.com/acedward/UmbraDB/pull/19" target="_blank" rel="noopener noreferrer">UmbraDB PR&nbsp;#19</a></li>
