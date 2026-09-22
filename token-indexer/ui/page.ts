@@ -71,22 +71,60 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 // ── Style ────────────────────────────────────────────────────────────────────────────────────
 
 const STYLE = `
-/* Midnight brand (the 2026 external presentation template, p.28 palette): black surface, white
-   type, one blue. Outfit is the brand face and is served by this process from /ui/outfit.woff2;
-   hex, heights and amounts stay monospaced because they are data to compare, not prose. */
+/* Midnight brand (the 2026 external presentation template, p.28 palette), LIGHT: white surface,
+   black type, one blue. Outfit is the brand face and is served by this process from
+   /ui/outfit.woff2; hex, heights and amounts stay monospaced because they are data to compare,
+   not prose.
+   The owner asked for a light page after the live review (plan 00023, Phase E). There is one
+   palette and no toggle: the brand colours keep their names, only the ROLES swap, so every rule
+   below reads the same as it did on the black page. Every text colour clears WCAG AA on the
+   surface it actually sits on (>= 4.5:1 body, >= 3:1 large/bold and control edges) — computed
+   from these hex values, not eyeballed; the 60 pairs and their ratios are in the plan's Phase E
+   log. */
 @font-face {
   font-family: "Outfit"; font-style: normal; font-weight: 100 900; font-display: swap;
   src: url("/ui/outfit.woff2") format("woff2");
 }
 :root {
   --md-black: #0a0a0a; --md-white: #ffffff; --md-blue: #0000fe; --md-grey: #cccccc;
-  --md-grey-light: #e6e6e6; --md-muted: #9a9a9a;
-  --bg: var(--md-black); --panel: #111111; --panel2: #161616; --line: #262626; --rule: #333333;
-  --ink: var(--md-white); --dim: var(--md-muted); --accent: var(--md-blue);
-  --bad: #ff5c5c; --violet: var(--md-grey);
+  --md-grey-light: #e6e6e6; --md-muted: #5f5f5f;
+  --bg: var(--md-white); --panel: #f6f6f6; --panel2: #efefef; --line: #dddddd;
+  --rule: var(--md-grey);
+  --ink: var(--md-black); --dim: var(--md-muted); --accent: var(--md-blue);
+  --bad: #b3261e; --bad-bg: #fdecec; --bad-fg: #8c1d18;
+  /* A hovered row, a built-in row and an opened detail row each sit one step off the panel they
+     are on, exactly as they sat one step darker on the black page. */
+  --hover: var(--md-grey-light); --zebra: #ededed; --det: #f1f1f1;
+  /* The brand blue as a ground: the notice, and anything the page marks blue. */
+  --tint-blue: #e8e8ff; --tint-notice: #ecedff;
+  /* A control's edge needs 3:1 against white to be seen at all; --rule is a hairline between
+     rows and must not shout. */
+  --ctl: #8f8f8f;
   --sans: "Outfit", "Avenir Next", "Century Gothic", ui-sans-serif, system-ui, -apple-system,
     "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+/* ── Tag colours: one hue per meaning, stated once ──────────────────────────────────────────
+   The owner asked for tags of different colours. A meaning gets a hue and keeps it everywhere it
+   appears on the page — a status badge, a family chip, and the direction word of an activity row
+   that expresses the same thing. Each hue is a triple: a background at a ~12-15 % tint, a border
+   at ~40 %, and the hue's dark shade as the text, which is what makes a small chip legible on a
+   white page (every -fg on its own -bg clears 5.4:1). A brand pass replaces this block and
+   touches nothing else. */
+:root {
+  --tag-builtin-bg: #ececec; --tag-builtin-bd: #b4b4b4; --tag-builtin-fg: #2b2b2b;
+  --tag-observed-bg: #fdf1d9; --tag-observed-bd: #e0aa4f; --tag-observed-fg: #8a5200;
+  --tag-declared-bg: #e7eef5; --tag-declared-bd: #8fb0c8; --tag-declared-fg: #2f4a63;
+  --tag-described-bg: #e3f3e8; --tag-described-bd: #7cc192; --tag-described-fg: #1b6b37;
+  --tag-seen-bg: #ece9fb; --tag-seen-bd: #a89ae2; --tag-seen-fg: #4527a0;
+  --tag-unknown-bg: #f0f0f0; --tag-unknown-bd: #c2c2c2; --tag-unknown-fg: #616161;
+  --tag-shielded-bg: #f7ecfd; --tag-shielded-bd: #c79ae8; --tag-shielded-fg: #6b21a8;
+  --tag-unshielded-bg: #e6f1fa; --tag-unshielded-bd: #85b6db; --tag-unshielded-fg: #13558c;
+  --tag-ledger-bg: #e2f4f3; --tag-ledger-bd: #78c2be; --tag-ledger-fg: #0f6b68;
+  --tag-collection-bg: var(--tint-blue); --tag-collection-bd: #9b9bfb;
+  --tag-collection-fg: var(--md-blue);
+  --tag-dual-bg: #fdeee0; --tag-dual-bd: #e9a870; --tag-dual-fg: #a14400;
+  --tag-bad-bg: var(--bad-bg); --tag-bad-bd: #e3a29f; --tag-bad-fg: var(--bad-fg);
 }
 * { box-sizing: border-box; }
 /* A display rule on an element beats the user agent's [hidden] rule, and the filter bar is a
@@ -98,7 +136,7 @@ body {
 }
 a { color: var(--ink); text-decoration: underline; text-decoration-color: var(--rule);
   text-underline-offset: 3px; }
-a:hover { text-decoration-color: var(--ink); }
+a:hover { text-decoration-color: var(--accent); }
 code { font-family: var(--mono); font-size: 0.92em; }
 header { padding: 22px 28px 0; border-bottom: 1px solid var(--rule); }
 .brand { display: flex; align-items: center; gap: 14px; color: var(--ink); }
@@ -113,23 +151,24 @@ nav.tabs a.on { color: var(--ink); border-bottom-color: var(--accent); }
 nav.tabs .sep { flex: 1 1 auto; }
 .strip { color: var(--dim); font-size: 12px; white-space: nowrap; }
 .strip b { color: var(--ink); font-weight: 600; font-family: var(--mono); font-size: 11.5px; }
-/* The proof-of-concept notice: the palette's light grey, the one surface on this page that is not
-   dark, so it is read first. Blue rule on the left, as the template marks a callout. */
-.poc { margin: 18px 28px 0; padding: 14px 18px 14px 16px; background: var(--md-grey-light);
-  color: var(--md-black); border-left: 4px solid var(--accent); font-size: 13.5px; line-height: 1.6; }
+/* The proof-of-concept notice: the one tinted surface on a white page, in the brand blue's
+   lightest tint, so it is read first. Blue rule on the left, as the template marks a callout. */
+.poc { margin: 18px 28px 0; padding: 14px 18px 14px 16px; background: var(--tint-notice);
+  color: var(--ink); border-left: 4px solid var(--accent); font-size: 13.5px; line-height: 1.6; }
 .poc p { margin: 6px 0 0; max-width: 110ch; }
 .poc-h { font-weight: 700; font-size: 14px; letter-spacing: 0.01em; color: var(--accent); }
-.poc a { color: var(--md-black); text-decoration-color: var(--accent); text-decoration-thickness: 2px; }
+.poc a { color: var(--ink); text-decoration-color: var(--accent); text-decoration-thickness: 2px; }
 .poc a:hover { color: var(--accent); }
 .poc code { background: rgba(0, 0, 0, 0.07); padding: 0 4px; }
 .poc { position: relative; padding-right: 90px; }
 .poc-x { position: absolute; top: 10px; right: 12px; padding: 3px 10px; font-size: 11.5px;
-  font-weight: 600; letter-spacing: 0.06em; color: var(--md-black); border-color: var(--md-black); }
-.poc-x:hover:enabled { background: var(--md-black); color: var(--md-white); border-color: var(--md-black); }
+  font-weight: 600; letter-spacing: 0.06em; color: var(--ink); border-color: var(--ink);
+  background: transparent; }
+.poc-x:hover:enabled { background: var(--ink); color: var(--md-white); border-color: var(--ink); }
 .poc-links { list-style: none; margin: 10px 0 0; padding: 0; font-weight: 500; display: flex;
   flex-wrap: wrap; gap: 2px 24px; margin-right: -72px; }
 .banner { margin: 14px 28px 0; padding: 10px 14px; border: 1px solid var(--bad);
-  background: #1a0d0d; color: #ffd6d6; font-size: 13px; white-space: pre-wrap; }
+  background: var(--bad-bg); color: var(--bad-fg); font-size: 13px; white-space: pre-wrap; }
 .filters { display: flex; gap: 14px; align-items: end; flex-wrap: wrap; padding: 18px 28px 0; }
 .filters label { color: var(--dim); font-size: 12px; font-weight: 500; display: flex;
   flex-direction: column; gap: 5px; }
@@ -144,42 +183,53 @@ th { text-align: left; color: var(--dim); font-weight: 500; font-size: 12px; pad
 td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
 tr:last-child td { border-bottom: none; }
 tbody tr.pick { cursor: pointer; }
-tbody tr.pick:hover td { background: #1a1a1a; }
-tr.built td { background: #0e0e0e; }
-tr.mark td { background: #0b0b33; }
+tbody tr.pick:hover td { background: var(--hover); }
+tr.built td { background: var(--zebra); }
+tr.mark td { background: var(--tint-blue); }
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 5px 18px; font-size: 13px; }
 .kv .k { color: var(--dim); }
 .num { text-align: right; font-family: var(--mono); font-size: 12.5px; font-variant-numeric: tabular-nums; }
-/* Status, in palette only: builtin outlined white, observed outlined grey, declared on the light
-   grey, described on the brand blue — the more a contract has said, the more ink it gets. */
+/* Status, one hue per row source (E2): builtin neutral grey (this indexer's own two rows),
+   observed amber (a mint was seen and nothing was said), declared slate (the contract named the
+   token), described green (it published the traits too), seen violet (a colour watched moving
+   before any contract named it) and unknown a flat light grey. A status is a fact about how much
+   the chain has said, so the hue is the reader's index into that. */
 .badge { display: inline-block; padding: 1px 9px; font-size: 11.5px; font-weight: 500; border: 1px solid; }
-.st-builtin { color: var(--ink); border-color: var(--ink); background: transparent; }
-.st-observed { color: var(--dim); border-color: var(--rule); background: transparent; }
-.st-declared { color: var(--md-black); border-color: var(--md-grey-light); background: var(--md-grey-light); }
-.st-described { color: var(--md-white); border-color: var(--accent); background: var(--accent); }
-.st-unknown { color: var(--dim); border-color: var(--line); background: var(--panel2); }
+.st-builtin { color: var(--tag-builtin-fg); border-color: var(--tag-builtin-bd); background: var(--tag-builtin-bg); }
+.st-observed { color: var(--tag-observed-fg); border-color: var(--tag-observed-bd); background: var(--tag-observed-bg); }
+.st-declared { color: var(--tag-declared-fg); border-color: var(--tag-declared-bd); background: var(--tag-declared-bg); }
+.st-described { color: var(--tag-described-fg); border-color: var(--tag-described-bd); background: var(--tag-described-bg); }
+.st-unknown { color: var(--tag-unknown-fg); border-color: var(--tag-unknown-bd); background: var(--tag-unknown-bg); }
+/* The family chip: shielded purple, unshielded blue, ledger teal (dashed, because a ledger token
+   is a claim the chain never corroborates), collection the Midnight blue, dual orange. */
 .fam { display: inline-block; min-width: 0; padding: 0 7px; margin-right: 6px; font-size: 11px;
-  font-weight: 500; border: 1px solid var(--rule); color: var(--md-grey); }
-.fam-ledger { border-style: dashed; }
-.fam-shielded { color: var(--md-white); border-color: #5c5c5c; }
-.fam-unshielded { color: var(--md-grey); }
-.fam-collection { color: var(--md-white); border-color: var(--accent); }
-.fam-dual { color: var(--md-white); border-color: var(--md-grey); }
+  font-weight: 500; border: 1px solid var(--tag-unknown-bd); color: var(--tag-unknown-fg);
+  background: var(--tag-unknown-bg); }
+.fam-ledger { color: var(--tag-ledger-fg); border-color: var(--tag-ledger-bd);
+  background: var(--tag-ledger-bg); border-style: dashed; }
+.fam-shielded { color: var(--tag-shielded-fg); border-color: var(--tag-shielded-bd);
+  background: var(--tag-shielded-bg); }
+.fam-unshielded { color: var(--tag-unshielded-fg); border-color: var(--tag-unshielded-bd);
+  background: var(--tag-unshielded-bg); }
+.fam-collection { color: var(--tag-collection-fg); border-color: var(--tag-collection-bd);
+  background: var(--tag-collection-bg); }
+.fam-dual { color: var(--tag-dual-fg); border-color: var(--tag-dual-bd);
+  background: var(--tag-dual-bg); }
 .multi { display: inline-block; margin-left: 8px; padding: 0 7px; font-family: var(--sans);
-  font-size: 11px; font-weight: 500; color: var(--md-white); background: rgba(0, 0, 254, 0.28);
-  border: 1px solid var(--accent); cursor: default; }
-.multi:focus { outline: 1px solid var(--md-white); outline-offset: 1px; }
-.tip { position: fixed; z-index: 50; max-width: 380px; padding: 10px 12px; background: var(--panel2);
-  border: 1px solid var(--rule); color: var(--ink); font-size: 12.5px; line-height: 1.6;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.6); pointer-events: none; }
+  font-size: 11px; font-weight: 500; color: var(--tag-collection-fg);
+  background: var(--tag-collection-bg); border: 1px solid var(--accent); cursor: default; }
+.multi:focus { outline: 1px solid var(--accent); outline-offset: 1px; }
+.tip { position: fixed; z-index: 50; max-width: 380px; padding: 10px 12px; background: var(--md-white);
+  border: 1px solid var(--ctl); color: var(--ink); font-size: 12.5px; line-height: 1.6;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18); pointer-events: none; }
 .tip .hex, .tip .here { font-family: var(--mono); font-size: 12px; }
-.tip .here { color: var(--md-white); }
+.tip .here { color: var(--ink); }
 .tip .hex { color: var(--dim); }
 td.apicol { text-align: center; }
 .api { display: inline-flex; padding: 3px; color: var(--dim); border: 1px solid transparent; }
-.api:hover { color: var(--md-white); border-color: var(--accent); background: rgba(0, 0, 254, 0.28); }
+.api:hover { color: var(--accent); border-color: var(--accent); background: var(--tint-blue); }
 .api svg { display: block; }
-.cp { cursor: pointer; text-decoration: underline dotted; text-decoration-color: #5c5c5c;
+.cp { cursor: pointer; text-decoration: underline dotted; text-decoration-color: var(--ctl);
   text-underline-offset: 3px; }
 .cp.copied { color: var(--md-white); background: var(--accent); text-decoration: none; }
 .cp.copyfail { color: var(--bad); }
@@ -190,7 +240,7 @@ td.apicol { text-align: center; }
 .txt { color: var(--ink); }
 /* A projection that Appendix A refused: the trait is real and kept, the column it would feed is
    not written. Shown as a warning, never as an error — the event itself was applied. */
-.perr { color: var(--md-grey); text-decoration: underline wavy #5c5c5c; }
+.perr { color: var(--tag-observed-fg); text-decoration: underline wavy var(--tag-observed-bd); }
 .vtype { color: var(--dim); font-size: 11.5px; }
 .hex { color: var(--dim); font-family: var(--mono); font-size: 12.5px; }
 .no { color: var(--dim); }
@@ -198,14 +248,14 @@ pre { margin: 0; padding: 12px 14px; background: var(--bg); border: 1px solid va
   font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word;
   max-height: 420px; overflow: auto; }
 button { font: inherit; font-size: 13px; font-weight: 500; padding: 7px 14px; cursor: pointer;
-  background: transparent; color: var(--ink); border: 1px solid var(--rule); }
+  background: var(--md-white); color: var(--ink); border: 1px solid var(--ctl); }
 button:hover:enabled { border-color: var(--ink); }
 button:disabled { opacity: 0.4; cursor: default; }
 button#now { background: var(--accent); border-color: var(--accent); color: var(--md-white); }
 button#now:hover:enabled { background: #0000c4; border-color: #0000c4; }
 input, select { font: inherit; font-size: 13.5px; padding: 7px 10px; background: var(--bg);
-  color: var(--ink); border: 1px solid var(--rule); border-radius: 0; }
-input::placeholder { color: #5c5c5c; }
+  color: var(--ink); border: 1px solid var(--ctl); border-radius: 0; }
+input::placeholder { color: var(--dim); }
 input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .crumb { color: var(--dim); font-size: 13px; margin-bottom: 10px; }
@@ -213,10 +263,10 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 /* ── 00023: activity rows, the disclosure panel, the calls note, the transaction view ───────
    A colour seen in public data before any mint named it (status seen, US5) is marked with a
    dashed badge: the row is real, the contract behind it is not known. */
-.st-seen { color: var(--md-white); border-color: var(--md-grey); border-style: dashed;
-  background: transparent; }
+.st-seen { color: var(--tag-seen-fg); border-color: var(--tag-seen-bd); border-style: dashed;
+  background: var(--tag-seen-bg); }
 .pill { display: inline-block; margin-left: 8px; padding: 0 7px; font-size: 11px; font-weight: 500;
-  color: var(--md-grey); border: 1px dashed var(--rule); }
+  color: var(--tag-seen-fg); border: 1px dashed var(--tag-seen-bd); background: var(--tag-seen-bg); }
 /* What a shielded token discloses, in numbers (US4 as the owner settled it in Q22: the static
    public/private columns are gone — the reader is an advanced user — and only the two live counts
    and their link remain). */
@@ -224,16 +274,29 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   border-top: 1px solid var(--line); align-items: baseline; }
 .counts b { font-family: var(--mono); font-size: 16px; color: var(--ink); }
 .warnnote { margin: 0 0 12px; padding: 11px 14px; border-left: 4px solid var(--accent);
-  background: var(--panel2); color: var(--md-grey-light); font-size: 13px; line-height: 1.6; }
-.warnnote b { color: var(--md-white); }
+  background: var(--panel2); color: var(--ink); font-size: 13px; line-height: 1.6; }
+.warnnote b { color: var(--accent); }
+/* "counted" is the ordinary case and stays neutral; "not counted" is the one that changes what a
+   reader may conclude, so it takes the page's red (E2). */
 .chip { display: inline-block; padding: 0 7px; font-size: 11px; font-weight: 500;
-  border: 1px solid var(--rule); color: var(--dim); }
-.chip.nocount { color: var(--bad); border-color: var(--bad); }
-tr.det td { background: #0c0c0c; white-space: normal; }
+  border: 1px solid var(--tag-unknown-bd); color: var(--tag-unknown-fg);
+  background: var(--tag-unknown-bg); }
+.chip.nocount { color: var(--tag-bad-fg); border-color: var(--tag-bad-bd);
+  background: var(--tag-bad-bg); }
+tr.det td { background: var(--det); white-space: normal; }
 .det-grid { display: grid; grid-template-columns: max-content 1fr; gap: 5px 18px; font-size: 12.5px;
   margin: 6px 0 4px; }
 .det-grid .k { color: var(--dim); }
 .amt { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+/* The "what happened" word of an activity row carries the hue of the row's DIRECTION, and only as
+   text: a whole tinted cell in every row would be a wall of colour, while one coloured word lets a
+   reader see at a glance that a list is all inflow or all outflow. The hues are the tag hues of
+   the same meanings — value arriving is the green of "described", value leaving the amber of
+   "observed", a shielded-pool delta the purple of the shielded chip, a mint the Midnight blue. */
+.dir-in { color: var(--tag-described-fg); }
+.dir-out { color: var(--tag-observed-fg); }
+.dir-pool { color: var(--tag-shielded-fg); }
+.dir-mint { color: var(--tag-collection-fg); }
 .expand { padding: 1px 9px; font-size: 11.5px; }
 .txsec { margin-top: 14px; }
 .txsec:first-child { margin-top: 0; }
@@ -564,6 +627,23 @@ function roleLabel(a) {
   }
   for (var i = 1; i < ROLES.length; i++) if (ROLES[i][0] === a.role) return ROLES[i][1];
   return String(a.role);
+}
+// The hue of the "what happened" word, from the row's own direction (FR-014: amount is unsigned
+// and "direction" carries the sign). A mint is an "in" row in the database, but it is the one
+// thing on this page that CREATES value rather than moving it, so it keeps its own colour.
+function directionClass(a) {
+  if (!a) return "";
+  if (a.role === "mint") return "dir-mint";
+  var d = a.direction === null || a.direction === undefined ? "" : String(a.direction);
+  if (d === "pool_in" || d === "pool_out") return "dir-pool";
+  if (d === "in") return "dir-in";
+  if (d === "out") return "dir-out";
+  return "";
+}
+// One cell, so the transactions table of a token and the activity list inside a transaction agree
+// on both the word and its colour.
+function roleCell(a) {
+  return node("span", roleLabel(a), directionClass(a));
 }
 // Q9: a wallet address is shown as Bech32m and only as Bech32m. The human-readable part names the
 // network and is kept whole; the data part is elided in the middle. The API also sends "ownerHex",
@@ -1394,7 +1474,7 @@ function activitySection(t, d) {
     cell(tr, orDash(a.blockHeight), "num");
     cell(tr, orDash(a.txPosition), "num");
     cell(tr, txLink(a.txHash));
-    cell(tr, node("span", roleLabel(a)));
+    cell(tr, roleCell(a));
     cell(tr, amountCell(a, t), "num");
     cell(tr, counterpartyCell(a));
     cell(tr, node("span", sectionLabel(a.section, a.segment), "note"));
@@ -1958,7 +2038,7 @@ function renderTx(main) {
       var row = tx.activity[a];
       var ar = document.createElement("tr");
       cell(ar, txTokenCell(row));
-      cell(ar, node("span", roleLabel(row)));
+      cell(ar, roleCell(row));
       cell(ar, amountCell(row, row.token), "num");
       cell(ar, counterpartyCell(row));
       cell(ar, node("span", sectionLabel(row.section, row.segment), "note"));

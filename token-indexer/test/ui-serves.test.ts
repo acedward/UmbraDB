@@ -278,6 +278,129 @@ describe("the token explorer page", () => {
     expect(body).not.toContain("inconsistent");
   });
 
+  /**
+   * 00023 Phase E, the owner's two style decisions after the live review: "let's make it light"
+   * and "let's make the tags of different colours".
+   *
+   * These are not colour-taste assertions. Two things are pinned because breaking either makes the
+   * page unreadable while every other test stays green: (a) the palette is **light** — one theme,
+   * no `prefers-color-scheme` branch, and none of the black page's surface values left behind in a
+   * rule the light palette no longer feeds; (b) every text colour the page uses clears **WCAG AA**
+   * on the surface it actually sits on, computed here from the served CSS custom properties rather
+   * than from a table someone kept up to date by hand. A brand pass that darkens one tint until a
+   * chip stops being legible fails this test.
+   */
+  it("ships one light palette, a distinct hue per tag, and WCAG AA on every pair", async () => {
+    const body = await (await fetch(`${base}/ui`)).text();
+    const style = /<style>([\s\S]*?)<\/style>/.exec(body)?.[1] ?? "";
+    const script = /<script>([\s\S]*?)<\/script>/.exec(body)?.[1] ?? "";
+
+    // ── the custom properties, as the browser would resolve them ────────────────────────────
+    const declared = new Map<string, string>();
+    for (const m of style.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;}]+)/g)) {
+      declared.set(m[1] ?? "", (m[2] ?? "").trim());
+    }
+    const resolve = (name: string): string => {
+      let value = declared.get(name);
+      for (let hop = 0; hop < 8 && value !== undefined && value.startsWith("var("); hop += 1) {
+        value = declared.get(value.slice(4, -1).trim());
+      }
+      expect(value, `${name} must resolve to a colour`).toMatch(/^#[0-9a-f]{6}$/);
+      return value ?? "";
+    };
+    const luminance = (hex: string): number => {
+      const channel = (v: number): number => {
+        const s = v / 255;
+        return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+      };
+      const r = channel(parseInt(hex.slice(1, 3), 16));
+      const g = channel(parseInt(hex.slice(3, 5), 16));
+      const b = channel(parseInt(hex.slice(5, 7), 16));
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const contrast = (a: string, b: string): number => {
+      const la = luminance(a), lb = luminance(b);
+      return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+    };
+
+    // (a) LIGHT, and light only. The page's ground is white and its ink is black — the two roles
+    // the black page had the other way round — and there is no second theme to fall into.
+    expect(declared.get("--bg")).toBe("var(--md-white)");
+    expect(declared.get("--ink")).toBe("var(--md-black)");
+    expect(luminance(resolve("--bg"))).toBeGreaterThan(0.9);
+    expect(luminance(resolve("--ink"))).toBeLessThan(0.05);
+    expect(style).not.toContain("prefers-color-scheme");
+    // The brand accent is untouched: the palette turned over, the one blue did not.
+    expect(declared.get("--md-blue")).toBe("#0000fe");
+    expect(declared.get("--accent")).toBe("var(--md-blue)");
+    // …and the black page's surfaces are gone from the stylesheet, not merely unused by :root.
+    for (const dark of ["#111111", "#161616", "#262626", "#333333", "#1a1a1a", "#0e0e0e",
+      "#0c0c0c", "#0b0b33", "#1a0d0d", "#ffd6d6", "#5c5c5c", "#ff5c5c", "#9a9a9a"]) {
+      expect(style, `${dark} is a dark-theme value and must not survive`).not.toContain(dark);
+    }
+
+    // (b) one hue per meaning, and the same hue wherever that meaning appears.
+    const TAGS = ["builtin", "observed", "declared", "described", "seen", "unknown",
+      "shielded", "unshielded", "ledger", "collection", "dual", "bad"];
+    const fgs = new Set<string>();
+    for (const tag of TAGS) {
+      const fg = resolve(`--tag-${tag}-fg`);
+      const bg = resolve(`--tag-${tag}-bg`);
+      resolve(`--tag-${tag}-bd`);
+      fgs.add(fg);
+      expect(contrast(fg, bg), `tag ${tag}: ${fg} on ${bg}`).toBeGreaterThanOrEqual(4.5);
+    }
+    // Twelve meanings, twelve hues: a tag that shares another's text colour says nothing.
+    expect(fgs.size).toBe(TAGS.length);
+    // Each badge and chip reads its own triple, so the block above is the only place to edit.
+    for (const [selector, tag] of [[".st-builtin", "builtin"], [".st-observed", "observed"],
+      [".st-declared", "declared"], [".st-described", "described"], [".st-seen", "seen"],
+      [".st-unknown", "unknown"], [".fam-shielded", "shielded"], [".fam-unshielded", "unshielded"],
+      [".fam-ledger", "ledger"], [".fam-collection", "collection"], [".fam-dual", "dual"],
+      [".chip.nocount", "bad"]] as const) {
+      const rule = style.slice(style.indexOf(`${selector} {`));
+      expect(rule.slice(0, rule.indexOf("}")), `${selector} must use --tag-${tag}-*`)
+        .toContain(`var(--tag-${tag}-fg)`);
+    }
+    // A ledger token's chip keeps its dashed edge, and so does a colour nobody has named.
+    expect(style).toMatch(/\.fam-ledger \{[^}]*border-style: dashed/);
+    expect(style).toMatch(/\.st-seen \{[^}]*border-style: dashed/);
+
+    // The transactions table's "what happened" word carries the hue of the row's own direction,
+    // as text only — the amount and the counterparty beside it stay uncoloured.
+    expect(script).toContain("function directionClass(");
+    expect(script).toContain('return "dir-mint"');
+    expect(script).toContain('return "dir-pool"');
+    expect(script).toContain('return "dir-in"');
+    expect(script).toContain('return "dir-out"');
+    for (const [rule, tag] of [[".dir-in", "described"], [".dir-out", "observed"],
+      [".dir-pool", "shielded"], [".dir-mint", "collection"]] as const) {
+      expect(style).toContain(`${rule} { color: var(--tag-${tag}-fg); }`);
+    }
+    const surfaces = ["--bg", "--panel", "--panel2", "--hover", "--zebra", "--det"].map(resolve);
+    for (const name of ["--tag-described-fg", "--tag-observed-fg", "--tag-shielded-fg",
+      "--tag-collection-fg"]) {
+      for (const surface of surfaces) {
+        expect(contrast(resolve(name), surface), `${name} on ${surface}`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+
+    // Body text, secondary text and the error colour on every surface they can land on.
+    for (const surface of surfaces) {
+      expect(contrast(resolve("--ink"), surface)).toBeGreaterThanOrEqual(4.5);
+      expect(contrast(resolve("--dim"), surface), `--dim on ${surface}`).toBeGreaterThanOrEqual(4.5);
+    }
+    expect(contrast(resolve("--bad"), resolve("--panel"))).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(resolve("--bad-fg"), resolve("--bad-bg"))).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(resolve("--ink"), resolve("--tint-notice"))).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(resolve("--accent"), resolve("--tint-blue"))).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(resolve("--accent"), resolve("--tint-notice"))).toBeGreaterThanOrEqual(3);
+    expect(contrast(resolve("--md-white"), resolve("--accent"))).toBeGreaterThanOrEqual(4.5);
+    // A control's edge is not text, so its bar is the 3:1 of WCAG 1.4.11 — and it must clear it,
+    // because a hairline that vanishes on white makes an input look like a label.
+    expect(contrast(resolve("--ctl"), resolve("--bg"))).toBeGreaterThanOrEqual(3);
+  });
+
   it("serves the vendored brand font from its own origin", async () => {
     const res = await fetch(`${base}/ui/outfit.woff2`);
     expect(res.status).toBe(200);
