@@ -281,8 +281,10 @@ export type RejectReason =
   | "key_pointer_invalid"
   | "val_type_reserved"
   | "val_len_too_long"
-  /** MIP-0018 §2.1 type 5 — Null with a non-zero `val-len`. */
-  | "val_null_len"
+  /** Every per-type value rule of §2.1, Null's `val-len` MUST be zero included — MIP §2.2 files
+   *  them all under one line ("`value` failing its `val-type` backing-type or semantic rule MUST
+   *  reject the event"), and the reference contracts' corpus names this case the same way, so the
+   *  two implementations report one string for one rule. */
   | "val_type_rule";
 
 /**
@@ -508,8 +510,12 @@ export function valueRuleError(
     }
     case VAL_TYPE_NULL:
       // Reachable under MIP-0018 only — `val_type_reserved` catches 5 under the draft name first.
-      // "`val-len` MUST be zero; consumers MUST ignore all 189 `value` bytes."
-      return valLen === 0 ? undefined : "val_null_len";
+      // "`val-len` MUST be zero; consumers MUST ignore all 189 `value` bytes." Reported as
+      // `val_type_rule` rather than a reason of its own: MIP §2.2 puts every per-type value rule on
+      // one line, and the reference contracts' negative corpus names this case `val_type_rule` too
+      // (`fixtures/contracts/negative-payloads.json`), so a diagnostic string means the same thing
+      // in both implementations.
+      return valLen === 0 ? undefined : "val_type_rule";
     default:
       return "val_type_rule"; // unreachable: a reserved type is rejected before this is asked
   }

@@ -238,10 +238,11 @@ describe("mip-0018:token-metadata[v1] payload — the final standard (MIP PR #32
     expect(withJunk.clears).toBe(true);
     expect(withJunk.valueBytes).toHaveLength(0);
 
-    // "`val-len` MUST be zero" — its own reason, because "a Null that carries a length" is a
-    // different mistake from "a value that fails its type's rule".
-    expectReject(payload("name", "x", { valType: 5, valLen: 1 }), "val_null_len");
-    expectReject(payload("name", new Uint8Array(189), { valType: 5, valLen: 189 }), "val_null_len");
+    // "`val-len` MUST be zero" — reported as `val_type_rule`, the one reason MIP §2.2 gives for
+    // every per-type value rule, which is also the string the reference contracts' negative corpus
+    // records for this case (`fixtures/contracts/negative-payloads.json`).
+    expectReject(payload("name", "x", { valType: 5, valLen: 1 }), "val_type_rule");
+    expectReject(payload("name", new Uint8Array(189), { valType: 5, valLen: 189 }), "val_type_rule");
 
     // Null clears EVERY key, including the ones this explorer projects, and never flags one.
     for (const key of ["name", "symbol", "decimals", "metadata", "tokenUri", "anything"]) {

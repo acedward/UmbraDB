@@ -1,20 +1,28 @@
 # token-indexer — every Midnight token, its colour, its on-chain metadata and its life on chain
 
 Projects 00020, 00021 and 00023. Specs: `spec/00020-token-indexer.md` (§5 the API, §6 the
-internals), `spec/00021-mip-315-alignment.md` (the delta that put this on the MIP draft) and
+internals), `spec/00021-mip-315-alignment.md` (the delta that put this on the MIP draft, since
+superseded by the final text — see below) and
 `spec/00023-token-transactions.md` (every on-chain transaction that touched a token) in the
 planning workspace. This directory is the whole deliverable; `src/` is untouched apart from four
 additive migration files (`src/postgres/migrations/token_index/` and
 `src/postgres/migrations/chain_archive/002_tx_result_segments.ts`).
 
-> ## ⚠ Breaking change in migration `003_token_activity` (project 00023)
+> ## ⚠ Breaking changes in migrations `003_token_activity` and `004_mip_0018` (project 00023)
+>
+> **`004_mip_0018`** puts this index on the FINAL MIP-0018 text: it adds `name_variant` to
+> `token_metadata_events` and `token_metadata_kv`, lets the kv table hold the new Null type, and
+> states the two Null rules as CHECKs. It recreates those two tables and deletes every row derived
+> from them, because `name_variant` cannot be derived from a stored payload — the events table keeps
+> the payload, not the event's name — so backfilling it would be a guess that happens to be right
+> for one database and is silently wrong for any other. Same two commands as below.
 >
 > **The index must be reindexed from scratch.** Migration `003` drops and recreates `tokens` with a
 > new identity and adds three tables, so a database built by 00020/00021 cannot be carried forward —
 > and does not need to be: everything in this schema is a derivation of `chain_archive`.
 >
 > ```
-> npm run token-indexer -- migrate     # applies 003; the index is now EMPTY
+> npm run token-indexer -- migrate     # applies 003 and 004; the index is now EMPTY
 > npm run token-indexer -- rebuild     # re-seeds NIGHT/DUST and re-scans from block zero
 > ```
 >
@@ -27,27 +35,67 @@ additive migration files (`src/postgres/migrations/token_index/` and
 
 ## The standard this reads (normative)
 
-**MIP PR #315, `mips/mip-xxxx-on-chain-token-metadata.md`** in
-`midnightntwrk/midnight-improvement-proposals` (head `f433056`, branch
-`mip-on-chain-token-metadata`) — "On-Chain Token Metadata Emission". Normative there are the event
-envelope [1], the payload layout [2], the `kind` byte [3], token identity [4], key/value handling
-[5], emission rules [6], consumer rules [7] and versioning [8]; Appendix A's well-known keys are
-informative but SHOULD-level for interoperability, and this indexer follows them.
+**MIP-0018, `mips/mip-0018-on-chain-token-metadata.md`** in
+`midnightntwrk/midnight-improvement-proposals` —
+[PR #325](https://github.com/midnightntwrk/midnight-improvement-proposals/pull/325) @ `37a3471`,
+status Proposed — "On-Chain Token Metadata Emission". Normative there are the event envelope [1],
+the payload layout [2], the `kind` byte [3], token identity [4], key/value handling [5], emission
+rules [6], consumer acceptance and input handling [7.1, 7.3–7.4] and versioning [8].
+
+**Appendix A is informative**, and the final text says so in as many words: its examples
+"demonstrate transport encodings only… They do not define required fields, key meanings, schema
+types, validation beyond [2] and [5.1], projections or display behavior", while §5.2 adds that "A
+transport-valid declaration is accepted even if its key is unknown". So the five keys this indexer
+projects into columns of its own — `name`, `symbol`, `decimals`, `tokenUri`, `metadata` — are **this
+consumer's convention**, not a MIP requirement, and a projection that fails is never a verdict about
+the emitting contract. It is also never a rejection: see `projection_error` below.
 
 The MIP is the text; `acedward/mip-erc7496-midnight-contracts` is the reference implementation whose
 compiled contracts produce the golden corpus below. This consumer implements the MIP directly and
 deliberately shares no code with the contracts.
 
-**Two consequences worth stating out loud.**
+### Two event names, two validators (owner decision Q27)
 
-* The event name is `pad(32, "mip-xxxx:token-metadata[v1]")`, and `xxxx` is a placeholder until the
-  MIP is assigned its number. The name is spelled once, in
-  `ingest/payload.ts`'s `TOKEN_METADATA_EVENT_NAME`; when the number is assigned that line changes
-  and every emitting contract has to be redeployed, because on their side the name is a circuit
-  literal.
-* The pre-MIP name `TokenMetadata` that project 00020 shipped is **ignored** — not stored, not
-  rejected, not evidence of anything (MIP §1: "Any other event MUST be ignored"). Contracts deployed
-  under the old name keep whatever rows their mints created, as `observed`.
+The event name **is** the layout version (MIP §8), and the number changed on the way to the final
+text. This indexer therefore recognises two names and judges each under its own rules:
+
+| rule | `mip-0018:token-metadata[v1]` (the standard) | `mip-xxxx:token-metadata[v1]` (superseded draft) |
+|---|---|---|
+| `val-type` 2 | Compact `Uint<8·N>`, `1 ≤ val-len ≤ 31`, **little-endian** | unsigned **big-endian**, `1 ≤ val-len ≤ 16` |
+| `val-type` 3 | ONE complete valid JSON value (RFC 8259; scalars and arrays allowed) | valid UTF-8, nothing more |
+| `val-type` 5 | **Null** — `val-len` MUST be 0, all 189 value bytes ignored; CLEARS the key | reserved → rejects |
+| reserved | 6–255 | 5–255 |
+| `/metadata/…` keys | MUST be valid RFC 6901 JSON Pointers (only `~0`/`~1`) or the event REJECTS | no rule; plain bytes |
+| multipart | **none** — `metadata` is one complete JSON value ≤ 189 B or nothing | `metadata/<n>`, parts `0..15`, assembled |
+
+Each name is spelled once, in `ingest/payload.ts` (`MIP_0018_EVENT_NAME`, `LEGACY_EVENT_NAME`), and
+every stored row carries its `name_variant` (`mip-0018` or `legacy-mip-xxxx`): on
+`token_metadata_events`, on `token_metadata_kv`, in the API's `nameVariant` on every trait and every
+event, and as the page's "pre-MIP name" badge.
+
+> **The draft path exists for demonstrative purposes only.** The reference contracts on Stagenet
+> were compiled with the draft name as a circuit literal and are **not** being redeployed (owner
+> decision Q28), so dropping the draft's rules would empty this explorer's token table. Keeping an
+> already-deployed demonstration readable is the only reason that code path exists: it is not a
+> compatibility guarantee, not a migration path, and not a pattern to copy. A real MIP-0018 consumer
+> implements the left-hand column and nothing else, and MIP §1's "Events of another type or name …
+> MUST be ignored by a v1 consumer" is what the draft name deserves once the contracts move. The
+> whole path can be deleted in one commit the day they do.
+
+The pre-MIP name `TokenMetadata` that project 00020 shipped is recognised by **neither** validator:
+it is **ignored** — not stored, not rejected, not evidence of anything (MIP §1). Contracts deployed
+under that name keep whatever rows their mints created, as `observed`.
+
+### Null clears a key, and its row stays
+
+A `val-type` 5 event sets the current value of the exact key to Null (MIP §2.1, §6.2) "without
+erasing history". In this index it lands as an ordinary last-write-wins upsert carrying `val_type
+5`, `val_len 0` and no value bytes, and **that row is the cleared state**: the projection skips it,
+so the column it fed goes empty, while the key keeps its place with the event that cleared it beside
+it. Deleting the row would be wrong — it is the only thing the last-write-wins comparison can hold a
+late-arriving *older* event against (a retried short lookup, a redelivery, a rebuild mid-flight),
+and that event would then resurrect the value the Null retired. Every event, Null included, stays in
+`token_metadata_events`.
 
 ## What it does
 
@@ -89,9 +137,11 @@ A token is **`(contract address, domainSep, kind)`** with the WHOLE kind byte:
 - Rows sharing `(address, domainSep)` may be linked as one asset's several representations:
   `GET /v1/contracts/:address/tokens/:domainSep` returns exactly that set.
 - The states are `observed`, `declared`, `described` (MIP §7.2) plus `builtin` for the two seeds.
-- An Appendix A key whose value breaks Appendix A's rule (wrong `val-type`, a `decimals` above 36, a
-  `tokenUri` that is not an absolute http(s) URL) does **not** reject the event: the trait is stored
-  with a `projection_error` and the column it would have filled is not written.
+- A projected key whose value this consumer's column cannot hold (wrong `val-type`, a `decimals`
+  above 36, a `tokenUri` that is not an absolute http(s) URL, a `metadata` that is a transport-valid
+  JSON scalar rather than an object) does **not** reject the event: the trait is stored with a
+  `projection_error` and the column it would have filled is not written. The projections are ours,
+  not the MIP's — see "The standard this reads" above.
 
 ## Built-in rows (owner decision Q7)
 
@@ -137,11 +187,31 @@ issuers' deploys at heights 360 721–360 737 and their mint calls at 364 875–
 from the public indexer with their `raw` bytes, `transactionResult` and created outputs. The scanner
 runs against those bytes through the real store and the real ledger-v9 decoder.
 
-`test/fixtures/contracts/` holds the golden corpus emitted by the **reference contracts** of
+**Two** golden corpora emitted by the **reference contracts** of
 `acedward/mip-erc7496-midnight-contracts`, produced by the real compiled Compact templates in the
-Compact simulator; `test/fixtures/contracts/SOURCE.md` pins the exact repository, branch and commit.
-The hand-built payloads in `test/payload.test.ts` and `test/status-rules.test.ts` are kept
-alongside it, not replaced by it.
+Compact simulator — because there are two event names and two validators:
+
+* `test/fixtures/contracts/` — **MIP-0018**: 66 `mip-0018:token-metadata[v1]` events, 16 mints, 15
+  colour vectors, 17 expected rows, 32 awkward payloads. Pinned on that repository's `main` @
+  `7d9f659`.
+* `test/fixtures/contracts-legacy/` — the frozen **PR #315 draft**: 69
+  `mip-xxxx:token-metadata[v1]` events and the rest of that set. This is what the Stagenet reference
+  set actually emits, and it is not being redeployed.
+
+Each directory's `SOURCE.md` pins its repository, branch and commit and tabulates the differences.
+`contract-fixtures.test.ts` runs **every one of its four governed ids over both**, and reads the
+rules to apply out of each payload's own recorded `eventName` — so a corpus regenerated under a
+third name throws rather than being silently validated under the wrong rules. The pair is the
+regression test for "two names, two validators": the same eleven contracts, the same 17 rows, two
+transports. It replays both into one Postgres container under two schemas, so the gate's container
+count does not change.
+
+The hand-built payloads are kept alongside it, not replaced by it, and there are two sets:
+`test/payload.test.ts` is the **draft** validator's suite (every assertion project 00021 wrote,
+unchanged) and `test/payload-0018.test.ts` is the **standard's** — seven governed ids, one per rule
+the final text moved, ending with `[[token-0018-legacy-pair]]`, which puts single byte strings
+through both validators at once. `test/status-rules.test.ts` carries the three fold-level ids
+(`[[token-0018-null-clears]]`, `[[token-0018-no-multipart]]`, `[[token-0018-decimals-width]]`).
 
 `test/fixtures/activity/` holds project 00023's four recorded Stagenet transactions — an unshielded
 deposit into a contract, a NIGHT pass-through, a shielded mint whose offer delta publishes its
@@ -151,21 +221,37 @@ and what each one proves.
 
 ## The payload
 
+The 256-byte layout is the one thing the two event names share, so the structural decode never
+depends on which name an event carried.
+
 ```
  offset  size  field
       0    32  domainSep
      32     1  kind        0 unshielded native, 1 shielded native, 2 unshielded ledger, 3 shielded ledger
-     33    32  key         UTF-8, NUL-padded; compared after trimming TRAILING NULs, and a key that is
-                           not valid UTF-8 is kept as bytes rather than rejected (MIP §5.1)
-     65     1  val-type    0 opaque, 1 UTF-8 string, 2 unsigned big-endian integer, 3 UTF-8 JSON,
-                           4 UTF-8 URI, 5..255 reserved → reject
-     66     1  val-len     meaningful bytes of `value`, 0..189; 0 means "present, empty"
+     33    32  key         key identifier bytes, NUL-padded; compared after trimming TRAILING NULs, and
+                           a key that is not valid UTF-8 is kept as bytes rather than rejected — except
+                           a key beginning `/metadata/`, which MUST be a valid RFC 6901 JSON Pointer
+                           (MIP §5.1)
+     65     1  val-type    0 opaque, 1 UTF-8 string, 2 unsigned integer (Compact `Uint<8·N>`,
+                           little-endian, 1..31 bytes), 3 UTF-8 JSON (ONE complete RFC 8259 value),
+                           4 UTF-8 URI, 5 Null (`val-len` MUST be 0, the 189 bytes ignored, the key
+                           cleared), 6..255 reserved → reject
+     66     1  val-len     meaningful bytes of `value`, 0..189; 0 means "present, empty" — which is
+                           NOT the same as Null (MIP §6.2)
      67   189  value
 ```
 
-One stable reject reason per transport rule: `kind_unknown`, `key_empty`, `val_type_reserved`,
-`val_len_too_long`, `val_type_rule`, `payload_size`. Rejected events are stored with their reason —
-a contract's malformed claim is evidence about that contract.
+`serialize<Uint<128>, 16>(6)` is `0x06000000000000000000000000000000` (MIP Appendix A): the least
+significant byte comes first. That is not taken on trust from the MIP's prose — the governed test
+`[[token-0018-integer-endianness]]` derives those bytes from `@midnight-ntwrk/compact-runtime`
+0.19.0, the runtime the MIP names as normative for v1, and asserts this module's encoder and decoder
+agree with `toBinaryRepr` and `CompactTypeUnsignedInteger.fromValue` at widths 1, 2, 3, 16 and 31.
+
+One stable reject reason per transport rule: `kind_unknown`, `key_empty`, `key_pointer_invalid`,
+`val_type_reserved`, `val_len_too_long`, `val_type_rule`, `payload_size` — the same strings the
+reference contracts' negative corpus records, so a diagnostic means one thing in both. Rejected
+events are stored with their reason — a contract's malformed claim is evidence about that contract,
+and MIP §7.1 asks a consumer to keep rejection reasons available for diagnostics.
 
 ## A note on payload width
 
