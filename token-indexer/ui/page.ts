@@ -21,8 +21,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
  * template, p.28 colours, p.32 logo). If the font file is missing the page falls back to the
  * system sans stack and nothing else changes.
  *
- * The proof-of-concept notice at the top links out to four GitHub pages (the MIP's PR, this
- * indexer's PR, the example contracts and the deployed token addresses). Those are plain `<a>` navigations a person chooses to follow, not resources the
+ * The proof-of-concept notice at the top links out to four GitHub pages (MIP-0018 itself, on
+ * `main`, this indexer's PR, the example contracts and the deployed token addresses). Those are plain `<a>` navigations a person chooses to follow, not resources the
  * page loads: `default-src 'none'` still stops the page from fetching anything off its origin.
  *
  * ── What it talks to ────────────────────────────────────────────────────────────────────────
@@ -130,7 +130,6 @@ const STYLE = `
      badge cannot be mistaken for a status, a family or a direction. Text 7.81:1 on its own ground;
      the border's 2.34:1 sits mid-band among the eleven existing tag borders (2.04-2.50:1), which
      is the band this palette already holds a decorative edge to. */
-  --tag-premip-bg: #fcebf3; --tag-premip-bd: #dd94b4; --tag-premip-fg: #8a1a50;
 }
 * { box-sizing: border-box; }
 /* A display rule on an element beats the user agent's [hidden] rule, and the filter bar is a
@@ -235,6 +234,10 @@ tr.mark td { background: var(--tint-blue); }
 .tip .here { color: var(--ink); }
 .tip .hex { color: var(--dim); }
 td.apicol { text-align: center; }
+/* The MIP-0018 column (Phase G): a check mark, or nothing. Centred under its own heading, and the
+   mark is sized up a little because an emoji glyph sits smaller than the 13px text beside it. */
+td.mipcol { text-align: center; }
+.mip { font-size: 14px; line-height: 1; }
 .api { display: inline-flex; padding: 3px; color: var(--dim); border: 1px solid transparent; }
 .api:hover { color: var(--accent); border-color: var(--accent); background: var(--tint-blue); }
 .api svg { display: block; }
@@ -292,13 +295,6 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   background: var(--tag-unknown-bg); }
 .chip.nocount { color: var(--tag-bad-fg); border-color: var(--tag-bad-bd);
   background: var(--tag-bad-bg); }
-/* The "pre-MIP name" badge (F1.4). The event name IS the standard's version (MIP-0018 section 8),
-   so a value that arrived under the superseded draft name was judged by different rules, and a
-   reader comparing two tokens has to be able to see which. One hue, one shape, everywhere it
-   appears: beside a trait's key and in the events table's own name column. */
-.premip { display: inline-block; margin-left: 8px; padding: 0 6px; font-size: 10.5px;
-  font-weight: 500; letter-spacing: 0.02em; color: var(--tag-premip-fg);
-  border: 1px solid var(--tag-premip-bd); background: var(--tag-premip-bg); }
 tr.det td { background: var(--det); white-space: normal; }
 .det-grid { display: grid; grid-template-columns: max-content 1fr; gap: 5px 18px; font-size: 12.5px;
   margin: 6px 0 4px; }
@@ -351,6 +347,10 @@ var P_STATUS = "/internal/status";
 
 var REFRESH_MS = 10000;
 var LIST_LIMIT = 200;
+// While the MIP-0018 filter is on, the page asks for the API's maximum page (MAX_LIMIT in
+// api/server.ts) instead of the usual one: the filter runs over the rows already loaded, so a
+// smaller page could hide a token that HAS metadata behind a boundary the reader never sees.
+var LIST_LIMIT_FILTERED = 500;
 var MINT_LIMIT = 200;
 var ACT_LIMIT = 200;
 var CALL_LIMIT = 200;
@@ -358,7 +358,9 @@ var OFFER_LIMIT = 200;
 
 var state = {
   route: { view: "list" },
-  filters: { kind: "", storage: "", status: "", q: "" },
+  // mip is the one filter applied in the browser rather than by the API: "has metadata published
+  // under MIP-0018" is a rule over the row's status, not a column the list route filters on.
+  filters: { kind: "", storage: "", status: "", q: "", mip: "" },
   list: { items: [], nextCursor: null, loaded: false },
   detail: null,
   contract: null,
@@ -397,10 +399,18 @@ function cell(row, child, cls) {
   row.appendChild(td);
   return td;
 }
+// A label is a string, or {label, title} when the column's name needs a tooltip of its own (the
+// list's MIP-0018 column: a check mark in a column headed by a number means nothing on its own).
 function headRow(table, labels) {
   var thead = document.createElement("thead");
   var tr = document.createElement("tr");
-  for (var i = 0; i < labels.length; i++) tr.appendChild(node("th", labels[i]));
+  for (var i = 0; i < labels.length; i++) {
+    var spec = labels[i];
+    var isPair = spec !== null && typeof spec === "object";
+    var th = node("th", isPair ? spec.label : spec);
+    if (isPair && spec.title) th.title = spec.title;
+    tr.appendChild(th);
+  }
   thead.appendChild(tr);
   table.appendChild(thead);
   return thead;
@@ -714,10 +724,9 @@ function hexListCell(values, key) {
 }
 function countedChip(counted) {
   if (counted === false) {
-    var c = node("span", "not counted", "chip nocount");
-    c.title = "this section did not count: the transaction failed or its fallible segment did "
-      + "(spec FR-002, Q10). No activity row is stored for it; the transaction is shown whole.";
-    return c;
+    // One phrase, from the same map as every other tag; the note under the activity table still
+    // says what follows from it (no activity row is stored, the transaction is shown whole).
+    return withHelp(node("span", "not counted", "chip nocount"), "nocount");
   }
   return node("span", "counted", "chip");
 }
@@ -859,6 +868,41 @@ function resolverPaths(t) {
 
 // ── Token cells ─────────────────────────────────────────────────────────────────────────────
 
+// Every tag on this page says one word — "observed", "dual", "multiple" — and a word is only a
+// label if the reader already knows the vocabulary. One phrase per tag, stated ONCE here and read
+// by the badge and chip constructors below, so a wording change is one line and no tag can be left
+// unexplained. The mechanism is the native title attribute: no script, no library, no extra
+// element, and nothing for the Content Security Policy to admit.
+var TAG_HELP = {
+  // the five row sources (MIP section 7.2's three, plus this indexer's builtin and 00023's seen)
+  builtin: "Built into the network: NIGHT and DUST have no issuing contract",
+  observed: "Minted on chain by its contract; the contract has published no metadata for it",
+  declared: "Its contract published metadata for it, but no mint has been seen",
+  described: "Minted on chain and described by its contract's published metadata",
+  seen: "Seen in public transaction data before its mint; the issuing contract is not known yet",
+  // the five families, derived from the rows themselves (see familyOf)
+  shielded: "A native shielded token: coins are commitments, only offer imbalances name the colour",
+  unshielded: "A native unshielded token: every UTXO shows its owner, colour and amount",
+  ledger: "A ledger token: balances live in the contract's own state, not in UTXOs",
+  collection: "One contract minting many tokens, one domain separator per piece",
+  dual: "One domain separator issued both shielded and unshielded",
+  // the two chips that are not a status and not a family
+  multiple: "This contract issues several domain separators; open the contract to see them all",
+  nocount: "This section did not take effect: its transaction or segment failed"
+};
+// Own properties only: a status string arrives from the API, and "constructor" or "toString" would
+// otherwise hand a function to title.
+function tagHelp(name) {
+  if (!name || !Object.prototype.hasOwnProperty.call(TAG_HELP, name)) return null;
+  return TAG_HELP[name];
+}
+// Sets a tag's tooltip and returns the node, so a constructor stays one expression.
+function withHelp(n, name) {
+  var help = tagHelp(name);
+  if (help) n.title = help;
+  return n;
+}
+
 // MIP section 7.2 has three consumer states; builtin is this indexer's own fourth, for the two
 // seeded rows. There is no state for a self-contradicting row: a declaration and a mint populate
 // different rows, so a row has nothing to contradict.
@@ -868,7 +912,8 @@ function statusBadge(s) {
   // yet (US5). It is a real row with real transactions and no name.
   var known = ["builtin", "observed", "declared", "described", "seen"];
   var cls = known.indexOf(v) < 0 ? "st-unknown" : "st-" + v;
-  return node("span", v, "badge " + cls);
+  // A status the page does not know is left without a tooltip rather than given a wrong one.
+  return withHelp(node("span", v, "badge " + cls), v);
 }
 // The kind byte (MIP section 3) as the two words it encodes. The byte itself goes in the title,
 // because it is the identity and a reader copying a URL needs it.
@@ -877,6 +922,23 @@ function kindLabel(t) {
   var privacy = t.privacy ? String(t.privacy) : "?";
   var storage = t.storage ? String(t.storage) : "?";
   return privacy + " " + String.fromCharCode(183) + " " + storage;
+}
+// The token view's subtitle, under the name. Every segment says either the fact or WHY it is
+// missing: "no symbol" reads like a symbol whose value is the words "no symbol", and a bare "-"
+// for decimals says nothing at all about whether the contract published none or the page failed
+// to read one. The kind byte keeps its privacy word in brackets, and the storage word becomes
+// "native token" / "ledger token", which is what the distinction actually means to a reader.
+//   no symbol metadata · kind 0 (unshielded) · native token · no decimals metadata
+//   SSTAR · kind 1 (shielded) · native token · decimals 6
+function subtitleOf(t) {
+  var symbol = t.symbol ? String(t.symbol) : "no symbol metadata";
+  var privacy = t.privacy ? String(t.privacy) : "?";
+  var storage = t.storage === "ledger" ? "ledger token"
+    : (t.storage === "native" ? "native token" : "storage unknown");
+  var decimals = t.decimals === null || t.decimals === undefined
+    ? "no decimals metadata" : "decimals " + String(t.decimals);
+  return symbol + " · kind " + orDash(t.kind) + " (" + privacy + ") · " + storage
+    + " · " + decimals;
 }
 function kindCell(t) {
   var s = node("span", kindLabel(t));
@@ -932,7 +994,7 @@ function familyOf(t, index) {
 function nameCell(t, index) {
   var wrap = node("span");
   var fam = familyOf(t, index);
-  if (fam) wrap.appendChild(node("span", fam, "fam fam-" + fam));
+  if (fam) wrap.appendChild(withHelp(node("span", fam, "fam fam-" + fam), fam));
   var seen = t.status === "seen";
   wrap.appendChild(node("span",
     t.name ? String(t.name) : (seen ? "colour " + shortHex(t.color, 8, 6) : "(undescribed)"),
@@ -958,26 +1020,6 @@ function typeLabel(vt) {
   var n = Number(vt);
   return n >= 0 && n < names.length ? String(n) + " " + names[n] : String(n) + " reserved";
 }
-// The "pre-MIP name" badge: a node for a value that arrived under the SUPERSEDED draft event name,
-// and null for the standard's own name, which needs no marking because it is the expected case.
-// The reference contracts on Stagenet were deployed with the draft name and are not being
-// redeployed, so their traits keep this badge for as long as they are the demonstration.
-function preMipBadge(variant) {
-  if (variant !== "legacy-mip-xxxx") return null;
-  var b = node("span", "pre-MIP name", "premip");
-  b.title = "this value arrived under the superseded draft event name "
-    + "mip-xxxx:token-metadata[v1], not the standard's mip-0018:token-metadata[v1]. The event name "
-    + "is the layout version, so it was validated under the draft's own rules: integers big-endian "
-    + "and at most 16 bytes, no Null type, and a metadata document assembled from metadata/<n> "
-    + "parts. Kept so the already-deployed reference contracts keep displaying correctly.";
-  return b;
-}
-// The name an event carried, as the events table prints it.
-function variantLabel(variant) {
-  if (variant === "mip-0018") return "MIP-0018";
-  if (variant === "legacy-mip-xxxx") return "pre-MIP";
-  return "-";
-}
 function traitValueCell(tr) {
   if (Number(tr.valType) === 2 && tr.integer !== null && tr.integer !== undefined) {
     return node("span", String(tr.integer), "txt");
@@ -996,10 +1038,6 @@ function traitKeyCell(tr) {
     hexKey.title = "this key is not valid UTF-8 and is shown as its bytes";
     wrap.appendChild(hexKey);
   }
-  // A trait carries the name variant of the event that SET it, not of the token: one token can
-  // hold keys set under both names, and which rules read a value is a property of the value.
-  var badge = preMipBadge(tr.nameVariant);
-  if (badge) wrap.appendChild(badge);
   return wrap;
 }
 function domainCell(d) {
@@ -1039,7 +1077,9 @@ function listDomainCell(t) {
   wrap.appendChild(domainCell(t.domainSep));
   var ds = t.contractDomainSeps;
   if (!ds || !(ds.count > 1)) return wrap;
-  var chip = node("span", "multiple", "multi");
+  // The chip keeps its hover panel (the contract's first five separators); the tooltip says what
+  // the word itself means, which the panel assumes the reader already knows.
+  var chip = withHelp(node("span", "multiple", "multi"), "multiple");
   chip.tabIndex = 0;
   var build = function (tip) {
     tip.appendChild(node("div", ds.count + " domainSeps on this contract", "note"));
@@ -1113,7 +1153,7 @@ function sortTokens(items) {
 // ── Loaders ─────────────────────────────────────────────────────────────────────────────────
 
 function listQuery(cursor) {
-  var qs = P_TOKENS + "?limit=" + LIST_LIMIT;
+  var qs = P_TOKENS + "?limit=" + (state.filters.mip ? LIST_LIMIT_FILTERED : LIST_LIMIT);
   if (state.filters.kind) qs += "&kind=" + enc(state.filters.kind);
   if (state.filters.storage) qs += "&storage=" + enc(state.filters.storage);
   if (state.filters.status) qs += "&status=" + enc(state.filters.status);
@@ -1436,15 +1476,52 @@ function apiCell(t) {
   a.addEventListener("click", function (e) { e.stopPropagation(); });
   return a;
 }
+// ── MIP-0018: which rows have metadata published on chain ───────────────────────────────────
+//
+// A token's contract published token-metadata for it in exactly the two states MIP section 7.2
+// calls declared (published, never minted) and described (published and minted); observed is
+// a mint with nothing said about it, seen is a colour with no contract at all, and builtin is
+// this indexer's own seed. BOTH event-name variants count: the draft name is the same standard at
+// an earlier number, and the owner's decision is that a reader of the list is not asked to care
+// Deliberately one line, so narrowing the rule to the final name later is a one-line change.
+function hasMip0018(t) {
+  return !!t && (t.status === "declared" || t.status === "described");
+}
+var MIP_HEAD = "Has metadata published on chain under MIP-0018";
+// The check mark is an emoji so it reads as a mark rather than as a character in a data column;
+// a row without metadata is left EMPTY on purpose — a cross in every second row would read as a
+// failure, and "nothing published" is not one.
+function mipCell(t) {
+  if (!hasMip0018(t)) return node("span", "", "mip");
+  return withTitle(node("span", "✅", "mip"), MIP_HEAD);
+}
+function withTitle(n, title) { n.title = title; return n; }
+// The frontend filter of the same rule (owner, Phase G). It filters the rows ALREADY LOADED, and
+// listQuery asks the API for its maximum page while it is on, so a token with metadata cannot be
+// hidden behind a page boundary the reader never sees.
+function visibleListItems() {
+  var items = state.list.items;
+  if (!state.filters.mip) return items;
+  var out = [];
+  for (var i = 0; i < items.length; i++) if (hasMip0018(items[i])) out.push(items[i]);
+  return out;
+}
 function renderList(main) {
   var sec = node("section");
   sec.appendChild(node("h2", "tokens"));
-  var items = state.list.items;
+  var items = visibleListItems();
   el("count").textContent = state.list.loaded
     ? items.length + " row" + (items.length === 1 ? "" : "s") + (state.list.nextCursor ? " (more available)" : "")
     : "loading…";
   if (!state.list.loaded) {
     sec.appendChild(node("div", "loading…", "empty"));
+    main.appendChild(sec);
+    return;
+  }
+  if (items.length === 0 && state.filters.mip && state.list.items.length > 0) {
+    sec.appendChild(node("div",
+      "no loaded token has metadata published under MIP-0018. Clear the MIP-0018 filter to see "
+      + "every row the other filters allow.", "empty"));
     main.appendChild(sec);
     return;
   }
@@ -1455,13 +1532,18 @@ function renderList(main) {
     main.appendChild(sec);
     return;
   }
-  var index = familyIndex(items);
-  var tbody = tableIn(sec, ["colour", "domainSep", "address", "kind", "name", "symbol",
+  // The family index reads the WHOLE loaded set, never the filtered one: "collection" means the
+  // contract issues several domain separators, which is a fact about the contract and must not
+  // change because a filter hid one of its rows.
+  var index = familyIndex(state.list.items);
+  var tbody = tableIn(sec, [{ label: "MIP-0018", title: MIP_HEAD },
+    "colour", "domainSep", "address", "kind", "name", "symbol",
     "dec", "#mints (#tokens)", "first … last block", "status", "tokenUri", "API"]);
   for (var i = 0; i < items.length; i++) {
     var t = items[i];
     var tr = document.createElement("tr");
     tr.className = t.status === "builtin" ? "pick built" : "pick";
+    cell(tr, mipCell(t), "mipcol");
     cell(tr, colorCell(t.color, t.storage));
     cell(tr, listDomainCell(t));
     cell(tr, addressCell(t));
@@ -2435,9 +2517,7 @@ function renderToken(main) {
   head.appendChild(title);
   var sub = node("div", null, "row");
   sub.appendChild(statusBadge(t.status));
-  sub.appendChild(node("span", (t.symbol ? String(t.symbol) : "no symbol")
-    + " · kind " + orDash(t.kind) + " " + kindLabel(t)
-    + " · decimals " + (t.decimals === null || t.decimals === undefined ? "-" : t.decimals), "note"));
+  sub.appendChild(node("span", subtitleOf(t), "note"));
   head.appendChild(sub);
   if (t.status === "seen") {
     head.appendChild(node("div",
@@ -2524,10 +2604,8 @@ function renderToken(main) {
   } else {
     var tb = tableIn(traits, ["key", "type", "value", "len", "projection", "block", "tx", "event id"]);
     var anyError = false;
-    var anyPreMip = false;
     for (var k = 0; k < d.keys.length; k++) {
       var kv = d.keys[k];
-      if (kv.nameVariant === "legacy-mip-xxxx") anyPreMip = true;
       var row = document.createElement("tr");
       cell(row, traitKeyCell(kv));
       cell(row, node("span", typeLabel(kv.valType), "vtype"));
@@ -2551,15 +2629,6 @@ function renderToken(main) {
         + "the column it would have filled was not written - the standard's appendix A is "
         + "informative and a projection is this explorer's convention, never a verdict on the "
         + "contract",
-        "note"));
-    }
-    if (anyPreMip) {
-      traits.appendChild(node("div",
-        "a key marked pre-MIP name was set by an event carrying the superseded draft name "
-        + "mip-xxxx:token-metadata[v1] rather than mip-0018:token-metadata[v1]. The event name is "
-        + "the layout version, so those values were read under the draft's rules; they are shown "
-        + "so that the reference contracts already deployed under that name keep displaying "
-        + "correctly",
         "note"));
     }
   }
@@ -2687,10 +2756,9 @@ function eventsSection(events, markDomain, heading) {
       + "order, which is the order the fold applies them in, so the last row of a key is the value in force",
       "note"));
   }
-  var tb = tableIn(sec, ["event id", "block", "name", "tx", "domainSep", "kind", "key", "type",
+  var tb = tableIn(sec, ["event id", "block", "tx", "domainSep", "kind", "key", "type",
     "len", "value", "applied", "reject reason"]);
   var ordered = orderEvents(events, markDomain);
-  var anyPreMipEvent = false;
   for (var i = 0; i < ordered.length; i++) {
     var e = ordered[i];
     var tr = document.createElement("tr");
@@ -2698,20 +2766,6 @@ function eventsSection(events, markDomain, heading) {
     if (markDomain && dom === markDomain) tr.className = "mark";
     cell(tr, orDash(e.eventId === undefined ? e.id : e.eventId), "num");
     cell(tr, orDash(e.blockHeight), "num");
-    // Which of the two event names this event carried, and therefore which rules judged it
-    // (MIP-0018 section 8: the event name is the version). The standard's name reads as plain
-    // text; the superseded draft name gets the badge, because that is the one a reader must
-    // notice.
-    if (e.nameVariant === "legacy-mip-xxxx") {
-      anyPreMipEvent = true;
-      var nameCell = node("span");
-      var nameBadge = preMipBadge(e.nameVariant);
-      nameCell.appendChild(nameBadge);
-      nameBadge.style.marginLeft = "0";
-      cell(tr, nameCell);
-    } else {
-      cell(tr, node("span", variantLabel(e.nameVariant), "vtype"));
-    }
     cell(tr, copyable(e.txHash, shortHex(e.txHash, 8, 6), "hex"));
     cell(tr, domainCell(dom));
     cell(tr, orDash(e.kindByte === undefined ? e.kind_byte : e.kindByte), "num");
@@ -2726,15 +2780,6 @@ function eventsSection(events, markDomain, heading) {
       : (e.applied === false ? node("span", "no", "err") : "-"));
     cell(tr, e.rejectReason ? node("span", String(e.rejectReason), "err wrapv") : node("span", "-", "no"));
     tb.appendChild(tr);
-  }
-  if (anyPreMipEvent) {
-    sec.appendChild(node("div",
-      "an event marked pre-MIP name carried the superseded draft name "
-      + "mip-xxxx:token-metadata[v1]. It was validated under that draft's rules - integers "
-      + "big-endian and at most 16 bytes, no Null type, metadata assembled from metadata/<n> "
-      + "parts - because the event name is the layout version. The reference contracts on this "
-      + "network were deployed with that name and are not being redeployed",
-      "note"));
   }
   return sec;
 }
@@ -2954,6 +2999,8 @@ function applyFilters() {
   state.filters.storage = el("f-storage").value;
   state.filters.status = el("f-status").value;
   state.filters.q = el("q").value.trim();
+  // Applied in the browser (see visibleListItems); it also widens the page listQuery asks for.
+  state.filters.mip = el("f-mip").value;
   state.list.loaded = false;
   state.list.items = [];
   render();
@@ -2996,11 +3043,13 @@ window.addEventListener("DOMContentLoaded", function () {
   el("toggle").addEventListener("click", toggle);
   el("clear").addEventListener("click", function () {
     el("q").value = ""; el("f-kind").value = ""; el("f-storage").value = ""; el("f-status").value = "";
+    el("f-mip").value = "";
     applyFilters();
   });
   el("f-kind").addEventListener("change", applyFilters);
   el("f-storage").addEventListener("change", applyFilters);
   el("f-status").addEventListener("change", applyFilters);
+  el("f-mip").addEventListener("change", applyFilters);
   el("q").addEventListener("input", function () {
     if (state.debounce !== null) window.clearTimeout(state.debounce);
     state.debounce = window.setTimeout(function () { state.debounce = null; applyFilters(); }, 400);
@@ -3025,14 +3074,15 @@ const BODY = `<aside id="poc" class="poc" role="note">
   <p><b>This explorer lists every token on Midnight Stagenet</b>, with the name, symbol and
     decimals of each token whose contract publishes them.</p>
   <p>Midnight has no standard way for a token to publish its name, symbol or decimals.
-    <b>MIP-0018, On-Chain Token Metadata Emission</b>
-    (<a href="https://github.com/midnightntwrk/midnight-improvement-proposals/pull/325" target="_blank" rel="noopener noreferrer">midnight-improvement-proposals PR&nbsp;#325</a>)
+    <!-- The MIP is merged, so the page points at the standard itself on main rather than at the
+         pull request that proposed it: a PR link is a moment in the discussion, and the file on
+         main is the document a reader of this page actually wants (owner, Phase G change 6). -->
+    <b><a href="https://github.com/midnightntwrk/midnight-improvement-proposals/blob/main/mips/mip-0018-on-chain-token-metadata.md" target="_blank" rel="noopener noreferrer">MIP-0018</a>, On-Chain Token Metadata Emission</b>
     adds one: a contract announces its token's metadata by emitting <b>events</b>, and an indexer
     like this one collects them.</p>
-  <p>The reference contracts on this network were deployed while that proposal still carried its
-    placeholder number, so their events arrive under the earlier name and are marked
-    <span class="premip">pre-MIP name</span> wherever they are shown. They are read under the rules
-    they were emitted with, which is why they still display correctly.</p>
+  <!-- The placeholder-number history and the per-value "pre-MIP name" badge were removed at the
+       owner's request after the live review: a reader of the page does not need to know which
+       event name a value arrived under. The API still reports nameVariant for machines. -->
   <ul class="poc-links">
     <li>Indexer:
       <a href="https://github.com/acedward/UmbraDB/pull/19" target="_blank" rel="noopener noreferrer">UmbraDB PR&nbsp;#19</a></li>
@@ -3096,6 +3146,16 @@ const BODY = `<aside id="poc" class="poc" role="note">
       <option value="observed">observed</option>
       <option value="declared">declared</option>
       <option value="described">described</option>
+    </select>
+  </label>
+  <!-- The one filter applied in the browser: "has metadata published under MIP-0018" is a rule
+       over the row's status (declared or described, under either event name), not a column the
+       list route filters on. The bar is static markup and only the table re-renders, so the
+       selection survives the 10 s auto-refresh like every other control here. -->
+  <label>MIP-0018
+    <select id="f-mip">
+      <option value="">all</option>
+      <option value="only">only with MIP-0018</option>
     </select>
   </label>
   <button id="clear">clear</button>
