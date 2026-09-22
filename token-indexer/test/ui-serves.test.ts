@@ -127,28 +127,68 @@ describe("the token explorer page", () => {
     // US5: the list can be filtered down to the colours no contract has named yet.
     expect(body).toContain('<option value="seen">seen</option>');
 
-    // ── 00023 / Q21: ONE indexed height, the chain's own head, and the distance between ──────
-    // The strip used to carry two numbers for one question — an archive tip and a decode cursor —
-    // and neither of them said how far behind the CHAIN the page was. It now carries the index's
-    // own position, the chain head read from the public indexer, and the gap.
-    expect(script).toContain('pair("indexed"');
-    expect(script).toContain('pair("chain head"');
-    expect(script).toContain('"behind "');
-    expect(script).toContain('"in sync"');
-    // A head that could not be read is said out loud rather than shown as a dash or a zero gap.
-    expect(script).toContain('"chain head unavailable"');
+    // ── 00023 / Q21 + Q24: the strip says where the CHAIN is, how far behind, and how fresh ───
+    // Q21 gave the strip one honest height and the chain's own head. Q24 — the owner's Phase E
+    // review — cut it to four segments and nothing else:
+    //     net: stagenet · chain tip 567117 · behind 1 234 · last updated 12 s ago
+    // The rule behind the distance is unchanged and still pinned; what changed is that the index's
+    // own height, the pending-lookup count, the archive's lead and the word "in sync" are no
+    // longer on the strip. They are read on the status view, which is a full technical listing.
+    // Asserted against the body of `renderStrip` itself, because "the string is somewhere in a
+    // 1 500-line script" would not notice a segment that stopped being rendered.
+    const stripFn = script.slice(script.indexOf("function renderStrip("));
+    const strip = stripFn.slice(0, stripFn.indexOf("\nfunction "));
+    expect(strip.length).toBeGreaterThan(200);
+    for (const segment of ['"net: "', '"chain tip "', '"behind "', '"last updated "']) {
+      expect(strip, `the strip must render ${segment}`).toContain(segment);
+    }
+    // The distance is printed ONLY while there is one: no word is printed to say nothing happened.
+    expect(strip).toContain("if (b !== null && b > 0)");
+    expect(strip).not.toContain('"in sync"');
+    // …and these four are off the strip, every one of them still on the status view.
+    for (const gone of ["indexedHeight(", "pendingLookups", '"(archive "', "archiveLeadNote"]) {
+      expect(strip, `${gone} must not be on the strip any more`).not.toContain(gone);
+    }
+    expect(script).not.toContain("ARCHIVE_LEAD_NOTE");
+    expect(script).not.toContain('pair("');
+    // A tip the indexer would not give is said out loud, never shown as a dash or a zero distance.
+    expect(strip).toContain('"chain tip unavailable"');
     expect(script).toContain("st.chainHead");
+    // The status view keeps the words for both states the strip now expresses by saying nothing.
+    expect(script).toContain('"chain tip unavailable"');
+    expect(script).toContain('"in sync"');
+    expect(script).toContain('["chain tip", st.chainHead');
+    expect(script).toContain('["indexed", orDash(indexedHeight(st))]');
     // "indexed" is the SMALLER of the two positions, so a rebuilt-but-unscanned index cannot look
     // in sync: after `rebuild` the cursor is 0 while the archive still holds half a million blocks.
     expect(script).toContain("function indexedHeight(");
     expect(script).toContain("tip < cur ? tip : cur");
-    // …and the archive's lead over the decoder is still visible when it is real, so a stalled
-    // decoder behind a healthy sync shows up.
-    expect(script).toContain('"(archive "');
-    expect(script).toContain("ARCHIVE_LEAD_NOTE");
     // The two retired strip labels are gone from the strip itself.
-    expect(script).not.toContain('pair("archive tip"');
-    expect(script).not.toContain('pair("decode cursor"');
+    expect(strip).not.toContain('"archive tip"');
+    expect(strip).not.toContain('"decode cursor"');
+
+    // "last updated" is relative, keeps counting between refreshes, and turns red when it is old.
+    expect(script).toContain("function agoText(");
+    for (const unit of ['"just now"', '" s ago"', '" min ago"', '" h ago"', '"never updated"']) {
+      expect(script, `the relative clock must be able to say ${unit}`).toContain(unit);
+    }
+    expect(script).toContain("var STALE_MS = 60000;");
+    expect(strip).toContain("STALE_MS");
+    expect(strip).toContain('"stale"');
+    expect(style).toContain(".strip .stale");
+    // A count is grouped for reading; a height is an identifier and is never grouped.
+    expect(script).toContain("function groupDigits(");
+    expect(strip).toContain("groupDigits(b)");
+    expect(strip).toContain('node("b", String(head))');
+    // The strip redraws every second on its own interval, so the clock moves between the 10 s data
+    // refreshes — which themselves are untouched.
+    expect(script).toContain("window.setInterval(renderStrip, STRIP_TICK_MS)");
+    expect(script).toContain("window.setInterval(refresh, REFRESH_MS)");
+    // The two refresh controls and the cadence note are HIDDEN, and the auto-refresh they
+    // described still runs (the interval above is the page's own, not theirs).
+    expect(body).toContain('<button id="now" hidden>refresh now</button>');
+    expect(body).toContain('<button id="toggle" hidden>pause auto-refresh</button>');
+    expect(body).toContain('<span class="note" hidden>every 10&nbsp;s</span>');
 
     // ── 00023 / Q22: a shielded token discloses its numbers, not a lecture ───────────────────
     // The owner removed the static two-column public/private panel: the reader is an advanced user

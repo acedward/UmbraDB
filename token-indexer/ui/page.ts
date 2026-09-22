@@ -151,6 +151,9 @@ nav.tabs a.on { color: var(--ink); border-bottom-color: var(--accent); }
 nav.tabs .sep { flex: 1 1 auto; }
 .strip { color: var(--dim); font-size: 12px; white-space: nowrap; }
 .strip b { color: var(--ink); font-weight: 600; font-family: var(--mono); font-size: 11.5px; }
+/* A strip segment that says the page may be out of date: the relative time past STALE_MS, and a
+   chain tip the indexer would not give. Same size as the rest of the strip, the page's red. */
+.strip .stale { color: var(--bad); font-weight: 600; }
 /* The proof-of-concept notice: the one tinted surface on a white page, in the brand blue's
    lightest tint, so it is read first. Blue rule on the left, as the template marks a callout. */
 .poc { margin: 18px 28px 0; padding: 14px 18px 14px 16px; background: var(--tint-notice);
@@ -357,6 +360,7 @@ var state = {
   lastOk: null,
   paused: false,
   timer: null,
+  tick: null,
   debounce: null,
   busy: false
 };
@@ -1248,14 +1252,24 @@ function renderBanner() {
   for (var i = 0; i < state.errors.length; i++) b.appendChild(node("div", "• " + state.errors[i]));
   if (state.lastOk) b.appendChild(node("div", "last complete refresh: " + state.lastOk.toLocaleTimeString(), "note"));
 }
-// The strip answers one question — is what I am looking at current? — so it carries ONE height
-// for this index and the chain's own head beside it (owner decision Q21). "indexed" is the decode
-// cursor: the position of the index itself, which is the number a reader of this page is actually
-// looking at. The archive tip used to sit beside it and meant something different (how far the
-// raw bytes have been fetched), which made two numbers for one question; it is only shown now when
-// it is meaningfully AHEAD of the index, because that gap is the one thing the cursor alone cannot
-// show — a stalled decoder behind a healthy sync.
-var ARCHIVE_LEAD_NOTE = 5;
+// The strip answers one question — is what I am looking at current? — and after the owner's
+// Phase E review it answers it in four segments and nothing else:
+//
+//   net: stagenet  ·  chain tip 567117  ·  behind 1 234  ·  last updated 12 s ago
+//
+// What left, and why (owner decision Q24, refining Q21). "indexed" and "pending lookups" are
+// diagnostics of the pipeline rather than of the page, and both keep their place on the status
+// view, where the two raw positions sit beside them. "in sync" was a word printed to say that
+// nothing was wrong: the **absence** of the "behind" segment says the same thing without asking
+// anyone to read it, so the segment appears only while the index really is behind. The distance
+// itself is still the Q21 number — chainHead − min(archiveTip, decodeCursor) — so a
+// rebuilt-but-unscanned index cannot look level, and the archive's lead over the decoder is read
+// on the status view, which shows both positions as their own rows.
+//
+// "last updated" is relative, because the question is never "at what o'clock" but "is this
+// stale?", and it turns red past STALE_MS so a page whose refreshes have stopped says so.
+var STALE_MS = 60000;
+var STRIP_TICK_MS = 1000;
 function cursorHeight(st) {
   var cur = st.decodeCursor || {};
   return cur.height === undefined || cur.height === null ? null : Number(cur.height);
@@ -1267,7 +1281,7 @@ function archiveHeight(st) {
 // been fetched, and how far they have been decoded. Taking the minimum is what makes one number
 // honest: after a rebuild the cursor is 0 while the archive still holds half a million blocks, and
 // a strip that showed the archive's number would claim to be in sync while the index was empty.
-// The gap between the two is surfaced separately, by archiveLeadNote below.
+// The gap between the two is read on the status view, which lists both positions as their own rows.
 function indexedHeight(st) {
   var cur = cursorHeight(st);
   var tip = archiveHeight(st);
@@ -1281,43 +1295,69 @@ function behindHead(st) {
   if (head === null || indexed === null) return null;
   return Number(head) - indexed;
 }
+// The status view is a full technical listing, so it keeps the words for the two states the strip
+// now expresses by saying nothing at all.
 function behindText(st) {
   var b = behindHead(st);
-  if (b === null) return "chain head unavailable";
+  if (b === null) return "chain tip unavailable";
   if (b <= 0) return "in sync";
   return String(b);
 }
-function archiveLeadNote(st) {
-  var cur = cursorHeight(st);
-  var tip = archiveHeight(st);
-  if (cur === null || tip === null) return null;
-  return tip - cur > ARCHIVE_LEAD_NOTE ? "(archive " + String(tip) + ")" : null;
+// A distance is a COUNT and its digits are grouped for reading; a height is an IDENTIFIER a reader
+// compares digit by digit against another screen, so a height is never grouped. The separator is a
+// non-breaking space, so the number cannot break across a line. (No regular expression and no
+// backslash here — see the file header.)
+function groupDigits(n) {
+  var s = String(n);
+  var out = "";
+  for (var i = 0; i < s.length; i++) {
+    if (i > 0 && (s.length - i) % 3 === 0) out += String.fromCharCode(160);
+    out += s.charAt(i);
+  }
+  return out;
+}
+// "12 s ago", not "11:17:43 PM": the reader's question is whether the numbers beside it are fresh.
+// Seconds while seconds matter, then minutes, then hours — and a floor of "just now", because a
+// page that refreshes every ten seconds would otherwise flicker through the first four.
+function agoText(then, now) {
+  if (!then) return "never updated";
+  var secs = Math.floor((now - then.getTime()) / 1000);
+  if (secs < 0) secs = 0;
+  if (secs < 5) return "just now";
+  if (secs < 60) return String(secs) + " s ago";
+  var mins = Math.floor(secs / 60);
+  if (mins < 60) return String(mins) + " min ago";
+  return String(Math.floor(mins / 60)) + " h ago";
 }
 function renderStrip() {
   var s = el("strip");
   clear(s);
   var st = state.status;
   if (!st) { s.appendChild(node("span", "status unavailable", "err")); return; }
-  function pair(label, value) {
-    s.appendChild(node("span", label + " "));
-    s.appendChild(node("b", value === null || value === undefined ? "-" : String(value)));
-    s.appendChild(node("span", "  ·  "));
+  function sep() { s.appendChild(node("span", "  ·  ")); }
+  s.appendChild(node("span", "net: "));
+  s.appendChild(node("b", orDash(st.net)));
+  sep();
+  var head = st.chainHead === undefined || st.chainHead === null ? null : Number(st.chainHead);
+  if (head === null) {
+    // Said out loud, never as a dash or a zero distance: the page cannot tell how current it is.
+    s.appendChild(node("span", "chain tip unavailable", "stale"));
+  } else {
+    s.appendChild(node("span", "chain tip "));
+    s.appendChild(node("b", String(head)));
   }
-  pair("net", st.net);
-  pair("indexed", indexedHeight(st));
-  var lead = archiveLeadNote(st);
-  if (lead !== null) {
-    s.appendChild(node("span", lead, "note"));
-    s.appendChild(node("span", "  ·  "));
-  }
-  pair("chain head", st.chainHead === undefined ? null : st.chainHead);
   var b = behindHead(st);
-  s.appendChild(node("span", "behind "));
-  s.appendChild(node("b", behindText(st)));
-  s.appendChild(node("span", "  ·  "));
-  var pend = st.pendingLookups ? st.pendingLookups.length : 0;
-  pair("pending lookups", pend);
-  s.appendChild(node("span", state.lastOk ? "updated " + state.lastOk.toLocaleTimeString() : "never updated"));
+  if (b !== null && b > 0) {
+    sep();
+    s.appendChild(node("span", "behind "));
+    s.appendChild(node("b", groupDigits(b)));
+  }
+  sep();
+  var now = new Date();
+  var stale = state.lastOk === null || now.getTime() - state.lastOk.getTime() > STALE_MS;
+  s.appendChild(node("span",
+    state.lastOk === null ? "never updated" : "last updated " + agoText(state.lastOk, now),
+    stale ? "stale" : null));
 }
 function renderTabs() {
   var v = state.route.view;
@@ -2740,9 +2780,10 @@ function renderStatus(main) {
   var counters = st.counters || {};
   kvInto(sec, [
     ["net", orDash(st.net)],
-    // The same three numbers the strip carries, in the same words (Q21).
+    // The strip carries two of these (the chain tip and, while it is not zero, the distance); the
+    // index's own height and both raw positions live here and only here (Q21, narrowed by Q24).
     ["indexed", orDash(indexedHeight(st))],
-    ["chain head", st.chainHead === undefined || st.chainHead === null
+    ["chain tip", st.chainHead === undefined || st.chainHead === null
       ? "unavailable — the indexer did not answer" : String(st.chainHead)],
     ["behind", behindText(st)],
     ["archive tip — raw bytes fetched", orDash(st.archiveTip)],
@@ -2840,6 +2881,12 @@ function schedule() {
   if (state.timer !== null) { window.clearInterval(state.timer); state.timer = null; }
   if (!state.paused) state.timer = window.setInterval(refresh, REFRESH_MS);
   el("toggle").textContent = state.paused ? "resume auto-refresh" : "pause auto-refresh";
+  // The strip's relative time has to move BETWEEN refreshes: on a healthy page it would otherwise
+  // only ever read "just now", and on a broken one it would freeze at whatever it said when the
+  // last refresh failed — exactly when the reader needs it to keep counting. Redrawing the strip
+  // alone is a handful of nodes a second; no view is touched, and the 10 s data refresh above is
+  // unchanged. One interval for the life of the page, never a second one.
+  if (state.tick === null) state.tick = window.setInterval(renderStrip, STRIP_TICK_MS);
 }
 function toggle() { state.paused = !state.paused; schedule(); if (!state.paused) refresh(); }
 
@@ -2922,9 +2969,15 @@ const BODY = `<aside id="poc" class="poc" role="note">
     <span class="sep"></span>
     <span id="strip" class="strip"></span>
     <button id="poc-show" type="button" aria-controls="poc" hidden>about</button>
-    <button id="now">refresh now</button>
-    <button id="toggle">pause auto-refresh</button>
-    <span class="note">every 10&nbsp;s</span>
+    <!-- Owner decision Q24: the two refresh controls and the cadence note are hidden, not deleted.
+         The 10 s auto-refresh they described keeps running (it is the page's own interval, not
+         these buttons), and the strip's "last updated" now says what the cadence note said, on the
+         only occasion it matters. They stay in the document, hidden and still wired, because the
+         decision is a presentation one and hiding it is the change that can be undone by deleting
+         one word. -->
+    <button id="now" hidden>refresh now</button>
+    <button id="toggle" hidden>pause auto-refresh</button>
+    <span class="note" hidden>every 10&nbsp;s</span>
   </nav>
 </header>
 <div id="banner" class="banner" hidden></div>
