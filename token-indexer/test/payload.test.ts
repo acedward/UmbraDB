@@ -3,8 +3,8 @@ import { pad32 } from "../color.js";
 import {
   MAX_METADATA_PARTS,
   PayloadSizeError,
-  TOKEN_METADATA_EVENT_NAME,
-  TOKEN_METADATA_NAME_HEX,
+  LEGACY_EVENT_NAME,
+  LEGACY_NAME_HEX,
   decodeTokenMetadata,
   encodeInteger,
   encodeTokenMetadata,
@@ -27,13 +27,26 @@ import {
 } from "../ingest/payload.js";
 
 /**
- * Project 00021, Phase A task A5 — the payload parser against MIP PR #315 §§1, 2, 2.1, 2.2, 3, 5.1
- * and Appendix A.
+ * The payload parser against the **superseded PR #315 draft** — `mip-xxxx:token-metadata[v1]`.
  *
- * Every payload here is hand-built with the module's own encoder, from the MIP's table rather than
- * from any contract: this file proves the parser's RULES. `contract-fixtures.test.ts` proves that
- * the parser reads what the compiled reference contracts really emit, which is a different claim.
+ * Written by project 00021 (Phase A task A5) against §§1, 2, 2.1, 2.2, 3, 5.1 and Appendix A of
+ * that draft, and kept verbatim by project 00023 Phase F: the reference contracts deployed on
+ * Stagenet emit the draft name and are not being redeployed (owner decisions Q27/Q28), so the draft
+ * validator has to keep working exactly as it did. **Every `parseLegacy` below judges its payload
+ * under the draft's rules, which is what this file is for** — the final standard's suite is
+ * `payload-0018.test.ts` next door, and `[[token-0018-legacy-pair]]` there is the test that puts
+ * one byte string through both validators at once.
+ *
+ * Every payload here is hand-built with the module's own encoder, from the draft's table rather
+ * than from any contract: this file proves the parser's RULES. `contract-fixtures.test.ts` proves
+ * that the parser reads what the compiled reference contracts really emit, which is a different
+ * claim.
  */
+
+/** The variant every payload in this file is judged under (see the note above). */
+const LEGACY = "legacy-mip-xxxx" as const;
+const parseLegacy = (bytes: Uint8Array): ReturnType<typeof parseTokenMetadata> =>
+  parseTokenMetadata(bytes, LEGACY);
 
 const DOMAIN = pad32("umbra:sstar");
 const KIND_SHIELDED_NATIVE = 1;
@@ -54,7 +67,7 @@ function payload(
 }
 
 function expectReject(bytes: Uint8Array, reason: RejectReason): void {
-  const parsed = parseTokenMetadata(bytes);
+  const parsed = parseLegacy(bytes);
   expect(parsed.applied, `expected ${reason}`).toBe(false);
   expect(parsed.rejectReason).toBe(reason);
   // A rejected event never carries a projection verdict: Appendix A is not consulted at all.
@@ -62,24 +75,24 @@ function expectReject(bytes: Uint8Array, reason: RejectReason): void {
 }
 
 function expectProjectionError(bytes: Uint8Array, error: ProjectionError): void {
-  const parsed = parseTokenMetadata(bytes);
+  const parsed = parseLegacy(bytes);
   // The whole point of MIP §5.3: the event is APPLIED and the trait is kept.
   expect(parsed.applied, `${error} must not reject the event`).toBe(true);
   expect(parsed.rejectReason).toBeUndefined();
   expect(parsed.projectionError).toBe(error);
 }
 
-describe("mip-xxxx:token-metadata[v1] payload (MIP §2)", () => {
+describe("mip-xxxx:token-metadata[v1] payload — the superseded draft (owner Q27)", () => {
   it("[[token-payload-golden]] decodes the documented layout byte for byte, for every well-known key and for a plain trait", () => {
     // The event name is the version marker (MIP §1) and this is the byte string the MIP prints:
     // 27 bytes of name followed by five NULs.
-    expect(TOKEN_METADATA_EVENT_NAME).toBe("mip-xxxx:token-metadata[v1]");
-    expect(TOKEN_METADATA_NAME_HEX).toBe(
+    expect(LEGACY_EVENT_NAME).toBe("mip-xxxx:token-metadata[v1]");
+    expect(LEGACY_NAME_HEX).toBe(
       "6d69702d787878783a746f6b656e2d6d657461646174615b76315d0000000000",
     );
-    expect(Buffer.from(TOKEN_METADATA_NAME_HEX, "hex")).toHaveLength(32);
-    expect(Buffer.from(TOKEN_METADATA_EVENT_NAME, "utf8")).toHaveLength(27);
-    expect(isTokenMetadataName(TOKEN_METADATA_NAME_HEX.toUpperCase())).toBe(true);
+    expect(Buffer.from(LEGACY_NAME_HEX, "hex")).toHaveLength(32);
+    expect(Buffer.from(LEGACY_EVENT_NAME, "utf8")).toHaveLength(27);
+    expect(isTokenMetadataName(LEGACY_NAME_HEX.toUpperCase())).toBe(true);
     // A future layout is a new NAME, never a reinterpretation of this one (MIP §8).
     expect(isTokenMetadataName(Buffer.from(pad32("mip-xxxx:token-metadata[v2]")).toString("hex"))).toBe(false);
 
@@ -107,32 +120,32 @@ describe("mip-xxxx:token-metadata[v1] payload (MIP §2)", () => {
     expect(name.subarray(67 + 13).every((b) => b === 0)).toBe(true);
     expect(32 + 1 + 32 + 1 + 1 + 189).toBe(256);
 
-    const parsedName = parseTokenMetadata(name);
+    const parsedName = parseLegacy(name);
     expect(parsedName.applied).toBe(true);
     expect(parsedName.valueText).toBe("Shielded Star");
     expect(parsedName.projectionError).toBeUndefined();
 
-    const symbol = parseTokenMetadata(payload("symbol", "SSTAR"));
+    const symbol = parseLegacy(payload("symbol", "SSTAR"));
     expect(symbol.applied).toBe(true);
     expect(symbol.keyText).toBe("symbol");
     expect(symbol.valueText).toBe("SSTAR");
 
     // Appendix A's `decimals` is val-type 2 — an unsigned big-endian integer, not a raw byte.
-    const decimals = parseTokenMetadata(payload("decimals", encodeInteger(6), { valType: 2 }));
+    const decimals = parseLegacy(payload("decimals", encodeInteger(6), { valType: 2 }));
     expect(decimals.applied).toBe(true);
     expect(decimals.projectionError).toBeUndefined();
     expect(decimals.valLen).toBe(1);
-    expect(integerOfValue(decimals.valueBytes)).toBe("6");
+    expect(integerOfValue(decimals.valueBytes, LEGACY)).toBe("6");
 
-    const metadata = parseTokenMetadata(payload("metadata", '{"website":"https://example.test"}', { valType: 3 }));
+    const metadata = parseLegacy(payload("metadata", '{"website":"https://example.test"}', { valType: 3 }));
     expect(metadata.applied).toBe(true);
     expect(metadata.projectionError).toBeUndefined();
 
-    const uri = parseTokenMetadata(payload("tokenUri", "http://localhost:10020/constellations/orion", { valType: 4 }));
+    const uri = parseLegacy(payload("tokenUri", "http://localhost:10020/constellations/orion", { valType: 4 }));
     expect(uri.applied).toBe(true);
     expect(uri.projectionError).toBeUndefined();
 
-    const trait = parseTokenMetadata(payload("magnitude", "1.25"));
+    const trait = parseLegacy(payload("magnitude", "1.25"));
     expect(trait.applied).toBe(true);
     expect(trait.keyText).toBe("magnitude");
     expect(trait.projectionError).toBeUndefined(); // a trait has no Appendix A rule to break
@@ -144,7 +157,7 @@ describe("mip-xxxx:token-metadata[v1] payload (MIP §2)", () => {
       [0, "unshielded", "native"], [1, "shielded", "native"],
       [2, "unshielded", "ledger"], [3, "shielded", "ledger"],
     ] as const) {
-      const p = parseTokenMetadata(payload("name", "x", { kindByte: byte }));
+      const p = parseLegacy(payload("name", "x", { kindByte: byte }));
       expect(p.applied).toBe(true);
       expect([p.privacy, p.storage]).toEqual([privacy, storage]);
       expect([privacyOfKind(byte), storageOfKind(byte)]).toEqual([privacy, storage]);
@@ -156,7 +169,7 @@ describe("mip-xxxx:token-metadata[v1] payload (MIP §2)", () => {
 
     // `val-len = 0` is "present, empty" at the transport level (MIP §6.2) — this is how a key is
     // unset, and it is not a rejection.
-    const empty = parseTokenMetadata(payload("cleared", new Uint8Array(0)));
+    const empty = parseLegacy(payload("cleared", new Uint8Array(0)));
     expect(empty.applied).toBe(true);
     expect(empty.valLen).toBe(0);
     expect(empty.valueBytes).toHaveLength(0);
@@ -164,7 +177,7 @@ describe("mip-xxxx:token-metadata[v1] payload (MIP §2)", () => {
 
     // A 189-byte value is the maximum and must round-trip exactly.
     const full = new Uint8Array(189).fill(0xab);
-    const parsedFull = parseTokenMetadata(payload("blob", full, { valType: 0 }));
+    const parsedFull = parseLegacy(payload("blob", full, { valType: 0 }));
     expect(parsedFull.applied).toBe(true);
     expect(parsedFull.valLen).toBe(189);
     expect(Buffer.from(parsedFull.valueBytes).toString("hex")).toBe(Buffer.from(full).toString("hex"));
@@ -172,30 +185,30 @@ describe("mip-xxxx:token-metadata[v1] payload (MIP §2)", () => {
 
   it("[[token-payload-valtype]] every val-type rule of MIP §2.1 decides acceptance, and the type decides how a value reads", () => {
     // 0 — opaque bytes: no rule at all, so bytes that are not UTF-8 are perfectly valid.
-    const opaque = parseTokenMetadata(payload("fingerprint", new Uint8Array([0xde, 0xad, 0xbe, 0xef]), { valType: 0 }));
+    const opaque = parseLegacy(payload("fingerprint", new Uint8Array([0xde, 0xad, 0xbe, 0xef]), { valType: 0 }));
     expect(opaque.applied).toBe(true);
     expect(opaque.valueText).toBeUndefined(); // surfaced as hex, never guessed at as text
     expect(valueTextOf(0, opaque.valueBytes)).toBeUndefined();
 
     // 1 — UTF-8 string: the bytes MUST decode.
-    expect(parseTokenMetadata(payload("label", "héllo")).applied).toBe(true);
+    expect(parseLegacy(payload("label", "héllo")).applied).toBe(true);
     expectReject(payload("label", new Uint8Array([0xc3, 0x28])), "val_type_rule");
 
     // 2 — unsigned big-endian integer, 1..16 bytes. Both ends of the range reject.
-    const wide = parseTokenMetadata(payload("supply", encodeInteger(2n ** 127n, 16), { valType: 2 }));
+    const wide = parseLegacy(payload("supply", encodeInteger(2n ** 127n, 16), { valType: 2 }));
     expect(wide.applied).toBe(true);
-    expect(integerOfValue(wide.valueBytes)).toBe((2n ** 127n).toString(10));
+    expect(integerOfValue(wide.valueBytes, LEGACY)).toBe((2n ** 127n).toString(10));
     expectReject(payload("supply", new Uint8Array(0), { valType: 2 }), "val_type_rule");
     expectReject(payload("supply", new Uint8Array(17), { valType: 2 }), "val_type_rule");
 
     // 3 — UTF-8 JSON: valid UTF-8 is the transport rule; "does it parse" is the KEY's rule, which
     // is why a fragment of a `metadata/<n>` document is legal on the wire (Appendix A).
-    expect(parseTokenMetadata(payload("fragment", '{"half":', { valType: 3 })).applied).toBe(true);
+    expect(parseLegacy(payload("fragment", '{"half":', { valType: 3 })).applied).toBe(true);
     expectReject(payload("fragment", new Uint8Array([0xff]), { valType: 3 }), "val_type_rule");
 
     // 4 — absolute URI. Note it is NOT "http(s)" at the transport level: that is Appendix A's
     // narrower rule for `tokenUri` alone, and the difference is visible here.
-    expect(parseTokenMetadata(payload("mirror", "ftp://example.test/x", { valType: 4 })).applied).toBe(true);
+    expect(parseLegacy(payload("mirror", "ftp://example.test/x", { valType: 4 })).applied).toBe(true);
     expect(isAbsoluteUri("ftp://example.test/x")).toBe(true);
     expect(isAbsoluteHttpUrl("ftp://example.test/x")).toBe(false);
     expectReject(payload("mirror", "/relative/path", { valType: 4 }), "val_type_rule");
@@ -211,17 +224,17 @@ describe("mip-xxxx:token-metadata[v1] payload (MIP §2)", () => {
     expect(valueTextOf(3, new TextEncoder().encode("{}"))).toBe("{}");
     expect(valueTextOf(4, new TextEncoder().encode("https://a.test"))).toBe("https://a.test");
     expect(valueTextOf(2, new Uint8Array([1, 0]))).toBeUndefined();
-    expect(integerOfValue(new Uint8Array([1, 0]))).toBe("256");
-    expect(integerOfValue(new Uint8Array(0))).toBe("0");
+    expect(integerOfValue(new Uint8Array([1, 0]), LEGACY)).toBe("256");
+    expect(integerOfValue(new Uint8Array(0), LEGACY)).toBe("0");
   });
 
   it("[[token-payload-rejections]] rejects every transport violation of MIP §2.2/§3/§5.1 with its own reason and never throws (except on an over-long payload)", () => {
     // Size: only a payload LONGER than 256 leaves nothing storable. A SHORT one is the same bytes
     // with their trailing NULs trimmed by the VM, so it is zero-extended (see payload.ts's header).
-    expect(() => parseTokenMetadata(new Uint8Array(257))).toThrow(PayloadSizeError);
-    expect(() => parseTokenMetadata(new Uint8Array(257))).toThrow(/at most 256 bytes, got 257/);
+    expect(() => parseLegacy(new Uint8Array(257))).toThrow(PayloadSizeError);
+    expect(() => parseLegacy(new Uint8Array(257))).toThrow(/at most 256 bytes, got 257/);
     const trimmed = payload("name", "ok").subarray(0, 69); // everything after byte 69 is NUL anyway
-    const padded = parseTokenMetadata(trimmed);
+    const padded = parseLegacy(trimmed);
     expect(padded.applied).toBe(true);
     expect(padded.paddedFrom).toBe(69);
     expect(padded.payload).toHaveLength(256);
@@ -250,7 +263,7 @@ describe("mip-xxxx:token-metadata[v1] payload (MIP §2)", () => {
     // "consumers MUST NOT reject a key solely for not being valid UTF-8 (they MAY display it as hex)"
     const badKey = new Uint8Array(32);
     badKey.set([0xff, 0xfe, 0x01], 0);
-    const parsed = parseTokenMetadata(
+    const parsed = parseLegacy(
       encodeTokenMetadata({ domainSep: DOMAIN, kindByte: 1, key: badKey, valType: 1, value: "x" }),
     );
     expect(parsed.applied).toBe(true);
@@ -265,18 +278,18 @@ describe("mip-xxxx:token-metadata[v1] payload (MIP §2)", () => {
     const interior = new Uint8Array(32);
     interior.set(new TextEncoder().encode("na"), 0);
     interior.set(new TextEncoder().encode("me"), 3); // byte 2 stays NUL
-    const withNul = parseTokenMetadata(
+    const withNul = parseLegacy(
       encodeTokenMetadata({ domainSep: DOMAIN, kindByte: 1, key: interior, valType: 1, value: "x" }),
     );
     expect(withNul.applied).toBe(true);
     expect(withNul.keyText).toBeUndefined();
     expect(withNul.keyHex).toBe("6e61006d65");
     // …and it is a DIFFERENT key from `name`, which is the whole reason the identity is the bytes.
-    expect(withNul.keyHex).not.toBe(parseTokenMetadata(payload("name", "x")).keyHex);
+    expect(withNul.keyHex).not.toBe(parseLegacy(payload("name", "x")).keyHex);
 
     // Trailing NULs are trimmed, so the same key padded differently is the same key.
-    expect(parseTokenMetadata(payload("name", "x")).keyHex)
-      .toBe(parseTokenMetadata(payload("name", "y")).keyHex);
+    expect(parseLegacy(payload("name", "x")).keyHex)
+      .toBe(parseLegacy(payload("name", "y")).keyHex);
   });
 
   it("[[token-payload-projection]] Appendix A decides PROJECTION, never acceptance (MIP §5.3)", () => {
@@ -310,7 +323,7 @@ describe("mip-xxxx:token-metadata[v1] payload (MIP §2)", () => {
     expectProjectionError(payload("metadata/x", "{", { valType: 3 }), "metadata_part_index");
     expectProjectionError(payload(`metadata/${MAX_METADATA_PARTS}`, "{", { valType: 3 }), "metadata_part_index");
     expectProjectionError(payload("metadata/2", "{"), "val_type_mismatch");
-    const lastPart = parseTokenMetadata(payload(`metadata/${MAX_METADATA_PARTS - 1}`, "{", { valType: 3 }));
+    const lastPart = parseLegacy(payload(`metadata/${MAX_METADATA_PARTS - 1}`, "{", { valType: 3 }));
     expect(lastPart.applied).toBe(true);
     expect(lastPart.projectionError).toBeUndefined();
 
@@ -320,9 +333,9 @@ describe("mip-xxxx:token-metadata[v1] payload (MIP §2)", () => {
     expectProjectionError(payload("name", withNul), "text_not_storable");
 
     // And the direct form of the same function, for the callers that have no payload in hand.
-    expect(projectionErrorFor("name", 1, 3, new TextEncoder().encode("abc"))).toBeUndefined();
-    expect(projectionErrorFor(undefined, 1, 3, new TextEncoder().encode("abc"))).toBeUndefined();
-    expect(projectionErrorFor("whatever", 0, 1, new Uint8Array([1]))).toBeUndefined();
+    expect(projectionErrorFor("name", 1, 3, new TextEncoder().encode("abc"), LEGACY)).toBeUndefined();
+    expect(projectionErrorFor(undefined, 1, 3, new TextEncoder().encode("abc"), LEGACY)).toBeUndefined();
+    expect(projectionErrorFor("whatever", 0, 1, new Uint8Array([1]), LEGACY)).toBeUndefined();
   });
 
   it("[[token-payload-keys]] the key helpers behave exactly as the standard describes", () => {
@@ -346,7 +359,7 @@ describe("mip-xxxx:token-metadata[v1] payload (MIP §2)", () => {
     // and only asks the emitter to zero them) and can never be projected.
     const bytes = encodeTokenMetadata({ domainSep: DOMAIN, kindByte: 1, key: "name", valType: 1, value: "ok", valLen: 2 });
     bytes[67 + 2] = 0x41; // an 'A' in the padding
-    const parsed = parseTokenMetadata(bytes);
+    const parsed = parseLegacy(bytes);
     expect(parsed.applied).toBe(true);
     expect(parsed.valueText).toBe("ok");
     expect(parsed.projectionError).toBeUndefined();

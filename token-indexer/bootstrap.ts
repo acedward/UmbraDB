@@ -27,6 +27,11 @@ export async function bootstrapTokenIndexSchema(
  * the schema and the ARCHIVE untouched. This is the alpha's answer to a parser or schema change —
  * not to forks, which this lineage cannot have (the archive is finalized-only).
  *
+ * **Required once after migration 003** (project 00023, owner decision Q3): that migration changes
+ * the identity of `tokens` and adds the three activity tables, so an existing index has to be
+ * regenerated from the archive. `rebuild` is what regenerates it, and spec 00023 FR-005 is the
+ * assertion that it reproduces a live run's rows exactly, activity rows included.
+ *
  * Deliberately per-`net` `DELETE`s rather than `TRUNCATE`: the same database may hold more than
  * one net's rows, and truncating would silently destroy another net's index.
  */
@@ -36,6 +41,9 @@ export async function rebuildTokenIndex(
   const schema = opts.schema ?? "token_index";
   const net = opts.net;
   await sql.begin(async (tx) => {
+    await tx`DELETE FROM ${tx(schema)}.token_activity WHERE net = ${net}`;
+    await tx`DELETE FROM ${tx(schema)}.shielded_offers WHERE net = ${net}`;
+    await tx`DELETE FROM ${tx(schema)}.contract_calls WHERE net = ${net}`;
     await tx`DELETE FROM ${tx(schema)}.token_metadata_kv WHERE net = ${net}`;
     await tx`DELETE FROM ${tx(schema)}.token_metadata_events WHERE net = ${net}`;
     await tx`DELETE FROM ${tx(schema)}.token_mints WHERE net = ${net}`;

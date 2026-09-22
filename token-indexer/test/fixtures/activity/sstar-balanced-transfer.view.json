@@ -1,0 +1,65 @@
+{
+  "txHash": "9b9254f4710e6a1893f30d3d396dd07336d190851961a526b106202d273eed75",
+  "selfReportedTxHash": "9b9254f4710e6a1893f30d3d396dd07336d190851961a526b106202d273eed75",
+  "isSystem": false,
+  "rawBytes": 18527,
+  "identifiers": [
+    "00b469366120a2dcc90382dd3a8502dec7378ceef3b47ff5c1b070ef3f3fe821c6",
+    "00d9cf871d1111a8e63703cafff9b256c5d34345f2c51450d827d18a1f1decf704",
+    "00713b03221be6c0eb19852c92c6649bfa16401624d1dd5ff0165afa0f22b5549b",
+    "00f1c6c6be92d85787de916b4c78b76db5907cbddb071ac256e0eee373d6200f95"
+  ],
+  "feeSpeck": "27520326636365305",
+  "bindingRandomness": true,
+  "offers": [
+    {
+      "section": "guaranteed",
+      "segment": 0,
+      "counted": true,
+      "inputCount": 1,
+      "outputCount": 2,
+      "transientCount": 0,
+      "deltaCount": 0,
+      "deltas": [],
+      "inputs": [
+        {
+          "nullifier": "79d47cf00534d00c6787e5609de01021048225605437060454e9980ced2803f3",
+          "contractAddress": null
+        }
+      ],
+      "outputs": [
+        {
+          "commitment": "38361cab00d69970b177d9a51d35e1330ac8cc5eb660189043d43db832927cc7",
+          "contractAddress": null
+        },
+        {
+          "commitment": "74bdbb61a163be41e3aa3a65ec65d17a8cd5f410466e096811916e8dbe307231",
+          "contractAddress": null
+        }
+      ],
+      "transients": []
+    }
+  ],
+  "intents": [
+    {
+      "segment": 1,
+      "ttl": "2026-09-21T23:53:02.000Z",
+      "intentHash": "be421703e5cacc1f6f1987bb4004e5cb47a8e618f315513fc6bfc1e21df94964",
+      "guaranteedUnshieldedOffer": null,
+      "fallibleUnshieldedOffer": null,
+      "dustActions": {
+        "ctime": "2026-09-21T23:22:48.000Z",
+        "spends": [
+          {
+            "vFee": "27520326636365305",
+            "oldNullifier": "1853625412637875609599599791140643879510396542550778665955606699693809114320",
+            "newCommitment": "23408756832904208972378314621113473869975363706919476093400769683606182610185"
+          }
+        ],
+        "registrations": []
+      },
+      "actions": []
+    }
+  ],
+  "rewards": null
+}

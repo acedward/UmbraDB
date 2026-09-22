@@ -1,6 +1,7 @@
 import type { ISql } from "postgres";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import type { TokenIndexerConfig } from "../config.js";
+import type { ActivityRecord, CallRecord, OfferRecord } from "./decode.js";
 
 /**
  * Project 00020 — every read and write of `token_index.*` that is not a single route's own query.
@@ -61,6 +62,12 @@ export interface PendingLookupRow {
 export interface TokenIndexStatus {
   net: string;
   archiveTip: number | null;
+  /** The chain's own head, read from the public indexer rather than from anything we store — the
+   *  one number in this document that says how far behind the WHOLE pipeline is, not just how far
+   *  the decoder trails the archive. `null` whenever it could not be read (no indexer configured,
+   *  the call failed, the call was slow): the status route never waits on the network and never
+   *  fails because of it. Project 00023, owner decision Q21. */
+  chainHead: number | null;
   decodeCursor: DecodeCursor;
   contracts: number;
   tokens: number;
@@ -71,6 +78,17 @@ export interface TokenIndexStatus {
     eventsRejected: number;
     lookupsOk: number;
     lookupsShort: number;
+    /** Project 00023, FR-013 — the five activity counters. Every one is a COUNT over the stored
+     *  rows rather than an in-memory tally, so a restart does not reset them and `rebuild` makes
+     *  them agree with a live run by construction. */
+    activityRows: number;
+    /** Rows of status `seen`: colours public data proves exist whose issuer is not knowable (US5).
+     *  SC-009 is that this equals the number of distinct unresolved colours in `token_activity`. */
+    seenTokens: number;
+    shieldedOffers: number;
+    /** …of which the colour is NOT public, because the offer is balanced (spec §0, FR-018). */
+    undisclosedShieldedOffers: number;
+    contractCalls: number;
   };
 }
 
@@ -89,6 +107,10 @@ export interface TokenIndexStatus {
  */
 export async function readStatus(
   sql: UmbraDBSql, config: TokenIndexerConfig,
+  /** Supplies `chainHead`. The caller owns the network call and its caching, so this function
+   *  stays pure database I/O and the CLI can answer without touching the network at all. It must
+   *  never throw and never block: a resolver that cannot answer returns `null`. */
+  chainHead?: () => Promise<number | null>,
 ): Promise<TokenIndexStatus> {
   const { schema, archiveSchema, net } = config;
   const [cursor, archiveTip, counts, pending] = await Promise.all([
@@ -97,6 +119,8 @@ export async function readStatus(
     sql<{
       contracts: string; tokens: string; mints: string;
       events_applied: string; events_rejected: string; lookups_ok: string;
+      activity_rows: string; seen_tokens: string; shielded_offers: string;
+      undisclosed_shielded_offers: string; contract_calls: string;
     }[]>`
       SELECT
         (SELECT count(*) FROM ${sql(schema)}.contracts WHERE net = ${net})                       AS contracts,
@@ -107,14 +131,21 @@ export async function readStatus(
         (SELECT count(*) FROM (
            SELECT 1 FROM ${sql(schema)}.token_metadata_events WHERE net = ${net}
            GROUP BY tx_hash, address
-         ) pairs)                                                                                AS lookups_ok
+         ) pairs)                                                                                AS lookups_ok,
+        (SELECT count(*) FROM ${sql(schema)}.token_activity  WHERE net = ${net})                 AS activity_rows,
+        (SELECT count(*) FROM ${sql(schema)}.tokens WHERE net = ${net} AND status = 'seen')       AS seen_tokens,
+        (SELECT count(*) FROM ${sql(schema)}.shielded_offers WHERE net = ${net})                 AS shielded_offers,
+        (SELECT count(*) FROM ${sql(schema)}.shielded_offers WHERE net = ${net} AND undisclosed) AS undisclosed_shielded_offers,
+        (SELECT count(*) FROM ${sql(schema)}.contract_calls  WHERE net = ${net})                 AS contract_calls
     `,
     readPendingLookups(sql, schema, net, 50),
   ]);
+  const head = chainHead === undefined ? null : await chainHead().catch(() => null);
   const row = counts[0]!;
   return {
     net,
     archiveTip,
+    chainHead: head,
     decodeCursor: cursor,
     contracts: Number(row.contracts),
     tokens: Number(row.tokens),
@@ -125,6 +156,11 @@ export async function readStatus(
       eventsRejected: Number(row.events_rejected),
       lookupsOk: Number(row.lookups_ok),
       lookupsShort: pending.length,
+      activityRows: Number(row.activity_rows),
+      seenTokens: Number(row.seen_tokens),
+      shieldedOffers: Number(row.shielded_offers),
+      undisclosedShieldedOffers: Number(row.undisclosed_shielded_offers),
+      contractCalls: Number(row.contract_calls),
     },
   };
 }
@@ -170,4 +206,85 @@ export async function readPendingLookups(
     nextAttemptAt: r.next_attempt_at.toISOString(),
     lastError: r.last_error,
   }));
+}
+
+/* ────────────────────────────────────────────────────────────────────────────────────────────
+ * Project 00023 — the three activity tables (spec §6.1/§6.3, FR-001/FR-004/FR-018/FR-020).
+ *
+ * All three are written by `TokenScanner.scanOnce` inside the SAME database transaction as the
+ * mints and the cursor, so the 00020 crash-safety argument holds unchanged: a `kill -9` at any
+ * point leaves the cursor exactly where the last committed rows end.
+ *
+ * Every insert is `ON CONFLICT DO NOTHING` on the row's NATURAL key, which is what makes
+ * re-scanning a block change nothing (FR-004) and what makes `rebuild` reproduce a live run
+ * byte-for-byte (FR-005). Each returns whether it actually inserted, so the scan outcome can count
+ * new rows rather than attempted ones.
+ * ──────────────────────────────────────────────────────────────────────────────────────────── */
+
+/** Where in the archive a decoded record sat. */
+export interface ActivityContext {
+  txHash: string;
+  blockHeight: number;
+  txPosition: number;
+}
+
+const bufOf = (hex: string): Buffer => Buffer.from(hex, "hex");
+const bufOrNull = (hex: string | undefined): Buffer | null => (hex === undefined ? null : bufOf(hex));
+
+/** One `token_activity` row. Returns `true` when it was new. */
+export async function insertActivityRow(
+  sql: ISql, schema: string, net: string, row: ActivityRecord, ctx: ActivityContext,
+): Promise<boolean> {
+  const inserted = await sql`
+    INSERT INTO ${sql(schema)}.token_activity
+      (net, tx_hash, block_height, tx_position, segment, section, role, item_index,
+       color, kind, amount, direction, owner, owner_key, intent_hash, output_no,
+       address, entry_point, call_index, domain_sep)
+    VALUES
+      (${net}, ${bufOf(ctx.txHash)}, ${ctx.blockHeight}, ${ctx.txPosition},
+       ${row.segment}, ${row.section}, ${row.role}, ${row.itemIndex},
+       ${bufOf(row.color)}, ${row.kind}, ${row.amount.toString()}, ${row.direction},
+       ${bufOrNull(row.owner)}, ${row.ownerKey ?? null}, ${bufOrNull(row.intentHash)},
+       ${row.outputNo ?? null},
+       ${bufOrNull(row.address)}, ${row.entryPoint ?? null}, ${row.callIndex ?? null},
+       ${bufOrNull(row.domainSep)})
+    ON CONFLICT (net, tx_hash, segment, section, role, item_index) DO NOTHING
+  `;
+  return inserted.count > 0;
+}
+
+/** One `shielded_offers` row — recorded whether or not its section counted, because the privacy
+ *  figure is about what the CHAIN carries, not about what took effect (FR-018). */
+export async function insertShieldedOffer(
+  sql: ISql, schema: string, net: string, offer: OfferRecord, ctx: ActivityContext,
+): Promise<boolean> {
+  const inserted = await sql`
+    INSERT INTO ${sql(schema)}.shielded_offers
+      (net, tx_hash, section, segment, block_height, tx_position,
+       inputs, outputs, transients, deltas, counted)
+    VALUES
+      (${net}, ${bufOf(ctx.txHash)}, ${offer.section}, ${offer.segment},
+       ${ctx.blockHeight}, ${ctx.txPosition},
+       ${offer.inputs}, ${offer.outputs}, ${offer.transients}, ${offer.deltas}, ${offer.counted})
+    ON CONFLICT (net, tx_hash, section, segment) DO NOTHING
+  `;
+  return inserted.count > 0;
+}
+
+/** One `contract_calls` row, with each transcript as a jsonb document (FR-020, US7). */
+export async function insertContractCall(
+  sql: ISql, schema: string, net: string, call: CallRecord, ctx: ActivityContext,
+): Promise<boolean> {
+  const inserted = await sql`
+    INSERT INTO ${sql(schema)}.contract_calls
+      (net, tx_hash, segment, call_index, address, entry_point, block_height, tx_position,
+       guaranteed, fallible)
+    VALUES
+      (${net}, ${bufOf(ctx.txHash)}, ${call.segment}, ${call.callIndex},
+       ${bufOf(call.address)}, ${call.entryPoint ?? null}, ${ctx.blockHeight}, ${ctx.txPosition},
+       ${call.guaranteed === undefined ? null : sql.json(call.guaranteed as never)},
+       ${call.fallible === undefined ? null : sql.json(call.fallible as never)})
+    ON CONFLICT (net, tx_hash, segment, call_index) DO NOTHING
+  `;
+  return inserted.count > 0;
 }

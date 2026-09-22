@@ -1,0 +1,42 @@
+[
+  {
+    "segment": 1,
+    "section": "fallible",
+    "role": "utxo_in",
+    "color": "0000000000000000000000000000000000000000000000000000000000000000",
+    "kind": 0,
+    "amount": "5000000000",
+    "direction": "out",
+    "owner": "dd50c29512c58c68a36384b6c47004f27824a5b2d9c5eb5251e10d854ffa89ad",
+    "ownerKey": "schnorr:13a8fd37f6feb272a19a276decc4c46f572747d4173192744ec7b6909b071315",
+    "intentHash": "2894eec3160eca9595b0e819ca2acd607ddbe2e8af7defe46e193c55f11ffbba",
+    "outputNo": 0,
+    "itemIndex": 0
+  },
+  {
+    "segment": 1,
+    "section": "fallible",
+    "role": "utxo_out",
+    "color": "0000000000000000000000000000000000000000000000000000000000000000",
+    "kind": 0,
+    "amount": "1000000",
+    "direction": "in",
+    "owner": "e25bbbcdbf50f71282626f03e2b55b289cc6a860a520a1f7567bccd93476066e",
+    "intentHash": "0bf060597cd209486a7593d906c6ff625b959c1bb25fe26276138153256128a9",
+    "outputNo": 0,
+    "itemIndex": 0
+  },
+  {
+    "segment": 1,
+    "section": "fallible",
+    "role": "utxo_out",
+    "color": "0000000000000000000000000000000000000000000000000000000000000000",
+    "kind": 0,
+    "amount": "4999000000",
+    "direction": "in",
+    "owner": "dd50c29512c58c68a36384b6c47004f27824a5b2d9c5eb5251e10d854ffa89ad",
+    "intentHash": "0bf060597cd209486a7593d906c6ff625b959c1bb25fe26276138153256128a9",
+    "outputNo": 1,
+    "itemIndex": 1
+  }
+]

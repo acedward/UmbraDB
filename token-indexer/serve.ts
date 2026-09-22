@@ -53,11 +53,15 @@ export async function serve(
   const loops: Promise<void>[] = [];
   let server: Server | undefined;
   let port: number | undefined;
+  /** Shared with the API: `GET /v1/transactions/:hash` decodes on request (Q5). In `api-only`
+   *  mode nothing loads it here, and `createTokenApi` loads it lazily on the first such request. */
+  let ledgerForApi: unknown;
 
   if (mode !== "api-only") {
     const indexerHttp = requireIndexerHttp(config, "serve (the ingest half)");
     const eventSource = new IndexerEventSource({ url: indexerHttp });
     const ledger = await loadLedgerV9();
+    ledgerForApi = ledger;
     const scanner = new TokenScanner({
       sql, schema: config.schema, archiveSchema: config.archiveSchema, net: config.net,
       eventSource, ledger, batchSize: config.scanBatch,
@@ -71,6 +75,11 @@ export async function serve(
           mints: outcome.mints, lookups: outcome.lookups, lookupsShort: outcome.lookupsShort,
           eventsApplied: outcome.eventsApplied, eventsRejected: outcome.eventsRejected,
           skippedUnknownResult: outcome.skippedUnknownResult,
+          // Project 00023's five (FR-013), so a live `serve` shows the activity index filling.
+          activityRows: outcome.activityRows, seenTokens: outcome.seenTokens,
+          shieldedOffers: outcome.shieldedOffers,
+          undisclosedShieldedOffers: outcome.undisclosedShieldedOffers,
+          contractCalls: outcome.contractCalls,
           height: outcome.cursor.height, position: outcome.cursor.position,
           waitingForResult: outcome.waitingForResult?.txHash,
         });
@@ -97,7 +106,7 @@ export async function serve(
   }
 
   if (mode !== "ingest-only") {
-    server = createTokenApi({ sql, config });
+    server = createTokenApi({ sql, config, ledger: ledgerForApi });
     port = await listen(server, config.apiPort);
     jsonLog("token-indexer", "api.listening", { port, net: config.net, schema: config.schema });
   }

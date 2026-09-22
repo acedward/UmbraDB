@@ -1,10 +1,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { jsonLog } from "../../wallet-monitor/log.js";
-import { countedEffects, decodeTransactionActions } from "./decode.js";
+import { decodeTokenFlows } from "./decode.js";
 import { lookupEventsFor, type EventSource, type LookupPair } from "./events.js";
-import { applyMint, upsertContract } from "./fold.js";
-import { readDecodeCursor, writeDecodeCursor, type DecodeCursor } from "./store.js";
+import { applyMint, ensureSeenToken, upsertContract } from "./fold.js";
+import {
+  insertActivityRow, insertContractCall, insertShieldedOffer,
+  readDecodeCursor, writeDecodeCursor, type DecodeCursor,
+} from "./store.js";
 
 /**
  * Project 00020 — the mint & deploy scanner (spec §6.3, FR-001/FR-003/FR-014).
@@ -48,6 +51,7 @@ export interface ArchivedTransactionRow {
 export interface ScanBatchOutcome {
   transactionsScanned: number;
   deploys: number;
+  /** Contract addresses this batch recorded as CALLED (00020's counter, unchanged). */
   calls: number;
   mints: number;
   lookups: number;
@@ -55,6 +59,13 @@ export interface ScanBatchOutcome {
   eventsApplied: number;
   eventsRejected: number;
   skippedUnknownResult: number;
+  /** Project 00023 (FR-013). All five count rows this batch actually INSERTED, so a re-scan of the
+   *  same blocks reports zeros — which is what `[[token-activity-idempotent]]` asserts. */
+  activityRows: number;
+  shieldedOffers: number;
+  undisclosedShieldedOffers: number;
+  contractCalls: number;
+  seenTokens: number;
   cursor: DecodeCursor;
   /** No more archived transactions past the cursor — the scanner is at the archive tip. */
   atTip: boolean;
@@ -104,6 +115,8 @@ export class TokenScanner {
     const outcome: ScanBatchOutcome = {
       transactionsScanned: 0, deploys: 0, calls: 0, mints: 0, lookups: 0, lookupsShort: 0,
       eventsApplied: 0, eventsRejected: 0, skippedUnknownResult: 0,
+      activityRows: 0, shieldedOffers: 0, undisclosedShieldedOffers: 0, contractCalls: 0,
+      seenTokens: 0,
       cursor, atTip: rows.length === 0, waitingForResult: undefined,
     };
     if (rows.length === 0) {
@@ -138,28 +151,60 @@ export class TokenScanner {
           continue;
         }
 
-        const decoded = decodeTransactionActions(this.opts.ledger, new Uint8Array(row.raw));
-        const counted = countedEffects(decoded, row.result!, row.segments, row.txHash);
+        // ONE deserialisation per transaction (≈ 6 ms of WASM on this host, measured over 200
+        // archived transactions on 2026-09-21): `decodeTokenFlows` returns the 00020 facts —
+        // deploys, calls, counted mints, `log` counts — from the same walk that produces the
+        // activity rows, the offers and the calls.
+        const flows = decodeTokenFlows(
+          this.opts.ledger, new Uint8Array(row.raw), row.result!, row.segments, row.txHash,
+        );
+        const ctx = { txHash: row.txHash, blockHeight: row.blockHeight, txPosition: row.position };
 
-        for (const address of counted.deployAddresses) {
+        for (const address of flows.deployAddresses) {
           await upsertContract(tx, schema, net, {
             address, height: row.blockHeight, deployTxHash: row.txHash, isDeploy: true, isCall: false,
           });
           outcome.deploys++;
         }
-        for (const address of counted.callAddresses) {
+        for (const address of flows.callAddresses) {
           await upsertContract(tx, schema, net, {
             address, height: row.blockHeight, isDeploy: false, isCall: true,
           });
           outcome.calls++;
         }
-        for (const mint of counted.mints) {
-          const isNew = await applyMint(tx, schema, net, mint, {
-            txHash: row.txHash, blockHeight: row.blockHeight, txPosition: row.position,
-          });
+        for (const mint of flows.mints) {
+          const isNew = await applyMint(tx, schema, net, mint, ctx);
           if (isNew) outcome.mints++;
         }
-        for (const [address, expected] of counted.logOpsByAddress) {
+
+        // ── the activity index (spec §6.3) ───────────────────────────────────────────────────
+        // A colour that has no row yet becomes a `seen` token BEFORE the row that references it,
+        // so the colour route and the token route can never disagree (US5, FR-008). Deduplicated
+        // per transaction: one statement per distinct `(colour, kind)`, not per row.
+        const colours = new Set<string>();
+        for (const record of flows.activity) colours.add(`${record.color}|${record.kind}`);
+        for (const key of colours) {
+          const [color, kind] = key.split("|") as [string, string];
+          if (await ensureSeenToken(tx, schema, net, color, Number(kind), row.blockHeight)) {
+            outcome.seenTokens++;
+          }
+        }
+        for (const record of flows.activity) {
+          if (await insertActivityRow(tx, schema, net, record, ctx)) outcome.activityRows++;
+        }
+        // Every zswap offer, counted or not: the privacy figure is about what the chain CARRIES.
+        for (const offer of flows.offers) {
+          if (await insertShieldedOffer(tx, schema, net, offer, ctx)) {
+            outcome.shieldedOffers++;
+            if (offer.deltas === 0) outcome.undisclosedShieldedOffers++;
+          }
+        }
+        // Every contract call, with every public field of each transcript (US7's introspection).
+        for (const call of flows.calls) {
+          if (await insertContractCall(tx, schema, net, call, ctx)) outcome.contractCalls++;
+        }
+
+        for (const [address, expected] of flows.logOpsByAddress) {
           const pair: LookupPair = { txHash: row.txHash, address, blockHeight: row.blockHeight, expected };
           const result = await lookupEventsFor(tx, schema, net, this.opts.eventSource, pair);
           outcome.lookups++;
