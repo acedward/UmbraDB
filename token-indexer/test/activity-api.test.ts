@@ -12,7 +12,7 @@ import { NIGHT_COLOR_HEX, pad32 } from "../color.js";
 import type { TokenIndexerConfig } from "../config.js";
 import type { EventSource, IndexerContractEvent } from "../ingest/events.js";
 import { applyMetadataEvent, type RawContractEvent } from "../ingest/fold.js";
-import { TOKEN_METADATA_NAME_HEX } from "../ingest/payload.js";
+import { LEGACY_NAME_HEX } from "../ingest/payload.js";
 import { TokenScanner } from "../ingest/scan.js";
 import { loadActivityFixture, loadActivityFixtures, seedArchive } from "./helpers/archive-fixture.js";
 import { metadataPayloadHex } from "./helpers/fake-ledger.js";
@@ -71,7 +71,7 @@ describe("activity API (spec §5)", () => {
     // and no UTXOs by construction (MIP §3), so its only public activity is that contract's calls.
     const event: RawContractEvent = {
       eventId: 1, contractAddress: TOMAP_CONTRACT,
-      txHash: "ab".repeat(32), blockHeight: 500_760, nameHex: TOKEN_METADATA_NAME_HEX,
+      txHash: "ab".repeat(32), blockHeight: 500_760, nameHex: LEGACY_NAME_HEX,
       payloadHex: metadataPayloadHex({
         domainSep: LEDGER_DOMAIN, kindByte: 2, key: "symbol", value: "TMAP",
       }),

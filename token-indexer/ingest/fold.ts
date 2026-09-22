@@ -5,11 +5,15 @@ import type { ObservedMint } from "./decode.js";
 import {
   MAX_METADATA_BYTES,
   MAX_METADATA_PARTS,
+  VAL_TYPE_NULL,
   decodeUtf8,
+  integerOfValue,
   isNativeKind,
   isWellKnownKey,
   metadataPartIndex,
+  nameVariantOf,
   parseTokenMetadata,
+  type NameVariant,
   type ParsedTokenMetadata,
 } from "./payload.js";
 
@@ -248,7 +252,9 @@ export interface RawContractEvent {
   contractAddress: string;
   txHash: string;
   blockHeight: number;
-  /** `pad(32, "mip-xxxx:token-metadata[v1]")` as hex, for a `MiscContractEvent`. */
+  /** The event's 32 padded name bytes as hex — `pad(32, "mip-0018:token-metadata[v1]")`, or the
+   *  superseded draft name the deployed reference contracts still emit (owner Q27). This is what
+   *  decides which validator runs: `nameVariantOf` maps it to a {@link NameVariant}. */
   nameHex: string;
   /** The 256-byte payload, hex. */
   payloadHex: string;
@@ -268,7 +274,13 @@ export interface AppliedEventOutcome {
 }
 
 /**
- * Stores one `mip-xxxx:token-metadata[v1]` event and, if it is applicable, folds it into the token.
+ * Stores one token-metadata event and, if it is applicable, folds it into the token.
+ *
+ * **The event's NAME decides which rules judge it** (MIP-0018 §8: the name is the version). The
+ * name is mapped to a {@link NameVariant} here, once, and travels with every row the event
+ * produces — `token_metadata_events.name_variant` and `token_metadata_kv.name_variant` — so the
+ * page can mark the draft-name rows "pre-MIP name" and so the legacy path can be deleted in one
+ * commit the day the reference contracts are redeployed (owner decision Q27).
  *
  * Idempotent on `(net, event_id)` — the indexer's own event id — so re-looking-up a transaction
  * after a short answer, or redelivering an event, changes nothing.
@@ -276,9 +288,20 @@ export interface AppliedEventOutcome {
 export async function applyMetadataEvent(
   sql: ISql, schema: string, net: string, event: RawContractEvent,
 ): Promise<AppliedEventOutcome> {
+  const nameVariant = nameVariantOf(event.nameHex);
+  if (nameVariant === undefined) {
+    // Unreachable through the scanner: `ingest/events.ts`'s `isTokenMetadataEvent` is the filter
+    // that implements MIP §1's "Events of another type or name … MUST be ignored", so an event
+    // reaching the fold has already been recognised. Stated as an error rather than a silent
+    // default, because a default would pick a validator for bytes nobody claimed either name for.
+    throw new Error(
+      `applyMetadataEvent: event ${event.eventId} carries the unrecognised name ${event.nameHex} — `
+      + "MIP §1 says a v1 consumer ignores it, so it must never reach the fold",
+    );
+  }
   let parsed: ParsedTokenMetadata;
   try {
-    parsed = parseTokenMetadata(new Uint8Array(Buffer.from(event.payloadHex, "hex")));
+    parsed = parseTokenMetadata(new Uint8Array(Buffer.from(event.payloadHex, "hex")), nameVariant);
   } catch (error) {
     // A payload longer than 256 bytes cannot be stored at all (the column's CHECK) — question Q31.
     // It is counted and surfaced by the caller rather than crashing the scan batch.
@@ -294,11 +317,11 @@ export async function applyMetadataEvent(
   const domainSep = Buffer.from(parsed.domainSep);
   const inserted = await sql`
     INSERT INTO ${sql(schema)}.token_metadata_events
-      (net, event_id, address, tx_hash, block_height, payload, domain_sep, kind_byte,
+      (net, event_id, address, tx_hash, block_height, name_variant, payload, domain_sep, kind_byte,
        key, key_hex, key_text, val_type, val_len, value, applied, reject_reason)
     VALUES
       (${net}, ${event.eventId}, ${hexBuf(event.contractAddress)}, ${hexBuf(event.txHash)}, ${event.blockHeight},
-       ${payload}, ${domainSep}, ${parsed.kindByte},
+       ${nameVariant}, ${payload}, ${domainSep}, ${parsed.kindByte},
        ${Buffer.from(parsed.key)}, ${parsed.keyHex}, ${parsed.keyText ?? null},
        ${parsed.valType}, ${parsed.valLen}, ${Buffer.from(parsed.value)},
        ${parsed.applied}, ${parsed.rejectReason ?? null})
@@ -327,17 +350,33 @@ export async function applyMetadataEvent(
   // Last write wins per (token, key), ordered by (block height, indexer event id) — the indexer's
   // ids are assigned in evaluation order, so two events in one transaction order correctly
   // (MIP §6.2). The key's identity is its trimmed BYTES (§5.1), so `key_hex` is what conflicts.
+  //
+  // ── Null is a TOMBSTONE, not a DELETE (MIP-0018 §2.1 type 5, §6.2) ─────────────────────────
+  // A `val-type` 5 event sets the current value of the exact key to Null. It lands here as an
+  // ordinary last-write-wins upsert carrying `val_type = 5`, `val_len = 0` and zero value bytes —
+  // and that row IS the cleared state: `projectedFields` below skips it, so the column it fed goes
+  // back to NULL, while the key keeps its place in the table with the event that cleared it
+  // (`updated_event_id`) beside it.
+  //
+  // DELETING the row instead would be wrong, and not only cosmetically: the `WHERE` clause below
+  // is the only thing that stops an OLDER event arriving late — a retried short lookup, a
+  // `pending_event_lookups` drain, a rebuild — from overwriting a newer value. With no row there
+  // is nothing to compare against, so that older event would resurrect the value the Null
+  // retired. The tombstone keeps the ordering guard, which is exactly what MIP §6.2's "last
+  // accepted event is the current value" needs. History is untouched either way: every event,
+  // Null included, stays in `token_metadata_events`.
   await sql`
     INSERT INTO ${sql(schema)}.token_metadata_kv
-      (net, address, domain_sep, kind, key_hex, key_text, val_type, val_len, value,
+      (net, address, domain_sep, kind, key_hex, key_text, name_variant, val_type, val_len, value,
        projection_error, updated_event_id, updated_height)
     VALUES
       (${net}, ${hexBuf(key.address)}, ${hexBuf(key.domainSep)}, ${key.kind},
-       ${parsed.keyHex}, ${parsed.keyText ?? null}, ${parsed.valType}, ${parsed.valLen},
+       ${parsed.keyHex}, ${parsed.keyText ?? null}, ${nameVariant}, ${parsed.valType}, ${parsed.valLen},
        ${Buffer.from(parsed.valueBytes)}, ${parsed.projectionError ?? null},
        ${event.eventId}, ${event.blockHeight})
     ON CONFLICT (net, address, domain_sep, kind, key_hex) DO UPDATE SET
       key_text         = EXCLUDED.key_text,
+      name_variant     = EXCLUDED.name_variant,
       val_type         = EXCLUDED.val_type,
       val_len          = EXCLUDED.val_len,
       value            = EXCLUDED.value,
@@ -477,6 +516,9 @@ export interface ProjectedFields {
 interface KvRow {
   key_hex: string;
   key_text: string | null;
+  /** Which event name set this key — it decides how a `val-type` 2 byte string reads and whether
+   *  `metadata/<n>` means anything at all. */
+  name_variant: NameVariant;
   val_type: number;
   val_len: number;
   value: Buffer;
@@ -501,25 +543,40 @@ interface KvRow {
  * pure function of the CURRENT stored evidence, which is what makes `rebuild` reproduce a live run
  * exactly.
  *
- * `metadata` may arrive whole (`metadata`) or split (`metadata/0 … metadata/15`, Appendix A: at
- * most 16 parts, 3 024 bytes). A split document is applied only when parts `0..max` are ALL present,
- * all type 3, and their concatenation parses as a JSON object. When both forms are present Appendix
- * A says the most recently COMPLETED one wins, which is decided here by the highest event id behind
- * each candidate.
+ * ── Null clears a column (MIP-0018 §2.1 type 5, §6.2) ─────────────────────────────────────────
+ * A kv row whose `val_type` is 5 is the tombstone written by a Null event (see
+ * {@link applyMetadataEvent}). It is skipped here exactly as a `projection_error` row is, so the
+ * column it fed goes back to NULL on the very next recompute — which is what "clears the key"
+ * means for a consumer that projects. The trait row itself stays visible, with the clearing event
+ * beside it.
+ *
+ * ── Multipart `metadata/<n>` is a DRAFT-NAME convention only (owner Q27) ───────────────────────
+ * MIP-0018 §5.4 is explicit: "This MIP defines no multipart representation or reassembly rule." So
+ * under the final name `metadata` is one complete JSON value or nothing, and `metadata/3` is an
+ * ordinary trait. The assembly below therefore considers **only rows whose `name_variant` is the
+ * draft**, so the already-deployed reference contracts keep displaying their split documents while
+ * no MIP-0018 event can ever be assembled into one. The draft's rule was: parts `0..max` ALL
+ * present, all type 3, at most 16 parts / 3 024 bytes, their concatenation parsing as a JSON
+ * object; and when both forms exist the most recently COMPLETED one wins, decided here by the
+ * highest event id behind each candidate.
  */
 export async function projectedFields(
   sql: ISql, schema: string, net: string, key: TokenKey,
 ): Promise<ProjectedFields> {
   const rows = await sql<KvRow[]>`
-    SELECT key_hex, key_text, val_type, val_len, value, projection_error, updated_event_id::text
+    SELECT key_hex, key_text, name_variant, val_type, val_len, value, projection_error,
+           updated_event_id::text
     FROM ${sql(schema)}.token_metadata_kv
     WHERE net = ${net} AND address = ${hexBuf(key.address)} AND domain_sep = ${hexBuf(key.domainSep)}
       AND kind = ${key.kind}
   `;
-  // Only projectable rows with a spellable key can reach a column; everything else is a trait.
+  // Only projectable rows with a spellable key can reach a column; everything else is a trait —
+  // and a Null tombstone (val_type 5) is deliberately in "everything else", which is how a cleared
+  // key empties its column.
   const byKey = new Map<string, KvRow>();
   for (const row of rows) {
     if (row.key_text === null || row.projection_error !== null) continue;
+    if (row.val_type === VAL_TYPE_NULL) continue;
     byKey.set(row.key_text, row);
   }
 
@@ -538,6 +595,9 @@ export async function projectedFields(
   let maxPart = -1;
   for (const row of rows) {
     if (row.key_text === null) continue;
+    // Draft-name rows only: under MIP-0018 this key is a trait and assembling it would invent a
+    // document the standard does not define (§5.4).
+    if (row.name_variant !== "legacy-mip-xxxx") continue;
     const index = metadataPartIndex(row.key_text);
     if (index !== undefined && index < MAX_METADATA_PARTS) maxPart = Math.max(maxPart, index);
   }
@@ -549,6 +609,10 @@ export async function projectedFields(
     for (let i = 0; i <= maxPart; i++) {
       const row = byKey.get(`metadata/${i}`);
       const piece = text(`metadata/${i}`);
+      // A part emitted under the FINAL name is not a part (§5.4): it neither completes an assembly
+      // nor blocks one — the draft-name document simply waits for a draft-name part, as it would
+      // for a missing one.
+      if (row !== undefined && row.name_variant !== "legacy-mip-xxxx") { complete = false; break; }
       if (row === undefined || piece === null) { complete = false; break; }
       parts.push(piece);
       const id = BigInt(row.updated_event_id);
@@ -583,9 +647,15 @@ export async function projectedFields(
   return {
     name: text("name"),
     symbol: text("symbol"),
-    // Appendix A's `decimals` is `val-type` 2 with `val-len == 1`, so the single byte IS the value;
-    // `projection_error` has already refused anything else.
-    decimals: decimalsRow === undefined ? null : decimalsRow.value[0] ?? null,
+    // `decimals` is `val-type` 2, and the bytes read differently under the two names: MIP-0018's
+    // Compact `Uint<8·N>` is little-endian at any width from 1 to 31 bytes, the draft's was
+    // big-endian at one byte. `integerOfValue` is the one place that knows; `projection_error` has
+    // already refused any row whose number is out of the column's 0–36 range, so `Number` is safe.
+    decimals: decimalsRow === undefined
+      ? null
+      : Number(integerOfValue(
+        new Uint8Array(decimalsRow.value.subarray(0, decimalsRow.val_len)), decimalsRow.name_variant,
+      )),
     tokenUri: text("tokenUri"),
     metadata,
   };

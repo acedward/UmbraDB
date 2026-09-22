@@ -5,7 +5,7 @@ import { bootstrapTokenIndexSchema } from "../bootstrap.js";
 import { pad32, tokenColorHex } from "../color.js";
 import type { ObservedMint } from "../ingest/decode.js";
 import { applyMetadataEvent, applyMint, type RawContractEvent } from "../ingest/fold.js";
-import { TOKEN_METADATA_NAME_HEX, encodeInteger } from "../ingest/payload.js";
+import { LEGACY_NAME_HEX, encodeInteger } from "../ingest/payload.js";
 import { metadataPayloadHex } from "./helpers/fake-ledger.js";
 
 /**
@@ -74,7 +74,7 @@ describe("token status rules (MIP §4, §6.3, §7.2)", () => {
       contractAddress: address,
       txHash: height.toString(16).padStart(64, "0"),
       blockHeight: height,
-      nameHex: opts.nameHex ?? TOKEN_METADATA_NAME_HEX,
+      nameHex: opts.nameHex ?? LEGACY_NAME_HEX,
       payloadHex: metadataPayloadHex({
         domainSep: opts.domainSep ?? DOMAIN, kindByte, key, value,
         valType: opts.valType, valLen: opts.valLen,

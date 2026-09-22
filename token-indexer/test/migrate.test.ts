@@ -37,7 +37,7 @@ describe("token_index migration lineage and built-in rows", () => {
     await container?.stop();
   }, 60_000);
 
-  it("[[token-migrate-seeds]] applies the lineage through 003, seeds NIGHT and DUST with the exact bytes the ledger defines, re-runs as a no-op, and rebuild empties everything but the seeds", async () => {
+  it("[[token-migrate-seeds]] applies the lineage through 004, seeds NIGHT and DUST with the exact bytes the ledger defines, re-runs as a no-op, and rebuild empties everything but the seeds", async () => {
     // --- fresh apply ---------------------------------------------------------------------
     await bootstrapTokenIndexSchema(sql, { schema, net });
     const applied = await sql<{ name: string }[]>`
@@ -45,6 +45,7 @@ describe("token_index migration lineage and built-in rows", () => {
     `;
     expect(applied.map((r) => r.name)).toEqual([
       "000_schema", "001_token_index_core", "002_mip_xxxx_layout", "003_token_activity",
+      "004_mip_0018",
     ]);
 
     const tables = await sql<{ table_name: string }[]>`
@@ -359,18 +360,49 @@ describe("token_index migration lineage and built-in rows", () => {
 
     expect(await bad(() => sql`
       INSERT INTO ${sql(schema)}.token_metadata_events
-        (net, event_id, address, tx_hash, block_height, payload, domain_sep, kind_byte, key, key_hex,
-         val_type, val_len, value, applied)
-      VALUES (${net}, 1, ${Buffer.alloc(32)}, ${Buffer.alloc(32)}, 1, ${Buffer.alloc(255)},
+        (net, event_id, address, tx_hash, block_height, name_variant, payload, domain_sep, kind_byte,
+         key, key_hex, val_type, val_len, value, applied)
+      VALUES (${net}, 1, ${Buffer.alloc(32)}, ${Buffer.alloc(32)}, 1, 'mip-0018', ${Buffer.alloc(255)},
               ${Buffer.alloc(32)}, 1, ${Buffer.alloc(32)}, '6e616d65', 1, 0, ${Buffer.alloc(0)}, true)
     `)).toMatch(/payload_check|violates check constraint/i);
+
+    // Migration 004: the event NAME is the version (MIP-0018 §8), so `name_variant` is NOT NULL and
+    // takes one of exactly two values — a third name is a third transport and would need its own
+    // validator, not a string in this column.
+    expect(await bad(() => sql`
+      INSERT INTO ${sql(schema)}.token_metadata_events
+        (net, event_id, address, tx_hash, block_height, name_variant, payload, domain_sep, kind_byte,
+         key, key_hex, val_type, val_len, value, applied)
+      VALUES (${net}, 2, ${Buffer.alloc(32)}, ${Buffer.alloc(32)}, 1, 'mip-9999', ${Buffer.alloc(256)},
+              ${Buffer.alloc(32)}, 1, ${Buffer.alloc(32)}, '6e616d65', 1, 0, ${Buffer.alloc(0)}, true)
+    `)).toMatch(/name_variant_check|violates check constraint/i);
 
     // The kv row's identity is the key's BYTES (MIP §5.1): `key_hex` is lowercase hex and never
     // empty — an all-NUL key is rejected by the parser long before it could reach a kv row.
     expect(await bad(() => sql`
       INSERT INTO ${sql(schema)}.token_metadata_kv
-        (net, address, domain_sep, kind, key_hex, val_type, val_len, value, updated_event_id, updated_height)
-      VALUES (${net}, ${Buffer.alloc(32)}, ${Buffer.alloc(32)}, 1, 'NOTHEX', 1, 0, ${Buffer.alloc(0)}, 1, 1)
+        (net, address, domain_sep, kind, key_hex, name_variant, val_type, val_len, value,
+         updated_event_id, updated_height)
+      VALUES (${net}, ${Buffer.alloc(32)}, ${Buffer.alloc(32)}, 1, 'NOTHEX', 'mip-0018', 1, 0,
+              ${Buffer.alloc(0)}, 1, 1)
     `)).toMatch(/key_hex_check|violates check constraint/i);
+
+    // Migration 004's two Null rules, stated in the schema so the two validators cannot drift:
+    // a Null tombstone carries no bytes, and Null does not exist under the draft name (where 5 is
+    // reserved, so the event is rejected and never reaches this table at all).
+    expect(await bad(() => sql`
+      INSERT INTO ${sql(schema)}.token_metadata_kv
+        (net, address, domain_sep, kind, key_hex, name_variant, val_type, val_len, value,
+         updated_event_id, updated_height)
+      VALUES (${net}, ${Buffer.alloc(32)}, ${Buffer.alloc(32)}, 1, '6e616d65', 'mip-0018', 5, 3,
+              ${Buffer.from("abc", "utf8")}, 1, 1)
+    `)).toMatch(/kv_null_is_empty|violates check constraint/i);
+    expect(await bad(() => sql`
+      INSERT INTO ${sql(schema)}.token_metadata_kv
+        (net, address, domain_sep, kind, key_hex, name_variant, val_type, val_len, value,
+         updated_event_id, updated_height)
+      VALUES (${net}, ${Buffer.alloc(32)}, ${Buffer.alloc(32)}, 1, '6e616d65', 'legacy-mip-xxxx', 5, 0,
+              ${Buffer.alloc(0)}, 1, 1)
+    `)).toMatch(/kv_null_is_mip_0018|violates check constraint/i);
   }, 60_000);
 });

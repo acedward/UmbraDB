@@ -9,7 +9,7 @@ import { pad32, tokenColorHex } from "../color.js";
 import type { TokenIndexerConfig } from "../config.js";
 import type { ObservedMint } from "../ingest/decode.js";
 import { applyMetadataEvent, applyMint, type RawContractEvent } from "../ingest/fold.js";
-import { TOKEN_METADATA_NAME_HEX, encodeInteger } from "../ingest/payload.js";
+import { LEGACY_NAME_HEX, encodeInteger } from "../ingest/payload.js";
 import { metadataPayloadHex } from "./helpers/fake-ledger.js";
 
 /**
@@ -86,7 +86,7 @@ describe("token API (spec §5, FR-106)", () => {
       contractAddress: address,
       txHash: (address.slice(-48) + height.toString(16).padStart(16, "0")),
       blockHeight: height,
-      nameHex: TOKEN_METADATA_NAME_HEX,
+      nameHex: LEGACY_NAME_HEX,
       payloadHex: metadataPayloadHex({ domainSep, kindByte, key, value, valType }),
     };
     await sql.begin(async (tx) => applyMetadataEvent(tx, schema, NET, event));

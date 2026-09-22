@@ -14,7 +14,7 @@ import {
   type IndexerContractEvent,
 } from "../ingest/events.js";
 import {
-  TOKEN_METADATA_NAME_HEX, encodeInteger, isTokenMetadataName, parseTokenMetadata,
+  LEGACY_NAME_HEX, encodeInteger, isTokenMetadataName, parseTokenMetadata,
 } from "../ingest/payload.js";
 import { TokenScanner } from "../ingest/scan.js";
 import { readDecodeCursor } from "../ingest/store.js";
@@ -83,7 +83,7 @@ describe("token metadata event lookup", () => {
   } {
     return {
       id, contractAddress: ADDRESS, txHash: TX, blockHeight: 100,
-      nameHex: opts.nameHex ?? TOKEN_METADATA_NAME_HEX,
+      nameHex: opts.nameHex ?? LEGACY_NAME_HEX,
       payloadHex: metadataPayloadHex({
         domainSep: DOMAIN, kindByte: KIND_SHIELDED_NATIVE, key, value,
         valType: opts.valType, valLen: opts.valLen,
@@ -241,16 +241,23 @@ describe("token metadata event lookup", () => {
   it("[[token-legacy-name-ignored]] an event under the pre-MIP name `TokenMetadata` is IGNORED — counted, never stored, never rejected (MIP §1)", async () => {
     const db = await freshDb();
     // The very same payload bytes under two names. Only the name differs, and only the name decides.
-    const legacyNameHex = Buffer.from(pad32("TokenMetadata")).toString("hex");
-    const legacy = metadataEvent(40, "name", "Old Name", { nameHex: legacyNameHex });
+    //
+    // NOTE, since "legacy" now means two things in this repository: the name under test here is
+    // `TokenMetadata`, the PRE-MIP name project 00020 shipped, which is recognised by NEITHER
+    // validator and is therefore ignored outright (MIP §1). The superseded MIP draft name
+    // `mip-xxxx:token-metadata[v1]` is a different matter entirely — it IS recognised, under the
+    // draft's own rules, because the reference contracts deployed with it are still on chain
+    // (owner Q27); that is what `LEGACY_NAME_HEX` below is, and what `current` is emitted under.
+    const preMipNameHex = Buffer.from(pad32("TokenMetadata")).toString("hex");
+    const preMip = metadataEvent(40, "name", "Old Name", { nameHex: preMipNameHex });
     const current = metadataEvent(41, "name", "New Name");
-    indexer.events.set(`${TX}:${ADDRESS}`, [legacy, current]);
+    indexer.events.set(`${TX}:${ADDRESS}`, [preMip, current]);
     await seedSyntheticTransaction(db.sql, db.archiveSchema, NET, { txHash: TX, blockHeight: 100 });
 
     const scanner = new TokenScanner({
       sql: db.sql, schema: db.schema, archiveSchema: db.archiveSchema, net: NET,
       eventSource: source(),
-      // TWO log ops: the transcript counts the legacy emission as well, because the VM ran it. The
+      // TWO log ops: the transcript counts the ignored emission as well, because the VM ran it. The
       // count assertion is about `log` ops, not about names.
       ledger: fakeLedger({ calls: [{ address: ADDRESS, entryPoint: "publishMetadata", guaranteed: { logOps: 2 } }] }),
     });
@@ -267,11 +274,13 @@ describe("token metadata event lookup", () => {
 
     // …and the bytes themselves were perfectly valid, which is what makes this a NAME decision:
     // the parser would have applied them had the event carried this MIP's name.
-    const parsed = parseTokenMetadata(new Uint8Array(Buffer.from(legacy.payloadHex, "hex")));
+    const parsed = parseTokenMetadata(
+      new Uint8Array(Buffer.from(preMip.payloadHex, "hex")), "legacy-mip-xxxx",
+    );
     expect(parsed.applied).toBe(true);
     expect(parsed.valueText).toBe("Old Name");
-    expect(isTokenMetadataName(legacyNameHex)).toBe(false);
-    expect(isTokenMetadataName(TOKEN_METADATA_NAME_HEX)).toBe(true);
+    expect(isTokenMetadataName(preMipNameHex)).toBe(false);
+    expect(isTokenMetadataName(LEGACY_NAME_HEX)).toBe(true);
   }, 180_000);
 
   async function lookupOnce(

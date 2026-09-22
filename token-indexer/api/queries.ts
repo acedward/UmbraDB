@@ -1,5 +1,7 @@
 import type { UmbraDBSql } from "../../src/postgres/client.js";
-import { decodeUtf8, integerOfValue, valueTextOf } from "../ingest/payload.js";
+import {
+  decodeUtf8, integerOfValue, valueTextOf, type NameVariant,
+} from "../ingest/payload.js";
 import { ownerAddress } from "./bech32m.js";
 
 /**
@@ -125,8 +127,14 @@ export interface TraitJson {
   value: string;
   /** `val-type` 1/3/4 rendered as text, when the bytes decode. */
   text: string | null;
-  /** `val-type` 2 as a decimal string — up to 16 big-endian bytes, so never a JSON number. */
+  /** `val-type` 2 as a decimal string — up to 31 bytes wide, so never a JSON number. Read under
+   *  `nameVariant`'s rules: MIP-0018's Compact `Uint<8·N>` is little-endian, the superseded draft's
+   *  integer was big-endian. */
   integer: string | null;
+  /** Which event name set this key: `mip-0018` for the standard, `legacy-mip-xxxx` for the
+   *  superseded draft the already-deployed reference contracts still emit (owner Q27). It is the
+   *  rule set the value was judged and decoded under, and what the page badges "pre-MIP name". */
+  nameVariant: NameVariant;
   /** Non-`null` when this is an Appendix A key whose value broke Appendix A's rule for it: the
    *  trait stands, the column it would feed does not (MIP §5.3). */
   projectionError: string | null;
@@ -399,12 +407,13 @@ export class TokenIndexQueries {
   async metadataKeys(address: string, domainSep: string, kind: number): Promise<TraitJson[]> {
     const sql = this.sql;
     const rows = await sql<{
-      key_hex: string; key_text: string | null; val_type: number; val_len: number; value: Buffer;
+      key_hex: string; key_text: string | null; name_variant: NameVariant; val_type: number;
+      val_len: number; value: Buffer;
       projection_error: string | null; updated_height: string; updated_event_id: string;
       tx_hash: Buffer | null;
     }[]>`
-      SELECT kv.key_hex, kv.key_text, kv.val_type, kv.val_len, kv.value, kv.projection_error,
-             kv.updated_height::text, kv.updated_event_id::text, e.tx_hash
+      SELECT kv.key_hex, kv.key_text, kv.name_variant, kv.val_type, kv.val_len, kv.value,
+             kv.projection_error, kv.updated_height::text, kv.updated_event_id::text, e.tx_hash
       FROM ${sql(this.s)}.token_metadata_kv kv
       LEFT JOIN ${sql(this.s)}.token_metadata_events e
         ON e.net = kv.net AND e.event_id = kv.updated_event_id
@@ -421,7 +430,8 @@ export class TokenIndexQueries {
         valLen: r.val_len,
         value: Buffer.from(bytes).toString("hex"),
         text: valueTextOf(r.val_type, bytes) ?? null,
-        integer: r.val_type === 2 ? integerOfValue(bytes) : null,
+        integer: r.val_type === 2 ? integerOfValue(bytes, r.name_variant) : null,
+        nameVariant: r.name_variant,
         projectionError: r.projection_error,
         updatedHeight: Number(r.updated_height),
         updatedTxHash: r.tx_hash === null ? null : r.tx_hash.toString("hex"),
@@ -482,16 +492,18 @@ export class TokenIndexQueries {
   ): Promise<Page<{
     eventId: number; blockHeight: number; txHash: string; domainSep: string; kindByte: number;
     key: string; keyHex: string; keyText: string | null; valType: number; valLen: number;
-    value: string; text: string | null; applied: boolean; rejectReason: string | null;
+    value: string; text: string | null; integer: string | null; nameVariant: NameVariant;
+    applied: boolean; rejectReason: string | null;
   }>> {
     const sql = this.sql;
     const rows = await sql<{
       event_id: string; block_height: string; tx_hash: Buffer; domain_sep: Buffer; kind_byte: number;
-      key: Buffer; key_hex: string; key_text: string | null; val_type: number; val_len: number;
+      key: Buffer; key_hex: string; key_text: string | null; name_variant: NameVariant;
+      val_type: number; val_len: number;
       value: Buffer; applied: boolean; reject_reason: string | null;
     }[]>`
       SELECT event_id::text, block_height::text, tx_hash, domain_sep, kind_byte, key, key_hex,
-             key_text, val_type, val_len, value, applied, reject_reason
+             key_text, name_variant, val_type, val_len, value, applied, reject_reason
       FROM ${sql(this.s)}.token_metadata_events
       WHERE net = ${this.net} AND address = ${Buffer.from(address, "hex")}
         AND (${opts.applied === undefined ? null : opts.applied}::boolean IS NULL
@@ -520,6 +532,10 @@ export class TokenIndexQueries {
         // A rejected event may carry a reserved type; render its bytes as text only when the type
         // says they are text and they really decode.
         text: valueTextOf(r.val_type, bytes) ?? null,
+        // …and an integer only under the rules of the name it was emitted with: MIP-0018's
+        // `Uint<8·N>` is little-endian, the superseded draft's integer was big-endian.
+        integer: r.val_type === 2 ? integerOfValue(bytes, r.name_variant) : null,
+        nameVariant: r.name_variant,
         applied: r.applied,
         rejectReason: r.reject_reason,
       };

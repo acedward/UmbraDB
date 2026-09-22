@@ -7,8 +7,8 @@ import { pad32, tokenColorHex } from "../color.js";
 import type { ObservedMint } from "../ingest/decode.js";
 import { applyMetadataEvent, applyMint, type RawContractEvent } from "../ingest/fold.js";
 import {
-  TOKEN_METADATA_EVENT_NAME, TOKEN_METADATA_NAME_HEX, integerOfValue, isTokenMetadataName,
-  parseTokenMetadata, type ProjectionError, type RejectReason,
+  LEGACY_EVENT_NAME, LEGACY_NAME_HEX, integerOfValue, isTokenMetadataName, nameVariantOf,
+  parseTokenMetadata, type NameVariant, type ProjectionError, type RejectReason,
 } from "../ingest/payload.js";
 
 /**
@@ -29,6 +29,29 @@ import {
 
 const DIR = new URL("./fixtures/contracts/", import.meta.url);
 const read = <T>(file: string): T => JSON.parse(readFileSync(new URL(file, DIR), "utf8")) as T;
+
+/**
+ * The event name the PINNED corpus was produced under.
+ *
+ * `fixtures/contracts/` came out of contracts compiled with the SUPERSEDED PR #315 draft name, and
+ * those are the contracts deployed on Stagenet today (owner decisions Q27/Q28: kept for the
+ * demonstration, not redeployed). `SOURCE.md` records the exact commit. Re-pinning this corpus on a
+ * regenerated MIP-0018 one changes **this one line** — and nothing else, because the rules each
+ * payload is judged under are read from that payload's own recorded event name by
+ * {@link variantOfFixture}, exactly as the indexer reads them from the event on chain.
+ */
+const CORPUS_EVENT_NAME = LEGACY_EVENT_NAME;
+
+/** The variant a fixture's own recorded event NAME names (MIP §8: the name is the version). Throws
+ *  for a name this consumer does not recognise, so a corpus regenerated under a third name cannot
+ *  quietly be validated under the wrong rules. */
+function variantOfFixture(eventName: string): NameVariant {
+  const variant = nameVariantOf(Buffer.from(pad32(eventName)).toString("hex"));
+  if (variant === undefined) {
+    throw new Error(`fixture event name ${eventName} is recognised by neither validator`);
+  }
+  return variant;
+}
 
 /** The corpus records `keyHex` as the RAW 32-byte field; MIP §5.1 makes the key's identity the same
  *  bytes with their trailing NULs trimmed, which is what this indexer stores. Same key, two
@@ -90,12 +113,12 @@ describe("the compiled reference contracts' recorded corpus", () => {
     expect(events.count).toBe(69);
     for (const e of events.events) {
       // MIP §1: the name is the version, and every one of these carries THIS MIP's name.
-      expect(e.eventName, `${e.row}#${e.eventId} event name`).toBe(TOKEN_METADATA_EVENT_NAME);
+      expect(e.eventName, `${e.row}#${e.eventId} event name`).toBe(CORPUS_EVENT_NAME);
       expect(isTokenMetadataName(Buffer.from(pad32(e.eventName)).toString("hex"))).toBe(true);
 
       const bytes = Buffer.from(e.payloadHex, "hex");
       expect(bytes, `${e.row}#${e.eventId} payload width`).toHaveLength(256);
-      const parsed = parseTokenMetadata(new Uint8Array(bytes));
+      const parsed = parseTokenMetadata(new Uint8Array(bytes), variantOfFixture(e.eventName));
       expect(parsed.applied, `${e.row}#${e.eventId} (${e.keyText}) was rejected: ${parsed.rejectReason}`).toBe(true);
       expect(Buffer.from(parsed.domainSep).toString("hex")).toBe(e.domainSepHex);
       expect(parsed.kindByte).toBe(e.kind);
@@ -113,7 +136,7 @@ describe("the compiled reference contracts' recorded corpus", () => {
       } else {
         expect(parsed.valueText, `${e.row}#${e.eventId} type ${e.valType} has no text`).toBeUndefined();
         if (e.valType === 2) {
-          expect(integerOfValue(parsed.valueBytes))
+          expect(integerOfValue(parsed.valueBytes, variantOfFixture(e.eventName)))
             .toBe(BigInt(`0x${e.valueHex === "" ? "0" : e.valueHex}`).toString(10));
         }
       }
@@ -158,7 +181,9 @@ describe("the compiled reference contracts' recorded corpus", () => {
         continue;
       }
 
-      const parsed = parseTokenMetadata(new Uint8Array(Buffer.from(n.payloadHex, "hex")));
+      const parsed = parseTokenMetadata(
+        new Uint8Array(Buffer.from(n.payloadHex, "hex")), variantOfFixture(n.eventName),
+      );
       if (n.expect === "rejected") {
         expect(parsed.applied, `${label} should be rejected`).toBe(false);
         expect(parsed.rejectReason, label).toBe(n.reason);
@@ -185,7 +210,9 @@ describe("the compiled reference contracts' recorded corpus", () => {
     const projectionErrors = new Set<ProjectionError | undefined>(
       negatives.payloads
         .filter((n) => n.expect === "applied" && n.projectionFails === true)
-        .map((n) => parseTokenMetadata(new Uint8Array(Buffer.from(n.payloadHex, "hex"))).projectionError),
+        .map((n) => parseTokenMetadata(
+          new Uint8Array(Buffer.from(n.payloadHex, "hex")), variantOfFixture(n.eventName),
+        ).projectionError),
     );
     expect(projectionErrors.size).toBeGreaterThanOrEqual(4);
     expect(projectionErrors.has("val_type_mismatch")).toBe(true);
@@ -243,7 +270,7 @@ describe("the compiled reference contracts' recorded corpus", () => {
           contractAddress: e.contractAddress,
           txHash: (e.contractAddress.slice(-56) + e.eventId.toString(16).padStart(8, "0")),
           blockHeight: 2_000 + e.eventId,
-          nameHex: TOKEN_METADATA_NAME_HEX,
+          nameHex: LEGACY_NAME_HEX,
           payloadHex: e.payloadHex,
         };
         await sql.begin(async (tx) => applyMetadataEvent(tx, schema, NET, event));
