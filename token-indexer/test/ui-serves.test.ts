@@ -19,6 +19,14 @@ import { DASHBOARD_CSP, DASHBOARD_HTML, serveUi } from "../ui/page.js";
  * imports — without pulling a DOM implementation into this repository's dependency set.
  */
 
+/**
+ * The standard itself, on `main` — the one URL the page and the README are now allowed to give for
+ * MIP-0018 (owner, Phase G change 6). A pull-request link names a moment in the discussion; this
+ * names the document.
+ */
+const MIP_URL =
+  "https://github.com/midnightntwrk/midnight-improvement-proposals/blob/main/mips/mip-0018-on-chain-token-metadata.md";
+
 /** The handler the token API is contracted to install: `serveUi` first, 404 for the rest. */
 function handler(req: IncomingMessage, res: ServerResponse): void {
   if (serveUi(req, res)) return;
@@ -234,18 +242,20 @@ describe("the token explorer page", () => {
     expect(script).toContain("lastIndexOf");
 
     // ── F1.4: MIP-0018 is the standard, and a draft-name value says so ──────────────────────
-    // The notice names the standard and its own PR, not the draft's.
-    expect(body).toContain("<b>MIP-0018, On-Chain Token Metadata Emission</b>");
-    expect(body).toContain("midnight-improvement-proposals PR&nbsp;#325");
+    // The notice names the standard, and (Phase G change 6) links the standard itself on `main`
+    // rather than the pull request that proposed it: a PR link is a moment in the discussion.
+    expect(body).toContain(`<b><a href="${MIP_URL}" target="_blank" rel="noopener noreferrer">MIP-0018</a>, On-Chain Token Metadata Emission</b>`);
+    expect(body).not.toContain("pull/325");
+    expect(body).not.toContain("PR&nbsp;#325");
     expect(body).not.toContain("MIP-XXXX");
     expect(body).not.toContain("pull/315");
     // The badge: one hue, one wording, and it appears wherever a draft-name value does — beside a
-    // trait's key, in the events table's own `name` column, and in the notice that explains it.
+    // trait's key and in the events table's own `name` column. (Its legend in the notice went with
+    // the paragraph the owner removed; it now carries its own tooltip — see Phase G change 2.)
     expect(style).toContain("--tag-premip-bg:");
     expect(style).toContain(".premip {");
     expect(script).toContain("function preMipBadge(");
     expect(script).toContain('node("span", "pre-MIP name", "premip")');
-    expect(body).toContain('<span class="premip">pre-MIP name</span>');
     // …and only a draft-name value is marked: the standard's own name is the expected case.
     expect(script).toContain('if (variant !== "legacy-mip-xxxx") return null;');
     expect(script).toContain("function variantLabel(");
@@ -261,6 +271,94 @@ describe("the token explorer page", () => {
     // Both explanatory notes are present, each under the table it explains.
     expect(script).toContain("a key marked pre-MIP name was set by an event carrying the superseded draft name ");
     expect(script).toContain("an event marked pre-MIP name carried the superseded draft name ");
+
+    // ── Phase G: the owner's UI fixes after the #21 merge (page only) ────────────────────────
+    //
+    // (1) The notice's pre-MIP explanation paragraph is REMOVED, not hidden: three lines of
+    // history in front of a reader who wants the list. Its legend went with it, which is why
+    // every tag now carries a tooltip (2). The rest of the notice is untouched.
+    expect(body).not.toContain("still carried its");
+    expect(body).not.toContain("placeholder number");
+    expect(body).not.toContain("which is why they still display correctly");
+    expect(body).not.toContain('<span class="premip">pre-MIP name</span>');
+    expect(body).toContain("<b>This explorer lists every token on Midnight Stagenet</b>");
+    expect(body).toContain("Midnight has no standard way for a token to publish its name");
+
+    // (2) Every tag explains itself, through the native `title` attribute — no script, no
+    // library, no second element, nothing for the CSP to admit — and every phrase is stated ONCE
+    // in `TAG_HELP`, so a tag cannot drift away from the sentence that explains it.
+    expect(script).toContain("var TAG_HELP = {");
+    for (const [tag, phrase] of [
+      ["builtin", "Built into the network: NIGHT and DUST have no issuing contract"],
+      ["observed", "Minted on chain by its contract; the contract has published no metadata for it"],
+      ["declared", "Its contract published metadata for it, but no mint has been seen"],
+      ["described", "Minted on chain and described by its contract's published metadata"],
+      ["seen", "Seen in public transaction data before its mint; the issuing contract is not known yet"],
+      ["shielded", "A native shielded token: coins are commitments, only offer imbalances name the colour"],
+      ["unshielded", "A native unshielded token: every UTXO shows its owner, colour and amount"],
+      ["ledger", "A ledger token: balances live in the contract's own state, not in UTXOs"],
+      ["collection", "One contract minting many tokens, one domain separator per piece"],
+      ["dual", "One domain separator issued both shielded and unshielded"],
+      ["multiple", "This contract issues several domain separators; open the contract to see them all"],
+      ["nocount", "This section did not take effect: its transaction or segment failed"],
+      // the pre-MIP phrase is a two-line concatenation in the source, so it is read in halves
+      ["premip", "Published under the draft name of MIP-0018 (before the number was assigned) and read "],
+      ["premip", "under the rules of that draft"],
+    ] as const) {
+      expect(script, `TAG_HELP.${tag} must carry its phrase`).toContain(phrase);
+    }
+    // …and every badge and chip takes its title FROM that map, rather than spelling one of its own.
+    expect(script).toContain("function tagHelp(");
+    expect(script).toContain("hasOwnProperty.call(TAG_HELP, name)");
+    expect(script).toContain("function withHelp(");
+    expect(script).toContain('withHelp(node("span", v, "badge " + cls), v)');
+    expect(script).toContain('withHelp(node("span", fam, "fam fam-" + fam), fam)');
+    expect(script).toContain('withHelp(node("span", "multiple", "multi"), "multiple")');
+    expect(script).toContain('withHelp(node("span", "pre-MIP name", "premip"), "premip")');
+    expect(script).toContain('withHelp(node("span", "not counted", "chip nocount"), "nocount")');
+
+    // (3) The token view's subtitle says what it knows, or why it does not know it: "no symbol"
+    // read like a symbol, and a bare "-" for decimals said nothing about why it was absent.
+    expect(script).toContain("function subtitleOf(");
+    expect(script).toContain('sub.appendChild(node("span", subtitleOf(t), "note"));');
+    expect(script).toContain('"no symbol metadata"');
+    expect(script).toContain('"no decimals metadata"');
+    expect(script).toContain('"ledger token"');
+    expect(script).toContain('"native token"');
+    expect(script).toContain('" · kind " + orDash(t.kind) + " (" + privacy + ") · "');
+    // the retired wording, gone
+    expect(script).not.toContain('" · decimals "');
+
+    // (4) The list's first column: a check mark when the token has metadata declarations on
+    // chain. ONE line of logic, so the rule can be narrowed to the final event name later, and
+    // both event-name variants count — the owner does not want the pre-MIP distinction here.
+    expect(script).toContain("function hasMip0018(");
+    expect(script).toContain('return !!t && (t.status === "declared" || t.status === "described");');
+    expect(script).toContain('var MIP_HEAD = "Has metadata published on chain under MIP-0018";');
+    expect(script).toContain('tableIn(sec, [{ label: "MIP-0018", title: MIP_HEAD },');
+    expect(script).toContain('cell(tr, mipCell(t), "mipcol");');
+    expect(script).toContain('node("span", "✅", "mip")');
+    // the header's own tooltip, and the column's style
+    expect(script).toContain("if (isPair && spec.title) th.title = spec.title;");
+    expect(style).toContain("td.mipcol { text-align: center; }");
+
+    // (5) The frontend filter of the same rule. It filters the rows already loaded, so the list
+    // is requested with the API's maximum page while it is on — otherwise a row with metadata
+    // could sit behind a page boundary the reader never sees.
+    expect(body).toContain('<select id="f-mip">');
+    expect(body).toContain('<option value="">all</option>');
+    expect(body).toContain('<option value="only">only with MIP-0018</option>');
+    expect(script).toContain("function visibleListItems(");
+    expect(script).toContain("var items = visibleListItems();");
+    expect(script).toContain("var LIST_LIMIT_FILTERED = 500;");
+    expect(script).toContain("state.filters.mip ? LIST_LIMIT_FILTERED : LIST_LIMIT");
+    expect(script).toContain('state.filters.mip = el("f-mip").value;');
+    expect(script).toContain('el("f-mip").addEventListener("change", applyFilters);');
+    expect(script).toContain('el("f-mip").value = "";');
+    // The filter bar is static markup and only the table re-renders, so the selection survives
+    // the 10 s refresh: `render()` must never rebuild `#filters`.
+    expect(script).toContain('el("filters").hidden = v !== "list";');
+    expect(script).not.toContain('el("filters").innerHTML');
 
     // ── 00023: the CSP hashes are the hashes of the bytes it serves ──────────────────────────
     const csp = res.headers.get("content-security-policy") ?? "";
@@ -280,7 +378,7 @@ describe("the token explorer page", () => {
     // in a string the script builds a link from. Those four are <a> navigations a person follows,
     // opened in a new tab without an opener or referrer — never a resource the page loads.
     const OUTBOUND = [
-      "https://github.com/midnightntwrk/midnight-improvement-proposals/pull/325",
+      MIP_URL,
       "https://github.com/acedward/UmbraDB/pull/19",
       "https://github.com/acedward/mip-erc7496-midnight-contracts",
       "https://github.com/effectstream/staging-tokens-addresses",

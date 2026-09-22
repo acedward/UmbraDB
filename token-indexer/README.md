@@ -35,10 +35,10 @@ additive migration files (`src/postgres/migrations/token_index/` and
 
 ## The standard this reads (normative)
 
-**MIP-0018, `mips/mip-0018-on-chain-token-metadata.md`** in
-`midnightntwrk/midnight-improvement-proposals` —
-[PR #325](https://github.com/midnightntwrk/midnight-improvement-proposals/pull/325) @ `37a3471`,
-status Proposed — "On-Chain Token Metadata Emission". Normative there are the event envelope [1],
+**[MIP-0018, On-Chain Token Metadata Emission](https://github.com/midnightntwrk/midnight-improvement-proposals/blob/main/mips/mip-0018-on-chain-token-metadata.md)**
+— `mips/mip-0018-on-chain-token-metadata.md` on `main` of
+`midnightntwrk/midnight-improvement-proposals` (merged from PR #325; this implementation was
+written against `37a3471`). Normative there are the event envelope [1],
 the payload layout [2], the `kind` byte [3], token identity [4], key/value handling [5], emission
 rules [6], consumer acceptance and input handling [7.1, 7.3–7.4] and versioning [8].
 
