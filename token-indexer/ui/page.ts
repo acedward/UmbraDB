@@ -130,7 +130,6 @@ const STYLE = `
      badge cannot be mistaken for a status, a family or a direction. Text 7.81:1 on its own ground;
      the border's 2.34:1 sits mid-band among the eleven existing tag borders (2.04-2.50:1), which
      is the band this palette already holds a decorative edge to. */
-  --tag-premip-bg: #fcebf3; --tag-premip-bd: #dd94b4; --tag-premip-fg: #8a1a50;
 }
 * { box-sizing: border-box; }
 /* A display rule on an element beats the user agent's [hidden] rule, and the filter bar is a
@@ -296,13 +295,6 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   background: var(--tag-unknown-bg); }
 .chip.nocount { color: var(--tag-bad-fg); border-color: var(--tag-bad-bd);
   background: var(--tag-bad-bg); }
-/* The "pre-MIP name" badge (F1.4). The event name IS the standard's version (MIP-0018 section 8),
-   so a value that arrived under the superseded draft name was judged by different rules, and a
-   reader comparing two tokens has to be able to see which. One hue, one shape, everywhere it
-   appears: beside a trait's key and in the events table's own name column. */
-.premip { display: inline-block; margin-left: 8px; padding: 0 6px; font-size: 10.5px;
-  font-weight: 500; letter-spacing: 0.02em; color: var(--tag-premip-fg);
-  border: 1px solid var(--tag-premip-bd); background: var(--tag-premip-bg); }
 tr.det td { background: var(--det); white-space: normal; }
 .det-grid { display: grid; grid-template-columns: max-content 1fr; gap: 5px 18px; font-size: 12.5px;
   margin: 6px 0 4px; }
@@ -896,8 +888,6 @@ var TAG_HELP = {
   dual: "One domain separator issued both shielded and unshielded",
   // the two chips that are not a status and not a family
   multiple: "This contract issues several domain separators; open the contract to see them all",
-  premip: "Published under the draft name of MIP-0018 (before the number was assigned) and read "
-    + "under the rules of that draft",
   nocount: "This section did not take effect: its transaction or segment failed"
 };
 // Own properties only: a status string arrives from the API, and "constructor" or "toString" would
@@ -1030,23 +1020,6 @@ function typeLabel(vt) {
   var n = Number(vt);
   return n >= 0 && n < names.length ? String(n) + " " + names[n] : String(n) + " reserved";
 }
-// The "pre-MIP name" badge: a node for a value that arrived under the SUPERSEDED draft event name,
-// and null for the standard's own name, which needs no marking because it is the expected case.
-// The reference contracts on Stagenet were deployed with the draft name and are not being
-// redeployed, so their traits keep this badge for as long as they are the demonstration.
-function preMipBadge(variant) {
-  if (variant !== "legacy-mip-xxxx") return null;
-  // The tooltip is the one phrase of TAG_HELP, like every other tag: the notice's explanatory
-  // paragraph is gone (the owner removed it), and the full rules still stand as the notes under
-  // the traits and the events tables, where a reader who wants them is already looking.
-  return withHelp(node("span", "pre-MIP name", "premip"), "premip");
-}
-// The name an event carried, as the events table prints it.
-function variantLabel(variant) {
-  if (variant === "mip-0018") return "MIP-0018";
-  if (variant === "legacy-mip-xxxx") return "pre-MIP";
-  return "-";
-}
 function traitValueCell(tr) {
   if (Number(tr.valType) === 2 && tr.integer !== null && tr.integer !== undefined) {
     return node("span", String(tr.integer), "txt");
@@ -1065,10 +1038,6 @@ function traitKeyCell(tr) {
     hexKey.title = "this key is not valid UTF-8 and is shown as its bytes";
     wrap.appendChild(hexKey);
   }
-  // A trait carries the name variant of the event that SET it, not of the token: one token can
-  // hold keys set under both names, and which rules read a value is a property of the value.
-  var badge = preMipBadge(tr.nameVariant);
-  if (badge) wrap.appendChild(badge);
   return wrap;
 }
 function domainCell(d) {
@@ -1514,8 +1483,7 @@ function apiCell(t) {
 // a mint with nothing said about it, seen is a colour with no contract at all, and builtin is
 // this indexer's own seed. BOTH event-name variants count: the draft name is the same standard at
 // an earlier number, and the owner's decision is that a reader of the list is not asked to care
-// (the per-value pre-MIP name badge still says it where the value is shown). Deliberately one
-// line, so narrowing the rule to the final name later is a one-line change.
+// Deliberately one line, so narrowing the rule to the final name later is a one-line change.
 function hasMip0018(t) {
   return !!t && (t.status === "declared" || t.status === "described");
 }
@@ -2636,10 +2604,8 @@ function renderToken(main) {
   } else {
     var tb = tableIn(traits, ["key", "type", "value", "len", "projection", "block", "tx", "event id"]);
     var anyError = false;
-    var anyPreMip = false;
     for (var k = 0; k < d.keys.length; k++) {
       var kv = d.keys[k];
-      if (kv.nameVariant === "legacy-mip-xxxx") anyPreMip = true;
       var row = document.createElement("tr");
       cell(row, traitKeyCell(kv));
       cell(row, node("span", typeLabel(kv.valType), "vtype"));
@@ -2663,15 +2629,6 @@ function renderToken(main) {
         + "the column it would have filled was not written - the standard's appendix A is "
         + "informative and a projection is this explorer's convention, never a verdict on the "
         + "contract",
-        "note"));
-    }
-    if (anyPreMip) {
-      traits.appendChild(node("div",
-        "a key marked pre-MIP name was set by an event carrying the superseded draft name "
-        + "mip-xxxx:token-metadata[v1] rather than mip-0018:token-metadata[v1]. The event name is "
-        + "the layout version, so those values were read under the draft's rules; they are shown "
-        + "so that the reference contracts already deployed under that name keep displaying "
-        + "correctly",
         "note"));
     }
   }
@@ -2799,10 +2756,9 @@ function eventsSection(events, markDomain, heading) {
       + "order, which is the order the fold applies them in, so the last row of a key is the value in force",
       "note"));
   }
-  var tb = tableIn(sec, ["event id", "block", "name", "tx", "domainSep", "kind", "key", "type",
+  var tb = tableIn(sec, ["event id", "block", "tx", "domainSep", "kind", "key", "type",
     "len", "value", "applied", "reject reason"]);
   var ordered = orderEvents(events, markDomain);
-  var anyPreMipEvent = false;
   for (var i = 0; i < ordered.length; i++) {
     var e = ordered[i];
     var tr = document.createElement("tr");
@@ -2810,20 +2766,6 @@ function eventsSection(events, markDomain, heading) {
     if (markDomain && dom === markDomain) tr.className = "mark";
     cell(tr, orDash(e.eventId === undefined ? e.id : e.eventId), "num");
     cell(tr, orDash(e.blockHeight), "num");
-    // Which of the two event names this event carried, and therefore which rules judged it
-    // (MIP-0018 section 8: the event name is the version). The standard's name reads as plain
-    // text; the superseded draft name gets the badge, because that is the one a reader must
-    // notice.
-    if (e.nameVariant === "legacy-mip-xxxx") {
-      anyPreMipEvent = true;
-      var nameCell = node("span");
-      var nameBadge = preMipBadge(e.nameVariant);
-      nameCell.appendChild(nameBadge);
-      nameBadge.style.marginLeft = "0";
-      cell(tr, nameCell);
-    } else {
-      cell(tr, node("span", variantLabel(e.nameVariant), "vtype"));
-    }
     cell(tr, copyable(e.txHash, shortHex(e.txHash, 8, 6), "hex"));
     cell(tr, domainCell(dom));
     cell(tr, orDash(e.kindByte === undefined ? e.kind_byte : e.kindByte), "num");
@@ -2838,15 +2780,6 @@ function eventsSection(events, markDomain, heading) {
       : (e.applied === false ? node("span", "no", "err") : "-"));
     cell(tr, e.rejectReason ? node("span", String(e.rejectReason), "err wrapv") : node("span", "-", "no"));
     tb.appendChild(tr);
-  }
-  if (anyPreMipEvent) {
-    sec.appendChild(node("div",
-      "an event marked pre-MIP name carried the superseded draft name "
-      + "mip-xxxx:token-metadata[v1]. It was validated under that draft's rules - integers "
-      + "big-endian and at most 16 bytes, no Null type, metadata assembled from metadata/<n> "
-      + "parts - because the event name is the layout version. The reference contracts on this "
-      + "network were deployed with that name and are not being redeployed",
-      "note"));
   }
   return sec;
 }
@@ -3147,12 +3080,9 @@ const BODY = `<aside id="poc" class="poc" role="note">
     <b><a href="https://github.com/midnightntwrk/midnight-improvement-proposals/blob/main/mips/mip-0018-on-chain-token-metadata.md" target="_blank" rel="noopener noreferrer">MIP-0018</a>, On-Chain Token Metadata Emission</b>
     adds one: a contract announces its token's metadata by emitting <b>events</b>, and an indexer
     like this one collects them.</p>
-  <!-- The paragraph that used to stand here explained the placeholder-number deployment and acted
-       as the legend for the "pre-MIP name" badge. The owner removed it after the live review: it
-       is three lines of history in front of a reader who only wants the list, and the badge is no
-       longer unexplained without it — it carries its own tooltip (TAG_HELP.premip), like every
-       other tag on the page. The badge itself is untouched wherever a value or an event shows it,
-       and the longer notes under the traits and events tables still say what it means in full. -->
+  <!-- The placeholder-number history and the per-value "pre-MIP name" badge were removed at the
+       owner's request after the live review: a reader of the page does not need to know which
+       event name a value arrived under. The API still reports nameVariant for machines. -->
   <ul class="poc-links">
     <li>Indexer:
       <a href="https://github.com/acedward/UmbraDB/pull/19" target="_blank" rel="noopener noreferrer">UmbraDB PR&nbsp;#19</a></li>

@@ -249,28 +249,16 @@ describe("the token explorer page", () => {
     expect(body).not.toContain("PR&nbsp;#325");
     expect(body).not.toContain("MIP-XXXX");
     expect(body).not.toContain("pull/315");
-    // The badge: one hue, one wording, and it appears wherever a draft-name value does — beside a
-    // trait's key and in the events table's own `name` column. (Its legend in the notice went with
-    // the paragraph the owner removed; it now carries its own tooltip — see Phase G change 2.)
-    expect(style).toContain("--tag-premip-bg:");
-    expect(style).toContain(".premip {");
-    expect(script).toContain("function preMipBadge(");
-    expect(script).toContain('node("span", "pre-MIP name", "premip")');
-    // …and only a draft-name value is marked: the standard's own name is the expected case.
-    expect(script).toContain('if (variant !== "legacy-mip-xxxx") return null;');
-    expect(script).toContain("function variantLabel(");
-    expect(script).toContain('"MIP-0018"');
-    // The events table gained a `name` column, between the block and the transaction.
-    expect(script).toContain('["event id", "block", "name", "tx", "domainSep", "kind", "key", "type"');
-    // A trait is badged by the variant of the event that SET it, never by the token's.
-    expect(script).toContain("preMipBadge(tr.nameVariant)");
-    expect(script).toContain('if (kv.nameVariant === "legacy-mip-xxxx") anyPreMip = true;');
-    expect(script).toContain('if (e.nameVariant === "legacy-mip-xxxx") {');
+    // The per-value "pre-MIP name" badge, the events table's `name` column and both explanatory
+    // notes are GONE (owner, after the live review of Phase G): a reader of the page is not told
+    // which event name a value arrived under; the API keeps `nameVariant` for machines.
+    expect(script).not.toContain("preMipBadge");
+    expect(script).not.toContain("pre-MIP");
+    expect(style).not.toContain(".premip");
+    expect(style).not.toContain("--tag-premip");
+    expect(script).toContain('["event id", "block", "tx", "domainSep", "kind", "key", "type"');
     // MIP-0018 section 2.1's sixth type has a name on the page: Null is not "5 reserved" any more.
     expect(script).toContain('var names = ["opaque", "text", "integer", "JSON", "URI", "Null"];');
-    // Both explanatory notes are present, each under the table it explains.
-    expect(script).toContain("a key marked pre-MIP name was set by an event carrying the superseded draft name ");
-    expect(script).toContain("an event marked pre-MIP name carried the superseded draft name ");
 
     // ── Phase G: the owner's UI fixes after the #21 merge (page only) ────────────────────────
     //
@@ -301,9 +289,6 @@ describe("the token explorer page", () => {
       ["dual", "One domain separator issued both shielded and unshielded"],
       ["multiple", "This contract issues several domain separators; open the contract to see them all"],
       ["nocount", "This section did not take effect: its transaction or segment failed"],
-      // the pre-MIP phrase is a two-line concatenation in the source, so it is read in halves
-      ["premip", "Published under the draft name of MIP-0018 (before the number was assigned) and read "],
-      ["premip", "under the rules of that draft"],
     ] as const) {
       expect(script, `TAG_HELP.${tag} must carry its phrase`).toContain(phrase);
     }
@@ -314,7 +299,6 @@ describe("the token explorer page", () => {
     expect(script).toContain('withHelp(node("span", v, "badge " + cls), v)');
     expect(script).toContain('withHelp(node("span", fam, "fam fam-" + fam), fam)');
     expect(script).toContain('withHelp(node("span", "multiple", "multi"), "multiple")');
-    expect(script).toContain('withHelp(node("span", "pre-MIP name", "premip"), "premip")');
     expect(script).toContain('withHelp(node("span", "not counted", "chip nocount"), "nocount")');
 
     // (3) The token view's subtitle says what it knows, or why it does not know it: "no symbol"
