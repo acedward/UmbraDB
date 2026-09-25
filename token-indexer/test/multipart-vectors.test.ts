@@ -1,0 +1,449 @@
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
+import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import { bootstrapTokenIndexSchema } from "../bootstrap.js";
+import { pad32 } from "../color.js";
+import { IndexerEventSource, drainPendingLookups } from "../ingest/events.js";
+import {
+  MIP_0018_NAME_HEX, encodeTokenMetadataUc1, splitIntoParts,
+} from "../ingest/payload.js";
+import { TokenScanner } from "../ingest/scan.js";
+import { startFakeEventIndexer, type FakeEvent, type FakeEventIndexer } from "./helpers/fake-event-indexer.js";
+import {
+  fakeLedgerPerTransaction, fakeRawEvent, type FakeCallSpec, type FakeLedgerSpecs,
+} from "./helpers/fake-ledger.js";
+import { seedSyntheticTransaction } from "./helpers/synthetic-archive.js";
+
+/**
+ * Project 00024-01 task B2 — every normative vector of [Y] (`compact-multi-part-event` PR #1 @
+ * `f2425f2`, `MIP-SPEC-DRAFT.md` "Testing"; spec 00024 US2, FR-005, SC-002) THROUGH THE SCANNER:
+ *
+ *   synthetic transaction (fake ledger: calls, intents, guaranteed/fallible `log` counts, the
+ *   archived result and segment outcomes) → the real `TokenScanner` → the real `IndexerEventSource`
+ *   over HTTP to a fake indexer serving each event's typed fields AND its `raw` → the barrier →
+ *   `readPackages` → the fold → `token_metadata_events`.
+ *
+ * Each vector asserts the package groups, part counts, part orders (the parts' event ids), lengths
+ * and bytes exactly as [Y] lists them, plus the phase this indexer records. The vectors' bytes are
+ * not MIP-0018 declarations (`aa…` is kind 170), so every package is stored REJECTED — which is
+ * the point: the transport result is independent of what the adopting protocol makes of it.
+ *
+ * `A = aa*256`, `B = bb*255 || 00`, `C = cc*256`, `Z = 00*256`; one chain, contract and name;
+ * transaction `T1`, physical intent 7, unless a vector says otherwise.
+ *
+ * Also here: the two barrier regressions of audit F1 (`[[multipart-short-lookup-retry]]`,
+ * `[[multipart-undecodable-raw-retry]]`).
+ */
+
+const NET = "undeployed";
+const CONTRACT = "c0".repeat(32);
+const T1 = "71".repeat(32);
+const T2 = "72".repeat(32);
+
+const A = Buffer.alloc(256, 0xaa);
+const B = (() => { const b = Buffer.alloc(256, 0xbb); b[255] = 0; return b; })();
+const C = Buffer.alloc(256, 0xcc);
+const Z = Buffer.alloc(256);
+
+/** What a source may deliver: the ledger trims trailing zeros, so a part can arrive short. */
+const trimmedHex = (b: Buffer): string => {
+  let end = b.length;
+  while (end > 0 && b[end - 1] === 0) end--;
+  return b.subarray(0, end).toString("hex");
+};
+
+interface EventSpec {
+  id: number;
+  segment: number;
+  payload: Buffer;
+  /** Serve the typed payload with its trailing zeros trimmed. */
+  trimmed?: boolean;
+  nameHex?: string;
+  /** Replace `raw` with these hex bytes (an undecodable one, for the barrier tests). */
+  rawHex?: string;
+}
+
+interface TxSpec {
+  txHash: string;
+  blockHeight: number;
+  position?: number;
+  result?: "success" | "partial_success" | "failure";
+  segments?: { id: number; success: boolean }[];
+  calls: FakeCallSpec[];
+  /** In DELIVERY order — the fake indexer serves them exactly so. */
+  events: EventSpec[];
+}
+
+interface PackageRow {
+  tx: string;
+  segment: number;
+  parts: number;
+  ids: number[];
+  payload: string;
+  phase: string;
+}
+
+describe("[Y] multi-part vectors and the complete-response barrier, through the scanner", () => {
+  let container: StartedPostgreSqlContainer;
+  let indexer: FakeEventIndexer;
+  const open: UmbraDBSql[] = [];
+  let counter = 0;
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer("postgres:17-alpine").start();
+    indexer = await startFakeEventIndexer();
+  }, 180_000);
+
+  afterAll(async () => {
+    while (open.length > 0) await open.pop()!.end({ timeout: 5 });
+    await indexer?.close();
+    await container?.stop();
+  }, 60_000);
+
+  afterEach(() => {
+    indexer.events.clear();
+    indexer.requests.length = 0;
+    indexer.failNext = 0;
+  });
+
+  async function freshDb(): Promise<{ sql: UmbraDBSql; schema: string; archiveSchema: string }> {
+    const id = counter++;
+    const schema = `token_mpv_${id}`;
+    const archiveSchema = `arch_mpv_${id}`;
+    const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    open.push(sql);
+    await bootstrapChainArchiveSchema(sql, archiveSchema);
+    await bootstrapTokenIndexSchema(sql, { schema, net: NET });
+    return { sql, schema, archiveSchema };
+  }
+
+  function serve(tx: TxSpec, events: EventSpec[] = tx.events): void {
+    indexer.events.set(`${tx.txHash}:${CONTRACT}`, events.map((e): FakeEvent => {
+      const nameHex = e.nameHex ?? MIP_0018_NAME_HEX;
+      return {
+        id: e.id, contractAddress: CONTRACT, txHash: tx.txHash, blockHeight: tx.blockHeight,
+        nameHex,
+        payloadHex: e.trimmed === true ? trimmedHex(e.payload) : e.payload.toString("hex"),
+        rawHex: e.rawHex ?? fakeRawEvent({
+          txHash: tx.txHash, segment: e.segment, address: CONTRACT, nameHex,
+          payloadHex: e.payload.toString("hex"),
+        }),
+      };
+    }));
+  }
+
+  /** A fresh database with the transactions archived, and the scanner that will read them. */
+  async function prepare(txs: TxSpec[]) {
+    const db = await freshDb();
+    const specs: Record<string, FakeLedgerSpecs> = {};
+    for (const tx of txs) {
+      specs[tx.txHash] = { calls: tx.calls };
+      await seedSyntheticTransaction(db.sql, db.archiveSchema, NET, {
+        txHash: tx.txHash, blockHeight: tx.blockHeight, position: tx.position ?? 0,
+        result: tx.result ?? "success", segments: tx.segments ?? null, marker: tx.txHash,
+      });
+    }
+    const ledger = fakeLedgerPerTransaction(specs);
+    const source = new IndexerEventSource({ url: indexer.url, pageSize: 500 });
+    const scanner = new TokenScanner({
+      sql: db.sql, schema: db.schema, archiveSchema: db.archiveSchema, net: NET, eventSource: source, ledger,
+    });
+    return { db, scanner, ledger, source };
+  }
+
+  async function scan(txs: TxSpec[]) {
+    const prepared = await prepare(txs);
+    for (const tx of txs) serve(tx);
+    const outcome = await prepared.scanner.scanOnce();
+    return { ...prepared, outcome };
+  }
+
+  /** Makes every pending lookup due now, so the next drain retries it. */
+  async function due(db: { sql: UmbraDBSql; schema: string }): Promise<void> {
+    await db.sql`UPDATE ${db.sql(db.schema)}.pending_event_lookups SET next_attempt_at = now() - interval '1 second' WHERE net = ${NET}`;
+  }
+
+  async function packages(db: { sql: UmbraDBSql; schema: string }): Promise<PackageRow[]> {
+    const rows = await db.sql<{
+      tx_hash: Buffer; segment: number; parts: number; part_event_ids: string[]; payload: Buffer; phase: string;
+    }[]>`
+      SELECT tx_hash, segment, parts, part_event_ids::text[] AS part_event_ids, payload, phase
+      FROM ${db.sql(db.schema)}.token_metadata_events WHERE net = ${NET}
+      ORDER BY block_height, tx_position, event_id
+    `;
+    return rows.map((r) => ({
+      tx: r.tx_hash.toString("hex"), segment: r.segment, parts: r.parts,
+      ids: r.part_event_ids.map(Number), payload: r.payload.toString("hex"), phase: r.phase,
+    }));
+  }
+
+  async function pendingRows(db: { sql: UmbraDBSql; schema: string }) {
+    return db.sql<{ got_events: number; expected_events: number; last_error: string | null }[]>`
+      SELECT got_events, expected_events, last_error FROM ${db.sql(db.schema)}.pending_event_lookups WHERE net = ${NET}`;
+  }
+
+  const hex = (...parts: Buffer[]): string => Buffer.concat(parts).toString("hex");
+  const guaranteed = (segment: number, logOps: number): FakeCallSpec =>
+    ({ address: CONTRACT, entryPoint: "emitPart", segment, guaranteed: { logOps } });
+  const fallible = (segment: number, logOps: number): FakeCallSpec =>
+    ({ address: CONTRACT, entryPoint: "emitPart", segment, guaranteed: { logOps: 0 }, fallible: { logOps } });
+
+  // ── the 14 normative vectors ───────────────────────────────────────────────────────────────
+
+  it("[[multipart-vector-empty-input]] empty filtered input: the contract logs only an event of a name that did not opt in → the lookup completes and no package exists", async () => {
+    const other = Buffer.from(pad32("example:message[v1]")).toString("hex");
+    const { db, outcome } = await scan([{
+      txHash: T1, blockHeight: 100, calls: [guaranteed(7, 1)],
+      events: [{ id: 10, segment: 7, payload: A, nameHex: other }],
+    }]);
+    expect(outcome).toMatchObject({ lookups: 1, lookupsShort: 0 });
+    expect(await packages(db)).toEqual([]);
+    expect(await pendingRows(db)).toEqual([]);
+  }, 120_000);
+
+  it("[[multipart-vector-all-zero-part]] all-zero part: Z, served fully trimmed → one part, payload Z, length 256", async () => {
+    const { db } = await scan([{
+      txHash: T1, blockHeight: 100, calls: [guaranteed(7, 1)],
+      events: [{ id: 10, segment: 7, payload: Z, trimmed: true }],
+    }]);
+    const rows = await packages(db);
+    expect(rows).toEqual([{ tx: T1, segment: 7, parts: 1, ids: [10], payload: hex(Z), phase: "guaranteed" }]);
+    expect(Buffer.from(rows[0]!.payload, "hex")).toHaveLength(256);
+  }, 120_000);
+
+  it("[[multipart-vector-trailing-zero]] trailing zero: B, served trimmed to 255 bytes → one part, payload B, its final zero kept", async () => {
+    const { db } = await scan([{
+      txHash: T1, blockHeight: 100, calls: [guaranteed(7, 1)],
+      events: [{ id: 10, segment: 7, payload: B, trimmed: true }],
+    }]);
+    const rows = await packages(db);
+    expect(rows).toEqual([{ tx: T1, segment: 7, parts: 1, ids: [10], payload: hex(B), phase: "guaranteed" }]);
+    expect(Buffer.from(rows[0]!.payload, "hex")[255]).toBe(0);
+  }, 120_000);
+
+  it("[[multipart-vector-guaranteed-multipart]] guaranteed multipart: guaranteed A then guaranteed B → one package A || B, length 512", async () => {
+    const { db } = await scan([{
+      txHash: T1, blockHeight: 100, calls: [guaranteed(7, 2)],
+      events: [{ id: 10, segment: 7, payload: A }, { id: 11, segment: 7, payload: B }],
+    }]);
+    expect(await packages(db)).toEqual([
+      { tx: T1, segment: 7, parts: 2, ids: [10, 11], payload: hex(A, B), phase: "guaranteed" },
+    ]);
+  }, 120_000);
+
+  it("[[multipart-vector-fallible-success]] fallible success: fallible C then fallible B, both applied → one package C || B, fallible", async () => {
+    const { db } = await scan([{
+      txHash: T1, blockHeight: 100, result: "success", calls: [fallible(7, 2)],
+      events: [{ id: 10, segment: 7, payload: C }, { id: 11, segment: 7, payload: B }],
+    }]);
+    expect(await packages(db)).toEqual([
+      { tx: T1, segment: 7, parts: 2, ids: [10, 11], payload: hex(C, B), phase: "fallible" },
+    ]);
+  }, 120_000);
+
+  it("[[multipart-vector-fallible-failure]] fallible failure: the fallible segment failed, no matching event was applied → no lookup, no package", async () => {
+    const { db, outcome } = await scan([{
+      txHash: T1, blockHeight: 100, result: "partial_success", segments: [{ id: 7, success: false }],
+      calls: [fallible(7, 2)], events: [],
+    }]);
+    // The failed segment's log ops are not counted (00020 FR-002), so nothing is asked for at all.
+    expect(outcome).toMatchObject({ lookups: 0, lookupsShort: 0 });
+    expect(indexer.requests).toEqual([]);
+    expect(await packages(db)).toEqual([]);
+  }, 120_000);
+
+  it("[[multipart-vector-same-group-separate-intentions]] same-group separate intentions: guaranteed A (message 1), then applied fallible B (message 2) → one package A || B, recorded as mixed (the publisher's error), not dropped", async () => {
+    const { db } = await scan([{
+      txHash: T1, blockHeight: 100, calls: [guaranteed(7, 1), fallible(7, 1)],
+      events: [{ id: 10, segment: 7, payload: A }, { id: 11, segment: 7, payload: B }],
+    }]);
+    expect(await packages(db)).toEqual([
+      { tx: T1, segment: 7, parts: 2, ids: [10, 11], payload: hex(A, B), phase: "mixed" },
+    ]);
+  }, 120_000);
+
+  it("[[multipart-vector-mixed-phase-failure]] mixed-phase failure: guaranteed A applied, fallible B discarded (its segment failed) → one package A; the reader does not infer B", async () => {
+    const { db } = await scan([{
+      txHash: T1, blockHeight: 100, result: "partial_success", segments: [{ id: 7, success: false }],
+      calls: [{ address: CONTRACT, entryPoint: "emitPart", segment: 7, guaranteed: { logOps: 1 }, fallible: { logOps: 1 } }],
+      events: [{ id: 10, segment: 7, payload: A }],
+    }]);
+    expect(await packages(db)).toEqual([
+      { tx: T1, segment: 7, parts: 1, ids: [10], payload: hex(A), phase: "guaranteed" },
+    ]);
+  }, 120_000);
+
+  it("[[multipart-vector-upstream-order]] upstream order: delivered B, A with ledger order 1, 0 → one package A || B", async () => {
+    const { db } = await scan([{
+      txHash: T1, blockHeight: 100, calls: [guaranteed(7, 2)],
+      events: [{ id: 11, segment: 7, payload: B }, { id: 10, segment: 7, payload: A }],
+    }]);
+    expect(await packages(db)).toEqual([
+      { tx: T1, segment: 7, parts: 2, ids: [10, 11], payload: hex(A, B), phase: "guaranteed" },
+    ]);
+  }, 120_000);
+
+  it("[[multipart-vector-equal-distinct-events]] equal distinct events: A, then A at another position → two parts A || A", async () => {
+    const { db } = await scan([{
+      txHash: T1, blockHeight: 100, calls: [guaranteed(7, 2)],
+      events: [{ id: 10, segment: 7, payload: A }, { id: 11, segment: 7, payload: A }],
+    }]);
+    expect(await packages(db)).toEqual([
+      { tx: T1, segment: 7, parts: 2, ids: [10, 11], payload: hex(A, A), phase: "guaranteed" },
+    ]);
+  }, 120_000);
+
+  it("[[multipart-vector-multiple-logs-per-call]] multiple logs per call: ONE call emits A then C → two parts A || C", async () => {
+    const { db } = await scan([{
+      txHash: T1, blockHeight: 100, calls: [guaranteed(7, 2)],
+      events: [{ id: 10, segment: 7, payload: A }, { id: 11, segment: 7, payload: C }],
+    }]);
+    expect(await packages(db)).toEqual([
+      { tx: T1, segment: 7, parts: 2, ids: [10, 11], payload: hex(A, C), phase: "guaranteed" },
+    ]);
+  }, 120_000);
+
+  it("[[multipart-vector-two-intents]] two intents: intent 7 emits A, intent 8 emits B → two packages, never joined", async () => {
+    const { db } = await scan([{
+      txHash: T1, blockHeight: 100, calls: [guaranteed(7, 1), guaranteed(8, 1)],
+      events: [{ id: 10, segment: 7, payload: A }, { id: 11, segment: 8, payload: B }],
+    }]);
+    expect(await packages(db)).toEqual([
+      { tx: T1, segment: 7, parts: 1, ids: [10], payload: hex(A), phase: "guaranteed" },
+      { tx: T1, segment: 8, parts: 1, ids: [11], payload: hex(B), phase: "guaranteed" },
+    ]);
+  }, 120_000);
+
+  it("[[multipart-vector-repeated-publication]] repeated publication: (T1, intent 7) and (T2, intent 7) each emit A → two packages despite equal bytes", async () => {
+    const { db } = await scan([
+      { txHash: T1, blockHeight: 100, calls: [guaranteed(7, 1)], events: [{ id: 10, segment: 7, payload: A }] },
+      { txHash: T2, blockHeight: 101, calls: [guaranteed(7, 1)], events: [{ id: 20, segment: 7, payload: A }] },
+    ]);
+    expect(await packages(db)).toEqual([
+      { tx: T1, segment: 7, parts: 1, ids: [10], payload: hex(A), phase: "guaranteed" },
+      { tx: T2, segment: 7, parts: 1, ids: [20], payload: hex(A), phase: "guaranteed" },
+    ]);
+  }, 120_000);
+
+  it("[[multipart-vector-no-hidden-framing]] no hidden framing: A and C intended as separate messages, from two calls in one intent → one package A || C", async () => {
+    const { db } = await scan([{
+      txHash: T1, blockHeight: 100, calls: [guaranteed(7, 1), guaranteed(7, 1)],
+      events: [{ id: 10, segment: 7, payload: A }, { id: 11, segment: 7, payload: C }],
+    }]);
+    expect(await packages(db)).toEqual([
+      { tx: T1, segment: 7, parts: 2, ids: [10, 11], payload: hex(A, C), phase: "guaranteed" },
+    ]);
+  }, 120_000);
+
+  // ── the complete-response barrier (audit F1) ───────────────────────────────────────────────
+
+  /** A real MIP-0018 declaration that needs exactly three parts: `metadata`, 700 bytes of JSON. */
+  const DOCUMENT = JSON.stringify({ description: "n".repeat(649), website: "https://example.test" });
+  const DOMAIN = Buffer.from(pad32("umbra:sneb18"));
+  const THREE_PARTS = splitIntoParts(encodeTokenMetadataUc1({
+    domainSep: new Uint8Array(DOMAIN), kindByte: 1, key: "metadata", valType: 3, value: DOCUMENT,
+  })).map((p) => Buffer.from(p));
+
+  async function declarationState(db: { sql: UmbraDBSql; schema: string }) {
+    const [events, kv, tokens] = await Promise.all([
+      db.sql<{ n: string }[]>`SELECT count(*)::text AS n FROM ${db.sql(db.schema)}.token_metadata_events WHERE net = ${NET}`,
+      db.sql<{ n: string }[]>`SELECT count(*)::text AS n FROM ${db.sql(db.schema)}.token_metadata_kv WHERE net = ${NET}`,
+      db.sql<{ n: string }[]>`SELECT count(*)::text AS n FROM ${db.sql(db.schema)}.tokens WHERE net = ${NET} AND status <> 'builtin'`,
+    ]);
+    return { events: Number(events[0]!.n), kv: Number(kv[0]!.n), tokens: Number(tokens[0]!.n) };
+  }
+
+  async function onePackage(db: { sql: UmbraDBSql; schema: string }) {
+    const rows = await db.sql<{
+      part_event_ids: string[]; parts: number; applied: boolean; reject_reason: string | null;
+      val_len: number; phase: string; segment: number;
+    }[]>`
+      SELECT part_event_ids::text[] AS part_event_ids, parts, applied, reject_reason, val_len, phase, segment
+      FROM ${db.sql(db.schema)}.token_metadata_events WHERE net = ${NET}`;
+    const token = await db.sql<{ metadata: unknown; status: string }[]>`
+      SELECT metadata, status FROM ${db.sql(db.schema)}.tokens WHERE net = ${NET} AND status <> 'builtin'`;
+    return { rows, token };
+  }
+
+  it("[[multipart-short-lookup-retry]] a first answer with 1 of 3 parts stores NOTHING of the package; the retry with all 3 stores exactly one complete, applied package and no rejection", async () => {
+    expect(Buffer.byteLength(DOCUMENT)).toBe(700);
+    expect(THREE_PARTS).toHaveLength(3);
+    const tx: TxSpec = {
+      txHash: T1, blockHeight: 100, calls: [guaranteed(5, 3)],
+      events: THREE_PARTS.map((payload, i) => ({ id: 30 + i, segment: 5, payload })),
+    };
+
+    // ── the short answer: only the first part exists yet ────────────────────────────────────
+    const { db, scanner, ledger, source } = await prepare([tx]);
+    serve(tx, tx.events.slice(0, 1));
+    const first = await scanner.scanOnce();
+    expect(first).toMatchObject({ lookups: 1, lookupsShort: 1, eventsApplied: 0, eventsRejected: 0 });
+    // The barrier: no history, no kv, no token — the truncated package was never stored …
+    expect(await declarationState(db)).toEqual({ events: 0, kv: 0, tokens: 0 });
+    // … and the pair waits in the retry queue.
+    expect(await pendingRows(db)).toEqual([{ got_events: 1, expected_events: 3, last_error: null }]);
+
+    // ── the retry: the indexer caught up; the whole answer, the whole package ───────────────
+    serve(tx);
+    await due(db);
+    const drained = await drainPendingLookups(db.sql, db.schema, NET, source, { ledger });
+    expect(drained).toMatchObject({ attempted: 1, completed: 1, stillShort: 0, applied: 1 });
+    expect(await pendingRows(db)).toEqual([]);
+    const after = await onePackage(db);
+    expect(after.rows).toEqual([{
+      part_event_ids: ["30", "31", "32"], parts: 3, applied: true, reject_reason: null,
+      val_len: 700, phase: "guaranteed", segment: 5,
+    }]);
+    expect(after.token).toEqual([{ metadata: JSON.parse(DOCUMENT), status: "declared" }]);
+
+    // ── a one-shot run over the complete answer ends in exactly the same state ──────────────
+    const ref = await scan([tx]);
+    expect(ref.outcome).toMatchObject({ lookups: 1, lookupsShort: 0, eventsApplied: 1 });
+    expect(await onePackage(ref.db)).toEqual(after);
+  }, 180_000);
+
+  it("[[multipart-undecodable-raw-retry]] a later part whose `raw` does not decode stores NOTHING of the package; a valid retry stores exactly one complete package", async () => {
+    const tx: TxSpec = {
+      txHash: T1, blockHeight: 100, calls: [guaranteed(5, 3)],
+      events: THREE_PARTS.map((payload, i) => ({
+        id: 40 + i, segment: 5, payload, ...(i === 2 ? { rawHex: "deadbeef" } : {}),
+      })),
+    };
+    const { db, outcome, ledger, source } = await scan([tx]);
+    // Complete by count — 3 of 3 — but the third part's intent is unknowable, so nothing is read.
+    expect(outcome).toMatchObject({ lookups: 1, lookupsShort: 1, eventsApplied: 0, eventsRejected: 0 });
+    expect(await declarationState(db)).toEqual({ events: 0, kv: 0, tokens: 0 });
+    const pending = await pendingRows(db);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({ got_events: 3, expected_events: 3 });
+    expect(pending[0]!.last_error).toMatch(/indexer event 42: `raw` does not decode/);
+
+    // The same barrier holds for a `raw` that decodes but disagrees with the typed payload.
+    serve({
+      ...tx,
+      events: tx.events.map((e, i) => ({
+        ...e,
+        rawHex: i !== 1 ? undefined : fakeRawEvent({
+          txHash: T1, segment: 5, address: CONTRACT, nameHex: MIP_0018_NAME_HEX, payloadHex: C.toString("hex"),
+        }),
+      })),
+    });
+    await due(db);
+    expect(await drainPendingLookups(db.sql, db.schema, NET, source, { ledger })).toMatchObject({ attempted: 1, completed: 0, stillShort: 1 });
+    expect(await declarationState(db)).toEqual({ events: 0, kv: 0, tokens: 0 });
+    expect((await pendingRows(db))[0]!.last_error).toMatch(/indexer event 41: the typed name\/payload disagree with `raw`/);
+
+    // A valid answer: one complete package, applied, and the queue is empty.
+    serve({ ...tx, events: tx.events.map((e) => ({ ...e, rawHex: undefined })) });
+    await due(db);
+    expect(await drainPendingLookups(db.sql, db.schema, NET, source, { ledger })).toMatchObject({ attempted: 1, completed: 1, applied: 1 });
+    expect(await pendingRows(db)).toEqual([]);
+    const after = await onePackage(db);
+    expect(after.rows).toEqual([{
+      part_event_ids: ["40", "41", "42"], parts: 3, applied: true, reject_reason: null,
+      val_len: 700, phase: "guaranteed", segment: 5,
+    }]);
+    expect(after.token).toEqual([{ metadata: JSON.parse(DOCUMENT), status: "declared" }]);
+  }, 180_000);
+});

@@ -1,5 +1,5 @@
 {
-  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md \u00a71.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 102: the 25 v1.0.0-recovery-testing ids, plus the 40 token-indexer / chain-archive-result ids added by project 00020 sub-plan 01 Phase 7, plus project 00021 Phase D dropping token-status-inconsistent \u2014 the status the MIP removes \u2014 and adding 8 ids for the MIP PR #315 layout: token-payload-valtype, token-key-nonutf8, token-payload-projection, token-legacy-name-ignored, token-two-rows-liar, token-projection-error, token-key-nonutf8-stored and token-api-linked-rows), plus project 00023 Phase C2 adding the 18 token-activity ids of spec 00023 \u00a77 (six decoder ids in activity-decode.test.ts, five scanner ids in activity-scan.test.ts, six API ids in activity-api.test.ts and token-activity-bech32m in bech32m.test.ts), plus project 00023 Phase F1 adding 10 token-0018-* ids for the FINAL MIP-0018 text (MIP PR #325: seven transport ids in payload-0018.test.ts and three fold ids in status-rules.test.ts), plus project 00024-01 (MIP-0018 values of any length as [Y] multi-part packages, spec 00024) adding ids task by task \u2014 B1: multipart-storage-lengths; B4: multipart-0018-rules \u2014 so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
+  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md \u00a71.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 119: the 25 v1.0.0-recovery-testing ids, plus the 40 token-indexer / chain-archive-result ids added by project 00020 sub-plan 01 Phase 7, plus project 00021 Phase D dropping token-status-inconsistent \u2014 the status the MIP removes \u2014 and adding 8 ids for the MIP PR #315 layout: token-payload-valtype, token-key-nonutf8, token-payload-projection, token-legacy-name-ignored, token-two-rows-liar, token-projection-error, token-key-nonutf8-stored and token-api-linked-rows), plus project 00023 Phase C2 adding the 18 token-activity ids of spec 00023 \u00a77 (six decoder ids in activity-decode.test.ts, five scanner ids in activity-scan.test.ts, six API ids in activity-api.test.ts and token-activity-bech32m in bech32m.test.ts), plus project 00023 Phase F1 adding 10 token-0018-* ids for the FINAL MIP-0018 text (MIP PR #325: seven transport ids in payload-0018.test.ts and three fold ids in status-rules.test.ts), plus project 00024-01 (MIP-0018 values of any length as [Y] multi-part packages, spec 00024) adding ids task by task \u2014 B1: multipart-storage-lengths; B4: multipart-0018-rules; B2: multipart-vector-empty-input, multipart-vector-all-zero-part, multipart-vector-trailing-zero, multipart-vector-guaranteed-multipart, multipart-vector-fallible-success, multipart-vector-fallible-failure, multipart-vector-same-group-separate-intentions, multipart-vector-mixed-phase-failure, multipart-vector-upstream-order, multipart-vector-equal-distinct-events, multipart-vector-multiple-logs-per-call, multipart-vector-two-intents, multipart-vector-repeated-publication, multipart-vector-no-hidden-framing, multipart-short-lookup-retry, multipart-undecodable-raw-retry, multipart-segment-from-raw \u2014 so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
   "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` \u2014 those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early \u2014 that would re-open the exact self-skip hole this manifest closes.",
   "required": [
     {
@@ -511,6 +511,91 @@
       "id": "multipart-0018-rules",
       "file": "token-indexer/test/payload-0018.test.ts",
       "description": "00024-01 B4: the UC-1 layout of mip-0018:token-metadata[v1], every rule both ways on 256 x k packages - val-len is Compact Uint<16> little-endian at 66 (pinned against compact-runtime 0.19.0), value from 68; 188 bytes in one part applied and 189 declared in one part rejected val_len_beyond_package with the declared length kept; ~400 B, ~700 B JSON, several KB and the 65535-byte maximum (257 parts) applied; beyond the package rejected; bytes after the value (even a second declaration) ignored (Q11); Null, reserved types (decided before the length), pointer keys, integer widths and complete JSON unchanged; a payload that is not 256 x k throws; the draft name keeps its one-event layout and val_len_too_long."
+    },
+    {
+      "id": "multipart-vector-empty-input",
+      "file": "token-indexer/test/multipart-vectors.test.ts",
+      "description": "00024-01 B2 ([Y] PR #1 normative vector, through the scanner: fake-ledger transcripts, real IndexerEventSource over HTTP with raw, barrier, reader, fold): empty filtered input: a contract that logs only an event of a name that did not opt in -> the lookup completes, no package; package groups, part counts, part event ids, lengths, bytes and phase asserted on token_metadata_events."
+    },
+    {
+      "id": "multipart-vector-all-zero-part",
+      "file": "token-indexer/test/multipart-vectors.test.ts",
+      "description": "00024-01 B2 ([Y] PR #1 normative vector, through the scanner: fake-ledger transcripts, real IndexerEventSource over HTTP with raw, barrier, reader, fold): all-zero part: Z served fully trimmed -> one part, payload Z, 256 bytes; package groups, part counts, part event ids, lengths, bytes and phase asserted on token_metadata_events."
+    },
+    {
+      "id": "multipart-vector-trailing-zero",
+      "file": "token-indexer/test/multipart-vectors.test.ts",
+      "description": "00024-01 B2 ([Y] PR #1 normative vector, through the scanner: fake-ledger transcripts, real IndexerEventSource over HTTP with raw, barrier, reader, fold): trailing zero: B served trimmed to 255 bytes -> one part, payload B, final zero kept; package groups, part counts, part event ids, lengths, bytes and phase asserted on token_metadata_events."
+    },
+    {
+      "id": "multipart-vector-guaranteed-multipart",
+      "file": "token-indexer/test/multipart-vectors.test.ts",
+      "description": "00024-01 B2 ([Y] PR #1 normative vector, through the scanner: fake-ledger transcripts, real IndexerEventSource over HTTP with raw, barrier, reader, fold): guaranteed multipart: guaranteed A then B -> one package A||B, 512 bytes, phase guaranteed; package groups, part counts, part event ids, lengths, bytes and phase asserted on token_metadata_events."
+    },
+    {
+      "id": "multipart-vector-fallible-success",
+      "file": "token-indexer/test/multipart-vectors.test.ts",
+      "description": "00024-01 B2 ([Y] PR #1 normative vector, through the scanner: fake-ledger transcripts, real IndexerEventSource over HTTP with raw, barrier, reader, fold): fallible success: fallible C then B applied -> one package C||B, phase fallible; package groups, part counts, part event ids, lengths, bytes and phase asserted on token_metadata_events."
+    },
+    {
+      "id": "multipart-vector-fallible-failure",
+      "file": "token-indexer/test/multipart-vectors.test.ts",
+      "description": "00024-01 B2 ([Y] PR #1 normative vector, through the scanner: fake-ledger transcripts, real IndexerEventSource over HTTP with raw, barrier, reader, fold): fallible failure: the fallible segment failed -> its log ops are not counted, no lookup, no package; package groups, part counts, part event ids, lengths, bytes and phase asserted on token_metadata_events."
+    },
+    {
+      "id": "multipart-vector-same-group-separate-intentions",
+      "file": "token-indexer/test/multipart-vectors.test.ts",
+      "description": "00024-01 B2 ([Y] PR #1 normative vector, through the scanner: fake-ledger transcripts, real IndexerEventSource over HTTP with raw, barrier, reader, fold): same-group separate intentions: guaranteed A then applied fallible B in one intent -> one package A||B recorded phase mixed (publisher error), not dropped; package groups, part counts, part event ids, lengths, bytes and phase asserted on token_metadata_events."
+    },
+    {
+      "id": "multipart-vector-mixed-phase-failure",
+      "file": "token-indexer/test/multipart-vectors.test.ts",
+      "description": "00024-01 B2 ([Y] PR #1 normative vector, through the scanner: fake-ledger transcripts, real IndexerEventSource over HTTP with raw, barrier, reader, fold): mixed-phase failure: guaranteed A applied, fallible B discarded (segment failed) -> one package A; B is not inferred; package groups, part counts, part event ids, lengths, bytes and phase asserted on token_metadata_events."
+    },
+    {
+      "id": "multipart-vector-upstream-order",
+      "file": "token-indexer/test/multipart-vectors.test.ts",
+      "description": "00024-01 B2 ([Y] PR #1 normative vector, through the scanner: fake-ledger transcripts, real IndexerEventSource over HTTP with raw, barrier, reader, fold): upstream order: delivered B, A with event ids 11, 10 -> one package A||B (ledger emission order, not delivery order); package groups, part counts, part event ids, lengths, bytes and phase asserted on token_metadata_events."
+    },
+    {
+      "id": "multipart-vector-equal-distinct-events",
+      "file": "token-indexer/test/multipart-vectors.test.ts",
+      "description": "00024-01 B2 ([Y] PR #1 normative vector, through the scanner: fake-ledger transcripts, real IndexerEventSource over HTTP with raw, barrier, reader, fold): equal distinct events: A at two positions -> two parts A||A; package groups, part counts, part event ids, lengths, bytes and phase asserted on token_metadata_events."
+    },
+    {
+      "id": "multipart-vector-multiple-logs-per-call",
+      "file": "token-indexer/test/multipart-vectors.test.ts",
+      "description": "00024-01 B2 ([Y] PR #1 normative vector, through the scanner: fake-ledger transcripts, real IndexerEventSource over HTTP with raw, barrier, reader, fold): multiple logs per call: one call emits A then C -> two parts A||C; package groups, part counts, part event ids, lengths, bytes and phase asserted on token_metadata_events."
+    },
+    {
+      "id": "multipart-vector-two-intents",
+      "file": "token-indexer/test/multipart-vectors.test.ts",
+      "description": "00024-01 B2 ([Y] PR #1 normative vector, through the scanner: fake-ledger transcripts, real IndexerEventSource over HTTP with raw, barrier, reader, fold): two intents: intent 7 emits A, intent 8 emits B -> two packages, never joined; package groups, part counts, part event ids, lengths, bytes and phase asserted on token_metadata_events."
+    },
+    {
+      "id": "multipart-vector-repeated-publication",
+      "file": "token-indexer/test/multipart-vectors.test.ts",
+      "description": "00024-01 B2 ([Y] PR #1 normative vector, through the scanner: fake-ledger transcripts, real IndexerEventSource over HTTP with raw, barrier, reader, fold): repeated publication: (T1, 7) and (T2, 7) each emit A -> two packages despite equal bytes; package groups, part counts, part event ids, lengths, bytes and phase asserted on token_metadata_events."
+    },
+    {
+      "id": "multipart-vector-no-hidden-framing",
+      "file": "token-indexer/test/multipart-vectors.test.ts",
+      "description": "00024-01 B2 ([Y] PR #1 normative vector, through the scanner: fake-ledger transcripts, real IndexerEventSource over HTTP with raw, barrier, reader, fold): no hidden framing: A and C from two calls in one intent -> one package A||C; package groups, part counts, part event ids, lengths, bytes and phase asserted on token_metadata_events."
+    },
+    {
+      "id": "multipart-short-lookup-retry",
+      "file": "token-indexer/test/multipart-vectors.test.ts",
+      "description": "00024-01 B2 (audit F1 complete-response barrier): the first answer has 1 of 3 parts of a 700-byte MIP-0018 metadata declaration -> nothing stored (no event row, kv or token), pair pending got 1/3; the retry with all 3 stores exactly one complete applied 3-part package (ids 30-32, val_len 700, phase guaranteed), no rejection, the token's metadata is the document, and a one-shot run over the complete answer ends in the same state."
+    },
+    {
+      "id": "multipart-undecodable-raw-retry",
+      "file": "token-indexer/test/multipart-vectors.test.ts",
+      "description": "00024-01 B2 (audit F1): a complete answer whose third part's raw does not decode stores nothing and stays pending with the reason; a raw that decodes but disagrees with the typed payload is refused the same way; a valid retry stores exactly one complete applied package and empties the queue."
+    },
+    {
+      "id": "multipart-segment-from-raw",
+      "file": "token-indexer/test/multipart-stagenet.test.ts",
+      "description": "00024-01 B2 (spec Q4/FR-003): on the [Y] live examples recorded read-only from the public Stagenet indexer (txs 3a4c54e9...fcdd and dacd1930...3074, fixtures/multipart-stagenet/SOURCE.md), every event's physicalSegment decoded from its own raw with the real ledger-v9 equals the key of the intent that logged it in the raw transaction (logicalSegment is 0); with example:message[v1] opted in in a test configuration the production path (normalizeEvent, decodeTokenFlows emission, multipartPartEvents, readPackages) reproduces [Y]'s packages: segment 5392 1 part SHA-256 40aff2e9...4880, segment 45345 3 parts / 768 B SHA-256 f5d7cc38...3ebf, segment 54287 a separate 1-part package; not grouped without the opt-in."
     }
   ],
   "deferred": [

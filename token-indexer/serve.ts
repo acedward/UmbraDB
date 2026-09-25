@@ -88,7 +88,7 @@ export async function serve(
     }));
 
     loops.push(loop("lookups", signal, async () => {
-      const outcome = await drainPendingLookups(sql, config.schema, config.net, eventSource);
+      const outcome = await drainPendingLookups(sql, config.schema, config.net, eventSource, { ledger });
       if (outcome.attempted > 0) jsonLog("token-indexer", "lookups.drain", { ...outcome });
       return DRAIN_INTERVAL_MS;
     }));

@@ -219,7 +219,7 @@ export class TokenScanner {
             txHash: row.txHash, address, blockHeight: row.blockHeight, txPosition: row.position,
             expected, emission: perIntent,
           };
-          const result = await lookupEventsFor(tx, schema, net, this.opts.eventSource, pair);
+          const result = await lookupEventsFor(tx, schema, net, this.opts.eventSource, pair, { ledger: this.opts.ledger });
           outcome.lookups++;
           outcome.eventsApplied += result.applied;
           outcome.eventsRejected += result.rejected;
