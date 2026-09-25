@@ -52,7 +52,7 @@ import { pad32 } from "../color.js";
  * |---|---|---|
  * | `val-type` 2 | Compact `Uint<8·N>`, `1 ≤ val-len ≤ 31`, **little-endian** | unsigned **big-endian**, `1 ≤ val-len ≤ 16` |
  * | `val-type` 3 | ONE complete valid JSON value (RFC 8259; scalars allowed) | valid UTF-8, nothing more |
- * | `val-type` 5 | **Null** — `val-len` MUST be 0, all 189 value bytes ignored; CLEARS the key | reserved → rejects |
+ * | `val-type` 5 | **Null** — `val-len` MUST be 0, every value byte ignored; CLEARS the key | reserved → rejects |
  * | reserved | 6–255 | 5–255 |
  * | `/metadata/…` keys | MUST be valid RFC 6901 JSON Pointers or the event REJECTS | no rule (plain bytes) |
  * | layout (UC-1) | `256·k`-byte package, 2-byte LE `val-len` at 66, value from 68, any length | one 256-byte event, 1-byte `val-len`, ≤ 189 |
@@ -643,10 +643,13 @@ export function projectionErrorFor(
     return text === undefined || text.includes(NUL) ? "text_not_storable" : undefined;
   };
 
+  // UC-1 (project 00024-01, spec FR-009): under the standard's name a value may be any length, so
+  // this consumer's projections set no 189-byte ceiling of their own; the draft keeps its limits.
+  const oneEventCeiling = variant === "mip-0018" ? Number.POSITIVE_INFINITY : VALUE_SIZE;
   switch (keyText) {
     case "name":
       if (valType !== 1) return "val_type_mismatch";
-      if (valLen < 1 || valLen > 189) return "name_len";
+      if (valLen < 1 || valLen > oneEventCeiling) return "name_len";
       return storableText();
     case "symbol":
       if (valType !== 1) return "val_type_mismatch";
@@ -678,7 +681,7 @@ export function projectionErrorFor(
     }
     case "tokenUri": {
       if (valType !== 4) return "val_type_mismatch";
-      if (valLen < 1 || valLen > 189) return "token_uri_not_absolute_http";
+      if (valLen < 1 || valLen > oneEventCeiling) return "token_uri_not_absolute_http";
       const bad = storableText();
       if (bad !== undefined) return bad;
       return isAbsoluteHttpUrl(decodeUtf8(valueBytes)!) ? undefined : "token_uri_not_absolute_http";

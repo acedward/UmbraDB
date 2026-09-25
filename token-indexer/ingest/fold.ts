@@ -395,9 +395,13 @@ export async function applyMetadataEvent(
     kind: parsed.kindByte,
   };
 
-  // Last write wins per (token, key), ordered by (block height, indexer event id) — the indexer's
-  // ids are assigned in evaluation order, so two events in one transaction order correctly
-  // (MIP §6.2). The key's identity is its trimmed BYTES (§5.1), so `key_hex` is what conflicts.
+  // Last write wins per (token, key) in MIP-0018 §6.2's canonical order: block, then transaction
+  // position in the block, then ledger execution order inside the transaction — "an indexer's
+  // monotonic event ID … does not define the normative order", so the id only breaks ties INSIDE
+  // one transaction, where it follows ledger emission order. A [Y] package is positioned by its
+  // FIRST part (derivation P1, `spec/00024-upstream-spec-changes.md`): `event.eventId` is that
+  // part's id, so two packages whose parts interleave in one transaction order by where each
+  // begins. The key's identity is its trimmed BYTES (§5.1), so `key_hex` is what conflicts.
   //
   // ── Null is a TOMBSTONE, not a DELETE (MIP-0018 §2.1 type 5, §6.2) ─────────────────────────
   // A `val-type` 5 event sets the current value of the exact key to Null. It lands here as an
@@ -432,8 +436,10 @@ export async function applyMetadataEvent(
       updated_event_id = EXCLUDED.updated_event_id,
       updated_height   = EXCLUDED.updated_height,
       updated_tx_position = EXCLUDED.updated_tx_position
-    WHERE (${sql(schema)}.token_metadata_kv.updated_height, ${sql(schema)}.token_metadata_kv.updated_event_id)
-          < (EXCLUDED.updated_height, EXCLUDED.updated_event_id)
+    WHERE (${sql(schema)}.token_metadata_kv.updated_height,
+           ${sql(schema)}.token_metadata_kv.updated_tx_position,
+           ${sql(schema)}.token_metadata_kv.updated_event_id)
+          < (EXCLUDED.updated_height, EXCLUDED.updated_tx_position, EXCLUDED.updated_event_id)
   `;
 
   // The event creates the row if no mint has — for ITS OWN kind byte and no other. A ledger kind
@@ -516,14 +522,15 @@ export async function recomputeToken(
     ? undefined
     : { address: row.address.toString("hex"), domainSep: row.domain_sep.toString("hex"), kind: identity.kind };
 
-  // The evidence: every APPLIED event for THIS kind byte, newest last. An event for another kind is
-  // another token's business entirely (MIP §6.3) — that is the whole of the D4 change.
+  // The evidence: every APPLIED declaration for THIS kind byte, newest last in MIP §6.2's order
+  // (block, transaction position, first part — P1). An event for another kind is another token's
+  // business entirely (MIP §6.3) — that is the whole of the D4 change.
   const events = key === undefined ? [] : await sql<{ event_id: string; block_height: string }[]>`
     SELECT event_id::text, block_height::text
     FROM ${sql(schema)}.token_metadata_events
     WHERE net = ${net} AND address = ${hexBuf(key.address)} AND domain_sep = ${hexBuf(key.domainSep)}
       AND applied AND kind_byte = ${identity.kind}
-    ORDER BY block_height, event_id
+    ORDER BY block_height, tx_position, event_id
   `;
   const hasMetadata = events.length > 0;
   const latest = events[events.length - 1];

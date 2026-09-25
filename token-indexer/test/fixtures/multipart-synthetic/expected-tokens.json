@@ -1,0 +1,156 @@
+{
+  "note": "SYNTHETIC (UmbraDB project 00024-01 task B5): built with this repository's UC-1 encoder from a literal declaration table, in the shape 01-A5's simulator corpus will have, until that corpus is re-pinned. Not contract output. Contract addresses are sha256(\"umbra:00024:<row>\"); there are no block heights or transaction hashes; eventId is the emission order across the whole corpus; every declaration is one call in its own intent (segment = step + 1), guaranteed.",
+  "count": 3,
+  "tokens": [
+    {
+      "row": "SNEB18",
+      "contractAddress": "e609b09e8e0f9a1dbaadb5f60907b6742e793239ee37b4a05492f86c08d599fb",
+      "domainSepHex": "756d6272613a736e656231380000000000000000000000000000000000000000",
+      "kind": 1,
+      "privacy": "shielded",
+      "storage": "native",
+      "colorHex": "dfe5b38c7faf9a7eb8bc3a4b702d287cc98d5ff6bf475d305562c528a9401068",
+      "name": "Shielded Nebula · MIP-18",
+      "symbol": "SNEB18",
+      "decimals": 6,
+      "tokenUri": null,
+      "metadata": {
+        "description": "A nebula of shielded dust, drawn in many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many",
+        "image": "https://example.test/sneb18.svg",
+        "attributes": [
+          {
+            "trait_type": "phase",
+            "value": "emission"
+          }
+        ]
+      },
+      "traits": {
+        "name": {
+          "valType": 1,
+          "valLen": 25,
+          "valueHex": "536869656c646564204e6562756c6120c2b7204d49502d3138",
+          "text": "Shielded Nebula · MIP-18"
+        },
+        "symbol": {
+          "valType": 1,
+          "valLen": 6,
+          "valueHex": "534e45423138",
+          "text": "SNEB18"
+        },
+        "decimals": {
+          "valType": 2,
+          "valLen": 16,
+          "valueHex": "06000000000000000000000000000000",
+          "text": null
+        },
+        "metadata": {
+          "valType": 3,
+          "valLen": 697,
+          "valueHex": "7b226465736372697074696f6e223a2241206e6562756c61206f6620736869656c64656420647573742c20647261776e20696e206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79206d616e79222c22696d616765223a2268747470733a2f2f6578616d706c652e746573742f736e656231382e737667222c2261747472696275746573223a5b7b2274726169745f74797065223a227068617365222c2276616c7565223a22656d697373696f6e227d5d7d",
+          "text": "{\"description\":\"A nebula of shielded dust, drawn in many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many many\",\"image\":\"https://example.test/sneb18.svg\",\"attributes\":[{\"trait_type\":\"phase\",\"value\":\"emission\"}]}"
+        },
+        "repository": {
+          "valType": 4,
+          "valLen": 100,
+          "valueHex": "68747470733a2f2f6769746875622e636f6d2f61636564776172642f6d69702d303031382d6d69646e696768742d636f6e7472616374732f626c6f622f6d61696e2f636f6e7472616374732f67656e6572617465642f534e454231382e636f6d70616374",
+          "text": "https://github.com/acedward/mip-0018-midnight-contracts/blob/main/contracts/generated/SNEB18.compact"
+        }
+      },
+      "mintCount": 1,
+      "totalMinted": "1000000",
+      "status": "described"
+    },
+    {
+      "row": "LMOON18",
+      "contractAddress": "03c98e6ac5c08566b3ee73404de826b49b3191e5d63dc7a2f430ef9e6e56c478",
+      "domainSepHex": "756d6272613a6c6d6f6f6e313800000000000000000000000000000000000000",
+      "kind": 2,
+      "privacy": "unshielded",
+      "storage": "ledger",
+      "colorHex": null,
+      "name": "Ledger Moon · MIP-18",
+      "symbol": "LMOON18",
+      "decimals": 9,
+      "tokenUri": null,
+      "metadata": null,
+      "traits": {
+        "name": {
+          "valType": 1,
+          "valLen": 21,
+          "valueHex": "4c6564676572204d6f6f6e20c2b7204d49502d3138",
+          "text": "Ledger Moon · MIP-18"
+        },
+        "symbol": {
+          "valType": 1,
+          "valLen": 7,
+          "valueHex": "4c4d4f4f4e3138",
+          "text": "LMOON18"
+        },
+        "decimals": {
+          "valType": 2,
+          "valLen": 16,
+          "valueHex": "09000000000000000000000000000000",
+          "text": null
+        },
+        "description": {
+          "valType": 1,
+          "valLen": 400,
+          "valueHex": "4c6564676572204d6f6f6e3a20612070616c65206c65646765722d6b696e64206d6f6f6e206f76657220746865206c6f63616c20636861696e3b20612070616c65206c65646765722d6b696e64206d6f6f6e206f76657220746865206c6f63616c20636861696e3b20612070616c65206c65646765722d6b696e64206d6f6f6e206f76657220746865206c6f63616c20636861696e3b20612070616c65206c65646765722d6b696e64206d6f6f6e206f76657220746865206c6f63616c20636861696e3b20612070616c65206c65646765722d6b696e64206d6f6f6e206f76657220746865206c6f63616c20636861696e3b20612070616c65206c65646765722d6b696e64206d6f6f6e206f76657220746865206c6f63616c20636861696e3b20612070616c65206c65646765722d6b696e64206d6f6f6e206f76657220746865206c6f63616c20636861696e3b20612070616c65206c65646765722d6b696e64206d6f6f6e206f76657220746865206c6f63616c20636861696e3b20612070616c65206c65646765722d6b696e6420",
+          "text": "Ledger Moon: a pale ledger-kind moon over the local chain; a pale ledger-kind moon over the local chain; a pale ledger-kind moon over the local chain; a pale ledger-kind moon over the local chain; a pale ledger-kind moon over the local chain; a pale ledger-kind moon over the local chain; a pale ledger-kind moon over the local chain; a pale ledger-kind moon over the local chain; a pale ledger-kind "
+        },
+        "repository": {
+          "valType": 4,
+          "valLen": 101,
+          "valueHex": "68747470733a2f2f6769746875622e636f6d2f61636564776172642f6d69702d303031382d6d69646e696768742d636f6e7472616374732f626c6f622f6d61696e2f636f6e7472616374732f67656e6572617465642f4c4d4f4f4e31382e636f6d70616374",
+          "text": "https://github.com/acedward/mip-0018-midnight-contracts/blob/main/contracts/generated/LMOON18.compact"
+        }
+      },
+      "mintCount": 0,
+      "totalMinted": "0",
+      "status": "declared"
+    },
+    {
+      "row": "CNST18",
+      "contractAddress": "fcfe3a554f45f233eeaef7bd809e95dafdffb4396b6bfccbb86f5b967498d421",
+      "domainSepHex": "756d6272613a636e737431383a6f72696f6e0000000000000000000000000000",
+      "kind": 1,
+      "privacy": "shielded",
+      "storage": "native",
+      "colorHex": "8fc0890f023ed472675a7efd12146f70f06c1ebd942523d5e79eaeff065e5dea",
+      "name": "Constellation Orion · MIP-18 · a name longer than one part can hold, a name longer than one part can hold, a name longer than one part can hold, a name longer than one part can hold, a name longer tha",
+      "symbol": "ORION18",
+      "decimals": null,
+      "tokenUri": "https://example.test/tokens/cnst18/orion/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/token.json",
+      "metadata": null,
+      "traits": {
+        "name": {
+          "valType": 1,
+          "valLen": 202,
+          "valueHex": "436f6e7374656c6c6174696f6e204f72696f6e20c2b7204d49502d313820c2b72061206e616d65206c6f6e676572207468616e206f6e6520706172742063616e20686f6c642c2061206e616d65206c6f6e676572207468616e206f6e6520706172742063616e20686f6c642c2061206e616d65206c6f6e676572207468616e206f6e6520706172742063616e20686f6c642c2061206e616d65206c6f6e676572207468616e206f6e6520706172742063616e20686f6c642c2061206e616d65206c6f6e67657220746861",
+          "text": "Constellation Orion · MIP-18 · a name longer than one part can hold, a name longer than one part can hold, a name longer than one part can hold, a name longer than one part can hold, a name longer tha"
+        },
+        "symbol": {
+          "valType": 1,
+          "valLen": 7,
+          "valueHex": "4f52494f4e3138",
+          "text": "ORION18"
+        },
+        "lore": {
+          "valType": 1,
+          "valLen": 300,
+          "valueHex": "4f72696f6e3a20736576656e20737461727320696e206120636f6e7374656c6c6174696f6e206f6620736869656c64656420746f6b656e732c20736576656e20737461727320696e206120636f6e7374656c6c6174696f6e206f6620736869656c64656420746f6b656e732c20736576656e20737461727320696e206120636f6e7374656c6c6174696f6e206f6620736869656c64656420746f6b656e732c20736576656e20737461727320696e206120636f6e7374656c6c6174696f6e206f6620736869656c64656420746f6b656e732c20736576656e20737461727320696e206120636f6e7374656c6c6174696f6e206f6620736869656c64656420746f6b656e732c20736576656e20737461727320696e206120636f6e7374656c6c6174696f6e206f662073686965",
+          "text": "Orion: seven stars in a constellation of shielded tokens, seven stars in a constellation of shielded tokens, seven stars in a constellation of shielded tokens, seven stars in a constellation of shielded tokens, seven stars in a constellation of shielded tokens, seven stars in a constellation of shie"
+        },
+        "tokenUri": {
+          "valType": 4,
+          "valLen": 259,
+          "valueHex": "68747470733a2f2f6578616d706c652e746573742f746f6b656e732f636e737431382f6f72696f6e2f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f7365676d656e742f746f6b656e2e6a736f6e",
+          "text": "https://example.test/tokens/cnst18/orion/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/segment/token.json"
+        }
+      },
+      "mintCount": 0,
+      "totalMinted": "0",
+      "status": "declared"
+    }
+  ]
+}
