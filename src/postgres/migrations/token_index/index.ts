@@ -3,6 +3,7 @@ import * as tokenIndexCore from "./001_token_index_core.js";
 import * as mipLayout from "./002_mip_xxxx_layout.js";
 import * as tokenActivity from "./003_token_activity.js";
 import * as mip0018 from "./004_mip_0018.js";
+import * as multipartPackages from "./005_multipart_packages.js";
 import type { Migration } from "../../migrate.js";
 
 /**
@@ -22,8 +23,12 @@ import type { Migration } from "../../migrate.js";
  * drops and recreates what `002` built for the same reason (spec 00023 Q3: the index is reindexed
  * from scratch, so breaking changes are allowed); `004` is the FINAL MIP-0018 shape — the event
  * name is the version, so the two metadata tables gain `name_variant` and the kv table gains
- * Null — and drops and recreates those two, for the same Q3 reason. All four run, in order, on a
- * fresh database — the derived tables live for the length of one migration run there, which costs
+ * Null — and drops and recreates those two, for the same Q3 reason; `005` is project 00024-01's —
+ * a metadata event row becomes a [Y] multi-part PACKAGE (merged payload, parts, segment, phase),
+ * `val_len` reaches 65 535 (MIP-0018 amended in place, UC-1) and the ordering carries the
+ * transaction position (MIP §6.2) — and drops and recreates the two metadata tables and the retry
+ * queue (spec 00024 Q3: everything is in development, no data migration). All of them run, in
+ * order, on a fresh database — the derived tables live for the length of one migration run there, which costs
  * nothing and keeps the lineage honest about how this schema actually got here.
  *
  * **Not wired into any executing path**, matching both sibling lineages' posture: nothing in
@@ -40,7 +45,7 @@ import type { Migration } from "../../migrate.js";
  * table shape.
  */
 export const tokenIndexMigrations: Migration[] = [
-  migration000, tokenIndexCore, mipLayout, tokenActivity, mip0018,
+  migration000, tokenIndexCore, mipLayout, tokenActivity, mip0018, multipartPackages,
 ];
 
 /** The conventional schema name this lineage lives in. */

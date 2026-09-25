@@ -423,6 +423,10 @@ describe("the compiled reference contracts' recorded corpus", () => {
             // The event's OWN recorded name, so the fold picks the validator the chain would.
             nameHex: nameHexOf(variantOfFixture(e.eventName)),
             payloadHex: e.payloadHex,
+            // Under the standard's name every declaration is a [Y] package (migration 005); the
+            // simulator emits each one from its own call, so each is a one-part guaranteed package.
+            ...(variantOfFixture(e.eventName) === "mip-0018"
+              ? { segment: 1, phase: "guaranteed" as const } : {}),
           };
           await sql.begin(async (tx) => applyMetadataEvent(tx, c.schema, NET, event));
         }

@@ -245,19 +245,43 @@ export async function ensureSeenToken(
   return inserted.count > 0;
 }
 
-/** One contract event as the lookup delivers it, before parsing. */
+/** A [Y] package's execution phase, from the archived transcripts of its APPLIED parts
+ *  (`compact-multi-part-event` PR #1 §5; spec 00024 FR-002). `mixed` is a publisher error that is
+ *  recorded and shown, never a reason to drop the package. */
+export type PackagePhase = "guaranteed" | "fallible" | "mixed";
+
+/**
+ * One token-metadata declaration as the lookup delivers it, before parsing: a [Y] **package**
+ * under the standard's name (project 00024-01), or one event under the superseded draft name
+ * (which is not opted into [Y] and keeps its single-event behaviour, spec 00024 FR-006).
+ *
+ * A single event is the one-part case: `partEventIds` defaults to `[eventId]`.
+ */
 export interface RawContractEvent {
-  /** The indexer's own `ContractEvent.id` — the idempotency key for the whole pipeline. */
+  /** The indexer's own `ContractEvent.id` — for a package, its FIRST part's id. The idempotency
+   *  key for the whole pipeline, and (derivation P1) the package's position inside its
+   *  transaction. */
   eventId: number;
   contractAddress: string;
   txHash: string;
   blockHeight: number;
+  /** The transaction's index in its block — MIP-0018 §6.2's second ordering key. The lookup always
+   *  supplies it; a direct caller that omits it (the fixture replays) places the event at 0. */
+  txPosition?: number;
   /** The event's 32 padded name bytes as hex — `pad(32, "mip-0018:token-metadata[v1]")`, or the
    *  superseded draft name the deployed reference contracts still emit (owner Q27). This is what
    *  decides which validator runs: `nameVariantOf` maps it to a {@link NameVariant}. */
   nameHex: string;
-  /** The 256-byte payload, hex. */
+  /** The payload, hex: `256 · parts` bytes for a package (the parts concatenated in ledger
+   *  emission order, every byte kept); up to 256 for a draft-name event. */
   payloadHex: string;
+  /** Every part's indexer event id in ledger emission order; `[eventId]` when absent. */
+  partEventIds?: readonly number[];
+  /** The physical intent of every part (`EventSource.physicalSegment`). REQUIRED for the
+   *  standard's name — its rows are packages and carry their evidence (FR-003, FR-016b). */
+  segment?: number;
+  /** REQUIRED for the standard's name, like {@link segment}. */
+  phase?: PackagePhase;
 }
 
 export interface AppliedEventOutcome {
@@ -299,6 +323,27 @@ export async function applyMetadataEvent(
       + "MIP §1 says a v1 consumer ignores it, so it must never reach the fold",
     );
   }
+  const partEventIds = event.partEventIds ?? [event.eventId];
+  if (partEventIds.length === 0 || partEventIds[0] !== event.eventId) {
+    throw new Error(
+      `applyMetadataEvent: package ${event.eventId} must list its own id as its first part ` +
+      `(got [${partEventIds.join(", ")}])`,
+    );
+  }
+  if (nameVariant === "legacy-mip-xxxx" && partEventIds.length !== 1) {
+    // The draft name is not opted into [Y] (spec 00024 FR-006): nothing may group its events.
+    throw new Error(`applyMetadataEvent: draft-name event ${event.eventId} cannot be a multi-part package`);
+  }
+  if (nameVariant === "mip-0018" && (event.segment === undefined || event.phase === undefined)) {
+    // The standard's name follows [Y] (UC-1): its declarations are packages, read by the
+    // multi-part reader, and a package always knows its intent and its phase.
+    throw new Error(
+      `applyMetadataEvent: mip-0018 declaration ${event.eventId} arrived without its package ` +
+      "evidence (segment, phase) — it must come through the multi-part reader",
+    );
+  }
+  const txPosition = event.txPosition ?? 0;
+
   let parsed: ParsedTokenMetadata;
   try {
     parsed = parseTokenMetadata(new Uint8Array(Buffer.from(event.payloadHex, "hex")), nameVariant);
@@ -317,11 +362,14 @@ export async function applyMetadataEvent(
   const domainSep = Buffer.from(parsed.domainSep);
   const inserted = await sql`
     INSERT INTO ${sql(schema)}.token_metadata_events
-      (net, event_id, address, tx_hash, block_height, name_variant, payload, domain_sep, kind_byte,
+      (net, event_id, part_event_ids, parts, segment, phase, address, tx_hash, block_height,
+       tx_position, name_variant, payload, domain_sep, kind_byte,
        key, key_hex, key_text, val_type, val_len, value, applied, reject_reason)
     VALUES
-      (${net}, ${event.eventId}, ${hexBuf(event.contractAddress)}, ${hexBuf(event.txHash)}, ${event.blockHeight},
-       ${nameVariant}, ${payload}, ${domainSep}, ${parsed.kindByte},
+      (${net}, ${event.eventId}, ${`{${partEventIds.join(",")}}`}::bigint[], ${partEventIds.length},
+       ${event.segment ?? null}, ${event.phase ?? null},
+       ${hexBuf(event.contractAddress)}, ${hexBuf(event.txHash)}, ${event.blockHeight},
+       ${txPosition}, ${nameVariant}, ${payload}, ${domainSep}, ${parsed.kindByte},
        ${Buffer.from(parsed.key)}, ${parsed.keyHex}, ${parsed.keyText ?? null},
        ${parsed.valType}, ${parsed.valLen}, ${Buffer.from(parsed.value)},
        ${parsed.applied}, ${parsed.rejectReason ?? null})
@@ -368,12 +416,12 @@ export async function applyMetadataEvent(
   await sql`
     INSERT INTO ${sql(schema)}.token_metadata_kv
       (net, address, domain_sep, kind, key_hex, key_text, name_variant, val_type, val_len, value,
-       projection_error, updated_event_id, updated_height)
+       projection_error, updated_event_id, updated_height, updated_tx_position)
     VALUES
       (${net}, ${hexBuf(key.address)}, ${hexBuf(key.domainSep)}, ${key.kind},
        ${parsed.keyHex}, ${parsed.keyText ?? null}, ${nameVariant}, ${parsed.valType}, ${parsed.valLen},
        ${Buffer.from(parsed.valueBytes)}, ${parsed.projectionError ?? null},
-       ${event.eventId}, ${event.blockHeight})
+       ${event.eventId}, ${event.blockHeight}, ${txPosition})
     ON CONFLICT (net, address, domain_sep, kind, key_hex) DO UPDATE SET
       key_text         = EXCLUDED.key_text,
       name_variant     = EXCLUDED.name_variant,
@@ -382,7 +430,8 @@ export async function applyMetadataEvent(
       value            = EXCLUDED.value,
       projection_error = EXCLUDED.projection_error,
       updated_event_id = EXCLUDED.updated_event_id,
-      updated_height   = EXCLUDED.updated_height
+      updated_height   = EXCLUDED.updated_height,
+      updated_tx_position = EXCLUDED.updated_tx_position
     WHERE (${sql(schema)}.token_metadata_kv.updated_height, ${sql(schema)}.token_metadata_kv.updated_event_id)
           < (EXCLUDED.updated_height, EXCLUDED.updated_event_id)
   `;

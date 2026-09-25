@@ -2,7 +2,7 @@
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { jsonLog } from "../../wallet-monitor/log.js";
 import { decodeTokenFlows } from "./decode.js";
-import { lookupEventsFor, type EventSource, type LookupPair } from "./events.js";
+import { emissionByAddress, lookupEventsFor, type EventSource, type LookupPair } from "./events.js";
 import { applyMint, ensureSeenToken, upsertContract } from "./fold.js";
 import {
   insertActivityRow, insertContractCall, insertShieldedOffer,
@@ -204,8 +204,21 @@ export class TokenScanner {
           if (await insertContractCall(tx, schema, net, call, ctx)) outcome.contractCalls++;
         }
 
+        const emission = emissionByAddress(flows.calls);
         for (const [address, expected] of flows.logOpsByAddress) {
-          const pair: LookupPair = { txHash: row.txHash, address, blockHeight: row.blockHeight, expected };
+          const perIntent = emission.get(address) ?? [];
+          const planned = perIntent.reduce((sum, e) => sum + e.guaranteed + e.fallible, 0);
+          if (planned !== expected) {
+            // Two readings of the same transcripts disagree: a decoder bug, never a chain fact.
+            throw new Error(
+              `transaction ${row.txHash}: contract ${address} counts ${expected} log ops but its ` +
+              `per-intent emission sums to ${planned}`,
+            );
+          }
+          const pair: LookupPair = {
+            txHash: row.txHash, address, blockHeight: row.blockHeight, txPosition: row.position,
+            expected, emission: perIntent,
+          };
           const result = await lookupEventsFor(tx, schema, net, this.opts.eventSource, pair);
           outcome.lookups++;
           outcome.eventsApplied += result.applied;

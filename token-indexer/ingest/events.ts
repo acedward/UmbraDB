@@ -171,12 +171,56 @@ export function isTokenMetadataEvent(event: IndexerContractEvent): boolean {
     && event.payloadHex !== undefined;
 }
 
+/**
+ * The counted `log` ops of ONE contract's calls in ONE physical intent, split by phase — what the
+ * transaction itself says that contract emitted there (00020 FR-004; project 00024-01 reads each
+ * part's phase off it, see {@link emissionByAddress}). Only COUNTED transcripts appear: a failed
+ * fallible segment's ops produced no applied event (00020 FR-002).
+ */
+export interface EmissionEntry {
+  segment: number;
+  guaranteed: number;
+  fallible: number;
+}
+
 export interface LookupPair {
   txHash: string;
   address: string;
   blockHeight: number;
+  /** The transaction's index in its block (MIP-0018 §6.2's second ordering key). */
+  txPosition: number;
   /** `log` ops counted in this call's COUNTED transcripts (spec FR-004). */
   expected: number;
+  /** The same ops, per physical intent and phase, ascending by segment. Their sum is `expected`. */
+  emission: EmissionEntry[];
+}
+
+/** The per-intent, per-phase `log` counts of every contract a transaction's calls emitted from —
+ *  built from the decoder's call records, COUNTED transcripts only (00020 FR-002). */
+export function emissionByAddress(
+  calls: readonly {
+    segment: number; address: string;
+    guaranteed: { logOps: number; counted: boolean } | undefined;
+    fallible: { logOps: number; counted: boolean } | undefined;
+  }[],
+): Map<string, EmissionEntry[]> {
+  const byAddress = new Map<string, Map<number, EmissionEntry>>();
+  for (const call of calls) {
+    const g = call.guaranteed !== undefined && call.guaranteed.counted ? call.guaranteed.logOps : 0;
+    const f = call.fallible !== undefined && call.fallible.counted ? call.fallible.logOps : 0;
+    if (g === 0 && f === 0) continue;
+    const segments = byAddress.get(call.address) ?? new Map<number, EmissionEntry>();
+    const entry = segments.get(call.segment) ?? { segment: call.segment, guaranteed: 0, fallible: 0 };
+    entry.guaranteed += g;
+    entry.fallible += f;
+    segments.set(call.segment, entry);
+    byAddress.set(call.address, segments);
+  }
+  const out = new Map<string, EmissionEntry[]>();
+  for (const [address, segments] of byAddress) {
+    out.set(address, [...segments.values()].sort((a, b) => a.segment - b.segment));
+  }
+  return out;
 }
 
 export interface LookupOutcome {
@@ -233,6 +277,7 @@ export async function lookupEventsFor(
       contractAddress: pair.address,
       txHash: pair.txHash,
       blockHeight: event.blockHeight === 0 ? pair.blockHeight : event.blockHeight,
+      txPosition: pair.txPosition,
       nameHex: event.nameHex!,
       payloadHex: event.payloadHex!,
     };
@@ -255,13 +300,17 @@ export async function recordPendingLookup(
 ): Promise<void> {
   await sql`
     INSERT INTO ${sql(schema)}.pending_event_lookups
-      (net, tx_hash, address, block_height, expected_events, got_events, attempts, next_attempt_at, last_error)
+      (net, tx_hash, address, block_height, tx_position, expected_events, emission, got_events,
+       attempts, next_attempt_at, last_error)
     VALUES
       (${net}, ${Buffer.from(pair.txHash, "hex")}, ${Buffer.from(pair.address, "hex")}, ${pair.blockHeight},
-       ${pair.expected}, ${got}, 1, now() + ${`${lookupBackoffMs(1)} milliseconds`}::interval, ${lastError ?? null})
+       ${pair.txPosition}, ${pair.expected}, ${sql.json(pair.emission as never)}, ${got}, 1,
+       now() + ${`${lookupBackoffMs(1)} milliseconds`}::interval, ${lastError ?? null})
     ON CONFLICT (net, tx_hash, address) DO UPDATE SET
       got_events      = EXCLUDED.got_events,
       expected_events = EXCLUDED.expected_events,
+      emission        = EXCLUDED.emission,
+      tx_position     = EXCLUDED.tx_position,
       attempts        = ${sql(schema)}.pending_event_lookups.attempts + 1,
       last_error      = EXCLUDED.last_error,
       next_attempt_at = now() + (LEAST(
@@ -299,9 +348,10 @@ export async function drainPendingLookups(
   sql: UmbraDBSql, schema: string, net: string, source: EventSource, opts: { limit?: number } = {},
 ): Promise<DrainOutcome> {
   const due = await sql<{
-    tx_hash: Buffer; address: Buffer; block_height: string; expected_events: number; attempts: number;
+    tx_hash: Buffer; address: Buffer; block_height: string; tx_position: number;
+    expected_events: number; emission: EmissionEntry[]; attempts: number;
   }[]>`
-    SELECT tx_hash, address, block_height, expected_events, attempts
+    SELECT tx_hash, address, block_height, tx_position, expected_events, emission, attempts
     FROM ${sql(schema)}.pending_event_lookups
     WHERE net = ${net} AND next_attempt_at <= now() AND attempts < ${LOOKUP_MAX_ATTEMPTS}
     ORDER BY block_height
@@ -313,7 +363,9 @@ export async function drainPendingLookups(
       txHash: row.tx_hash.toString("hex"),
       address: row.address.toString("hex"),
       blockHeight: Number(row.block_height),
+      txPosition: row.tx_position,
       expected: row.expected_events,
+      emission: row.emission,
     };
     outcome.attempted++;
     try {

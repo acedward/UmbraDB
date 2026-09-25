@@ -37,7 +37,7 @@ describe("token_index migration lineage and built-in rows", () => {
     await container?.stop();
   }, 60_000);
 
-  it("[[token-migrate-seeds]] applies the lineage through 004, seeds NIGHT and DUST with the exact bytes the ledger defines, re-runs as a no-op, and rebuild empties everything but the seeds", async () => {
+  it("[[token-migrate-seeds]] applies the lineage through 005, seeds NIGHT and DUST with the exact bytes the ledger defines, re-runs as a no-op, and rebuild empties everything but the seeds", async () => {
     // --- fresh apply ---------------------------------------------------------------------
     await bootstrapTokenIndexSchema(sql, { schema, net });
     const applied = await sql<{ name: string }[]>`
@@ -45,7 +45,7 @@ describe("token_index migration lineage and built-in rows", () => {
     `;
     expect(applied.map((r) => r.name)).toEqual([
       "000_schema", "001_token_index_core", "002_mip_xxxx_layout", "003_token_activity",
-      "004_mip_0018",
+      "004_mip_0018", "005_multipart_packages",
     ]);
 
     const tables = await sql<{ table_name: string }[]>`
@@ -358,23 +358,28 @@ describe("token_index migration lineage and built-in rows", () => {
       VALUES (${net}, ${Buffer.alloc(32)}, 1, 0, 0, 0, ${Buffer.alloc(32)}, ${Buffer.alloc(32)}, 2, 1)
     `)).toMatch(/token_mints_kind_check|violates check constraint/i);
 
+    // Migration 005: a row is a [Y] package, so the payload is exactly 256 bytes per part.
     expect(await bad(() => sql`
       INSERT INTO ${sql(schema)}.token_metadata_events
-        (net, event_id, address, tx_hash, block_height, name_variant, payload, domain_sep, kind_byte,
-         key, key_hex, val_type, val_len, value, applied)
-      VALUES (${net}, 1, ${Buffer.alloc(32)}, ${Buffer.alloc(32)}, 1, 'mip-0018', ${Buffer.alloc(255)},
-              ${Buffer.alloc(32)}, 1, ${Buffer.alloc(32)}, '6e616d65', 1, 0, ${Buffer.alloc(0)}, true)
-    `)).toMatch(/payload_check|violates check constraint/i);
+        (net, event_id, part_event_ids, parts, segment, phase, address, tx_hash, block_height,
+         tx_position, name_variant, payload, domain_sep, kind_byte, key, key_hex, val_type, val_len,
+         value, applied)
+      VALUES (${net}, 1, '{1}', 1, 1, 'guaranteed', ${Buffer.alloc(32)}, ${Buffer.alloc(32)}, 1, 0,
+              'mip-0018', ${Buffer.alloc(255)}, ${Buffer.alloc(32)}, 1, ${Buffer.alloc(32)}, '6e616d65',
+              1, 0, ${Buffer.alloc(0)}, true)
+    `)).toMatch(/events_payload_is_parts|violates check constraint/i);
 
     // Migration 004: the event NAME is the version (MIP-0018 §8), so `name_variant` is NOT NULL and
     // takes one of exactly two values — a third name is a third transport and would need its own
     // validator, not a string in this column.
     expect(await bad(() => sql`
       INSERT INTO ${sql(schema)}.token_metadata_events
-        (net, event_id, address, tx_hash, block_height, name_variant, payload, domain_sep, kind_byte,
-         key, key_hex, val_type, val_len, value, applied)
-      VALUES (${net}, 2, ${Buffer.alloc(32)}, ${Buffer.alloc(32)}, 1, 'mip-9999', ${Buffer.alloc(256)},
-              ${Buffer.alloc(32)}, 1, ${Buffer.alloc(32)}, '6e616d65', 1, 0, ${Buffer.alloc(0)}, true)
+        (net, event_id, part_event_ids, parts, segment, phase, address, tx_hash, block_height,
+         tx_position, name_variant, payload, domain_sep, kind_byte, key, key_hex, val_type, val_len,
+         value, applied)
+      VALUES (${net}, 2, '{2}', 1, 1, 'guaranteed', ${Buffer.alloc(32)}, ${Buffer.alloc(32)}, 1, 0,
+              'mip-9999', ${Buffer.alloc(256)}, ${Buffer.alloc(32)}, 1, ${Buffer.alloc(32)}, '6e616d65',
+              1, 0, ${Buffer.alloc(0)}, true)
     `)).toMatch(/name_variant_check|violates check constraint/i);
 
     // The kv row's identity is the key's BYTES (MIP §5.1): `key_hex` is lowercase hex and never
@@ -382,9 +387,9 @@ describe("token_index migration lineage and built-in rows", () => {
     expect(await bad(() => sql`
       INSERT INTO ${sql(schema)}.token_metadata_kv
         (net, address, domain_sep, kind, key_hex, name_variant, val_type, val_len, value,
-         updated_event_id, updated_height)
+         updated_event_id, updated_height, updated_tx_position)
       VALUES (${net}, ${Buffer.alloc(32)}, ${Buffer.alloc(32)}, 1, 'NOTHEX', 'mip-0018', 1, 0,
-              ${Buffer.alloc(0)}, 1, 1)
+              ${Buffer.alloc(0)}, 1, 1, 0)
     `)).toMatch(/key_hex_check|violates check constraint/i);
 
     // Migration 004's two Null rules, stated in the schema so the two validators cannot drift:
@@ -393,16 +398,129 @@ describe("token_index migration lineage and built-in rows", () => {
     expect(await bad(() => sql`
       INSERT INTO ${sql(schema)}.token_metadata_kv
         (net, address, domain_sep, kind, key_hex, name_variant, val_type, val_len, value,
-         updated_event_id, updated_height)
+         updated_event_id, updated_height, updated_tx_position)
       VALUES (${net}, ${Buffer.alloc(32)}, ${Buffer.alloc(32)}, 1, '6e616d65', 'mip-0018', 5, 3,
-              ${Buffer.from("abc", "utf8")}, 1, 1)
+              ${Buffer.from("abc", "utf8")}, 1, 1, 0)
     `)).toMatch(/kv_null_is_empty|violates check constraint/i);
     expect(await bad(() => sql`
       INSERT INTO ${sql(schema)}.token_metadata_kv
         (net, address, domain_sep, kind, key_hex, name_variant, val_type, val_len, value,
-         updated_event_id, updated_height)
+         updated_event_id, updated_height, updated_tx_position)
       VALUES (${net}, ${Buffer.alloc(32)}, ${Buffer.alloc(32)}, 1, '6e616d65', 'legacy-mip-xxxx', 5, 0,
-              ${Buffer.alloc(0)}, 1, 1)
+              ${Buffer.alloc(0)}, 1, 1, 0)
     `)).toMatch(/kv_null_is_mip_0018|violates check constraint/i);
+  }, 60_000);
+  it("[[multipart-storage-lengths]] migration 005 stores a package of any part count and values past 255 and 32 767 bytes, records a malformed declared length, and states the package rules as constraints", async () => {
+    const bad = async (fn: () => Promise<unknown>): Promise<string> => {
+      try {
+        await fn();
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+      throw new Error("expected the insert to be rejected");
+    };
+    const address = Buffer.alloc(32, 0x51);
+    const domainSep = Buffer.alloc(32, 0x52);
+    const key = Buffer.alloc(32);
+    key.write("description", 0, "utf8");
+    const keyHex = Buffer.from("description", "utf8").toString("hex");
+
+    /** One events row: `parts` parts of zeros, `valLen` declared, the value field as given. */
+    const insertEvent = (o: {
+      eventId: number; parts: number; valLen: number; value: Buffer; applied: boolean;
+      rejectReason?: string; nameVariant?: string; segment?: number | null; phase?: string | null;
+      partIds?: string;
+    }) => sql`
+      INSERT INTO ${sql(schema)}.token_metadata_events
+        (net, event_id, part_event_ids, parts, segment, phase, address, tx_hash, block_height,
+         tx_position, name_variant, payload, domain_sep, kind_byte, key, key_hex, key_text,
+         val_type, val_len, value, applied, reject_reason)
+      VALUES (${net}, ${o.eventId},
+              ${o.partIds ?? `{${Array.from({ length: o.parts }, (_v, i) => o.eventId + i).join(",")}}`},
+              ${o.parts}, ${o.segment === undefined ? 7 : o.segment},
+              ${o.phase === undefined ? "guaranteed" : o.phase},
+              ${address}, ${Buffer.alloc(32, o.eventId % 256)}, 10, 0, ${o.nameVariant ?? "mip-0018"},
+              ${Buffer.alloc(256 * o.parts)}, ${domainSep}, 2, ${key}, ${keyHex}, 'description',
+              1, ${o.valLen}, ${o.value}, ${o.applied}, ${o.rejectReason ?? null})
+    `;
+
+    // 300 bytes (> 255, the old events CHECK) in 2 parts, and 40 000 bytes (> 32 767, a smallint)
+    // in 157 parts: both stored with their exact declared length.
+    await insertEvent({ eventId: 1_000, parts: 2, valLen: 300, value: Buffer.alloc(444, 0x61), applied: true });
+    await insertEvent({ eventId: 2_000, parts: 157, valLen: 40_000, value: Buffer.alloc(40_124, 0x62), applied: true });
+    // A MALFORMED declaration: it declares 65 535 bytes in a one-part package. It is rejected, and
+    // the length it DECLARED is what the row records — that number is what the reason is about.
+    await insertEvent({
+      eventId: 3_000, parts: 1, valLen: 65_535, value: Buffer.alloc(188), applied: false,
+      rejectReason: "val_len_beyond_package",
+    });
+    const stored = await sql<{ event_id: string; parts: number; payload_len: number; val_len: number; reject_reason: string | null }[]>`
+      SELECT event_id::text, parts, octet_length(payload) AS payload_len, val_len, reject_reason
+      FROM ${sql(schema)}.token_metadata_events
+      WHERE net = ${net} AND event_id IN (1000, 2000, 3000) ORDER BY event_id
+    `;
+    expect(stored).toEqual([
+      { event_id: "1000", parts: 2, payload_len: 512, val_len: 300, reject_reason: null },
+      { event_id: "2000", parts: 157, payload_len: 40_192, val_len: 40_000, reject_reason: null },
+      { event_id: "3000", parts: 1, payload_len: 256, val_len: 65_535, reject_reason: "val_len_beyond_package" },
+    ]);
+
+    // The kv table holds exactly the meaningful bytes, at any length up to 65 535.
+    for (const [len, tag] of [[300, "a"], [40_000, "b"], [65_535, "c"]] as const) {
+      const k = Buffer.from(`long-${tag}`, "utf8").toString("hex");
+      await sql`
+        INSERT INTO ${sql(schema)}.token_metadata_kv
+          (net, address, domain_sep, kind, key_hex, key_text, name_variant, val_type, val_len, value,
+           updated_event_id, updated_height, updated_tx_position)
+        VALUES (${net}, ${address}, ${domainSep}, 2, ${k}, ${`long-${tag}`}, 'mip-0018', 1, ${len},
+                ${Buffer.alloc(len, 0x63)}, 1000, 10, 0)
+      `;
+    }
+    const kvRows = await sql<{ key_text: string; val_len: number; n: number }[]>`
+      SELECT key_text, val_len, octet_length(value) AS n FROM ${sql(schema)}.token_metadata_kv
+      WHERE net = ${net} AND key_text LIKE 'long-%' ORDER BY key_text
+    `;
+    expect(kvRows).toEqual([
+      { key_text: "long-a", val_len: 300, n: 300 },
+      { key_text: "long-b", val_len: 40_000, n: 40_000 },
+      { key_text: "long-c", val_len: 65_535, n: 65_535 },
+    ]);
+
+    // …and the rules of a package, as constraints.
+    // val-len is 16 bits: 65 536 does not exist.
+    expect(await bad(() => insertEvent({ eventId: 4_000, parts: 1, valLen: 65_536, value: Buffer.alloc(0), applied: false })))
+      .toMatch(/val_len_check|violates check constraint/i);
+    // The part ids ARE the parts, and the first one is the package's id (P1).
+    expect(await bad(() => insertEvent({ eventId: 4_001, parts: 2, valLen: 0, value: Buffer.alloc(0), applied: true, partIds: "{4001}" })))
+      .toMatch(/events_part_ids_match|violates check constraint/i);
+    expect(await bad(() => insertEvent({ eventId: 4_002, parts: 2, valLen: 0, value: Buffer.alloc(0), applied: true, partIds: "{4003,4002}" })))
+      .toMatch(/events_part_ids_match|violates check constraint/i);
+    // A MIP-0018 row is a package and carries its intent and its phase.
+    expect(await bad(() => insertEvent({ eventId: 4_004, parts: 1, valLen: 0, value: Buffer.alloc(0), applied: true, segment: null })))
+      .toMatch(/events_package_evidence|violates check constraint/i);
+    expect(await bad(() => insertEvent({ eventId: 4_005, parts: 1, valLen: 0, value: Buffer.alloc(0), applied: true, phase: null })))
+      .toMatch(/events_package_evidence|violates check constraint/i);
+    expect(await bad(() => insertEvent({ eventId: 4_006, parts: 1, valLen: 0, value: Buffer.alloc(0), applied: true, phase: "sometimes" })))
+      .toMatch(/phase_check|violates check constraint/i);
+    // The draft name is not opted into [Y]: never more than one event per row.
+    expect(await bad(() => insertEvent({ eventId: 4_007, parts: 2, valLen: 0, value: Buffer.alloc(0), applied: true, nameVariant: "legacy-mip-xxxx", segment: null, phase: null })))
+      .toMatch(/events_legacy_single_event|violates check constraint/i);
+    // [Y]'s 1 024-part publisher ceiling is the reader's safety ceiling (FR-004).
+    expect(await bad(() => insertEvent({ eventId: 5_000, parts: 1_025, valLen: 0, value: Buffer.alloc(0), applied: true })))
+      .toMatch(/parts_check|violates check constraint/i);
+    // A kv value is exactly its val-len bytes.
+    expect(await bad(() => sql`
+      INSERT INTO ${sql(schema)}.token_metadata_kv
+        (net, address, domain_sep, kind, key_hex, key_text, name_variant, val_type, val_len, value,
+         updated_event_id, updated_height, updated_tx_position)
+      VALUES (${net}, ${address}, ${domainSep}, 2, '6d69736d61746368', 'mismatch', 'mip-0018', 1, 5,
+              ${Buffer.alloc(4)}, 1000, 10, 0)
+    `)).toMatch(/kv_value_is_val_len|violates check constraint/i);
+    // The retry queue keeps what a retry needs: the transaction position and the emission plan.
+    expect(await bad(() => sql`
+      INSERT INTO ${sql(schema)}.pending_event_lookups
+        (net, tx_hash, address, block_height, tx_position, expected_events, emission)
+      VALUES (${net}, ${Buffer.alloc(32, 9)}, ${address}, 10, 0, 1, ${sql.json({ segment: 1 } as never)})
+    `)).toMatch(/emission_check|violates check constraint/i);
   }, 60_000);
 });

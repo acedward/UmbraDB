@@ -86,6 +86,9 @@ describe("token status rules (MIP §4, §6.3, §7.2)", () => {
         domainSep: opts.domainSep ?? DOMAIN, kindByte, key, value,
         valType: opts.valType, valLen: opts.valLen,
       }),
+      // Under the standard's name a declaration is a [Y] package and carries its evidence
+      // (migration 005); these hand-built ones are one-part guaranteed packages in intent 1.
+      ...(opts.nameHex === MIP_0018_NAME_HEX ? { segment: 1, phase: "guaranteed" as const } : {}),
     };
     return sql.begin(async (tx) => applyMetadataEvent(tx, schema, NET, event));
   }
