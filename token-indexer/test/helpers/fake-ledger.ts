@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { encodeTokenMetadata } from "../../ingest/payload.js";
+import { encodeTokenMetadata, encodeTokenMetadataUc1, type NameVariant } from "../../ingest/payload.js";
 import { pad32 } from "../../color.js";
 
 /**
@@ -288,11 +288,13 @@ export function fakeLedger(specs: FakeLedgerSpecs): any {
 }
 
 /**
- * A 256-byte `mip-xxxx:token-metadata[v1]` payload as hex — built with the encoder the parser module
- * itself exports, so the fixtures and the production parser can never drift apart.
+ * A token-metadata payload as hex — built with the encoders the parser module itself exports, so
+ * the fixtures and the production parser can never drift apart.
  *
- * `valType` defaults to 1 (UTF-8 string), which is what most of the hand-built cases want; every
- * test that exercises a type rule passes it explicitly.
+ * `nameVariant` picks the layout: the superseded draft's single 256-byte event (the default, what
+ * the pre-00024 hand-built cases were written against) or MIP-0018's UC-1 package (`256 · k`
+ * bytes, 2-byte `val-len`, project 00024-01). `valType` defaults to 1 (UTF-8 string); every test
+ * that exercises a type rule passes it explicitly.
  */
 export function metadataPayloadHex(fields: {
   domainSep: string | Uint8Array;
@@ -301,12 +303,17 @@ export function metadataPayloadHex(fields: {
   value: string | Uint8Array;
   valType?: number;
   valLen?: number;
+  nameVariant?: NameVariant;
+  parts?: number;
 }): string {
   const domainSep = typeof fields.domainSep === "string"
     ? (fields.domainSep.length === 64 ? new Uint8Array(Buffer.from(fields.domainSep, "hex")) : pad32(fields.domainSep))
     : fields.domainSep;
-  return Buffer.from(encodeTokenMetadata({
+  const common = {
     domainSep, kindByte: fields.kindByte, key: fields.key, valType: fields.valType ?? 1,
     value: fields.value, valLen: fields.valLen,
-  })).toString("hex");
+  };
+  return Buffer.from(fields.nameVariant === "mip-0018"
+    ? encodeTokenMetadataUc1({ ...common, parts: fields.parts })
+    : encodeTokenMetadata(common)).toString("hex");
 }

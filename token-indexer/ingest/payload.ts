@@ -10,16 +10,34 @@ import { pad32 } from "../color.js";
  * the earlier PR #315 draft of the same document; project 00023 Phase F moved this module onto the
  * final text and kept the draft as a second, clearly-labelled code path.
  *
- * One `Misc` contract event (MIP §1) carries exactly 256 bytes (MIP §2):
+ * ── The two layouts (project 00024-01, UC-1) ──────────────────────────────────────────────────
+ * **MIP-0018 as amended in place by UC-1** (`spec/00024-upstream-spec-changes.md`; spec 00024 Q1,
+ * FR-007): `mip-0018:token-metadata[v1]` follows the Multi-Part Event rule ([Y],
+ * `compact-multi-part-event` PR #1), so what this module decodes under that name is a PACKAGE — the
+ * `256 · k` merged payload of `k ≥ 1` events (`ingest/packages.ts`) — and its length field is two
+ * bytes, so ONE field can be any length the package holds:
  *
  * ```
- *  offset  size  field
- *       0    32  domainSep   the token within the contract (the ERC-1155 id analogue)
- *      32     1  kind        0 unshielded native, 1 shielded native, 2 unshielded ledger,
- *                            3 shielded ledger — the FULL byte is part of the token identity
- *      33    32  key         key identifier bytes, NUL-padded; compared after trimming trailing NULs
- *      65     1  val-type    0 opaque, 1 UTF-8 string, 2 unsigned integer, 3 UTF-8 JSON,
- *                            4 UTF-8 URI, 5 Null, 6..255 reserved
+ *  offset  size     field
+ *       0    32     domainSep   the token within the contract (the ERC-1155 id analogue)
+ *      32     1     kind        0 unshielded native, 1 shielded native, 2 unshielded ledger,
+ *                               3 shielded ledger — the FULL byte is part of the token identity
+ *      33    32     key         key identifier bytes, NUL-padded; compared after trimming trailing NULs
+ *      65     1     val-type    0 opaque, 1 UTF-8 string, 2 unsigned integer, 3 UTF-8 JSON,
+ *                               4 UTF-8 URI, 5 Null, 6..255 reserved
+ *      66     2     val-len     unsigned 16-bit LITTLE-endian, 0..65535, with 68 + val-len ≤ 256·k
+ *      68  256·k−68 value       the value bytes; bytes at or after `val-len` carry no meaning
+ * ```
+ *
+ * A one-part package holds 188 value bytes. One package is ONE declaration (UC-1: "The MULTI-PART
+ * is ONLY for extending the length of the field"); bytes after the value are ignored, as MIP-0018
+ * already says (spec Q11).
+ *
+ * **The superseded draft name** keeps the one-event 256-byte layout of the MIP text before UC-1 —
+ * `val-len` ONE byte at 66 (`0 ≤ val-len ≤ 189`), value from 67, 189 bytes — and is not opted into
+ * [Y] (spec FR-006):
+ *
+ * ```
  *      66     1  val-len     meaningful bytes of `value`, 0 ≤ val-len ≤ 189
  *      67   189  value       the value bytes; bytes at or after `val-len` carry no meaning
  * ```
@@ -37,7 +55,8 @@ import { pad32 } from "../color.js";
  * | `val-type` 5 | **Null** — `val-len` MUST be 0, all 189 value bytes ignored; CLEARS the key | reserved → rejects |
  * | reserved | 6–255 | 5–255 |
  * | `/metadata/…` keys | MUST be valid RFC 6901 JSON Pointers or the event REJECTS | no rule (plain bytes) |
- * | multipart | **none** — `metadata` is one complete JSON value ≤ 189 B or nothing | `metadata/<n>`, parts `0..15`, assembled |
+ * | layout (UC-1) | `256·k`-byte package, 2-byte LE `val-len` at 66, value from 68, any length | one 256-byte event, 1-byte `val-len`, ≤ 189 |
+ * | long values | a [Y] multi-part package; `metadata` is ONE complete JSON value of any length | `metadata/<n>`, parts `0..15`, assembled |
  *
  * {@link nameVariantOf} maps the event's 32 name bytes to the variant, and every judging function
  * in this module takes that variant. Nothing infers it, and nothing has a default: a payload
@@ -66,12 +85,13 @@ import { pad32 } from "../color.js";
  * anything. {@link nameVariantOf} returns `undefined` and `ingest/events.ts` never hands them here.
  *
  * ── Two stages, on purpose ─────────────────────────────────────────────────────────────────────
- * {@link decodeTokenMetadata} does the structural split and never judges — it is variant-free,
- * because the 256-byte layout is the one thing the two names share. {@link validateTokenMetadata}
- * judges, and only against the TRANSPORT rules of MIP §2.1/§2.2/§3/§5.1. That is what lets a
- * REJECTED event still be stored with all of its fields plus a stable `reject_reason` — a
- * contract's malformed claim is evidence about that contract, and the page shows it. Only a
- * payload LONGER than 256 bytes cannot be decoded at all.
+ * {@link decodeTokenMetadata} does the structural split and never judges — it takes the variant
+ * only to pick the layout (UC-1 moved `val-len` and the value). {@link validateTokenMetadata}
+ * judges, and only against the TRANSPORT rules of MIP §2.1/§2.2/§3/§5.1 (and UC-1's length rule).
+ * That is what lets a REJECTED declaration still be stored with all of its fields plus a stable
+ * `reject_reason` — a contract's malformed claim is evidence about that contract, and the page
+ * shows it. Only a payload of the wrong SHAPE cannot be decoded at all: longer than 256 bytes under
+ * the draft name, not a positive multiple of 256 under the standard's.
  *
  * ── Appendix A is a PROJECTION rule, never a rejection rule (MIP §5.2/§5.3, §7.1) ──────────────
  * Appendix A is explicitly **informative** in the final text ("The examples below demonstrate
@@ -95,11 +115,13 @@ import { pad32 } from "../color.js";
  * ── Trailing-NUL trimming, and why a SHORT payload is padded rather than rejected ──────────────
  * The on-chain VM hands a `Log` event's bytes out with **trailing NULs trimmed**, while the event
  * itself declares its serialized length. Since `value` is NUL-padded after `val-len` by
- * construction, a real event whose value does not fill 189 bytes arrives SHORT — it is not
+ * construction, a real event whose value does not fill its field arrives SHORT — it is not
  * malformed, it is the same bytes with zeros removed. The indexer's GraphQL `payload` field re-pads
  * to exactly 256, so this does not arise through that source, but the node-direct `EventSource` the
- * owner has planned sees the untrimmed form. {@link decodeTokenMetadata} therefore **zero-extends**
- * a short payload to 256 and records how short it was; only a payload LONGER than 256 is an error.
+ * owner has planned sees the untrimmed form. Under the draft name {@link decodeTokenMetadata}
+ * therefore **zero-extends** a short payload to 256 and records how short it was. Under the
+ * standard's name the multi-part reader restores every PART to 256 bytes before concatenating
+ * (`ingest/packages.ts`, [Y] §4), so the package it hands over is already `256 · k` bytes.
  *
  * ── Keys are bytes (MIP §5.1) ──────────────────────────────────────────────────────────────────
  * "Except for `/metadata/` keys as specified below, keys SHOULD be valid UTF-8; consumers MUST NOT
@@ -143,19 +165,30 @@ export const NAME_VARIANTS: readonly NameVariant[] = ["mip-0018", "legacy-mip-xx
  *  file binary to `grep` and invisible to half the tooling. */
 const NUL = String.fromCharCode(0);
 
+/** One event's payload — and so one PART of a MIP-0018 package ([Y] §1). */
 export const PAYLOAD_SIZE = 256;
-/** Payload offsets, from MIP §2's table — spelled out so the decoder reads as the table does. */
+/** Payload offsets, from MIP §2's table — spelled out so the decoder reads as the table does. The
+ *  first four are shared by both layouts. */
 export const OFFSET_DOMAIN_SEP = 0;
 export const OFFSET_KIND = 32;
 export const OFFSET_KEY = 33;
 export const OFFSET_VAL_TYPE = 65;
 export const OFFSET_VAL_LEN = 66;
+/** The draft's value offset (one-byte `val-len`). */
 export const OFFSET_VALUE = 67;
+/** The draft's value field: 189 bytes. */
 export const VALUE_SIZE = 189;
-/** `val-len > 189` rejects (MIP §2.2). */
+/** `val-len > 189` rejects under the draft (MIP §2.2 before UC-1). */
 export const MAX_VAL_LEN = VALUE_SIZE;
 
-/** MIP-0018 §2.1's Null type. `val-len` MUST be 0 and all 189 value bytes are ignored; it sets the
+/** UC-1: `val-len` is two bytes at offset 66, so the value starts at 68 … */
+export const OFFSET_VALUE_UC1 = 68;
+/** … and one part holds 188 value bytes; more needs a multi-part package. */
+export const ONE_PART_VALUE_SIZE_UC1 = PAYLOAD_SIZE - OFFSET_VALUE_UC1;
+/** UC-1: `val-len` is an unsigned 16-bit integer. */
+export const MAX_VAL_LEN_UC1 = 65_535;
+
+/** MIP-0018 §2.1's Null type. `val-len` MUST be 0 and every value byte is ignored; it sets the
  *  current value of the exact key to Null (MIP §6.2) without erasing history. Reserved — and so
  *  rejected — under the legacy draft name. */
 export const VAL_TYPE_NULL = 5;
@@ -239,11 +272,15 @@ export function kindOfMint(privacy: TokenPrivacy): 0 | 1 {
 }
 
 export interface DecodedTokenMetadata {
-  /** The payload as decoded: exactly 256 bytes, zero-extended if the source delivered it with its
-   *  trailing NULs trimmed. This is what gets stored. */
+  /** The payload as decoded: `256 · parts` bytes under the standard's name (a [Y] package); exactly
+   *  256 under the draft name, zero-extended if the source delivered it with its trailing NULs
+   *  trimmed. This is what gets stored. */
   payload: Uint8Array;
+  /** How many 256-byte parts the payload is: `payload.length / 256`. Always 1 under the draft. */
+  parts: number;
   /** The length the source actually delivered, when it was shorter than 256 — evidence that the
-   *  trailing-NUL trimming happened, and `undefined` for a full-width payload. */
+   *  trailing-NUL trimming happened, and `undefined` for a full-width payload (and always for a
+   *  package, whose parts the reader restored). */
   paddedFrom: number | undefined;
   /** 32 bytes. */
   domainSep: Uint8Array;
@@ -257,10 +294,14 @@ export interface DecodedTokenMetadata {
   /** `keyBytes` decoded as UTF-8; `undefined` when they are not a NUL-free valid UTF-8 string. */
   keyText: string | undefined;
   valType: number;
+  /** The DECLARED length — two bytes little-endian under UC-1, one byte under the draft. It may
+   *  exceed the value field on a malformed payload; validation reports that. */
   valLen: number;
-  /** The raw 189 value bytes, padding included — stored verbatim on the event row. */
+  /** The whole value field, padding included — from offset 68 to the end of the package under
+   *  UC-1, the 189 bytes from offset 67 under the draft — stored verbatim on the event row. */
   value: Uint8Array;
-  /** `value.subarray(0, val-len)` — the only bytes any consumer may read (MIP §2.2). */
+  /** `value.subarray(0, val-len)` — the only bytes any consumer may read (MIP §2.2); clamped to the
+   *  field when a malformed `val-len` runs past it. */
   valueBytes: Uint8Array;
   /** Derived from the kind byte; meaningless if the byte is invalid, which validation catches. */
   privacy: TokenPrivacy;
@@ -280,7 +321,12 @@ export type RejectReason =
    *  not valid UTF-8 at all). The final name only; the draft had no such rule. */
   | "key_pointer_invalid"
   | "val_type_reserved"
+  /** The draft name only: `val-len > 189` (MIP §2.2 before UC-1). */
   | "val_len_too_long"
+  /** The standard's name (UC-1): `68 + val-len` runs past the package's `256 · k` bytes — the
+   *  declared value is longer than what the package carries. A one-part package holds 188 bytes,
+   *  so `val-len` 189 in one part lands here too. */
+  | "val_len_beyond_package"
   /** Every per-type value rule of §2.1, Null's `val-len` MUST be zero included — MIP §2.2 files
    *  them all under one line ("`value` failing its `val-type` backing-type or semantic rule MUST
    *  reject the event"), and the reference contracts' corpus names this case the same way, so the
@@ -309,8 +355,10 @@ export type ProjectionError =
 
 export class PayloadSizeError extends Error {
   readonly reason = "payload_size" as const;
-  constructor(readonly size: number) {
-    super(`token-metadata payload must be at most ${PAYLOAD_SIZE} bytes, got ${size}`);
+  constructor(readonly size: number, variant: NameVariant = "legacy-mip-xxxx") {
+    super(variant === "mip-0018"
+      ? `a mip-0018 package must be a positive multiple of ${PAYLOAD_SIZE} bytes, got ${size}`
+      : `token-metadata payload must be at most ${PAYLOAD_SIZE} bytes, got ${size}`);
     this.name = "PayloadSizeError";
   }
 }
@@ -344,31 +392,46 @@ export function nameHexOf(variant: NameVariant): string {
 }
 
 /**
- * Structural decode — **variant-free**, because the 256-byte layout of MIP §2 is the one thing the
- * two names share. A payload SHORTER than 256 bytes is zero-extended (see the header: the VM trims
- * trailing NULs, and every short payload is a full one with zeros removed). A payload LONGER than
- * 256 throws {@link PayloadSizeError} — the one failure that leaves nothing storable, since
- * `token_metadata_events.payload` is `CHECK (octet_length(payload) = 256)` and truncating would
- * store bytes the chain never carried.
+ * Structural decode. It never judges; the variant only picks the LAYOUT, because UC-1 moved
+ * `val-len` and the value (see the header).
+ *
+ *  - `mip-0018`: a [Y] package, `256 · k` bytes (`k ≥ 1`); `val-len` is two bytes little-endian at
+ *    66 and the value field runs from 68 to the end of the package. Anything that is not a positive
+ *    multiple of 256 throws {@link PayloadSizeError}: the reader never produces one, so it is a bug
+ *    upstream, and storing it would store a package the chain never carried.
+ *  - `legacy-mip-xxxx`: one 256-byte event; a SHORTER payload is zero-extended (the VM trims
+ *    trailing NULs, and every short payload is a full one with zeros removed), a LONGER one throws.
+ *
+ * `valueBytes` is clamped to the field so a malformed `val-len` is reported by validation, never by
+ * a range error.
  */
-export function decodeTokenMetadata(raw: Uint8Array): DecodedTokenMetadata {
-  if (raw.length > PAYLOAD_SIZE) throw new PayloadSizeError(raw.length);
+export function decodeTokenMetadata(raw: Uint8Array, variant: NameVariant): DecodedTokenMetadata {
   let payload = raw;
   let paddedFrom: number | undefined;
-  if (raw.length < PAYLOAD_SIZE) {
-    paddedFrom = raw.length;
-    payload = new Uint8Array(PAYLOAD_SIZE);
-    payload.set(raw, 0);
+  if (variant === "mip-0018") {
+    if (raw.length === 0 || raw.length % PAYLOAD_SIZE !== 0) throw new PayloadSizeError(raw.length, variant);
+  } else {
+    if (raw.length > PAYLOAD_SIZE) throw new PayloadSizeError(raw.length, variant);
+    if (raw.length < PAYLOAD_SIZE) {
+      paddedFrom = raw.length;
+      payload = new Uint8Array(PAYLOAD_SIZE);
+      payload.set(raw, 0);
+    }
   }
   const domainSep = payload.subarray(OFFSET_DOMAIN_SEP, OFFSET_KIND);
   const kindByte = payload[OFFSET_KIND]!;
   const key = payload.subarray(OFFSET_KEY, OFFSET_VAL_TYPE);
   const keyBytes = trimTrailingNuls(key);
   const valType = payload[OFFSET_VAL_TYPE]!;
-  const valLen = payload[OFFSET_VAL_LEN]!;
-  const value = payload.subarray(OFFSET_VALUE, PAYLOAD_SIZE);
+  const uc1 = variant === "mip-0018";
+  // UC-1: `Uint<16>` in Compact's serialization — little-endian, byte 66 is the low byte.
+  const valLen = uc1
+    ? payload[OFFSET_VAL_LEN]! | (payload[OFFSET_VAL_LEN + 1]! << 8)
+    : payload[OFFSET_VAL_LEN]!;
+  const value = payload.subarray(uc1 ? OFFSET_VALUE_UC1 : OFFSET_VALUE, payload.length);
   return {
     payload,
+    parts: payload.length / PAYLOAD_SIZE,
     paddedFrom,
     domainSep,
     kindByte,
@@ -379,9 +442,7 @@ export function decodeTokenMetadata(raw: Uint8Array): DecodedTokenMetadata {
     valType,
     valLen,
     value,
-    // `val-len` may exceed VALUE_SIZE on a malformed payload; clamp so the slice is always valid
-    // and validation, not a range error, is what reports the problem.
-    valueBytes: value.subarray(0, Math.min(valLen, VALUE_SIZE)),
+    valueBytes: value.subarray(0, Math.min(valLen, value.length)),
     privacy: privacyOfKind(kindByte),
     storage: storageOfKind(kindByte),
   };
@@ -510,7 +571,7 @@ export function valueRuleError(
     }
     case VAL_TYPE_NULL:
       // Reachable under MIP-0018 only — `val_type_reserved` catches 5 under the draft name first.
-      // "`val-len` MUST be zero; consumers MUST ignore all 189 `value` bytes." Reported as
+      // "`val-len` MUST be zero; consumers MUST ignore all … `value` bytes." Reported as
       // `val_type_rule` rather than a reason of its own: MIP §2.2 puts every per-type value rule on
       // one line, and the reference contracts' negative corpus names this case `val_type_rule` too
       // (`fixtures/contracts/negative-payloads.json`), so a diagnostic string means the same thing
@@ -529,11 +590,14 @@ export function valueMatchesType(
 }
 
 /**
- * Every rejection rule of MIP §2.2, §2.1, §3 and §5.1, applied in PAYLOAD-OFFSET order so a payload
- * that breaks two rules always reports the same one: `kind` (32) → `key` (33) → `val-type` (65) →
- * `val-len` (66) → `value` (67). Returns `undefined` when the event is applicable.
+ * Every rejection rule of MIP §2.2, §2.1, §3 and §5.1 (with UC-1's length rule under the standard's
+ * name), applied in PAYLOAD-OFFSET order so a payload that breaks two rules always reports the same
+ * one: `kind` (32) → `key` (33) → `val-type` (65) → `val-len` (66) → `value` (67 / 68). Returns
+ * `undefined` when the declaration is applicable.
  *
- * The pointer rule sits with the key it is about, at offset 33.
+ * The pointer rule sits with the key it is about, at offset 33. The length rule differs by name:
+ * `val_len_beyond_package` under UC-1 (`68 + val-len > 256 · k`), `val_len_too_long` under the
+ * draft (`val-len > 189`).
  */
 export function validateTokenMetadata(
   decoded: DecodedTokenMetadata, variant: NameVariant,
@@ -545,7 +609,11 @@ export function validateTokenMetadata(
     if (pointer !== undefined) return pointer;
   }
   if (decoded.valType > maxValType(variant)) return "val_type_reserved";
-  if (decoded.valLen > MAX_VAL_LEN) return "val_len_too_long";
+  if (variant === "mip-0018") {
+    if (OFFSET_VALUE_UC1 + decoded.valLen > decoded.payload.length) return "val_len_beyond_package";
+  } else if (decoded.valLen > MAX_VAL_LEN) {
+    return "val_len_too_long";
+  }
   return valueRuleError(variant, decoded.valType, decoded.valLen, decoded.valueBytes);
 }
 
@@ -739,16 +807,16 @@ export interface ParsedTokenMetadata extends DecodedTokenMetadata {
 }
 
 /**
- * Decode + validate in one call — what the event lookup uses. The variant is **required**: it
- * decides four transport rules and how a type-2 byte string reads, and a default would silently
+ * Decode + validate in one call — what the fold uses. The variant is **required**: it decides the
+ * layout, four transport rules and how a type-2 byte string reads, and a default would silently
  * validate a payload under rules its emitter never used.
  *
- * Throws {@link PayloadSizeError} for a payload longer than 256 bytes (nothing can be stored for
- * it); every other transport failure comes back as `applied: false` with a reason, and the caller
- * stores the row anyway.
+ * Throws {@link PayloadSizeError} for a payload of the wrong shape (nothing can be stored for it);
+ * every other transport failure comes back as `applied: false` with a reason, and the caller stores
+ * the row anyway.
  */
 export function parseTokenMetadata(payload: Uint8Array, variant: NameVariant): ParsedTokenMetadata {
-  const decoded = decodeTokenMetadata(payload);
+  const decoded = decodeTokenMetadata(payload, variant);
   const rejectReason = validateTokenMetadata(decoded, variant);
   const applied = rejectReason === undefined;
   return {
@@ -780,9 +848,10 @@ export const WELL_KNOWN_VAL_TYPES: Readonly<Record<WellKnownKey, ValType>> = {
 };
 
 /**
- * Builds a 256-byte payload — the encoder side of the same layout. Used by the tests and by the
- * fixture tooling; having the encoder here rather than in a test file is what makes
- * "encode(decode(x)) == x" a property the module itself guarantees.
+ * Builds a 256-byte payload in the **draft's** layout (one-byte `val-len`, value from 67) — the
+ * encoder side of the legacy decode. Used by the tests and by the fixture tooling; having the
+ * encoder here rather than in a test file is what makes "encode(decode(x)) == x" a property the
+ * module itself guarantees. The standard's name uses {@link encodeTokenMetadataUc1}.
  *
  * `valType` and `valLen` are explicit so a test can build a payload no honest emitter would (a
  * reserved type, a length past the field) without the encoder second-guessing it.
@@ -808,6 +877,63 @@ export function encodeTokenMetadata(fields: {
   out[OFFSET_VAL_LEN] = fields.valLen ?? value.length;
   out.set(value, OFFSET_VALUE);
   return out;
+}
+
+/**
+ * Builds a MIP-0018 package payload on the **UC-1** layout: `domainSep` · `kind` · `key` ·
+ * `val-type` · `val-len` (`Uint<16>`, little-endian) · value, zero-padded to `256 · parts` bytes —
+ * by default the fewest parts that hold the value (188 value bytes in one part). This is the byte
+ * string the multi-part reader hands the decoder, and the one a publisher splits into parts.
+ *
+ * `valLen` and `parts` are explicit so a test can build what no honest emitter would (a declared
+ * length past the package, a value in a larger package than it needs).
+ */
+export function encodeTokenMetadataUc1(fields: {
+  domainSep: Uint8Array;
+  kindByte: number;
+  key: Uint8Array | string;
+  valType: number;
+  valLen?: number;
+  value: Uint8Array | string;
+  parts?: number;
+  /** Bytes written after the value (a publisher that broke [Y] §5 by putting two declarations in
+   *  one intent leaves the second one here — spec Q11). */
+  trailing?: Uint8Array;
+}): Uint8Array {
+  if (fields.domainSep.length !== 32) throw new Error("domainSep must be 32 bytes");
+  const key = typeof fields.key === "string" ? pad32(fields.key) : fields.key;
+  if (key.length !== 32) throw new Error("key must be 32 bytes");
+  const value = typeof fields.value === "string" ? new TextEncoder().encode(fields.value) : fields.value;
+  const trailing = fields.trailing ?? new Uint8Array(0);
+  const valLen = fields.valLen ?? value.length;
+  if (!Number.isInteger(valLen) || valLen < 0 || valLen > MAX_VAL_LEN_UC1) {
+    throw new Error(`val-len ${valLen} does not fit Uint<16>`);
+  }
+  const needed = OFFSET_VALUE_UC1 + value.length + trailing.length;
+  const parts = fields.parts ?? Math.max(1, Math.ceil(needed / PAYLOAD_SIZE));
+  if (!Number.isInteger(parts) || parts < 1 || parts * PAYLOAD_SIZE < needed) {
+    throw new Error(`${needed} bytes do not fit ${parts} part(s)`);
+  }
+  const out = new Uint8Array(parts * PAYLOAD_SIZE);
+  out.set(fields.domainSep, OFFSET_DOMAIN_SEP);
+  out[OFFSET_KIND] = fields.kindByte;
+  out.set(key, OFFSET_KEY);
+  out[OFFSET_VAL_TYPE] = fields.valType;
+  out[OFFSET_VAL_LEN] = valLen & 0xff;
+  out[OFFSET_VAL_LEN + 1] = valLen >> 8;
+  out.set(value, OFFSET_VALUE_UC1);
+  out.set(trailing, OFFSET_VALUE_UC1 + value.length);
+  return out;
+}
+
+/** A package payload split into its 256-byte parts — what a publisher emits, one event each. */
+export function splitIntoParts(payload: Uint8Array): Uint8Array[] {
+  if (payload.length === 0 || payload.length % PAYLOAD_SIZE !== 0) {
+    throw new Error(`a package is a positive multiple of ${PAYLOAD_SIZE} bytes, got ${payload.length}`);
+  }
+  const parts: Uint8Array[] = [];
+  for (let i = 0; i < payload.length; i += PAYLOAD_SIZE) parts.push(payload.slice(i, i + PAYLOAD_SIZE));
+  return parts;
 }
 
 /**

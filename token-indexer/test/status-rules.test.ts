@@ -85,6 +85,7 @@ describe("token status rules (MIP §4, §6.3, §7.2)", () => {
       payloadHex: metadataPayloadHex({
         domainSep: opts.domainSep ?? DOMAIN, kindByte, key, value,
         valType: opts.valType, valLen: opts.valLen,
+        nameVariant: opts.nameHex === MIP_0018_NAME_HEX ? "mip-0018" : "legacy-mip-xxxx",
       }),
       // Under the standard's name a declaration is a [Y] package and carries its evidence
       // (migration 005); these hand-built ones are one-part guaranteed packages in intent 1.
@@ -93,8 +94,8 @@ describe("token status rules (MIP §4, §6.3, §7.2)", () => {
     return sql.begin(async (tx) => applyMetadataEvent(tx, schema, NET, event));
   }
 
-  /** The same emission under the FINAL standard's event name. Everything else is identical: the
-   *  256-byte layout is the one thing the two names share, so only the rules change. */
+  /** The same declaration under the FINAL standard's event name: encoded on its UC-1 layout (2-byte
+   *  `val-len`, value from 68 — project 00024-01) and judged by its rules. */
   async function emit0018(
     address: string, kindByte: number, key: string | Uint8Array, value: string | Uint8Array, height: number,
     opts: { eventId?: number; valType?: number; valLen?: number; domainSep?: string } = {},
@@ -571,7 +572,7 @@ describe("token status rules (MIP §4, §6.3, §7.2)", () => {
     expect(await kv(address, "symbol")).toMatchObject({ val_type: 1, projection_error: "symbol_len" });
   }, 120_000);
 
-  it("[[token-0018-no-multipart]] MIP-0018 defines no multipart representation: metadata/<n> stays a trait under the standard's name while the same parts still assemble under the draft's", async () => {
+  it("[[token-0018-no-multipart]] MIP-0018's long values are [Y] packages, never metadata/<n> keys: metadata/<n> stays a trait under the standard's name while the same parts still assemble under the draft's", async () => {
     const document = JSON.stringify({ description: "A nebula in two halves", website: "https://example.test" });
     const halves = [document.slice(0, 40), document.slice(40)];
     expect(halves.join("")).toBe(document);
@@ -583,7 +584,8 @@ describe("token status rules (MIP §4, §6.3, §7.2)", () => {
     expect(await emit0018(final, KIND.shieldedNative, "metadata/0", halves[0]!, 200,
       { eventId: 1920, valType: 3 })).toMatchObject({ applied: false, rejectReason: "val_type_rule" });
     // Two parts that ARE each complete JSON values are stored — as two independent traits. Nothing
-    // is concatenated, because §5.4 defines nothing to concatenate.
+    // is concatenated: under the standard a long value is ONE declaration carried by a [Y]
+    // multi-part package (UC-1, project 00024-01), never a family of `metadata/<n>` keys.
     await emit0018(final, KIND.shieldedNative, "metadata/0", '{"half":"one"}', 201,
       { eventId: 1921, valType: 3 });
     await emit0018(final, KIND.shieldedNative, "metadata/1", '{"half":"two"}', 201,
@@ -592,10 +594,12 @@ describe("token status rules (MIP §4, §6.3, §7.2)", () => {
     // …and neither is flagged: under the standard these are ordinary keys with no rule to break.
     expect(await kv(final, "metadata/0")).toMatchObject({ name_variant: "mip-0018", projection_error: null });
     expect(await kv(final, "metadata/1")).toMatchObject({ name_variant: "mip-0018", projection_error: null });
-    // The only way to a `metadata` column under the standard is one complete value ≤ 189 bytes.
+    // The way to a `metadata` column under the standard is one complete value under the key
+    // `metadata` — of any length since UC-1; this one fits one part (≤ 188 bytes), a longer one is
+    // a multi-part package (`[[multipart-0018-golden]]`, `[[multipart-vector-*]]`).
     await emit0018(final, KIND.shieldedNative, "metadata", document, 202, { eventId: 1923, valType: 3 });
     expect((await row(final, KIND.shieldedNative)).metadata).toEqual(JSON.parse(document));
-    expect(Buffer.byteLength(document, "utf8")).toBeLessThanOrEqual(189);
+    expect(Buffer.byteLength(document, "utf8")).toBeLessThanOrEqual(188);
 
     // ── Under the draft name: the deployed contracts' documents still assemble ───────────────
     const draft = newAddress();

@@ -72,3 +72,17 @@ Consumed by `token-indexer/test/contract-fixtures.test.ts`, which reads the rule
 rather than being validated under the wrong rules. The hand-built payloads in
 `token-indexer/test/payload-0018.test.ts` (the standard), `token-indexer/test/payload.test.ts` (the
 draft) and `token-indexer/test/status-rules.test.ts` are kept alongside these, not replaced by them.
+
+## Project 00024-01 — read on UC-1 through an interim view (2026-09-25)
+
+UC-1 (`spec/00024-upstream-spec-changes.md` in the organizer) amends `mip-0018:token-metadata[v1]`
+**in place**: `val-len` is two bytes little-endian at offset 66 and the value starts at 68, so one
+field may be any length within a [Y] multi-part package. These files were recorded at `7d9f659` in
+the one-event layout (one-byte `val-len` at 66, value from 67) and are **not modified**. Until the
+contracts repository's regenerated corpus (plan `00024-01` task 01-A5) is re-pinned here,
+`contract-fixtures.test.ts` reads every payload recorded under the standard's name through
+`uc1ViewOfRecordedPayload`: bytes 0–65 as recorded, `val-len` widened to two bytes, the value
+shifted one byte right, the recorded payload's last byte (value padding for every declaration)
+dropped. The one negative whose reason depends on the layout (`val-len` 200) is expected as
+`val_len_beyond_package` instead of `val_len_too_long`. The draft corpus in `../contracts-legacy/`
+is read as recorded.

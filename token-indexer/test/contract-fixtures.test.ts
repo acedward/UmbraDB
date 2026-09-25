@@ -21,7 +21,9 @@ import {
  *
  *  - `fixtures/contracts/` — **MIP-0018**, the standard: 66 `mip-0018:token-metadata[v1]` events,
  *    16 mints, 15 colour vectors, 17 expected rows, 32 awkward payloads. Re-pinned on that
- *    repository's `main` @ `7d9f659`.
+ *    repository's `main` @ `7d9f659` — recorded in the one-event layout the MIP had before UC-1, so
+ *    project 00024-01 reads it through {@link uc1ViewOfRecordedPayload} until the contracts
+ *    repository's regenerated corpus (its task 01-A5) is re-pinned here.
  *  - `fixtures/contracts-legacy/` — the **superseded PR #315 draft**: 69
  *    `mip-xxxx:token-metadata[v1]` events and the rest of that set, frozen. This is what the
  *    Stagenet reference set actually emits, and it is not being redeployed.
@@ -95,6 +97,34 @@ interface FixtureNegative {
   kind: number; keyHex: string; keyText: string | null; valType: number; len: number;
 }
 
+/**
+ * **INTERIM — project 00024-01, until the 01-A5 corpus is re-pinned into `fixtures/contracts/`.**
+ *
+ * UC-1 amends `mip-0018:token-metadata[v1]` IN PLACE (2-byte little-endian `val-len` at 66, value
+ * from 68; spec 00024 Q1), so the MIP-0018 corpus recorded at `7d9f659` — one-byte `val-len` at 66,
+ * value from 67 — is a corpus of the superseded layout. The contracts repository regenerates it on
+ * UC-1 in its task 01-A5; until then this function carries each recorded payload over to UC-1
+ * mechanically: bytes 0–65 as they are, the one-byte `val-len` widened to two (high byte 0), the
+ * value field shifted one byte right. The only byte dropped is the recorded payload's LAST one,
+ * which is value padding for every recorded declaration (the longest value is 172 bytes, so each
+ * still fits one part) and junk in exactly one negative (a Null "whose 189 value bytes are not NUL",
+ * whose verdict does not depend on it). The files on disk are unchanged; `SOURCE.md` says so.
+ */
+function uc1ViewOfRecordedPayload(payloadHex: string): string {
+  const recorded = Buffer.from(payloadHex, "hex");
+  if (recorded.length !== 256) throw new Error(`recorded payload is ${recorded.length} bytes`);
+  const out = Buffer.alloc(256);
+  recorded.copy(out, 0, 0, 66);
+  out[66] = recorded[66]!; // val-len, low byte …
+  out[67] = 0;             // … high byte: every recorded length is < 256
+  recorded.copy(out, 68, 67, 255);
+  return out.toString("hex");
+}
+
+/** The one negative whose REASON changes with the layout: a length past the value field is
+ *  `val_len_too_long` in the one-event layout and `val_len_beyond_package` under UC-1. */
+const UC1_REASON: Partial<Record<RejectReason, RejectReason>> = { val_len_too_long: "val_len_beyond_package" };
+
 interface Corpus {
   /** The variant every event in this corpus carries — asserted per event, not assumed. */
   variant: NameVariant;
@@ -123,15 +153,29 @@ interface Corpus {
 
 function corpus(
   spec: Pick<Corpus, "variant" | "eventName" | "dir" | "schema" | "eventCount" | "valTypes"
-  | "rejectReasons" | "snebMetadataKeys">,
+  | "rejectReasons" | "snebMetadataKeys"> & { uc1View?: boolean },
 ): Corpus {
+  const { uc1View, ...rest } = spec;
+  const events = read<Corpus["events"]>(spec.dir, "events.json");
+  const negatives = read<Corpus["negatives"]>(spec.dir, "negative-payloads.json");
+  if (uc1View === true) {
+    // See `uc1ViewOfRecordedPayload`: only payloads recorded under the STANDARD's name move.
+    for (const e of events.events) {
+      if (e.eventName === MIP_0018_EVENT_NAME) e.payloadHex = uc1ViewOfRecordedPayload(e.payloadHex);
+    }
+    for (const n of negatives.payloads) {
+      if (n.eventName !== MIP_0018_EVENT_NAME) continue;
+      n.payloadHex = uc1ViewOfRecordedPayload(n.payloadHex);
+      if (n.reason !== undefined) n.reason = UC1_REASON[n.reason] ?? n.reason;
+    }
+  }
   return {
-    ...spec,
-    events: read(spec.dir, "events.json"),
+    ...rest,
+    events,
     mints: read(spec.dir, "mints.json"),
     colorVectors: read(spec.dir, "color-vectors.json"),
     expectedTokens: read(spec.dir, "expected-tokens.json"),
-    negatives: read(spec.dir, "negative-payloads.json"),
+    negatives,
   };
 }
 
@@ -144,14 +188,16 @@ const CORPORA: readonly Corpus[] = [
   corpus({
     variant: "mip-0018", eventName: MIP_0018_EVENT_NAME,
     dir: "contracts", schema: "token_contract_fixtures",
+    // Read on UC-1 through the interim view until 01-A5's corpus is re-pinned (project 00024-01).
+    uc1View: true,
     eventCount: 66,
     // 5 is Null: LMOON clears its `description` with one.
     valTypes: [1, 2, 3, 4, 5],
     rejectReasons: [
-      "kind_unknown", "key_empty", "key_pointer_invalid", "val_type_reserved", "val_len_too_long",
+      "kind_unknown", "key_empty", "key_pointer_invalid", "val_type_reserved", "val_len_beyond_package",
       "val_type_rule",
     ],
-    // ONE complete JSON value (§5.4 defines no reassembly), plus a pointer key that is just a key.
+    // ONE complete JSON value under `metadata`, plus a pointer key that is just a key.
     snebMetadataKeys: ["metadata", "/metadata/description"],
   }),
   corpus({
@@ -241,8 +287,8 @@ describe("the compiled reference contracts' recorded corpus", () => {
     expect(new Set(c.events.events.map((e) => e.kind)), c.dir).toEqual(new Set([0, 1, 2]));
     expect([...new Set(c.events.events.map((e) => e.valType))].sort((a, b) => a - b), c.dir)
       .toEqual(c.valTypes);
-    // How this corpus's SNEB publishes its document — one complete value under the standard, six
-    // fragments under the draft (MIP-0018 §5.4 defines no reassembly at all).
+    // How this corpus's SNEB publishes its document — one complete value under the standard (a
+    // long one is a [Y] package since UC-1, never `metadata/<n>` keys), six fragments under the draft.
     const keys = new Set(c.events.events.map((e) => e.keyText));
     for (const key of c.snebMetadataKeys) expect(keys.has(key), `${c.dir} ${key}`).toBe(true);
     expect(keys.has("tokenUri"), c.dir).toBe(true);
