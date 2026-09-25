@@ -89,6 +89,12 @@ export interface TokenIndexStatus {
     /** …of which the colour is NOT public, because the offer is balanced (spec §0, FR-018). */
     undisclosedShieldedOffers: number;
     contractCalls: number;
+    /** Project 00024-01 — [Y] packages under the standard's name (one per `token_metadata_events`
+     *  row of `mip-0018`), how many of them span several parts, and how many are `mixed`-phase —
+     *  a publisher error that is recorded, never dropped (spec FR-002). */
+    packages: number;
+    multipartPackages: number;
+    mixedPackages: number;
   };
 }
 
@@ -121,6 +127,7 @@ export async function readStatus(
       events_applied: string; events_rejected: string; lookups_ok: string;
       activity_rows: string; seen_tokens: string; shielded_offers: string;
       undisclosed_shielded_offers: string; contract_calls: string;
+      packages: string; multipart_packages: string; mixed_packages: string;
     }[]>`
       SELECT
         (SELECT count(*) FROM ${sql(schema)}.contracts WHERE net = ${net})                       AS contracts,
@@ -136,7 +143,13 @@ export async function readStatus(
         (SELECT count(*) FROM ${sql(schema)}.tokens WHERE net = ${net} AND status = 'seen')       AS seen_tokens,
         (SELECT count(*) FROM ${sql(schema)}.shielded_offers WHERE net = ${net})                 AS shielded_offers,
         (SELECT count(*) FROM ${sql(schema)}.shielded_offers WHERE net = ${net} AND undisclosed) AS undisclosed_shielded_offers,
-        (SELECT count(*) FROM ${sql(schema)}.contract_calls  WHERE net = ${net})                 AS contract_calls
+        (SELECT count(*) FROM ${sql(schema)}.contract_calls  WHERE net = ${net})                 AS contract_calls,
+        (SELECT count(*) FROM ${sql(schema)}.token_metadata_events
+           WHERE net = ${net} AND name_variant = 'mip-0018')                                    AS packages,
+        (SELECT count(*) FROM ${sql(schema)}.token_metadata_events
+           WHERE net = ${net} AND name_variant = 'mip-0018' AND parts > 1)                      AS multipart_packages,
+        (SELECT count(*) FROM ${sql(schema)}.token_metadata_events
+           WHERE net = ${net} AND name_variant = 'mip-0018' AND phase = 'mixed')                AS mixed_packages
     `,
     readPendingLookups(sql, schema, net, 50),
   ]);
@@ -161,6 +174,9 @@ export async function readStatus(
       shieldedOffers: Number(row.shielded_offers),
       undisclosedShieldedOffers: Number(row.undisclosed_shielded_offers),
       contractCalls: Number(row.contract_calls),
+      packages: Number(row.packages),
+      multipartPackages: Number(row.multipart_packages),
+      mixedPackages: Number(row.mixed_packages),
     },
   };
 }

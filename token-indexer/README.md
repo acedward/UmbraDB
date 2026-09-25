@@ -63,10 +63,11 @@ text. This indexer therefore recognises two names and judges each under its own 
 |---|---|---|
 | `val-type` 2 | Compact `Uint<8·N>`, `1 ≤ val-len ≤ 31`, **little-endian** | unsigned **big-endian**, `1 ≤ val-len ≤ 16` |
 | `val-type` 3 | ONE complete valid JSON value (RFC 8259; scalars and arrays allowed) | valid UTF-8, nothing more |
-| `val-type` 5 | **Null** — `val-len` MUST be 0, all 189 value bytes ignored; CLEARS the key | reserved → rejects |
+| `val-type` 5 | **Null** — `val-len` MUST be 0, every value byte ignored; CLEARS the key | reserved → rejects |
 | reserved | 6–255 | 5–255 |
 | `/metadata/…` keys | MUST be valid RFC 6901 JSON Pointers (only `~0`/`~1`) or the event REJECTS | no rule; plain bytes |
-| multipart | **none** — `metadata` is one complete JSON value ≤ 189 B or nothing | `metadata/<n>`, parts `0..15`, assembled |
+| layout (UC-1, project 00024-01) | a [Y] package of `256·k` bytes: 2-byte little-endian `val-len` at 66, value from 68, any length | one 256-byte event: 1-byte `val-len`, ≤ 189 |
+| long values | a [Y] multi-part package; `metadata` is ONE complete JSON value of any length | `metadata/<n>`, parts `0..15`, assembled |
 
 Each name is spelled once, in `ingest/payload.ts` (`MIP_0018_EVENT_NAME`, `LEGACY_EVENT_NAME`), and
 every stored row carries its `name_variant` (`mip-0018` or `legacy-mip-xxxx`): on
@@ -85,6 +86,37 @@ event, and as the page's "pre-MIP name" badge.
 The pre-MIP name `TokenMetadata` that project 00020 shipped is recognised by **neither** validator:
 it is **ignored** — not stored, not rejected, not evidence of anything (MIP §1). Contracts deployed
 under that name keep whatever rows their mints created, as `observed`.
+
+### Project 00024-01: MIP-0018 values of any length, as multi-part packages
+
+MIP-0018 is amended in place (UC-1 of the organizer's `spec/00024-upstream-spec-changes.md`) and
+`mip-0018:token-metadata[v1]` follows the Multi-Part Event rule ([Y], `acedward/compact-multi-part-event`
+PR #1, adopted unchanged): the events of that name one contract emits from one intent of one
+transaction are ONE package, their 256-byte payloads concatenated in ledger emission order, and one
+package is one declaration. The draft name is not opted in and keeps its single-event path.
+
+* **Acquisition** (`ingest/events.ts`, `ingest/raw-event.ts`): the `contractEvents` query requests
+  each event's `raw`; its `EventSource.physicalSegment` is the event's intent, its indexer id its
+  position, and its phase comes from the archived transcripts (the ledger applies every intent's
+  guaranteed part before any fallible segment). Nothing of an opted-in name is grouped, stored or
+  folded until the whole `(transaction, contract)` answer is complete and every `raw` decodes — a
+  short or undecodable answer stays in `pending_event_lookups` with its reason and stores nothing.
+* **Reader** (`ingest/packages.ts`, ported from [Y]'s reference with `ingest/SOURCE.md`): groups by
+  (network, contract, name, transaction, segment) on every contract, restores every part to 256
+  bytes, keeps trailing zeros, records `guaranteed | fallible | mixed`; a 1 024-part safety ceiling.
+* **Decoder** (`ingest/payload.ts`): the UC-1 layout; `val_len_beyond_package` when `68 + val-len`
+  runs past the package. **Fold** (`ingest/fold.ts`): last write wins in MIP-0018 §6.2's order
+  (block, transaction position, execution order), a package positioned by its first part (P1);
+  projections have no 189-byte ceiling under the standard's name.
+* **API** (additive): every token carries `origins` for `name`, `symbol`, `decimals`, `tokenUri`,
+  `metadata`, `color`, `status` and `mints` — `mip-0018` (with the package: event ids, transaction,
+  block, position, segment, parts, phase), `chain`, `derived` (with the rule) or `none` (with the
+  reason); traits and metadata events gain `segment`, `parts`, `partEventIds`, `phase`, `txPosition`
+  and an `origin` (events also `payloadLength` and `payloadSha256` of the merged package); mints and
+  activity rows carry a `chain` origin; `/internal/status` counts `packages`, `multipartPackages` and
+  `mixedPackages`. The page is unchanged in this project.
+* **Schema** (`005_multipart_packages`): one `token_metadata_events` row per package; `val_len` up
+  to 65 535; a fresh database per run (no migration of existing rows).
 
 ### Null clears a key, and its row stays
 
