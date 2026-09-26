@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: Apache-2.0
+// MIP-xxxx: Public Interfaces for Compact Contracts — the module.
+//
+// This is the ONLY contract code the standard adds to a contract: one circuit
+// that emits the contract's public-interface event, which commits the contract to
+// its off-chain interface bundle. A contract has one interface, at one URL; when
+// it emits the event again, the newest event wins. The README's Spec defines the
+// event. `xxxx` becomes the MIP number once one is assigned.
+//
+// The payload is assembled by the caller, because Compact has no byte
+// concatenation:
+//
+//     payload[0..32)   = the bundle commitment (JubJub multiset hash of its index)
+//     payload[32..256) = utf8 of the index.json URL, zero padded (URL <= 224 bytes)
+//
+// The event name is fixed here, so no caller can choose another one.
+//
+// The circuit is impure (it emits), so the chain stores a verifier key for it
+// under the entry point name the including contract exports it as. Calling it
+// costs one transaction with one proof, once per published bundle version.
+//
+// There is NO access control here: anyone who can call the including contract
+// can call publishBundle and publish a newer event, and consumers take the
+// newest one. Restricting who may publish is up to the contract and is outside
+// the standard; the README's "Contract owners" section shows an optional check
+// that the caller knows a secret committed at deploy time.
+//
+// This file is self-contained: it imports nothing from this repository and can be
+// copied into any Compact project on its own.
+
+pragma language_version >= 0.23.0;
+
+module OffChainInterface {
+  import CompactStandardLibrary;
+
+  /**
+   * @description Emits the public-interface event: commits the contract to an off-chain interface bundle.
+   * @param {Bytes<256>} payload - commitment (32 bytes) ++ utf8(index.json url) zero padded to 224 bytes.
+   * @return {[]} - Empty tuple.
+   */
+  export circuit publishBundle(payload: Bytes<256>): [] {
+    emit(Misc { name: pad(32, "mip-xxxx:public-interface[v1]"), payload: disclose(payload) });
+  }
+}

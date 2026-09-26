@@ -60,3 +60,17 @@ d0ddd2ed2ef1a7d46518134e1e2a1da67053ade06da9203d4912b4db2697bcbc  payload-short.
 The UmbraDB tests derive the same variants from `bundle/` with the same transformations and check that the
 derived `index.json` has the SHA-256 recorded for that verdict (`indexSha256`), so every recorded reference
 conclusion is tied to byte-identical inputs.
+
+## `b5-bundles/` — the real fixture bundles of 02-B5 (LSUNPI, six cases)
+
+| | |
+|---|---|
+| Copied from | `acedward/mip-public-interfaces` `feat/00024-02-public-interface` @ `dd9d95f8893b9cae6e8e4a01931635c8874af404` ("00024-02-B5: fixtures for the token indexer"), `fixtures/bundles/`, byte for byte (`git archive`, 130 files) — generated there by `scripts/export-fixtures.ts`; its own `SOURCE.md` (copied here) lists the toolchain, the inputs and every output |
+| What | six public-interface bundles built from LSUNPI's FULL interface (compactc 0.34.0; the patched `public-interface-deploy-check`): `valid`, `tampered-file`, `wrong-hash`, `over-size-cap` (one listed 1 048 577-byte zero file; built to exceed a 1 MiB cap), `loopback-host` (URL on 127.0.0.1), `compiler-not-installed` (names compactc 0.33.0; keys real); `LSUNPI.state.hex` (LSUNPI's simulated state — one state fits all); `cases.json` (per case: URL, payload, parts, sizes, and the outcome spec FR-010–FR-013 expects of an unattended verifier) |
+| `cases.json` SHA-256 | `c32e08f6f25daceae87a70092c3aef8cc6fd3740beef985f840f82ec9c7df0e2` |
+| `LSUNPI.state.hex` SHA-256 (file) | `093c948cc255c5d7a55ed549ffc066a4d84b5472e608aa4e2308e92a516f4086` (the decoded state bytes: `cases.json` `stateSha256`) |
+| Used by | `[[interface-fixture-bundles]]` (`test/interface-fixture-bundles.test.ts`): every case through `verifyPublication` ends with `cases.json`'s expected status and levels |
+
+The contract is simulated, not deployed; the address in the test is a stand-in. Each bundle is served by a
+local test host under that host's address (the event URL is not part of the commitment); `loopback-host`
+keeps its exact URL and is verified with private hosts refused.
