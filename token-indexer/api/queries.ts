@@ -312,13 +312,17 @@ export function originsOf(
   // one is decided by the SAME function the fold projects with (`chooseMetadata`), so the evidence
   // is always the declaration(s) the served document came from — never a newer part of an
   // assembly that is incomplete or does not parse (01-D audit F5).
+  // The evidence is built from the chosen ROWS, not looked up again by key text: two byte keys can
+  // share a text (01-D audit round 2, N3).
   let metadata = field("metadata", token.metadata);
   if (token.metadata !== null) {
     const choice = chooseMetadata(kv
       .filter((row) => row.key_text === "metadata" || (row.key_text !== null && metadataPartIndex(row.key_text) !== undefined))
       .map((row) => ({ ...row, val_len: row.val_len ?? 0, value: row.value ?? Buffer.alloc(0) })));
     if (choice.source === "assembly") {
-      metadata = { origin: "mip-0018", evidence: choice.keys.map((key) => packageEvidence(byKey.get(key)!)) };
+      metadata = { origin: "mip-0018", evidence: choice.rows.map(packageEvidence) };
+    } else if (choice.source === "whole") {
+      metadata = { origin: "mip-0018", evidence: packageEvidence(choice.rows[0]!) };
     }
   }
 
@@ -379,6 +383,12 @@ export function decodeCursor<T>(raw: string): T {
 /** The read snapshot of the request being served, when there is one (01-D audit F6). */
 const requestSnapshot = new AsyncLocalStorage<UmbraDBSql>();
 
+/** Test seam (01-D audit round 2, N4): runs between a route's token read and the origins read, so
+ *  a test can commit a fold there and prove the two reads share one snapshot through HTTP. */
+export interface TokenQueryHooks {
+  beforeOrigins?: () => Promise<void>;
+}
+
 export class TokenIndexQueries {
   constructor(
     private readonly baseSql: UmbraDBSql,
@@ -388,6 +398,8 @@ export class TokenIndexQueries {
      *  on-request transaction decode (00023 §6.4). Defaults to the conventional name so the
      *  00020/00021 call sites need no change. */
     private readonly archiveSchema: string = "chain_archive",
+    /** Test seam only. */
+    private readonly hooks: TokenQueryHooks = {},
   ) {}
 
   /** Every statement runs in the current request's snapshot ({@link inSnapshot}), when there is one. */
@@ -416,6 +428,7 @@ export class TokenIndexQueries {
    * projected columns of the whole batch, then a pure function per token.
    */
   async withOrigins<T extends TokenBaseJson>(tokens: T[]): Promise<(T & { origins: TokenOriginsJson })[]> {
+    await this.hooks.beforeOrigins?.();
     const sql = this.sql;
     const keyOf = (address: string, domainSep: string, kind: number): string => `${address}:${domainSep}:${kind}`;
     const wanted = [...new Set(tokens

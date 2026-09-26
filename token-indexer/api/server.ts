@@ -9,7 +9,7 @@ import { DASHBOARD_CSP, serveUi } from "../ui/page.js";
 import {
   TokenIndexQueries, decodeCursor,
   type ActivityCursor, type ContractCallCursor, type ShieldedOfferCursor,
-  type TokenCursor, type TokenJson, type TraitJson,
+  type TokenCursor, type TokenJson, type TokenQueryHooks, type TraitJson,
 } from "./queries.js";
 
 /**
@@ -239,11 +239,13 @@ export interface TokenApiOptions {
    *  that never calls the route — it is loaded lazily on the first request and cached, so no
    *  process pays for the WASM until something actually needs a decode. */
   ledger?: unknown;
+  /** Test seam only (see `TokenQueryHooks`). */
+  testHooks?: TokenQueryHooks;
 }
 
 export function createTokenApi(opts: TokenApiOptions): Server {
   const queries = new TokenIndexQueries(
-    opts.sql, opts.config.schema, opts.config.net, opts.config.archiveSchema,
+    opts.sql, opts.config.schema, opts.config.net, opts.config.archiveSchema, opts.testHooks,
   );
   const chainHead = makeChainHeadReader(opts.config.indexerHttp);
   let ledgerPromise: Promise<unknown> | undefined =

@@ -6,12 +6,12 @@ import { bootstrapTokenIndexSchema } from "../bootstrap.js";
 import { pad32 } from "../color.js";
 import { IndexerEventSource, drainPendingLookups } from "../ingest/events.js";
 import {
-  MIP_0018_NAME_HEX, encodeTokenMetadataUc1, splitIntoParts,
+  LEGACY_NAME_HEX, MIP_0018_NAME_HEX, encodeTokenMetadataUc1, splitIntoParts,
 } from "../ingest/payload.js";
 import { TokenScanner } from "../ingest/scan.js";
 import { startFakeEventIndexer, type FakeEvent, type FakeEventIndexer } from "./helpers/fake-event-indexer.js";
 import {
-  fakeLedgerPerTransaction, fakeRawEvent, type FakeCallSpec, type FakeLedgerSpecs,
+  fakeLedgerPerTransaction, fakeRawEvent, metadataPayloadHex, type FakeCallSpec, type FakeLedgerSpecs,
 } from "./helpers/fake-ledger.js";
 import { seedSyntheticTransaction } from "./helpers/synthetic-archive.js";
 
@@ -459,7 +459,7 @@ describe("[Y] multi-part vectors and the complete-response barrier, through the 
     expect(after.token).toEqual([{ metadata: JSON.parse(DOCUMENT), status: "declared" }]);
   }, 180_000);
 
-  it("[[multipart-lookup-integrity]] an answer complete by count but not by content stores NOTHING — a redelivered id counts once, two contents under one id, a part with no typed payload, a part whose typed fields hide an opted-in `raw`, a part that cannot be classified — and the valid retry stores exactly one complete package", async () => {
+  it("[[multipart-lookup-integrity]] an answer that contradicts itself stores NOTHING, not even a draft-name event — a redelivered id counts once, two contents under one id, a part with no typed payload, a part whose typed fields (another name, none, or the draft's) hide an opted-in `raw`, a part that cannot be classified — and the valid retry stores exactly one complete package", async () => {
     const parts = THREE_PARTS.map((payload, i) => ({ id: 30 + i, segment: 5, payload }));
     const tx: TxSpec = { txHash: T1, blockHeight: 100, calls: [guaranteed(5, 3)], events: parts };
     const [p30, p31, p32] = parts as [EventSpec, EventSpec, EventSpec];
@@ -503,6 +503,20 @@ describe("[Y] multi-part vectors and the complete-response barrier, through the 
     await nothingStored();
     expect((await pendingRows(db))[0]!.last_error).toMatch(/incomplete_event: indexer event 32 has no typed name and no decodable `raw`/);
 
+    // (6b) round 2 (N1): the FIRST part served with the DRAFT's typed name — its `raw` is the
+    //      MIP-0018 part — must not be folded as a draft declaration under id 30 (the id the
+    //      package needs), neither from a short answer nor from a complete one …
+    const draftTyped = { ...p30, typedName: LEGACY_NAME_HEX };
+    expect(await retry([draftTyped])).toMatchObject({ completed: 0, stillShort: 1 });
+    await nothingStored();
+    expect((await pendingRows(db))[0]!.last_error).toMatch(/hidden_part: indexer event 30's `raw` is an opted-in event/);
+    expect(await retry([draftTyped, p31, p32])).toMatchObject({ completed: 0, stillShort: 1 });
+    await nothingStored();
+    // … nor when a draft-typed copy of id 30 arrives before the correct one (a conflict).
+    expect(await retry([draftTyped, p30, p31, p32])).toMatchObject({ completed: 0, stillShort: 1 });
+    await nothingStored();
+    expect((await pendingRows(db))[0]!.last_error).toMatch(/conflicting_delivery: indexer event 30 was delivered twice/);
+
     // (7) an identical redelivery of an id in an otherwise complete answer is harmless: one
     //     complete package, applied, and the queue empties (before the fix `[30,31,32,32]` was
     //     4 > 3 and stopped the scanner).
@@ -521,7 +535,7 @@ describe("[Y] multi-part vectors and the complete-response barrier, through the 
     expect(await onePackage(ref.db)).toEqual(after);
   }, 180_000);
 
-  it("[[multipart-hostile-values]] values the transport allows but a column cannot hold never stall the scanner — an 8 KiB incompressible name is stored and projected whole, a 15 000-level JSON `metadata` is kept as a flagged trait (`metadata_too_deep`), a 101-level one still projects — all in ONE scan batch that goes on to the next transaction", async () => {
+  it("[[multipart-hostile-values]] values the transport allows but a column cannot hold never stall the scanner — an 8 KiB incompressible name is stored and projected whole, a 15 000-level JSON `metadata` is kept as a flagged trait (`metadata_too_deep`), a 101-level one still projects, and the draft name's assemblies (130 and 1 509 levels) project unchanged — all in ONE scan batch that goes on to the next transaction", async () => {
     // A deterministic, incompressible, printable-ASCII name of 8 192 bytes (xorshift32): far past a
     // B-tree entry (~2.7 KB), which is what stalled the scanner before the 01-D audit fix F1.
     let x = 0x2545f491;
@@ -544,18 +558,39 @@ describe("[Y] multi-part vectors and the complete-response barrier, through the 
     const nameParts = declaration("umbra:hostile", "name", 1, nameText);
     const deepParts = declaration("umbra:hostile", "metadata", 3, deep);
     expect([nameParts.length, deepParts.length]).toEqual([33, 118]);
+    // Round 2 (N2): the DRAFT name keeps its rules (FR-006). Its assemblies are bounded at 3 024
+    // bytes, so they project at any depth they can reach — the auditors' 130-level document (265 B,
+    // 2 parts) and the deepest one 3 024 bytes can hold (1 509 levels, 3 023 B, 16 parts).
+    const draftDocument = (depth: number): string => `{"x":${"[".repeat(depth - 1)}0${"]".repeat(depth - 1)}}`;
+    const d130 = draftDocument(130);
+    const d1509 = draftDocument(1_509);
+    expect([Buffer.byteLength(d130), Buffer.byteLength(d1509)]).toEqual([265, 3_023]);
+    const draftTx = (txHash: string, blockHeight: number, domain: string, document: string, firstId: number): TxSpec => {
+      const chunks = document.match(/[\s\S]{1,189}/g)!;
+      return {
+        txHash, blockHeight, calls: [guaranteed(5, chunks.length)],
+        events: chunks.map((chunk, i) => ({
+          id: firstId + i, segment: 5, nameHex: LEGACY_NAME_HEX,
+          payload: Buffer.from(metadataPayloadHex({ domainSep: domain, kindByte: 1, key: `metadata/${i}`, value: chunk, valType: 3 }), "hex"),
+        })),
+      };
+    };
     const txs = [
       tx(T1, 100, nameParts, 1_000),
       tx(T2, 101, deepParts, 2_000),
       tx("73".repeat(32), 102, declaration("umbra:hostile", "symbol", 1, "HOST"), 3_000),
       tx("74".repeat(32), 103, declaration("umbra:shallow", "metadata", 3, shallow), 4_000),
+      draftTx("75".repeat(32), 104, "umbra:draft130", d130, 5_000),
+      draftTx("76".repeat(32), 105, "umbra:draft1509", d1509, 6_000),
     ];
+    expect([txs[4]!.events.length, txs[5]!.events.length]).toEqual([2, 16]);
 
     const { db, outcome } = await scan(txs);
-    // One batch, four transactions, four applied packages: nothing threw, nothing rolled back.
+    // One batch, six transactions, 4 packages + 18 draft events applied: nothing threw, nothing
+    // rolled back.
     expect(outcome).toMatchObject({
-      transactionsScanned: 4, lookups: 4, lookupsShort: 0, eventsApplied: 4, eventsRejected: 0,
-      cursor: { height: 103, position: 0 },
+      transactionsScanned: 6, lookups: 6, lookupsShort: 0, eventsApplied: 22, eventsRejected: 0,
+      cursor: { height: 105, position: 0 },
     });
     expect(await pendingRows(db)).toEqual([]);
 
@@ -563,7 +598,10 @@ describe("[Y] multi-part vectors and the complete-response barrier, through the 
       SELECT domain_sep, name, symbol, metadata, status
       FROM ${db.sql(db.schema)}.tokens WHERE net = ${NET} AND status <> 'builtin'`;
     const tokens = rows.map((r) => ({ ...r, domain: r.domain_sep.toString("utf8").replace(/\0+$/, "") }));
-    expect(tokens.map((t) => t.domain).sort()).toEqual(["umbra:hostile", "umbra:shallow"]);
+    expect(tokens.map((t) => t.domain).sort()).toEqual(["umbra:draft130", "umbra:draft1509", "umbra:hostile", "umbra:shallow"]);
+    // The draft's deep assemblies project exactly as before the depth rule (FR-006).
+    expect(tokens.find((t) => t.domain === "umbra:draft130")!.metadata).toEqual(JSON.parse(d130));
+    expect(tokens.find((t) => t.domain === "umbra:draft1509")!.metadata).toEqual(JSON.parse(d1509));
     const hostile = tokens.find((t) => t.domain === "umbra:hostile")!;
     const shallowToken = tokens.find((t) => t.domain === "umbra:shallow")!;
     expect(hostile.name).toBe(nameText); // projected whole

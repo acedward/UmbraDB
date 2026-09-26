@@ -40,6 +40,16 @@ const ORPHAN = "0e".repeat(32);
 const ASSEMBLED = "ae".repeat(32);
 const orphanDomain = Buffer.from(pad32("umbra:orphan")).toString("hex");
 const assembledDomain = Buffer.from(pad32("umbra:assembled")).toString("hex");
+// Round 2 (N3): two BYTE keys that decode to one key text — `metadata/0` and BOM + `metadata/0`
+// (a leading BOM is dropped by the UTF-8 decoder). The evidence must name the row that supplied the
+// value, not whichever row a lookup by text happens to find.
+const ALIAS = "a1".repeat(32);
+const aliasDomain = Buffer.from(pad32("umbra:alias")).toString("hex");
+let aliasSupplierId = 0;
+let aliasTwinId = 0;
+// Round 2 (N4): a token renamed WHILE an HTTP request is between its token read and its origins read.
+const RACE = "ac".repeat(32);
+const raceDomain = Buffer.from(pad32("umbra:race")).toString("hex");
 
 const snebDomain = Buffer.from(pad32("umbra:sneb18")).toString("hex");
 const lmoonDomain = Buffer.from(pad32("umbra:lmoon18")).toString("hex");
@@ -61,13 +71,17 @@ describe("token API — the origin of every value (FR-016b)", () => {
     schema, archiveSchema, scanBatch: 500, live2x: false,
   });
 
-  /** One draft-name declaration (one event, the legacy path). */
-  async function declareDraft(address: string, domainSep: string, kind: number, key: string, value: string, height: number): Promise<void> {
+  /** One draft-name declaration (one event, the legacy path); returns its event id. */
+  async function declareDraft(
+    address: string, domainSep: string, kind: number, key: string, value: string, height: number, valType = 3,
+  ): Promise<number> {
+    const eventId = nextId++;
     await sql.begin(async (tx) => applyMetadataEvent(tx, schema, NET, {
-      eventId: nextId++, contractAddress: address, txHash: createHash("sha256").update(`draft:${address}:${nextId}`).digest("hex"),
+      eventId, contractAddress: address, txHash: createHash("sha256").update(`draft:${address}:${eventId}`).digest("hex"),
       blockHeight: height, nameHex: LEGACY_NAME_HEX,
-      payloadHex: metadataPayloadHex({ domainSep, kindByte: kind, key, value, valType: 3 }),
+      payloadHex: metadataPayloadHex({ domainSep, kindByte: kind, key, value, valType }),
     }));
+    return eventId;
   }
 
   /** One MIP-0018 declaration as the lookup folds it: a package of `parts` consecutive event ids. */
@@ -138,6 +152,10 @@ describe("token API — the origin of every value (FR-016b)", () => {
     await declare(ASSEMBLED, assembledDomain, 2, "metadata", JSON.stringify({ old: true }), { valType: 3, height: 60 });
     await declareDraft(ASSEMBLED, assembledDomain, 2, "metadata/0", '{"new":', 61);
     await declareDraft(ASSEMBLED, assembledDomain, 2, "metadata/1", "true}", 62);
+    await declare(RACE, raceDomain, 2, "name", "Race One", { height: 65 });
+    await declare(RACE, raceDomain, 2, "symbol", "RACE", { height: 65, position: 1 });
+    aliasSupplierId = await declareDraft(ALIAS, aliasDomain, 2, "metadata/0", "{}", 63);
+    aliasTwinId = await declareDraft(ALIAS, aliasDomain, 2, "\uFEFFmetadata/0", "x", 64, 1);
 
     server = createTokenApi({ sql, config: config() });
     base = `http://127.0.0.1:${await listen(server, 0)}`;
@@ -179,7 +197,7 @@ describe("token API — the origin of every value (FR-016b)", () => {
   it("[[token-api-origin]] every value the token routes serve carries its origin — mip-0018 with its package, chain, derived with the rule, none with the reason — and events, traits, mints and activity carry theirs", async () => {
     // ── every token of every list route ─────────────────────────────────────────────────────
     const list = await get("/v1/tokens?limit=100");
-    expect(list.items.map((t: any) => t.status).sort()).toEqual(["builtin", "builtin", "declared", "declared", "declared", "declared", "described", "seen"]);
+    expect(list.items.map((t: any) => t.status).sort()).toEqual(["builtin", "builtin", "declared", "declared", "declared", "declared", "declared", "declared", "described", "seen"]);
     for (const t of list.items) expectEveryValueHasItsOrigin(t, `list ${t.symbol ?? t.color ?? t.status}`);
 
     // ── SNEB18: MIP-0018 packages, a chain mint, a derived colour and status ─────────────────
@@ -260,7 +278,7 @@ describe("token API — the origin of every value (FR-016b)", () => {
     const registry = await get("/v1/registry.json");
     expect(registry.tokens[sneb.color].origins.metadata).toEqual(sneb.origins.metadata);
     const status = await get("/internal/status");
-    expect(status.counters).toMatchObject({ packages: 11, multipartPackages: 2, mixedPackages: 1 });
+    expect(status.counters).toMatchObject({ packages: 13, multipartPackages: 2, mixedPackages: 1 });
 
     // ── activity rows carry a chain origin (audit F8: the claim above is now exercised) ─────
     for (const path of [`/v1/colors/${sneb.color}/transactions`, `/v1/contracts/${SNEB}/tokens/${snebDomain}/1/transactions`]) {
@@ -286,6 +304,53 @@ describe("token API — the origin of every value (FR-016b)", () => {
     expect(assembled.origins.metadata.evidence.map((e: any) => [e.key, e.nameVariant, e.blockHeight])).toEqual([
       ["metadata/0", "legacy-mip-xxxx", 61], ["metadata/1", "legacy-mip-xxxx", 62],
     ]);
+
+    // … and it names the ROW that supplied the value when two byte keys share a key text (N3).
+    const [aliasRows] = await Promise.all([sql<{ key_text: string; key_hex: string; projection_error: string | null }[]>`
+      SELECT key_text, key_hex, projection_error FROM ${sql(schema)}.token_metadata_kv
+      WHERE net = ${NET} AND address = ${Buffer.from(ALIAS, "hex")} ORDER BY updated_event_id`]);
+    expect(aliasRows.map((r) => r.key_text)).toEqual(["metadata/0", "metadata/0"]); // one text, two keys
+    expect(aliasRows[0]!.key_hex).not.toBe(aliasRows[1]!.key_hex);
+    expect(aliasRows[1]!.projection_error).not.toBeNull(); // the twin is not a projectable part
+    const alias = await get(`/v1/contracts/${ALIAS}/tokens/${aliasDomain}/2`);
+    expect(alias.metadata).toEqual({});
+    expect(alias.origins.metadata.evidence.map((e: any) => e.eventIds)).toEqual([[aliasSupplierId]]);
+    expect(aliasTwinId).toBeGreaterThan(aliasSupplierId);
+
+    // ── one snapshot per HTTP request (audit F6; round 2 N4): a second server whose query object
+    //    commits a rename (on another connection) between the token read and the origins read of
+    //    the next request it serves — the token route, then the tokenUri resolver ───────────────
+    let armed: (() => Promise<void>) | undefined;
+    const racing = createTokenApi({
+      sql, config: config(),
+      testHooks: { beforeOrigins: async () => { const once = armed; armed = undefined; await once?.(); } },
+    });
+    const raceBase = `http://127.0.0.1:${await listen(racing, 0)}`;
+    const raceGet = async (path: string): Promise<any> => { // eslint-disable-line @typescript-eslint/no-explicit-any
+      const res = await fetch(`${raceBase}${path}`);
+      expect(res.status, path).toBe(200);
+      return res.json();
+    };
+    try {
+      armed = () => declare(RACE, raceDomain, 2, "name", "Race Two", { height: 66 }).then(() => undefined);
+      const during = await raceGet(`/v1/contracts/${RACE}/tokens/${raceDomain}/2`);
+      expect(armed).toBeUndefined(); // the rename really committed in the middle of that request
+      // One snapshot: the old name WITH the old name's evidence (not the new declaration's).
+      expect(during.name).toBe("Race One");
+      expect(during.origins.name).toMatchObject({ origin: "mip-0018", evidence: { key: "name", blockHeight: 65 } });
+      const after = await raceGet(`/v1/contracts/${RACE}/tokens/${raceDomain}/2`);
+      expect(after.name).toBe("Race Two");
+      expect(after.origins.name.evidence.blockHeight).toBe(66);
+
+      // The resolver: candidates (with origins) first, then the traits — one snapshot too.
+      armed = () => declare(RACE, raceDomain, 2, "name", "Race Three", { height: 67 }).then(() => undefined);
+      const resolved = await raceGet("/RACE/race");
+      expect(armed).toBeUndefined();
+      expect(resolved.name).toBe("Race Two");
+      expect(resolved.traits.name.text).toBe(resolved.name);
+    } finally {
+      await new Promise<void>((resolve) => racing.close(() => resolve()));
+    }
 
     // ── one snapshot per request (audit F6): a fold committed between two reads of one
     //    request is invisible to both; the next request sees it, value and evidence together ──

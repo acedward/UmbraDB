@@ -4,14 +4,12 @@ import { tokenColor, tokenColorHex } from "../color.js";
 import type { ObservedMint } from "./decode.js";
 import {
   MAX_METADATA_BYTES,
-  MAX_METADATA_DEPTH,
   MAX_METADATA_PARTS,
   VAL_TYPE_NULL,
   decodeUtf8,
   integerOfValue,
   isNativeKind,
   isWellKnownKey,
-  jsonNestingDepth,
   metadataPartIndex,
   nameVariantOf,
   parseTokenMetadata,
@@ -678,13 +676,17 @@ export interface MetadataKvRow {
 }
 
 /** Which declaration(s) the projected `metadata` column comes from — and the column itself. */
-export interface MetadataChoice {
+export interface MetadataChoice<R extends MetadataKvRow = MetadataKvRow> {
   metadata: Record<string, unknown> | null;
   /** `whole`: the key `metadata`; `assembly`: the draft name's `metadata/0..n`; `null`: nothing
    *  projects. */
   source: "whole" | "assembly" | null;
   /** The kv keys behind the winning candidate, in part order (`["metadata"]` for a whole one). */
   keys: string[];
+  /** The winning candidate's ROWS themselves, in part order — the caller's own objects, so its
+   *  evidence names exactly the declarations the value came from, even when two byte keys share
+   *  one key text (01-D audit round 2, N3). */
+  rows: R[];
 }
 
 /**
@@ -695,13 +697,12 @@ export interface MetadataChoice {
  *
  * The two candidates are the whole `metadata` declaration and, under the superseded draft name only,
  * the assembly of `metadata/0..max`: every part present, projectable, type 3, at most 16 parts /
- * 3 024 bytes (Appendix A). Of the candidates whose document parses as a JSON object — and is not
- * nested deeper than {@link MAX_METADATA_DEPTH} (audit F2) — the most recently completed (highest
- * event id behind it) wins.
+ * 3 024 bytes (Appendix A). Of the candidates whose document parses as a JSON object, the most
+ * recently completed (highest event id behind it) wins.
  */
-export function chooseMetadata(rows: readonly MetadataKvRow[]): MetadataChoice {
+export function chooseMetadata<R extends MetadataKvRow>(rows: readonly R[]): MetadataChoice<R> {
   // Only projectable rows with a spellable key can reach a column; a Null tombstone does not.
-  const byKey = new Map<string, MetadataKvRow>();
+  const byKey = new Map<string, R>();
   for (const row of rows) {
     if (row.key_text === null || row.projection_error !== null) continue;
     if (row.val_type === VAL_TYPE_NULL) continue;
@@ -726,11 +727,12 @@ export function chooseMetadata(rows: readonly MetadataKvRow[]): MetadataChoice {
     if (index !== undefined && index < MAX_METADATA_PARTS) maxPart = Math.max(maxPart, index);
   }
 
-  interface Candidate { document: string; eventId: bigint; source: "whole" | "assembly"; keys: string[] }
+  interface Candidate { document: string; eventId: bigint; source: "whole" | "assembly"; keys: string[]; rows: R[] }
   let assembled: Candidate | null = null;
   if (maxPart >= 0) {
     const parts: string[] = [];
     const keys: string[] = [];
+    const used: R[] = [];
     let eventId = 0n;
     let complete = true;
     for (let i = 0; i <= maxPart; i++) {
@@ -743,6 +745,7 @@ export function chooseMetadata(rows: readonly MetadataKvRow[]): MetadataChoice {
       if (row === undefined || piece === null) { complete = false; break; }
       parts.push(piece);
       keys.push(`metadata/${i}`);
+      used.push(row);
       const id = BigInt(row.updated_event_id);
       if (id > eventId) eventId = id;
     }
@@ -750,27 +753,27 @@ export function chooseMetadata(rows: readonly MetadataKvRow[]): MetadataChoice {
     // Appendix A caps the assembly at 16 parts / 3 024 bytes; the per-part rules already bound it,
     // and this is the belt that says so out loud.
     if (complete && Buffer.byteLength(document, "utf8") <= MAX_METADATA_BYTES) {
-      assembled = { document, eventId, source: "assembly", keys };
+      assembled = { document, eventId, source: "assembly", keys, rows: used };
     }
   }
 
   const wholeRow = byKey.get("metadata");
   const whole: Candidate | null = wholeRow === undefined ? null
-    : { document: text("metadata") ?? "", eventId: BigInt(wholeRow.updated_event_id), source: "whole", keys: ["metadata"] };
+    : { document: text("metadata") ?? "", eventId: BigInt(wholeRow.updated_event_id), source: "whole", keys: ["metadata"], rows: [wholeRow] };
 
   // "A single-part `metadata` and a multi-part `metadata/<n>` for the same token SHOULD NOT both be
   // emitted; if they are, the most recently completed one wins" (Appendix A).
   const candidates = [assembled, whole].filter((c): c is Candidate => c !== null);
   candidates.sort((a, b) => (a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0));
-  let choice: MetadataChoice = { metadata: null, source: null, keys: [] };
+  let choice: MetadataChoice<R> = { metadata: null, source: null, keys: [], rows: [] };
   for (const candidate of candidates) {
-    // Belt and braces for 01-D audit F2: a document too deep to be written back never projects
-    // (the whole-`metadata` row already carries `metadata_too_deep`; this covers an assembly too).
-    if (jsonNestingDepth(candidate.document) > MAX_METADATA_DEPTH) continue;
+    // A MIP-0018 document too deep to be written back never gets here: its row carries
+    // `metadata_too_deep` (01-D audit F2) and is not a candidate. The draft's assembly is bounded
+    // at 3 024 bytes (≤ ~1 512 levels, which serialize fine) and keeps its rules (FR-006).
     try {
       const value: unknown = JSON.parse(candidate.document);
       if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-        choice = { metadata: value as Record<string, unknown>, source: candidate.source, keys: candidate.keys };
+        choice = { metadata: value as Record<string, unknown>, source: candidate.source, keys: candidate.keys, rows: candidate.rows };
       }
     } catch { /* an incomplete or malformed document simply does not project */ }
   }

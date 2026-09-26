@@ -674,11 +674,12 @@ export function projectionErrorFor(
       // Under MIP-0018 the transport has already proven this is ONE complete JSON value, so the
       // only thing left to check is our column's own shape: `tokens.metadata` is a jsonb OBJECT.
       // A transport-valid scalar or array is kept as a trait and flagged — never rejected.
-      // 01-D audit F2: a valid document can nest deeper than the column can be written
-      // (`JSON.stringify` overflows the stack long before a 65 535-byte value runs out); such a
-      // value stays a trait and is flagged, so the fold never throws and the scan never stalls.
-      if (jsonNestingDepth(decodeUtf8(valueBytes)!) > MAX_METADATA_DEPTH) return "metadata_too_deep";
       if (variant === "mip-0018") {
+        // 01-D audit F2: a valid document of up to 65 535 bytes can nest deeper than the column
+        // can be written (`JSON.stringify` overflows the stack); such a value stays a trait and is
+        // flagged, so the fold never throws and the scan never stalls. The draft name's values
+        // (≤ 189 bytes, assemblies ≤ 3 024) cannot get there and keep their rules (FR-006).
+        if (jsonNestingDepth(decodeUtf8(valueBytes)!) > MAX_METADATA_DEPTH) return "metadata_too_deep";
         return isJsonObject(decodeUtf8(valueBytes)!) ? undefined : "metadata_not_json_object";
       }
       if (valLen < 2) return "metadata_len";
@@ -712,7 +713,7 @@ export function projectionErrorFor(
 /** A JSON **object** — not an array, not a scalar. `tokens.metadata` is a jsonb object, which is
  *  this consumer's convention and not a MIP rule (MIP-0018 §2.1 allows any JSON value). */
 /**
- * The deepest nesting a projected `metadata` document may have (01-D audit F2). A MIP-0018 value may
+ * The deepest nesting a projected MIP-0018 `metadata` document may have (01-D audit F2). A MIP-0018 value may
  * be 65 535 bytes, enough for ~32 000 levels of `[`; `JSON.parse` accepts that, but serializing the
  * parsed object back into the `jsonb` column (`JSON.stringify`, and Postgres's own parser) recurses
  * once per level and overflows. 128 is far beyond any real metadata document and far below both

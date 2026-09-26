@@ -46,7 +46,8 @@ import { RawEventError, decodeRawMiscEvent, rawMiscEventName } from "./raw-event
  *  - `readPackages` groups them ([Y] §4) and every package of the pair is folded in the caller's
  *    database transaction — atomically with the scan batch's cursor, or with the drain's retry.
  *
- * Two more conditions of the barrier (01-D audit, findings F3 and F4): the answer is counted by
+ * Two more conditions, checked on EVERY answer before anything of it is folded — the draft-name
+ * events included (01-D audit, findings F3 and F4; round 2's N1): the answer is counted by
  * DISTINCT event id — an identical redelivery of one id is one event, two different contents under
  * one id make the whole answer pending ({@link distinctDeliveries}) — and no `MiscContractEvent` may
  * hide an opted-in part: one whose typed name is opted in but has no payload, one whose `raw` is an
@@ -477,6 +478,21 @@ export async function lookupEventsFor(
     else if (result.stored) outcome.rejected++;
   };
 
+  const pending = async (reason: NonNullable<LookupOutcome["pendingReason"]>, lastError: string | undefined): Promise<LookupOutcome> => {
+    await recordPendingLookup(sql, schema, net, pair, got, lastError);
+    return { ...outcome, short: true, pendingReason: reason };
+  };
+
+  // ── an answer that contradicts itself stores NOTHING, not even a draft-name event (01-D audit
+  //    F3, F4 and round 2's N1) — checked BEFORE the draft path, short answer or complete: an
+  //    event served with the draft's typed name while its `raw` is an opted-in part would otherwise
+  //    be folded as a draft declaration under the id the package's first part needs, and the
+  //    correct retry would be shadowed by `ON CONFLICT (net, event_id) DO NOTHING`.
+  const optIns = opts.optIns ?? MULTIPART_OPT_INS;
+  if (distinct.conflict !== undefined) return pending("reader", distinct.conflict);
+  const hidden = hiddenOptedInEvent(events, optIns, opts.ledger);
+  if (hidden !== undefined) return pending("reader", hidden);
+
   // ── the superseded draft name: one event at a time, exactly as before (FR-006) ──────────────
   for (const event of events) {
     if (!isDraftNameEvent(event)) continue;
@@ -492,19 +508,9 @@ export async function lookupEventsFor(
     count(await applyMetadataEvent(sql, schema, net, raw));
   }
 
-  const pending = async (reason: NonNullable<LookupOutcome["pendingReason"]>, lastError: string | undefined): Promise<LookupOutcome> => {
-    await recordPendingLookup(sql, schema, net, pair, got, lastError);
-    return { ...outcome, short: true, pendingReason: reason };
-  };
-
   // ── the barrier (audit F1): a short answer stores NOTHING of an opted-in name ──────────────
   if (got < pair.expected) return pending("short", undefined);
 
-  const optIns = opts.optIns ?? MULTIPART_OPT_INS;
-  // … nor does an answer that is complete by count but not by content (01-D audit F3, F4).
-  if (distinct.conflict !== undefined) return pending("reader", distinct.conflict);
-  const hidden = hiddenOptedInEvent(events, optIns, opts.ledger);
-  if (hidden !== undefined) return pending("reader", hidden);
   if (events.some((e) => isMultipartEvent(e, optIns))) {
     let packages;
     try {
