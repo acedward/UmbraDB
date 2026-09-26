@@ -34,6 +34,8 @@ import type { ISql } from "postgres";
  *  4. **`pending_event_lookups` carries what a retry needs to rebuild the lookup exactly**: the
  *     transaction's position (for 3) and `emission`, the counted `log` ops of the contract's calls per
  *     intent and phase, from which every part's phase is derived (see `token-indexer/ingest/events.ts`).
+ *  5. **`tokens_by_name` indexes a 256-character prefix** of the name (01-D audit F1): a name may now
+ *     be longer than a B-tree entry can hold, and a refused index entry would stall the scanner.
  *
  * ── Why this drops and recreates (spec Q3, FR-014) ─────────────────────────────────────────────
  * Everything is in development: every local run starts from an empty chain and an empty database,
@@ -186,4 +188,13 @@ export async function up(sql: ISql, schema: string): Promise<void> {
     CREATE INDEX token_metadata_kv_by_key_text
       ON ${sql(schema)}.token_metadata_kv (net, key_text)
   `;
+
+  // ---- tokens: the name index covers a bounded prefix (01-D audit F1) -----------------------
+  // Under UC-1 a MIP-0018 `name` may be any length (up to 65 535 bytes). A B-tree entry holds at
+  // most ~2.7 KB, so 003's `tokens_by_name (net, lower(name))` refused a long incompressible name:
+  // the token update failed and rolled back the whole scan batch, on every retry — the scanner
+  // stalled. The index now keeps the first 256 characters (at most 1 KiB of UTF-8); the `name`
+  // column itself stays unbounded, and the name search reads the column, not the index key.
+  await sql`DROP INDEX IF EXISTS ${sql(schema)}.tokens_by_name`;
+  await sql`CREATE INDEX tokens_by_name ON ${sql(schema)}.tokens (net, lower(left(name, 256)))`;
 }

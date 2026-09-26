@@ -4,12 +4,14 @@ import { tokenColor, tokenColorHex } from "../color.js";
 import type { ObservedMint } from "./decode.js";
 import {
   MAX_METADATA_BYTES,
+  MAX_METADATA_DEPTH,
   MAX_METADATA_PARTS,
   VAL_TYPE_NULL,
   decodeUtf8,
   integerOfValue,
   isNativeKind,
   isWellKnownKey,
+  jsonNestingDepth,
   metadataPartIndex,
   nameVariantOf,
   parseTokenMetadata,
@@ -692,6 +694,9 @@ export async function projectedFields(
   candidates.sort((a, b) => (a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0));
   let metadata: Record<string, unknown> | null = null;
   for (const candidate of candidates) {
+    // Belt and braces for 01-D audit F2: a document too deep to be written back never projects
+    // (the whole-`metadata` row already carries `metadata_too_deep`; this covers an assembly too).
+    if (jsonNestingDepth(candidate.document) > MAX_METADATA_DEPTH) continue;
     try {
       const value: unknown = JSON.parse(candidate.document);
       if (typeof value === "object" && value !== null && !Array.isArray(value)) {

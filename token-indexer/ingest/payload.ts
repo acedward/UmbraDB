@@ -349,6 +349,7 @@ export type ProjectionError =
   | "decimals_range"
   | "metadata_len"
   | "metadata_not_json_object"
+  | "metadata_too_deep"
   | "metadata_part_index"
   | "token_uri_not_absolute_http"
   | "text_not_storable";
@@ -673,6 +674,10 @@ export function projectionErrorFor(
       // Under MIP-0018 the transport has already proven this is ONE complete JSON value, so the
       // only thing left to check is our column's own shape: `tokens.metadata` is a jsonb OBJECT.
       // A transport-valid scalar or array is kept as a trait and flagged — never rejected.
+      // 01-D audit F2: a valid document can nest deeper than the column can be written
+      // (`JSON.stringify` overflows the stack long before a 65 535-byte value runs out); such a
+      // value stays a trait and is flagged, so the fold never throws and the scan never stalls.
+      if (jsonNestingDepth(decodeUtf8(valueBytes)!) > MAX_METADATA_DEPTH) return "metadata_too_deep";
       if (variant === "mip-0018") {
         return isJsonObject(decodeUtf8(valueBytes)!) ? undefined : "metadata_not_json_object";
       }
@@ -706,6 +711,37 @@ export function projectionErrorFor(
 
 /** A JSON **object** — not an array, not a scalar. `tokens.metadata` is a jsonb object, which is
  *  this consumer's convention and not a MIP rule (MIP-0018 §2.1 allows any JSON value). */
+/**
+ * The deepest nesting a projected `metadata` document may have (01-D audit F2). A MIP-0018 value may
+ * be 65 535 bytes, enough for ~32 000 levels of `[`; `JSON.parse` accepts that, but serializing the
+ * parsed object back into the `jsonb` column (`JSON.stringify`, and Postgres's own parser) recurses
+ * once per level and overflows. 128 is far beyond any real metadata document and far below both
+ * limits. A deeper value is still stored and served as a trait; only the column projection is refused.
+ */
+export const MAX_METADATA_DEPTH = 128;
+
+/** The maximum `{`/`[` nesting depth of a JSON text, counted in one pass without recursion; string
+ *  contents (with their escapes) do not count. */
+export function jsonNestingDepth(text: string): number {
+  let depth = 0;
+  let max = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === 0x5c) escaped = true;
+      else if (c === 0x22) inString = false;
+      continue;
+    }
+    if (c === 0x22) inString = true;
+    else if (c === 0x7b || c === 0x5b) { depth++; if (depth > max) max = depth; }
+    else if (c === 0x7d || c === 0x5d) depth--;
+  }
+  return max;
+}
+
 export function isJsonObject(text: string): boolean {
   let parsed: unknown;
   try {

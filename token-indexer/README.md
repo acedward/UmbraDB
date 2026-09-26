@@ -122,6 +122,9 @@ package is one declaration. The draft name is not opted in and keeps its single-
   `mixedPackages`. The page is unchanged in this project.
 * **Schema** (`005_multipart_packages`): one `token_metadata_events` row per package; `val_len` up
   to 65 535; a fresh database per run (no migration of existing rows).
+  Values of any length are held without stalling the scanner (`[[multipart-hostile-values]]`):
+  `tokens_by_name` indexes a 256-character prefix, so a long name projects whole; a `metadata`
+  document nested deeper than 128 levels stays a trait flagged `metadata_too_deep`.
 
 ### Null clears a key, and its row stays
 

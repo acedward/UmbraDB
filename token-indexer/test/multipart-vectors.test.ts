@@ -520,4 +520,67 @@ describe("[Y] multi-part vectors and the complete-response barrier, through the 
     expect(ref.outcome).toMatchObject({ lookups: 1, lookupsShort: 0, eventsApplied: 1 });
     expect(await onePackage(ref.db)).toEqual(after);
   }, 180_000);
+
+  it("[[multipart-hostile-values]] values the transport allows but a column cannot hold never stall the scanner — an 8 KiB incompressible name is stored and projected whole, a 15 000-level JSON `metadata` is kept as a flagged trait (`metadata_too_deep`), a 101-level one still projects — all in ONE scan batch that goes on to the next transaction", async () => {
+    // A deterministic, incompressible, printable-ASCII name of 8 192 bytes (xorshift32): far past a
+    // B-tree entry (~2.7 KB), which is what stalled the scanner before the 01-D audit fix F1.
+    let x = 0x2545f491;
+    const nameText = Array.from({ length: 8192 }, () => {
+      x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0;
+      return String.fromCharCode(0x21 + (x % 94));
+    }).join("");
+    // 01-D audit F2's counterexample: valid JSON, 30 007 bytes, nested 15 001 deep.
+    const deep = `{"x":${"[".repeat(15_000)}0${"]".repeat(15_000)}}`;
+    expect(Buffer.byteLength(deep)).toBe(30_007);
+    const shallow = `{"a":${"[".repeat(100)}0${"]".repeat(100)}}`;
+    const declaration = (domain: string, key: string, valType: number, value: string): Buffer[] =>
+      splitIntoParts(encodeTokenMetadataUc1({
+        domainSep: new Uint8Array(pad32(domain)), kindByte: 1, key, valType, value,
+      })).map((p) => Buffer.from(p));
+    const tx = (txHash: string, blockHeight: number, parts: Buffer[], firstId: number): TxSpec => ({
+      txHash, blockHeight, calls: [guaranteed(5, parts.length)],
+      events: parts.map((payload, i) => ({ id: firstId + i, segment: 5, payload })),
+    });
+    const nameParts = declaration("umbra:hostile", "name", 1, nameText);
+    const deepParts = declaration("umbra:hostile", "metadata", 3, deep);
+    expect([nameParts.length, deepParts.length]).toEqual([33, 118]);
+    const txs = [
+      tx(T1, 100, nameParts, 1_000),
+      tx(T2, 101, deepParts, 2_000),
+      tx("73".repeat(32), 102, declaration("umbra:hostile", "symbol", 1, "HOST"), 3_000),
+      tx("74".repeat(32), 103, declaration("umbra:shallow", "metadata", 3, shallow), 4_000),
+    ];
+
+    const { db, outcome } = await scan(txs);
+    // One batch, four transactions, four applied packages: nothing threw, nothing rolled back.
+    expect(outcome).toMatchObject({
+      transactionsScanned: 4, lookups: 4, lookupsShort: 0, eventsApplied: 4, eventsRejected: 0,
+      cursor: { height: 103, position: 0 },
+    });
+    expect(await pendingRows(db)).toEqual([]);
+
+    const rows = await db.sql<{ domain_sep: Buffer; name: string | null; symbol: string | null; metadata: unknown; status: string }[]>`
+      SELECT domain_sep, name, symbol, metadata, status
+      FROM ${db.sql(db.schema)}.tokens WHERE net = ${NET} AND status <> 'builtin'`;
+    const tokens = rows.map((r) => ({ ...r, domain: r.domain_sep.toString("utf8").replace(/\0+$/, "") }));
+    expect(tokens.map((t) => t.domain).sort()).toEqual(["umbra:hostile", "umbra:shallow"]);
+    const hostile = tokens.find((t) => t.domain === "umbra:hostile")!;
+    const shallowToken = tokens.find((t) => t.domain === "umbra:shallow")!;
+    expect(hostile.name).toBe(nameText); // projected whole
+    expect(hostile.symbol).toBe("HOST");
+    expect(hostile.metadata).toBeNull(); // too deep to project …
+    expect(hostile.status).toBe("declared");
+    expect(shallowToken.metadata).toEqual(JSON.parse(shallow)); // … a 101-level document is fine
+
+    const kv = await db.sql<{ key_text: string; val_len: number; projection_error: string | null; value: Buffer }[]>`
+      SELECT key_text, val_len, projection_error, value FROM ${db.sql(db.schema)}.token_metadata_kv
+      WHERE net = ${NET} AND domain_sep = ${Buffer.from(pad32("umbra:hostile"))} ORDER BY key_text`;
+    expect(kv.map(({ key_text, val_len, projection_error }) => ({ key_text, val_len, projection_error }))).toEqual([
+      { key_text: "metadata", val_len: 30_007, projection_error: "metadata_too_deep" },
+      { key_text: "name", val_len: 8_192, projection_error: null },
+      { key_text: "symbol", val_len: 4, projection_error: null },
+    ]);
+    // … and the deep document is kept byte for byte as the trait it is.
+    expect(kv[0]!.value.toString("utf8")).toBe(deep);
+  }, 180_000);
 });
