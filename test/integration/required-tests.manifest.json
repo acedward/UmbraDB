@@ -320,22 +320,22 @@
     {
       "id": "token-contract-golden",
       "file": "token-indexer/test/contract-fixtures.test.ts",
-      "description": "00020 master Phase C.1 + 00021 (SC-004): all 69 payloads RECORDED FROM THE REAL COMPILED REFERENCE CONTRACTS (acedward/mip-erc7496-midnight-contracts, branch and commit pinned in token-indexer/test/fixtures/contracts/SOURCE.md) parse byte for byte through the same parser the live indexer uses \u2014 the MIP's bytes are pinned to an independent implementation, not to this repo's own encoder."
+      "description": "00020 master Phase C.1 + 00021 (SC-004) + 00024-01 (UC-1): every declaration of BOTH recorded corpora RECORDED FROM THE REAL COMPILED REFERENCE CONTRACTS parses byte for byte through the same parser the live indexer uses \u2014 the MIP-18 set's 82 [Y] packages from 86 events (acedward/mip-0018-midnight-contracts @ cb6c675, pinned in token-indexer/test/fixtures/contracts/SOURCE.md; each package equals its parts and its recorded SHA-256; the three long declarations 377 B / 2 parts, 677 B / 3, 279 B / 2) and the draft's 69 events (fixtures/contracts-legacy/) \u2014 so the MIP's bytes are pinned to an independent implementation, not to this repo's own encoder."
     },
     {
       "id": "token-contract-negatives",
       "file": "token-indexer/test/contract-fixtures.test.ts",
-      "description": "00020 master Phase C.1 + 00021 (SC-102): every one of the 22 deliberately awkward payloads the reference contracts emit behaves exactly as they intended \u2014 11 rejected with the FR-102 reason the corpus names, 1 (the pre-MIP event name) ignored, and 10 applied, six of them with a failing Appendix A projection \u2014 so a rejection rule cannot quietly become a rejection of something legitimate."
+      "description": "00020 master Phase C.1 + 00021 (SC-102) + 00024-01 (UC-1): every deliberately awkward package of both corpora (40 under MIP-0018, including the UC-1 multi-part cases \u2014 a declared length beyond the package in 1/2/3 parts, a package filled exactly, a UTF-8 character across a part boundary, a JSON value cut by val-len, trailing non-zero bytes ignored, two declarations merged by one intent; 22 under the draft) behaves exactly as the corpus says \u2014 ignored, rejected with its reason, or applied (with or without a failing Appendix A projection) \u2014 and is exactly its parts, so a rejection rule cannot quietly become a rejection of something legitimate."
     },
     {
       "id": "token-contract-colors",
       "file": "token-indexer/test/contract-fixtures.test.ts",
-      "description": "00020 master Phase C.1 (SC-003): all 15 recorded colour vectors and all 16 recorded mint colours are reproduced by this repo's own derivation \u2014 the contract's tokenColor() circuit and the indexer agree on every byte."
+      "description": "00020 master Phase C.1 (SC-003): all 15 recorded colour vectors and all 16 recorded mint colours of EACH corpus (the MIP-18 set's and the draft's) are reproduced by this repo's own derivation \u2014 the contract's tokenColor() circuit and the indexer agree on every byte."
     },
     {
       "id": "token-contract-rows",
       "file": "token-indexer/test/contract-fixtures.test.ts",
-      "description": "00020 master Phase C.1 + 00021 (SC-101, question Q20): replaying the whole recorded corpus through the fold produces EXACTLY the 17 expected token rows over 17 identities (address, domainSep, kind) across 11 contracts and 15 (address, domainSep) pairs, in the MIP's three states, including the Ledger Liar as TWO rows and Dual Aurora as two rows sharing one colour."
+      "description": "00020 master Phase C.1 + 00021 (SC-101, question Q20) + 00024-01: replaying each recorded corpus through the fold (the standard's as [Y] packages with their part ids) produces EXACTLY the 17 expected token rows over 17 identities (address, domainSep, kind) across 11 contracts and 15 (address, domainSep) pairs, in the MIP's three states — the Ledger Liar as TWO rows, Dual Aurora as two rows sharing one colour, SNEB18's 677-byte metadata projected whole, LMOON18's description history (text, Null, 377-byte text in 2 parts) kept in order — and both corpora fold to the same table modulo the MIP-18 suffix."
     },
     {
       "id": "archive-tx-results",

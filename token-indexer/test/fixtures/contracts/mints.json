@@ -1,185 +1,185 @@
 {
-  "standard": "MIP-0018 (MIP PR #325), mips/mip-0018-on-chain-token-metadata.md @ 37a3471; event name \"mip-0018:token-metadata[v1]\". A v1 consumer IGNORES every other name, including this repository's pre-MIP \"TokenMetadata\" and the #315 draft placeholder \"mip-xxxx:token-metadata[v1]\" that the Stagenet reference set in fixtures/stagenet/ was deployed with (MIP sections 1 and 8).",
-  "source": "Compact simulator (@midnight-ntwrk/compact-runtime 0.19.0), compactc 0.34.0",
+  "standard": "MIP-0018 (MIP PR #325), mips/mip-0018-on-chain-token-metadata.md @ 37a3471, on the UC-1 layout (an amendment in development: 2-byte little-endian val-len at offset 66, value from offset 68, packages of 256·k bytes under the Multi-Part Event rule; see TOKEN-METADATA.md); event name \"mip-0018:token-metadata[v1]\". A consumer IGNORES every other name, including this repository's pre-MIP \"TokenMetadata\" and the #315 draft placeholder \"mip-xxxx:token-metadata[v1]\" that the Stagenet reference set in fixtures/stagenet/ was deployed with (MIP sections 1 and 8).",
+  "source": "the generated MIP-18 contracts (contracts/generated/*18.compact, compactc 0.34.0) executed in the Compact simulator (@midnight-ntwrk/compact-runtime 0.19.0); the negative corpus from contracts/probe/MetadataProbe.compact",
   "producedBy": "scripts/export-simulator-fixtures.ts",
-  "note": "Real compiled-contract output, executed in process. Contract addresses are sha256(\"umbra:00020:<row id>\") so everything here is reproducible; there are no block heights, transaction hashes or indexer event ids, and `eventId` is simply the emission order across the whole corpus. Token rows are keyed by the MIP's identity `(contractAddress, domainSep, kind 0..3)`; `privacy` and `storage` are derived from the kind byte and `status` is one of observed | declared | described (MIP section 7.2). val-type 2 values are the little-endian Compact serialization of `Uint<8*val-len>` (MIP section 2.1), and `decimals` is emitted as `Uint<128>`, i.e. val-len 16. A val-type 5 (Null) event sets the key's CURRENT value to Null without erasing history: in expected-tokens.json the projected column it fed is absent and a non-projected key appears in `traits` with `valType: 5` — a consumer may instead delete the row.",
+  "note": "Real compiled-contract output, executed in process, one deployments/generated-matrix.json step per circuit call. Contract addresses are sha256(\"umbra:00024:<row id>\"), so everything here is reproducible. There are no block heights, transaction hashes, segments or indexer event ids: `txStandIn` is sha256(\"umbra:00024:sim:<row>:<step>\"), `segmentStandIn` is 1 (one call = one intent) and `eventId` is the emission order across the whole corpus. Every emit step is ONE package of one declaration (UC-1): `events` lists the Misc events as a chain would deliver them (256 bytes each, with `packageId` and `part`), `packages` the merged 256·k-byte payloads. Token rows are keyed by the MIP's identity `(contractAddress, domainSep, kind 0..3)`; `privacy` and `storage` are derived from the kind byte and `status` is one of observed | declared | described (MIP section 7.2). val-type 2 values are the little-endian Compact serialization of `Uint<8*val-len>` (MIP section 2.1), and `decimals` is emitted as `Uint<128>`, i.e. val-len 16. A val-type 5 (Null) package sets the key's CURRENT value to Null without erasing history: in expected-tokens.json the projected column it fed is absent and a non-projected key appears in `traits` with `valType: 5`. Last write wins in emission order, a package positioned by its first part (derivation P1).",
   "count": 16,
   "mints": [
     {
-      "row": "SSTAR",
-      "step": 1,
+      "row": "SSTAR18",
+      "step": 4,
       "op": "mint",
-      "contractAddress": "0b119a29fbda7ff687822ec73cb12aaa1b8db47221ebf454959d7b35973804da",
-      "domainSepHex": "756d6272613a7373746172000000000000000000000000000000000000000000",
+      "contractAddress": "a30bea7cfa22232baf0aa6f2c6a58e8ac7c4b26cd7beb94ec6ee0dd9861d3f97",
+      "domainSepHex": "756d6272613a7373746172313800000000000000000000000000000000000000",
       "kindByte": 1,
       "kind": "shielded",
       "amount": "5000000",
-      "colorHex": "78b0493921643a05b2a5eba717c3b61e1fccca13d7bcde0a96f30067253127e3"
+      "colorHex": "8bcecfca7d365174819e734373edeba27e60df7d998a23dd5016a5799fc80d7e"
     },
     {
-      "row": "SNEB",
-      "step": 3,
+      "row": "SNEB18",
+      "step": 6,
       "op": "mint",
-      "contractAddress": "94d81144f07b38817ad6521692e6b31af589171ad29fb68696646bc8ae698f21",
-      "domainSepHex": "756d6272613a736e656200000000000000000000000000000000000000000000",
+      "contractAddress": "e609b09e8e0f9a1dbaadb5f60907b6742e793239ee37b4a05492f86c08d599fb",
+      "domainSepHex": "756d6272613a736e656231380000000000000000000000000000000000000000",
       "kindByte": 1,
       "kind": "shielded",
       "amount": "1",
-      "colorHex": "58e5b2d090d59b65d28af6654ab3962e6e4b7b2588c7d853a9dc25a1ebc23ab3"
+      "colorHex": "dfe5b38c7faf9a7eb8bc3a4b702d287cc98d5ff6bf475d305562c528a9401068"
     },
     {
-      "row": "SNEB",
-      "step": 4,
+      "row": "SNEB18",
+      "step": 7,
       "op": "mint",
-      "contractAddress": "94d81144f07b38817ad6521692e6b31af589171ad29fb68696646bc8ae698f21",
-      "domainSepHex": "756d6272613a736e656200000000000000000000000000000000000000000000",
+      "contractAddress": "e609b09e8e0f9a1dbaadb5f60907b6742e793239ee37b4a05492f86c08d599fb",
+      "domainSepHex": "756d6272613a736e656231380000000000000000000000000000000000000000",
       "kindByte": 1,
       "kind": "shielded",
       "amount": "2",
-      "colorHex": "58e5b2d090d59b65d28af6654ab3962e6e4b7b2588c7d853a9dc25a1ebc23ab3"
+      "colorHex": "dfe5b38c7faf9a7eb8bc3a4b702d287cc98d5ff6bf475d305562c528a9401068"
     },
     {
-      "row": "SGHOST",
+      "row": "SGHOST18",
       "step": 0,
       "op": "mint",
-      "contractAddress": "6d22f8c6a2755c2358c1bd38cb205a33c2142eb0951de4a882b7c169e177522c",
-      "domainSepHex": "756d6272613a7367686f73740000000000000000000000000000000000000000",
+      "contractAddress": "18e53ae2351bb49ba628467c9bfbbae74cf9f330bcc17e2da8319fa64f900184",
+      "domainSepHex": "756d6272613a7367686f73743138000000000000000000000000000000000000",
       "kindByte": 1,
       "kind": "shielded",
       "amount": "13",
-      "colorHex": "7d0695f966a9ff4c7b8ab9a72719f28ed5fd7d7344f022a318b8b2064372ab61"
+      "colorHex": "2e00e507662dcafa40eb5cd4fb8c4da953c21f0459f5d0c2a8c541a61b699dbd"
     },
     {
-      "row": "UCOM",
-      "step": 1,
+      "row": "UCOM18",
+      "step": 4,
       "op": "mint",
-      "contractAddress": "5e130ecc7279239557ff2c9c7d460f87b60b0346b1675394851dd97a3a26fdd7",
-      "domainSepHex": "756d6272613a75636f6d00000000000000000000000000000000000000000000",
+      "contractAddress": "d2722c9b9df1023164e00ddfe8daaca824dd6bcfa4432b23c40055137a22dac7",
+      "domainSepHex": "756d6272613a75636f6d31380000000000000000000000000000000000000000",
       "kindByte": 0,
       "kind": "unshielded",
       "amount": "2500000",
-      "colorHex": "6fca1c97e05eb5e0977d970fbf9bf3dd80ed479ac4ce0667cd20e33fede3b4c0"
+      "colorHex": "1083c1ef99e0518fd077d6ff4151b5b866629cd71ccd6b4c2ba39ebf8dac027a"
     },
     {
-      "row": "UMET",
+      "row": "UMET18",
       "step": 0,
       "op": "mint",
-      "contractAddress": "1106c11c709b9f5dba076862120fbb4cc58d6f2e1282559768d9d43ca01951fb",
-      "domainSepHex": "756d6272613a756d657400000000000000000000000000000000000000000000",
+      "contractAddress": "e72e2608db4fffa9b5446452efcd5f75bc8ecf4732c92da65c1661f5ebe89e98",
+      "domainSepHex": "756d6272613a756d657431380000000000000000000000000000000000000000",
       "kindByte": 0,
       "kind": "unshielded",
       "amount": "100",
-      "colorHex": "f11f726d0855332a31b3adf139a2a30fa371045a663b26e2437ddc73a39d02c5"
+      "colorHex": "bf41cd47b8e695cee53e6cd407598cc705c1b1f2bb9e788e09f6fc19966fa434"
     },
     {
-      "row": "UMET",
+      "row": "UMET18",
       "step": 1,
       "op": "mint",
-      "contractAddress": "1106c11c709b9f5dba076862120fbb4cc58d6f2e1282559768d9d43ca01951fb",
-      "domainSepHex": "756d6272613a756d657400000000000000000000000000000000000000000000",
+      "contractAddress": "e72e2608db4fffa9b5446452efcd5f75bc8ecf4732c92da65c1661f5ebe89e98",
+      "domainSepHex": "756d6272613a756d657431380000000000000000000000000000000000000000",
       "kindByte": 0,
       "kind": "unshielded",
       "amount": "200",
-      "colorHex": "f11f726d0855332a31b3adf139a2a30fa371045a663b26e2437ddc73a39d02c5"
+      "colorHex": "bf41cd47b8e695cee53e6cd407598cc705c1b1f2bb9e788e09f6fc19966fa434"
     },
     {
-      "row": "UMET",
+      "row": "UMET18",
       "step": 2,
       "op": "mint",
-      "contractAddress": "1106c11c709b9f5dba076862120fbb4cc58d6f2e1282559768d9d43ca01951fb",
-      "domainSepHex": "756d6272613a756d657400000000000000000000000000000000000000000000",
+      "contractAddress": "e72e2608db4fffa9b5446452efcd5f75bc8ecf4732c92da65c1661f5ebe89e98",
+      "domainSepHex": "756d6272613a756d657431380000000000000000000000000000000000000000",
       "kindByte": 0,
       "kind": "unshielded",
       "amount": "300",
-      "colorHex": "f11f726d0855332a31b3adf139a2a30fa371045a663b26e2437ddc73a39d02c5"
+      "colorHex": "bf41cd47b8e695cee53e6cd407598cc705c1b1f2bb9e788e09f6fc19966fa434"
     },
     {
-      "row": "DAUR",
-      "step": 2,
+      "row": "DAUR18",
+      "step": 8,
       "op": "mintShielded",
-      "contractAddress": "1f32a738d0234d55bce8414d4ea86a4614847b0c4aa2548a840f37e612782cb4",
-      "domainSepHex": "756d6272613a6461757200000000000000000000000000000000000000000000",
+      "contractAddress": "177006f79ff2f88d6f0cb002d3c45d3fbc8f57cc5632106e8b9de6eb6097bf08",
+      "domainSepHex": "756d6272613a6461757231380000000000000000000000000000000000000000",
       "kindByte": 1,
       "kind": "shielded",
       "amount": "1000",
-      "colorHex": "e0386485c175ffe2bf128922293b78ab799e465af7529a84379f1c02eb79afc2"
+      "colorHex": "911fe3b0973b5e82317e8f6c00b2fe14de899b6d626704e79b144cb175349c1c"
     },
     {
-      "row": "DAUR",
-      "step": 3,
+      "row": "DAUR18",
+      "step": 9,
       "op": "mintUnshielded",
-      "contractAddress": "1f32a738d0234d55bce8414d4ea86a4614847b0c4aa2548a840f37e612782cb4",
-      "domainSepHex": "756d6272613a6461757200000000000000000000000000000000000000000000",
+      "contractAddress": "177006f79ff2f88d6f0cb002d3c45d3fbc8f57cc5632106e8b9de6eb6097bf08",
+      "domainSepHex": "756d6272613a6461757231380000000000000000000000000000000000000000",
       "kindByte": 0,
       "kind": "unshielded",
       "amount": "2000",
-      "colorHex": "e0386485c175ffe2bf128922293b78ab799e465af7529a84379f1c02eb79afc2"
+      "colorHex": "911fe3b0973b5e82317e8f6c00b2fe14de899b6d626704e79b144cb175349c1c"
     },
     {
-      "row": "CNST",
+      "row": "CNST18",
       "step": 0,
       "op": "mintPiece",
-      "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
-      "domainSepHex": "636e73743a6f72696f6e00000000000000000000000000000000000000000000",
+      "contractAddress": "fcfe3a554f45f233eeaef7bd809e95dafdffb4396b6bfccbb86f5b967498d421",
+      "domainSepHex": "636e737431383a6f72696f6e0000000000000000000000000000000000000000",
       "kindByte": 1,
       "kind": "shielded",
       "amount": "1",
-      "colorHex": "46ab4b3dde60180f97e18bf190cb97c007c965b4384bb6e1f742695e0550d672"
+      "colorHex": "dedd927a4c6524fc786a06e9a0aa2a9b274a09524ad66bd9ceb4536c5df18cea"
     },
     {
-      "row": "CNST",
-      "step": 8,
+      "row": "CNST18",
+      "step": 11,
       "op": "mintPiece",
-      "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
-      "domainSepHex": "636e73743a6c7972610000000000000000000000000000000000000000000000",
+      "contractAddress": "fcfe3a554f45f233eeaef7bd809e95dafdffb4396b6bfccbb86f5b967498d421",
+      "domainSepHex": "636e737431383a6c797261000000000000000000000000000000000000000000",
       "kindByte": 1,
       "kind": "shielded",
       "amount": "1",
-      "colorHex": "e7365e10713862aaec94986702bdaecf42604e2a2049363eb889fdfe884ce28e"
+      "colorHex": "3e7036fae4bb9c5558a926085cac58f4c216da88f5b566f800bde43713a7d669"
     },
     {
-      "row": "CNST",
-      "step": 13,
+      "row": "CNST18",
+      "step": 19,
       "op": "mintPiece",
-      "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
-      "domainSepHex": "636e73743a6379676e7573000000000000000000000000000000000000000000",
+      "contractAddress": "fcfe3a554f45f233eeaef7bd809e95dafdffb4396b6bfccbb86f5b967498d421",
+      "domainSepHex": "636e737431383a6379676e757300000000000000000000000000000000000000",
       "kindByte": 1,
       "kind": "shielded",
       "amount": "1",
-      "colorHex": "97fec186b8ae9ebc65e1640a14791942473dbf07377e1483ccd43759c64adcfb"
+      "colorHex": "8400f4f09d05eeced9941d1b3fa1158940ba6d859e92795fa81edd541a063c41"
     },
     {
-      "row": "CNST",
-      "step": 18,
+      "row": "CNST18",
+      "step": 27,
       "op": "mintPiece",
-      "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
-      "domainSepHex": "636e73743a766567610000000000000000000000000000000000000000000000",
+      "contractAddress": "fcfe3a554f45f233eeaef7bd809e95dafdffb4396b6bfccbb86f5b967498d421",
+      "domainSepHex": "636e737431383a76656761000000000000000000000000000000000000000000",
       "kindByte": 1,
       "kind": "shielded",
       "amount": "1",
-      "colorHex": "8107e2d2796fee3fe97a75c24763f9746e30b4129e02b287f2c1fd346648b0d7"
+      "colorHex": "4bed0e6daf96d3b75a877562405429265de33ade2505486212d0ae6f761f508c"
     },
     {
-      "row": "CNST",
-      "step": 22,
+      "row": "CNST18",
+      "step": 34,
       "op": "mintPiece",
-      "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
-      "domainSepHex": "636e73743a616c74616972000000000000000000000000000000000000000000",
+      "contractAddress": "fcfe3a554f45f233eeaef7bd809e95dafdffb4396b6bfccbb86f5b967498d421",
+      "domainSepHex": "636e737431383a616c7461697200000000000000000000000000000000000000",
       "kindByte": 1,
       "kind": "shielded",
       "amount": "1",
-      "colorHex": "d820d1e3aa89eb73987637d78590edcc17c05de43d60af0efb4ac61080e1b47d"
+      "colorHex": "659c849727eeecb1d07c752cce6529347bb9cc39065b91fe96a774c56b049b45"
     },
     {
-      "row": "LLIAR",
-      "step": 1,
+      "row": "LLIAR18",
+      "step": 4,
       "op": "mint",
-      "contractAddress": "4df9f4f86ce86e972a411f125610555589bd2480a8dd4d390e8f205cc49fa377",
-      "domainSepHex": "756d6272613a6c6c696172000000000000000000000000000000000000000000",
+      "contractAddress": "6aabb21d64d0c2e1df08bb0cdbed766b4dac3e7a3a8604481d1e0b902c34a7af",
+      "domainSepHex": "756d6272613a6c6c696172313800000000000000000000000000000000000000",
       "kindByte": 0,
       "kind": "unshielded",
       "amount": "7",
-      "colorHex": "da1238dce2d8d92f3707cfde043b33461283c736b4e0f82e57a3ee569efb1283"
+      "colorHex": "27697360b6f25686e6b3fa1c88a012abde7d83a20045097daefda07916ce99e6"
     }
   ]
 }

@@ -1,8 +1,8 @@
 {
-  "standard": "MIP-0018 (MIP PR #325), mips/mip-0018-on-chain-token-metadata.md @ 37a3471; event name \"mip-0018:token-metadata[v1]\". A v1 consumer IGNORES every other name, including this repository's pre-MIP \"TokenMetadata\" and the #315 draft placeholder \"mip-xxxx:token-metadata[v1]\" that the Stagenet reference set in fixtures/stagenet/ was deployed with (MIP sections 1 and 8).",
-  "source": "Compact simulator (@midnight-ntwrk/compact-runtime 0.19.0), compactc 0.34.0",
+  "standard": "MIP-0018 (MIP PR #325), mips/mip-0018-on-chain-token-metadata.md @ 37a3471, on the UC-1 layout (an amendment in development: 2-byte little-endian val-len at offset 66, value from offset 68, packages of 256·k bytes under the Multi-Part Event rule; see TOKEN-METADATA.md); event name \"mip-0018:token-metadata[v1]\". A consumer IGNORES every other name, including this repository's pre-MIP \"TokenMetadata\" and the #315 draft placeholder \"mip-xxxx:token-metadata[v1]\" that the Stagenet reference set in fixtures/stagenet/ was deployed with (MIP sections 1 and 8).",
+  "source": "the generated MIP-18 contracts (contracts/generated/*18.compact, compactc 0.34.0) executed in the Compact simulator (@midnight-ntwrk/compact-runtime 0.19.0); the negative corpus from contracts/probe/MetadataProbe.compact",
   "producedBy": "scripts/export-simulator-fixtures.ts",
-  "note": "Real compiled-contract output, executed in process. Contract addresses are sha256(\"umbra:00020:<row id>\") so everything here is reproducible; there are no block heights, transaction hashes or indexer event ids, and `eventId` is simply the emission order across the whole corpus. Token rows are keyed by the MIP's identity `(contractAddress, domainSep, kind 0..3)`; `privacy` and `storage` are derived from the kind byte and `status` is one of observed | declared | described (MIP section 7.2). val-type 2 values are the little-endian Compact serialization of `Uint<8*val-len>` (MIP section 2.1), and `decimals` is emitted as `Uint<128>`, i.e. val-len 16. A val-type 5 (Null) event sets the key's CURRENT value to Null without erasing history: in expected-tokens.json the projected column it fed is absent and a non-projected key appears in `traits` with `valType: 5` — a consumer may instead delete the row.",
+  "note": "Real compiled-contract output, executed in process, one deployments/generated-matrix.json step per circuit call. Contract addresses are sha256(\"umbra:00024:<row id>\"), so everything here is reproducible. There are no block heights, transaction hashes, segments or indexer event ids: `txStandIn` is sha256(\"umbra:00024:sim:<row>:<step>\"), `segmentStandIn` is 1 (one call = one intent) and `eventId` is the emission order across the whole corpus. Every emit step is ONE package of one declaration (UC-1): `events` lists the Misc events as a chain would deliver them (256 bytes each, with `packageId` and `part`), `packages` the merged 256·k-byte payloads. Token rows are keyed by the MIP's identity `(contractAddress, domainSep, kind 0..3)`; `privacy` and `storage` are derived from the kind byte and `status` is one of observed | declared | described (MIP section 7.2). val-type 2 values are the little-endian Compact serialization of `Uint<8*val-len>` (MIP section 2.1), and `decimals` is emitted as `Uint<128>`, i.e. val-len 16. A val-type 5 (Null) package sets the key's CURRENT value to Null without erasing history: in expected-tokens.json the projected column it fed is absent and a non-projected key appears in `traits` with `valType: 5`. Last write wins in emission order, a package positioned by its first part (derivation P1).",
   "count": 17,
   "identities": 17,
   "addressDomainPairs": 15,
@@ -13,369 +13,527 @@
   },
   "tokens": [
     {
-      "row": "LSUN",
-      "contractAddress": "167d799a5be996c45174fc90c0ca1dbad27f0ba53cca4049d20a952d92481fa4",
-      "domainSepHex": "756d6272613a6c73756e00000000000000000000000000000000000000000000",
-      "domainSepText": "umbra:lsun",
-      "kind": 2,
-      "privacy": "unshielded",
-      "storage": "ledger",
-      "colorHex": null,
-      "traits": {},
-      "mintCount": 0,
-      "totalMinted": "0",
-      "name": "Ledger Sun",
-      "symbol": "LSUN",
-      "decimals": 6,
-      "status": "declared"
-    },
-    {
-      "row": "LMOON",
-      "contractAddress": "edd0173d57a2af1076f7cf53165aa4e17afa821c2629127bb30dacc99c6f06ea",
-      "domainSepHex": "756d6272613a6c6d6f6f6e000000000000000000000000000000000000000000",
-      "domainSepText": "umbra:lmoon",
+      "row": "LSUN18",
+      "contractAddress": "6d110ee8b0340eebd8d4578f441f23369bbf54e75457a2a7dd4136c5789bce4d",
+      "domainSepHex": "756d6272613a6c73756e31380000000000000000000000000000000000000000",
+      "domainSepText": "umbra:lsun18",
       "kind": 2,
       "privacy": "unshielded",
       "storage": "ledger",
       "colorHex": null,
       "traits": {
-        "description": {
-          "valType": 5,
-          "valLen": 0,
-          "valueHex": "",
-          "text": null
+        "repository": {
+          "valType": 4,
+          "valLen": 100,
+          "parts": 1,
+          "valueHex": "68747470733a2f2f6769746875622e636f6d2f61636564776172642f6d69702d303031382d6d69646e696768742d636f6e7472616374732f626c6f622f6d61696e2f636f6e7472616374732f67656e6572617465642f4c53554e31382e636f6d70616374",
+          "text": "https://github.com/acedward/mip-0018-midnight-contracts/blob/main/contracts/generated/LSUN18.compact"
         }
       },
       "mintCount": 0,
       "totalMinted": "0",
-      "name": "Ledger Moon (renamed)",
-      "symbol": "LMOON",
+      "name": "Ledger Sun · MIP-18",
+      "symbol": "LSUN18",
+      "decimals": 6,
+      "status": "declared"
+    },
+    {
+      "row": "LMOON18",
+      "contractAddress": "03c98e6ac5c08566b3ee73404de826b49b3191e5d63dc7a2f430ef9e6e56c478",
+      "domainSepHex": "756d6272613a6c6d6f6f6e313800000000000000000000000000000000000000",
+      "domainSepText": "umbra:lmoon18",
+      "kind": 2,
+      "privacy": "unshielded",
+      "storage": "ledger",
+      "colorHex": null,
+      "traits": {
+        "repository": {
+          "valType": 4,
+          "valLen": 101,
+          "parts": 1,
+          "valueHex": "68747470733a2f2f6769746875622e636f6d2f61636564776172642f6d69702d303031382d6d69646e696768742d636f6e7472616374732f626c6f622f6d61696e2f636f6e7472616374732f67656e6572617465642f4c4d4f4f4e31382e636f6d70616374",
+          "text": "https://github.com/acedward/mip-0018-midnight-contracts/blob/main/contracts/generated/LMOON18.compact"
+        },
+        "description": {
+          "valType": 1,
+          "valLen": 377,
+          "parts": 2,
+          "valueHex": "4c6564676572204d6f6f6e20636c656172656420697473206465736372697074696f6e20776974682061204e756c6c206465636c61726174696f6e20616e64207468656e206465636c617265642074686973206f6e653a20612076616c7565206c6f6e676572207468616e206f6e65206576656e742063616e20686f6c642c207075626c697368656420617320612073696e676c65204d49502d30303138206465636c61726174696f6e20696e2074776f2070617274732066726f6d206f6e6520636972637569742063616c6c2e2054686520696e646578657220706f736974696f6e7320746865207061636b6167652062792069747320666972737420706172742c20736f2074686973206465736372697074696f6e206973207468652063757272656e742076616c756520616e642074686520636c6561726564206f6e6520737461797320696e2074686520686973746f72792e204e6f7468696e6720696e207468657365206279746573206973206672616d696e672e",
+          "text": "Ledger Moon cleared its description with a Null declaration and then declared this one: a value longer than one event can hold, published as a single MIP-0018 declaration in two parts from one circuit call. The indexer positions the package by its first part, so this description is the current value and the cleared one stays in the history. Nothing in these bytes is framing."
+        }
+      },
+      "mintCount": 0,
+      "totalMinted": "0",
+      "name": "Ledger Moon · MIP-18 (renamed)",
+      "symbol": "LMOON18",
       "decimals": 8,
       "status": "declared"
     },
     {
-      "row": "SSTAR",
-      "contractAddress": "0b119a29fbda7ff687822ec73cb12aaa1b8db47221ebf454959d7b35973804da",
-      "domainSepHex": "756d6272613a7373746172000000000000000000000000000000000000000000",
-      "domainSepText": "umbra:sstar",
+      "row": "SSTAR18",
+      "contractAddress": "a30bea7cfa22232baf0aa6f2c6a58e8ac7c4b26cd7beb94ec6ee0dd9861d3f97",
+      "domainSepHex": "756d6272613a7373746172313800000000000000000000000000000000000000",
+      "domainSepText": "umbra:sstar18",
       "kind": 1,
       "privacy": "shielded",
       "storage": "native",
-      "colorHex": "78b0493921643a05b2a5eba717c3b61e1fccca13d7bcde0a96f30067253127e3",
-      "traits": {},
+      "colorHex": "8bcecfca7d365174819e734373edeba27e60df7d998a23dd5016a5799fc80d7e",
+      "traits": {
+        "repository": {
+          "valType": 4,
+          "valLen": 101,
+          "parts": 1,
+          "valueHex": "68747470733a2f2f6769746875622e636f6d2f61636564776172642f6d69702d303031382d6d69646e696768742d636f6e7472616374732f626c6f622f6d61696e2f636f6e7472616374732f67656e6572617465642f535354415231382e636f6d70616374",
+          "text": "https://github.com/acedward/mip-0018-midnight-contracts/blob/main/contracts/generated/SSTAR18.compact"
+        }
+      },
       "mintCount": 1,
       "totalMinted": "5000000",
-      "name": "Shielded Star",
-      "symbol": "SSTAR",
+      "name": "Shielded Star · MIP-18",
+      "symbol": "SSTAR18",
       "decimals": 6,
       "status": "described"
     },
     {
-      "row": "SNEB",
-      "contractAddress": "94d81144f07b38817ad6521692e6b31af589171ad29fb68696646bc8ae698f21",
-      "domainSepHex": "756d6272613a736e656200000000000000000000000000000000000000000000",
-      "domainSepText": "umbra:sneb",
+      "row": "SNEB18",
+      "contractAddress": "e609b09e8e0f9a1dbaadb5f60907b6742e793239ee37b4a05492f86c08d599fb",
+      "domainSepHex": "756d6272613a736e656231380000000000000000000000000000000000000000",
+      "domainSepText": "umbra:sneb18",
       "kind": 1,
       "privacy": "shielded",
       "storage": "native",
-      "colorHex": "58e5b2d090d59b65d28af6654ab3962e6e4b7b2588c7d853a9dc25a1ebc23ab3",
+      "colorHex": "dfe5b38c7faf9a7eb8bc3a4b702d287cc98d5ff6bf475d305562c528a9401068",
       "traits": {
+        "repository": {
+          "valType": 4,
+          "valLen": 100,
+          "parts": 1,
+          "valueHex": "68747470733a2f2f6769746875622e636f6d2f61636564776172642f6d69702d303031382d6d69646e696768742d636f6e7472616374732f626c6f622f6d61696e2f636f6e7472616374732f67656e6572617465642f534e454231382e636f6d70616374",
+          "text": "https://github.com/acedward/mip-0018-midnight-contracts/blob/main/contracts/generated/SNEB18.compact"
+        },
         "metadata": {
           "valType": 3,
-          "valLen": 141,
-          "valueHex": "7b226465736372697074696f6e223a2241206e6562756c6120646573637269626564206279206f6e6520636f6d706c657465204a534f4e2076616c75653a204d49502d3030313820646566696e6573206e6f206d756c746970617274207265617373656d626c792e222c22636f6c6c656374696f6e223a22556d627261207265666572656e636520736574227d",
-          "text": "{\"description\":\"A nebula described by one complete JSON value: MIP-0018 defines no multipart reassembly.\",\"collection\":\"Umbra reference set\"}"
+          "valLen": 677,
+          "parts": 3,
+          "valueHex": "7b226465736372697074696f6e223a22536869656c646564204e6562756c612069732061207265666572656e636520746f6b656e206f662074686520556d627261207365742e20497473206d6574616461746120646f63756d656e74206973206f6e6520636f6d706c657465204a534f4e2076616c75652074686174206973206c6f6e676572207468616e206f6e65204d49502d30303138206576656e742063616e2063617272792c20736f2069742074726176656c7320617320612073696e676c65206465636c61726174696f6e20696e2074687265652070617274732c20656d6974746564206279206f6e6520636972637569742063616c6c20696e206f6e652067756172616e7465656420696e74656e7420616e64206d657267656420627920746865204d756c74692d50617274204576656e742072756c652e222c22636f6c6c656374696f6e223a22556d627261207265666572656e636520736574222c22696d616765223a22646174613a696d6167652f7376672b786d6c3b757466382c3c73766720786d6c6e733d27687474703a2f2f7777772e77332e6f72672f323030302f737667272076696577426f783d2730203020382038273e3c636972636c652063783d2734272063793d27342720723d2733272066696c6c3d27253233613366272f3e3c2f7376673e222c2261747472696275746573223a5b7b2274726169745f74797065223a226c61796f7574222c2276616c7565223a2255432d313a20322d62797465206c6974746c652d656e6469616e2076616c2d6c656e227d2c7b2274726169745f74797065223a227061727473222c2276616c7565223a337d2c7b2274726169745f74797065223a227374616e64617264222c2276616c7565223a226d69702d303031383a746f6b656e2d6d657461646174615b76315d227d5d7d",
+          "text": "{\"description\":\"Shielded Nebula is a reference token of the Umbra set. Its metadata document is one complete JSON value that is longer than one MIP-0018 event can carry, so it travels as a single declaration in three parts, emitted by one circuit call in one guaranteed intent and merged by the Multi-Part Event rule.\",\"collection\":\"Umbra reference set\",\"image\":\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'><circle cx='4' cy='4' r='3' fill='%23a3f'/></svg>\",\"attributes\":[{\"trait_type\":\"layout\",\"value\":\"UC-1: 2-byte little-endian val-len\"},{\"trait_type\":\"parts\",\"value\":3},{\"trait_type\":\"standard\",\"value\":\"mip-0018:token-metadata[v1]\"}]}"
         },
         "/metadata/description": {
           "valType": 1,
           "valLen": 53,
+          "parts": 1,
           "valueHex": "4120706f696e746572206b6579206973206a7573742061206b65793a206e6f20617373656d626c792c206e6f206e657374696e672e",
           "text": "A pointer key is just a key: no assembly, no nesting."
         }
       },
       "mintCount": 2,
       "totalMinted": "3",
-      "name": "Shielded Nebula",
-      "symbol": "SNEB",
+      "name": "Shielded Nebula · MIP-18",
+      "symbol": "SNEB18",
       "decimals": 0,
+      "metadata": {
+        "description": "Shielded Nebula is a reference token of the Umbra set. Its metadata document is one complete JSON value that is longer than one MIP-0018 event can carry, so it travels as a single declaration in three parts, emitted by one circuit call in one guaranteed intent and merged by the Multi-Part Event rule.",
+        "collection": "Umbra reference set",
+        "image": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'><circle cx='4' cy='4' r='3' fill='%23a3f'/></svg>",
+        "attributes": [
+          {
+            "trait_type": "layout",
+            "value": "UC-1: 2-byte little-endian val-len"
+          },
+          {
+            "trait_type": "parts",
+            "value": 3
+          },
+          {
+            "trait_type": "standard",
+            "value": "mip-0018:token-metadata[v1]"
+          }
+        ]
+      },
       "status": "described"
     },
     {
-      "row": "SGHOST",
-      "contractAddress": "6d22f8c6a2755c2358c1bd38cb205a33c2142eb0951de4a882b7c169e177522c",
-      "domainSepHex": "756d6272613a7367686f73740000000000000000000000000000000000000000",
-      "domainSepText": "umbra:sghost",
+      "row": "SGHOST18",
+      "contractAddress": "18e53ae2351bb49ba628467c9bfbbae74cf9f330bcc17e2da8319fa64f900184",
+      "domainSepHex": "756d6272613a7367686f73743138000000000000000000000000000000000000",
+      "domainSepText": "umbra:sghost18",
       "kind": 1,
       "privacy": "shielded",
       "storage": "native",
-      "colorHex": "7d0695f966a9ff4c7b8ab9a72719f28ed5fd7d7344f022a318b8b2064372ab61",
+      "colorHex": "2e00e507662dcafa40eb5cd4fb8c4da953c21f0459f5d0c2a8c541a61b699dbd",
       "traits": {},
       "mintCount": 1,
       "totalMinted": "13",
       "status": "observed"
     },
     {
-      "row": "UCOM",
-      "contractAddress": "5e130ecc7279239557ff2c9c7d460f87b60b0346b1675394851dd97a3a26fdd7",
-      "domainSepHex": "756d6272613a75636f6d00000000000000000000000000000000000000000000",
-      "domainSepText": "umbra:ucom",
+      "row": "UCOM18",
+      "contractAddress": "d2722c9b9df1023164e00ddfe8daaca824dd6bcfa4432b23c40055137a22dac7",
+      "domainSepHex": "756d6272613a75636f6d31380000000000000000000000000000000000000000",
+      "domainSepText": "umbra:ucom18",
       "kind": 0,
       "privacy": "unshielded",
       "storage": "native",
-      "colorHex": "6fca1c97e05eb5e0977d970fbf9bf3dd80ed479ac4ce0667cd20e33fede3b4c0",
-      "traits": {},
+      "colorHex": "1083c1ef99e0518fd077d6ff4151b5b866629cd71ccd6b4c2ba39ebf8dac027a",
+      "traits": {
+        "repository": {
+          "valType": 4,
+          "valLen": 100,
+          "parts": 1,
+          "valueHex": "68747470733a2f2f6769746875622e636f6d2f61636564776172642f6d69702d303031382d6d69646e696768742d636f6e7472616374732f626c6f622f6d61696e2f636f6e7472616374732f67656e6572617465642f55434f4d31382e636f6d70616374",
+          "text": "https://github.com/acedward/mip-0018-midnight-contracts/blob/main/contracts/generated/UCOM18.compact"
+        }
+      },
       "mintCount": 1,
       "totalMinted": "2500000",
-      "name": "Unshielded Comet",
-      "symbol": "UCOM",
+      "name": "Unshielded Comet · MIP-18",
+      "symbol": "UCOM18",
       "decimals": 6,
       "status": "described"
     },
     {
-      "row": "UMET",
-      "contractAddress": "1106c11c709b9f5dba076862120fbb4cc58d6f2e1282559768d9d43ca01951fb",
-      "domainSepHex": "756d6272613a756d657400000000000000000000000000000000000000000000",
-      "domainSepText": "umbra:umet",
+      "row": "UMET18",
+      "contractAddress": "e72e2608db4fffa9b5446452efcd5f75bc8ecf4732c92da65c1661f5ebe89e98",
+      "domainSepHex": "756d6272613a756d657431380000000000000000000000000000000000000000",
+      "domainSepText": "umbra:umet18",
       "kind": 0,
       "privacy": "unshielded",
       "storage": "native",
-      "colorHex": "f11f726d0855332a31b3adf139a2a30fa371045a663b26e2437ddc73a39d02c5",
-      "traits": {},
+      "colorHex": "bf41cd47b8e695cee53e6cd407598cc705c1b1f2bb9e788e09f6fc19966fa434",
+      "traits": {
+        "repository": {
+          "valType": 4,
+          "valLen": 100,
+          "parts": 1,
+          "valueHex": "68747470733a2f2f6769746875622e636f6d2f61636564776172642f6d69702d303031382d6d69646e696768742d636f6e7472616374732f626c6f622f6d61696e2f636f6e7472616374732f67656e6572617465642f554d455431382e636f6d70616374",
+          "text": "https://github.com/acedward/mip-0018-midnight-contracts/blob/main/contracts/generated/UMET18.compact"
+        }
+      },
       "mintCount": 3,
       "totalMinted": "600",
-      "name": "Unshielded Meteor",
-      "symbol": "UMET",
+      "name": "Unshielded Meteor · MIP-18",
+      "symbol": "UMET18",
       "decimals": 2,
       "status": "described"
     },
     {
-      "row": "UPROM",
-      "contractAddress": "a8cad42f2881ce0d5efe1401675809c5bc87fc840f8776ff8569308c676ef5f6",
-      "domainSepHex": "756d6272613a7570726f6d000000000000000000000000000000000000000000",
-      "domainSepText": "umbra:uprom",
+      "row": "UPROM18",
+      "contractAddress": "339e5cb487f83337ea535a79f5c689a7d5f1173a83f0d9dc6875ed7bae7542a0",
+      "domainSepHex": "756d6272613a7570726f6d313800000000000000000000000000000000000000",
+      "domainSepText": "umbra:uprom18",
       "kind": 0,
       "privacy": "unshielded",
       "storage": "native",
-      "colorHex": "48e8b148a20025d9d07b87e85f212286a113a409ca0736e74ec3afe8310655d5",
-      "traits": {},
+      "colorHex": "ada6565ba98ef1f2dc53d1e637d08d1ddd8310afd7a0e8421269011af065d70d",
+      "traits": {
+        "repository": {
+          "valType": 4,
+          "valLen": 101,
+          "parts": 1,
+          "valueHex": "68747470733a2f2f6769746875622e636f6d2f61636564776172642f6d69702d303031382d6d69646e696768742d636f6e7472616374732f626c6f622f6d61696e2f636f6e7472616374732f67656e6572617465642f5550524f4d31382e636f6d70616374",
+          "text": "https://github.com/acedward/mip-0018-midnight-contracts/blob/main/contracts/generated/UPROM18.compact"
+        }
+      },
       "mintCount": 0,
       "totalMinted": "0",
-      "name": "Unshielded Promise",
-      "symbol": "UPROM",
+      "name": "Unshielded Promise · MIP-18",
+      "symbol": "UPROM18",
       "decimals": 6,
       "status": "declared"
     },
     {
-      "row": "DAUR",
-      "contractAddress": "1f32a738d0234d55bce8414d4ea86a4614847b0c4aa2548a840f37e612782cb4",
-      "domainSepHex": "756d6272613a6461757200000000000000000000000000000000000000000000",
-      "domainSepText": "umbra:daur",
+      "row": "DAUR18",
+      "contractAddress": "177006f79ff2f88d6f0cb002d3c45d3fbc8f57cc5632106e8b9de6eb6097bf08",
+      "domainSepHex": "756d6272613a6461757231380000000000000000000000000000000000000000",
+      "domainSepText": "umbra:daur18",
       "kind": 0,
       "privacy": "unshielded",
       "storage": "native",
-      "colorHex": "e0386485c175ffe2bf128922293b78ab799e465af7529a84379f1c02eb79afc2",
-      "traits": {},
+      "colorHex": "911fe3b0973b5e82317e8f6c00b2fe14de899b6d626704e79b144cb175349c1c",
+      "traits": {
+        "repository": {
+          "valType": 4,
+          "valLen": 100,
+          "parts": 1,
+          "valueHex": "68747470733a2f2f6769746875622e636f6d2f61636564776172642f6d69702d303031382d6d69646e696768742d636f6e7472616374732f626c6f622f6d61696e2f636f6e7472616374732f67656e6572617465642f4441555231382e636f6d70616374",
+          "text": "https://github.com/acedward/mip-0018-midnight-contracts/blob/main/contracts/generated/DAUR18.compact"
+        }
+      },
       "mintCount": 1,
       "totalMinted": "2000",
-      "name": "Dual Aurora",
-      "symbol": "DAUR",
+      "name": "Dual Aurora · MIP-18",
+      "symbol": "DAUR18",
       "decimals": 6,
       "status": "described"
     },
     {
-      "row": "DAUR",
-      "contractAddress": "1f32a738d0234d55bce8414d4ea86a4614847b0c4aa2548a840f37e612782cb4",
-      "domainSepHex": "756d6272613a6461757200000000000000000000000000000000000000000000",
-      "domainSepText": "umbra:daur",
+      "row": "DAUR18",
+      "contractAddress": "177006f79ff2f88d6f0cb002d3c45d3fbc8f57cc5632106e8b9de6eb6097bf08",
+      "domainSepHex": "756d6272613a6461757231380000000000000000000000000000000000000000",
+      "domainSepText": "umbra:daur18",
       "kind": 1,
       "privacy": "shielded",
       "storage": "native",
-      "colorHex": "e0386485c175ffe2bf128922293b78ab799e465af7529a84379f1c02eb79afc2",
-      "traits": {},
+      "colorHex": "911fe3b0973b5e82317e8f6c00b2fe14de899b6d626704e79b144cb175349c1c",
+      "traits": {
+        "repository": {
+          "valType": 4,
+          "valLen": 100,
+          "parts": 1,
+          "valueHex": "68747470733a2f2f6769746875622e636f6d2f61636564776172642f6d69702d303031382d6d69646e696768742d636f6e7472616374732f626c6f622f6d61696e2f636f6e7472616374732f67656e6572617465642f4441555231382e636f6d70616374",
+          "text": "https://github.com/acedward/mip-0018-midnight-contracts/blob/main/contracts/generated/DAUR18.compact"
+        }
+      },
       "mintCount": 1,
       "totalMinted": "1000",
-      "name": "Dual Aurora",
-      "symbol": "DAUR",
+      "name": "Dual Aurora · MIP-18",
+      "symbol": "DAUR18",
       "decimals": 6,
       "status": "described"
     },
     {
-      "row": "CNST",
-      "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
-      "domainSepHex": "636e73743a6f72696f6e00000000000000000000000000000000000000000000",
-      "domainSepText": "cnst:orion",
+      "row": "CNST18",
+      "contractAddress": "fcfe3a554f45f233eeaef7bd809e95dafdffb4396b6bfccbb86f5b967498d421",
+      "domainSepHex": "636e737431383a6f72696f6e0000000000000000000000000000000000000000",
+      "domainSepText": "cnst18:orion",
       "kind": 1,
       "privacy": "shielded",
       "storage": "native",
-      "colorHex": "46ab4b3dde60180f97e18bf190cb97c007c965b4384bb6e1f742695e0550d672",
+      "colorHex": "dedd927a4c6524fc786a06e9a0aa2a9b274a09524ad66bd9ceb4536c5df18cea",
       "traits": {
+        "repository": {
+          "valType": 4,
+          "valLen": 100,
+          "parts": 1,
+          "valueHex": "68747470733a2f2f6769746875622e636f6d2f61636564776172642f6d69702d303031382d6d69646e696768742d636f6e7472616374732f626c6f622f6d61696e2f636f6e7472616374732f67656e6572617465642f434e535431382e636f6d70616374",
+          "text": "https://github.com/acedward/mip-0018-midnight-contracts/blob/main/contracts/generated/CNST18.compact"
+        },
         "hemisphere": {
           "valType": 1,
           "valLen": 10,
+          "parts": 1,
           "valueHex": "65717561746f7269616c",
           "text": "equatorial"
         },
         "magnitude": {
           "valType": 1,
           "valLen": 4,
+          "parts": 1,
           "valueHex": "312e3235",
           "text": "1.25"
         },
         "metadata": {
           "valType": 3,
-          "valLen": 172,
-          "valueHex": "7b22636f6c6c656374696f6e223a22436f6e7374656c6c6174696f6e73222c22696d616765223a22646174613a696d6167652f7376672b786d6c3b757466382c3c73766720786d6c6e733d27687474703a2f2f7777772e77332e6f72672f323030302f737667272076696577426f783d2730203020342034273e3c7061746820643d274d302034204c322030204c34203427207374726f6b653d27253233666666272f3e3c2f7376673e227d",
-          "text": "{\"collection\":\"Constellations\",\"image\":\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 4 4'><path d='M0 4 L2 0 L4 4' stroke='%23fff'/></svg>\"}"
+          "valLen": 279,
+          "parts": 2,
+          "valueHex": "7b22636f6c6c656374696f6e223a22436f6e7374656c6c6174696f6e73222c22696d616765223a22646174613a696d6167652f7376672b786d6c3b757466382c3c73766720786d6c6e733d27687474703a2f2f7777772e77332e6f72672f323030302f737667272076696577426f783d2730203020342034273e3c7061746820643d274d302034204c322030204c34203427207374726f6b653d27253233666666272f3e3c2f7376673e222c227374617273223a5b22426574656c6765757365222c22526967656c222c2242656c6c6174726978222c224d696e74616b61222c22416c6e696c616d222c22416c6e6974616b222c225361697068225d2c2268656d69737068657265223a2265717561746f7269616c227d",
+          "text": "{\"collection\":\"Constellations\",\"image\":\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 4 4'><path d='M0 4 L2 0 L4 4' stroke='%23fff'/></svg>\",\"stars\":[\"Betelgeuse\",\"Rigel\",\"Bellatrix\",\"Mintaka\",\"Alnilam\",\"Alnitak\",\"Saiph\"],\"hemisphere\":\"equatorial\"}"
         }
       },
       "mintCount": 1,
       "totalMinted": "1",
-      "name": "Constellations · Orion",
-      "symbol": "CNST",
+      "name": "Constellations · MIP-18 · Orion",
+      "symbol": "CNST18",
       "decimals": 0,
       "tokenUri": "http://localhost:10020/constellations/orion",
+      "metadata": {
+        "collection": "Constellations",
+        "image": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 4 4'><path d='M0 4 L2 0 L4 4' stroke='%23fff'/></svg>",
+        "stars": [
+          "Betelgeuse",
+          "Rigel",
+          "Bellatrix",
+          "Mintaka",
+          "Alnilam",
+          "Alnitak",
+          "Saiph"
+        ],
+        "hemisphere": "equatorial"
+      },
       "status": "described"
     },
     {
-      "row": "CNST",
-      "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
-      "domainSepHex": "636e73743a6c7972610000000000000000000000000000000000000000000000",
-      "domainSepText": "cnst:lyra",
+      "row": "CNST18",
+      "contractAddress": "fcfe3a554f45f233eeaef7bd809e95dafdffb4396b6bfccbb86f5b967498d421",
+      "domainSepHex": "636e737431383a6c797261000000000000000000000000000000000000000000",
+      "domainSepText": "cnst18:lyra",
       "kind": 1,
       "privacy": "shielded",
       "storage": "native",
-      "colorHex": "e7365e10713862aaec94986702bdaecf42604e2a2049363eb889fdfe884ce28e",
+      "colorHex": "3e7036fae4bb9c5558a926085cac58f4c216da88f5b566f800bde43713a7d669",
       "traits": {
+        "repository": {
+          "valType": 4,
+          "valLen": 100,
+          "parts": 1,
+          "valueHex": "68747470733a2f2f6769746875622e636f6d2f61636564776172642f6d69702d303031382d6d69646e696768742d636f6e7472616374732f626c6f622f6d61696e2f636f6e7472616374732f67656e6572617465642f434e535431382e636f6d70616374",
+          "text": "https://github.com/acedward/mip-0018-midnight-contracts/blob/main/contracts/generated/CNST18.compact"
+        },
         "hemisphere": {
           "valType": 1,
           "valLen": 8,
+          "parts": 1,
           "valueHex": "6e6f72746865726e",
           "text": "northern"
         },
         "magnitude": {
           "valType": 1,
           "valLen": 4,
+          "parts": 1,
           "valueHex": "302e3033",
           "text": "0.03"
         }
       },
       "mintCount": 1,
       "totalMinted": "1",
-      "name": "Constellations · Lyra",
-      "symbol": "CNST",
+      "name": "Constellations · MIP-18 · Lyra",
+      "symbol": "CNST18",
       "decimals": 0,
       "tokenUri": "http://localhost:10020/constellations/lyra",
       "status": "described"
     },
     {
-      "row": "CNST",
-      "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
-      "domainSepHex": "636e73743a6379676e7573000000000000000000000000000000000000000000",
-      "domainSepText": "cnst:cygnus",
+      "row": "CNST18",
+      "contractAddress": "fcfe3a554f45f233eeaef7bd809e95dafdffb4396b6bfccbb86f5b967498d421",
+      "domainSepHex": "636e737431383a6379676e757300000000000000000000000000000000000000",
+      "domainSepText": "cnst18:cygnus",
       "kind": 1,
       "privacy": "shielded",
       "storage": "native",
-      "colorHex": "97fec186b8ae9ebc65e1640a14791942473dbf07377e1483ccd43759c64adcfb",
+      "colorHex": "8400f4f09d05eeced9941d1b3fa1158940ba6d859e92795fa81edd541a063c41",
       "traits": {
+        "repository": {
+          "valType": 4,
+          "valLen": 100,
+          "parts": 1,
+          "valueHex": "68747470733a2f2f6769746875622e636f6d2f61636564776172642f6d69702d303031382d6d69646e696768742d636f6e7472616374732f626c6f622f6d61696e2f636f6e7472616374732f67656e6572617465642f434e535431382e636f6d70616374",
+          "text": "https://github.com/acedward/mip-0018-midnight-contracts/blob/main/contracts/generated/CNST18.compact"
+        },
         "hemisphere": {
           "valType": 1,
           "valLen": 8,
+          "parts": 1,
           "valueHex": "6e6f72746865726e",
           "text": "northern"
         },
         "magnitude": {
           "valType": 1,
           "valLen": 4,
+          "parts": 1,
           "valueHex": "312e3235",
           "text": "1.25"
         }
       },
       "mintCount": 1,
       "totalMinted": "1",
-      "name": "Constellations · Cygnus",
-      "symbol": "CNST",
+      "name": "Constellations · MIP-18 · Cygnus",
+      "symbol": "CNST18",
       "decimals": 0,
       "tokenUri": "http://localhost:10020/constellations/cygnus",
       "status": "described"
     },
     {
-      "row": "CNST",
-      "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
-      "domainSepHex": "636e73743a766567610000000000000000000000000000000000000000000000",
-      "domainSepText": "cnst:vega",
+      "row": "CNST18",
+      "contractAddress": "fcfe3a554f45f233eeaef7bd809e95dafdffb4396b6bfccbb86f5b967498d421",
+      "domainSepHex": "636e737431383a76656761000000000000000000000000000000000000000000",
+      "domainSepText": "cnst18:vega",
       "kind": 1,
       "privacy": "shielded",
       "storage": "native",
-      "colorHex": "8107e2d2796fee3fe97a75c24763f9746e30b4129e02b287f2c1fd346648b0d7",
+      "colorHex": "4bed0e6daf96d3b75a877562405429265de33ade2505486212d0ae6f761f508c",
       "traits": {
+        "repository": {
+          "valType": 4,
+          "valLen": 100,
+          "parts": 1,
+          "valueHex": "68747470733a2f2f6769746875622e636f6d2f61636564776172642f6d69702d303031382d6d69646e696768742d636f6e7472616374732f626c6f622f6d61696e2f636f6e7472616374732f67656e6572617465642f434e535431382e636f6d70616374",
+          "text": "https://github.com/acedward/mip-0018-midnight-contracts/blob/main/contracts/generated/CNST18.compact"
+        },
         "hemisphere": {
           "valType": 1,
           "valLen": 8,
+          "parts": 1,
           "valueHex": "6e6f72746865726e",
           "text": "northern"
         }
       },
       "mintCount": 1,
       "totalMinted": "1",
-      "name": "Constellations · Vega",
-      "symbol": "CNST",
+      "name": "Constellations · MIP-18 · Vega",
+      "symbol": "CNST18",
       "decimals": 0,
       "tokenUri": "http://localhost:10020/constellations/vega",
       "status": "described"
     },
     {
-      "row": "CNST",
-      "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
-      "domainSepHex": "636e73743a616c74616972000000000000000000000000000000000000000000",
-      "domainSepText": "cnst:altair",
+      "row": "CNST18",
+      "contractAddress": "fcfe3a554f45f233eeaef7bd809e95dafdffb4396b6bfccbb86f5b967498d421",
+      "domainSepHex": "636e737431383a616c7461697200000000000000000000000000000000000000",
+      "domainSepText": "cnst18:altair",
       "kind": 1,
       "privacy": "shielded",
       "storage": "native",
-      "colorHex": "d820d1e3aa89eb73987637d78590edcc17c05de43d60af0efb4ac61080e1b47d",
+      "colorHex": "659c849727eeecb1d07c752cce6529347bb9cc39065b91fe96a774c56b049b45",
       "traits": {
+        "repository": {
+          "valType": 4,
+          "valLen": 100,
+          "parts": 1,
+          "valueHex": "68747470733a2f2f6769746875622e636f6d2f61636564776172642f6d69702d303031382d6d69646e696768742d636f6e7472616374732f626c6f622f6d61696e2f636f6e7472616374732f67656e6572617465642f434e535431382e636f6d70616374",
+          "text": "https://github.com/acedward/mip-0018-midnight-contracts/blob/main/contracts/generated/CNST18.compact"
+        },
         "hemisphere": {
           "valType": 1,
           "valLen": 10,
+          "parts": 1,
           "valueHex": "65717561746f7269616c",
           "text": "equatorial"
         }
       },
       "mintCount": 1,
       "totalMinted": "1",
-      "name": "Constellations · Altair",
-      "symbol": "CNST",
+      "name": "Constellations · MIP-18 · Altair",
+      "symbol": "CNST18",
       "decimals": 0,
       "tokenUri": "http://localhost:10020/constellations/altair",
       "status": "described"
     },
     {
-      "row": "LLIAR",
-      "contractAddress": "4df9f4f86ce86e972a411f125610555589bd2480a8dd4d390e8f205cc49fa377",
-      "domainSepHex": "756d6272613a6c6c696172000000000000000000000000000000000000000000",
-      "domainSepText": "umbra:lliar",
+      "row": "LLIAR18",
+      "contractAddress": "6aabb21d64d0c2e1df08bb0cdbed766b4dac3e7a3a8604481d1e0b902c34a7af",
+      "domainSepHex": "756d6272613a6c6c696172313800000000000000000000000000000000000000",
+      "domainSepText": "umbra:lliar18",
       "kind": 0,
       "privacy": "unshielded",
       "storage": "native",
-      "colorHex": "da1238dce2d8d92f3707cfde043b33461283c736b4e0f82e57a3ee569efb1283",
+      "colorHex": "27697360b6f25686e6b3fa1c88a012abde7d83a20045097daefda07916ce99e6",
       "traits": {},
       "mintCount": 1,
       "totalMinted": "7",
       "status": "observed"
     },
     {
-      "row": "LLIAR",
-      "contractAddress": "4df9f4f86ce86e972a411f125610555589bd2480a8dd4d390e8f205cc49fa377",
-      "domainSepHex": "756d6272613a6c6c696172000000000000000000000000000000000000000000",
-      "domainSepText": "umbra:lliar",
+      "row": "LLIAR18",
+      "contractAddress": "6aabb21d64d0c2e1df08bb0cdbed766b4dac3e7a3a8604481d1e0b902c34a7af",
+      "domainSepHex": "756d6272613a6c6c696172313800000000000000000000000000000000000000",
+      "domainSepText": "umbra:lliar18",
       "kind": 2,
       "privacy": "unshielded",
       "storage": "ledger",
       "colorHex": null,
-      "traits": {},
+      "traits": {
+        "repository": {
+          "valType": 4,
+          "valLen": 101,
+          "parts": 1,
+          "valueHex": "68747470733a2f2f6769746875622e636f6d2f61636564776172642f6d69702d303031382d6d69646e696768742d636f6e7472616374732f626c6f622f6d61696e2f636f6e7472616374732f67656e6572617465642f4c4c49415231382e636f6d70616374",
+          "text": "https://github.com/acedward/mip-0018-midnight-contracts/blob/main/contracts/generated/LLIAR18.compact"
+        }
+      },
       "mintCount": 0,
       "totalMinted": "0",
-      "name": "Ledger Liar",
-      "symbol": "LLIAR",
+      "name": "Ledger Liar · MIP-18",
+      "symbol": "LLIAR18",
       "decimals": 6,
       "status": "declared"
     }
