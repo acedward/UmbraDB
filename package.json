@@ -68,7 +68,7 @@
     "@midnightntwrk/wallet-sdk-hd": "3.1.0-beta.1",
     "@midnightntwrk/wallet-sdk-shielded": "4.0.0-beta.2",
     "@midnightntwrk/wallet-sdk-unshielded-wallet": "4.0.0-beta.2",
-    "@noble/curves": "2.2.0",
+    "@noble/curves": "2.4.0",
     "@noble/hashes": "2.2.0",
     "@stryker-mutator/core": "^9.6.1",
     "@stryker-mutator/vitest-runner": "^9.6.1",

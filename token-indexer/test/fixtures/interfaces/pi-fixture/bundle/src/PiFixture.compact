@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: Apache-2.0
+// A TEST FIXTURE for the UmbraDB token indexer (project 00024-02, task C3): the smallest
+// contract whose FULL-source public interface exercises Levels 1-3 — a ledger write, a
+// ledger read, and a circuit that takes a witness (the emitter-secret pattern of spec
+// 00024 Q12, verify-only under UC-3). Never deployed.
+
+pragma language_version >= 0.26.0;
+
+import CompactStandardLibrary;
+
+export ledger counter: Counter;
+export ledger emitterSecretHash: Bytes<32>;
+
+witness emitterSecret(): Bytes<32>;
+
+constructor(secretHash: Bytes<32>) {
+  emitterSecretHash = disclose(secretHash);
+}
+
+export circuit increment(): [] {
+  counter.increment(1);
+}
+
+export circuit read(): Uint<64> {
+  return counter;
+}
+
+export circuit guardedIncrement(): [] {
+  assert(persistentHash<Vector<2, Bytes<32>>>([pad(32, "fx:emitter:"), emitterSecret()]) == emitterSecretHash,
+    "caller is not the emitter");
+  counter.increment(1);
+}

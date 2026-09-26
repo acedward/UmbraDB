@@ -1,0 +1,61 @@
+{
+  "bundle": "v1",
+  "commitment": "ecmh-jubjub-grouphash",
+  "hash": "bb0a01afa52f34f3ef21294ad1829ee6f4f8618294f5eb36481657740b0373d2",
+  "compiler": {
+    "name": "compactc",
+    "version": "0.34.0"
+  },
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "4ddcfee254fd6d3ae2fcb68b8a06896baa5f14270cba8fae73fff129212466ce",
+      "size": 2804
+    },
+    {
+      "path": "out/compiler/contract-info.json",
+      "sha256": "0d2cf8ab9df9d67e73e12a5f4334914ca0567bc0448c8dcbc583681ef9a9166b",
+      "size": 1249
+    },
+    {
+      "path": "out/contract/index.d.ts",
+      "sha256": "bf333dad494a6eb8be01c6361aa1612458369a325f07f52c7e2daf31ba288e12",
+      "size": 2167
+    },
+    {
+      "path": "out/contract/index.js",
+      "sha256": "696f9fbd6182dac9ee64df9ec599d1ae5a8c08bf2e8c419a3eb0de5497747f30",
+      "size": 23322
+    },
+    {
+      "path": "out/contract/package.json",
+      "sha256": "5a065fe7d8eab2a582f428e11c2ea63aaf70607a54f69cfd5c711b5c53d91b32",
+      "size": 21
+    },
+    {
+      "path": "out/keys/guardedIncrement.verifier",
+      "sha256": "0e92ab0941bd088287d8ec4a3a3cf36473a202129957aea5a13b09214f433564",
+      "size": 2119
+    },
+    {
+      "path": "out/keys/increment.verifier",
+      "sha256": "62d768951a97c18af8cb385f8c0fe6488a4dbfbebce83ea08b21914a0ebe7789",
+      "size": 1351
+    },
+    {
+      "path": "out/keys/read.verifier",
+      "sha256": "62bc962997f0d591fe4fd452e596f6a4b813ccd2a08b5583cd02f1fe809ffa16",
+      "size": 1351
+    },
+    {
+      "path": "package.json",
+      "sha256": "e84897f26677e4fedb9bf8fc8d8a6e51b7109bbd5076a682d956274328b46b39",
+      "size": 323
+    },
+    {
+      "path": "src/PiFixture.compact",
+      "sha256": "635e10d358404710a2fbdf9249106b6b7f201150eac76755f1efdb054de52b56",
+      "size": 954
+    }
+  ]
+}
