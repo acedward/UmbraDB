@@ -4,6 +4,7 @@ import * as mipLayout from "./002_mip_xxxx_layout.js";
 import * as tokenActivity from "./003_token_activity.js";
 import * as mip0018 from "./004_mip_0018.js";
 import * as multipartPackages from "./005_multipart_packages.js";
+import * as publicInterfaces from "./006_public_interfaces.js";
 import type { Migration } from "../../migrate.js";
 
 /**
@@ -27,7 +28,9 @@ import type { Migration } from "../../migrate.js";
  * a metadata event row becomes a [Y] multi-part PACKAGE (merged payload, parts, segment, phase),
  * `val_len` reaches 65 535 (MIP-0018 amended in place, UC-1) and the ordering carries the
  * transaction position (MIP §6.2) — and drops and recreates the two metadata tables and the retry
- * queue (spec 00024 Q3: everything is in development, no data migration). All of them run, in
+ * queue (spec 00024 Q3: everything is in development, no data migration); `006` is project 00024-02's
+ * — the public-interface publications ([B] packages), the current one per contract (derivation P2)
+ * and the verification history — and only ADDS tables. All of them run, in
  * order, on a fresh database — the derived tables live for the length of one migration run there, which costs
  * nothing and keeps the lineage honest about how this schema actually got here.
  *
@@ -45,7 +48,7 @@ import type { Migration } from "../../migrate.js";
  * table shape.
  */
 export const tokenIndexMigrations: Migration[] = [
-  migration000, tokenIndexCore, mipLayout, tokenActivity, mip0018, multipartPackages,
+  migration000, tokenIndexCore, mipLayout, tokenActivity, mip0018, multipartPackages, publicInterfaces,
 ];
 
 /** The conventional schema name this lineage lives in. */
