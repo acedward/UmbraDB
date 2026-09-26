@@ -89,12 +89,16 @@ describe("migration 006 — public-interface tables", () => {
     `;
     expect(await refused(() => update({ status: "verified", level: 1, l1: "passed", l2: "not_run" }))).toMatch(/pie_verified_level/);
     expect(await refused(() => update({ status: "failed", reason: "x" }))).toMatch(/pie_failed_has_level/);
+    expect(await refused(() => update({ failed_level: 1 }))).toMatch(/pie_failed_level_only_when_failed/);
     expect(await refused(() => update({ status: "unchecked" }))).toMatch(/pie_reason_when_not_ok/);
     expect(await refused(() => update({ status: "historical" }))).toMatch(/status_check/);
     expect(await refused(() => update({ l3: "skipped" }))).toMatch(/l3_check/);
     expect(await refused(() => update({ verified_until: new Date() }))).toMatch(/pie_until_after_verified/);
     // A consistent verified result, with L3 tried and not run.
     await update({ status: "verified", level: 2, l1: "passed", l2: "passed", l3: "not_run", l3_reason: "compiler 0.33.0 unavailable" });
+    // A failed result, then marked stale by a maintenance update: its last result stays.
+    await update({ status: "failed", level: 0, l1: "failed", l2: "not_run", l3: "not_run", l3_reason: null, failed_level: 1, reason: "hash" });
+    await update({ status: "stale" });
 
     // The current pointer must name a stored publication; a check must name one too.
     expect(await refused(() => sql`

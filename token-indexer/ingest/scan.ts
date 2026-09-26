@@ -4,6 +4,7 @@ import { jsonLog } from "../../wallet-monitor/log.js";
 import { decodeTokenFlows } from "./decode.js";
 import { emissionByAddress, lookupEventsFor, type EventSource, type LookupPair } from "./events.js";
 import { applyMint, ensureSeenToken, upsertContract } from "./fold.js";
+import { markInterfaceStale } from "../interface/store.js";
 import {
   insertActivityRow, insertContractCall, insertShieldedOffer,
   readDecodeCursor, writeDecodeCursor, type DecodeCursor,
@@ -60,6 +61,9 @@ export interface ScanBatchOutcome {
   eventsRejected: number;
   /** Public-interface publications stored by this batch (00024-02). */
   interfacePublications: number;
+  /** Current public interfaces this batch marked `stale` — their contract had a maintenance update
+   *  (00024-02, FR-012). */
+  interfacesStaled: number;
   skippedUnknownResult: number;
   /** Project 00023 (FR-013). All five count rows this batch actually INSERTED, so a re-scan of the
    *  same blocks reports zeros — which is what `[[token-activity-idempotent]]` asserts. */
@@ -116,7 +120,7 @@ export class TokenScanner {
 
     const outcome: ScanBatchOutcome = {
       transactionsScanned: 0, deploys: 0, calls: 0, mints: 0, lookups: 0, lookupsShort: 0,
-      eventsApplied: 0, eventsRejected: 0, interfacePublications: 0, skippedUnknownResult: 0,
+      eventsApplied: 0, eventsRejected: 0, interfacePublications: 0, interfacesStaled: 0, skippedUnknownResult: 0,
       activityRows: 0, shieldedOffers: 0, undisclosedShieldedOffers: 0, contractCalls: 0,
       seenTokens: 0,
       cursor, atTip: rows.length === 0, waitingForResult: undefined,
@@ -204,6 +208,19 @@ export class TokenScanner {
         // Every contract call, with every public field of each transcript (US7's introspection).
         for (const call of flows.calls) {
           if (await insertContractCall(tx, schema, net, call, ctx)) outcome.contractCalls++;
+        }
+
+        // ── public interfaces (00024-02, FR-012): a maintenance update of a contract makes its
+        // current interface stale. A failed transaction changed nothing; for any other result the
+        // update is taken as applied — a wrongly staled interface is only re-verified sooner.
+        if (row.result !== "failure") {
+          const maintained = new Set<string>();
+          for (const intent of flows.view.intents) {
+            for (const action of intent.actions) if (action.kind === "maintenance") maintained.add(action.address);
+          }
+          for (const address of maintained) {
+            if (await markInterfaceStale(tx, schema, net, address)) outcome.interfacesStaled++;
+          }
         }
 
         const emission = emissionByAddress(flows.calls);

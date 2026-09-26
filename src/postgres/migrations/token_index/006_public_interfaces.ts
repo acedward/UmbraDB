@@ -110,7 +110,10 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       ),
       -- Verified means L1 and L2 passed (level 2), L3 passed too (level 3) or tried and not.
       CONSTRAINT pie_verified_level CHECK (status <> 'verified' OR (level >= 2 AND l1 = 'passed' AND l2 = 'passed')),
-      CONSTRAINT pie_failed_has_level CHECK ((status = 'failed') = (failed_level IS NOT NULL)),
+      -- A failed result names the level that failed; a stale publication keeps its last result
+      -- (level, l1/l2/l3, reason, failed_level) as the last known one until it is re-checked.
+      CONSTRAINT pie_failed_has_level CHECK (status <> 'failed' OR failed_level IS NOT NULL),
+      CONSTRAINT pie_failed_level_only_when_failed CHECK (failed_level IS NULL OR status IN ('failed','stale')),
       CONSTRAINT pie_reason_when_not_ok CHECK (
         status NOT IN ('failed','unchecked','unfetchable') OR reason IS NOT NULL
       ),

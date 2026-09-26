@@ -28,7 +28,11 @@ export const MAX_CONTRACT_INFO_DEPTH = 64;
 /** Circuits read from contract-info.json; beyond it the bundle is `unchecked` (a local limit). */
 export const MAX_CIRCUITS = 10_000;
 /** Longest string (a name, a rendered type) kept in a circuit summary. */
-const MAX_TEXT = 256;
+const MAX_TEXT = 128;
+/** Circuits and arguments per circuit kept in the summary (it is stored with every result, so it
+ *  stays small whatever a bundle claims; honest interfaces have a handful). */
+export const MAX_SUMMARY_CIRCUITS = 500;
+const MAX_SUMMARY_ARGUMENTS = 16;
 /** Deepest type rendered in a circuit summary. */
 const MAX_TYPE_DEPTH = 16;
 
@@ -148,6 +152,8 @@ export interface Level2Result {
   /** The state's installed operation names. */
   entryPoints: string[];
   circuits: CircuitSummary[];
+  /** True when the summary was cut at {@link MAX_SUMMARY_CIRCUITS} (the check itself was not). */
+  circuitsTruncated: boolean;
   witnesses: string[];
 }
 
@@ -300,7 +306,7 @@ const maxvalOf = (t: Record<string, unknown>): bigint | undefined => {
  *  check that does not pass. */
 export function levelTwo(files: ReadonlyMap<string, Buffer>, stateBytes: Uint8Array): Level2Result {
   const empty = (outcome: Level2Result["outcome"], reason: string): Level2Result =>
-    ({ outcome, reason, rows: [], wrapper: { ok: false, rows: [] }, entryPoints: [], circuits: [], witnesses: [] });
+    ({ outcome, reason, rows: [], wrapper: { ok: false, rows: [] }, entryPoints: [], circuits: [], circuitsTruncated: false, witnesses: [] });
   let state: rt.ContractState;
   try {
     state = rt.ContractState.deserialize(Uint8Array.from(stateBytes));
@@ -352,15 +358,16 @@ export function levelTwo(files: ReadonlyMap<string, Buffer>, stateBytes: Uint8Ar
   // The published circuits, for display (spec US1 scenario 4: "each circuit listed with its argument types").
   const maxval = maxvalOf;
   const rowOf = new Map(rows.map((r) => [r.circuit, r.status]));
-  const circuits: CircuitSummary[] = circuitList
-    .filter((c): c is Record<string, unknown> => c !== null && typeof c === "object" && typeof (c as { name?: unknown }).name === "string")
+  const named = circuitList
+    .filter((c): c is Record<string, unknown> => c !== null && typeof c === "object" && typeof (c as { name?: unknown }).name === "string");
+  const circuits: CircuitSummary[] = named.slice(0, MAX_SUMMARY_CIRCUITS)
     .map((c) => {
       const name = c.name as string;
       const key = keys.get(name);
       return {
         name: clip(name),
         pure: typeof c.pure === "boolean" ? c.pure : null,
-        arguments: (Array.isArray(c.arguments) ? c.arguments : []).slice(0, 64).map((a: unknown) => ({
+        arguments: (Array.isArray(c.arguments) ? c.arguments : []).slice(0, MAX_SUMMARY_ARGUMENTS).map((a: unknown) => ({
           name: clip(String((a as { name?: unknown } | null)?.name ?? "")),
           type: clip(renderType((a as { type?: unknown } | null)?.type, maxval)),
         })),
@@ -371,7 +378,7 @@ export function levelTwo(files: ReadonlyMap<string, Buffer>, stateBytes: Uint8Ar
       };
     });
   const witnesses = "info" in contractInfo && Array.isArray(contractInfo.info.witnesses)
-    ? (contractInfo.info.witnesses as unknown[]).slice(0, 1000).map((w) => clip(String((w as { name?: unknown } | null)?.name ?? w)))
+    ? (contractInfo.info.witnesses as unknown[]).slice(0, MAX_SUMMARY_CIRCUITS).map((w) => clip(String((w as { name?: unknown } | null)?.name ?? w)))
     : [];
 
   const failed = rows.find((r) => r.status === "FAIL");
@@ -381,5 +388,8 @@ export function levelTwo(files: ReadonlyMap<string, Buffer>, stateBytes: Uint8Ar
     : failed !== undefined
       ? `vk ${failed.circuit}: ${failed.reason ?? "FAIL"}`
       : wrapper.error ?? `wrapper expectedVk: ${wrapper.rows.filter((r) => r.status === "FAIL").map((r) => r.circuit).join(", ")} ${wrapper.rows.find((r) => r.status === "FAIL")?.reason ?? "does not match the shipped key"}`;
-  return { outcome, ...(reason === undefined ? {} : { reason }), rows, wrapper, entryPoints, circuits, witnesses };
+  return {
+    outcome, ...(reason === undefined ? {} : { reason }), rows, wrapper, entryPoints, circuits,
+    circuitsTruncated: named.length > MAX_SUMMARY_CIRCUITS, witnesses,
+  };
 }

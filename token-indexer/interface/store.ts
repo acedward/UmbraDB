@@ -135,3 +135,25 @@ export async function applyInterfacePublication(
   `;
   return { stored: true, current: true, decoded };
 }
+
+/**
+ * FR-012 — a maintenance update of a contract (`MaintenanceUpdate`: a verifier key inserted,
+ * removed, or the authority changed) makes its current interface's Level 2 result obsolete: the
+ * current publication becomes `stale` (its last result kept as the last known one), is due at once,
+ * and its `generation` is bumped so a check already in flight — which read the old keys — cannot
+ * write its result (`drain.ts`). A never-checked (`pending`) publication stays `pending` (its first
+ * check reads the current state anyway) but is bumped too. Runs in the scan's database transaction.
+ * Returns whether the contract had an interface.
+ */
+export async function markInterfaceStale(sql: ISql, schema: string, net: string, address: string): Promise<boolean> {
+  const updated = await sql`
+    UPDATE ${sql(schema)}.public_interface_events e
+    SET status = CASE WHEN e.status = 'pending' THEN 'pending' ELSE 'stale' END,
+        generation = e.generation + 1,
+        next_check_at = now()
+    FROM ${sql(schema)}.public_interfaces pi
+    WHERE pi.net = ${net} AND pi.address = ${hexBuf(address)}
+      AND e.net = pi.net AND e.event_id = pi.event_id
+  `;
+  return updated.count > 0;
+}

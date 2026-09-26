@@ -12,6 +12,9 @@
  * npm run token-indexer -- backfill-results [--from H] [--to H] [--max-blocks N]
  *                                                        fill chain_archive result/segments for a
  *                                                        pre-existing archive (spec FR-002)
+ * npm run token-indexer -- verify-interfaces --address <hex>
+ *                                                        re-verify that contract's current public
+ *                                                        interface now (00024 FR-011b)
  * ```
  *
  * Every command is dispatched from `runCli`, so the tests drive the same code path the binary does.
@@ -26,6 +29,8 @@ import { bootstrapTokenIndexSchema, rebuildTokenIndex } from "./bootstrap.js";
 import { loadConfig, requireIndexerHttp, type TokenIndexerConfig } from "./config.js";
 import { tokenColorHex } from "./color.js";
 import { readStatus } from "./ingest/store.js";
+import { drainDepsFromConfig, verifyInterfaceNow } from "./interface/drain.js";
+import { DEFAULT_INTERFACE_CONFIG } from "./config.js";
 import { serve, type ServeMode } from "./serve.js";
 
 const USAGE = [
@@ -38,6 +43,7 @@ const USAGE = [
   "  serve [--api-only|--ingest-only]     scanner + event-lookup drain + the JSON API and page",
   "  backfill-results [--from H] [--to H] [--max-blocks N]",
   "                                       fill chain_archive.transactions.result/segments",
+  "  verify-interfaces --address <hex>    re-verify that contract's current public interface now",
   "",
 ].join("\n");
 
@@ -132,6 +138,29 @@ export async function runCli(argv: readonly string[]): Promise<number> {
           maxBlocks: numericFlag(rest, "--max-blocks"),
         });
         jsonLog("token-indexer", "backfill-results.done", { ...outcome });
+      } finally {
+        await sql.end({ timeout: 5 });
+      }
+      return 0;
+    }
+    case "verify-interfaces": {
+      const at = rest.indexOf("--address");
+      const address = (at < 0 ? "" : rest[at + 1] ?? "").replace(/^0x/i, "").toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(address)) {
+        process.stderr.write("verify-interfaces needs --address <64 hex characters>\n");
+        return 1;
+      }
+      const sql = openClient(config);
+      try {
+        await bootstrapTokenIndexSchema(sql, { schema: config.schema, net: config.net });
+        const deps = drainDepsFromConfig(config.interfaces ?? DEFAULT_INTERFACE_CONFIG, requireIndexerHttp(config, "verify-interfaces"));
+        const done = await verifyInterfaceNow(sql, config.schema, config.net, address, deps);
+        if (done === undefined) {
+          process.stderr.write(`contract ${address} has published no public interface\n`);
+          return 1;
+        }
+        const { report: _report, circuits: _circuits, ...summary } = done.result;
+        process.stdout.write(`${JSON.stringify({ address, eventId: done.eventId, written: done.write === "written", ...summary }, null, 2)}\n`);
       } finally {
         await sql.end({ timeout: 5 });
       }
