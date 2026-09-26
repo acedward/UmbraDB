@@ -119,7 +119,10 @@ package is one declaration. The draft name is not opted in and keeps its single-
   reason); traits and metadata events gain `segment`, `parts`, `partEventIds`, `phase`, `txPosition`
   and an `origin` (events also `payloadLength` and `payloadSha256` of the merged package); mints and
   activity rows carry a `chain` origin; `/internal/status` counts `packages`, `multipartPackages` and
-  `mixedPackages`. The page is unchanged in this project.
+  `mixedPackages`. The page is unchanged in this project. A `metadata` origin cites exactly the
+  declaration(s) the served document came from (the fold's `chooseMetadata`), and every data route
+  answers from ONE read-only `REPEATABLE READ` snapshot, so a value and its evidence can never come
+  from two different moments.
 * **Schema** (`005_multipart_packages`): one `token_metadata_events` row per package; `val_len` up
   to 65 535; a fresh database per run (no migration of existing rows).
   Values of any length are held without stalling the scanner (`[[multipart-hostile-values]]`):
@@ -272,8 +275,11 @@ and what each one proves.
 
 ## The payload
 
-The 256-byte layout is the one thing the two event names share, so the structural decode never
-depends on which name an event carried.
+The first 66 bytes — `domainSep`, `kind`, `key`, `val-type` — are the same under both event
+names, so the structural decode of the header never depends on which name an event carried. From
+offset 66 the two names differ (project 00024-01, UC-1): the standard's `mip-0018:token-metadata[v1]`
+is a [Y] **package** of `256·k` bytes with a 2-byte length; the superseded draft
+`mip-xxxx:token-metadata[v1]` is one 256-byte event with a 1-byte length.
 
 ```
  offset  size  field
@@ -285,33 +291,49 @@ depends on which name an event carried.
                            (MIP §5.1)
      65     1  val-type    0 opaque, 1 UTF-8 string, 2 unsigned integer (Compact `Uint<8·N>`,
                            little-endian, 1..31 bytes), 3 UTF-8 JSON (ONE complete RFC 8259 value),
-                           4 UTF-8 URI, 5 Null (`val-len` MUST be 0, the 189 bytes ignored, the key
+                           4 UTF-8 URI, 5 Null (`val-len` MUST be 0, the value bytes ignored, the key
                            cleared), 6..255 reserved → reject
-     66     1  val-len     meaningful bytes of `value`, 0..189; 0 means "present, empty" — which is
-                           NOT the same as Null (MIP §6.2)
+
+ mip-0018:token-metadata[v1] (UC-1) — the merged payload of a [Y] package, 256·k bytes (k ≥ 1)
+     66     2  val-len     unsigned 16-bit LITTLE-endian (Compact `Uint<16>`), 0..65 535; 0 means
+                           "present, empty" — NOT the same as Null (MIP §6.2); `68 + val-len` must fit
+                           the package, else `val_len_beyond_package`
+     68   val-len  value   any length; one part holds ≤ 188 bytes; bytes after the value are ignored
+
+ mip-xxxx:token-metadata[v1] (the draft, not opted into [Y]) — one event, exactly 256 bytes
+     66     1  val-len     0..189, else `val_len_too_long`
      67   189  value
 ```
+
+To publish `name = "A"` under the standard: `val-type` 1, `val-len` bytes `01 00` at 66–67, `41`
+at 68. Writing the draft's single `01` at 66 and `41` at 67 reads as a length of `0x4101` and is
+rejected.
 
 `serialize<Uint<128>, 16>(6)` is `0x06000000000000000000000000000000` (MIP Appendix A): the least
 significant byte comes first. That is not taken on trust from the MIP's prose — the governed test
 `[[token-0018-integer-endianness]]` derives those bytes from `@midnight-ntwrk/compact-runtime`
 0.19.0, the runtime the MIP names as normative for v1, and asserts this module's encoder and decoder
 agree with `toBinaryRepr` and `CompactTypeUnsignedInteger.fromValue` at widths 1, 2, 3, 16 and 31.
+The 2-byte `val-len` is checked the same way (`[[multipart-0018-rules]]`: every value 0…65 535
+against compact-runtime's `Uint<16>` serialization).
 
 One stable reject reason per transport rule: `kind_unknown`, `key_empty`, `key_pointer_invalid`,
-`val_type_reserved`, `val_len_too_long`, `val_type_rule`, `payload_size` — the same strings the
-reference contracts' negative corpus records, so a diagnostic means one thing in both. Rejected
-events are stored with their reason — a contract's malformed claim is evidence about that contract,
-and MIP §7.1 asks a consumer to keep rejection reasons available for diagnostics.
+`val_type_reserved`, `val_len_beyond_package` (standard) / `val_len_too_long` (draft),
+`val_type_rule`, `payload_size` — the same strings the reference contracts' negative corpus records,
+so a diagnostic means one thing in both. Rejected declarations are stored with their reason — a
+contract's malformed claim is evidence about that contract, and MIP §7.1 asks a consumer to keep
+rejection reasons available for diagnostics.
 
 ## A note on payload width
 
 The on-chain VM hands a `Log` event's bytes out with **trailing NULs trimmed**, while the event
 declares its full serialized length. The indexer's GraphQL `payload` field re-pads to exactly 256
 bytes, so this does not show through that source — but the node-direct event source the owner plans
-next sees the untrimmed form. The parser therefore **zero-extends** a short payload to 256 and
-records how short it arrived; only a payload longer than 256 is an error. The bytes stored in
-`token_metadata_events.payload` are always the padded 256.
+next sees the untrimmed form. The parser therefore **zero-extends** a short payload (a part) to 256
+and records how short it arrived; only a part longer than 256 is an error. The bytes stored in
+`token_metadata_events.payload` are the padded **256 per event** for the draft name and the merged
+**256·parts** of the package for the standard's name (every part restored to 256 bytes, trailing
+zeros kept — [Y] §4).
 
 ## Colour derivation
 
