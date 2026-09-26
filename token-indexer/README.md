@@ -249,6 +249,13 @@ the final text moved, ending with `[[token-0018-legacy-pair]]`, which puts singl
 through both validators at once. `test/status-rules.test.ts` carries the three fold-level ids
 (`[[token-0018-null-clears]]`, `[[token-0018-no-multipart]]`, `[[token-0018-decimals-width]]`).
 
+`test/fixtures/maintenance/` holds **one staged deploy** recorded on the 00024 local chain (project
+00024-01, question Q21): CNST18's `ContractDeploy` with 11 of its 39 operations and the 28
+`MaintenanceUpdate` transactions that insert the other verifier keys. `maintenance-scan.test.ts`
+(`[[token-scan-maintenance-actions]]`) runs them through the real decoder and the scanner: the
+deploy is recorded, the updates are `maintenance` actions that are not calls, emit nothing and are
+never looked up, and the cursor moves past them. Its `SOURCE.md` names the run and the SHA-256.
+
 `test/fixtures/activity/` holds project 00023's four recorded Stagenet transactions — an unshielded
 deposit into a contract, a NIGHT pass-through, a shielded mint whose offer delta publishes its
 colour, and a **balanced** shielded offer that publishes none — with a golden row set and a golden
