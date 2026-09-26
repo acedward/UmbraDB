@@ -58,6 +58,8 @@ export interface ScanBatchOutcome {
   lookupsShort: number;
   eventsApplied: number;
   eventsRejected: number;
+  /** Public-interface publications stored by this batch (00024-02). */
+  interfacePublications: number;
   skippedUnknownResult: number;
   /** Project 00023 (FR-013). All five count rows this batch actually INSERTED, so a re-scan of the
    *  same blocks reports zeros — which is what `[[token-activity-idempotent]]` asserts. */
@@ -114,7 +116,7 @@ export class TokenScanner {
 
     const outcome: ScanBatchOutcome = {
       transactionsScanned: 0, deploys: 0, calls: 0, mints: 0, lookups: 0, lookupsShort: 0,
-      eventsApplied: 0, eventsRejected: 0, skippedUnknownResult: 0,
+      eventsApplied: 0, eventsRejected: 0, interfacePublications: 0, skippedUnknownResult: 0,
       activityRows: 0, shieldedOffers: 0, undisclosedShieldedOffers: 0, contractCalls: 0,
       seenTokens: 0,
       cursor, atTip: rows.length === 0, waitingForResult: undefined,
@@ -223,6 +225,7 @@ export class TokenScanner {
           outcome.lookups++;
           outcome.eventsApplied += result.applied;
           outcome.eventsRejected += result.rejected;
+          outcome.interfacePublications += result.publications;
           if (result.short) outcome.lookupsShort++;
         }
 

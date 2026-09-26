@@ -5,6 +5,8 @@ import { applyMetadataEvent, type RawContractEvent } from "./fold.js";
 import { MULTIPART_OPT_INS, PackageReadError, readPackages, type PartEvent } from "./packages.js";
 import { LEGACY_NAME_HEX, isTokenMetadataName } from "./payload.js";
 import { RawEventError, decodeRawMiscEvent, rawMiscEventName } from "./raw-event.js";
+import { isPublicInterfaceName } from "../interface/event.js";
+import { applyInterfacePublication } from "../interface/store.js";
 
 /**
  * Project 00020 — the event lookup (spec §6.5, FR-004). Transaction-driven, no watch list.
@@ -29,8 +31,9 @@ import { RawEventError, decodeRawMiscEvent, rawMiscEventName } from "./raw-event
  * nothing else changes.
  *
  * ── Project 00024-01: opted-in names are read as [Y] packages, behind a barrier ────────────────
- * Events of a name opted into the Multi-Part Event rule ([Y]; `mip-0018:token-metadata[v1]` —
- * {@link MULTIPART_OPT_INS}) are not folded one by one. For such a pair (audit F1, plan B2):
+ * Events of a name opted into the Multi-Part Event rule ([Y]; `mip-0018:token-metadata[v1]` and,
+ * since 00024-02, `mip-xxxx:public-interface[v1]` — {@link MULTIPART_OPT_INS}) are not folded one
+ * by one. For such a pair (audit F1, plan B2):
  *
  *  - **complete-response barrier**: nothing of the pair's opted-in events is grouped, stored or
  *    folded until the WHOLE response is complete (`got == expected`) and EVERY opted-in event's
@@ -289,6 +292,9 @@ export interface LookupOutcome {
   unstorable: number;
   /** [Y] packages folded from this answer (00024-01). */
   packages: number;
+  /** Of those, public-interface publications stored (00024-02); `applied`/`rejected` count
+   *  MIP-0018 declarations only. */
+  publications: number;
 }
 
 /** The pair's events contradict what its own transcripts say it emitted, per intent and phase — the
@@ -471,7 +477,9 @@ export async function lookupEventsFor(
     throw new UnexpectedEventCountError(pair.txHash, pair.address, pair.expected, got);
   }
 
-  const outcome: LookupOutcome = { got, short: false, applied: 0, rejected: 0, unstorable: 0, packages: 0 };
+  const outcome: LookupOutcome = {
+    got, short: false, applied: 0, rejected: 0, unstorable: 0, packages: 0, publications: 0,
+  };
   const count = (result: { unstorable: boolean; applied: boolean; stored: boolean }): void => {
     if (result.unstorable) { outcome.unstorable++; return; }
     if (result.applied && result.stored) outcome.applied++;
@@ -520,8 +528,26 @@ export async function lookupEventsFor(
       if (error instanceof PackageReadError) return pending("reader", `${error.reason}: ${error.message}`);
       throw error;
     }
-    // Complete and decoded: every package of the pair, folded in this one database transaction.
+    // Complete and decoded: every package of the pair, folded in this one database transaction —
+    // a public-interface package ([B], 00024-02) becomes a publication, every other opted-in name
+    // is a MIP-0018 declaration (or, in a test configuration, the name the test opted in).
     for (const pkg of packages) {
+      if (isPublicInterfaceName(pkg.nameHex)) {
+        const published = await applyInterfacePublication(sql, schema, net, {
+          eventId: pkg.positions[0]!,
+          partEventIds: pkg.positions,
+          contractAddress: pair.address,
+          txHash: pair.txHash,
+          blockHeight: pair.blockHeight,
+          txPosition: pair.txPosition,
+          segment: pkg.segment,
+          phase: pkg.phase,
+          payload: pkg.payload,
+        });
+        outcome.packages++;
+        if (published.stored) outcome.publications++;
+        continue;
+      }
       const result = await applyMetadataEvent(sql, schema, net, {
         eventId: pkg.positions[0]!,
         partEventIds: pkg.positions,

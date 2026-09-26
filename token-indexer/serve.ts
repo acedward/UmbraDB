@@ -74,6 +74,7 @@ export async function serve(
           scanned: outcome.transactionsScanned, deploys: outcome.deploys, calls: outcome.calls,
           mints: outcome.mints, lookups: outcome.lookups, lookupsShort: outcome.lookupsShort,
           eventsApplied: outcome.eventsApplied, eventsRejected: outcome.eventsRejected,
+          interfacePublications: outcome.interfacePublications,
           skippedUnknownResult: outcome.skippedUnknownResult,
           // Project 00023's five (FR-013), so a live `serve` shows the activity index filling.
           activityRows: outcome.activityRows, seenTokens: outcome.seenTokens,
