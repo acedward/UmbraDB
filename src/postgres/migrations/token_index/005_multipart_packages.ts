@@ -36,6 +36,8 @@ import type { ISql } from "postgres";
  *     intent and phase, from which every part's phase is derived (see `token-indexer/ingest/events.ts`).
  *  5. **`tokens_by_name` indexes a 256-character prefix** of the name (01-D audit F1): a name may now
  *     be longer than a B-tree entry can hold, and a refused index entry would stall the scanner.
+ *  6. **`tokens.metadata_event_ids`**: the declaration(s) the `metadata` column was projected from,
+ *     so the API's origin for it is the stored choice, not a second one (01-D audit round 3).
  *
  * ── Why this drops and recreates (spec Q3, FR-014) ─────────────────────────────────────────────
  * Everything is in development: every local run starts from an empty chain and an empty database,
@@ -197,4 +199,11 @@ export async function up(sql: ISql, schema: string): Promise<void> {
   // column itself stays unbounded, and the name search reads the column, not the index key.
   await sql`DROP INDEX IF EXISTS ${sql(schema)}.tokens_by_name`;
   await sql`CREATE INDEX tokens_by_name ON ${sql(schema)}.tokens (net, lower(left(name, 256)))`;
+
+  // ---- tokens: which declarations the `metadata` column came from (01-D audit round 3) -------
+  // The kv row ids (`updated_event_id`) of the declaration(s) the fold projected into `metadata`,
+  // in part order: one id for a whole document, the parts of a draft-name assembly. The API cites
+  // exactly these as the column's origin instead of re-deriving the choice, so the evidence is
+  // bound to the stored value even when two byte keys share a key text (organizer issue 00025).
+  await sql`ALTER TABLE ${sql(schema)}.tokens ADD COLUMN metadata_event_ids bigint[]`;
 }

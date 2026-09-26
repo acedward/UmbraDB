@@ -543,7 +543,7 @@ export async function recomputeToken(
   const color = isNativeKind(identity.kind) ? tokenKey : null;
 
   const projected = key === undefined
-    ? { name: null, symbol: null, decimals: null, tokenUri: null, metadata: null }
+    ? { name: null, symbol: null, decimals: null, tokenUri: null, metadata: null, metadataEventIds: null }
     : await projectedFields(sql, schema, net, key);
 
   await sql`
@@ -555,6 +555,7 @@ export async function recomputeToken(
       decimals                  = ${projected.decimals},
       token_uri                 = ${projected.tokenUri},
       metadata                  = ${projected.metadata === null ? null : sql.json(projected.metadata as never)},
+      metadata_event_ids        = ${projected.metadataEventIds === null ? null : `{${projected.metadataEventIds.join(",")}}`}::bigint[],
       metadata_updated_height   = ${latest === undefined ? null : Number(latest.block_height)},
       metadata_updated_event_id = ${latest === undefined ? null : Number(latest.event_id)}
     WHERE net = ${net} AND token_key = ${tokenKey} AND kind = ${identity.kind}
@@ -567,6 +568,9 @@ export interface ProjectedFields {
   decimals: number | null;
   tokenUri: string | null;
   metadata: Record<string, unknown> | null;
+  /** The kv `updated_event_id`s of the declaration(s) `metadata` was projected from, in part order
+   *  (`null` with no metadata) — stored in `tokens.metadata_event_ids`. */
+  metadataEventIds: string[] | null;
 }
 
 interface KvRow {
@@ -645,7 +649,10 @@ export async function projectedFields(
   const decimalsRow = byKey.get("decimals");
 
   // --- metadata: the single declaration or the draft's split document (chooseMetadata) ---------
-  const { metadata } = chooseMetadata(rows);
+  const choice = chooseMetadata(rows);
+  const metadata = choice.metadata;
+  // The rows it came from, stored beside it (01-D audit round 3) — the API cites exactly these.
+  const metadataEventIds = metadata === null ? null : choice.rows.map((row) => row.updated_event_id);
 
   return {
     name: text("name"),
@@ -661,6 +668,7 @@ export async function projectedFields(
       )),
     tokenUri: text("tokenUri"),
     metadata,
+    metadataEventIds,
   };
 }
 

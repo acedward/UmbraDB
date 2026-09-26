@@ -120,7 +120,8 @@ package is one declaration. The draft name is not opted in and keeps its single-
   and an `origin` (events also `payloadLength` and `payloadSha256` of the merged package); mints and
   activity rows carry a `chain` origin; `/internal/status` counts `packages`, `multipartPackages` and
   `mixedPackages`. The page is unchanged in this project. A `metadata` origin cites exactly the
-  declaration(s) the served document came from (the fold's `chooseMetadata`), and every data route
+  declaration(s) the served document came from — the ids the fold stores beside it in
+  `tokens.metadata_event_ids` (its `chooseMetadata` choice) — and every data route
   answers from ONE read-only `REPEATABLE READ` snapshot, so a value and its evidence can never come
   from two different moments.
 * **Schema** (`005_multipart_packages`): one `token_metadata_events` row per package; `val_len` up

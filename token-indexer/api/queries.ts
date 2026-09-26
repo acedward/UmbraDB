@@ -260,6 +260,9 @@ export function originsOf(
      *  assembly depends on the bytes — 01-D audit F5). */
     val_len?: number | null; value?: Buffer | null;
   })[],
+  /** `tokens.metadata_event_ids`: the declaration(s) the fold projected `metadata` from (01-D audit
+   *  round 3). When given, the origin cites exactly these rows; `chooseMetadata` is the fallback. */
+  metadataEventIds?: readonly string[] | null,
 ): TokenOriginsJson {
   const status: OriginJson = {
     origin: "derived", rule: token.status === "builtin" ? "a seeded built-in row (00020 owner decision Q7)" : STATUS_RULE,
@@ -312,10 +315,22 @@ export function originsOf(
   // one is decided by the SAME function the fold projects with (`chooseMetadata`), so the evidence
   // is always the declaration(s) the served document came from — never a newer part of an
   // assembly that is incomplete or does not parse (01-D audit F5).
-  // The evidence is built from the chosen ROWS, not looked up again by key text: two byte keys can
-  // share a text (01-D audit round 2, N3).
+  // The evidence is the ROWS the stored value came from: the ids the fold recorded with it
+  // (`tokens.metadata_event_ids`, audit round 3 — bound to the stored choice, whatever order a
+  // query returns rows in), else the same choice made again (`chooseMetadata`, round 2's N3) —
+  // never a lookup by key text, since two byte keys can share one (organizer issue 00025).
   let metadata = field("metadata", token.metadata);
-  if (token.metadata !== null) {
+  const isMetadataKey = (row: { key_text: string | null }): boolean =>
+    row.key_text === "metadata" || (row.key_text !== null && metadataPartIndex(row.key_text) !== undefined);
+  const stored = token.metadata === null || metadataEventIds === undefined || metadataEventIds === null
+    ? undefined
+    : metadataEventIds.map((id) => kv.find((row) => isMetadataKey(row) && row.updated_event_id === id));
+  if (stored !== undefined && stored.length > 0 && stored.every((row) => row !== undefined)) {
+    const rows = stored as (typeof kv[number])[];
+    metadata = rows.length === 1 && rows[0]!.key_text === "metadata"
+      ? { origin: "mip-0018", evidence: packageEvidence(rows[0]!) }
+      : { origin: "mip-0018", evidence: rows.map(packageEvidence) };
+  } else if (token.metadata !== null) {
     const choice = chooseMetadata(kv
       .filter((row) => row.key_text === "metadata" || (row.key_text !== null && metadataPartIndex(row.key_text) !== undefined))
       .map((row) => ({ ...row, val_len: row.val_len ?? 0, value: row.value ?? Buffer.alloc(0) })));
@@ -460,10 +475,26 @@ export class TokenIndexQueries {
         byToken.set(row.token, list);
       }
     }
-    return tokens.map((t) => ({
-      ...t,
-      origins: originsOf(t, t.address === null || t.domainSep === null ? [] : byToken.get(keyOf(t.address, t.domainSep, t.kind)) ?? []),
-    }));
+    // The declaration ids each token's `metadata` was projected from — read in the same snapshot
+    // as the token rows and the kv rows (the request's `inSnapshot`).
+    const metadataIds = new Map<string, string[] | null>();
+    if (wanted.length > 0) {
+      const idRows = await sql<{ token: string; ids: string[] | null }[]>`
+        SELECT encode(address, 'hex') || ':' || encode(domain_sep, 'hex') || ':' || kind::text AS token,
+               metadata_event_ids::text[] AS ids
+        FROM ${sql(this.s)}.tokens
+        WHERE net = ${this.net} AND address IS NOT NULL AND domain_sep IS NOT NULL
+          AND encode(address, 'hex') || ':' || encode(domain_sep, 'hex') || ':' || kind::text = ANY(${sql.array(wanted)}::text[])
+      `;
+      for (const row of idRows) metadataIds.set(row.token, row.ids);
+    }
+    return tokens.map((t) => {
+      const key = t.address === null || t.domainSep === null ? undefined : keyOf(t.address, t.domainSep, t.kind);
+      return {
+        ...t,
+        origins: originsOf(t, key === undefined ? [] : byToken.get(key) ?? [], key === undefined ? undefined : metadataIds.get(key)),
+      };
+    });
   }
 
   async listTokens(filters: TokenListFilters): Promise<Page<TokenListItemJson>> {

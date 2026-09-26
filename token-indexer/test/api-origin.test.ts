@@ -4,7 +4,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
-import { TokenIndexQueries } from "../api/queries.js";
+import { TokenIndexQueries, originsOf } from "../api/queries.js";
 import { createTokenApi, listen } from "../api/server.js";
 import { bootstrapTokenIndexSchema } from "../bootstrap.js";
 import { pad32, tokenColorHex } from "../color.js";
@@ -47,6 +47,12 @@ const ALIAS = "a1".repeat(32);
 const aliasDomain = Buffer.from(pad32("umbra:alias")).toString("hex");
 let aliasSupplierId = 0;
 let aliasTwinId = 0;
+// Round 3: two PROJECTABLE aliases (`metadata/0` and BOM + `metadata/0`, both valid parts) — the
+// fold keeps one; the evidence must be that one, whatever order any query returns the rows in.
+const ALIAS2 = "a2".repeat(32);
+const alias2Domain = Buffer.from(pad32("umbra:alias2")).toString("hex");
+let alias2A = 0;
+let alias2B = 0;
 // Round 2 (N4): a token renamed WHILE an HTTP request is between its token read and its origins read.
 const RACE = "ac".repeat(32);
 const raceDomain = Buffer.from(pad32("umbra:race")).toString("hex");
@@ -154,6 +160,8 @@ describe("token API — the origin of every value (FR-016b)", () => {
     await declareDraft(ASSEMBLED, assembledDomain, 2, "metadata/1", "true}", 62);
     await declare(RACE, raceDomain, 2, "name", "Race One", { height: 65 });
     await declare(RACE, raceDomain, 2, "symbol", "RACE", { height: 65, position: 1 });
+    alias2A = await declareDraft(ALIAS2, alias2Domain, 2, "metadata/0", '{"a":1}', 68);
+    alias2B = await declareDraft(ALIAS2, alias2Domain, 2, "\uFEFFmetadata/0", '{"b":1}', 69);
     aliasSupplierId = await declareDraft(ALIAS, aliasDomain, 2, "metadata/0", "{}", 63);
     aliasTwinId = await declareDraft(ALIAS, aliasDomain, 2, "\uFEFFmetadata/0", "x", 64, 1);
 
@@ -197,7 +205,7 @@ describe("token API — the origin of every value (FR-016b)", () => {
   it("[[token-api-origin]] every value the token routes serve carries its origin — mip-0018 with its package, chain, derived with the rule, none with the reason — and events, traits, mints and activity carry theirs", async () => {
     // ── every token of every list route ─────────────────────────────────────────────────────
     const list = await get("/v1/tokens?limit=100");
-    expect(list.items.map((t: any) => t.status).sort()).toEqual(["builtin", "builtin", "declared", "declared", "declared", "declared", "declared", "declared", "described", "seen"]);
+    expect(list.items.map((t: any) => t.status).sort()).toEqual(["builtin", "builtin", "declared", "declared", "declared", "declared", "declared", "declared", "declared", "described", "seen"]);
     for (const t of list.items) expectEveryValueHasItsOrigin(t, `list ${t.symbol ?? t.color ?? t.status}`);
 
     // ── SNEB18: MIP-0018 packages, a chain mint, a derived colour and status ─────────────────
@@ -316,6 +324,36 @@ describe("token API — the origin of every value (FR-016b)", () => {
     expect(alias.metadata).toEqual({});
     expect(alias.origins.metadata.evidence.map((e: any) => e.eventIds)).toEqual([[aliasSupplierId]]);
     expect(aliasTwinId).toBeGreaterThan(aliasSupplierId);
+
+    // … and with two PROJECTABLE aliases (round 3) the evidence is the row the stored value came
+    // from: the fold records it (`tokens.metadata_event_ids`) and the API cites exactly that.
+    const alias2 = await get(`/v1/contracts/${ALIAS2}/tokens/${alias2Domain}/2`);
+    const supplier = (alias2.metadata as { a?: number }).a === 1 ? alias2A : alias2B;
+    const other = supplier === alias2A ? alias2B : alias2A;
+    expect([{ a: 1 }, { b: 1 }]).toContainEqual(alias2.metadata);
+    expect(alias2.origins.metadata.evidence.map((e: any) => e.eventIds)).toEqual([[supplier]]);
+    const storedIds = await sql<{ ids: string[] | null }[]>`
+      SELECT metadata_event_ids::text[] AS ids FROM ${sql(schema)}.tokens WHERE net = ${NET} AND address = ${Buffer.from(ALIAS2, "hex")}`;
+    expect(storedIds[0]!.ids).toEqual([String(supplier)]);
+    // The binding holds for ANY row order: the pure `originsOf` over the same kv rows, forwards and
+    // reversed, cites the stored supplier both times — re-deriving the choice would follow the order.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const kvRows = await sql<any[]>`
+      SELECT kv.key_text, kv.name_variant, kv.val_type, kv.projection_error, kv.val_len, kv.value,
+             kv.updated_event_id::text, kv.updated_height::text, kv.updated_tx_position,
+             e.tx_hash, e.segment, e.parts, e.part_event_ids::text[] AS part_event_ids, e.phase
+      FROM ${sql(schema)}.token_metadata_kv kv
+      LEFT JOIN ${sql(schema)}.token_metadata_events e ON e.net = kv.net AND e.event_id = kv.updated_event_id
+      WHERE kv.net = ${NET} AND kv.address = ${Buffer.from(ALIAS2, "hex")}`;
+    expect(kvRows.map((r) => r.key_text)).toEqual(["metadata/0", "metadata/0"]);
+    expect(kvRows.every((r) => r.projection_error === null)).toBe(true); // both projectable
+    for (const rows of [kvRows, [...kvRows].reverse()]) {
+      expect(originsOf(alias2, rows, storedIds[0]!.ids).metadata).toMatchObject({ origin: "mip-0018" });
+      expect((originsOf(alias2, rows, storedIds[0]!.ids).metadata as any).evidence.map((e: any) => e.eventIds)).toEqual([[supplier]]);
+    }
+    // (Without the stored ids one of the two orders cites the other row — the defect they remove.)
+    const rederived = [kvRows, [...kvRows].reverse()].map((rows) => (originsOf(alias2, rows).metadata as any).evidence.map((e: any) => e.eventIds));
+    expect(rederived).toContainEqual([[other]]);
 
     // ── one snapshot per HTTP request (audit F6; round 2 N4): a second server whose query object
     //    commits a rename (on another connection) between the token read and the origins read of
