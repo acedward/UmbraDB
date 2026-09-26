@@ -605,7 +605,7 @@
     {
       "id": "multipart-0018-golden",
       "file": "token-indexer/test/multipart-golden.test.ts",
-      "description": "00024-01 B5: a MIP-0018 corpus of declarations carried as [Y] packages (SYNTHETIC in the 01-A5 shape until the contracts repo exports its regenerated corpus; fixtures/multipart-synthetic/SOURCE.md) - committed JSON equals its generator; every package rebuilt by readPackages from its parts equals the recorded payload and SHA-256; the UC-1 decoder reads the recorded fields; the fold gives exactly the 3 expected token rows (columns, colour, status, every trait byte) incl. a 697-byte metadata document (3 parts), a Null then 400-byte description (2 parts), a 300-byte trait and a 202-byte name and 259-byte tokenUri projected with no 189-byte ceiling (FR-009); history keeps every package."
+      "description": "00024-01 B5, re-pointed in 01-C: the MIP-0018 corpus of the REAL compiled MIP-18 contracts (acedward/mip-0018-midnight-contracts @ cb6c675, token-indexer/test/fixtures/contracts/SOURCE.md; its six files pinned by SHA-256) — every one of its 82 packages rebuilt by readPackages from its recorded events (86) equals the recorded payload and SHA-256 (also when all events are read at once); the UC-1 decoder reads the recorded fields; the fold gives exactly the 17 expected token rows (columns, projected metadata, colour, status, every trait's bytes and part count) incl. SNEB18's 677-byte metadata (3 parts), LMOON18's Null then 377-byte description (2 parts) and CNST18 Orion's 279-byte metadata (2 parts); history keeps every package; nothing rejected."
     },
     {
       "id": "token-api-origin",

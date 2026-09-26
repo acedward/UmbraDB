@@ -219,24 +219,28 @@ issuers' deploys at heights 360 721–360 737 and their mint calls at 364 875–
 from the public indexer with their `raw` bytes, `transactionResult` and created outputs. The scanner
 runs against those bytes through the real store and the real ledger-v9 decoder.
 
-**Two** golden corpora emitted by the **reference contracts** of
-`acedward/mip-erc7496-midnight-contracts`, produced by the real compiled Compact templates in the
-Compact simulator — because there are two event names and two validators:
+**Two** golden corpora emitted by the **reference contracts**, produced by the real compiled
+Compact contracts in the Compact simulator — because there are two event names and two validators:
 
-* `test/fixtures/contracts/` — **MIP-0018**: 66 `mip-0018:token-metadata[v1]` events, 16 mints, 15
-  colour vectors, 17 expected rows, 32 awkward payloads. Pinned on that repository's `main` @
-  `7d9f659`.
-* `test/fixtures/contracts-legacy/` — the frozen **PR #315 draft**: 69
-  `mip-xxxx:token-metadata[v1]` events and the rest of that set. This is what the Stagenet reference
-  set actually emits, and it is not being redeployed.
+* `test/fixtures/contracts/` — **MIP-0018 on UC-1** (project 00024-01): the generated MIP-18 set of
+  `acedward/mip-0018-midnight-contracts` (`LSUN18` … `LLIAR18`), 86 `mip-0018:token-metadata[v1]`
+  events forming 82 [Y] packages (one declaration each; SNEB18 `metadata` 677 B in 3 parts, LMOON18
+  `description` 377 B in 2, CNST18 Orion `metadata` 279 B in 2), 16 mints, 15 colour vectors, 17
+  expected rows, 40 awkward packages. Pinned on `feat/00024-01-mip-0018` @ `cb6c675`, with the
+  producer's own provenance in `PRODUCER-SOURCE.md`.
+* `test/fixtures/contracts-legacy/` — the frozen **PR #315 draft** (`acedward/mip-erc7496-midnight-
+  contracts`): 69 `mip-xxxx:token-metadata[v1]` events and the rest of that set. This is what the
+  Stagenet reference set actually emits, and it is not being redeployed.
 
 Each directory's `SOURCE.md` pins its repository, branch and commit and tabulates the differences.
 `contract-fixtures.test.ts` runs **every one of its four governed ids over both**, and reads the
-rules to apply out of each payload's own recorded `eventName` — so a corpus regenerated under a
+rules to apply out of each declaration's own recorded `eventName` — so a corpus regenerated under a
 third name throws rather than being silently validated under the wrong rules. The pair is the
-regression test for "two names, two validators": the same eleven contracts, the same 17 rows, two
-transports. It replays both into one Postgres container under two schemas, so the gate's container
-count does not change.
+regression test for "two names, two validators": the same eleven reference rows (the standard's
+corpus is their `…18` variant), the same 17 token rows, two transports. It replays both into one
+Postgres container under two schemas, so the gate's container count does not change.
+`multipart-golden.test.ts` (`[[multipart-0018-golden]]`) reads the same MIP-0018 corpus part by part
+through the [Y] reader, the UC-1 decoder and the fold.
 
 The hand-built payloads are kept alongside it, not replaced by it, and there are two sets:
 `test/payload.test.ts` is the **draft** validator's suite (every assertion project 00021 wrote,
