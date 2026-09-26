@@ -62,6 +62,13 @@ interface EventSpec {
   nameHex?: string;
   /** Replace `raw` with these hex bytes (an undecodable one, for the barrier tests). */
   rawHex?: string;
+  /** Serve this TYPED name instead of the event's real one (`null`: no typed name at all) — the
+   *  `raw` keeps the real name (01-D audit F4). */
+  typedName?: string | null;
+  /** Serve no typed payload (01-D audit F4). */
+  omitPayload?: boolean;
+  /** Serve no `raw` at all. */
+  omitRaw?: boolean;
 }
 
 interface TxSpec {
@@ -121,13 +128,18 @@ describe("[Y] multi-part vectors and the complete-response barrier, through the 
   function serve(tx: TxSpec, events: EventSpec[] = tx.events): void {
     indexer.events.set(`${tx.txHash}:${CONTRACT}`, events.map((e): FakeEvent => {
       const nameHex = e.nameHex ?? MIP_0018_NAME_HEX;
+      const typedName = e.typedName === undefined ? nameHex : (e.typedName ?? undefined);
       return {
         id: e.id, contractAddress: CONTRACT, txHash: tx.txHash, blockHeight: tx.blockHeight,
-        nameHex,
-        payloadHex: e.trimmed === true ? trimmedHex(e.payload) : e.payload.toString("hex"),
-        rawHex: e.rawHex ?? fakeRawEvent({
-          txHash: tx.txHash, segment: e.segment, address: CONTRACT, nameHex,
-          payloadHex: e.payload.toString("hex"),
+        ...(typedName === undefined ? {} : { nameHex: typedName }),
+        ...(e.omitPayload === true ? {} : {
+          payloadHex: e.trimmed === true ? trimmedHex(e.payload) : e.payload.toString("hex"),
+        }),
+        ...(e.omitRaw === true ? {} : {
+          rawHex: e.rawHex ?? fakeRawEvent({
+            txHash: tx.txHash, segment: e.segment, address: CONTRACT, nameHex,
+            payloadHex: e.payload.toString("hex"),
+          }),
         }),
       };
     }));
@@ -445,5 +457,67 @@ describe("[Y] multi-part vectors and the complete-response barrier, through the 
       val_len: 700, phase: "guaranteed", segment: 5,
     }]);
     expect(after.token).toEqual([{ metadata: JSON.parse(DOCUMENT), status: "declared" }]);
+  }, 180_000);
+
+  it("[[multipart-lookup-integrity]] an answer complete by count but not by content stores NOTHING — a redelivered id counts once, two contents under one id, a part with no typed payload, a part whose typed fields hide an opted-in `raw`, a part that cannot be classified — and the valid retry stores exactly one complete package", async () => {
+    const parts = THREE_PARTS.map((payload, i) => ({ id: 30 + i, segment: 5, payload }));
+    const tx: TxSpec = { txHash: T1, blockHeight: 100, calls: [guaranteed(5, 3)], events: parts };
+    const [p30, p31, p32] = parts as [EventSpec, EventSpec, EventSpec];
+    const { db, scanner, ledger, source } = await prepare([tx]);
+    const retry = async (events: EventSpec[]) => {
+      serve(tx, events);
+      await due(db);
+      return drainPendingLookups(db.sql, db.schema, NET, source, { ledger });
+    };
+    const nothingStored = async () => expect(await declarationState(db)).toEqual({ events: 0, kv: 0, tokens: 0 });
+
+    // (1) `[30, 30, 31]`: three deliveries, two events — SHORT, not complete (audit F3).
+    serve(tx, [p30, p30, p31]);
+    const first = await scanner.scanOnce();
+    expect(first).toMatchObject({ lookups: 1, lookupsShort: 1, eventsApplied: 0, eventsRejected: 0 });
+    await nothingStored();
+    expect(await pendingRows(db)).toEqual([{ got_events: 2, expected_events: 3, last_error: null }]);
+
+    // (2) one id with two contents: complete by distinct id, but conflicting → pending.
+    expect(await retry([p30, p31, { ...p31, payload: C }, p32])).toMatchObject({ attempted: 1, completed: 0, stillShort: 1 });
+    await nothingStored();
+    expect((await pendingRows(db))[0]!.last_error).toMatch(/conflicting_delivery: indexer event 31 was delivered twice/);
+
+    // (3) the third part with no typed payload (audit F4).
+    expect(await retry([p30, p31, { ...p32, omitPayload: true }])).toMatchObject({ completed: 0, stillShort: 1 });
+    await nothingStored();
+    expect((await pendingRows(db))[0]!.last_error).toMatch(/incomplete_event: indexer event 32 is of an opted-in name but has no typed payload/);
+
+    // (4) the third part's typed name says another name; its `raw` is the MIP-0018 part.
+    const other = Buffer.from(pad32("example:message[v1]")).toString("hex");
+    expect(await retry([p30, p31, { ...p32, typedName: other }])).toMatchObject({ completed: 0, stillShort: 1 });
+    await nothingStored();
+    expect((await pendingRows(db))[0]!.last_error).toMatch(/hidden_part: indexer event 32's `raw` is an opted-in event/);
+
+    // (5) … or no typed name at all, the `raw` still telling.
+    expect(await retry([p30, p31, { ...p32, typedName: null }])).toMatchObject({ completed: 0, stillShort: 1 });
+    expect((await pendingRows(db))[0]!.last_error).toMatch(/hidden_part: indexer event 32's `raw`.*name absent/);
+
+    // (6) no typed name and no `raw`: it cannot be classified, so it cannot be skipped.
+    expect(await retry([p30, p31, { ...p32, typedName: null, omitRaw: true }])).toMatchObject({ completed: 0, stillShort: 1 });
+    await nothingStored();
+    expect((await pendingRows(db))[0]!.last_error).toMatch(/incomplete_event: indexer event 32 has no typed name and no decodable `raw`/);
+
+    // (7) an identical redelivery of an id in an otherwise complete answer is harmless: one
+    //     complete package, applied, and the queue empties (before the fix `[30,31,32,32]` was
+    //     4 > 3 and stopped the scanner).
+    expect(await retry([p30, p31, p32, p32])).toMatchObject({ attempted: 1, completed: 1, stillShort: 0, applied: 1 });
+    expect(await pendingRows(db)).toEqual([]);
+    const after = await onePackage(db);
+    expect(after.rows).toEqual([{
+      part_event_ids: ["30", "31", "32"], parts: 3, applied: true, reject_reason: null,
+      val_len: 700, phase: "guaranteed", segment: 5,
+    }]);
+    expect(after.token).toEqual([{ metadata: JSON.parse(DOCUMENT), status: "declared" }]);
+
+    // A one-shot scan of the valid answer ends in the same state.
+    const ref = await scan([tx]);
+    expect(ref.outcome).toMatchObject({ lookups: 1, lookupsShort: 0, eventsApplied: 1 });
+    expect(await onePackage(ref.db)).toEqual(after);
   }, 180_000);
 });

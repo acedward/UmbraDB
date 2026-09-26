@@ -101,6 +101,11 @@ package is one declaration. The draft name is not opted in and keeps its single-
   guaranteed part before any fallible segment). Nothing of an opted-in name is grouped, stored or
   folded until the whole `(transaction, contract)` answer is complete and every `raw` decodes — a
   short or undecodable answer stays in `pending_event_lookups` with its reason and stores nothing.
+  "Complete" is counted by **distinct** event id (a redelivered id is one event; one id with two
+  contents is a conflicting answer), and no `MiscContractEvent` may hide an opted-in part (an
+  opted-in name without a typed payload, typed fields that contradict an opted-in `raw`, or an event
+  with neither typed name nor decodable `raw`) — each leaves the pair pending
+  (`[[multipart-lookup-integrity]]`).
 * **Reader** (`ingest/packages.ts`, ported from [Y]'s reference with `ingest/SOURCE.md`): groups by
   (network, contract, name, transaction, segment) on every contract, restores every part to 256
   bytes, keeps trailing zeros, records `guaranteed | fallible | mixed`; a 1 024-part safety ceiling.

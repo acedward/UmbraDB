@@ -4,7 +4,7 @@ import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { applyMetadataEvent, type RawContractEvent } from "./fold.js";
 import { MULTIPART_OPT_INS, PackageReadError, readPackages, type PartEvent } from "./packages.js";
 import { LEGACY_NAME_HEX, isTokenMetadataName } from "./payload.js";
-import { RawEventError, decodeRawMiscEvent } from "./raw-event.js";
+import { RawEventError, decodeRawMiscEvent, rawMiscEventName } from "./raw-event.js";
 
 /**
  * Project 00020 — the event lookup (spec §6.5, FR-004). Transaction-driven, no watch list.
@@ -45,6 +45,15 @@ import { RawEventError, decodeRawMiscEvent } from "./raw-event.js";
  *    `Σ guaranteed log ops` are guaranteed and the rest fallible ({@link multipartPartEvents});
  *  - `readPackages` groups them ([Y] §4) and every package of the pair is folded in the caller's
  *    database transaction — atomically with the scan batch's cursor, or with the drain's retry.
+ *
+ * Two more conditions of the barrier (01-D audit, findings F3 and F4): the answer is counted by
+ * DISTINCT event id — an identical redelivery of one id is one event, two different contents under
+ * one id make the whole answer pending ({@link distinctDeliveries}) — and no `MiscContractEvent` may
+ * hide an opted-in part: one whose typed name is opted in but has no payload, one whose `raw` is an
+ * opted-in event while its typed fields say otherwise, or one missing its typed name or payload with
+ * no `raw` to classify it by, makes the answer pending ({@link hiddenOptedInEvent}). Otherwise a
+ * complete-looking answer could still be missing a part, and the truncated package it leaves would
+ * be stored, the retry cleared and the repair shadowed by `ON CONFLICT DO NOTHING`.
  *
  * The superseded draft name `mip-xxxx:token-metadata[v1]` is NOT opted in (spec FR-006) and keeps
  * its behaviour exactly: each event is folded on its own, even from a short response (the fold is
@@ -297,6 +306,72 @@ export interface LookupOptions {
   optIns?: readonly string[];
 }
 
+/** Two deliveries of one event id carry the same event only if every served field is equal. */
+function sameDelivery(a: IndexerContractEvent, b: IndexerContractEvent): boolean {
+  return a.typename === b.typename && a.contractAddress === b.contractAddress && a.txHash === b.txHash
+    && a.blockHeight === b.blockHeight && a.nameHex === b.nameHex && a.payloadHex === b.payloadHex
+    && a.rawHex === b.rawHex;
+}
+
+/**
+ * One answer's events by DISTINCT indexer id (01-D audit F3). An indexer may serve an id twice (a
+ * paging overlap, a replica); that is one event, kept once, in first-delivery order. The same id
+ * with two different contents is a conflicting answer: `conflict` names it and the lookup leaves the
+ * pair pending. Counting deliveries instead of ids would let `[30, 30, 31]` pass as three parts.
+ */
+export function distinctDeliveries(delivered: readonly IndexerContractEvent[]): {
+  events: IndexerContractEvent[]; duplicates: number; conflict: string | undefined;
+} {
+  const byId = new Map<number, IndexerContractEvent>();
+  let duplicates = 0;
+  let conflict: string | undefined;
+  for (const event of delivered) {
+    const seen = byId.get(event.eventId);
+    if (seen === undefined) { byId.set(event.eventId, event); continue; }
+    duplicates++;
+    if (conflict === undefined && !sameDelivery(seen, event)) {
+      conflict = `conflicting_delivery: indexer event ${event.eventId} was delivered twice with different contents`;
+    }
+  }
+  return { events: [...byId.values()], duplicates, conflict };
+}
+
+/**
+ * The first `MiscContractEvent` of a complete answer that could be a HIDDEN part of an opted-in
+ * package, described — or `undefined` when there is none (01-D audit F4). A part is hidden when the
+ * typed fields would make {@link isMultipartEvent} skip it although it is, or may be, opted in:
+ *
+ *  - its typed name is opted in but it has no typed payload;
+ *  - its `raw` decodes to a `Misc` event of an opted-in name while its typed fields say otherwise
+ *    (another name, or no name / payload);
+ *  - its typed name or payload is missing and there is no decodable `raw` to classify it by.
+ *
+ * Any of these makes the answer pending: skipping the event would store the other parts as a
+ * truncated package and clear the retry.
+ */
+export function hiddenOptedInEvent(
+  events: readonly IndexerContractEvent[], optIns: readonly string[], ledger: any,
+): string | undefined {
+  const opted = new Set(optIns.map((n) => n.toLowerCase()));
+  for (const event of events) {
+    if (event.typename !== "MiscContractEvent" || isMultipartEvent(event, optIns)) continue;
+    const typedName = event.nameHex?.toLowerCase();
+    if (typedName !== undefined && opted.has(typedName)) {
+      return `incomplete_event: indexer event ${event.eventId} is of an opted-in name but has no typed payload`;
+    }
+    const rawName = rawMiscEventName(ledger, event.rawHex);
+    if (rawName !== undefined && opted.has(rawName)) {
+      return `hidden_part: indexer event ${event.eventId}'s \`raw\` is an opted-in event but its typed fields say ` +
+        `otherwise (name ${typedName ?? "absent"}, payload ${event.payloadHex === undefined ? "absent" : "present"})`;
+    }
+    if (rawName === undefined && (typedName === undefined || event.payloadHex === undefined)) {
+      return `incomplete_event: indexer event ${event.eventId} has no typed ${typedName === undefined ? "name" : "payload"} ` +
+        "and no decodable `raw` to tell whether it is part of an opted-in package";
+    }
+  }
+  return undefined;
+}
+
 /**
  * The reader's input for one COMPLETE `(transaction, contract)` answer: every opted-in event,
  * decoded from its `raw`, with its intent, its position and its phase.
@@ -385,7 +460,10 @@ export async function lookupEventsFor(
   sql: ISql, schema: string, net: string, source: EventSource, pair: LookupPair,
   opts: LookupOptions = {},
 ): Promise<LookupOutcome> {
-  const events = await source.eventsFor(pair.txHash, pair.address);
+  const delivered = await source.eventsFor(pair.txHash, pair.address);
+  // Counted by DISTINCT event id (01-D audit F3): a redelivered id is one event, not two parts.
+  const distinct = distinctDeliveries(delivered);
+  const events = distinct.events;
   const got = events.length;
 
   if (got > pair.expected) {
@@ -423,6 +501,10 @@ export async function lookupEventsFor(
   if (got < pair.expected) return pending("short", undefined);
 
   const optIns = opts.optIns ?? MULTIPART_OPT_INS;
+  // … nor does an answer that is complete by count but not by content (01-D audit F3, F4).
+  if (distinct.conflict !== undefined) return pending("reader", distinct.conflict);
+  const hidden = hiddenOptedInEvent(events, optIns, opts.ledger);
+  if (hidden !== undefined) return pending("reader", hidden);
   if (events.some((e) => isMultipartEvent(e, optIns))) {
     let packages;
     try {

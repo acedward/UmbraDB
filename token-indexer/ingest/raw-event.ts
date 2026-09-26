@@ -141,3 +141,24 @@ export function decodeRawMiscEvent(
   }
   return { transactionHash, physicalSegment, address, nameHex, payload };
 }
+
+/**
+ * The 32 name bytes (lowercase hex) of a serialized contract `Misc` event, or `undefined` when
+ * `raw` is absent, does not decode, or is not a contract `Misc` log. Never throws: it only
+ * CLASSIFIES an event the typed fields did not mark as opted in, so that a hidden part of an
+ * opted-in package is noticed instead of skipped (01-D audit F4; `events.ts` `hiddenOptedInEvent`).
+ */
+export function rawMiscEventName(ledger: any, rawHex: string | undefined): string | undefined {
+  if (rawHex === undefined || rawHex.length === 0 || ledger?.Event?.deserialize === undefined) return undefined;
+  try {
+    const decoded = ledger.Event.deserialize(new Uint8Array(Buffer.from(rawHex, "hex")));
+    const content = decoded?.content;
+    if (content?.tag !== "contractLog" || content.loggedItem?.eventType !== "misc") return undefined;
+    const atom = cellAtom(0, content.loggedItem.data, MISC_VALUE_LENGTH);
+    const full = new Uint8Array(MISC_VALUE_LENGTH);
+    full.set(atom);
+    return Buffer.from(full.subarray(0, NAME_LENGTH)).toString("hex");
+  } catch {
+    return undefined;
+  }
+}
