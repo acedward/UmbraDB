@@ -2,13 +2,16 @@ import { createHash } from "node:crypto";
 import type { Server } from "node:http";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import { TokenIndexQueries } from "../api/queries.js";
 import { createTokenApi, listen } from "../api/server.js";
 import { bootstrapTokenIndexSchema } from "../bootstrap.js";
 import { pad32, tokenColorHex } from "../color.js";
 import type { TokenIndexerConfig } from "../config.js";
 import type { ObservedMint } from "../ingest/decode.js";
 import { applyMetadataEvent, applyMint, ensureSeenToken, type PackagePhase } from "../ingest/fold.js";
+import { insertActivityRow } from "../ingest/store.js";
 import {
   LEGACY_NAME_HEX, MIP_0018_NAME_HEX, encodeCompactUint, encodeTokenMetadataUc1, splitIntoParts,
 } from "../ingest/payload.js";
@@ -31,6 +34,12 @@ const SNEB = "5e".repeat(32);   // shielded native, described: a mint + MIP-0018
 const LMOON = "1a".repeat(32);  // unshielded ledger: declarations only, a Null, a projection error
 const DRAFT = "d7".repeat(32);  // a draft-name declaration (legacy path, not opted into [Y])
 const SEEN_COLOR = "5c".repeat(32);
+// 01-D audit F5: a whole MIP-0018 `metadata` beside draft-name `metadata/<n>` parts, twice — an
+// orphan part that assembles nothing, and a complete assembly that is newer than the whole one.
+const ORPHAN = "0e".repeat(32);
+const ASSEMBLED = "ae".repeat(32);
+const orphanDomain = Buffer.from(pad32("umbra:orphan")).toString("hex");
+const assembledDomain = Buffer.from(pad32("umbra:assembled")).toString("hex");
 
 const snebDomain = Buffer.from(pad32("umbra:sneb18")).toString("hex");
 const lmoonDomain = Buffer.from(pad32("umbra:lmoon18")).toString("hex");
@@ -43,12 +52,23 @@ describe("token API — the origin of every value (FR-016b)", () => {
   let server: Server;
   let base: string;
   const schema = "token_api_origin";
+  // The activity routes join the archive for each row's result, so the schema must exist (empty).
+  const archiveSchema = "arch_api_origin";
   let nextId = 100;
 
   const config = (): TokenIndexerConfig => ({
     pgUrl: "", indexerHttp: undefined, net: NET, apiPort: 0,
-    schema, archiveSchema: "chain_archive_absent", scanBatch: 500, live2x: false,
+    schema, archiveSchema, scanBatch: 500, live2x: false,
   });
+
+  /** One draft-name declaration (one event, the legacy path). */
+  async function declareDraft(address: string, domainSep: string, kind: number, key: string, value: string, height: number): Promise<void> {
+    await sql.begin(async (tx) => applyMetadataEvent(tx, schema, NET, {
+      eventId: nextId++, contractAddress: address, txHash: createHash("sha256").update(`draft:${address}:${nextId}`).digest("hex"),
+      blockHeight: height, nameHex: LEGACY_NAME_HEX,
+      payloadHex: metadataPayloadHex({ domainSep, kindByte: kind, key, value, valType: 3 }),
+    }));
+  }
 
   /** One MIP-0018 declaration as the lookup folds it: a package of `parts` consecutive event ids. */
   async function declare(
@@ -72,6 +92,7 @@ describe("token API — the origin of every value (FR-016b)", () => {
     container = await new PostgreSqlContainer("postgres:17-alpine").start();
     sql = createClient({ connectionString: container.getConnectionUri(), schema });
     await bootstrapTokenIndexSchema(sql, { schema, net: NET });
+    await bootstrapChainArchiveSchema(sql, archiveSchema);
 
     // SNEB18: minted (chain), described by MIP-0018 packages — the metadata document in 3 parts.
     const mint: ObservedMint = {
@@ -101,6 +122,22 @@ describe("token API — the origin of every value (FR-016b)", () => {
 
     // A colour seen in public data, with no contract behind it.
     await ensureSeenToken(sql, schema, NET, SEEN_COLOR, 0, 40);
+
+    // SNEB18's mint as an activity row (00023): a chain fact with its own origin (audit F8).
+    await sql.begin(async (tx) => insertActivityRow(tx, schema, NET, {
+      segment: 1, section: "guaranteed", role: "mint", itemIndex: 0, color: tokenColorHex(snebDomain, SNEB),
+      kind: 1, amount: 1_000n, direction: "in", owner: undefined, ownerKey: undefined, intentHash: undefined,
+      outputNo: undefined, address: SNEB, entryPoint: "mint", callIndex: 0, domainSep: snebDomain,
+    }, { txHash: "a0".repeat(32), blockHeight: 10, txPosition: 0 }));
+
+    // F5: the whole document, then a draft part `metadata/1` with no `metadata/0` — it assembles
+    // nothing, so the whole document stays the value AND the evidence …
+    await declare(ORPHAN, orphanDomain, 2, "metadata", JSON.stringify({ ok: true }), { valType: 3, height: 50 });
+    await declareDraft(ORPHAN, orphanDomain, 2, "metadata/1", "}", 51);
+    // … and the whole document, then a COMPLETE, newer draft assembly — the assembly wins both.
+    await declare(ASSEMBLED, assembledDomain, 2, "metadata", JSON.stringify({ old: true }), { valType: 3, height: 60 });
+    await declareDraft(ASSEMBLED, assembledDomain, 2, "metadata/0", '{"new":', 61);
+    await declareDraft(ASSEMBLED, assembledDomain, 2, "metadata/1", "true}", 62);
 
     server = createTokenApi({ sql, config: config() });
     base = `http://127.0.0.1:${await listen(server, 0)}`;
@@ -142,7 +179,7 @@ describe("token API — the origin of every value (FR-016b)", () => {
   it("[[token-api-origin]] every value the token routes serve carries its origin — mip-0018 with its package, chain, derived with the rule, none with the reason — and events, traits, mints and activity carry theirs", async () => {
     // ── every token of every list route ─────────────────────────────────────────────────────
     const list = await get("/v1/tokens?limit=100");
-    expect(list.items.map((t: any) => t.status).sort()).toEqual(["builtin", "builtin", "declared", "declared", "described", "seen"]);
+    expect(list.items.map((t: any) => t.status).sort()).toEqual(["builtin", "builtin", "declared", "declared", "declared", "declared", "described", "seen"]);
     for (const t of list.items) expectEveryValueHasItsOrigin(t, `list ${t.symbol ?? t.color ?? t.status}`);
 
     // ── SNEB18: MIP-0018 packages, a chain mint, a derived colour and status ─────────────────
@@ -223,6 +260,47 @@ describe("token API — the origin of every value (FR-016b)", () => {
     const registry = await get("/v1/registry.json");
     expect(registry.tokens[sneb.color].origins.metadata).toEqual(sneb.origins.metadata);
     const status = await get("/internal/status");
-    expect(status.counters).toMatchObject({ packages: 9, multipartPackages: 2, mixedPackages: 1 });
+    expect(status.counters).toMatchObject({ packages: 11, multipartPackages: 2, mixedPackages: 1 });
+
+    // ── activity rows carry a chain origin (audit F8: the claim above is now exercised) ─────
+    for (const path of [`/v1/colors/${sneb.color}/transactions`, `/v1/contracts/${SNEB}/tokens/${snebDomain}/1/transactions`]) {
+      const activity = await get(path);
+      expect(activity.items, path).toHaveLength(1);
+      expect(activity.items[0], path).toMatchObject({ role: "mint", amount: "1000" });
+      expect(activity.items[0].origin, path).toEqual({
+        origin: "chain", rule: expect.stringMatching(/counted public token movement/),
+        evidence: { txHash: "a0".repeat(32), blockHeight: 10, txPosition: 0, segment: 1, section: "guaranteed", role: "mint", itemIndex: 0 },
+      });
+    }
+
+    // ── metadata evidence is the declaration the document came from (audit F5) ──────────────
+    const orphan = await get(`/v1/contracts/${ORPHAN}/tokens/${orphanDomain}/2`);
+    expectEveryValueHasItsOrigin(orphan, "orphan");
+    expect(orphan.metadata).toEqual({ ok: true });
+    // Before the fix this cited the newer, incomplete `metadata/1` part.
+    expect(orphan.origins.metadata).toMatchObject({ origin: "mip-0018", evidence: { key: "metadata", nameVariant: "mip-0018", blockHeight: 50 } });
+    const assembled = await get(`/v1/contracts/${ASSEMBLED}/tokens/${assembledDomain}/2`);
+    expectEveryValueHasItsOrigin(assembled, "assembled");
+    expect(assembled.metadata).toEqual({ new: true });
+    expect(assembled.origins.metadata.origin).toBe("mip-0018");
+    expect(assembled.origins.metadata.evidence.map((e: any) => [e.key, e.nameVariant, e.blockHeight])).toEqual([
+      ["metadata/0", "legacy-mip-xxxx", 61], ["metadata/1", "legacy-mip-xxxx", 62],
+    ]);
+
+    // ── one snapshot per request (audit F6): a fold committed between two reads of one
+    //    request is invisible to both; the next request sees it, value and evidence together ──
+    const queries = new TokenIndexQueries(sql, schema, NET, archiveSchema);
+    const inside = await queries.inSnapshot(async () => {
+      const before = await queries.token(LMOON, lmoonDomain, 2);
+      // committed on ANOTHER connection while the snapshot is open
+      await declare(LMOON, lmoonDomain, 2, "name", "Ledger Moon · renamed", { height: 70 });
+      const after = await queries.token(LMOON, lmoonDomain, 2);
+      return { before, after };
+    });
+    expect(inside.before!.name).toBe("Ledger Moon · MIP-18");
+    expect(inside.after).toEqual(inside.before);
+    const renamed = await get(`/v1/contracts/${LMOON}/tokens/${lmoonDomain}/2`);
+    expect(renamed.name).toBe("Ledger Moon · renamed");
+    expect(renamed.origins.name).toMatchObject({ origin: "mip-0018", evidence: { key: "name", blockHeight: 70 } });
   }, 120_000);
 });

@@ -1,5 +1,7 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
+import { chooseMetadata } from "../ingest/fold.js";
 import {
   decodeUtf8, integerOfValue, metadataPartIndex, valueTextOf, type NameVariant,
 } from "../ingest/payload.js";
@@ -252,7 +254,12 @@ function packageEvidence(row: KvEvidenceRow): PackageEvidenceJson {
  */
 export function originsOf(
   token: TokenBaseJson,
-  kv: readonly (KvEvidenceRow & { val_type: number; projection_error: string | null })[],
+  kv: readonly (KvEvidenceRow & {
+    val_type: number; projection_error: string | null;
+    /** The stored value, for the `metadata` keys (the choice between a whole document and an
+     *  assembly depends on the bytes — 01-D audit F5). */
+    val_len?: number | null; value?: Buffer | null;
+  })[],
 ): TokenOriginsJson {
   const status: OriginJson = {
     origin: "derived", rule: token.status === "builtin" ? "a seeded built-in row (00020 owner decision Q7)" : STATUS_RULE,
@@ -301,18 +308,17 @@ export function originsOf(
   };
 
   // `metadata` is either ONE declaration under the key `metadata` (MIP-0018: of any length, a [Y]
-  // package) or, under the superseded draft name only, an assembly of `metadata/<n>` parts —
-  // whichever `projectedFields` picked, which is the most recently completed of the two.
+  // package) or, under the superseded draft name only, an assembly of `metadata/<n>` parts. Which
+  // one is decided by the SAME function the fold projects with (`chooseMetadata`), so the evidence
+  // is always the declaration(s) the served document came from — never a newer part of an
+  // assembly that is incomplete or does not parse (01-D audit F5).
   let metadata = field("metadata", token.metadata);
   if (token.metadata !== null) {
-    const parts = kv
-      .filter((row) => row.name_variant === "legacy-mip-xxxx" && row.key_text !== null && metadataPartIndex(row.key_text) !== undefined)
-      .sort((a, b) => metadataPartIndex(a.key_text!)! - metadataPartIndex(b.key_text!)!);
-    const whole = byKey.get("metadata");
-    const newestPart = parts.reduce((max, row) => Math.max(max, Number(row.updated_event_id)), -1);
-    if (parts.length > 0 && (whole === undefined || whole.projection_error !== null || whole.val_type === 5
-      || Number(whole.updated_event_id) < newestPart)) {
-      metadata = { origin: "mip-0018", evidence: parts.map(packageEvidence) };
+    const choice = chooseMetadata(kv
+      .filter((row) => row.key_text === "metadata" || (row.key_text !== null && metadataPartIndex(row.key_text) !== undefined))
+      .map((row) => ({ ...row, val_len: row.val_len ?? 0, value: row.value ?? Buffer.alloc(0) })));
+    if (choice.source === "assembly") {
+      metadata = { origin: "mip-0018", evidence: choice.keys.map((key) => packageEvidence(byKey.get(key)!)) };
     }
   }
 
@@ -370,9 +376,12 @@ export function decodeCursor<T>(raw: string): T {
   return JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as T;
 }
 
+/** The read snapshot of the request being served, when there is one (01-D audit F6). */
+const requestSnapshot = new AsyncLocalStorage<UmbraDBSql>();
+
 export class TokenIndexQueries {
   constructor(
-    private readonly sql: UmbraDBSql,
+    private readonly baseSql: UmbraDBSql,
     private readonly schema: string,
     private readonly net: string,
     /** The archive schema, for the `result` every activity row is served with and for the
@@ -380,6 +389,23 @@ export class TokenIndexQueries {
      *  00020/00021 call sites need no change. */
     private readonly archiveSchema: string = "chain_archive",
   ) {}
+
+  /** Every statement runs in the current request's snapshot ({@link inSnapshot}), when there is one. */
+  private get sql(): UmbraDBSql { return requestSnapshot.getStore() ?? this.baseSql; }
+
+  /**
+   * Runs `fn` with EVERY query of this object inside one read-only `REPEATABLE READ` transaction —
+   * one database snapshot (01-D audit F6). A token route reads the token rows, then the declarations
+   * behind them ({@link withOrigins}), then often traits and mints: separate statements, and a fold
+   * committing between two of them could pair a value with another value's evidence (a rename, or a
+   * Null that cleared it). Inside a snapshot every statement sees the same committed state. Nested
+   * calls join the snapshot already open.
+   */
+  async inSnapshot<T>(fn: () => Promise<T>): Promise<T> {
+    if (requestSnapshot.getStore() !== undefined) return fn();
+    return this.baseSql.begin("isolation level repeatable read read only", (tx) =>
+      requestSnapshot.run(tx as unknown as UmbraDBSql, fn)) as Promise<T>;
+  }
 
   private get s(): string { return this.schema; }
 
@@ -395,11 +421,16 @@ export class TokenIndexQueries {
     const wanted = [...new Set(tokens
       .filter((t) => t.status !== "builtin" && t.address !== null && t.domainSep !== null)
       .map((t) => keyOf(t.address!, t.domainSep!, t.kind)))];
-    const byToken = new Map<string, (KvEvidenceRow & { val_type: number; projection_error: string | null; token: string })[]>();
+    type OriginKvRow = KvEvidenceRow & {
+      val_type: number; projection_error: string | null; val_len: number | null; value: Buffer | null; token: string;
+    };
+    const byToken = new Map<string, OriginKvRow[]>();
     if (wanted.length > 0) {
-      const rows = await sql<(KvEvidenceRow & { val_type: number; projection_error: string | null; token: string })[]>`
+      const rows = await sql<OriginKvRow[]>`
         SELECT encode(kv.address, 'hex') || ':' || encode(kv.domain_sep, 'hex') || ':' || kv.kind::text AS token,
                kv.key_text, kv.name_variant, kv.val_type, kv.projection_error,
+               CASE WHEN kv.key_text = 'metadata' OR kv.key_text LIKE 'metadata/%' THEN kv.val_len END AS val_len,
+               CASE WHEN kv.key_text = 'metadata' OR kv.key_text LIKE 'metadata/%' THEN kv.value END AS value,
                kv.updated_event_id::text, kv.updated_height::text, kv.updated_tx_position,
                e.tx_hash, e.segment, e.parts, e.part_event_ids::text[] AS part_event_ids, e.phase
         FROM ${sql(this.s)}.token_metadata_kv kv

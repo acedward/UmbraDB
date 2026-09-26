@@ -646,64 +646,8 @@ export async function projectedFields(
 
   const decimalsRow = byKey.get("decimals");
 
-  // --- the split document -----------------------------------------------------------------
-  // `max` is taken over EVERY part that exists, projectable or not: a part carried with the wrong
-  // `val-type` is still a part the contract emitted, and the MIP's rule is that the assembly waits
-  // for it rather than quietly publishing the document without it (spec §2 edge cases, MIP §5.3).
-  let maxPart = -1;
-  for (const row of rows) {
-    if (row.key_text === null) continue;
-    // Draft-name rows only: under MIP-0018 this key is a trait and assembling it would invent a
-    // document the standard does not define (§5.4).
-    if (row.name_variant !== "legacy-mip-xxxx") continue;
-    const index = metadataPartIndex(row.key_text);
-    if (index !== undefined && index < MAX_METADATA_PARTS) maxPart = Math.max(maxPart, index);
-  }
-  let assembled: { document: string; eventId: bigint } | null = null;
-  if (maxPart >= 0) {
-    const parts: string[] = [];
-    let eventId = 0n;
-    let complete = true;
-    for (let i = 0; i <= maxPart; i++) {
-      const row = byKey.get(`metadata/${i}`);
-      const piece = text(`metadata/${i}`);
-      // A part emitted under the FINAL name is not a part (§5.4): it neither completes an assembly
-      // nor blocks one — the draft-name document simply waits for a draft-name part, as it would
-      // for a missing one.
-      if (row !== undefined && row.name_variant !== "legacy-mip-xxxx") { complete = false; break; }
-      if (row === undefined || piece === null) { complete = false; break; }
-      parts.push(piece);
-      const id = BigInt(row.updated_event_id);
-      if (id > eventId) eventId = id;
-    }
-    const document = parts.join("");
-    // Appendix A caps the assembly at 16 parts / 3 024 bytes; the per-part rules already bound it,
-    // and this is the belt that says so out loud.
-    if (complete && Buffer.byteLength(document, "utf8") <= MAX_METADATA_BYTES) {
-      assembled = { document, eventId };
-    }
-  }
-
-  const wholeRow = byKey.get("metadata");
-  const whole = wholeRow === undefined ? null
-    : { document: text("metadata") ?? "", eventId: BigInt(wholeRow.updated_event_id) };
-
-  // "A single-part `metadata` and a multi-part `metadata/<n>` for the same token SHOULD NOT both be
-  // emitted; if they are, the most recently completed one wins" (Appendix A).
-  const candidates = [assembled, whole].filter((c): c is { document: string; eventId: bigint } => c !== null);
-  candidates.sort((a, b) => (a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0));
-  let metadata: Record<string, unknown> | null = null;
-  for (const candidate of candidates) {
-    // Belt and braces for 01-D audit F2: a document too deep to be written back never projects
-    // (the whole-`metadata` row already carries `metadata_too_deep`; this covers an assembly too).
-    if (jsonNestingDepth(candidate.document) > MAX_METADATA_DEPTH) continue;
-    try {
-      const value: unknown = JSON.parse(candidate.document);
-      if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-        metadata = value as Record<string, unknown>;
-      }
-    } catch { /* an incomplete or malformed document simply does not project */ }
-  }
+  // --- metadata: the single declaration or the draft's split document (chooseMetadata) ---------
+  const { metadata } = chooseMetadata(rows);
 
   return {
     name: text("name"),
@@ -720,6 +664,117 @@ export async function projectedFields(
     tokenUri: text("tokenUri"),
     metadata,
   };
+}
+
+/** The fields of a `token_metadata_kv` row {@link chooseMetadata} reads. */
+export interface MetadataKvRow {
+  key_text: string | null;
+  name_variant: NameVariant;
+  val_type: number;
+  val_len: number;
+  value: Buffer;
+  projection_error: string | null;
+  updated_event_id: string;
+}
+
+/** Which declaration(s) the projected `metadata` column comes from — and the column itself. */
+export interface MetadataChoice {
+  metadata: Record<string, unknown> | null;
+  /** `whole`: the key `metadata`; `assembly`: the draft name's `metadata/0..n`; `null`: nothing
+   *  projects. */
+  source: "whole" | "assembly" | null;
+  /** The kv keys behind the winning candidate, in part order (`["metadata"]` for a whole one). */
+  keys: string[];
+}
+
+/**
+ * The `metadata` projection as ONE pure function of a token's kv rows, so the fold that writes the
+ * column and the API that says where it came from cannot disagree (01-D audit F5: the API used to
+ * pick the newest `metadata/<n>` part as evidence even when that assembly was incomplete and the
+ * column still held the whole document).
+ *
+ * The two candidates are the whole `metadata` declaration and, under the superseded draft name only,
+ * the assembly of `metadata/0..max`: every part present, projectable, type 3, at most 16 parts /
+ * 3 024 bytes (Appendix A). Of the candidates whose document parses as a JSON object — and is not
+ * nested deeper than {@link MAX_METADATA_DEPTH} (audit F2) — the most recently completed (highest
+ * event id behind it) wins.
+ */
+export function chooseMetadata(rows: readonly MetadataKvRow[]): MetadataChoice {
+  // Only projectable rows with a spellable key can reach a column; a Null tombstone does not.
+  const byKey = new Map<string, MetadataKvRow>();
+  for (const row of rows) {
+    if (row.key_text === null || row.projection_error !== null) continue;
+    if (row.val_type === VAL_TYPE_NULL) continue;
+    byKey.set(row.key_text, row);
+  }
+  const text = (k: string): string | null => {
+    const row = byKey.get(k);
+    if (row === undefined) return null;
+    return decodeUtf8(new Uint8Array(row.value.subarray(0, row.val_len))) ?? null;
+  };
+
+  // `max` is taken over EVERY part that exists, projectable or not: a part carried with the wrong
+  // `val-type` is still a part the contract emitted, and the MIP's rule is that the assembly waits
+  // for it rather than quietly publishing the document without it (spec §2 edge cases, MIP §5.3).
+  let maxPart = -1;
+  for (const row of rows) {
+    if (row.key_text === null) continue;
+    // Draft-name rows only: under MIP-0018 this key is a trait and assembling it would invent a
+    // document the standard does not define (§5.4).
+    if (row.name_variant !== "legacy-mip-xxxx") continue;
+    const index = metadataPartIndex(row.key_text);
+    if (index !== undefined && index < MAX_METADATA_PARTS) maxPart = Math.max(maxPart, index);
+  }
+
+  interface Candidate { document: string; eventId: bigint; source: "whole" | "assembly"; keys: string[] }
+  let assembled: Candidate | null = null;
+  if (maxPart >= 0) {
+    const parts: string[] = [];
+    const keys: string[] = [];
+    let eventId = 0n;
+    let complete = true;
+    for (let i = 0; i <= maxPart; i++) {
+      const row = byKey.get(`metadata/${i}`);
+      const piece = text(`metadata/${i}`);
+      // A part emitted under the FINAL name is not a part (§5.4): it neither completes an assembly
+      // nor blocks one — the draft-name document simply waits for a draft-name part, as it would
+      // for a missing one.
+      if (row !== undefined && row.name_variant !== "legacy-mip-xxxx") { complete = false; break; }
+      if (row === undefined || piece === null) { complete = false; break; }
+      parts.push(piece);
+      keys.push(`metadata/${i}`);
+      const id = BigInt(row.updated_event_id);
+      if (id > eventId) eventId = id;
+    }
+    const document = parts.join("");
+    // Appendix A caps the assembly at 16 parts / 3 024 bytes; the per-part rules already bound it,
+    // and this is the belt that says so out loud.
+    if (complete && Buffer.byteLength(document, "utf8") <= MAX_METADATA_BYTES) {
+      assembled = { document, eventId, source: "assembly", keys };
+    }
+  }
+
+  const wholeRow = byKey.get("metadata");
+  const whole: Candidate | null = wholeRow === undefined ? null
+    : { document: text("metadata") ?? "", eventId: BigInt(wholeRow.updated_event_id), source: "whole", keys: ["metadata"] };
+
+  // "A single-part `metadata` and a multi-part `metadata/<n>` for the same token SHOULD NOT both be
+  // emitted; if they are, the most recently completed one wins" (Appendix A).
+  const candidates = [assembled, whole].filter((c): c is Candidate => c !== null);
+  candidates.sort((a, b) => (a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0));
+  let choice: MetadataChoice = { metadata: null, source: null, keys: [] };
+  for (const candidate of candidates) {
+    // Belt and braces for 01-D audit F2: a document too deep to be written back never projects
+    // (the whole-`metadata` row already carries `metadata_too_deep`; this covers an assembly too).
+    if (jsonNestingDepth(candidate.document) > MAX_METADATA_DEPTH) continue;
+    try {
+      const value: unknown = JSON.parse(candidate.document);
+      if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+        choice = { metadata: value as Record<string, unknown>, source: candidate.source, keys: candidate.keys };
+      }
+    } catch { /* an incomplete or malformed document simply does not project */ }
+  }
+  return choice;
 }
 
 /** Exported for the API and the tests: the keys that become columns rather than traits. */

@@ -277,13 +277,16 @@ export function createTokenApi(opts: TokenApiOptions): Server {
       return;
     }
 
+    // Every data route answers from ONE database snapshot (01-D audit F6): a token's values, their
+    // origins, its traits and its mints are read by separate statements, and a fold committing in
+    // between must not show in some of them and not in others.
     if (segments[0] === "v1") {
-      await handleV1(segments.slice(1), query, res);
+      await queries.inSnapshot(() => handleV1(segments.slice(1), query, res));
       return;
     }
 
     // 3. Everything else is the tokenUri resolver.
-    await handleResolver(segments, req, res);
+    await queries.inSnapshot(() => handleResolver(segments, req, res));
   }
 
   /** Spec §5's read-time `Token` counts. A LEDGER kind has no colour and therefore no activity
