@@ -127,6 +127,139 @@ export interface TokenBaseJson {
 /** A token as the API serves it: every value with its origin (spec 00024 FR-016b). */
 export interface TokenJson extends TokenBaseJson {
   origins: TokenOriginsJson;
+  /** Project 00024-02: the token's contract's CURRENT public interface — its status and levels, with
+   *  its own origin — or `null` when the contract has published none (spec §5 `Token.interface`). */
+  interface: InterfaceSummaryJson | null;
+}
+
+/* ────────────────────────────────────────────────────────────────────────────────────────────
+ * Project 00024-02 task C8 — PUBLIC INTERFACES in the API (spec §5, FR-010, FR-016b; additive,
+ * FR-015). Every interface value carries `origin: "public-interface"` with the publication it came
+ * from and the levels it passed; `Token.interface` carries its own origin, so a token's `origins`
+ * keep exactly their 00024-01 fields.
+ * ──────────────────────────────────────────────────────────────────────────────────────────── */
+
+/** The publication statuses (spec §4 Key Entities); `historical` is a role, see `role`. */
+export const INTERFACE_STATUSES = ["pending", "verified", "failed", "unchecked", "unfetchable", "stale"] as const;
+
+export interface InterfaceLevelsJson {
+  l1: string | null;
+  l2: string | null;
+  l3: string | null;
+}
+
+/** The evidence of a public-interface value: the publication and what its last check established. */
+export interface InterfaceEvidenceJson {
+  eventId: number;
+  partEventIds: number[];
+  txHash: string;
+  blockHeight: number;
+  txPosition: number;
+  segment: number;
+  parts: number;
+  phase: string;
+  url: string | null;
+  commitment: string;
+  status: string;
+  level: number;
+  levels: InterfaceLevelsJson;
+  checkedAt: string | null;
+}
+
+/** `Token.interface` and `GET /v1/contracts/:address` `interface`. */
+export interface InterfaceSummaryJson {
+  eventId: number;
+  status: string;
+  level: number;
+  levels: InterfaceLevelsJson;
+  l3Reason: string | null;
+  url: string | null;
+  checkedAt: string | null;
+  verifiedUntil: string | null;
+  origin: OriginJson;
+}
+
+/** One publication of a contract with its own last result. */
+export interface InterfacePublicationJson {
+  eventId: number;
+  partEventIds: number[];
+  txHash: string;
+  blockHeight: number;
+  txPosition: number;
+  segment: number;
+  parts: number;
+  phase: string;
+  /** The merged package ([Y]): its length and SHA-256 — the value a `cmse verify` comparison uses. */
+  payloadLength: number;
+  payloadSha256: string;
+  commitment: string;
+  url: string | null;
+  urlError: string | null;
+  /** `current` for the newest publication (derivation P2), `historical` for every older one. */
+  role: "current" | "historical";
+  status: string;
+  level: number;
+  levels: InterfaceLevelsJson;
+  l3Reason: string | null;
+  reason: string | null;
+  failedLevel: number | null;
+  checkedAt: string | null;
+  checks: number;
+  lastVerifiedAt: string | null;
+  verifiedUntil: string | null;
+  nextCheckAt: string | null;
+  origin: OriginJson;
+}
+
+export interface InterfaceCursor {
+  height: number;
+  position: number;
+  eventId: number;
+}
+
+interface InterfaceEventRow {
+  event_id: string; part_event_ids: string[]; parts: number; segment: number; phase: string; address: Buffer;
+  tx_hash: Buffer; block_height: string; tx_position: number; payload_length: number; payload_sha256: string;
+  commitment: Buffer; url: string | null; url_error: string | null; status: string; level: number;
+  l1: string | null; l2: string | null; l3: string | null; l3_reason: string | null; reason: string | null;
+  failed_level: number | null; checked_at: Date | null; checks: number; last_verified_at: Date | null;
+  verified_until: Date | null; next_check_at: Date | null; state_block_height: string | null;
+  state_tx_hash: Buffer | null; is_current: boolean; publications: number | null;
+}
+
+const iso = (d: Date | null): string | null => (d === null ? null : d.toISOString());
+
+function interfaceEvidence(row: InterfaceEventRow): InterfaceEvidenceJson {
+  return {
+    eventId: Number(row.event_id), partEventIds: row.part_event_ids.map(Number), txHash: row.tx_hash.toString("hex"),
+    blockHeight: Number(row.block_height), txPosition: row.tx_position, segment: row.segment, parts: row.parts,
+    phase: row.phase, url: row.url, commitment: row.commitment.toString("hex"), status: row.status, level: row.level,
+    levels: { l1: row.l1, l2: row.l2, l3: row.l3 }, checkedAt: iso(row.checked_at),
+  };
+}
+
+const interfaceOrigin = (row: InterfaceEventRow): OriginJson => ({ origin: "public-interface", evidence: interfaceEvidence(row) as unknown as Record<string, unknown> });
+
+function toInterfaceSummary(row: InterfaceEventRow): InterfaceSummaryJson {
+  return {
+    eventId: Number(row.event_id), status: row.status, level: row.level, levels: { l1: row.l1, l2: row.l2, l3: row.l3 },
+    l3Reason: row.l3_reason, url: row.url, checkedAt: iso(row.checked_at), verifiedUntil: iso(row.verified_until),
+    origin: interfaceOrigin(row),
+  };
+}
+
+function toPublication(row: InterfaceEventRow): InterfacePublicationJson {
+  return {
+    eventId: Number(row.event_id), partEventIds: row.part_event_ids.map(Number), txHash: row.tx_hash.toString("hex"),
+    blockHeight: Number(row.block_height), txPosition: row.tx_position, segment: row.segment, parts: row.parts,
+    phase: row.phase, payloadLength: row.payload_length, payloadSha256: row.payload_sha256,
+    commitment: row.commitment.toString("hex"), url: row.url, urlError: row.url_error,
+    role: row.is_current ? "current" : "historical", status: row.status, level: row.level,
+    levels: { l1: row.l1, l2: row.l2, l3: row.l3 }, l3Reason: row.l3_reason, reason: row.reason,
+    failedLevel: row.failed_level, checkedAt: iso(row.checked_at), checks: row.checks,
+    lastVerifiedAt: iso(row.last_verified_at), verifiedUntil: iso(row.verified_until), nextCheckAt: iso(row.next_check_at),
+    origin: interfaceOrigin(row),
+  };
 }
 
 /** How many distinct domain separators the row's contract has, and the first five of them (by
@@ -442,7 +575,7 @@ export class TokenIndexQueries {
    * Adds `origins` to every token (spec 00024 FR-016b): one query for the declarations behind the
    * projected columns of the whole batch, then a pure function per token.
    */
-  async withOrigins<T extends TokenBaseJson>(tokens: T[]): Promise<(T & { origins: TokenOriginsJson })[]> {
+  async withOrigins<T extends TokenBaseJson>(tokens: T[]): Promise<(T & { origins: TokenOriginsJson; interface: InterfaceSummaryJson | null })[]> {
     await this.hooks.beforeOrigins?.();
     const sql = this.sql;
     const keyOf = (address: string, domainSep: string, kind: number): string => `${address}:${domainSep}:${kind}`;
@@ -488,13 +621,144 @@ export class TokenIndexQueries {
       `;
       for (const row of idRows) metadataIds.set(row.token, row.ids);
     }
+    // 00024-02: each token's contract's current public interface, in the same snapshot.
+    const interfaces = await this.interfaceSummaries([...new Set(tokens
+      .filter((t) => t.status !== "builtin" && t.address !== null).map((t) => t.address!))]);
     return tokens.map((t) => {
       const key = t.address === null || t.domainSep === null ? undefined : keyOf(t.address, t.domainSep, t.kind);
       return {
         ...t,
         origins: originsOf(t, key === undefined ? [] : byToken.get(key) ?? [], key === undefined ? undefined : metadataIds.get(key)),
+        interface: t.status === "builtin" || t.address === null ? null : interfaces.get(t.address) ?? null,
       };
     });
+  }
+
+  /** The columns every interface read selects (`e` = public_interface_events, `pi` = public_interfaces). */
+  private interfaceColumns(sql: UmbraDBSql) {
+    return sql`
+      e.event_id::text, e.part_event_ids::text[] AS part_event_ids, e.parts, e.segment, e.phase, e.address, e.tx_hash,
+      e.block_height::text, e.tx_position, octet_length(e.payload) AS payload_length,
+      encode(sha256(e.payload), 'hex') AS payload_sha256, e.commitment, e.url, e.url_error, e.status, e.level,
+      e.l1, e.l2, e.l3, e.l3_reason, e.reason, e.failed_level, e.checked_at, e.checks, e.last_verified_at,
+      e.verified_until, e.next_check_at, e.state_block_height::text, e.state_tx_hash,
+      (pi.event_id IS NOT NULL AND pi.event_id = e.event_id) AS is_current, pi.publications
+    `;
+  }
+
+  /** The current public interface of each of `addresses` (lowercase hex), by address. */
+  async interfaceSummaries(addresses: string[]): Promise<Map<string, InterfaceSummaryJson>> {
+    const out = new Map<string, InterfaceSummaryJson>();
+    if (addresses.length === 0) return out;
+    const sql = this.sql;
+    const rows = await sql<InterfaceEventRow[]>`
+      SELECT ${this.interfaceColumns(sql)}
+      FROM ${sql(this.s)}.public_interfaces pi
+      JOIN ${sql(this.s)}.public_interface_events e ON e.net = pi.net AND e.event_id = pi.event_id
+      WHERE pi.net = ${this.net} AND encode(pi.address, 'hex') = ANY(${sql.array(addresses)}::text[])
+    `;
+    for (const row of rows) out.set(row.address.toString("hex"), toInterfaceSummary(row));
+    return out;
+  }
+
+  /** `GET /v1/interfaces` — contracts with an interface, newest current publication first (P2). */
+  async interfaces(filters: { status?: string; limit: number; cursor?: InterfaceCursor }): Promise<Page<InterfacePublicationJson & { address: string; publications: number }>> {
+    const sql = this.sql;
+    const c = filters.cursor;
+    const rows = await sql<InterfaceEventRow[]>`
+      SELECT ${this.interfaceColumns(sql)}
+      FROM ${sql(this.s)}.public_interfaces pi
+      JOIN ${sql(this.s)}.public_interface_events e ON e.net = pi.net AND e.event_id = pi.event_id
+      WHERE pi.net = ${this.net}
+        AND (${filters.status ?? null}::text IS NULL OR e.status = ${filters.status ?? null})
+        AND (${c === undefined ? null : c.height}::bigint IS NULL
+             OR (pi.block_height, pi.tx_position, pi.event_id) < (${c?.height ?? 0}::bigint, ${c?.position ?? 0}::int, ${c?.eventId ?? 0}::bigint))
+      ORDER BY pi.block_height DESC, pi.tx_position DESC, pi.event_id DESC
+      LIMIT ${filters.limit + 1}
+    `;
+    const items = rows.map((row) => ({ address: row.address.toString("hex"), publications: row.publications ?? 1, ...toPublication(row) }));
+    return this.paginate(items, filters.limit, (last) => encodeCursor({
+      height: last.blockHeight, position: last.txPosition, eventId: last.eventId,
+    } satisfies InterfaceCursor));
+  }
+
+  /**
+   * `GET /v1/contracts/:address/interface` — the current publication with its whole result (report,
+   * circuits, files, keys), its check history, and every older publication with its own last result
+   * (FR-010, Q14). `undefined` when the contract has published none.
+   */
+  async interfaceOf(address: string): Promise<Record<string, unknown> | undefined> {
+    const sql = this.sql;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const current = await sql<(InterfaceEventRow & { report: Record<string, any> | null; circuits: Record<string, unknown>[] | null })[]>`
+      SELECT ${this.interfaceColumns(sql)}, e.report, e.circuits
+      FROM ${sql(this.s)}.public_interfaces pi
+      JOIN ${sql(this.s)}.public_interface_events e ON e.net = pi.net AND e.event_id = pi.event_id
+      WHERE pi.net = ${this.net} AND pi.address = ${Buffer.from(address, "hex")}
+    `;
+    const row = current[0];
+    if (row === undefined) return undefined;
+    const origin = interfaceOrigin(row);
+    const report = row.report;
+    const checks = await sql<{ check_no: number; checked_at: Date; trigger: string; status: string; level: number; l1: string; l2: string; l3: string; l3_reason: string | null; reason: string | null; state_block_height: string | null }[]>`
+      SELECT check_no, checked_at, trigger, status, level, l1, l2, l3, l3_reason, reason, state_block_height::text
+      FROM ${sql(this.s)}.public_interface_checks
+      WHERE net = ${this.net} AND event_id = ${Number(row.event_id)}
+      ORDER BY check_no DESC
+      LIMIT 100
+    `;
+    const older = await sql<InterfaceEventRow[]>`
+      SELECT ${this.interfaceColumns(sql)}
+      FROM ${sql(this.s)}.public_interface_events e
+      LEFT JOIN ${sql(this.s)}.public_interfaces pi ON pi.net = e.net AND pi.address = e.address
+      WHERE e.net = ${this.net} AND e.address = ${Buffer.from(address, "hex")} AND e.event_id <> ${Number(row.event_id)}
+      ORDER BY e.block_height DESC, e.tx_position DESC, e.event_id DESC
+      LIMIT 100
+    `;
+    const files = Array.isArray(report?.artifacts?.files) ? report!.artifacts.files as Record<string, unknown>[] : [];
+    const keys = Array.isArray(report?.operations)
+      ? (report!.operations as { circuit: string; status: string; keySha256?: string }[])
+        .filter((r) => typeof r.keySha256 === "string").map((r) => ({ circuit: r.circuit, sha256: r.keySha256!, l2: r.status }))
+      : [];
+    return {
+      address,
+      ...toPublication(row),
+      state: row.state_block_height === null && row.state_tx_hash === null ? null
+        : { blockHeight: num(row.state_block_height), txHash: row.state_tx_hash?.toString("hex") ?? null },
+      compiler: report?.compiler ?? null,
+      build: report?.build ?? null,
+      witnesses: Array.isArray(report?.witnesses) ? report!.witnesses : [],
+      files: files.map((f) => ({ ...f, origin })),
+      keys: keys.map((k) => ({ ...k, origin })),
+      circuits: (row.circuits ?? []).map((c) => ({ ...c, origin })),
+      report,
+      checkHistory: checks.map((c) => ({
+        checkNo: c.check_no, checkedAt: c.checked_at.toISOString(), trigger: c.trigger, status: c.status, level: c.level,
+        levels: { l1: c.l1, l2: c.l2, l3: c.l3 }, l3Reason: c.l3_reason, reason: c.reason, stateBlockHeight: num(c.state_block_height),
+      })),
+      history: older.map(toPublication),
+      publications: row.publications ?? 1 + older.length,
+    };
+  }
+
+  /** `GET /v1/contracts/:address/interface/events` — every publication of the contract, newest first
+   *  (P2), each with its own last result and its role. */
+  async interfaceEvents(address: string, filters: { limit: number; cursor?: InterfaceCursor }): Promise<Page<InterfacePublicationJson>> {
+    const sql = this.sql;
+    const c = filters.cursor;
+    const rows = await sql<InterfaceEventRow[]>`
+      SELECT ${this.interfaceColumns(sql)}
+      FROM ${sql(this.s)}.public_interface_events e
+      LEFT JOIN ${sql(this.s)}.public_interfaces pi ON pi.net = e.net AND pi.address = e.address
+      WHERE e.net = ${this.net} AND e.address = ${Buffer.from(address, "hex")}
+        AND (${c === undefined ? null : c.height}::bigint IS NULL
+             OR (e.block_height, e.tx_position, e.event_id) < (${c?.height ?? 0}::bigint, ${c?.position ?? 0}::int, ${c?.eventId ?? 0}::bigint))
+      ORDER BY e.block_height DESC, e.tx_position DESC, e.event_id DESC
+      LIMIT ${filters.limit + 1}
+    `;
+    return this.paginate(rows.map(toPublication), filters.limit, (last) => encodeCursor({
+      height: last.blockHeight, position: last.txPosition, eventId: last.eventId,
+    } satisfies InterfaceCursor));
   }
 
   async listTokens(filters: TokenListFilters): Promise<Page<TokenListItemJson>> {

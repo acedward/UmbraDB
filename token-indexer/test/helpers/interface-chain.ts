@@ -65,6 +65,8 @@ export interface PublishTxSpec {
   publications: PublicationSpec[];
   /** Maintenance updates of these contracts in this transaction (task C7). */
   maintenance?: string[];
+  /** Other calls in this transaction (a mint, say, so the contract has a token — task C8). */
+  extraCalls?: FakeCallSpec[];
   result?: "success" | "partial_success" | "failure";
 }
 
@@ -132,7 +134,7 @@ export class InterfaceChain {
     const specs: Record<string, FakeLedgerSpecs> = {};
     for (const tx of txs) {
       specs[tx.txHash] = {
-        calls: callsOf(tx),
+        calls: [...callsOf(tx), ...(tx.extraCalls ?? [])],
         maintenance: (tx.maintenance ?? []).map((address) => ({ address, segment: 1 })),
       };
       await seedSyntheticTransaction(db.sql, db.archiveSchema, NET, {

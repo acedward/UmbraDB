@@ -528,3 +528,70 @@ envelope is 00020's.
   `item_index` is a positional counter and an unsorted map would give the same row a different
   primary key on a re-scan. Lists that are genuinely ordered on chain (an offer's
   inputs/outputs/transients, an intent's actions and unshielded outputs) are never reordered.
+
+# Project 00024-02 — public interfaces, verified
+
+The indexer reads the **Public Interfaces for Compact Contracts** draft ([B],
+`acedward/public-interfaces-for-compact-contracts` PR #6): a contract's `publishBundle` emits
+`mip-xxxx:public-interface[v1]` — the 32-byte bundle commitment, then the URL of the bundle's
+`index.json`. Under UC-2 that name follows the Multi-Part Event rule, so a publication is a
+**package** (a URL longer than 224 bytes takes several `publishBundle` calls in one intent). Code:
+`interface/` (`SOURCE.md` names every ported reference file and every difference).
+
+## What happens to a publication
+
+1. **Scan** (in the scan's transaction): the package is stored `pending` in `public_interface_events`
+   with its commitment and URL (a URL that is not valid text is kept as bytes with `url_error`), and it
+   becomes its contract's current one in `public_interfaces` if it is the newest — block, transaction
+   position, then its FIRST part's event id (derivation P2). A newer publication is current whatever
+   its result; older ones are historical and keep their own last result.
+2. **Verify** (the `interfaces` loop of `serve`, outside the scan's transaction): Level 1 (the index
+   and its `hash` — compared with the commitment **before any other request** — the recomputed
+   `ecmh-jubjub-grouphash`, every listed file's size and sha256, `compiler` vs `package.json`), Level 2
+   (each shipped verifier key byte-equals the key the contract's current state installs under the same
+   name; the state comes from the indexer's `contractAction`), Level 3 **tried** with the exact compiler
+   the bundle names (`COMPACT_BIN compile +<version>`; not installed → `not_run` with the reason). The
+   bundle is fetched through the fetch guard: http(s) only, private / loopback / link-local
+   destinations refused after DNS (inside the connection's own lookup), ≤ 3 redirects, one deadline,
+   size and file-count caps. **Nothing from a bundle is executed.**
+3. **Re-verify**: the current publication every `TOKEN_INTERFACE_RECHECK_MS` (24 h), sooner after a
+   limit (backoff), at once after a maintenance update of the contract (`stale`), and on demand. A
+   result that changes keeps the time the earlier verified result held (`verifiedUntil`).
+
+| status | meaning |
+|---|---|
+| `pending` | stored, not yet checked |
+| `verified` | Levels 1 and 2 passed; `level` 3 when Level 3 passed too (`l3` = `passed` / `failed` / `not_run` + reason) |
+| `failed` | a check failed on the bundle's bytes (`failedLevel` 1 or 2, `reason`) |
+| `unchecked` | a local limit stopped it (deadline, a cap) or the contract state was unavailable — never "invalid" |
+| `unfetchable` | the URL is not usable, not http(s), a refused destination, or the host did not deliver |
+| `stale` | a maintenance update changed the contract since the last check; the last result is kept until it is re-checked |
+
+## Routes added
+
+| Route | Returns |
+|---|---|
+| `GET /v1/interfaces?status=&limit&cursor` | contracts with an interface, newest current publication first |
+| `GET /v1/contracts/:address/interface` | the current publication: status, level, levels, reason, commitment, URL, package evidence, state, compiler/build, files, keys, circuits (with argument types), the verification record (`report`), its check history, and every older publication (`history`); 404 if none |
+| `GET /v1/contracts/:address/interface/events?limit&cursor` | every publication of the contract, newest first, each with its role (`current` / `historical`) and its own last result |
+| `Token.interface`, `GET /v1/contracts/:address` `interface` (additive) | the current interface's status and levels, or `null` |
+| `GET /internal/status` (exists) | `counters` gains `interfaces`, `interfacePublications`, `interfacesVerified`, `interfacesFailed`, `interfacesWaiting`, `interfacesUnavailable` |
+
+Every interface value carries `origin: { origin: "public-interface", evidence }` — the publication
+(event ids, transaction, block, segment, parts, phase, URL, commitment) and what its last check
+established (status, levels, checked at). A token's `origins` are unchanged: `Token.interface`
+carries its own origin.
+
+## Configuration and CLI
+
+| Variable | Default | |
+|---|---|---|
+| `TOKEN_INTERFACE_RECHECK_MS` | `86400000` | re-verify the current publications this often |
+| `TOKEN_INTERFACE_FETCH_DEADLINE_MS` | `120000` | one deadline for every request of one bundle |
+| `TOKEN_INTERFACE_MAX_INDEX_BYTES` / `_MAX_FILES` / `_MAX_FILE_BYTES` / `_MAX_BUNDLE_BYTES` | 256 KiB / 1000 / 8 MiB / 16 MiB | Level 1 caps |
+| `TOKEN_INTERFACE_L3` / `TOKEN_INTERFACE_L3_DEADLINE_MS` / `COMPACT_BIN` | `on` / `1800000` / `compact` | Level 3 |
+| `TOKEN_INTERFACE_ALLOW_PRIVATE_HOSTS` | unset | **test-only**: `1` lets the fetch reach private hosts (the local stack's bundle server) |
+
+```
+npm run token-indexer -- verify-interfaces --address <hex>   re-verify that contract's current interface now
+```

@@ -95,6 +95,14 @@ export interface TokenIndexStatus {
     packages: number;
     multipartPackages: number;
     mixedPackages: number;
+    /** 00024-02 — public interfaces: contracts with one, their publications, and the current
+     *  publications by status (waiting = pending or stale; unavailable = unchecked or unfetchable). */
+    interfaces: number;
+    interfacePublications: number;
+    interfacesVerified: number;
+    interfacesFailed: number;
+    interfacesWaiting: number;
+    interfacesUnavailable: number;
   };
 }
 
@@ -128,6 +136,8 @@ export async function readStatus(
       activity_rows: string; seen_tokens: string; shielded_offers: string;
       undisclosed_shielded_offers: string; contract_calls: string;
       packages: string; multipart_packages: string; mixed_packages: string;
+      interfaces: string; interface_publications: string; interfaces_verified: string;
+      interfaces_failed: string; interfaces_waiting: string; interfaces_unavailable: string;
     }[]>`
       SELECT
         (SELECT count(*) FROM ${sql(schema)}.contracts WHERE net = ${net})                       AS contracts,
@@ -149,7 +159,21 @@ export async function readStatus(
         (SELECT count(*) FROM ${sql(schema)}.token_metadata_events
            WHERE net = ${net} AND name_variant = 'mip-0018' AND parts > 1)                      AS multipart_packages,
         (SELECT count(*) FROM ${sql(schema)}.token_metadata_events
-           WHERE net = ${net} AND name_variant = 'mip-0018' AND phase = 'mixed')                AS mixed_packages
+           WHERE net = ${net} AND name_variant = 'mip-0018' AND phase = 'mixed')                AS mixed_packages,
+        (SELECT count(*) FROM ${sql(schema)}.public_interfaces WHERE net = ${net})               AS interfaces,
+        (SELECT count(*) FROM ${sql(schema)}.public_interface_events WHERE net = ${net})         AS interface_publications,
+        (SELECT count(*) FROM ${sql(schema)}.public_interfaces pi
+           JOIN ${sql(schema)}.public_interface_events e ON e.net = pi.net AND e.event_id = pi.event_id
+           WHERE pi.net = ${net} AND e.status = 'verified')                                      AS interfaces_verified,
+        (SELECT count(*) FROM ${sql(schema)}.public_interfaces pi
+           JOIN ${sql(schema)}.public_interface_events e ON e.net = pi.net AND e.event_id = pi.event_id
+           WHERE pi.net = ${net} AND e.status = 'failed')                                        AS interfaces_failed,
+        (SELECT count(*) FROM ${sql(schema)}.public_interfaces pi
+           JOIN ${sql(schema)}.public_interface_events e ON e.net = pi.net AND e.event_id = pi.event_id
+           WHERE pi.net = ${net} AND e.status IN ('pending', 'stale'))                           AS interfaces_waiting,
+        (SELECT count(*) FROM ${sql(schema)}.public_interfaces pi
+           JOIN ${sql(schema)}.public_interface_events e ON e.net = pi.net AND e.event_id = pi.event_id
+           WHERE pi.net = ${net} AND e.status IN ('unchecked', 'unfetchable'))                   AS interfaces_unavailable
     `,
     readPendingLookups(sql, schema, net, 50),
   ]);
@@ -177,6 +201,14 @@ export async function readStatus(
       packages: Number(row.packages),
       multipartPackages: Number(row.multipart_packages),
       mixedPackages: Number(row.mixed_packages),
+      // 00024-02: contracts with a public interface, their publications, and the current ones by
+      // status (verified / failed / waiting = pending or stale / unavailable = unchecked or unfetchable).
+      interfaces: Number(row.interfaces),
+      interfacePublications: Number(row.interface_publications),
+      interfacesVerified: Number(row.interfaces_verified),
+      interfacesFailed: Number(row.interfaces_failed),
+      interfacesWaiting: Number(row.interfaces_waiting),
+      interfacesUnavailable: Number(row.interfaces_unavailable),
     },
   };
 }

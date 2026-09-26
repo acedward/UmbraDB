@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { drainInterfaceVerifications, retryBackoffMs, verifyInterfaceNow, type DrainDeps } from "../interface/drain.js";
 import { DEFAULT_LEVEL1_LIMITS } from "../interface/level1.js";
@@ -26,9 +26,9 @@ import { fixtureHex, loadFixtureBundle, payloadFor, wrongHash, type Bundle } fro
 const STAND_IN = fileURLToPath(new URL("./helpers/fake-compact.mjs", import.meta.url));
 const CONTRACT = "d7".repeat(32);
 const RECHECK = 3_600_000;
-/** The test clock starts a minute after the real one: the scan schedules a first check at the
- *  database's `now()`, so it must be due at T0. */
-const T0 = new Date(Math.ceil(Date.now() / 1000) * 1000 + 60_000);
+/** The test clock: set when each test starts, ten minutes after the real clock — the scan schedules a
+ *  first check at the database's `now()`, so it must be due at T0 however long the run takes. */
+let T0 = new Date();
 const at = (ms: number): Date => new Date(T0.getTime() + ms);
 
 class StubState implements StateSource {
@@ -79,6 +79,8 @@ describe("public-interface verification drain (C7)", () => {
     await container?.stop();
     rmSync(scratch, { recursive: true, force: true });
   }, 60_000);
+
+  beforeEach(() => { T0 = new Date(Math.ceil(Date.now() / 1000) * 1000 + 600_000); });
 
   afterEach(() => {
     indexer.events.clear();
