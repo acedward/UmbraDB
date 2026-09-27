@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { compilerAvailable, levelThree, probeCompile, quotedDirective, quotedDirectives, reachableDirectiveProblem, searchTraceProblem, type Level3Options } from "../interface/level3.js";
+import { compilerAvailable, directivesOf, levelThree, probeCompile, quotedDirective, quotedDirectives, reachableDirectiveProblem, searchTraceProblem, type Level3Options } from "../interface/level3.js";
 import { clone, compiler033, loadFixtureBundle, sha256Hex, verdict, withFiles, withPackage, type Bundle } from "./helpers/pi-fixture.js";
 
 /**
@@ -248,6 +248,16 @@ describe("[B] Level 3 with the stand-in compiler (C6)", () => {
     expect(reachableDirectiveProblem(new Map([["src/a/B.compact", Buffer.from('import "../C";')]]), ["src/a/B.compact"], "/r", "src/a/B.compact")).toBeNull();
     const chain = new Map([["src/A.compact", Buffer.from('import "./sub/B";')], ["src/sub/B.compact", Buffer.from('include "../../../x";')]]);
     expect(reachableDirectiveProblem(chain, [...chain.keys()], "/r", "src/A.compact")).toMatch(/^"src\/sub\/B\.compact" imports or includes "\.\.\/\.\.\/\.\.\/x", which is outside the bundle/);
+    // E2-R3F: an unquoted `import Evil;` names src/Evil.compact next to the importer, which is walked too.
+    const viaUnquoted = new Map([["src/Main.compact", Buffer.from("import CompactStandardLibrary;\nimport Evil;\n")], ["src/Evil.compact", Buffer.from('import "/outside/Stolen" prefix S_;\n')]]);
+    expect(reachableDirectiveProblem(viaUnquoted, [...viaUnquoted.keys()], "/r", "src/Main.compact")).toMatch(/^"src\/Evil\.compact" imports or includes "\/outside\/Stolen", which is outside the bundle/);
+    expect(directivesOf("import Foo prefix F_; import { a } from \"b\"; import /* c */ Bar; x import; import\n  Baz;")).toEqual({ quoted: ["b"], unquoted: ["Foo", "Bar", "Baz"] });
+    // E2-R3B: a source repeating one import 600 000 times (7.8 MB, under the 8 MiB file cap) is walked
+    // in linear time — each file visited once, each distinct name once.
+    const repeated = new Map([["src/A.compact", Buffer.from('import "./B";\n'.repeat(600_000))], ["src/B.compact", Buffer.from("")]]);
+    const t0 = Date.now();
+    expect(reachableDirectiveProblem(repeated, [...repeated.keys()], "/r", "src/A.compact")).toBeNull();
+    expect(Date.now() - t0).toBeLessThan(2_000);
     const unused = withFiles(bundle, { "src/Unused.compact": Buffer.from('import "/outside/Unused" prefix U_;\n') });
     // (A real compile prints a search-trace line for each file it opens, which satisfies the trace's
     // positive control; the stand-in is given one for the published source.)

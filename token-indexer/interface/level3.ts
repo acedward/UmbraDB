@@ -114,35 +114,50 @@ const IDENTIFIER = /[\p{L}\p{Nl}_$][\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}_$]*/uy;
 const NUMERAL = /[0-9][0-9A-Za-z_.]*/y;
 
 /**
- * Every file named by a quoted `import`/`include` of a Compact source, in order: a string whose
- * previous word is `import`, `include` or `from`, read the way compactc's lexer reads comments and
- * strings ([B] `quotedDirective`, which stops at the first). `limit` stops the scan early.
+ * The files a Compact source names, read the way compactc's lexer reads comments and strings ([B]
+ * `quotedDirective`, which stops at the first): `quoted` — every string whose previous word is
+ * `import`, `include` or `from`, in order; `unquoted` — every identifier that directly follows
+ * `import` (only whitespace or comments between): a name that is not a built-in "can only be a file
+ * next to the importing one" ([B] `src/verify.mjs`, audit 02 E2-R3F). `limit` stops the scan early.
  */
-export function quotedDirectives(text: string, limit = Infinity): string[] {
-  const found: string[] = [];
+export function directivesOf(text: string, limit = Infinity): { quoted: string[]; unquoted: string[] } {
+  const quoted: string[] = [];
+  const unquoted: string[] = [];
   let word: string | null = null;
+  let afterImport = false;
   let i = 0;
-  while (i < text.length && found.length < limit) {
+  while (i < text.length && quoted.length < limit) {
     const c = text[i];
     if (c === "/" && text[i + 1] === "/") { const end = text.indexOf("\n", i); i = end < 0 ? text.length : end; continue; }
     if (c === "/" && text[i + 1] === "*") { const end = text.indexOf("*/", i + 2); i = end < 0 ? text.length : end + 2; continue; }
     if (c === '"' || c === "'") {
       let j = i + 1;
       while (j < text.length && text[j] !== c) j += text[j] === "\\" ? 2 : 1;
-      if (word === "import" || word === "include" || word === "from") found.push(text.slice(i + 1, j));
+      if (word === "import" || word === "include" || word === "from") quoted.push(text.slice(i + 1, j));
       word = null;
+      afterImport = false;
       i = j + 1;
       continue;
     }
     IDENTIFIER.lastIndex = i;
     const id = IDENTIFIER.exec(text);
-    if (id !== null) { word = id[0]; i = IDENTIFIER.lastIndex; continue; }
+    if (id !== null) {
+      if (afterImport) unquoted.push(id[0]);
+      afterImport = id[0] === "import";
+      word = id[0]; i = IDENTIFIER.lastIndex; continue;
+    }
     NUMERAL.lastIndex = i;
     const numeral = NUMERAL.exec(text);
-    if (numeral !== null) { word = numeral[0]; i = NUMERAL.lastIndex; continue; }
+    if (numeral !== null) { word = numeral[0]; afterImport = false; i = NUMERAL.lastIndex; continue; }
+    if (!/\s/.test(c!)) afterImport = false;
     i++;
   }
-  return found;
+  return { quoted, unquoted };
+}
+
+/** Every file named by a quoted `import`/`include` of a Compact source, in order ({@link directivesOf}). */
+export function quotedDirectives(text: string, limit = Infinity): string[] {
+  return directivesOf(text, limit).quoted;
 }
 
 /** The file named by the first quoted `import`/`include` of a Compact source, or null ([B]
@@ -152,8 +167,9 @@ export function quotedDirective(text: string): string | null {
 }
 
 /**
- * The read boundary BEFORE the compiler runs (audit 02 E2-F6, E2-R2D): walks the sources the compile
- * can reach — from the published source through each quoted `import` / `include` / `from`, resolved
+ * The read boundary BEFORE the compiler runs (audit 02 E2-F6, E2-R2D, E2-R3B, E2-R3F): walks the
+ * sources the compile can reach — from the published source through each quoted `import` / `include` /
+ * `from` and each unquoted `import X;` (the file `X.compact` next to the importer), the quoted ones resolved
  * as the reference resolves imports (`src/bundle.mjs` `resolveImports`: `resolve(dir of the importer,
  * name) + ".compact"`), against the REAL private directory `root` the files were written to — and
  * says why one names a file outside `root`, or null. Such a name is refused before the compiler
@@ -166,24 +182,28 @@ export function quotedDirective(text: string): string | null {
  */
 export function reachableDirectiveProblem(files: ReadonlyMap<string, Buffer>, listed: readonly string[], root: string, entry: string): string | null {
   const listedSet = new Set(listed);
-  const seen = new Set<string>();
+  // Each reachable file is visited once, in an index-walked queue, and each distinct name once per
+  // file: a source repeating one import 600 000 times costs one lookup, not quadratic work (E2-R3B).
+  const seen = new Set<string>([entry]);
   const queue = [entry];
-  while (queue.length > 0) {
-    const file = queue.shift()!;
-    if (seen.has(file)) continue;
-    seen.add(file);
+  const visit = (next: string): void => { if (listedSet.has(next) && !seen.has(next)) { seen.add(next); queue.push(next); } };
+  for (let at = 0; at < queue.length; at++) {
+    const file = queue[at]!;
     const body = files.get(file);
     if (body === undefined) continue;
     const dir = dirname(join(root, ...file.split("/")));
-    for (const name of quotedDirectives(body.toString("utf8"))) {
+    const { quoted, unquoted } = directivesOf(body.toString("utf8"));
+    for (const name of new Set(quoted)) {
       const shown = JSON.stringify(name.length > 120 ? `${name.slice(0, 117)}...` : name);
       const target = resolve(dir, name);
       if (name.includes("\\") || !target.startsWith(root + sep)) {
         return `${JSON.stringify(file)} imports or includes ${shown}, which is outside the bundle; the compiler was not run`;
       }
-      const next = relative(root, `${target}.compact`).split(sep).join("/");
-      if (listedSet.has(next)) queue.push(next);
+      visit(relative(root, `${target}.compact`).split(sep).join("/"));
     }
+    // An unquoted name is a file next to the importer (or a built-in): it cannot leave the directory,
+    // but the file it names may itself import something outside (E2-R3F).
+    for (const name of new Set(unquoted)) visit(relative(root, join(dir, `${name}.compact`)).split(sep).join("/"));
   }
   return null;
 }
