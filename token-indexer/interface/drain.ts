@@ -30,10 +30,13 @@ import {
  * `FOR UPDATE` for the write); otherwise the result is DISCARDED and the row, still due, is checked
  * again — a check that read the old keys can never overwrite a `stale`.
  * Checks of one publication may also overlap (the `serve` drain and `verify-interfaces --address`
- * run in different processes). A result is SUPERSEDED — not written — when the row already holds
- * the result of a check that STARTED later (`checked_at` is a check's start): the newer observation
- * stands, so a long Level 3 that began before the host was breached can never overwrite the failure
- * a later check stored, move `checked_at` back or clear `verified_until` (audit 02 E2-F2).
+ * run in different processes). Every check draws a TICKET from the database sequence
+ * `public_interface_check_tickets` when it starts; a result is SUPERSEDED — not written — when the
+ * row already holds the result of a check with a later ticket: the newer observation stands, so a
+ * long Level 3 that began before the host was breached can never overwrite the failure a later
+ * check stored, move `checked_at` back or clear `verified_until`. The order is the database's, not
+ * a clock's: checks started in the same millisecond, or on skewed clocks, are ordered too (audit 02
+ * E2-F2, E2-R2A).
  *
  * ── "Verified until" (FR-011b) ────────────────────────────────────────────────────────────────
  * `last_verified_at` is the last check that returned `verified`. When a later check does not, the
@@ -140,12 +143,12 @@ export type WriteOutcome = "written" | "discarded" | "superseded";
  *  re-check interval after a conclusion (verified / failed), the retry backoff after none. */
 export async function writeCheckResult(
   sql: UmbraDBSql, schema: string, net: string,
-  target: { eventId: number; generation: number }, trigger: CheckTrigger, result: VerificationResult,
+  target: { eventId: number; generation: number; ticket: bigint }, trigger: CheckTrigger, result: VerificationResult,
   checkedAt: Date, schedule: Pick<DrainDeps, "recheckMs" | "retryBackoff">,
 ): Promise<WriteOutcome> {
   return sql.begin(async (tx) => {
-    const locked = await tx<{ generation: number; checks: number; attempts: number; checked_at: Date | null; is_current: boolean }[]>`
-      SELECT e.generation, e.checks, e.attempts, e.checked_at, (pi.event_id IS NOT NULL) AS is_current
+    const locked = await tx<{ generation: number; checks: number; attempts: number; result_ticket: string; is_current: boolean }[]>`
+      SELECT e.generation, e.checks, e.attempts, e.result_ticket::text, (pi.event_id IS NOT NULL) AS is_current
       FROM ${tx(schema)}.public_interface_events e
       LEFT JOIN ${tx(schema)}.public_interfaces pi ON pi.net = e.net AND pi.event_id = e.event_id
       WHERE e.net = ${net} AND e.event_id = ${target.eventId}
@@ -153,7 +156,7 @@ export async function writeCheckResult(
     `;
     const row = locked[0];
     if (row === undefined || row.generation !== target.generation) return "discarded";
-    if (row.checked_at !== null && row.checked_at.getTime() > checkedAt.getTime()) return "superseded";
+    if (BigInt(row.result_ticket) > target.ticket) return "superseded";
     const retried = RETRIED_STATUSES.has(result.status);
     const attempts = retried ? row.attempts + 1 : 0;
     const nextMs = !row.is_current ? null
@@ -168,6 +171,7 @@ export async function writeCheckResult(
         state_block_height = ${result.state?.blockHeight ?? null},
         state_tx_hash = ${result.state?.txHash === null || result.state?.txHash === undefined ? null : Buffer.from(result.state.txHash, "hex")},
         checked_at = ${checkedAt}, checks = checks + 1, attempts = ${attempts}, next_check_at = ${next},
+        result_ticket = ${target.ticket.toString()}::bigint,
         verified_until = CASE WHEN ${verified} THEN NULL ELSE last_verified_at END,
         last_verified_at = CASE WHEN ${verified} THEN ${checkedAt}::timestamptz ELSE last_verified_at END
       WHERE net = ${net} AND event_id = ${target.eventId}
@@ -182,7 +186,17 @@ export async function writeCheckResult(
   }) as Promise<WriteOutcome>;
 }
 
+/** A check's ticket: the next value of the schema's `public_interface_check_tickets` sequence,
+ *  drawn when the check starts (E2-R2A). */
+export async function drawCheckTicket(sql: UmbraDBSql, schema: string): Promise<bigint> {
+  const [row] = await sql<{ ticket: string }[]>`
+    SELECT nextval(format('%I.public_interface_check_tickets', ${schema}::text)::regclass)::text AS ticket
+  `;
+  return BigInt(row!.ticket);
+}
+
 async function checkRow(sql: UmbraDBSql, schema: string, net: string, row: DueRow, trigger: CheckTrigger, deps: DrainDeps): Promise<{ write: WriteOutcome; result: VerificationResult }> {
+  const ticket = await drawCheckTicket(sql, schema);
   const checkedAt = deps.now?.() ?? new Date();
   let result: VerificationResult;
   try {
@@ -190,7 +204,7 @@ async function checkRow(sql: UmbraDBSql, schema: string, net: string, row: DueRo
   } catch (error) {
     result = internalError(error);
   }
-  const target = { eventId: Number(row.event_id), generation: row.generation };
+  const target = { eventId: Number(row.event_id), generation: row.generation, ticket };
   try {
     return { write: await writeCheckResult(sql, schema, net, target, trigger, result, checkedAt, deps), result };
   } catch (error) {

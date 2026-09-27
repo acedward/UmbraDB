@@ -710,7 +710,7 @@
     {
       "id": "interface-check-ordering",
       "file": "token-indexer/test/interface-drain.test.ts",
-      "description": "00024-02 E2 (Codex audit round 1, E2-F2; spec 00024 FR-011b): overlapping checks of one publication \u2014 a periodic re-check A that has downloaded the honest bundle is still at Level 2 when the host is breached and an on-demand check B, started later, stores 'failed' at L1 with verified_until; A then finishes 'verified' and is SUPERSEDED (counted as discarded, not written, not in the history): the row keeps B's failure, B's checked_at, last_verified_at and verified_until, and B's schedule; a check started after every stored result is written; one started before the stored result is superseded whatever it found. Negative control: without the checked_at ordering A overwrites B with 'verified'."
+      "description": "00024-02 E2 (Codex audit rounds 1-2, E2-F2 / E2-R2A; spec 00024 FR-011b): overlapping checks of one publication are ordered by a TICKET each draws from the database sequence public_interface_check_tickets when it starts - a periodic re-check A that has the honest bytes is still at Level 2 when the host is breached and an on-demand check B, started later on the SAME clock value, stores 'failed' at L1 with verified_until; A then finishes 'verified' and is SUPERSEDED (counted as discarded, not written, not in the history): the row keeps B's failure, times and schedule; a check started later on a clock BEHIND the stored result is still written (ticket order, not clock order). Negative controls: no ticket guard, or the round-1 clock comparison, lets A overwrite B."
     }
   ],
   "deferred": [

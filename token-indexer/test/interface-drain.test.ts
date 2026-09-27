@@ -316,9 +316,7 @@ describe("public-interface verification drain (C7)", () => {
     expect(raced).toMatchObject({ attempted: 1, discarded: 1, verified: 0 });
     const kept = await row(db, 10);
     expect(kept).toMatchObject({ status: "stale", checks: 3 }); // not overwritten, not counted (initial, stale, on_demand)
-    // On the test clock (after every stored check: a check that started earlier would be superseded,
-    // E2-F2); the stale row is due since the database's now(), which is before T0.
-    const next = await drainInterfaceVerifications(db.sql, db.schema, NET, deps(state, at(150_000)));
+    const next = await drainInterfaceVerifications(db.sql, db.schema, NET, deps(state, new Date(Date.now() + 5_000)));
     expect(next).toMatchObject({ attempted: 1, verified: 1, discarded: 0 });
     expect((await history(db, 10)).at(-1)).toMatchObject({ check_no: 4, trigger: "stale", status: "verified" });
 
@@ -495,7 +493,7 @@ describe("public-interface verification drain (C7)", () => {
     ]);
   }, 180_000);
 
-  it("[[interface-check-ordering]] overlapping checks of one publication: a check that started earlier never overwrites the result of one that started later — the breach a later on-demand check found stands, with its 'verified until' (audit 02 E2-F2)", async () => {
+  it("[[interface-check-ordering]] overlapping checks of one publication are ordered by a database ticket drawn when each starts: an earlier-started check never overwrites a later one's result — even in the same millisecond or on a skewed clock (audit 02 E2-F2, E2-R2A)", async () => {
     const db = await chain.freshDb("ordering");
     const url = serveAt("/pi/", bundle);
     await chain.scan(db, [publish("e1".repeat(32), 100, 10, payloadFor(bundle, url))]);
@@ -503,13 +501,14 @@ describe("public-interface verification drain (C7)", () => {
     expect(await row(db, 10)).toMatchObject({ status: "verified", level: 3, checks: 1 });
 
     // Check A (the periodic re-check) has downloaded the honest bundle and is at Level 2 when the
-    // host is breached and check B (`verify-interfaces --address`, started later) runs to the end.
+    // host is breached and check B (`verify-interfaces --address`, started later) runs to the end —
+    // both on the SAME clock value: no timestamp can order them, the tickets do.
     const slow = new StubState();
     let demanded: Awaited<ReturnType<typeof verifyInterfaceNow>>;
     slow.hook = async () => {
       slow.hook = undefined;
       host.files.set("/pi/out/contract/index.js", Buffer.from("export const breached = true;\n"));
-      demanded = await verifyInterfaceNow(db.sql, db.schema, NET, CONTRACT, deps(new StubState(), at(RECHECK + 1_000)));
+      demanded = await verifyInterfaceNow(db.sql, db.schema, NET, CONTRACT, deps(new StubState(), at(RECHECK)));
     };
     const a = await drainInterfaceVerifications(db.sql, db.schema, NET, deps(slow, at(RECHECK)));
     expect(demanded!).toMatchObject({ eventId: 10, write: "written", result: { status: "failed" } });
@@ -518,22 +517,21 @@ describe("public-interface verification drain (C7)", () => {
     const r = await row(db, 10);
     expect(r).toMatchObject({ status: "failed", level: 0, l1: "failed", failed_level: 1, checks: 2 });
     expect(r.reason).toMatch(/^Level 1: out\/contract\/index\.js: 30 bytes, index\.json says/);
-    expect(r.checked_at).toEqual(at(RECHECK + 1_000));
+    expect(r.checked_at).toEqual(at(RECHECK));
     expect(r.last_verified_at).toEqual(T0);
     expect(r.verified_until).toEqual(T0);
-    expect(r.next_check_at).toEqual(at(RECHECK + 1_000 + RECHECK));
+    expect(r.next_check_at).toEqual(at(2 * RECHECK));
     expect(await history(db, 10)).toMatchObject([
       { check_no: 1, trigger: "initial", status: "verified" }, { check_no: 2, trigger: "on_demand", status: "failed" },
     ]);
-    // A check that starts later than every stored result is written as usual.
+    // A check that starts later is written, even on a clock that is BEHIND the stored result's.
     host.mount("/pi/", bundle);
-    const later = await verifyInterfaceNow(db.sql, db.schema, NET, CONTRACT, deps(new StubState(), at(RECHECK + 2_000)));
-    expect(later).toMatchObject({ write: "written", result: { status: "verified" } });
+    const skewed = await verifyInterfaceNow(db.sql, db.schema, NET, CONTRACT, deps(new StubState(), at(RECHECK - 60_000)));
+    expect(skewed).toMatchObject({ write: "written", result: { status: "verified" } });
     expect(await row(db, 10)).toMatchObject({ status: "verified", checks: 3, verified_until: null });
-    // …and one that starts earlier than the stored result is superseded, whatever it found.
-    const stale = await verifyInterfaceNow(db.sql, db.schema, NET, CONTRACT, deps(new StubState(), at(RECHECK + 1_500)));
-    expect(stale).toMatchObject({ write: "superseded" });
-    expect(await row(db, 10)).toMatchObject({ status: "verified", checks: 3 });
+    // …and the tickets are the database's: strictly increasing, one per check started.
+    const tickets = await db.sql<{ result_ticket: string }[]>`SELECT result_ticket::text FROM ${db.sql(db.schema)}.public_interface_events WHERE net = ${NET} AND event_id = 10`;
+    expect(BigInt(tickets[0]!.result_ticket)).toBeGreaterThan(2n);
   }, 180_000);
 
   it("[[interface-hostile-diagnostics]] a bundle-controlled NUL in a diagnostic is stored made safe, and one publication whose result the database refuses never holds up the others (audit 02 E2-F1)", async () => {

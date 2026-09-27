@@ -104,6 +104,12 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       -- Bumped by anything that makes an in-flight check's result obsolete (a maintenance update,
       -- a newer publication); a result is written only if the generation it read is still current.
       generation          int         NOT NULL DEFAULT 0 CHECK (generation >= 0),
+      -- The ticket of the check whose result is stored. A check draws its ticket from the sequence
+      -- public_interface_check_tickets when it STARTS; its result is written only if no check that
+      -- started later has stored one — an order the database issues, with no clock involved, so
+      -- two checks started in the same millisecond or on skewed clocks are still ordered (audit 02
+      -- E2-F2 / E2-R2A).
+      result_ticket       bigint      NOT NULL DEFAULT 0 CHECK (result_ticket >= 0),
 
       PRIMARY KEY (net, event_id),
       CONSTRAINT pie_payload_is_parts CHECK (octet_length(payload) = 256 * parts),
@@ -124,6 +130,7 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       CONSTRAINT pie_until_after_verified CHECK (verified_until IS NULL OR last_verified_at IS NOT NULL)
     )
   `;
+  await sql`CREATE SEQUENCE ${sql(schema)}.public_interface_check_tickets AS bigint MINVALUE 1`;
   await sql`
     CREATE INDEX public_interface_events_by_contract
       ON ${sql(schema)}.public_interface_events (net, address, block_height, tx_position, event_id)
