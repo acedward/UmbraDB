@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { compilerAvailable, levelThree, outsideDirectiveProblem, quotedDirective, quotedDirectives, searchTraceProblem, type Level3Options } from "../interface/level3.js";
+import { compilerAvailable, levelThree, quotedDirective, quotedDirectives, reachableDirectiveProblem, searchTraceProblem, type Level3Options } from "../interface/level3.js";
 import { clone, compiler033, loadFixtureBundle, sha256Hex, verdict, withFiles, withPackage, type Bundle } from "./helpers/pi-fixture.js";
 
 /**
@@ -199,6 +199,9 @@ describe("[B] Level 3 with the stand-in compiler (C6)", () => {
     useStandIn({ FAKE_COMPACT_OUTPUT: output(bundle) });
     for (const [spelling, why] of [
       ["/bundle/src/PiFixture.compact", /resolves outside the bundle/], ["src/../../PiFixture.compact", /resolves outside the bundle/],
+      // Resolved against the REAL private directory, as the reference does (E2-R2D): leaving it and
+      // naming a directory "bundle" does not come back in (the reference refuses this one too).
+      ["../bundle/src/PiFixture.compact", /resolves outside the bundle/],
       ["src\\PiFixture.compact", /compact\.interface "src\\\\PiFixture\.compact" is not listed/],
     ] as const) {
       const alias = withPackage(bundle, (pkg) => { pkg.compact.interface = spelling; });
@@ -212,17 +215,29 @@ describe("[B] Level 3 with the stand-in compiler (C6)", () => {
     const source = bundle.get("src/PiFixture.compact")!.toString("utf8");
     const withDirective = (line: string): Bundle =>
       withFiles(bundle, { "src/PiFixture.compact": Buffer.from(source.replace("import CompactStandardLibrary;", `import CompactStandardLibrary;\n${line}`)) });
-    for (const line of ['include "/etc/umbradb-l3-outside";', 'import "../../../outside" prefix O_;', 'import "..\\/outside" prefix O_;']) {
+    for (const line of [
+      'include "/etc/umbradb-l3-outside";', 'import "../../../outside" prefix O_;', 'import "..\\/outside" prefix O_;',
+      // E2-R2D: checked against the real directory, not a fictitious root it could re-enter.
+      'import "../../bundle/Stolen" prefix S_;',
+    ]) {
       const hostile = withDirective(line);
       expect((await levelThree(filesOf(hostile), listedOf(hostile), opts())).reason, line)
         .toMatch(/^"src\/PiFixture\.compact" imports or includes .*, which is outside the bundle; the compiler was not run$/);
     }
     expect(calls()).toEqual([]);
-    // Not refused here: a directive in a comment, and a relative name inside the bundle (the private
-    // directory holds only listed files, so the compiler finds nothing else there).
+    // Not refused: a directive in a comment, a relative name inside the bundle (the private directory
+    // holds only listed files, so the compiler finds nothing else there), and — E2-R2D — a listed
+    // source the compile never reaches: the reference compiles such a bundle, and so does this.
     const commented = withDirective('// include "/etc/passwd";');
-    expect(outsideDirectiveProblem(filesOf(commented), listedOf(commented))).toBeNull();
-    expect(outsideDirectiveProblem(new Map([["src/a/B.compact", Buffer.from('import "../C";')]]), ["src/a/B.compact"])).toBeNull();
+    expect(reachableDirectiveProblem(filesOf(commented), listedOf(commented), "/r", "src/PiFixture.compact")).toBeNull();
+    expect(reachableDirectiveProblem(new Map([["src/a/B.compact", Buffer.from('import "../C";')]]), ["src/a/B.compact"], "/r", "src/a/B.compact")).toBeNull();
+    const chain = new Map([["src/A.compact", Buffer.from('import "./sub/B";')], ["src/sub/B.compact", Buffer.from('include "../../../x";')]]);
+    expect(reachableDirectiveProblem(chain, [...chain.keys()], "/r", "src/A.compact")).toMatch(/^"src\/sub\/B\.compact" imports or includes "\.\.\/\.\.\/\.\.\/x", which is outside the bundle/);
+    const unused = withFiles(bundle, { "src/Unused.compact": Buffer.from('import "/outside/Unused" prefix U_;\n') });
+    // (A real compile prints a search-trace line for each file it opens, which satisfies the trace's
+    // positive control; the stand-in is given one for the published source.)
+    useStandIn({ FAKE_COMPACT_OUTPUT: output(unused), FAKE_COMPACT_TRACE: JSON.stringify(["looking for src/PiFixture.compact...found"]) });
+    expect(await levelThree(filesOf(unused), listedOf(unused), opts())).toMatchObject({ outcome: "passed" });
     expect(quotedDirectives('import "a"; /* include "b" */ include "c"; export circuit f(): [] { "import"; }')).toEqual(["a", "c"]);
   }, 120_000);
 });

@@ -40,11 +40,14 @@ executed); `src/fetch.mjs` is unchanged there. The bundle fixture the tests use 
   `"a/".repeat(120000) + "a"` fits a 256 KiB index and takes minutes, before the hash is compared.
   Here each path is walked once in a tree of segments; the rule and the first conflict reported are
   the reference's.
-- **Level 3 has a read boundary before the compile** (`level3.ts` `outsideDirectiveProblem`, audit 02
-  E2-F6): the reference relies on `--trace-search` alone, i.e. it finds out AFTER the compiler read a
-  file outside the bundle; here a listed source whose quoted `import` / `include` can only name a file
-  outside the bundle (absolute, `..` leaving it, a backslash) is refused before the compiler starts.
-  The trace check is kept. `compact.interface` is resolved as the reference resolves it (E2-F5).
+- **Level 3 has a read boundary before the compile** (`level3.ts` `reachableDirectiveProblem`, audit 02
+  E2-F6 / E2-R2D): the reference relies on `--trace-search` alone, i.e. it finds out AFTER the compiler
+  read a file outside the bundle; here the sources the compile can reach (from the published source,
+  through quoted `import` / `include`, resolved as the reference's `resolveImports` resolves them) are
+  checked against the REAL private directory before the compiler starts — a name leaving it (or holding
+  a backslash) is refused. Unreachable listed files are not examined (the reference compiles such a
+  bundle). The trace check is kept. `compact.interface` is resolved against the same real directory, as
+  the reference resolves it (E2-F5 / E2-R2D).
 - **Level 1 takes an injected transport** (`BundleTransport`) instead of `fetch` or a directory: the
   indexer's transport is the guarded one of `fetch-guard.ts` (http(s) only, private destinations refused
   after DNS, redirects capped, a deadline), which the reference does not have.

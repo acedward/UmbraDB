@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, posix, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { pathProblem, sha256Hex } from "./commitment.js";
 
 /**
@@ -151,27 +151,37 @@ export function quotedDirective(text: string): string | null {
 }
 
 /**
- * The read boundary BEFORE the compiler runs (audit 02 E2-F6): why a listed source names, by a quoted
- * `import` / `include`, a file that can only lie outside the bundle — an absolute path, a path whose
- * `..` segments leave the bundle from the importing file's directory, or one holding a backslash (a
- * bundle path never does, and an escape could spell a `/`) — or null. The compiler would read such
- * a file (with the indexer's permissions) before `--trace-search` could show it; this refuses it
- * first. Names inside the bundle that are not listed are harmless here: only listed files are in the
- * private directory, so the compiler finds nothing there. The trace check after the compile stays,
- * for anything this reading of the source does not see.
+ * The read boundary BEFORE the compiler runs (audit 02 E2-F6, E2-R2D): walks the sources the compile
+ * can reach — from the published source through each quoted `import` / `include` / `from`, resolved
+ * as the reference resolves imports (`src/bundle.mjs` `resolveImports`: `resolve(dir of the importer,
+ * name) + ".compact"`), against the REAL private directory `root` the files were written to — and
+ * says why one names a file outside `root`, or null. Such a name is refused before the compiler
+ * would read it with the indexer's permissions; `--trace-search` could only show the read after the
+ * fact. A name holding a backslash is refused too: a bundle path never holds one, and an escape
+ * could spell a `/` this reading cannot see. Only reachable sources are examined — a listed file the
+ * compile never opens cannot make it read anything (the reference compiles such a bundle). Names
+ * inside `root` that are not listed are harmless: only listed files were written there. The trace
+ * check after the compile stays, for anything this reading does not see.
  */
-export function outsideDirectiveProblem(files: ReadonlyMap<string, Buffer>, listed: readonly string[]): string | null {
-  const BUNDLE = "/bundle";
-  for (const file of listed) {
-    if (!file.endsWith(".compact")) continue;
+export function reachableDirectiveProblem(files: ReadonlyMap<string, Buffer>, listed: readonly string[], root: string, entry: string): string | null {
+  const listedSet = new Set(listed);
+  const seen = new Set<string>();
+  const queue = [entry];
+  while (queue.length > 0) {
+    const file = queue.shift()!;
+    if (seen.has(file)) continue;
+    seen.add(file);
     const body = files.get(file);
     if (body === undefined) continue;
+    const dir = dirname(join(root, ...file.split("/")));
     for (const name of quotedDirectives(body.toString("utf8"))) {
       const shown = JSON.stringify(name.length > 120 ? `${name.slice(0, 117)}...` : name);
-      const resolved = posix.resolve(posix.dirname(`${BUNDLE}/${file}`), name);
-      if (posix.isAbsolute(name) || name.includes("\\") || !resolved.startsWith(`${BUNDLE}/`)) {
+      const target = resolve(dir, name);
+      if (name.includes("\\") || !target.startsWith(root + sep)) {
         return `${JSON.stringify(file)} imports or includes ${shown}, which is outside the bundle; the compiler was not run`;
       }
+      const next = relative(root, `${target}.compact`).split(sep).join("/");
+      if (listedSet.has(next)) queue.push(next);
     }
   }
   return null;
@@ -330,27 +340,6 @@ export async function levelThree(
   compiler.flags = flags as string[];
   const source = pinned.interface;
   if (typeof source !== "string" || source.length === 0) return done("failed", "bundle package.json does not point at a published source (compact.interface)");
-  // Resolved as the reference resolves it (`src/verify.mjs` levelThree: `resolve(root, interface)`,
-  // inside the bundle, then relative to it and listed), so `src/./X.compact`, `./src/X.compact` and
-  // `src/../src/X.compact` name the same listed file (audit 02 E2-F5). Nothing is rewritten: a
-  // backslash is an ordinary character on POSIX, and an absolute path is outside any bundle.
-  const BUNDLE = "/bundle";
-  const resolved = posix.resolve(BUNDLE, source);
-  if (posix.isAbsolute(source) || !resolved.startsWith(`${BUNDLE}/`)) {
-    return done("failed", `compact.interface ${JSON.stringify(source.slice(0, 200))} resolves outside the bundle`);
-  }
-  const rel = posix.relative(BUNDLE, resolved);
-  if (pathProblem(rel) !== null || !listed.includes(rel) || !files.has(rel)) {
-    return done("failed", `compact.interface ${JSON.stringify(rel.slice(0, 200))} is not listed in index.json, so it is not part of the committed bundle`);
-  }
-
-  const outside = outsideDirectiveProblem(files, listed);
-  if (outside !== null) return done("failed", outside);
-
-  // --- the exact compiler, or not_run -----------------------------------------------------------
-  const available = await compilerAvailable(opts.compactBin, version, opts);
-  if (!available.ok) return done("not_run", available.reason);
-  compiler.installed = available.installed;
 
   // --- the checked files, alone, in a private directory ------------------------------------------
   const tmpRoot = opts.tmpRoot ?? tmpdir();
@@ -358,7 +347,7 @@ export async function levelThree(
   let out: string | undefined;
   try {
     try {
-      root = mkdtempSync(join(tmpRoot, "umbradb-l3-src-"));
+      root = realpathSync(mkdtempSync(join(tmpRoot, "umbradb-l3-src-")));
       out = mkdtempSync(join(tmpRoot, "umbradb-l3-out-"));
       for (const path of listed) {
         const body = files.get(path);
@@ -371,7 +360,27 @@ export async function levelThree(
     } catch (error) {
       return done("not_run", `the bundle could not be written to a private directory (${(error as NodeJS.ErrnoException).code ?? (error as Error).message})`);
     }
-    const src = join(root, ...rel.split("/"));
+
+    // --- the published source and what it reaches, against THAT directory (E2-F5, E2-F6, E2-R2D)
+    // As the reference resolves `compact.interface` (`src/verify.mjs` levelThree: `resolve(root,
+    // interface)` inside the bundle directory, then relative to it and listed): `src/./X.compact`,
+    // `./src/X.compact` and `src/../src/X.compact` name the listed file; an absolute path, or one
+    // that leaves the directory (it has a random name, so no path can leave and come back), does not.
+    const src = resolve(root, source);
+    if (!src.startsWith(root + sep)) {
+      return done("failed", `compact.interface ${JSON.stringify(source.slice(0, 200))} resolves outside the bundle`);
+    }
+    const rel = relative(root, src).split(sep).join("/");
+    if (pathProblem(rel) !== null || !listed.includes(rel) || !files.has(rel)) {
+      return done("failed", `compact.interface ${JSON.stringify(rel.slice(0, 200))} is not listed in index.json, so it is not part of the committed bundle`);
+    }
+    const outside = reachableDirectiveProblem(files, listed, root, rel);
+    if (outside !== null) return done("failed", outside);
+
+    // --- the exact compiler, or not_run ---------------------------------------------------------
+    const available = await compilerAvailable(opts.compactBin, version, opts);
+    if (!available.ok) return done("not_run", available.reason);
+    compiler.installed = available.installed;
 
     // --- compile --------------------------------------------------------------------------------
     const compile = await run(opts.compactBin, ["compile", `+${version}`, "--trace-search", ...compiler.flags, src, out], {
