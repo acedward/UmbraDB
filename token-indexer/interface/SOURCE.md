@@ -7,6 +7,10 @@ PR #6 @ `1cf947786d55739ec4e89aef9258ebef0d8687fa` (normative: `MIP-SPEC-DRAFT.m
 `README.md`). Its MIP names the reference module as the definition of the `ecmh-jubjub-grouphash` profile
 ("The pinned reference module defines the profile and contains its implementation details").
 
+Licence: Apache-2.0 (upstream and this repository); the upstream `NOTICE` ("compact-off-chain-circuits,
+Copyright 2026 the compact-off-chain-circuits authors") is carried in this repository's `NOTICE`
+(audit 02 E2-F9), together with the MIT notice of the OpenZeppelin modules the test fixtures copy.
+
 ## Ported from
 
 | Upstream file (PR #6 `1cf9477`) | SHA-256 | Ported into |
