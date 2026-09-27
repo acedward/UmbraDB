@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import * as rt from "@midnight-ntwrk/compact-runtime";
 import { describe, expect, it } from "vitest";
 import {
-  IndexerStateSource, MAX_CIRCUITS, StateUnavailableError, jsonDepth, levelTwo, renderType, shippedKeys, wrapperBinding,
+  IndexerStateSource, MAX_CIRCUITS, StateUnavailableError, jsonDepth, levelTwo, providerOrigin, renderType, shippedKeys, wrapperBinding,
 } from "../interface/level2.js";
 import { clone, fixtureHex, loadFixtureBundle, sha256Hex, verdict, type Bundle } from "./helpers/pi-fixture.js";
 
@@ -155,7 +155,14 @@ describe("[B] Level 2 (C5)", () => {
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/v4/graphql`;
     try {
       const source = new IndexerStateSource({ url });
-      expect(source.description).toMatch(/contractAction/);
+      expect(source.description).toBe(`indexer contractAction(address) at http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+      // The description is stored in every verification record and served: the provider's ORIGIN only,
+      // never a credential its URL may carry (audit 02 E2-F4).
+      const keyed = new IndexerStateSource({ url: "https://user:hunter2@provider.example:8443/v3/SECRETKEY/graphql?api_key=SECRETQ#SECRETF" });
+      expect(keyed.description).toBe("indexer contractAction(address) at https://provider.example:8443");
+      for (const secret of ["hunter2", "user", "SECRETKEY", "SECRETQ", "SECRETF", "graphql"]) expect(keyed.description).not.toContain(secret);
+      expect(providerOrigin("not a url")).toBe("an unparseable URL");
+      expect(providerOrigin("file:///etc/indexer.sock")).toBe("a file: URL");
       const obs = await source.stateOf("cd".repeat(32));
       expect(obs).toEqual({ state, blockHeight: 42, txHash: "ab".repeat(32) });
       expect(requests[0]).toMatchObject({ variables: { address: "cd".repeat(32) } });

@@ -65,6 +65,20 @@ const STATE_QUERY = `query ContractState($address: HexEncoded!) {
   contractAction(address: $address) { address state transaction { hash block { height } } }
 }`;
 
+/**
+ * How a provider URL is named in a verification record: its origin only (scheme, host, port). The
+ * record is stored and served publicly, and a configured `INDEXER_HTTP` may carry a credential in its
+ * userinfo, path (`/v3/<key>/…`), query (`?api_key=…`) or fragment (audit 02 E2-F4).
+ */
+export function providerOrigin(url: string): string {
+  try {
+    const u = new URL(url);
+    return u.origin === "null" ? `a ${u.protocol} URL` : u.origin;
+  } catch {
+    return "an unparseable URL";
+  }
+}
+
 /** The public indexer's `contractAction(address) { state }` (indexer 4.4, GraphQL v4). */
 export class IndexerStateSource implements StateSource {
   readonly description: string;
@@ -74,7 +88,7 @@ export class IndexerStateSource implements StateSource {
   constructor(private readonly opts: { url: string; fetchImpl?: typeof fetch; timeoutMs?: number }) {
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.timeoutMs = opts.timeoutMs ?? 20_000;
-    this.description = `indexer contractAction(address) at ${opts.url}`;
+    this.description = `indexer contractAction(address) at ${providerOrigin(opts.url)}`;
   }
 
   async stateOf(address: string): Promise<StateObservation> {
