@@ -88,8 +88,14 @@ export const PROVIDER_LIMITS: readonly string[] = Object.freeze([
 export const MAX_RECORD_STRING_CHARS = 8192;
 export const MAX_DIAGNOSTIC_CHARS = 2000;
 
+/** At most `max` characters, the marker included, so bounding twice changes nothing (idempotent — the
+ *  write re-applies it; audit 02 E2-R5B): the start is kept and the marker says exactly how much of
+ *  the original was omitted. */
 function bounded(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max)}… [${text.length - max} characters omitted]`;
+  if (text.length <= max) return text;
+  const marker = (n: number): string => `… [${n} characters omitted]`;
+  const kept = max - marker(text.length).length;
+  return `${text.slice(0, kept)}${marker(text.length - kept)}`;
 }
 
 /** U+0000 and lone surrogates (a cut may leave one) → U+FFFD. */

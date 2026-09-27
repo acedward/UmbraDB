@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { drainDepsFromConfig, drainInterfaceVerifications, retryBackoffMs, verifyInterfaceNow, type DrainDeps } from "../interface/drain.js";
 import { DEFAULT_LEVEL1_LIMITS } from "../interface/level1.js";
+import { textSafe } from "../interface/verify.js";
 import type { StateObservation, StateSource } from "../interface/level2.js";
 import { markInterfaceStale } from "../interface/store.js";
 import { startBundleHost, type BundleHost, type Route } from "./helpers/bundle-host.js";
@@ -622,12 +623,18 @@ describe("public-interface verification drain (C7)", () => {
     expect(await drainInterfaceVerifications(db.sql, db.schema, NET, deps(state, at(3_000)))).toMatchObject({ attempted: 1, failed: 1 });
     const long = await row(db, 60);
     expect(long).toMatchObject({ status: "failed", failed_level: 1 });
-    expect(long.reason!.length).toBeLessThanOrEqual(2_100);
+    expect(long.reason!.length).toBeLessThanOrEqual(2_000);
     expect(long.reason).toMatch(/^Level 1: index\.json names compiler compactc 0\.34\.0, but the bundle's package\.json pins compactc x+… \[\d+ characters omitted\]$/);
+    // The marker says exactly how much of the original was omitted, though the text was bounded twice
+    // (the record, then the write) — the bound is idempotent (E2-R5B).
+    const original = `Level 1: index.json names compiler compactc 0.34.0, but the bundle's package.json pins compactc ${"x".repeat(100_000)}`;
+    const kept = long.reason!.indexOf("… [");
+    expect(Number(/\[(\d+) characters omitted\]$/.exec(long.reason!)![1]) + kept).toBe(original.length);
+    expect(textSafe(long.reason)).toBe(long.reason);
     const histReason = (await db.sql<{ reason: string }[]>`SELECT reason FROM ${db.sql(db.schema)}.public_interface_checks WHERE net = ${NET} AND event_id = 60`)[0]!.reason;
     expect(histReason).toBe(long.reason);
     for (const text of [long.report!.reason, long.report!.levels.l1.reason]) {
-      expect(String(text).length).toBeLessThanOrEqual(8_192 + 40);
+      expect(String(text).length).toBeLessThanOrEqual(8_192);
       expect(String(text)).toMatch(/… \[\d+ characters omitted\]$/);
     }
   }, 180_000);
