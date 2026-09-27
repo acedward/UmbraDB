@@ -17,8 +17,9 @@ import { pathProblem, sha256Hex } from "./commitment.js";
  *    (e.g. "compiler 0.33.0 unavailable"). The reference instead compiles with whatever is installed
  *    and reports `versionMismatch`; the difference is policy (audit F4).
  *  - **Never blocks** (FR-013): a deadline (process-group kill) → `not_run`; the compiler's own
- *    environment problems (its proving parameters unavailable, killed from outside) → `not_run`;
- *    only a result about the BUNDLE is `failed`. `not_run` and `failed` never discard the event.
+ *    environment problems (killed from outside, or — when the compile fails — a probe compile of a
+ *    known-good contract fails too, {@link probeCompile}) → `not_run`; only a result about the BUNDLE
+ *    is `failed`. `not_run` and `failed` never discard the event.
  *  - **Only listed files are read** (FR-013): the Level 1–checked files are written into a fresh
  *    private directory (nothing else is in it), the compile runs there with `COMPACT_PATH` removed
  *    and `--trace-search`, and it is refused when the compiler read any file outside that directory
@@ -254,33 +255,48 @@ function run(bin: string, args: string[], opts: { cwd?: string; env: NodeJS.Proc
   });
 }
 
-/** Stderr that says the COMPILER's environment failed, not the bundle (it could not obtain its
- *  proving parameters, or the chosen version disappeared). */
-const ENVIRONMENT_FAILURE = /couldn't find compiler|data provider|zk[-_ ]?params|public parameters|srs\.midnight|no space left on device|cannot allocate memory/i;
-
-/**
- * Whether the compiler's stderr says ITS environment failed (then Level 3 is `not_run`, not a verdict).
- * Judged only on text the bundle cannot have written (audit 02 E2-F7): search-trace lines are skipped,
- * and a matched phrase that any of the bundle's files contains is ignored — an import name such as
- * `"./data provider"` is echoed by the compiler's own error for a missing file and would otherwise
- * disguise a bundle failure as an unavailable environment. (A bundle whose source happens to contain
- * such a phrase, compiled in a really broken environment, is reported `failed` — the safe side.)
- */
-function environmentFailed(stderr: string, files: ReadonlyMap<string, Buffer>): boolean {
-  let texts: string[] | undefined;
-  for (const line of stderr.split("\n")) {
-    if (TRACE_LINE.test(line)) continue;
-    const m = ENVIRONMENT_FAILURE.exec(line);
-    if (m === null) continue;
-    texts ??= [...files.values()].map((b) => b.toString("utf8").toLowerCase());
-    const phrase = m[0].toLowerCase();
-    if (!texts.some((t) => t.includes(phrase))) return true;
-  }
-  return false;
-}
-
 const firstLine = (text: string): string | undefined =>
   text.split("\n").map((l) => l.trim()).find((l) => l !== "" && !TRACE_LINE.test(l));
+
+/**
+ * A contract that compiles with keys on any working toolchain (compactc 0.34.0: < 1 s). When a bundle's
+ * compile fails, compiling this — same CLI, version, flags and environment, in its own private
+ * directory — tells the two causes apart without reading anything the bundle wrote: if the probe
+ * compiles, the environment works and the failure is the bundle's (`failed`); if it does not, the
+ * compiler cannot run here (its proving parameters, disk, memory) and Level 3 is `not_run` (audit 02
+ * E2-F7 / E2-R2C — matching phrases in the compiler's output was spoofable by a file name and could
+ * be flipped by a README).
+ */
+export const PROBE_SOURCE = `pragma language_version >= 0.16.0;
+
+import CompactStandardLibrary;
+
+export ledger probeCounter: Counter;
+
+export circuit probe(): [] {
+  probeCounter.increment(1);
+}
+`;
+
+/** Compiles {@link PROBE_SOURCE} with keys; ok when the compiler exits 0 and wrote the probe's key. */
+export async function probeCompile(
+  compactBin: string, version: string, flags: readonly string[], opts: { tmpRoot?: string; timeoutMs: number },
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const dir = mkdtempSync(join(opts.tmpRoot ?? tmpdir(), "umbradb-l3-probe-"));
+  try {
+    writeFileSync(join(dir, "umbradb-l3-probe.compact"), PROBE_SOURCE);
+    const r = await run(compactBin, ["compile", `+${version}`, ...flags, join(dir, "umbradb-l3-probe.compact"), join(dir, "out")], {
+      cwd: dir, env: compilerEnv(), timeoutMs: opts.timeoutMs, maxOutputBytes: 1024 * 1024,
+    });
+    if (r.spawnError !== undefined) return { ok: false, reason: `${compactBin} cannot be run (${r.spawnError.code ?? r.spawnError.message})` };
+    if (r.timedOut) return { ok: false, reason: `it did not finish within ${opts.timeoutMs} ms` };
+    const key = (() => { try { return statSync(join(dir, "out", "keys", "probe.verifier")).isFile(); } catch { return false; } })();
+    if (r.code === 0 && key) return { ok: true };
+    return { ok: false, reason: (firstLine(r.stderr) ?? `exit status ${String(r.code)}${r.signal === null ? "" : `, ${r.signal}`}`).slice(0, 300) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 /** The Compact CLI's environment: the caller's, without `COMPACT_PATH` (it belongs to the consumer,
  *  not the bundle — an import must not resolve there). */
@@ -394,7 +410,11 @@ export async function levelThree(
     if (compile.signal !== null) return done("not_run", `the compiler was stopped by ${compile.signal}`);
     if (compile.code !== 0) {
       const first = firstLine(compile.stderr) ?? `exit status ${String(compile.code)}`;
-      if (environmentFailed(compile.stderr, files)) return done("not_run", `the compiler's environment failed: ${first.slice(0, 300)}`);
+      // Whose failure is it? A probe compile of a known-good contract decides, never the bundle's text.
+      const probe = await probeCompile(opts.compactBin, version, compiler.flags, { tmpRoot, timeoutMs: Math.min(opts.deadlineMs, 300_000) });
+      if (!probe.ok) {
+        return done("not_run", `the compiler's environment failed: ${first.slice(0, 300)} (a probe compile of a known-good contract failed too: ${probe.reason})`);
+      }
       return done("failed", `recompile failed: ${first.slice(0, 300)}`);
     }
     const unrecognised = traceControlProblem(compile.stderr, files, listed);

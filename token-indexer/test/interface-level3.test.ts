@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { compilerAvailable, levelThree, quotedDirective, quotedDirectives, reachableDirectiveProblem, searchTraceProblem, type Level3Options } from "../interface/level3.js";
+import { compilerAvailable, levelThree, probeCompile, quotedDirective, quotedDirectives, reachableDirectiveProblem, searchTraceProblem, type Level3Options } from "../interface/level3.js";
 import { clone, compiler033, loadFixtureBundle, sha256Hex, verdict, withFiles, withPackage, type Bundle } from "./helpers/pi-fixture.js";
 
 /**
@@ -126,8 +126,23 @@ describe("[B] Level 3 with the stand-in compiler (C6)", () => {
     // A source that does not compile is failed; the compiler's environment failing is not_run.
     useStandIn({ FAKE_COMPACT_EXIT: "255", FAKE_COMPACT_STDERR: "Exception: PiFixture.compact line 20 char 3: parse error" });
     expect(await levelThree(files, listed, opts())).toMatchObject({ outcome: "failed", reason: "recompile failed: Exception: PiFixture.compact line 20 char 3: parse error" });
-    useStandIn({ FAKE_COMPACT_EXIT: "1", FAKE_COMPACT_STDERR: "error constructing midnight data provider fetcher: builder error" });
-    expect(await levelThree(files, listed, opts())).toMatchObject({ outcome: "not_run", reason: expect.stringMatching(/^the compiler's environment failed: error constructing midnight data provider/) });
+    // Whose failure it is, a probe compile of a known-good contract decides (audit 02 E2-R2C) — never
+    // the text: the probe fails too → the environment's (not_run); the probe compiles → the bundle's.
+    const envDown = { FAKE_COMPACT_EXIT: "1", FAKE_COMPACT_STDERR: "error constructing midnight data provider fetcher: builder error", FAKE_COMPACT_PROBE_EXIT: "1", FAKE_COMPACT_PROBE_STDERR: "error constructing midnight data provider fetcher: builder error" };
+    useStandIn(envDown);
+    expect(await levelThree(files, listed, opts())).toMatchObject({ outcome: "not_run", reason: expect.stringMatching(/^the compiler's environment failed: error constructing midnight data provider .*\(a probe compile of a known-good contract failed too: error constructing/) });
+    expect(calls().map((c) => c.args.at(-2)!.split("/").pop())).toEqual(["+0.34.0", "PiFixture.compact", "umbradb-l3-probe.compact"]); // version probe, compile, environment probe
+    // A bundle that MENTIONS such a phrase (a README) does not turn a real environment failure into its own.
+    const mentions = withFiles(bundle, { "README.md": Buffer.from(`${bundle.get("README.md")!.toString("utf8")}\nThe compiler uses a data provider and zk-params.\n`) });
+    useStandIn(envDown);
+    expect(await levelThree(filesOf(mentions), listedOf(mentions), opts())).toMatchObject({ outcome: "not_run" });
+    // An environment failure worded like nothing known is still the environment's when the probe fails.
+    useStandIn({ FAKE_COMPACT_EXIT: "1", FAKE_COMPACT_STDERR: "Error: something unexpected", FAKE_COMPACT_PROBE_EXIT: "1" });
+    expect(await levelThree(files, listed, opts())).toMatchObject({ outcome: "not_run" });
+    // A diagnostic worded like an environment failure (a source file named zkparams, however its name
+    // was spelled in package.json) is the bundle's when the probe compiles.
+    useStandIn({ FAKE_COMPACT_EXIT: "255", FAKE_COMPACT_STDERR: "Exception: zkparams.compact line 1 char 1: parse error" });
+    expect(await levelThree(files, listed, opts())).toMatchObject({ outcome: "failed", reason: "recompile failed: Exception: zkparams.compact line 1 char 1: parse error" });
     // …but only on text the bundle cannot have written (audit 02 E2-F7): a missing module whose NAME
     // holds such a phrase is echoed by the compiler — that is the bundle's failure, not the environment's.
     const echoed = withFiles(bundle, { "src/PiFixture.compact": Buffer.from(bundle.get("src/PiFixture.compact")!.toString("utf8")
@@ -255,6 +270,9 @@ describe.skipIf(!hostCompact)("[B] Level 3 with the REAL compiler (host compact,
     expect(ok.outcome, ok.reason).toBe("passed");
     expect(ok.rows.every((r) => r.status === "OK")).toBe(true);
     expect(ok.generatedKeys).toEqual(["guardedIncrement", "increment", "read"].map((c) => ({ circuit: c, sha256: sha256Hex(bundle.get(`out/keys/${c}.verifier`)!) })));
+
+    // The environment probe (E2-R2C) compiles with keys on the real toolchain.
+    expect(await probeCompile("compact", "0.34.0", [], { timeoutMs: 120_000 })).toEqual({ ok: true });
 
     const old = await levelThree(filesOf(compiler033(bundle)), listedOf(compiler033(bundle)), real);
     expect(old).toMatchObject({ outcome: "not_run", reason: expect.stringMatching(/^compiler 0\.33\.0 unavailable \(compact compile \+0\.33\.0: Error: Failed to run compactc\)$/) });

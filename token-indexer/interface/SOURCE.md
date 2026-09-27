@@ -48,6 +48,10 @@ executed); `src/fetch.mjs` is unchanged there. The bundle fixture the tests use 
   a backslash) is refused. Unreachable listed files are not examined (the reference compiles such a
   bundle). The trace check is kept. `compact.interface` is resolved against the same real directory, as
   the reference resolves it (E2-F5 / E2-R2D).
+- **Level 3 tells an environment failure from a bundle failure by a probe compile** (`level3.ts`
+  `probeCompile`, audit 02 E2-R2C): when the recompile fails, a known-good contract is compiled with the
+  same CLI, version, flags and environment; if that fails too, Level 3 is `not_run` (the compiler cannot
+  run here), otherwise `failed`. The reference has no such distinction (its Level 3 simply fails).
 - **Level 1 takes an injected transport** (`BundleTransport`) instead of `fetch` or a directory: the
   indexer's transport is the guarded one of `fetch-guard.ts` (http(s) only, private destinations refused
   after DNS, redirects capped, a deadline), which the reference does not have.

@@ -19,6 +19,10 @@
 //   FAKE_COMPACT_LOG        append one JSON line per invocation: argv, cwd, whether COMPACT_PATH was set,
 //                           and every file under cwd (Level 3 must give the compiler the listed files only)
 //   FAKE_COMPACT_TOUCH      create this file (relative to cwd) before printing the trace
+//   FAKE_COMPACT_PROBE_EXIT the exit status of Level 3's PROBE compile (a source named
+//                           umbradb-l3-probe.compact; default 0 = the environment works: it writes
+//                           keys/probe.verifier), with FAKE_COMPACT_PROBE_STDERR — the probe ignores the
+//                           other FAKE_COMPACT_* settings, which describe the bundle's compile
 // The real-compiler test (environment-gated) runs the host's `compact` instead.
 import { appendFileSync, cpSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 
@@ -44,6 +48,16 @@ if (rest[0] === '--version') {
   process.exit(0);
 }
 const out = rest.at(-1);
+if ((rest.at(-2) ?? '').endsWith('umbradb-l3-probe.compact')) {
+  const code = Number(process.env.FAKE_COMPACT_PROBE_EXIT ?? 0);
+  if (code !== 0) {
+    process.stderr.write(`${process.env.FAKE_COMPACT_PROBE_STDERR ?? 'Exception: probe failed'}\n`);
+    process.exit(code);
+  }
+  mkdirSync(`${out}/keys`, { recursive: true });
+  writeFileSync(`${out}/keys/probe.verifier`, 'fake verifier key\n');
+  process.exit(0);
+}
 const sleep = Number(process.env.FAKE_COMPACT_SLEEP_MS ?? 0);
 if (sleep > 0) await new Promise((resolve) => setTimeout(resolve, sleep));
 if (process.env.FAKE_COMPACT_TOUCH) writeFileSync(process.env.FAKE_COMPACT_TOUCH, 'export circuit x(): [] {}\n');
