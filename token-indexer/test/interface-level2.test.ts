@@ -85,6 +85,16 @@ describe("[B] Level 2 (C5)", () => {
     const withPure = levelTwo(filesOf(extraCircuit), state);
     expect(withPure.outcome).toBe("passed");
     expect(withPure.circuits.at(-1)).toMatchObject({ name: "pureHelper", pure: true, arguments: [{ name: "x", type: "Field" }], resultType: "Boolean", keySha256: null, onChain: false, l2: null });
+    // Circuit and argument names are identities, never clipped (E2-R6A): two long names sharing a
+    // 128-character prefix stay distinct and exact.
+    const longNames = clone(bundle);
+    const info2 = JSON.parse(longNames.get("out/compiler/contract-info.json")!.toString("utf8"));
+    for (const tail of ["A", "B"]) info2.circuits.push({ name: `${"x".repeat(128)}${tail}`, pure: true, arguments: [{ name: `${"y".repeat(200)}${tail}`, type: { "type-name": "Field" } }], "result-type": { "type-name": "Boolean" } });
+    longNames.set("out/compiler/contract-info.json", Buffer.from(JSON.stringify(info2)));
+    const withLong = levelTwo(filesOf(longNames), state);
+    expect(withLong.circuits.slice(-2).map((c) => [c.name, c.arguments[0]!.name])).toEqual([
+      [`${"x".repeat(128)}A`, `${"y".repeat(200)}A`], [`${"x".repeat(128)}B`, `${"y".repeat(200)}B`],
+    ]);
 
     // --- no key at all; a key that is a directory -----------------------------------------------
     const bare = new Map([...files].filter(([p]) => !p.startsWith("out/keys/")));

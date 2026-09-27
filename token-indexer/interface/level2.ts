@@ -27,7 +27,7 @@ import { sha256Hex } from "./commitment.js";
 export const MAX_CONTRACT_INFO_DEPTH = 64;
 /** Circuits read from contract-info.json; beyond it the bundle is `unchecked` (a local limit). */
 export const MAX_CIRCUITS = 10_000;
-/** Longest string (a name, a rendered type) kept in a circuit summary. */
+/** Longest rendered TYPE kept in a circuit summary (a display label; names are kept exact — E2-R6A). */
 const MAX_TEXT = 128;
 /** Circuits and arguments per circuit kept in the summary (it is stored with every result, so it
  *  stays small whatever a bundle claims; honest interfaces have a handful). */
@@ -459,10 +459,13 @@ export function levelTwo(files: ReadonlyMap<string, Buffer>, stateBytes: Uint8Ar
       const name = c.name as string;
       const key = keys.get(name);
       return {
-        name: clip(name),
+        // Names are identities: exact (bounded by the contract-info file cap), never clipped — two
+        // circuits whose long names share a prefix stay two (audit 02 E2-R6A). Only rendered TYPES,
+        // display labels, are clipped.
+        name,
         pure: typeof c.pure === "boolean" ? c.pure : null,
         arguments: (Array.isArray(c.arguments) ? c.arguments : []).slice(0, MAX_SUMMARY_ARGUMENTS).map((a: unknown) => ({
-          name: clip(String((a as { name?: unknown } | null)?.name ?? "")),
+          name: String((a as { name?: unknown } | null)?.name ?? ""),
           type: clip(renderType((a as { type?: unknown } | null)?.type, maxval)),
         })),
         resultType: clip(renderType(c["result-type"], maxval)),
@@ -472,7 +475,7 @@ export function levelTwo(files: ReadonlyMap<string, Buffer>, stateBytes: Uint8Ar
       };
     });
   const witnesses = "info" in contractInfo && Array.isArray(contractInfo.info.witnesses)
-    ? (contractInfo.info.witnesses as unknown[]).slice(0, MAX_SUMMARY_CIRCUITS).map((w) => clip(String((w as { name?: unknown } | null)?.name ?? w)))
+    ? (contractInfo.info.witnesses as unknown[]).slice(0, MAX_SUMMARY_CIRCUITS).map((w) => String((w as { name?: unknown } | null)?.name ?? w))
     : [];
 
   const failed = rows.find((r) => r.status === "FAIL");
