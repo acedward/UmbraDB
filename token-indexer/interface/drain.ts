@@ -29,6 +29,11 @@ import {
  * reads it before verifying and writes the result only if it is unchanged (the row is locked
  * `FOR UPDATE` for the write); otherwise the result is DISCARDED and the row, still due, is checked
  * again — a check that read the old keys can never overwrite a `stale`.
+ * Checks of one publication may also overlap (the `serve` drain and `verify-interfaces --address`
+ * run in different processes). A result is SUPERSEDED — not written — when the row already holds
+ * the result of a check that STARTED later (`checked_at` is a check's start): the newer observation
+ * stands, so a long Level 3 that began before the host was breached can never overwrite the failure
+ * a later check stored, move `checked_at` back or clear `verified_until` (audit 02 E2-F2).
  *
  * ── "Verified until" (FR-011b) ────────────────────────────────────────────────────────────────
  * `last_verified_at` is the last check that returned `verified`. When a later check does not, the
@@ -127,7 +132,9 @@ function internalError(error: unknown): VerificationResult {
   };
 }
 
-export type WriteOutcome = "written" | "discarded";
+/** `discarded`: the generation moved (a maintenance update); `superseded`: a check that started
+ *  later has already stored its result. Neither is written or recorded in the history. */
+export type WriteOutcome = "written" | "discarded" | "superseded";
 
 /** Writes one result under the generation guard, with its history row and the next check time: the
  *  re-check interval after a conclusion (verified / failed), the retry backoff after none. */
@@ -137,8 +144,8 @@ export async function writeCheckResult(
   checkedAt: Date, schedule: Pick<DrainDeps, "recheckMs" | "retryBackoff">,
 ): Promise<WriteOutcome> {
   return sql.begin(async (tx) => {
-    const locked = await tx<{ generation: number; checks: number; attempts: number; is_current: boolean }[]>`
-      SELECT e.generation, e.checks, e.attempts, (pi.event_id IS NOT NULL) AS is_current
+    const locked = await tx<{ generation: number; checks: number; attempts: number; checked_at: Date | null; is_current: boolean }[]>`
+      SELECT e.generation, e.checks, e.attempts, e.checked_at, (pi.event_id IS NOT NULL) AS is_current
       FROM ${tx(schema)}.public_interface_events e
       LEFT JOIN ${tx(schema)}.public_interfaces pi ON pi.net = e.net AND pi.event_id = e.event_id
       WHERE e.net = ${net} AND e.event_id = ${target.eventId}
@@ -146,6 +153,7 @@ export async function writeCheckResult(
     `;
     const row = locked[0];
     if (row === undefined || row.generation !== target.generation) return "discarded";
+    if (row.checked_at !== null && row.checked_at.getTime() > checkedAt.getTime()) return "superseded";
     const retried = RETRIED_STATUSES.has(result.status);
     const attempts = retried ? row.attempts + 1 : 0;
     const nextMs = !row.is_current ? null
@@ -201,7 +209,8 @@ export interface InterfaceDrainOutcome {
   unfetchable: number;
   /** The host did not deliver (owner Q25). */
   unreachable: number;
-  /** Results dropped because the publication was invalidated while it was being checked. */
+  /** Results dropped because the publication was invalidated while it was being checked, or
+   *  because a check that started later had already stored its result (`superseded`). */
   discarded: number;
 }
 
@@ -222,7 +231,7 @@ export async function drainInterfaceVerifications(
   for (const row of due) {
     outcome.attempted++;
     const { write, result } = await checkRow(sql, schema, net, row, triggerOf(row), deps);
-    if (write === "discarded") { outcome.discarded++; continue; }
+    if (write !== "written") { outcome.discarded++; continue; }
     outcome[result.status]++;
   }
   return outcome;

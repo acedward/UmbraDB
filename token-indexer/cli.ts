@@ -160,7 +160,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
           return 1;
         }
         const { report: _report, circuits: _circuits, ...summary } = done.result;
-        process.stdout.write(`${JSON.stringify({ address, eventId: done.eventId, written: done.write === "written", ...summary }, null, 2)}\n`);
+        process.stdout.write(`${JSON.stringify({ address, eventId: done.eventId, written: done.write === "written", write: done.write, ...summary }, null, 2)}\n`);
       } finally {
         await sql.end({ timeout: 5 });
       }
