@@ -293,19 +293,26 @@ export function jsonDepth(value: unknown, limit: number): number {
  *  one has a few thousand; beyond this Level 2 is `unchecked` (a local limit, audit 02 E2-R8A). */
 export const MAX_CONTRACT_INFO_VALUES = 200_000;
 
-/** The depth and the number of values of a parsed JSON document, stopping once either limit is passed. */
-function jsonShape(value: unknown, maxDepth: number, maxValues: number): { depth: number; values: number } {
+/** The depth and the number of values of a parsed JSON document, stopping once either limit is
+ *  passed. A container's children are COUNTED before any of them is scheduled, so the walk itself never
+ *  allocates more than `maxValues` entries (audit 02 E2-R9A: scheduling first and counting later
+ *  allocated one tuple per child of a 4 000 000-element array before refusing it). */
+export function jsonShape(value: unknown, maxDepth: number, maxValues: number, stats?: { maxStack: number }): { depth: number; values: number } {
   let depth = 0;
-  let values = 0;
+  let values = 1;
   const stack: [unknown, number][] = [[value, 1]];
   while (stack.length > 0) {
     const [v, d] = stack.pop()!;
-    values++;
-    if (values > maxValues) return { depth, values };
     if (v === null || typeof v !== "object") continue;
     if (d > depth) depth = d;
     if (depth > maxDepth) return { depth, values };
+    let size = 0;
+    if (Array.isArray(v)) size = v.length;
+    else for (const _k in v) { if (++size > maxValues) break; } // eslint-disable-line @typescript-eslint/no-unused-vars
+    values += size;
+    if (values > maxValues) return { depth, values };
     for (const child of Array.isArray(v) ? v : Object.values(v)) stack.push([child, d + 1]);
+    if (stats !== undefined && stack.length > stats.maxStack) stats.maxStack = stack.length; // test seam
   }
   return { depth, values };
 }
@@ -455,17 +462,18 @@ export function levelTwo(files: ReadonlyMap<string, Buffer>, stateBytes: Uint8Ar
     if (circuitList.length > MAX_CIRCUITS) {
       return empty("unchecked", `contract-info.json lists ${circuitList.length} circuits, over the ${MAX_CIRCUITS}-circuit limit; Level 2 was not run`);
     }
-    // The summary keeps every argument of every kept circuit (E2-R7A), so their total is bounded
-    // BEFORE anything is expanded: 4 000 000 one-byte entries fit an 8 MiB file and would become a
-    // 96 MB summary (audit 02 E2-R8A). Beyond the budget this is a local limit, never a verdict.
-    let argumentsTotal = 0;
-    for (const c of circuitList.slice(0, MAX_SUMMARY_CIRCUITS)) {
-      const args = (c as { arguments?: unknown } | null)?.arguments;
-      if (Array.isArray(args)) argumentsTotal += args.length;
-    }
-    if (argumentsTotal > MAX_SUMMARY_ARGUMENTS) {
-      return empty("unchecked", `contract-info.json declares ${argumentsTotal} circuit arguments, over the ${MAX_SUMMARY_ARGUMENTS}-argument limit; Level 2 was not run`);
-    }
+  }
+  // The circuits the summary keeps — selected ONCE, for the argument budget and for the summary alike
+  // (audit 02 E2-R9B: counting raw entries while summarising named ones let unnamed entries in front
+  // hide an oversized circuit). The summary keeps every argument of each (E2-R7A), so their total is
+  // bounded BEFORE anything is expanded (E2-R8A); beyond it this is a local limit, never a verdict.
+  const named = circuitList
+    .filter((c): c is Record<string, unknown> => c !== null && typeof c === "object" && typeof (c as { name?: unknown }).name === "string");
+  const kept = named.slice(0, MAX_SUMMARY_CIRCUITS);
+  let argumentsTotal = 0;
+  for (const c of kept) if (Array.isArray(c.arguments)) argumentsTotal += c.arguments.length;
+  if (argumentsTotal > MAX_SUMMARY_ARGUMENTS) {
+    return empty("unchecked", `contract-info.json declares ${argumentsTotal} circuit arguments, over the ${MAX_SUMMARY_ARGUMENTS}-argument limit; Level 2 was not run`);
   }
 
   const keys = shippedKeys(files);
@@ -494,9 +502,7 @@ export function levelTwo(files: ReadonlyMap<string, Buffer>, stateBytes: Uint8Ar
   // The published circuits, for display (spec US1 scenario 4: "each circuit listed with its argument types").
   const maxval = maxvalOf;
   const rowOf = new Map(rows.map((r) => [r.circuit, r.status]));
-  const named = circuitList
-    .filter((c): c is Record<string, unknown> => c !== null && typeof c === "object" && typeof (c as { name?: unknown }).name === "string");
-  const circuits: CircuitSummary[] = named.slice(0, MAX_SUMMARY_CIRCUITS)
+  const circuits: CircuitSummary[] = kept
     .map((c) => {
       const name = c.name as string;
       const key = keys.get(name);

@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import * as rt from "@midnight-ntwrk/compact-runtime";
 import { describe, expect, it } from "vitest";
 import {
-  IndexerStateSource, MAX_CIRCUITS, MAX_CONTRACT_INFO_VALUES, MAX_STATE_RESPONSE_BYTES, MAX_SUMMARY_ARGUMENTS, StateUnavailableError, jsonDepth, levelTwo, providerOrigin, providerRedactor, renderType, shippedKeys, wrapperBinding,
+  IndexerStateSource, MAX_CIRCUITS, MAX_CONTRACT_INFO_VALUES, MAX_STATE_RESPONSE_BYTES, MAX_SUMMARY_ARGUMENTS, StateUnavailableError, jsonDepth, jsonShape, levelTwo, providerOrigin, providerRedactor, renderType, shippedKeys, wrapperBinding,
 } from "../interface/level2.js";
 import { clone, fixtureHex, loadFixtureBundle, sha256Hex, verdict, type Bundle } from "./helpers/pi-fixture.js";
 
@@ -120,6 +120,19 @@ describe("[B] Level 2 (C5)", () => {
     manyArgs.set("out/compiler/contract-info.json", Buffer.from(JSON.stringify(info4)));
     expect(levelTwo(filesOf(manyArgs), state)).toMatchObject({ outcome: "unchecked", reason: "contract-info.json declares 10001 circuit arguments, over the 10000-argument limit; Level 2 was not run" });
     expect([MAX_SUMMARY_ARGUMENTS, MAX_CONTRACT_INFO_VALUES]).toEqual([10_000, 200_000]);
+    // The shape walk counts a container's children BEFORE scheduling any (E2-R9A): refusing the
+    // 4 000 000-element array schedules nothing of it.
+    const stats = { maxStack: 0 };
+    expect(jsonShape(info3, 64, 200_000, stats).values).toBeGreaterThan(200_000);
+    expect(stats.maxStack).toBeLessThanOrEqual(200_001);
+    const fine = { maxStack: 0 };
+    expect(jsonShape({ a: [1, 2, { b: [3] }] }, 64, 200_000, fine)).toEqual({ depth: 4, values: 7 });
+    // The budget and the summary count the SAME circuits (E2-R9B): unnamed entries in front hide nothing.
+    const hidden = clone(bundle);
+    const info5 = JSON.parse(hidden.get("out/compiler/contract-info.json")!.toString("utf8"));
+    info5.circuits = [...new Array(500).fill(null), ...info5.circuits, { name: "bulk", pure: true, arguments: new Array(10_001).fill(0), "result-type": { "type-name": "Boolean" } }];
+    hidden.set("out/compiler/contract-info.json", Buffer.from(JSON.stringify(info5)));
+    expect(levelTwo(filesOf(hidden), state)).toMatchObject({ outcome: "unchecked", reason: "contract-info.json declares 10001 circuit arguments, over the 10000-argument limit; Level 2 was not run" });
 
     // --- no key at all; a key that is a directory -----------------------------------------------
     const bare = new Map([...files].filter(([p]) => !p.startsWith("out/keys/")));
