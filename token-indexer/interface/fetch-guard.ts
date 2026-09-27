@@ -250,7 +250,19 @@ export class GuardedHttpTransport implements BundleTransport {
     return new Promise((resolvePromise, reject) => {
       const lib = u.protocol === "https:" ? https : http;
       let settled = false;
-      const finish = (fn: () => void): void => { if (!settled) { settled = true; fn(); } };
+      let responded = false;
+      // Every way a request can end settles this promise exactly once (audit 02 E2-R7B): a response,
+      // a request error, a protocol upgrade (Node takes a 101 away from the response callback), a
+      // connection closed with no response, and — independently of the socket — the deadline.
+      const onDeadline = (): void => finish(() => reject(this.deadlineError()));
+      const finish = (fn: () => void): void => {
+        if (settled) return;
+        settled = true;
+        this.signal.removeEventListener("abort", onDeadline);
+        fn();
+      };
+      if (this.signal.aborted) { onDeadline(); return; }
+      this.signal.addEventListener("abort", onDeadline, { once: true });
       this.requests++;
       const req = lib.request({
         protocol: u.protocol, hostname: host, port: u.port === "" ? undefined : Number(u.port),
@@ -258,6 +270,7 @@ export class GuardedHttpTransport implements BundleTransport {
         headers: { "accept-encoding": "identity", accept: "*/*", "user-agent": USER_AGENT },
         lookup: lookup as never,
       }, (res) => {
+        responded = true;
         const status = res.statusCode ?? 0;
         if ([301, 302, 303, 307, 308].includes(status)) {
           res.resume();
@@ -300,8 +313,14 @@ export class GuardedHttpTransport implements BundleTransport {
         res.on("end", () => finish(() => resolvePromise({ body: Buffer.concat(chunks) })));
         res.on("error", (error) => finish(() => reject(this.transportError(u, error))));
         res.on("aborted", () => finish(() => reject(this.transportError(u, new Error("the response was cut off")))));
+        res.on("close", () => { if (!res.complete) finish(() => reject(this.transportError(u, new Error("the response was cut off")))); });
+      });
+      req.on("upgrade", (res, socket) => {
+        socket.destroy();
+        finish(() => reject(new TransportError("unreachable", `${u.href} answered HTTP ${res.statusCode ?? 101} (a protocol upgrade); only an HTTP body can be checked`)));
       });
       req.on("error", (error) => finish(() => reject(this.transportError(u, error))));
+      req.on("close", () => { if (!responded) finish(() => reject(this.transportError(u, new Error("the connection closed without a response")))); });
       req.end();
     });
   }

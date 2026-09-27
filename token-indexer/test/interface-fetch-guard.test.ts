@@ -1,3 +1,5 @@
+import { createServer } from "node:net";
+import type { AddressInfo } from "node:net";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { GuardedHttpTransport, checkUrl, classifyAddress, ipBytes, type FetchPolicy } from "../interface/fetch-guard.js";
 import { BodyTooLargeError, TransportError, levelOne } from "../interface/level1.js";
@@ -165,6 +167,30 @@ describe("the fetch guard (C4)", () => {
     const deadPort = closed.port;
     await closed.close();
     expect(await refusal(() => open().get(`http://127.0.0.1:${deadPort}/x`, 100))).toMatchObject({ kind: "unreachable", message: expect.stringMatching(/could not fetch .*ECONNREFUSED/) });
+    // Every way a request can end settles it (E2-R7B): a protocol upgrade (Node takes a 101 away from
+    // the response callback), a connection closed before any response, and a host that never answers
+    // — bounded by the deadline even when the socket is gone. Raw TCP answers:
+    const raw = createServer((socket) => {
+      socket.once("data", (chunk) => {
+        const path = /^GET (\S+)/.exec(chunk.toString("latin1"))?.[1];
+        if (path === "/upgrade") socket.end("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n");
+        else if (path === "/hangup") socket.destroy();
+        // "/silent": never answers
+      });
+    });
+    await new Promise<void>((resolve) => raw.listen(0, "127.0.0.1", resolve));
+    const rawOrigin = `http://127.0.0.1:${(raw.address() as AddressInfo).port}`;
+    try {
+      const t0 = Date.now();
+      expect(await refusal(() => open({ deadlineMs: 5_000 }).get(`${rawOrigin}/upgrade`, 100))).toMatchObject({ kind: "unreachable", message: expect.stringMatching(/answered HTTP 101 \(a protocol upgrade\)/) });
+      expect(Date.now() - t0).toBeLessThan(2_000);
+      expect(await refusal(() => open({ deadlineMs: 5_000 }).get(`${rawOrigin}/hangup`, 100))).toMatchObject({ kind: "unreachable" });
+      const t1 = Date.now();
+      expect(await refusal(() => open({ deadlineMs: 400 }).get(`${rawOrigin}/silent`, 100))).toMatchObject({ kind: "unchecked", message: expect.stringMatching(/the 400 ms deadline was reached/) });
+      expect(Date.now() - t1).toBeLessThan(2_000);
+    } finally {
+      raw.close();
+    }
     // Through Level 1: a missing listed file is unreachable, naming the file (not failed, not a level).
     host.routes.set("/pi/out/keys/read.verifier", { kind: "status", status: 404 });
     const missing = await levelOne({ url: `${host.origin}/pi/index.json`, commitment: commitmentOf(bundle) }, open());

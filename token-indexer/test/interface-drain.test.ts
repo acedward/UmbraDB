@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer as createNetServer, type AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -650,6 +651,26 @@ describe("public-interface verification drain (C7)", () => {
     const paths = (d.report!.artifacts.files as { path: string }[]).map((f) => f.path);
     expect(paths).toContain(`${prefix}A`);
     expect(paths).toContain(`${prefix}B`);
+
+    // A host that answers with a protocol upgrade (HTTP 101) cannot hold the queue (E2-R7B): that
+    // publication is unreachable, and the next one is verified in the same pass.
+    const upgrader = createNetServer((socket) => {
+      socket.once("data", () => socket.end("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"));
+    });
+    await new Promise<void>((resolve) => upgrader.listen(0, "127.0.0.1", resolve));
+    try {
+      const upUrl = `http://127.0.0.1:${(upgrader.address() as AddressInfo).port}/index.json`;
+      await chain.scan(db, [
+        publish("b8".repeat(32), 107, 80, payloadFor(bundle, upUrl)),
+        other("b9".repeat(32), 108, 90, payloadFor(bundle, goodUrl)),
+      ]);
+      const pass = await drainInterfaceVerifications(db.sql, db.schema, NET, deps(state, at(5_000)));
+      expect(pass).toMatchObject({ attempted: 2, unreachable: 1, verified: 1 });
+      expect((await row(db, 80)).reason).toMatch(/answered HTTP 101 \(a protocol upgrade\)/);
+      expect(await row(db, 90)).toMatchObject({ status: "verified", level: 3 });
+    } finally {
+      upgrader.close();
+    }
   }, 180_000);
 });
 
