@@ -8,6 +8,8 @@ import { commitmentOf, loadFixtureBundle } from "./helpers/pi-fixture.js";
  * Project 00024-02 task C4 — the fetch guard (spec US1 scenarios 5–6, FR-011; audit F4: the
  * private-host refusal is tested with the bypass OFF, here, not in the integration run).
  * Everything goes over real TCP to a local host (`helpers/bundle-host.ts`).
+ * Task C9 (owner Q25): every "the host did not deliver" case is `unreachable`; `unfetchable` is only
+ * a policy refusal (scheme, private destination) and `unchecked` only the deadline.
  */
 
 async function refusal(fn: () => Promise<unknown>): Promise<TransportError> {
@@ -37,7 +39,7 @@ describe("the fetch guard (C4)", () => {
   const open = (policy: Partial<FetchPolicy> = {}): GuardedHttpTransport =>
     new GuardedHttpTransport({ allowPrivateHosts: true, ...policy });
 
-  it("[[interface-fetch-guard]] http(s) only; private, loopback and link-local destinations refused after DNS (bypass OFF); ≤ 3 redirects, each re-checked; one deadline; size caps; identity bytes only", async () => {
+  it("[[interface-fetch-guard]] http(s) only; private, loopback and link-local destinations refused after DNS (bypass OFF); ≤ 3 redirects, each re-checked; one deadline; size caps; identity bytes only; a host that does not deliver is unreachable", async () => {
     // --- destinations: the classifier -----------------------------------------------------------
     for (const [address, label] of [
       ["127.0.0.1", "loopback"], ["127.255.255.254", "loopback"], ["10.1.2.3", "private"], ["172.16.0.1", "private"],
@@ -81,11 +83,16 @@ describe("the fetch guard (C4)", () => {
     const rebinding = new GuardedHttpTransport({
       resolve: async (name) => { asked.push(name); return name === "mixed.test" ? [{ address: "93.184.216.34", family: 4 }, { address: "10.0.0.7", family: 4 }] : [{ address: "10.1.2.3", family: 4 }]; },
     });
-    expect((await refusal(() => rebinding.get("http://bundles.test/pi/index.json", 1000))).message).toMatch(/bundles\.test resolves to 10\.1\.2\.3, a private address/);
-    expect((await refusal(() => rebinding.get("https://mixed.test/pi/index.json", 1000))).message).toMatch(/mixed\.test resolves to 10\.0\.0\.7, a private address/);
+    expect(await refusal(() => rebinding.get("http://bundles.test/pi/index.json", 1000))).toMatchObject({ kind: "unfetchable", message: expect.stringMatching(/bundles\.test resolves to 10\.1\.2\.3, a private address/) });
+    expect(await refusal(() => rebinding.get("https://mixed.test/pi/index.json", 1000))).toMatchObject({ kind: "unfetchable", message: expect.stringMatching(/mixed\.test resolves to 10\.0\.0\.7, a private address/) });
     expect(asked).toEqual(["bundles.test", "mixed.test"]);
+    expect(named.kind).toBe("unfetchable");
+    expect(v6.kind).toBe("unfetchable");
+    // A name that does not resolve is NOT a policy refusal: the host did not deliver (C9, Q25).
     const nowhere = new GuardedHttpTransport({ resolve: async () => [] });
-    expect((await refusal(() => nowhere.get("http://nowhere.test/", 10))).message).toMatch(/ENOTFOUND/);
+    expect(await refusal(() => nowhere.get("http://nowhere.test/", 10))).toMatchObject({ kind: "unreachable", message: expect.stringMatching(/ENOTFOUND/) });
+    const failing = new GuardedHttpTransport({ resolve: async () => { throw Object.assign(new Error("getaddrinfo EAI_AGAIN"), { code: "EAI_AGAIN" }); } });
+    expect(await refusal(() => failing.get("http://flaky.test/", 10))).toMatchObject({ kind: "unreachable", message: expect.stringMatching(/EAI_AGAIN/) });
     // And through Level 1: the event URL on a loopback host is unfetchable, nothing fetched.
     const l1Refused = await levelOne({ url: `${host.origin}/pi/index.json`, commitment: commitmentOf(bundle) }, new GuardedHttpTransport());
     expect(l1Refused).toMatchObject({ outcome: "unfetchable", file: "index.json", requests: 1 });
@@ -112,17 +119,17 @@ describe("the fetch guard (C4)", () => {
     expect((await three.get(`${host.origin}/r1`, 10_000)).equals(bundle.get("README.md")!)).toBe(true);
     expect(three.redirects).toBe(3);
     host.routes.set("/r0", { kind: "redirect", location: "/r1", status: 307 });
-    expect((await refusal(() => open().get(`${host.origin}/r0`, 10_000))).message).toMatch(/more than 3 redirects/);
+    expect(await refusal(() => open().get(`${host.origin}/r0`, 10_000))).toMatchObject({ kind: "unreachable", message: expect.stringMatching(/more than 3 redirects/) });
     host.routes.set("/to-ftp", { kind: "redirect", location: "ftp://b.example/x" });
-    expect((await refusal(() => open().get(`${host.origin}/to-ftp`, 10))).message).toMatch(/ftp: URLs are not fetched/);
+    expect(await refusal(() => open().get(`${host.origin}/to-ftp`, 10))).toMatchObject({ kind: "unfetchable", message: expect.stringMatching(/ftp: URLs are not fetched/) });
     host.routes.set("/nowhere", { kind: "redirect", location: "" });
-    expect((await refusal(() => open().get(`${host.origin}/nowhere`, 10))).message).toMatch(/without a Location/);
+    expect(await refusal(() => open().get(`${host.origin}/nowhere`, 10))).toMatchObject({ kind: "unreachable", message: expect.stringMatching(/without a Location/) });
     // With the bypass OFF, a hop to a private address is refused even when the first hop was allowed
     // (the classifier seam lets exactly 127.0.0.1 through; 127.0.0.2 is judged by the real one).
     host.routes.set("/to-private", { kind: "redirect", location: `http://127.0.0.2:${host.port}/pi/README.md` });
     const hop = new GuardedHttpTransport({ classify: (a) => (a === "127.0.0.1" ? null : classifyAddress(a)) });
     host.requests.length = 0;
-    expect((await refusal(() => hop.get(`${host.origin}/to-private`, 10_000))).message).toMatch(/127\.0\.0\.2:\d+ is a loopback address/);
+    expect(await refusal(() => hop.get(`${host.origin}/to-private`, 10_000))).toMatchObject({ kind: "unfetchable", message: expect.stringMatching(/127\.0\.0\.2:\d+ is a loopback address/) });
     expect(host.requests.map((r) => r.path)).toEqual(["/to-private"]);
 
     // --- one deadline for the whole verification: unchecked ---------------------------------------
@@ -142,15 +149,25 @@ describe("the fetch guard (C4)", () => {
     await expect(open().get(`${host.origin}/chunked`, 4_999)).rejects.toThrow(/more than 4999 bytes; download aborted/);
     expect((await open().get(`${host.origin}/chunked`, 5_000))).toHaveLength(5_000);
 
-    // --- identity bytes only; HTTP errors and dead hosts are unfetchable ----------------------------
+    // --- identity bytes only; a host that does not deliver is unreachable (C9, owner Q25) --------
     host.routes.set("/gz", { kind: "body", body: Buffer.from("x"), headers: { "content-encoding": "gzip" } });
-    expect((await refusal(() => open().get(`${host.origin}/gz`, 100))).message).toMatch(/Content-Encoding "gzip"/);
+    expect(await refusal(() => open().get(`${host.origin}/gz`, 100))).toMatchObject({ kind: "unreachable", message: expect.stringMatching(/Content-Encoding "gzip"/) });
     host.routes.set("/boom", { kind: "status", status: 500 });
-    expect(await refusal(() => open().get(`${host.origin}/boom`, 100))).toMatchObject({ kind: "unfetchable", message: expect.stringMatching(/HTTP 500/) });
-    expect((await refusal(() => open().get(`${host.origin}/missing`, 100))).message).toMatch(/HTTP 404/);
+    expect(await refusal(() => open().get(`${host.origin}/boom`, 100))).toMatchObject({ kind: "unreachable", message: expect.stringMatching(/HTTP 500/) });
+    host.routes.set("/gone", { kind: "status", status: 410 });
+    expect(await refusal(() => open().get(`${host.origin}/gone`, 100))).toMatchObject({ kind: "unreachable", message: expect.stringMatching(/HTTP 410/) });
+    host.routes.set("/info", { kind: "status", status: 204 });
+    expect((await open().get(`${host.origin}/info`, 100))).toHaveLength(0); // 2xx: delivered (an empty body)
+    expect(await refusal(() => open().get(`${host.origin}/missing`, 100))).toMatchObject({ kind: "unreachable", message: expect.stringMatching(/HTTP 404/) });
+    host.routes.set("/reset", { kind: "reset" });
+    expect(await refusal(() => open().get(`${host.origin}/reset`, 100))).toMatchObject({ kind: "unreachable", message: expect.stringMatching(/could not fetch .*(ECONNRESET|socket hang up)/) });
     const closed = await startBundleHost();
     const deadPort = closed.port;
     await closed.close();
-    expect((await refusal(() => open().get(`http://127.0.0.1:${deadPort}/x`, 100))).message).toMatch(/could not fetch .*ECONNREFUSED/);
+    expect(await refusal(() => open().get(`http://127.0.0.1:${deadPort}/x`, 100))).toMatchObject({ kind: "unreachable", message: expect.stringMatching(/could not fetch .*ECONNREFUSED/) });
+    // Through Level 1: a missing listed file is unreachable, naming the file (not failed, not a level).
+    host.routes.set("/pi/out/keys/read.verifier", { kind: "status", status: 404 });
+    const missing = await levelOne({ url: `${host.origin}/pi/index.json`, commitment: commitmentOf(bundle) }, open());
+    expect(missing).toMatchObject({ outcome: "unreachable", file: "out/keys/read.verifier", steps: { hashOk: true, indexOk: true } });
   }, 60_000);
 });

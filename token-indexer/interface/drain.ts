@@ -1,6 +1,6 @@
 import type { ISql } from "postgres";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
-import type { InterfaceConfig } from "../config.js";
+import { DEFAULT_RETRY_BACKOFF, type InterfaceConfig, type RetryBackoff } from "../config.js";
 import { IndexerStateSource } from "./level2.js";
 import {
   jsonbSafe, verifyPublication, type CheckTrigger, type PublicationToVerify, type VerificationResult, type VerifierDeps,
@@ -17,7 +17,10 @@ import {
  *    one first;
  *  - a publication marked `stale` by a maintenance update (`stale`; FR-012);
  *  - the CURRENT publication again after `TOKEN_INTERFACE_RECHECK_MS` (default 24 h) (`recheck`;
- *    FR-011b), or sooner after a limit or an unavailable host, with backoff (`retry`; US1 scenario 6);
+ *    FR-011b), or sooner after a check that reached no conclusion — a host that did not deliver
+ *    (`unreachable`, owner Q25), a limit (`unchecked`, US1 scenario 6) or a refused destination
+ *    (`unfetchable`) — with EXPONENTIAL backoff (`retry`; {@link retryBackoffMs}). A retry is a whole
+ *    new verification, so a host that delivers again is verified from Level 1;
  *  - on demand, `token-indexer verify-interfaces --address <hex>` (`on_demand`).
  * A historical publication is not re-checked: it keeps its own last result (FR-010).
  *
@@ -34,15 +37,24 @@ import {
  * to `public_interface_checks`.
  */
 
-/** Retry backoff after a limit or an unavailable host: 30 s, 60 s, 120 s … capped at 1 h (and at
- *  the re-check interval). */
-export function retryBackoffMs(attempts: number, recheckMs: number): number {
-  return Math.min(30_000 * 2 ** Math.max(0, attempts - 1), 3_600_000, recheckMs);
+/** The statuses that reached no conclusion and are retried with backoff (`attempts` counts them). */
+export const RETRIED_STATUSES: ReadonlySet<string> = new Set(["unreachable", "unchecked", "unfetchable"]);
+
+/**
+ * The delay before the `attempts`-th consecutive retry (owner decision Q25: "exponential fallback"):
+ * `baseMs · 2^(attempts − 1)` — with the defaults 30 s, 60 s, 120 s … — capped at `capMs` (default
+ * 1 h; `TOKEN_INTERFACE_RETRY_BASE_MS` / `TOKEN_INTERFACE_RETRY_CAP_MS`) and never beyond the
+ * re-check interval. Any attempt count gives a finite delay (2^n overflows to Infinity, the cap wins).
+ */
+export function retryBackoffMs(attempts: number, recheckMs: number, backoff: RetryBackoff = DEFAULT_RETRY_BACKOFF): number {
+  return Math.min(backoff.baseMs * 2 ** Math.max(0, attempts - 1), backoff.capMs, recheckMs);
 }
 
 export interface DrainDeps extends VerifierDeps {
   /** The re-check interval of a current publication (FR-011b). */
   recheckMs: number;
+  /** The retry backoff (owner Q25). Default {@link DEFAULT_RETRY_BACKOFF}: 30 s doubling to 1 h. */
+  retryBackoff?: RetryBackoff;
   /** Test seam: the clock. */
   now?: () => Date;
 }
@@ -55,6 +67,7 @@ export function drainDepsFromConfig(interfaces: InterfaceConfig, indexerHttp: st
     limits: interfaces.limits,
     level3: { enabled: interfaces.level3.enabled, compactBin: interfaces.level3.compactBin, deadlineMs: interfaces.level3.deadlineMs },
     recheckMs: interfaces.recheckMs,
+    retryBackoff: interfaces.retry,
   };
 }
 
@@ -92,7 +105,7 @@ const toVerify = (row: DueRow): PublicationToVerify => ({
 function triggerOf(row: DueRow): CheckTrigger {
   if (row.status === "stale") return "stale";
   if (row.checks === 0) return "initial";
-  if (row.status === "unchecked" || row.status === "unfetchable") return "retry";
+  if (RETRIED_STATUSES.has(row.status)) return "retry";
   return "recheck";
 }
 
@@ -109,11 +122,12 @@ function internalError(error: unknown): VerificationResult {
 
 export type WriteOutcome = "written" | "discarded";
 
-/** Writes one result under the generation guard, with its history row and the next check time. */
+/** Writes one result under the generation guard, with its history row and the next check time: the
+ *  re-check interval after a conclusion (verified / failed), the retry backoff after none. */
 export async function writeCheckResult(
   sql: UmbraDBSql, schema: string, net: string,
   target: { eventId: number; generation: number }, trigger: CheckTrigger, result: VerificationResult,
-  checkedAt: Date, recheckMs: number,
+  checkedAt: Date, schedule: Pick<DrainDeps, "recheckMs" | "retryBackoff">,
 ): Promise<WriteOutcome> {
   return sql.begin(async (tx) => {
     const locked = await tx<{ generation: number; checks: number; attempts: number; is_current: boolean }[]>`
@@ -125,9 +139,10 @@ export async function writeCheckResult(
     `;
     const row = locked[0];
     if (row === undefined || row.generation !== target.generation) return "discarded";
-    const limited = result.status === "unchecked" || result.status === "unfetchable";
-    const attempts = limited ? row.attempts + 1 : 0;
-    const nextMs = !row.is_current ? null : limited ? retryBackoffMs(attempts, recheckMs) : recheckMs;
+    const retried = RETRIED_STATUSES.has(result.status);
+    const attempts = retried ? row.attempts + 1 : 0;
+    const nextMs = !row.is_current ? null
+      : retried ? retryBackoffMs(attempts, schedule.recheckMs, schedule.retryBackoff) : schedule.recheckMs;
     const next = nextMs === null ? null : new Date(checkedAt.getTime() + nextMs);
     const verified = result.status === "verified";
     await tx`
@@ -160,7 +175,7 @@ async function checkRow(sql: UmbraDBSql, schema: string, net: string, row: DueRo
   } catch (error) {
     result = internalError(error);
   }
-  const write = await writeCheckResult(sql, schema, net, { eventId: Number(row.event_id), generation: row.generation }, trigger, result, checkedAt, deps.recheckMs);
+  const write = await writeCheckResult(sql, schema, net, { eventId: Number(row.event_id), generation: row.generation }, trigger, result, checkedAt, deps);
   return { write, result };
 }
 
@@ -170,6 +185,8 @@ export interface InterfaceDrainOutcome {
   failed: number;
   unchecked: number;
   unfetchable: number;
+  /** The host did not deliver (owner Q25). */
+  unreachable: number;
   /** Results dropped because the publication was invalidated while it was being checked. */
   discarded: number;
 }
@@ -187,7 +204,7 @@ export async function drainInterfaceVerifications(
     ORDER BY (pi.event_id IS NULL), e.next_check_at, e.event_id
     LIMIT ${opts.limit ?? 10}
   `;
-  const outcome: InterfaceDrainOutcome = { attempted: 0, verified: 0, failed: 0, unchecked: 0, unfetchable: 0, discarded: 0 };
+  const outcome: InterfaceDrainOutcome = { attempted: 0, verified: 0, failed: 0, unchecked: 0, unfetchable: 0, unreachable: 0, discarded: 0 };
   for (const row of due) {
     outcome.attempted++;
     const { write, result } = await checkRow(sql, schema, net, row, triggerOf(row), deps);

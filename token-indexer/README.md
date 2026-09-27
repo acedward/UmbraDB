@@ -554,9 +554,14 @@ The indexer reads the **Public Interfaces for Compact Contracts** draft ([B],
    bundle is fetched through the fetch guard: http(s) only, private / loopback / link-local
    destinations refused after DNS (inside the connection's own lookup), ≤ 3 redirects, one deadline,
    size and file-count caps. **Nothing from a bundle is executed.**
-3. **Re-verify**: the current publication every `TOKEN_INTERFACE_RECHECK_MS` (24 h), sooner after a
-   limit (backoff), at once after a maintenance update of the contract (`stale`), and on demand. A
-   result that changes keeps the time the earlier verified result held (`verifiedUntil`).
+3. **Re-verify**: the current publication every `TOKEN_INTERFACE_RECHECK_MS` (24 h), at once after a
+   maintenance update of the contract (`stale`), on demand, and — after a check that reached no
+   conclusion (`unreachable`, `unchecked`, `unfetchable`) — sooner, with **exponential backoff**: the
+   n-th consecutive retry waits `TOKEN_INTERFACE_RETRY_BASE_MS · 2^(n−1)` (30 s, 60 s, 120 s …),
+   capped at `TOKEN_INTERFACE_RETRY_CAP_MS` (1 h) and never beyond the re-check interval. A retry is a
+   whole new verification, so a host that delivers again is verified from Level 1. A result that
+   changes keeps the time the earlier verified result held (`verifiedUntil`) — a verified interface
+   whose host goes away shows `unreachable` with "verified until <time>".
 
 | status | meaning |
 |---|---|
@@ -564,7 +569,8 @@ The indexer reads the **Public Interfaces for Compact Contracts** draft ([B],
 | `verified` | Levels 1 and 2 passed; `level` 3 when Level 3 passed too (`l3` = `passed` / `failed` / `not_run` + reason) |
 | `failed` | a check failed on the bundle's bytes (`failedLevel` 1 or 2, `reason`) |
 | `unchecked` | a local limit stopped it (deadline, a cap) or the contract state was unavailable — never "invalid" |
-| `unfetchable` | the URL is not usable, not http(s), a refused destination, or the host did not deliver |
+| `unfetchable` | a policy refusal: the URL is not usable text, not http(s), or its host is a private / loopback / link-local destination |
+| `unreachable` | the host did not deliver (a name that does not resolve, a refused or reset connection, a non-2xx answer — a listed file missing included —, more than 3 redirects, an unexpected `Content-Encoding`): handled before the [B] levels, no level claimed, retried with exponential backoff (owner decision Q25) |
 | `stale` | a maintenance update changed the contract since the last check; the last result is kept until it is re-checked |
 
 ## Routes added
@@ -575,7 +581,7 @@ The indexer reads the **Public Interfaces for Compact Contracts** draft ([B],
 | `GET /v1/contracts/:address/interface` | the current publication: status, level, levels, reason, commitment, URL, package evidence, state, compiler/build, files, keys, circuits (with argument types), the verification record (`report`), its check history, and every older publication (`history`); 404 if none |
 | `GET /v1/contracts/:address/interface/events?limit&cursor` | every publication of the contract, newest first, each with its role (`current` / `historical`) and its own last result |
 | `Token.interface`, `GET /v1/contracts/:address` `interface` (additive) | the current interface's status and levels, or `null` |
-| `GET /internal/status` (exists) | `counters` gains `interfaces`, `interfacePublications`, `interfacesVerified`, `interfacesFailed`, `interfacesWaiting`, `interfacesUnavailable` |
+| `GET /internal/status` (exists) | `counters` gains `interfaces`, `interfacePublications`, and the current publications by status: `interfacesVerified`, `interfacesFailed`, `interfacesWaiting` (pending or stale), `interfacesUnavailable` (unchecked or unfetchable), `interfacesUnreachable` — the five add up to `interfaces` |
 
 Every interface value carries `origin: { origin: "public-interface", evidence }` — the publication
 (event ids, transaction, block, segment, parts, phase, URL, commitment) and what its last check
@@ -587,6 +593,7 @@ carries its own origin.
 | Variable | Default | |
 |---|---|---|
 | `TOKEN_INTERFACE_RECHECK_MS` | `86400000` | re-verify the current publications this often |
+| `TOKEN_INTERFACE_RETRY_BASE_MS` / `TOKEN_INTERFACE_RETRY_CAP_MS` | `30000` / `3600000` | exponential retry after an inconclusive check: base · 2^(n−1), capped (cap ≥ base, both ≥ 1000; a malformed value fails at startup naming the variable) |
 | `TOKEN_INTERFACE_FETCH_DEADLINE_MS` | `120000` | one deadline for every request of one bundle |
 | `TOKEN_INTERFACE_MAX_INDEX_BYTES` / `_MAX_FILES` / `_MAX_FILE_BYTES` / `_MAX_BUNDLE_BYTES` | 256 KiB / 1000 / 8 MiB / 16 MiB | Level 1 caps |
 | `TOKEN_INTERFACE_L3` / `TOKEN_INTERFACE_L3_DEADLINE_MS` / `COMPACT_BIN` | `on` / `1800000` / `compact` | Level 3 |

@@ -116,7 +116,8 @@ export function payloadFor(b: Bundle, url: string): Buffer {
 
 /**
  * An in-memory transport over one bundle served at `base` (a directory URL ending in `/`): every
- * GET is recorded; a path the bundle does not hold is an `unfetchable` 404; `overrides` replace a
+ * GET is recorded; a path the bundle does not hold is an `unreachable` 404 (as the guarded transport
+ * reports it since C9, owner Q25); `overrides` replace a
  * URL's answer with bytes or a thrown error.
  */
 export class MemoryTransport implements BundleTransport {
@@ -130,7 +131,7 @@ export class MemoryTransport implements BundleTransport {
     const override = this.overrides.get(url);
     if (override instanceof Error) throw override;
     const body = override ?? (url.startsWith(this.base) ? this.bundle.get(decodeURIComponent(url.slice(this.base.length))) : undefined);
-    if (body === undefined) throw new TransportError("unfetchable", `${url} returned HTTP 404`);
+    if (body === undefined) throw new TransportError("unreachable", `${url} returned HTTP 404`);
     if (body.length > cap) throw new BodyTooLargeError(cap, `more than ${cap} bytes`);
     return body;
   }

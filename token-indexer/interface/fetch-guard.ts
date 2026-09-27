@@ -26,15 +26,22 @@ import { BodyTooLargeError, TransportError, type BundleTransport } from "./level
  *    the connection (DNS rebinding). An IP-literal host (which skips `lookup`) is classified first.
  *    A test-only flag (`allowPrivateHosts`) lets the local stack's static server be used (spec §6.1);
  *    the refusal itself is tested with the flag OFF (audit F4).
- *  - **At most 3 redirects** (301/302/303/307/308), each hop re-checked (scheme and destination).
+ *  - **At most 3 redirects** (301/302/303/307/308), each hop re-checked (scheme and destination);
+ *    more is `unreachable` (the host did not deliver).
  *  - **One deadline per verification**: every request of one bundle shares it; reaching it is
  *    `unchecked` — a local limit, never a verdict.
  *  - **Size caps** are enforced while reading (and from an announced `Content-Length`): the caller
  *    passes the cap (`level1.ts`), and exceeding it is {@link BodyTooLargeError}.
  *  - **Bytes as served**: `Accept-Encoding: identity`; a response with any other `Content-Encoding`
- *    is refused (`unfetchable`) — a transparently decompressed body would not be the committed bytes.
- *  - Any other transport problem (a host that does not resolve, refuses, resets, or answers a non-2xx
- *    status) is `unfetchable`: unavailable, not invalid.
+ *    is not the committed bytes (a transparently decompressed body would not be) — `unreachable`.
+ *  - Any other transport problem (a host that does not resolve, refuses, resets or cuts the
+ *    connection, fails TLS, answers a non-2xx status or a redirect without a usable `Location`) is
+ *    `unreachable`: the host did not deliver — unavailable, not invalid, and not a policy refusal
+ *    (owner decision Q25, UC-13: handled before the [B] levels, retried with exponential backoff).
+ *
+ * So `unfetchable` is only ever a POLICY refusal (scheme, destination), `unchecked` only a local
+ * LIMIT (deadline; the size caps are raised as {@link BodyTooLargeError} and judged by Level 1), and
+ * everything else the transport meets is `unreachable`.
  */
 
 export interface FetchPolicy {
@@ -198,13 +205,13 @@ export class GuardedHttpTransport implements BundleTransport {
       const answer = await this.once(current, cap);
       if (answer.location === undefined) return answer.body!;
       if (hop >= this.policy.maxRedirects) {
-        throw new TransportError("unfetchable", `${url}: more than ${this.policy.maxRedirects} redirects`);
+        throw new TransportError("unreachable", `${url}: more than ${this.policy.maxRedirects} redirects`);
       }
       let next: URL;
       try {
         next = new URL(answer.location, current);
       } catch {
-        throw new TransportError("unfetchable", `${current.href} redirects to ${JSON.stringify(answer.location.slice(0, 200))}, which is not a URL`);
+        throw new TransportError("unreachable", `${current.href} redirects to ${JSON.stringify(answer.location.slice(0, 200))}, which is not a URL`);
       }
       current = checkUrl(next.href);
       this.redirects++;
@@ -256,20 +263,20 @@ export class GuardedHttpTransport implements BundleTransport {
           res.resume();
           const location = res.headers.location;
           finish(() => (location === undefined || location === ""
-            ? reject(new TransportError("unfetchable", `${u.href} returned HTTP ${status} without a Location`))
+            ? reject(new TransportError("unreachable", `${u.href} returned HTTP ${status} without a Location`))
             : resolvePromise({ location })));
           req.destroy();
           return;
         }
         if (status < 200 || status >= 300) {
           res.resume();
-          finish(() => reject(new TransportError("unfetchable", `${u.href} returned HTTP ${status}`)));
+          finish(() => reject(new TransportError("unreachable", `${u.href} returned HTTP ${status}`)));
           req.destroy();
           return;
         }
         const encoding = res.headers["content-encoding"];
         if (encoding !== undefined && encoding.toLowerCase() !== "identity") {
-          finish(() => reject(new TransportError("unfetchable", `${u.href} sent Content-Encoding ${JSON.stringify(encoding)}; only the identity bytes can be checked`)));
+          finish(() => reject(new TransportError("unreachable", `${u.href} sent Content-Encoding ${JSON.stringify(encoding)}; only the identity bytes can be checked`)));
           req.destroy();
           return;
         }
@@ -299,10 +306,12 @@ export class GuardedHttpTransport implements BundleTransport {
     });
   }
 
+  /** A failed request: the deadline (`unchecked`), a refused destination (`unfetchable`), or —
+   *  anything else: DNS, refused/reset connection, TLS, a cut-off body — `unreachable` (owner Q25). */
   private transportError(u: URL, error: unknown): TransportError {
     if (this.signal.aborted) return this.deadlineError();
     if (error instanceof DestinationRefused) return new TransportError("unfetchable", error.message);
     const e = error as { code?: string; message?: string };
-    return new TransportError("unfetchable", `could not fetch ${u.href}: ${e.code ?? e.message ?? String(error)}`);
+    return new TransportError("unreachable", `could not fetch ${u.href}: ${e.code ?? e.message ?? String(error)}`);
   }
 }

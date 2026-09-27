@@ -5,11 +5,11 @@ import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
-import { drainInterfaceVerifications, retryBackoffMs, verifyInterfaceNow, type DrainDeps } from "../interface/drain.js";
+import { drainDepsFromConfig, drainInterfaceVerifications, retryBackoffMs, verifyInterfaceNow, type DrainDeps } from "../interface/drain.js";
 import { DEFAULT_LEVEL1_LIMITS } from "../interface/level1.js";
 import type { StateObservation, StateSource } from "../interface/level2.js";
 import { markInterfaceStale } from "../interface/store.js";
-import { startBundleHost, type BundleHost } from "./helpers/bundle-host.js";
+import { startBundleHost, type BundleHost, type Route } from "./helpers/bundle-host.js";
 import { startFakeEventIndexer, type FakeEventIndexer } from "./helpers/fake-event-indexer.js";
 import { InterfaceChain, NET, currentOf, partsOf } from "./helpers/interface-chain.js";
 import { fixtureHex, loadFixtureBundle, payloadFor, wrongHash, type Bundle } from "./helpers/pi-fixture.js";
@@ -21,6 +21,8 @@ import { fixtureHex, loadFixtureBundle, payloadFor, wrongHash, type Bundle } fro
  * Level 2 against a stub state provider → Level 3 on the stand-in compiler → the result, its history
  * and its schedule in `public_interface_events` / `public_interface_checks`.
  * Spec FR-010, FR-011, FR-011b, FR-012, Q14, UC-2; plan `plans/00024-02-public-interface.md` C7.
+ * Task C9 (owner Q25, UC-13): a host that does not deliver → `unreachable`, no level claimed,
+ * retried with exponential backoff; a later delivery is verified from Level 1.
  */
 
 const STAND_IN = fileURLToPath(new URL("./helpers/fake-compact.mjs", import.meta.url));
@@ -129,7 +131,7 @@ describe("public-interface verification drain (C7)", () => {
 
     // --- the first publication: verified L1/L2/L3 in one drain, outside the scan ---------------------
     const first = await drainInterfaceVerifications(db.sql, db.schema, NET, deps(state, T0));
-    expect(first).toEqual({ attempted: 1, verified: 1, failed: 0, unchecked: 0, unfetchable: 0, discarded: 0 });
+    expect(first).toEqual({ attempted: 1, verified: 1, failed: 0, unchecked: 0, unfetchable: 0, unreachable: 0, discarded: 0 });
     const v = await row(db, 10);
     expect(v).toMatchObject({ status: "verified", level: 3, l1: "passed", l2: "passed", l3: "passed", l3_reason: null, reason: null, failed_level: null, checks: 1, attempts: 0 });
     expect(v.last_verified_at).toEqual(T0);
@@ -196,7 +198,7 @@ describe("public-interface verification drain (C7)", () => {
     expect((await history(db2, 800))[0]!.checked_at).toEqual(T0);
   }, 180_000);
 
-  it("[[interface-recheck]] the current publication is re-verified on its timer and on demand; bytes changed on the host → failed at L1 with 'verified until'; a limit is retried with backoff", async () => {
+  it("[[interface-recheck]] the current publication is re-verified on its timer and on demand; bytes changed on the host → failed at L1 with 'verified until'; a limit is retried with backoff; a verified one whose host goes away → unreachable with 'verified until'", async () => {
     const db = await chain.freshDb("recheck");
     const state = new StubState();
     const url = serveAt("/pi/", bundle);
@@ -260,6 +262,23 @@ describe("public-interface verification drain (C7)", () => {
     expect(retry).toMatchObject({ attempted: 1, verified: 1 });
     expect((await history(db, 10)).at(-1)).toMatchObject({ trigger: "retry", status: "verified" });
     expect((await row(db, 10)).attempts).toBe(0);
+
+    // The host goes away (C9, owner Q25): at the next re-check the current, VERIFIED publication is
+    // unreachable — no level claimed, not failed — and keeps "verified until" its last verified check.
+    const lastVerified = at(RECHECK + 180_000 + 31_000);
+    expect((await row(db, 10)).last_verified_at).toEqual(lastVerified);
+    host.routes.set("/pi/index.json", { kind: "status", status: 503 });
+    const awayAt = new Date(lastVerified.getTime() + RECHECK);
+    const away = await drainInterfaceVerifications(db.sql, db.schema, NET, deps(state, awayAt));
+    expect(away).toMatchObject({ attempted: 1, unreachable: 1, failed: 0 });
+    const gone = await row(db, 10);
+    expect(gone).toMatchObject({ status: "unreachable", level: 0, l1: "not_run", l2: "not_run", l3: "not_run", failed_level: null, attempts: 1 });
+    expect(gone.reason).toMatch(/^the host did not deliver: index\.json: http:\/\/127\.0\.0\.1:\d+\/pi\/index\.json returned HTTP 503$/);
+    expect(gone.last_verified_at).toEqual(lastVerified);
+    expect(gone.verified_until).toEqual(lastVerified); // "verified until <time>"
+    expect(gone.next_check_at).toEqual(new Date(awayAt.getTime() + retryBackoffMs(1, RECHECK)));
+    expect(await currentOf(db, CONTRACT)).toEqual({ eventId: 10, publications: 2 });
+    expect((await history(db, 10)).at(-1)).toMatchObject({ trigger: "recheck", status: "unreachable", level: 0 });
   }, 180_000);
 
   it("[[interface-stale-on-maintenance]] a maintenance update marks the current interface stale; it is re-verified; a check in flight when it happens is discarded, never written over the stale", async () => {
@@ -344,9 +363,134 @@ describe("public-interface verification drain (C7)", () => {
     expect(split.map((r) => [r.event_id, r.parts])).toEqual([["20", 1], ["21", 1]]);
     expect(split[0]!.url).toBe(url.slice(0, 224));
     expect(await currentOf(db2, CONTRACT)).toEqual({ eventId: 21, publications: 2 });
-    expect(await drainInterfaceVerifications(db2.sql, db2.schema, NET, deps(state, T0))).toMatchObject({ attempted: 2, unfetchable: 2 });
-    expect((await row(db2, 20)).reason).toMatch(/HTTP 404/);
-    expect((await row(db2, 21)).reason).toMatch(/is not a URL/);
+    // Part 1's truncated URL is not served (the host did not deliver: unreachable, C9); part 2 is not
+    // a URL at all (a policy refusal: unfetchable).
+    expect(await drainInterfaceVerifications(db2.sql, db2.schema, NET, deps(state, T0))).toMatchObject({ attempted: 2, unreachable: 1, unfetchable: 1 });
+    expect(await row(db2, 20)).toMatchObject({ status: "unreachable", level: 0, reason: expect.stringMatching(/HTTP 404/) });
+    expect(await row(db2, 21)).toMatchObject({ status: "unfetchable", level: 0, reason: expect.stringMatching(/is not a URL/) });
+  }, 180_000);
+
+  it("[[interface-unreachable-backoff]] a host that does not deliver is retried with exponential backoff — base · 2^(n−1), capped, configurable and zod-validated; nothing is due before its time; every kind of non-delivery keeps the same schedule and claims no level", async () => {
+    // --- the delay: doubles from the base, then stays at the cap (and never beyond the re-check) ----
+    const configured = { baseMs: 1_000, capMs: 8_000 };
+    expect(Array.from({ length: 8 }, (_, i) => retryBackoffMs(i + 1, RECHECK, configured)))
+      .toEqual([1_000, 2_000, 4_000, 8_000, 8_000, 8_000, 8_000, 8_000]);
+    expect(Array.from({ length: 9 }, (_, i) => retryBackoffMs(i + 1, 86_400_000))) // the defaults: 30 s … 1 h
+      .toEqual([30_000, 60_000, 120_000, 240_000, 480_000, 960_000, 1_920_000, 3_600_000, 3_600_000]);
+    expect(retryBackoffMs(3, 3_000, configured)).toBe(3_000);
+    expect(retryBackoffMs(0, RECHECK, configured)).toBe(1_000);
+    expect(retryBackoffMs(2_000_000_000, RECHECK, configured)).toBe(8_000); // 2^n overflows; the cap wins
+
+    // --- configured through the environment, validated like the other TOKEN_INTERFACE_* variables --
+    const { loadConfig } = await import("../config.js");
+    const env = { PG_URL: "postgres://x" };
+    expect(loadConfig(env).interfaces!.retry).toEqual({ baseMs: 30_000, capMs: 3_600_000 });
+    const fromEnv = loadConfig({ ...env, TOKEN_INTERFACE_RETRY_BASE_MS: "1000", TOKEN_INTERFACE_RETRY_CAP_MS: "8000" }).interfaces!;
+    expect(fromEnv.retry).toEqual(configured);
+    expect(drainDepsFromConfig(fromEnv, "http://indexer.test/api/v4/graphql").retryBackoff).toEqual(configured);
+    expect(() => loadConfig({ ...env, TOKEN_INTERFACE_RETRY_BASE_MS: "10" })).toThrow(/TOKEN_INTERFACE_RETRY_BASE_MS/);
+    expect(() => loadConfig({ ...env, TOKEN_INTERFACE_RETRY_CAP_MS: "soon" })).toThrow(/TOKEN_INTERFACE_RETRY_CAP_MS/);
+    expect(() => loadConfig({ ...env, TOKEN_INTERFACE_RETRY_BASE_MS: "9000", TOKEN_INTERFACE_RETRY_CAP_MS: "8000" }))
+      .toThrow(/TOKEN_INTERFACE_RETRY_CAP_MS: must be at least TOKEN_INTERFACE_RETRY_BASE_MS \(9000\)/);
+
+    // --- end to end: a host that never delivers, each drain run exactly when the row is due ---------
+    const db = await chain.freshDb("backoff");
+    const state = new StubState();
+    const path = "/down/index.json";
+    await chain.scan(db, [publish("0b".repeat(32), 100, 10, payloadFor(bundle, `${host.origin}${path}`))]);
+    const d = (now: Date) => deps(state, now, { retryBackoff: fromEnv.retry });
+    // One way of not delivering per attempt; the schedule does not care which.
+    const behaviours: [Route | undefined, RegExp][] = [
+      [{ kind: "status", status: 503 }, /HTTP 503$/],
+      [{ kind: "reset" }, /(ECONNRESET|socket hang up)$/],
+      [undefined, /HTTP 404$/], // nothing served
+      [{ kind: "redirect", location: path }, /more than 3 redirects$/],
+      [{ kind: "body", body: Buffer.from("{}"), headers: { "content-encoding": "gzip" } }, /Content-Encoding "gzip"; only the identity bytes can be checked$/],
+      [{ kind: "status", status: 500 }, /HTTP 500$/],
+      [{ kind: "status", status: 503 }, /HTTP 503$/],
+    ];
+    let now = T0;
+    const delays: number[] = [];
+    for (const [n, [route, why]] of behaviours.entries()) {
+      host.routes.clear();
+      if (route !== undefined) host.routes.set(path, route);
+      host.requests.length = 0;
+      expect(await drainInterfaceVerifications(db.sql, db.schema, NET, d(now)), `attempt ${n + 1}`).toMatchObject({ attempted: 1, unreachable: 1 });
+      expect(host.requests.length, `attempt ${n + 1}`).toBeGreaterThan(0);
+      expect(host.requests.every((r) => r.path === path), `attempt ${n + 1}`).toBe(true); // nothing past index.json
+      const r = await row(db, 10);
+      expect(r, `attempt ${n + 1}`).toMatchObject({ status: "unreachable", level: 0, l1: "not_run", l2: "not_run", l3: "not_run", failed_level: null, attempts: n + 1, checks: n + 1 });
+      expect(r.reason, `attempt ${n + 1}`).toMatch(/^the host did not deliver: index\.json: /);
+      expect(r.reason, `attempt ${n + 1}`).toMatch(why);
+      delays.push(r.next_check_at!.getTime() - now.getTime());
+      // One millisecond early, nothing is due.
+      expect((await drainInterfaceVerifications(db.sql, db.schema, NET, d(new Date(r.next_check_at!.getTime() - 1)))).attempted, `attempt ${n + 1}`).toBe(0);
+      now = r.next_check_at!;
+    }
+    expect(delays).toEqual([1_000, 2_000, 4_000, 8_000, 8_000, 8_000, 8_000]);
+    expect(state.calls).toBe(0); // no level claimed: the contract state was never read
+    const checks = await history(db, 10);
+    expect(checks.map((h) => [h.trigger, h.status, h.level])).toEqual([
+      ["initial", "unreachable", 0], ...Array.from({ length: 6 }, () => ["retry", "unreachable", 0]),
+    ]);
+    const last = await row(db, 10);
+    expect(last.report).toMatchObject({ status: "unreachable", completedLevel: 0, state: null, operations: [], levels: { l1: { status: "not_run", outcome: "unreachable", file: "index.json" }, l2: { status: "not_run" }, l3: { status: "not_run" } } });
+    expect(last.last_verified_at).toBeNull();
+    expect(last.verified_until).toBeNull();
+  }, 180_000);
+
+  it("[[interface-unreachable-recovery]] unreachable → delivered → verified: a publication whose host did not deliver claims no level, and once the host delivers the retry verifies it from Level 1; a verified one whose listed file goes missing is unreachable with 'verified until' and recovers the same way", async () => {
+    const db = await chain.freshDb("recovery");
+    const state = new StubState();
+    const url = `${host.origin}/later/index.json`; // nothing served there yet: HTTP 404
+    await chain.scan(db, [publish("0c".repeat(32), 100, 10, payloadFor(bundle, url))]);
+    const d = (now: Date) => deps(state, now, { retryBackoff: { baseMs: 1_000, capMs: 8_000 } });
+    const wholeBundle = ["/later/index.json", ...[...bundle.keys()].filter((p) => p !== "index.json").sort().map((p) => `/later/${p}`)];
+
+    // --- 1. never delivered: unreachable, no level, only index.json asked, retried after the base ---
+    expect(await drainInterfaceVerifications(db.sql, db.schema, NET, d(T0)))
+      .toEqual({ attempted: 1, verified: 0, failed: 0, unchecked: 0, unfetchable: 0, unreachable: 1, discarded: 0 });
+    const u = await row(db, 10);
+    expect(u).toMatchObject({ status: "unreachable", level: 0, l1: "not_run", l2: "not_run", l3: "not_run", failed_level: null, attempts: 1, checks: 1, last_verified_at: null, verified_until: null });
+    expect(u.reason).toMatch(/^the host did not deliver: index\.json: http:\/\/127\.0\.0\.1:\d+\/later\/index\.json returned HTTP 404$/);
+    expect(u.next_check_at).toEqual(at(1_000));
+    expect(u.report).toMatchObject({ status: "unreachable", completedLevel: 0, levels: { l1: { status: "not_run", outcome: "unreachable", file: "index.json" } } });
+    expect(host.requests.map((r) => r.path)).toEqual(["/later/index.json"]);
+    expect(state.calls).toBe(0);
+
+    // --- 2. the host now delivers: the retry verifies it, starting again at Level 1 -----------------
+    host.mount("/later/", bundle);
+    host.requests.length = 0;
+    expect(await drainInterfaceVerifications(db.sql, db.schema, NET, d(at(1_000)))).toMatchObject({ attempted: 1, verified: 1, unreachable: 0 });
+    const v = await row(db, 10);
+    expect(v).toMatchObject({ status: "verified", level: 3, l1: "passed", l2: "passed", l3: "passed", reason: null, failed_level: null, attempts: 0, checks: 2, verified_until: null });
+    expect(v.last_verified_at).toEqual(at(1_000));
+    expect(v.next_check_at).toEqual(at(1_000 + RECHECK)); // back on the re-check timer
+    expect(host.requests.map((r) => r.path)).toEqual(wholeBundle); // index.json first, then every listed file
+    expect(state.calls).toBe(1);
+
+    // --- 3. a listed file goes missing on the host: unreachable (not failed), "verified until" ----
+    host.files.delete("/later/out/keys/read.verifier");
+    expect(await drainInterfaceVerifications(db.sql, db.schema, NET, d(at(1_000 + RECHECK)))).toMatchObject({ attempted: 1, unreachable: 1, failed: 0 });
+    const g = await row(db, 10);
+    expect(g).toMatchObject({ status: "unreachable", level: 0, l1: "not_run", l2: "not_run", l3: "not_run", failed_level: null, attempts: 1, checks: 3 });
+    expect(g.reason).toMatch(/^the host did not deliver: out\/keys\/read\.verifier: http:\/\/127\.0\.0\.1:\d+\/later\/out\/keys\/read\.verifier returned HTTP 404$/);
+    expect(g.last_verified_at).toEqual(at(1_000));
+    expect(g.verified_until).toEqual(at(1_000)); // "verified until <time>"
+    expect(g.next_check_at).toEqual(at(1_000 + RECHECK + 1_000));
+    expect((await drainInterfaceVerifications(db.sql, db.schema, NET, d(at(1_000 + RECHECK + 999)))).attempted).toBe(0);
+
+    // --- 4. the file is back: verified again from Level 1, "verified until" cleared -----------------
+    host.mount("/later/", bundle);
+    host.requests.length = 0;
+    expect(await drainInterfaceVerifications(db.sql, db.schema, NET, d(at(1_000 + RECHECK + 1_000)))).toMatchObject({ attempted: 1, verified: 1 });
+    const b = await row(db, 10);
+    expect(b).toMatchObject({ status: "verified", level: 3, attempts: 0, checks: 4, verified_until: null });
+    expect(b.last_verified_at).toEqual(at(1_000 + RECHECK + 1_000));
+    expect(host.requests.map((r) => r.path)).toEqual(wholeBundle);
+    expect((await history(db, 10)).map((h) => [h.trigger, h.status, h.level])).toEqual([
+      ["initial", "unreachable", 0], ["retry", "verified", 3], ["recheck", "unreachable", 0], ["retry", "verified", 3],
+    ]);
   }, 180_000);
 });
 

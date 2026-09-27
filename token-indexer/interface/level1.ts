@@ -19,15 +19,20 @@ import {
  *  5. obtain each LISTED file — never anything else — and check its size and sha256;
  *  6. require `index.json`'s `compiler` to match the committed `package.json`.
  *
- * ── Three kinds of "not passed" (spec US1 scenarios 3, 5, 6; FR-011) ───────────────────────────
+ * ── Four kinds of "not passed" (spec US1 scenarios 3, 5, 6; FR-011; owner Q25) ─────────────────
  *  - `failed`      the bytes were obtained and do not match: a broken index, a wrong hash, an entry
  *                  set that does not give the commitment, a file with other bytes or another size
  *                  (including a body LONGER than its entry declares), a compiler mismatch;
  *  - `unchecked`   a local limit stopped the check before a conclusion (a cap, the deadline) — "a
  *                  bundle stopped by a local limit has not been checked, so report it as unchecked,
  *                  never as invalid" ([B] `src/fetch.mjs` SIZING_GUIDANCE);
- *  - `unfetchable` the transport could not or must not obtain the bytes (a refused destination, an
- *                  unreachable host, an HTTP error) — unavailable, not invalid.
+ *  - `unfetchable` POLICY: the transport must not obtain the bytes (a non-http(s) URL, a private,
+ *                  loopback or link-local destination) — spec US1 scenario 5;
+ *  - `unreachable` DELIVERY: the host did not deliver the bytes (a name that does not resolve, a
+ *                  refused or reset connection, a non-2xx answer — a listed file missing included —,
+ *                  too many redirects, an unexpected `Content-Encoding`). Owner decision Q25 (UC-13):
+ *                  delivery is the client's concern BEFORE the [B] levels, so no level is claimed and
+ *                  the drain retries with exponential backoff; a later delivery starts at Level 1.
  * [B]'s reference reports every transport problem as a Level 1 failure; the split is this indexer's
  * policy (audit F4: policies are asserted against the spec, not compared with the reference).
  *
@@ -35,8 +40,9 @@ import {
  * `package.json` are parsed as JSON data.
  */
 
-/** Why the transport produced no bytes. */
-export type TransportFailure = "unfetchable" | "unchecked";
+/** Why the transport produced no bytes: a policy refusal (`unfetchable`), a local limit
+ *  (`unchecked`), or a host that did not deliver (`unreachable`, owner Q25). */
+export type TransportFailure = "unfetchable" | "unchecked" | "unreachable";
 
 /** The transport could not (or must not) deliver a body. */
 export class TransportError extends Error {
@@ -116,7 +122,7 @@ export interface Level1Passed extends Level1Common {
 }
 
 export interface Level1NotPassed extends Level1Common {
-  outcome: "failed" | "unchecked" | "unfetchable";
+  outcome: "failed" | "unchecked" | "unfetchable" | "unreachable";
   reason: string;
   /** The file at fault, when there is one. */
   file?: string;

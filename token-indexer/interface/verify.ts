@@ -11,10 +11,11 @@ import { DEFAULT_LEVEL3_OPTIONS, levelThree, type Level3Options, type Level3Resu
  * compiler/build inputs, completed levels, provider assumptions, and any failure or unavailable
  * prerequisite"). No database here: `drain.ts` stores the result; the scan never waits for it.
  *
- * ── Status (spec §4 Key Entities, US1 scenarios 3–6, Q14) ──────────────────────────────────────
+ * ── Status (spec §4 Key Entities, US1 scenarios 3–6, Q14, Q25) ─────────────────────────────────
  * | outcome | status | level | l1 / l2 / l3 |
  * |---|---|---|---|
- * | URL not usable text, not http(s), refused destination, host unavailable | `unfetchable` | 0 | not_run × 3 |
+ * | URL not usable text, not http(s), refused (private / loopback / link-local) destination — policy | `unfetchable` | 0 | not_run × 3 |
+ * | the host did not deliver (DNS, refused/reset connection, non-2xx incl. a listed file missing, > 3 redirects, unexpected `Content-Encoding`) — before the [B] levels (owner Q25, UC-13) | `unreachable` | 0 | not_run × 3 |
  * | a limit (deadline, a cap) at Level 1, or the provider's state unavailable at Level 2 | `unchecked` | 0 or 1 | … not_run |
  * | Level 1 fails | `failed` (failed_level 1) | 0 | failed / not_run / not_run |
  * | Level 2 fails | `failed` (failed_level 2) | 1 | passed / failed / not_run |
@@ -22,9 +23,13 @@ import { DEFAULT_LEVEL3_OPTIONS, levelThree, type Level3Options, type Level3Resu
  *
  * An L3 that runs and fails is shown, not a failure of the publication (spec Q7: "An L3 that runs
  * and fails is shown, not discarded"); `not_run` carries its reason.
+ *
+ * `unreachable` claims no level: Level 1 was begun but no conclusion was reached because the bytes
+ * never arrived, so its reason names the delivery, not a level ("the host did not deliver: …"). The
+ * drain retries it with exponential backoff; the next delivered check runs Level 1 from the start.
  */
 
-export type InterfaceStatus = "verified" | "failed" | "unchecked" | "unfetchable";
+export type InterfaceStatus = "verified" | "failed" | "unchecked" | "unfetchable" | "unreachable";
 export type LevelOutcome = "passed" | "failed" | "not_run";
 export type CheckTrigger = "initial" | "retry" | "recheck" | "stale" | "on_demand";
 
@@ -176,6 +181,11 @@ export async function verifyPublication(
 
   // --- Level 1 ------------------------------------------------------------------------------------
   l1 = await levelOne({ url: publication.url, commitment: publication.commitment }, transport, limits);
+  if (l1.outcome === "unreachable") {
+    // Delivery, before the [B] levels (owner Q25): no level claimed, not a Level 1 result.
+    return record({ ...base, status: "unreachable", level: 0, l1: "not_run", l2: "not_run", l3: "not_run",
+      reason: `the host did not deliver: ${l1.reason}` });
+  }
   if (l1.outcome !== "passed") {
     return record({
       ...base, status: l1.outcome === "failed" ? "failed" : l1.outcome, level: 0,

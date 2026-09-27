@@ -96,13 +96,16 @@ export interface TokenIndexStatus {
     multipartPackages: number;
     mixedPackages: number;
     /** 00024-02 — public interfaces: contracts with one, their publications, and the current
-     *  publications by status (waiting = pending or stale; unavailable = unchecked or unfetchable). */
+     *  publications by status (waiting = pending or stale; unavailable = unchecked or unfetchable — a
+     *  limit or a refused destination; unreachable = the host did not deliver, owner Q25). The five
+     *  status counters partition `interfaces`. */
     interfaces: number;
     interfacePublications: number;
     interfacesVerified: number;
     interfacesFailed: number;
     interfacesWaiting: number;
     interfacesUnavailable: number;
+    interfacesUnreachable: number;
   };
 }
 
@@ -138,6 +141,7 @@ export async function readStatus(
       packages: string; multipart_packages: string; mixed_packages: string;
       interfaces: string; interface_publications: string; interfaces_verified: string;
       interfaces_failed: string; interfaces_waiting: string; interfaces_unavailable: string;
+      interfaces_unreachable: string;
     }[]>`
       SELECT
         (SELECT count(*) FROM ${sql(schema)}.contracts WHERE net = ${net})                       AS contracts,
@@ -173,7 +177,10 @@ export async function readStatus(
            WHERE pi.net = ${net} AND e.status IN ('pending', 'stale'))                           AS interfaces_waiting,
         (SELECT count(*) FROM ${sql(schema)}.public_interfaces pi
            JOIN ${sql(schema)}.public_interface_events e ON e.net = pi.net AND e.event_id = pi.event_id
-           WHERE pi.net = ${net} AND e.status IN ('unchecked', 'unfetchable'))                   AS interfaces_unavailable
+           WHERE pi.net = ${net} AND e.status IN ('unchecked', 'unfetchable'))                   AS interfaces_unavailable,
+        (SELECT count(*) FROM ${sql(schema)}.public_interfaces pi
+           JOIN ${sql(schema)}.public_interface_events e ON e.net = pi.net AND e.event_id = pi.event_id
+           WHERE pi.net = ${net} AND e.status = 'unreachable')                                   AS interfaces_unreachable
     `,
     readPendingLookups(sql, schema, net, 50),
   ]);
@@ -202,13 +209,15 @@ export async function readStatus(
       multipartPackages: Number(row.multipart_packages),
       mixedPackages: Number(row.mixed_packages),
       // 00024-02: contracts with a public interface, their publications, and the current ones by
-      // status (verified / failed / waiting = pending or stale / unavailable = unchecked or unfetchable).
+      // status (verified / failed / waiting = pending or stale / unavailable = unchecked or unfetchable /
+      // unreachable = the host did not deliver, owner Q25).
       interfaces: Number(row.interfaces),
       interfacePublications: Number(row.interface_publications),
       interfacesVerified: Number(row.interfaces_verified),
       interfacesFailed: Number(row.interfaces_failed),
       interfacesWaiting: Number(row.interfaces_waiting),
       interfacesUnavailable: Number(row.interfaces_unavailable),
+      interfacesUnreachable: Number(row.interfaces_unreachable),
     },
   };
 }

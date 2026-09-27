@@ -91,6 +91,11 @@ describe("migration 006 — public-interface tables", () => {
     expect(await refused(() => update({ status: "failed", reason: "x" }))).toMatch(/pie_failed_has_level/);
     expect(await refused(() => update({ failed_level: 1 }))).toMatch(/pie_failed_level_only_when_failed/);
     expect(await refused(() => update({ status: "unchecked" }))).toMatch(/pie_reason_when_not_ok/);
+    // `unreachable` (C9, owner Q25): a reason is required, and it never names a failed level.
+    expect(await refused(() => update({ status: "unreachable" }))).toMatch(/pie_reason_when_not_ok/);
+    expect(await refused(() => update({ status: "unreachable", reason: "HTTP 404", failed_level: 1 }))).toMatch(/pie_failed_level_only_when_failed/);
+    await update({ status: "unreachable", level: 0, l1: "not_run", l2: "not_run", l3: "not_run", reason: "the host did not deliver: index.json: HTTP 404" });
+    await update({ status: "pending", level: 0, l1: null, l2: null, l3: null, reason: null });
     expect(await refused(() => update({ status: "historical" }))).toMatch(/status_check/);
     expect(await refused(() => update({ l3: "skipped" }))).toMatch(/l3_check/);
     expect(await refused(() => update({ verified_until: new Date() }))).toMatch(/pie_until_after_verified/);
@@ -110,5 +115,10 @@ describe("migration 006 — public-interface tables", () => {
         (net, event_id, check_no, checked_at, trigger, status, level, l1, l2, l3)
       VALUES (${NET}, ${id}, 1, now(), 'initial', 'pending', 0, 'not_run', 'not_run', 'not_run')
     `)).toMatch(/status_check/);
+    await sql`
+      INSERT INTO ${sql(schema)}.public_interface_checks
+        (net, event_id, check_no, checked_at, trigger, status, level, l1, l2, l3, reason)
+      VALUES (${NET}, ${id}, 1, now(), 'retry', 'unreachable', 0, 'not_run', 'not_run', 'not_run', 'HTTP 503')
+    `;
   });
 });

@@ -158,11 +158,20 @@ describe("[B] Level 1 (C3)", () => {
     // The hash is still compared first: a wrong hash is failed even when a limit would stop it.
     expect((await run(wrong, { commitment: committed, limits: { ...DEFAULT_LEVEL1_LIMITS, maxFiles: 1 } })).result.outcome).toBe("failed");
 
-    // --- the transport's own answers pass through as unfetchable / unchecked -------------------
+    // --- the transport's own answers pass through: unreachable / unchecked / unfetchable ---------
+    // A listed file the host does not serve: the host did not deliver — unreachable (C9, owner Q25),
+    // naming the file, after the index checks passed; never failed.
     const missing = serve(new Map([...bundle].filter(([p]) => p !== "out/keys/read.verifier")));
     const missingRun = await run(bundle, { transport: missing });
-    expect(missingRun.result).toMatchObject({ outcome: "unfetchable", file: "out/keys/read.verifier" });
+    expect(missingRun.result).toMatchObject({ outcome: "unreachable", file: "out/keys/read.verifier", steps: { hashOk: true, indexOk: true } });
+    expect(missingRun.result.steps.filesOk).toBeUndefined();
     expect(reason(missingRun.result)).toMatch(/HTTP 404/);
+    // index.json itself not delivered (a refused connection): unreachable, nothing else requested.
+    const down = serve(bundle);
+    down.overrides.set(URL, new TransportError("unreachable", `could not fetch ${URL}: ECONNREFUSED`));
+    const downRun = await run(bundle, { transport: down });
+    expect(downRun.result).toMatchObject({ outcome: "unreachable", file: "index.json", requests: 1, steps: {} });
+    expect(down.requests).toHaveLength(1);
     const slow = serve(bundle);
     slow.overrides.set(`${BASE}out/contract/index.js`, new TransportError("unchecked", "the 120000 ms deadline was reached"));
     expect((await run(bundle, { transport: slow })).result).toMatchObject({ outcome: "unchecked", file: "out/contract/index.js" });

@@ -37,8 +37,11 @@ import type { ISql } from "postgres";
 export const name = "006_public_interfaces";
 
 /** The statuses a publication's last result can have (spec §4 Key Entities; `historical` is not a
- *  status but a role: every publication that is not its contract's current one). */
-export const INTERFACE_STATUSES = ["pending", "verified", "failed", "unchecked", "unfetchable", "stale"] as const;
+ *  status but a role: every publication that is not its contract's current one). `unreachable`
+ *  (owner decision Q25, task 02-C9): the host did not deliver — no level claimed, retried with
+ *  exponential backoff; `unfetchable` is a policy refusal only (scheme, private destination). Edited
+ *  in place: everything is in development and every run starts from an empty database (spec Q3). */
+export const INTERFACE_STATUSES = ["pending", "verified", "failed", "unchecked", "unfetchable", "unreachable", "stale"] as const;
 
 export async function up(sql: ISql, schema: string): Promise<void> {
   // ---- public_interface_events: one row per publication (a [Y] package of the [B] name) ------
@@ -70,15 +73,15 @@ export async function up(sql: ISql, schema: string): Promise<void> {
 
       -- ── this publication's last verification result ──────────────────────────────────────
       status              text        NOT NULL DEFAULT 'pending'
-                          CHECK (status IN ('pending','verified','failed','unchecked','unfetchable','stale')),
+                          CHECK (status IN ('pending','verified','failed','unchecked','unfetchable','unreachable','stale')),
       -- The highest level passed: 0 none, 1 L1, 2 L1+L2, 3 L1+L2+L3 ([B]: levels are cumulative).
       level               smallint    NOT NULL DEFAULT 0 CHECK (level >= 0 AND level <= 3),
       l1                  text        CHECK (l1 IS NULL OR l1 IN ('passed','failed','not_run')),
       l2                  text        CHECK (l2 IS NULL OR l2 IN ('passed','failed','not_run')),
       l3                  text        CHECK (l3 IS NULL OR l3 IN ('passed','failed','not_run')),
       l3_reason           text,
-      -- Why the status is failed / unchecked / unfetchable (the limit, the failed check, the
-      -- refused destination); NULL when verified or pending.
+      -- Why the status is failed / unchecked / unfetchable / unreachable (the failed check, the
+      -- limit, the refused destination, what the host did not deliver); NULL when verified or pending.
       reason              text,
       failed_level        smallint    CHECK (failed_level IS NULL OR failed_level IN (1, 2)),
       -- The [B] PR #6 verification record of the last check, and the published circuits.
@@ -93,7 +96,8 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       -- earlier verified result held until (FR-011b: "verified until <time>").
       last_verified_at    timestamptz,
       verified_until      timestamptz,
-      -- Consecutive checks stopped by a limit or an unavailable host (the retry backoff).
+      -- Consecutive checks that reached no conclusion — unreachable, unchecked, unfetchable (the
+      -- exponential retry backoff, owner Q25).
       attempts            int         NOT NULL DEFAULT 0 CHECK (attempts >= 0),
       -- When the drain should check it next; NULL = nothing scheduled.
       next_check_at       timestamptz,
@@ -115,7 +119,7 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       CONSTRAINT pie_failed_has_level CHECK (status <> 'failed' OR failed_level IS NOT NULL),
       CONSTRAINT pie_failed_level_only_when_failed CHECK (failed_level IS NULL OR status IN ('failed','stale')),
       CONSTRAINT pie_reason_when_not_ok CHECK (
-        status NOT IN ('failed','unchecked','unfetchable') OR reason IS NOT NULL
+        status NOT IN ('failed','unchecked','unfetchable','unreachable') OR reason IS NOT NULL
       ),
       CONSTRAINT pie_until_after_verified CHECK (verified_until IS NULL OR last_verified_at IS NOT NULL)
     )
@@ -164,7 +168,7 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       -- maintenance update (stale), or verify-interfaces --address.
       trigger             text        NOT NULL CHECK (trigger IN ('initial','retry','recheck','stale','on_demand')),
       status              text        NOT NULL
-                          CHECK (status IN ('verified','failed','unchecked','unfetchable')),
+                          CHECK (status IN ('verified','failed','unchecked','unfetchable','unreachable')),
       level               smallint    NOT NULL CHECK (level >= 0 AND level <= 3),
       l1                  text        NOT NULL CHECK (l1 IN ('passed','failed','not_run')),
       l2                  text        NOT NULL CHECK (l2 IN ('passed','failed','not_run')),

@@ -140,7 +140,7 @@ export interface TokenJson extends TokenBaseJson {
  * ──────────────────────────────────────────────────────────────────────────────────────────── */
 
 /** The publication statuses (spec §4 Key Entities); `historical` is a role, see `role`. */
-export const INTERFACE_STATUSES = ["pending", "verified", "failed", "unchecked", "unfetchable", "stale"] as const;
+export const INTERFACE_STATUSES = ["pending", "verified", "failed", "unchecked", "unfetchable", "unreachable", "stale"] as const;
 
 export interface InterfaceLevelsJson {
   l1: string | null;

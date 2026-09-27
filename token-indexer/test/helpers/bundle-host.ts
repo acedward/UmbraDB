@@ -14,6 +14,8 @@ export type Route =
   | { kind: "redirect"; location: string; status?: number }
   | { kind: "status"; status: number }
   | { kind: "stall" }
+  /** Destroys the connection without an answer (the client sees a reset). */
+  | { kind: "reset" }
   | { kind: "body"; body: Buffer; headers?: Record<string, string>; chunked?: boolean };
 
 export interface BundleHost {
@@ -39,6 +41,7 @@ export async function startBundleHost(): Promise<BundleHost> {
     requests.push({ path, headers: req.headers });
     const route = routes.get(path);
     if (route?.kind === "stall") return; // never answers; the client's deadline must end it
+    if (route?.kind === "reset") { req.socket.destroy(); return; }
     if (route?.kind === "redirect") {
       res.writeHead(route.status ?? 302, route.location === "" ? {} : { location: route.location });
       res.end();

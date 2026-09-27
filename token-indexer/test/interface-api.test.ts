@@ -26,6 +26,7 @@ const STAND_IN = fileURLToPath(new URL("./helpers/fake-compact.mjs", import.meta
 const A = "a1".repeat(32); // publishes a good bundle, then a broken one (current and failed)
 const B = "b2".repeat(32); // publishes a good bundle (verified, level 3)
 const C = "c3".repeat(32); // publishes, not yet checked (pending)
+const D = "d4".repeat(32); // publishes a URL its host does not serve (unreachable, C9 / owner Q25)
 const MINT_DOMAIN = "aa".repeat(32);
 
 class StubState implements StateSource {
@@ -46,6 +47,7 @@ describe("public-interface API (C8)", () => {
   const bundle = loadFixtureBundle();
   let goodUrl = "";
   let badUrl = "";
+  let goneUrl = "";
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:17-alpine").start();
@@ -62,6 +64,7 @@ describe("public-interface API (C8)", () => {
     host.mount("/pi-bad/", wrongHash(bundle));
     goodUrl = `${host.origin}/pi/index.json`;
     badUrl = `${host.origin}/pi-bad/index.json`;
+    goneUrl = `${host.origin}/pi-gone/index.json`; // nothing mounted there: HTTP 404
     const pub = (txHash: string, blockHeight: number, contract: string, id: number, url: string, extraCalls = [] as never[]) => ({
       txHash, blockHeight, contract, extraCalls,
       publications: [{ segment: 1, parts: partsOf(payloadFor(bundle, url)).map((p, i) => ({ id: id + i, payload: p })) }],
@@ -80,7 +83,9 @@ describe("public-interface API (C8)", () => {
     await chain.scan(db, [pub("d2".repeat(32), 101, A, 20, badUrl)]);
     await chain.scan(db, [pub("d3".repeat(32), 102, B, 30, goodUrl)]);
     await drainInterfaceVerifications(db.sql, db.schema, NET, deps);
-    await chain.scan(db, [pub("d4".repeat(32), 103, C, 40, goodUrl)]);
+    await chain.scan(db, [pub("d5".repeat(32), 103, D, 50, goneUrl)]);
+    await drainInterfaceVerifications(db.sql, db.schema, NET, deps);
+    await chain.scan(db, [pub("d4".repeat(32), 104, C, 40, goodUrl)]);
 
     const config: TokenIndexerConfig = {
       pgUrl: "", indexerHttp: undefined, net: NET, apiPort: 0, schema: db.schema, archiveSchema: db.archiveSchema,
@@ -117,22 +122,24 @@ describe("public-interface API (C8)", () => {
     // --- /v1/interfaces: contracts with an interface, newest current publication first ------------
     const list = await get("/v1/interfaces");
     expect(list.items.map((i: any) => [i.address, i.eventId, i.status, i.level, i.role])).toEqual([ // eslint-disable-line @typescript-eslint/no-explicit-any
-      [C, 40, "pending", 0, "current"], [B, 30, "verified", 3, "current"], [A, 20, "failed", 0, "current"],
+      [C, 40, "pending", 0, "current"], [D, 50, "unreachable", 0, "current"], [B, 30, "verified", 3, "current"], [A, 20, "failed", 0, "current"],
     ]);
     expect(list.nextCursor).toBeNull();
-    const a = list.items[2];
+    const a = list.items[3];
     expect(a).toMatchObject({ publications: 2, url: badUrl, levels: { l1: "failed", l2: "not_run", l3: "not_run" }, failedLevel: 1, parts: 1, segment: 1 });
     expect(a.reason).toMatch(/^Level 1: index\.json's hash/);
     expect(list.items[0]).toMatchObject({ levels: { l1: null, l2: null, l3: null }, checkedAt: null, checks: 0 });
     for (const item of list.items) expectInterfaceOrigin(item.origin, item.eventId);
     expect((await get("/v1/interfaces?status=failed")).items.map((i: any) => i.address)).toEqual([A]); // eslint-disable-line @typescript-eslint/no-explicit-any
     expect((await get("/v1/interfaces?status=verified")).items.map((i: any) => i.address)).toEqual([B]); // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect((await get("/v1/interfaces?status=unreachable")).items.map((i: any) => i.address)).toEqual([D]); // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect((await get("/v1/interfaces?status=unfetchable")).items).toEqual([]);
     const bad = await get("/v1/interfaces?status=historical", 400);
-    expect(bad.error).toMatchObject({ code: "TOKEN_BAD_REQUEST", message: expect.stringMatching(/status must be one of pending, verified, failed, unchecked, unfetchable, stale/) });
+    expect(bad.error).toMatchObject({ code: "TOKEN_BAD_REQUEST", message: expect.stringMatching(/status must be one of pending, verified, failed, unchecked, unfetchable, unreachable, stale/) });
     const page1 = await get("/v1/interfaces?limit=2");
-    expect(page1.items.map((i: any) => i.address)).toEqual([C, B]); // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect(page1.items.map((i: any) => i.address)).toEqual([C, D]); // eslint-disable-line @typescript-eslint/no-explicit-any
     const page2 = await get(`/v1/interfaces?limit=2&cursor=${page1.nextCursor}`);
-    expect(page2.items.map((i: any) => i.address)).toEqual([A]); // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect(page2.items.map((i: any) => i.address)).toEqual([B, A]); // eslint-disable-line @typescript-eslint/no-explicit-any
     expect(page2.nextCursor).toBeNull();
     await get("/v1/interfaces?cursor=not-a-cursor", 400);
 
@@ -168,6 +175,19 @@ describe("public-interface API (C8)", () => {
     for (const value of [...ib.files, ...ib.keys, ...ib.circuits]) expectInterfaceOrigin(value.origin, 30);
     expect(ib.lastVerifiedAt).not.toBeNull();
     expect(ib.verifiedUntil).toBeNull();
+    // --- an unreachable interface (C9, owner Q25): no level claimed, the delivery named, retried ------
+    const id = await get(`/v1/contracts/${D}/interface`);
+    expect(id).toMatchObject({
+      address: D, eventId: 50, role: "current", status: "unreachable", level: 0, levels: { l1: "not_run", l2: "not_run", l3: "not_run" },
+      failedLevel: null, url: goneUrl, lastVerifiedAt: null, verifiedUntil: null, files: [], keys: [], circuits: [], history: [], publications: 1,
+    });
+    expect(id.reason).toMatch(/^the host did not deliver: index\.json: .*returned HTTP 404$/);
+    expect(id.nextCheckAt).not.toBeNull(); // retried with backoff
+    expect(id.checkHistory).toMatchObject([{ checkNo: 1, trigger: "initial", status: "unreachable", level: 0 }]);
+    expectInterfaceOrigin(id.origin, 50);
+    expect(id.origin.evidence).toMatchObject({ status: "unreachable", level: 0 });
+    expect((await get(`/v1/contracts/${D}`)).interface).toMatchObject({ eventId: 50, status: "unreachable", level: 0, verifiedUntil: null });
+
     // A contract without an interface: 404; a malformed address: 400.
     expect((await get(`/v1/contracts/${"0f".repeat(32)}/interface`, 404)).error.code).toBe("TOKEN_NOT_FOUND");
     await get("/v1/contracts/nothex/interface", 400);
@@ -199,7 +219,10 @@ describe("public-interface API (C8)", () => {
     // --- /internal/status counters ------------------------------------------------------------
     const status = await get("/internal/status");
     expect(status.counters).toMatchObject({
-      interfaces: 3, interfacePublications: 4, interfacesVerified: 1, interfacesFailed: 1, interfacesWaiting: 1, interfacesUnavailable: 0,
+      interfaces: 4, interfacePublications: 5, interfacesVerified: 1, interfacesFailed: 1, interfacesWaiting: 1, interfacesUnavailable: 0,
+      interfacesUnreachable: 1,
     });
+    const c = status.counters;
+    expect(c.interfacesVerified + c.interfacesFailed + c.interfacesWaiting + c.interfacesUnavailable + c.interfacesUnreachable).toBe(c.interfaces);
   }, 120_000);
 });

@@ -12,6 +12,8 @@
  * | `TOKEN_SCAN_BATCH` | `500` | transactions decoded per scan batch |
  * | `TOKEN_LIVE_2X` | *(unset)* | opt-in marker for the live Stagenet tests only |
  * | `TOKEN_INTERFACE_RECHECK_MS` | `86400000` (24 h) | re-verify every current public interface this often (00024 FR-011b) |
+ * | `TOKEN_INTERFACE_RETRY_BASE_MS` | `30000` (30 s) | first retry delay after a check that reached no conclusion (`unreachable` — owner Q25 —, `unchecked`, `unfetchable`); doubles per consecutive attempt |
+ * | `TOKEN_INTERFACE_RETRY_CAP_MS` | `3600000` (1 h) | the longest retry delay (also never beyond `TOKEN_INTERFACE_RECHECK_MS`); must be ≥ the base |
  * | `TOKEN_INTERFACE_FETCH_DEADLINE_MS` | `120000` | one deadline for all requests of one bundle (FR-011) |
  * | `TOKEN_INTERFACE_MAX_INDEX_BYTES` / `_MAX_FILES` / `_MAX_FILE_BYTES` / `_MAX_BUNDLE_BYTES` | 256 KiB / 1000 / 8 MiB / 16 MiB | Level 1 caps (beyond → `unchecked`) |
  * | `TOKEN_INTERFACE_L3` | `on` | `off` records Level 3 `not_run` ("disabled") instead of compiling |
@@ -41,6 +43,8 @@ export const TokenIndexerEnvSchema = z.object({
   TOKEN_SCAN_BATCH: z.coerce.number().int().min(1).max(5_000).default(500),
   TOKEN_LIVE_2X: z.string().optional(),
   TOKEN_INTERFACE_RECHECK_MS: z.coerce.number().int().min(1_000).default(86_400_000),
+  TOKEN_INTERFACE_RETRY_BASE_MS: z.coerce.number().int().min(1_000).default(30_000),
+  TOKEN_INTERFACE_RETRY_CAP_MS: z.coerce.number().int().min(1_000).default(3_600_000),
   TOKEN_INTERFACE_FETCH_DEADLINE_MS: z.coerce.number().int().min(100).default(120_000),
   TOKEN_INTERFACE_MAX_INDEX_BYTES: z.coerce.number().int().min(1).default(256 * 1024),
   TOKEN_INTERFACE_MAX_FILES: z.coerce.number().int().min(1).default(1_000),
@@ -50,11 +54,29 @@ export const TokenIndexerEnvSchema = z.object({
   TOKEN_INTERFACE_L3_DEADLINE_MS: z.coerce.number().int().min(1_000).default(1_800_000),
   COMPACT_BIN: z.string().min(1).default("compact"),
   TOKEN_INTERFACE_ALLOW_PRIVATE_HOSTS: z.enum(["0", "1"]).optional(),
+}).superRefine((value, ctx) => {
+  if (value.TOKEN_INTERFACE_RETRY_CAP_MS < value.TOKEN_INTERFACE_RETRY_BASE_MS) {
+    ctx.addIssue({
+      code: "custom", path: ["TOKEN_INTERFACE_RETRY_CAP_MS"],
+      message: `must be at least TOKEN_INTERFACE_RETRY_BASE_MS (${value.TOKEN_INTERFACE_RETRY_BASE_MS})`,
+    });
+  }
 });
+
+/** Exponential retry backoff (owner decision Q25): the n-th consecutive inconclusive check waits
+ *  `baseMs · 2^(n−1)`, capped at `capMs` (and at the re-check interval). */
+export interface RetryBackoff {
+  baseMs: number;
+  capMs: number;
+}
+
+export const DEFAULT_RETRY_BACKOFF: RetryBackoff = Object.freeze({ baseMs: 30_000, capMs: 3_600_000 });
 
 /** Project 00024-02: how public interfaces are verified (spec FR-011, FR-011b, FR-013). */
 export interface InterfaceConfig {
   recheckMs: number;
+  /** Retry of an `unreachable` / `unchecked` / `unfetchable` result (owner Q25). */
+  retry: RetryBackoff;
   fetchDeadlineMs: number;
   /** TEST-ONLY: allow private/loopback destinations (the local stack's bundle server). */
   allowPrivateHosts: boolean;
@@ -64,6 +86,7 @@ export interface InterfaceConfig {
 
 export const DEFAULT_INTERFACE_CONFIG: InterfaceConfig = Object.freeze({
   recheckMs: 86_400_000,
+  retry: DEFAULT_RETRY_BACKOFF,
   fetchDeadlineMs: 120_000,
   allowPrivateHosts: false,
   limits: Object.freeze({ maxIndexBytes: 256 * 1024, maxFiles: 1_000, maxFileBytes: 8 * 1024 * 1024, maxBundleBytes: 16 * 1024 * 1024 }),
@@ -101,6 +124,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): TokenIndexerCo
     TOKEN_SCAN_BATCH: env.TOKEN_SCAN_BATCH,
     TOKEN_LIVE_2X: env.TOKEN_LIVE_2X,
     TOKEN_INTERFACE_RECHECK_MS: env.TOKEN_INTERFACE_RECHECK_MS,
+    TOKEN_INTERFACE_RETRY_BASE_MS: env.TOKEN_INTERFACE_RETRY_BASE_MS,
+    TOKEN_INTERFACE_RETRY_CAP_MS: env.TOKEN_INTERFACE_RETRY_CAP_MS,
     TOKEN_INTERFACE_FETCH_DEADLINE_MS: env.TOKEN_INTERFACE_FETCH_DEADLINE_MS,
     TOKEN_INTERFACE_MAX_INDEX_BYTES: env.TOKEN_INTERFACE_MAX_INDEX_BYTES,
     TOKEN_INTERFACE_MAX_FILES: env.TOKEN_INTERFACE_MAX_FILES,
@@ -129,6 +154,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): TokenIndexerCo
     live2x: value.TOKEN_LIVE_2X === "1",
     interfaces: {
       recheckMs: value.TOKEN_INTERFACE_RECHECK_MS,
+      retry: { baseMs: value.TOKEN_INTERFACE_RETRY_BASE_MS, capMs: value.TOKEN_INTERFACE_RETRY_CAP_MS },
       fetchDeadlineMs: value.TOKEN_INTERFACE_FETCH_DEADLINE_MS,
       allowPrivateHosts: value.TOKEN_INTERFACE_ALLOW_PRIVATE_HOSTS === "1",
       limits: {

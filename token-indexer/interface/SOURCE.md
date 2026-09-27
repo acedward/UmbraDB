@@ -34,11 +34,14 @@ executed); `src/fetch.mjs` is unchanged there. The bundle fixture the tests use 
 - **Level 1 takes an injected transport** (`BundleTransport`) instead of `fetch` or a directory: the
   indexer's transport is the guarded one of `fetch-guard.ts` (http(s) only, private destinations refused
   after DNS, redirects capped, a deadline), which the reference does not have.
-- **Three outcomes instead of one failure**: the reference reports every problem as a Level 1 failure.
-  Here only evidence that the bytes do not match is `failed`; a local limit is `unchecked` and an
-  unavailable or refused source is `unfetchable` ([B] `src/fetch.mjs` SIZING_GUIDANCE: "report it as
-  unchecked, never as invalid"; spec US1 scenarios 5–6). Audit F4: these policies are asserted against the
-  spec, not compared with the reference.
+- **Four outcomes instead of one failure**: the reference reports every problem as a Level 1 failure.
+  Here only evidence that the bytes do not match is `failed`; a local limit is `unchecked`, a refused
+  source (scheme, private destination) is `unfetchable` ([B] `src/fetch.mjs` SIZING_GUIDANCE: "report it
+  as unchecked, never as invalid"; spec US1 scenarios 5–6), and a host that did not deliver (DNS, refused
+  or reset connection, non-2xx — a listed file missing included —, too many redirects, an unexpected
+  `Content-Encoding`) is `unreachable`: delivery is handled before the [B] levels, no level is claimed,
+  and it is retried with exponential backoff (owner decision Q25, 00024 upstream log UC-13). Audit F4:
+  these policies are asserted against the spec, not compared with the reference.
 - **Caps are this indexer's** (`DEFAULT_LEVEL1_LIMITS`: index 256 KiB, 1 000 files, 8 MiB per file,
   16 MiB in all — [B]'s SIZING_GUIDANCE estimates; the reference only caps the whole bundle at 64 MiB).
   They are checked after the hash comparison and the commitment recomputation, so a bundle the reference
