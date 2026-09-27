@@ -12,7 +12,8 @@ import { markInterfaceStale } from "../interface/store.js";
 import { startBundleHost, type BundleHost, type Route } from "./helpers/bundle-host.js";
 import { startFakeEventIndexer, type FakeEventIndexer } from "./helpers/fake-event-indexer.js";
 import { InterfaceChain, NET, currentOf, partsOf } from "./helpers/interface-chain.js";
-import { clone, fixtureHex, loadFixtureBundle, payloadFor, wrongHash, type Bundle } from "./helpers/pi-fixture.js";
+import { indexCommitment, validateIndex } from "../interface/commitment.js";
+import { clone, fixtureHex, loadFixtureBundle, payloadFor, sha256Hex, wrongHash, type Bundle } from "./helpers/pi-fixture.js";
 
 /**
  * Project 00024-02 task C7 — the verification drain, end to end: synthetic chain → the real scanner
@@ -604,6 +605,31 @@ describe("public-interface verification drain (C7)", () => {
     expect(keyed.report!.observation.stateSource).toBe("indexer contractAction(address) at https://provider.invalid");
     const stored = JSON.stringify(keyed) + JSON.stringify(await history(db, 50));
     for (const secret of ["hunter2", "operator", "SECRETKEY", "SECRETQ", "SECRETF"]) expect(stored, secret).not.toContain(secret);
+
+    // Bundle-controlled text is bounded where it is stored (E2-R4C): a package.json whose
+    // compact.compiler is 100 000 characters gives a compiler-mismatch reason (and a history row, and a
+    // record string) of bounded length that says how much was omitted.
+    const verbose = clone(bundle);
+    const vpkg = JSON.parse(verbose.get("package.json")!.toString("utf8")) as { compact: Record<string, unknown> };
+    vpkg.compact.compiler = "x".repeat(100_000);
+    verbose.set("package.json", Buffer.from(`${JSON.stringify(vpkg, null, 2)}\n`));
+    const vindex = JSON.parse(bundle.get("index.json")!.toString("utf8")) as { hash: string; files: { path: string; sha256: string; size: number }[] };
+    vindex.files = vindex.files.map((f) => (f.path === "package.json" ? { ...f, sha256: sha256Hex(verbose.get("package.json")!), size: verbose.get("package.json")!.length } : f));
+    vindex.hash = indexCommitment(validateIndex(vindex)).toString("hex"); // the index still names compactc 0.34.0
+    verbose.set("index.json", Buffer.from(`${JSON.stringify(vindex, null, 2)}\n`));
+    const verboseUrl = serveAt("/verbose/", verbose);
+    await chain.scan(db, [other("b6".repeat(32), 105, 60, payloadFor(verbose, verboseUrl))]);
+    expect(await drainInterfaceVerifications(db.sql, db.schema, NET, deps(state, at(3_000)))).toMatchObject({ attempted: 1, failed: 1 });
+    const long = await row(db, 60);
+    expect(long).toMatchObject({ status: "failed", failed_level: 1 });
+    expect(long.reason!.length).toBeLessThanOrEqual(2_100);
+    expect(long.reason).toMatch(/^Level 1: index\.json names compiler compactc 0\.34\.0, but the bundle's package\.json pins compactc x+… \[\d+ characters omitted\]$/);
+    const histReason = (await db.sql<{ reason: string }[]>`SELECT reason FROM ${db.sql(db.schema)}.public_interface_checks WHERE net = ${NET} AND event_id = 60`)[0]!.reason;
+    expect(histReason).toBe(long.reason);
+    for (const text of [long.report!.reason, long.report!.levels.l1.reason]) {
+      expect(String(text).length).toBeLessThanOrEqual(8_192 + 40);
+      expect(String(text)).toMatch(/… \[\d+ characters omitted\]$/);
+    }
   }, 180_000);
 });
 

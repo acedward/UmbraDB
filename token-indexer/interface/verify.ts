@@ -80,6 +80,23 @@ export const PROVIDER_LIMITS: readonly string[] = Object.freeze([
   "Level 2 compares against the contract's CURRENT state as the provider reports it at checkedAt, which may be later than the publication's block",
 ]);
 
+/** The longest string kept in a stored verification record (`report`, `circuits`), and the longest
+ *  stored diagnostic (`reason`, `l3_reason`, in every history row): bundle-controlled text can be as
+ *  long as a bundle file (e.g. an 8 MiB `compact.compiler`), and a hundred history rows of it would
+ *  make one response hundreds of megabytes (audit 02 E2-R4C). Longer text keeps its start and says
+ *  how much was omitted. */
+export const MAX_RECORD_STRING_CHARS = 8192;
+export const MAX_DIAGNOSTIC_CHARS = 2000;
+
+function bounded(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max)}… [${text.length - max} characters omitted]`;
+}
+
+/** U+0000 and lone surrogates (a cut may leave one) → U+FFFD. */
+function cleanText(text: string): string {
+  return text.replace(/\u0000/g, "�").replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, "�");
+}
+
 /**
  * A value safe for Postgres `jsonb`: every string (keys included) without U+0000 and without lone
  * surrogates — both are refused by `jsonb` and would fail the result's write on every retry. The
@@ -87,9 +104,7 @@ export const PROVIDER_LIMITS: readonly string[] = Object.freeze([
  */
 export function jsonbSafe<T>(value: T, depth = 0): T {
   if (depth > 64) return null as T;
-  if (typeof value === "string") {
-    return value.replace(/\u0000/g, "�").replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, "�") as T;
-  }
+  if (typeof value === "string") return cleanText(bounded(value, MAX_RECORD_STRING_CHARS)) as T;
   if (typeof value === "bigint") return value.toString() as T;
   if (Array.isArray(value)) return value.map((v) => jsonbSafe(v, depth + 1)) as T;
   if (value !== null && typeof value === "object") {
@@ -100,13 +115,13 @@ export function jsonbSafe<T>(value: T, depth = 0): T {
 }
 
 /**
- * A diagnostic safe for a Postgres `text` column: U+0000 (which `text` refuses) and lone surrogates
- * replaced by U+FFFD. Every `reason` / `l3_reason` passes here — they quote bundle-controlled text
+ * A diagnostic safe for a Postgres `text` column: at most {@link MAX_DIAGNOSTIC_CHARS} characters, U+0000
+ * (which `text` refuses) and lone surrogates replaced by U+FFFD. Every `reason` / `l3_reason` passes here — they quote bundle-controlled text
  * (e.g. an uncommitted `index.json` `compiler.flags` entry holding a NUL), and a refused write would
  * otherwise fail the same publication on every drain pass (audit 02 E2-F1).
  */
 export function textSafe(value: string | null): string | null {
-  return value === null ? null : jsonbSafe(value);
+  return value === null ? null : cleanText(bounded(value, MAX_DIAGNOSTIC_CHARS));
 }
 
 function packageJsonBuild(files: ReadonlyMap<string, Buffer> | undefined): Record<string, unknown> | null {
