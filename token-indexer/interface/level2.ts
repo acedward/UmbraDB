@@ -79,15 +79,22 @@ export function providerOrigin(url: string): string {
   }
 }
 
+/** The largest `contractAction` response read (bytes; the state is hex in it, so ≈ 2× the state):
+ *  a generous bound, well above any contract state a block can hold; beyond it Level 2 is `unchecked`
+ *  (a local limit — audit 02 E2-F8), never a buffer of whatever the provider sends. */
+export const MAX_STATE_RESPONSE_BYTES = 64 * 1024 * 1024;
+
 /** The public indexer's `contractAction(address) { state }` (indexer 4.4, GraphQL v4). */
 export class IndexerStateSource implements StateSource {
   readonly description: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly maxResponseBytes: number;
 
-  constructor(private readonly opts: { url: string; fetchImpl?: typeof fetch; timeoutMs?: number }) {
+  constructor(private readonly opts: { url: string; fetchImpl?: typeof fetch; timeoutMs?: number; maxResponseBytes?: number }) {
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.timeoutMs = opts.timeoutMs ?? 20_000;
+    this.maxResponseBytes = opts.maxResponseBytes ?? MAX_STATE_RESPONSE_BYTES;
     this.description = `indexer contractAction(address) at ${providerOrigin(opts.url)}`;
   }
 
@@ -104,16 +111,17 @@ export class IndexerStateSource implements StateSource {
       throw new StateUnavailableError(`contractAction request failed: ${(error as Error).message}`);
     }
     if (!res.ok) throw new StateUnavailableError(`contractAction HTTP ${res.status}`);
+    const text = await this.boundedText(res);
     let body: { data?: { contractAction?: { state?: string; transaction?: { hash?: string; block?: { height?: number } } } | null }; errors?: { message: string }[] };
     try {
-      body = await res.json() as typeof body;
+      body = JSON.parse(text) as typeof body;
     } catch {
       throw new StateUnavailableError("contractAction response was not JSON");
     }
-    if (body.errors !== undefined && body.errors.length > 0) {
+    if (Array.isArray(body?.errors) && body.errors.length > 0) {
       throw new StateUnavailableError(`contractAction GraphQL error: ${body.errors.map((e) => e.message).join("; ")}`);
     }
-    const action = body.data?.contractAction;
+    const action = body?.data?.contractAction;
     if (action === undefined || action === null) throw new StateUnavailableError(`the indexer knows no contract at ${address}`);
     const hex = String(action.state ?? "").replace(/^0x/i, "");
     if (!/^([0-9a-fA-F]{2})+$/.test(hex)) throw new StateUnavailableError("contractAction state is not hex");
@@ -124,6 +132,34 @@ export class IndexerStateSource implements StateSource {
       blockHeight: typeof height === "number" && Number.isSafeInteger(height) ? height : null,
       txHash: typeof tx === "string" && /^(0x)?[0-9a-fA-F]{64}$/.test(tx) ? tx.replace(/^0x/i, "").toLowerCase() : null,
     };
+  }
+
+  /** The response body as text, at most {@link maxResponseBytes} (announced or counted while read). */
+  private async boundedText(res: Response): Promise<string> {
+    const cap = this.maxResponseBytes;
+    const tooLarge = (): StateUnavailableError => new StateUnavailableError(`the contractAction response is larger than the ${cap}-byte limit; Level 2 was not run`);
+    const announced = Number(res.headers.get("content-length"));
+    if (res.headers.get("content-length") !== null && Number.isFinite(announced) && announced > cap) {
+      await res.body?.cancel().catch(() => undefined);
+      throw tooLarge();
+    }
+    if (res.body === null) return "";
+    const reader = res.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let n = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        n += value.byteLength;
+        if (n > cap) { await reader.cancel().catch(() => undefined); throw tooLarge(); }
+        chunks.push(value);
+      }
+    } catch (error) {
+      if (error instanceof StateUnavailableError) throw error;
+      throw new StateUnavailableError(`contractAction response could not be read: ${(error as Error).message}`);
+    }
+    return Buffer.concat(chunks).toString("utf8");
   }
 }
 

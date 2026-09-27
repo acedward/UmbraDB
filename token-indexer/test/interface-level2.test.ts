@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import * as rt from "@midnight-ntwrk/compact-runtime";
 import { describe, expect, it } from "vitest";
 import {
-  IndexerStateSource, MAX_CIRCUITS, StateUnavailableError, jsonDepth, levelTwo, providerOrigin, renderType, shippedKeys, wrapperBinding,
+  IndexerStateSource, MAX_CIRCUITS, MAX_STATE_RESPONSE_BYTES, StateUnavailableError, jsonDepth, levelTwo, providerOrigin, renderType, shippedKeys, wrapperBinding,
 } from "../interface/level2.js";
 import { clone, fixtureHex, loadFixtureBundle, sha256Hex, verdict, type Bundle } from "./helpers/pi-fixture.js";
 
@@ -141,14 +141,19 @@ describe("[B] Level 2 (C5)", () => {
     // --- the state source: the public indexer's contractAction(address) { state } ----------------
     let answer: unknown = { data: { contractAction: { address: "aa", state: state.toString("hex"), transaction: { hash: "ab".repeat(32), block: { height: 42 } } } } };
     let status = 200;
+    let streamed = false;
     const requests: unknown[] = [];
     const server = createServer((req, res) => {
       let body = "";
       req.on("data", (c) => { body += String(c); });
       req.on("end", () => {
         requests.push(JSON.parse(body));
+        const text = typeof answer === "string" ? answer : JSON.stringify(answer);
         res.writeHead(status, { "content-type": "application/json" });
-        res.end(typeof answer === "string" ? answer : JSON.stringify(answer));
+        if (!streamed) { res.end(text); return; }
+        // No Content-Length: chunked, so the limit must be counted while reading.
+        for (let i = 0; i < text.length; i += 500) res.write(text.slice(i, i + 500));
+        res.end();
       });
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -177,6 +182,18 @@ describe("[B] Level 2 (C5)", () => {
       await expect(source.stateOf("cd".repeat(32))).rejects.toThrow(/not JSON/);
       status = 503;
       await expect(source.stateOf("cd".repeat(32))).rejects.toThrow(/HTTP 503/);
+      // The response is read up to a byte limit, announced or counted (audit 02 E2-F8): beyond it the
+      // state is unavailable (Level 2 not run, `unchecked`), never buffered whole.
+      status = 200;
+      answer = { data: { contractAction: { address: "aa", state: "ab".repeat(4_000), transaction: null } } };
+      const capped = new IndexerStateSource({ url, maxResponseBytes: 1_000 });
+      await expect(capped.stateOf("cd".repeat(32))).rejects.toThrow(/larger than the 1000-byte limit; Level 2 was not run/);
+      streamed = true;
+      await expect(capped.stateOf("cd".repeat(32))).rejects.toThrow(/larger than the 1000-byte limit; Level 2 was not run/);
+      await expect(capped.stateOf("cd".repeat(32))).rejects.toThrow(StateUnavailableError);
+      expect((await new IndexerStateSource({ url, maxResponseBytes: 100_000 }).stateOf("cd".repeat(32))).state.length).toBe(4_000);
+      streamed = false;
+      expect(MAX_STATE_RESPONSE_BYTES).toBe(64 * 1024 * 1024);
       await expect(new IndexerStateSource({ url: "http://127.0.0.1:1/x", timeoutMs: 2_000 }).stateOf("cd".repeat(32))).rejects.toThrow(/request failed/);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
