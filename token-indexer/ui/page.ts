@@ -31,7 +31,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
  *   GET /v1/tokens?kind&storage&status&q&limit&cursor
  *   GET /v1/colors/:color                              (the list's "API" column links here)
  *   GET /v1/contracts/:address
- *   GET /v1/contracts/:address/events?applied=false
+ *   GET /v1/contracts/:address/events?limit=     (every event; 00024-03 dropped "applied=false")
  *   GET /v1/contracts/:address/tokens/:domainSep/:kind
  *   GET /v1/contracts/:address/tokens/:domainSep/:kind/metadata
  *   GET /v1/contracts/:address/tokens/:domainSep/:kind/mints?limit&cursor
@@ -47,6 +47,18 @@ import type { IncomingMessage, ServerResponse } from "node:http";
  *
  * with four hash routes on top of the three it had: `#/tx/<hash>`, `#/shielded-offers` and
  * `#/color/<color>/<kind>` (the page of a colour whose mint predates the archive, US5).
+ *
+ * and, since 00024-03 (spec `00024` US6, FR-016 — the page shows where every value came from):
+ *
+ *   GET /v1/interfaces?limit                          (the list's interface part badge)
+ *   GET /v1/contracts/:address/interface              (the contract view's "public interface")
+ *
+ * with an optional section on the contract and token routes (`#/contract/<address>/interface`,
+ * `#/token/…/mints`, …) that an origin's evidence link scrolls to. Every value of the token and
+ * contract views carries its origin — "MIP-0018 declaration", "Public interface", "Chain
+ * observation", "Derived by this indexer" or "Not available" — with the link to its evidence; the
+ * labels come from the API's `origin` fields through one pure view model (`tokenModel`,
+ * `contractModel`), which the governed test `[[token-ui-origin]]` evaluates on recorded payloads.
  *
  * A `tokenUri` that points at `localhost:<any port>` is rewritten to this page's own origin
  * before it is rendered (spec §8 and FR-013: the reference Constellations pieces bake
@@ -313,6 +325,63 @@ tr.det td { background: var(--det); white-space: normal; }
 .txsec { margin-top: 14px; }
 .txsec:first-child { margin-top: 0; }
 .txsec > .h { color: var(--dim); font-size: 12px; margin-bottom: 6px; }
+/* ── 00024-03: where every value came from (spec 00024 US6) ─────────────────────────────────
+   One hue per ORIGIN, stated once here, distinct from every tag hue above, each text colour at
+   >= 6:1 on its own ground and on every surface a table cell can have. A label the page gives a
+   value the API serves without an origin (question Q28) has a dashed edge, like the other claims
+   the page makes on its own. */
+:root {
+  --or-mip-bg: #eceffc; --or-mip-bd: #9aa6e6; --or-mip-fg: #2a3b8f;
+  --or-pi-bg: #fbe9f1; --or-pi-bd: #e29ab9; --or-pi-fg: #8a1c4f;
+  --or-chain-bg: #f6f1dc; --or-chain-bd: #cdb86a; --or-chain-fg: #5a4a0f;
+  --or-derived-bg: #e2f3f7; --or-derived-bd: #79c0d2; --or-derived-fg: #0f5c6e;
+  --or-none-bg: #f4f4f4; --or-none-bd: #b9b9b9; --or-none-fg: #555555;
+  /* the interface statuses: verified, waiting (pending, stale), unavailable (unchecked,
+     unfetchable, unreachable); failed takes the page's red */
+  --if-ok-bg: #e1f4e8; --if-ok-bd: #86c79e; --if-ok-fg: #17593a;
+  --if-wait-bg: #fff3d1; --if-wait-bd: #e0b84f; --if-wait-fg: #6e4a00;
+  --if-unav-bg: #ececec; --if-unav-bd: #adadad; --if-unav-fg: #4d4d4d;
+  --pp-bg: #efebfc; --pp-bd: #a99be3; --pp-fg: #3a2c8c;
+}
+/* A grid item may not shrink below its content by default, so one wide table (more columns now,
+   each value with its label) would widen every section and the page: the items may shrink, and a
+   wide table scrolls inside its own .scroll wrapper, as the others always did. */
+main > * { min-width: 0; }
+.orig { display: inline-block; margin: 1px 0 1px 6px; padding: 0 7px; font-size: 11px; font-weight: 500;
+  border: 1px solid; text-decoration: none; white-space: nowrap; }
+td > .orig:first-child, .ob .orig { margin-left: 0; }
+a.orig:hover { text-decoration: underline; }
+.or-mip-0018 { color: var(--or-mip-fg); border-color: var(--or-mip-bd); background: var(--or-mip-bg); }
+.or-public-interface { color: var(--or-pi-fg); border-color: var(--or-pi-bd); background: var(--or-pi-bg); }
+.or-chain { color: var(--or-chain-fg); border-color: var(--or-chain-bd); background: var(--or-chain-bg); }
+.or-derived { color: var(--or-derived-fg); border-color: var(--or-derived-bd); background: var(--or-derived-bg); }
+.or-none, .or-unknown { color: var(--or-none-fg); border-color: var(--or-none-bd); background: var(--or-none-bg); }
+.or-unknown { color: var(--bad-fg); border-color: var(--bad); }
+.or-page { border-style: dashed; }
+.p1 { display: inline-block; margin-left: 6px; padding: 0 5px; font-size: 10.5px; font-weight: 700;
+  color: var(--md-white); background: var(--or-mip-fg); cursor: help; }
+.ob { display: grid; gap: 3px; }
+.oev { color: var(--dim); font-size: 11.5px; line-height: 1.5; white-space: normal; word-break: break-word;
+  max-width: 72ch; }
+.vo { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 0; }
+td.k { color: var(--dim); }
+td.fv { white-space: normal; word-break: break-word; max-width: 60ch; }
+td.ocell { white-space: normal; min-width: 260px; }
+tr.hist td { background: var(--det); font-size: 12.5px; }
+.ifb.if-ok { color: var(--if-ok-fg); border-color: var(--if-ok-bd); background: var(--if-ok-bg); }
+.ifb.if-wait { color: var(--if-wait-fg); border-color: var(--if-wait-bd); background: var(--if-wait-bg); }
+.ifb.if-unav { color: var(--if-unav-fg); border-color: var(--if-unav-bd); background: var(--if-unav-bg);
+  border-style: dashed; }
+.ifb.if-bad, .ifb.if-unknown { color: var(--tag-bad-fg); border-color: var(--tag-bad-bd); background: var(--tag-bad-bg); }
+.pp { display: inline-block; margin-left: 6px; padding: 0 6px; font-size: 11px; font-weight: 500;
+  color: var(--pp-fg); border: 1px solid var(--pp-bd); background: var(--pp-bg); cursor: default; }
+.pp-bad { color: var(--tag-bad-fg); border-color: var(--tag-bad-bd); background: var(--tag-bad-bg); }
+/* A diagnostic is served bounded ("… [N characters omitted]") and shown as served: it wraps, it
+   never widens the table. A URL of up to 262 112 bytes is shortened for the eye (head … tail) and
+   copied whole. */
+.diag { white-space: pre-wrap; word-break: break-word; display: inline-block; max-width: 72ch; }
+.urlv { white-space: normal; word-break: break-all; display: inline-block; max-width: 72ch; }
+.cpbtn { font-size: 11.5px; }
 `;
 
 // ── Behaviour ────────────────────────────────────────────────────────────────────────────────
@@ -328,7 +397,7 @@ const SCRIPT = `
 //   GET /v1/tokens
 //   GET /v1/colors/:color
 //   GET /v1/contracts/:address
-//   GET /v1/contracts/:address/events?applied=false
+//   GET /v1/contracts/:address/events?limit=                         (every event, 00024-03)
 //   GET /v1/contracts/:address/tokens/:domainSep/:kind
 //   GET /v1/contracts/:address/tokens/:domainSep/:kind/metadata
 //   GET /v1/contracts/:address/tokens/:domainSep/:kind/mints
@@ -337,6 +406,8 @@ const SCRIPT = `
 //   GET /v1/contracts/:address/calls                                  (00023, FR-020)
 //   GET /v1/transactions/:hash                                        (00023, FR-007)
 //   GET /v1/shielded-offers                                           (00023, FR-018)
+//   GET /v1/interfaces                                                (00024-03, the list's part badge)
+//   GET /v1/contracts/:address/interface                              (00024-03, the interface section)
 //   GET /internal/status
 var P_TOKENS = "/v1/tokens";
 var P_COLORS = "/v1/colors";
@@ -361,7 +432,9 @@ var state = {
   // mip is the one filter applied in the browser rather than by the API: "has metadata published
   // under MIP-0018" is a rule over the row's status, not a column the list route filters on.
   filters: { kind: "", storage: "", status: "", q: "", mip: "" },
-  list: { items: [], nextCursor: null, loaded: false },
+  // ifaces: the current publication of every contract with an interface, by address (00024-03:
+  // the list's interface column reads the token's own summary, and this only adds its part count).
+  list: { items: [], nextCursor: null, loaded: false, ifaces: {} },
   detail: null,
   contract: null,
   status: null,
@@ -761,8 +834,14 @@ function counterOf(st, name) {
 
 // ── Routing (hash only: the page is one document and every view is bookmarkable) ────────────
 
-function parseHash() {
-  var h = window.location.hash || "";
+// 00024-03: a route may end in a section of its view — "#/contract/<address>/interface",
+// "#/token/<address>/<domainSep>/<kind>/mints" — which the page scrolls to once it is drawn. That
+// is how an origin's evidence link lands on the publication or the rows it cites.
+var FOCUS_SECTIONS = ["interface", "calls", "mints", "traits", "events", "activity", "metadata", "facts"];
+function focusOf(s) { return s !== undefined && FOCUS_SECTIONS.indexOf(s) >= 0 ? s : null; }
+function parseHash() { return routeOf(window.location.hash || ""); }
+function routeOf(hash) {
+  var h = String(hash === null || hash === undefined ? "" : hash);
   if (h.charAt(0) === "#") h = h.slice(1);
   var raw = h.split("/");
   var parts = [];
@@ -774,14 +853,16 @@ function parseHash() {
   if (parts[0] === "status") return { view: "status" };
   if (parts[0] === "shielded-offers") return { view: "offers" };
   if (parts[0] === "tx" && parts.length >= 2) return { view: "tx", hash: parts[1] };
-  if (parts[0] === "contract" && parts.length >= 2) return { view: "contract", address: parts[1] };
+  if (parts[0] === "contract" && parts.length >= 2) {
+    return { view: "contract", address: parts[1], focus: focusOf(parts[2]) };
+  }
   if (parts[0] === "token" && parts.length >= 4) {
-    return { view: "token", address: parts[1], domainSep: parts[2], kind: parts[3] };
+    return { view: "token", address: parts[1], domainSep: parts[2], kind: parts[3], focus: focusOf(parts[4]) };
   }
   // US5: a colour whose mint predates the archive has no (address, domainSep) to route by, so its
   // page is the colour and the kind. When a later mint names it, the token route works as well.
   if (parts[0] === "color" && parts.length >= 3) {
-    return { view: "token", color: parts[1], kind: parts[2] };
+    return { view: "token", color: parts[1], kind: parts[2], focus: focusOf(parts[3]) };
   }
   return { view: "list" };
 }
@@ -1150,6 +1231,878 @@ function sortTokens(items) {
   return built.concat(rest).concat(seen);
 }
 
+// ── 00024-03: where every value came from (spec 00024 US6, FR-016, FR-016b) ─────────────────
+//
+// The API sends an "origin" with every value it serves (FR-016b): one of five kinds and the
+// evidence behind it. This block turns those into what the token and contract views show — a label,
+// one line of evidence and the links that open it — and it is PURE: it reads API payloads and
+// returns plain objects, never a DOM node. The page's governed test evaluates this very script
+// (node:vm, the string this module serves) on recorded payloads and checks that every value of the
+// two views carries a label and a link that resolves ([[token-ui-origin]]); the renderers further
+// down draw only what these functions return, so what is tested is what is shown.
+//
+//   mip-0018          the package: tx, block, position, segment, parts, phase, event ids → the tx
+//   public-interface  the publication: tx, block, segment, parts, commitment, levels, checked at
+//                     → the contract's interface section (and the publication tx)
+//   chain             the transaction or mint in the archive → the tx (or the section listing them)
+//   derived           the rule applied (and, for a MIP-0018 key declared more than once, P1)
+//   none              the reason
+//
+// A few values reach the page with no origin at all (the token's identity, its heights and
+// counts, a contract's deploy facts, contract calls). The page labels those itself with a fixed
+// rule, marked as its own, and says so (question Q28); it never invents evidence the API did not
+// send. Diagnostics arrive already bounded by the indexer ("… [N characters omitted]") and are
+// shown exactly as served.
+
+var P_INTERFACES = "/v1/interfaces";
+var EVENT_LIMIT = 500;
+var INTERFACE_LIST_LIMIT = 500;
+
+var ORIGIN_LABELS = {
+  "mip-0018": "MIP-0018 declaration",
+  "public-interface": "Public interface",
+  "chain": "Chain observation",
+  "derived": "Derived by this indexer",
+  "none": "Not available"
+};
+var P1_NOTE = "P1: last write, positioned by the first part";
+var P1_RULE = "P1 (spec 00024 §9.2): of several declarations of one key, the last write wins in "
+  + "MIP-0018's canonical order — block, transaction position, execution order — and a multi-part "
+  + "package is positioned by its first part";
+var PAGE_NOTE = "this page's own label: the API serves this value without an origin (Q28)";
+
+// The seven publication statuses of the API (INTERFACE_STATUSES in api/queries.ts; spec §4 Key
+// Entities). "historical" is not a status: it is the role of every publication older than the
+// current one, and each keeps its own last result.
+var INTERFACE_STATUS = {
+  "pending": { cls: "if-wait",
+    help: "published; its first check has not run yet — no level is claimed" },
+  "verified": { cls: "if-ok",
+    help: "the bundle passed the levels shown: L1 the commitment and every listed file, L2 the "
+      + "verifier keys against the contract's state, L3 the keys recompiled with the exact compiler" },
+  "failed": { cls: "if-bad",
+    help: "the bundle failed the level shown and the reason says why; a newer failed publication is "
+      + "the current one and is shown failed (Q14)" },
+  "unchecked": { cls: "if-unav",
+    help: "a limit stopped the check (size, count or deadline): no level is claimed; retried" },
+  "unfetchable": { cls: "if-unav",
+    help: "the URL is refused by policy (not http(s), a private address, not text): no level is claimed" },
+  "unreachable": { cls: "if-unav",
+    help: "the host did not deliver (an HTTP error, a refused connection, a listed file missing): no "
+      + "level is claimed; retried with exponential backoff (Q25)" },
+  "stale": { cls: "if-wait",
+    help: "the contract's verifier keys changed in a maintenance update: waiting for re-verification" }
+};
+var ROLE_HELP = {
+  "current": "the newest publication of this contract (P2: block, transaction position, execution order)",
+  "historical": "an older publication, kept with its own last result; never presented as current"
+};
+
+function own(o, k) { return !!o && typeof o === "object" && Object.prototype.hasOwnProperty.call(o, k); }
+function partsText(n) { return String(n) + " part" + (Number(n) === 1 ? "" : "s"); }
+function asciiHex(s) {
+  var out = "";
+  var str = String(s);
+  for (var i = 0; i < str.length; i++) {
+    var h = str.charCodeAt(i).toString(16);
+    out += h.length < 2 ? "0" + h : h;
+  }
+  return out;
+}
+
+// ── interface statuses and levels ────────────────────────────────────────────────────────────
+
+function levelsPassed(levels) {
+  if (!levels) return "";
+  var out = [];
+  if (levels.l1 === "passed") out.push("L1");
+  if (levels.l2 === "passed") out.push("L2");
+  if (levels.l3 === "passed") out.push("L3");
+  return out.join("/");
+}
+function levelsLine(levels) {
+  var lv = levels || {};
+  return "L1 " + orDash(lv.l1) + " · L2 " + orDash(lv.l2) + " · L3 " + orDash(lv.l3);
+}
+function failedLevelOf(x) {
+  if (!x) return null;
+  if (typeof x.failedLevel === "number") return x.failedLevel;
+  var lv = x.levels || {};
+  if (lv.l1 === "failed") return 1;
+  if (lv.l2 === "failed") return 2;
+  if (lv.l3 === "failed") return 3;
+  return null;
+}
+// One publication's result as a badge: "verified L1/L2/L3", "verified L1/L2", "failed at L1",
+// "unchecked", ... with the help text and the notes a reader needs beside it.
+function interfaceStatusView(x) {
+  var status = x && x.status !== undefined && x.status !== null ? String(x.status) : "unknown";
+  var known = own(INTERFACE_STATUS, status);
+  var passed = levelsPassed(x ? x.levels : null);
+  var failed = failedLevelOf(x);
+  var text = status;
+  if (status === "verified") text = "verified " + (passed === "" ? "(no level)" : passed);
+  else if (status === "failed") text = failed === null ? "failed" : "failed at L" + failed;
+  else if (status === "stale" && passed !== "") text = "stale (was " + passed + ")";
+  var notes = [];
+  if (x && x.levels && status === "verified" && x.levels.l3 !== "passed") {
+    notes.push("L3 " + orDash(x.levels.l3) + (x.l3Reason ? ": " + x.l3Reason : ""));
+  }
+  if (x && x.verifiedUntil) notes.push("verified until " + x.verifiedUntil);
+  return {
+    status: status, known: known, text: text, passed: passed, failedLevel: failed, notes: notes,
+    cls: known ? INTERFACE_STATUS[status].cls : "if-unknown",
+    help: known ? INTERFACE_STATUS[status].help : "a status this page does not know"
+  };
+}
+
+// ── evidence ─────────────────────────────────────────────────────────────────────────────────
+
+function evidenceList(ev) {
+  if (isArray(ev)) return ev;
+  return ev && typeof ev === "object" ? [ev] : [];
+}
+function eventIdsOf(p) {
+  if (isArray(p.eventIds)) return p.eventIds;
+  if (isArray(p.partEventIds)) return p.partEventIds;
+  return p.eventId === undefined || p.eventId === null ? [] : [p.eventId];
+}
+// "tx 591d1c45…94bb2c · block 221 · position 0 · segment 23651 · 1 part · guaranteed · event 97"
+function packageText(p) {
+  var bits = [];
+  if (!p) return "";
+  if (p.txHash) bits.push("tx " + shortHex(String(p.txHash), 8, 6));
+  if (p.blockHeight !== undefined && p.blockHeight !== null) bits.push("block " + p.blockHeight);
+  if (p.txPosition !== undefined && p.txPosition !== null) bits.push("position " + p.txPosition);
+  if (p.segment !== undefined && p.segment !== null) bits.push("segment " + p.segment);
+  if (p.parts !== undefined && p.parts !== null) bits.push(partsText(p.parts));
+  if (p.phase) bits.push(String(p.phase));
+  var ids = eventIdsOf(p);
+  if (ids.length > 0) bits.push((ids.length === 1 ? "event " : "events ") + idsText(ids));
+  return bits.join(" · ");
+}
+// A package may hold up to 1 024 parts (FR-004): the first three ids and the last say which events
+// they are without a thousand numbers in one line.
+function idsText(ids) {
+  if (ids.length <= 6) return ids.join(", ");
+  return ids.slice(0, 3).join(", ") + ", … " + ids[ids.length - 1] + " (" + ids.length + " ids)";
+}
+// Plain facts of an evidence object that is not a package ({mintCount, firstMintHeight, ...}). A
+// transaction, a contract or a list it names becomes a link instead, so it is not repeated here.
+var LINKED_EVIDENCE = ["txHash", "contract", "list"];
+function factsText(ev) {
+  var bits = [];
+  if (!ev || typeof ev !== "object" || isArray(ev)) return "";
+  for (var k in ev) {
+    if (!own(ev, k) || LINKED_EVIDENCE.indexOf(k) >= 0) continue;
+    var v = ev[k];
+    if (v === null || v === undefined || typeof v === "object") continue;
+    var s = String(v);
+    bits.push(k + " " + (isHex(s) && s.length > 20 ? shortHex(s, 8, 6) : s));
+  }
+  return bits.join(" · ");
+}
+function txEvidence(txHash, what) {
+  var h = txHash === null || txHash === undefined ? "" : String(txHash);
+  if (!isHex(h)) return null;
+  return { href: hashTx(h), text: (what || "tx") + " " + shortHex(h, 8, 6), title: h + " (open the transaction)" };
+}
+var SECTION_TEXT = {
+  "interface": "the public interface", "calls": "the contract's calls", "mints": "the mint history",
+  "traits": "the traits", "events": "the raw events", "activity": "the transactions",
+  "metadata": "the metadata document", "facts": "the token's values"
+};
+function sectionEvidence(ctx, section) {
+  var c = ctx || {};
+  if (c.token && c.token.address && c.token.domainSep) {
+    return { href: hashTokenSection(c.token, section), text: SECTION_TEXT[section] || section,
+      title: "open " + (SECTION_TEXT[section] || section) + " of this token" };
+  }
+  if (c.token && c.token.color) {
+    return { href: hashTokenSection(c.token, section), text: SECTION_TEXT[section] || section,
+      title: "open " + (SECTION_TEXT[section] || section) + " of this colour" };
+  }
+  if (c.address) {
+    return { href: hashContract(c.address) + "/" + enc(section), text: SECTION_TEXT[section] || section,
+      title: "open " + (SECTION_TEXT[section] || section) + " of this contract" };
+  }
+  return null;
+}
+
+// A value the API serves WITHOUT an origin: the page's own label, marked as such (Q28).
+function pageOrigin(kind, text, evidence) {
+  var o = { origin: kind, page: true };
+  if (kind === "none") o.reason = text; else o.rule = text;
+  if (evidence) o.evidence = evidence;
+  return o;
+}
+
+// The one function every label on the token and contract views goes through.
+//   ctx.address       the contract (a public-interface value links to its interface section)
+//   ctx.token         the token (a chain value without a transaction links to its section)
+//   ctx.section       that section, for a chain value that cites no transaction
+//   ctx.declarations  how many applied declarations the value's key has (> 1 → P1 is named)
+function originView(o, ctx) {
+  var c = ctx || {};
+  var kind = o && typeof o === "object" && typeof o.origin === "string" ? o.origin : null;
+  var known = kind !== null && own(ORIGIN_LABELS, kind);
+  var v = {
+    kind: known ? kind : "unknown", known: known,
+    label: known ? ORIGIN_LABELS[kind] : "Origin not given",
+    detail: "", links: [], rule: null, reason: null, parts: null, phase: null, p1: false,
+    page: !!(o && o.page)
+  };
+  if (!known) {
+    v.detail = o && typeof o === "object"
+      ? "the API sent an origin this page does not know: " + String(o.origin)
+      : "the API sent no origin for this value";
+    return v;
+  }
+  var ev = o.evidence;
+  var texts = [];
+  if (kind === "mip-0018") {
+    var packages = evidenceList(ev);
+    for (var i = 0; i < packages.length; i++) {
+      texts.push(packageText(packages[i]));
+      var link = txEvidence(packages[i].txHash, packages.length > 1 ? "declaration " + (i + 1) + " tx" : "tx");
+      if (link) v.links.push(link);
+    }
+    if (packages.length === 1) {
+      v.parts = packages[0].parts === undefined ? null : packages[0].parts;
+      v.phase = packages[0].phase === undefined ? null : packages[0].phase;
+      if (Number(v.parts) > 1) v.label = ORIGIN_LABELS[kind] + ", " + partsText(v.parts);
+    } else if (packages.length > 1) {
+      v.label = ORIGIN_LABELS[kind] + ", " + packages.length + " declarations";
+    }
+    if (Number(c.declarations) > 1) {
+      v.p1 = true;
+      texts.push(P1_NOTE + " — the latest of " + c.declarations + " declarations of this key");
+    }
+  } else if (kind === "public-interface") {
+    var e = ev && typeof ev === "object" ? ev : {};
+    var st = interfaceStatusView(e);
+    v.label = ORIGIN_LABELS[kind] + ", " + (st.status === "verified" ? (st.passed === "" ? "no level" : st.passed) : st.text);
+    texts.push("publication " + packageText(e));
+    if (e.commitment) texts.push("commitment " + shortHex(String(e.commitment), 8, 6));
+    texts.push(e.checkedAt ? "checked " + e.checkedAt : "not checked yet");
+    if (c.address) {
+      v.links.push({ href: hashContract(c.address) + "/interface", text: "the interface",
+        title: "open this contract's public interface: URL, files, keys, circuits, history" });
+    }
+    var pl = txEvidence(e.txHash, "publication tx");
+    if (pl) v.links.push(pl);
+    v.parts = e.parts === undefined ? null : e.parts;
+    v.phase = e.phase === undefined ? null : e.phase;
+  } else if (kind === "chain") {
+    v.rule = o.rule ? String(o.rule) : null;
+    if (v.rule) texts.push(v.rule);
+    var ce = ev && typeof ev === "object" && !isArray(ev) ? ev : {};
+    var facts = factsText(ce);
+    if (facts) texts.push(facts);
+    var tl = txEvidence(ce.txHash, "tx");
+    if (tl) v.links.push(tl);
+    if (ce.contract && isHex(String(ce.contract))) {
+      v.links.push({ href: hashContract(String(ce.contract)), text: "the contract",
+        title: String(ce.contract) + " (open the contract)" });
+    }
+    if (ce.list === "shielded-offers") {
+      v.links.push({ href: "#/shielded-offers", text: "the list of those offers",
+        title: "open every shielded offer whose colour is undisclosed" });
+    }
+    if (v.links.length === 0 && c.section) {
+      var sl = sectionEvidence(c, c.section);
+      if (sl) v.links.push(sl);
+    }
+  } else if (kind === "derived") {
+    v.rule = o.rule ? String(o.rule) : "(no rule given)";
+    texts.push(v.rule);
+    var de = factsText(ev);
+    if (de) texts.push("inputs: " + de);
+  } else {
+    v.reason = o.reason ? String(o.reason) : "no reason given";
+    v.label = ORIGIN_LABELS[kind] + " (" + v.reason + ")";
+    texts.push(v.reason);
+    var np = evidenceList(ev);
+    for (var j = 0; j < np.length; j++) {
+      if (!np[j].txHash) continue;
+      texts.push("the declaration: " + packageText(np[j]));
+      var nl = txEvidence(np[j].txHash, "declaration tx");
+      if (nl) v.links.push(nl);
+    }
+  }
+  if (v.page) texts.push(PAGE_NOTE);
+  v.detail = texts.join(" · ");
+  return v;
+}
+
+// ── MIP-0018 history: every applied declaration of a key, newest first (P1 order) ───────────
+
+function declarationsOf(events, t) {
+  var byKey = {};
+  var list = arr(events);
+  if (!t) return byKey;
+  for (var i = 0; i < list.length; i++) {
+    var e = list[i];
+    if (!e || e.applied !== true) continue;
+    if (String(e.domainSep) !== String(t.domainSep)) continue;
+    if (Number(e.kindByte) !== Number(t.kind)) continue;
+    var k = String(e.keyHex === undefined || e.keyHex === null ? e.key : e.keyHex);
+    if (!own(byKey, k)) byKey[k] = [];
+    byKey[k].push(e);
+  }
+  for (var key in byKey) {
+    if (!own(byKey, key)) continue;
+    byKey[key].sort(function (a, b) {
+      if (Number(a.blockHeight) !== Number(b.blockHeight)) return Number(b.blockHeight) - Number(a.blockHeight);
+      if (Number(a.txPosition) !== Number(b.txPosition)) return Number(b.txPosition) - Number(a.txPosition);
+      return Number(b.eventId) - Number(a.eventId);
+    });
+  }
+  return byKey;
+}
+function declaredValueText(e) {
+  if (!e) return "-";
+  if (Number(e.valType) === 5) return "Null (the key was cleared)";
+  if (Number(e.valType) === 2 && e.integer !== null && e.integer !== undefined) return String(e.integer);
+  if (e.text !== null && e.text !== undefined) return String(e.text);
+  if (e.value) return "0x" + shortHex(String(e.value), 10, 8);
+  return "(empty)";
+}
+
+// ── the token view ───────────────────────────────────────────────────────────────────────────
+
+function hashTokenSection(t, section) { return hashToken(t) + "/" + enc(section); }
+function valueOrNull(v) { return v === null || v === undefined || v === "" ? null : String(v); }
+
+// Every value the token view shows, each with its origin, section by section. "all" lists every
+// item once, so a reader (or a test) can walk the whole view without knowing its layout.
+function tokenModel(d) {
+  var t = d && d.token ? d.token : null;
+  if (!t) return null;
+  var o = t.origins || {};
+  var events = arr(d.events);
+  var decls = declarationsOf(events, t);
+  var ctx = { token: t, address: t.address };
+  var builtin = t.status === "builtin";
+  var seen = !t.address || !t.domainSep;
+  var seeded = pageOrigin("derived", "a seeded built-in row: the ledger's own token (00020 owner decision Q7)");
+  var noContract = pageOrigin("none", "no contract is known for this colour (status seen)");
+  function declCount(keyText) { var l = decls[asciiHex(keyText)]; return l ? l.length : 0; }
+  function item(field, label, value, origin, extra) {
+    var c = extra || ctx;
+    var it = { field: field, label: label, value: valueOrNull(value), origin: originView(origin, c) };
+    return it;
+  }
+  var facts = [];
+  facts.push(item("address", "address",
+    builtin ? "built-in row, no contract" : (seen ? "unknown" : t.address),
+    builtin ? seeded : (seen ? noContract : pageOrigin("chain",
+      "the contract that declared or minted this token; its deploy and calls are on the contract view",
+      { contract: t.address }))));
+  facts.push(item("domainSep", "domainSep", seen ? "unknown" : t.domainSep,
+    builtin ? seeded : (seen ? noContract : pageOrigin("chain",
+      "MIP-0018 §4: carried by every declaration and mint of this token"))
+    , { token: t, section: "events" }));
+  facts.push(item("kind", "kind", orDash(t.kind) + "  (" + kindLabel(t) + ")",
+    builtin ? seeded : pageOrigin("chain", "MIP-0018 §3: the kind byte carried by this token's declarations and mints"),
+    { token: t, section: seen ? "activity" : "events" }));
+  facts.push(item("privacy", "privacy", t.privacy,
+    pageOrigin("derived", "MIP-0018 §3: bit 0 of the kind byte")));
+  facts.push(item("storage", "storage", t.storage,
+    pageOrigin("derived", "MIP-0018 §3: bit 1 of the kind byte")));
+  facts.push(item("color", "colour", t.color, o.color));
+  facts.push(item("name", "name", t.name, o.name, { token: t, address: t.address, declarations: declCount("name") }));
+  facts.push(item("symbol", "symbol", t.symbol, o.symbol, { token: t, address: t.address, declarations: declCount("symbol") }));
+  facts.push(item("decimals", "decimals", t.decimals, o.decimals, { token: t, address: t.address, declarations: declCount("decimals") }));
+  facts.push(item("tokenUri", "tokenUri", t.tokenUri, o.tokenUri, { token: t, address: t.address, declarations: declCount("tokenUri") }));
+  facts.push(item("status", "status", t.status, o.status));
+  var mintCtx = { token: t, section: "mints" };
+  facts.push(item("mintCount", "mint count", t.mintCount, o.mints, mintCtx));
+  facts.push(item("totalMinted", "total minted", t.totalMinted, o.mints, mintCtx));
+  facts.push(item("firstMintHeight", "first mint height", t.firstMintHeight, o.mints, mintCtx));
+  facts.push(item("lastMintHeight", "last mint height", t.lastMintHeight, o.mints, mintCtx));
+  facts.push(item("firstSeenHeight", "first seen height", t.firstSeenHeight,
+    builtin ? seeded : pageOrigin("derived", "the lowest block height at which a declaration, a mint or a public movement of this token was seen")));
+  facts.push(item("metadataUpdatedHeight", "metadata updated height", t.metadataUpdatedHeight,
+    t.metadataUpdatedHeight === null || t.metadataUpdatedHeight === undefined
+      ? pageOrigin("none", builtin ? "a built-in row carries no declaration" : "no applied declaration")
+      : pageOrigin("derived", "the block of this token's latest applied MIP-0018 declaration"),
+    { token: t, section: "traits" }));
+  facts.push(item("deployHeight", "deploy height", t.deployHeight,
+    builtin ? seeded : (t.deployHeight === null || t.deployHeight === undefined
+      ? pageOrigin("none", seen ? "no contract is known for this colour (status seen)" : "the contract's deploy is not in the archive")
+      : pageOrigin("chain", "the block of the contract's deploy transaction (on the contract view)", { contract: t.address }))));
+  var vis = visibilityOf(t);
+  if (t.activityCount !== undefined) {
+    var actOrigin = vis === "not-tracked" ? pageOrigin("none", "DUST is not tracked per token: every transaction pays a fee (Q13)")
+      : (vis === "calls-only" ? pageOrigin("none", "a ledger kind has no colour and so no activity row; its contract's calls are listed instead (US7)")
+        : pageOrigin("chain", "00023: the counted public movements of this token in archived transactions"));
+    facts.push(item("activityCount", "activity rows", t.activityCount, actOrigin, { token: t, section: "activity" }));
+    facts.push(item("lastActivityHeight", "last activity height", t.lastActivityHeight, actOrigin, { token: t, section: "activity" }));
+  }
+  facts.push(item("visibility", "what the chain lets this page show", visibilityOf(t),
+    pageOrigin("derived", "00023 §5: what the ledger publishes for this kind of token (DUST: not tracked, Q13)")));
+  var disclosure = [];
+  if (vis === "disclosed-imbalances") {
+    disclosure.push(item("disclosedTransactions", "transactions disclose this colour", t.disclosedTransactions,
+      pageOrigin("chain", "00023 US4: transactions whose offers publish this colour's net imbalance"), { token: t, section: "activity" }));
+    disclosure.push(item("undisclosedShieldedOffers", "shielded offers publish no colour", t.undisclosedShieldedOffers,
+      pageOrigin("chain", "00023 FR-018: zswap offers on this chain that publish no colour at all",
+        { list: "shielded-offers" })));
+  }
+
+  // The contract's public interface, as the token route carries it: status and levels, no URL.
+  var iface = t.interface;
+  var ifaceItem = item("interface", "public interface",
+    iface ? interfaceStatusView(iface).text : null,
+    iface ? iface.origin : (builtin ? pageOrigin("none", "a built-in row has no contract") : (seen
+      ? noContract : pageOrigin("none", "this token's contract has published no public interface"))),
+    { token: t, address: t.address });
+  ifaceItem.status = iface ? interfaceStatusView(iface) : null;
+
+  var metadata = item("metadata", "metadata document",
+    t.metadata === null || t.metadata === undefined ? null : jsonText(t.metadata), o.metadata,
+    { token: t, address: t.address, declarations: declCount("metadata") });
+
+  var traits = [];
+  var keys = arr(d.keys);
+  for (var k = 0; k < keys.length; k++) {
+    var kv = keys[k];
+    var keyId = String(kv.keyHex === undefined || kv.keyHex === null ? asciiHex(kv.key) : kv.keyHex);
+    var all = decls[keyId] || [];
+    var history = [];
+    for (var h = 0; h < all.length; h++) {
+      if (Number(all[h].eventId) === Number(kv.eventId)) continue;
+      var he = all[h];
+      var hi = item("trait:" + keyId + ":" + he.eventId, "earlier declaration", declaredValueText(he), he.origin, { token: t, address: t.address });
+      hi.eventId = he.eventId; hi.blockHeight = he.blockHeight; hi.txPosition = he.txPosition;
+      hi.txHash = he.txHash; hi.valType = he.valType; hi.parts = he.parts; hi.phase = he.phase;
+      history.push(hi);
+    }
+    var ti = item("trait:" + keyId, kv.key === null || kv.key === undefined ? "0x" + keyId : String(kv.key),
+      traitText(kv), kv.origin, { token: t, address: t.address, declarations: all.length });
+    ti.trait = kv; ti.history = history; ti.parts = kv.parts; ti.phase = kv.phase;
+    traits.push(ti);
+  }
+
+  var mints = [];
+  var ml = arr(d.mints);
+  for (var m = 0; m < ml.length; m++) {
+    var mi = item("mint:" + ml[m].txHash + ":" + ml[m].segment + ":" + ml[m].callIndex, "mint",
+      ml[m].amount, ml[m].origin, { token: t, section: "mints" });
+    mi.row = ml[m];
+    mints.push(mi);
+  }
+  var activity = [];
+  var al = d.activity ? arr(d.activity.items) : [];
+  for (var a = 0; a < al.length; a++) {
+    var ai = item("activity:" + [al[a].txHash, al[a].segment, al[a].section, al[a].role, al[a].itemIndex].join(":"),
+      roleLabel(al[a]), al[a].amount, al[a].origin, { token: t, section: "activity" });
+    ai.row = al[a];
+    activity.push(ai);
+  }
+  var calls = callsModel(d.calls, t.address);
+  var siblings = [];
+  var sl = arr(d.siblings);
+  for (var s = 0; s < sl.length; s++) {
+    var sib = sl[s];
+    if (!sib || String(sib.domainSep) !== String(t.domainSep) || Number(sib.kind) === Number(t.kind)) continue;
+    siblings.push(siblingItems(sib, SIBLING_FIELDS));
+  }
+  var ev = eventsModel(events, t.domainSep, t.address);
+  var model = {
+    token: t, facts: facts, disclosure: disclosure, iface: ifaceItem, metadata: metadata,
+    traits: traits, mints: mints, activity: activity, calls: calls, siblings: siblings, events: ev
+  };
+  model.all = collectItems(model);
+  return model;
+}
+function jsonText(v) {
+  try { return JSON.stringify(v, null, 2); } catch (e) { return String(v); }
+}
+function traitText(tr) {
+  if (Number(tr.valType) === 5) return "Null (the key was cleared)";
+  if (Number(tr.valType) === 2 && tr.integer !== null && tr.integer !== undefined) return String(tr.integer);
+  if (tr.text !== null && tr.text !== undefined) return String(tr.text);
+  if (tr.value) return "0x" + String(tr.value);
+  return "(empty)";
+}
+// A row of another table (the contract's tokens, the rows sharing a domain separator): each value
+// the row shows — exactly the columns it has — with its own origin from the token's "origins".
+var SIBLING_FIELDS = ["kind", "color", "name", "symbol", "decimals", "mints", "status"];
+var CONTRACT_TOKEN_FIELDS = ["domainSep", "kind", "color", "name", "symbol", "decimals", "mints", "status"];
+function siblingItems(t, fields) {
+  var o = t.origins || {};
+  var ctx = { token: t, address: t.address };
+  var base = "row:" + t.domainSep + ":" + t.kind + ":";
+  var identity = pageOrigin("chain", "MIP-0018 §3–§4: carried by every declaration and mint of this token");
+  var all = {
+    domainSep: { value: t.domainSep, origin: identity, ctx: { token: t, section: "events" } },
+    kind: { value: t.kind, origin: identity, ctx: { token: t, section: "events" } },
+    color: { value: t.color, origin: o.color, ctx: ctx },
+    name: { value: t.name, origin: o.name, ctx: ctx },
+    symbol: { value: t.symbol, origin: o.symbol, ctx: ctx },
+    decimals: { value: t.decimals, origin: o.decimals, ctx: ctx },
+    mints: { value: t.mintCount, origin: o.mints, ctx: { token: t, section: "mints" } },
+    status: { value: t.status, origin: o.status, ctx: ctx }
+  };
+  var items = [];
+  for (var i = 0; i < fields.length; i++) {
+    var f = all[fields[i]];
+    items.push({ field: base + fields[i], label: fields[i], value: valueOrNull(f.value), origin: originView(f.origin, f.ctx) });
+  }
+  return { token: t, items: items };
+}
+function callsModel(page, address) {
+  var out = [];
+  var items = page ? arr(page.items) : [];
+  for (var i = 0; i < items.length; i++) {
+    var c = items[i];
+    // A call row carries no origin on the wire (ContractCallJson): it IS a transcript of an
+    // archived transaction, so the page labels it with that transaction as its evidence (Q28).
+    var origin = c.origin ? c.origin : pageOrigin("chain", "a call of this contract in an archived transaction",
+      { txHash: c.txHash, blockHeight: c.blockHeight, txPosition: c.txPosition, segment: c.segment, callIndex: c.callIndex });
+    out.push({ field: "call:" + c.txHash + ":" + c.segment + ":" + c.callIndex, label: "call",
+      value: valueOrNull(c.entryPoint === null || c.entryPoint === undefined ? "call " + c.callIndex : c.entryPoint),
+      origin: originView(origin, { address: address, section: "calls" }), row: c });
+  }
+  return out;
+}
+function eventsModel(events, markDomain, address) {
+  var out = [];
+  var ordered = orderEvents(arr(events), markDomain);
+  for (var i = 0; i < ordered.length; i++) {
+    var e = ordered[i];
+    var id = e.eventId === undefined ? e.id : e.eventId;
+    out.push({ field: "event:" + id, label: "event " + id, value: declaredValueText(e),
+      origin: originView(e.origin, { address: address, section: "events" }), row: e });
+  }
+  return out;
+}
+function collectItems(model) {
+  var all = [];
+  function push(list) { for (var i = 0; i < list.length; i++) all.push(list[i]); }
+  push(model.facts || []);
+  push(model.disclosure || []);
+  if (model.iface) all.push(model.iface);
+  if (model.metadata) all.push(model.metadata);
+  var traits = model.traits || [];
+  for (var t = 0; t < traits.length; t++) { all.push(traits[t]); push(traits[t].history || []); }
+  push(model.mints || []);
+  push(model.activity || []);
+  push(model.calls || []);
+  var sib = (model.siblings || []).concat(model.tokens || []);
+  for (var s = 0; s < sib.length; s++) push(sib[s].items);
+  push(model.events || []);
+  if (model.face) {
+    push(model.face.rows); push(model.face.files); push(model.face.keys); push(model.face.circuits);
+    push(model.face.witnesses); push(model.face.checks); push(model.face.history);
+  }
+  push(model.pending || []);
+  return all;
+}
+
+// ── the contract view and its public interface ──────────────────────────────────────────────
+
+// A URL may be 262 112 bytes (256 parts of [Y]): the page shows its head and tail and copies the
+// whole of it; only http(s) becomes a link.
+var URL_HEAD = 72;
+var URL_TAIL = 28;
+function urlView(url) {
+  var s = url === null || url === undefined ? "" : String(url);
+  var n = s.length;
+  var cut = n > URL_HEAD + URL_TAIL + 1;
+  var low = s.slice(0, 8).toLowerCase();
+  var mark = ":" + "//";
+  var linkable = low.indexOf("http" + mark) === 0 || low.indexOf("https" + mark) === 0;
+  return {
+    full: s, length: n, shortened: cut,
+    short: cut ? s.slice(0, URL_HEAD) + "…" + s.slice(n - URL_TAIL) : s,
+    href: linkable ? s : null
+  };
+}
+function contractModel(c) {
+  var d = c && c.contract ? c.contract : null;
+  if (!d) return null;
+  var address = d.address;
+  var ctx = { address: address };
+  var deployKnown = d.deployTxHash !== null && d.deployTxHash !== undefined;
+  var deploy = deployKnown
+    ? pageOrigin("chain", "the contract's deploy transaction in the archive", { txHash: d.deployTxHash, blockHeight: d.deployHeight })
+    : pageOrigin("none", "the contract's deploy is not in the archive");
+  function it(field, label, value, origin, extra) {
+    return { field: field, label: label, value: valueOrNull(value), origin: originView(origin, extra || ctx) };
+  }
+  var facts = [
+    it("address", "address", address, deployKnown
+      ? pageOrigin("chain", "the address the deploy transaction created", { txHash: d.deployTxHash })
+      : pageOrigin("chain", "the address its declarations, mints and calls carry"), { address: address, section: "events" }),
+    it("deployHeight", "deploy height", d.deployHeight, deploy),
+    it("deployTxHash", "deploy tx", d.deployTxHash, deploy),
+    it("lastCallHeight", "last call height", d.lastCallHeight,
+      d.lastCallHeight === null || d.lastCallHeight === undefined
+        ? pageOrigin("none", "no call of this contract is archived")
+        : pageOrigin("chain", "the block of this contract's latest archived call"), { address: address, section: "calls" })
+  ];
+  var tokens = [];
+  var list = itemsOf(d.tokens ? { items: d.tokens } : null);
+  for (var i = 0; i < list.length; i++) tokens.push(siblingItems(list[i], CONTRACT_TOKEN_FIELDS));
+  var pending = [];
+  var pl = arr(d.pendingLookups);
+  for (var p = 0; p < pl.length; p++) {
+    pending.push(it("pending:" + pl[p].txHash, "pending lookup", pl[p].lastError || (pl[p].got + "/" + pl[p].expected),
+      pageOrigin("derived", "the scanner's pending event lookup for this transaction: events expected against events read",
+        { txHash: pl[p].txHash })));
+  }
+  var model = {
+    contract: d, facts: facts, tokens: tokens, pending: pending,
+    face: interfaceModel(c.iface, address, c.ifaceLoaded !== false),
+    calls: callsModel(c.calls, address), events: eventsModel(c.events, null, address)
+  };
+  model.all = collectItems(model);
+  return model;
+}
+// The "Public interface" section: GET /v1/contracts/:address/interface, every value with its origin.
+function interfaceModel(x, address, loaded) {
+  var ctx = { address: address };
+  if (!x) {
+    return {
+      present: false,
+      rows: [{ field: "iface:none", label: "public interface", value: null,
+        origin: originView(loaded ? pageOrigin("none", "this contract has published no public interface")
+          : pageOrigin("none", "the interface could not be read (see the banner)"), ctx) }],
+      files: [], keys: [], circuits: [], witnesses: [], checks: [], history: []
+    };
+  }
+  var O = x.origin;
+  var st = interfaceStatusView(x);
+  var rows = [];
+  function row(field, label, value, extra) {
+    var r = { field: "iface:" + field, label: label, value: valueOrNull(value), origin: originView(O, ctx) };
+    if (extra) for (var k in extra) if (own(extra, k)) r[k] = extra[k];
+    rows.push(r);
+    return r;
+  }
+  row("status", "status", st.text, { status: st });
+  row("role", "role", x.role, { help: ROLE_HELP[x.role] || null });
+  row("levels", "levels", levelsLine(x.levels));
+  if (st.failedLevel !== null) row("failure", "failed at", "L" + st.failedLevel + (x.reason ? ": " + x.reason : ""), { diagnostic: true });
+  else if (x.reason) row("reason", "reason", x.reason, { diagnostic: true });
+  if (x.levels && x.levels.l3 !== "passed") {
+    row("l3", "Level 3", orDash(x.levels.l3) + (x.l3Reason ? ": " + x.l3Reason : ""), { diagnostic: true });
+  }
+  row("commitment", "commitment", x.commitment, { hex: true });
+  var uv = urlView(x.url);
+  if (x.url !== null && x.url !== undefined) row("url", "bundle URL", x.url, { url: uv });
+  else row("url", "bundle URL", x.urlError ? "not decodable: " + x.urlError : null, { diagnostic: true });
+  row("publication", "publication", packageText(x), { txHash: x.txHash });
+  row("payload", "package payload", orDash(x.payloadLength) + " bytes · SHA-256 " + orDash(x.payloadSha256));
+  row("checkedAt", "last check", x.checkedAt || "not checked yet");
+  row("checks", "checks so far", x.checks);
+  row("lastVerifiedAt", "last verified", x.lastVerifiedAt);
+  row("verifiedUntil", "verified until", x.verifiedUntil);
+  row("nextCheckAt", "next check", x.nextCheckAt);
+  row("state", "contract state used", x.state ? "block " + orDash(x.state.blockHeight) + " · tx " + shortHex(String(x.state.txHash || ""), 8, 6) : null,
+    x.state && x.state.txHash ? { txHash: x.state.txHash } : null);
+  row("compiler", "compiler", x.compiler ? orDash(x.compiler.name) + " " + orDash(x.compiler.version) : null);
+  if (x.build) {
+    row("build", "build", "compiler " + orDash(x.build.compiler) + " · language " + orDash(x.build.language)
+      + " · runtime " + orDash(x.build.runtime) + " · interface " + orDash(x.build.interface)
+      + " · flags " + (arr(x.build.flags).length === 0 ? "none" : arr(x.build.flags).join(" ")));
+  }
+  row("publications", "publications of this contract", x.publications);
+  var files = [];
+  var fl = arr(x.files);
+  for (var f = 0; f < fl.length; f++) {
+    files.push({ field: "iface:file:" + fl[f].path, label: String(fl[f].path), value: valueOrNull(fl[f].size),
+      origin: originView(fl[f].origin, ctx), row: fl[f] });
+  }
+  var keys = [];
+  var kl = arr(x.keys);
+  for (var k = 0; k < kl.length; k++) {
+    keys.push({ field: "iface:key:" + kl[k].circuit, label: String(kl[k].circuit), value: valueOrNull(kl[k].sha256),
+      origin: originView(kl[k].origin, ctx), row: kl[k] });
+  }
+  var circuits = [];
+  var cl = arr(x.circuits);
+  for (var c = 0; c < cl.length; c++) {
+    circuits.push({ field: "iface:circuit:" + cl[c].name, label: String(cl[c].name), value: circuitSignature(cl[c]),
+      origin: originView(cl[c].origin, ctx), row: cl[c] });
+  }
+  var witnesses = [];
+  var wl = arr(x.witnesses);
+  for (var w = 0; w < wl.length; w++) {
+    // A witness is a name the bundle's code declares; the API sends it as a plain string of the
+    // interface, so it carries the interface's own origin.
+    witnesses.push({ field: "iface:witness:" + wl[w], label: "witness", value: valueOrNull(wl[w]), origin: originView(O, ctx) });
+  }
+  var checks = [];
+  var chl = arr(x.checkHistory);
+  for (var h = 0; h < chl.length; h++) {
+    var ch = chl[h];
+    var base = O && O.evidence && typeof O.evidence === "object" ? O.evidence : {};
+    var evc = {};
+    for (var b in base) if (own(base, b)) evc[b] = base[b];
+    evc.status = ch.status; evc.level = ch.level; evc.levels = ch.levels; evc.checkedAt = ch.checkedAt;
+    checks.push({ field: "iface:check:" + ch.checkNo, label: "check " + ch.checkNo, value: interfaceStatusView(ch).text,
+      origin: originView({ origin: "public-interface", evidence: evc }, ctx), row: ch, status: interfaceStatusView(ch) });
+  }
+  var history = [];
+  var hl = arr(x.history);
+  for (var q = 0; q < hl.length; q++) {
+    history.push({ field: "iface:history:" + hl[q].eventId, label: "publication " + hl[q].eventId,
+      value: interfaceStatusView(hl[q]).text, origin: originView(hl[q].origin, ctx), row: hl[q],
+      status: interfaceStatusView(hl[q]), url: urlView(hl[q].url) });
+  }
+  return { present: true, status: st, rows: rows, files: files, keys: keys, circuits: circuits,
+    witnesses: witnesses, checks: checks, history: history, url: uv };
+}
+function circuitSignature(c) {
+  var args = arr(c.arguments);
+  var parts = [];
+  for (var i = 0; i < args.length; i++) parts.push(orDash(args[i].name) + ": " + orDash(args[i].type));
+  return orDash(c.name) + "(" + parts.join(", ") + "): " + orDash(c.resultType);
+}
+
+// ── the list: the interface column and the multi-part badges ────────────────────────────────
+
+// Every MIP-0018 value of a list row that came in more than one part, or not in one guaranteed
+// phase ([Y] §5; a mixed package is a publisher error, FR-002).
+function multipartOf(t) {
+  var out = [];
+  var o = t && t.origins ? t.origins : {};
+  for (var k in o) {
+    if (!own(o, k) || !o[k] || o[k].origin !== "mip-0018") continue;
+    var pk = evidenceList(o[k].evidence);
+    for (var i = 0; i < pk.length; i++) {
+      var parts = Number(pk[i].parts);
+      var phase = pk[i].phase ? String(pk[i].phase) : null;
+      if (parts > 1 || (phase !== null && phase !== "guaranteed")) {
+        out.push({ field: k, parts: parts, phase: phase });
+      }
+    }
+  }
+  return out;
+}
+function listInterfaceView(t, byAddress) {
+  if (!t || !t.interface) return null;
+  var st = interfaceStatusView(t.interface);
+  var pub = byAddress && t.address && own(byAddress, t.address) ? byAddress[t.address] : null;
+  st.parts = pub && pub.parts !== undefined ? pub.parts : null;
+  st.phase = pub && pub.phase ? pub.phase : null;
+  return st;
+}
+
+// ── 00024-03: drawing an origin ─────────────────────────────────────────────────────────────
+//
+// An origin is drawn one of two ways: a CHIP (its label; a link to its first piece of evidence
+// when it has one; the whole evidence line on hover) beside a value in a table, or a BLOCK (the
+// chip, then the evidence line and every link) in the two "value · origin" tables. Every value
+// row carries data-o = its field key, so the governed test can match what is drawn against the
+// view model item for item.
+
+function stopClick(ev) { ev.stopPropagation(); }
+function originChip(ov) {
+  var first = ov.links.length > 0 ? ov.links[0] : null;
+  var chip = node(first ? "a" : "span", ov.label, "orig or-" + ov.kind + (ov.page ? " or-page" : ""));
+  if (first) {
+    chip.href = first.href;
+    chip.addEventListener("click", stopClick);
+  }
+  chip.title = ov.label + (ov.detail ? " — " + ov.detail : "");
+  chip.setAttribute("data-origin", ov.kind);
+  return chip;
+}
+function p1Mark() {
+  var s = node("span", "P1", "p1");
+  s.title = P1_RULE;
+  return s;
+}
+function originBlock(ov) {
+  var wrap = node("div", null, "ob");
+  var head = node("div", null, "row");
+  head.appendChild(originChip(ov));
+  if (ov.p1) head.appendChild(p1Mark());
+  wrap.appendChild(head);
+  var ev = node("div", null, "oev");
+  ev.appendChild(node("span", ov.detail));
+  for (var i = 0; i < ov.links.length; i++) {
+    ev.appendChild(node("span", "  ·  "));
+    var a = node("a", ov.links[i].text);
+    a.href = ov.links[i].href;
+    a.title = ov.links[i].title || ov.links[i].text;
+    a.addEventListener("click", stopClick);
+    ev.appendChild(a);
+  }
+  wrap.appendChild(ev);
+  return wrap;
+}
+// A value with its chip beside it, for the cells of a dense table.
+function withOrigin(valueNode, ov) {
+  var wrap = node("span", null, "vo");
+  wrap.appendChild(valueNode);
+  wrap.appendChild(originChip(ov));
+  if (ov.p1) wrap.appendChild(p1Mark());
+  return wrap;
+}
+function marked(n, field) { n.setAttribute("data-o", field); return n; }
+function ifaceBadge(st) {
+  var b = node("span", st.text, "badge ifb " + st.cls);
+  b.title = st.help + (st.notes.length > 0 ? " · " + st.notes.join(" · ") : "");
+  return b;
+}
+function partsChip(parts, phase, what) {
+  var p = Number(parts);
+  var ph = phase ? String(phase) : null;
+  var mixed = ph !== null && ph !== "guaranteed";
+  var c = node("span", partsText(p) + (mixed ? " · " + ph : ""), mixed ? "pp pp-bad" : "pp");
+  c.title = (what ? what + ": " : "") + "one [Y] multi-part package in " + partsText(p)
+    + (ph ? ", " + ph + " phase" : "")
+    + (ph === "mixed" ? " — mixed phase is a publisher error (FR-002): shown, not dropped" : "");
+  return c;
+}
+// "1 · guaranteed" as plain text; a chip once there is more than one part, or another phase.
+function partsPhaseCell(parts, phase) {
+  if (parts === null || parts === undefined) return node("span", "-", "no");
+  var ph = phase ? String(phase) : null;
+  if (Number(parts) > 1 || (ph !== null && ph !== "guaranteed")) return partsChip(parts, ph, null);
+  return node("span", String(parts) + (ph ? " · " + ph : ""), "note");
+}
+// The "value | origin" table of the token and contract views.
+function factsTable(parent, items, valueOf) {
+  var tb = tableIn(parent, ["", "value", "origin and evidence"]);
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    var tr = marked(document.createElement("tr"), it.field);
+    cell(tr, it.label, "k");
+    cell(tr, valueOf(it), "fv");
+    cell(tr, originBlock(it.origin), "ocell");
+    tb.appendChild(tr);
+  }
+  return tb;
+}
+// A URL shortened for the eye and copied whole: the head, an ellipsis, the tail, its length.
+function urlNode(uv) {
+  var wrap = node("span", null, "urlv");
+  if (uv.href) {
+    var a = node("a", uv.short, "hex");
+    a.href = uv.href;
+    a.rel = "noreferrer noopener";
+    a.target = "_blank";
+    a.title = uv.shortened ? uv.length + " characters; use copy for the whole URL" : uv.full;
+    a.addEventListener("click", stopClick);
+    wrap.appendChild(a);
+  } else {
+    wrap.appendChild(node("span", uv.short, "hex"));
+  }
+  if (uv.shortened) wrap.appendChild(node("span", "  (" + groupDigits(uv.length) + " characters)", "note"));
+  wrap.appendChild(node("span", "  "));
+  var cp = copyable(uv.full, "copy", "cpbtn");
+  cp.title = "copy the whole URL (" + uv.length + " characters)";
+  wrap.appendChild(cp);
+  return wrap;
+}
+
 // ── Loaders ─────────────────────────────────────────────────────────────────────────────────
 
 function listQuery(cursor) {
@@ -1162,7 +2115,9 @@ function listQuery(cursor) {
   return qs;
 }
 async function loadList(cursor) {
-  var payload = await api(listQuery(cursor));
+  var both = await Promise.all([api(listQuery(cursor)), cursor ? Promise.resolve(null) : loadInterfaceParts()]);
+  var payload = both[0];
+  if (both[1] !== null) state.list.ifaces = both[1];
   var items = itemsOf(payload);
   state.list.items = cursor ? state.list.items.concat(items) : sortTokens(items);
   state.list.nextCursor = payload && payload.nextCursor ? payload.nextCursor : null;
@@ -1171,8 +2126,26 @@ async function loadList(cursor) {
 function tokenBase(r) {
   return P_CONTRACTS + "/" + enc(r.address) + "/tokens/" + enc(r.domainSep) + "/" + enc(r.kind);
 }
+// Every token-metadata event of the contract, applied AND rejected: the route filters only when
+// "applied" is given, and "applied=false" means the rejected ones alone (00024-03 finding: the page
+// asked for that since 00020, so the table showed no applied declaration at all). The applied ones
+// are what a key's MIP-0018 history is made of.
 function contractEventsPath(address) {
-  return P_CONTRACTS + "/" + enc(address) + "/events?applied=false";
+  return P_CONTRACTS + "/" + enc(address) + "/events?limit=" + EVENT_LIMIT;
+}
+// The list's interface column: the part count and phase of each contract's current publication
+// (the token's own summary carries status and levels, not the package). Not fatal: without it the
+// column still shows every status, only the part badge is missing.
+async function loadInterfaceParts() {
+  var byAddress = {};
+  try {
+    var page = await api(P_INTERFACES + "?limit=" + INTERFACE_LIST_LIMIT);
+    var items = itemsOf(page);
+    for (var i = 0; i < items.length; i++) {
+      if (items[i] && items[i].address) byAddress[String(items[i].address)] = { parts: items[i].parts, phase: items[i].phase };
+    }
+  } catch (e) { return state.list.ifaces || {}; }
+  return byAddress;
 }
 // FR-006 by (address, domainSep, kind); FR-008 by colour for a row that has no address yet (US5).
 function activityPath(t, cursor) {
@@ -1267,9 +2240,18 @@ async function loadNamedToken(r, d) {
   ]);
 }
 async function loadContract(address) {
-  var c = { contract: null, events: [], calls: null, notes: [] };
+  var c = { contract: null, events: [], calls: null, notes: [], iface: null, ifaceLoaded: true };
   c.contract = await api(P_CONTRACTS + "/" + enc(address));
   await Promise.all([
+    // 00024-02's route: the current publication with everything its checks established, and every
+    // older one. A 404 is an answer ("none published"), not an error.
+    api(P_CONTRACTS + "/" + enc(address) + "/interface").then(
+      function (p) { c.iface = p; },
+      function (e) {
+        if (e.status === 404) return;
+        c.ifaceLoaded = false;
+        c.notes.push("public interface unavailable: " + e.message);
+      }),
     api(contractEventsPath(address)).then(
       function (p) { c.events = itemsOf(p); },
       function (e) { c.notes.push("raw events unavailable: " + e.message); }),
@@ -1492,8 +2474,22 @@ var MIP_HEAD = "Has metadata published on chain under MIP-0018";
 // a row without metadata is left EMPTY on purpose — a cross in every second row would read as a
 // failure, and "nothing published" is not one.
 function mipCell(t) {
-  if (!hasMip0018(t)) return node("span", "", "mip");
-  return withTitle(node("span", "✅", "mip"), MIP_HEAD);
+  var wrap = node("span");
+  if (hasMip0018(t)) wrap.appendChild(withTitle(node("span", "✅", "mip"), MIP_HEAD));
+  // 00024-03: a value that arrived as a multi-part package says how many parts, and its phase.
+  var mp = multipartOf(t);
+  for (var i = 0; i < mp.length; i++) wrap.appendChild(partsChip(mp[i].parts, mp[i].phase, mp[i].field));
+  return wrap;
+}
+var IFACE_HEAD = "The contract's public interface: the result of its current publication and the "
+  + "levels it passed (L1 files and commitment, L2 keys, L3 recompiled keys)";
+function listIfaceCell(t) {
+  var st = listInterfaceView(t, state.list.ifaces);
+  if (st === null) return node("span", "", "no");
+  var wrap = node("span", null, "vo");
+  wrap.appendChild(ifaceBadge(st));
+  if (st.parts !== null && Number(st.parts) > 1) wrap.appendChild(partsChip(st.parts, st.phase, "bundle URL"));
+  return wrap;
 }
 function withTitle(n, title) { n.title = title; return n; }
 // The frontend filter of the same rule (owner, Phase G). It filters the rows ALREADY LOADED, and
@@ -1538,7 +2534,8 @@ function renderList(main) {
   var index = familyIndex(state.list.items);
   var tbody = tableIn(sec, [{ label: "MIP-0018", title: MIP_HEAD },
     "colour", "domainSep", "address", "kind", "name", "symbol",
-    "dec", "#mints (#tokens)", "first … last block", "status", "tokenUri", "API"]);
+    "dec", "#mints (#tokens)", "first … last block", "status", { label: "interface", title: IFACE_HEAD },
+    "tokenUri", "API"]);
   for (var i = 0; i < items.length; i++) {
     var t = items[i];
     var tr = document.createElement("tr");
@@ -1554,6 +2551,7 @@ function renderList(main) {
     cell(tr, mintsCell(t), "num");
     cell(tr, heightsCell(t));
     cell(tr, statusBadge(t.status));
+    cell(tr, listIfaceCell(t));
     cell(tr, uriLink(t.tokenUri));
     cell(tr, apiCell(t), "apicol");
     (function (token) {
@@ -1589,7 +2587,8 @@ function renderList(main) {
 
 // One row per public occurrence of the token in an archived transaction (US1, FR-009). Heights and
 // positions only: the archive holds no wall-clock time and the owner asked for none (Q1).
-function activitySection(t, d) {
+function activitySection(t, d, items) {
+  var model = items || [];
   var sec = node("section");
   sec.id = "activity";
   sec.appendChild(node("h2", "transactions: every public occurrence of this token"));
@@ -1632,12 +2631,15 @@ function activitySection(t, d) {
         : "no archived transaction has touched this token yet"), "empty"));
     return sec;
   }
-  var tb = tableIn(sec, ["block", "pos", "tx", "what", "amount", "counterparty", "section", ""]);
+  var tb = tableIn(sec, ["block", "pos", "tx", "what", "amount", "counterparty", "section", "origin", ""]);
   for (var r = 0; r < rows.length; r++) {
     var a = rows[r];
     var key = String(a.txHash) + "|" + String(a.segment) + "|" + String(a.section) + "|"
       + String(a.role) + "|" + String(a.itemIndex);
     var tr = document.createElement("tr");
+    // The model is built from the same page of rows, in the same order (tokenModel).
+    var ai = model[r] || { field: "activity:" + key, origin: originView(a.origin, { token: t, section: "activity" }) };
+    marked(tr, ai.field);
     cell(tr, orDash(a.blockHeight), "num");
     cell(tr, orDash(a.txPosition), "num");
     cell(tr, txLink(a.txHash));
@@ -1645,6 +2647,7 @@ function activitySection(t, d) {
     cell(tr, amountCell(a, t), "num");
     cell(tr, counterpartyCell(a));
     cell(tr, node("span", sectionLabel(a.section, a.segment), "note"));
+    cell(tr, originChip(ai.origin));
     if (a.role === "shielded_delta") {
       var open = state.act.expand[key] !== undefined && state.act.expand[key] !== null;
       var btn = node("button", open ? "hide offer" : "offer", "expand");
@@ -1656,7 +2659,7 @@ function activitySection(t, d) {
       cell(tr, node("span", "", "no"));
     }
     tb.appendChild(tr);
-    if (a.role === "shielded_delta" && state.act.expand[key]) tb.appendChild(offerDetailRow(a, key, 8));
+    if (a.role === "shielded_delta" && state.act.expand[key]) tb.appendChild(offerDetailRow(a, key, 9));
   }
   if (d.activity.nextCursor) {
     var more = node("button", "load more");
@@ -1823,18 +2826,26 @@ function contractsOfOffer(offer) {
 // is the part only this index can supply — the two live counts, and the link that turns the second
 // one into a list you can open. The per-delta "offer" expansion under each row and the one-line
 // note under the transactions table carry the rest.
-function disclosureSection(t) {
+function disclosureSection(t, items) {
+  var model = items || [];
   var sec = node("section");
   var counts = node("div", null, "counts");
   var disclosed = t.disclosedTransactions;
   var undisclosed = t.undisclosedShieldedOffers;
   if (undisclosed === null || undisclosed === undefined) undisclosed = counterOf(state.status, "undisclosedShieldedOffers");
   var line = node("div");
-  line.appendChild(node("b", disclosed === null || disclosed === undefined ? "-" : String(disclosed)));
-  line.appendChild(node("span", "  transactions disclose this colour  ·  ", "note"));
-  line.appendChild(node("b", undisclosed === null || undisclosed === undefined ? "-" : String(undisclosed)));
-  line.appendChild(node("span", "  shielded offers on this chain publish no colour at all — any of "
+  var first = marked(node("span"), model[0] ? model[0].field : "disclosedTransactions");
+  first.appendChild(node("b", disclosed === null || disclosed === undefined ? "-" : String(disclosed)));
+  first.appendChild(node("span", "  transactions disclose this colour  ", "note"));
+  if (model[0]) first.appendChild(originChip(model[0].origin));
+  line.appendChild(first);
+  line.appendChild(node("span", "  ·  ", "note"));
+  var second = marked(node("span"), model[1] ? model[1].field : "undisclosedShieldedOffers");
+  second.appendChild(node("b", undisclosed === null || undisclosed === undefined ? "-" : String(undisclosed)));
+  second.appendChild(node("span", "  shielded offers on this chain publish no colour at all — any of "
     + "them may be this token  ", "note"));
+  if (model[1]) second.appendChild(originChip(model[1].origin));
+  line.appendChild(second);
   var link = node("a", "list them");
   link.href = "#/shielded-offers";
   line.appendChild(link);
@@ -1868,7 +2879,8 @@ function callsNote() {
     "; what a call means for this token's balances is defined by the contract and is not readable here."));
   return box;
 }
-function callsSection(page, heading, notes) {
+function callsSection(page, heading, notes, items) {
+  var model = items || [];
   var sec = node("section");
   sec.id = "calls";
   sec.appendChild(node("h2", heading));
@@ -1883,18 +2895,20 @@ function callsSection(page, heading, notes) {
     return sec;
   }
   var tb = tableIn(sec, ["block", "pos", "tx", "segment", "call", "entry point", "section",
-    "ops", "log", "gas (compute)", "effects", ""]);
+    "ops", "log", "gas (compute)", "effects", "", "origin"]);
   for (var i = 0; i < items.length; i++) {
     var c = items[i];
+    var ci = model[i] || { field: "call:" + c.txHash + ":" + c.segment + ":" + c.callIndex,
+      origin: callsModel({ items: [c] }, c.address)[0].origin };
     var sections = [["guaranteed", c.guaranteed], ["fallible", c.fallible]];
     var any = false;
     for (var s = 0; s < sections.length; s++) {
       var tr2 = sections[s][1];
       if (!tr2) continue;
       any = true;
-      tb.appendChild(callRow(c, sections[s][0], tr2));
+      tb.appendChild(callRow(c, sections[s][0], tr2, ci));
     }
-    if (!any) tb.appendChild(callRow(c, "-", null));
+    if (!any) tb.appendChild(callRow(c, "-", null, ci));
   }
   if (page.nextCursor) {
     var more = node("button", "load more");
@@ -1915,8 +2929,9 @@ function callsSection(page, heading, notes) {
   if (notes) sec.appendChild(node("div", notes, "note"));
   return sec;
 }
-function callRow(c, section, transcript) {
+function callRow(c, section, transcript, item) {
   var tr = document.createElement("tr");
+  if (item) marked(tr, item.field);
   cell(tr, orDash(c.blockHeight), "num");
   cell(tr, orDash(c.txPosition), "num");
   cell(tr, txLink(c.txHash));
@@ -1929,6 +2944,7 @@ function callRow(c, section, transcript) {
   cell(tr, gasCell(transcript ? transcript.gas : null), "num");
   cell(tr, node("span", effectsSummary(transcript ? transcript.effects : null), "wrapv"));
   cell(tr, countedChip(transcript ? transcript.counted : undefined));
+  if (item) cell(tr, originChip(item.origin));
   return tr;
 }
 function gasCell(g) {
@@ -2234,9 +3250,8 @@ function txTokenCell(a) {
   var label = t && t.name ? String(t.name)
     : (t && t.symbol ? String(t.symbol) : "colour " + shortHex(String(a.color), 8, 6));
   var link = node("a", label);
-  link.href = t && t.address && t.domainSep ? hashToken(t) : hashColor(a.color, a.kind);
+  link.href = (t && t.address && t.domainSep ? hashToken(t) : hashColor(a.color, a.kind)) + "/activity";
   link.title = "open this token with its transactions";
-  link.addEventListener("click", function () { state.scrollTo = "activity"; });
   var wrap = node("span");
   wrap.appendChild(link);
   if (!t) wrap.appendChild(node("span", "unknown contract", "pill"));
@@ -2509,11 +3524,15 @@ function renderToken(main) {
     return;
   }
   var t = d.token;
+  // 00024-03: everything below is drawn from this one model, value by value with its origin.
+  var m = tokenModel(d);
 
   var index = familyIndex(d.siblings && d.siblings.length ? d.siblings : [t]);
   var head = node("section");
-  var title = node("h3");
+  var title = marked(node("h3"), "name");
   title.appendChild(nameCell(t, index));
+  title.appendChild(originChip(factOf(m, "name").origin));
+  if (factOf(m, "name").origin.p1) title.appendChild(p1Mark());
   head.appendChild(title);
   var sub = node("div", null, "row");
   sub.appendChild(statusBadge(t.status));
@@ -2535,10 +3554,25 @@ function renderToken(main) {
         : "Described but not yet minted: the chain has not seen this token, only the contract's claim "
           + "about it (MIP 7.2).", "note"));
   }
-  var links = node("div", null, "row");
+  // The contract's public interface beside the MIP-0018 values, neither overriding the other (P3):
+  // its result here, its URL, files, keys and circuits on the contract view.
+  var ifl = marked(node("div", null, "row"), m.iface.field);
+  ifl.style.marginTop = "8px";
+  ifl.appendChild(node("span", "public interface", "note"));
+  if (m.iface.status) ifl.appendChild(ifaceBadge(m.iface.status));
+  else ifl.appendChild(node("span", "none", "no"));
+  ifl.appendChild(originChip(m.iface.origin));
+  if (t.address && !isZeroHex(t.address) && m.iface.status) {
+    var toIface = node("a", "URL, files, keys, circuits and history on the contract view");
+    toIface.href = hashContract(t.address) + "/interface";
+    ifl.appendChild(toIface);
+  }
+  head.appendChild(ifl);
+  var links = marked(node("div", null, "row"), "tokenUri");
   links.style.marginTop = "8px";
   links.appendChild(node("span", "tokenUri", "note"));
   links.appendChild(uriLink(t.tokenUri));
+  links.appendChild(originChip(factOf(m, "tokenUri").origin));
   var paths = resolverPaths(t);
   for (var i = 0; i < paths.length; i++) {
     links.appendChild(node("span", paths[i].label, "note"));
@@ -2553,115 +3587,43 @@ function renderToken(main) {
   main.appendChild(head);
 
   var facts = node("section");
-  facts.appendChild(node("h2", "token"));
-  kvInto(facts, [
-    ["address", !t.address ? node("span", t.status === "seen"
-        ? "unknown: no mint or metadata event has named this colour's contract"
-        : "built-in row, no contract", "no")
-      : (isZeroHex(t.address) ? node("span", "built-in row, no contract", "no")
-        : copyable(t.address, String(t.address), "hex"))],
-    ["domainSep", t.domainSep ? domainCell(t.domainSep) : node("span", "unknown", "no")],
-    ["domainSep (hex)", copyable(t.domainSep, t.domainSep ? String(t.domainSep) : "-", "hex")],
-    ["kind", orDash(t.kind) + "  (" + kindLabel(t) + ")"],
-    ["privacy", orDash(t.privacy)],
-    ["storage", orDash(t.storage)],
-    ["colour", t.color ? copyable(t.color, String(t.color), "hex")
-      : node("span", t.storage === "ledger" ? "ledger tokens have no derived colour" : "none", "no")],
-    ["name", orDash(t.name)],
-    ["symbol", orDash(t.symbol)],
-    ["decimals", t.decimals === null || t.decimals === undefined ? "-" : String(t.decimals)],
-    ["status", statusBadge(t.status)],
-    ["mint count", orDash(t.mintCount)],
-    ["total minted", orDash(t.totalMinted)],
-    ["first mint height", orDash(t.firstMintHeight)],
-    ["last mint height", orDash(t.lastMintHeight)],
-    ["first seen height", orDash(t.firstSeenHeight)],
-    ["metadata updated height", orDash(t.metadataUpdatedHeight)],
-    ["deploy height", orDash(t.deployHeight)],
-    ["activity rows", orDash(t.activityCount)],
-    ["last activity height", orDash(t.lastActivityHeight)],
-    ["what the chain lets this page show", visibilityCell(t)]
-  ]);
+  facts.id = "facts";
+  facts.appendChild(node("h2", "token · every value with where it came from"));
+  factsTable(facts, m.facts, function (it) { return tokenFactValue(it, t); });
+  facts.appendChild(node("div", ORIGIN_LEGEND, "note"));
   main.appendChild(facts);
 
-  var meta = node("section");
+  var meta = marked(node("section"), m.metadata.field);
+  meta.id = "metadata";
   meta.appendChild(node("h2", "metadata JSON"));
+  meta.appendChild(originBlock(m.metadata.origin));
   if (t.metadata === null || t.metadata === undefined) {
     meta.appendChild(node("div", "no metadata published (or a multi-part document is still incomplete)", "empty"));
   } else {
     var pre = node("pre");
-    var text;
-    try { text = JSON.stringify(t.metadata, null, 2); } catch (e) { text = String(t.metadata); }
-    pre.textContent = text;
+    pre.textContent = m.metadata.value;
     meta.appendChild(pre);
   }
   main.appendChild(meta);
 
-  var traits = node("section");
-  traits.appendChild(node("h2", "traits: every key with the event that set it"));
-  if (d.keys.length === 0) {
-    traits.appendChild(node("div", "no key/value pairs recorded for this token", "empty"));
-  } else {
-    var tb = tableIn(traits, ["key", "type", "value", "len", "projection", "block", "tx", "event id"]);
-    var anyError = false;
-    for (var k = 0; k < d.keys.length; k++) {
-      var kv = d.keys[k];
-      var row = document.createElement("tr");
-      cell(row, traitKeyCell(kv));
-      cell(row, node("span", typeLabel(kv.valType), "vtype"));
-      cell(row, traitValueCell(kv));
-      cell(row, orDash(kv.valLen), "num");
-      if (kv.projectionError) {
-        anyError = true;
-        cell(row, node("span", String(kv.projectionError), "perr wrapv"));
-      } else {
-        cell(row, node("span", "-", "no"));
-      }
-      cell(row, orDash(kv.updatedHeight), "num");
-      cell(row, copyable(kv.updatedTxHash, shortHex(kv.updatedTxHash, 8, 6), "hex"));
-      cell(row, orDash(kv.eventId), "num");
-      tb.appendChild(row);
-    }
-    if (anyError) {
-      traits.appendChild(node("div",
-        "a value in the projection column is a key this explorer projects into a column of its own "
-        + "whose value the column cannot hold. The event was accepted and the trait is kept, only "
-        + "the column it would have filled was not written - the standard's appendix A is "
-        + "informative and a projection is this explorer's convention, never a verdict on the "
-        + "contract",
-        "note"));
-    }
-  }
-  main.appendChild(traits);
+  main.appendChild(traitsSection(m));
 
   // The other representations of the same asset: MIP section 4 lets a consumer link the rows that
   // share (contract address, domain separator). This is where a contract that declares a ledger
   // book and mints native UTXOs reads as one asset in two forms rather than as a contradiction.
-  var others = [];
-  for (var sIdx = 0; sIdx < (d.siblings || []).length; sIdx++) {
-    var sib = d.siblings[sIdx];
-    if (sib && String(sib.domainSep) === String(t.domainSep) && Number(sib.kind) !== Number(t.kind)) {
-      others.push(sib);
-    }
-  }
-  if (others.length > 0) {
+  if (m.siblings.length > 0) {
     var linked = node("section");
     linked.appendChild(node("h2", "other rows under this domain separator"));
     linked.appendChild(node("div",
       "the same contract and the same domain separator under another kind byte: the standard treats "
       + "each as its own token and lets a consumer show them as representations of one asset",
       "note"));
-    var lb = tableIn(linked, ["kind", "colour", "name", "symbol", "mints", "status"]);
-    for (var o = 0; o < others.length; o++) {
-      var ot = others[o];
+    var lb = tableIn(linked, ["kind", "colour", "name", "symbol", "dec", "mints", "status"]);
+    for (var o = 0; o < m.siblings.length; o++) {
+      var ot = m.siblings[o].token;
       var lr = document.createElement("tr");
       lr.className = "pick";
-      cell(lr, kindCell(ot));
-      cell(lr, colorCell(ot.color, ot.storage));
-      cell(lr, nameCell(ot, index));
-      cell(lr, orDash(ot.symbol));
-      cell(lr, mintsCell(ot), "num");
-      cell(lr, statusBadge(ot.status));
+      rowCells(lr, m.siblings[o].items, ot, SIBLING_FIELDS);
       (function (token) {
         lr.addEventListener("click", function () {
           go(hashToken({ address: t.address, domainSep: token.domainSep, kind: token.kind }));
@@ -2673,23 +3635,25 @@ function renderToken(main) {
   }
 
   var mints = node("section");
+  mints.id = "mints";
   mints.appendChild(node("h2", "mint history"));
-  if (d.mints.length === 0) {
+  if (m.mints.length === 0) {
     mints.appendChild(node("div", t.storage === "ledger"
       ? "a ledger token is never minted natively, so it has no mint rows by construction"
       : "no mint observed for this token yet", "empty"));
   } else {
-    var mb = tableIn(mints, ["block", "tx", "segment", "call", "entry point", "kind", "amount"]);
-    for (var m = 0; m < d.mints.length; m++) {
-      var mi = d.mints[m];
-      var mr = document.createElement("tr");
+    var mb = tableIn(mints, ["block", "tx", "segment", "call", "entry point", "kind", "amount", "origin"]);
+    for (var n = 0; n < m.mints.length; n++) {
+      var mi = m.mints[n].row;
+      var mr = marked(document.createElement("tr"), m.mints[n].field);
       cell(mr, orDash(mi.blockHeight), "num");
-      cell(mr, copyable(mi.txHash, shortHex(mi.txHash, 8, 6), "hex"));
+      cell(mr, txLink(mi.txHash));
       cell(mr, orDash(mi.segment), "num");
       cell(mr, orDash(mi.callIndex), "num");
       cell(mr, orDash(mi.entryPoint));
       cell(mr, orDash(mi.kind) + (mi.privacy ? " " + String(mi.privacy) : ""));
       cell(mr, orDash(mi.amount), "num");
+      cell(mr, originChip(m.mints[n].origin));
       mb.appendChild(mr);
     }
   }
@@ -2701,26 +3665,135 @@ function renderToken(main) {
   // its table (US4), a ledger row gets its contract's calls under the public-data note (US7), and
   // DUST gets the note alone (Q13).
   var vis = visibilityOf(t);
-  if (vis === "disclosed-imbalances") main.appendChild(disclosureSection(t));
+  if (vis === "disclosed-imbalances") main.appendChild(disclosureSection(t, m.disclosure));
   if (vis === "not-tracked") main.appendChild(dustSection());
   else if (vis === "calls-only") {
     main.appendChild(callsSection(d.calls, "contract calls · this is what a ledger token publishes",
       "a ledger token has no colour and no UTXO: its balances live in its contract's state, which "
-      + "this indexer does not read. What is public is every call of the contract, listed above."));
+      + "this indexer does not read. What is public is every call of the contract, listed above.", m.calls));
   } else {
-    main.appendChild(activitySection(t, d));
+    main.appendChild(activitySection(t, d, m.activity));
   }
 
   if (t.address) {
-    main.appendChild(eventsSection(d.events, t.domainSep, "raw token-metadata events of this contract (rejected ones included)"));
+    main.appendChild(eventsSection(m.events, t.domainSep, "raw token-metadata events of this contract (rejected ones included)"));
   }
 
   if (d.notes.length > 0) {
     var notes = node("section");
     notes.appendChild(node("h2", "partial data"));
-    for (var n = 0; n < d.notes.length; n++) notes.appendChild(node("div", d.notes[n], "err"));
+    for (var q = 0; q < d.notes.length; q++) notes.appendChild(node("div", d.notes[q], "err"));
     main.appendChild(notes);
   }
+}
+function factOf(m, field) {
+  for (var i = 0; i < m.facts.length; i++) if (m.facts[i].field === field) return m.facts[i];
+  return { field: field, origin: originView(null, null) };
+}
+var ORIGIN_LEGEND = "every value carries where it came from: MIP-0018 declaration (the package that "
+  + "declared it: transaction, block, position, segment, parts, phase, event ids) · Public interface "
+  + "(the publication and the levels its bundle passed) · Chain observation (the transaction or mint "
+  + "in the archive) · Derived by this indexer (the rule applied) · Not available (why). A dashed "
+  + "label is this page's own, for a value the API serves without an origin.";
+// One value of the token's "value | origin" table, drawn by what it is.
+function tokenFactValue(it, t) {
+  var f = it.field;
+  if (it.value === null) return node("span", "-", "no");
+  if (f === "address") return isHex(it.value) ? copyable(it.value, it.value, "hex") : node("span", it.value, "no");
+  if (f === "domainSep") return isHex(it.value) ? domainCell(it.value) : node("span", it.value, "no");
+  if (f === "color") return copyable(it.value, it.value, "hex");
+  if (f === "status") return statusBadge(it.value);
+  if (f === "tokenUri") return uriLink(it.value);
+  if (f === "visibility") return visibilityCell(t);
+  return node("span", it.value, "txt wrapv");
+}
+// The cells of a token row in another table, each value with its chip.
+function rowCells(tr, items, t, fields) {
+  for (var i = 0; i < fields.length; i++) {
+    var it = null;
+    for (var j = 0; j < items.length; j++) if (items[j].field.slice(items[j].field.lastIndexOf(":") + 1) === fields[i]) it = items[j];
+    if (it === null) { cell(tr, "-"); continue; }
+    var v;
+    if (fields[i] === "domainSep") v = it.value === null ? node("span", "-", "no") : domainCell(it.value);
+    else if (fields[i] === "kind") v = kindCell(t);
+    else if (fields[i] === "color") v = colorCell(it.value, t ? t.storage : null);
+    else if (fields[i] === "status") v = statusBadge(it.value);
+    else if (fields[i] === "name") v = node("span", it.value === null ? "(undescribed)" : it.value, it.value === null ? "no" : "txt");
+    else v = node("span", it.value === null ? "-" : it.value, it.value === null ? "no" : "txt");
+    var td = cell(tr, withOrigin(v, it.origin));
+    marked(td, it.field);
+  }
+}
+// Every key of the token with the declaration that set it — and, under a key declared more than
+// once, the earlier declarations (a Null included), newest first, with P1 named as the rule that
+// picked the current one.
+function traitsSection(m) {
+  var traits = node("section");
+  traits.id = "traits";
+  traits.appendChild(node("h2", "traits: every key with the declaration that set it, and the earlier ones"));
+  if (m.traits.length === 0) {
+    traits.appendChild(node("div", "no key/value pairs recorded for this token", "empty"));
+    return traits;
+  }
+  var tb = tableIn(traits, ["key", "type", "value", "len", "parts · phase", "projection", "block", "tx", "event id", "origin"]);
+  var anyError = false;
+  var anyP1 = false;
+  for (var k = 0; k < m.traits.length; k++) {
+    var ti = m.traits[k];
+    var kv = ti.trait;
+    var row = marked(document.createElement("tr"), ti.field);
+    cell(row, traitKeyCell(kv));
+    cell(row, node("span", typeLabel(kv.valType), "vtype"));
+    cell(row, traitValueCell(kv));
+    cell(row, orDash(kv.valLen), "num");
+    cell(row, partsPhaseCell(kv.parts, kv.phase));
+    if (kv.projectionError) {
+      anyError = true;
+      cell(row, node("span", String(kv.projectionError), "perr wrapv"));
+    } else {
+      cell(row, node("span", "-", "no"));
+    }
+    cell(row, orDash(kv.updatedHeight), "num");
+    cell(row, txLink(kv.updatedTxHash));
+    cell(row, orDash(kv.eventId), "num");
+    var oc = node("span");
+    oc.appendChild(originChip(ti.origin));
+    if (ti.origin.p1) { anyP1 = true; oc.appendChild(p1Mark()); }
+    cell(row, oc);
+    tb.appendChild(row);
+    for (var h = 0; h < ti.history.length; h++) {
+      var hi = ti.history[h];
+      var hr = marked(document.createElement("tr"), hi.field);
+      hr.className = "hist";
+      cell(hr, node("span", "↳ earlier", "note"));
+      cell(hr, node("span", typeLabel(hi.valType), "vtype"));
+      cell(hr, node("span", hi.value === null ? "-" : hi.value, Number(hi.valType) === 5 ? "no" : "txt wrapv"));
+      cell(hr, "-", "num");
+      cell(hr, partsPhaseCell(hi.parts, hi.phase));
+      cell(hr, node("span", "superseded", "no"));
+      cell(hr, orDash(hi.blockHeight), "num");
+      cell(hr, txLink(hi.txHash));
+      cell(hr, orDash(hi.eventId), "num");
+      cell(hr, originChip(hi.origin));
+      tb.appendChild(hr);
+    }
+  }
+  if (anyP1) {
+    var p1 = node("div", null, "note");
+    p1.appendChild(p1Mark());
+    p1.appendChild(node("span", "  " + P1_RULE + ". The rows marked ↳ are the earlier declarations of the key above them."));
+    traits.appendChild(p1);
+  }
+  if (anyError) {
+    traits.appendChild(node("div",
+      "a value in the projection column is a key this explorer projects into a column of its own "
+      + "whose value the column cannot hold. The event was accepted and the trait is kept, only "
+      + "the column it would have filled was not written - the standard's appendix A is "
+      + "informative and a projection is this explorer's convention, never a verdict on the "
+      + "contract",
+      "note"));
+  }
+  return traits;
 }
 
 // ── Raw events (shared by the token and contract views) ─────────────────────────────────────
@@ -2743,10 +3816,11 @@ function orderEvents(events, markDomain) {
   return mine.concat(others);
 }
 
-function eventsSection(events, markDomain, heading) {
+function eventsSection(items, markDomain, heading) {
   var sec = node("section");
+  sec.id = "events";
   sec.appendChild(node("h2", heading));
-  if (!events || events.length === 0) {
+  if (!items || items.length === 0) {
     sec.appendChild(node("div", "no token-metadata event from this contract", "empty"));
     return sec;
   }
@@ -2756,17 +3830,18 @@ function eventsSection(events, markDomain, heading) {
       + "order, which is the order the fold applies them in, so the last row of a key is the value in force",
       "note"));
   }
+  // One row per package: a multi-part declaration is one event row with its part count, and its
+  // event id is its first part's (P1).
   var tb = tableIn(sec, ["event id", "block", "tx", "domainSep", "kind", "key", "type",
-    "len", "value", "applied", "reject reason"]);
-  var ordered = orderEvents(events, markDomain);
-  for (var i = 0; i < ordered.length; i++) {
-    var e = ordered[i];
-    var tr = document.createElement("tr");
+    "len", "value", "applied", "reject reason", "parts · phase", "origin"]);
+  for (var i = 0; i < items.length; i++) {
+    var e = items[i].row;
+    var tr = marked(document.createElement("tr"), items[i].field);
     var dom = e.domainSep || e.domain_sep;
     if (markDomain && dom === markDomain) tr.className = "mark";
     cell(tr, orDash(e.eventId === undefined ? e.id : e.eventId), "num");
     cell(tr, orDash(e.blockHeight), "num");
-    cell(tr, copyable(e.txHash, shortHex(e.txHash, 8, 6), "hex"));
+    cell(tr, txLink(e.txHash));
     cell(tr, domainCell(dom));
     cell(tr, orDash(e.kindByte === undefined ? e.kind_byte : e.kindByte), "num");
     var key = e.keyText || (e.key ? hexText(e.key) : null) || e.key;
@@ -2775,10 +3850,12 @@ function eventsSection(events, markDomain, heading) {
     cell(tr, orDash(e.valLen === undefined ? e.len : e.valLen), "num");
     var value = e.text !== undefined && e.text !== null ? String(e.text)
       : (e.value ? (hexText(e.value) || shortHex(e.value, 10, 8)) : null);
-    cell(tr, value === null ? node("span", "-", "no") : node("span", value, "wrapv"));
+    cell(tr, value === null ? node("span", Number(e.valType) === 5 ? "Null" : "-", "no") : node("span", value, "wrapv"));
     cell(tr, e.applied === true ? node("span", "yes", "txt")
       : (e.applied === false ? node("span", "no", "err") : "-"));
     cell(tr, e.rejectReason ? node("span", String(e.rejectReason), "err wrapv") : node("span", "-", "no"));
+    cell(tr, partsPhaseCell(e.parts, e.phase));
+    cell(tr, originChip(items[i].origin));
     tb.appendChild(tr);
   }
   return sec;
@@ -2802,15 +3879,20 @@ function renderContract(main) {
     return;
   }
   var d = c.contract;
+  // 00024-03: drawn from one model, every value with its origin (contractModel).
+  var m = contractModel(c);
   var head = node("section");
-  head.appendChild(node("h2", "contract"));
-  kvInto(head, [
-    ["address", copyable(d.address, d.address ? String(d.address) : "-", "hex")],
-    ["deploy height", orDash(d.deployHeight)],
-    ["deploy tx", copyable(d.deployTxHash, d.deployTxHash ? String(d.deployTxHash) : "-", "hex")],
-    ["last call height", orDash(d.lastCallHeight)]
-  ]);
+  head.id = "facts";
+  head.appendChild(node("h2", "contract · every value with where it came from"));
+  factsTable(head, m.facts, function (it) {
+    if (it.value === null) return node("span", "-", "no");
+    if (it.field === "address") return copyable(it.value, it.value, "hex");
+    if (it.field === "deployTxHash") return txLink(it.value);
+    return node("span", it.value, "txt");
+  });
   main.appendChild(head);
+
+  main.appendChild(interfaceSection(m.face));
 
   var toks = node("section");
   toks.appendChild(node("h2", "tokens of this contract"));
@@ -2818,21 +3900,13 @@ function renderContract(main) {
   if (list.length === 0) {
     toks.appendChild(node("div", "no token row for this contract yet", "empty"));
   } else {
-    var index = familyIndex(list);
     var tb = tableIn(toks, ["domainSep", "kind", "colour", "name", "symbol", "dec",
       "mints", "status"]);
-    for (var i = 0; i < list.length; i++) {
-      var t = list[i];
+    for (var i = 0; i < m.tokens.length; i++) {
+      var t = m.tokens[i].token;
       var tr = document.createElement("tr");
       tr.className = "pick";
-      cell(tr, domainCell(t.domainSep));
-      cell(tr, kindCell(t));
-      cell(tr, colorCell(t.color, t.storage));
-      cell(tr, nameCell(t, index));
-      cell(tr, orDash(t.symbol));
-      cell(tr, t.decimals === null || t.decimals === undefined ? "-" : String(t.decimals), "num");
-      cell(tr, mintsCell(t), "num");
-      cell(tr, statusBadge(t.status));
+      rowCells(tr, m.tokens[i].items, t, CONTRACT_TOKEN_FIELDS);
       (function (token) {
         tr.addEventListener("click", function () {
           go(hashToken({ address: d.address, domainSep: token.domainSep, kind: token.kind }));
@@ -2840,24 +3914,24 @@ function renderContract(main) {
       })(t);
       tb.appendChild(tr);
     }
+    toks.appendChild(node("div", "each value carries its own origin; open a row for the token's whole page", "note"));
   }
   main.appendChild(toks);
 
   var pend = node("section");
   pend.appendChild(node("h2", "pending event lookups"));
-  var plist = d.pendingLookups && d.pendingLookups.length ? d.pendingLookups : [];
-  if (plist.length === 0) {
+  if (m.pending.length === 0) {
     pend.appendChild(node("div", "none: every emitting call of this contract has had its events read", "empty"));
   } else {
-    pend.appendChild(pendingTable(plist));
+    pend.appendChild(pendingTable(d.pendingLookups, m.pending));
   }
   main.appendChild(pend);
 
   // US7: the same table a ledger token's page shows, under the same note — a contract's calls are
   // public whatever kind of token it issues.
-  main.appendChild(callsSection(c.calls, "calls of this contract", null));
+  main.appendChild(callsSection(c.calls, "calls of this contract", null, m.calls));
 
-  main.appendChild(eventsSection(c.events, null, "raw token-metadata events of this contract (rejected ones included)"));
+  main.appendChild(eventsSection(m.events, null, "raw token-metadata events of this contract (rejected ones included)"));
 
   if (c.notes.length > 0) {
     var notes = node("section");
@@ -2867,18 +3941,141 @@ function renderContract(main) {
   }
 }
 
-function pendingTable(plist) {
+// ── The contract's public interface (spec 00024 US1, US6; GET /v1/contracts/:address/interface) ─
+//
+// The current publication first — its result, the levels it passed or the level it failed, the
+// Level 3 reason, the commitment, the URL (shortened for the eye, copied whole), where it was
+// published, when it was checked and will be again — then what its checks established (files, keys,
+// circuits with their argument types, witnesses), its check history, and every older publication
+// with its own last result. Every value carries the publication as its origin.
+function interfaceSection(face) {
+  var sec = node("section");
+  sec.id = "interface";
+  sec.appendChild(node("h2", "public interface · the current publication, what its checks established, and every older one"));
+  if (!face.present) {
+    var none = marked(node("div", null, "row"), face.rows[0].field);
+    none.appendChild(node("span", "no public interface published by this contract", "no"));
+    none.appendChild(originChip(face.rows[0].origin));
+    sec.appendChild(none);
+    return sec;
+  }
+  var top = node("div", null, "row");
+  top.appendChild(ifaceBadge(face.status));
+  for (var n = 0; n < face.status.notes.length; n++) top.appendChild(node("span", face.status.notes[n], "note wrapv"));
+  sec.appendChild(top);
+  sec.appendChild(originBlock(face.rows[0].origin));
+
+  var tb = tableIn(sec, ["", "value", "origin"]);
+  for (var i = 0; i < face.rows.length; i++) {
+    var r = face.rows[i];
+    var tr = marked(document.createElement("tr"), r.field);
+    cell(tr, r.label, "k");
+    cell(tr, ifaceValue(r), "fv");
+    cell(tr, originChip(r.origin));
+    tb.appendChild(tr);
+  }
+
+  sec.appendChild(ifaceTable("files the bundle lists (Level 1)", face.files,
+    ["path", "size (bytes)", "SHA-256", "origin"], function (tr, it) {
+      cell(tr, node("span", it.label, "txt wrapv"));
+      cell(tr, orDash(it.row.size), "num");
+      cell(tr, copyable(it.row.sha256, shortHex(String(it.row.sha256 || ""), 10, 8), "hex"));
+    }, "no file: the check did not reach Level 1's file list"));
+  sec.appendChild(ifaceTable("verifier keys (Level 2: equal to the contract's on-chain keys)", face.keys,
+    ["circuit", "verifier key SHA-256", "Level 2", "origin"], function (tr, it) {
+      cell(tr, it.label);
+      cell(tr, copyable(it.value, shortHex(String(it.value || ""), 10, 8), "hex"));
+      cell(tr, orDash(it.row.l2));
+    }, "no key: the check did not reach Level 2"));
+  sec.appendChild(ifaceTable("circuits the interface publishes, with their argument types", face.circuits,
+    ["circuit", "signature", "pure", "on chain", "key SHA-256", "Level 2", "origin"], function (tr, it) {
+      cell(tr, it.label);
+      cell(tr, node("span", it.value, "hex wrapv"));
+      cell(tr, it.row.pure === true ? "yes" : (it.row.pure === false ? "no" : "-"));
+      cell(tr, it.row.onChain === true ? "yes" : (it.row.onChain === false ? "no" : "-"));
+      cell(tr, copyable(it.row.keySha256, shortHex(String(it.row.keySha256 || ""), 10, 8), "hex"));
+      cell(tr, orDash(it.row.l2));
+    }, "no circuit: the check did not reach Level 2"));
+  sec.appendChild(ifaceTable("witnesses the bundle's code declares", face.witnesses,
+    ["witness", "origin"], function (tr, it) { cell(tr, it.value); }, "no witness declared"));
+  sec.appendChild(ifaceTable("check history (newest first)", face.checks,
+    ["check", "checked at", "trigger", "result", "levels", "L3", "reason", "state block", "origin"], function (tr, it) {
+      var ch = it.row;
+      cell(tr, orDash(ch.checkNo), "num");
+      cell(tr, orDash(ch.checkedAt));
+      cell(tr, orDash(ch.trigger));
+      cell(tr, ifaceBadge(it.status));
+      cell(tr, levelsLine(ch.levels));
+      cell(tr, node("span", ch.l3Reason ? String(ch.l3Reason) : "-", ch.l3Reason ? "wrapv" : "no"));
+      cell(tr, node("span", ch.reason ? String(ch.reason) : "-", ch.reason ? "err wrapv diag" : "no"));
+      cell(tr, orDash(ch.stateBlockHeight), "num");
+    }, "never checked yet"));
+  sec.appendChild(ifaceTable("older publications (historical: each with its own last result, never current)", face.history,
+    ["publication", "block", "tx", "parts · phase", "commitment", "URL", "role", "result", "reason", "checked at", "verified until", "origin"],
+    function (tr, it) {
+      var h = it.row;
+      cell(tr, orDash(h.eventId), "num");
+      cell(tr, orDash(h.blockHeight), "num");
+      cell(tr, txLink(h.txHash));
+      cell(tr, partsPhaseCell(h.parts, h.phase));
+      cell(tr, copyable(h.commitment, shortHex(String(h.commitment || ""), 8, 6), "hex"));
+      cell(tr, h.url === null || h.url === undefined ? node("span", h.urlError ? "not decodable: " + h.urlError : "-", "no") : urlNode(it.url));
+      cell(tr, withTitle(node("span", orDash(h.role), "note"), ROLE_HELP[h.role] || ""));
+      cell(tr, ifaceBadge(it.status));
+      cell(tr, node("span", h.reason ? String(h.reason) : "-", h.reason ? "err wrapv diag" : "no"));
+      cell(tr, orDash(h.checkedAt));
+      cell(tr, orDash(h.verifiedUntil));
+    }, "none: this is the contract's only publication"));
+  return sec;
+}
+// One value of the interface's "value | origin" table, drawn by what it is.
+function ifaceValue(r) {
+  if (r.status) return ifaceBadge(r.status);
+  if (r.value === null) return node("span", "-", "no");
+  if (r.url) return urlNode(r.url);
+  if (r.hex) return copyable(r.value, r.value, "hex");
+  if (r.diagnostic) return node("span", r.value, "err wrapv diag");
+  if (r.help) return withTitle(node("span", r.value, "txt"), r.help);
+  if (r.txHash) {
+    var wrap = node("span", null, "wrapv");
+    wrap.appendChild(node("span", r.value + "  "));
+    wrap.appendChild(txLink(r.txHash));
+    return wrap;
+  }
+  return node("span", r.value, "txt wrapv");
+}
+// A sub-table of the interface section: its heading, its rows (each with its chip), or why none.
+function ifaceTable(heading, items, labels, fill, emptyText) {
+  var box = node("div", null, "txsec");
+  box.appendChild(node("div", heading + " · " + items.length, "h"));
+  if (items.length === 0) {
+    box.appendChild(node("div", emptyText, "empty"));
+    return box;
+  }
+  var tb = tableIn(box, labels);
+  for (var i = 0; i < items.length; i++) {
+    var tr = marked(document.createElement("tr"), items[i].field);
+    fill(tr, items[i]);
+    cell(tr, originChip(items[i].origin));
+    tb.appendChild(tr);
+  }
+  return box;
+}
+
+function pendingTable(plist, items) {
   var holder = node("div");
-  var tb = tableIn(holder, ["tx", "address", "expected", "got", "attempts", "last error"]);
+  var tb = tableIn(holder, ["tx", "address", "expected", "got", "attempts", "last error"].concat(items ? ["origin"] : []));
   for (var i = 0; i < plist.length; i++) {
     var p = plist[i];
     var tr = document.createElement("tr");
+    if (items && items[i]) marked(tr, items[i].field);
     cell(tr, copyable(p.txHash, shortHex(p.txHash, 8, 6), "hex"));
     cell(tr, copyable(p.address, shortHex(p.address, 8, 6), "hex"));
     cell(tr, orDash(p.expected), "num");
     cell(tr, orDash(p.got), "num");
     cell(tr, orDash(p.attempts), "num");
     cell(tr, p.lastError ? node("span", String(p.lastError), "err wrapv") : node("span", "-", "no"));
+    if (items && items[i]) cell(tr, originChip(items[i].origin));
     tb.appendChild(tr);
   }
   return holder;
@@ -2928,7 +4125,16 @@ function renderStatus(main) {
     ["seen tokens (colours no contract has named)", orDash(counterOf(st, "seenTokens"))],
     ["shielded offers", orDash(counterOf(st, "shieldedOffers"))],
     ["undisclosed shielded offers", undisclosedCell(st)],
-    ["contract calls", orDash(counterOf(st, "contractCalls"))]
+    ["contract calls", orDash(counterOf(st, "contractCalls"))],
+    // 00024-01/02: the multi-part packages and the public interfaces (spec §5, additive).
+    ["packages ([Y]): all · multi-part · mixed phase", orDash(counterOf(st, "packages")) + " · "
+      + orDash(counterOf(st, "multipartPackages")) + " · " + orDash(counterOf(st, "mixedPackages"))],
+    ["public interfaces · publications", orDash(counterOf(st, "interfaces")) + " · "
+      + orDash(counterOf(st, "interfacePublications"))],
+    ["current interfaces: verified · failed · waiting · unavailable · unreachable",
+      orDash(counterOf(st, "interfacesVerified")) + " · " + orDash(counterOf(st, "interfacesFailed")) + " · "
+      + orDash(counterOf(st, "interfacesWaiting")) + " · " + orDash(counterOf(st, "interfacesUnavailable"))
+      + " · " + orDash(counterOf(st, "interfacesUnreachable"))]
   ]);
   main.appendChild(sec);
 
@@ -2966,11 +4172,15 @@ function render() {
   else if (state.route.view === "tx") renderTx(main);
   else if (state.route.view === "offers") renderOffers(main);
   else renderList(main);
-  // US2 scenario 3: a token opened from a transaction's activity list lands on its transactions.
+  // US2 scenario 3: a token opened from a transaction's activity list lands on its transactions;
+  // 00024-03: an origin's evidence link lands on the section it cites. The target is kept until the
+  // view that holds it has loaded, so a link followed from another page still arrives.
   if (state.scrollTo) {
     var target = document.getElementById(state.scrollTo);
-    state.scrollTo = null;
-    if (target && target.scrollIntoView) target.scrollIntoView();
+    if (target) {
+      state.scrollTo = null;
+      if (target.scrollIntoView) target.scrollIntoView();
+    }
   }
 }
 
@@ -2980,6 +4190,9 @@ function onHashChange() {
   var next = parseHash();
   var same = routeKey(next) === routeKey(state.route);
   state.route = next;
+  // A section named in the route is scrolled to once drawn; a route without one forgets any
+  // earlier target, so it cannot fire later on another view.
+  state.scrollTo = next.focus ? next.focus : null;
   if (!same) {
     if (next.view === "token") {
       state.detail = null;
@@ -3036,6 +4249,7 @@ function setPoc(hidden) {
 
 window.addEventListener("DOMContentLoaded", function () {
   state.route = parseHash();
+  state.scrollTo = state.route.focus ? state.route.focus : null;
   setPoc(pocHidden());
   el("poc-hide").addEventListener("click", function () { setPoc(true); });
   el("poc-show").addEventListener("click", function () { setPoc(false); });
