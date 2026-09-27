@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { compilerAvailable, directivesOf, levelThree, probeCompile, quotedDirective, quotedDirectives, reachableDirectiveProblem, searchTraceProblem, type Level3Options } from "../interface/level3.js";
+import { BUILTIN_MODULES, compilerAvailable, directivesOf, levelThree, probeCompile, quotedDirective, quotedDirectives, reachableDirectiveProblem, searchTraceProblem, type Level3Options } from "../interface/level3.js";
 import { clone, compiler033, loadFixtureBundle, sha256Hex, verdict, withFiles, withPackage, type Bundle } from "./helpers/pi-fixture.js";
 
 /**
@@ -264,6 +264,13 @@ describe("[B] Level 3 with the stand-in compiler (C6)", () => {
     const viaUnquoted = new Map([["src/Main.compact", Buffer.from("import CompactStandardLibrary;\nimport Evil;\n")], ["src/Evil.compact", Buffer.from('import "/outside/Stolen" prefix S_;\n')]]);
     expect(reachableDirectiveProblem(viaUnquoted, [...viaUnquoted.keys()], "/r", "src/Main.compact")).toMatch(/^"src\/Evil\.compact" imports or includes "\/outside\/Stolen", which is outside the bundle/);
     expect(directivesOf("import Foo prefix F_; import { a } from \"b\"; import /* c */ Bar; x import; import\n  Baz;")).toEqual({ quoted: ["b"], unquoted: ["Foo", "Bar", "Baz"] });
+    // E2-R4: a selective import from an unquoted module is followed too; a built-in never is.
+    expect(directivesOf("import { marker } from Evil; import { x } from \"q\";")).toEqual({ quoted: ["q"], unquoted: ["Evil"] });
+    const selective = new Map([["src/Main.compact", Buffer.from("import CompactStandardLibrary;\nimport { marker } from Evil;\n")], ["src/Evil.compact", Buffer.from('module Evil {\n  include "/outside/Stolen";\n  export circuit marker(): [] {}\n}\n')]]);
+    expect(reachableDirectiveProblem(selective, [...selective.keys()], "/r", "src/Main.compact")).toMatch(/^"src\/Evil\.compact" imports or includes "\/outside\/Stolen", which is outside the bundle/);
+    const shadow = new Map([["src/Main.compact", Buffer.from("import CompactStandardLibrary;\n")], ["src/CompactStandardLibrary.compact", Buffer.from('include "/outside/Unused";\n')]]);
+    expect(reachableDirectiveProblem(shadow, [...shadow.keys()], "/r", "src/Main.compact")).toBeNull();
+    expect([...BUILTIN_MODULES]).toEqual(["CompactStandardLibrary"]);
     // E2-R3B: a source repeating one import 600 000 times (7.8 MB, under the 8 MiB file cap) is walked
     // in linear time — each file visited once, each distinct name once.
     const repeated = new Map([["src/A.compact", Buffer.from('import "./B";\n'.repeat(600_000))], ["src/B.compact", Buffer.from("")]]);

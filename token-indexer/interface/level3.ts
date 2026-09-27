@@ -117,8 +117,9 @@ const NUMERAL = /[0-9][0-9A-Za-z_.]*/y;
  * The files a Compact source names, read the way compactc's lexer reads comments and strings ([B]
  * `quotedDirective`, which stops at the first): `quoted` — every string whose previous word is
  * `import`, `include` or `from`, in order; `unquoted` — every identifier that directly follows
- * `import` (only whitespace or comments between): a name that is not a built-in "can only be a file
- * next to the importing one" ([B] `src/verify.mjs`, audit 02 E2-R3F). `limit` stops the scan early.
+ * `import` or `from` (only whitespace or comments between: `import Foo;`, `import { a } from Foo;`):
+ * a name that is not a built-in "can only be a file next to the importing one" ([B] `src/verify.mjs`,
+ * audit 02 E2-R3F, E2-R4). `limit` stops the scan early.
  */
 export function directivesOf(text: string, limit = Infinity): { quoted: string[]; unquoted: string[] } {
   const quoted: string[] = [];
@@ -143,7 +144,7 @@ export function directivesOf(text: string, limit = Infinity): { quoted: string[]
     const id = IDENTIFIER.exec(text);
     if (id !== null) {
       if (afterImport) unquoted.push(id[0]);
-      afterImport = id[0] === "import";
+      afterImport = id[0] === "import" || id[0] === "from";
       word = id[0]; i = IDENTIFIER.lastIndex; continue;
     }
     NUMERAL.lastIndex = i;
@@ -154,6 +155,10 @@ export function directivesOf(text: string, limit = Infinity): { quoted: string[]
   }
   return { quoted, unquoted };
 }
+
+/** The modules compactc provides itself: an unquoted import of one names no file ([B] `src/verify.mjs`
+ *  quotedDirective: "`import CompactStandardLibrary;` names a built-in module"). */
+export const BUILTIN_MODULES: ReadonlySet<string> = new Set(["CompactStandardLibrary"]);
 
 /** Every file named by a quoted `import`/`include` of a Compact source, in order ({@link directivesOf}). */
 export function quotedDirectives(text: string, limit = Infinity): string[] {
@@ -201,9 +206,13 @@ export function reachableDirectiveProblem(files: ReadonlyMap<string, Buffer>, li
       }
       visit(relative(root, `${target}.compact`).split(sep).join("/"));
     }
-    // An unquoted name is a file next to the importer (or a built-in): it cannot leave the directory,
-    // but the file it names may itself import something outside (E2-R3F).
-    for (const name of new Set(unquoted)) visit(relative(root, join(dir, `${name}.compact`)).split(sep).join("/"));
+    // An unquoted name is a built-in module or a file next to the importer: it cannot leave the
+    // directory, but the file it names may itself import something outside (E2-R3F). A built-in is
+    // never a file — a listed file that happens to share its name is not read (E2-R4).
+    for (const name of new Set(unquoted)) {
+      if (BUILTIN_MODULES.has(name)) continue;
+      visit(relative(root, join(dir, `${name}.compact`)).split(sep).join("/"));
+    }
   }
   return null;
 }
