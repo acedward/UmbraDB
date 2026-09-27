@@ -208,6 +208,24 @@ describe("[B] commitment and index rules (C3)", () => {
     const deep = JSON.parse(`${"[".repeat(200_000)}${"]".repeat(200_000)}`);
     expect(() => validateIndex(mutate((i) => { i.bundle = deep; }))).toThrow(IndexError);
     expect(() => validateIndex(mutate((i) => { i.compiler.name = deep; }))).toThrow(/too deeply nested/);
+    // A deep path is checked in time linear in its length (audit 02 E2-F3): the reference's
+    // prefix-by-prefix join is quadratic — ~10 s at 40 000 segments, minutes at 120 000 (a single
+    // entry that fits the 256 KiB index cap) — and it runs before the hash is compared.
+    const deepPath = (n: number): string => `${"a/".repeat(n)}a`;
+    for (const n of [40_000, 120_000]) {
+      const started = Date.now();
+      expect(() => validateIndex(mutate((i) => { i.files.push({ path: deepPath(n), sha256: sha("x"), size: 1 }); }))).not.toThrow();
+      expect(Date.now() - started, `${n} segments`).toBeLessThan(1_000);
+    }
+    const t0 = Date.now();
+    expect(() => validateIndex(mutate((i) => {
+      i.files.push({ path: deepPath(60_000), sha256: sha("x"), size: 1 }, { path: deepPath(59_999), sha256: sha("y"), size: 1 });
+    }))).toThrow(/as a file and as the directory of/);
+    expect(Date.now() - t0).toBeLessThan(1_000);
+    // The first conflict reported is the reference's: in listing order, each path's shortest listed ancestor.
+    expect(() => validateIndex(mutate((i) => {
+      i.files.push({ path: "x/y/z/w", sha256: sha("1"), size: 1 }, { path: "x/y", sha256: sha("2"), size: 1 }, { path: "x", sha256: sha("3"), size: 1 });
+    }))).toThrow('"x" is listed as a file and as the directory of "x/y/z/w"');
     // Accepted: an empty file list (its commitment is the identity), recorded flags, and a hash that
     // does not match the entries (Level 1 compares it, not validation).
     const empty = validateIndex({ ...INDEX_FORMAT, hash: `01${"00".repeat(31)}`, compiler: { name: "compactc", version: "0.34.0" }, files: [] });

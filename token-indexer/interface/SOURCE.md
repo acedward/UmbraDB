@@ -31,6 +31,11 @@ executed); `src/fetch.mjs` is unchanged there. The bundle fixture the tests use 
   bare `JSON.stringify`, which overflows the stack on a deeply nested value that `JSON.parse` accepts; here
   that value is named by its type, so the index is refused with an `IndexError` instead of crashing the
   verification job (the 01-D audit's F2 class).
+- **The file-versus-directory rule is checked in linear time** (`commitment.ts`, audit 02 E2-F3): the
+  reference (`src/hash.mjs:176`) joins every prefix of every path, quadratic in the depth — one entry
+  `"a/".repeat(120000) + "a"` fits a 256 KiB index and takes minutes, before the hash is compared.
+  Here each path is walked once in a tree of segments; the rule and the first conflict reported are
+  the reference's.
 - **Level 1 takes an injected transport** (`BundleTransport`) instead of `fetch` or a directory: the
   indexer's transport is the guarded one of `fetch-guard.ts` (http(s) only, private destinations refused
   after DNS, redirects capped, a deadline), which the reference does not have.

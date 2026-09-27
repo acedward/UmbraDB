@@ -192,13 +192,32 @@ export function validateIndex(index: unknown): BundleIndex {
     }
     seen.add(path);
   });
-  // A directory tree cannot hold `a` as a file and `a/b` beneath it.
-  for (const p of seen) {
+  // A directory tree cannot hold `a` as a file and `a/b` beneath it. The same rule and the same first
+  // conflict as the reference (`src/hash.mjs`: for each path in order, its shortest listed ancestor),
+  // but in time LINEAR in the total path length: the reference builds `parts.slice(0, k).join("/")`
+  // for every k, quadratic in the depth, so one deep path in a 256 KiB index would hold the event
+  // loop for minutes before the hash is even compared (audit 02 E2-F3). Each path is a walk in a
+  // tree of segments (node key = parent id + "/" + segment; a segment holds no "/"), and a listed
+  // path marks the node it ends at.
+  const nodes = new Map<string, number>();
+  const fileAt = new Map<number, string>();
+  const walk = (p: string, visit: (node: number, last: boolean) => void): void => {
     const parts = p.split("/");
-    for (let k = 1; k < parts.length; k++) {
-      const dir = parts.slice(0, k).join("/");
-      if (seen.has(dir)) throw new IndexError(`${show(dir)} is listed as a file and as the directory of ${show(p)}`);
+    let node = 0;
+    for (let k = 0; k < parts.length; k++) {
+      const key = `${node}/${parts[k]!}`;
+      let next = nodes.get(key);
+      if (next === undefined) { next = nodes.size + 1; nodes.set(key, next); }
+      node = next;
+      visit(node, k === parts.length - 1);
     }
+  };
+  for (const p of seen) walk(p, (node, last) => { if (last) fileAt.set(node, p); });
+  for (const p of seen) {
+    walk(p, (node, last) => {
+      const dir = last ? undefined : fileAt.get(node);
+      if (dir !== undefined) throw new IndexError(`${show(dir)} is listed as a file and as the directory of ${show(p)}`);
+    });
   }
   return index as unknown as BundleIndex;
 }
