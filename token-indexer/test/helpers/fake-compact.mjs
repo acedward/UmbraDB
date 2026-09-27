@@ -19,14 +19,12 @@
 //   FAKE_COMPACT_LOG        append one JSON line per invocation: argv, cwd, whether COMPACT_PATH was set,
 //                           and every file under cwd (Level 3 must give the compiler the listed files only)
 //   FAKE_COMPACT_TOUCH      create this file (relative to cwd) before printing the trace
-//   FAKE_COMPACT_LOCK_DIR   make this directory read-only (0555) at the end of the bundle's compile,
-//                           before its exit — so a later probe cannot even create its directory
 //   FAKE_COMPACT_PROBE_EXIT the exit status of Level 3's PROBE compile (a source named
 //                           umbradb-l3-probe.compact; default 0 = the environment works: it writes
 //                           keys/probe.verifier), with FAKE_COMPACT_PROBE_STDERR — the probe ignores the
 //                           other FAKE_COMPACT_* settings, which describe the bundle's compile
 // The real-compiler test (environment-gated) runs the host's `compact` instead.
-import { appendFileSync, chmodSync, cpSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 
 const args = process.argv.slice(2);
 if (process.env.FAKE_COMPACT_LOG) {
@@ -64,7 +62,6 @@ const sleep = Number(process.env.FAKE_COMPACT_SLEEP_MS ?? 0);
 if (sleep > 0) await new Promise((resolve) => setTimeout(resolve, sleep));
 if (process.env.FAKE_COMPACT_TOUCH) writeFileSync(process.env.FAKE_COMPACT_TOUCH, 'export circuit x(): [] {}\n');
 for (const line of JSON.parse(process.env.FAKE_COMPACT_TRACE ?? '[]')) process.stderr.write(`${line}\n`);
-if (process.env.FAKE_COMPACT_LOCK_DIR) chmodSync(process.env.FAKE_COMPACT_LOCK_DIR, 0o555);
 if (process.env.FAKE_COMPACT_EXIT) {
   process.stderr.write(`${process.env.FAKE_COMPACT_STDERR ?? 'Exception: compile error'}\n`);
   process.exit(Number(process.env.FAKE_COMPACT_EXIT));

@@ -44,6 +44,8 @@ export interface Level3Options {
   probeTimeoutMs?: number;
   /** stdout + stderr kept from the compiler; beyond it the search trace cannot be checked. */
   maxOutputBytes?: number;
+  /** Test seam: the environment probe. Default {@link probeCompile}. */
+  probe?: typeof probeCompile;
 }
 
 export const DEFAULT_LEVEL3_OPTIONS: Level3Options = Object.freeze({
@@ -472,7 +474,7 @@ async function levelThreeUnguarded(
     if (compile.code !== 0) {
       const first = firstLine(compile.stderr) ?? `exit status ${String(compile.code)}`;
       // Whose failure is it? A probe compile of a known-good contract decides, never the bundle's text.
-      const probe = await probeCompile(opts.compactBin, version, compiler.flags, { tmpRoot, timeoutMs: Math.min(opts.deadlineMs, 300_000) });
+      const probe = await (opts.probe ?? probeCompile)(opts.compactBin, version, compiler.flags, { tmpRoot, timeoutMs: Math.min(opts.deadlineMs, 300_000) });
       if (!probe.ok) {
         return done("not_run", `the compiler's environment failed: ${first.slice(0, 300)} (a probe compile of a known-good contract failed too: ${probe.reason})`);
       }
