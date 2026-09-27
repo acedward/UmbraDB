@@ -240,6 +240,20 @@ function interfaceEvidence(row: InterfaceEventRow): InterfaceEvidenceJson {
 
 const interfaceOrigin = (row: InterfaceEventRow): OriginJson => ({ origin: "public-interface", evidence: interfaceEvidence(row) as unknown as Record<string, unknown> });
 
+/**
+ * The origin of an ITEM of an interface (a file, a key, a circuit): the same publication, cited by its
+ * identity only — its URL (up to 262 112 bytes) and part ids (up to 1 024) are given once, on the
+ * interface itself. Repeating them per item let one small bundle (1 000 files, 500 circuits) make a
+ * response of hundreds of megabytes (audit 02 E2-R3D).
+ */
+const interfaceItemOrigin = (row: InterfaceEventRow): OriginJson => ({
+  origin: "public-interface",
+  evidence: {
+    eventId: Number(row.event_id), txHash: row.tx_hash.toString("hex"), commitment: row.commitment.toString("hex"),
+    status: row.status, level: row.level, levels: { l1: row.l1, l2: row.l2, l3: row.l3 }, checkedAt: iso(row.checked_at),
+  },
+});
+
 function toInterfaceSummary(row: InterfaceEventRow): InterfaceSummaryJson {
   return {
     eventId: Number(row.event_id), status: row.status, level: row.level, levels: { l1: row.l1, l2: row.l2, l3: row.l3 },
@@ -698,7 +712,7 @@ export class TokenIndexQueries {
     `;
     const row = current[0];
     if (row === undefined) return undefined;
-    const origin = interfaceOrigin(row);
+    const origin = interfaceItemOrigin(row);
     const report = row.report;
     const checks = await sql<{ check_no: number; checked_at: Date; trigger: string; status: string; level: number; l1: string; l2: string; l3: string; l3_reason: string | null; reason: string | null; state_block_height: string | null }[]>`
       SELECT check_no, checked_at, trigger, status, level, l1, l2, l3, l3_reason, reason, state_block_height::text

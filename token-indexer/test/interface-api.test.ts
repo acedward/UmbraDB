@@ -1,3 +1,4 @@
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
@@ -48,6 +49,7 @@ describe("public-interface API (C8)", () => {
   let goodUrl = "";
   let badUrl = "";
   let goneUrl = "";
+  let dbRef: { sql: UmbraDBSql; schema: string } | undefined;
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:17-alpine").start();
@@ -71,6 +73,7 @@ describe("public-interface API (C8)", () => {
     });
 
     const db = await chain.freshDb("api");
+    dbRef = db;
     const deps: DrainDeps = {
       stateSource: new StubState(), fetchPolicy: { allowPrivateHosts: true, deadlineMs: 5_000 }, limits: DEFAULT_LEVEL1_LIMITS,
       level3: { compactBin: STAND_IN, deadlineMs: 20_000, tmpRoot: scratch }, recheckMs: 3_600_000,
@@ -116,6 +119,14 @@ describe("public-interface API (C8)", () => {
   function expectInterfaceOrigin(o: any, eventId: number): void { // eslint-disable-line @typescript-eslint/no-explicit-any
     expect(o.origin).toBe("public-interface");
     expect(o.evidence).toMatchObject({ eventId, partEventIds: expect.any(Array), txHash: expect.stringMatching(/^[0-9a-f]{64}$/), commitment: expect.stringMatching(/^[0-9a-f]{64}$/), levels: expect.any(Object) });
+  }
+  /** …on an ITEM of an interface (a file, a key, a circuit): the same publication cited by identity
+   *  only — the URL and part ids are given once, on the interface (audit 02 E2-R3D). */
+  function expectItemOrigin(o: any, eventId: number): void { // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect(o.origin).toBe("public-interface");
+    expect(o.evidence).toMatchObject({ eventId, txHash: expect.stringMatching(/^[0-9a-f]{64}$/), commitment: expect.stringMatching(/^[0-9a-f]{64}$/), levels: expect.any(Object) });
+    expect(Object.keys(o.evidence)).not.toContain("url");
+    expect(Object.keys(o.evidence)).not.toContain("partEventIds");
   }
 
   it("[[interface-api-contract]] GET /v1/interfaces, /v1/contracts/:a/interface and /interface/events; Token.interface and the contract's interface; origins on every interface value; counters", async () => {
@@ -172,7 +183,7 @@ describe("public-interface API (C8)", () => {
     expect(ib.keys.map((k: any) => [k.circuit, k.l2])).toEqual([["guardedIncrement", "OK"], ["increment", "OK"], ["read", "OK"]]); // eslint-disable-line @typescript-eslint/no-explicit-any
     expect(ib.keys[2].sha256).toBe(createHash("sha256").update(bundle.get("out/keys/read.verifier")!).digest("hex"));
     expect(ib.circuits.map((c: any) => [c.name, c.resultType, c.l2])).toEqual([["increment", "[]", "OK"], ["read", "Uint<64>", "OK"], ["guardedIncrement", "[]", "OK"]]); // eslint-disable-line @typescript-eslint/no-explicit-any
-    for (const value of [...ib.files, ...ib.keys, ...ib.circuits]) expectInterfaceOrigin(value.origin, 30);
+    for (const value of [...ib.files, ...ib.keys, ...ib.circuits]) expectItemOrigin(value.origin, 30);
     expect(ib.lastVerifiedAt).not.toBeNull();
     expect(ib.verifiedUntil).toBeNull();
     // --- an unreachable interface (C9, owner Q25): no level claimed, the delivery named, retried ------
@@ -224,5 +235,41 @@ describe("public-interface API (C8)", () => {
     });
     const c = status.counters;
     expect(c.interfacesVerified + c.interfacesFailed + c.interfacesWaiting + c.interfacesUnavailable + c.interfacesUnreachable).toBe(c.interfaces);
+
+    // --- a response is not amplified by the publication's size (audit 02 E2-R3D): a 20 000-byte URL
+    //     and an interface of 1 000 files, 998 keys and 500 circuits; the URL is given once (+ once in
+    //     the interface's own origin), never per item -------------------------------------------------
+    const E = "e9".repeat(32);
+    const longUrl = `http://h.example/index.json#${"a".repeat(20_000)}`;
+    const { sql: dsql, schema } = dbRef!;
+    const report = {
+      artifacts: { files: Array.from({ length: 1000 }, (_v, i) => ({ path: `out/keys/k${i}.verifier`, sha256: "ab".repeat(32), size: 0 })) },
+      operations: Array.from({ length: 998 }, (_v, i) => ({ circuit: `k${i}`, status: "FAIL", keySha256: "cd".repeat(32) })),
+    };
+    const circuits = Array.from({ length: 500 }, (_v, i) => ({ name: `k${i}`, resultType: "[]", l2: "FAIL" }));
+    await dsql`
+      INSERT INTO ${dsql(schema)}.public_interface_events
+        (net, event_id, part_event_ids, parts, segment, phase, address, tx_hash, block_height, tx_position, payload, commitment,
+         url_bytes, url, status, level, l1, l2, l3, reason, failed_level, report, circuits, checked_at, checks)
+      VALUES (${NET}, 900, '{900}'::bigint[], 1, 1, 'guaranteed', ${Buffer.from(E, "hex")}, ${Buffer.from("f9".repeat(32), "hex")}, 200, 0,
+              ${Buffer.alloc(256)}, ${Buffer.alloc(32, 7)}, ${Buffer.from(longUrl)}, ${longUrl}, 'failed', 1, 'passed', 'failed', 'not_run',
+              'Level 2: keys differ', 2, ${dsql.json(report as never)}, ${dsql.json(circuits as never)}, now(), 1)`;
+    await dsql`INSERT INTO ${dsql(schema)}.public_interfaces (net, address, event_id, block_height, tx_position, publications)
+               VALUES (${NET}, ${Buffer.from(E, "hex")}, 900, 200, 0, 1)`;
+    try {
+      const res = await fetch(`${base}/v1/contracts/${E}/interface`);
+      expect(res.status).toBe(200);
+      const body = await res.text();
+      expect(body.length).toBeLessThan(3_000_000);
+      expect(body.split(longUrl).length - 1).toBe(2); // the interface's `url` and its own origin's evidence
+      const big = JSON.parse(body);
+      expect(big.files).toHaveLength(1000);
+      expect(big.keys).toHaveLength(998);
+      expect(big.circuits).toHaveLength(500);
+      expectItemOrigin(big.files[999].origin, 900);
+    } finally {
+      await dsql`DELETE FROM ${dsql(schema)}.public_interfaces WHERE net = ${NET} AND address = ${Buffer.from(E, "hex")}`;
+      await dsql`DELETE FROM ${dsql(schema)}.public_interface_events WHERE net = ${NET} AND event_id = 900`;
+    }
   }, 120_000);
 });
