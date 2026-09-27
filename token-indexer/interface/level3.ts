@@ -248,6 +248,27 @@ function run(bin: string, args: string[], opts: { cwd?: string; env: NodeJS.Proc
  *  proving parameters, or the chosen version disappeared). */
 const ENVIRONMENT_FAILURE = /couldn't find compiler|data provider|zk[-_ ]?params|public parameters|srs\.midnight|no space left on device|cannot allocate memory/i;
 
+/**
+ * Whether the compiler's stderr says ITS environment failed (then Level 3 is `not_run`, not a verdict).
+ * Judged only on text the bundle cannot have written (audit 02 E2-F7): search-trace lines are skipped,
+ * and a matched phrase that any of the bundle's files contains is ignored — an import name such as
+ * `"./data provider"` is echoed by the compiler's own error for a missing file and would otherwise
+ * disguise a bundle failure as an unavailable environment. (A bundle whose source happens to contain
+ * such a phrase, compiled in a really broken environment, is reported `failed` — the safe side.)
+ */
+function environmentFailed(stderr: string, files: ReadonlyMap<string, Buffer>): boolean {
+  let texts: string[] | undefined;
+  for (const line of stderr.split("\n")) {
+    if (TRACE_LINE.test(line)) continue;
+    const m = ENVIRONMENT_FAILURE.exec(line);
+    if (m === null) continue;
+    texts ??= [...files.values()].map((b) => b.toString("utf8").toLowerCase());
+    const phrase = m[0].toLowerCase();
+    if (!texts.some((t) => t.includes(phrase))) return true;
+  }
+  return false;
+}
+
 const firstLine = (text: string): string | undefined =>
   text.split("\n").map((l) => l.trim()).find((l) => l !== "" && !TRACE_LINE.test(l));
 
@@ -364,7 +385,7 @@ export async function levelThree(
     if (compile.signal !== null) return done("not_run", `the compiler was stopped by ${compile.signal}`);
     if (compile.code !== 0) {
       const first = firstLine(compile.stderr) ?? `exit status ${String(compile.code)}`;
-      if (ENVIRONMENT_FAILURE.test(compile.stderr)) return done("not_run", `the compiler's environment failed: ${first.slice(0, 300)}`);
+      if (environmentFailed(compile.stderr, files)) return done("not_run", `the compiler's environment failed: ${first.slice(0, 300)}`);
       return done("failed", `recompile failed: ${first.slice(0, 300)}`);
     }
     const unrecognised = traceControlProblem(compile.stderr, files, listed);

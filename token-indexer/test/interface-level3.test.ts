@@ -128,6 +128,15 @@ describe("[B] Level 3 with the stand-in compiler (C6)", () => {
     expect(await levelThree(files, listed, opts())).toMatchObject({ outcome: "failed", reason: "recompile failed: Exception: PiFixture.compact line 20 char 3: parse error" });
     useStandIn({ FAKE_COMPACT_EXIT: "1", FAKE_COMPACT_STDERR: "error constructing midnight data provider fetcher: builder error" });
     expect(await levelThree(files, listed, opts())).toMatchObject({ outcome: "not_run", reason: expect.stringMatching(/^the compiler's environment failed: error constructing midnight data provider/) });
+    // …but only on text the bundle cannot have written (audit 02 E2-F7): a missing module whose NAME
+    // holds such a phrase is echoed by the compiler — that is the bundle's failure, not the environment's.
+    const echoed = withFiles(bundle, { "src/PiFixture.compact": Buffer.from(bundle.get("src/PiFixture.compact")!.toString("utf8")
+      .replace("import CompactStandardLibrary;", 'import CompactStandardLibrary;\nimport "./data provider" prefix D_;')) });
+    useStandIn({
+      FAKE_COMPACT_TRACE: JSON.stringify(["looking for ./data provider.compact...not found"]),
+      FAKE_COMPACT_EXIT: "255", FAKE_COMPACT_STDERR: 'Exception: PiFixture.compact line 10 char 1: failed to locate file "./data provider.compact"',
+    });
+    expect(await levelThree(filesOf(echoed), listedOf(echoed), opts())).toMatchObject({ outcome: "failed", reason: expect.stringMatching(/^recompile failed: Exception: .*data provider/) });
 
     // --- only listed files are read: the search trace is confined, and it must be recognisable ----
     const outside = mkdtempSync(join(scratch, "outside-"));
