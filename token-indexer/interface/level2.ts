@@ -33,6 +33,10 @@ const MAX_TEXT = 128;
  *  claims; honest interfaces have a handful; `circuitsTruncated` says when more exist). Each kept
  *  circuit keeps every argument (E2-R7A). */
 export const MAX_SUMMARY_CIRCUITS = 500;
+/** Arguments, in all, of the circuits kept in the summary: every one is kept (E2-R7A), so their total
+ *  is bounded before expansion — beyond it Level 2 is `unchecked` (E2-R8A). Honest interfaces have a
+ *  few per circuit; this allows 500 circuits of 20. */
+export const MAX_SUMMARY_ARGUMENTS = 10_000;
 /** Deepest type rendered in a circuit summary. */
 const MAX_TYPE_DEPTH = 16;
 
@@ -285,33 +289,59 @@ export function jsonDepth(value: unknown, limit: number): number {
   return max;
 }
 
-/** `out/compiler/contract-info.json`, parsed as data, or why it cannot be. */
-export function readContractInfo(files: ReadonlyMap<string, Buffer>): { info: Record<string, unknown> } | { error: string } {
+/** Values (every array element, object member and scalar) a contract-info.json may hold: an honest
+ *  one has a few thousand; beyond this Level 2 is `unchecked` (a local limit, audit 02 E2-R8A). */
+export const MAX_CONTRACT_INFO_VALUES = 200_000;
+
+/** The depth and the number of values of a parsed JSON document, stopping once either limit is passed. */
+function jsonShape(value: unknown, maxDepth: number, maxValues: number): { depth: number; values: number } {
+  let depth = 0;
+  let values = 0;
+  const stack: [unknown, number][] = [[value, 1]];
+  while (stack.length > 0) {
+    const [v, d] = stack.pop()!;
+    values++;
+    if (values > maxValues) return { depth, values };
+    if (v === null || typeof v !== "object") continue;
+    if (d > depth) depth = d;
+    if (depth > maxDepth) return { depth, values };
+    for (const child of Array.isArray(v) ? v : Object.values(v)) stack.push([child, d + 1]);
+  }
+  return { depth, values };
+}
+
+/** `out/compiler/contract-info.json`, parsed as data, or why it cannot be (`error`: not a compiler's
+ *  contract description — Level 2 fails; `limit`: over a local limit — Level 2 is not run). */
+export function readContractInfo(files: ReadonlyMap<string, Buffer>): { info: Record<string, unknown> } | { error: string } | { limit: string } {
   const body = files.get("out/compiler/contract-info.json");
   if (body === undefined) return { error: "out/compiler/contract-info.json is missing or unreadable, so the published circuits cannot be checked" };
-  // `maxval` (a Uint's largest value) is written as exact decimal digits that a double cannot always
-  // hold (2^64 − 1); the reviver keeps them exact from the source text, for display. The reviver walk
-  // recurses, so a hostile deeply nested file overflows it — then the plain parse (iterative) is used
-  // and the depth check below refuses the file anyway.
   const text = body.toString("utf8");
-  let info: unknown;
+  // First a plain parse (iterative, fast) and one bounded walk for the shape: the exact-`maxval`
+  // reviver below costs ~1 µs per value, so an 8 MiB file of 4 000 000 tiny values would hold the
+  // event loop for seconds before any limit applied (audit 02 E2-R8A).
+  let plain: unknown;
   try {
-    info = JSON.parse(text, (key, value, context?: { source?: string }) =>
-      (key === "maxval" && typeof value === "number" && !Number.isSafeInteger(value)
-        && typeof context?.source === "string" && /^[0-9]+$/.test(context.source) ? BigInt(context.source) : value));
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      return { error: "out/compiler/contract-info.json is missing or unreadable, so the published circuits cannot be checked" };
-    }
-    info = JSON.parse(text);
-  }
-  if (jsonDepth(info, MAX_CONTRACT_INFO_DEPTH) > MAX_CONTRACT_INFO_DEPTH) {
-    return { error: `out/compiler/contract-info.json is nested deeper than ${MAX_CONTRACT_INFO_DEPTH} levels, so it is not a compiler's contract description` };
-  }
-  if (info === null || typeof info !== "object" || Array.isArray(info)) {
+    plain = JSON.parse(text);
+  } catch {
     return { error: "out/compiler/contract-info.json is missing or unreadable, so the published circuits cannot be checked" };
   }
-  return { info: info as Record<string, unknown> };
+  const shape = jsonShape(plain, MAX_CONTRACT_INFO_DEPTH, MAX_CONTRACT_INFO_VALUES);
+  if (shape.depth > MAX_CONTRACT_INFO_DEPTH) {
+    return { error: `out/compiler/contract-info.json is nested deeper than ${MAX_CONTRACT_INFO_DEPTH} levels, so it is not a compiler's contract description` };
+  }
+  if (shape.values > MAX_CONTRACT_INFO_VALUES) {
+    return { limit: `out/compiler/contract-info.json holds more than ${MAX_CONTRACT_INFO_VALUES} values, over this indexer's limit; Level 2 was not run` };
+  }
+  if (plain === null || typeof plain !== "object" || Array.isArray(plain)) {
+    return { error: "out/compiler/contract-info.json is missing or unreadable, so the published circuits cannot be checked" };
+  }
+  // `maxval` (a Uint's largest value) is written as exact decimal digits that a double cannot always
+  // hold (2^64 − 1); the reviver keeps them exact from the source text, for display. The shape is
+  // bounded above, so this parse is too.
+  const info = JSON.parse(text, (key, value, context?: { source?: string }) =>
+    (key === "maxval" && typeof value === "number" && !Number.isSafeInteger(value)
+      && typeof context?.source === "string" && /^[0-9]+$/.test(context.source) ? BigInt(context.source) : value)) as Record<string, unknown>;
+  return { info };
 }
 
 /** The `expectedVk` table exactly as compactc writes it: one line per circuit, name and sha256. */
@@ -418,11 +448,23 @@ export function levelTwo(files: ReadonlyMap<string, Buffer>, stateBytes: Uint8Ar
   };
 
   const contractInfo = readContractInfo(files);
+  if ("limit" in contractInfo) return empty("unchecked", contractInfo.limit);
   let circuitList: unknown[] = [];
   if ("info" in contractInfo && Array.isArray(contractInfo.info.circuits)) {
     circuitList = contractInfo.info.circuits;
     if (circuitList.length > MAX_CIRCUITS) {
       return empty("unchecked", `contract-info.json lists ${circuitList.length} circuits, over the ${MAX_CIRCUITS}-circuit limit; Level 2 was not run`);
+    }
+    // The summary keeps every argument of every kept circuit (E2-R7A), so their total is bounded
+    // BEFORE anything is expanded: 4 000 000 one-byte entries fit an 8 MiB file and would become a
+    // 96 MB summary (audit 02 E2-R8A). Beyond the budget this is a local limit, never a verdict.
+    let argumentsTotal = 0;
+    for (const c of circuitList.slice(0, MAX_SUMMARY_CIRCUITS)) {
+      const args = (c as { arguments?: unknown } | null)?.arguments;
+      if (Array.isArray(args)) argumentsTotal += args.length;
+    }
+    if (argumentsTotal > MAX_SUMMARY_ARGUMENTS) {
+      return empty("unchecked", `contract-info.json declares ${argumentsTotal} circuit arguments, over the ${MAX_SUMMARY_ARGUMENTS}-argument limit; Level 2 was not run`);
     }
   }
 

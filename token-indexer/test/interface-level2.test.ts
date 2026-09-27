@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import * as rt from "@midnight-ntwrk/compact-runtime";
 import { describe, expect, it } from "vitest";
 import {
-  IndexerStateSource, MAX_CIRCUITS, MAX_STATE_RESPONSE_BYTES, StateUnavailableError, jsonDepth, levelTwo, providerOrigin, providerRedactor, renderType, shippedKeys, wrapperBinding,
+  IndexerStateSource, MAX_CIRCUITS, MAX_CONTRACT_INFO_VALUES, MAX_STATE_RESPONSE_BYTES, MAX_SUMMARY_ARGUMENTS, StateUnavailableError, jsonDepth, levelTwo, providerOrigin, providerRedactor, renderType, shippedKeys, wrapperBinding,
 } from "../interface/level2.js";
 import { clone, fixtureHex, loadFixtureBundle, sha256Hex, verdict, type Bundle } from "./helpers/pi-fixture.js";
 
@@ -100,6 +100,26 @@ describe("[B] Level 2 (C5)", () => {
     ]);
     expect(withLong.witnesses.slice(-2)).toEqual([`${"w".repeat(128)}A`, `${"w".repeat(128)}B`]);
     expect(withLong.circuits.at(-1)!.arguments.map((a) => a.name)).toEqual(Array.from({ length: 17 }, (_v, i) => `a${i}`));
+    // …within an argument budget checked before anything is expanded (E2-R8A): 4 000 000 one-byte
+    // entries fit an 8 MiB file and would be a 96 MB summary — a local limit, `unchecked`, fast.
+    const flood = clone(bundle);
+    const info3 = JSON.parse(flood.get("out/compiler/contract-info.json")!.toString("utf8"));
+    info3.circuits[0].arguments = new Array(4_000_000).fill(0);
+    flood.set("out/compiler/contract-info.json", Buffer.from(JSON.stringify(info3)));
+    expect(flood.get("out/compiler/contract-info.json")!.length).toBeLessThan(8 * 1024 * 1024);
+    const t0 = Date.now();
+    const flooded = levelTwo(filesOf(flood), state);
+    expect(flooded).toMatchObject({ outcome: "unchecked", circuits: [] });
+    // The file's shape is bounded before the (slow, exact-maxval) reviver parse: fast.
+    expect(flooded.reason).toBe(`out/compiler/contract-info.json holds more than ${MAX_CONTRACT_INFO_VALUES} values, over this indexer's limit; Level 2 was not run`);
+    expect(Date.now() - t0).toBeLessThan(2_000);
+    // Under the value limit but over the argument budget: the budget, before any expansion.
+    const manyArgs = clone(bundle);
+    const info4 = JSON.parse(manyArgs.get("out/compiler/contract-info.json")!.toString("utf8"));
+    info4.circuits[0].arguments = new Array(10_001).fill(0);
+    manyArgs.set("out/compiler/contract-info.json", Buffer.from(JSON.stringify(info4)));
+    expect(levelTwo(filesOf(manyArgs), state)).toMatchObject({ outcome: "unchecked", reason: "contract-info.json declares 10001 circuit arguments, over the 10000-argument limit; Level 2 was not run" });
+    expect([MAX_SUMMARY_ARGUMENTS, MAX_CONTRACT_INFO_VALUES]).toEqual([10_000, 200_000]);
 
     // --- no key at all; a key that is a directory -----------------------------------------------
     const bare = new Map([...files].filter(([p]) => !p.startsWith("out/keys/")));
