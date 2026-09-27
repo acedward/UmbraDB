@@ -113,21 +113,22 @@ const IDENTIFIER = /[\p{L}\p{Nl}_$][\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}_$]*/uy;
 const NUMERAL = /[0-9][0-9A-Za-z_.]*/y;
 
 /**
- * The file named by the first quoted `import`/`include` of a Compact source, or null ([B]
- * `quotedDirective`): a string whose previous word is `import`, `include` or `from`, read the way
- * compactc's lexer reads comments and strings.
+ * Every file named by a quoted `import`/`include` of a Compact source, in order: a string whose
+ * previous word is `import`, `include` or `from`, read the way compactc's lexer reads comments and
+ * strings ([B] `quotedDirective`, which stops at the first). `limit` stops the scan early.
  */
-export function quotedDirective(text: string): string | null {
+export function quotedDirectives(text: string, limit = Infinity): string[] {
+  const found: string[] = [];
   let word: string | null = null;
   let i = 0;
-  while (i < text.length) {
+  while (i < text.length && found.length < limit) {
     const c = text[i];
     if (c === "/" && text[i + 1] === "/") { const end = text.indexOf("\n", i); i = end < 0 ? text.length : end; continue; }
     if (c === "/" && text[i + 1] === "*") { const end = text.indexOf("*/", i + 2); i = end < 0 ? text.length : end + 2; continue; }
     if (c === '"' || c === "'") {
       let j = i + 1;
       while (j < text.length && text[j] !== c) j += text[j] === "\\" ? 2 : 1;
-      if (word === "import" || word === "include" || word === "from") return text.slice(i + 1, j);
+      if (word === "import" || word === "include" || word === "from") found.push(text.slice(i + 1, j));
       word = null;
       i = j + 1;
       continue;
@@ -139,6 +140,39 @@ export function quotedDirective(text: string): string | null {
     const numeral = NUMERAL.exec(text);
     if (numeral !== null) { word = numeral[0]; i = NUMERAL.lastIndex; continue; }
     i++;
+  }
+  return found;
+}
+
+/** The file named by the first quoted `import`/`include` of a Compact source, or null ([B]
+ *  `quotedDirective`). */
+export function quotedDirective(text: string): string | null {
+  return quotedDirectives(text, 1)[0] ?? null;
+}
+
+/**
+ * The read boundary BEFORE the compiler runs (audit 02 E2-F6): why a listed source names, by a quoted
+ * `import` / `include`, a file that can only lie outside the bundle — an absolute path, a path whose
+ * `..` segments leave the bundle from the importing file's directory, or one holding a backslash (a
+ * bundle path never does, and an escape could spell a `/`) — or null. The compiler would read such
+ * a file (with the indexer's permissions) before `--trace-search` could show it; this refuses it
+ * first. Names inside the bundle that are not listed are harmless here: only listed files are in the
+ * private directory, so the compiler finds nothing there. The trace check after the compile stays,
+ * for anything this reading of the source does not see.
+ */
+export function outsideDirectiveProblem(files: ReadonlyMap<string, Buffer>, listed: readonly string[]): string | null {
+  const BUNDLE = "/bundle";
+  for (const file of listed) {
+    if (!file.endsWith(".compact")) continue;
+    const body = files.get(file);
+    if (body === undefined) continue;
+    for (const name of quotedDirectives(body.toString("utf8"))) {
+      const shown = JSON.stringify(name.length > 120 ? `${name.slice(0, 117)}...` : name);
+      const resolved = posix.resolve(posix.dirname(`${BUNDLE}/${file}`), name);
+      if (posix.isAbsolute(name) || name.includes("\\") || !resolved.startsWith(`${BUNDLE}/`)) {
+        return `${JSON.stringify(file)} imports or includes ${shown}, which is outside the bundle; the compiler was not run`;
+      }
+    }
   }
   return null;
 }
@@ -288,6 +322,9 @@ export async function levelThree(
   if (pathProblem(rel) !== null || !listed.includes(rel) || !files.has(rel)) {
     return done("failed", `compact.interface ${JSON.stringify(rel.slice(0, 200))} is not listed in index.json, so it is not part of the committed bundle`);
   }
+
+  const outside = outsideDirectiveProblem(files, listed);
+  if (outside !== null) return done("failed", outside);
 
   // --- the exact compiler, or not_run -----------------------------------------------------------
   const available = await compilerAvailable(opts.compactBin, version, opts);

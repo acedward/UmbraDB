@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { compilerAvailable, levelThree, quotedDirective, searchTraceProblem, type Level3Options } from "../interface/level3.js";
+import { compilerAvailable, levelThree, outsideDirectiveProblem, quotedDirective, quotedDirectives, searchTraceProblem, type Level3Options } from "../interface/level3.js";
 import { clone, compiler033, loadFixtureBundle, sha256Hex, verdict, withFiles, withPackage, type Bundle } from "./helpers/pi-fixture.js";
 
 /**
@@ -196,6 +196,25 @@ describe("[B] Level 3 with the stand-in compiler (C6)", () => {
       expect((await levelThree(filesOf(alias), listedOf(alias), opts())).reason, spelling).toMatch(why);
     }
     expect(calls()).toEqual([]);
+
+    // The read boundary BEFORE the compiler runs (audit 02 E2-F6): a listed source that names, by a
+    // quoted import/include, a file that can only lie outside the bundle is refused, and the compiler
+    // (which would read it with the indexer's permissions) is never started.
+    const source = bundle.get("src/PiFixture.compact")!.toString("utf8");
+    const withDirective = (line: string): Bundle =>
+      withFiles(bundle, { "src/PiFixture.compact": Buffer.from(source.replace("import CompactStandardLibrary;", `import CompactStandardLibrary;\n${line}`)) });
+    for (const line of ['include "/etc/umbradb-l3-outside";', 'import "../../../outside" prefix O_;', 'import "..\\/outside" prefix O_;']) {
+      const hostile = withDirective(line);
+      expect((await levelThree(filesOf(hostile), listedOf(hostile), opts())).reason, line)
+        .toMatch(/^"src\/PiFixture\.compact" imports or includes .*, which is outside the bundle; the compiler was not run$/);
+    }
+    expect(calls()).toEqual([]);
+    // Not refused here: a directive in a comment, and a relative name inside the bundle (the private
+    // directory holds only listed files, so the compiler finds nothing else there).
+    const commented = withDirective('// include "/etc/passwd";');
+    expect(outsideDirectiveProblem(filesOf(commented), listedOf(commented))).toBeNull();
+    expect(outsideDirectiveProblem(new Map([["src/a/B.compact", Buffer.from('import "../C";')]]), ["src/a/B.compact"])).toBeNull();
+    expect(quotedDirectives('import "a"; /* include "b" */ include "c"; export circuit f(): [] { "import"; }')).toEqual(["a", "c"]);
   }, 120_000);
 });
 
