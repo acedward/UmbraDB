@@ -600,7 +600,7 @@ describe("public-interface verification drain (C7)", () => {
     expect(await drainInterfaceVerifications(db.sql, db.schema, NET, { ...configured, now: () => at(2_000) })).toMatchObject({ attempted: 1, unchecked: 1 });
     const keyed = await row(db, 50);
     expect(keyed).toMatchObject({ status: "unchecked", level: 1, l1: "passed", l2: "not_run" });
-    expect(keyed.reason).toMatch(/^Level 2: the contract state is unavailable \(contractAction request failed: TypeError/);
+    expect(keyed.reason).toBe("Level 2: the contract state is unavailable (contractAction request failed (TypeError)); Level 2 was not run");
     expect(keyed.report!.observation.stateSource).toBe("indexer contractAction(address) at https://provider.invalid");
     const stored = JSON.stringify(keyed) + JSON.stringify(await history(db, 50));
     for (const secret of ["hunter2", "operator", "SECRETKEY", "SECRETQ", "SECRETF"]) expect(stored, secret).not.toContain(secret);

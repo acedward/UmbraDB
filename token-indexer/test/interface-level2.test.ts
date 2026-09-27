@@ -173,12 +173,24 @@ describe("[B] Level 2 (C5)", () => {
       const withUserinfo = new IndexerStateSource({ url: `http://operator:hunter2@127.0.0.1:${port}/v3/SECRETKEY/graphql?api_key=SECRETQ` });
       const refused = await withUserinfo.stateOf("cd".repeat(32)).then(() => null, (e: Error) => e);
       expect(refused).toBeInstanceOf(StateUnavailableError);
-      expect(refused!.message).toMatch(/^contractAction request failed: TypeError/);
+      expect(refused!.message).toBe("contractAction request failed (TypeError)");
       for (const secret of secrets) expect(refused!.message).not.toContain(secret);
       answer = { errors: [{ message: "invalid api_key SECRETQ for /v3/SECRETKEY/graphql?api_key=SECRETQ" }] };
       const echoed = await new IndexerStateSource({ url: `http://127.0.0.1:${port}/v3/SECRETKEY/graphql?api_key=SECRETQ` }).stateOf("cd".repeat(32)).then(() => null, (e: Error) => e);
-      expect(echoed!.message).toMatch(/GraphQL error: invalid api_key \[redacted\] for \[redacted\]/);
+      expect(echoed!.message).toBe("contractAction GraphQL error (1 error)"); // the provider's words are never quoted (E2-R3A)
       for (const secret of secrets) expect(echoed!.message).not.toContain(secret);
+      // …whatever the key's spelling: percent-encoded, short, or behind a malformed path escape.
+      for (const [keyed, echo] of [
+        [`http://127.0.0.1:${port}/graphql?api_key=LONG%2DSECRET%2DKEY123`, "invalid API key LONG%2DSECRET%2DKEY123"],
+        [`http://127.0.0.1:${port}/v3/ab12/graphql`, "invalid key ab12"],
+        [`http://127.0.0.1:${port}/prefix%ZZ/graphql?api_key=SECRETQUERYKEY`, "unknown SECRETQUERYKEY"],
+      ] as const) {
+        answer = { errors: [{ message: echo }] };
+        const e = await new IndexerStateSource({ url: keyed }).stateOf("cd".repeat(32)).then(() => null, (x: Error) => x);
+        expect(e!.message, keyed).toBe("contractAction GraphQL error (1 error)");
+      }
+      expect(providerRedactor("https://h.example/prefix%ZZ/graphql?api_key=SECRETQUERYKEY&k=abc%2Fdef")("x SECRETQUERYKEY abc%2Fdef abc/def"))
+        .toBe("x [redacted] [redacted] [redacted]");
       expect(providerRedactor("https://u:pw1@h.example/p/LONGSEGMENT?k=VALUE#FRAG")("at https://u:pw1@h.example/p/LONGSEGMENT?k=VALUE#FRAG: pw1 LONGSEGMENT VALUE FRAG"))
         .toBe("at [redacted]: [redacted] [redacted] [redacted] [redacted]");
       answer = { data: { contractAction: { address: "aa", state: state.toString("hex"), transaction: { hash: "ab".repeat(32), block: { height: 42 } } } } };
@@ -191,7 +203,7 @@ describe("[B] Level 2 (C5)", () => {
       answer = { data: { contractAction: null } };
       await expect(source.stateOf("cd".repeat(32))).rejects.toThrow(StateUnavailableError);
       answer = { errors: [{ message: "boom" }] };
-      await expect(source.stateOf("cd".repeat(32))).rejects.toThrow(/GraphQL error: boom/);
+      await expect(source.stateOf("cd".repeat(32))).rejects.toThrow(/^contractAction GraphQL error \(1 error\)$/);
       answer = { data: { contractAction: { state: "zz" } } };
       await expect(source.stateOf("cd".repeat(32))).rejects.toThrow(/not hex/);
       answer = "not json";

@@ -86,24 +86,32 @@ export const MAX_STATE_RESPONSE_BYTES = 64 * 1024 * 1024;
 
 /**
  * A function that removes from a diagnostic every piece of `url` that may be a credential — the URL
- * itself, its userinfo, its path and every long path segment, its query and every query value, its
- * fragment — before the text is stored in a (public) verification record. The fetch implementation
- * quotes the URL it was given in some errors (e.g. undici refuses a URL with userinfo and prints
- * it), and a provider's own error text may echo its key (audit 02 E2-R2B).
+ * itself, its userinfo, its path and every path segment, its query and every query value (as written
+ * AND decoded), its fragment — a second line of defence: the state source's diagnostics are built
+ * from safe categories only and quote no provider or exception text (audit 02 E2-R2B, E2-R3A).
  */
 export function providerRedactor(url: string): (text: string) => string {
   const pieces = new Set<string>([url]);
+  const decoded = (p: string): string => { try { return decodeURIComponent(p); } catch { return p; } };
+  const add = (p: string): void => { pieces.add(p); pieces.add(decoded(p)); };
   try {
     const u = new URL(url);
-    pieces.add(u.href);
-    for (const p of [u.username, u.password]) { pieces.add(p); pieces.add(decodeURIComponent(p)); }
-    if (u.pathname.length > 1) pieces.add(u.pathname);
-    for (const seg of u.pathname.split("/")) { if (seg.length >= 6) { pieces.add(seg); pieces.add(decodeURIComponent(seg)); } }
-    pieces.add(u.search); pieces.add(u.search.slice(1)); pieces.add(u.hash); pieces.add(u.hash.slice(1));
+    add(u.href); add(u.username); add(u.password); add(u.pathname); add(u.search); add(u.search.slice(1)); add(u.hash); add(u.hash.slice(1));
+    for (const seg of u.pathname.split("/")) add(seg);
+    for (const pair of u.search.slice(1).split("&")) { const eq = pair.indexOf("="); add(eq < 0 ? pair : pair.slice(eq + 1)); }
     for (const [, value] of u.searchParams) pieces.add(value);
   } catch { /* not a URL: only the text itself */ }
   const secrets = [...pieces].filter((p) => p.length >= 3).sort((a, b) => b.length - a.length);
   return (text: string): string => secrets.reduce((t, secret) => t.split(secret).join("[redacted]"), text);
+}
+
+/** An exception named by its class and code only — never its message, which may quote a URL. */
+function errorCategory(error: unknown): string {
+  const e = error as { name?: unknown; code?: unknown; cause?: { code?: unknown } };
+  const name = typeof e?.name === "string" && /^[A-Za-z]{1,40}$/.test(e.name) ? e.name : "Error";
+  const raw = e?.cause?.code ?? e?.code;
+  const code = typeof raw === "string" && /^[A-Z][A-Z0-9_]{1,39}$/.test(raw) ? ` ${raw}` : "";
+  return `${name}${code}`;
 }
 
 /** The public indexer's `contractAction(address) { state }` (indexer 4.4, GraphQL v4). */
@@ -143,9 +151,7 @@ export class IndexerStateSource implements StateSource {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (error) {
-      const e = error as Error & { code?: string; cause?: { code?: string } };
-      const code = e.cause?.code ?? e.code;
-      throw new StateUnavailableError(`contractAction request failed: ${e.name ?? "Error"}${code === undefined ? "" : ` ${code}`}: ${e.message}`);
+      throw new StateUnavailableError(`contractAction request failed (${errorCategory(error)})`);
     }
     if (!res.ok) throw new StateUnavailableError(`contractAction HTTP ${res.status}`);
     const text = await this.boundedText(res);
@@ -156,7 +162,8 @@ export class IndexerStateSource implements StateSource {
       throw new StateUnavailableError("contractAction response was not JSON");
     }
     if (Array.isArray(body?.errors) && body.errors.length > 0) {
-      throw new StateUnavailableError(`contractAction GraphQL error: ${body.errors.map((e) => e.message).join("; ")}`);
+      // The provider's own words are not quoted: they may echo its key (E2-R3A).
+      throw new StateUnavailableError(`contractAction GraphQL error (${body.errors.length} error${body.errors.length === 1 ? "" : "s"})`);
     }
     const action = body?.data?.contractAction;
     if (action === undefined || action === null) throw new StateUnavailableError(`the indexer knows no contract at ${address}`);
@@ -194,7 +201,7 @@ export class IndexerStateSource implements StateSource {
       }
     } catch (error) {
       if (error instanceof StateUnavailableError) throw error;
-      throw new StateUnavailableError(`contractAction response could not be read: ${(error as Error).message}`);
+      throw new StateUnavailableError(`contractAction response could not be read (${errorCategory(error)})`);
     }
     return Buffer.concat(chunks).toString("utf8");
   }
