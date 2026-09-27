@@ -90,11 +90,16 @@ describe("[B] Level 2 (C5)", () => {
     const longNames = clone(bundle);
     const info2 = JSON.parse(longNames.get("out/compiler/contract-info.json")!.toString("utf8"));
     for (const tail of ["A", "B"]) info2.circuits.push({ name: `${"x".repeat(128)}${tail}`, pure: true, arguments: [{ name: `${"y".repeat(200)}${tail}`, type: { "type-name": "Field" } }], "result-type": { "type-name": "Boolean" } });
+    // …witness names too (E2-R7B/INFO), and every argument of a long signature (E2-R7A).
+    info2.witnesses = [...(info2.witnesses ?? []), { name: `${"w".repeat(128)}A` }, { name: `${"w".repeat(128)}B` }];
+    info2.circuits.push({ name: "manyArgs", pure: true, arguments: Array.from({ length: 17 }, (_v, i) => ({ name: `a${i}`, type: { "type-name": "Field" } })), "result-type": { "type-name": "Boolean" } });
     longNames.set("out/compiler/contract-info.json", Buffer.from(JSON.stringify(info2)));
     const withLong = levelTwo(filesOf(longNames), state);
-    expect(withLong.circuits.slice(-2).map((c) => [c.name, c.arguments[0]!.name])).toEqual([
+    expect(withLong.circuits.slice(-3, -1).map((c) => [c.name, c.arguments[0]!.name])).toEqual([
       [`${"x".repeat(128)}A`, `${"y".repeat(200)}A`], [`${"x".repeat(128)}B`, `${"y".repeat(200)}B`],
     ]);
+    expect(withLong.witnesses.slice(-2)).toEqual([`${"w".repeat(128)}A`, `${"w".repeat(128)}B`]);
+    expect(withLong.circuits.at(-1)!.arguments.map((a) => a.name)).toEqual(Array.from({ length: 17 }, (_v, i) => `a${i}`));
 
     // --- no key at all; a key that is a directory -----------------------------------------------
     const bare = new Map([...files].filter(([p]) => !p.startsWith("out/keys/")));

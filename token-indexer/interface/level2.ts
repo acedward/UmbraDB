@@ -29,10 +29,10 @@ export const MAX_CONTRACT_INFO_DEPTH = 64;
 export const MAX_CIRCUITS = 10_000;
 /** Longest rendered TYPE kept in a circuit summary (a display label; names are kept exact — E2-R6A). */
 const MAX_TEXT = 128;
-/** Circuits and arguments per circuit kept in the summary (it is stored with every result, so it
- *  stays small whatever a bundle claims; honest interfaces have a handful). */
+/** Circuits kept in the summary (it is stored with every result, so it stays small whatever a bundle
+ *  claims; honest interfaces have a handful; `circuitsTruncated` says when more exist). Each kept
+ *  circuit keeps every argument (E2-R7A). */
 export const MAX_SUMMARY_CIRCUITS = 500;
-const MAX_SUMMARY_ARGUMENTS = 16;
 /** Deepest type rendered in a circuit summary. */
 const MAX_TYPE_DEPTH = 16;
 
@@ -464,7 +464,9 @@ export function levelTwo(files: ReadonlyMap<string, Buffer>, stateBytes: Uint8Ar
         // display labels, are clipped.
         name,
         pure: typeof c.pure === "boolean" ? c.pure : null,
-        arguments: (Array.isArray(c.arguments) ? c.arguments : []).slice(0, MAX_SUMMARY_ARGUMENTS).map((a: unknown) => ({
+        // Every argument, in order: a signature is what a consumer calls, so it is never cut short
+        // (spec US1 scenario 4; audit 02 E2-R7A) — the contract-info file cap bounds it.
+        arguments: (Array.isArray(c.arguments) ? c.arguments : []).map((a: unknown) => ({
           name: String((a as { name?: unknown } | null)?.name ?? ""),
           type: clip(renderType((a as { type?: unknown } | null)?.type, maxval)),
         })),
