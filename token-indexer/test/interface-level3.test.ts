@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -139,6 +139,18 @@ describe("[B] Level 3 with the stand-in compiler (C6)", () => {
     // An environment failure worded like nothing known is still the environment's when the probe fails.
     useStandIn({ FAKE_COMPACT_EXIT: "1", FAKE_COMPACT_STDERR: "Error: something unexpected", FAKE_COMPACT_PROBE_EXIT: "1" });
     expect(await levelThree(files, listed, opts())).toMatchObject({ outcome: "not_run" });
+    // The probe cannot even be prepared (E2-R3C: e.g. the disk the bundle's compile filled): Level 3 is
+    // not_run — levelThree never throws, so the passed Levels 1-2 are kept — and nothing is left behind.
+    expect(await probeCompile(STAND_IN, "0.34.0", [], { tmpRoot: join(scratch, "no-such-dir"), timeoutMs: 5_000 })).toMatchObject({ ok: false, reason: expect.stringMatching(/^the probe could not be prepared \(ENOENT\)$/) });
+    const locked = mkdtempSync(join(scratch, "locked-"));
+    try {
+      useStandIn({ FAKE_COMPACT_EXIT: "255", FAKE_COMPACT_STDERR: "Exception: out of space", FAKE_COMPACT_LOCK_DIR: locked });
+      const r = await levelThree(files, listed, opts({ tmpRoot: locked }));
+      expect(r).toMatchObject({ outcome: "not_run", reason: expect.stringMatching(/^the compiler's environment failed: Exception: out of space \(a probe compile of a known-good contract failed too: the probe could not be prepared \(EACCES\)\)$/) });
+    } finally {
+      chmodSync(locked, 0o755);
+      rmSync(locked, { recursive: true, force: true });
+    }
     // A diagnostic worded like an environment failure (a source file named zkparams, however its name
     // was spelled in package.json) is the bundle's when the probe compiles.
     useStandIn({ FAKE_COMPACT_EXIT: "255", FAKE_COMPACT_STDERR: "Exception: zkparams.compact line 1 char 1: parse error" });

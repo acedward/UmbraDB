@@ -298,24 +298,40 @@ export circuit probe(): [] {
 }
 `;
 
-/** Compiles {@link PROBE_SOURCE} with keys; ok when the compiler exits 0 and wrote the probe's key. */
+/** Compiles {@link PROBE_SOURCE} with keys; ok when the compiler exits 0 and wrote the probe's key.
+ *  Never throws: a probe that cannot even be prepared (its directory or source cannot be written —
+ *  e.g. the disk is full, which is what may have failed the bundle's compile too) is not ok, so Level
+ *  3 is `not_run` and the passed Levels 1–2 are kept (audit 02 E2-R3C). */
 export async function probeCompile(
   compactBin: string, version: string, flags: readonly string[], opts: { tmpRoot?: string; timeoutMs: number },
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const dir = mkdtempSync(join(opts.tmpRoot ?? tmpdir(), "umbradb-l3-probe-"));
+  let dir: string | undefined;
   try {
-    writeFileSync(join(dir, "umbradb-l3-probe.compact"), PROBE_SOURCE);
+    try {
+      dir = mkdtempSync(join(opts.tmpRoot ?? tmpdir(), "umbradb-l3-probe-"));
+      writeFileSync(join(dir, "umbradb-l3-probe.compact"), PROBE_SOURCE);
+    } catch (error) {
+      return { ok: false, reason: `the probe could not be prepared (${(error as NodeJS.ErrnoException).code ?? (error as Error).message})` };
+    }
     const r = await run(compactBin, ["compile", `+${version}`, ...flags, join(dir, "umbradb-l3-probe.compact"), join(dir, "out")], {
       cwd: dir, env: compilerEnv(), timeoutMs: opts.timeoutMs, maxOutputBytes: 1024 * 1024,
     });
     if (r.spawnError !== undefined) return { ok: false, reason: `${compactBin} cannot be run (${r.spawnError.code ?? r.spawnError.message})` };
     if (r.timedOut) return { ok: false, reason: `it did not finish within ${opts.timeoutMs} ms` };
-    const key = (() => { try { return statSync(join(dir, "out", "keys", "probe.verifier")).isFile(); } catch { return false; } })();
+    const key = (() => { try { return statSync(join(dir!, "out", "keys", "probe.verifier")).isFile(); } catch { return false; } })();
     if (r.code === 0 && key) return { ok: true };
     return { ok: false, reason: (firstLine(r.stderr) ?? `exit status ${String(r.code)}${r.signal === null ? "" : `, ${r.signal}`}`).slice(0, 300) };
+  } catch (error) {
+    return { ok: false, reason: `the probe failed (${(error as NodeJS.ErrnoException).code ?? (error as Error).message})` };
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeQuietly(dir);
   }
+}
+
+/** Removes a private directory; a failure to clean up never turns a result into an exception. */
+function removeQuietly(dir: string | undefined): void {
+  if (dir === undefined) return;
+  try { rmSync(dir, { recursive: true, force: true }); } catch { /* left for the OS's temp cleaning */ }
 }
 
 /** The Compact CLI's environment: the caller's, without `COMPACT_PATH` (it belongs to the consumer,
@@ -350,6 +366,22 @@ export async function compilerAvailable(compactBin: string, version: string, opt
  * lists). Never throws for a check that does not pass; the private directories are always removed.
  */
 export async function levelThree(
+  files: ReadonlyMap<string, Buffer>, listed: readonly string[], options: Partial<Level3Options> = {},
+): Promise<Level3Result> {
+  const started = Date.now();
+  try {
+    return await levelThreeUnguarded(files, listed, options);
+  } catch (error) {
+    // Anything unexpected in Level 3 is Level 3's own `not_run`: it never takes the passed Levels 1–2
+    // with it (FR-013 "never blocks"; audit 02 E2-R3C).
+    return {
+      outcome: "not_run", reason: `Level 3 could not be completed (${(error as NodeJS.ErrnoException).code ?? (error as Error).message})`,
+      compiler: { version: null, flags: [], installed: null }, rows: [], generatedKeys: [], durationMs: Date.now() - started,
+    };
+  }
+}
+
+async function levelThreeUnguarded(
   files: ReadonlyMap<string, Buffer>, listed: readonly string[], options: Partial<Level3Options> = {},
 ): Promise<Level3Result> {
   const opts: Level3Options = { ...DEFAULT_LEVEL3_OPTIONS, ...options };
@@ -480,7 +512,7 @@ export async function levelThree(
       rows, generatedKeys,
     );
   } finally {
-    if (root !== undefined) rmSync(root, { recursive: true, force: true });
-    if (out !== undefined) rmSync(out, { recursive: true, force: true });
+    removeQuietly(root);
+    removeQuietly(out);
   }
 }
