@@ -167,7 +167,8 @@ describe("public-interface API (C8)", () => {
     expect(ia.history).toHaveLength(1);
     expect(ia.history[0]).toMatchObject({ eventId: 10, role: "historical", status: "verified", level: 3, levels: { l1: "passed", l2: "passed", l3: "passed" }, url: goodUrl, nextCheckAt: null });
     expectInterfaceOrigin(ia.origin, 20);
-    expect(ia.origin.evidence).toMatchObject({ status: "failed", level: 0, url: badUrl, blockHeight: 101 });
+    expect(ia.origin.evidence).toMatchObject({ status: "failed", level: 0, blockHeight: 101 });
+    expect(Object.keys(ia.origin.evidence)).not.toContain("url"); // the URL is the value's own field, once (E2-R4B)
     expectInterfaceOrigin(ia.history[0].origin, 10);
     expect(ia.report).toMatchObject({ status: "failed", completedLevel: 0, contract: A });
 
@@ -215,8 +216,11 @@ describe("public-interface API (C8)", () => {
     // --- Token.interface (additive) and the contract route ----------------------------------------
     const tokens = await get("/v1/tokens");
     const minted = tokens.items.find((t: any) => t.address === A); // eslint-disable-line @typescript-eslint/no-explicit-any
-    expect(minted).toMatchObject({ kind: 0, status: "observed", interface: { eventId: 20, status: "failed", level: 0, levels: { l1: "failed" }, url: badUrl } });
-    expectInterfaceOrigin(minted.interface.origin, 20);
+    expect(minted).toMatchObject({ kind: 0, status: "observed", interface: { eventId: 20, status: "failed", level: 0, levels: { l1: "failed" } } });
+    // Spec §5 "interface {status, level}": no URL per token (a contract may have any number of tokens,
+    // a URL up to 262 112 bytes — E2-R4B); the URL is on /interface.
+    expect(Object.keys(minted.interface)).not.toContain("url");
+    expectItemOrigin(minted.interface.origin, 20);
     // A token's `origins` keep exactly their 00024-01 fields: the interface carries its own origin.
     expect(Object.keys(minted.origins).sort()).toEqual(["color", "decimals", "metadata", "mints", "name", "status", "symbol", "tokenUri"]);
     for (const t of tokens.items.filter((t: any) => t.status === "builtin")) expect(t.interface).toBeNull(); // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -261,7 +265,10 @@ describe("public-interface API (C8)", () => {
       expect(res.status).toBe(200);
       const body = await res.text();
       expect(body.length).toBeLessThan(3_000_000);
-      expect(body.split(longUrl).length - 1).toBe(2); // the interface's `url` and its own origin's evidence
+      expect(body.split(longUrl).length - 1).toBe(1); // the interface's own `url`, once (E2-R4B)
+      // …and per token: none. The contract route and its tokens cite the interface without its URL.
+      const contract = await (await fetch(`${base}/v1/contracts/${E}`)).text();
+      expect(contract.includes(longUrl)).toBe(false);
       const big = JSON.parse(body);
       expect(big.files).toHaveLength(1000);
       expect(big.keys).toHaveLength(998);

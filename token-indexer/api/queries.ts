@@ -158,7 +158,6 @@ export interface InterfaceEvidenceJson {
   segment: number;
   parts: number;
   phase: string;
-  url: string | null;
   commitment: string;
   status: string;
   level: number;
@@ -166,14 +165,16 @@ export interface InterfaceEvidenceJson {
   checkedAt: string | null;
 }
 
-/** `Token.interface` and `GET /v1/contracts/:address` `interface`. */
+/** `Token.interface` and `GET /v1/contracts/:address` `interface` (spec §5: "`interface {status,
+ *  level}`"): no URL — a contract can have any number of tokens and a URL may be 262 112 bytes, so a
+ *  per-token copy made one contract's response hundreds of megabytes (audit 02 E2-R4B); the URL is on
+ *  `GET /v1/contracts/:address/interface`. */
 export interface InterfaceSummaryJson {
   eventId: number;
   status: string;
   level: number;
   levels: InterfaceLevelsJson;
   l3Reason: string | null;
-  url: string | null;
   checkedAt: string | null;
   verifiedUntil: string | null;
   origin: OriginJson;
@@ -229,11 +230,13 @@ interface InterfaceEventRow {
 
 const iso = (d: Date | null): string | null => (d === null ? null : d.toISOString());
 
+/** The evidence of an interface value: the publication by its identity and place, and what its last
+ *  check established. Not the URL: the value itself carries it where it is served, once (E2-R4B). */
 function interfaceEvidence(row: InterfaceEventRow): InterfaceEvidenceJson {
   return {
     eventId: Number(row.event_id), partEventIds: row.part_event_ids.map(Number), txHash: row.tx_hash.toString("hex"),
     blockHeight: Number(row.block_height), txPosition: row.tx_position, segment: row.segment, parts: row.parts,
-    phase: row.phase, url: row.url, commitment: row.commitment.toString("hex"), status: row.status, level: row.level,
+    phase: row.phase, commitment: row.commitment.toString("hex"), status: row.status, level: row.level,
     levels: { l1: row.l1, l2: row.l2, l3: row.l3 }, checkedAt: iso(row.checked_at),
   };
 }
@@ -257,8 +260,8 @@ const interfaceItemOrigin = (row: InterfaceEventRow): OriginJson => ({
 function toInterfaceSummary(row: InterfaceEventRow): InterfaceSummaryJson {
   return {
     eventId: Number(row.event_id), status: row.status, level: row.level, levels: { l1: row.l1, l2: row.l2, l3: row.l3 },
-    l3Reason: row.l3_reason, url: row.url, checkedAt: iso(row.checked_at), verifiedUntil: iso(row.verified_until),
-    origin: interfaceOrigin(row),
+    l3Reason: row.l3_reason, checkedAt: iso(row.checked_at), verifiedUntil: iso(row.verified_until),
+    origin: interfaceItemOrigin(row),
   };
 }
 

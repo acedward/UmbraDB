@@ -580,13 +580,19 @@ The indexer reads the **Public Interfaces for Compact Contracts** draft ([B],
 | `GET /v1/interfaces?status=&limit&cursor` | contracts with an interface, newest current publication first |
 | `GET /v1/contracts/:address/interface` | the current publication: status, level, levels, reason, commitment, URL, package evidence, state, compiler/build, files, keys, circuits (with argument types), the verification record (`report`), its check history, and every older publication (`history`); 404 if none |
 | `GET /v1/contracts/:address/interface/events?limit&cursor` | every publication of the contract, newest first, each with its role (`current` / `historical`) and its own last result |
-| `Token.interface`, `GET /v1/contracts/:address` `interface` (additive) | the current interface's status and levels, or `null` |
+| `Token.interface`, `GET /v1/contracts/:address` `interface` (additive) | the current interface's status and levels (event id, L3 reason, checked / verified-until times; no URL), or `null` |
 | `GET /internal/status` (exists) | `counters` gains `interfaces`, `interfacePublications`, and the current publications by status: `interfacesVerified`, `interfacesFailed`, `interfacesWaiting` (pending or stale), `interfacesUnavailable` (unchecked or unfetchable), `interfacesUnreachable` — the five add up to `interfaces` |
 
-Every interface value carries `origin: { origin: "public-interface", evidence }` — the publication
-(event ids, transaction, block, segment, parts, phase, URL, commitment) and what its last check
-established (status, levels, checked at). A token's `origins` are unchanged: `Token.interface`
-carries its own origin.
+Every interface value carries `origin: { origin: "public-interface", evidence }`. On a publication
+(`/v1/interfaces`, `/interface`, `/interface/events`, `history`) the evidence is the publication —
+event ids, transaction, block, segment, parts, phase, commitment — and what its last check
+established (status, levels, checked at); its URL is the value's own `url` field, given once. On an
+ITEM of an interface (each of `files`, `keys`, `circuits`) and on `Token.interface` / a contract's
+`interface`, the evidence cites the publication by identity only (event id, transaction, commitment,
+status, levels, checked at): the full publication and its URL are on
+`GET /v1/contracts/:address/interface` — so no response grows with the URL (up to 262 112 bytes)
+times the number of items or tokens. A token's `origins` are unchanged: `Token.interface` carries its
+own origin.
 
 ## Configuration and CLI
 
