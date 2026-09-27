@@ -177,6 +177,25 @@ describe("[B] Level 3 with the stand-in compiler (C6)", () => {
     useStandIn({ FAKE_COMPACT_OUTPUT: output(v3) });
     await levelThree(filesOf(v3), listedOf(v3), opts());
     expect(calls()[1]!.args.slice(0, 4)).toEqual(["compile", "+0.34.0", "--trace-search", "--feature-zkir-v3"]);
+
+    // compact.interface is resolved as the reference resolves it (audit 02 E2-F5): equivalent
+    // spellings of the listed source compile it; an absolute path or one leaving the bundle is refused
+    // before the compiler runs, and nothing is rewritten (a backslash is an ordinary character).
+    for (const spelling of ["src/./PiFixture.compact", "./src/PiFixture.compact", "src/../src/PiFixture.compact"]) {
+      const alias = withPackage(bundle, (pkg) => { pkg.compact.interface = spelling; });
+      useStandIn({ FAKE_COMPACT_OUTPUT: output(alias) });
+      expect(await levelThree(filesOf(alias), listedOf(alias), opts()), spelling).toMatchObject({ outcome: "passed" });
+      expect(calls()[1]!.args.at(-2)!.endsWith("/src/PiFixture.compact"), spelling).toBe(true);
+    }
+    useStandIn({ FAKE_COMPACT_OUTPUT: output(bundle) });
+    for (const [spelling, why] of [
+      ["/bundle/src/PiFixture.compact", /resolves outside the bundle/], ["src/../../PiFixture.compact", /resolves outside the bundle/],
+      ["src\\PiFixture.compact", /compact\.interface "src\\\\PiFixture\.compact" is not listed/],
+    ] as const) {
+      const alias = withPackage(bundle, (pkg) => { pkg.compact.interface = spelling; });
+      expect((await levelThree(filesOf(alias), listedOf(alias), opts())).reason, spelling).toMatch(why);
+    }
+    expect(calls()).toEqual([]);
   }, 120_000);
 });
 

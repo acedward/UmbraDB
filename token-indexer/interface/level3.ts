@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, posix, relative, resolve, sep } from "node:path";
 import { pathProblem, sha256Hex } from "./commitment.js";
 
 /**
@@ -275,9 +275,18 @@ export async function levelThree(
   compiler.flags = flags as string[];
   const source = pinned.interface;
   if (typeof source !== "string" || source.length === 0) return done("failed", "bundle package.json does not point at a published source (compact.interface)");
-  const rel = source.split("\\").join("/").replace(/^\.\//, "");
+  // Resolved as the reference resolves it (`src/verify.mjs` levelThree: `resolve(root, interface)`,
+  // inside the bundle, then relative to it and listed), so `src/./X.compact`, `./src/X.compact` and
+  // `src/../src/X.compact` name the same listed file (audit 02 E2-F5). Nothing is rewritten: a
+  // backslash is an ordinary character on POSIX, and an absolute path is outside any bundle.
+  const BUNDLE = "/bundle";
+  const resolved = posix.resolve(BUNDLE, source);
+  if (posix.isAbsolute(source) || !resolved.startsWith(`${BUNDLE}/`)) {
+    return done("failed", `compact.interface ${JSON.stringify(source.slice(0, 200))} resolves outside the bundle`);
+  }
+  const rel = posix.relative(BUNDLE, resolved);
   if (pathProblem(rel) !== null || !listed.includes(rel) || !files.has(rel)) {
-    return done("failed", `compact.interface ${JSON.stringify(source.slice(0, 200))} is not listed in index.json, so it is not part of the committed bundle`);
+    return done("failed", `compact.interface ${JSON.stringify(rel.slice(0, 200))} is not listed in index.json, so it is not part of the committed bundle`);
   }
 
   // --- the exact compiler, or not_run -----------------------------------------------------------
