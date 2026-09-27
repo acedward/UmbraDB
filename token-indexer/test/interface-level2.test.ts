@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import * as rt from "@midnight-ntwrk/compact-runtime";
 import { describe, expect, it } from "vitest";
 import {
-  IndexerStateSource, MAX_CIRCUITS, MAX_STATE_RESPONSE_BYTES, StateUnavailableError, jsonDepth, levelTwo, providerOrigin, renderType, shippedKeys, wrapperBinding,
+  IndexerStateSource, MAX_CIRCUITS, MAX_STATE_RESPONSE_BYTES, StateUnavailableError, jsonDepth, levelTwo, providerOrigin, providerRedactor, renderType, shippedKeys, wrapperBinding,
 } from "../interface/level2.js";
 import { clone, fixtureHex, loadFixtureBundle, sha256Hex, verdict, type Bundle } from "./helpers/pi-fixture.js";
 
@@ -166,6 +166,22 @@ describe("[B] Level 2 (C5)", () => {
       const keyed = new IndexerStateSource({ url: "https://user:hunter2@provider.example:8443/v3/SECRETKEY/graphql?api_key=SECRETQ#SECRETF" });
       expect(keyed.description).toBe("indexer contractAction(address) at https://provider.example:8443");
       for (const secret of ["hunter2", "user", "SECRETKEY", "SECRETQ", "SECRETF", "graphql"]) expect(keyed.description).not.toContain(secret);
+      // …and no diagnostic it produces carries one either (E2-R2B): fetch refuses a URL with
+      // userinfo in an error that QUOTES the URL, and a provider's error text may echo its key.
+      const port = (server.address() as AddressInfo).port;
+      const secrets = ["hunter2", "operator", "SECRETKEY", "SECRETQ"];
+      const withUserinfo = new IndexerStateSource({ url: `http://operator:hunter2@127.0.0.1:${port}/v3/SECRETKEY/graphql?api_key=SECRETQ` });
+      const refused = await withUserinfo.stateOf("cd".repeat(32)).then(() => null, (e: Error) => e);
+      expect(refused).toBeInstanceOf(StateUnavailableError);
+      expect(refused!.message).toMatch(/^contractAction request failed: TypeError/);
+      for (const secret of secrets) expect(refused!.message).not.toContain(secret);
+      answer = { errors: [{ message: "invalid api_key SECRETQ for /v3/SECRETKEY/graphql?api_key=SECRETQ" }] };
+      const echoed = await new IndexerStateSource({ url: `http://127.0.0.1:${port}/v3/SECRETKEY/graphql?api_key=SECRETQ` }).stateOf("cd".repeat(32)).then(() => null, (e: Error) => e);
+      expect(echoed!.message).toMatch(/GraphQL error: invalid api_key \[redacted\] for \[redacted\]/);
+      for (const secret of secrets) expect(echoed!.message).not.toContain(secret);
+      expect(providerRedactor("https://u:pw1@h.example/p/LONGSEGMENT?k=VALUE#FRAG")("at https://u:pw1@h.example/p/LONGSEGMENT?k=VALUE#FRAG: pw1 LONGSEGMENT VALUE FRAG"))
+        .toBe("at [redacted]: [redacted] [redacted] [redacted] [redacted]");
+      answer = { data: { contractAction: { address: "aa", state: state.toString("hex"), transaction: { hash: "ab".repeat(32), block: { height: 42 } } } } };
       expect(providerOrigin("not a url")).toBe("an unparseable URL");
       expect(providerOrigin("file:///etc/indexer.sock")).toBe("a file: URL");
       const obs = await source.stateOf("cd".repeat(32));

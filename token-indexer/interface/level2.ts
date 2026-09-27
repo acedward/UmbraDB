@@ -84,14 +84,38 @@ export function providerOrigin(url: string): string {
  *  (a local limit — audit 02 E2-F8), never a buffer of whatever the provider sends. */
 export const MAX_STATE_RESPONSE_BYTES = 64 * 1024 * 1024;
 
+/**
+ * A function that removes from a diagnostic every piece of `url` that may be a credential — the URL
+ * itself, its userinfo, its path and every long path segment, its query and every query value, its
+ * fragment — before the text is stored in a (public) verification record. The fetch implementation
+ * quotes the URL it was given in some errors (e.g. undici refuses a URL with userinfo and prints
+ * it), and a provider's own error text may echo its key (audit 02 E2-R2B).
+ */
+export function providerRedactor(url: string): (text: string) => string {
+  const pieces = new Set<string>([url]);
+  try {
+    const u = new URL(url);
+    pieces.add(u.href);
+    for (const p of [u.username, u.password]) { pieces.add(p); pieces.add(decodeURIComponent(p)); }
+    if (u.pathname.length > 1) pieces.add(u.pathname);
+    for (const seg of u.pathname.split("/")) { if (seg.length >= 6) { pieces.add(seg); pieces.add(decodeURIComponent(seg)); } }
+    pieces.add(u.search); pieces.add(u.search.slice(1)); pieces.add(u.hash); pieces.add(u.hash.slice(1));
+    for (const [, value] of u.searchParams) pieces.add(value);
+  } catch { /* not a URL: only the text itself */ }
+  const secrets = [...pieces].filter((p) => p.length >= 3).sort((a, b) => b.length - a.length);
+  return (text: string): string => secrets.reduce((t, secret) => t.split(secret).join("[redacted]"), text);
+}
+
 /** The public indexer's `contractAction(address) { state }` (indexer 4.4, GraphQL v4). */
 export class IndexerStateSource implements StateSource {
   readonly description: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   private readonly maxResponseBytes: number;
+  private readonly redact: (text: string) => string;
 
   constructor(private readonly opts: { url: string; fetchImpl?: typeof fetch; timeoutMs?: number; maxResponseBytes?: number }) {
+    this.redact = providerRedactor(opts.url);
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.timeoutMs = opts.timeoutMs ?? 20_000;
     this.maxResponseBytes = opts.maxResponseBytes ?? MAX_STATE_RESPONSE_BYTES;
@@ -99,6 +123,17 @@ export class IndexerStateSource implements StateSource {
   }
 
   async stateOf(address: string): Promise<StateObservation> {
+    try {
+      return await this.observe(address);
+    } catch (error) {
+      // Every message this source produces is stored in a public record: nothing of the configured
+      // URL survives in it (E2-R2B).
+      if (error instanceof StateUnavailableError) throw new StateUnavailableError(this.redact(error.message));
+      throw error;
+    }
+  }
+
+  private async observe(address: string): Promise<StateObservation> {
     let res: Response;
     try {
       res = await this.fetchImpl(this.opts.url, {
@@ -108,7 +143,9 @@ export class IndexerStateSource implements StateSource {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (error) {
-      throw new StateUnavailableError(`contractAction request failed: ${(error as Error).message}`);
+      const e = error as Error & { code?: string; cause?: { code?: string } };
+      const code = e.cause?.code ?? e.code;
+      throw new StateUnavailableError(`contractAction request failed: ${e.name ?? "Error"}${code === undefined ? "" : ` ${code}`}: ${e.message}`);
     }
     if (!res.ok) throw new StateUnavailableError(`contractAction HTTP ${res.status}`);
     const text = await this.boundedText(res);

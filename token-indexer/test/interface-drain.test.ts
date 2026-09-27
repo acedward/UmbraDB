@@ -588,17 +588,22 @@ describe("public-interface verification drain (C7)", () => {
     expect(r.next_check_at).toEqual(at(1_000 + 30_000)); // the retry backoff, not the front of the queue
     expect(await row(db, 40)).toMatchObject({ status: "verified", level: 3 });
 
-    // No provider credential is stored or served (E2-F4): the configured INDEXER_HTTP may carry one in
-    // its userinfo, path, query or fragment; the record names the state provider by its origin only.
+    // No provider credential is stored or served (E2-F4, E2-R2B): the configured INDEXER_HTTP may
+    // carry one in its userinfo, path, query or fragment. A publication that passes Level 1 reaches
+    // the state request, which fetch refuses in an error QUOTING that URL: the record names the
+    // provider by its origin only and the reason carries none of it.
     await db.sql.unsafe(`DROP TRIGGER refuse_verified ON ${db.schema}.public_interface_events`);
     const { DEFAULT_INTERFACE_CONFIG } = await import("../config.js");
     const configured = drainDepsFromConfig({ ...DEFAULT_INTERFACE_CONFIG, allowPrivateHosts: true },
       "https://operator:hunter2@provider.invalid/v3/SECRETKEY/graphql?api_key=SECRETQ#SECRETF");
-    await chain.scan(db, [publish("b5".repeat(32), 104, 50, payloadFor(bundle, serveAt("/pi-bad/", wrongHash(bundle))))]);
-    expect(await drainInterfaceVerifications(db.sql, db.schema, NET, { ...configured, now: () => at(2_000) })).toMatchObject({ attempted: 1, failed: 1 });
+    await chain.scan(db, [publish("b5".repeat(32), 104, 50, payloadFor(bundle, goodUrl))]);
+    expect(await drainInterfaceVerifications(db.sql, db.schema, NET, { ...configured, now: () => at(2_000) })).toMatchObject({ attempted: 1, unchecked: 1 });
     const keyed = await row(db, 50);
+    expect(keyed).toMatchObject({ status: "unchecked", level: 1, l1: "passed", l2: "not_run" });
+    expect(keyed.reason).toMatch(/^Level 2: the contract state is unavailable \(contractAction request failed: TypeError/);
     expect(keyed.report!.observation.stateSource).toBe("indexer contractAction(address) at https://provider.invalid");
-    for (const secret of ["hunter2", "operator", "SECRETKEY", "SECRETQ", "SECRETF"]) expect(JSON.stringify(keyed.report)).not.toContain(secret);
+    const stored = JSON.stringify(keyed) + JSON.stringify(await history(db, 50));
+    for (const secret of ["hunter2", "operator", "SECRETKEY", "SECRETQ", "SECRETF"]) expect(stored, secret).not.toContain(secret);
   }, 180_000);
 });
 
