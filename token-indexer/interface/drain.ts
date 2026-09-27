@@ -3,7 +3,7 @@ import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { DEFAULT_RETRY_BACKOFF, type InterfaceConfig, type RetryBackoff } from "../config.js";
 import { IndexerStateSource } from "./level2.js";
 import {
-  jsonbSafe, verifyPublication, type CheckTrigger, type PublicationToVerify, type VerificationResult, type VerifierDeps,
+  jsonbSafe, textSafe, verifyPublication, type CheckTrigger, type PublicationToVerify, type VerificationResult, type VerifierDeps,
 } from "./verify.js";
 
 /**
@@ -35,6 +35,13 @@ import {
  * row keeps that time as `verified_until` — the time the earlier result held — and the new result is
  * the current one: nothing rolls back to an older publication (Q14). Every result is also appended
  * to `public_interface_checks`.
+ *
+ * ── One publication never holds up the others (audit 02 E2-F1) ────────────────────────────────
+ * Every text written is made safe for `text` / `jsonb` first ({@link textSafe}); and if storing a
+ * result still fails (a value the database refuses), an `unchecked` internal-error result is stored
+ * in its place, so the row moves on to its backoff and the rest of the queue is checked in the same
+ * pass. Only a failure of that write too — the database itself — stops the pass (the `serve` loop
+ * logs it and tries again).
  */
 
 /** The statuses that reached no conclusion and are retried with backoff (`attempts` counts them). */
@@ -148,7 +155,7 @@ export async function writeCheckResult(
     await tx`
       UPDATE ${tx(schema)}.public_interface_events SET
         status = ${result.status}, level = ${result.level}, l1 = ${result.l1}, l2 = ${result.l2}, l3 = ${result.l3},
-        l3_reason = ${result.l3Reason}, reason = ${result.reason}, failed_level = ${result.failedLevel},
+        l3_reason = ${textSafe(result.l3Reason)}, reason = ${textSafe(result.reason)}, failed_level = ${result.failedLevel},
         report = ${tx.json(result.report as never)}, circuits = ${tx.json(result.circuits as never)},
         state_block_height = ${result.state?.blockHeight ?? null},
         state_tx_hash = ${result.state?.txHash === null || result.state?.txHash === undefined ? null : Buffer.from(result.state.txHash, "hex")},
@@ -161,7 +168,7 @@ export async function writeCheckResult(
       INSERT INTO ${tx(schema)}.public_interface_checks
         (net, event_id, check_no, checked_at, trigger, status, level, l1, l2, l3, l3_reason, reason, state_block_height)
       VALUES (${net}, ${target.eventId}, ${row.checks + 1}, ${checkedAt}, ${trigger}, ${result.status}, ${result.level},
-              ${result.l1}, ${result.l2}, ${result.l3}, ${result.l3Reason}, ${result.reason}, ${result.state?.blockHeight ?? null})
+              ${result.l1}, ${result.l2}, ${result.l3}, ${textSafe(result.l3Reason)}, ${textSafe(result.reason)}, ${result.state?.blockHeight ?? null})
     `;
     return "written";
   }) as Promise<WriteOutcome>;
@@ -175,8 +182,15 @@ async function checkRow(sql: UmbraDBSql, schema: string, net: string, row: DueRo
   } catch (error) {
     result = internalError(error);
   }
-  const write = await writeCheckResult(sql, schema, net, { eventId: Number(row.event_id), generation: row.generation }, trigger, result, checkedAt, deps);
-  return { write, result };
+  const target = { eventId: Number(row.event_id), generation: row.generation };
+  try {
+    return { write: await writeCheckResult(sql, schema, net, target, trigger, result, checkedAt, deps), result };
+  } catch (error) {
+    // The database refused this result (E2-F1): store an internal-error result instead, so this row
+    // moves on to its backoff and the others are still checked. If that fails too, it propagates.
+    const fallback = internalError(new Error(`the result could not be stored: ${error instanceof Error ? error.message : String(error)}`));
+    return { write: await writeCheckResult(sql, schema, net, target, trigger, fallback, checkedAt, deps), result: fallback };
+  }
 }
 
 export interface InterfaceDrainOutcome {

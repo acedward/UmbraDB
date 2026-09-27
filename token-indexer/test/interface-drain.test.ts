@@ -12,7 +12,7 @@ import { markInterfaceStale } from "../interface/store.js";
 import { startBundleHost, type BundleHost, type Route } from "./helpers/bundle-host.js";
 import { startFakeEventIndexer, type FakeEventIndexer } from "./helpers/fake-event-indexer.js";
 import { InterfaceChain, NET, currentOf, partsOf } from "./helpers/interface-chain.js";
-import { fixtureHex, loadFixtureBundle, payloadFor, wrongHash, type Bundle } from "./helpers/pi-fixture.js";
+import { clone, fixtureHex, loadFixtureBundle, payloadFor, wrongHash, type Bundle } from "./helpers/pi-fixture.js";
 
 /**
  * Project 00024-02 task C7 — the verification drain, end to end: synthetic chain → the real scanner
@@ -491,6 +491,61 @@ describe("public-interface verification drain (C7)", () => {
     expect((await history(db, 10)).map((h) => [h.trigger, h.status, h.level])).toEqual([
       ["initial", "unreachable", 0], ["retry", "verified", 3], ["recheck", "unreachable", 0], ["retry", "verified", 3],
     ]);
+  }, 180_000);
+
+  it("[[interface-hostile-diagnostics]] a bundle-controlled NUL in a diagnostic is stored made safe, and one publication whose result the database refuses never holds up the others (audit 02 E2-F1)", async () => {
+    const db = await chain.freshDb("hostile");
+    const state = new StubState();
+    const OTHER = "d8".repeat(32);
+    // index.json's `compiler` is not covered by the commitment: a NUL in its flags keeps the hash and
+    // the entries valid, and Level 1 fails on the compiler mismatch with a reason quoting that NUL.
+    const hostile = clone(bundle);
+    const index = JSON.parse(hostile.get("index.json")!.toString("utf8")) as { compiler: Record<string, unknown> };
+    index.compiler.flags = ["\u0000"];
+    hostile.set("index.json", Buffer.from(`${JSON.stringify(index, null, 2)}\n`));
+    const hostileUrl = serveAt("/hostile/", hostile);
+    const goodUrl = serveAt("/pi/", bundle);
+    const other = (txHash: string, blockHeight: number, id: number, payload: Buffer) => ({
+      ...publish(txHash, blockHeight, id, payload), contract: OTHER,
+    });
+    await chain.scan(db, [
+      publish("b1".repeat(32), 100, 10, payloadFor(bundle, hostileUrl)),
+      other("b2".repeat(32), 101, 20, payloadFor(bundle, goodUrl)),
+    ]);
+
+    // One pass: the hostile one (first in the queue) gets its outcome, the next one is still verified.
+    const pass = await drainInterfaceVerifications(db.sql, db.schema, NET, deps(state, T0));
+    expect(pass).toEqual({ attempted: 2, verified: 1, failed: 1, unchecked: 0, unfetchable: 0, unreachable: 0, discarded: 0 });
+    const h = await row(db, 10);
+    expect(h).toMatchObject({ status: "failed", level: 0, l1: "failed", failed_level: 1, checks: 1 });
+    expect(h.reason).toMatch(/^Level 1: index\.json names compiler compactc 0\.34\.0 �, but the bundle's package\.json pins compactc 0\.34\.0$/);
+    expect(h.reason).not.toContain("\u0000");
+    expect(h.next_check_at).toEqual(at(RECHECK));
+    expect(await history(db, 10)).toMatchObject([{ check_no: 1, trigger: "initial", status: "failed" }]);
+    expect(await row(db, 20)).toMatchObject({ status: "verified", level: 3, checks: 1 });
+
+    // A result the database refuses for any other reason (here a trigger standing in for it): the
+    // row gets an `unchecked` internal-error result and its backoff, and the queue moves on.
+    await db.sql.unsafe(`
+      CREATE FUNCTION ${db.schema}.refuse_verified() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.event_id = 30 AND NEW.status <> 'unchecked' THEN RAISE EXCEPTION 'refused by the test trigger'; END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER refuse_verified BEFORE UPDATE ON ${db.schema}.public_interface_events
+        FOR EACH ROW EXECUTE FUNCTION ${db.schema}.refuse_verified();
+    `);
+    await chain.scan(db, [
+      publish("b3".repeat(32), 102, 30, payloadFor(bundle, goodUrl)),
+      other("b4".repeat(32), 103, 40, payloadFor(bundle, goodUrl)),
+    ]);
+    const refused = await drainInterfaceVerifications(db.sql, db.schema, NET, deps(state, at(1_000)));
+    expect(refused).toMatchObject({ attempted: 2, verified: 1, unchecked: 1, discarded: 0 });
+    const r = await row(db, 30);
+    expect(r).toMatchObject({ status: "unchecked", level: 0, attempts: 1, checks: 1 });
+    expect(r.reason).toMatch(/internal error: Error: the result could not be stored: refused by the test trigger/);
+    expect(r.next_check_at).toEqual(at(1_000 + 30_000)); // the retry backoff, not the front of the queue
+    expect(await row(db, 40)).toMatchObject({ status: "verified", level: 3 });
   }, 180_000);
 });
 

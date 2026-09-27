@@ -99,6 +99,16 @@ export function jsonbSafe<T>(value: T, depth = 0): T {
   return value;
 }
 
+/**
+ * A diagnostic safe for a Postgres `text` column: U+0000 (which `text` refuses) and lone surrogates
+ * replaced by U+FFFD. Every `reason` / `l3_reason` passes here — they quote bundle-controlled text
+ * (e.g. an uncommitted `index.json` `compiler.flags` entry holding a NUL), and a refused write would
+ * otherwise fail the same publication on every drain pass (audit 02 E2-F1).
+ */
+export function textSafe(value: string | null): string | null {
+  return value === null ? null : jsonbSafe(value);
+}
+
 function packageJsonBuild(files: ReadonlyMap<string, Buffer> | undefined): Record<string, unknown> | null {
   const body = files?.get("package.json");
   if (body === undefined) return null;
@@ -168,7 +178,9 @@ export async function verifyPublication(
       transport: { requests: transport.requests, redirects: transport.redirects, bytes: l1?.bytes ?? 0 },
       executed: "nothing from the bundle was executed or imported (spec FR-013b)",
     });
-    return { ...result, report, circuits: jsonbSafe(result.circuits) };
+    // The reasons quote bundle-controlled text (a path, a compiler flag, a compiler message): stored
+    // in `text` columns, they get the same treatment as the report (a NUL fails the write).
+    return { ...result, reason: textSafe(result.reason), l3Reason: textSafe(result.l3Reason), report, circuits: jsonbSafe(result.circuits) };
   };
   const base: Pick<VerificationResult, "l3Reason" | "reason" | "failedLevel" | "circuits" | "state"> =
     { l3Reason: null, reason: null, failedLevel: null, circuits: [], state: null };
