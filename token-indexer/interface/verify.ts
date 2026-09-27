@@ -80,11 +80,13 @@ export const PROVIDER_LIMITS: readonly string[] = Object.freeze([
   "Level 2 compares against the contract's CURRENT state as the provider reports it at checkedAt, which may be later than the publication's block",
 ]);
 
-/** The longest string kept in a stored verification record (`report`, `circuits`), and the longest
- *  stored diagnostic (`reason`, `l3_reason`, in every history row): bundle-controlled text can be as
- *  long as a bundle file (e.g. an 8 MiB `compact.compiler`), and a hundred history rows of it would
- *  make one response hundreds of megabytes (audit 02 E2-R4C). Longer text keeps its start and says
- *  how much was omitted. */
+/** The longest DIAGNOSTIC kept: in the record (`report.reason`, each level's `reason`) and in the
+ *  stored `reason` / `l3_reason` of the publication and of every history row. A diagnostic quotes
+ *  bundle-controlled text, which can be as long as a bundle file (e.g. an 8 MiB `compact.compiler`),
+ *  and a hundred history rows of it would make one response hundreds of megabytes (audit 02 E2-R4C).
+ *  Longer text keeps its start and says how much was omitted. DATA in the record — committed paths,
+ *  hashes, circuit names — is never cut: it is what the verification established, and it is already
+ *  bounded by the index and file caps (audit 02 E2-R5A). */
 export const MAX_RECORD_STRING_CHARS = 8192;
 export const MAX_DIAGNOSTIC_CHARS = 2000;
 
@@ -98,6 +100,9 @@ function bounded(text: string, max: number): string {
   return `${text.slice(0, kept)}${marker(text.length - kept)}`;
 }
 
+/** A diagnostic of the record, bounded (see {@link MAX_RECORD_STRING_CHARS}). */
+const display = (text: string | null | undefined): string | null => (text === null || text === undefined ? null : bounded(text, MAX_RECORD_STRING_CHARS));
+
 /** U+0000 and lone surrogates (a cut may leave one) → U+FFFD. */
 function cleanText(text: string): string {
   return text.replace(/\u0000/g, "�").replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, "�");
@@ -110,7 +115,7 @@ function cleanText(text: string): string {
  */
 export function jsonbSafe<T>(value: T, depth = 0): T {
   if (depth > 64) return null as T;
-  if (typeof value === "string") return cleanText(bounded(value, MAX_RECORD_STRING_CHARS)) as T;
+  if (typeof value === "string") return cleanText(value) as T;
   if (typeof value === "bigint") return value.toString() as T;
   if (Array.isArray(value)) return value.map((v) => jsonbSafe(v, depth + 1)) as T;
   if (value !== null && typeof value === "object") {
@@ -179,19 +184,19 @@ export async function verifyPublication(
       witnesses: l2?.witnesses ?? [],
       levels: {
         l1: l1 === undefined ? { status: "not_run" } : {
-          status: result.l1, outcome: l1.outcome, steps: l1.steps, ...(l1.outcome === "passed" ? {} : { reason: l1.reason, file: l1.file ?? null }),
+          status: result.l1, outcome: l1.outcome, steps: l1.steps, ...(l1.outcome === "passed" ? {} : { reason: display(l1.reason), file: l1.file ?? null }),
           computed: l1.computed ?? null,
         },
         l2: l2 === undefined ? { status: result.l2 } : {
-          status: result.l2, outcome: l2.outcome, reason: l2.reason ?? null, rows: l2.rows, wrapper: l2.wrapper, circuitsTruncated: l2.circuitsTruncated,
+          status: result.l2, outcome: l2.outcome, reason: display(l2.reason), rows: l2.rows, wrapper: l2.wrapper, circuitsTruncated: l2.circuitsTruncated,
         },
-        l3: l3 === undefined ? { status: result.l3, reason: result.l3Reason } : {
-          status: result.l3, reason: l3.reason ?? null, compiler: l3.compiler, rows: l3.rows, generatedKeys: l3.generatedKeys, durationMs: l3.durationMs,
+        l3: l3 === undefined ? { status: result.l3, reason: display(result.l3Reason) } : {
+          status: result.l3, reason: display(l3.reason), compiler: l3.compiler, rows: l3.rows, generatedKeys: l3.generatedKeys, durationMs: l3.durationMs,
         },
       },
       completedLevel: result.level,
       status: result.status,
-      reason: result.reason,
+      reason: display(result.reason),
       limits: {
         ...limits, fetchDeadlineMs: policy.deadlineMs, maxRedirects: policy.maxRedirects,
         allowPrivateHosts: policy.allowPrivateHosts, l3DeadlineMs: deps.level3.deadlineMs ?? DEFAULT_LEVEL3_OPTIONS.deadlineMs,

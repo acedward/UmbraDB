@@ -14,7 +14,7 @@ import { startBundleHost, type BundleHost, type Route } from "./helpers/bundle-h
 import { startFakeEventIndexer, type FakeEventIndexer } from "./helpers/fake-event-indexer.js";
 import { InterfaceChain, NET, currentOf, partsOf } from "./helpers/interface-chain.js";
 import { indexCommitment, validateIndex } from "../interface/commitment.js";
-import { clone, fixtureHex, loadFixtureBundle, payloadFor, sha256Hex, wrongHash, type Bundle } from "./helpers/pi-fixture.js";
+import { clone, fixtureHex, loadFixtureBundle, payloadFor, sha256Hex, withFiles, wrongHash, type Bundle } from "./helpers/pi-fixture.js";
 
 /**
  * Project 00024-02 task C7 — the verification drain, end to end: synthetic chain → the real scanner
@@ -637,6 +637,19 @@ describe("public-interface verification drain (C7)", () => {
       expect(String(text).length).toBeLessThanOrEqual(8_192);
       expect(String(text)).toMatch(/… \[\d+ characters omitted\]$/);
     }
+
+    // …but DATA is never cut (E2-R5A): two committed files whose paths are 8 193 characters long (a
+    // 4 096-segment prefix) stay exact and distinct in the record — they are what Level 1 established.
+    const prefix = "a/".repeat(4096);
+    const deep = withFiles(bundle, { [`${prefix}A`]: Buffer.alloc(0), [`${prefix}B`]: Buffer.alloc(0) });
+    const deepUrl = serveAt("/deep/", deep);
+    await chain.scan(db, [other("b7".repeat(32), 106, 70, payloadFor(deep, deepUrl))]);
+    await drainInterfaceVerifications(db.sql, db.schema, NET, deps(state, at(4_000)));
+    const d = await row(db, 70);
+    expect(d).toMatchObject({ status: "verified", level: 2, l1: "passed", l2: "passed", l3: "not_run" }); // too deep to write for Level 3
+    const paths = (d.report!.artifacts.files as { path: string }[]).map((f) => f.path);
+    expect(paths).toContain(`${prefix}A`);
+    expect(paths).toContain(`${prefix}B`);
   }, 180_000);
 });
 
