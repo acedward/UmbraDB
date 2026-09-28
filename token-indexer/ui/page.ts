@@ -1028,11 +1028,20 @@ function urlDest(url) {
   return { host: host.toLowerCase(), userinfo: at >= 0, path: v.slice(e) };
 }
 // The path of a same-origin rewrite: one leading slash, never two (a "//host/…" href would leave
-// this origin) and never a backslash (browsers read it as a slash).
+// this origin) and never a backslash (browsers read it as a slash). Tabs and newlines go FIRST, as a
+// browser drops them before it parses: "/" + TAB + "/evil.example" is "//evil.example" to it (audit
+// 03-E1a finding R2B). The result is checked once more; anything else is not made a link (null).
 function localPath(path) {
+  var p = "";
+  for (var j = 0; j < path.length; j++) {
+    var c = path.charCodeAt(j);
+    if (c !== 9 && c !== 10 && c !== 13) p += path.charAt(j);
+  }
   var i = 0;
-  while (i < path.length && (path.charAt(i) === "/" || path.charCodeAt(i) === 92)) i++;
-  return "/" + path.slice(i);
+  while (i < p.length && (p.charAt(i) === "/" || p.charCodeAt(i) === 92)) i++;
+  var out = "/" + p.slice(i);
+  var second = out.length > 1 ? out.charCodeAt(1) : 0;
+  return second === 47 || second === 92 ? null : out;
 }
 function splitUri(uri) {
   var s = txt(uri === null || uri === undefined ? "" : uri);
@@ -1045,6 +1054,7 @@ function splitUri(uri) {
   // A URI with user information before its host is not made a link: its label reads as one host
   // and the browser would open another.
   var href = dest.userinfo || dest.host === "" ? null : (local ? localPath(dest.path) : s);
+  if (href === null && local && !dest.userinfo) return { href: null, label: s, local: false, host: dest.host, userinfo: false };
   return { href: href, label: s, local: local, host: dest.host, userinfo: dest.userinfo };
 }
 function uriLink(uri) {

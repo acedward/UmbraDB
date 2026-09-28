@@ -212,6 +212,12 @@ describe("the page draws hostile values without breaking", () => {
     const rewrite: FakeElement = P.ctx.uriLink("http://localhost//evil.example/x");
     expect(rewrite.href).toBe("/evil.example/x");
     expect(P.ctx.uriLink("http://localhost:10020/constellations/orion").href).toBe("/constellations/orion");
+    // E1a-R2B: tabs and newlines are dropped BEFORE the slashes are counted, as a browser does
+    for (const cc of ["\t", "\n", "\r", "\t\\\n"]) {
+      const href: string = P.ctx.uriLink(`http://localhost/${cc}/evil.example/x`).href;
+      expect(href, JSON.stringify(cc)).toBe("/evil.example/x");
+    }
+    expect(P.ctx.localPath("/\t/")).toBe("/");
     const userinfo: FakeElement = P.ctx.uriLink("https://good.example@evil.example/meta.json");
     expect([...userinfo.walk()].some((el) => el.tagName === "a")).toBe(false);
     expect(userinfo.textContent).toContain("it leads to evil.example");
@@ -289,6 +295,13 @@ describe("the page draws hostile values without breaking", () => {
     const P = loadPage(broken);
     const pub = { url: "https://bundles.example/index.json" };
     expect(P.ctx.urlViewOf(pub)).not.toBe(P.ctx.urlViewOf(pub));
+  });
+
+  it("negative control (E1a-R2B): collapsing slashes before dropping a TAB leaves this origin", () => {
+    const broken = SERVED_SCRIPT.replace("    if (c !== 9 && c !== 10 && c !== 13) p += path.charAt(j);", "    p += path.charAt(j);");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const href: string = loadPage(broken).ctx.uriLink("http://localhost/\t/evil.example/x").href;
+    expect(href.replace(/[\t\n\r]/g, "")).toBe("//evil.example/x"); // what a browser makes of it
   });
 
   it("negative control (E1a-F13): the old tokenUri rewrite leaves this origin", () => {
