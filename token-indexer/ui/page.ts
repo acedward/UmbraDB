@@ -1854,6 +1854,16 @@ function firstSeenSection(t, events, unknownRead) {
 function tokenApiHref(t) {
   return t.address && t.domainSep ? tokenBase(t) : P_COLORS + "/" + enc(t.color);
 }
+// Whether the events read include one of this token's own (its domain separator and kind byte).
+function hasOwnEvent(events, t) {
+  var l = arr(events);
+  for (var i = 0; i < l.length; i++) {
+    var e = l[i];
+    if (!e) continue;
+    if (txt(e.domainSep || e.domain_sep) === txt(t.domainSep) && Number(e.kindByte === undefined ? e.kind_byte : e.kindByte) === Number(t.kind)) return true;
+  }
+  return false;
+}
 function identitySection(t) {
   if (!t) return null;
   if (t.status === "builtin") return null;
@@ -1934,8 +1944,13 @@ function tokenModel(d) {
     return it;
   }
   var facts = [];
-  // Where this token's identity is carried (and, for a built-in row, where the chain shows it).
-  var idCtx = { token: t, section: identitySection(t) };
+  // Where this token's identity is carried (and, for a built-in row, where the chain shows it). The
+  // raw events carry it only when some of this token's own events were read: 2 000 events of other
+  // domain separators first leave none of them there — the API's row is cited instead (audit 03-E1a
+  // finding R8B).
+  var idSection = identitySection(t);
+  var idCtx = { token: t, section: idSection };
+  if (idSection === "events" && !hasOwnEvent(events, t)) idCtx = { token: t, api: tokenApiHref(t) };
   facts.push(item("address", "address",
     builtin ? "built-in row, no contract" : (seen ? "unknown" : t.address),
     builtin ? seeded : (seen ? noContract : pageOrigin("chain",
@@ -2070,7 +2085,7 @@ function tokenModel(d) {
   for (var s = 0; s < sl.length; s++) {
     var sib = sl[s];
     if (!sib || txt(sib.domainSep) !== txt(t.domainSep) || Number(sib.kind) === Number(t.kind)) continue;
-    siblings.push(siblingItems(sib, SIBLING_FIELDS));
+    siblings.push(siblingItems(sib, SIBLING_FIELDS, events));
   }
   var ev = eventsModel(events, t.domainSep, t.address);
   var model = {
@@ -2101,12 +2116,15 @@ function traitText(tr) {
 // the row shows — exactly the columns it has — with its own origin from the token's "origins".
 var SIBLING_FIELDS = ["kind", "color", "name", "symbol", "decimals", "mints", "status"];
 var CONTRACT_TOKEN_FIELDS = ["domainSep", "kind", "color", "name", "symbol", "decimals", "mints", "status"];
-function siblingItems(t, fields) {
+function siblingItems(t, fields, events) {
   var o = t.origins || {};
   var ctx = { token: t, address: t.address };
   var base = "row:" + t.domainSep + ":" + t.kind + ":";
   var identity = pageOrigin("chain", "MIP-0018 §3–§4: carried by every declaration and mint of this token");
-  var idCtx = { token: t, section: identitySection(t) };
+  var idSection = identitySection(t);
+  // the contract's events read here are the ones that token's view reads: none of its own among them,
+  // its row's identity cites the API's row of it (audit 03-E1a finding R8B)
+  var idCtx = idSection === "events" && !hasOwnEvent(events, t) ? { token: t, api: tokenApiHref(t) } : { token: t, section: idSection };
   var all = {
     domainSep: { value: t.domainSep, origin: identity, ctx: idCtx },
     kind: { value: t.kind, origin: identity, ctx: idCtx },
@@ -2257,7 +2275,7 @@ function contractModel(c) {
   var tokens = [];
   var list = itemsOf(d.tokens ? { items: d.tokens } : null);
   // at most CONTRACT_TOKEN_ROWS token rows are drawn; the count of all of them is a value of its own
-  for (var i = 0; i < list.length && i < CONTRACT_TOKEN_ROWS; i++) tokens.push(siblingItems(list[i], CONTRACT_TOKEN_FIELDS));
+  for (var i = 0; i < list.length && i < CONTRACT_TOKEN_ROWS; i++) tokens.push(siblingItems(list[i], CONTRACT_TOKEN_FIELDS, c.events));
   var tokensCount = list.length > CONTRACT_TOKEN_ROWS
     ? it("tokens:count", "token rows", list.length, pageOrigin("derived", "the number of token rows GET /v1/contracts/:address serves"),
       { address: address, api: P_CONTRACTS + "/" + enc(address), apiOf: "contract" })

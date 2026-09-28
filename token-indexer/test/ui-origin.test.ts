@@ -529,9 +529,18 @@ describe("the page shows the origin of every value", () => {
       const want: Record<string, string> = { seen: "activity", observed: "mints", declared: "events", described: "events" };
       for (const row of rows.filter((r) => want[r.status] !== undefined)) {
         const facts = drawRow(page, row).model.facts;
+        // the declarations carry it when one of the token's own events was read (E1a-R8B)
+        const ownEvent = { eventId: 1, blockHeight: 1, txPosition: 0, domainSep: row.domainSep, kindByte: row.kind, keyText: "name", valType: 1, applied: true };
+        const withOwn = want[row.status] === "events"
+          ? page.ctx.tokenModel({ ...tokenDetail(rowFixture(row)), events: [ownEvent] }).facts : facts;
         for (const field of row.address ? ["domainSep", "kind"] : ["kind"]) {
-          const first = facts.find((i: Json) => i.field === field).origin.links[0]?.href ?? "(none)";
+          const first = withOwn.find((i: Json) => i.field === field).origin.links[0]?.href ?? "(none)";
           expect(first, `${row.status} row: ${field}`).toMatch(new RegExp(`/${want[row.status]}$`));
+          // E1a-R8B: none of its own events read (the row fixture reads none) → the API's row of it
+          if (want[row.status] === "events") {
+            expect(facts.find((i: Json) => i.field === field).origin.links.map((l: Json) => l.href), `${row.status} row: ${field}, no own event read`)
+              .toEqual([`/v1/contracts/${row.address}/tokens/${row.domainSep}/${row.kind}`]);
+          }
         }
       }
       // E1a-R3A: a built-in row's seeded values cite the seed itself (the API's built-in rows)
@@ -903,6 +912,17 @@ describe("the page shows the origin of every value", () => {
       const cut = await bootToken(far.f, far.routes);
       expect(cut.requests.filter((r) => r.includes("/events?")).length).toBe(4);
       expect(cut.ctx.state.detail.eventsMore).toBe(true);
+      // E1a-R8B: none of the 2 000 events read is this token's — its identity cites the API's row
+      const cutFacts = cut.ctx.tokenModel(cut.ctx.state.detail).facts;
+      for (const field of ["domainSep", "kind"]) {
+        expect(cutFacts.find((i: Json) => i.field === field).origin.links.map((l: Json) => l.href), field)
+          .toEqual([`/v1/contracts/${far.f.token.address}/tokens/${far.f.token.domainSep}/${far.f.token.kind}`]);
+      }
+      // …and so does its row on the contract view, which reads the same events
+      const cm = cut.ctx.contractModel({ contract: far.f.contract, events: cut.ctx.state.detail.events, calls: null, notes: [], iface: null, ifaceLoaded: true });
+      const lmRow = cm.tokens.find((r: Json) => r.token.domainSep === far.f.token.domainSep && Number(r.token.kind) === Number(far.f.token.kind));
+      expect(lmRow.items.find((i: Json) => i.label === "domainSep").origin.links.map((l: Json) => l.href))
+        .toEqual([`/v1/contracts/${far.f.token.address}/tokens/${far.f.token.domainSep}/${far.f.token.kind}`]);
       const view = cut.doc.getElementById("view")!;
       const traitsSec = [...view.walk()].find((el) => el.id === "traits")!;
       expect(traitsSec.textContent).toContain("this contract has more token-metadata events than the page reads a contract's first 2\u00a0000 events");
@@ -1700,6 +1720,19 @@ describe("the page shows the origin of every value", () => {
     expect(text).not.toContain("0x78");
   });
 
+  it("negative control (E1a-R8B): identity cited into events none of which are the token's", async () => {
+    const broken = SERVED_SCRIPT.replace('  if (idSection === "events" && !hasOwnEvent(events, t)) idCtx = { token: t, api: tokenApiHref(t) };', "")
+      .replace('  var idCtx = idSection === "events" && !hasOwnEvent(events, t) ? { token: t, api: tokenApiHref(t) } : { token: t, section: idSection };',
+        "  var idCtx = { token: t, section: idSection };");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const far = lmoonBehindFillers(5);
+    const cut = await bootToken(far.f, far.routes, broken);
+    expect(cut.ctx.tokenModel(cut.ctx.state.detail).facts.find((i: Json) => i.field === "domainSep").origin.links[0].href).toMatch(/\/events$/);
+    const cm = cut.ctx.contractModel({ contract: far.f.contract, events: cut.ctx.state.detail.events, calls: null, notes: [], iface: null, ifaceLoaded: true });
+    const lmRow = cm.tokens.find((r: Json) => r.token.domainSep === far.f.token.domainSep && Number(r.token.kind) === Number(far.f.token.kind));
+    expect(lmRow.items.find((i: Json) => i.label === "domainSep").origin.links[0].href).toMatch(/\/events$/);
+  });
+
   it("negative control (E1a-S2): with the contract's rows unread, the family guessed from one row", async () => {
     const broken = SERVED_SCRIPT.replace("  var fam = d.siblingsFailed === true ? null : familyOf(", "  var fam = false ? null : familyOf(");
     expect(broken).not.toBe(SERVED_SCRIPT);
@@ -1810,7 +1843,7 @@ describe("the page shows the origin of every value", () => {
     expect(broken).not.toBe(SERVED_SCRIPT);
     const page = loadPage(broken);
     const row = (read("tokens.json").items as Json[]).find((r) => r.status === "observed")!;
-    expect(drawRow(page, row).model.facts.find((i: Json) => i.field === "domainSep").origin.links[0].href).toMatch(/\/events$/);
+    expect(drawRow(page, row).model.facts.find((i: Json) => i.field === "domainSep").origin.links[0].href).not.toMatch(/\/mints$/);
   });
 
   it("negative control (E1a-F6): a capped history drawn as if complete fails the check", () => {

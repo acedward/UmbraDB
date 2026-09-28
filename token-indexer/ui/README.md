@@ -88,6 +88,8 @@ What else the page shows:
   "no mint observed" or the like), no value cites it (the token's or the contract's row as the API
   serves it is cited instead), and the family is not guessed without the contract's rows (audit
   03-E1a findings R5C, R6A, S2).
+- A token's identity (domain separator, kind) cites the raw events only when some of the token's own
+  events are among those read; otherwise the API's row of it (audit 03-E1a finding R8B).
 - A URL (bundle URL, tokenUri) is parsed by the browser's own URL parser: its destination host —
   percent-decoded, IDNA-mapped, as the browser will go to it — is always shown beside the shortened
   text; a URL the parser refuses, or one with user information before its host, is not a link; a
