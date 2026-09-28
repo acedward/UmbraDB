@@ -7,7 +7,8 @@ compose project `umbra-00024-local`, API `http://127.0.0.1:27222`; token indexer
 keeps it unchanged). The chain is the local dev chain of that run: projects 01 and 02 deployed from
 an empty chain (the 11 MIP-18 contracts, the 4 PI contracts and 02-D's 7 LSUNPI fixture instances);
 public local-chain data only, no secret (counts-only scan before the commit: 0 hits). 53 requests,
-all HTTP 200.
+all HTTP 200. (`interfaces.json`, the answer of `/v1/interfaces?limit=100`, was removed in 03-E1a
+(audit finding F4): the page no longer reads that route.)
 
 Trimmed, nothing else changed: every `report` (the verification record) is dropped — the page never
 reads it; a `checkHistory` longer than 3 rows (the retried `deadline` instance had 100) is cut to its
@@ -23,7 +24,6 @@ re-serialised compact.
 | `token-uprompi.json` | UPROMPI (`5f28efc4…8afc3`, `umbra:uprompi`, kind 0): the same routes + interface | a 235-byte URL published as a **2-part** [Y] package (events 331–332), verified L1/L2/L3; 21 files, 9 keys, 9 circuits with argument types, 1 witness |
 | `token-sstarpi.json` | SSTARPI (`b76d3853…5f5f93`, `umbra:sstarpi`, kind 1): the same routes + interface | a verified shielded PI token with mints and activity |
 | `interface-outcomes.json` | `/v1/contracts/:address/interface` and `/v1/contracts/:address` of 02-D's LSUNPI fixture instances, keyed by the fixture name in their URL: `valid`, `compiler-not-installed`, `tampered-file`, `wrong-hash`, `breach`, `deadline`, `over-size-cap` | verified L1/L2/L3; verified L1/L2 with L3 `not_run` (no compiler 0.33.0); failed at L1 (three causes); failed at L1 after a verified check (`verifiedUntil`); `unchecked` by a deadline and by the size cap |
-| `interfaces.json` | `/v1/interfaces?limit=100` | the list's part badge (UPROMPI: 2 parts) |
 | `tokens.json` | 10 rows of `/v1/tokens?limit=500` | the list's interface column and multi-part badges |
 
 The statuses this stack cannot show — `pending`, `unfetchable`, `unreachable`, `stale` — a

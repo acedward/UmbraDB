@@ -50,8 +50,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
  *
  * and, since 00024-03 (spec `00024` US6, FR-016 — the page shows where every value came from):
  *
- *   GET /v1/interfaces?limit                          (the list's interface part badge)
- *   GET /v1/contracts/:address/interface              (the contract view's "public interface")
+ *   GET /v1/contracts/:address/interface              (the contract view's "public interface",
+ *                                                      read again only when the contract route's
+ *                                                      interface summary changed)
  *
  * with an optional section on the contract and token routes (`#/contract/<address>/interface`,
  * `#/token/…/mints`, …) that an origin's evidence link scrolls to. Every value of the token and
@@ -406,7 +407,6 @@ const SCRIPT = `
 //   GET /v1/contracts/:address/calls                                  (00023, FR-020)
 //   GET /v1/transactions/:hash                                        (00023, FR-007)
 //   GET /v1/shielded-offers                                           (00023, FR-018)
-//   GET /v1/interfaces                                                (00024-03, the list's part badge)
 //   GET /v1/contracts/:address/interface                              (00024-03, the interface section)
 //   GET /internal/status
 var P_TOKENS = "/v1/tokens";
@@ -432,9 +432,7 @@ var state = {
   // mip is the one filter applied in the browser rather than by the API: "has metadata published
   // under MIP-0018" is a rule over the row's status, not a column the list route filters on.
   filters: { kind: "", storage: "", status: "", q: "", mip: "" },
-  // ifaces: the current publication of every contract with an interface, by address (00024-03:
-  // the list's interface column reads the token's own summary, and this only adds its part count).
-  list: { items: [], nextCursor: null, loaded: false, ifaces: {} },
+  list: { items: [], nextCursor: null, loaded: false },
   detail: null,
   contract: null,
   status: null,
@@ -609,9 +607,46 @@ function selectFallback(value, flash) {
 
 // ── Fetch ───────────────────────────────────────────────────────────────────────────────────
 
+// No answer is read past MAX_RESPONSE_BYTES: a publisher chooses what some answers hold (URLs of up
+// to 262 112 bytes, bundle-derived lists), and the page must not buffer and parse without end on
+// every refresh (audit 03-E1a finding F4). An announced length over the bound is refused before
+// reading; a streamed body is counted as it arrives and cancelled at the bound.
+var MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
+function tooLarge(path, n) {
+  var err = new Error("the answer is larger than this page reads (" + groupDigits(n) + " bytes > "
+    + groupDigits(MAX_RESPONSE_BYTES) + "): " + path);
+  err.status = 0;
+  err.code = "TOO_LARGE";
+  return err;
+}
+async function readBody(res, path) {
+  var announced = res.headers && res.headers.get ? Number(res.headers.get("content-length")) : NaN;
+  if (announced > MAX_RESPONSE_BYTES) throw tooLarge(path, announced);
+  var reader = res.body && res.body.getReader && typeof TextDecoder !== "undefined" ? res.body.getReader() : null;
+  if (reader === null) {
+    var whole = await res.text();
+    if (whole.length > MAX_RESPONSE_BYTES) throw tooLarge(path, whole.length);
+    return whole;
+  }
+  var dec = new TextDecoder("utf-8");
+  var parts = [];
+  var n = 0;
+  for (;;) {
+    var chunk = await reader.read();
+    if (chunk.done) break;
+    n += chunk.value.byteLength;
+    if (n > MAX_RESPONSE_BYTES) {
+      try { reader.cancel(); } catch (e) { /* already closed */ }
+      throw tooLarge(path, n);
+    }
+    parts.push(dec.decode(chunk.value, { stream: true }));
+  }
+  parts.push(dec.decode());
+  return parts.join("");
+}
 async function api(path) {
   var res = await fetch(path, { headers: { accept: "application/json" }, cache: "no-store" });
-  var body = await res.text();
+  var body = await readBody(res, path);
   var parsed = null;
   if (body !== "") { try { parsed = JSON.parse(body); } catch (e) { parsed = null; } }
   if (!res.ok) {
@@ -1269,13 +1304,11 @@ function sortTokens(items) {
 // send. Diagnostics arrive already bounded by the indexer ("… [N characters omitted]") and are
 // shown exactly as served.
 
-var P_INTERFACES = "/v1/interfaces";
 var EVENT_LIMIT = 500;
 // The contract's events are read page by page, following the API's cursor, up to EVENT_PAGES pages
 // (EVENT_PAGES x EVENT_LIMIT events, oldest first). A contract with more says so where it matters —
 // a key's history and the P1 count are then made of the events read (audit 03-E1a finding F2).
 var EVENT_PAGES = 4;
-var INTERFACE_LIST_LIMIT = 500;
 
 var ORIGIN_LABELS = {
   "mip-0018": "MIP-0018 declaration",
@@ -2018,13 +2051,13 @@ function multipartOf(t) {
   }
   return out;
 }
-function listInterfaceView(t, byAddress) {
+// The list's interface column reads the row's own summary (status and levels). It shows no part
+// badge: only GET /v1/interfaces carries a publication's part count, as whole publications with
+// URLs of up to 262 112 bytes each — up to ~131 MB for 500 contracts on every refresh (audit 03-E1a
+// finding F4; question Q30). The part count and phase are on the contract view.
+function listInterfaceView(t) {
   if (!t || !t.interface) return null;
-  var st = interfaceStatusView(t.interface);
-  var pub = byAddress && t.address && own(byAddress, t.address) ? byAddress[t.address] : null;
-  st.parts = pub && pub.parts !== undefined ? pub.parts : null;
-  st.phase = pub && pub.phase ? pub.phase : null;
-  return st;
+  return interfaceStatusView(t.interface);
 }
 
 // ── 00024-03: drawing an origin ─────────────────────────────────────────────────────────────
@@ -2149,9 +2182,7 @@ function listQuery(cursor) {
   return qs;
 }
 async function loadList(cursor) {
-  var both = await Promise.all([api(listQuery(cursor)), cursor ? Promise.resolve(null) : loadInterfaceParts()]);
-  var payload = both[0];
-  if (both[1] !== null) state.list.ifaces = both[1];
+  var payload = await api(listQuery(cursor));
   var items = itemsOf(payload);
   state.list.items = cursor ? state.list.items.concat(items) : sortTokens(items);
   state.list.nextCursor = payload && payload.nextCursor ? payload.nextCursor : null;
@@ -2171,20 +2202,6 @@ function contractEventsPath(address, cursor) {
 }
 function eventsReadText() {
   return "the page reads a contract's first " + groupDigits(EVENT_PAGES * EVENT_LIMIT) + " events";
-}
-// The list's interface column: the part count and phase of each contract's current publication
-// (the token's own summary carries status and levels, not the package). Not fatal: without it the
-// column still shows every status, only the part badge is missing.
-async function loadInterfaceParts() {
-  var byAddress = {};
-  try {
-    var page = await api(P_INTERFACES + "?limit=" + INTERFACE_LIST_LIMIT);
-    var items = itemsOf(page);
-    for (var i = 0; i < items.length; i++) {
-      if (items[i] && items[i].address) byAddress[txt(items[i].address)] = { parts: items[i].parts, phase: items[i].phase };
-    }
-  } catch (e) { return state.list.ifaces || {}; }
-  return byAddress;
 }
 // FR-006 by (address, domainSep, kind); FR-008 by colour for a row that has no address yet (US5).
 function activityPath(t, cursor) {
@@ -2278,19 +2295,40 @@ async function loadNamedToken(r, d) {
       function (e) { d.notes.push("related rows unavailable: " + e.message); })
   ]);
 }
+// The interface section's publication is read again only when the contract route's summary of it
+// (event, status, levels, check times) changed: a publication with 100 older ones and their URLs can
+// be megabytes, and the 10 s refresh must not download it again and again (audit 03-E1a finding F4).
+function ifaceKey(summary) {
+  if (!summary || typeof summary !== "object") return null;
+  var lv = summary.levels && typeof summary.levels === "object" ? summary.levels : {};
+  return [summary.eventId, summary.status, summary.level, lv.l1, lv.l2, lv.l3, summary.checkedAt,
+    summary.verifiedUntil, summary.l3Reason].map(txt).join("|");
+}
 async function loadContract(address) {
-  var c = { contract: null, events: [], calls: null, notes: [], iface: null, ifaceLoaded: true };
+  var prev = state.contract && state.contract.address === address ? state.contract : null;
+  var c = { address: address, contract: null, events: [], calls: null, notes: [], iface: null, ifaceLoaded: true, ifaceKey: null };
   c.contract = await api(P_CONTRACTS + "/" + enc(address));
-  await Promise.all([
+  var summary = c.contract ? c.contract.interface : undefined;
+  c.ifaceKey = ifaceKey(summary);
+  var ifaceLoad;
+  if (summary === null) {
+    ifaceLoad = null; // the contract route says: no publication
+  } else if (c.ifaceKey !== null && prev !== null && prev.ifaceKey === c.ifaceKey && prev.iface) {
+    c.iface = prev.iface;
+    ifaceLoad = null;
+  } else {
     // 00024-02's route: the current publication with everything its checks established, and every
     // older one. A 404 is an answer ("none published"), not an error.
-    api(P_CONTRACTS + "/" + enc(address) + "/interface").then(
+    ifaceLoad = api(P_CONTRACTS + "/" + enc(address) + "/interface").then(
       function (p) { c.iface = p; },
       function (e) {
         if (e.status === 404) return;
         c.ifaceLoaded = false;
         c.notes.push("public interface unavailable: " + e.message);
-      }),
+      });
+  }
+  await Promise.all([
+    ifaceLoad,
     loadPages(function (cur) { return contractEventsPath(address, cur); }, EVENT_PAGES).then(
       function (p) { c.events = p.items; c.eventsMore = p.nextCursor !== null; },
       function (e) { c.notes.push("raw events unavailable: " + e.message); }),
@@ -2523,11 +2561,10 @@ function mipCell(t) {
 var IFACE_HEAD = "The contract's public interface: the result of its current publication and the "
   + "levels it passed (L1 files and commitment, L2 keys, L3 recompiled keys)";
 function listIfaceCell(t) {
-  var st = listInterfaceView(t, state.list.ifaces);
+  var st = listInterfaceView(t);
   if (st === null) return node("span", "", "no");
   var wrap = node("span", null, "vo");
   wrap.appendChild(ifaceBadge(st));
-  if (st.parts !== null && Number(st.parts) > 1) wrap.appendChild(partsChip(st.parts, st.phase, "bundle URL"));
   return wrap;
 }
 function withTitle(n, title) { n.title = title; return n; }

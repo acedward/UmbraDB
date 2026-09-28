@@ -20,7 +20,8 @@ import { DASHBOARD_CSP, DASHBOARD_HTML, serveUi } from "../ui/page.js";
  * imports — without pulling a DOM implementation into this repository's dependency set.
  *
  * Re-pinned in 00024-03 (Phase 03-B): the CSP hashes follow the new bytes by construction, the
- * page reads two more relative routes (`/v1/interfaces`, `/v1/contracts/:address/interface`), the
+ * page reads one more relative route (`/v1/contracts/:address/interface`; `/v1/interfaces` was dropped
+ * by the 03-E1a audit, finding F4), the
  * events route without "applied=false", and carries the five origin labels and the seven
  * publication statuses. That every VALUE is drawn with its origin is `[[token-ui-origin]]`'s job
  * (`ui-origin.test.ts`); this file keeps what the served document must say and must not contain.
@@ -352,10 +353,16 @@ describe("the token explorer page", () => {
     expect(script).not.toContain('el("filters").innerHTML');
 
     // ── 00024-03: where every value came from (spec 00024 US6, FR-016) ────────────────────────
-    // Two more relative routes, and the events route asks for every event (applied AND rejected):
+    // One more relative route, and the events route asks for every event (applied AND rejected):
     // "applied=false" meant "rejected only" to the server since 00020, so the raw-events table had
     // never shown an applied declaration — and a key's MIP-0018 history is made of those.
-    expect(script).toContain('var P_INTERFACES = "/v1/interfaces";');
+    // …and not /v1/interfaces: whole publications (URLs of up to 262 112 bytes) for a part badge (E1a-F4)
+    expect(script).not.toContain('"/v1/interfaces"');
+    expect(script).not.toContain("loadInterfaceParts");
+    // Every answer is read up to MAX_RESPONSE_BYTES, and the interface publication again only when its
+    // summary changed (E1a-F4).
+    expect(script).toContain("var MAX_RESPONSE_BYTES = 64 * 1024 * 1024;");
+    expect(script).toContain("function ifaceKey(summary)");
     expect(script).toContain('"/interface").then(');
     expect(script).toContain('"/events?limit=" + EVENT_LIMIT');
     expect(script).not.toContain('"/events?applied=false"');

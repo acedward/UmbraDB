@@ -29,8 +29,11 @@ What else the page shows:
 
 - **The list** gains an `interface` column: the current publication's status — `pending`, `verified`
   with the levels passed (`L1/L2` or `L1/L2/L3`), `failed at L<n>`, `unchecked`, `unfetchable`,
-  `unreachable`, `stale` — and a part badge when the bundle URL was a multi-part package; the
-  MIP-0018 column adds a part badge (and the phase, when it is not `guaranteed`) on multi-part values.
+  `unreachable`, `stale`; the MIP-0018 column adds a part badge (and the phase, when it is not
+  `guaranteed`) on multi-part values. The interface column shows no part badge: only
+  `GET /v1/interfaces` carries a publication's part count, as whole publications with URLs of up to
+  262 112 bytes each, so the list does not ask it (audit 03-E1a finding F4, question Q30); the part
+  count and phase are on the contract view.
 - **The contract view** gains a "public interface" section from `GET /v1/contracts/:address/interface`:
   status, role, levels, the failure and its level, the Level 3 reason, commitment, the URL (shortened
   for the eye — head … tail, its length — and copied whole; a URL may be 262 112 bytes), the
@@ -41,6 +44,9 @@ What else the page shows:
 - **The token view** gains its contract's interface summary (status and levels; the URL is on the
   contract view), the parts and phase of every trait, and, under a key declared more than once, its
   earlier declarations — a Null included — newest first.
+- Every answer is read up to 64 MiB (`MAX_RESPONSE_BYTES`: a longer announced length is refused, a
+  longer stream cancelled), and the contract view reads `/interface` again only when the contract
+  route's summary of the publication changed (audit 03-E1a finding F4).
 - Routes may end in a section (`#/contract/<address>/interface`, `#/token/…/mints`, …), scrolled to
   once drawn. The raw-events table asks for every event of the contract (`/events?limit=500`): the
   route's `applied=false` means "rejected only", which the page had asked for since 00020.

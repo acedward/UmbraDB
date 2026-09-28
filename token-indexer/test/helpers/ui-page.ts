@@ -164,6 +164,7 @@ export function loadPage(script = SERVED_SCRIPT, routes: Map<string, Route> = ne
     document: doc,
     navigator: { clipboard: { writeText: async (v: string) => { copied.push(v); } } },
     fetch: fetchStub,
+    TextDecoder,
   });
   vm.runInContext(script, ctx, { filename: "served-page-script.js" });
   const fire = (type: string): void => { for (const fn of winListeners[type] ?? []) fn(fakeEvent(type)); };

@@ -463,24 +463,22 @@ describe("the page shows the origin of every value", () => {
     });
     expect([...statusesDrawn].sort()).toEqual([...INTERFACE_STATUSES].sort());
 
-    // ── the list: every status in the interface column, the part badges ───────────────────────
+    // ── the list: every status in the interface column; the MIP-0018 part badges ──────────────
     const list = read("tokens.json").items as Json[];
     const lsunRow = list.find((t) => t.address === tokenFixture("lsunpi").token.address);
-    page.ctx.state.list = { items: [], nextCursor: null, loaded: true, ifaces: {} };
+    page.ctx.state.list = { items: [], nextCursor: null, loaded: true };
     for (const s of INTERFACE_STATUSES) {
       const row = clone(lsunRow);
       row.interface.status = s; row.interface.levels = clone(LEVELS[s]);
-      const cellView = page.ctx.listInterfaceView(row, {});
+      const cellView = page.ctx.listInterfaceView(row);
       expect(cellView.known, `list: ${s}`).toBe(true);
       expect(cellView.cls).not.toBe("if-unknown");
       const drawnCell: FakeElement = page.ctx.listIfaceCell(row);
       expect(drawnCell.textContent.startsWith(s === "failed" ? "failed at L2" : s)).toBe(true);
     }
-    const ifaces = read("interfaces.json").items as Json[];
-    const byAddress = Object.fromEntries(ifaces.map((x) => [x.address, { parts: x.parts, phase: x.phase }]));
+    // no interface part badge in the list (E1a-F4, Q30): the part count is on the contract view
     const upRow = list.find((t) => t.address === up.token.address);
-    page.ctx.state.list.ifaces = byAddress;
-    expect(page.ctx.listIfaceCell(upRow).textContent).toBe("verified L1/L2/L32 parts");
+    expect(page.ctx.listIfaceCell(upRow).textContent).toBe("verified L1/L2/L3");
     const snebRow = list.find((t) => t.symbol === "SNEB18");
     expect(JSON.parse(JSON.stringify(page.ctx.multipartOf(snebRow)))).toEqual([{ field: "metadata", parts: 3, phase: "guaranteed" }]);
     expect(page.ctx.mipCell(snebRow).textContent).toBe("✅3 parts");
