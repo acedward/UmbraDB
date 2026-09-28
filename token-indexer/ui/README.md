@@ -47,6 +47,10 @@ What else the page shows:
 - Every answer is read up to 64 MiB (`MAX_RESPONSE_BYTES`: a longer announced length is refused, a
   longer stream cancelled), and the contract view reads `/interface` again only when the contract
   route's summary of the publication changed (audit 03-E1a finding F4).
+- Text a bundle chooses — circuit, argument and witness names, file paths, build fields — is drawn
+  as its head … tail with its length and copied whole (160 characters for a name or a path, 400 for
+  a signature, 1 000 for other interface values); interface items are keyed by position, so no
+  published name reaches an attribute (audit 03-E1a finding F5).
 - Routes may end in a section (`#/contract/<address>/interface`, `#/token/…/mints`, …), scrolled to
   once drawn. The raw-events table asks for every event of the contract (`/events?limit=500`): the
   route's `applied=false` means "rejected only", which the page had asked for since 00020.

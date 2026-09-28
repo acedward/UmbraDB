@@ -571,7 +571,8 @@ function copyable(value, label, cls) {
   var text = label === null || label === undefined ? "-" : txt(label);
   var s = node("span", text, cls ? "cp " + cls : "cp");
   if (value === null || value === undefined || value === "") { s.className = cls || ""; return s; }
-  s.title = txt(value) + "  (click to copy)";
+  var full = txt(value);
+  s.title = (full.length > 200 ? full.slice(0, 200) + "… (" + full.length + " characters)" : full) + "  (click to copy)";
   s.addEventListener("click", function (ev) { ev.stopPropagation(); copyValue(txt(value), s); });
   return s;
 }
@@ -1978,22 +1979,23 @@ function interfaceModel(x, address, loaded) {
       + " · flags " + (arr(x.build.flags).length === 0 ? "none" : arr(x.build.flags).map(txt).join(" ")));
   }
   row("publications", "publications of this contract", x.publications);
+  // Items are keyed by their position, never by a published name: a name may be megabytes (E1a-F5).
   var files = [];
   var fl = arr(x.files);
   for (var f = 0; f < fl.length; f++) {
-    files.push({ field: "iface:file:" + txt(fl[f].path), label: txt(fl[f].path), value: valueOrNull(fl[f].size),
+    files.push({ field: "iface:file:" + f, label: txt(fl[f].path), value: valueOrNull(fl[f].size),
       origin: originView(fl[f].origin, ctx), row: fl[f] });
   }
   var keys = [];
   var kl = arr(x.keys);
   for (var k = 0; k < kl.length; k++) {
-    keys.push({ field: "iface:key:" + txt(kl[k].circuit), label: txt(kl[k].circuit), value: valueOrNull(kl[k].sha256),
+    keys.push({ field: "iface:key:" + k, label: txt(kl[k].circuit), value: valueOrNull(kl[k].sha256),
       origin: originView(kl[k].origin, ctx), row: kl[k] });
   }
   var circuits = [];
   var cl = arr(x.circuits);
   for (var c = 0; c < cl.length; c++) {
-    circuits.push({ field: "iface:circuit:" + txt(cl[c].name), label: txt(cl[c].name), value: circuitSignature(cl[c]),
+    circuits.push({ field: "iface:circuit:" + c, label: txt(cl[c].name), value: circuitSignature(cl[c]),
       origin: originView(cl[c].origin, ctx), row: cl[c] });
   }
   var witnesses = [];
@@ -2001,7 +2003,7 @@ function interfaceModel(x, address, loaded) {
   for (var w = 0; w < wl.length; w++) {
     // A witness is a name the bundle's code declares; the API sends it as a plain string of the
     // interface, so it carries the interface's own origin.
-    witnesses.push({ field: "iface:witness:" + txt(wl[w]), label: "witness", value: valueOrNull(wl[w]), origin: originView(O, ctx) });
+    witnesses.push({ field: "iface:witness:" + w, label: "witness", value: valueOrNull(wl[w]), origin: originView(O, ctx) });
   }
   var checks = [];
   var chl = arr(x.checkHistory);
@@ -2166,6 +2168,32 @@ function urlNode(uv) {
   wrap.appendChild(node("span", "  "));
   var cp = copyable(uv.full, "copy", "cpbtn");
   cp.title = "copy the whole URL (" + uv.length + " characters)";
+  wrap.appendChild(cp);
+  return wrap;
+}
+
+// Bundle-derived text is the publisher's to choose and cheap to make huge (contract-info.json may be
+// 8 MiB): a name, a path, a signature or a build field is drawn as its head and tail with its
+// length, and copied whole (audit 03-E1a finding F5). Diagnostics arrive bounded by the indexer and
+// are drawn as served; a URL has urlNode.
+var NAME_MAX = 160;
+var SIG_MAX = 400;
+var TEXT_MAX = 1000;
+function clipText(value, max) {
+  var v = txt(value);
+  if (v.length <= max) return { text: v, cut: false, length: v.length };
+  var head = Math.floor(max * 0.7);
+  return { text: v.slice(0, head) + "…" + v.slice(v.length - (max - head)), cut: true, length: v.length };
+}
+function boundedNode(value, max, cls) {
+  var c = clipText(value, max);
+  if (!c.cut) return node("span", c.text, cls);
+  var wrap = node("span", null, cls);
+  wrap.appendChild(node("span", c.text));
+  wrap.appendChild(node("span", "  (" + groupDigits(c.length) + " characters)", "note"));
+  wrap.appendChild(node("span", "  "));
+  var cp = copyable(txt(value), "copy", "cpbtn");
+  cp.title = "copy the whole value (" + c.length + " characters)";
   wrap.appendChild(cp);
   return wrap;
 }
@@ -4070,27 +4098,27 @@ function interfaceSection(face) {
 
   sec.appendChild(ifaceTable("files the bundle lists (Level 1)", face.files,
     ["path", "size (bytes)", "SHA-256", "origin"], function (tr, it) {
-      cell(tr, node("span", it.label, "txt wrapv"));
+      cell(tr, boundedNode(it.label, NAME_MAX, "txt wrapv"));
       cell(tr, orDash(it.row.size), "num");
       cell(tr, copyable(it.row.sha256, shortHex(txt(it.row.sha256 || ""), 10, 8), "hex"));
     }, "no file: the check did not reach Level 1's file list"));
   sec.appendChild(ifaceTable("verifier keys (Level 2: equal to the contract's on-chain keys)", face.keys,
     ["circuit", "verifier key SHA-256", "Level 2", "origin"], function (tr, it) {
-      cell(tr, it.label);
+      cell(tr, boundedNode(it.label, NAME_MAX, "txt wrapv"));
       cell(tr, copyable(it.value, shortHex(txt(it.value || ""), 10, 8), "hex"));
       cell(tr, orDash(it.row.l2));
     }, "no key: the check did not reach Level 2"));
   sec.appendChild(ifaceTable("circuits the interface publishes, with their argument types", face.circuits,
     ["circuit", "signature", "pure", "on chain", "key SHA-256", "Level 2", "origin"], function (tr, it) {
-      cell(tr, it.label);
-      cell(tr, node("span", it.value, "hex wrapv"));
+      cell(tr, boundedNode(it.label, NAME_MAX, "txt wrapv"));
+      cell(tr, boundedNode(it.value, SIG_MAX, "hex wrapv"));
       cell(tr, it.row.pure === true ? "yes" : (it.row.pure === false ? "no" : "-"));
       cell(tr, it.row.onChain === true ? "yes" : (it.row.onChain === false ? "no" : "-"));
       cell(tr, copyable(it.row.keySha256, shortHex(txt(it.row.keySha256 || ""), 10, 8), "hex"));
       cell(tr, orDash(it.row.l2));
     }, "no circuit: the check did not reach Level 2"));
   sec.appendChild(ifaceTable("witnesses the bundle's code declares", face.witnesses,
-    ["witness", "origin"], function (tr, it) { cell(tr, it.value); }, "no witness declared"));
+    ["witness", "origin"], function (tr, it) { cell(tr, boundedNode(it.value, NAME_MAX, "txt wrapv")); }, "no witness declared"));
   sec.appendChild(ifaceTable("check history (newest first)", face.checks,
     ["check", "checked at", "trigger", "result", "levels", "L3", "reason", "state block", "origin"], function (tr, it) {
       var ch = it.row;
@@ -4128,14 +4156,15 @@ function ifaceValue(r) {
   if (r.url) return urlNode(r.url);
   if (r.hex) return copyable(r.value, r.value, "hex");
   if (r.diagnostic) return node("span", r.value, "err wrapv diag");
-  if (r.help) return withTitle(node("span", r.value, "txt"), r.help);
+  if (r.help) return withTitle(boundedNode(r.value, TEXT_MAX, "txt"), r.help);
   if (r.txHash) {
     var wrap = node("span", null, "wrapv");
-    wrap.appendChild(node("span", r.value + "  "));
+    wrap.appendChild(boundedNode(r.value, TEXT_MAX, "txt"));
+    wrap.appendChild(node("span", "  "));
     wrap.appendChild(txLink(r.txHash));
     return wrap;
   }
-  return node("span", r.value, "txt wrapv");
+  return boundedNode(r.value, TEXT_MAX, "txt wrapv");
 }
 // A sub-table of the interface section: its heading, its rows (each with its chip), or why none.
 function ifaceTable(heading, items, labels, fill, emptyText) {

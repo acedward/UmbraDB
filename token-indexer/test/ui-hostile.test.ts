@@ -14,6 +14,9 @@ import { type FakeElement, type Json, type Page, SERVED_SCRIPT, loadPage } from 
  *    bytes, ~131 MB for 500 contracts, on every 10 s refresh) — Q30; the contract view reads
  *    `/interface` again only when the contract route's summary of it changed; no answer is read past
  *    MAX_RESPONSE_BYTES (an announced length is refused, a streamed body is cancelled).
+ *  - E1a-F5: bundle-derived text (circuit, argument and witness names, file paths, build fields) may
+ *    be megabytes (contract-info.json ≤ 8 MiB): drawn as head … tail with its length, copied whole;
+ *    items are keyed by position, so no published name reaches an attribute.
  *
  * The page script runs in `node:vm` exactly as served (`helpers/ui-page.ts`).
  */
@@ -66,6 +69,29 @@ function streamed(chunks: number, announced: number | null): Json {
   };
   return res;
 }
+/** UPROMPI's interface with megabyte names where a bundle chooses them (E1a-F5). */
+function hugeNames(): { iface: Json; name: string } {
+  const iface = JSON.parse(JSON.stringify(UP.interface));
+  const name = `c${"x".repeat(3_000_000)}`;
+  iface.circuits[0].name = name;
+  iface.circuits[0].arguments = [{ name: "a".repeat(1_000_000), type: "Field" }];
+  iface.keys[0].circuit = name;
+  iface.files[0].path = `src/${"d/".repeat(50_000)}f.compact`;
+  iface.witnesses = ["w".repeat(1_000_000)];
+  iface.build = { ...(iface.build ?? {}), language: "l".repeat(2_000_000) };
+  return { iface, name };
+}
+/** The drawn view's text length and its longest attribute (title, href, data-o), against the
+ *  recorded (small-name) interface as the baseline. */
+function budgetOf(root: FakeElement): { text: number; longestAttribute: number; baseline: number } {
+  let longest = 0;
+  for (const el of root.walk()) {
+    for (const v of [el.title, el.href, ...Object.values(el.attrs)]) longest = Math.max(longest, String(v).length);
+  }
+  const base = drawContract(SERVED_SCRIPT, UP.interface).root.textContent.length;
+  return { text: root.textContent.length, longestAttribute: longest, baseline: base };
+}
+const groupedCount = (n: number): string => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0");
 /** Valid JSON, as a bundle's package.json may publish it: objects whose toString is not callable. */
 const HOSTILE_BUILD = JSON.parse('{"compiler":"0.34.0","language":{"toString":null},"runtime":{"toString":null,"valueOf":null},'
   + '"interface":[1,{"toString":null}],"flags":[{"toString":null},"--vscode"]}');
@@ -125,6 +151,27 @@ describe("the page draws hostile values without breaking", () => {
     capped.ctx.fetch = async () => fine;
     await expect(capped.ctx.api("/ok"), "an answer under the bound is read whole").resolves.toBeNull(); // spaces: no JSON
     expect(fine.cancelled).toBe(false);
+
+    // ── E1a-F5: megabyte names from a bundle are drawn bounded and copied whole ───────────────
+    const hugeIface = hugeNames();
+    const huge = drawContract(SERVED_SCRIPT, hugeIface.iface);
+    expect(huge.error).toBeNull();
+    const sizes = budgetOf(huge.root);
+    expect(sizes.longestAttribute, "no attribute carries a published name").toBeLessThan(1_000);
+    expect(sizes.text, "the drawn text stays small").toBeLessThan(sizes.baseline + 20_000);
+    const circuitRow = [...huge.root.walk()].find((el) => el.getAttribute("data-o") === "iface:circuit:0")!;
+    expect(circuitRow.textContent).toContain(`(${groupedCount(hugeIface.name.length)} characters)`);
+    const copyName = [...circuitRow.walk()].find((el) => el.className.includes("cpbtn"))!;
+    const livePage = loadPage();
+    livePage.ctx.state.route = { view: "contract", address: UP.contract.address };
+    livePage.ctx.state.contract = contractState(hugeIface.iface);
+    const liveRoot = livePage.doc.createElement("main");
+    livePage.ctx.renderContract(liveRoot);
+    const liveRow = [...liveRoot.walk()].find((el) => el.getAttribute("data-o") === "iface:circuit:0")!;
+    [...liveRow.walk()].find((el) => el.className.includes("cpbtn"))!.click();
+    await livePage.settle();
+    expect(livePage.copied[0], "the copy control copies the whole name").toBe(hugeIface.name);
+    expect(copyName.title).toBe(`copy the whole value (${hugeIface.name.length} characters)`);
   });
 
   it("negative control (E1a-F4): without the summary key the publication is read on every refresh", async () => {
@@ -144,6 +191,16 @@ describe("the page draws hostile values without breaking", () => {
     page.ctx.fetch = async () => flood;
     await page.ctx.api("/v1/contracts/x/interface").catch(() => null);
     expect(flood.cancelled).toBe(false);
+  });
+
+  it("negative control (E1a-F5): drawn whole, a megabyte name floods the view and its attributes", () => {
+    const broken = SERVED_SCRIPT.replace("  if (v.length <= max) return { text: v, cut: false, length: v.length };",
+      "  return { text: v, cut: false, length: v.length };").replace('field: "iface:circuit:" + c,', 'field: "iface:circuit:" + txt(cl[c].name),');
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const drawn = drawContract(broken, hugeNames().iface);
+    const sizes = budgetOf(drawn.root);
+    expect(sizes.text).toBeGreaterThan(sizes.baseline + 3_000_000);
+    expect(sizes.longestAttribute).toBeGreaterThan(3_000_000);
   });
 
   it("negative control (E1a-F3): String() on a published object stops the contract view", () => {

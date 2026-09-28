@@ -129,9 +129,9 @@ function contractSources(c: Json, x: Json, events: Json[] = []): Sources {
   if (x) {
     for (const r of ["status", "levels", "failure", "reason", "l3", "commitment", "url", "publication", "payload", "checkedAt",
       "checks", "lastVerifiedAt", "verifiedUntil", "nextCheckAt", "state", "compiler", "build", "publications"]) m.set(`iface:${r}`, x.origin);
-    for (const f of x.files ?? []) m.set(`iface:file:${f.path}`, f.origin);
-    for (const k of x.keys ?? []) m.set(`iface:key:${k.circuit}`, k.origin);
-    for (const k of x.circuits ?? []) m.set(`iface:circuit:${k.name}`, k.origin);
+    (x.files ?? []).forEach((f: Json, i: number) => m.set(`iface:file:${i}`, f.origin));
+    (x.keys ?? []).forEach((k: Json, i: number) => m.set(`iface:key:${i}`, k.origin));
+    (x.circuits ?? []).forEach((k: Json, i: number) => m.set(`iface:circuit:${i}`, k.origin));
     (x.history ?? []).forEach((h: Json) => m.set(`iface:history:${h.eventId}`, h.origin));
   }
   return m;
