@@ -311,13 +311,14 @@ describe("the token explorer page", () => {
 
     // (3) The token view's subtitle says what it knows, or why it does not know it: "no symbol"
     // read like a symbol, and a bare "-" for decimals said nothing about why it was absent.
-    expect(script).toContain("function subtitleOf(");
-    expect(script).toContain('sub.appendChild(node("span", subtitleOf(t), "note"));');
+    // (00024-03 E1a-R2E: each value of the subtitle is drawn with its own origin chip.)
+    expect(script).toContain("function subtitleNode(t, m)");
+    expect(script).toContain("sub.appendChild(subtitleNode(t, m));");
     expect(script).toContain('"no symbol metadata"');
     expect(script).toContain('"no decimals metadata"');
     expect(script).toContain('"ledger token"');
     expect(script).toContain('"native token"');
-    expect(script).toContain('" · kind " + orDash(t.kind) + " (" + privacy + ") · "');
+    expect(script).toContain('part("kind", "kind " + orDash(t.kind));');
     // the retired wording, gone
     expect(script).not.toContain('" · decimals "');
 

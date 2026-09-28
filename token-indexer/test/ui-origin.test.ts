@@ -280,6 +280,19 @@ function checkDrawn(root: FakeElement, items: Json[]): string[] {
     for (let n: FakeElement | null = el; n !== null; n = n.parentNode) if (n.tagName === "tbody") inBody = true;
     if (inBody) out.push(`a value cell drawn outside any marked element: "${el.textContent.slice(0, 60)}"`);
   }
+  // Wherever a value of the view is drawn — a table cell, a heading, a line of the header — its text
+  // lies inside a marked element, i.e. next to an origin (E1a-R2E: the check no longer depends on
+  // the page marking every place it draws a value).
+  const values = new Map<string, string>();
+  for (const it of items) {
+    const v = it.value === null || it.value === undefined ? "" : String(it.value);
+    if (v.trim().length >= 3 && !values.has(v)) values.set(v, it.field);
+  }
+  for (const el of root.walk()) {
+    if (el.children.length > 0 || markedAncestor(el) !== null) continue;
+    const field = values.get(el.textContent);
+    if (field !== undefined) out.push(`${field}: its value "${el.textContent.slice(0, 40)}" is drawn outside any marked element`);
+  }
   return out;
 }
 
@@ -443,6 +456,28 @@ describe("the page shows the origin of every value", () => {
       expect(sneb.find((i: Json) => i.field === "color").origin.links[0].href).toBe(`#/contract/${tokenFixture("sneb18").token.address}`);
       expect(sneb.find((i: Json) => i.field === "status").origin.links.map((l: Json) => l.text))
         .toEqual(["input: the mint history", "input: the declarations"]);
+    }
+
+    // ── E1a-R2E: an opened shielded offer is drawn as an occurrence of its activity row ────────
+    {
+      const ss = tokenFixture("sstarpi");
+      const row = ss.activity!.items.find((a: Json) => a.role === "shielded_delta");
+      const key = [row.txHash, row.segment, row.section, row.role, row.itemIndex].join("|");
+      page.ctx.state.act = { role: "", pages: 1, expand: { [key]: { loading: false, error: null, doc: {
+        offers: [{ section: "guaranteed", segment: 0, counted: true, deltas: [{ color: row.color, delta: "-5000000" }],
+          inputs: [{ nullifier: "ab".repeat(32) }], outputs: [{ commitment: "cd".repeat(32) }], transients: [] }] } } } };
+      const drawn = drawToken(page, ss);
+      page.ctx.state.act = { role: "", pages: 1, expand: {} };
+      const field = `activity:${[row.txHash, row.segment, row.section, row.role, row.itemIndex].join(":")}`;
+      const det = [...drawn.root.walk()].find((el) => el.className === "det")!;
+      expect(det.getAttribute("data-o")).toBe(field);
+      expect(det.textContent).toContain("the offer, as decoded from this archived transaction");
+      expect(checkDrawn(drawn.root, drawn.model.all)).toEqual([]);
+      // the nullifier and the commitment it shows lie inside the marked row
+      for (const hex of ["abababab", "cdcdcdcd"]) {
+        const leaf = [...det.walk()].find((el) => el.children.length === 0 && el.textContent.startsWith(hex))!;
+        expect(markedAncestor(leaf)?.getAttribute("data-o")).toBe(field);
+      }
     }
 
     // ── E1a-F2: a key's history past the first page of the contract's events ─────────────────
@@ -737,7 +772,7 @@ describe("the page shows the origin of every value", () => {
     const broken = SERVED_SCRIPT.replace('cell(tr, originBlock(it.origin), "ocell");', 'cell(tr, "-", "ocell");');
     expect(broken).not.toBe(SERVED_SCRIPT);
     const violations = snebChecks(broken).drawn;
-    expect(violations.some((v) => v.startsWith('symbol: drawn (occurrence 1 of 1) without its origin "MIP-0018 declaration"'))).toBe(true);
+    expect(violations.some((v) => /^symbol: drawn \(occurrence \d of \d\) without its origin "MIP-0018 declaration"/.test(v))).toBe(true);
     expect(violations.some((v) => v.startsWith('address: drawn (occurrence 1 of 1) without its origin "Chain observation"'))).toBe(true);
   });
 
@@ -777,6 +812,20 @@ describe("the page shows the origin of every value", () => {
     const broken = SERVED_SCRIPT.replace('title.appendChild(originChip(factOf(m, "name").origin));', "");
     expect(broken).not.toBe(SERVED_SCRIPT);
     expect(snebChecks(broken).drawn.some((v) => v.startsWith('name: drawn (occurrence 1 of 2) without its origin'))).toBe(true);
+  });
+
+  it("negative control (E1a-R2E): a heading drawn without its mark AND its chip fails the check", () => {
+    const broken = SERVED_SCRIPT.replace('var title = marked(node("h3"), "name");', 'var title = node("h3");')
+      .replace('title.appendChild(originChip(factOf(m, "name").origin));', "");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    expect(snebChecks(broken).drawn.some((v) => v.startsWith('name: its value "') && v.endsWith("is drawn outside any marked element"))).toBe(true);
+  });
+
+  it("negative control (E1a-R2E): the header's status drawn without its origin fails the check", () => {
+    const broken = SERVED_SCRIPT.replace('var st = marked(node("span", null, "vo"), "status");', 'var st = node("span", null, "vo");')
+      .replace('st.appendChild(originChip(factOf(m, "status").origin));', "");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    expect(snebChecks(broken).drawn).toContain('status: its value "described" is drawn outside any marked element');
   });
 
   it("negative control (E1a-F15): a value cell drawn outside any marked element fails the check", () => {

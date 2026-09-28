@@ -1164,15 +1164,30 @@ function kindLabel(t) {
 // "native token" / "ledger token", which is what the distinction actually means to a reader.
 //   no symbol metadata · kind 0 (unshielded) · native token · no decimals metadata
 //   SSTAR · kind 1 (shielded) · native token · decimals 6
-function subtitleOf(t) {
-  var symbol = t.symbol ? txt(t.symbol) : "no symbol metadata";
-  var privacy = t.privacy ? txt(t.privacy) : "?";
-  var storage = t.storage === "ledger" ? "ledger token"
-    : (t.storage === "native" ? "native token" : "storage unknown");
-  var decimals = t.decimals === null || t.decimals === undefined
-    ? "no decimals metadata" : "decimals " + txt(t.decimals);
-  return symbol + " · kind " + orDash(t.kind) + " (" + privacy + ") · " + storage
-    + " · " + decimals;
+// The token heading's one-line summary. Every value in it is drawn with its own origin chip and
+// marked as another occurrence of its fact (audit 03-E1a finding R2E); the words for what is not
+// known stay the 00023 ones ("no symbol metadata", "no decimals metadata").
+function subtitleNode(t, m) {
+  var wrap = node("span", null, "note");
+  function part(field, text) {
+    var it = factOf(m, field);
+    var s = marked(node("span", null, "vo"), field);
+    s.appendChild(node("span", text));
+    s.appendChild(originChip(it.origin));
+    if (it.origin.p1) s.appendChild(p1Mark());
+    wrap.appendChild(s);
+  }
+  function sep() { wrap.appendChild(node("span", "  ·  ")); }
+  part("symbol", t.symbol ? txt(t.symbol) : "no symbol metadata");
+  sep();
+  part("kind", "kind " + orDash(t.kind));
+  wrap.appendChild(node("span", " "));
+  part("privacy", "(" + (t.privacy ? txt(t.privacy) : "?") + ")");
+  sep();
+  part("storage", t.storage === "ledger" ? "ledger token" : (t.storage === "native" ? "native token" : "storage unknown"));
+  sep();
+  part("decimals", t.decimals === null || t.decimals === undefined ? "no decimals metadata" : "decimals " + txt(t.decimals));
+  return wrap;
 }
 function kindCell(t) {
   var s = node("span", kindLabel(t));
@@ -2964,7 +2979,7 @@ function activitySection(t, d, items) {
       cell(tr, node("span", "", "no"));
     }
     tb.appendChild(tr);
-    if (a.role === "shielded_delta" && state.act.expand[key]) tb.appendChild(offerDetailRow(a, key, 9));
+    if (a.role === "shielded_delta" && state.act.expand[key]) tb.appendChild(offerDetailRow(a, key, 9, ai));
   }
   if (d.activity.nextCursor) {
     var more = node("button", "load more");
@@ -3044,11 +3059,20 @@ function toggleOffer(a, key) {
     render();
   });
 }
-function offerDetailRow(a, key, span) {
+// The opened offer is another occurrence of its activity row: the same archived transaction is its
+// evidence, so it is marked as that row and carries the row's origin (audit 03-E1a finding R2E).
+function offerDetailRow(a, key, span, item) {
   var tr = document.createElement("tr");
   tr.className = "det";
   var td = document.createElement("td");
   td.colSpan = span;
+  if (item) {
+    marked(tr, item.field);
+    var src = node("div", null, "row");
+    src.appendChild(node("span", "the offer, as decoded from this archived transaction", "note"));
+    src.appendChild(originChip(item.origin));
+    td.appendChild(src);
+  }
   var st = state.act.expand[key];
   if (!st || st.loading) td.appendChild(node("div", "reading the transaction…", "note"));
   else if (st.error) td.appendChild(node("div", st.error, "err"));
@@ -3810,7 +3834,7 @@ function renderToken(main) {
   // A colour route (US5) has no contract to point at — that is the whole reason it exists.
   if (r.address && !isZeroHex(r.address)) {
     crumb.appendChild(node("span", "  ·  "));
-    var toContract = node("a", "contract " + shortHex(r.address, 8, 6));
+    var toContract = node("a", "its contract");
     toContract.href = hashContract(r.address);
     crumb.appendChild(toContract);
   } else if (r.color) {
@@ -3840,8 +3864,11 @@ function renderToken(main) {
   if (factOf(m, "name").origin.p1) title.appendChild(p1Mark());
   head.appendChild(title);
   var sub = node("div", null, "row");
-  sub.appendChild(statusBadge(t.status));
-  sub.appendChild(node("span", subtitleOf(t), "note"));
+  var st = marked(node("span", null, "vo"), "status");
+  st.appendChild(statusBadge(t.status));
+  st.appendChild(originChip(factOf(m, "status").origin));
+  sub.appendChild(st);
+  sub.appendChild(subtitleNode(t, m));
   head.appendChild(sub);
   if (t.status === "seen") {
     head.appendChild(node("div",
@@ -4285,11 +4312,14 @@ function interfaceSection(face) {
     sec.appendChild(none);
     return sec;
   }
+  // The result at the top is another occurrence of the status row: marked as it, with its origin.
+  var head = marked(node("div"), face.rows[0].field);
   var top = node("div", null, "row");
   top.appendChild(ifaceBadge(face.status));
   for (var n = 0; n < face.status.notes.length; n++) top.appendChild(node("span", face.status.notes[n], "note wrapv"));
-  sec.appendChild(top);
-  sec.appendChild(originBlock(face.rows[0].origin));
+  head.appendChild(top);
+  head.appendChild(originBlock(face.rows[0].origin));
+  sec.appendChild(head);
 
   var tb = tableIn(sec, ["", "value", "origin"]);
   for (var i = 0; i < face.rows.length; i++) {
