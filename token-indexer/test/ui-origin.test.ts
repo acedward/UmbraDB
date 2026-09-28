@@ -862,6 +862,21 @@ describe("the page shows the origin of every value", () => {
       expect(drawn.model.traits.find((i: Json) => i.label === "description").history.map((h: Json) => h.eventId)).not.toContain(95);
     }
 
+    // ── E1a-R8C: an empty file list says why by Level 1's own result ───────────────────────────
+    {
+      const up = tokenFixture("uprompi");
+      const lp = loadPage(SERVED_SCRIPT);
+      const filesText = (levels: Json, status: string): string => {
+        const f = clone(up.interface);
+        Object.assign(f, { status, levels, files: [], keys: [], circuits: [], witnesses: [] });
+        return drawContract(lp, contractState(up, f)).root.textContent;
+      };
+      const failedL1 = filesText({ l1: "failed", l2: "not_run", l3: "not_run" }, "failed");
+      expect(failedL1).toContain("not shown: the indexer keeps a bundle's file list only when Level 1 passes, and it failed");
+      expect(failedL1).not.toContain("did not reach Level 1");
+      expect(filesText({ l1: "not_run", l2: "not_run", l3: "not_run" }, "unreachable")).toContain("not known: the latest check did not run Level 1");
+    }
+
     // ── E1a-R5D: the shielded-offers view keeps its rows and reports a later page that failed ──
     {
       const routes = new Map<string, Json>([["/internal/status", { net: "undeployed" }]]);
@@ -1731,6 +1746,15 @@ describe("the page shows the origin of every value", () => {
     const cm = cut.ctx.contractModel({ contract: far.f.contract, events: cut.ctx.state.detail.events, calls: null, notes: [], iface: null, ifaceLoaded: true });
     const lmRow = cm.tokens.find((r: Json) => r.token.domainSep === far.f.token.domainSep && Number(r.token.kind) === Number(far.f.token.kind));
     expect(lmRow.items.find((i: Json) => i.label === "domainSep").origin.links[0].href).toMatch(/\/events$/);
+  });
+
+  it("negative control (E1a-R8C): one reason for every empty file list says a failed Level 1 never reached it", () => {
+    const broken = SERVED_SCRIPT.replace("    }, filesEmptyText(face.l1)));", "    }, \"no file: the check did not reach Level 1's file list\"));");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const up = tokenFixture("uprompi");
+    const f = clone(up.interface);
+    Object.assign(f, { status: "failed", levels: { l1: "failed", l2: "not_run", l3: "not_run" }, files: [] });
+    expect(drawContract(loadPage(broken), contractState(up, f)).root.textContent).toContain("did not reach Level 1's file list");
   });
 
   it("negative control (E1a-S2): with the contract's rows unread, the family guessed from one row", async () => {

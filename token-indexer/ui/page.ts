@@ -2426,6 +2426,7 @@ function interfaceModel(x, address, loaded) {
   return { present: true, status: st, rows: rows, files: files, keys: keys, circuits: circuits,
     witnesses: witnesses, checks: checks, history: history, roles: roles, url: uv, address: address,
     circuitsTruncated: circuitsTruncated, l2Ran: l2Ran, infoRead: infoRead,
+    l1: x.levels && x.levels.l1 !== undefined && x.levels.l1 !== null ? txt(x.levels.l1) : null,
     historyMore: olderTotal > hl.length ? olderTotal : null,
     checksMore: checksTotal > chl.length ? checksTotal : null };
 }
@@ -4718,7 +4719,7 @@ function interfaceSection(face) {
       cell(tr, boundedNode(it.label, NAME_MAX, "txt wrapv"));
       cell(tr, orDash(it.row.size), "num");
       cell(tr, copyable(it.row.sha256, shortHex(txt(it.row.sha256 || ""), 10, 8), "hex"));
-    }, "no file: the check did not reach Level 1's file list"));
+    }, filesEmptyText(face.l1)));
   sec.appendChild(ifaceTable("verifier keys (Level 2: equal to the contract's on-chain keys)", face.keys,
     ["circuit", "verifier key SHA-256", "Level 2", "origin"], function (tr, it) {
       cell(tr, boundedNode(it.label, NAME_MAX, "txt wrapv"));
@@ -4805,6 +4806,14 @@ function ifaceValue(r) {
 }
 // A sub-table of the interface section: its heading, its rows (each with its chip), or why none.
 var L2_NOT_RUN = "not known: Level 2 reads them, and the latest check did not run it (see the levels above)";
+// The indexer keeps a bundle's file list only when Level 1 passed: an empty list after a failed
+// Level 1 is not "never reached" — the list may have been read before a file failed its SHA-256
+// (audit 03-E1a finding R8C).
+function filesEmptyText(l1) {
+  if (l1 === "passed") return "no file: Level 1 passed and its list names none";
+  if (l1 === "failed") return "not shown: the indexer keeps a bundle's file list only when Level 1 passes, and it failed (see the failure above)";
+  return "not known: the latest check did not run Level 1 (see the levels above)";
+}
 var L2_INFO_UNREAD = "not known: Level 2 failed without establishing them from the bundle's contract information (see the failure above)";
 function ifaceTable(heading, items, labels, fill, emptyText) {
   var box = node("div", null, "txsec");
