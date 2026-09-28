@@ -30,12 +30,15 @@ const CHROME_IDS = [
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type Json = any;
 
-export interface FakeEvent { type: string; key?: string; stopped: boolean; stopPropagation(): void; preventDefault(): void }
+export interface FakeEvent {
+  type: string; key?: string; stopped: boolean; defaultPrevented: boolean;
+  stopPropagation(): void; preventDefault(): void;
+}
 export function fakeEvent(type: string, extra: Record<string, unknown> = {}): FakeEvent {
   const ev: FakeEvent = {
-    type, stopped: false,
+    type, stopped: false, defaultPrevented: false,
     stopPropagation() { ev.stopped = true; },
-    preventDefault() { /* nothing to prevent */ },
+    preventDefault() { ev.defaultPrevented = true; },
     ...extra,
   };
   return ev;
@@ -83,11 +86,22 @@ export class FakeElement {
   getAttribute(k: string): string | null { return this.attrs[k] ?? null; }
   scrollIntoView(): void { this.scrolled += 1; }
   select(): void { /* the copy fallback selects its buffer */ }
-  /** A click as a browser delivers it: on the element, then each parent, until one stops it. */
+  /** A click as a browser delivers it: on the element, then each parent, until one stops it; then,
+   *  unless a handler prevented it, the default action of the nearest link — a "#…" href navigates
+   *  this page (the owning document's navigate hook), any other href is recorded as opened. */
   click(): FakeEvent {
     const ev = fakeEvent("click");
     for (let n: FakeElement | null = this; n !== null && !ev.stopped; n = n.parentNode) {
       for (const fn of n.listeners.click ?? []) fn.call(n, ev);
+    }
+    if (!ev.defaultPrevented) {
+      let a: FakeElement | null = this;
+      while (a !== null && !(a.tagName === "a" && a.href !== "")) a = a.parentNode;
+      if (a !== null) {
+        const doc = a.ownerDocument as FakeDocument | undefined;
+        if (a.href.startsWith("#")) doc?.navigateHook?.(a.href);
+        else doc?.opened.push(a.href);
+      }
     }
     return ev;
   }
@@ -97,14 +111,23 @@ export class FakeElement {
 export class FakeDocument {
   body = new FakeElement("body");
   copiedByCommand: string[] = [];
+  /** Links followed to another document (not a "#…" route of this page). */
+  opened: string[] = [];
+  /** Set by {@link loadPage}: what following a "#…" link does. */
+  navigateHook: ((hash: string) => void) | null = null;
   constructor() {
+    this.body.ownerDocument = this;
     for (const id of CHROME_IDS) {
       const e = new FakeElement(id === "view" ? "main" : "div");
       e.id = id;
       this.body.appendChild(e);
     }
   }
-  createElement(tag: string): FakeElement { return new FakeElement(tag.toLowerCase()); }
+  createElement(tag: string): FakeElement {
+    const e = new FakeElement(tag.toLowerCase());
+    e.ownerDocument = this;
+    return e;
+  }
   getElementById(id: string): FakeElement | null {
     for (const e of this.body.walk()) if (e.id === id) return e;
     return null;
@@ -168,6 +191,7 @@ export function loadPage(script = SERVED_SCRIPT, routes: Map<string, Route> = ne
   });
   vm.runInContext(script, ctx, { filename: "served-page-script.js" });
   const fire = (type: string): void => { for (const fn of winListeners[type] ?? []) fn(fakeEvent(type)); };
+  doc.navigateHook = (hash: string) => { location.hash = hash; fire("hashchange"); };
   return {
     ctx, doc, requests, copied, routes, window: win,
     navigate(hash: string) { location.hash = hash; fire("hashchange"); },

@@ -674,8 +674,12 @@ describe("the page shows the origin of every value", () => {
     const ifaceChip = [...tokenView.walk()].find((el) => el.getAttribute("data-o") === "interface")!;
     const ifaceLink = [...ifaceChip.walk()].find((el) => el.tagName === "a" && el.className.includes("orig"))!;
     expect(ifaceLink.href).toBe(`#/contract/${up.token.address}/interface`);
-    expect(ifaceLink.click().stopped, "a chip's click stays on the chip").toBe(true);
-    live.navigate(ifaceLink.href);
+    // the click itself follows the link (its default action), and stays on the chip (a row's own
+    // click handler does not run) — nothing is navigated by hand (E1a-R2G)
+    const clicked = ifaceLink.click();
+    expect(clicked.stopped, "a chip's click stays on the chip").toBe(true);
+    expect(clicked.defaultPrevented, "a chip's click follows its link").toBe(false);
+    expect(live.window.location.hash).toBe(`#/contract/${up.token.address}/interface`);
     await live.settle();
     expect(live.ctx.state.route.view).toBe("contract");
     expect(live.doc.getElementById("interface")!.scrolled).toBeGreaterThan(0);
@@ -755,6 +759,22 @@ describe("the page shows the origin of every value", () => {
     [...urlRow.walk()].find((el) => el.className.includes("cpbtn"))!.click();
     await page.settle();
     expect(page.copied).toEqual([]);
+  });
+
+  it("negative control (E1a-R2G): a chip whose click prevents navigation fails the check", async () => {
+    const broken = SERVED_SCRIPT.replace("function stopClick(ev) { ev.stopPropagation(); }",
+      "function stopClick(ev) { ev.preventDefault(); ev.stopPropagation(); }");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const up = tokenFixture("uprompi");
+    const live = loadPage(broken, apiRoutes(up));
+    live.window.location.hash = `#/token/${up.token.address}/${up.token.domainSep}/${up.token.kind}`;
+    live.boot();
+    await live.settle();
+    const chip = [...live.doc.getElementById("view")!.walk()].find((el) => el.getAttribute("data-o") === "interface")!;
+    const link = [...chip.walk()].find((el) => el.tagName === "a" && el.className.includes("orig"))!;
+    expect(link.click().defaultPrevented).toBe(true);
+    await live.settle();
+    expect(live.ctx.state.route.view).toBe("token");
   });
 
   it("negative control (E1a-F15): a page that does not scroll to the section fails the check", async () => {
