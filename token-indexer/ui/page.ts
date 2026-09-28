@@ -1838,9 +1838,15 @@ function tokenModel(d) {
   // the current value the page shows — never "earlier" (audit 03-E1a finding R3G).
   function earlier(e, cur) {
     if (!cur) return true;
-    if (Number(e.blockHeight) !== Number(cur.blockHeight)) return Number(e.blockHeight) < Number(cur.blockHeight);
-    if (Number(e.txPosition) !== Number(cur.txPosition)) return Number(e.txPosition) < Number(cur.txPosition);
-    return Number(e.eventId) < Number(cur.eventId);
+    var fin = function (v) { return v !== null && v !== undefined && isFinite(Number(v)); };
+    // a place the payload does not give is not compared (an older API row, a colour document's trait)
+    if (fin(cur.blockHeight) && fin(e.blockHeight) && Number(e.blockHeight) !== Number(cur.blockHeight)) {
+      return Number(e.blockHeight) < Number(cur.blockHeight);
+    }
+    if (fin(cur.txPosition) && fin(e.txPosition) && Number(e.txPosition) !== Number(cur.txPosition)) {
+      return Number(e.txPosition) < Number(cur.txPosition);
+    }
+    return fin(cur.eventId) && fin(e.eventId) ? Number(e.eventId) < Number(cur.eventId) : true;
   }
   function declCountOf(keyId, cur) {
     var l = decls[keyId] || [];

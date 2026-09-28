@@ -709,6 +709,10 @@ describe("the page shows the origin of every value", () => {
       const d2 = drawToken(page, f).model.traits.find((i: Json) => i.label === "description");
       expect(d2.history.map((h: Json) => h.eventId)).toEqual([80, 78]);
       expect(d2.origin.detail).toContain("the latest of 3 declarations of this key");
+      // a key row without its place (no updatedHeight, no txPosition) is still ordered by what it gives
+      const g = clone(f);
+      for (const k of g.metadata.keys) { delete k.txPosition; delete k.updatedHeight; }
+      expect(drawToken(page, g).model.traits.find((i: Json) => i.label === "description").history.map((h: Json) => h.eventId)).toEqual([80, 78]);
     }
 
     // ── every status of the API, current and historical, on the contract view ─────────────────
