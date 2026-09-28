@@ -143,6 +143,19 @@ describe("the page draws hostile values without breaking", () => {
     routes.set(`/v1/contracts/${UP.contract.address}`, changed);
     await live.ctx.refresh();
     expect(ifaceReads(), "a changed summary: read again").toBe(2);
+    // E1a-R2C: an older publication can finish its own check while the current summary stays the
+    // same — the kept document is read again once it is a minute old, and the new result is drawn
+    const later = JSON.parse(JSON.stringify(UP.interface));
+    later.history = [{ ...JSON.parse(JSON.stringify(UP.interface)), eventId: 1, role: "historical", status: "failed", failedLevel: 1,
+      levels: { l1: "failed", l2: "not_run", l3: "not_run" }, reason: "Level 1: tampered", origin: UP.interface.origin }];
+    routes.set(`/v1/contracts/${UP.contract.address}/interface`, later);
+    await live.ctx.refresh();
+    expect(ifaceReads(), "younger than a minute: kept").toBe(2);
+    expect(live.ctx.IFACE_MAX_AGE_MS).toBe(60_000);
+    live.ctx.state.contract.ifaceAt -= 61_000;
+    await live.ctx.refresh();
+    expect(ifaceReads(), "a minute old: read again").toBe(3);
+    expect(live.ctx.contractModel(live.ctx.state.contract).face.history.map((h: Json) => h.status.text)).toEqual(["failed at L1"]);
     // no answer is read past MAX_RESPONSE_BYTES (64 MiB)
     const capped = loadPage();
     expect(capped.ctx.MAX_RESPONSE_BYTES).toBe(64 * MiB);
@@ -250,12 +263,21 @@ describe("the page draws hostile values without breaking", () => {
   });
 
   it("negative control (E1a-F4): without the summary key the publication is read on every refresh", async () => {
-    const broken = SERVED_SCRIPT.replace("} else if (c.ifaceKey !== null && prev !== null && prev.ifaceKey === c.ifaceKey && prev.iface) {",
-      "} else if (false) {");
+    const broken = SERVED_SCRIPT.replace("} else if (c.ifaceKey !== null && prev !== null && prev.ifaceKey === c.ifaceKey && prev.iface",
+      "} else if (false");
     expect(broken).not.toBe(SERVED_SCRIPT);
     const live = await bootAt(`#/contract/${UP.contract.address}`, contractRoutes(), broken);
     await live.ctx.refresh(); await live.ctx.refresh();
     expect(live.requests.filter((r) => r.endsWith("/interface")).length).toBe(3);
+  });
+
+  it("negative control (E1a-R2C): without the age bound an older publication's new result is never read", async () => {
+    const broken = SERVED_SCRIPT.replace("      && Date.now() - prev.ifaceAt < IFACE_MAX_AGE_MS) {", "      && true) {");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const live = await bootAt(`#/contract/${UP.contract.address}`, contractRoutes(), broken);
+    live.ctx.state.contract.ifaceAt -= 61_000;
+    await live.ctx.refresh();
+    expect(live.requests.filter((r) => r.endsWith("/interface")).length).toBe(1);
   });
 
   it("negative control (E1a-F4): without the byte bound a flood is read whole", async () => {

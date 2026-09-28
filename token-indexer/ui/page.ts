@@ -2564,6 +2564,11 @@ async function loadNamedToken(r, d) {
 // The interface section's publication is read again only when the contract route's summary of it
 // (event, status, levels, check times) changed: a publication with 100 older ones and their URLs can
 // be megabytes, and the 10 s refresh must not download it again and again (audit 03-E1a finding F4).
+// The summary describes the CURRENT publication only; an older one can still finish its own check
+// (or retry) while the current one is unchanged. The kept document is therefore read again at least
+// every IFACE_MAX_AGE_MS (audit 03-E1a finding R2C): at most one minute stale, at most one download
+// a minute instead of one every 10 s refresh.
+var IFACE_MAX_AGE_MS = 60000;
 function ifaceKey(summary) {
   if (!summary || typeof summary !== "object") return null;
   var lv = summary.levels && typeof summary.levels === "object" ? summary.levels : {};
@@ -2572,21 +2577,24 @@ function ifaceKey(summary) {
 }
 async function loadContract(address) {
   var prev = state.contract && state.contract.address === address ? state.contract : null;
-  var c = { address: address, contract: null, events: [], calls: null, notes: [], iface: null, ifaceLoaded: true, ifaceKey: null };
+  var c = { address: address, contract: null, events: [], calls: null, notes: [], iface: null, ifaceLoaded: true, ifaceKey: null,
+    ifaceAt: 0 };
   c.contract = await api(P_CONTRACTS + "/" + enc(address));
   var summary = c.contract ? c.contract.interface : undefined;
   c.ifaceKey = ifaceKey(summary);
   var ifaceLoad;
   if (summary === null) {
     ifaceLoad = null; // the contract route says: no publication
-  } else if (c.ifaceKey !== null && prev !== null && prev.ifaceKey === c.ifaceKey && prev.iface) {
+  } else if (c.ifaceKey !== null && prev !== null && prev.ifaceKey === c.ifaceKey && prev.iface
+      && Date.now() - prev.ifaceAt < IFACE_MAX_AGE_MS) {
     c.iface = prev.iface;
+    c.ifaceAt = prev.ifaceAt;
     ifaceLoad = null;
   } else {
     // 00024-02's route: the current publication with everything its checks established, and every
     // older one. A 404 is an answer ("none published"), not an error.
     ifaceLoad = api(P_CONTRACTS + "/" + enc(address) + "/interface").then(
-      function (p) { c.iface = p; },
+      function (p) { c.iface = p; c.ifaceAt = Date.now(); },
       function (e) {
         if (e.status === 404) return;
         c.ifaceLoaded = false;
