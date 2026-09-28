@@ -4305,6 +4305,10 @@ function partialEventsNote(address, what) {
   n.appendChild(a);
   return n;
 }
+var EVENTS_ORDER_NOTE = "this token's own events first (highlighted), then the rest of the contract's, each in "
+  + "event-id order — the order the scanner read them. Which declaration of a key is in force is rule P1's "
+  + "choice among the APPLIED rows (block, transaction position, execution order; a multi-part package placed "
+  + "by its first part); a rejected row never applies. The traits above show the result.";
 function eventsSection(items, markDomain, heading, moreOf) {
   var sec = node("section");
   sec.id = "events";
@@ -4315,10 +4319,9 @@ function eventsSection(items, markDomain, heading, moreOf) {
     return sec;
   }
   if (markDomain) {
-    sec.appendChild(node("div",
-      "this token's own events first (highlighted), then the rest of the contract's, each in event-id "
-      + "order, which is the order the fold applies them in, so the last row of a key is the value in force",
-      "note"));
+    // Not "the last row wins": the value in force is P1's choice among the applied rows (audit 03-E1a
+    // finding R3J).
+    sec.appendChild(node("div", EVENTS_ORDER_NOTE, "note"));
   }
   // One row per package: a multi-part declaration is one event row with its part count, and its
   // event id is its first part's (P1).

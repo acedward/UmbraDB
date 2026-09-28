@@ -372,6 +372,11 @@ describe("the token explorer page", () => {
       ["chain", "Chain observation"], ["derived", "Derived by this indexer"], ["none", "Not available"]] as const) {
       expect(script, `origin ${kind} must be labelled "${label}"`).toContain(`"${kind}": "${label}"`);
     }
+    // The raw-events table says what decides the value in force — P1 among the applied rows — and no
+    // longer that the last row by event id wins (audit 03-E1a finding R3J).
+    expect(script).toContain("Which declaration of a key is in force is rule P1's");
+    expect(script).toContain("a rejected row never applies");
+    expect(script).not.toContain("so the last row of a key is the value in force");
     // P1 is named where a key was declared more than once (US6 scenario 3).
     expect(script).toContain('var P1_NOTE = "P1: last write, positioned by the first part";');
     // Every publication status the API serves has its badge; "historical" is a role, not a status.
