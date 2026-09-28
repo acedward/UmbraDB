@@ -231,6 +231,8 @@ function checkModel(page: Page, items: Json[], where: Where, known: Known, sourc
       if (o.links.length === 0) out.push(`${it.field}: ${o.kind} without an evidence link`);
     }
     if (o.kind === "derived" && !o.rule) out.push(`${it.field}: derived without its rule`);
+    // a derived value links the inputs it names, or the section that shows them (E1a-F7, E1a-R2A)
+    if (o.kind === "derived" && o.links.length === 0) out.push(`${it.field}: derived without an evidence link`);
     if (o.kind === "none" && !o.reason) out.push(`${it.field}: not available without a reason`);
     if (o.kind === "public-interface" && where.address !== null
       && !o.links.some((l: Json) => l.href === `#/contract/${where.address}/interface`)) {
@@ -432,8 +434,8 @@ describe("the page shows the origin of every value", () => {
     // ── E1a-F7: every derived value with inputs links them; a `seen` colour links its movements ─
     {
       const rows = read("tokens.json").items as Json[];
-      for (const status of ["seen", "observed", "declared", "described"]) {
-        const row = rows.find((r) => r.status === status && r.address !== undefined)!;
+      for (const status of ["seen", "observed", "declared", "described", "builtin"]) {
+        const row = rows.find((r) => r.status === status && (status !== "builtin" || r.color))!;
         const drawn = drawRow(page, row);
         const where: Where = { tokenIds: drawn.ids, contractIds: new Set(["interface", "calls", "events", "facts"]), address: row.address ?? null };
         expect(checkModel(page, drawn.model.all, where, knownOf(row), tokenSources(rowFixture(row))), `${status} row: model`).toEqual([]);
@@ -449,6 +451,20 @@ describe("the page shows the origin of every value", () => {
           expect(first, `${row.status} row: ${field}`).toMatch(new RegExp(`/${want[row.status]}$`));
         }
       }
+      // E1a-R2A: the visibility links the section it decides; a pending lookup links its transaction
+      const upV = drawToken(page, tokenFixture("uprompi")).model.facts.find((i: Json) => i.field === "visibility");
+      expect(upV.origin.links.map((l: Json) => l.href)).toEqual([`#/token/${tokenFixture("uprompi").token.address}/${tokenFixture("uprompi").token.domainSep}/${tokenFixture("uprompi").token.kind}/activity`]);
+      const lm = tokenFixture("lmoon18");
+      expect(drawToken(page, lm).model.facts.find((i: Json) => i.field === "visibility").origin.links[0].href).toMatch(/\/calls$/);
+      const pendingTx = lm.contract.deployTxHash as string;
+      const stuck = clone(lm.contract);
+      stuck.pendingLookups = [{ txHash: pendingTx, address: stuck.address, expected: 3, got: 1, attempts: 2, lastError: null }];
+      const pend = drawContract(page, contractState({ contract: stuck, events: lm.events, calls: lm.calls }, null));
+      const pendItem = pend.model.pending[0];
+      expect(pendItem.origin.kind).toBe("derived");
+      expect(pendItem.origin.links.map((l: Json) => l.href)).toEqual([`#/tx/${pendingTx}`]);
+      expect(checkModel(page, pend.model.all, { tokenIds: drawToken(page, lm).ids, contractIds: pend.ids, address: stuck.address }, knownOf(lm, stuck))).toEqual([]);
+      expect(checkDrawn(pend.root, pend.model.all)).toEqual([]);
       const seenRow = rows.find((r) => r.status === "seen")!;
       const seenColor = drawRow(page, seenRow).model.facts.find((i: Json) => i.field === "color");
       expect(seenColor.origin.links[0].href).toBe(`#/color/${seenRow.color}/${seenRow.kind}/activity`);
@@ -928,6 +944,21 @@ describe("the page shows the origin of every value", () => {
     const up = tokenFixture("uprompi");
     const drawn = drawContract(page, contractState(up, up.interface));
     expect(drawn.model.face.rows.find((r: Json) => r.field === "iface:role").origin.kind).toBe("public-interface");
+  });
+
+  it("negative control (E1a-R2A): a derived value that links nothing fails the check", () => {
+    const broken = SERVED_SCRIPT.replace('    var dt = txEvidence(din.txHash, "input: tx");', '    var dt = null;')
+      .replace('{ token: t, section: vis === "calls-only" ? (t.address ? "calls" : null) : (vis === "not-tracked" ? null : "activity") }));', "{ token: t }));");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const lm = tokenFixture("lmoon18");
+    const stuck = clone(lm.contract);
+    stuck.pendingLookups = [{ txHash: lm.contract.deployTxHash, address: stuck.address, expected: 3, got: 1, attempts: 2, lastError: null }];
+    const pend = drawContract(page, contractState({ contract: stuck, events: lm.events }, null));
+    const token = drawToken(page, lm);
+    const where: Where = { tokenIds: token.ids, contractIds: pend.ids, address: stuck.address };
+    expect(checkModel(page, pend.model.all, where, knownOf(lm, stuck))).toContain(`pending:${lm.contract.deployTxHash}: derived without an evidence link`);
+    expect(checkModel(page, token.model.all, where, knownOf(lm))).toContain("visibility: derived without an evidence link");
   });
 
   it("negative control (E1a-F8): identity evidence that always cites the declarations fails for a minted-only token", () => {

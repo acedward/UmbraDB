@@ -1718,6 +1718,8 @@ function originView(o, ctx) {
       var dl = sectionEvidence(c, "traits");
       if (dl) { dl.text = "input: the declarations"; v.links.push(dl); }
     }
+    var dt = txEvidence(din.txHash, "input: tx");
+    if (dt) v.links.push(dt);
     if (v.links.length === 0 && c.section) {
       var ds = sectionEvidence(c, c.section);
       if (ds) v.links.push(ds);
@@ -1780,7 +1782,9 @@ function hashTokenSection(t, section) { return hashToken(t) + "/" + enc(section)
 // rows that show it: its declarations when it was declared, its mints when it was only minted, the
 // public movements of a colour no contract named (audit 03-E1a finding F8).
 function identitySection(t) {
-  if (!t || t.status === "builtin") return null;
+  if (!t) return null;
+  // a built-in row (NIGHT) is known by its colour: its public movements are what the chain shows of it
+  if (t.status === "builtin") return t.color ? "activity" : null;
   if (!t.address || !t.domainSep) return "activity";
   return t.status === "observed" ? "mints" : "events";
 }
@@ -1815,16 +1819,25 @@ function tokenModel(d) {
   function declCount(keyText) { return declCountOf(asciiHex(keyText), currentIdOf(o[keyText])); }
   function item(field, label, value, origin, extra) {
     var c = extra || ctx;
+    // A built-in row's values are the indexer's seed (a rule with no inputs): their evidence link is
+    // the section where the chain shows the token (NIGHT's movements) — audit 03-E1a finding R2A.
+    if (builtin && !c.section && idCtx && idCtx.section) {
+      var cc = {};
+      for (var k in c) if (own(c, k)) cc[k] = c[k];
+      cc.section = idCtx.section;
+      c = cc;
+    }
     var it = { field: field, label: label, value: valueOrNull(value), origin: originView(origin, c) };
     return it;
   }
   var facts = [];
+  // Where this token's identity is carried (and, for a built-in row, where the chain shows it).
+  var idCtx = { token: t, section: identitySection(t) };
   facts.push(item("address", "address",
     builtin ? "built-in row, no contract" : (seen ? "unknown" : t.address),
     builtin ? seeded : (seen ? noContract : pageOrigin("chain",
       "the contract that declared or minted this token; its deploy and calls are on the contract view",
-      { contract: t.address }))));
-  var idCtx = { token: t, section: identitySection(t) };
+      { contract: t.address })), builtin ? idCtx : undefined));
   facts.push(item("domainSep", "domainSep", seen ? "unknown" : t.domainSep,
     builtin ? seeded : (seen ? noContract : pageOrigin("chain",
       "MIP-0018 §4: carried by every declaration and mint of this token")), idCtx));
@@ -1858,7 +1871,8 @@ function tokenModel(d) {
   facts.push(item("deployHeight", "deploy height", t.deployHeight,
     builtin ? seeded : (t.deployHeight === null || t.deployHeight === undefined
       ? pageOrigin("none", seen ? "no contract is known for this colour (status seen)" : "the contract's deploy is not in the archive")
-      : pageOrigin("chain", "the block of the contract's deploy transaction (on the contract view)", { contract: t.address }))));
+      : pageOrigin("chain", "the block of the contract's deploy transaction (on the contract view)", { contract: t.address })),
+    builtin ? idCtx : undefined));
   var vis = visibilityOf(t);
   if (t.activityCount !== undefined) {
     var actOrigin = vis === "not-tracked" ? pageOrigin("none", "DUST is not tracked per token: every transaction pays a fee (Q13)")
@@ -1867,8 +1881,11 @@ function tokenModel(d) {
     facts.push(item("activityCount", "activity rows", t.activityCount, actOrigin, { token: t, section: "activity" }));
     facts.push(item("lastActivityHeight", "last activity height", t.lastActivityHeight, actOrigin, { token: t, section: "activity" }));
   }
+  // What the visibility decides is which section below lists this token's public data: it links it
+  // (audit 03-E1a finding R2A).
   facts.push(item("visibility", "what the chain lets this page show", visibilityOf(t),
-    pageOrigin("derived", "00023 §5: what the ledger publishes for this kind of token (DUST: not tracked, Q13)")));
+    pageOrigin("derived", "00023 §5: what the ledger publishes for this kind of token (DUST: not tracked, Q13)"),
+    { token: t, section: vis === "calls-only" ? (t.address ? "calls" : null) : (vis === "not-tracked" ? null : "activity") }));
   var disclosure = [];
   if (vis === "disclosed-imbalances") {
     disclosure.push(item("disclosedTransactions", "transactions disclose this colour", t.disclosedTransactions,
