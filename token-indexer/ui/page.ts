@@ -441,7 +441,8 @@ var state = {
   // mip is the one filter applied in the browser rather than by the API: "has metadata published
   // under MIP-0018" is a rule over the row's status, not a column the list route filters on.
   filters: { kind: "", storage: "", status: "", q: "", mip: "" },
-  list: { items: [], nextCursor: null, loaded: false },
+  // pages: how many pages of the list the refresh reads ("load more" adds one, R13A)
+  list: { items: [], nextCursor: null, loaded: false, pages: 1 },
   detail: null,
   contract: null,
   status: null,
@@ -2746,21 +2747,52 @@ function boundedNode(value, max, cls, openKey) {
 
 // ── Loaders ─────────────────────────────────────────────────────────────────────────────────
 
-function listQuery(cursor) {
-  var qs = P_TOKENS + "?limit=" + (state.filters.mip ? LIST_LIMIT_FILTERED : LIST_LIMIT);
-  if (state.filters.kind) qs += "&kind=" + enc(state.filters.kind);
-  if (state.filters.storage) qs += "&storage=" + enc(state.filters.storage);
-  if (state.filters.status) qs += "&status=" + enc(state.filters.status);
-  if (state.filters.q) qs += "&q=" + enc(state.filters.q);
+// f: the filters the whole read runs under, taken once when it starts (as the transactions
+// section's role filter, audit 03-E1a finding R11A)
+function listQuery(cursor, f) {
+  var qs = P_TOKENS + "?limit=" + f.limit;
+  if (f.kind) qs += "&kind=" + enc(f.kind);
+  if (f.storage) qs += "&storage=" + enc(f.storage);
+  if (f.status) qs += "&status=" + enc(f.status);
+  if (f.q) qs += "&q=" + enc(f.q);
   if (cursor) qs += "&cursor=" + enc(cursor);
   return qs;
 }
-async function loadList(cursor) {
-  var payload = await api(listQuery(cursor));
-  var items = itemsOf(payload);
-  state.list.items = cursor ? state.list.items.concat(items) : sortTokens(items);
-  state.list.nextCursor = payload && payload.nextCursor ? payload.nextCursor : null;
+function listFilters() {
+  return { kind: state.filters.kind, storage: state.filters.storage, status: state.filters.status,
+    q: state.filters.q, mip: state.filters.mip,
+    // the API's maximum page while the MIP-0018 filter is on (see visibleListItems)
+    limit: state.filters.mip ? LIST_LIMIT_FILTERED : LIST_LIMIT };
+}
+function sameListFilters(a, b) {
+  return a.kind === b.kind && a.storage === b.storage && a.status === b.status && a.q === b.q && a.mip === b.mip;
+}
+// The token list pages as every other "load more" of this page does: a page count that the refresh
+// reads, not a saved cursor whose read ends on its own (audit 03-E1a finding R13A: the list's "load
+// more" drew its own error on whatever view was current when it failed). One more page is therefore
+// a read of the refresh like any other: one that finishes after the route moved, or after the
+// filters changed, keeps nothing and draws nothing — neither its rows nor its error — and the view
+// now shown is read at once (R12A); the 10 s refresh keeps the pages the reader asked for. A later
+// page that fails keeps the rows read and reaches the banner (R4G, R5D). The rows of every page read
+// take their place in the list's order (sortTokens: built-ins first, colours nobody named last).
+async function loadList() {
+  var f = listFilters();
+  var page = null;
+  var failed = false;
+  var failure = null;
+  try {
+    page = await loadPages(function (c) { return listQuery(c, f); }, state.list.pages);
+  } catch (e) {
+    failed = true;
+    failure = e;
+  }
+  // the route or the filters moved on while this read ran: it is not the list now shown
+  if (state.route.view !== "list" || !sameListFilters(f, state.filters)) { state.staleRead = true; return; }
+  if (failed) throw failure;
+  state.list.items = sortTokens(page.items);
+  state.list.nextCursor = page.nextCursor;
   state.list.loaded = true;
+  if (page.error !== null) throw page.error;
 }
 function tokenBase(r) {
   return P_CONTRACTS + "/" + enc(r.address) + "/tokens/" + enc(r.domainSep) + "/" + enc(r.kind);
@@ -2989,7 +3021,7 @@ async function refresh() {
   await loadStatus().then(function () {}, function (e) { errors.push("status: " + e.message); });
   state.staleRead = false;
   try {
-    if (route.view === "list") await loadList(null);
+    if (route.view === "list") await loadList();
     else if (route.view === "token") await loadToken(route);
     else if (route.view === "contract") await loadContract(route.address);
     else if (route.view === "tx") await loadTx(route.hash);
@@ -3274,10 +3306,8 @@ function renderList(main) {
     var more = node("button", "load more");
     more.addEventListener("click", function () {
       more.disabled = true;
-      loadList(state.list.nextCursor).then(render, function (e) {
-        state.errors = ["list: " + e.message];
-        render();
-      });
+      state.list.pages = state.list.pages + 1;
+      refresh();
     });
     var bar = node("div", null, "row");
     bar.style.marginTop = "10px";
@@ -5093,7 +5123,7 @@ function onHashChange() {
     if (next.view === "contract") { state.contract = null; state.act.pages = 1; }
     if (next.view === "tx") state.tx = null;
     if (next.view === "offers") { state.offers.loaded = false; state.offers.pages = 1; }
-    if (next.view === "list") state.list.loaded = false;
+    if (next.view === "list") { state.list.loaded = false; state.list.pages = 1; }
   }
   render();
   refresh();
@@ -5107,6 +5137,7 @@ function applyFilters() {
   state.filters.mip = el("f-mip").value;
   state.list.loaded = false;
   state.list.items = [];
+  state.list.pages = 1;
   render();
   refresh();
 }

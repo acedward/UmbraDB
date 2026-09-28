@@ -111,6 +111,14 @@ What else the page shows:
 - A read that finishes after the route moved to another view is dropped — neither its result nor
   its errors are drawn under the new route — and the new route is read at once (audit 03-E1a finding
   R12A).
+- The token list's "load more" is a read of the refresh like every other "load more" of the page (it
+  had kept a read of its own, which drew its error on whatever view was current when it failed):
+  the list is a page count that the refresh reads, so the 10 s refresh keeps the pages asked for, a
+  read that finishes after the route moved or after the filters changed is dropped as above, and the
+  view now shown is read at once; every page of one read uses the filters taken when it starts; a
+  later page that fails keeps the rows read and reaches the banner. Returning to the list or changing
+  a filter starts again from one page; the rows of every page read take their place in the list's
+  order (built-ins first, colours nobody named last) (audit 03-E1a finding R13A).
 - The metadata document is pretty-printed only while that stays small (up to 4 096 compact
   characters, a pretty form of at most four times that); otherwise it is kept compact — a 32 KB
   document nested 128 deep pretty-prints to millions of characters. Either way it is drawn within

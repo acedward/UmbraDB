@@ -478,6 +478,56 @@ async function bootToken(f: TokenFixture, routes: Map<string, Json>, script = SE
   return live;
 }
 
+/** The fake API with a hook on the token list's page 2 (audit 03-E1a finding R13A): `onPage2` runs
+ *  once, as the page asks for that page and before its answer — the reader moving on meanwhile. */
+class ListPage2Hook extends Map<string, Json> {
+  page: Page | undefined;
+  fired = false;
+  onPage2: ((live: Page) => void) | undefined;
+  get(k: string): Json {
+    if (k === "/v1/tokens?limit=200&cursor=l1" && this.onPage2 && this.page && !this.fired) {
+      this.fired = true;
+      this.onPage2(this.page);
+    }
+    return super.get(k);
+  }
+}
+/** The token list over two pages (the recorded rows, then one synthetic row "PAGE2"; page 2 may
+ *  answer 503) beside token B (SNEB18) and its routes. */
+function listLoadMoreRoutes(onPage2?: (live: Page) => void, page2Fails = false): {
+  page1: Json; page2: Json; hashB: string; b: TokenFixture; routes: ListPage2Hook;
+} {
+  const rows = read("tokens.json");
+  const page1 = { items: rows.items, nextCursor: "l1" };
+  const page2 = { items: [{ ...clone(rows.items[7]), domainSep: "ee".repeat(32), name: "Page two", symbol: "PAGE2" }], nextCursor: null };
+  const b = tokenFixture("sneb18");
+  const hashB = `#/token/${b.token.address}/${b.token.domainSep}/${b.token.kind}`;
+  const routes = new ListPage2Hook(apiRoutes(b));
+  routes.onPage2 = onPage2;
+  routes.set("/v1/tokens?limit=200", page1);
+  routes.set("/v1/tokens?limit=200&cursor=l1", page2Fails ? new Reply(503, { error: { code: "UNAVAILABLE" } }) : page2);
+  return { page1, page2, hashB, b, routes };
+}
+function loadMoreButton(p: Page): FakeElement {
+  const btn = [...p.doc.getElementById("view")!.walk()].find((e) => e.tagName === "button" && e.textContent === "load more");
+  if (!btn) throw new Error("the list drew no load more button");
+  return btn;
+}
+/** The list's "load more" as it was before E1a-R13A: a read of its own, outside the refresh. */
+const PRE_R13A_LOAD_MORE = [
+  "      api(listQuery(state.list.nextCursor, listFilters())).then(function (payload) {",
+  "        state.list.items = state.list.items.concat(itemsOf(payload));",
+  "        state.list.nextCursor = payload && payload.nextCursor ? payload.nextCursor : null;",
+  "        state.list.loaded = true;",
+  "        render();",
+  "      }, function (e) {",
+  "        state.errors = [\"list: \" + e.message];",
+  "        render();",
+  "      });",
+  "",
+].join("\n");
+const R13A_LOAD_MORE = "      state.list.pages = state.list.pages + 1;\n      refresh();\n";
+
 // ── the test ────────────────────────────────────────────────────────────────────────────────────
 
 describe("the page shows the origin of every value", () => {
@@ -1083,6 +1133,92 @@ describe("the page shows the origin of every value", () => {
         expect(live.ctx.state.scrollTo, "B's section was scrolled to once B was drawn").toBeNull();
         expect(drawn.some((x) => x === `${b.token.domainSep}|${b.token.domainSep}`)).toBe(true);
       }
+    }
+
+    // ── E1a-R13A: the list's "load more" is a read of the refresh like the other reads ─────────
+    //    (a page that finishes after the route or the filters moved draws nothing on the view now
+    //    shown; the 10 s refresh keeps the pages asked for)
+    {
+      const { page1, page2, hashB, routes } = listLoadMoreRoutes();
+      const lp = loadPage(SERVED_SCRIPT, routes);
+      lp.boot();
+      await lp.settle();
+      expect(lp.ctx.state.list.items.length).toBe(page1.items.length);
+      loadMoreButton(lp).click();
+      await lp.settle();
+      expect(lp.requests).toContain(`/v1/tokens?limit=200&cursor=l1`);
+      expect(lp.ctx.state.list.items.length, "page 2 is drawn").toBe(page1.items.length + page2.items.length);
+      expect(lp.doc.getElementById("view")!.textContent).toContain("PAGE2");
+      // the 10 s refresh reads the same two pages again: the rows asked for stay
+      await lp.ctx.refresh();
+      await lp.settle();
+      expect(lp.ctx.state.list.items.length, "the refresh keeps the pages asked for").toBe(page1.items.length + page2.items.length);
+      expect(lp.doc.getElementById("view")!.textContent).toContain("PAGE2");
+      // a later page that fails keeps the rows read and reaches the banner (on the list itself)
+      routes.set("/v1/tokens?limit=200&cursor=l1", new Reply(503, { error: { code: "UNAVAILABLE" } }));
+      await lp.ctx.refresh();
+      await lp.settle();
+      expect(lp.ctx.state.list.items.length, "the rows read stay").toBe(page1.items.length);
+      expect(lp.ctx.state.errors.join(" ")).toContain("list: 503");
+      expect(lp.doc.getElementById("banner")!.textContent).toContain("list: 503");
+      // leaving the list and coming back starts again from one page
+      lp.navigate(hashB);
+      await lp.settle();
+      lp.navigate("#/");
+      await lp.settle();
+      expect(lp.ctx.state.list.pages).toBe(1);
+      expect(lp.ctx.state.list.items.length).toBe(page1.items.length);
+    }
+    for (const page2Fails of [true, false]) {
+      // the reader follows a list row to token B while the list's page 2 is still being read
+      const { page1, hashB, b, routes } = listLoadMoreRoutes((live) => {
+        live.window.location.hash = hashB;
+        live.ctx.onHashChange();
+      }, page2Fails);
+      const lp = loadPage(SERVED_SCRIPT, routes);
+      routes.page = lp;
+      lp.boot();
+      await lp.settle();
+      const drawnElsewhere: string[] = [];
+      const render0 = lp.ctx.render;
+      lp.ctx.render = (): void => {
+        if (lp.ctx.state.route.view !== "list") drawnElsewhere.push(lp.ctx.state.errors.join(" "));
+        render0();
+      };
+      loadMoreButton(lp).click();
+      await lp.settle();
+      expect(routes.fired, "the route moved while page 2 was read").toBe(true);
+      expect(drawnElsewhere.length).toBeGreaterThan(0);
+      expect(drawnElsewhere.filter((e) => e.includes("list")), "nothing of the list's read drawn under B's route").toEqual([]);
+      expect(lp.ctx.state.route.view).toBe("token");
+      expect(lp.ctx.state.detail.token.domainSep, "B read at once and drawn").toBe(b.token.domainSep);
+      expect(lp.doc.getElementById("banner")!.textContent).not.toContain("list");
+      expect(lp.ctx.state.list.items.length, "the dropped read kept nothing").toBe(page1.items.length);
+    }
+    {
+      // a filter changed while page 2 was read: the old filter's rows are never drawn under the new one
+      const { routes } = listLoadMoreRoutes((live) => {
+        live.doc.getElementById("q")!.value = "zzz";
+        live.ctx.applyFilters();
+      });
+      routes.set("/v1/tokens?limit=200&q=zzz", { items: [], nextCursor: null });
+      const lp = loadPage(SERVED_SCRIPT, routes);
+      routes.page = lp;
+      lp.boot();
+      await lp.settle();
+      const oldRowsUnderNewFilter: number[] = [];
+      const render0 = lp.ctx.render;
+      lp.ctx.render = (): void => {
+        if (lp.ctx.state.filters.q === "zzz" && lp.ctx.state.list.items.length > 0) oldRowsUnderNewFilter.push(lp.ctx.state.list.items.length);
+        render0();
+      };
+      loadMoreButton(lp).click();
+      await lp.settle();
+      expect(routes.fired).toBe(true);
+      expect(lp.requests).toContain("/v1/tokens?limit=200&q=zzz");
+      expect(oldRowsUnderNewFilter, "no row of the unfiltered read drawn under the filter").toEqual([]);
+      expect(lp.ctx.state.list.loaded).toBe(true);
+      expect(lp.ctx.state.list.items).toEqual([]);
     }
 
     // ── E1a-R5D: the shielded-offers view keeps its rows and reports a later page that failed ──
@@ -2093,6 +2229,44 @@ describe("the page shows the origin of every value", () => {
     await live.ctx.refresh();
     await live.settle();
     expect(drawn.some((x) => x === `${b.token.domainSep}|${a.token.domainSep}`)).toBe(true);
+  });
+
+  it("negative control (E1a-R13A): the list's own load-more read draws its error under the token route it no longer shows", async () => {
+    const broken = SERVED_SCRIPT.replace(R13A_LOAD_MORE, PRE_R13A_LOAD_MORE);
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const { hashB, routes } = listLoadMoreRoutes((live) => {
+      live.window.location.hash = hashB;
+      live.ctx.onHashChange();
+    }, true);
+    const lp = loadPage(broken, routes);
+    routes.page = lp;
+    lp.boot();
+    await lp.settle();
+    const drawnElsewhere: string[] = [];
+    const render0 = lp.ctx.render;
+    lp.ctx.render = (): void => {
+      if (lp.ctx.state.route.view !== "list") drawnElsewhere.push(lp.ctx.state.errors.join(" "));
+      render0();
+    };
+    loadMoreButton(lp).click();
+    await lp.settle();
+    expect(routes.fired).toBe(true);
+    expect(drawnElsewhere.some((e) => e.includes("list: 503")), "the list's error drawn under B's route").toBe(true);
+  });
+
+  it("negative control (E1a-R13A): a load-more read of its own is lost by the next 10 s refresh", async () => {
+    const broken = SERVED_SCRIPT.replace(R13A_LOAD_MORE, PRE_R13A_LOAD_MORE);
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const { page1, page2, routes } = listLoadMoreRoutes();
+    const lp = loadPage(broken, routes);
+    lp.boot();
+    await lp.settle();
+    loadMoreButton(lp).click();
+    await lp.settle();
+    expect(lp.ctx.state.list.items.length).toBe(page1.items.length + page2.items.length);
+    await lp.ctx.refresh();
+    await lp.settle();
+    expect(lp.ctx.state.list.items.length, "back to one page").toBe(page1.items.length);
   });
 
   it("negative control (E1a-S2): with the contract's rows unread, the family guessed from one row", async () => {
