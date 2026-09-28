@@ -554,6 +554,9 @@ describe("the page shows the origin of every value", () => {
         expect(drawToken(page, f).model.facts.find((i: Json) => i.field === "firstSeenHeight").origin.links[0].href).toMatch(/\/mints$/);
         f.token.firstMintHeight = firstDecl + 50; f.token.firstSeenHeight = firstDecl;
         expect(drawToken(page, f).model.facts.find((i: Json) => i.field === "firstSeenHeight").origin.links[0].href).toMatch(/\/events$/);
+        // E1a-R3D: a movement first (100), then a mint (150), then the declaration: the movement
+        f.token.firstSeenHeight = firstDecl - 100; f.token.firstMintHeight = firstDecl - 50;
+        expect(drawToken(page, f).model.facts.find((i: Json) => i.field === "firstSeenHeight").origin.links[0].href).toMatch(/\/activity$/);
       }
       const seenRow = rows.find((r) => r.status === "seen")!;
       const seenColor = drawRow(page, seenRow).model.facts.find((i: Json) => i.field === "color");
@@ -1150,8 +1153,18 @@ describe("the page shows the origin of every value", () => {
     expect(checkModel(page, token.model.all, where, knownOf(lm))).toContain("visibility: derived without an evidence link");
   });
 
+  it("negative control (E1a-R3D): first seen guessed from the current status cites the declarations for a movement-first token", () => {
+    const broken = SERVED_SCRIPT.replace("  if (partial && t.address && t.domainSep && (t.status", "  if (t.address && t.domainSep && (t.status");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const f = clone(tokenFixture("sneb18"));
+    const firstDecl = Math.min(...f.events.items.filter((e: Json) => e.domainSep === f.token.domainSep).map((e: Json) => Number(e.blockHeight)));
+    f.token.firstSeenHeight = firstDecl - 100; f.token.firstMintHeight = firstDecl - 50;
+    expect(drawToken(page, f).model.facts.find((i: Json) => i.field === "firstSeenHeight").origin.links[0].href).toMatch(/\/events$/);
+  });
+
   it("negative control (E1a-R2I): first seen cited by status, not by its observation, fails the check", () => {
-    const broken = SERVED_SCRIPT.replace("    { token: t, section: firstSeenSection(t, events) }));", "    idCtx));");
+    const broken = SERVED_SCRIPT.replace("    { token: t, section: firstSeenSection(t, events, partial) }));", "    idCtx));");
     expect(broken).not.toBe(SERVED_SCRIPT);
     const page = loadPage(broken);
     const f = clone(tokenFixture("sneb18"));

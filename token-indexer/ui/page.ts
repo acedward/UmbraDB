@@ -1782,11 +1782,12 @@ function hashTokenSection(t, section) { return hashToken(t) + "/" + enc(section)
 // rows that show it: its declarations when it was declared, its mints when it was only minted, the
 // public movements of a colour no contract named (audit 03-E1a finding F8).
 // The observation that set a token's first-seen height, so its evidence link lands on it: a mint at
-// that height, else a declaration of this token at that height, else — for a declared token whose
-// declaration lies beyond the events read — its declarations, else its public movements (audit
-// 03-E1a finding R2I: a described token first minted at 100 and declared at 200 cited the
-// declarations).
-function firstSeenSection(t, events) {
+// that height, else a declaration of this token at that height, else its public movements — never
+// guessed from the token's current status (audit 03-E1a findings R2I, R3D: movement at 100, mint at
+// 150, declaration at 200 is first seen at 100 by the movement). Only when the page read fewer events
+// than the contract has, a declared token's first declaration may lie beyond them: then its
+// declarations, where the partial read is said.
+function firstSeenSection(t, events, partial) {
   if (!t) return null;
   if (t.status === "builtin") return identitySection(t);
   var h = Number(t.firstSeenHeight);
@@ -1796,7 +1797,7 @@ function firstSeenSection(t, events) {
     var e = list[i];
     if (e && txt(e.domainSep) === txt(t.domainSep) && Number(e.kindByte) === Number(t.kind) && Number(e.blockHeight) === h) return "events";
   }
-  if (t.address && t.domainSep && (t.status === "declared" || t.status === "described")) return "events";
+  if (partial && t.address && t.domainSep && (t.status === "declared" || t.status === "described")) return "events";
   return "activity";
 }
 function identitySection(t) {
@@ -1885,7 +1886,7 @@ function tokenModel(d) {
   facts.push(item("lastMintHeight", "last mint height", t.lastMintHeight, o.mints, mintCtx));
   facts.push(item("firstSeenHeight", "first seen height", t.firstSeenHeight,
     builtin ? seeded : pageOrigin("derived", "the lowest block height at which a declaration, a mint or a public movement of this token was seen"),
-    { token: t, section: firstSeenSection(t, events) }));
+    { token: t, section: firstSeenSection(t, events, partial) }));
   facts.push(item("metadataUpdatedHeight", "metadata updated height", t.metadataUpdatedHeight,
     t.metadataUpdatedHeight === null || t.metadataUpdatedHeight === undefined
       ? pageOrigin("none", builtin ? "a built-in row carries no declaration" : "no applied declaration")
