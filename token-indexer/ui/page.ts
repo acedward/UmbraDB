@@ -1811,7 +1811,12 @@ function declarationsOf(events, t) {
 }
 function declaredValueText(e) {
   if (!e) return "-";
-  if (Number(e.valType) === 5) return "Null (the key was cleared)";
+  // a Null clears its key only when it was applied: a rejected one (e.g. a Null with bytes,
+  // val_type_rule) cleared nothing, and its bytes are shown whole (audit 03-E1a finding R8A)
+  if (Number(e.valType) === 5) {
+    if (e.applied === true) return "Null (the key was cleared)";
+    return e.value ? "Null with bytes 0x" + txt(e.value) + " (not applied)" : "Null (not applied)";
+  }
   if (Number(e.valType) === 2 && e.integer !== null && e.integer !== undefined) return txt(e.integer);
   if (e.text !== null && e.text !== undefined) return txt(e.text);
   // the whole bytes: the drawing bounds them (head … tail, the length, copy the whole value) — a

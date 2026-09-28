@@ -68,7 +68,8 @@ What else the page shows:
   route's summary of the publication changed or the kept document is a minute old (audit 03-E1a
   findings F4, R2C).
 - An earlier declaration of a key and a raw event's value are drawn within 160 characters (head …
-  tail, the length, copy the whole value — for opaque bytes, every byte: audit 03-E1a finding R6D); a current value is drawn whole up to 2 048 drawn
+  tail, the length, copy the whole value — for opaque bytes, every byte: audit 03-E1a finding R6D;
+  a Null says it cleared its key only when it was applied — a rejected one shows its bytes, R8A); a current value is drawn whole up to 2 048 drawn
   characters — every realistic long value, e.g. a 677-byte metadata document — and past that on the
   reader's request ("show all", kept across refreshes); at most 500 keys of a token are drawn, the
   rest named with a link to all of them; a name or a symbol in a table row (the contract's token rows

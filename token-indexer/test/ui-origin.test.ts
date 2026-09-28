@@ -836,6 +836,23 @@ describe("the page shows the origin of every value", () => {
       expect(chip.textContent).toBe("2 parts · mixed — a publisher error (FR-002)");
     }
 
+    // ── E1a-R8A: a rejected Null cleared nothing — its row says so and shows its bytes ────────
+    {
+      const lm = tokenFixture("lmoon18");
+      const nul = lm.events.items.find((e: Json) => e.eventId === 80);
+      const bad = { ...clone(nul), eventId: 95, partEventIds: [95], blockHeight: nul.blockHeight + 40, valLen: 1, value: "78",
+        applied: false, rejectReason: "val_type_rule", origin: { ...clone(nul.origin), evidence: { ...clone(nul.origin.evidence), eventIds: [95] } } };
+      const f = clone(lm); f.events.items.push(bad);
+      const drawn = drawToken(loadPage(SERVED_SCRIPT), f);
+      const evSec = [...drawn.root.walk()].find((el) => el.id === "events")!;
+      const row = (id: number): string => [...evSec.walk()].find((el) => el.tagName === "tr" && el.getAttribute("data-o") === `event:${id}`)!.textContent;
+      expect(row(95)).toContain("Null with bytes 0x78 (not applied)");
+      expect(row(95)).not.toContain("the key was cleared");
+      expect(row(80), "an applied Null still says it cleared the key").toContain("Null (the key was cleared)");
+      // the rejected Null is not part of the key's history
+      expect(drawn.model.traits.find((i: Json) => i.label === "description").history.map((h: Json) => h.eventId)).not.toContain(95);
+    }
+
     // ── E1a-R5D: the shielded-offers view keeps its rows and reports a later page that failed ──
     {
       const routes = new Map<string, Json>([["/internal/status", { net: "undeployed" }]]);
@@ -1668,6 +1685,19 @@ describe("the page shows the origin of every value", () => {
     const drawn = drawContract(loadPage(broken), contractState(up, mixedIface));
     const pubRow = [...drawn.root.walk()].find((el) => el.getAttribute("data-o") === "iface:publication")!;
     expect(pubRow.textContent).not.toContain("publisher error");
+  });
+
+  it("negative control (E1a-R8A): a rejected Null drawn as a clear hides its bytes", () => {
+    const broken = SERVED_SCRIPT.replace("    if (e.applied === true) return \"Null (the key was cleared)\";\n", "    return \"Null (the key was cleared)\";\n");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const lm = tokenFixture("lmoon18");
+    const nul = lm.events.items.find((e: Json) => e.eventId === 80);
+    const f = clone(lm);
+    f.events.items.push({ ...clone(nul), eventId: 95, partEventIds: [95], valLen: 1, value: "78", applied: false, rejectReason: "val_type_rule" });
+    const evSec = [...drawToken(loadPage(broken), f).root.walk()].find((el) => el.id === "events")!;
+    const text = [...evSec.walk()].find((el) => el.tagName === "tr" && el.getAttribute("data-o") === "event:95")!.textContent;
+    expect(text).toContain("the key was cleared");
+    expect(text).not.toContain("0x78");
   });
 
   it("negative control (E1a-S2): with the contract's rows unread, the family guessed from one row", async () => {
