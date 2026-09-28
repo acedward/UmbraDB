@@ -90,3 +90,16 @@ a7affa4c892b64c074a2bbc7eaffeba52bc784b8:token-indexer/test/multipart-golden.tes
 74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:577
 74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:598
 74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:619
+# Project 00024-03 (PR feat/00024-03-ui): 35 more PUBLIC-data false positives of the stock
+# generic-api-key rule, all in commit 09e5e49 — the captured API payloads of the page tests
+# (token-indexer/test/fixtures/ui/, provenance in its SOURCE.md). Every hit is a `keySha256` field:
+# the SHA-256 of a PUBLIC verifier key, as the API serves it in a contract's public interface (the
+# key itself is on chain); "key" in the field name reads as credential context. The fixtures are
+# one-line JSON, so the 35 hits are three fingerprints, all on line 1 of an immutable blob:
+# token-uprompi.json 9 hits (blob cb30514e), token-sstarpi.json 8 (d8438797),
+# interface-outcomes.json 18 (dd7ff5c4) — each hit judged. Nothing here is a credential. Exact
+# fingerprints, as above: a re-recorded fixture or a real key pasted into these files is a new
+# commit, a different fingerprint, and still fails the gate.
+09e5e497967476f5b5f6845a3a201b41853c4236:token-indexer/test/fixtures/ui/token-uprompi.json:generic-api-key:1
+09e5e497967476f5b5f6845a3a201b41853c4236:token-indexer/test/fixtures/ui/token-sstarpi.json:generic-api-key:1
+09e5e497967476f5b5f6845a3a201b41853c4236:token-indexer/test/fixtures/ui/interface-outcomes.json:generic-api-key:1
