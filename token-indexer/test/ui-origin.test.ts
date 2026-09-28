@@ -643,18 +643,24 @@ describe("the page shows the origin of every value", () => {
       expect([...note.walk()].some((el) => el.className.includes("orig"))).toBe(true);
     }
 
-    // ── E1a-S1: the contract's events are kept for a minute across refreshes ──────────────────
+    // ── E1a-R5A: every refresh reads the history the fresh metadata belongs to ────────────────
     {
       const lm = tokenFixture("lmoon18");
-      const live = await bootToken(lm, apiRoutes(lm));
-      const eventReads = (): number => live.requests.filter((r) => r.includes("/events?")).length;
-      expect(eventReads()).toBe(1);
-      await live.ctx.refresh(); await live.ctx.refresh();
-      expect(eventReads(), "younger than a minute: kept").toBe(1);
-      expect(live.ctx.tokenModel(live.ctx.state.detail).traits.find((i: Json) => i.label === "description").history.length).toBe(2);
-      live.ctx.state.detail.eventsAt -= 61_000;
+      const routes = apiRoutes(lm);
+      const live = await bootToken(lm, routes);
+      // a Null and a replacement of description are indexed before the next refresh
+      const cur = lm.events.items.find((e: Json) => e.eventId === 82);
+      const nul = { ...clone(lm.events.items.find((e: Json) => e.eventId === 80)), eventId: 90, partEventIds: [90], blockHeight: cur.blockHeight + 5 };
+      const rep = { ...clone(cur), eventId: 91, partEventIds: [91], blockHeight: cur.blockHeight + 6, text: "the newest description" };
+      routes.set(`/v1/contracts/${lm.token.address}/events?limit=500`, { items: [...lm.events.items, nul, rep], nextCursor: null });
+      const meta = clone(lm.metadata);
+      const k = meta.keys.find((x: Json) => x.key === "description");
+      Object.assign(k, { eventId: 91, updatedHeight: rep.blockHeight, text: rep.text, origin: { ...clone(k.origin), evidence: { ...clone(k.origin.evidence), eventIds: [91], blockHeight: rep.blockHeight } } });
+      routes.set(`/v1/contracts/${lm.token.address}/tokens/${lm.token.domainSep}/${lm.token.kind}/metadata`, meta);
       await live.ctx.refresh();
-      expect(eventReads(), "a minute old: read again").toBe(2);
+      const d2 = live.ctx.tokenModel(live.ctx.state.detail).traits.find((i: Json) => i.label === "description");
+      expect(d2.history.map((h: Json) => h.eventId), "the Null and the older ones, from the same refresh").toEqual([90, 82, 80, 78]);
+      expect(d2.origin.detail).toContain("the latest of 5 declarations of this key");
     }
 
     // ── E1a-R4G: a later page that fails keeps the pages read ────────────────────────────────
@@ -1376,15 +1382,6 @@ describe("the page shows the origin of every value", () => {
     expect(live.doc.getElementById("mints")!.textContent).not.toContain("mints are listed");
   });
 
-  it("negative control (E1a-S1): without keeping them, the contract's events are read on every refresh", async () => {
-    const broken = SERVED_SCRIPT.replace("  return Date.now() - prev.eventsAt < EVENTS_MAX_AGE_MS ? prev : null;", "  return null;");
-    expect(broken).not.toBe(SERVED_SCRIPT);
-    const lm = tokenFixture("lmoon18");
-    const live = await bootToken(lm, apiRoutes(lm), broken);
-    await live.ctx.refresh(); await live.ctx.refresh();
-    expect(live.requests.filter((r) => r.includes("/events?")).length).toBe(3);
-  });
-
   it("negative control (E1a-R4G): a later failed page that discards the pages read says no mint was observed", async () => {
     const broken = SERVED_SCRIPT.replace("      if (i === 0) throw e;\n      return { items: items, nextCursor: cursor, error: e };", "      throw e;");
     expect(broken).not.toBe(SERVED_SCRIPT);
@@ -1484,8 +1481,8 @@ describe("the page shows the origin of every value", () => {
   });
 
   it("negative control (E1a-F2): one page of events loses the history past it", async () => {
-    const broken = SERVED_SCRIPT.replace("loadPages(function (c) { return contractEventsPath(address, c); }, EVENT_PAGES)",
-      "loadPages(function (c) { return contractEventsPath(address, c); }, 1)");
+    const broken = SERVED_SCRIPT.replace("loadPages(function (c) { return contractEventsPath(r.address, c); }, EVENT_PAGES)",
+      "loadPages(function (c) { return contractEventsPath(r.address, c); }, 1)");
     expect(broken).not.toBe(SERVED_SCRIPT);
     const { f, routes } = lmoonBehindFillers(1);
     const live = await bootToken(f, routes, broken);
