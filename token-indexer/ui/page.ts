@@ -2415,13 +2415,22 @@ function urlNode(uv) {
 // length, and copied whole (audit 03-E1a finding F5). Diagnostics arrive bounded by the indexer and
 // are drawn as served; a URL has urlNode.
 var NAME_MAX = 160;
+var HISTORY_MAX = 160;
 var SIG_MAX = 400;
 var TEXT_MAX = 1000;
+// The budget holds for what is DRAWN: the marks shown() puts in place of hidden characters count
+// too (one hidden character draws as eight), so head and tail are marked first, then cut (audit
+// 03-E1a finding R2D). Only a bounded head and tail of the value are ever scanned.
 function clipText(value, max) {
   var v = txt(value);
-  if (v.length <= max) return { text: v, cut: false, length: v.length };
+  var whole = v.length <= max ? shown(v) : null;
+  if (whole !== null && whole.length <= max) return { text: whole, cut: false, length: v.length };
   var head = Math.floor(max * 0.7);
-  return { text: v.slice(0, head) + "…" + v.slice(v.length - (max - head)), cut: true, length: v.length };
+  var tail = max - head;
+  var h = shown(v.slice(0, head)).slice(0, head);
+  var t = shown(v.slice(Math.max(0, v.length - tail)));
+  t = t.slice(Math.max(0, t.length - tail));
+  return { text: h + "…" + t, cut: true, length: v.length };
 }
 function boundedNode(value, max, cls) {
   var c = clipText(value, max);
@@ -4136,7 +4145,10 @@ function traitsSection(m) {
       hr.className = "hist";
       cell(hr, node("span", "↳ earlier", "note"));
       cell(hr, node("span", typeLabel(hi.valType), "vtype"));
-      cell(hr, node("span", hi.value === null ? "-" : hi.value, Number(hi.valType) === 5 ? "no" : "txt wrapv"));
+      // An earlier declaration and a raw event are drawn within HISTORY_MAX (copied whole): up to
+      // 2 000 events of up to 64 KB each must not become hundreds of millions of characters (R2D).
+      cell(hr, hi.value === null ? node("span", "-", "no")
+        : boundedNode(hi.value, HISTORY_MAX, Number(hi.valType) === 5 ? "no" : "txt wrapv"));
       cell(hr, "-", "num");
       cell(hr, partsPhaseCell(hi.parts, hi.phase));
       cell(hr, node("span", "superseded", "no"));
@@ -4233,7 +4245,7 @@ function eventsSection(items, markDomain, heading, moreOf) {
     cell(tr, orDash(e.valLen === undefined ? e.len : e.valLen), "num");
     var value = e.text !== undefined && e.text !== null ? txt(e.text)
       : (e.value ? (hexText(e.value) || shortHex(e.value, 10, 8)) : null);
-    cell(tr, value === null ? node("span", Number(e.valType) === 5 ? "Null" : "-", "no") : node("span", value, "wrapv"));
+    cell(tr, value === null ? node("span", Number(e.valType) === 5 ? "Null" : "-", "no") : boundedNode(value, HISTORY_MAX, "wrapv"));
     cell(tr, e.applied === true ? node("span", "yes", "txt")
       : (e.applied === false ? node("span", "no", "err") : "-"));
     cell(tr, e.rejectReason ? node("span", txt(e.rejectReason), "err wrapv") : node("span", "-", "no"));

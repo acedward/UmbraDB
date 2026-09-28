@@ -24,6 +24,8 @@ import { type FakeElement, type Json, type Page, SERVED_SCRIPT, loadPage } from 
  *  - E1a-F14: bidi and invisible characters (U+202E, U+200B, tags …) are drawn as visible marks
  *    "⟨U+202E⟩" in text and tooltips — two distinct identifiers never look the same — while copying
  *    keeps the original characters; every piece of published text is a bidi-isolated island.
+ *  - E1a-R2D: up to 2 000 events are read; an earlier declaration and a raw event are drawn within
+ *    160 characters — the marks of hidden characters counted — and copied whole.
  *
  * The page script runs in `node:vm` exactly as served (`helpers/ui-page.ts`).
  */
@@ -99,6 +101,30 @@ function budgetOf(root: FakeElement): { text: number; longestAttribute: number; 
   return { text: root.textContent.length, longestAttribute: longest, baseline: base };
 }
 const groupedCount = (n: number): string => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0");
+/** LMOON18 whose key "custom" was declared `n` + 1 times, each value `len` U+202E characters. */
+function floodedToken(n: number, len: number): Json {
+  const lm = read("token-lmoon18.json");
+  const t = lm.token;
+  const model = lm.events.items[0];
+  const keyHex = Buffer.from("custom").toString("hex");
+  const events = Array.from({ length: n + 1 }, (_, i) => ({ ...model, eventId: 100_000 + i, blockHeight: 10_000 + i, txPosition: 0,
+    domainSep: t.domainSep, kindByte: t.kind, key: keyHex.padEnd(64, "0"), keyHex, keyText: "custom", valType: 1, valLen: len * 3,
+    text: "\u202E".repeat(len), value: "e280ae".repeat(len), applied: true,
+    origin: { origin: "mip-0018", evidence: { ...model.origin.evidence, eventIds: [100_000 + i] } } }));
+  const current = events[n]!;
+  const keys = [{ key: "custom", keyHex, valType: 1, valLen: len * 3, value: current.value, text: current.text, integer: null,
+    projectionError: null, updatedHeight: current.blockHeight, updatedTxHash: current.txHash, eventId: current.eventId,
+    segment: current.segment, parts: 1, phase: "guaranteed", origin: current.origin }];
+  return { token: t, keys, mints: [], events, siblings: lm.contract.tokens, activity: null, calls: lm.calls ?? null, notes: [] };
+}
+function drawTokenState(page: Page, detail: Json): FakeElement {
+  const t = detail.token;
+  page.ctx.state.route = { view: "token", address: t.address, domainSep: t.domainSep, kind: String(t.kind) };
+  page.ctx.state.detail = detail;
+  const root = page.doc.createElement("main");
+  page.ctx.renderToken(root);
+  return root;
+}
 /** Valid JSON, as a bundle's package.json may publish it: objects whose toString is not callable. */
 const HOSTILE_BUILD = JSON.parse('{"compiler":"0.34.0","language":{"toString":null},"runtime":{"toString":null,"valueOf":null},'
   + '"interface":[1,{"toString":null}],"flags":[{"toString":null},"--vscode"]}');
@@ -260,6 +286,21 @@ describe("the page draws hostile values without breaking", () => {
     cp.click();
     await P2.settle();
     expect(P2.copied[0]).toBe(longSpoof);
+
+    // ── E1a-R2D: many long declarations of one key stay a bounded drawing ─────────────────────
+    const declared = floodedToken(600, 12_000);
+    const fp = loadPage();
+    const drawnFlood = drawTokenState(fp, declared);
+    const floodText = drawnFlood.textContent.length;
+    expect(floodText, "600 earlier declarations + 601 raw events of 12 000 hidden characters each").toBeLessThan(600_000);
+    expect(drawTokenState(loadPage(), floodedToken(100, 4_000)).textContent.length, "the negative control's view, bounded").toBeLessThan(100_000);
+    const histRows = [...drawnFlood.walk()].filter((el) => el.className === "hist");
+    expect(histRows.length).toBe(600);
+    for (const r of histRows.slice(0, 5)) expect(r.textContent.length).toBeLessThan(700);
+    const histCopy = [...histRows[0]!.walk()].find((el) => el.className.includes("cpbtn"))!;
+    histCopy.click();
+    await fp.settle();
+    expect(fp.copied[0], "the earlier value is copied whole").toBe("\u202E".repeat(12_000));
   });
 
   it("negative control (E1a-F4): without the summary key the publication is read on every refresh", async () => {
@@ -280,6 +321,15 @@ describe("the page draws hostile values without breaking", () => {
     expect(live.requests.filter((r) => r.endsWith("/interface")).length).toBe(1);
   });
 
+  it("negative control (E1a-R2D): earlier declarations and raw events drawn whole flood the view", () => {
+    const hist = "      cell(hr, hi.value === null ? node(\"span\", \"-\", \"no\")\n        : boundedNode(hi.value, HISTORY_MAX,";
+    expect(SERVED_SCRIPT).toContain(hist);
+    const broken = SERVED_SCRIPT.replace("var HISTORY_MAX = 160;", "var HISTORY_MAX = 100000000;");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const drawn = drawTokenState(loadPage(broken), floodedToken(100, 4_000));
+    expect(drawn.textContent.length).toBeGreaterThan(5_000_000); // bounded, the same view draws < 100 000
+  });
+
   it("negative control (E1a-F4): without the byte bound a flood is read whole", async () => {
     const broken = SERVED_SCRIPT.replace("if (n > MAX_RESPONSE_BYTES) {", "if (false) {");
     expect(broken).not.toBe(SERVED_SCRIPT);
@@ -291,9 +341,12 @@ describe("the page draws hostile values without breaking", () => {
   });
 
   it("negative control (E1a-F5): drawn whole, a megabyte name floods the view and its attributes", () => {
-    const broken = SERVED_SCRIPT.replace("  if (v.length <= max) return { text: v, cut: false, length: v.length };",
-      "  return { text: v, cut: false, length: v.length };").replace('field: "iface:circuit:" + c,', 'field: "iface:circuit:" + txt(cl[c].name),');
-    expect(broken).not.toBe(SERVED_SCRIPT);
+    const cut = "  if (whole !== null && whole.length <= max) return { text: whole, cut: false, length: v.length };";
+    const key = 'field: "iface:circuit:" + c,';
+    expect(SERVED_SCRIPT).toContain(cut);
+    expect(SERVED_SCRIPT).toContain(key);
+    const broken = SERVED_SCRIPT.replace(cut, "  return { text: v, cut: false, length: v.length };")
+      .replace(key, 'field: "iface:circuit:" + txt(cl[c].name),');
     const drawn = drawContract(broken, hugeNames().iface);
     const sizes = budgetOf(drawn.root);
     expect(sizes.text).toBeGreaterThan(sizes.baseline + 3_000_000);

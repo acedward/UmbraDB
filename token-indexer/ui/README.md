@@ -52,7 +52,12 @@ What else the page shows:
   earlier declarations — a Null included — newest first.
 - Every answer is read up to 64 MiB (`MAX_RESPONSE_BYTES`: a longer announced length is refused, a
   longer stream cancelled), and the contract view reads `/interface` again only when the contract
-  route's summary of the publication changed (audit 03-E1a finding F4).
+  route's summary of the publication changed or the kept document is a minute old (audit 03-E1a
+  findings F4, R2C).
+- An earlier declaration of a key and a raw event's value are drawn within 160 characters (head …
+  tail, the length, copy the whole value); the current value of every key, the metadata document and
+  the facts stay whole (spec US5: a long value is shown in full). Every such budget counts the drawn
+  marks of hidden characters too (audit 03-E1a finding R2D).
 - Text a bundle chooses — circuit, argument and witness names, file paths, build fields — is drawn
   as its head … tail with its length and copied whole (160 characters for a name or a path, 400 for
   a signature, 1 000 for other interface values); interface items are keyed by position, so no
