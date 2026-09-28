@@ -102,7 +102,9 @@ What else the page shows:
 - The transactions section holds what it draws — the newest pages read, under the reader's role
   filter: a height (last activity, first seen) cites it only when a row at that height is drawn, a
   count only when every row is (no filter, no further page), a seen colour's colour and kind only
-  when a row is drawn; otherwise the token's API row (audit 03-E1a finding R10A).
+  when a row is drawn; otherwise the token's API row (audit 03-E1a finding R10A). Every page of one
+  read uses the filter taken when the read starts; a filter, a "load more" or a route asked for while
+  a refresh runs is read by the refresh that follows it, never dropped (R11A).
 - A URL (bundle URL, tokenUri) is parsed by the browser's own URL parser: its destination host —
   percent-decoded, IDNA-mapped, as the browser will go to it — is always shown beside the shortened
   text; a URL the parser refuses, or one with user information before its host, is not a link; a

@@ -969,6 +969,44 @@ describe("the page shows the origin of every value", () => {
       expect(links("lastActivityHeight")).toEqual([section]);
     }
 
+    // ── E1a-R11A: one filter for every page of a read; a filter chosen meanwhile is read next ──
+    {
+      const ss = tokenFixture("sstarpi");
+      const base = `/v1/contracts/${ss.token.address}/tokens/${ss.token.domainSep}/${ss.token.kind}`;
+      const move = (h: number, role: string): Json => ({ ...clone(ss.activity.items[0]), blockHeight: h, role, txHash: h.toString(16).padStart(64, "0") });
+      const f = clone(ss); f.token.activityCount = 300; f.token.lastActivityHeight = 300;
+      let live: Page | undefined;
+      let switched = false;
+      // the reader picks "UTXO created" while the first page of a two-page read is on its way
+      class Hooked extends Map<string, Json> {
+        get(k: string): Json {
+          if (k === `${base}/transactions?limit=200` && live && live.ctx.state.act.pages === 2 && !switched) {
+            switched = true;
+            live.ctx.state.act.role = "utxo_out";
+            void live.ctx.refresh(); // the select's handler: asked while a refresh runs
+          }
+          return super.get(k);
+        }
+      }
+      const routes = new Hooked(apiRoutes(f));
+      routes.set(base, f.token);
+      routes.set(`${base}/transactions?limit=200`, { items: Array.from({ length: 200 }, (_, i) => move(300 - i, "utxo_in")), nextCursor: "c" });
+      routes.set(`${base}/transactions?limit=200&cursor=c`, { items: Array.from({ length: 100 }, (_, i) => move(100 - i, "utxo_in")), nextCursor: null });
+      routes.set(`${base}/transactions?limit=200&role=utxo_out`, { items: [move(50, "utxo_out")], nextCursor: null });
+      routes.set(`${base}/transactions?limit=200&role=utxo_out&cursor=c`, { items: [], nextCursor: null });
+      live = await bootToken(f, routes);
+      live.ctx.state.act.pages = 2;
+      await live.ctx.refresh();
+      await live.settle();
+      expect(switched).toBe(true);
+      expect(live.requests, "the second page of the unfiltered read stays unfiltered").toContain(`${base}/transactions?limit=200&cursor=c`);
+      expect(live.requests, "no page mixes the new filter into the old read").not.toContain(`${base}/transactions?limit=200&role=utxo_out&cursor=c`);
+      expect(live.requests, "the filter chosen meanwhile is read next").toContain(`${base}/transactions?limit=200&role=utxo_out`);
+      expect(live.ctx.state.detail.activityRole).toBe("utxo_out");
+      const count = live.ctx.tokenModel(live.ctx.state.detail).facts.find((i: Json) => i.field === "activityCount");
+      expect(count.origin.links.map((l: Json) => l.href), "a filtered read is not every row").toEqual([base]);
+    }
+
     // ── E1a-R5D: the shielded-offers view keeps its rows and reports a later page that failed ──
     {
       const routes = new Map<string, Json>([["/internal/status", { net: "undeployed" }]]);
@@ -1897,6 +1935,33 @@ describe("the page shows the origin of every value", () => {
     const t = { ...clone(ss.token), mintCount: 1_300 };
     const cm = loadPage(broken).ctx.contractModel({ contract: { ...clone(ss.contract), tokens: [t] }, events: [], calls: null, notes: [], iface: null, ifaceLoaded: true });
     expect(cm.tokens[0].items.find((i: Json) => i.label === "mints").origin.links[0].href).toMatch(/\/mints$/);
+  });
+
+  it("negative control (E1a-R11A): each page reading the live filter mixes two filters into one read", async () => {
+    const broken = SERVED_SCRIPT.replace("  await loadPages(function (c) { return activityPath(t, c, role); }, state.act.pages).then(",
+      "  await loadPages(function (c) { return activityPath(t, c, state.act.role); }, state.act.pages).then(");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const ss = tokenFixture("sstarpi");
+    const base = `/v1/contracts/${ss.token.address}/tokens/${ss.token.domainSep}/${ss.token.kind}`;
+    let live: Page | undefined;
+    let switched = false;
+    class Hooked extends Map<string, Json> {
+      get(k: string): Json {
+        if (k === `${base}/transactions?limit=200` && live && live.ctx.state.act.pages === 2 && !switched) {
+          switched = true;
+          live.ctx.state.act.role = "utxo_out";
+        }
+        return super.get(k);
+      }
+    }
+    const routes = new Hooked(apiRoutes(ss));
+    routes.set(`${base}/transactions?limit=200`, { items: [clone(ss.activity.items[0])], nextCursor: "c" });
+    routes.set(`${base}/transactions?limit=200&role=utxo_out&cursor=c`, { items: [], nextCursor: null });
+    live = await bootToken(ss, routes, broken);
+    live.ctx.state.act.pages = 2;
+    await live.ctx.refresh();
+    await live.settle();
+    expect(live.requests).toContain(`${base}/transactions?limit=200&role=utxo_out&cursor=c`);
   });
 
   it("negative control (E1a-S2): with the contract's rows unread, the family guessed from one row", async () => {

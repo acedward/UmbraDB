@@ -459,7 +459,8 @@ var state = {
   timer: null,
   tick: null,
   debounce: null,
-  busy: false
+  busy: false,
+  again: false
 };
 
 // ── DOM helpers (textContent only; this file assigns no markup anywhere) ────────────────────
@@ -2768,11 +2769,12 @@ function eventsReadText(why) {
   return "the page reads a contract's first " + groupDigits(EVENT_PAGES * EVENT_LIMIT) + " events";
 }
 // FR-006 by (address, domainSep, kind); FR-008 by colour for a row that has no address yet (US5).
-function activityPath(t, cursor) {
+// role: the filter the whole read runs under, taken once when it starts (audit 03-E1a finding R11A)
+function activityPath(t, cursor, role) {
   var p;
   if (t.address && t.domainSep) p = tokenBase(t) + "/transactions?limit=" + ACT_LIMIT;
   else p = P_COLORS + "/" + enc(t.color) + "/transactions?limit=" + ACT_LIMIT + "&kind=" + enc(t.kind);
-  if (state.act.role) p += "&role=" + enc(state.act.role);
+  if (role) p += "&role=" + enc(role);
   if (cursor) p += "&cursor=" + enc(cursor);
   return p;
 }
@@ -2853,8 +2855,11 @@ async function loadTokenActivity(d) {
       function (e) { d.callsFailed = true; d.notes.push("contract calls unavailable: " + e.message); });
     return;
   }
-  d.activityRole = state.act.role || null;
-  await loadPages(function (c) { return activityPath(t, c); }, state.act.pages).then(
+  // One filter for every page of the read: a filter chosen while it runs is read by the refresh that
+  // follows it, never mixed into this one (audit 03-E1a finding R11A).
+  var role = state.act.role || null;
+  d.activityRole = role;
+  await loadPages(function (c) { return activityPath(t, c, role); }, state.act.pages).then(
     function (p) { d.activity = p; partlyNote(d.notes, "transactions", p); },
     function (e) { d.activityFailed = true; d.notes.push("transactions unavailable: " + e.message); });
 }
@@ -2960,8 +2965,11 @@ async function loadStatus() { state.status = await api(P_STATUS); }
 // ── Refresh: the status strip on every view, plus whatever the view needs ───────────────────
 
 async function refresh() {
-  if (state.busy) return;
+  // A refresh asked for while one runs (a filter, "load more", a route) is not dropped: it runs as
+  // soon as this one ends (audit 03-E1a finding R11A).
+  if (state.busy) { state.again = true; return; }
   state.busy = true;
+  state.again = false;
   var errors = [];
   var route = state.route;
   await loadStatus().then(function () {}, function (e) { errors.push("status: " + e.message); });
@@ -2978,6 +2986,7 @@ async function refresh() {
   if (errors.length === 0) state.lastOk = new Date();
   state.busy = false;
   render();
+  if (state.again) { state.again = false; refresh(); }
 }
 
 // ── Chrome: banner, strip, tabs, filters ────────────────────────────────────────────────────
