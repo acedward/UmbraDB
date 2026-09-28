@@ -750,6 +750,25 @@ describe("the page shows the origin of every value", () => {
       for (const it of cm.all) for (const l of it.origin.links) expect(l.href, it.field).not.toMatch(/\/calls$/);
     }
 
+    // ── E1a-R6B: the keys, circuits and witnesses are an answer only when Level 2 ran ─────────
+    {
+      const up = tokenFixture("uprompi");
+      const lp = loadPage(SERVED_SCRIPT);
+      // the latest check never reached Level 2: the API sends empty lists
+      const unread = clone(up.interface);
+      Object.assign(unread, { status: "unreachable", level: 0, levels: { l1: "not_run", l2: "not_run", l3: "not_run" }, witnesses: [], keys: [], circuits: [] });
+      const t1 = drawContract(lp, contractState(up, unread)).root.textContent;
+      expect(t1).not.toContain("no witness declared");
+      expect(t1).not.toContain("no key:");
+      expect(t1).not.toContain("no circuit:");
+      expect(t1.split("not known: Level 2 reads them, and the latest check did not run it").length - 1, "keys, circuits, witnesses").toBe(3);
+      // Level 2 ran and the bundle lists no witness: that is an answer
+      const ran = clone(up.interface); ran.witnesses = [];
+      const t2 = drawContract(lp, contractState(up, ran)).root.textContent;
+      expect(t2).toContain("no witness declared: Level 2 read the bundle's contract information and it lists none");
+      expect(t2).not.toContain("not known: Level 2 reads them");
+    }
+
     // ── E1a-R5D: the shielded-offers view keeps its rows and reports a later page that failed ──
     {
       const routes = new Map<string, Json>([["/internal/status", { net: "undeployed" }]]);
@@ -1539,6 +1558,15 @@ describe("the page shows the origin of every value", () => {
     await cl.settle();
     const cm = cl.ctx.contractModel(cl.ctx.state.contract);
     expect(cm.facts.find((i: Json) => i.field === "lastCallHeight").origin.links[0].href).toMatch(/\/calls$/);
+  });
+
+  it("negative control (E1a-R6B): empty Level 2 lists read as answers when Level 2 never ran", () => {
+    const broken = SERVED_SCRIPT.replace('  var l2Ran = !!(x.levels && (x.levels.l2 === "passed" || x.levels.l2 === "failed"));', "  var l2Ran = true;");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const up = tokenFixture("uprompi");
+    const unread = clone(up.interface);
+    Object.assign(unread, { status: "unreachable", level: 0, levels: { l1: "not_run", l2: "not_run", l3: "not_run" }, witnesses: [], keys: [], circuits: [] });
+    expect(drawContract(loadPage(broken), contractState(up, unread)).root.textContent).toContain("no witness declared");
   });
 
   it("negative control (E1a-S2): with the contract's rows unread, the family guessed from one row", async () => {

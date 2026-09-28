@@ -2358,9 +2358,13 @@ function interfaceModel(x, address, loaded) {
   var rl = x.report && typeof x.report === "object" && x.report.levels && typeof x.report.levels === "object" ? x.report.levels : {};
   var circuitsTruncated = !!(rl.l2 && typeof rl.l2 === "object" && rl.l2.circuitsTruncated === true);
   var checksTotal = Number(x.checks);
+  // The keys, the circuits and the witnesses are read at Level 2: an empty list is an answer only
+  // when Level 2 ran (passed or failed); otherwise they are not known (audit 03-E1a finding R6B —
+  // the API sends [] for a check that never reached Level 2).
+  var l2Ran = !!(x.levels && (x.levels.l2 === "passed" || x.levels.l2 === "failed"));
   return { present: true, status: st, rows: rows, files: files, keys: keys, circuits: circuits,
     witnesses: witnesses, checks: checks, history: history, roles: roles, url: uv, address: address,
-    circuitsTruncated: circuitsTruncated,
+    circuitsTruncated: circuitsTruncated, l2Ran: l2Ran,
     historyMore: olderTotal > hl.length ? olderTotal : null,
     checksMore: checksTotal > chl.length ? checksTotal : null };
 }
@@ -4650,7 +4654,7 @@ function interfaceSection(face) {
       cell(tr, boundedNode(it.label, NAME_MAX, "txt wrapv"));
       cell(tr, copyable(it.value, shortHex(txt(it.value || ""), 10, 8), "hex"));
       cell(tr, orDash(it.row.l2));
-    }, "no key: the check did not reach Level 2"));
+    }, face.l2Ran ? "no key: Level 2 ran and its report lists none" : L2_NOT_RUN));
   sec.appendChild(ifaceTable("circuits the interface publishes, with their argument types", face.circuits,
     ["circuit", "signature", "pure", "on chain", "key SHA-256", "Level 2", "origin"], function (tr, it) {
       cell(tr, boundedNode(it.label, NAME_MAX, "txt wrapv"));
@@ -4659,7 +4663,7 @@ function interfaceSection(face) {
       cell(tr, it.row.onChain === true ? "yes" : (it.row.onChain === false ? "no" : "-"));
       cell(tr, copyable(it.row.keySha256, shortHex(txt(it.row.keySha256 || ""), 10, 8), "hex"));
       cell(tr, orDash(it.row.l2));
-    }, "no circuit: the check did not reach Level 2"));
+    }, face.l2Ran ? "no circuit: Level 2 ran and summarised none" : L2_NOT_RUN));
   if (face.circuitsTruncated) {
     // the cut is a result of the publication's check (its report says so): an occurrence of that
     // row with its origin, and no count of its own (audit 03-E1a findings R4C, R5B)
@@ -4668,7 +4672,8 @@ function interfaceSection(face) {
     sec.appendChild(asOccurrence(cutNote, face, "circuitsTruncated"));
   }
   sec.appendChild(ifaceTable("witnesses the bundle's code declares", face.witnesses,
-    ["witness", "origin"], function (tr, it) { cell(tr, boundedNode(it.value, NAME_MAX, "txt wrapv")); }, "no witness declared"));
+    ["witness", "origin"], function (tr, it) { cell(tr, boundedNode(it.value, NAME_MAX, "txt wrapv")); },
+    face.l2Ran ? "no witness declared: Level 2 read the bundle's contract information and it lists none" : L2_NOT_RUN));
   sec.appendChild(ifaceTable("check history (newest first)", face.checks,
     ["check", "checked at", "trigger", "result", "levels", "L3", "reason", "state block", "origin"], function (tr, it) {
       var ch = it.row;
@@ -4722,6 +4727,7 @@ function ifaceValue(r) {
   return boundedNode(r.value, TEXT_MAX, "txt wrapv");
 }
 // A sub-table of the interface section: its heading, its rows (each with its chip), or why none.
+var L2_NOT_RUN = "not known: Level 2 reads them, and the latest check did not run it (see the levels above)";
 function ifaceTable(heading, items, labels, fill, emptyText) {
   var box = node("div", null, "txsec");
   // no count in the caption: every row is drawn below with its origin (audit 03-E1a finding R4C)

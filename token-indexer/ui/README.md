@@ -46,7 +46,9 @@ What else the page shows:
   (`historical`), each with its own result. The API serves the newest 100 checks and older
   publications: when more exist the section says "the newest N of M" and links the paginated
   `GET /v1/contracts/:address/interface/events` (audit 03-E1a finding F6). Diagnostics are shown
-  exactly as served (bounded by the indexer).
+  exactly as served (bounded by the indexer). The keys, the circuits and the witnesses are read at
+  Level 2: an empty list says "none" only when Level 2 ran (passed or failed); after a check that did
+  not run it they are "not known" — the API sends `[]` either way (audit 03-E1a finding R6B).
 - **The heading** of the token view draws every value it shows as its own marked occurrence with its
   own chip: the family badge (a derived value: ledger / dual / collection / privacy, linking the
   contract whose rows decide it), the name (or, for a colour no contract has named, the colour), the
