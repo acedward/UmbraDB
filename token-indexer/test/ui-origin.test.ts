@@ -359,8 +359,8 @@ function checkPayloadShown(root: FakeElement, payload: Json): string[] {
   const { pieces, words } = payloadPieces(payload);
   for (const el of root.walk()) {
     if (el.children.length > 0 || markedAncestor(el) !== null) continue;
-    // a column heading names a field; a table's caption names it and counts its (marked) rows
-    if (el.tagName === "th" || el.className === "h") continue;
+    // a column heading names a field, it shows no value (captions carry no count: E1a-R4C)
+    if (el.tagName === "th") continue;
     const text = el.textContent;
     if (text.trim() === "") continue;
     const bare = text.trim().replace(/^[(\[·\s]+|[)\]·,:\s]+$/g, "");
@@ -1110,6 +1110,15 @@ describe("the page shows the origin of every value", () => {
     const drawn = drawToken(page, tokenFixture("sneb18"));
     expect(checkPayloadShown(drawn.root, tokenDetail(tokenFixture("sneb18")))).toContain('"(shielded)": a value drawn outside any marked element');
     expect(marksOf(drawn.root).get("privacy")?.length).toBe(1);
+  });
+
+  it("negative control (E1a-R4C): a caption that counts its rows draws a value without an origin", () => {
+    const broken = SERVED_SCRIPT.replace('  box.appendChild(node("div", heading, "h"));', '  box.appendChild(node("div", heading + " · " + items.length, "h"));');
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const up = tokenFixture("uprompi");
+    const drawn = drawContract(page, contractState(up, up.interface));
+    expect(checkPayloadShown(drawn.root, contractState(up, up.interface)).some((v) => v.includes('holds "21"'))).toBe(true);
   });
 
   it("negative control (E1a-R3B): the family badge under the name's origin fails the check", () => {

@@ -2025,7 +2025,11 @@ function tokenModel(d) {
     token: t, facts: facts, disclosure: disclosure, iface: ifaceItem, metadata: metadata,
     traits: traits, mints: mints, activity: activity, calls: calls, siblings: siblings, events: ev,
     historyPartial: partial, mintsMore: d.mintsMore === true,
-    traitsMore: keysAll.length > TRAIT_ROWS ? keysAll.length : null
+    traitsMore: keysAll.length > TRAIT_ROWS ? keysAll.length : null,
+    // how many keys the API serves: a count of the token's own, drawn in the traits section's note
+    traitsCount: keysAll.length > TRAIT_ROWS ? item("traits:count", "keys", keysAll.length,
+      pageOrigin("derived", "the number of keys GET …/metadata serves for this token"),
+      { token: t, api: t.address && t.domainSep ? tokenBase(t) + "/metadata" : P_COLORS + "/" + enc(t.color) }) : null
   };
   model.all = collectItems(model);
   return model;
@@ -2113,6 +2117,8 @@ function collectItems(model) {
     push(model.face.witnesses); push(model.face.checks); push(model.face.history); push(model.face.roles || []);
   }
   push(model.pending || []);
+  if (model.traitsCount) all.push(model.traitsCount);
+  if (model.tokensCount) all.push(model.tokensCount);
   return all;
 }
 
@@ -3108,8 +3114,7 @@ function activitySection(t, d, items, countItem) {
   bar.appendChild(sel);
   var rows = d.activity ? d.activity.items : [];
   bar.appendChild(node("span",
-    (d.activity ? rows.length + " row" + (rows.length === 1 ? "" : "s") : "loading…")
-    + (d.activity && d.activity.nextCursor ? " (more available)" : ""), "note"));
+    (d.activity ? "" : "loading…") + (d.activity && d.activity.nextCursor ? "more rows available below" : ""), "note"));
   // the index's own count is a value of the token: drawn as an occurrence of it, with its origin
   // (audit 03-E1a finding R3B)
   if (t.activityCount !== null && t.activityCount !== undefined && countItem) {
@@ -4264,7 +4269,7 @@ function traitsSection(m) {
   }
   if (m.historyPartial) traits.appendChild(partialEventsNote(m.token.address, "the earlier declarations listed under a key"));
   if (m.traitsMore !== null) {
-    var tm = node("div", null, "note err");
+    var tm = marked(node("div", null, "note err"), m.traitsCount.field);
     tm.appendChild(node("span", "the first " + groupDigits(m.traits.length) + " of " + groupDigits(m.traitsMore)
       + " keys are listed — all of them: "));
     var ta = node("a", "every key (API)");
@@ -4272,6 +4277,8 @@ function traitsSection(m) {
     ta.target = "_blank";
     ta.rel = "noopener";
     tm.appendChild(ta);
+    tm.appendChild(node("span", "  "));
+    tm.appendChild(originChip(m.traitsCount.origin));
     traits.appendChild(tm);
   }
   var tb = tableIn(traits, ["key", "type", "value", "len", "parts · phase", "projection", "block", "tx", "event id", "origin"]);
@@ -4625,7 +4632,8 @@ function ifaceValue(r) {
 // A sub-table of the interface section: its heading, its rows (each with its chip), or why none.
 function ifaceTable(heading, items, labels, fill, emptyText) {
   var box = node("div", null, "txsec");
-  box.appendChild(node("div", heading + " · " + items.length, "h"));
+  // no count in the caption: every row is drawn below with its origin (audit 03-E1a finding R4C)
+  box.appendChild(node("div", heading, "h"));
   if (items.length === 0) {
     box.appendChild(node("div", emptyText, "empty"));
     return box;

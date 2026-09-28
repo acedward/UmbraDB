@@ -339,6 +339,9 @@ describe("the page draws hostile values without breaking", () => {
     const traitsSec = [...kview.walk()].find((el) => el.id === "traits")!;
     expect([...traitsSec.walk()].filter((el) => el.tagName === "tr" && (el.getAttribute("data-o") ?? "").startsWith("trait:")).length).toBe(500);
     expect(traitsSec.textContent).toContain("the first 500 of 2\u00a0000 keys are listed — all of them: every key (API)");
+    // the count is a value of the token's: a marked occurrence with its derived origin (E1a-R4C)
+    const countNote = [...traitsSec.walk()].find((el) => el.getAttribute("data-o") === "traits:count")!;
+    expect([...countNote.walk()].some((el) => el.className.includes("orig") && el.textContent === "Derived by this indexer")).toBe(true);
     // the reader asks for the whole value: it is drawn whole, and stays so across a re-render
     const firstRow = [...traitsSec.walk()].find((el) => el.tagName === "tr" && (el.getAttribute("data-o") ?? "").startsWith("trait:"))!;
     [...firstRow.walk()].find((el) => el.tagName === "button" && el.textContent === "show all")!.click();
