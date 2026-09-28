@@ -504,8 +504,14 @@ describe("the page shows the origin of every value", () => {
       }
       expect(drawn.model.face.status.text).toBe(s === "verified" ? "verified L1/L2/L3" : s === "failed" ? "failed at L2"
         : s === "stale" ? "stale (was L1/L2/L3)" : s);
-      // both roles, each publication with its own result
-      expect(drawn.model.face.rows.find((r: Json) => r.field === "iface:role").value).toBe("current");
+      // both roles, each publication with its own result; the role itself is a P2 choice of this
+      // indexer, labelled "Derived by this indexer" (E1a-F9), linking the interface section
+      const roleRow = drawn.model.face.rows.find((r: Json) => r.field === "iface:role");
+      expect(roleRow.value).toBe("current");
+      expect(roleRow.origin.kind).toBe("derived");
+      expect(roleRow.origin.rule).toMatch(/^P2 \(spec 00024 §9\.2\)/);
+      expect(roleRow.origin.links[0].href).toBe(`#/contract/${up.token.address}/interface`);
+      expect(drawn.model.face.roles.map((r: Json) => [r.value, r.origin.kind])).toEqual(INTERFACE_STATUSES.map(() => ["historical", "derived"]));
       expect(drawn.model.face.history.map((h: Json) => h.row.role)).toEqual(INTERFACE_STATUSES.map(() => "historical"));
       expect(drawn.model.face.history.map((h: Json) => h.status.status)).toEqual([...INTERFACE_STATUSES]);
     });
@@ -728,6 +734,16 @@ describe("the page shows the origin of every value", () => {
     const violations = snebChecks(broken).model;
     expect(violations).toContain("color: derived from 2 inputs without a link to them");
     expect(violations).toContain("status: derived from 2 inputs without a link to them");
+  });
+
+  it("negative control (E1a-F9): a role labelled with the publication's origin fails the check", () => {
+    const broken = SERVED_SCRIPT.replace('row("role", "role", x.role, { help: ROLE_HELP[x.role] || null }, roleOrigin(x));',
+      'row("role", "role", x.role, { help: ROLE_HELP[x.role] || null });');
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const up = tokenFixture("uprompi");
+    const drawn = drawContract(page, contractState(up, up.interface));
+    expect(drawn.model.face.rows.find((r: Json) => r.field === "iface:role").origin.kind).toBe("public-interface");
   });
 
   it("negative control (E1a-F8): identity evidence that always cites the declarations fails for a minted-only token", () => {

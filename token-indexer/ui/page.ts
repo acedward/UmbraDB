@@ -1349,6 +1349,16 @@ var INTERFACE_STATUS = {
   "stale": { cls: "if-wait",
     help: "the contract's verifier keys changed in a maintenance update: waiting for re-verification" }
 };
+// The role of a publication is a choice this indexer makes by rule P2, so it is labelled "Derived by
+// this indexer" with that rule (spec US6: "current" choices made by a §9.2 rule), not with the
+// publication's own origin (audit 03-E1a finding F9). The API serves the role without an origin of
+// its own, so the label is the page's (Q28).
+var P2_RULE = "P2 (spec 00024 §9.2): a contract's newest publication — by block, transaction position and "
+  + "execution order — is its current one, whatever its result (Q14); every older one is historical";
+function roleOrigin(p) {
+  var q = p && typeof p === "object" ? p : {};
+  return pageOrigin("derived", P2_RULE, { eventId: q.eventId, blockHeight: q.blockHeight, txPosition: q.txPosition });
+}
 var ROLE_HELP = {
   "current": "the newest publication of this contract (P2: block, transaction position, execution order)",
   "historical": "an older publication, kept with its own last result; never presented as current"
@@ -1897,7 +1907,7 @@ function collectItems(model) {
   push(model.events || []);
   if (model.face) {
     push(model.face.rows); push(model.face.files); push(model.face.keys); push(model.face.circuits);
-    push(model.face.witnesses); push(model.face.checks); push(model.face.history);
+    push(model.face.witnesses); push(model.face.checks); push(model.face.history); push(model.face.roles || []);
   }
   push(model.pending || []);
   return all;
@@ -1978,14 +1988,16 @@ function interfaceModel(x, address, loaded) {
   var O = x.origin;
   var st = interfaceStatusView(x);
   var rows = [];
-  function row(field, label, value, extra) {
-    var r = { field: "iface:" + field, label: label, value: valueOrNull(value), origin: originView(O, ctx) };
+  var roleCtx = { address: address, section: "interface" };
+  function row(field, label, value, extra, own0) {
+    var r = { field: "iface:" + field, label: label, value: valueOrNull(value),
+      origin: own0 ? originView(own0, roleCtx) : originView(O, ctx) };
     if (extra) for (var k in extra) if (own(extra, k)) r[k] = extra[k];
     rows.push(r);
     return r;
   }
   row("status", "status", st.text, { status: st });
-  row("role", "role", x.role, { help: ROLE_HELP[x.role] || null });
+  row("role", "role", x.role, { help: ROLE_HELP[x.role] || null }, roleOrigin(x));
   row("levels", "levels", levelsLine(x.levels));
   if (st.failedLevel !== null) row("failure", "failed at", "L" + st.failedLevel + (x.reason ? ": " + x.reason : ""), { diagnostic: true });
   else if (x.reason) row("reason", "reason", x.reason, { diagnostic: true });
@@ -2051,17 +2063,22 @@ function interfaceModel(x, address, loaded) {
   }
   var history = [];
   var hl = arr(x.history);
+  var roles = [];
   for (var q = 0; q < hl.length; q++) {
-    history.push({ field: "iface:history:" + hl[q].eventId, label: "publication " + hl[q].eventId,
+    var hi = { field: "iface:history:" + hl[q].eventId, label: "publication " + hl[q].eventId,
       value: interfaceStatusView(hl[q]).text, origin: originView(hl[q].origin, ctx), row: hl[q],
-      status: interfaceStatusView(hl[q]), url: urlView(hl[q].url) });
+      status: interfaceStatusView(hl[q]), url: urlView(hl[q].url) };
+    hi.role = { field: "iface:history:" + hl[q].eventId + ":role", label: "role", value: valueOrNull(hl[q].role),
+      origin: originView(roleOrigin(hl[q]), roleCtx) };
+    roles.push(hi.role);
+    history.push(hi);
   }
   // The API serves the newest 100 older publications and the newest 100 checks: say how many there
   // are when that is fewer than all (audit 03-E1a finding F6), and link the paginated route.
   var olderTotal = Number(x.publications) - 1;
   var checksTotal = Number(x.checks);
   return { present: true, status: st, rows: rows, files: files, keys: keys, circuits: circuits,
-    witnesses: witnesses, checks: checks, history: history, url: uv, address: address,
+    witnesses: witnesses, checks: checks, history: history, roles: roles, url: uv, address: address,
     historyMore: olderTotal > hl.length ? olderTotal : null,
     checksMore: checksTotal > chl.length ? checksTotal : null };
 }
@@ -4195,7 +4212,7 @@ function interfaceSection(face) {
       cell(tr, partsPhaseCell(h.parts, h.phase));
       cell(tr, copyable(h.commitment, shortHex(txt(h.commitment || ""), 8, 6), "hex"));
       cell(tr, h.url === null || h.url === undefined ? node("span", h.urlError ? "not decodable: " + h.urlError : "-", "no") : urlNode(it.url));
-      cell(tr, withTitle(node("span", orDash(h.role), "note"), ROLE_HELP[h.role] || ""));
+      marked(cell(tr, withOrigin(withTitle(node("span", orDash(h.role), "note"), ROLE_HELP[h.role] || ""), it.role.origin)), it.role.field);
       cell(tr, ifaceBadge(it.status));
       cell(tr, node("span", h.reason ? txt(h.reason) : "-", h.reason ? "err wrapv diag" : "no"));
       cell(tr, orDash(h.checkedAt));
