@@ -1007,6 +1007,39 @@ describe("the page shows the origin of every value", () => {
       expect(count.origin.links.map((l: Json) => l.href), "a filtered read is not every row").toEqual([base]);
     }
 
+    // ── E1a-R11B: from a colour route, a cited section of the named token keeps what was read ──
+    {
+      const ss = tokenFixture("sstarpi");
+      const base = `/v1/contracts/${ss.token.address}/tokens/${ss.token.domainSep}/${ss.token.kind}`;
+      const move = (h: number): Json => ({ ...clone(ss.activity.items[0]), blockHeight: h, txHash: h.toString(16).padStart(64, "0") });
+      const named = { ...clone(ss.token), firstSeenHeight: 100, firstMintHeight: 700, lastActivityHeight: 300, activityCount: 2 };
+      const routes = apiRoutes({ ...ss, token: named });
+      routes.set(base, named);
+      routes.set(`/v1/colors/${named.color}`, { tokens: [{ ...named, traits: [], mints: { items: [], nextCursor: null } }] });
+      routes.set(`${base}/transactions?limit=200`, { items: [move(300)], nextCursor: "a1" });
+      routes.set(`${base}/transactions?limit=200&cursor=a1`, { items: [move(100)], nextCursor: null });
+      const live = loadPage(SERVED_SCRIPT, routes);
+      live.window.location.hash = `#/color/${named.color}/${named.kind}`;
+      live.boot();
+      await live.settle();
+      live.ctx.state.act.pages = 2; // "load more": block 100 is drawn now
+      await live.ctx.refresh();
+      const fs = live.ctx.tokenModel(live.ctx.state.detail).facts.find((i: Json) => i.field === "firstSeenHeight");
+      const href = fs.origin.links[0].href;
+      expect(href).toBe(`#/token/${ss.token.address}/${ss.token.domainSep}/${ss.token.kind}/activity`);
+      // follow it: the same token — the two pages stay read, block 100 is still drawn and cited
+      live.navigate(href);
+      await live.settle();
+      expect(live.ctx.state.act.pages, "the section keeps its pages").toBe(2);
+      expect(live.ctx.state.detail.activity.items.map((a: Json) => a.blockHeight)).toEqual([300, 100]);
+      const fs2 = live.ctx.tokenModel(live.ctx.state.detail).facts.find((i: Json) => i.field === "firstSeenHeight");
+      expect(fs2.origin.links[0].href).toBe(href);
+      // another token's route still starts afresh
+      live.navigate(`#/token/${ss.token.address}/${"00".repeat(32)}/${ss.token.kind}`);
+      await live.settle();
+      expect(live.ctx.state.act.pages).toBe(1);
+    }
+
     // ── E1a-R5D: the shielded-offers view keeps its rows and reports a later page that failed ──
     {
       const routes = new Map<string, Json>([["/internal/status", { net: "undeployed" }]]);
@@ -1962,6 +1995,26 @@ describe("the page shows the origin of every value", () => {
     await live.ctx.refresh();
     await live.settle();
     expect(live.requests).toContain(`${base}/transactions?limit=200&role=utxo_out&cursor=c`);
+  });
+
+  it("negative control (E1a-R11B): following a colour route's section link to the named route resets its pages", async () => {
+    const broken = SERVED_SCRIPT.replace("  var same = routeKey(next) === routeKey(state.route) || sameTokenAs(next);", "  var same = routeKey(next) === routeKey(state.route);");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const ss = tokenFixture("sstarpi");
+    const base = `/v1/contracts/${ss.token.address}/tokens/${ss.token.domainSep}/${ss.token.kind}`;
+    const routes = apiRoutes(ss);
+    routes.set(`/v1/colors/${ss.token.color}`, { tokens: [{ ...clone(ss.token), traits: [], mints: { items: [], nextCursor: null } }] });
+    routes.set(`${base}/transactions?limit=200`, { items: [clone(ss.activity.items[0])], nextCursor: "a1" });
+    routes.set(`${base}/transactions?limit=200&cursor=a1`, { items: [], nextCursor: null });
+    const live = loadPage(broken, routes);
+    live.window.location.hash = `#/color/${ss.token.color}/${ss.token.kind}`;
+    live.boot();
+    await live.settle();
+    live.ctx.state.act.pages = 2;
+    await live.ctx.refresh();
+    live.navigate(`#/token/${ss.token.address}/${ss.token.domainSep}/${ss.token.kind}/activity`);
+    await live.settle();
+    expect(live.ctx.state.act.pages).toBe(1);
   });
 
   it("negative control (E1a-S2): with the contract's rows unread, the family guessed from one row", async () => {

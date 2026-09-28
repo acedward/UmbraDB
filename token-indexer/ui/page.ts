@@ -5030,9 +5030,20 @@ function render() {
 
 // ── Wiring ──────────────────────────────────────────────────────────────────────────────────
 
+// A token route and the colour route of the same token are one view: a named token opened from its
+// colour cites its sections on its token route, and following such a link must keep what the section
+// has read (its pages, its filter, what is open) — or the rows that justified the citation are gone
+// at the destination (audit 03-E1a finding R11B).
+function sameTokenAs(next) {
+  var t = state.detail && state.detail.token;
+  if (!t || next.view !== "token" || state.route.view !== "token") return false;
+  if (next.color) return txt(next.color) === txt(t.color) && txt(next.kind) === txt(t.kind);
+  return !!t.address && txt(next.address) === txt(t.address) && txt(next.domainSep) === txt(t.domainSep)
+    && txt(next.kind) === txt(t.kind);
+}
 function onHashChange() {
   var next = parseHash();
-  var same = routeKey(next) === routeKey(state.route);
+  var same = routeKey(next) === routeKey(state.route) || sameTokenAs(next);
   state.route = next;
   // A section named in the route is scrolled to once drawn; a route without one forgets any
   // earlier target, so it cannot fire later on another view.

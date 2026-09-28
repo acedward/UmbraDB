@@ -105,6 +105,9 @@ What else the page shows:
   when a row is drawn; otherwise the token's API row (audit 03-E1a finding R10A). Every page of one
   read uses the filter taken when the read starts; a filter, a "load more" or a route asked for while
   a refresh runs is read by the refresh that follows it, never dropped (R11A).
+- A named token's colour route and its token route are one view: following a section link from one to
+  the other keeps what the section has read (its pages, its filter, what is open) (audit 03-E1a
+  finding R11B).
 - A URL (bundle URL, tokenUri) is parsed by the browser's own URL parser: its destination host —
   percent-decoded, IDNA-mapped, as the browser will go to it — is always shown beside the shortened
   text; a URL the parser refuses, or one with user information before its host, is not a link; a
