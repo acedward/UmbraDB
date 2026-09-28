@@ -669,6 +669,17 @@ describe("the page shows the origin of every value", () => {
     const descRow = [...lmoon.root.walk()].find((el) => el.getAttribute("data-o") === desc.field)!;
     expect([...descRow.walk()].some((el) => el.className === "p1" && el.title.startsWith("P1 (spec 00024 §9.2)"))).toBe(true);
     expect(lmoon.model.facts.find((i: Json) => i.field === "name").origin.p1).toBe(true); // renamed once
+    // E1a-R3G: a declaration indexed between the metadata read and the events read is NEWER than the
+    // current value shown — never listed as earlier, never counted before it
+    {
+      const f = clone(tokenFixture("lmoon18"));
+      const cur = f.events.items.find((e: Json) => e.eventId === 82);
+      f.events.items.push({ ...clone(cur), eventId: 95, partEventIds: [95], blockHeight: cur.blockHeight + 10, text: "a newer description",
+        origin: { ...clone(cur.origin), evidence: { ...clone(cur.origin.evidence), eventIds: [95], blockHeight: cur.blockHeight + 10 } } });
+      const d2 = drawToken(page, f).model.traits.find((i: Json) => i.label === "description");
+      expect(d2.history.map((h: Json) => h.eventId)).toEqual([80, 78]);
+      expect(d2.origin.detail).toContain("the latest of 3 declarations of this key");
+    }
 
     // ── every status of the API, current and historical, on the contract view ─────────────────
     const up = tokenFixture("uprompi");
@@ -1151,6 +1162,18 @@ describe("the page shows the origin of every value", () => {
     const where: Where = { tokenIds: token.ids, contractIds: pend.ids, address: stuck.address };
     expect(checkModel(page, pend.model.all, where, knownOf(lm, stuck))).toContain(`pending:${lm.contract.deployTxHash}: derived without an evidence link`);
     expect(checkModel(page, token.model.all, where, knownOf(lm))).toContain("visibility: derived without an evidence link");
+  });
+
+  it("negative control (E1a-R3G): a newer declaration listed as earlier fails the check", () => {
+    const broken = SERVED_SCRIPT.replace("      if (Number(all[h].eventId) === Number(kv.eventId) || !earlier(all[h], cur)) continue;",
+      "      if (Number(all[h].eventId) === Number(kv.eventId)) continue;");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const f = clone(tokenFixture("lmoon18"));
+    const cur = f.events.items.find((e: Json) => e.eventId === 82);
+    f.events.items.push({ ...clone(cur), eventId: 95, partEventIds: [95], blockHeight: cur.blockHeight + 10, text: "a newer description" });
+    const d2 = drawToken(page, f).model.traits.find((i: Json) => i.label === "description");
+    expect(d2.history.map((h: Json) => h.eventId)).toContain(95);
   });
 
   it("negative control (E1a-R3D): first seen guessed from the current status cites the declarations for a movement-first token", () => {

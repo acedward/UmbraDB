@@ -1824,17 +1824,30 @@ function tokenModel(d) {
   var partial = d.eventsMore === true;
   // How many applied declarations a key has among the events read; when the contract has more
   // events than the page reads, the current declaration may lie beyond them and counts as one more.
-  function declCountOf(keyId, currentId) {
+  // Only declarations that come BEFORE the current one in P1's order count, or are listed as earlier:
+  // the metadata and the events are two reads, and a declaration indexed between them is newer than
+  // the current value the page shows — never "earlier" (audit 03-E1a finding R3G).
+  function earlier(e, cur) {
+    if (!cur) return true;
+    if (Number(e.blockHeight) !== Number(cur.blockHeight)) return Number(e.blockHeight) < Number(cur.blockHeight);
+    if (Number(e.txPosition) !== Number(cur.txPosition)) return Number(e.txPosition) < Number(cur.txPosition);
+    return Number(e.eventId) < Number(cur.eventId);
+  }
+  function declCountOf(keyId, cur) {
     var l = decls[keyId] || [];
     var have = false;
-    for (var i = 0; i < l.length; i++) if (Number(l[i].eventId) === Number(currentId)) have = true;
-    return l.length + (partial && !have && currentId !== null && currentId !== undefined ? 1 : 0);
+    var n = 0;
+    for (var i = 0; i < l.length; i++) {
+      if (cur && Number(l[i].eventId) === Number(cur.eventId)) { have = true; n++; } else if (earlier(l[i], cur)) n++;
+    }
+    return n + (!have && cur ? 1 : 0);
   }
-  function currentIdOf(origin) {
+  // Where the current declaration of a fact sits: its package's place (P1: the first part).
+  function currentOf(origin) {
     var pk = origin && origin.origin === "mip-0018" ? evidenceList(origin.evidence)[0] : null;
-    return pk ? eventIdsOf(pk)[0] : null;
+    return pk ? { blockHeight: pk.blockHeight, txPosition: pk.txPosition, eventId: eventIdsOf(pk)[0] } : null;
   }
-  function declCount(keyText) { return declCountOf(asciiHex(keyText), currentIdOf(o[keyText])); }
+  function declCount(keyText) { return declCountOf(asciiHex(keyText), currentOf(o[keyText])); }
   function item(field, label, value, origin, extra) {
     var c = extra || ctx;
     // A built-in row's values are the indexer's seed, a rule with no chain inputs: their evidence is
@@ -1938,9 +1951,10 @@ function tokenModel(d) {
     var kv = keys[k];
     var keyId = txt(kv.keyHex === undefined || kv.keyHex === null ? asciiHex(kv.key) : kv.keyHex);
     var all = decls[keyId] || [];
+    var cur = { blockHeight: kv.updatedHeight, txPosition: kv.txPosition, eventId: kv.eventId };
     var history = [];
     for (var h = 0; h < all.length; h++) {
-      if (Number(all[h].eventId) === Number(kv.eventId)) continue;
+      if (Number(all[h].eventId) === Number(kv.eventId) || !earlier(all[h], cur)) continue;
       var he = all[h];
       var hi = item("trait:" + keyId + ":" + he.eventId, "earlier declaration", declaredValueText(he), he.origin, { token: t, address: t.address });
       hi.eventId = he.eventId; hi.blockHeight = he.blockHeight; hi.txPosition = he.txPosition;
@@ -1948,7 +1962,7 @@ function tokenModel(d) {
       history.push(hi);
     }
     var ti = item("trait:" + keyId, kv.key === null || kv.key === undefined ? "0x" + keyId : txt(kv.key),
-      traitText(kv), kv.origin, { token: t, address: t.address, declarations: declCountOf(keyId, kv.eventId), partial: partial });
+      traitText(kv), kv.origin, { token: t, address: t.address, declarations: declCountOf(keyId, cur), partial: partial });
     ti.trait = kv; ti.history = history; ti.parts = kv.parts; ti.phase = kv.phase;
     traits.push(ti);
   }
