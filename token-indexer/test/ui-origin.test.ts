@@ -858,6 +858,19 @@ describe("the page shows the origin of every value", () => {
       const unavailable = live.ctx.contractModel(live.ctx.state.contract).face.rows[0].origin;
       expect(unavailable.label).toBe("Not available (the interface could not be read: see partial data)");
     }
+    // E1a-R3H: a contract whose deploy is not archived cites what carries its address
+    {
+      const lm = tokenFixture("lmoon18");
+      const bare = clone(lm.contract); bare.deployTxHash = null; bare.deployHeight = null;
+      const addressLink = (state: Json): string => drawContract(page, state).model.facts.find((i: Json) => i.field === "address").origin.links[0].href;
+      const a = bare.address;
+      expect(addressLink({ ...contractState({ contract: bare, events: lm.events, calls: lm.calls }, null) })).toBe(`#/contract/${a}/calls`);
+      expect(addressLink({ ...contractState({ contract: bare, events: lm.events }, null) })).toBe(`#/contract/${a}/events`);
+      expect(addressLink({ ...contractState({ contract: bare }, tokenFixture("uprompi").interface) })).toBe(`#/contract/${a}/interface`);
+      expect(addressLink({ ...contractState({ contract: bare }, null) })).toBe(`#/contract/${a}/tokens`);
+      const drawn = drawContract(page, contractState({ contract: bare }, null));
+      expect(drawn.ids.has("tokens")).toBe(true);
+    }
     // a contract that published none: "Not available" with its reason, drawn
     const none = drawContract(page, contractState(tokenFixture("sneb18"), null));
     expect(none.model.face.rows[0].origin.label).toBe("Not available (this contract has published no public interface)");
@@ -1162,6 +1175,16 @@ describe("the page shows the origin of every value", () => {
     const where: Where = { tokenIds: token.ids, contractIds: pend.ids, address: stuck.address };
     expect(checkModel(page, pend.model.all, where, knownOf(lm, stuck))).toContain(`pending:${lm.contract.deployTxHash}: derived without an evidence link`);
     expect(checkModel(page, token.model.all, where, knownOf(lm))).toContain("visibility: derived without an evidence link");
+  });
+
+  it("negative control (E1a-R3H): an undeployed contract's address citing its (empty) events fails the check", () => {
+    const broken = SERVED_SCRIPT.replace("      { address: address, section: addressSection(c) }),", '      { address: address, section: "events" }),');
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const lm = tokenFixture("lmoon18");
+    const bare = clone(lm.contract); bare.deployTxHash = null;
+    const drawn = drawContract(page, contractState({ contract: bare, calls: lm.calls }, null));
+    expect(drawn.model.facts.find((i: Json) => i.field === "address").origin.links[0].href).toBe(`#/contract/${bare.address}/events`);
   });
 
   it("negative control (E1a-R3G): a newer declaration listed as earlier fails the check", () => {

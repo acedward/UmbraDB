@@ -923,7 +923,7 @@ function counterOf(st, name) {
 // 00024-03: a route may end in a section of its view — "#/contract/<address>/interface",
 // "#/token/<address>/<domainSep>/<kind>/mints" — which the page scrolls to once it is drawn. That
 // is how an origin's evidence link lands on the publication or the rows it cites.
-var FOCUS_SECTIONS = ["interface", "calls", "mints", "traits", "events", "activity", "metadata", "facts"];
+var FOCUS_SECTIONS = ["interface", "calls", "mints", "traits", "events", "activity", "metadata", "facts", "tokens"];
 function focusOf(s) { return s !== undefined && FOCUS_SECTIONS.indexOf(s) >= 0 ? s : null; }
 function parseHash() { return routeOf(window.location.hash || ""); }
 function routeOf(hash) {
@@ -1588,7 +1588,7 @@ function txEvidence(txHash, what) {
 var SECTION_TEXT = {
   "interface": "the public interface", "calls": "the contract's calls", "mints": "the mint history",
   "traits": "the traits", "events": "the raw events", "activity": "the transactions",
-  "metadata": "the metadata document", "facts": "the token's values"
+  "metadata": "the metadata document", "facts": "the token's values", "tokens": "the contract's tokens"
 };
 function sectionEvidence(ctx, section) {
   var c = ctx || {};
@@ -2118,6 +2118,16 @@ function urlView(url) {
     host: dest !== null ? dest.host : null, userinfo: dest !== null && dest.userinfo
   };
 }
+// Where a contract whose deploy is not archived shows its address: the first of its calls, its
+// declaration events, its public interface, its token rows that the page has (audit 03-E1a finding
+// R3H: a contract that only minted or published an interface cited an empty events section).
+function addressSection(c) {
+  if (c.calls && arr(c.calls.items).length > 0) return "calls";
+  if (arr(c.events).length > 0) return "events";
+  if (c.iface) return "interface";
+  if (c.contract && arr(c.contract.tokens).length > 0) return "tokens";
+  return "calls";
+}
 function contractModel(c) {
   var d = c && c.contract ? c.contract : null;
   if (!d) return null;
@@ -2133,7 +2143,8 @@ function contractModel(c) {
   var facts = [
     it("address", "address", address, deployKnown
       ? pageOrigin("chain", "the address the deploy transaction created", { txHash: d.deployTxHash })
-      : pageOrigin("chain", "the address its declarations, mints and calls carry"), { address: address, section: "events" }),
+      : pageOrigin("chain", "the address its calls, declarations, publications and tokens carry"),
+      { address: address, section: addressSection(c) }),
     it("deployHeight", "deploy height", d.deployHeight, deploy),
     it("deployTxHash", "deploy tx", d.deployTxHash, deploy),
     it("lastCallHeight", "last call height", d.lastCallHeight,
@@ -4355,6 +4366,7 @@ function renderContract(main) {
   main.appendChild(interfaceSection(m.face));
 
   var toks = node("section");
+  toks.id = "tokens";
   toks.appendChild(node("h2", "tokens of this contract"));
   var list = itemsOf(d.tokens ? { items: d.tokens } : null);
   if (list.length === 0) {

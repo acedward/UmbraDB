@@ -388,7 +388,7 @@ describe("the token explorer page", () => {
     expect(script).toContain("cell(tr, listIfaceCell(t));");
     expect(script).toContain("function partsChip(");
     // An origin's evidence link may end in a section of its view, which the page scrolls to.
-    expect(script).toContain('var FOCUS_SECTIONS = ["interface", "calls", "mints", "traits", "events", "activity", "metadata", "facts"];');
+    expect(script).toContain('var FOCUS_SECTIONS = ["interface", "calls", "mints", "traits", "events", "activity", "metadata", "facts", "tokens"];');
     expect(script).toContain('hashContract(c.address) + "/interface"');
     // A URL of up to 262 112 bytes is shortened for the eye and copied whole; only http(s) links.
     expect(script).toContain("var URL_HEAD = 72;");
