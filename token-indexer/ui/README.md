@@ -51,8 +51,9 @@ What else the page shows:
   Level 2 ran (passed or failed); an empty circuit or witness list only when Level 2 read the bundle's
   contract information (it passed, or failed with its report showing that file read — no
   `(contract-info)` row); otherwise they are "not known" (audit 03-E1a findings R6B, R7A). The
-  indexer keeps a bundle's file list only when Level 1 passes: an empty one says so after a failed
-  Level 1, and "not known" when Level 1 did not run (R8C).
+  indexer keeps a bundle's file list only when Level 1 passes: an empty one says so (R8C). The API's
+  `not_run` means no result at that level — the level may have started and stopped at a deadline or
+  a limit — so no text claims a level never ran (R9A).
 - **The heading** of the token view draws every value it shows as its own marked occurrence with its
   own chip: the family badge (a derived value: ledger / dual / collection / privacy, linking the
   contract whose rows decide it), the name (or, for a colour no contract has named, the colour), the

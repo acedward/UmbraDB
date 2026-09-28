@@ -770,12 +770,12 @@ describe("the page shows the origin of every value", () => {
       expect(t1).not.toContain("no witness declared");
       expect(t1).not.toContain("no key:");
       expect(t1).not.toContain("no circuit:");
-      expect(t1.split("not known: Level 2 reads them, and the latest check did not run it").length - 1, "keys, circuits, witnesses").toBe(3);
+      expect(t1.split("not known: Level 2 establishes them, and the latest check has no Level 2 result").length - 1, "keys, circuits, witnesses").toBe(3);
       // Level 2 ran and the bundle lists no witness: that is an answer
       const ran = clone(up.interface); ran.witnesses = [];
       const t2 = drawContract(lp, contractState(up, ran)).root.textContent;
       expect(t2).toContain("no witness declared: Level 2 read the bundle's contract information and it lists none");
-      expect(t2).not.toContain("not known: Level 2 reads them");
+      expect(t2).not.toContain("not known: Level 2 establishes them");
       // E1a-R7A: a FAILED Level 2 established them only when it read the contract information
       const infoRow = { circuit: "(contract-info)", status: "FAIL", reason: "out/compiler/contract-info.json is missing or unreadable, so the published circuits cannot be checked" };
       const failedOn = (report: Json | undefined): string => {
@@ -874,7 +874,20 @@ describe("the page shows the origin of every value", () => {
       const failedL1 = filesText({ l1: "failed", l2: "not_run", l3: "not_run" }, "failed");
       expect(failedL1).toContain("not shown: the indexer keeps a bundle's file list only when Level 1 passes, and it failed");
       expect(failedL1).not.toContain("did not reach Level 1");
-      expect(filesText({ l1: "not_run", l2: "not_run", l3: "not_run" }, "unreachable")).toContain("not known: the latest check did not run Level 1");
+      // E1a-R9A: "not_run" is no result — the recorded deadline and size-cap outcomes READ the list and
+      // stopped: no text claims Level 1 (or Level 2) never ran
+      const outcomes = read("interface-outcomes.json");
+      for (const name of ["deadline", "over-size-cap"]) {
+        const o = clone(outcomes[name]);
+        expect(o.levels.l1, `${name}: the recorded outcome`).toBe("not_run");
+        expect(o.files, `${name}: no file list kept`).toEqual([]);
+        const t = drawContract(lp, contractState(up, o)).root.textContent;
+        expect(t, name).toContain("not shown: the indexer keeps a bundle's file list only when Level 1 passes, and the latest check has no Level 1 result");
+        expect(t, name).not.toMatch(/did not run (Level|it)/);
+      }
+      const unreach = filesText({ l1: "not_run", l2: "not_run", l3: "not_run" }, "unreachable");
+      expect(unreach).toContain("the latest check has no Level 2 result");
+      expect(unreach).not.toMatch(/did not run (Level|it)/);
     }
 
     // ── E1a-R5D: the shielded-offers view keeps its rows and reports a later page that failed ──
@@ -1755,6 +1768,16 @@ describe("the page shows the origin of every value", () => {
     const f = clone(up.interface);
     Object.assign(f, { status: "failed", levels: { l1: "failed", l2: "not_run", l3: "not_run" }, files: [] });
     expect(drawContract(loadPage(broken), contractState(up, f)).root.textContent).toContain("did not reach Level 1's file list");
+  });
+
+  it("negative control (E1a-R9A): an interrupted Level 1 said never to have run", () => {
+    const broken = SERVED_SCRIPT.replace(
+      '  return "not shown: the indexer keeps a bundle\'s file list only when Level 1 passes, and the latest check has no Level 1 result (see the levels and the reason above)";',
+      '  return "not known: the latest check did not run Level 1 (see the levels above)";');
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const up = tokenFixture("uprompi");
+    const o = clone(read("interface-outcomes.json").deadline);
+    expect(drawContract(loadPage(broken), contractState(up, o)).root.textContent).toContain("did not run Level 1");
   });
 
   it("negative control (E1a-S2): with the contract's rows unread, the family guessed from one row", async () => {

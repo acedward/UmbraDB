@@ -4805,14 +4805,17 @@ function ifaceValue(r) {
   return boundedNode(r.value, TEXT_MAX, "txt wrapv");
 }
 // A sub-table of the interface section: its heading, its rows (each with its chip), or why none.
-var L2_NOT_RUN = "not known: Level 2 reads them, and the latest check did not run it (see the levels above)";
-// The indexer keeps a bundle's file list only when Level 1 passed: an empty list after a failed
-// Level 1 is not "never reached" — the list may have been read before a file failed its SHA-256
-// (audit 03-E1a finding R8C).
+// "not_run" is the API's word for NO RESULT at that level — the level may never have started, or have
+// started and stopped at a limit, a deadline or an unreadable state (verify.ts): neither text claims
+// which (audit 03-E1a finding R9A).
+var L2_NOT_RUN = "not known: Level 2 establishes them, and the latest check has no Level 2 result (see the levels and the reason above)";
+// The indexer keeps a bundle's file list only when Level 1 passed: an empty list otherwise says
+// nothing of how far Level 1 got — it may have read the list and failed a file's SHA-256 (R8C), or
+// stopped at a deadline or a size cap after reading it (R9A: those are "not_run").
 function filesEmptyText(l1) {
   if (l1 === "passed") return "no file: Level 1 passed and its list names none";
   if (l1 === "failed") return "not shown: the indexer keeps a bundle's file list only when Level 1 passes, and it failed (see the failure above)";
-  return "not known: the latest check did not run Level 1 (see the levels above)";
+  return "not shown: the indexer keeps a bundle's file list only when Level 1 passes, and the latest check has no Level 1 result (see the levels and the reason above)";
 }
 var L2_INFO_UNREAD = "not known: Level 2 failed without establishing them from the bundle's contract information (see the failure above)";
 function ifaceTable(heading, items, labels, fill, emptyText) {
