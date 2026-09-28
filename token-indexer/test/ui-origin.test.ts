@@ -690,6 +690,14 @@ describe("the page shows the origin of every value", () => {
       const el = await bootToken(ss, eRoutes);
       const tsec = [...el.doc.getElementById("view")!.walk()].find((x) => x.id === "traits")!;
       expect(tsec.textContent).toContain("the contract's events could not be read (see partial data below): a key's earlier declarations");
+      // the contract's rows unread: the family is not known, not guessed from this row (S2)
+      const cfRoutes = apiRoutes(tokenFixture("sneb18"));
+      const sn = tokenFixture("sneb18");
+      cfRoutes.set(`/v1/contracts/${sn.token.address}`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
+      const cf = await bootToken(sn, cfRoutes);
+      const famItem = cf.ctx.tokenModel(cf.ctx.state.detail).facts.find((i: Json) => i.field === "family");
+      expect(famItem.value).toBeNull();
+      expect(famItem.origin.label).toBe("Not available (the contract's token rows could not be read (see partial data), so the family is not known)");
       // the contract view too
       const cRoutes = apiRoutes(ss);
       cRoutes.set(`/v1/contracts/${ss.token.address}/events?limit=500`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
@@ -1468,6 +1476,16 @@ describe("the page shows the origin of every value", () => {
     expect(live.doc.getElementById("view")!.textContent).toContain("no mint observed for this token yet");
     const m = live.ctx.tokenModel(live.ctx.state.detail);
     expect(m.facts.find((i: Json) => i.field === "mintCount").origin.links[0].href).toMatch(/\/mints$/);
+  });
+
+  it("negative control (E1a-S2): with the contract's rows unread, the family guessed from one row", async () => {
+    const broken = SERVED_SCRIPT.replace("  var fam = d.siblingsFailed === true ? null : familyOf(", "  var fam = false ? null : familyOf(");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const sn = tokenFixture("sneb18");
+    const routes = apiRoutes(sn);
+    routes.set(`/v1/contracts/${sn.token.address}`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
+    const live = await bootToken(sn, routes, broken);
+    expect(live.ctx.tokenModel(live.ctx.state.detail).facts.find((i: Json) => i.field === "family").value).toBe("shielded");
   });
 
   it("negative control (E1a-R5D): an offers page error dropped leaves the refresh recorded as successful", async () => {

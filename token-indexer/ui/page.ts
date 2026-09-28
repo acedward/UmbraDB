@@ -1915,9 +1915,14 @@ function tokenModel(d) {
     pageOrigin("derived", "MIP-0018 §3: bit 1 of the kind byte"), idCtx));
   // The family badge of the heading is a value of its own, derived from the token's storage and its
   // contract's rows — never under the name's origin (audit 03-E1a finding R3B).
-  var fam = familyOf(t, familyIndex(d.siblings && d.siblings.length ? d.siblings : [t]));
+  // the family is derived from the contract's rows: when they could not be read it is not known —
+  // never guessed from this row alone (a collection would read as its privacy)
+  var fam = d.siblingsFailed === true ? null : familyOf(t, familyIndex(d.siblings && d.siblings.length ? d.siblings : [t]));
   if (fam !== null) {
     facts.push(item("family", "family", fam, pageOrigin("derived", FAMILY_RULE, t.address ? { address: t.address } : null), idCtx));
+  } else if (d.siblingsFailed === true && !builtin && !seen) {
+    facts.push(item("family", "family", null,
+      pageOrigin("none", "the contract's token rows could not be read (see partial data), so the family is not known"), idCtx));
   }
   // A colour seen in public data only (status seen) cites no transaction: its evidence is the
   // token's public movements (audit 03-E1a finding F7).
@@ -2739,7 +2744,7 @@ async function loadNamedToken(r, d) {
     // contract route serves both in one request, which is why the page asks for it instead.
     api(P_CONTRACTS + "/" + enc(r.address)).then(
       function (p) { d.siblings = itemsOf(p && p.tokens ? { items: p.tokens } : null); },
-      function (e) { d.notes.push("related rows unavailable: " + e.message); })
+      function (e) { d.siblingsFailed = true; d.notes.push("related rows unavailable: " + e.message); })
   ]);
 }
 // The interface section's publication is read again only when the contract route's summary of it
