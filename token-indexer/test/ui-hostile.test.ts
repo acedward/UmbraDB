@@ -30,6 +30,8 @@ const HEAVY_MS = 120_000;
  *    keeps the original characters; every piece of published text is a bidi-isolated island.
  *  - E1a-R2D: up to 2 000 events are read; an earlier declaration and a raw event are drawn within
  *    160 characters — the marks of hidden characters counted — and copied whole.
+ *  - E1a-R6D: an earlier opaque value (and a raw event's) keeps its whole bytes in the model: two
+ *    values that differ in the middle are told apart, a long one is drawn bounded and copied whole.
  *  - E1a-R3E: at most 500 keys of a token are drawn (the rest named, with a link); a current value
  *    is drawn whole up to 2 048 drawn characters and past that on the reader's request.
  *  - E1a-R4F: a contract's token rows (at most 500, the count named with its origin) and the list's
@@ -143,6 +145,23 @@ function crowdedContract(n: number, len: number): Json {
   const tokens = Array.from({ length: n }, (_, i) => ({ ...row, domainSep: i.toString(16).padStart(64, "0"),
     name: "\u007F".repeat(len), symbol: "\u007F".repeat(len) }));
   return { contract: { ...lm.contract, tokens }, iface: null, ifaceLoaded: true, events: [], calls: null, notes: [] };
+}
+/** LMOON18 with earlier opaque (valType 0) declarations of one key, oldest first, then a current one. */
+function opaqueHistory(values: string[]): Json {
+  const lm = read("token-lmoon18.json");
+  const t = lm.token;
+  const model = lm.events.items[0];
+  const keyHex = Buffer.from("blob").toString("hex");
+  const all = [...values, "00"];
+  const events = all.map((v, i) => ({ ...model, eventId: 200_000 + i, blockHeight: 20_000 + i, txPosition: 0,
+    domainSep: t.domainSep, kindByte: t.kind, key: keyHex.padEnd(64, "0"), keyHex, keyText: "blob", valType: 0, valLen: v.length / 2,
+    text: null, integer: null, value: v, applied: true,
+    origin: { origin: "mip-0018", evidence: { ...model.origin.evidence, eventIds: [200_000 + i] } } }));
+  const current = events[events.length - 1]!;
+  const keys = [{ key: "blob", keyHex, valType: 0, valLen: 1, value: current.value, text: null, integer: null,
+    projectionError: null, updatedHeight: current.blockHeight, updatedTxHash: current.txHash, eventId: current.eventId,
+    segment: current.segment, parts: 1, phase: "guaranteed", origin: current.origin }];
+  return { token: t, keys, mints: [], events, siblings: lm.contract.tokens, activity: null, calls: lm.calls ?? null, notes: [] };
 }
 function drawTokenState(page: Page, detail: Json): FakeElement {
   const t = detail.token;
@@ -338,6 +357,30 @@ describe("the page draws hostile values without breaking", () => {
     await fp.settle();
     expect(fp.copied[0], "the earlier value is copied whole").toBe("\u202E".repeat(12_000));
 
+    // ── E1a-R6D: an earlier opaque value keeps its bytes: told apart, bounded, copied whole ───
+    {
+      const a32 = "0011223344" + "aa".repeat(23) + "ccddeeff";
+      const b32 = "0011223344" + "bb".repeat(23) + "ccddeeff";
+      const long = "0011223344" + "cd".repeat(191) + "ccddeeff";
+      const op = loadPage();
+      const detail = opaqueHistory([long, a32, b32]);
+      const blob = op.ctx.tokenModel(detail).traits.find((i: Json) => i.label === "blob");
+      expect(blob.history.map((h: Json) => h.value), "newest first, the whole bytes").toEqual(["0x" + b32, "0x" + a32, "0x" + long]);
+      const root = drawTokenState(op, detail);
+      const hist = [...root.walk()].filter((el) => el.className === "hist");
+      expect(hist[0]!.textContent).toContain("0x" + b32);
+      expect(hist[1]!.textContent).toContain("0x" + a32);
+      // a long one: head … tail with its length, and a copy control that copies every byte
+      expect(hist[2]!.textContent).not.toContain("0x" + long);
+      expect(hist[2]!.textContent).toContain(`(${(2 + long.length).toString()} characters)`);
+      [...hist[2]!.walk()].find((el) => el.className.includes("cpbtn"))!.click();
+      await op.settle();
+      expect(op.copied[0], "the earlier opaque value is copied whole").toBe("0x" + long);
+      // the raw events keep them too
+      const ev = op.ctx.tokenModel(detail).all.filter((i: Json) => String(i.field).startsWith("event:"));
+      expect(ev.map((i: Json) => i.value)).toContain("0x" + a32);
+    }
+
     // ── E1a-R3E: 2 000 current keys of 8 000 hidden characters each ───────────────────────────
     const keyed = manyKeys(2_000, 8_000);
     const kp = loadPage();
@@ -420,6 +463,14 @@ describe("the page draws hostile values without breaking", () => {
     const drawn = drawTokenState(loadPage(broken), manyKeys(600, 2_000));
     expect(drawn.textContent.length).toBeGreaterThan(9_000_000); // bounded: < 600 × ~2 300
   }, HEAVY_MS);
+
+  it("negative control (E1a-R6D): shortened in the model, two earlier opaque values look the same", () => {
+    const broken = SERVED_SCRIPT.replace('  if (e.value) return "0x" + txt(e.value);', '  if (e.value) return "0x" + shortHex(txt(e.value), 10, 8);');
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const detail = opaqueHistory(["0011223344" + "aa".repeat(23) + "ccddeeff", "0011223344" + "bb".repeat(23) + "ccddeeff"]);
+    const blob = loadPage(broken).ctx.tokenModel(detail).traits.find((i: Json) => i.label === "blob");
+    expect(blob.history[0].value).toBe(blob.history[1].value);
+  });
 
   it("negative control (E1a-R2D): earlier declarations and raw events drawn whole flood the view", () => {
     const hist = "      cell(hr, hi.value === null ? node(\"span\", \"-\", \"no\")\n        : boundedNode(hi.value, HISTORY_MAX,";

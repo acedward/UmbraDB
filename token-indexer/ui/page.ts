@@ -1792,7 +1792,9 @@ function declaredValueText(e) {
   if (Number(e.valType) === 5) return "Null (the key was cleared)";
   if (Number(e.valType) === 2 && e.integer !== null && e.integer !== undefined) return txt(e.integer);
   if (e.text !== null && e.text !== undefined) return txt(e.text);
-  if (e.value) return "0x" + shortHex(txt(e.value), 10, 8);
+  // the whole bytes: the drawing bounds them (head … tail, the length, copy the whole value) — a
+  // value shortened here could not be told from another or copied (audit 03-E1a finding R6D)
+  if (e.value) return "0x" + txt(e.value);
   return "(empty)";
 }
 
