@@ -463,6 +463,29 @@ describe("the page shows the origin of every value", () => {
     });
     expect([...statusesDrawn].sort()).toEqual([...INTERFACE_STATUSES].sort());
 
+    // ── E1a-F6: past the API's 100 older publications and 100 checks, the section says so ──────
+    {
+      const many = publicationAs(base, "verified", "current", 9_500);
+      many.files = base.files; many.keys = base.keys; many.circuits = base.circuits; many.witnesses = base.witnesses;
+      many.history = Array.from({ length: 100 }, (_, j) => publicationAs(base, "failed", "historical", 7_000 + j));
+      many.publications = 102;
+      many.checks = 250;
+      many.checkHistory = [{ checkNo: 250, checkedAt: base.checkedAt, trigger: "recheck", status: "verified", level: 3,
+        levels: LEVELS.verified, l3Reason: null, reason: null, stateBlockHeight: 714 }];
+      const drawn = drawContract(page, contractState(up, many));
+      expect(checkModel(page, drawn.model.all, { tokenIds: upTokenIds, contractIds: drawn.ids, address: up.token.address }, knownOf(up),
+        contractSources(up.contract, many))).toEqual([]);
+      expect(checkDrawn(drawn.root, drawn.model.all)).toEqual([]);
+      const sec = [...drawn.root.walk()].find((el) => el.id === "interface")!;
+      expect(sec.textContent).toContain("the newest 100 of 101 older publications are shown — all of them: every publication (API, paginated)");
+      expect(sec.textContent).toContain("the newest 1 of 250 checks are shown");
+      const all = [...sec.walk()].find((el) => el.tagName === "a" && el.textContent === "every publication (API, paginated)")!;
+      expect(all.href).toBe(`/v1/contracts/${up.token.address}/interface/events?limit=500`);
+      // …and says nothing when every one is shown
+      const one = drawContract(page, contractState(up, base));
+      expect([...one.root.walk()].find((el) => el.id === "interface")!.textContent).not.toContain("the newest");
+    }
+
     // ── the list: every status in the interface column; the MIP-0018 part badges ──────────────
     const list = read("tokens.json").items as Json[];
     const lsunRow = list.find((t) => t.address === tokenFixture("lsunpi").token.address);
@@ -647,6 +670,18 @@ describe("the page shows the origin of every value", () => {
     live.boot();
     await live.settle();
     expect(live.doc.getElementById("interface")!.scrolled).toBe(0);
+  });
+
+  it("negative control (E1a-F6): a capped history drawn as if complete fails the check", () => {
+    const broken = SERVED_SCRIPT.replace("historyMore: olderTotal > hl.length ? olderTotal : null,", "historyMore: null,");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const up = tokenFixture("uprompi");
+    const many = publicationAs(up.interface, "verified", "current", 9_500);
+    many.history = Array.from({ length: 100 }, (_, j) => publicationAs(up.interface, "failed", "historical", 7_000 + j));
+    many.publications = 102;
+    const drawn = drawContract(page, contractState(up, many));
+    expect([...drawn.root.walk()].find((el) => el.id === "interface")!.textContent).not.toContain("older publications are shown");
   });
 
   it("negative control (E1a-F2): one page of events loses the history past it", async () => {

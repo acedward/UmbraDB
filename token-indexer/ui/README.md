@@ -39,8 +39,11 @@ What else the page shows:
   for the eye — head … tail, its length — and copied whole; a URL may be 262 112 bytes), the
   publication, the package payload's length and SHA-256, check times (`checkedAt`, `lastVerifiedAt`,
   `verifiedUntil`, `nextCheckAt`), the contract state used, compiler and build, the files, keys,
-  circuits (with argument types) and witnesses, the check history, and every older publication
-  (`historical`) with its own result. Diagnostics are shown exactly as served (bounded by the indexer).
+  circuits (with argument types) and witnesses, the check history, and the older publications
+  (`historical`), each with its own result. The API serves the newest 100 checks and older
+  publications: when more exist the section says "the newest N of M" and links the paginated
+  `GET /v1/contracts/:address/interface/events` (audit 03-E1a finding F6). Diagnostics are shown
+  exactly as served (bounded by the indexer).
 - **The token view** gains its contract's interface summary (status and levels; the URL is on the
   contract view), the parts and phase of every trait, and, under a key declared more than once, its
   earlier declarations — a Null included — newest first.

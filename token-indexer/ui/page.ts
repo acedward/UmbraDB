@@ -54,6 +54,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
  *                                                      read again only when the contract route's
  *                                                      interface summary changed)
  *
+ * and links (raw JSON in a new tab, never read by the page) to the paginated lists a view shows only
+ * the start of: GET /v1/contracts/:address/interface/events and GET /v1/contracts/:address/events.
+ *
  * with an optional section on the contract and token routes (`#/contract/<address>/interface`,
  * `#/token/…/mints`, …) that an origin's evidence link scrolls to. Every value of the token and
  * contract views carries its origin — "MIP-0018 declaration", "Public interface", "Chain
@@ -2023,8 +2026,28 @@ function interfaceModel(x, address, loaded) {
       value: interfaceStatusView(hl[q]).text, origin: originView(hl[q].origin, ctx), row: hl[q],
       status: interfaceStatusView(hl[q]), url: urlView(hl[q].url) });
   }
+  // The API serves the newest 100 older publications and the newest 100 checks: say how many there
+  // are when that is fewer than all (audit 03-E1a finding F6), and link the paginated route.
+  var olderTotal = Number(x.publications) - 1;
+  var checksTotal = Number(x.checks);
   return { present: true, status: st, rows: rows, files: files, keys: keys, circuits: circuits,
-    witnesses: witnesses, checks: checks, history: history, url: uv };
+    witnesses: witnesses, checks: checks, history: history, url: uv, address: address,
+    historyMore: olderTotal > hl.length ? olderTotal : null,
+    checksMore: checksTotal > chl.length ? checksTotal : null };
+}
+// "the newest 100 of 250 …": a table that shows fewer rows than exist says so.
+function moreNote(shown, total, what, href, linkText) {
+  var n = node("div", null, "note err");
+  n.appendChild(node("span", "the newest " + groupDigits(shown) + " of " + groupDigits(total) + " " + what + " are shown"
+    + (href ? " — all of them: " : "")));
+  if (href) {
+    var a = node("a", linkText);
+    a.href = href;
+    a.target = "_blank";
+    a.rel = "noopener";
+    n.appendChild(a);
+  }
+  return n;
 }
 function circuitSignature(c) {
   var args = arr(c.arguments);
@@ -4067,12 +4090,12 @@ function renderContract(main) {
 // The current publication first — its result, the levels it passed or the level it failed, the
 // Level 3 reason, the commitment, the URL (shortened for the eye, copied whole), where it was
 // published, when it was checked and will be again — then what its checks established (files, keys,
-// circuits with their argument types, witnesses), its check history, and every older publication
+// circuits with their argument types, witnesses), its check history, and the older publications
 // with its own last result. Every value carries the publication as its origin.
 function interfaceSection(face) {
   var sec = node("section");
   sec.id = "interface";
-  sec.appendChild(node("h2", "public interface · the current publication, what its checks established, and every older one"));
+  sec.appendChild(node("h2", "public interface · the current publication, what its checks established, and the older ones"));
   if (!face.present) {
     var none = marked(node("div", null, "row"), face.rows[0].field);
     none.appendChild(node("span", "no public interface published by this contract", "no"));
@@ -4131,6 +4154,7 @@ function interfaceSection(face) {
       cell(tr, node("span", ch.reason ? txt(ch.reason) : "-", ch.reason ? "err wrapv diag" : "no"));
       cell(tr, orDash(ch.stateBlockHeight), "num");
     }, "never checked yet"));
+  if (face.checksMore !== null) sec.appendChild(moreNote(face.checks.length, face.checksMore, "checks", null, null));
   sec.appendChild(ifaceTable("older publications (historical: each with its own last result, never current)", face.history,
     ["publication", "block", "tx", "parts · phase", "commitment", "URL", "role", "result", "reason", "checked at", "verified until", "origin"],
     function (tr, it) {
@@ -4147,6 +4171,10 @@ function interfaceSection(face) {
       cell(tr, orDash(h.checkedAt));
       cell(tr, orDash(h.verifiedUntil));
     }, "none: this is the contract's only publication"));
+  if (face.historyMore !== null) {
+    sec.appendChild(moreNote(face.history.length, face.historyMore, "older publications",
+      P_CONTRACTS + "/" + enc(face.address) + "/interface/events?limit=" + EVENT_LIMIT, "every publication (API, paginated)"));
+  }
   return sec;
 }
 // One value of the interface's "value | origin" table, drawn by what it is.
