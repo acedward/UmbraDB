@@ -96,6 +96,9 @@ What else the page shows:
 - The metadata-updated height cites the traits only when the key its declaration set is among the
   keys drawn (the first 500); otherwise that declaration's transaction, the raw events, or the API's
   row (audit 03-E1a finding R9B).
+- With more mints than the page reads (1 000, oldest first), the mint count, the total minted and
+  the last mint height cite the token's API row, not the mint history that lacks them (audit 03-E1a
+  self-review S3).
 - A URL (bundle URL, tokenUri) is parsed by the browser's own URL parser: its destination host —
   percent-decoded, IDNA-mapped, as the browser will go to it — is always shown beside the shortened
   text; a URL the parser refuses, or one with user information before its host, is not a link; a

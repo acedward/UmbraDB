@@ -651,6 +651,15 @@ describe("the page shows the origin of every value", () => {
       expect(sec.textContent).toContain("the first 1\u00a0000 of 1300 mints are listed — all of them: every mint (API, paginated)");
       const note = [...sec.walk()].find((el) => el.getAttribute("data-o") === "mintCount")!;
       expect([...note.walk()].some((el) => el.className.includes("orig"))).toBe(true);
+      // E1a-S3: the section draws the oldest 1 000 — the count, the total and the last height cite the
+      // token's API row; the first height is drawn and cites the section
+      const cutLinks = (field: string): string[] => cut.ctx.tokenModel(cut.ctx.state.detail).facts.find((i: Json) => i.field === field).origin.links.map((l: Json) => l.href);
+      const row = `/v1/contracts/${a}/tokens/${ss.token.domainSep}/${ss.token.kind}`;
+      for (const field of ["mintCount", "totalMinted", "lastMintHeight"]) expect(cutLinks(field), field).toEqual([row]);
+      expect(cutLinks("firstMintHeight")[0]).toMatch(/\/mints$/);
+      // every mint read: the section holds them all
+      const all201 = live.ctx.tokenModel(live.ctx.state.detail).facts.find((i: Json) => i.field === "lastMintHeight");
+      expect(all201.origin.links[0].href).toMatch(/\/mints$/);
     }
 
     // ── E1a-R5A: every refresh reads the history the fresh metadata belongs to ────────────────
@@ -1805,6 +1814,14 @@ describe("the page shows the origin of every value", () => {
     const keys = Array.from({ length: 501 }, (_, i) => ({ ...clone(model), key: `k${i}`, updatedHeight: i < 500 ? 100 + i : 9000, updatedTxHash: "cd".repeat(32) }));
     const m = loadPage(broken).ctx.tokenModel({ ...tokenDetail(lm), token: { ...lm.token, metadataUpdatedHeight: 9000 }, keys });
     expect(m.facts.find((i: Json) => i.field === "metadataUpdatedHeight").origin.links[0].href).toMatch(/\/traits$/);
+  });
+
+  it("negative control (E1a-S3): with more mints than read, the last mint height cites the section that lacks it", async () => {
+    const broken = SERVED_SCRIPT.replace('  var mintAllCtx = d.mintsMore === true ? { token: t, api: tokenApiHref(t) } : mintCtx;', "  var mintAllCtx = mintCtx;");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const ss = tokenFixture("sstarpi");
+    const detail = { ...tokenDetail(ss), mintsMore: true };
+    expect(loadPage(broken).ctx.tokenModel(detail).facts.find((i: Json) => i.field === "lastMintHeight").origin.links[0].href).toMatch(/\/mints$/);
   });
 
   it("negative control (E1a-S2): with the contract's rows unread, the family guessed from one row", async () => {

@@ -2001,10 +2001,14 @@ function tokenModel(d) {
   facts.push(item("tokenUri", "tokenUri", t.tokenUri, o.tokenUri, { token: t, address: t.address, declarations: declCount("tokenUri"), partial: partial }));
   facts.push(item("status", "status", t.status, o.status));
   var mintCtx = { token: t, section: "mints" };
-  facts.push(item("mintCount", "mint count", t.mintCount, o.mints, mintCtx));
-  facts.push(item("totalMinted", "total minted", t.totalMinted, o.mints, mintCtx));
+  // With more mints than the page reads (oldest first), the section draws the oldest only: the count,
+  // the total and the last height are not in it — the token's API row carries them (audit 03-E1a
+  // self-review S3, the R9B class). The first mint height is drawn first.
+  var mintAllCtx = d.mintsMore === true ? { token: t, api: tokenApiHref(t) } : mintCtx;
+  facts.push(item("mintCount", "mint count", t.mintCount, o.mints, mintAllCtx));
+  facts.push(item("totalMinted", "total minted", t.totalMinted, o.mints, mintAllCtx));
   facts.push(item("firstMintHeight", "first mint height", t.firstMintHeight, o.mints, mintCtx));
-  facts.push(item("lastMintHeight", "last mint height", t.lastMintHeight, o.mints, mintCtx));
+  facts.push(item("lastMintHeight", "last mint height", t.lastMintHeight, o.mints, mintAllCtx));
   var fsSection = firstSeenSection(t, events, partial || d.eventsFailed === true);
   facts.push(item("firstSeenHeight", "first seen height", t.firstSeenHeight,
     builtin ? seeded : pageOrigin("derived", "the lowest block height at which a declaration, a mint or a public movement of this token was seen"
