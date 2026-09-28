@@ -532,7 +532,7 @@ describe("the page shows the origin of every value", () => {
         // the declarations carry it when one of the token's own events was read (E1a-R8B); a seen
         // colour's movements when one of them is drawn (E1a-R10A)
         const ownEvent = { eventId: 1, blockHeight: 1, txPosition: 0, domainSep: row.domainSep, kindByte: row.kind, keyText: "name", valType: 1, applied: true };
-        const ownMove = { txHash: "ab".repeat(32), blockHeight: row.firstSeenHeight ?? 1, color: row.color, kind: row.kind, role: "utxo_created" };
+        const ownMove = { txHash: "ab".repeat(32), blockHeight: row.firstSeenHeight ?? 1, color: row.color, kind: row.kind, role: "utxo_out" };
         const withOwn = want[row.status] === "events"
           ? page.ctx.tokenModel({ ...tokenDetail(rowFixture(row)), events: [ownEvent] }).facts
           : (want[row.status] === "activity"
@@ -589,7 +589,7 @@ describe("the page shows the origin of every value", () => {
         const rowApi0 = `/v1/contracts/${f.token.address}/tokens/${f.token.domainSep}/${f.token.kind}`;
         expect(drawToken(page, f).model.facts.find((i: Json) => i.field === "firstSeenHeight").origin.links.map((l: Json) => l.href),
           "no movement at that height drawn").toEqual([rowApi0]);
-        f.activity = { items: [{ txHash: "ab".repeat(32), blockHeight: firstDecl - 100, color: f.token.color, kind: f.token.kind, role: "utxo_created" }], nextCursor: null };
+        f.activity = { items: [{ txHash: "ab".repeat(32), blockHeight: firstDecl - 100, color: f.token.color, kind: f.token.kind, role: "utxo_out" }], nextCursor: null };
         expect(drawToken(page, f).model.facts.find((i: Json) => i.field === "firstSeenHeight").origin.links[0].href).toMatch(/\/activity$/);
         // E1a-R4B: a rejected event at that height never set it; a capped or failed events read, or a
         // view that lists no movements, leaves the observation unknown — the API's row is cited
@@ -612,7 +612,7 @@ describe("the page shows the origin of every value", () => {
       }
       const seenRow = rows.find((r) => r.status === "seen")!;
       // a seen colour's evidence is its movements — when one is drawn (E1a-R10A); else the colour's API document
-      const seenMove = { txHash: "ab".repeat(32), blockHeight: seenRow.firstSeenHeight ?? 1, color: seenRow.color, kind: seenRow.kind, role: "utxo_created" };
+      const seenMove = { txHash: "ab".repeat(32), blockHeight: seenRow.firstSeenHeight ?? 1, color: seenRow.color, kind: seenRow.kind, role: "utxo_out" };
       const seenColor = page.ctx.tokenModel({ ...tokenDetail(rowFixture(seenRow)), activity: { items: [seenMove], nextCursor: null } })
         .facts.find((i: Json) => i.field === "color");
       expect(seenColor.origin.links[0].href).toBe(`#/color/${seenRow.color}/${seenRow.kind}/activity`);
@@ -948,22 +948,22 @@ describe("the page shows the origin of every value", () => {
       const f = clone(ss); f.token.lastActivityHeight = 300; f.token.activityCount = 2;
       const routes = apiRoutes(f);
       routes.set(base, f.token);
-      routes.set(`${base}/transactions?limit=200`, { items: [move(300, "utxo_spent"), move(100, "utxo_created")], nextCursor: null });
-      routes.set(`${base}/transactions?limit=200&role=utxo_created`, { items: [move(100, "utxo_created")], nextCursor: null });
+      routes.set(`${base}/transactions?limit=200`, { items: [move(300, "utxo_in"), move(100, "utxo_out")], nextCursor: null });
+      routes.set(`${base}/transactions?limit=200&role=utxo_out`, { items: [move(100, "utxo_out")], nextCursor: null });
       const live = await bootToken(f, routes);
       const links = (field: string): string[] => live.ctx.tokenModel(live.ctx.state.detail).facts.find((i: Json) => i.field === field).origin.links.map((l: Json) => l.href);
       const section = `#/token/${ss.token.address}/${ss.token.domainSep}/${ss.token.kind}/activity`;
       expect(links("lastActivityHeight"), "every row drawn: the section").toEqual([section]);
       expect(links("activityCount")).toEqual([section]);
       // the reader filters to "UTXO created": block 300 is not drawn, nor is every row
-      live.ctx.state.act.role = "utxo_created";
+      live.ctx.state.act.role = "utxo_out";
       await live.ctx.refresh();
-      expect(live.ctx.state.detail.activityRole).toBe("utxo_created");
+      expect(live.ctx.state.detail.activityRole).toBe("utxo_out");
       expect(links("lastActivityHeight"), "the filtered section lacks block 300").toEqual([base]);
       expect(links("activityCount"), "a filtered section is not every row").toEqual([base]);
       // unfiltered but more pages than read: the count is not drawn whole; the newest height is
       live.ctx.state.act.role = null;
-      routes.set(`${base}/transactions?limit=200`, { items: [move(300, "utxo_spent")], nextCursor: "a1" });
+      routes.set(`${base}/transactions?limit=200`, { items: [move(300, "utxo_in")], nextCursor: "a1" });
       await live.ctx.refresh();
       expect(links("activityCount")).toEqual([base]);
       expect(links("lastActivityHeight")).toEqual([section]);
@@ -1955,8 +1955,8 @@ describe("the page shows the origin of every value", () => {
     expect(broken).not.toBe(SERVED_SCRIPT);
     const ss = tokenFixture("sstarpi");
     const t = { ...clone(ss.token), lastActivityHeight: 300 };
-    const d = { ...tokenDetail(ss), token: t, activityRole: "utxo_created",
-      activity: { items: [{ ...clone(ss.activity.items[0]), blockHeight: 100, role: "utxo_created" }], nextCursor: null } };
+    const d = { ...tokenDetail(ss), token: t, activityRole: "utxo_out",
+      activity: { items: [{ ...clone(ss.activity.items[0]), blockHeight: 100, role: "utxo_out" }], nextCursor: null } };
     expect(loadPage(broken).ctx.tokenModel(d).facts.find((i: Json) => i.field === "lastActivityHeight").origin.links[0].href).toMatch(/\/activity$/);
   });
 
