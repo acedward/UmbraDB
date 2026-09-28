@@ -1205,6 +1205,35 @@ function familyOf(t, index) {
   if (domains && countKeys(domains) > 1) return "collection";
   return t.privacy ? txt(t.privacy) : null;
 }
+var FAMILY_RULE = "the kind of asset this row is, from its own storage bit and its contract's token rows: "
+  + "ledger (a ledger token) · dual (one domain separator under kinds 0 and 1) · collection (the contract "
+  + "issues several domain separators) · otherwise its privacy";
+// The token view's heading: the family badge, the name (or, for a colour no contract has named, the
+// colour), each marked as its own value with its own origin chip (audit 03-E1a finding R3B).
+function headingNodes(t, m, h3) {
+  var fam = factOf(m, "family");
+  if (fam.value !== undefined && fam.value !== null) {
+    var f = marked(node("span", null, "vo"), "family");
+    f.appendChild(withHelp(node("span", fam.value, "fam fam-" + fam.value), fam.value));
+    f.appendChild(originChip(fam.origin));
+    h3.appendChild(f);
+  }
+  var seen = t.status === "seen";
+  var which = seen ? factOf(m, "color") : factOf(m, "name");
+  var v = marked(node("span", null, "vo"), which.field);
+  v.appendChild(node("span", t.name ? txt(t.name) : (seen ? "colour " + shortHex(t.color, 8, 6) : "(undescribed)"),
+    t.name ? "txt" : (seen ? "hex" : "no")));
+  v.appendChild(originChip(which.origin));
+  if (which.origin.p1) v.appendChild(p1Mark());
+  h3.appendChild(v);
+  if (seen) {
+    var pill = node("span", "unknown contract", "pill");
+    pill.title = "this colour was seen in public transaction data before any mint or metadata "
+      + "event named it: its contract and domain separator are not known (its mint predates the "
+      + "archive). A later mint or metadata event completes this row in place.";
+    h3.appendChild(pill);
+  }
+}
 function nameCell(t, index) {
   var wrap = node("span");
   var fam = familyOf(t, index);
@@ -1835,6 +1864,12 @@ function tokenModel(d) {
     pageOrigin("derived", "MIP-0018 §3: bit 0 of the kind byte"), idCtx));
   facts.push(item("storage", "storage", t.storage,
     pageOrigin("derived", "MIP-0018 §3: bit 1 of the kind byte"), idCtx));
+  // The family badge of the heading is a value of its own, derived from the token's storage and its
+  // contract's rows — never under the name's origin (audit 03-E1a finding R3B).
+  var fam = familyOf(t, familyIndex(d.siblings && d.siblings.length ? d.siblings : [t]));
+  if (fam !== null) {
+    facts.push(item("family", "family", fam, pageOrigin("derived", FAMILY_RULE, t.address ? { address: t.address } : null), idCtx));
+  }
   // A colour seen in public data only (status seen) cites no transaction: its evidence is the
   // token's public movements (audit 03-E1a finding F7).
   facts.push(item("color", "colour", t.color, o.color, { token: t, address: t.address, section: seen ? "activity" : null }));
@@ -2222,6 +2257,17 @@ function interfaceModel(x, address, loaded) {
     circuitsTruncated: circuitsTruncated,
     historyMore: olderTotal > hl.length ? olderTotal : null,
     checksMore: checksTotal > chl.length ? checksTotal : null };
+}
+// A note that shows a count of the interface (checks so far, publications) is another occurrence
+// of that row: marked as it, with its origin chip (audit 03-E1a finding R3B).
+function asOccurrence(n, face, field) {
+  var r = null;
+  for (var i = 0; i < face.rows.length; i++) if (face.rows[i].field === "iface:" + field) r = face.rows[i];
+  if (r === null) return n;
+  marked(n, r.field);
+  n.appendChild(node("span", "  "));
+  n.appendChild(originChip(r.origin));
+  return n;
 }
 // "the newest 100 of 250 …": a table that shows fewer rows than exist says so.
 function moreNote(shown, total, what, href, linkText) {
@@ -2952,7 +2998,7 @@ function renderList(main) {
 
 // One row per public occurrence of the token in an archived transaction (US1, FR-009). Heights and
 // positions only: the archive holds no wall-clock time and the owner asked for none (Q1).
-function activitySection(t, d, items) {
+function activitySection(t, d, items, countItem) {
   var model = items || [];
   var sec = node("section");
   sec.id = "activity";
@@ -2978,9 +3024,15 @@ function activitySection(t, d, items) {
   var rows = d.activity ? d.activity.items : [];
   bar.appendChild(node("span",
     (d.activity ? rows.length + " row" + (rows.length === 1 ? "" : "s") : "loading…")
-    + (d.activity && d.activity.nextCursor ? " (more available)" : "")
-    + (t.activityCount === null || t.activityCount === undefined ? "" : "  ·  " + t.activityCount + " in the index"),
-    "note"));
+    + (d.activity && d.activity.nextCursor ? " (more available)" : ""), "note"));
+  // the index's own count is a value of the token: drawn as an occurrence of it, with its origin
+  // (audit 03-E1a finding R3B)
+  if (t.activityCount !== null && t.activityCount !== undefined && countItem) {
+    var cnt = marked(node("span", null, "note"), countItem.field);
+    cnt.appendChild(node("span", "  ·  " + txt(t.activityCount) + " in the index  "));
+    cnt.appendChild(originChip(countItem.origin));
+    bar.appendChild(cnt);
+  }
   sec.appendChild(bar);
 
   if (!d.activity) {
@@ -3883,8 +3935,8 @@ function renderToken(main) {
     toContract.href = hashContract(r.address);
     crumb.appendChild(toContract);
   } else if (r.color) {
-    crumb.appendChild(node("span", "  ·  colour " + shortHex(r.color, 10, 8)
-      + " · kind " + orDash(r.kind)));
+    // the colour and kind are values of this token: they are shown below, each with its origin
+    crumb.appendChild(node("span", "  ·  a colour no contract has named"));
   }
   main.appendChild(crumb);
 
@@ -3901,12 +3953,9 @@ function renderToken(main) {
   // 00024-03: everything below is drawn from this one model, value by value with its origin.
   var m = tokenModel(d);
 
-  var index = familyIndex(d.siblings && d.siblings.length ? d.siblings : [t]);
   var head = node("section");
-  var title = marked(node("h3"), "name");
-  title.appendChild(nameCell(t, index));
-  title.appendChild(originChip(factOf(m, "name").origin));
-  if (factOf(m, "name").origin.p1) title.appendChild(p1Mark());
+  var title = node("h3");
+  headingNodes(t, m, title);
   head.appendChild(title);
   var sub = node("div", null, "row");
   var st = marked(node("span", null, "vo"), "status");
@@ -4049,7 +4098,7 @@ function renderToken(main) {
       "a ledger token has no colour and no UTXO: its balances live in its contract's state, which "
       + "this indexer does not read. What is public is every call of the contract, listed above.", m.calls));
   } else {
-    main.appendChild(activitySection(t, d, m.activity));
+    main.appendChild(activitySection(t, d, m.activity, factOf(m, "activityCount")));
   }
 
   if (t.address) {
@@ -4418,7 +4467,7 @@ function interfaceSection(face) {
       cell(tr, node("span", ch.reason ? txt(ch.reason) : "-", ch.reason ? "err wrapv diag" : "no"));
       cell(tr, orDash(ch.stateBlockHeight), "num");
     }, "never checked yet"));
-  if (face.checksMore !== null) sec.appendChild(moreNote(face.checks.length, face.checksMore, "checks", null, null));
+  if (face.checksMore !== null) sec.appendChild(asOccurrence(moreNote(face.checks.length, face.checksMore, "checks", null, null), face, "checks"));
   sec.appendChild(ifaceTable("older publications (historical: each with its own last result, never current)", face.history,
     ["publication", "block", "tx", "parts · phase", "commitment", "URL", "role", "result", "reason", "checked at", "verified until", "origin"],
     function (tr, it) {
@@ -4436,8 +4485,8 @@ function interfaceSection(face) {
       cell(tr, orDash(h.verifiedUntil));
     }, "none: this is the contract's only publication"));
   if (face.historyMore !== null) {
-    sec.appendChild(moreNote(face.history.length, face.historyMore, "older publications",
-      P_CONTRACTS + "/" + enc(face.address) + "/interface/events?limit=" + EVENT_LIMIT, "every publication (API, paginated)"));
+    sec.appendChild(asOccurrence(moreNote(face.history.length, face.historyMore, "older publications",
+      P_CONTRACTS + "/" + enc(face.address) + "/interface/events?limit=" + EVENT_LIMIT, "every publication (API, paginated)"), face, "publications"));
   }
   return sec;
 }

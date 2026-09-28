@@ -47,6 +47,11 @@ What else the page shows:
   publications: when more exist the section says "the newest N of M" and links the paginated
   `GET /v1/contracts/:address/interface/events` (audit 03-E1a finding F6). Diagnostics are shown
   exactly as served (bounded by the indexer).
+- **The heading** of the token view draws every value it shows as its own marked occurrence with its
+  own chip: the family badge (a derived value: ledger / dual / collection / privacy, linking the
+  contract whose rows decide it), the name (or, for a colour no contract has named, the colour), the
+  status and each part of the summary line; the breadcrumb and the other summary lines repeat no
+  value without its origin (audit 03-E1a findings R2E, R3B).
 - **The token view** gains its contract's interface summary (status and levels; the URL is on the
   contract view), the parts and phase of every trait, and, under a key declared more than once, its
   earlier declarations — a Null included — newest first.

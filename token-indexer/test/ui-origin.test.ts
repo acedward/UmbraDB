@@ -314,6 +314,58 @@ function checkDrawn(root: FakeElement, items: Json[]): string[] {
   return out;
 }
 
+/** Check 3 — the payload: no DISTINCTIVE piece of the data a view was drawn from — a text of four
+ *  characters or more, the head of a hash, a number of two digits or more — appears in any drawn
+ *  text outside a marked element, i.e. away from an origin (E1a-R3B: a value is found wherever and
+ *  however it is drawn — a breadcrumb, a summary line, "(shielded)" — not only as an exact leaf).
+ *  Values of an enumeration (statuses, kinds, phases …) also name themselves in the page's own prose,
+ *  so they are matched only as a whole word-for-word leaf (punctuation around it ignored). */
+const ENUM_KEYS = new Set(["status", "role", "privacy", "storage", "phase", "section", "l1", "l2", "l3", "trigger",
+  "shieldedVisibility", "direction", "nameVariant", "result", "origin", "kind", "kindByte", "valType", "level", "failedLevel"]);
+const TEXT_KEYS = new Set(["rule", "reason", "l3Reason", "help"]); // the API's explanations: evidence lines, inside marks
+function payloadPieces(payload: Json): { pieces: Set<string>; words: Set<string> } {
+  const pieces = new Set<string>();
+  const words = new Set<string>();
+  const add = (key: string, v: Json): void => {
+    if (typeof v === "number" && Number.isInteger(v)) { if (Math.abs(v) >= 10 && !ENUM_KEYS.has(key)) pieces.add(String(v)); return; }
+    if (typeof v !== "string" || TEXT_KEYS.has(key)) return;
+    if (ENUM_KEYS.has(key)) { if (v.length >= 3) words.add(v); return; }
+    if (/^[0-9a-f]{16,}$/i.test(v)) { pieces.add(v.slice(0, 8)); return; } // a hash: its head, as shortHex draws it
+    if (/^-?\d+$/.test(v)) { if (v.replace("-", "").length >= 2) pieces.add(v); return; }
+    // a word the page itself also writes ("mint", "name", "parts" …) is matched as a whole leaf only
+    if (SERVED_SCRIPT.includes(v)) { if (v.length >= 3) words.add(v); return; }
+    if (v.length >= 4) pieces.add(v.length > 80 ? v.slice(0, 80) : v);
+  };
+  const visit = (key: string, v: Json): void => {
+    if (Array.isArray(v)) { for (const x of v) visit(key, x); return; }
+    if (v !== null && typeof v === "object") { for (const [k, x] of Object.entries(v)) visit(k, x); return; }
+    add(key, v);
+  };
+  visit("", payload);
+  return { pieces, words };
+}
+function checkPayloadShown(root: FakeElement, payload: Json): string[] {
+  const out: string[] = [];
+  const { pieces, words } = payloadPieces(payload);
+  for (const el of root.walk()) {
+    if (el.children.length > 0 || markedAncestor(el) !== null) continue;
+    // a column heading names a field; a table's caption names it and counts its (marked) rows
+    if (el.tagName === "th" || el.className === "h") continue;
+    const text = el.textContent;
+    if (text.trim() === "") continue;
+    const bare = text.trim().replace(/^[(\[·\s]+|[)\]·,:\s]+$/g, "");
+    if (words.has(bare)) { out.push(`"${text.slice(0, 60)}": a value drawn outside any marked element`); continue; }
+    const grouped = text.replace(/\u00a0/g, "");
+    for (const p of pieces) {
+      if (text.includes(p) || (p.length >= 4 && /^\d+$/.test(p) && grouped.includes(p))) {
+        out.push(`"${text.slice(0, 60)}": holds "${p.slice(0, 20)}" of the payload outside any marked element`);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 // ── synthetic payloads, built from the recorded ones ────────────────────────────────────────────
 
 const DIAGNOSTIC_CHARS = 2000; // token-indexer/interface/verify.ts MAX_DIAGNOSTIC_CHARS
@@ -441,6 +493,8 @@ describe("the page shows the origin of every value", () => {
       expect(checkDrawn(token.root, token.model.all), `${name}: token view drawn`).toEqual([]);
       expect(checkModel(page, contract.model.all, where, known, cSrc), `${name}: contract view model`).toEqual([]);
       expect(checkDrawn(contract.root, contract.model.all), `${name}: contract view drawn`).toEqual([]);
+      expect(checkPayloadShown(token.root, tokenDetail(f)), `${name}: token view payload`).toEqual([]);
+      expect(checkPayloadShown(contract.root, contractState(f, f.interface ?? null)), `${name}: contract view payload`).toEqual([]);
       note(token.model.all); note(contract.model.all);
       expect(token.model.all.length, `${name}: the token view lists its values`).toBeGreaterThan(20);
       // the independent map really covered the view (a check over nothing proves nothing)
@@ -457,6 +511,7 @@ describe("the page shows the origin of every value", () => {
         const where: Where = { tokenIds: drawn.ids, contractIds: new Set(["interface", "calls", "events", "facts"]), address: row.address ?? null };
         expect(checkModel(page, drawn.model.all, where, knownOf(row), tokenSources(rowFixture(row))), `${status} row: model`).toEqual([]);
         expect(checkDrawn(drawn.root, drawn.model.all), `${status} row: drawn`).toEqual([]);
+        expect(checkPayloadShown(drawn.root, tokenDetail(rowFixture(row))), `${status} row: payload`).toEqual([]);
       }
       // E1a-F8: the identity (domainSep, kind) links where it is carried — declarations, or mints for
       // a token that was only minted, or a seen colour's movements
@@ -490,6 +545,7 @@ describe("the page shows the origin of every value", () => {
       expect(pendItem.origin.links.map((l: Json) => l.href)).toEqual([`#/tx/${pendingTx}`]);
       expect(checkModel(page, pend.model.all, { tokenIds: drawToken(page, lm).ids, contractIds: pend.ids, address: stuck.address }, knownOf(lm, stuck))).toEqual([]);
       expect(checkDrawn(pend.root, pend.model.all)).toEqual([]);
+      expect(checkPayloadShown(pend.root, { contract: stuck })).toEqual([]);
       // E1a-R2I: first seen links the observation that set it — a mint before the first declaration
       {
         const f = clone(tokenFixture("sneb18"));
@@ -553,6 +609,29 @@ describe("the page shows the origin of every value", () => {
       expect(eventsSec.textContent).toContain("the rows below come from those read");
     }
 
+    // ── E1a-R3B: the heading and its summary line — every value drawn there is a marked occurrence
+    // with its own chip, counted independently of the checkers above (a mutation that drops a mark
+    // AND its chip for a formatted value such as "(shielded)" or "decimals 0" fails here) ──────
+    for (const name of TOKEN_FIXTURES) {
+      const f = tokenFixture(name);
+      const drawn = drawToken(page, f);
+      const marks = marksOf(drawn.root);
+      const head = drawn.root.children.find((c) => c.tagName === "section")!; // the heading section
+      const inHead = (field: string): number => [...head.walk()].filter((el) => el.getAttribute("data-o") === field).length;
+      for (const field of ["status", "symbol", "kind", "privacy", "storage", "decimals"]) {
+        expect(inHead(field), `${name}: ${field} in the heading`).toBe(1);
+        expect(marks.get(field)?.length, `${name}: ${field} drawn twice (heading, facts)`).toBe(2);
+      }
+      expect(inHead(f.token.status === "seen" ? "color" : "name"), `${name}: the heading's name`).toBe(1);
+      const fam = drawn.model.facts.find((i: Json) => i.field === "family");
+      if (fam) {
+        expect(inHead("family"), `${name}: the family badge is its own value`).toBe(1);
+        expect(fam.origin.kind).toBe("derived");
+        expect(fam.origin.links.map((l: Json) => l.href)).toEqual([`#/contract/${f.token.address}`]);
+      }
+    }
+    expect(drawToken(page, tokenFixture("lsunpi")).model.facts.find((i: Json) => i.field === "family").value).toBe("ledger");
+
     // ── US6 scenario 1's half that exists before 03-A (SNEB18 = SNEBDU's MIP-0018 twin) ───────
     const sneb = drawToken(page, tokenFixture("sneb18"));
     const name = sneb.model.facts.find((i: Json) => i.field === "name");
@@ -607,6 +686,7 @@ describe("the page shows the origin of every value", () => {
       const src = contractSources(up.contract, current, up.events.items); callSources(src, up.calls);
       expect(checkModel(page, drawn.model.all, where, knownOf(up), src), `status ${s}: model`).toEqual([]);
       expect(checkDrawn(drawn.root, drawn.model.all), `status ${s}: drawn`).toEqual([]);
+      expect(checkPayloadShown(drawn.root, contractState(up, current)), `status ${s}: payload`).toEqual([]);
       note(drawn.model.all);
       // the badge: a known class and a word that says it
       const badges = [...drawn.root.walk()].filter((el) => el.className.startsWith("badge ifb "));
@@ -643,6 +723,7 @@ describe("the page shows the origin of every value", () => {
       expect(checkModel(page, drawn.model.all, { tokenIds: upTokenIds, contractIds: drawn.ids, address: up.token.address }, knownOf(up),
         contractSources(up.contract, many))).toEqual([]);
       expect(checkDrawn(drawn.root, drawn.model.all)).toEqual([]);
+      expect(checkPayloadShown(drawn.root, contractState(up, many))).toEqual([]);
       const sec = [...drawn.root.walk()].find((el) => el.id === "interface")!;
       expect(sec.textContent).toContain("the newest 100 of 101 older publications are shown — all of them: every publication (API, paginated)");
       expect(sec.textContent).toContain("the newest 1 of 250 checks are shown");
@@ -718,6 +799,7 @@ describe("the page shows the origin of every value", () => {
       const where: Where = { tokenIds: new Set(), contractIds: drawn.ids, address: c.address };
       expect(checkModel(page, drawn.model.all, where, knownOf(c, outcomes[label]), contractSources(c, outcomes[label])), `outcome ${label}`).toEqual([]);
       expect(checkDrawn(drawn.root, drawn.model.all), `outcome ${label} drawn`).toEqual([]);
+      expect(checkPayloadShown(drawn.root, contractState({ contract: c }, outcomes[label])), `outcome ${label} payload`).toEqual([]);
       note(drawn.model.all);
     }
     // E1a-F11: `unchecked` after L1 passed (state unavailable, a Level 2 limit) says what passed
@@ -884,16 +966,38 @@ describe("the page shows the origin of every value", () => {
 
   it("negative control (E1a-F15): a value drawn with its chip in one place but not in another fails the check", () => {
     // the heading draws the name without its chip; the facts table still draws it with one
-    const broken = SERVED_SCRIPT.replace('title.appendChild(originChip(factOf(m, "name").origin));', "");
+    const broken = SERVED_SCRIPT.replace("  v.appendChild(originChip(which.origin));\n", "");
     expect(broken).not.toBe(SERVED_SCRIPT);
     expect(snebChecks(broken).drawn.some((v) => v.startsWith('name: drawn (occurrence 1 of 2) without its origin'))).toBe(true);
   });
 
   it("negative control (E1a-R2E): a heading drawn without its mark AND its chip fails the check", () => {
-    const broken = SERVED_SCRIPT.replace('var title = marked(node("h3"), "name");', 'var title = node("h3");')
-      .replace('title.appendChild(originChip(factOf(m, "name").origin));', "");
+    const broken = SERVED_SCRIPT.replace('  var v = marked(node("span", null, "vo"), which.field);', '  var v = node("span", null, "vo");')
+      .replace("  v.appendChild(originChip(which.origin));\n", "");
     expect(broken).not.toBe(SERVED_SCRIPT);
     expect(snebChecks(broken).drawn.some((v) => v.startsWith('name: its value "') && v.endsWith("is drawn outside any marked element"))).toBe(true);
+  });
+
+  it("negative control (E1a-R3B): a formatted heading value without its mark and chip fails the check", () => {
+    // "(shielded)" and "decimals 0": neither is an exact value string, so only the payload check and
+    // the heading's own count can see them
+    const broken = SERVED_SCRIPT.replace('  part("privacy", "(" + (t.privacy ? txt(t.privacy) : "?") + ")");',
+      '  wrap.appendChild(node("span", "(" + (t.privacy ? txt(t.privacy) : "?") + ")"));');
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const drawn = drawToken(page, tokenFixture("sneb18"));
+    expect(checkPayloadShown(drawn.root, tokenDetail(tokenFixture("sneb18")))).toContain('"(shielded)": a value drawn outside any marked element');
+    expect(marksOf(drawn.root).get("privacy")?.length).toBe(1);
+  });
+
+  it("negative control (E1a-R3B): the family badge under the name's origin fails the check", () => {
+    const broken = SERVED_SCRIPT.replace('    var f = marked(node("span", null, "vo"), "family");', '    var f = node("span", null, "vo");')
+      .replace("    f.appendChild(originChip(fam.origin));\n", "");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const f = tokenFixture("lsunpi");
+    const drawn = drawToken(page, f);
+    expect(marksOf(drawn.root).get("family")?.length).toBe(1); // the facts row only: the heading's is unmarked
   });
 
   it("negative control (E1a-R2E): the header's status drawn without its origin fails the check", () => {
