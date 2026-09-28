@@ -21,6 +21,9 @@ import { type FakeElement, type Json, type Page, SERVED_SCRIPT, loadPage } from 
  *    backslashes after the scheme skipped, the host after the last "@"); its host is always shown,
  *    and a URL with user information before its host is not a link; a tokenUri rewritten to this
  *    origin keeps one leading slash (never a protocol-relative "//host").
+ *  - E1a-F14: bidi and invisible characters (U+202E, U+200B, tags …) are drawn as visible marks
+ *    "⟨U+202E⟩" in text and tooltips — two distinct identifiers never look the same — while copying
+ *    keeps the original characters; every piece of published text is a bidi-isolated island.
  *
  * The page script runs in `node:vm` exactly as served (`helpers/ui-page.ts`).
  */
@@ -206,6 +209,32 @@ describe("the page draws hostile values without breaking", () => {
     const userinfo: FakeElement = P.ctx.uriLink("https://good.example@evil.example/meta.json");
     expect([...userinfo.walk()].some((el) => el.tagName === "a")).toBe(false);
     expect(userinfo.textContent).toContain("it leads to evil.example");
+
+    // ── E1a-F14: bidi and invisible characters are drawn as visible marks ─────────────────────
+    const spoof = JSON.parse(JSON.stringify(UP.interface));
+    spoof.witnesses = ["safeAmount", "safe\u202EtnuomA\u202C", "safe\u200BAmount"];
+    spoof.reason = "Level 2: circuit mint\u2066 differs";
+    spoof.status = "failed"; spoof.failedLevel = 2; spoof.levels = { l1: "passed", l2: "failed", l3: "not_run" };
+    const sp = drawContract(SERVED_SCRIPT, spoof);
+    const witnessTexts = [0, 1, 2].map((i) => [...sp.root.walk()].find((el) => el.getAttribute("data-o") === `iface:witness:${i}`)!.textContent);
+    expect(witnessTexts.map((t) => t.split("Public interface")[0])).toEqual(["safeAmount", "safe⟨U+202E⟩tnuomA⟨U+202C⟩", "safe⟨U+200B⟩Amount"]);
+    expect(new Set(witnessTexts).size, "three identifiers, three different drawings").toBe(3);
+    const failure = [...sp.root.walk()].find((el) => el.getAttribute("data-o") === "iface:failure")!;
+    expect(failure.textContent).toContain("mint⟨U+2066⟩ differs");
+    for (const el of sp.root.walk()) {
+      expect(el.title, "no tooltip carries a raw bidi or zero-width character").not.toMatch(/[\u202A-\u202E\u2066-\u2069\u200B-\u200F]/);
+      if (el.children.length === 0) expect(el.textContent).not.toMatch(/[\u202A-\u202E\u2066-\u2069\u200B-\u200F]/);
+    }
+    // ordinary text of every script is left alone: an emoji with its variation selector, Arabic, CJK
+    const P2 = loadPage();
+    for (const plain of ["❤️ Heart", "رمز", "漢字", "Ünïcödé", "tab\there"]) expect(P2.ctx.shown(plain)).toBe(plain);
+    expect(P2.ctx.shown("a\u0000b\u{E0041}c")).toBe("a⟨U+0000⟩b⟨U+E0041⟩c");
+    // …and a copy keeps the original characters
+    const longSpoof = `x\u202E${"y".repeat(400)}`;
+    const cp = [...P2.ctx.boundedNode(longSpoof, 160, "txt").walk()].find((el: FakeElement) => el.className.includes("cpbtn"))!;
+    cp.click();
+    await P2.settle();
+    expect(P2.copied[0]).toBe(longSpoof);
   });
 
   it("negative control (E1a-F4): without the summary key the publication is read on every refresh", async () => {
@@ -252,6 +281,16 @@ describe("the page draws hostile values without breaking", () => {
     const broken = SERVED_SCRIPT.replace("(local ? localPath(dest.path) : s)", "(local ? dest.path : s)");
     expect(broken).not.toBe(SERVED_SCRIPT);
     expect(loadPage(broken).ctx.uriLink("http://localhost//evil.example/x").href).toBe("//evil.example/x");
+  });
+
+  it("negative control (E1a-F14): without the marks, a reversed identifier draws its raw controls", () => {
+    const broken = SERVED_SCRIPT.replace("    if (hiddenChar(c)) {", "    if (false) {");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const spoof = JSON.parse(JSON.stringify(UP.interface));
+    spoof.witnesses = ["safe\u202EtnuomA\u202C"];
+    const drawn = drawContract(broken, spoof);
+    const w = [...drawn.root.walk()].find((el) => el.getAttribute("data-o") === "iface:witness:0")!;
+    expect(w.textContent).toContain("\u202E");
   });
 
   it("negative control (E1a-F3): String() on a published object stops the contract view", () => {

@@ -384,6 +384,9 @@ tr.hist td { background: var(--det); font-size: 12.5px; }
    never widens the table. A URL of up to 262 112 bytes is shortened for the eye (head … tail) and
    copied whole. */
 .diag { white-space: pre-wrap; word-break: break-word; display: inline-block; max-width: 72ch; }
+/* 00024-03 (audit 03-E1a F14): every piece of published text is its own bidirectional island, so
+   right-to-left text in a name cannot reorder the label or the chip beside it. */
+main span, main a, main td, main pre, main h3 { unicode-bidi: isolate; }
 .urlv { white-space: normal; word-break: break-all; display: inline-block; max-width: 72ch; }
 .cpbtn { font-size: 11.5px; }
 `;
@@ -459,7 +462,7 @@ var state = {
 function el(id) { return document.getElementById(id); }
 function node(tag, text, cls) {
   var n = document.createElement(tag);
-  if (text !== undefined && text !== null) n.textContent = txt(text);
+  if (text !== undefined && text !== null) n.textContent = shown(text);
   if (cls) n.className = cls;
   return n;
 }
@@ -469,7 +472,7 @@ function cell(row, child, cls) {
   if (cls) td.className = cls;
   if (child === null || child === undefined) td.textContent = "-";
   else if (typeof child === "object" && child.nodeType) td.appendChild(child);
-  else td.textContent = txt(child);
+  else td.textContent = shown(child);
   row.appendChild(td);
   return td;
 }
@@ -567,6 +570,35 @@ function txt(v) {
   } catch (e) { return "(a value this page cannot show)"; }
 }
 function orDash(v) { return v === null || v === undefined || v === "" ? "-" : txt(v); }
+// Characters that change how the text around them is laid out, or that cannot be seen at all, are
+// drawn as a visible mark "⟨U+202E⟩": "safe" + U+202E + "tnuomA" would otherwise read as another
+// identifier, and a zero-width space makes two names look the same (audit 03-E1a finding F14). Only
+// what is DRAWN changes; a copy control copies the original characters.
+function hiddenChar(c) {
+  return (c < 32 && c !== 9 && c !== 10 && c !== 13) || (c >= 127 && c <= 159) || c === 173 || c === 847
+    || c === 1564 || c === 4447 || c === 4448 || c === 6068 || c === 6069 || c === 6158
+    || (c >= 8203 && c <= 8207) || (c >= 8234 && c <= 8238) || (c >= 8288 && c <= 8303)
+    || c === 12644 || c === 65279 || c === 65440 || (c >= 65529 && c <= 65531)
+    || (c >= 119155 && c <= 119162) || (c >= 917504 && c <= 917631);
+}
+function shown(value) {
+  var v = txt(value);
+  var out = null;
+  for (var i = 0; i < v.length; i++) {
+    var c = v.codePointAt(i);
+    var w = c > 65535 ? 2 : 1;
+    if (hiddenChar(c)) {
+      if (out === null) out = v.slice(0, i);
+      var h = c.toString(16).toUpperCase();
+      while (h.length < 4) h = "0" + h;
+      out += "⟨U+" + h + "⟩";
+    } else if (out !== null) {
+      out += v.substr(i, w);
+    }
+    i += w - 1;
+  }
+  return out === null ? v : out;
+}
 
 // ── Copy to clipboard ───────────────────────────────────────────────────────────────────────
 
@@ -575,7 +607,7 @@ function copyable(value, label, cls) {
   var s = node("span", text, cls ? "cp " + cls : "cp");
   if (value === null || value === undefined || value === "") { s.className = cls || ""; return s; }
   var full = txt(value);
-  s.title = (full.length > 200 ? full.slice(0, 200) + "… (" + full.length + " characters)" : full) + "  (click to copy)";
+  s.title = shown(full.length > 200 ? full.slice(0, 200) + "… (" + full.length + " characters)" : full) + "  (click to copy)";
   s.addEventListener("click", function (ev) { ev.stopPropagation(); copyValue(txt(value), s); });
   return s;
 }
@@ -1014,7 +1046,7 @@ function uriLink(uri) {
   a.href = parsed.href;
   a.rel = "noreferrer noopener";
   a.target = "_blank";
-  a.title = (parsed.local ? "rewritten to this origin: " + parsed.href : parsed.label) + " (opens the metadata document in a new tab)";
+  a.title = shown(clipText(parsed.local ? "rewritten to this origin: " + parsed.href : parsed.label, TEXT_MAX).text) + " (opens the metadata document in a new tab)";
   // A row click navigates to the token view; a click on the link itself must only open the document.
   a.addEventListener("click", function (ev) { ev.stopPropagation(); });
   return a;
@@ -2210,7 +2242,7 @@ function originChip(ov) {
     chip.href = first.href;
     chip.addEventListener("click", stopClick);
   }
-  chip.title = ov.label + (ov.detail ? " — " + ov.detail : "");
+  chip.title = shown(ov.label + (ov.detail ? " — " + ov.detail : ""));
   chip.setAttribute("data-origin", ov.kind);
   return chip;
 }
@@ -2249,7 +2281,7 @@ function withOrigin(valueNode, ov) {
 function marked(n, field) { n.setAttribute("data-o", field); return n; }
 function ifaceBadge(st) {
   var b = node("span", st.text, "badge ifb " + st.cls);
-  b.title = st.help + (st.notes.length > 0 ? " · " + st.notes.join(" · ") : "");
+  b.title = shown(st.help + (st.notes.length > 0 ? " · " + st.notes.join(" · ") : ""));
   return b;
 }
 function partsChip(parts, phase, what) {
@@ -2290,7 +2322,7 @@ function urlNode(uv) {
     a.href = uv.href;
     a.rel = "noreferrer noopener";
     a.target = "_blank";
-    a.title = uv.shortened ? uv.length + " characters; use copy for the whole URL" : uv.full;
+    a.title = uv.shortened ? uv.length + " characters; use copy for the whole URL" : shown(uv.full);
     a.addEventListener("click", stopClick);
     wrap.appendChild(a);
   } else {
@@ -2732,7 +2764,7 @@ function listIfaceCell(t) {
   wrap.appendChild(ifaceBadge(st));
   return wrap;
 }
-function withTitle(n, title) { n.title = title; return n; }
+function withTitle(n, title) { n.title = shown(title); return n; }
 // The frontend filter of the same rule (owner, Phase G). It filters the rows ALREADY LOADED, and
 // listQuery asks the API for its maximum page while it is on, so a token with metadata cannot be
 // hidden behind a page boundary the reader never sees.
@@ -3842,7 +3874,7 @@ function renderToken(main) {
     meta.appendChild(node("div", "no metadata published (or a multi-part document is still incomplete)", "empty"));
   } else {
     var pre = node("pre");
-    pre.textContent = m.metadata.value;
+    pre.textContent = shown(m.metadata.value);
     meta.appendChild(pre);
   }
   main.appendChild(meta);

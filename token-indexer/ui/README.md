@@ -60,6 +60,10 @@ What else the page shows:
 - A URL (bundle URL, tokenUri) is parsed as a browser parses it: its destination host is always
   shown beside the shortened text, a URL with user information before its host is not a link, and a
   `localhost` tokenUri rewritten to this origin keeps exactly one leading slash (audit 03-E1a F13).
+- Characters that change the layout of the text around them or cannot be seen (bidi controls such as
+  U+202E, zero-width characters, C0/C1 controls, tag characters) are drawn as a visible mark
+  `⟨U+202E⟩` in text and tooltips; copying keeps the original; every piece of published text is a
+  bidi-isolated island (`unicode-bidi: isolate`) (audit 03-E1a F14).
 - Routes may end in a section (`#/contract/<address>/interface`, `#/token/…/mints`, …), scrolled to
   once drawn. The raw-events table asks for every event of the contract (`/events?limit=500`): the
   route's `applied=false` means "rejected only", which the page had asked for since 00020.
