@@ -4529,9 +4529,11 @@ function eventsSection(items, markDomain, heading, moreOf, failed, why) {
     cell(tr, orDash(key));
     cell(tr, node("span", typeLabel(e.valType), "vtype"));
     cell(tr, orDash(e.valLen === undefined ? e.len : e.valLen), "num");
-    var value = e.text !== undefined && e.text !== null ? txt(e.text)
-      : (e.value ? (hexText(e.value) || shortHex(e.value, 10, 8)) : null);
-    cell(tr, value === null ? node("span", Number(e.valType) === 5 ? "Null" : "-", "no") : boundedNode(value, HISTORY_MAX, "wrapv"));
+    // the value as the model holds it, whole (an integer, a text, every byte of an opaque value, a
+    // Null): drawn within HISTORY_MAX and copied whole — never shortened here (audit 03-E1a R6D, R7B)
+    var value = items[i].value;
+    cell(tr, value === null || value === undefined ? node("span", "-", "no")
+      : boundedNode(value, HISTORY_MAX, Number(e.valType) === 5 ? "no" : "wrapv"));
     cell(tr, e.applied === true ? node("span", "yes", "txt")
       : (e.applied === false ? node("span", "no", "err") : "-"));
     cell(tr, e.rejectReason ? node("span", txt(e.rejectReason), "err wrapv") : node("span", "-", "no"));

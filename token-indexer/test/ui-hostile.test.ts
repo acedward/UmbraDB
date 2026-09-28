@@ -383,9 +383,17 @@ describe("the page draws hostile values without breaking", () => {
       [...hist[2]!.walk()].find((el) => el.className.includes("cpbtn"))!.click();
       await op.settle();
       expect(op.copied[0], "the earlier opaque value is copied whole").toBe("0x" + long);
-      // the raw events keep them too
+      // the raw events keep them too — in the model and in the drawn cells (E1a-R7B)
       const ev = op.ctx.tokenModel(detail).all.filter((i: Json) => String(i.field).startsWith("event:"));
       expect(ev.map((i: Json) => i.value)).toContain("0x" + a32);
+      const evSec = [...root.walk()].find((el) => el.id === "events")!;
+      const evRow = (id: number): FakeElement => [...evSec.walk()].find((el) => el.tagName === "tr" && el.getAttribute("data-o") === `event:${id}`)!;
+      expect(evRow(200_001).textContent).toContain("0x" + a32);
+      expect(evRow(200_002).textContent).toContain("0x" + b32);
+      expect(evRow(200_000).textContent).not.toContain("0x" + long);
+      [...evRow(200_000).walk()].find((el) => el.className.includes("cpbtn"))!.click();
+      await op.settle();
+      expect(op.copied[op.copied.length - 1], "the raw event's opaque value is copied whole").toBe("0x" + long);
     }
 
     // ── E1a-R3E: 2 000 current keys of 8 000 hidden characters each ───────────────────────────
@@ -515,6 +523,18 @@ describe("the page draws hostile values without breaking", () => {
     bp.ctx.state.route = { view: "list" };
     bp.ctx.render();
     expect(bp.doc.getElementById("view")!.textContent.length).toBeGreaterThan(6_000_000);
+  });
+
+  it("negative control (E1a-R7B): raw events shortened by their renderer look the same", () => {
+    const broken = SERVED_SCRIPT.replace("    var value = items[i].value;\n",
+      "    var value = e.text !== undefined && e.text !== null ? txt(e.text) : (e.value ? (hexText(e.value) || shortHex(e.value, 10, 8)) : null);\n");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const detail = opaqueHistory(["0011223344" + "aa".repeat(23) + "ccddeeff", "0011223344" + "bb".repeat(23) + "ccddeeff"]);
+    const root = drawTokenState(loadPage(broken), detail);
+    const evSec = [...root.walk()].find((el) => el.id === "events")!;
+    const cellOf = (id: number): string => [...evSec.walk()].find((el) => el.tagName === "tr" && el.getAttribute("data-o") === `event:${id}`)!.textContent;
+    expect(cellOf(200_000)).not.toContain("aaaaaa");
+    expect(cellOf(200_001)).not.toContain("bbbbbb");
   });
 
   it("negative control (E1a-R2D): earlier declarations and raw events drawn whole flood the view", () => {
