@@ -1,94 +1,38 @@
 import { readFileSync } from "node:fs";
-import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 import { INTERFACE_STATUSES } from "../api/queries.js";
-import { DASHBOARD_HTML } from "../ui/page.js";
+import {
+  type FakeElement, type Json, type Page, SERVED_SCRIPT, loadPage, markedAncestor, marksOf,
+} from "./helpers/ui-page.js";
 
 /**
- * `[[token-ui-origin]]` — spec 00024 US6 / FR-016 (sub-plan 00024-03, Phase 03-B): on the token and
- * contract views, every value the page shows carries its origin — "MIP-0018 declaration", "Public
- * interface", "Chain observation", "Derived by this indexer" or "Not available" — and the link to
- * its evidence resolves.
+ * `[[token-ui-origin]]` — spec 00024 US6 / FR-016 (sub-plan 00024-03, Phase 03-B; hardened by the
+ * 03-E1a audit): on the token and contract views, every value the page shows carries its origin —
+ * "MIP-0018 declaration", "Public interface", "Chain observation", "Derived by this indexer" or "Not
+ * available" — and the link to ITS OWN evidence.
  *
- * No browser and no DOM library (plan 03-B item 6): the page's behaviour lives in ONE inline script,
- * and this test evaluates exactly the string the page serves (read off `DASHBOARD_HTML`, not
- * imported from anywhere else) in a `node:vm` context, with a thirty-line document good for
- * `createElement`, `appendChild` and `textContent` — the only DOM the page uses, because it assigns
- * no markup. Two things are then checked on recorded API payloads
- * (`fixtures/ui/`, see its SOURCE.md) and on synthetic ones built from them:
+ * No browser and no DOM library (plan 03-B item 6): the served script runs in `node:vm` with the
+ * small browser of `helpers/ui-page.ts` (listeners, fetch, clipboard, hash navigation and scrolling
+ * kept — audit finding E1a-F15). Checked on recorded API payloads (`fixtures/ui/`, see its SOURCE.md)
+ * and on synthetic ones built from them:
  *
  *  1. the VIEW MODEL (`tokenModel`, `contractModel`): every item has a known origin with its label,
- *     and every evidence link is a route the page resolves — a transaction the payloads name, the
- *     contract, the token, or a section that the rendered view really has;
- *  2. the DRAWN VIEW (`renderToken`, `renderContract`): every item of the model is drawn, marked
- *     `data-o`, with its own chip — the label, and a link to the first piece of evidence — and
- *     nothing is marked that the model does not list.
- *
- * The fixtures cover every origin kind, every one of the API's seven publication statuses, both
- * roles (current / historical), multi-part packages (SNEB18's 3-part `metadata`, LMOON18's 2-part
- * `description` after a Null, UPROMPI's 2-part URL), a URL of the 262 112-byte maximum and a
- * diagnostic bounded by the indexer ("… [N characters omitted]"), which must be shown as served.
+ *     and every evidence link is a route the page resolves; where the API gave the value an origin,
+ *     the item's origin is of the same kind and its first link is the evidence THAT origin names —
+ *     computed here from the payloads alone, so a link to another (known) transaction fails;
+ *  2. the DRAWN VIEW (`renderToken`, `renderContract`): every item is drawn, marked `data-o`, and
+ *     EVERY occurrence carries its own chip; nothing is marked that the model does not list; no value
+ *     cell of a table is drawn outside a marked element;
+ *  3. the PAGE AS A BROWSER RUNS IT: boot on a deep link scrolls to the section, following an
+ *     evidence link navigates and scrolls, the copy control copies the whole value.
  */
 
-const SERVED_SCRIPT = /<script>([\s\S]*?)<\/script>/.exec(DASHBOARD_HTML)?.[1] ?? "";
 const FIXTURES = new URL("./fixtures/ui/", import.meta.url);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Json = any;
 const read = (name: string): Json => JSON.parse(readFileSync(new URL(name, FIXTURES), "utf8"));
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
 const LABELS = ["MIP-0018 declaration", "Public interface", "Chain observation", "Derived by this indexer", "Not available"];
 const MAX_URL_BYTES = 262_112;
-
-// ── a document just large enough for this page ─────────────────────────────────────────────────
-
-class FakeElement {
-  nodeType = 1;
-  children: FakeElement[] = [];
-  parentNode: FakeElement | null = null;
-  attrs: Record<string, string> = {};
-  style: Record<string, string> = {};
-  className = "";
-  id = "";
-  title = "";
-  href = "";
-  private text = "";
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  [prop: string]: any;
-  constructor(public tagName: string) {}
-  get textContent(): string { return this.text + this.children.map((c) => c.textContent).join(""); }
-  set textContent(v: string) { this.children = []; this.text = String(v); }
-  get firstChild(): FakeElement | null { return this.children[0] ?? null; }
-  appendChild(child: FakeElement): FakeElement { child.parentNode = this; this.children.push(child); return child; }
-  removeChild(child: FakeElement): FakeElement { this.children = this.children.filter((c) => c !== child); return child; }
-  addEventListener(): void { /* the views are drawn, not clicked */ }
-  setAttribute(k: string, v: string): void { this.attrs[k] = String(v); }
-  getAttribute(k: string): string | null { return this.attrs[k] ?? null; }
-  *walk(): Generator<FakeElement> { yield this; for (const c of this.children) yield* c.walk(); }
-}
-class FakeDocument {
-  body = new FakeElement("body");
-  createElement(tag: string): FakeElement { return new FakeElement(tag.toLowerCase()); }
-  getElementById(id: string): FakeElement | null {
-    for (const el of this.body.walk()) if (el.id === id) return el;
-    return new FakeElement("div"); // the chrome (#count, #strip …) is not part of these views
-  }
-}
-
-interface Page { ctx: Json; doc: FakeDocument }
-function loadPage(script = SERVED_SCRIPT): Page {
-  const doc = new FakeDocument();
-  const ctx = vm.createContext({
-    window: {
-      addEventListener() {}, location: { hash: "" }, setTimeout: () => 0, clearTimeout() {},
-      setInterval: () => 0, clearInterval() {}, innerWidth: 1280, innerHeight: 800,
-    },
-    document: doc,
-    navigator: {},
-  });
-  vm.runInContext(script, ctx, { filename: "served-page-script.js" });
-  return { ctx, doc };
-}
 
 // ── fixtures → the page's own state ─────────────────────────────────────────────────────────────
 
@@ -148,7 +92,66 @@ function knownOf(...docs: Json[]): Known {
   return k;
 }
 
-// ── the two checks ──────────────────────────────────────────────────────────────────────────────
+// ── the API origin behind each value, computed from the payloads alone (independent of the page) ─
+
+type Sources = Map<string, Json>;
+const hexOf = (s: string): string => Buffer.from(s, "utf8").toString("hex");
+function tokenSources(f: TokenFixture): Sources {
+  const m: Sources = new Map();
+  const o = f.token.origins ?? {};
+  for (const k of ["name", "symbol", "decimals", "tokenUri", "color", "status", "metadata"]) if (o[k]) m.set(k, o[k]);
+  for (const k of ["mintCount", "totalMinted", "firstMintHeight", "lastMintHeight"]) if (o.mints) m.set(k, o.mints);
+  if (f.token.interface) m.set("interface", f.token.interface.origin);
+  for (const kv of f.metadata.keys ?? []) m.set(`trait:${kv.keyHex ?? hexOf(kv.key)}`, kv.origin);
+  for (const e of f.events.items ?? []) {
+    m.set(`event:${e.eventId}`, e.origin);
+    if (e.keyHex) m.set(`trait:${e.keyHex}:${e.eventId}`, e.origin);
+  }
+  for (const r of f.mints.items ?? []) m.set(`mint:${r.txHash}:${r.segment}:${r.callIndex}`, r.origin);
+  for (const r of f.activity?.items ?? []) m.set(`activity:${[r.txHash, r.segment, r.section, r.role, r.itemIndex].join(":")}`, r.origin);
+  for (const s of f.contract.tokens ?? []) rowSources(m, s);
+  return m;
+}
+function rowSources(m: Sources, s: Json): void {
+  const o = s.origins ?? {};
+  for (const k of ["color", "name", "symbol", "decimals", "status"]) if (o[k]) m.set(`row:${s.domainSep}:${s.kind}:${k}`, o[k]);
+  if (o.mints) m.set(`row:${s.domainSep}:${s.kind}:mints`, o.mints);
+}
+function contractSources(c: Json, x: Json, events: Json[] = []): Sources {
+  const m: Sources = new Map();
+  for (const s of c.tokens ?? []) rowSources(m, s);
+  for (const e of events) m.set(`event:${e.eventId}`, e.origin);
+  // The deploy facts and the calls come without an origin (Q28): their evidence is the payload's own.
+  if (c.deployTxHash) {
+    const deploy = { origin: "chain", evidence: { txHash: c.deployTxHash } };
+    m.set("deployHeight", deploy); m.set("deployTxHash", deploy); m.set("address", deploy);
+  }
+  if (x) {
+    for (const r of ["status", "levels", "failure", "reason", "l3", "commitment", "url", "publication", "payload", "checkedAt",
+      "checks", "lastVerifiedAt", "verifiedUntil", "nextCheckAt", "state", "compiler", "build", "publications"]) m.set(`iface:${r}`, x.origin);
+    for (const f of x.files ?? []) m.set(`iface:file:${f.path}`, f.origin);
+    for (const k of x.keys ?? []) m.set(`iface:key:${k.circuit}`, k.origin);
+    for (const k of x.circuits ?? []) m.set(`iface:circuit:${k.name}`, k.origin);
+    (x.history ?? []).forEach((h: Json) => m.set(`iface:history:${h.eventId}`, h.origin));
+  }
+  return m;
+}
+function callSources(m: Sources, calls: Json): void {
+  for (const c of calls?.items ?? []) m.set(`call:${c.txHash}:${c.segment}:${c.callIndex}`, { origin: "chain", evidence: { txHash: c.txHash } });
+}
+/** The first evidence link an origin of the API names, or null when it names no transaction. */
+function expectedFirstLink(o: Json, address: string | null): string | null {
+  if (!o || typeof o !== "object") return null;
+  if (o.origin === "mip-0018") {
+    const pk = Array.isArray(o.evidence) ? o.evidence[0] : o.evidence;
+    return pk && typeof pk.txHash === "string" ? `#/tx/${pk.txHash}` : null;
+  }
+  if (o.origin === "public-interface") return address === null ? null : `#/contract/${address}/interface`;
+  if (o.origin === "chain") return o.evidence && typeof o.evidence.txHash === "string" ? `#/tx/${o.evidence.txHash}` : null;
+  return null;
+}
+
+// ── the checks ──────────────────────────────────────────────────────────────────────────────────
 
 interface Where { tokenIds: Set<string>; contractIds: Set<string>; address: string | null }
 
@@ -169,8 +172,8 @@ function resolves(page: Page, href: string, where: Where, known: Known): string 
   return `the route resolves to the ${String(r.view)} view`;
 }
 
-/** Check 1 — the model: a known origin, its label, its evidence, links that resolve. */
-function checkModel(page: Page, items: Json[], where: Where, known: Known): string[] {
+/** Check 1 — the model: a known origin, its label, its OWN evidence, links that resolve. */
+function checkModel(page: Page, items: Json[], where: Where, known: Known, sources: Sources = new Map()): string[] {
   const out: string[] = [];
   const fields = new Set<string>();
   for (const it of items) {
@@ -194,29 +197,42 @@ function checkModel(page: Page, items: Json[], where: Where, known: Known): stri
       const why = resolves(page, l.href, where, known);
       if (why !== null) out.push(`${it.field}: the link ${l.href.slice(0, 90)} resolves to ${why}`);
     }
+    const src = sources.get(it.field);
+    if (src !== undefined) {
+      if (src.origin !== o.kind) out.push(`${it.field}: origin ${o.kind}, but the API gave ${String(src.origin)}`);
+      const want = expectedFirstLink(src, where.address);
+      const got = o.links[0]?.href ?? null;
+      if (want !== null && got !== want) out.push(`${it.field}: first evidence link ${String(got).slice(0, 90)}, but its evidence is ${want.slice(0, 90)}`);
+      if (src.origin === "public-interface" && src.evidence?.txHash && !o.links.some((l: Json) => l.href === `#/tx/${src.evidence.txHash}`)) {
+        out.push(`${it.field}: a public-interface value that does not link its publication transaction`);
+      }
+    }
   }
   return out;
 }
 
-/** Check 2 — the drawing: every item drawn with its own chip, nothing drawn that is not an item. */
+/** Check 2 — the drawing: every occurrence of every item with its own chip; nothing drawn that is
+ *  not an item; no value cell of a table outside a marked element. */
 function checkDrawn(root: FakeElement, items: Json[]): string[] {
   const out: string[] = [];
-  const drawn = new Map<string, FakeElement[]>();
-  for (const el of root.walk()) {
-    const f = el.getAttribute("data-o");
-    if (f !== null) drawn.set(f, [...(drawn.get(f) ?? []), el]);
-  }
+  const drawn = marksOf(root);
   const wanted = new Set(items.map((it) => it.field as string));
   for (const it of items) {
     const els = drawn.get(it.field);
     if (els === undefined) { out.push(`${it.field}: in the model but not drawn`); continue; }
     const first = it.origin.links[0];
-    const ok = els.some((el) => [...el.walk()].some((c) =>
+    const hasChip = (el: FakeElement): boolean => [...el.walk()].some((c) =>
       c.className.split(" ").includes("orig") && c.textContent === it.origin.label
-      && (first === undefined ? c.tagName === "span" : c.tagName === "a" && c.href === first.href)));
-    if (!ok) out.push(`${it.field}: drawn without its origin "${it.origin.label}"`);
+      && (first === undefined ? c.tagName === "span" : c.tagName === "a" && c.href === first.href));
+    els.forEach((el, i) => { if (!hasChip(el)) out.push(`${it.field}: drawn (occurrence ${i + 1} of ${els.length}) without its origin "${it.origin.label}"`); });
   }
   for (const f of drawn.keys()) if (!wanted.has(f)) out.push(`${f}: drawn but not in the model`);
+  for (const el of root.walk()) {
+    if (el.tagName !== "td" || markedAncestor(el) !== null) continue;
+    let inBody = false;
+    for (let n: FakeElement | null = el; n !== null; n = n.parentNode) if (n.tagName === "tbody") inBody = true;
+    if (inBody) out.push(`a value cell drawn outside any marked element: "${el.textContent.slice(0, 60)}"`);
+  }
   return out;
 }
 
@@ -253,7 +269,7 @@ function publicationAs(base: Json, s: Status, role: "current" | "historical", ev
   p.eventId = eventId; p.partEventIds = [eventId]; p.role = role; p.status = s; p.levels = clone(LEVELS[s]);
   p.level = s === "verified" || s === "stale" ? 3 : s === "failed" ? 1 : 0;
   p.failedLevel = s === "failed" ? 2 : null;
-  p.l3Reason = s === "verified" || s === "stale" ? null : null;
+  p.l3Reason = null;
   p.reason = s === "failed" ? BOUNDED_REASON
     : s === "unchecked" ? "Level 1: index.json: the 30000 ms deadline was reached after 30001 ms; the bundle was not checked"
       : s === "unfetchable" ? "the URL is not http(s): ipfs"
@@ -265,6 +281,26 @@ function publicationAs(base: Json, s: Status, role: "current" | "historical", ev
   return p;
 }
 
+// ── the API as the page asks it, for the boot / navigation checks ───────────────────────────────
+
+function apiRoutes(f: TokenFixture): Map<string, Json> {
+  const t = f.token;
+  const a = t.address;
+  const base = `/v1/contracts/${a}/tokens/${t.domainSep}/${t.kind}`;
+  const routes = new Map<string, Json>([
+    ["/internal/status", { net: "undeployed" }],
+    [`/v1/contracts/${a}`, f.contract],
+    [`/v1/contracts/${a}/events?limit=500`, f.events],
+    [`/v1/contracts/${a}/calls?limit=200`, f.calls ?? { items: [], nextCursor: null }],
+    [base, t],
+    [`${base}/metadata`, f.metadata],
+    [`${base}/mints?limit=200`, f.mints],
+    [`${base}/transactions?limit=200`, f.activity ?? { items: [], nextCursor: null }],
+  ]);
+  if (f.interface) routes.set(`/v1/contracts/${a}/interface`, f.interface);
+  return routes;
+}
+
 // ── the test ────────────────────────────────────────────────────────────────────────────────────
 
 describe("the page shows the origin of every value", () => {
@@ -272,7 +308,7 @@ describe("the page shows the origin of every value", () => {
    * ONE test carries the id: an id reported by more than one test is an `ambiguous` gate violation
    * (check-required-tests.ts). Its negative controls are the untagged tests below.
    */
-  it("[[token-ui-origin]] every value of the token and contract views has an origin label and an evidence link that resolves", () => {
+  it("[[token-ui-origin]] every value of the token and contract views has an origin label and an evidence link that resolves", async () => {
     expect(SERVED_SCRIPT.length).toBeGreaterThan(10_000);
     const page = loadPage();
     const kindsSeen = new Set<string>();
@@ -285,12 +321,16 @@ describe("the page shows the origin of every value", () => {
       const contract = drawContract(page, contractState(f, f.interface ?? null));
       const token = drawToken(page, f);
       const where: Where = { tokenIds: token.ids, contractIds: contract.ids, address: f.token.address };
-      expect(checkModel(page, token.model.all, where, known), `${name}: token view model`).toEqual([]);
+      const tSrc = tokenSources(f); callSources(tSrc, f.calls);
+      const cSrc = contractSources(f.contract, f.interface ?? null, f.events.items); callSources(cSrc, f.calls);
+      expect(checkModel(page, token.model.all, where, known, tSrc), `${name}: token view model`).toEqual([]);
       expect(checkDrawn(token.root, token.model.all), `${name}: token view drawn`).toEqual([]);
-      expect(checkModel(page, contract.model.all, where, known), `${name}: contract view model`).toEqual([]);
+      expect(checkModel(page, contract.model.all, where, known, cSrc), `${name}: contract view model`).toEqual([]);
       expect(checkDrawn(contract.root, contract.model.all), `${name}: contract view drawn`).toEqual([]);
       note(token.model.all); note(contract.model.all);
       expect(token.model.all.length, `${name}: the token view lists its values`).toBeGreaterThan(20);
+      // the independent map really covered the view (a check over nothing proves nothing)
+      expect(token.model.all.filter((it: Json) => tSrc.has(it.field)).length, `${name}: values with an API origin`).toBeGreaterThan(8);
     }
 
     // ── US6 scenario 1's half that exists before 03-A (SNEB18 = SNEBDU's MIP-0018 twin) ───────
@@ -344,7 +384,8 @@ describe("the page shows the origin of every value", () => {
       current.history = INTERFACE_STATUSES.map((h, j) => publicationAs(base, h, "historical", 8_000 + j));
       const drawn = drawContract(page, contractState(up, current));
       const where: Where = { tokenIds: upTokenIds, contractIds: drawn.ids, address: up.token.address };
-      expect(checkModel(page, drawn.model.all, where, knownOf(up)), `status ${s}: model`).toEqual([]);
+      const src = contractSources(up.contract, current, up.events.items); callSources(src, up.calls);
+      expect(checkModel(page, drawn.model.all, where, knownOf(up), src), `status ${s}: model`).toEqual([]);
       expect(checkDrawn(drawn.root, drawn.model.all), `status ${s}: drawn`).toEqual([]);
       note(drawn.model.all);
       // the badge: a known class and a word that says it
@@ -392,17 +433,22 @@ describe("the page shows the origin of every value", () => {
     huge.status = "failed"; huge.levels = clone(LEVELS.failed); huge.failedLevel = 2; huge.reason = BOUNDED_REASON;
     huge.origin.evidence.status = "failed"; huge.origin.evidence.levels = clone(LEVELS.failed);
     const hugeDrawn = drawContract(page, contractState(up, huge));
-    expect(checkModel(page, hugeDrawn.model.all, { tokenIds: upTokenIds, contractIds: hugeDrawn.ids, address: up.token.address }, knownOf(up))).toEqual([]);
+    expect(checkModel(page, hugeDrawn.model.all, { tokenIds: upTokenIds, contractIds: hugeDrawn.ids, address: up.token.address }, knownOf(up),
+      contractSources(up.contract, huge))).toEqual([]);
     expect(checkDrawn(hugeDrawn.root, hugeDrawn.model.all)).toEqual([]);
     const urlRow = [...hugeDrawn.root.walk()].find((el) => el.getAttribute("data-o") === "iface:url")!;
     const urlLink = [...urlRow.walk()].find((el) => el.tagName === "a" && el.href === MAX_URL)!;
     expect(MAX_URL.length).toBe(MAX_URL_BYTES);
     expect(urlLink.textContent.length).toBeLessThanOrEqual(101);            // head … tail
     expect(urlLink.textContent.endsWith("/index.json")).toBe(true);
-    expect(urlRow.textContent).toContain("(262\u00a0112 characters)");      // grouped with U+00A0
+    expect(urlRow.textContent).toContain("(262 112 characters)");      // grouped with U+00A0
     expect(urlLink.title).not.toContain(MAX_URL);                           // no 262 KB tooltip
     const copy = [...urlRow.walk()].find((el) => el.className.includes("cpbtn"))!;
     expect(copy.title).toBe(`copy the whole URL (${MAX_URL_BYTES} characters)`);
+    // …and the copy control really copies the whole URL (its listener runs, E1a-F15)
+    copy.click();
+    await page.settle();
+    expect(page.copied.at(-1)).toBe(MAX_URL);
     // the evidence line names 1 024 parts without listing 1 024 ids
     const hugeOrigin = hugeDrawn.model.face.rows[0].origin;
     expect(hugeOrigin.detail).toContain("1024 parts");
@@ -423,7 +469,7 @@ describe("the page shows the origin of every value", () => {
       const c = outcomes[`${label}.contract`];
       const drawn = drawContract(page, contractState({ contract: c }, outcomes[label]));
       const where: Where = { tokenIds: new Set(), contractIds: drawn.ids, address: c.address };
-      expect(checkModel(page, drawn.model.all, where, knownOf(c, outcomes[label])), `outcome ${label}`).toEqual([]);
+      expect(checkModel(page, drawn.model.all, where, knownOf(c, outcomes[label]), contractSources(c, outcomes[label])), `outcome ${label}`).toEqual([]);
       expect(checkDrawn(drawn.root, drawn.model.all), `outcome ${label} drawn`).toEqual([]);
       note(drawn.model.all);
     }
@@ -434,9 +480,41 @@ describe("the page shows the origin of every value", () => {
 
     // ── every origin kind met at least once ───────────────────────────────────────────────────
     expect([...kindsSeen].sort()).toEqual(["chain", "derived", "mip-0018", "none", "public-interface"]);
+
+    // ── the page as a browser runs it (E1a-F15): boot on a deep link, follow an evidence link ─
+    const live = loadPage(SERVED_SCRIPT, apiRoutes(up));
+    live.window.location.hash = `#/contract/${up.token.address}/interface`;
+    live.boot();
+    await live.settle();
+    expect(live.ctx.state.route.view).toBe("contract");
+    expect(live.requests).toContain(`/v1/contracts/${up.token.address}/interface`);
+    const section = live.doc.getElementById("interface");
+    expect(section, "the interface section is drawn in the document").not.toBeNull();
+    expect(section!.scrolled, "boot on #/contract/…/interface scrolls to the section").toBeGreaterThan(0);
+    // follow a value's evidence link from the token view: it navigates and lands on its section
+    live.navigate(`#/token/${up.token.address}/${up.token.domainSep}/${up.token.kind}`);
+    await live.settle();
+    const tokenView = live.doc.getElementById("view")!;
+    const ifaceChip = [...tokenView.walk()].find((el) => el.getAttribute("data-o") === "interface")!;
+    const ifaceLink = [...ifaceChip.walk()].find((el) => el.tagName === "a" && el.className.includes("orig"))!;
+    expect(ifaceLink.href).toBe(`#/contract/${up.token.address}/interface`);
+    expect(ifaceLink.click().stopped, "a chip's click stays on the chip").toBe(true);
+    live.navigate(ifaceLink.href);
+    await live.settle();
+    expect(live.ctx.state.route.view).toBe("contract");
+    expect(live.doc.getElementById("interface")!.scrolled).toBeGreaterThan(0);
   });
 
   // ── negative controls: the same checks on a page that breaks the rule must FAIL ─────────────
+
+  const snebChecks = (script: string): { model: string[]; drawn: string[] } => {
+    const page = loadPage(script);
+    const f = tokenFixture("sneb18");
+    const contract = drawContract(page, contractState(f, null));
+    const token = drawToken(page, f);
+    const where: Where = { tokenIds: token.ids, contractIds: contract.ids, address: f.token.address };
+    return { model: checkModel(page, token.model.all, where, knownOf(f), tokenSources(f)), drawn: checkDrawn(token.root, token.model.all) };
+  };
 
   it("negative control: a value shown without an origin fails the check", () => {
     const broken = SERVED_SCRIPT.replace(
@@ -444,33 +522,74 @@ describe("the page shows the origin of every value", () => {
       'facts.push(item("symbol", "symbol", t.symbol, null,',
     );
     expect(broken).not.toBe(SERVED_SCRIPT);
-    const page = loadPage(broken);
-    const f = tokenFixture("sneb18");
-    const contract = drawContract(page, contractState(f, null));
-    const token = drawToken(page, f);
-    const where: Where = { tokenIds: token.ids, contractIds: contract.ids, address: f.token.address };
-    expect(checkModel(page, token.model.all, where, knownOf(f))).toEqual(["symbol: shown without an origin (Origin not given)"]);
+    expect(snebChecks(broken).model).toContain("symbol: shown without an origin (Origin not given)");
   });
 
   it("negative control: a value drawn without its origin chip fails the check", () => {
     const broken = SERVED_SCRIPT.replace('cell(tr, originBlock(it.origin), "ocell");', 'cell(tr, "-", "ocell");');
     expect(broken).not.toBe(SERVED_SCRIPT);
-    const page = loadPage(broken);
-    const token = drawToken(page, tokenFixture("sneb18"));
-    const violations = checkDrawn(token.root, token.model.all);
-    expect(violations).toContain('symbol: drawn without its origin "MIP-0018 declaration"');
-    expect(violations).toContain('address: drawn without its origin "Chain observation"');
+    const violations = snebChecks(broken).drawn;
+    expect(violations.some((v) => v.startsWith('symbol: drawn (occurrence 1 of 1) without its origin "MIP-0018 declaration"'))).toBe(true);
+    expect(violations.some((v) => v.startsWith('address: drawn (occurrence 1 of 1) without its origin "Chain observation"'))).toBe(true);
   });
 
   it("negative control: an evidence link that does not resolve fails the check", () => {
     const broken = SERVED_SCRIPT.replace('return { href: hashTx(h), text:', 'return { href: hashTx(h.slice(2)), text:');
     expect(broken).not.toBe(SERVED_SCRIPT);
+    const violations = snebChecks(broken).model;
+    expect(violations.some((v) => v.startsWith("name: the link #/tx/") && v.endsWith("a transaction the payloads do not name"))).toBe(true);
+  });
+
+  it("negative control (E1a-F15): a link to ANOTHER transaction the payloads name fails the check", () => {
+    // decimals cites the name's declaration: a known transaction, but not the one that declared the
+    // decimals (the round-1 check accepted it: every link resolved to a transaction the payloads name)
+    const broken = SERVED_SCRIPT.replace('facts.push(item("decimals", "decimals", t.decimals, o.decimals,',
+      'facts.push(item("decimals", "decimals", t.decimals, o.name,');
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const violations = snebChecks(broken).model;
+    expect(violations.some((v) => v.startsWith("decimals: first evidence link #/tx/591d1c45") && v.includes("but its evidence is #/tx/"))).toBe(true);
+  });
+
+  it("negative control (E1a-F15): a value drawn with its chip in one place but not in another fails the check", () => {
+    // the heading draws the name without its chip; the facts table still draws it with one
+    const broken = SERVED_SCRIPT.replace('title.appendChild(originChip(factOf(m, "name").origin));', "");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    expect(snebChecks(broken).drawn.some((v) => v.startsWith('name: drawn (occurrence 1 of 2) without its origin'))).toBe(true);
+  });
+
+  it("negative control (E1a-F15): a value cell drawn outside any marked element fails the check", () => {
+    // an extra table with the deploy transaction, drawn with no origin and no mark
+    const broken = SERVED_SCRIPT.replace('main.appendChild(interfaceSection(m.face));',
+      'main.appendChild(interfaceSection(m.face)); var xtb = tableIn(main, ["deploy tx"]); var xtr = document.createElement("tr"); cell(xtr, txLink(d.deployTxHash)); xtb.appendChild(xtr);');
+    expect(broken).not.toBe(SERVED_SCRIPT);
     const page = loadPage(broken);
     const f = tokenFixture("sneb18");
-    const contract = drawContract(page, contractState(f, null));
-    const token = drawToken(page, f);
-    const violations = checkModel(page, token.model.all, { tokenIds: token.ids, contractIds: contract.ids, address: f.token.address }, knownOf(f));
-    expect(violations.some((v) => v.startsWith("name: the link #/tx/") && v.endsWith("a transaction the payloads do not name"))).toBe(true);
+    const drawn = drawContract(page, contractState(f, null));
+    expect(checkDrawn(drawn.root, drawn.model.all).some((v) => v.startsWith("a value cell drawn outside any marked element"))).toBe(true);
+  });
+
+  it("negative control (E1a-F15): a copy control that does not copy fails the check", async () => {
+    const broken = SERVED_SCRIPT.replace('s.addEventListener("click", function (ev) { ev.stopPropagation(); copyValue(String(value), s); });',
+      's.addEventListener("click", function (ev) { ev.stopPropagation(); });');
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const up = tokenFixture("uprompi");
+    const drawn = drawContract(page, contractState(up, up.interface));
+    const urlRow = [...drawn.root.walk()].find((el) => el.getAttribute("data-o") === "iface:url")!;
+    [...urlRow.walk()].find((el) => el.className.includes("cpbtn"))!.click();
+    await page.settle();
+    expect(page.copied).toEqual([]);
+  });
+
+  it("negative control (E1a-F15): a page that does not scroll to the section fails the check", async () => {
+    const broken = SERVED_SCRIPT.replace("if (target.scrollIntoView) target.scrollIntoView();", "");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const up = tokenFixture("uprompi");
+    const live = loadPage(broken, apiRoutes(up));
+    live.window.location.hash = `#/contract/${up.token.address}/interface`;
+    live.boot();
+    await live.settle();
+    expect(live.doc.getElementById("interface")!.scrolled).toBe(0);
   });
 
   it("negative control: a status the page does not render fails the check", () => {
