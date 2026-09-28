@@ -2382,9 +2382,19 @@ function interfaceModel(x, address, loaded) {
   // when Level 2 ran (passed or failed); otherwise they are not known (audit 03-E1a finding R6B —
   // the API sends [] for a check that never reached Level 2).
   var l2Ran = !!(x.levels && (x.levels.l2 === "passed" || x.levels.l2 === "failed"));
+  // The circuits and the witnesses come from the bundle's contract information, which Level 2 reads:
+  // they are known when Level 2 passed, or failed with that file read — a failed Level 2 whose report
+  // carries the "(contract-info)" row (the file is missing or not a compiler's description), or whose
+  // report the API did not serve, established nothing about them (audit 03-E1a finding R7A).
+  var rep = x.report && typeof x.report === "object" ? x.report : null;
+  var repL2 = rep && rep.levels && typeof rep.levels === "object" && rep.levels.l2 && typeof rep.levels.l2 === "object" ? rep.levels.l2 : null;
+  var l2rows = rep === null ? null : arr(rep.operations).concat(repL2 ? arr(repL2.rows) : []);
+  var infoFailed = l2rows === null;
+  if (l2rows !== null) for (var ir = 0; ir < l2rows.length; ir++) if (l2rows[ir] && l2rows[ir].circuit === "(contract-info)") infoFailed = true;
+  var infoRead = !!(x.levels && (x.levels.l2 === "passed" || (x.levels.l2 === "failed" && !infoFailed)));
   return { present: true, status: st, rows: rows, files: files, keys: keys, circuits: circuits,
     witnesses: witnesses, checks: checks, history: history, roles: roles, url: uv, address: address,
-    circuitsTruncated: circuitsTruncated, l2Ran: l2Ran,
+    circuitsTruncated: circuitsTruncated, l2Ran: l2Ran, infoRead: infoRead,
     historyMore: olderTotal > hl.length ? olderTotal : null,
     checksMore: checksTotal > chl.length ? checksTotal : null };
 }
@@ -4688,7 +4698,8 @@ function interfaceSection(face) {
       cell(tr, it.row.onChain === true ? "yes" : (it.row.onChain === false ? "no" : "-"));
       cell(tr, copyable(it.row.keySha256, shortHex(txt(it.row.keySha256 || ""), 10, 8), "hex"));
       cell(tr, orDash(it.row.l2));
-    }, face.l2Ran ? "no circuit: Level 2 ran and summarised none" : L2_NOT_RUN));
+    }, face.infoRead ? "no circuit: Level 2 read the bundle's contract information and it lists none"
+      : (face.l2Ran ? L2_INFO_UNREAD : L2_NOT_RUN)));
   if (face.circuitsTruncated) {
     // the cut is a result of the publication's check (its report says so): an occurrence of that
     // row with its origin, and no count of its own (audit 03-E1a findings R4C, R5B)
@@ -4698,7 +4709,8 @@ function interfaceSection(face) {
   }
   sec.appendChild(ifaceTable("witnesses the bundle's code declares", face.witnesses,
     ["witness", "origin"], function (tr, it) { cell(tr, boundedNode(it.value, NAME_MAX, "txt wrapv")); },
-    face.l2Ran ? "no witness declared: Level 2 read the bundle's contract information and it lists none" : L2_NOT_RUN));
+    face.infoRead ? "no witness declared: Level 2 read the bundle's contract information and it lists none"
+      : (face.l2Ran ? L2_INFO_UNREAD : L2_NOT_RUN)));
   sec.appendChild(ifaceTable("check history (newest first)", face.checks,
     ["check", "checked at", "trigger", "result", "levels", "L3", "reason", "state block", "origin"], function (tr, it) {
       var ch = it.row;
@@ -4753,6 +4765,7 @@ function ifaceValue(r) {
 }
 // A sub-table of the interface section: its heading, its rows (each with its chip), or why none.
 var L2_NOT_RUN = "not known: Level 2 reads them, and the latest check did not run it (see the levels above)";
+var L2_INFO_UNREAD = "not known: Level 2 failed without establishing them from the bundle's contract information (see the failure above)";
 function ifaceTable(heading, items, labels, fill, emptyText) {
   var box = node("div", null, "txsec");
   // no count in the caption: every row is drawn below with its origin (audit 03-E1a finding R4C)

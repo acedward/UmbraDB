@@ -767,6 +767,28 @@ describe("the page shows the origin of every value", () => {
       const t2 = drawContract(lp, contractState(up, ran)).root.textContent;
       expect(t2).toContain("no witness declared: Level 2 read the bundle's contract information and it lists none");
       expect(t2).not.toContain("not known: Level 2 reads them");
+      // E1a-R7A: a FAILED Level 2 established them only when it read the contract information
+      const infoRow = { circuit: "(contract-info)", status: "FAIL", reason: "out/compiler/contract-info.json is missing or unreadable, so the published circuits cannot be checked" };
+      const failedOn = (report: Json | undefined): string => {
+        const f = clone(up.interface);
+        Object.assign(f, { status: "failed", failedLevel: 2, levels: { l1: "passed", l2: "failed", l3: "not_run" }, witnesses: [], circuits: [] });
+        if (report !== undefined) f.report = report;
+        return drawContract(lp, contractState(up, f)).root.textContent;
+      };
+      const unreadInfo = "not known: Level 2 failed without establishing them from the bundle's contract information";
+      for (const t of [
+        failedOn({ operations: [infoRow], levels: { l2: { status: "failed", outcome: "failed", rows: [infoRow] } } }),
+        failedOn(undefined),
+      ]) {
+        expect(t).not.toContain("no witness declared");
+        expect(t).not.toContain("no circuit:");
+        expect(t.split(unreadInfo).length - 1, "circuits, witnesses").toBe(2);
+      }
+      // failed on a key, the contract information read: its empty lists are answers
+      const keyRow = { circuit: "mint", status: "FAIL", reason: "shipped key differs from the key on chain", keySha256: "ab".repeat(32) };
+      const t3 = failedOn({ operations: [keyRow], levels: { l2: { status: "failed", outcome: "failed", rows: [keyRow] } } });
+      expect(t3).toContain("no witness declared: Level 2 read the bundle's contract information and it lists none");
+      expect(t3).not.toContain(unreadInfo);
     }
 
     // ── E1a-R6C: a later events page that fails is not the page's read budget ─────────────────
@@ -1591,7 +1613,8 @@ describe("the page shows the origin of every value", () => {
   });
 
   it("negative control (E1a-R6B): empty Level 2 lists read as answers when Level 2 never ran", () => {
-    const broken = SERVED_SCRIPT.replace('  var l2Ran = !!(x.levels && (x.levels.l2 === "passed" || x.levels.l2 === "failed"));', "  var l2Ran = true;");
+    const broken = SERVED_SCRIPT.replace('  var l2Ran = !!(x.levels && (x.levels.l2 === "passed" || x.levels.l2 === "failed"));', "  var l2Ran = true;")
+      .replace('  var infoRead = !!(x.levels && (x.levels.l2 === "passed" || (x.levels.l2 === "failed" && !infoFailed)));', "  var infoRead = true;");
     expect(broken).not.toBe(SERVED_SCRIPT);
     const up = tokenFixture("uprompi");
     const unread = clone(up.interface);
@@ -1608,6 +1631,17 @@ describe("the page shows the origin of every value", () => {
     routes.set(`/v1/contracts/${lm.token.address}/events?limit=500&cursor=c1`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
     const live = await bootToken(lm, routes, broken);
     expect(live.doc.getElementById("view")!.textContent).toContain("this contract has more token-metadata events than the page reads a contract's first 2\u00a0000 events");
+  });
+
+  it("negative control (E1a-R7A): a failed Level 2 read as an answer claims no witness", () => {
+    const broken = SERVED_SCRIPT.replace('(x.levels.l2 === "failed" && !infoFailed)', '(x.levels.l2 === "failed")');
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const up = tokenFixture("uprompi");
+    const f = clone(up.interface);
+    const infoRow = { circuit: "(contract-info)", status: "FAIL", reason: "unreadable" };
+    Object.assign(f, { status: "failed", failedLevel: 2, levels: { l1: "passed", l2: "failed", l3: "not_run" }, witnesses: [], circuits: [],
+      report: { operations: [infoRow], levels: { l2: { status: "failed", outcome: "failed", rows: [infoRow] } } } });
+    expect(drawContract(loadPage(broken), contractState(up, f)).root.textContent).toContain("no witness declared");
   });
 
   it("negative control (E1a-S2): with the contract's rows unread, the family guessed from one row", async () => {
