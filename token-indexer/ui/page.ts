@@ -1578,6 +1578,11 @@ function sectionEvidence(ctx, section) {
   return null;
 }
 
+// The seed of the two built-in rows (NIGHT, DUST), as the API serves it: the evidence of every value
+// the indexer seeded rather than observed (00020 owner decision Q7; audit 03-E1a finding R3A).
+var SEED_EVIDENCE = { href: P_TOKENS + "?status=builtin", text: "the seeded built-in rows (API)",
+  title: "the built-in rows this indexer seeds, as GET /v1/tokens?status=builtin serves them (raw JSON, new tab)" };
+
 // A value the API serves WITHOUT an origin: the page's own label, marked as such (Q28).
 function pageOrigin(kind, text, evidence) {
   var o = { origin: kind, page: true };
@@ -1685,6 +1690,7 @@ function originView(o, ctx) {
     }
     var dt = txEvidence(din.txHash, "input: tx");
     if (dt) v.links.push(dt);
+    if (v.links.length === 0 && c.seed) v.links.push(SEED_EVIDENCE);
     if (v.links.length === 0 && c.section) {
       var ds = sectionEvidence(c, c.section);
       if (ds) v.links.push(ds);
@@ -1766,8 +1772,7 @@ function firstSeenSection(t, events) {
 }
 function identitySection(t) {
   if (!t) return null;
-  // a built-in row (NIGHT) is known by its colour: its public movements are what the chain shows of it
-  if (t.status === "builtin") return t.color ? "activity" : null;
+  if (t.status === "builtin") return null;
   if (!t.address || !t.domainSep) return "activity";
   return t.status === "observed" ? "mints" : "events";
 }
@@ -1802,12 +1807,12 @@ function tokenModel(d) {
   function declCount(keyText) { return declCountOf(asciiHex(keyText), currentIdOf(o[keyText])); }
   function item(field, label, value, origin, extra) {
     var c = extra || ctx;
-    // A built-in row's values are the indexer's seed (a rule with no inputs): their evidence link is
-    // the section where the chain shows the token (NIGHT's movements) — audit 03-E1a finding R2A.
-    if (builtin && !c.section && idCtx && idCtx.section) {
+    // A built-in row's values are the indexer's seed, a rule with no chain inputs: their evidence is
+    // the seed itself, as the API serves it (audit 03-E1a findings R2A, R3A).
+    if (builtin) {
       var cc = {};
       for (var k in c) if (own(c, k)) cc[k] = c[k];
-      cc.section = idCtx.section;
+      cc.seed = true;
       c = cc;
     }
     var it = { field: field, label: label, value: valueOrNull(value), origin: originView(origin, c) };

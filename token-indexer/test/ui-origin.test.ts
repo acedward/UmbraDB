@@ -218,6 +218,7 @@ function resolves(page: Page, href: string, where: Where, known: Known): string 
     return null;
   }
   if (r.view === "offers") return null; // the chain-wide list of undisclosed shielded offers
+  if (href === "/v1/tokens?status=builtin") return null; // the API's own seeded rows (E1a-R3A)
   return `the route resolves to the ${String(r.view)} view`;
 }
 
@@ -449,8 +450,9 @@ describe("the page shows the origin of every value", () => {
     // ── E1a-F7: every derived value with inputs links them; a `seen` colour links its movements ─
     {
       const rows = read("tokens.json").items as Json[];
-      for (const status of ["seen", "observed", "declared", "described", "builtin"]) {
-        const row = rows.find((r) => r.status === status && (status !== "builtin" || r.color))!;
+      for (const row of [...["seen", "observed", "declared", "described"].map((st) => rows.find((r) => r.status === st)!),
+        ...rows.filter((r) => r.status === "builtin")]) {
+        const status = `${row.status} ${row.symbol ?? ""}`;
         const drawn = drawRow(page, row);
         const where: Where = { tokenIds: drawn.ids, contractIds: new Set(["interface", "calls", "events", "facts"]), address: row.address ?? null };
         expect(checkModel(page, drawn.model.all, where, knownOf(row), tokenSources(rowFixture(row))), `${status} row: model`).toEqual([]);
@@ -464,6 +466,14 @@ describe("the page shows the origin of every value", () => {
         for (const field of row.address ? ["domainSep", "kind"] : ["kind"]) {
           const first = facts.find((i: Json) => i.field === field).origin.links[0]?.href ?? "(none)";
           expect(first, `${row.status} row: ${field}`).toMatch(new RegExp(`/${want[row.status]}$`));
+        }
+      }
+      // E1a-R3A: a built-in row's seeded values cite the seed itself (the API's built-in rows)
+      for (const b of rows.filter((r) => r.status === "builtin")) {
+        const facts = drawRow(page, b).model.facts;
+        for (const field of ["address", "domainSep", "kind", "firstSeenHeight", "deployHeight", "visibility"]) {
+          expect(facts.find((i: Json) => i.field === field).origin.links.map((l: Json) => l.href), `${b.symbol} ${field}`)
+            .toEqual(["/v1/tokens?status=builtin"]);
         }
       }
       // E1a-R2A: the visibility links the section it decides; a pending lookup links its transaction
@@ -1008,6 +1018,17 @@ describe("the page shows the origin of every value", () => {
     const up = tokenFixture("uprompi");
     const drawn = drawContract(page, contractState(up, up.interface));
     expect(drawn.model.face.rows.find((r: Json) => r.field === "iface:role").origin.kind).toBe("public-interface");
+  });
+
+  it("negative control (E1a-R3A): a built-in row's seeded values without the seed as evidence fail the check", () => {
+    const broken = SERVED_SCRIPT.replace("    if (v.links.length === 0 && c.seed) v.links.push(SEED_EVIDENCE);", "");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const dust = (read("tokens.json").items as Json[]).find((r) => r.status === "builtin" && !r.color)!;
+    const drawn = drawRow(page, dust);
+    const v = checkModel(page, drawn.model.all, { tokenIds: drawn.ids, contractIds: new Set(), address: null }, knownOf(dust));
+    expect(v).toContain("visibility: derived without an evidence link");
+    expect(v).toContain("address: derived without an evidence link");
   });
 
   it("negative control (E1a-R2A): a derived value that links nothing fails the check", () => {
