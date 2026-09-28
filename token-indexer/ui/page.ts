@@ -1244,9 +1244,8 @@ function nameCell(t, index) {
   var fam = familyOf(t, index);
   if (fam) wrap.appendChild(withHelp(node("span", fam, "fam fam-" + fam), fam));
   var seen = t.status === "seen";
-  wrap.appendChild(node("span",
-    t.name ? txt(t.name) : (seen ? "colour " + shortHex(t.color, 8, 6) : "(undescribed)"),
-    t.name ? "txt" : (seen ? "hex" : "no")));
+  wrap.appendChild(t.name ? boundedNode(t.name, NAME_MAX, "txt")
+    : node("span", seen ? "colour " + shortHex(t.color, 8, 6) : "(undescribed)", seen ? "hex" : "no"));
   if (seen) {
     // US5: the row exists because the colour was seen moving, not because a contract said so.
     var pill = node("span", "unknown contract", "pill");
@@ -2190,7 +2189,12 @@ function contractModel(c) {
   ];
   var tokens = [];
   var list = itemsOf(d.tokens ? { items: d.tokens } : null);
-  for (var i = 0; i < list.length; i++) tokens.push(siblingItems(list[i], CONTRACT_TOKEN_FIELDS));
+  // at most CONTRACT_TOKEN_ROWS token rows are drawn; the count of all of them is a value of its own
+  for (var i = 0; i < list.length && i < CONTRACT_TOKEN_ROWS; i++) tokens.push(siblingItems(list[i], CONTRACT_TOKEN_FIELDS));
+  var tokensCount = list.length > CONTRACT_TOKEN_ROWS
+    ? it("tokens:count", "token rows", list.length, pageOrigin("derived", "the number of token rows GET /v1/contracts/:address serves"),
+      { address: address, api: P_CONTRACTS + "/" + enc(address) })
+    : null;
   var pending = [];
   var pl = arr(d.pendingLookups);
   for (var p = 0; p < pl.length; p++) {
@@ -2199,7 +2203,7 @@ function contractModel(c) {
         { txHash: pl[p].txHash })));
   }
   var model = {
-    contract: d, facts: facts, tokens: tokens, pending: pending,
+    contract: d, facts: facts, tokens: tokens, pending: pending, tokensCount: tokensCount,
     face: interfaceModel(c.iface, address, c.ifaceLoaded !== false),
     calls: callsModel(c.calls, address), events: eventsModel(c.events, null, address)
   };
@@ -2529,6 +2533,7 @@ var HISTORY_MAX = 160;
 // token are drawn: 2 000 keys of 8 000 hidden characters each made 128 M drawn characters (R3E).
 var TRAIT_MAX = 2048;
 var TRAIT_ROWS = 500;
+var CONTRACT_TOKEN_ROWS = 500;
 var SIG_MAX = 400;
 var TEXT_MAX = 1000;
 // The budget holds for what is DRAWN: the marks shown() puts in place of hidden characters count
@@ -3048,7 +3053,7 @@ function renderList(main) {
     cell(tr, addressCell(t));
     cell(tr, kindCell(t));
     cell(tr, nameCell(t, index));
-    cell(tr, orDash(t.symbol));
+    cell(tr, t.symbol === null || t.symbol === undefined || t.symbol === "" ? "-" : boundedNode(t.symbol, NAME_MAX, ""));
     cell(tr, t.decimals === null || t.decimals === undefined ? "-" : txt(t.decimals), "num");
     cell(tr, mintsCell(t), "num");
     cell(tr, heightsCell(t));
@@ -4250,8 +4255,10 @@ function rowCells(tr, items, t, fields) {
     else if (fields[i] === "kind") v = kindCell(t);
     else if (fields[i] === "color") v = colorCell(it.value, t ? t.storage : null);
     else if (fields[i] === "status") v = statusBadge(it.value);
-    else if (fields[i] === "name") v = node("span", it.value === null ? "(undescribed)" : it.value, it.value === null ? "no" : "txt");
-    else v = node("span", it.value === null ? "-" : it.value, it.value === null ? "no" : "txt");
+    // a name or a symbol in a table row is drawn within NAME_MAX (whole on the token's own view, and
+    // copied whole): 2 000 rows of 8 000 hidden characters each made 128 M characters (R4F)
+    else if (fields[i] === "name") v = it.value === null ? node("span", "(undescribed)", "no") : boundedNode(it.value, NAME_MAX, "txt");
+    else v = it.value === null ? node("span", "-", "no") : boundedNode(it.value, NAME_MAX, "txt");
     var td = cell(tr, withOrigin(v, it.origin));
     marked(td, it.field);
   }
@@ -4480,6 +4487,19 @@ function renderContract(main) {
         });
       })(t);
       tb.appendChild(tr);
+    }
+    if (m.tokensCount) {
+      var tc = marked(node("div", null, "note err"), m.tokensCount.field);
+      tc.appendChild(node("span", "the first " + groupDigits(m.tokens.length) + " of " + groupDigits(m.tokensCount.value)
+        + " token rows are listed — all of them: "));
+      var tca = node("a", "every token row (API)");
+      tca.href = P_CONTRACTS + "/" + enc(d.address);
+      tca.target = "_blank";
+      tca.rel = "noopener";
+      tc.appendChild(tca);
+      tc.appendChild(node("span", "  "));
+      tc.appendChild(originChip(m.tokensCount.origin));
+      toks.appendChild(tc);
     }
     toks.appendChild(node("div", "each value carries its own origin; open a row for the token's whole page", "note"));
   }

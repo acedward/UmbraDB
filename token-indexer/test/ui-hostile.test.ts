@@ -32,6 +32,8 @@ const HEAVY_MS = 120_000;
  *    160 characters — the marks of hidden characters counted — and copied whole.
  *  - E1a-R3E: at most 500 keys of a token are drawn (the rest named, with a link); a current value
  *    is drawn whole up to 2 048 drawn characters and past that on the reader's request.
+ *  - E1a-R4F: a contract's token rows (at most 500, the count named with its origin) and the list's
+ *    rows draw a name or a symbol within 160 characters, copied whole.
  *
  * The page script runs in `node:vm` exactly as served (`helpers/ui-page.ts`).
  */
@@ -133,6 +135,14 @@ function manyKeys(n: number, len: number): Json {
       integer: null, eventId: 500_000 + i };
   });
   return { token: lm.token, keys, mints: [], events: [], siblings: lm.contract.tokens, activity: null, calls: lm.calls ?? null, notes: [] };
+}
+/** LMOON18's contract with `n` token rows, each named (and symbolled) with `len` DEL characters. */
+function crowdedContract(n: number, len: number): Json {
+  const lm = read("token-lmoon18.json");
+  const row = lm.contract.tokens[0];
+  const tokens = Array.from({ length: n }, (_, i) => ({ ...row, domainSep: i.toString(16).padStart(64, "0"),
+    name: "\u007F".repeat(len), symbol: "\u007F".repeat(len) }));
+  return { contract: { ...lm.contract, tokens }, iface: null, ifaceLoaded: true, events: [], calls: null, notes: [] };
 }
 function drawTokenState(page: Page, detail: Json): FakeElement {
   const t = detail.token;
@@ -350,6 +360,26 @@ describe("the page draws hostile values without breaking", () => {
     kp.ctx.render();
     expect([...kp.doc.getElementById("view")!.walk()].find((el) => el.getAttribute("data-o") === firstRow.getAttribute("data-o"))!.textContent)
       .toContain("show less");
+    // ── E1a-R4F: 2 000 token rows of one contract, each named with 8 000 hidden characters ────
+    const crowd = crowdedContract(2_000, 8_000);
+    const crp = loadPage();
+    crp.ctx.state.route = { view: "contract", address: crowd.contract.address };
+    crp.ctx.state.contract = crowd;
+    crp.ctx.render();
+    const cview = crp.doc.getElementById("view")!;
+    expect(cview.textContent.length, "2 000 rows × 8 000 marks each, drawn").toBeLessThan(2_000_000);
+    const toks = [...cview.walk()].find((el) => el.id === "tokens")!;
+    expect([...toks.walk()].filter((el) => el.tagName === "tr" && el.className === "pick").length).toBe(500);
+    expect(toks.textContent).toContain("the first 500 of 2\u00a0000 token rows are listed — all of them: every token row (API)");
+    const tcount = [...toks.walk()].find((el) => el.getAttribute("data-o") === "tokens:count")!;
+    expect([...tcount.walk()].some((el) => el.className.includes("orig") && el.textContent === "Derived by this indexer")).toBe(true);
+    // the list draws the same names bounded too
+    const lpage = loadPage();
+    lpage.ctx.state.list = { items: crowd.contract.tokens.slice(0, 500), nextCursor: null, loaded: true };
+    lpage.ctx.state.route = { view: "list" };
+    lpage.ctx.render();
+    expect(lpage.doc.getElementById("view")!.textContent.length, "500 list rows").toBeLessThan(1_000_000);
+
     // a realistic long value (SNEB18's 677-byte metadata, LMOON18's 377-byte description) is drawn whole
     expect(read("token-lmoon18.json").metadata.keys.every((k: Json) => (k.text ?? "").length < 2_048)).toBe(true);
   }, HEAVY_MS);
@@ -371,6 +401,18 @@ describe("the page draws hostile values without breaking", () => {
     await live.ctx.refresh();
     expect(live.requests.filter((r) => r.endsWith("/interface")).length).toBe(1);
   });
+
+  it("negative control (E1a-R4F): every contract token row drawn whole floods the view", () => {
+    const broken = SERVED_SCRIPT.replace("var CONTRACT_TOKEN_ROWS = 500;", "var CONTRACT_TOKEN_ROWS = 100000000;")
+      .replace('    else if (fields[i] === "name") v = it.value === null ? node("span", "(undescribed)", "no") : boundedNode(it.value, NAME_MAX, "txt");',
+        '    else if (fields[i] === "name") v = node("span", it.value === null ? "(undescribed)" : it.value, "txt");');
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    page.ctx.state.route = { view: "contract", address: "x" };
+    page.ctx.state.contract = crowdedContract(600, 2_000);
+    page.ctx.render();
+    expect(page.doc.getElementById("view")!.textContent.length).toBeGreaterThan(9_000_000);
+  }, HEAVY_MS);
 
   it("negative control (E1a-R3E): every key drawn whole floods the view", () => {
     const broken = SERVED_SCRIPT.replace("var TRAIT_MAX = 2048;", "var TRAIT_MAX = 100000000;").replace("var TRAIT_ROWS = 500;", "var TRAIT_ROWS = 100000000;");

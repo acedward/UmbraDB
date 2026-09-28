@@ -63,8 +63,10 @@ What else the page shows:
   tail, the length, copy the whole value); a current value is drawn whole up to 2 048 drawn
   characters — every realistic long value, e.g. a 677-byte metadata document — and past that on the
   reader's request ("show all", kept across refreshes); at most 500 keys of a token are drawn, the
-  rest named with a link to all of them. Every budget counts the drawn marks of hidden characters too
-  (audit 03-E1a findings R2D, R3E).
+  rest named with a link to all of them; a name or a symbol in a table row (the contract's token rows
+  — at most 500, the count named —, the rows sharing a domain separator, the list) is drawn within
+  160 characters, whole on the token's own view. Every budget counts the drawn marks of hidden
+  characters too (audit 03-E1a findings R2D, R3E, R4F).
 - Text a bundle chooses — circuit, argument and witness names, file paths, build fields — is drawn
   as its head … tail with its length and copied whole (160 characters for a name or a path, 400 for
   a signature, 1 000 for other interface values); interface items are keyed by position, so no
