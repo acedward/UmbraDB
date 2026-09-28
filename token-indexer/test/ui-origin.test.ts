@@ -701,6 +701,22 @@ describe("the page shows the origin of every value", () => {
       expect(cl.doc.getElementById("view")!.textContent).not.toContain("no token-metadata event from this contract");
     }
 
+    // ── E1a-R5D: the shielded-offers view keeps its rows and reports a later page that failed ──
+    {
+      const routes = new Map<string, Json>([["/internal/status", { net: "undeployed" }]]);
+      const offer = { txHash: "ab".repeat(32), blockHeight: 1, section: "guaranteed", segment: 0, deltas: [], inputs: [], outputs: [], transients: [] };
+      routes.set("/v1/shielded-offers?limit=200&undisclosed=true", { items: Array.from({ length: 200 }, () => offer), nextCursor: "o1" });
+      routes.set("/v1/shielded-offers?limit=200&undisclosed=true&cursor=o1", new Reply(503, { error: { code: "UNAVAILABLE" } }));
+      const op = loadPage(SERVED_SCRIPT, routes);
+      op.window.location.hash = "#/shielded-offers";
+      op.boot();
+      await op.settle();
+      op.ctx.state.offers.pages = 2;
+      await op.ctx.refresh();
+      expect(op.ctx.state.offers.items.length, "the rows read stay").toBe(200);
+      expect(op.ctx.state.errors.join(" "), "the failed page reaches the banner").toContain("503 UNAVAILABLE");
+    }
+
     // ── E1a-R4G: a later page that fails keeps the pages read ────────────────────────────────
     {
       const ss = tokenFixture("sstarpi");
@@ -1452,6 +1468,22 @@ describe("the page shows the origin of every value", () => {
     expect(live.doc.getElementById("view")!.textContent).toContain("no mint observed for this token yet");
     const m = live.ctx.tokenModel(live.ctx.state.detail);
     expect(m.facts.find((i: Json) => i.field === "mintCount").origin.links[0].href).toMatch(/\/mints$/);
+  });
+
+  it("negative control (E1a-R5D): an offers page error dropped leaves the refresh recorded as successful", async () => {
+    const broken = SERVED_SCRIPT.replace("  if (page.error) throw page.error;\n", "");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const routes = new Map<string, Json>([["/internal/status", { net: "undeployed" }]]);
+    const offer = { txHash: "ab".repeat(32), blockHeight: 1, section: "guaranteed", segment: 0, deltas: [], inputs: [], outputs: [], transients: [] };
+    routes.set("/v1/shielded-offers?limit=200&undisclosed=true", { items: [offer], nextCursor: "o1" });
+    routes.set("/v1/shielded-offers?limit=200&undisclosed=true&cursor=o1", new Reply(503, { error: { code: "UNAVAILABLE" } }));
+    const op = loadPage(broken, routes);
+    op.window.location.hash = "#/shielded-offers";
+    op.boot();
+    await op.settle();
+    op.ctx.state.offers.pages = 2;
+    await op.ctx.refresh();
+    expect(op.ctx.state.errors).toEqual([]);
   });
 
   it("negative control (E1a-R4G): a later failed page that discards the pages read loses them", async () => {

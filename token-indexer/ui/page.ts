@@ -2814,6 +2814,8 @@ async function loadOffers() {
   state.offers.items = page.items;
   state.offers.nextCursor = page.nextCursor;
   state.offers.loaded = true;
+  // the rows read stay; a later page that failed still reaches the banner (audit 03-E1a R5D)
+  if (page.error) throw page.error;
 }
 async function loadStatus() { state.status = await api(P_STATUS); }
 
