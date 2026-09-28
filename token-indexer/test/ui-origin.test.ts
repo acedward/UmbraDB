@@ -188,6 +188,8 @@ function expectedLinks(o: Json, address: string | null): Want[] | null {
     return out.length === 0 ? null : out;
   }
   if (o.origin === "derived") {
+    // a built-in row's values are the seed's: their evidence is the API's seeded rows (E1a-R3A, R4A)
+    if (o.__token && o.__token.status === "builtin") return ["/v1/tokens?status=builtin"];
     const out: Want[] = [];
     if (ev && typeof ev === "object" && !Array.isArray(ev)) {
       if (typeof ev.address === "string" && HEX64.test(ev.address)) out.push(`#/contract/${ev.address}`);
@@ -530,7 +532,7 @@ describe("the page shows the origin of every value", () => {
       // E1a-R3A: a built-in row's seeded values cite the seed itself (the API's built-in rows)
       for (const b of rows.filter((r) => r.status === "builtin")) {
         const facts = drawRow(page, b).model.facts;
-        for (const field of ["address", "domainSep", "kind", "firstSeenHeight", "deployHeight", "visibility"]) {
+        for (const field of ["address", "domainSep", "kind", "firstSeenHeight", "deployHeight", "visibility", "status", "privacy", "storage"]) {
           expect(facts.find((i: Json) => i.field === field).origin.links.map((l: Json) => l.href), `${b.symbol} ${field}`)
             .toEqual(["/v1/tokens?status=builtin"]);
         }
@@ -1215,6 +1217,17 @@ describe("the page shows the origin of every value", () => {
     const up = tokenFixture("uprompi");
     const drawn = drawContract(page, contractState(up, up.interface));
     expect(drawn.model.face.rows.find((r: Json) => r.field === "iface:role").origin.kind).toBe("public-interface");
+  });
+
+  it("negative control (E1a-R4A): a built-in row's status citing its (empty) mint and trait sections fails the check", () => {
+    const broken = SERVED_SCRIPT.replace("    if (c.seed) din = {};\n", "");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const night = (read("tokens.json").items as Json[]).find((r) => r.status === "builtin" && r.color)!;
+    const drawn = drawRow(page, night);
+    const v = checkModel(page, drawn.model.all, { tokenIds: drawn.ids, contractIds: new Set(), address: null }, knownOf(night),
+      tokenSources(rowFixture(night)));
+    expect(v.some((x) => x.startsWith("status: evidence links") && x.includes("/mints"))).toBe(true);
   });
 
   it("negative control (E1a-R3A): a built-in row's seeded values without the seed as evidence fail the check", () => {

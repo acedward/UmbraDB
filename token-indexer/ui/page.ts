@@ -1714,6 +1714,9 @@ function originView(o, ctx) {
     // A derived value links the inputs it names, where the page shows them (audit 03-E1a finding
     // F7): the contract, the token's mints, its declarations; else the section its ctx names.
     var din = ev && typeof ev === "object" && !isArray(ev) ? ev : {};
+    // A built-in row's values are the seed's, whatever inputs the rule names (a seeded row has no
+    // mint and no declaration to show): the seed is their evidence (audit 03-E1a findings R3A, R4A).
+    if (c.seed) din = {};
     if (din.address && isHex(txt(din.address))) {
       v.links.push({ href: hashContract(txt(din.address)), text: "input: the contract",
         title: txt(din.address) + " (open the contract)" });
