@@ -98,7 +98,7 @@ What else the page shows:
   row (audit 03-E1a finding R9B).
 - With more mints than the page reads (1 000, oldest first), the mint count, the total minted and
   the last mint height cite the token's API row, not the mint history that lacks them (audit 03-E1a
-  self-review S3).
+  self-review S3); so does a contract or sibling row's mint count past that read (S4).
 - The transactions section holds what it draws — the newest pages read, under the reader's role
   filter: a height (last activity, first seen) cites it only when a row at that height is drawn, a
   count only when every row is (no filter, no further page), a seen colour's colour and kind only

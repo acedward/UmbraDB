@@ -675,6 +675,11 @@ describe("the page shows the origin of every value", () => {
       const cutLinks = (field: string): string[] => cut.ctx.tokenModel(cut.ctx.state.detail).facts.find((i: Json) => i.field === field).origin.links.map((l: Json) => l.href);
       const row = `/v1/contracts/${a}/tokens/${ss.token.domainSep}/${ss.token.kind}`;
       for (const field of ["mintCount", "totalMinted", "lastMintHeight"]) expect(cutLinks(field), field).toEqual([row]);
+      // E1a-S4: the same token as a row of its contract (1 300 mints: more than its view reads) cites its API row
+      const cm = cut.ctx.contractModel({ contract: { ...clone(f1200.contract), tokens: [f1200.token] }, events: [], calls: null, notes: [], iface: null, ifaceLoaded: true });
+      expect(cm.tokens[0].items.find((i: Json) => i.label === "mints").origin.links.map((l: Json) => l.href)).toEqual([row]);
+      const cm201 = cut.ctx.contractModel({ contract: { ...clone(f201.contract), tokens: [f201.token] }, events: [], calls: null, notes: [], iface: null, ifaceLoaded: true });
+      expect(cm201.tokens[0].items.find((i: Json) => i.label === "mints").origin.links[0].href).toMatch(/\/mints$/);
       expect(cutLinks("firstMintHeight")[0]).toMatch(/\/mints$/);
       // every mint read: the section holds them all
       const all201 = live.ctx.tokenModel(live.ctx.state.detail).facts.find((i: Json) => i.field === "lastMintHeight");
@@ -1882,6 +1887,16 @@ describe("the page shows the origin of every value", () => {
     const d = { ...tokenDetail(ss), token: t, activityRole: "utxo_created",
       activity: { items: [{ ...clone(ss.activity.items[0]), blockHeight: 100, role: "utxo_created" }], nextCursor: null } };
     expect(loadPage(broken).ctx.tokenModel(d).facts.find((i: Json) => i.field === "lastActivityHeight").origin.links[0].href).toMatch(/\/activity$/);
+  });
+
+  it("negative control (E1a-S4): a contract row's mint count past its view's read cites that view's mint history", () => {
+    const broken = SERVED_SCRIPT.replace("      ctx: Number(t.mintCount) > MINT_PAGES * MINT_LIMIT ? { token: t, api: tokenApiHref(t) } : { token: t, section: \"mints\" } },",
+      "      ctx: { token: t, section: \"mints\" } },");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const ss = tokenFixture("sstarpi");
+    const t = { ...clone(ss.token), mintCount: 1_300 };
+    const cm = loadPage(broken).ctx.contractModel({ contract: { ...clone(ss.contract), tokens: [t] }, events: [], calls: null, notes: [], iface: null, ifaceLoaded: true });
+    expect(cm.tokens[0].items.find((i: Json) => i.label === "mints").origin.links[0].href).toMatch(/\/mints$/);
   });
 
   it("negative control (E1a-S2): with the contract's rows unread, the family guessed from one row", async () => {

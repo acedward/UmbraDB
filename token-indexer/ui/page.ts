@@ -2179,7 +2179,10 @@ function siblingItems(t, fields, events) {
     name: { value: t.name, origin: o.name, ctx: ctx },
     symbol: { value: t.symbol, origin: o.symbol, ctx: ctx },
     decimals: { value: t.decimals, origin: o.decimals, ctx: ctx },
-    mints: { value: t.mintCount, origin: o.mints, ctx: { token: t, section: "mints" } },
+    // that token's view reads MINT_PAGES × MINT_LIMIT mints, oldest first: a count past that is not in
+    // its mint history, but in its API row (audit 03-E1a self-review S4, the S3 class)
+    mints: { value: t.mintCount, origin: o.mints,
+      ctx: Number(t.mintCount) > MINT_PAGES * MINT_LIMIT ? { token: t, api: tokenApiHref(t) } : { token: t, section: "mints" } },
     status: { value: t.status, origin: o.status, ctx: ctx }
   };
   var items = [];
