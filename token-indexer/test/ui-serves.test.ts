@@ -194,7 +194,7 @@ describe("the token explorer page", () => {
     // A count is grouped for reading; a height is an identifier and is never grouped.
     expect(script).toContain("function groupDigits(");
     expect(strip).toContain("groupDigits(b)");
-    expect(strip).toContain('node("b", String(head))');
+    expect(strip).toContain('node("b", txt(head))');
     // The strip redraws every second on its own interval, so the clock moves between the 10 s data
     // refreshes — which themselves are untouched.
     expect(script).toContain("window.setInterval(renderStrip, STRIP_TICK_MS)");

@@ -458,7 +458,7 @@ var state = {
 function el(id) { return document.getElementById(id); }
 function node(tag, text, cls) {
   var n = document.createElement(tag);
-  if (text !== undefined && text !== null) n.textContent = String(text);
+  if (text !== undefined && text !== null) n.textContent = txt(text);
   if (cls) n.className = cls;
   return n;
 }
@@ -468,7 +468,7 @@ function cell(row, child, cls) {
   if (cls) td.className = cls;
   if (child === null || child === undefined) td.textContent = "-";
   else if (typeof child === "object" && child.nodeType) td.appendChild(child);
-  else td.textContent = String(child);
+  else td.textContent = txt(child);
   row.appendChild(td);
   return td;
 }
@@ -498,7 +498,7 @@ function tableIn(parent, labels) {
   parent.appendChild(wrap);
   return tbody;
 }
-function enc(v) { return encodeURIComponent(String(v === null || v === undefined ? "" : v)); }
+function enc(v) { return encodeURIComponent(txt(v === null || v === undefined ? "" : v)); }
 
 // ── Values ──────────────────────────────────────────────────────────────────────────────────
 
@@ -539,7 +539,7 @@ function shortHex(s, head, tail) {
 }
 function slug(s) {
   var out = "";
-  var low = String(s === null || s === undefined ? "" : s).toLowerCase();
+  var low = txt(s === null || s === undefined ? "" : s).toLowerCase();
   for (var i = 0; i < low.length; i++) {
     var c = low.charAt(i);
     var code = low.charCodeAt(i);
@@ -550,16 +550,31 @@ function slug(s) {
   while (out.length > 0 && out.charAt(out.length - 1) === "-") out = out.slice(0, out.length - 1);
   return out;
 }
-function orDash(v) { return v === null || v === undefined || v === "" ? "-" : String(v); }
+// Every payload value reaches the page as text through txt(): a string as it is, a number or a
+// boolean as its digits or word, anything else as its JSON. Never String() or "+" on an object: the
+// API passes some bundle fields through as they were published (package.json "compact.language",
+// "runtime", "interface", "flags"), and valid JSON such as {"toString": null} makes String() throw
+// a TypeError — which stopped the whole view from being drawn (audit 03-E1a finding F3).
+function txt(v) {
+  if (v === null || v === undefined) return "";
+  var t = typeof v;
+  if (t === "string") return v;
+  if (t === "number" || t === "boolean" || t === "bigint") return "" + v;
+  try {
+    var j = JSON.stringify(v);
+    return typeof j === "string" ? j : "";
+  } catch (e) { return "(a value this page cannot show)"; }
+}
+function orDash(v) { return v === null || v === undefined || v === "" ? "-" : txt(v); }
 
 // ── Copy to clipboard ───────────────────────────────────────────────────────────────────────
 
 function copyable(value, label, cls) {
-  var text = label === null || label === undefined ? "-" : String(label);
+  var text = label === null || label === undefined ? "-" : txt(label);
   var s = node("span", text, cls ? "cp " + cls : "cp");
   if (value === null || value === undefined || value === "") { s.className = cls || ""; return s; }
-  s.title = String(value) + "  (click to copy)";
-  s.addEventListener("click", function (ev) { ev.stopPropagation(); copyValue(String(value), s); });
+  s.title = txt(value) + "  (click to copy)";
+  s.addEventListener("click", function (ev) { ev.stopPropagation(); copyValue(txt(value), s); });
   return s;
 }
 function copyValue(value, target) {
@@ -647,7 +662,7 @@ function count(v) { return isArray(v) ? v.length : (v === null || v === undefine
 // its decimals, so the point is placed by hand. No Number(), no rounding, no locale — a token with
 // 18 decimals would lose its low digits to a float before it ever reached the screen.
 function formatUnits(amount, decimals) {
-  var s = String(amount === null || amount === undefined ? "" : amount);
+  var s = txt(amount === null || amount === undefined ? "" : amount);
   if (s === "") return "-";
   var sign = "";
   if (s.charAt(0) === "-") { sign = "-"; s = s.slice(1); }
@@ -675,11 +690,11 @@ function amountCell(a, t) {
   var dec = decimalsOf(a, t);
   var sign = poolSign(a.direction);
   var s = node("span", sign + formatUnits(a.amount, dec), "amt");
-  var title = String(a.amount) + " raw units";
+  var title = txt(a.amount) + " raw units";
   if (dec !== null && dec !== undefined) title += "  ·  decimals " + dec;
   if (a.role === "shielded_delta") {
     title += "  ·  the ledger's own offer delta is "
-      + (a.direction === "pool_in" ? "-" : "+") + String(a.amount) + " (inputs - outputs)";
+      + (a.direction === "pool_in" ? "-" : "+") + txt(a.amount) + " (inputs - outputs)";
   }
   s.title = title;
   return s;
@@ -687,7 +702,7 @@ function amountCell(a, t) {
 // An offer delta straight from the §4 document, which carries the LEDGER's signed value. Shown the
 // same way round as the rows above, with the ledger's own number on hover.
 function poolDeltaCell(delta) {
-  var raw = String(delta === null || delta === undefined ? "" : delta);
+  var raw = txt(delta === null || delta === undefined ? "" : delta);
   if (raw === "") return node("span", "-", "amt");
   var magnitude = raw.charAt(0) === "-" ? raw.slice(1) : raw;
   var shown = raw.charAt(0) === "-" ? "+" + magnitude : "-" + magnitude;
@@ -701,15 +716,15 @@ function poolDeltaCell(delta) {
 // "segment 0" beside it shows a reader a storage detail and sends them looking for an intent that
 // does not exist. Only intent-carried sections get a number.
 function isTxLevelOffer(section, segment) {
-  return String(section) === "guaranteed" && (segment === 0 || segment === "0");
+  return txt(section) === "guaranteed" && (segment === 0 || segment === "0");
 }
 function sectionLabel(section, segment) {
   if (isTxLevelOffer(section, segment)) return "guaranteed offer";
-  return String(section) + " · segment " + orDash(segment);
+  return txt(section) + " · segment " + orDash(segment);
 }
 function offerHeading(section, segment) {
   if (isTxLevelOffer(section, segment)) return "guaranteed offer";
-  return String(section) + " offer · segment " + orDash(segment);
+  return txt(section) + " offer · segment " + orDash(segment);
 }
 var ROLES = [
   ["", "all"],
@@ -726,7 +741,7 @@ function roleLabel(a) {
     return a.direction === "pool_out" ? "out of the shielded pool" : "into the shielded pool";
   }
   for (var i = 1; i < ROLES.length; i++) if (ROLES[i][0] === a.role) return ROLES[i][1];
-  return String(a.role);
+  return txt(a.role);
 }
 // The hue of the "what happened" word, from the row's own direction (FR-014: amount is unsigned
 // and "direction" carries the sign). A mint is an "in" row in the database, but it is the one
@@ -734,7 +749,7 @@ function roleLabel(a) {
 function directionClass(a) {
   if (!a) return "";
   if (a.role === "mint") return "dir-mint";
-  var d = a.direction === null || a.direction === undefined ? "" : String(a.direction);
+  var d = a.direction === null || a.direction === undefined ? "" : txt(a.direction);
   if (d === "pool_in" || d === "pool_out") return "dir-pool";
   if (d === "in") return "dir-in";
   if (d === "out") return "dir-out";
@@ -749,7 +764,7 @@ function roleCell(a) {
 // network and is kept whole; the data part is elided in the middle. The API also sends "ownerHex",
 // which this page never displays.
 function shortAddr(s) {
-  var v = String(s === null || s === undefined ? "" : s);
+  var v = txt(s === null || s === undefined ? "" : s);
   if (v === "") return "-";
   var cut = v.lastIndexOf("1");
   if (cut < 1 || v.length - cut < 16) return v;
@@ -791,7 +806,7 @@ function hexListCell(values, key) {
     var v = key === undefined ? list[i] : list[i][key];
     if (i > 0) wrap.appendChild(node("span", "  "));
     if (!v) wrap.appendChild(node("span", "-", "no"));
-    else wrap.appendChild(copyable(v, shortHex(String(v), 8, 6), "hex"));
+    else wrap.appendChild(copyable(v, shortHex(txt(v), 8, 6), "hex"));
   }
   return wrap;
 }
@@ -807,7 +822,7 @@ function countedChip(counted) {
 // answer from the row itself, so the page still renders against an API that has not caught up.
 function visibilityOf(t) {
   if (!t) return "full";
-  if (t.shieldedVisibility) return String(t.shieldedVisibility);
+  if (t.shieldedVisibility) return txt(t.shieldedVisibility);
   if (t.storage === "ledger") return "calls-only";
   if (t.status === "builtin" && !t.color) return "not-tracked";
   return Number(t.kind) === 1 ? "disclosed-imbalances" : "full";
@@ -841,7 +856,7 @@ var FOCUS_SECTIONS = ["interface", "calls", "mints", "traits", "events", "activi
 function focusOf(s) { return s !== undefined && FOCUS_SECTIONS.indexOf(s) >= 0 ? s : null; }
 function parseHash() { return routeOf(window.location.hash || ""); }
 function routeOf(hash) {
-  var h = String(hash === null || hash === undefined ? "" : hash);
+  var h = txt(hash === null || hash === undefined ? "" : hash);
   if (h.charAt(0) === "#") h = h.slice(1);
   var raw = h.split("/");
   var parts = [];
@@ -885,7 +900,7 @@ function go(hash) { window.location.hash = hash; }
 // is rewritten to a same-origin path. A URI on any other host is left alone and rendered as it is.
 
 function splitUri(uri) {
-  var s = String(uri === null || uri === undefined ? "" : uri);
+  var s = txt(uri === null || uri === undefined ? "" : uri);
   var low = s.toLowerCase();
   var mark = ":" + "//";
   var httpPrefix = "http" + mark;
@@ -919,7 +934,7 @@ function uriLink(uri) {
 // (address / domainSep) always resolves, so both are offered.
 function resolverPaths(t) {
   var out = [];
-  var sym = t.symbol ? String(t.symbol).toLowerCase() : null;
+  var sym = t.symbol ? txt(t.symbol).toLowerCase() : null;
   if (sym) {
     var text = hexText(t.domainSep);
     var id = null;
@@ -988,7 +1003,7 @@ function withHelp(n, name) {
 // seeded rows. There is no state for a self-contradicting row: a declaration and a mint populate
 // different rows, so a row has nothing to contradict.
 function statusBadge(s) {
-  var v = s ? String(s) : "unknown";
+  var v = s ? txt(s) : "unknown";
   // 00023 adds the fourth row source: a colour seen in public data whose contract is not known
   // yet (US5). It is a real row with real transactions and no name.
   var known = ["builtin", "observed", "declared", "described", "seen"];
@@ -1000,8 +1015,8 @@ function statusBadge(s) {
 // because it is the identity and a reader copying a URL needs it.
 function kindLabel(t) {
   if (!t) return "-";
-  var privacy = t.privacy ? String(t.privacy) : "?";
-  var storage = t.storage ? String(t.storage) : "?";
+  var privacy = t.privacy ? txt(t.privacy) : "?";
+  var storage = t.storage ? txt(t.storage) : "?";
   return privacy + " " + String.fromCharCode(183) + " " + storage;
 }
 // The token view's subtitle, under the name. Every segment says either the fact or WHY it is
@@ -1012,18 +1027,18 @@ function kindLabel(t) {
 //   no symbol metadata · kind 0 (unshielded) · native token · no decimals metadata
 //   SSTAR · kind 1 (shielded) · native token · decimals 6
 function subtitleOf(t) {
-  var symbol = t.symbol ? String(t.symbol) : "no symbol metadata";
-  var privacy = t.privacy ? String(t.privacy) : "?";
+  var symbol = t.symbol ? txt(t.symbol) : "no symbol metadata";
+  var privacy = t.privacy ? txt(t.privacy) : "?";
   var storage = t.storage === "ledger" ? "ledger token"
     : (t.storage === "native" ? "native token" : "storage unknown");
   var decimals = t.decimals === null || t.decimals === undefined
-    ? "no decimals metadata" : "decimals " + String(t.decimals);
+    ? "no decimals metadata" : "decimals " + txt(t.decimals);
   return symbol + " · kind " + orDash(t.kind) + " (" + privacy + ") · " + storage
     + " · " + decimals;
 }
 function kindCell(t) {
   var s = node("span", kindLabel(t));
-  if (t.kind !== null && t.kind !== undefined) s.title = "kind byte " + String(t.kind);
+  if (t.kind !== null && t.kind !== undefined) s.title = "kind byte " + txt(t.kind);
   return s;
 }
 // The family chip is DERIVED from the rows themselves, never from the name's first word: the
@@ -1046,13 +1061,13 @@ function familyIndex(items) {
     // A "seen" row has no contract and no domain separator (US5): it cannot take part in a family,
     // and two of them would otherwise look like one asset minted under two kinds.
     if (!t.address || !t.domainSep) continue;
-    var a = String(t.address);
-    var d = String(t.domainSep);
+    var a = txt(t.address);
+    var d = txt(t.domainSep);
     if (!domains[a]) domains[a] = {};
     domains[a][d] = true;
     var pair = a + "/" + d;
     if (!kinds[pair]) kinds[pair] = {};
-    kinds[pair][String(t.kind)] = true;
+    kinds[pair][txt(t.kind)] = true;
   }
   return { domains: domains, kinds: kinds };
 }
@@ -1065,12 +1080,12 @@ function familyOf(t, index) {
   if (!t || t.status === "builtin") return null;
   if (!t.address || !t.domainSep) return null;
   if (t.storage === "ledger") return "ledger";
-  var pair = String(t.address) + "/" + String(t.domainSep);
+  var pair = txt(t.address) + "/" + txt(t.domainSep);
   var kinds = index && index.kinds ? index.kinds[pair] : null;
   if (kinds && kinds["0"] && kinds["1"]) return "dual";
-  var domains = index && index.domains ? index.domains[String(t.address)] : null;
+  var domains = index && index.domains ? index.domains[txt(t.address)] : null;
   if (domains && countKeys(domains) > 1) return "collection";
-  return t.privacy ? String(t.privacy) : null;
+  return t.privacy ? txt(t.privacy) : null;
 }
 function nameCell(t, index) {
   var wrap = node("span");
@@ -1078,7 +1093,7 @@ function nameCell(t, index) {
   if (fam) wrap.appendChild(withHelp(node("span", fam, "fam fam-" + fam), fam));
   var seen = t.status === "seen";
   wrap.appendChild(node("span",
-    t.name ? String(t.name) : (seen ? "colour " + shortHex(t.color, 8, 6) : "(undescribed)"),
+    t.name ? txt(t.name) : (seen ? "colour " + shortHex(t.color, 8, 6) : "(undescribed)"),
     t.name ? "txt" : (seen ? "hex" : "no")));
   if (seen) {
     // US5: the row exists because the colour was seen moving, not because a contract said so.
@@ -1099,23 +1114,23 @@ function typeLabel(vt) {
   var names = ["opaque", "text", "integer", "JSON", "URI", "Null"];
   if (vt === null || vt === undefined) return "-";
   var n = Number(vt);
-  return n >= 0 && n < names.length ? String(n) + " " + names[n] : String(n) + " reserved";
+  return n >= 0 && n < names.length ? txt(n) + " " + names[n] : txt(n) + " reserved";
 }
 function traitValueCell(tr) {
   if (Number(tr.valType) === 2 && tr.integer !== null && tr.integer !== undefined) {
-    return node("span", String(tr.integer), "txt");
+    return node("span", txt(tr.integer), "txt");
   }
-  if (tr.text !== null && tr.text !== undefined) return node("span", String(tr.text), "txt wrapv");
-  if (tr.value) return copyable(tr.value, shortHex(String(tr.value), 10, 8), "hex");
+  if (tr.text !== null && tr.text !== undefined) return node("span", txt(tr.text), "txt wrapv");
+  if (tr.value) return copyable(tr.value, shortHex(txt(tr.value), 10, 8), "hex");
   return node("span", "(empty)", "no");
 }
 function traitKeyCell(tr) {
   var wrap = node("span");
   if (tr.key !== null && tr.key !== undefined) {
-    wrap.appendChild(node("span", String(tr.key), "txt"));
+    wrap.appendChild(node("span", txt(tr.key), "txt"));
   } else {
     // MIP section 5.1: a key that is not valid UTF-8 is still a key. It is shown as its bytes.
-    var hexKey = copyable(tr.keyHex, "0x" + shortHex(String(tr.keyHex), 8, 6), "hex");
+    var hexKey = copyable(tr.keyHex, "0x" + shortHex(txt(tr.keyHex), 8, 6), "hex");
     hexKey.title = "this key is not valid UTF-8 and is shown as its bytes";
     wrap.appendChild(hexKey);
   }
@@ -1212,7 +1227,7 @@ function mintsCell(t) {
 }
 function heightsCell(t) {
   if (t.firstMintHeight === null || t.firstMintHeight === undefined) return node("span", "-", "no");
-  return node("span", String(t.firstMintHeight) + " … " + orDash(t.lastMintHeight));
+  return node("span", txt(t.firstMintHeight) + " … " + orDash(t.lastMintHeight));
 }
 // NIGHT and DUST first, then every named row, then the colours nobody has named yet (US5
 // scenario 3: "seen" rows sort after named rows — they are the ones a reader can say least about).
@@ -1227,7 +1242,7 @@ function sortTokens(items) {
     else if (t.status === "seen") seen.push(t);
     else rest.push(t);
   }
-  built.sort(function (a, b) { return String(a.symbol) < String(b.symbol) ? 1 : -1; });  // NIGHT, then DUST
+  built.sort(function (a, b) { return txt(a.symbol) < txt(b.symbol) ? 1 : -1; });  // NIGHT, then DUST
   return built.concat(rest).concat(seen);
 }
 
@@ -1299,10 +1314,10 @@ var ROLE_HELP = {
 };
 
 function own(o, k) { return !!o && typeof o === "object" && Object.prototype.hasOwnProperty.call(o, k); }
-function partsText(n) { return String(n) + " part" + (Number(n) === 1 ? "" : "s"); }
+function partsText(n) { return txt(n) + " part" + (Number(n) === 1 ? "" : "s"); }
 function asciiHex(s) {
   var out = "";
-  var str = String(s);
+  var str = txt(s);
   for (var i = 0; i < str.length; i++) {
     var h = str.charCodeAt(i).toString(16);
     out += h.length < 2 ? "0" + h : h;
@@ -1336,7 +1351,7 @@ function failedLevelOf(x) {
 // One publication's result as a badge: "verified L1/L2/L3", "verified L1/L2", "failed at L1",
 // "unchecked", ... with the help text and the notes a reader needs beside it.
 function interfaceStatusView(x) {
-  var status = x && x.status !== undefined && x.status !== null ? String(x.status) : "unknown";
+  var status = x && x.status !== undefined && x.status !== null ? txt(x.status) : "unknown";
   var known = own(INTERFACE_STATUS, status);
   var passed = levelsPassed(x ? x.levels : null);
   var failed = failedLevelOf(x);
@@ -1371,12 +1386,12 @@ function eventIdsOf(p) {
 function packageText(p) {
   var bits = [];
   if (!p) return "";
-  if (p.txHash) bits.push("tx " + shortHex(String(p.txHash), 8, 6));
+  if (p.txHash) bits.push("tx " + shortHex(txt(p.txHash), 8, 6));
   if (p.blockHeight !== undefined && p.blockHeight !== null) bits.push("block " + p.blockHeight);
   if (p.txPosition !== undefined && p.txPosition !== null) bits.push("position " + p.txPosition);
   if (p.segment !== undefined && p.segment !== null) bits.push("segment " + p.segment);
   if (p.parts !== undefined && p.parts !== null) bits.push(partsText(p.parts));
-  if (p.phase) bits.push(String(p.phase));
+  if (p.phase) bits.push(txt(p.phase));
   var ids = eventIdsOf(p);
   if (ids.length > 0) bits.push((ids.length === 1 ? "event " : "events ") + idsText(ids));
   return bits.join(" · ");
@@ -1397,13 +1412,13 @@ function factsText(ev) {
     if (!own(ev, k) || LINKED_EVIDENCE.indexOf(k) >= 0) continue;
     var v = ev[k];
     if (v === null || v === undefined || typeof v === "object") continue;
-    var s = String(v);
+    var s = txt(v);
     bits.push(k + " " + (isHex(s) && s.length > 20 ? shortHex(s, 8, 6) : s));
   }
   return bits.join(" · ");
 }
 function txEvidence(txHash, what) {
-  var h = txHash === null || txHash === undefined ? "" : String(txHash);
+  var h = txHash === null || txHash === undefined ? "" : txt(txHash);
   if (!isHex(h)) return null;
   return { href: hashTx(h), text: (what || "tx") + " " + shortHex(h, 8, 6), title: h + " (open the transaction)" };
 }
@@ -1454,7 +1469,7 @@ function originView(o, ctx) {
   };
   if (!known) {
     v.detail = o && typeof o === "object"
-      ? "the API sent an origin this page does not know: " + String(o.origin)
+      ? "the API sent an origin this page does not know: " + txt(o.origin)
       : "the API sent no origin for this value";
     return v;
   }
@@ -1483,7 +1498,7 @@ function originView(o, ctx) {
     var st = interfaceStatusView(e);
     v.label = ORIGIN_LABELS[kind] + ", " + (st.status === "verified" ? (st.passed === "" ? "no level" : st.passed) : st.text);
     texts.push("publication " + packageText(e));
-    if (e.commitment) texts.push("commitment " + shortHex(String(e.commitment), 8, 6));
+    if (e.commitment) texts.push("commitment " + shortHex(txt(e.commitment), 8, 6));
     texts.push(e.checkedAt ? "checked " + e.checkedAt : "not checked yet");
     if (c.address) {
       v.links.push({ href: hashContract(c.address) + "/interface", text: "the interface",
@@ -1494,16 +1509,16 @@ function originView(o, ctx) {
     v.parts = e.parts === undefined ? null : e.parts;
     v.phase = e.phase === undefined ? null : e.phase;
   } else if (kind === "chain") {
-    v.rule = o.rule ? String(o.rule) : null;
+    v.rule = o.rule ? txt(o.rule) : null;
     if (v.rule) texts.push(v.rule);
     var ce = ev && typeof ev === "object" && !isArray(ev) ? ev : {};
     var facts = factsText(ce);
     if (facts) texts.push(facts);
     var tl = txEvidence(ce.txHash, "tx");
     if (tl) v.links.push(tl);
-    if (ce.contract && isHex(String(ce.contract))) {
-      v.links.push({ href: hashContract(String(ce.contract)), text: "the contract",
-        title: String(ce.contract) + " (open the contract)" });
+    if (ce.contract && isHex(txt(ce.contract))) {
+      v.links.push({ href: hashContract(txt(ce.contract)), text: "the contract",
+        title: txt(ce.contract) + " (open the contract)" });
     }
     if (ce.list === "shielded-offers") {
       v.links.push({ href: "#/shielded-offers", text: "the list of those offers",
@@ -1514,12 +1529,12 @@ function originView(o, ctx) {
       if (sl) v.links.push(sl);
     }
   } else if (kind === "derived") {
-    v.rule = o.rule ? String(o.rule) : "(no rule given)";
+    v.rule = o.rule ? txt(o.rule) : "(no rule given)";
     texts.push(v.rule);
     var de = factsText(ev);
     if (de) texts.push("inputs: " + de);
   } else {
-    v.reason = o.reason ? String(o.reason) : "no reason given";
+    v.reason = o.reason ? txt(o.reason) : "no reason given";
     v.label = ORIGIN_LABELS[kind] + " (" + v.reason + ")";
     texts.push(v.reason);
     var np = evidenceList(ev);
@@ -1544,9 +1559,9 @@ function declarationsOf(events, t) {
   for (var i = 0; i < list.length; i++) {
     var e = list[i];
     if (!e || e.applied !== true) continue;
-    if (String(e.domainSep) !== String(t.domainSep)) continue;
+    if (txt(e.domainSep) !== txt(t.domainSep)) continue;
     if (Number(e.kindByte) !== Number(t.kind)) continue;
-    var k = String(e.keyHex === undefined || e.keyHex === null ? e.key : e.keyHex);
+    var k = txt(e.keyHex === undefined || e.keyHex === null ? e.key : e.keyHex);
     if (!own(byKey, k)) byKey[k] = [];
     byKey[k].push(e);
   }
@@ -1563,16 +1578,16 @@ function declarationsOf(events, t) {
 function declaredValueText(e) {
   if (!e) return "-";
   if (Number(e.valType) === 5) return "Null (the key was cleared)";
-  if (Number(e.valType) === 2 && e.integer !== null && e.integer !== undefined) return String(e.integer);
-  if (e.text !== null && e.text !== undefined) return String(e.text);
-  if (e.value) return "0x" + shortHex(String(e.value), 10, 8);
+  if (Number(e.valType) === 2 && e.integer !== null && e.integer !== undefined) return txt(e.integer);
+  if (e.text !== null && e.text !== undefined) return txt(e.text);
+  if (e.value) return "0x" + shortHex(txt(e.value), 10, 8);
   return "(empty)";
 }
 
 // ── the token view ───────────────────────────────────────────────────────────────────────────
 
 function hashTokenSection(t, section) { return hashToken(t) + "/" + enc(section); }
-function valueOrNull(v) { return v === null || v === undefined || v === "" ? null : String(v); }
+function valueOrNull(v) { return v === null || v === undefined || v === "" ? null : txt(v); }
 
 // Every value the token view shows, each with its origin, section by section. "all" lists every
 // item once, so a reader (or a test) can walk the whole view without knowing its layout.
@@ -1668,7 +1683,7 @@ function tokenModel(d) {
   var keys = arr(d.keys);
   for (var k = 0; k < keys.length; k++) {
     var kv = keys[k];
-    var keyId = String(kv.keyHex === undefined || kv.keyHex === null ? asciiHex(kv.key) : kv.keyHex);
+    var keyId = txt(kv.keyHex === undefined || kv.keyHex === null ? asciiHex(kv.key) : kv.keyHex);
     var all = decls[keyId] || [];
     var history = [];
     for (var h = 0; h < all.length; h++) {
@@ -1679,7 +1694,7 @@ function tokenModel(d) {
       hi.txHash = he.txHash; hi.valType = he.valType; hi.parts = he.parts; hi.phase = he.phase;
       history.push(hi);
     }
-    var ti = item("trait:" + keyId, kv.key === null || kv.key === undefined ? "0x" + keyId : String(kv.key),
+    var ti = item("trait:" + keyId, kv.key === null || kv.key === undefined ? "0x" + keyId : txt(kv.key),
       traitText(kv), kv.origin, { token: t, address: t.address, declarations: all.length });
     ti.trait = kv; ti.history = history; ti.parts = kv.parts; ti.phase = kv.phase;
     traits.push(ti);
@@ -1706,7 +1721,7 @@ function tokenModel(d) {
   var sl = arr(d.siblings);
   for (var s = 0; s < sl.length; s++) {
     var sib = sl[s];
-    if (!sib || String(sib.domainSep) !== String(t.domainSep) || Number(sib.kind) === Number(t.kind)) continue;
+    if (!sib || txt(sib.domainSep) !== txt(t.domainSep) || Number(sib.kind) === Number(t.kind)) continue;
     siblings.push(siblingItems(sib, SIBLING_FIELDS));
   }
   var ev = eventsModel(events, t.domainSep, t.address);
@@ -1718,13 +1733,13 @@ function tokenModel(d) {
   return model;
 }
 function jsonText(v) {
-  try { return JSON.stringify(v, null, 2); } catch (e) { return String(v); }
+  try { return JSON.stringify(v, null, 2); } catch (e) { return txt(v); }
 }
 function traitText(tr) {
   if (Number(tr.valType) === 5) return "Null (the key was cleared)";
-  if (Number(tr.valType) === 2 && tr.integer !== null && tr.integer !== undefined) return String(tr.integer);
-  if (tr.text !== null && tr.text !== undefined) return String(tr.text);
-  if (tr.value) return "0x" + String(tr.value);
+  if (Number(tr.valType) === 2 && tr.integer !== null && tr.integer !== undefined) return txt(tr.integer);
+  if (tr.text !== null && tr.text !== undefined) return txt(tr.text);
+  if (tr.value) return "0x" + txt(tr.value);
   return "(empty)";
 }
 // A row of another table (the contract's tokens, the rows sharing a domain separator): each value
@@ -1809,7 +1824,7 @@ function collectItems(model) {
 var URL_HEAD = 72;
 var URL_TAIL = 28;
 function urlView(url) {
-  var s = url === null || url === undefined ? "" : String(url);
+  var s = url === null || url === undefined ? "" : txt(url);
   var n = s.length;
   var cut = n > URL_HEAD + URL_TAIL + 1;
   var low = s.slice(0, 8).toLowerCase();
@@ -1902,31 +1917,31 @@ function interfaceModel(x, address, loaded) {
   row("lastVerifiedAt", "last verified", x.lastVerifiedAt);
   row("verifiedUntil", "verified until", x.verifiedUntil);
   row("nextCheckAt", "next check", x.nextCheckAt);
-  row("state", "contract state used", x.state ? "block " + orDash(x.state.blockHeight) + " · tx " + shortHex(String(x.state.txHash || ""), 8, 6) : null,
+  row("state", "contract state used", x.state ? "block " + orDash(x.state.blockHeight) + " · tx " + shortHex(txt(x.state.txHash || ""), 8, 6) : null,
     x.state && x.state.txHash ? { txHash: x.state.txHash } : null);
   row("compiler", "compiler", x.compiler ? orDash(x.compiler.name) + " " + orDash(x.compiler.version) : null);
   if (x.build) {
     row("build", "build", "compiler " + orDash(x.build.compiler) + " · language " + orDash(x.build.language)
       + " · runtime " + orDash(x.build.runtime) + " · interface " + orDash(x.build.interface)
-      + " · flags " + (arr(x.build.flags).length === 0 ? "none" : arr(x.build.flags).join(" ")));
+      + " · flags " + (arr(x.build.flags).length === 0 ? "none" : arr(x.build.flags).map(txt).join(" ")));
   }
   row("publications", "publications of this contract", x.publications);
   var files = [];
   var fl = arr(x.files);
   for (var f = 0; f < fl.length; f++) {
-    files.push({ field: "iface:file:" + fl[f].path, label: String(fl[f].path), value: valueOrNull(fl[f].size),
+    files.push({ field: "iface:file:" + txt(fl[f].path), label: txt(fl[f].path), value: valueOrNull(fl[f].size),
       origin: originView(fl[f].origin, ctx), row: fl[f] });
   }
   var keys = [];
   var kl = arr(x.keys);
   for (var k = 0; k < kl.length; k++) {
-    keys.push({ field: "iface:key:" + kl[k].circuit, label: String(kl[k].circuit), value: valueOrNull(kl[k].sha256),
+    keys.push({ field: "iface:key:" + txt(kl[k].circuit), label: txt(kl[k].circuit), value: valueOrNull(kl[k].sha256),
       origin: originView(kl[k].origin, ctx), row: kl[k] });
   }
   var circuits = [];
   var cl = arr(x.circuits);
   for (var c = 0; c < cl.length; c++) {
-    circuits.push({ field: "iface:circuit:" + cl[c].name, label: String(cl[c].name), value: circuitSignature(cl[c]),
+    circuits.push({ field: "iface:circuit:" + txt(cl[c].name), label: txt(cl[c].name), value: circuitSignature(cl[c]),
       origin: originView(cl[c].origin, ctx), row: cl[c] });
   }
   var witnesses = [];
@@ -1934,7 +1949,7 @@ function interfaceModel(x, address, loaded) {
   for (var w = 0; w < wl.length; w++) {
     // A witness is a name the bundle's code declares; the API sends it as a plain string of the
     // interface, so it carries the interface's own origin.
-    witnesses.push({ field: "iface:witness:" + wl[w], label: "witness", value: valueOrNull(wl[w]), origin: originView(O, ctx) });
+    witnesses.push({ field: "iface:witness:" + txt(wl[w]), label: "witness", value: valueOrNull(wl[w]), origin: originView(O, ctx) });
   }
   var checks = [];
   var chl = arr(x.checkHistory);
@@ -1976,7 +1991,7 @@ function multipartOf(t) {
     var pk = evidenceList(o[k].evidence);
     for (var i = 0; i < pk.length; i++) {
       var parts = Number(pk[i].parts);
-      var phase = pk[i].phase ? String(pk[i].phase) : null;
+      var phase = pk[i].phase ? txt(pk[i].phase) : null;
       if (parts > 1 || (phase !== null && phase !== "guaranteed")) {
         out.push({ field: k, parts: parts, phase: phase });
       }
@@ -2053,7 +2068,7 @@ function ifaceBadge(st) {
 }
 function partsChip(parts, phase, what) {
   var p = Number(parts);
-  var ph = phase ? String(phase) : null;
+  var ph = phase ? txt(phase) : null;
   var mixed = ph !== null && ph !== "guaranteed";
   var c = node("span", partsText(p) + (mixed ? " · " + ph : ""), mixed ? "pp pp-bad" : "pp");
   c.title = (what ? what + ": " : "") + "one [Y] multi-part package in " + partsText(p)
@@ -2064,9 +2079,9 @@ function partsChip(parts, phase, what) {
 // "1 · guaranteed" as plain text; a chip once there is more than one part, or another phase.
 function partsPhaseCell(parts, phase) {
   if (parts === null || parts === undefined) return node("span", "-", "no");
-  var ph = phase ? String(phase) : null;
+  var ph = phase ? txt(phase) : null;
   if (Number(parts) > 1 || (ph !== null && ph !== "guaranteed")) return partsChip(parts, ph, null);
-  return node("span", String(parts) + (ph ? " · " + ph : ""), "note");
+  return node("span", txt(parts) + (ph ? " · " + ph : ""), "note");
 }
 // The "value | origin" table of the token and contract views.
 function factsTable(parent, items, valueOf) {
@@ -2142,7 +2157,7 @@ async function loadInterfaceParts() {
     var page = await api(P_INTERFACES + "?limit=" + INTERFACE_LIST_LIMIT);
     var items = itemsOf(page);
     for (var i = 0; i < items.length; i++) {
-      if (items[i] && items[i].address) byAddress[String(items[i].address)] = { parts: items[i].parts, phase: items[i].phase };
+      if (items[i] && items[i].address) byAddress[txt(items[i].address)] = { parts: items[i].parts, phase: items[i].phase };
     }
   } catch (e) { return state.list.ifaces || {}; }
   return byAddress;
@@ -2193,7 +2208,7 @@ async function loadSeenToken(r, d) {
   var doc = await api(P_COLORS + "/" + enc(r.color));
   var rows = itemsOf(doc && doc.tokens ? { items: doc.tokens } : null);
   for (var i = 0; i < rows.length; i++) {
-    if (String(rows[i].kind) === String(r.kind)) d.token = rows[i];
+    if (txt(rows[i].kind) === txt(r.kind)) d.token = rows[i];
   }
   if (d.token === null && rows.length > 0) d.token = rows[0];
   if (d.token === null) throw new Error("404 TOKEN_NOT_FOUND: no row for colour " + r.color);
@@ -2368,14 +2383,14 @@ function behindText(st) {
   var b = behindHead(st);
   if (b === null) return "chain tip unavailable";
   if (b <= 0) return "in sync";
-  return String(b);
+  return txt(b);
 }
 // A distance is a COUNT and its digits are grouped for reading; a height is an IDENTIFIER a reader
 // compares digit by digit against another screen, so a height is never grouped. The separator is a
 // non-breaking space, so the number cannot break across a line. (No regular expression and no
 // backslash here — see the file header.)
 function groupDigits(n) {
-  var s = String(n);
+  var s = txt(n);
   var out = "";
   for (var i = 0; i < s.length; i++) {
     if (i > 0 && (s.length - i) % 3 === 0) out += String.fromCharCode(160);
@@ -2391,10 +2406,10 @@ function agoText(then, now) {
   var secs = Math.floor((now - then.getTime()) / 1000);
   if (secs < 0) secs = 0;
   if (secs < 5) return "just now";
-  if (secs < 60) return String(secs) + " s ago";
+  if (secs < 60) return txt(secs) + " s ago";
   var mins = Math.floor(secs / 60);
-  if (mins < 60) return String(mins) + " min ago";
-  return String(Math.floor(mins / 60)) + " h ago";
+  if (mins < 60) return txt(mins) + " min ago";
+  return txt(Math.floor(mins / 60)) + " h ago";
 }
 function renderStrip() {
   var s = el("strip");
@@ -2411,7 +2426,7 @@ function renderStrip() {
     s.appendChild(node("span", "chain tip unavailable", "stale"));
   } else {
     s.appendChild(node("span", "chain tip "));
-    s.appendChild(node("b", String(head)));
+    s.appendChild(node("b", txt(head)));
   }
   var b = behindHead(st);
   if (b !== null && b > 0) {
@@ -2547,7 +2562,7 @@ function renderList(main) {
     cell(tr, kindCell(t));
     cell(tr, nameCell(t, index));
     cell(tr, orDash(t.symbol));
-    cell(tr, t.decimals === null || t.decimals === undefined ? "-" : String(t.decimals), "num");
+    cell(tr, t.decimals === null || t.decimals === undefined ? "-" : txt(t.decimals), "num");
     cell(tr, mintsCell(t), "num");
     cell(tr, heightsCell(t));
     cell(tr, statusBadge(t.status));
@@ -2634,8 +2649,8 @@ function activitySection(t, d, items) {
   var tb = tableIn(sec, ["block", "pos", "tx", "what", "amount", "counterparty", "section", "origin", ""]);
   for (var r = 0; r < rows.length; r++) {
     var a = rows[r];
-    var key = String(a.txHash) + "|" + String(a.segment) + "|" + String(a.section) + "|"
-      + String(a.role) + "|" + String(a.itemIndex);
+    var key = txt(a.txHash) + "|" + txt(a.segment) + "|" + txt(a.section) + "|"
+      + txt(a.role) + "|" + txt(a.itemIndex);
     var tr = document.createElement("tr");
     // The model is built from the same page of rows, in the same order (tokenModel).
     var ai = model[r] || { field: "activity:" + key, origin: originView(a.origin, { token: t, section: "activity" }) };
@@ -2695,7 +2710,7 @@ function counterpartyCell(a) {
     wrap.appendChild(contractLink(a.address));
     if (a.entryPoint) {
       wrap.appendChild(node("span", " · "));
-      wrap.appendChild(node("span", String(a.entryPoint)));
+      wrap.appendChild(node("span", txt(a.entryPoint)));
     }
     return wrap;
   }
@@ -2703,7 +2718,7 @@ function counterpartyCell(a) {
     var holder = node("span");
     holder.appendChild(ownerCell(a.owner));
     if (a.role === "utxo_in" && a.intentHash) {
-      var spent = node("span", " spends " + shortHex(String(a.intentHash), 6, 4)
+      var spent = node("span", " spends " + shortHex(txt(a.intentHash), 6, 4)
         + "/" + orDash(a.outputNo), "note");
       spent.title = "the UTXO being spent: intent hash " + a.intentHash + ", output " + orDash(a.outputNo);
       holder.appendChild(spent);
@@ -2758,7 +2773,7 @@ function offerDetail(doc, a) {
   for (var i = 0; i < tx.offers.length; i++) {
     var o = tx.offers[i];
     for (var j = 0; j < o.deltas.length; j++) {
-      if (String(o.deltas[j].color) === String(a.color)) { mine.push(o); break; }
+      if (txt(o.deltas[j].color) === txt(a.color)) { mine.push(o); break; }
     }
   }
   if (mine.length === 0) mine = tx.offers;
@@ -2835,13 +2850,13 @@ function disclosureSection(t, items) {
   if (undisclosed === null || undisclosed === undefined) undisclosed = counterOf(state.status, "undisclosedShieldedOffers");
   var line = node("div");
   var first = marked(node("span"), model[0] ? model[0].field : "disclosedTransactions");
-  first.appendChild(node("b", disclosed === null || disclosed === undefined ? "-" : String(disclosed)));
+  first.appendChild(node("b", disclosed === null || disclosed === undefined ? "-" : txt(disclosed)));
   first.appendChild(node("span", "  transactions disclose this colour  ", "note"));
   if (model[0]) first.appendChild(originChip(model[0].origin));
   line.appendChild(first);
   line.appendChild(node("span", "  ·  ", "note"));
   var second = marked(node("span"), model[1] ? model[1].field : "undisclosedShieldedOffers");
-  second.appendChild(node("b", undisclosed === null || undisclosed === undefined ? "-" : String(undisclosed)));
+  second.appendChild(node("b", undisclosed === null || undisclosed === undefined ? "-" : txt(undisclosed)));
   second.appendChild(node("span", "  shielded offers on this chain publish no colour at all — any of "
     + "them may be this token  ", "note"));
   if (model[1]) second.appendChild(originChip(model[1].origin));
@@ -3012,7 +3027,7 @@ function effectsBlock(e) {
       var entry = entries[k];
       if (entry.isColor) holder.appendChild(colorLink(entry.key, 0));
       else if (entry.text) holder.appendChild(copyable(entry.key, entry.text, "txt"));
-      else holder.appendChild(copyable(entry.key, shortHex(String(entry.key), 8, 6), "hex"));
+      else holder.appendChild(copyable(entry.key, shortHex(txt(entry.key), 8, 6), "hex"));
       holder.appendChild(node("span", " " + orDash(entry.value), "amt"));
     }
     detRow(grid, EFFECT_MAPS[i][1], holder);
@@ -3021,7 +3036,7 @@ function effectsBlock(e) {
     var c = count(e[EFFECT_COUNTS[j][0]]);
     if (c === 0) continue;
     any = true;
-    detRow(grid, EFFECT_COUNTS[j][1], node("span", String(c), "amt"));
+    detRow(grid, EFFECT_COUNTS[j][1], node("span", txt(c), "amt"));
   }
   if (!any) { wrap.appendChild(node("span", "no effect declared by this transcript", "no")); return wrap; }
   wrap.appendChild(grid);
@@ -3036,7 +3051,7 @@ function effectsBlock(e) {
 function normOffer(o, section, segment) {
   var v = o || {};
   return {
-    section: v.section ? String(v.section) : section,
+    section: v.section ? txt(v.section) : section,
     segment: v.segment === undefined || v.segment === null ? segment : v.segment,
     counted: v.counted === undefined ? true : v.counted,
     deltas: arr(v.deltas), inputs: arr(v.inputs), outputs: arr(v.outputs), transients: arr(v.transients)
@@ -3083,7 +3098,7 @@ function normalizeTx(doc) {
 function normUnshielded(o, section) {
   var v = o || {};
   return {
-    section: v.section ? String(v.section) : section,
+    section: v.section ? txt(v.section) : section,
     counted: v.counted === undefined ? true : v.counted,
     signatures: v.signatures === undefined ? null : v.signatures,
     inputs: arr(v.inputs), outputs: arr(v.outputs)
@@ -3104,7 +3119,7 @@ function segmentsText(segments) {
   if (list.length === 0) return "-";
   var out = [];
   for (var i = 0; i < list.length; i++) {
-    out.push(String(list[i].id === undefined ? list[i].segment : list[i].id)
+    out.push(txt(list[i].id === undefined ? list[i].segment : list[i].id)
       + (list[i].success === false ? " failed" : " ok"));
   }
   return out.join(" · ");
@@ -3121,7 +3136,7 @@ function renderTx(main) {
     var miss = node("section");
     miss.appendChild(node("h2", "transaction"));
     miss.appendChild(node("div", "not loaded (see the banner above). The hash is "
-      + String(state.route.hash), "empty"));
+      + txt(state.route.hash), "empty"));
     main.appendChild(miss);
     return;
   }
@@ -3132,9 +3147,9 @@ function renderTx(main) {
   head.appendChild(node("h2", "transaction · decoded from the archived bytes on request"));
   var feeSpeck = d.feeSpeck === undefined ? d.fee : d.feeSpeck;
   kvInto(head, [
-    ["hash", copyable(d.txHash, d.txHash ? String(d.txHash) : "-", "hex")],
+    ["hash", copyable(d.txHash, d.txHash ? txt(d.txHash) : "-", "hex")],
     ["block height", orDash(d.blockHeight)],
-    ["block hash", copyable(d.blockHash, d.blockHash ? shortHex(String(d.blockHash), 12, 10) : "-", "hex")],
+    ["block hash", copyable(d.blockHash, d.blockHash ? shortHex(txt(d.blockHash), 12, 10) : "-", "hex")],
     ["position in block", orDash(d.txPosition)],
     ["protocol version", orDash(d.protocolVersion)],
     ["result", node("span", orDash(d.result), d.result === "success" ? "txt" : "err")],
@@ -3174,7 +3189,7 @@ function renderTx(main) {
         deltas.appendChild(colorLink(o.deltas[dd].color, 1));
         deltas.appendChild(node("span", " "));
         deltas.appendChild(poolDeltaCell(o.deltas[dd].delta));
-        if (o.deltas[dd].tokenName) deltas.appendChild(node("span", " " + String(o.deltas[dd].tokenName), "txt"));
+        if (o.deltas[dd].tokenName) deltas.appendChild(node("span", " " + txt(o.deltas[dd].tokenName), "txt"));
       }
       detRow(grid, "deltas (+ enters the shielded pool)", deltas);
       detRow(grid, "inputs · nullifiers", hexListCell(o.inputs, "nullifier"));
@@ -3202,7 +3217,7 @@ function renderTx(main) {
       cell(rr, orDash(reward.kind));
       cell(rr, node("span", formatUnits(reward.value, 6), "amt"), "num");
       cell(rr, ownerCell(reward.owner));
-      cell(rr, copyable(reward.nonce, shortHex(String(reward.nonce), 8, 6), "hex"));
+      cell(rr, copyable(reward.nonce, shortHex(txt(reward.nonce), 8, 6), "hex"));
       rb.appendChild(rr);
     }
     main.appendChild(rw);
@@ -3240,15 +3255,15 @@ function renderTx(main) {
   raw.appendChild(bar);
   if (holder.raw) {
     var pre = node("pre");
-    try { pre.textContent = JSON.stringify(holder.doc, null, 2); } catch (e) { pre.textContent = String(holder.doc); }
+    try { pre.textContent = JSON.stringify(holder.doc, null, 2); } catch (e) { pre.textContent = txt(holder.doc); }
     raw.appendChild(pre);
   }
   main.appendChild(raw);
 }
 function txTokenCell(a) {
   var t = a.token;
-  var label = t && t.name ? String(t.name)
-    : (t && t.symbol ? String(t.symbol) : "colour " + shortHex(String(a.color), 8, 6));
+  var label = t && t.name ? txt(t.name)
+    : (t && t.symbol ? txt(t.symbol) : "colour " + shortHex(txt(a.color), 8, 6));
   var link = node("a", label);
   link.href = (t && t.address && t.domainSep ? hashToken(t) : hashColor(a.color, a.kind)) + "/activity";
   link.title = "open this token with its transactions";
@@ -3264,7 +3279,7 @@ function intentSection(it) {
   ttl.title = "the wallet's own time-to-live for this intent — a value inside the transaction, "
     + "never the block's time (the archive stores no block time)";
   kvInto(sec, [
-    ["intent hash", copyable(it.intentHash, it.intentHash ? String(it.intentHash) : "-", "hex")],
+    ["intent hash", copyable(it.intentHash, it.intentHash ? txt(it.intentHash) : "-", "hex")],
     ["ttl (wallet-set, not the block time)", ttl]
   ]);
   for (var i = 0; i < it.unshieldedOffers.length; i++) {
@@ -3281,11 +3296,11 @@ function intentSection(it) {
       for (var n = 0; n < offer.inputs.length; n++) {
         var input = offer.inputs[n];
         var ir = document.createElement("tr");
-        cell(ir, String(n), "num");
+        cell(ir, txt(n), "num");
         cell(ir, node("span", orDash(input.value), "amt"), "num");
         cell(ir, colorLink(input.color === undefined ? input.type : input.color, 0));
         cell(ir, ownerCell(input.ownerAddress === undefined ? input.owner : input.ownerAddress));
-        cell(ir, copyable(input.spentIntentHash, shortHex(String(input.spentIntentHash), 8, 6), "hex"));
+        cell(ir, copyable(input.spentIntentHash, shortHex(txt(input.spentIntentHash), 8, 6), "hex"));
         cell(ir, orDash(input.spentOutputNo === undefined ? input.outputNo : input.spentOutputNo), "num");
         ib.appendChild(ir);
       }
@@ -3314,15 +3329,15 @@ function intentSection(it) {
 function actionBlock(action) {
   var block = node("div", null, "txsec");
   var title = node("div", null, "row");
-  title.appendChild(node("div", "contract " + (action.kind ? String(action.kind) : "action")
+  title.appendChild(node("div", "contract " + (action.kind ? txt(action.kind) : "action")
     + " · index " + orDash(action.index), "h"));
   block.appendChild(title);
   var grid = node("div", null, "det-grid");
-  detRow(grid, "address", contractLink(action.address, action.address ? String(action.address) : null));
-  if (action.entryPoint) detRow(grid, "entry point", node("span", String(action.entryPoint)));
+  detRow(grid, "address", contractLink(action.address, action.address ? txt(action.address) : null));
+  if (action.entryPoint) detRow(grid, "entry point", node("span", txt(action.entryPoint)));
   if (action.communicationCommitment) {
     detRow(grid, "communication commitment",
-      copyable(action.communicationCommitment, shortHex(String(action.communicationCommitment), 10, 8), "hex"));
+      copyable(action.communicationCommitment, shortHex(txt(action.communicationCommitment), 10, 8), "hex"));
   }
   block.appendChild(grid);
   var transcripts = [["guaranteed", action.guaranteed], ["fallible", action.fallible]];
@@ -3356,10 +3371,10 @@ function dustActionsBlock(dust) {
     for (var i = 0; i < spends.length; i++) {
       var s = spends[i];
       var tr = document.createElement("tr");
-      cell(tr, String(i), "num");
+      cell(tr, txt(i), "num");
       cell(tr, node("span", orDash(s.vFee), "amt"), "num");
-      cell(tr, copyable(s.oldNullifier, shortHex(String(s.oldNullifier), 8, 6), "hex"));
-      cell(tr, copyable(s.newCommitment, shortHex(String(s.newCommitment), 8, 6), "hex"));
+      cell(tr, copyable(s.oldNullifier, shortHex(txt(s.oldNullifier), 8, 6), "hex"));
+      cell(tr, copyable(s.newCommitment, shortHex(txt(s.newCommitment), 8, 6), "hex"));
       sb.appendChild(tr);
     }
   }
@@ -3369,8 +3384,8 @@ function dustActionsBlock(dust) {
     for (var r = 0; r < regs.length; r++) {
       var g = regs[r];
       var rr = document.createElement("tr");
-      cell(rr, String(r), "num");
-      cell(rr, copyable(g.nightKey, shortHex(String(g.nightKey), 8, 6), "hex"));
+      cell(rr, txt(r), "num");
+      cell(rr, copyable(g.nightKey, shortHex(txt(g.nightKey), 8, 6), "hex"));
       cell(rr, ownerCell(g.dustAddress));
       cell(rr, g.allowFeePayment === true ? "yes" : (g.allowFeePayment === false ? "no" : "-"));
       rb.appendChild(rr);
@@ -3490,7 +3505,7 @@ function kvInto(parent, pairs) {
       holder.appendChild(v);
       grid.appendChild(holder);
     } else {
-      grid.appendChild(node("div", v === null || v === undefined || v === "" ? "-" : String(v)));
+      grid.appendChild(node("div", v === null || v === undefined || v === "" ? "-" : txt(v)));
     }
   }
   parent.appendChild(grid);
@@ -3651,7 +3666,7 @@ function renderToken(main) {
       cell(mr, orDash(mi.segment), "num");
       cell(mr, orDash(mi.callIndex), "num");
       cell(mr, orDash(mi.entryPoint));
-      cell(mr, orDash(mi.kind) + (mi.privacy ? " " + String(mi.privacy) : ""));
+      cell(mr, orDash(mi.kind) + (mi.privacy ? " " + txt(mi.privacy) : ""));
       cell(mr, orDash(mi.amount), "num");
       cell(mr, originChip(m.mints[n].origin));
       mb.appendChild(mr);
@@ -3749,7 +3764,7 @@ function traitsSection(m) {
     cell(row, partsPhaseCell(kv.parts, kv.phase));
     if (kv.projectionError) {
       anyError = true;
-      cell(row, node("span", String(kv.projectionError), "perr wrapv"));
+      cell(row, node("span", txt(kv.projectionError), "perr wrapv"));
     } else {
       cell(row, node("span", "-", "no"));
     }
@@ -3848,12 +3863,12 @@ function eventsSection(items, markDomain, heading) {
     cell(tr, orDash(key));
     cell(tr, node("span", typeLabel(e.valType), "vtype"));
     cell(tr, orDash(e.valLen === undefined ? e.len : e.valLen), "num");
-    var value = e.text !== undefined && e.text !== null ? String(e.text)
+    var value = e.text !== undefined && e.text !== null ? txt(e.text)
       : (e.value ? (hexText(e.value) || shortHex(e.value, 10, 8)) : null);
     cell(tr, value === null ? node("span", Number(e.valType) === 5 ? "Null" : "-", "no") : node("span", value, "wrapv"));
     cell(tr, e.applied === true ? node("span", "yes", "txt")
       : (e.applied === false ? node("span", "no", "err") : "-"));
-    cell(tr, e.rejectReason ? node("span", String(e.rejectReason), "err wrapv") : node("span", "-", "no"));
+    cell(tr, e.rejectReason ? node("span", txt(e.rejectReason), "err wrapv") : node("span", "-", "no"));
     cell(tr, partsPhaseCell(e.parts, e.phase));
     cell(tr, originChip(items[i].origin));
     tb.appendChild(tr);
@@ -3979,12 +3994,12 @@ function interfaceSection(face) {
     ["path", "size (bytes)", "SHA-256", "origin"], function (tr, it) {
       cell(tr, node("span", it.label, "txt wrapv"));
       cell(tr, orDash(it.row.size), "num");
-      cell(tr, copyable(it.row.sha256, shortHex(String(it.row.sha256 || ""), 10, 8), "hex"));
+      cell(tr, copyable(it.row.sha256, shortHex(txt(it.row.sha256 || ""), 10, 8), "hex"));
     }, "no file: the check did not reach Level 1's file list"));
   sec.appendChild(ifaceTable("verifier keys (Level 2: equal to the contract's on-chain keys)", face.keys,
     ["circuit", "verifier key SHA-256", "Level 2", "origin"], function (tr, it) {
       cell(tr, it.label);
-      cell(tr, copyable(it.value, shortHex(String(it.value || ""), 10, 8), "hex"));
+      cell(tr, copyable(it.value, shortHex(txt(it.value || ""), 10, 8), "hex"));
       cell(tr, orDash(it.row.l2));
     }, "no key: the check did not reach Level 2"));
   sec.appendChild(ifaceTable("circuits the interface publishes, with their argument types", face.circuits,
@@ -3993,7 +4008,7 @@ function interfaceSection(face) {
       cell(tr, node("span", it.value, "hex wrapv"));
       cell(tr, it.row.pure === true ? "yes" : (it.row.pure === false ? "no" : "-"));
       cell(tr, it.row.onChain === true ? "yes" : (it.row.onChain === false ? "no" : "-"));
-      cell(tr, copyable(it.row.keySha256, shortHex(String(it.row.keySha256 || ""), 10, 8), "hex"));
+      cell(tr, copyable(it.row.keySha256, shortHex(txt(it.row.keySha256 || ""), 10, 8), "hex"));
       cell(tr, orDash(it.row.l2));
     }, "no circuit: the check did not reach Level 2"));
   sec.appendChild(ifaceTable("witnesses the bundle's code declares", face.witnesses,
@@ -4006,8 +4021,8 @@ function interfaceSection(face) {
       cell(tr, orDash(ch.trigger));
       cell(tr, ifaceBadge(it.status));
       cell(tr, levelsLine(ch.levels));
-      cell(tr, node("span", ch.l3Reason ? String(ch.l3Reason) : "-", ch.l3Reason ? "wrapv" : "no"));
-      cell(tr, node("span", ch.reason ? String(ch.reason) : "-", ch.reason ? "err wrapv diag" : "no"));
+      cell(tr, node("span", ch.l3Reason ? txt(ch.l3Reason) : "-", ch.l3Reason ? "wrapv" : "no"));
+      cell(tr, node("span", ch.reason ? txt(ch.reason) : "-", ch.reason ? "err wrapv diag" : "no"));
       cell(tr, orDash(ch.stateBlockHeight), "num");
     }, "never checked yet"));
   sec.appendChild(ifaceTable("older publications (historical: each with its own last result, never current)", face.history,
@@ -4018,11 +4033,11 @@ function interfaceSection(face) {
       cell(tr, orDash(h.blockHeight), "num");
       cell(tr, txLink(h.txHash));
       cell(tr, partsPhaseCell(h.parts, h.phase));
-      cell(tr, copyable(h.commitment, shortHex(String(h.commitment || ""), 8, 6), "hex"));
+      cell(tr, copyable(h.commitment, shortHex(txt(h.commitment || ""), 8, 6), "hex"));
       cell(tr, h.url === null || h.url === undefined ? node("span", h.urlError ? "not decodable: " + h.urlError : "-", "no") : urlNode(it.url));
       cell(tr, withTitle(node("span", orDash(h.role), "note"), ROLE_HELP[h.role] || ""));
       cell(tr, ifaceBadge(it.status));
-      cell(tr, node("span", h.reason ? String(h.reason) : "-", h.reason ? "err wrapv diag" : "no"));
+      cell(tr, node("span", h.reason ? txt(h.reason) : "-", h.reason ? "err wrapv diag" : "no"));
       cell(tr, orDash(h.checkedAt));
       cell(tr, orDash(h.verifiedUntil));
     }, "none: this is the contract's only publication"));
@@ -4074,7 +4089,7 @@ function pendingTable(plist, items) {
     cell(tr, orDash(p.expected), "num");
     cell(tr, orDash(p.got), "num");
     cell(tr, orDash(p.attempts), "num");
-    cell(tr, p.lastError ? node("span", String(p.lastError), "err wrapv") : node("span", "-", "no"));
+    cell(tr, p.lastError ? node("span", txt(p.lastError), "err wrapv") : node("span", "-", "no"));
     if (items && items[i]) cell(tr, originChip(items[i].origin));
     tb.appendChild(tr);
   }
@@ -4108,7 +4123,7 @@ function renderStatus(main) {
     // index's own height and both raw positions live here and only here (Q21, narrowed by Q24).
     ["indexed", orDash(indexedHeight(st))],
     ["chain tip", st.chainHead === undefined || st.chainHead === null
-      ? "unavailable — the indexer did not answer" : String(st.chainHead)],
+      ? "unavailable — the indexer did not answer" : txt(st.chainHead)],
     ["behind", behindText(st)],
     ["archive tip — raw bytes fetched", orDash(st.archiveTip)],
     ["decode cursor height — bytes decoded; indexed above is the smaller of these two",
@@ -4152,7 +4167,7 @@ function renderStatus(main) {
   var raw = node("section");
   raw.appendChild(node("h2", "raw"));
   var pre = node("pre");
-  try { pre.textContent = JSON.stringify(st, null, 2); } catch (e) { pre.textContent = String(st); }
+  try { pre.textContent = JSON.stringify(st, null, 2); } catch (e) { pre.textContent = txt(st); }
   raw.appendChild(pre);
   main.appendChild(raw);
 }
@@ -4166,12 +4181,22 @@ function render() {
   renderTabs();
   var main = el("view");
   clear(main);
-  if (state.route.view === "token") renderToken(main);
-  else if (state.route.view === "contract") renderContract(main);
-  else if (state.route.view === "status") renderStatus(main);
-  else if (state.route.view === "tx") renderTx(main);
-  else if (state.route.view === "offers") renderOffers(main);
-  else renderList(main);
+  // A render boundary: whatever a payload holds, a view that cannot be drawn says so instead of
+  // leaving the page blank (audit 03-E1a finding F3); the banner and the tabs above still work.
+  try {
+    if (state.route.view === "token") renderToken(main);
+    else if (state.route.view === "contract") renderContract(main);
+    else if (state.route.view === "status") renderStatus(main);
+    else if (state.route.view === "tx") renderTx(main);
+    else if (state.route.view === "offers") renderOffers(main);
+    else renderList(main);
+  } catch (e) {
+    clear(main);
+    var failed = node("section");
+    failed.appendChild(node("h2", "this view could not be drawn"));
+    failed.appendChild(node("div", "a value in the answer could not be shown: " + txt(e && e.message ? e.message : e), "err"));
+    main.appendChild(failed);
+  }
   // US2 scenario 3: a token opened from a transaction's activity list lands on its transactions;
   // 00024-03: an origin's evidence link lands on the section it cites. The target is kept until the
   // view that holds it has loaded, so a link followed from another page still arrives.

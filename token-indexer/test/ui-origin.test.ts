@@ -569,7 +569,7 @@ describe("the page shows the origin of every value", () => {
   });
 
   it("negative control (E1a-F15): a copy control that does not copy fails the check", async () => {
-    const broken = SERVED_SCRIPT.replace('s.addEventListener("click", function (ev) { ev.stopPropagation(); copyValue(String(value), s); });',
+    const broken = SERVED_SCRIPT.replace('s.addEventListener("click", function (ev) { ev.stopPropagation(); copyValue(txt(value), s); });',
       's.addEventListener("click", function (ev) { ev.stopPropagation(); });');
     expect(broken).not.toBe(SERVED_SCRIPT);
     const page = loadPage(broken);
