@@ -429,6 +429,9 @@ var LIST_LIMIT = 200;
 // smaller page could hide a token that HAS metadata behind a boundary the reader never sees.
 var LIST_LIMIT_FILTERED = 500;
 var MINT_LIMIT = 200;
+// The mint history is read page by page too (oldest first), up to MINT_PAGES pages; a token with more
+// says so beside the table, with its mint count and a link to the whole list (audit 03-E1a R3I).
+var MINT_PAGES = 5;
 var ACT_LIMIT = 200;
 var CALL_LIMIT = 200;
 var OFFER_LIMIT = 200;
@@ -1995,7 +1998,7 @@ function tokenModel(d) {
   var model = {
     token: t, facts: facts, disclosure: disclosure, iface: ifaceItem, metadata: metadata,
     traits: traits, mints: mints, activity: activity, calls: calls, siblings: siblings, events: ev,
-    historyPartial: partial
+    historyPartial: partial, mintsMore: d.mintsMore === true
   };
   model.all = collectItems(model);
   return model;
@@ -2603,6 +2606,7 @@ async function loadSeenToken(r, d) {
   if (d.token === null) throw new Error("404 TOKEN_NOT_FOUND: no row for colour " + r.color);
   d.keys = itemsOf(d.token.traits ? { items: d.token.traits } : null);
   d.mints = itemsOf(d.token.mints);
+  d.mintsMore = !!(d.token.mints && d.token.mints.nextCursor);
   d.siblings = rows;
 }
 async function loadTokenActivity(d) {
@@ -2627,8 +2631,8 @@ async function loadNamedToken(r, d) {
     api(tokenBase(r) + "/metadata").then(
       function (p) { d.keys = itemsOf(p); },
       function (e) { d.notes.push("traits unavailable: " + e.message); }),
-    api(tokenBase(r) + "/mints?limit=" + MINT_LIMIT).then(
-      function (p) { d.mints = itemsOf(p); },
+    loadPages(function (c) { return tokenBase(r) + "/mints?limit=" + MINT_LIMIT + (c ? "&cursor=" + enc(c) : ""); }, MINT_PAGES).then(
+      function (p) { d.mints = p.items; d.mintsMore = p.nextCursor !== null; },
       function (e) { d.notes.push("mint history unavailable: " + e.message); }),
     loadPages(function (c) { return contractEventsPath(r.address, c); }, EVENT_PAGES).then(
       function (p) { d.events = p.items; d.eventsMore = p.nextCursor !== null; },
@@ -4094,6 +4098,21 @@ function renderToken(main) {
       ? "a ledger token is never minted natively, so it has no mint rows by construction"
       : "no mint observed for this token yet", "empty"));
   } else {
+    if (m.mintsMore) {
+      // the note shows the token's mint count: an occurrence of it, with its origin
+      var mc = factOf(m, "mintCount");
+      var more = marked(node("div", null, "note err"), mc.field);
+      more.appendChild(node("span", "the first " + groupDigits(m.mints.length) + " of " + orDash(t.mintCount)
+        + " mints are listed — all of them: "));
+      var all = node("a", "every mint (API, paginated)");
+      all.href = t.address && t.domainSep ? tokenBase(t) + "/mints?limit=" + MINT_LIMIT : P_COLORS + "/" + enc(t.color);
+      all.target = "_blank";
+      all.rel = "noopener";
+      more.appendChild(all);
+      more.appendChild(node("span", "  "));
+      more.appendChild(originChip(mc.origin));
+      mints.appendChild(more);
+    }
     var mb = tableIn(mints, ["block", "tx", "segment", "call", "entry point", "kind", "amount", "origin"]);
     for (var n = 0; n < m.mints.length; n++) {
       var mi = m.mints[n].row;

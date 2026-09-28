@@ -589,6 +589,32 @@ describe("the page shows the origin of every value", () => {
       }
     }
 
+    // ── E1a-R3I: the mint history past its first page ─────────────────────────────────────────
+    {
+      const ss = tokenFixture("sstarpi");
+      const a = ss.token.address;
+      const base = `/v1/contracts/${a}/tokens/${ss.token.domainSep}/${ss.token.kind}/mints?limit=200`;
+      const mint = ss.mints.items[0];
+      const pageOf = (p: number, n: number, next: string | null): Json => ({ items: Array.from({ length: n }, (_, i) => ({ ...mint,
+        blockHeight: 1_000 + p * 200 + i, callIndex: p * 200 + i })), nextCursor: next });
+      const two = apiRoutes(ss);
+      two.set(base, pageOf(0, 200, "m1")); two.set(`${base}&cursor=m1`, pageOf(1, 1, null));
+      const f201 = clone(ss); f201.token.mintCount = 201;
+      const live = await bootToken(f201, (() => { const r = two; r.set(`/v1/contracts/${a}/tokens/${ss.token.domainSep}/${ss.token.kind}`, f201.token); return r; })());
+      expect(live.ctx.state.detail.mints.length, "201 mints: both pages read").toBe(201);
+      expect(live.doc.getElementById("mints")!.textContent).not.toContain("mints are listed");
+      const six = apiRoutes(ss);
+      for (let p = 0; p < 6; p++) six.set(p === 0 ? base : `${base}&cursor=m${p}`, pageOf(p, 200, `m${p + 1}`));
+      const f1200 = clone(ss); f1200.token.mintCount = 1_300;
+      six.set(`/v1/contracts/${a}/tokens/${ss.token.domainSep}/${ss.token.kind}`, f1200.token);
+      const cut = await bootToken(f1200, six);
+      expect(cut.requests.filter((r) => r.includes("/mints?")).length).toBe(5);
+      const sec = cut.doc.getElementById("mints")!;
+      expect(sec.textContent).toContain("the first 1\u00a0000 of 1300 mints are listed — all of them: every mint (API, paginated)");
+      const note = [...sec.walk()].find((el) => el.getAttribute("data-o") === "mintCount")!;
+      expect([...note.walk()].some((el) => el.className.includes("orig"))).toBe(true);
+    }
+
     // ── E1a-F2: a key's history past the first page of the contract's events ─────────────────
     // 500 unrelated declarations first: the description (a text, a Null, a 2-part value) is on page 2.
     {
@@ -1175,6 +1201,21 @@ describe("the page shows the origin of every value", () => {
     const where: Where = { tokenIds: token.ids, contractIds: pend.ids, address: stuck.address };
     expect(checkModel(page, pend.model.all, where, knownOf(lm, stuck))).toContain(`pending:${lm.contract.deployTxHash}: derived without an evidence link`);
     expect(checkModel(page, token.model.all, where, knownOf(lm))).toContain("visibility: derived without an evidence link");
+  });
+
+  it("negative control (E1a-R3I): one page of mints hides the rest without a word", async () => {
+    const broken = SERVED_SCRIPT.replace('+ (c ? "&cursor=" + enc(c) : ""); }, MINT_PAGES)', '+ (c ? "&cursor=" + enc(c) : ""); }, 1)')
+      .replace("    if (m.mintsMore) {", "    if (false) {");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const ss = tokenFixture("sstarpi");
+    const a = ss.token.address;
+    const base = `/v1/contracts/${a}/tokens/${ss.token.domainSep}/${ss.token.kind}/mints?limit=200`;
+    const routes = apiRoutes(ss);
+    routes.set(base, { items: Array.from({ length: 200 }, (_, i) => ({ ...ss.mints.items[0], callIndex: i })), nextCursor: "m1" });
+    routes.set(`${base}&cursor=m1`, { items: [{ ...ss.mints.items[0], callIndex: 200 }], nextCursor: null });
+    const live = await bootToken(ss, routes, broken);
+    expect(live.ctx.state.detail.mints.length).toBe(200);
+    expect(live.doc.getElementById("mints")!.textContent).not.toContain("mints are listed");
   });
 
   it("negative control (E1a-R3H): an undeployed contract's address citing its (empty) events fails the check", () => {
