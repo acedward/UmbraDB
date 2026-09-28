@@ -476,6 +476,29 @@ describe("the page draws hostile values without breaking", () => {
       for (const a of tl) expect(a.textContent.length).toBeLessThanOrEqual(1_001);
     }
 
+    // ── E1a-R12B: a deeply nested metadata document is not pretty-printed into millions of characters
+    {
+      const nestedText = '{"x":' + "[".repeat(127) + "0,".repeat(15_999) + "0" + "]".repeat(127) + "}";
+      const lm = read("token-lmoon18.json");
+      const detail = { token: { ...lm.token, metadata: JSON.parse(nestedText) }, keys: lm.metadata.keys, mints: [], events: [],
+        siblings: lm.contract.tokens, activity: null, calls: lm.calls ?? null, notes: [] };
+      const np = loadPage();
+      const root = drawTokenState(np, detail);
+      const metaSec = [...root.walk()].find((el) => el.id === "metadata")!;
+      expect(metaSec.textContent.length, "a 32 KB document nested 128 deep, drawn").toBeLessThan(10_000);
+      const value = np.ctx.tokenModel(detail).metadata.value;
+      expect(value, "kept compact: its pretty form would be millions of characters").toBe(nestedText);
+      [...metaSec.walk()].find((el) => el.className.includes("cpbtn"))!.click();
+      await np.settle();
+      expect(np.copied[np.copied.length - 1], "copied whole").toBe(nestedText);
+      expect([...metaSec.walk()].some((el) => el.tagName === "button" && el.textContent === "show all")).toBe(true);
+      // SNEB18's real 677-byte document is still pretty-printed and drawn whole
+      const sn = read("token-sneb18.json");
+      const snDetail = { token: sn.token, keys: sn.metadata.keys, mints: [], events: [], siblings: sn.contract.tokens, activity: null, calls: null, notes: [] };
+      const snMeta = [...drawTokenState(loadPage(), snDetail).walk()].find((el) => el.id === "metadata")!;
+      expect(snMeta.textContent).toContain(JSON.stringify(sn.token.metadata, null, 2));
+    }
+
     // a realistic long value (SNEB18's 677-byte metadata, LMOON18's 377-byte description) is drawn whole
     expect(read("token-lmoon18.json").metadata.keys.every((k: Json) => (k.text ?? "").length < 2_048)).toBe(true);
   }, HEAVY_MS);
@@ -555,6 +578,19 @@ describe("the page draws hostile values without breaking", () => {
     bp.ctx.state.route = { view: "list" };
     bp.ctx.render();
     expect(bp.doc.getElementById("view")!.textContent).toContain("→ localhost");
+  });
+
+  it("negative control (E1a-R12B): the metadata pretty-printed and drawn whole floods the view", () => {
+    const broken = SERVED_SCRIPT.replace("  if (compact.length > METADATA_PRETTY_MAX) return compact;\n", "")
+      .replace("  return pretty.length <= 4 * METADATA_PRETTY_MAX ? pretty : compact;", "  return pretty;")
+      .replace('    pre.appendChild(boundedNode(m.metadata.value, TRAIT_MAX, null, "metadata:document"));', "    pre.textContent = shown(m.metadata.value);");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const nestedText = '{"x":' + "[".repeat(127) + "0,".repeat(15_999) + "0" + "]".repeat(127) + "}";
+    const lm = read("token-lmoon18.json");
+    const detail = { token: { ...lm.token, metadata: JSON.parse(nestedText) }, keys: lm.metadata.keys, mints: [], events: [],
+      siblings: lm.contract.tokens, activity: null, calls: lm.calls ?? null, notes: [] };
+    const metaSec = [...drawTokenState(loadPage(broken), detail).walk()].find((el) => el.id === "metadata")!;
+    expect(metaSec.textContent.length).toBeGreaterThan(4_000_000);
   });
 
   it("negative control (E1a-R2D): earlier declarations and raw events drawn whole flood the view", () => {

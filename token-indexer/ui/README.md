@@ -111,6 +111,10 @@ What else the page shows:
 - A read that finishes after the route moved to another view is dropped — neither its result nor
   its errors are drawn under the new route — and the new route is read at once (audit 03-E1a finding
   R12A).
+- The metadata document is pretty-printed only while that stays small (up to 4 096 compact
+  characters, a pretty form of at most four times that); otherwise it is kept compact — a 32 KB
+  document nested 128 deep pretty-prints to millions of characters. Either way it is drawn within
+  2 048 characters ("show all" on request) and copied whole (audit 03-E1a finding R12B).
 - A URL (bundle URL, tokenUri) is parsed by the browser's own URL parser: its destination host —
   percent-decoded, IDNA-mapped, as the browser will go to it — is always shown beside the shortened
   text; a URL the parser refuses, or one with user information before its host, is not a link; a

@@ -2150,8 +2150,18 @@ function tokenModel(d) {
   model.all = collectItems(model);
   return model;
 }
+// The metadata document is pretty-printed only while that stays small: a publisher may nest a 32 KB
+// document 128 deep, which pretty-prints to millions of characters of indentation (audit 03-E1a
+// finding R12B). Past METADATA_PRETTY_MAX compact characters (or a pretty form four times that) it
+// is kept compact; either way it is drawn within TRAIT_MAX ("show all" on request) and copied whole.
+var METADATA_PRETTY_MAX = 4096;
 function jsonText(v) {
-  try { return JSON.stringify(v, null, 2); } catch (e) { return txt(v); }
+  var compact;
+  try { compact = JSON.stringify(v); } catch (e) { return txt(v); }
+  if (typeof compact !== "string") return txt(v);
+  if (compact.length > METADATA_PRETTY_MAX) return compact;
+  var pretty = JSON.stringify(v, null, 2);
+  return pretty.length <= 4 * METADATA_PRETTY_MAX ? pretty : compact;
 }
 function traitText(tr) {
   if (Number(tr.valType) === 5) return "Null (the key was cleared)";
@@ -4323,7 +4333,7 @@ function renderToken(main) {
     meta.appendChild(node("div", "no metadata published (or a multi-part document is still incomplete)", "empty"));
   } else {
     var pre = node("pre");
-    pre.textContent = shown(m.metadata.value);
+    pre.appendChild(boundedNode(m.metadata.value, TRAIT_MAX, null, "metadata:document"));
     meta.appendChild(pre);
   }
   main.appendChild(meta);
