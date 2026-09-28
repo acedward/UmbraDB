@@ -1271,6 +1271,10 @@ function sortTokens(items) {
 
 var P_INTERFACES = "/v1/interfaces";
 var EVENT_LIMIT = 500;
+// The contract's events are read page by page, following the API's cursor, up to EVENT_PAGES pages
+// (EVENT_PAGES x EVENT_LIMIT events, oldest first). A contract with more says so where it matters —
+// a key's history and the P1 count are then made of the events read (audit 03-E1a finding F2).
+var EVENT_PAGES = 4;
 var INTERFACE_LIST_LIMIT = 500;
 
 var ORIGIN_LABELS = {
@@ -1491,7 +1495,8 @@ function originView(o, ctx) {
     }
     if (Number(c.declarations) > 1) {
       v.p1 = true;
-      texts.push(P1_NOTE + " — the latest of " + c.declarations + " declarations of this key");
+      texts.push(P1_NOTE + " — the latest of " + (c.partial ? "at least " : "") + c.declarations
+        + " declarations of this key" + (c.partial ? " (" + eventsReadText() + ")" : ""));
     }
   } else if (kind === "public-interface") {
     var e = ev && typeof ev === "object" ? ev : {};
@@ -1602,7 +1607,20 @@ function tokenModel(d) {
   var seen = !t.address || !t.domainSep;
   var seeded = pageOrigin("derived", "a seeded built-in row: the ledger's own token (00020 owner decision Q7)");
   var noContract = pageOrigin("none", "no contract is known for this colour (status seen)");
-  function declCount(keyText) { var l = decls[asciiHex(keyText)]; return l ? l.length : 0; }
+  var partial = d.eventsMore === true;
+  // How many applied declarations a key has among the events read; when the contract has more
+  // events than the page reads, the current declaration may lie beyond them and counts as one more.
+  function declCountOf(keyId, currentId) {
+    var l = decls[keyId] || [];
+    var have = false;
+    for (var i = 0; i < l.length; i++) if (Number(l[i].eventId) === Number(currentId)) have = true;
+    return l.length + (partial && !have && currentId !== null && currentId !== undefined ? 1 : 0);
+  }
+  function currentIdOf(origin) {
+    var pk = origin && origin.origin === "mip-0018" ? evidenceList(origin.evidence)[0] : null;
+    return pk ? eventIdsOf(pk)[0] : null;
+  }
+  function declCount(keyText) { return declCountOf(asciiHex(keyText), currentIdOf(o[keyText])); }
   function item(field, label, value, origin, extra) {
     var c = extra || ctx;
     var it = { field: field, label: label, value: valueOrNull(value), origin: originView(origin, c) };
@@ -1626,10 +1644,10 @@ function tokenModel(d) {
   facts.push(item("storage", "storage", t.storage,
     pageOrigin("derived", "MIP-0018 §3: bit 1 of the kind byte")));
   facts.push(item("color", "colour", t.color, o.color));
-  facts.push(item("name", "name", t.name, o.name, { token: t, address: t.address, declarations: declCount("name") }));
-  facts.push(item("symbol", "symbol", t.symbol, o.symbol, { token: t, address: t.address, declarations: declCount("symbol") }));
-  facts.push(item("decimals", "decimals", t.decimals, o.decimals, { token: t, address: t.address, declarations: declCount("decimals") }));
-  facts.push(item("tokenUri", "tokenUri", t.tokenUri, o.tokenUri, { token: t, address: t.address, declarations: declCount("tokenUri") }));
+  facts.push(item("name", "name", t.name, o.name, { token: t, address: t.address, declarations: declCount("name"), partial: partial }));
+  facts.push(item("symbol", "symbol", t.symbol, o.symbol, { token: t, address: t.address, declarations: declCount("symbol"), partial: partial }));
+  facts.push(item("decimals", "decimals", t.decimals, o.decimals, { token: t, address: t.address, declarations: declCount("decimals"), partial: partial }));
+  facts.push(item("tokenUri", "tokenUri", t.tokenUri, o.tokenUri, { token: t, address: t.address, declarations: declCount("tokenUri"), partial: partial }));
   facts.push(item("status", "status", t.status, o.status));
   var mintCtx = { token: t, section: "mints" };
   facts.push(item("mintCount", "mint count", t.mintCount, o.mints, mintCtx));
@@ -1677,7 +1695,7 @@ function tokenModel(d) {
 
   var metadata = item("metadata", "metadata document",
     t.metadata === null || t.metadata === undefined ? null : jsonText(t.metadata), o.metadata,
-    { token: t, address: t.address, declarations: declCount("metadata") });
+    { token: t, address: t.address, declarations: declCount("metadata"), partial: partial });
 
   var traits = [];
   var keys = arr(d.keys);
@@ -1695,7 +1713,7 @@ function tokenModel(d) {
       history.push(hi);
     }
     var ti = item("trait:" + keyId, kv.key === null || kv.key === undefined ? "0x" + keyId : txt(kv.key),
-      traitText(kv), kv.origin, { token: t, address: t.address, declarations: all.length });
+      traitText(kv), kv.origin, { token: t, address: t.address, declarations: declCountOf(keyId, kv.eventId), partial: partial });
     ti.trait = kv; ti.history = history; ti.parts = kv.parts; ti.phase = kv.phase;
     traits.push(ti);
   }
@@ -1727,7 +1745,8 @@ function tokenModel(d) {
   var ev = eventsModel(events, t.domainSep, t.address);
   var model = {
     token: t, facts: facts, disclosure: disclosure, iface: ifaceItem, metadata: metadata,
-    traits: traits, mints: mints, activity: activity, calls: calls, siblings: siblings, events: ev
+    traits: traits, mints: mints, activity: activity, calls: calls, siblings: siblings, events: ev,
+    historyPartial: partial
   };
   model.all = collectItems(model);
   return model;
@@ -2145,8 +2164,13 @@ function tokenBase(r) {
 // "applied" is given, and "applied=false" means the rejected ones alone (00024-03 finding: the page
 // asked for that since 00020, so the table showed no applied declaration at all). The applied ones
 // are what a key's MIP-0018 history is made of.
-function contractEventsPath(address) {
-  return P_CONTRACTS + "/" + enc(address) + "/events?limit=" + EVENT_LIMIT;
+function contractEventsPath(address, cursor) {
+  var p = P_CONTRACTS + "/" + enc(address) + "/events?limit=" + EVENT_LIMIT;
+  if (cursor) p += "&cursor=" + enc(cursor);
+  return p;
+}
+function eventsReadText() {
+  return "the page reads a contract's first " + groupDigits(EVENT_PAGES * EVENT_LIMIT) + " events";
 }
 // The list's interface column: the part count and phase of each contract's current publication
 // (the token's own summary carries status and levels, not the package). Not fatal: without it the
@@ -2241,8 +2265,8 @@ async function loadNamedToken(r, d) {
     api(tokenBase(r) + "/mints?limit=" + MINT_LIMIT).then(
       function (p) { d.mints = itemsOf(p); },
       function (e) { d.notes.push("mint history unavailable: " + e.message); }),
-    api(contractEventsPath(r.address)).then(
-      function (p) { d.events = itemsOf(p); },
+    loadPages(function (c) { return contractEventsPath(r.address, c); }, EVENT_PAGES).then(
+      function (p) { d.events = p.items; d.eventsMore = p.nextCursor !== null; },
       function (e) { d.notes.push("raw events unavailable: " + e.message); }),
     // Every token row of this contract. Two things come out of it: the rows sharing this token's
     // domain separator, which the MIP (section 4) lets a consumer link as one asset's several
@@ -2267,8 +2291,8 @@ async function loadContract(address) {
         c.ifaceLoaded = false;
         c.notes.push("public interface unavailable: " + e.message);
       }),
-    api(contractEventsPath(address)).then(
-      function (p) { c.events = itemsOf(p); },
+    loadPages(function (cur) { return contractEventsPath(address, cur); }, EVENT_PAGES).then(
+      function (p) { c.events = p.items; c.eventsMore = p.nextCursor !== null; },
       function (e) { c.notes.push("raw events unavailable: " + e.message); }),
     // US7: the same calls table the ledger-token page shows, under the same note.
     loadPages(function (cur) { return callsPath(address, cur); }, state.act.pages).then(
@@ -3691,7 +3715,8 @@ function renderToken(main) {
   }
 
   if (t.address) {
-    main.appendChild(eventsSection(m.events, t.domainSep, "raw token-metadata events of this contract (rejected ones included)"));
+    main.appendChild(eventsSection(m.events, t.domainSep, "raw token-metadata events of this contract (rejected ones included)",
+      d.eventsMore === true ? t.address : null));
   }
 
   if (d.notes.length > 0) {
@@ -3750,6 +3775,7 @@ function traitsSection(m) {
     traits.appendChild(node("div", "no key/value pairs recorded for this token", "empty"));
     return traits;
   }
+  if (m.historyPartial) traits.appendChild(partialEventsNote(m.token.address, "the earlier declarations listed under a key"));
   var tb = tableIn(traits, ["key", "type", "value", "len", "parts · phase", "projection", "block", "tx", "event id", "origin"]);
   var anyError = false;
   var anyP1 = false;
@@ -3831,10 +3857,24 @@ function orderEvents(events, markDomain) {
   return mine.concat(others);
 }
 
-function eventsSection(items, markDomain, heading) {
+// A contract with more events than the page reads: say so, and link the whole list (the API route,
+// raw JSON, paginated by its cursor).
+function partialEventsNote(address, what) {
+  var n = node("div", null, "note err");
+  n.appendChild(node("span", "this contract has more token-metadata events than " + eventsReadText() + ": "
+    + what + " come from those read, oldest first — the rest: "));
+  var a = node("a", "every event (API)");
+  a.href = P_CONTRACTS + "/" + enc(address) + "/events?limit=" + EVENT_LIMIT;
+  a.target = "_blank";
+  a.rel = "noopener";
+  n.appendChild(a);
+  return n;
+}
+function eventsSection(items, markDomain, heading, moreOf) {
   var sec = node("section");
   sec.id = "events";
   sec.appendChild(node("h2", heading));
+  if (moreOf) sec.appendChild(partialEventsNote(moreOf, "the rows below"));
   if (!items || items.length === 0) {
     sec.appendChild(node("div", "no token-metadata event from this contract", "empty"));
     return sec;
@@ -3946,7 +3986,8 @@ function renderContract(main) {
   // public whatever kind of token it issues.
   main.appendChild(callsSection(c.calls, "calls of this contract", null, m.calls));
 
-  main.appendChild(eventsSection(m.events, null, "raw token-metadata events of this contract (rejected ones included)"));
+  main.appendChild(eventsSection(m.events, null, "raw token-metadata events of this contract (rejected ones included)",
+    c.eventsMore === true ? d.address : null));
 
   if (c.notes.length > 0) {
     var notes = node("section");

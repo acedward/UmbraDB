@@ -301,6 +301,42 @@ function apiRoutes(f: TokenFixture): Map<string, Json> {
   return routes;
 }
 
+/** Every event id in `v` moved by `by` (eventId, eventIds, partEventIds), so recorded events can be
+ *  placed after synthetic ones without changing anything else. */
+function shiftIds(v: Json, by: number): Json {
+  if (Array.isArray(v)) return v.map((x) => shiftIds(x, by));
+  if (v === null || typeof v !== "object") return v;
+  const out: Json = {};
+  for (const [k, x] of Object.entries(v)) {
+    if (k === "eventId" && typeof x === "number") out[k] = x + by;
+    else if ((k === "eventIds" || k === "partEventIds") && Array.isArray(x)) out[k] = x.map((n: number) => n + by);
+    else out[k] = shiftIds(x, by);
+  }
+  return out;
+}
+/** LMOON18 behind `fillerPages` pages of 500 unrelated declarations (another domain separator):
+ *  the recorded description history (a text, a Null, a 2-part value) starts on page fillerPages + 1. */
+function lmoonBehindFillers(fillerPages: number): { f: TokenFixture; routes: Map<string, Json> } {
+  const f = shiftIds(tokenFixture("lmoon18"), 1_000_000) as TokenFixture;
+  const a = f.token.address;
+  const routes = apiRoutes(f);
+  const model = f.events.items[0];
+  for (let p = 0; p < fillerPages; p++) {
+    const items = Array.from({ length: 500 }, (_, i) => ({ ...model, eventId: p * 500 + i + 1, keyText: "filler", keyHex: "66696c6c6572",
+      domainSep: "ff".repeat(32), origin: { ...model.origin, evidence: { ...model.origin.evidence, eventIds: [p * 500 + i + 1] } } }));
+    routes.set(`/v1/contracts/${a}/events?limit=500${p === 0 ? "" : `&cursor=c${p}`}`, { items, nextCursor: `c${p + 1}` });
+  }
+  routes.set(`/v1/contracts/${a}/events?limit=500&cursor=c${fillerPages}`, { items: f.events.items, nextCursor: null });
+  return { f, routes };
+}
+async function bootToken(f: TokenFixture, routes: Map<string, Json>, script = SERVED_SCRIPT): Promise<Page> {
+  const live = loadPage(script, routes);
+  live.window.location.hash = `#/token/${f.token.address}/${f.token.domainSep}/${f.token.kind}`;
+  live.boot();
+  await live.settle();
+  return live;
+}
+
 // ── the test ────────────────────────────────────────────────────────────────────────────────────
 
 describe("the page shows the origin of every value", () => {
@@ -331,6 +367,29 @@ describe("the page shows the origin of every value", () => {
       expect(token.model.all.length, `${name}: the token view lists its values`).toBeGreaterThan(20);
       // the independent map really covered the view (a check over nothing proves nothing)
       expect(token.model.all.filter((it: Json) => tSrc.has(it.field)).length, `${name}: values with an API origin`).toBeGreaterThan(8);
+    }
+
+    // ── E1a-F2: a key's history past the first page of the contract's events ─────────────────
+    // 500 unrelated declarations first: the description (a text, a Null, a 2-part value) is on page 2.
+    {
+      const { f, routes } = lmoonBehindFillers(1);
+      const live = await bootToken(f, routes);
+      const m = live.ctx.tokenModel(live.ctx.state.detail);
+      const d2 = m.traits.find((i: Json) => i.label === "description");
+      expect(d2.history.map((h: Json) => h.eventId), "the history is read past the first page").toEqual([1_000_080, 1_000_078]);
+      expect(d2.origin.p1).toBe(true);
+      expect(d2.origin.detail).toContain("the latest of 3 declarations of this key");
+      expect(live.requests.filter((r) => r.includes("/events?")).length).toBe(2);
+      // more pages than the page reads (4 x 500): it stops, and says so where the history is shown
+      const far = lmoonBehindFillers(5);
+      const cut = await bootToken(far.f, far.routes);
+      expect(cut.requests.filter((r) => r.includes("/events?")).length).toBe(4);
+      expect(cut.ctx.state.detail.eventsMore).toBe(true);
+      const view = cut.doc.getElementById("view")!;
+      const traitsSec = [...view.walk()].find((el) => el.id === "traits")!;
+      expect(traitsSec.textContent).toContain("this contract has more token-metadata events than the page reads a contract's first 2\u00a0000 events");
+      const eventsSec = [...view.walk()].find((el) => el.id === "events")!;
+      expect(eventsSec.textContent).toContain("the rows below come from those read");
     }
 
     // ── US6 scenario 1's half that exists before 03-A (SNEB18 = SNEBDU's MIP-0018 twin) ───────
@@ -590,6 +649,17 @@ describe("the page shows the origin of every value", () => {
     live.boot();
     await live.settle();
     expect(live.doc.getElementById("interface")!.scrolled).toBe(0);
+  });
+
+  it("negative control (E1a-F2): one page of events loses the history past it", async () => {
+    const broken = SERVED_SCRIPT.replace("loadPages(function (c) { return contractEventsPath(r.address, c); }, EVENT_PAGES)",
+      "loadPages(function (c) { return contractEventsPath(r.address, c); }, 1)");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const { f, routes } = lmoonBehindFillers(1);
+    const live = await bootToken(f, routes, broken);
+    const d2 = live.ctx.tokenModel(live.ctx.state.detail).traits.find((i: Json) => i.label === "description");
+    expect(d2.history).toEqual([]);
+    expect(d2.origin.p1).toBe(false);
   });
 
   it("negative control: a status the page does not render fails the check", () => {
