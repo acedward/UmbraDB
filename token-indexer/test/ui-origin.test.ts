@@ -225,6 +225,10 @@ function resolves(page: Page, href: string, where: Where, known: Known): string 
   }
   if (r.view === "offers") return null; // the chain-wide list of undisclosed shielded offers
   if (href === "/v1/tokens?status=builtin") return null; // the API's own seeded rows (E1a-R3A)
+  // the API's own row of a token or a colour (E1a-R4B): a route of the server, for a token the payloads name
+  const api = /^\/v1\/contracts\/([0-9a-f]{64})\/tokens\/([0-9a-f]{64})\/(\d+)$/.exec(href);
+  if (api) return known.tokens.has(`${api[1]}/${api[2]}/${api[3]}`) ? null : "a token row the payloads do not name";
+  if (/^\/v1\/colors\/[0-9a-f]{64}$/.test(href)) return null;
   return `the route resolves to the ${String(r.view)} view`;
 }
 
@@ -563,6 +567,24 @@ describe("the page shows the origin of every value", () => {
         // E1a-R3D: a movement first (100), then a mint (150), then the declaration: the movement
         f.token.firstSeenHeight = firstDecl - 100; f.token.firstMintHeight = firstDecl - 50;
         expect(drawToken(page, f).model.facts.find((i: Json) => i.field === "firstSeenHeight").origin.links[0].href).toMatch(/\/activity$/);
+        // E1a-R4B: a rejected event at that height never set it; a capped or failed events read, or a
+        // view that lists no movements, leaves the observation unknown — the API's row is cited
+        const withRejected = clone(f);
+        withRejected.events.items.unshift({ ...clone(f.events.items[0]), eventId: 5, blockHeight: firstDecl - 100, applied: false });
+        expect(drawToken(page, withRejected).model.facts.find((i: Json) => i.field === "firstSeenHeight").origin.links[0].href).toMatch(/\/activity$/);
+        const rowApi = `/v1/contracts/${f.token.address}/tokens/${f.token.domainSep}/${f.token.kind}`;
+        for (const d of [{ ...tokenDetail(f), eventsMore: true }, { ...tokenDetail(f), eventsFailed: true }]) {
+          const fs = page.ctx.tokenModel(d).facts.find((i: Json) => i.field === "firstSeenHeight");
+          expect(fs.origin.links.map((l: Json) => l.href)).toEqual([rowApi]);
+          expect(fs.origin.rule).toContain("not among what this page read");
+        }
+        // a ledger token (its view lists calls, no movements) whose events read failed
+        const lm = tokenFixture("lmoon18");
+        const lmRoutes = apiRoutes(lm);
+        lmRoutes.set(`/v1/contracts/${lm.token.address}/events?limit=500`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
+        const lmLive = await bootToken(lm, lmRoutes);
+        const lmFs = lmLive.ctx.tokenModel(lmLive.ctx.state.detail).facts.find((i: Json) => i.field === "firstSeenHeight");
+        expect(lmFs.origin.links.map((l: Json) => l.href)).toEqual([`/v1/contracts/${lm.token.address}/tokens/${lm.token.domainSep}/${lm.token.kind}`]);
       }
       const seenRow = rows.find((r) => r.status === "seen")!;
       const seenColor = drawRow(page, seenRow).model.facts.find((i: Json) => i.field === "color");
@@ -1293,18 +1315,32 @@ describe("the page shows the origin of every value", () => {
     expect(d2.history.map((h: Json) => h.eventId)).toContain(95);
   });
 
-  it("negative control (E1a-R3D): first seen guessed from the current status cites the declarations for a movement-first token", () => {
-    const broken = SERVED_SCRIPT.replace("  if (partial && t.address && t.domainSep && (t.status", "  if (t.address && t.domainSep && (t.status");
+  it("negative control (E1a-R3D, R4B): first seen guessed under a capped read cites the declarations for a movement-first token", () => {
+    const broken = SERVED_SCRIPT.replace("  if (unknownRead) return null;", '  if (unknownRead) return "events";');
     expect(broken).not.toBe(SERVED_SCRIPT);
     const page = loadPage(broken);
     const f = clone(tokenFixture("sneb18"));
     const firstDecl = Math.min(...f.events.items.filter((e: Json) => e.domainSep === f.token.domainSep).map((e: Json) => Number(e.blockHeight)));
     f.token.firstSeenHeight = firstDecl - 100; f.token.firstMintHeight = firstDecl - 50;
+    page.ctx.state.route = { view: "token", address: f.token.address, domainSep: f.token.domainSep, kind: String(f.token.kind) };
+    const d = { ...tokenDetail(f), eventsMore: true };
+    expect(page.ctx.tokenModel(d).facts.find((i: Json) => i.field === "firstSeenHeight").origin.links[0].href).toMatch(/\/events$/);
+  });
+
+  it("negative control (E1a-R4B): a rejected event at the height taken as the first observation fails the check", () => {
+    const broken = SERVED_SCRIPT.replace("    if (e && e.applied === true && txt(e.domainSep)", "    if (e && txt(e.domainSep)");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const f = clone(tokenFixture("sneb18"));
+    const firstDecl = Math.min(...f.events.items.filter((e: Json) => e.domainSep === f.token.domainSep).map((e: Json) => Number(e.blockHeight)));
+    const rejected = { ...clone(f.events.items[0]), eventId: 5, blockHeight: firstDecl - 100, applied: false };
+    f.events.items.unshift(rejected);
+    f.token.firstSeenHeight = firstDecl - 100; f.token.firstMintHeight = firstDecl - 50;
     expect(drawToken(page, f).model.facts.find((i: Json) => i.field === "firstSeenHeight").origin.links[0].href).toMatch(/\/events$/);
   });
 
   it("negative control (E1a-R2I): first seen cited by status, not by its observation, fails the check", () => {
-    const broken = SERVED_SCRIPT.replace("    { token: t, section: firstSeenSection(t, events, partial) }));", "    idCtx));");
+    const broken = SERVED_SCRIPT.replace("    fsSection === null ? { token: t, api: tokenApiHref(t) } : { token: t, section: fsSection }));", "    idCtx));");
     expect(broken).not.toBe(SERVED_SCRIPT);
     const page = loadPage(broken);
     const f = clone(tokenFixture("sneb18"));

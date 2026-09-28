@@ -1732,6 +1732,9 @@ function originView(o, ctx) {
     var dt = txEvidence(din.txHash, "input: tx");
     if (dt) v.links.push(dt);
     if (v.links.length === 0 && c.seed) v.links.push(SEED_EVIDENCE);
+    if (v.links.length === 0 && c.api) {
+      v.links.push({ href: c.api, text: "the token's row (API)", title: "the token as the API serves it (raw JSON, new tab)" });
+    }
     if (v.links.length === 0 && c.section) {
       var ds = sectionEvidence(c, c.section);
       if (ds) v.links.push(ds);
@@ -1794,23 +1797,27 @@ function hashTokenSection(t, section) { return hashToken(t) + "/" + enc(section)
 // rows that show it: its declarations when it was declared, its mints when it was only minted, the
 // public movements of a colour no contract named (audit 03-E1a finding F8).
 // The observation that set a token's first-seen height, so its evidence link lands on it: a mint at
-// that height, else a declaration of this token at that height, else its public movements — never
-// guessed from the token's current status (audit 03-E1a findings R2I, R3D: movement at 100, mint at
-// 150, declaration at 200 is first seen at 100 by the movement). Only when the page read fewer events
-// than the contract has, a declared token's first declaration may lie beyond them: then its
-// declarations, where the partial read is said.
-function firstSeenSection(t, events, partial) {
-  if (!t) return null;
-  if (t.status === "builtin") return identitySection(t);
+// that height, else an APPLIED declaration of this token at that height (a rejected one never
+// updated the token), else — only when the page read all of the contract's events — a public
+// movement, where the view lists them. Anything else is not known to the page and is not guessed
+// (audit 03-E1a findings R2I, R3D, R4B): null, and the value cites the API's row that carries it.
+function firstSeenSection(t, events, unknownRead) {
+  if (!t || t.status === "builtin") return null;
   var h = Number(t.firstSeenHeight);
   if (t.firstMintHeight !== null && t.firstMintHeight !== undefined && Number(t.firstMintHeight) === h) return "mints";
   var list = arr(events);
   for (var i = 0; i < list.length; i++) {
     var e = list[i];
-    if (e && txt(e.domainSep) === txt(t.domainSep) && Number(e.kindByte) === Number(t.kind) && Number(e.blockHeight) === h) return "events";
+    if (e && e.applied === true && txt(e.domainSep) === txt(t.domainSep) && Number(e.kindByte) === Number(t.kind)
+      && Number(e.blockHeight) === h) return "events";
   }
-  if (partial && t.address && t.domainSep && (t.status === "declared" || t.status === "described")) return "events";
-  return "activity";
+  if (unknownRead) return null;
+  var vis = visibilityOf(t);
+  return vis === "full" || vis === "disclosed-imbalances" ? "activity" : null;
+}
+// The API's own row of a token (raw JSON), the evidence of a value the page cannot place better.
+function tokenApiHref(t) {
+  return t.address && t.domainSep ? tokenBase(t) : P_COLORS + "/" + enc(t.color);
 }
 function identitySection(t) {
   if (!t) return null;
@@ -1915,9 +1922,11 @@ function tokenModel(d) {
   facts.push(item("totalMinted", "total minted", t.totalMinted, o.mints, mintCtx));
   facts.push(item("firstMintHeight", "first mint height", t.firstMintHeight, o.mints, mintCtx));
   facts.push(item("lastMintHeight", "last mint height", t.lastMintHeight, o.mints, mintCtx));
+  var fsSection = firstSeenSection(t, events, partial || d.eventsFailed === true);
   facts.push(item("firstSeenHeight", "first seen height", t.firstSeenHeight,
-    builtin ? seeded : pageOrigin("derived", "the lowest block height at which a declaration, a mint or a public movement of this token was seen"),
-    { token: t, section: firstSeenSection(t, events, partial) }));
+    builtin ? seeded : pageOrigin("derived", "the lowest block height at which a declaration, a mint or a public movement of this token was seen"
+      + (fsSection === null ? " — the observation that set it is not among what this page read; the API's row carries the height" : "")),
+    fsSection === null ? { token: t, api: tokenApiHref(t) } : { token: t, section: fsSection }));
   facts.push(item("metadataUpdatedHeight", "metadata updated height", t.metadataUpdatedHeight,
     t.metadataUpdatedHeight === null || t.metadataUpdatedHeight === undefined
       ? pageOrigin("none", builtin ? "a built-in row carries no declaration" : "no applied declaration")
@@ -2670,7 +2679,7 @@ async function loadNamedToken(r, d) {
       function (e) { d.notes.push("mint history unavailable: " + e.message); }),
     loadPages(function (c) { return contractEventsPath(r.address, c); }, EVENT_PAGES).then(
       function (p) { d.events = p.items; d.eventsMore = p.nextCursor !== null; },
-      function (e) { d.notes.push("raw events unavailable: " + e.message); }),
+      function (e) { d.eventsFailed = true; d.notes.push("raw events unavailable: " + e.message); }),
     // Every token row of this contract. Two things come out of it: the rows sharing this token's
     // domain separator, which the MIP (section 4) lets a consumer link as one asset's several
     // representations, and the family chip, which is derived from how the contract's rows relate.
