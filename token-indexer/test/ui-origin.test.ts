@@ -5,6 +5,10 @@ import {
   type FakeElement, type Json, type Page, Reply, SERVED_SCRIPT, loadPage, markedAncestor, marksOf,
 } from "./helpers/ui-page.js";
 
+/** The heavy tests build megabytes of synthetic payload: a deadline the shared host (load ≈ 30 while
+ *  another runner proves) cannot trip — vitest's default is 5 s. */
+const HEAVY_MS = 120_000;
+
 /**
  * `[[token-ui-origin]]` — spec 00024 US6 / FR-016 (sub-plan 00024-03, Phase 03-B; hardened by the
  * 03-E1a audit): on the token and contract views, every value the page shows carries its origin —
@@ -938,7 +942,7 @@ describe("the page shows the origin of every value", () => {
     expect(live.doc.getElementById("interface")!.scrolled, "the same link scrolls again").toBe(before + 1);
     expect(live.ctx.state.route.view).toBe("contract");
     expect(live.doc.getElementById("interface")!.scrolled).toBeGreaterThan(0);
-  });
+  }, HEAVY_MS);
 
   // ── negative controls: the same checks on a page that breaks the rule must FAIL ─────────────
 

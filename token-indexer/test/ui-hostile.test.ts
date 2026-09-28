@@ -2,6 +2,10 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { type FakeElement, type Json, type Page, SERVED_SCRIPT, loadPage } from "./helpers/ui-page.js";
 
+/** The heavy tests build megabytes of synthetic payload: a deadline the shared host (load ≈ 30 while
+ *  another runner proves) cannot trip — vitest's default is 5 s. */
+const HEAVY_MS = 120_000;
+
 /**
  * `[[token-ui-hostile-values]]` — spec 00024 FR-016 / FR-013b and the 03-E1a Codex audit: every string
  * the explorer page draws comes from data anyone can publish on chain or serve from a bundle host.
@@ -26,6 +30,8 @@ import { type FakeElement, type Json, type Page, SERVED_SCRIPT, loadPage } from 
  *    keeps the original characters; every piece of published text is a bidi-isolated island.
  *  - E1a-R2D: up to 2 000 events are read; an earlier declaration and a raw event are drawn within
  *    160 characters — the marks of hidden characters counted — and copied whole.
+ *  - E1a-R3E: at most 500 keys of a token are drawn (the rest named, with a link); a current value
+ *    is drawn whole up to 2 048 drawn characters and past that on the reader's request.
  *
  * The page script runs in `node:vm` exactly as served (`helpers/ui-page.ts`).
  */
@@ -116,6 +122,17 @@ function floodedToken(n: number, len: number): Json {
     projectionError: null, updatedHeight: current.blockHeight, updatedTxHash: current.txHash, eventId: current.eventId,
     segment: current.segment, parts: 1, phase: "guaranteed", origin: current.origin }];
   return { token: t, keys, mints: [], events, siblings: lm.contract.tokens, activity: null, calls: lm.calls ?? null, notes: [] };
+}
+/** LMOON18 with `n` current keys, each a text of `len` DEL (U+007F) characters. */
+function manyKeys(n: number, len: number): Json {
+  const lm = read("token-lmoon18.json");
+  const model = lm.metadata.keys[0];
+  const keys = Array.from({ length: n }, (_, i) => {
+    const keyHex = Buffer.from(`k${i}`).toString("hex");
+    return { ...model, key: `k${i}`, keyHex, valType: 1, valLen: len, text: "\u007F".repeat(len), value: "7f".repeat(len),
+      integer: null, eventId: 500_000 + i };
+  });
+  return { token: lm.token, keys, mints: [], events: [], siblings: lm.contract.tokens, activity: null, calls: lm.calls ?? null, notes: [] };
 }
 function drawTokenState(page: Page, detail: Json): FakeElement {
   const t = detail.token;
@@ -310,7 +327,29 @@ describe("the page draws hostile values without breaking", () => {
     histCopy.click();
     await fp.settle();
     expect(fp.copied[0], "the earlier value is copied whole").toBe("\u202E".repeat(12_000));
-  });
+
+    // ── E1a-R3E: 2 000 current keys of 8 000 hidden characters each ───────────────────────────
+    const keyed = manyKeys(2_000, 8_000);
+    const kp = loadPage();
+    kp.ctx.state.route = { view: "token", address: keyed.token.address, domainSep: keyed.token.domainSep, kind: String(keyed.token.kind) };
+    kp.ctx.state.detail = keyed;
+    kp.ctx.render();
+    const kview = kp.doc.getElementById("view")!;
+    expect(kview.textContent.length, "2 000 keys × 8 000 marks each, drawn").toBeLessThan(2_000_000);
+    const traitsSec = [...kview.walk()].find((el) => el.id === "traits")!;
+    expect([...traitsSec.walk()].filter((el) => el.tagName === "tr" && (el.getAttribute("data-o") ?? "").startsWith("trait:")).length).toBe(500);
+    expect(traitsSec.textContent).toContain("the first 500 of 2\u00a0000 keys are listed — all of them: every key (API)");
+    // the reader asks for the whole value: it is drawn whole, and stays so across a re-render
+    const firstRow = [...traitsSec.walk()].find((el) => el.tagName === "tr" && (el.getAttribute("data-o") ?? "").startsWith("trait:"))!;
+    [...firstRow.walk()].find((el) => el.tagName === "button" && el.textContent === "show all")!.click();
+    const opened = [...kp.doc.getElementById("view")!.walk()].find((el) => el.getAttribute("data-o") === firstRow.getAttribute("data-o"))!;
+    expect(opened.textContent).toContain("⟨U+007F⟩".repeat(8_000));
+    kp.ctx.render();
+    expect([...kp.doc.getElementById("view")!.walk()].find((el) => el.getAttribute("data-o") === firstRow.getAttribute("data-o"))!.textContent)
+      .toContain("show less");
+    // a realistic long value (SNEB18's 677-byte metadata, LMOON18's 377-byte description) is drawn whole
+    expect(read("token-lmoon18.json").metadata.keys.every((k: Json) => (k.text ?? "").length < 2_048)).toBe(true);
+  }, HEAVY_MS);
 
   it("negative control (E1a-F4): without the summary key the publication is read on every refresh", async () => {
     const broken = SERVED_SCRIPT.replace("} else if (c.ifaceKey !== null && prev !== null && prev.ifaceKey === c.ifaceKey && prev.iface",
@@ -330,6 +369,13 @@ describe("the page draws hostile values without breaking", () => {
     expect(live.requests.filter((r) => r.endsWith("/interface")).length).toBe(1);
   });
 
+  it("negative control (E1a-R3E): every key drawn whole floods the view", () => {
+    const broken = SERVED_SCRIPT.replace("var TRAIT_MAX = 2048;", "var TRAIT_MAX = 100000000;").replace("var TRAIT_ROWS = 500;", "var TRAIT_ROWS = 100000000;");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const drawn = drawTokenState(loadPage(broken), manyKeys(600, 2_000));
+    expect(drawn.textContent.length).toBeGreaterThan(9_000_000); // bounded: < 600 × ~2 300
+  }, HEAVY_MS);
+
   it("negative control (E1a-R2D): earlier declarations and raw events drawn whole flood the view", () => {
     const hist = "      cell(hr, hi.value === null ? node(\"span\", \"-\", \"no\")\n        : boundedNode(hi.value, HISTORY_MAX,";
     expect(SERVED_SCRIPT).toContain(hist);
@@ -337,7 +383,7 @@ describe("the page draws hostile values without breaking", () => {
     expect(broken).not.toBe(SERVED_SCRIPT);
     const drawn = drawTokenState(loadPage(broken), floodedToken(100, 4_000));
     expect(drawn.textContent.length).toBeGreaterThan(5_000_000); // bounded, the same view draws < 100 000
-  });
+  }, HEAVY_MS);
 
   it("negative control (E1a-F4): without the byte bound a flood is read whole", async () => {
     const broken = SERVED_SCRIPT.replace("if (n > MAX_RESPONSE_BYTES) {", "if (false) {");
@@ -360,7 +406,7 @@ describe("the page draws hostile values without breaking", () => {
     const sizes = budgetOf(drawn.root);
     expect(sizes.text).toBeGreaterThan(sizes.baseline + 3_000_000);
     expect(sizes.longestAttribute).toBeGreaterThan(3_000_000);
-  });
+  }, HEAVY_MS);
 
   it("negative control (E1a-F13): a URL linked by its prefix alone hides where it leads", () => {
     const broken = SERVED_SCRIPT.replace("    href: dest !== null && !dest.userinfo && dest.host !== \"\" ? s : null,", "    href: linkable ? s : null,")

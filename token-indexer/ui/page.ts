@@ -451,6 +451,8 @@ var state = {
   tx: null,
   offers: { items: [], nextCursor: null, loaded: false, undisclosed: "true", pages: 1 },
   scrollTo: null,
+  // values drawn whole on the reader's request ("show all"), by their field key (E1a-R3E)
+  expandText: {},
   errors: [],
   lastOk: null,
   paused: false,
@@ -1266,11 +1268,15 @@ function typeLabel(vt) {
   var n = Number(vt);
   return n >= 0 && n < names.length ? txt(n) + " " + names[n] : txt(n) + " reserved";
 }
-function traitValueCell(tr) {
+function traitValueCell(tr, openKey) {
   if (Number(tr.valType) === 2 && tr.integer !== null && tr.integer !== undefined) {
     return node("span", txt(tr.integer), "txt");
   }
-  if (tr.text !== null && tr.text !== undefined) return node("span", txt(tr.text), "txt wrapv");
+  // a current value is drawn whole up to TRAIT_MAX drawn characters — every realistic long value —
+  // and past that on the reader's request (audit 03-E1a finding R3E)
+  if (tr.text !== null && tr.text !== undefined) {
+    return openKey ? boundedNode(tr.text, TRAIT_MAX, "txt wrapv", openKey) : node("span", txt(tr.text), "txt wrapv");
+  }
   if (tr.value) return copyable(tr.value, shortHex(txt(tr.value), 10, 8), "hex");
   return node("span", "(empty)", "no");
 }
@@ -1949,7 +1955,9 @@ function tokenModel(d) {
     { token: t, address: t.address, declarations: declCount("metadata"), partial: partial });
 
   var traits = [];
-  var keys = arr(d.keys);
+  // at most TRAIT_ROWS keys are drawn (the traits section says how many there are, with a link to all)
+  var keysAll = arr(d.keys);
+  var keys = keysAll.slice(0, TRAIT_ROWS);
   for (var k = 0; k < keys.length; k++) {
     var kv = keys[k];
     var keyId = txt(kv.keyHex === undefined || kv.keyHex === null ? asciiHex(kv.key) : kv.keyHex);
@@ -1998,7 +2006,8 @@ function tokenModel(d) {
   var model = {
     token: t, facts: facts, disclosure: disclosure, iface: ifaceItem, metadata: metadata,
     traits: traits, mints: mints, activity: activity, calls: calls, siblings: siblings, events: ev,
-    historyPartial: partial, mintsMore: d.mintsMore === true
+    historyPartial: partial, mintsMore: d.mintsMore === true,
+    traitsMore: keysAll.length > TRAIT_ROWS ? keysAll.length : null
   };
   model.all = collectItems(model);
   return model;
@@ -2492,6 +2501,10 @@ function urlNode(uv) {
 // are drawn as served; a URL has urlNode.
 var NAME_MAX = 160;
 var HISTORY_MAX = 160;
+// A current trait value is drawn whole up to TRAIT_MAX characters, and at most TRAIT_ROWS keys of a
+// token are drawn: 2 000 keys of 8 000 hidden characters each made 128 M drawn characters (R3E).
+var TRAIT_MAX = 2048;
+var TRAIT_ROWS = 500;
 var SIG_MAX = 400;
 var TEXT_MAX = 1000;
 // The budget holds for what is DRAWN: the marks shown() puts in place of hidden characters count
@@ -2508,16 +2521,28 @@ function clipText(value, max) {
   t = t.slice(Math.max(0, t.length - tail));
   return { text: h + "…" + t, cut: true, length: v.length };
 }
-function boundedNode(value, max, cls) {
-  var c = clipText(value, max);
-  if (!c.cut) return node("span", c.text, cls);
+// openKey (optional): the reader may ask for the whole value ("show all"), kept across refreshes.
+function boundedNode(value, max, cls, openKey) {
+  var open = !!(openKey && state.expandText[openKey]);
+  var c = open ? { text: shown(txt(value)), cut: false, length: txt(value).length } : clipText(value, max);
+  if (!c.cut && !open) return node("span", c.text, cls);
   var wrap = node("span", null, cls);
   wrap.appendChild(node("span", c.text));
-  wrap.appendChild(node("span", "  (" + groupDigits(c.length) + " characters)", "note"));
+  if (!open) wrap.appendChild(node("span", "  (" + groupDigits(c.length) + " characters)", "note"));
   wrap.appendChild(node("span", "  "));
   var cp = copyable(txt(value), "copy", "cpbtn");
   cp.title = "copy the whole value (" + c.length + " characters)";
   wrap.appendChild(cp);
+  if (openKey) {
+    var tg = node("button", open ? "show less" : "show all", "expand");
+    tg.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      if (open) delete state.expandText[openKey]; else state.expandText[openKey] = true;
+      render();
+    });
+    wrap.appendChild(node("span", "  "));
+    wrap.appendChild(tg);
+  }
   return wrap;
 }
 
@@ -4208,6 +4233,17 @@ function traitsSection(m) {
     return traits;
   }
   if (m.historyPartial) traits.appendChild(partialEventsNote(m.token.address, "the earlier declarations listed under a key"));
+  if (m.traitsMore !== null) {
+    var tm = node("div", null, "note err");
+    tm.appendChild(node("span", "the first " + groupDigits(m.traits.length) + " of " + groupDigits(m.traitsMore)
+      + " keys are listed — all of them: "));
+    var ta = node("a", "every key (API)");
+    ta.href = m.token.address && m.token.domainSep ? tokenBase(m.token) + "/metadata" : P_COLORS + "/" + enc(m.token.color);
+    ta.target = "_blank";
+    ta.rel = "noopener";
+    tm.appendChild(ta);
+    traits.appendChild(tm);
+  }
   var tb = tableIn(traits, ["key", "type", "value", "len", "parts · phase", "projection", "block", "tx", "event id", "origin"]);
   var anyError = false;
   var anyP1 = false;
@@ -4217,7 +4253,7 @@ function traitsSection(m) {
     var row = marked(document.createElement("tr"), ti.field);
     cell(row, traitKeyCell(kv));
     cell(row, node("span", typeLabel(kv.valType), "vtype"));
-    cell(row, traitValueCell(kv));
+    cell(row, traitValueCell(kv, ti.field));
     cell(row, orDash(kv.valLen), "num");
     cell(row, partsPhaseCell(kv.parts, kv.phase));
     if (kv.projectionError) {
@@ -4716,6 +4752,7 @@ function onHashChange() {
   // earlier target, so it cannot fire later on another view.
   state.scrollTo = next.focus ? next.focus : null;
   if (!same) {
+    state.expandText = {};
     if (next.view === "token") {
       state.detail = null;
       // A different token starts with an unfiltered, one-page, all-collapsed transactions section.
