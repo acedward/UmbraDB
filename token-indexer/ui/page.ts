@@ -2080,9 +2080,14 @@ function interfaceModel(x, address, loaded) {
   // The API serves the newest 100 older publications and the newest 100 checks: say how many there
   // are when that is fewer than all (audit 03-E1a finding F6), and link the paginated route.
   var olderTotal = Number(x.publications) - 1;
+  // The indexer keeps a summary of the first 500 named circuits and flags that there were more in
+  // its report (level2 circuitsTruncated): the circuits table says so (audit 03-E1a finding F12).
+  var rl = x.report && typeof x.report === "object" && x.report.levels && typeof x.report.levels === "object" ? x.report.levels : {};
+  var circuitsTruncated = !!(rl.l2 && typeof rl.l2 === "object" && rl.l2.circuitsTruncated === true);
   var checksTotal = Number(x.checks);
   return { present: true, status: st, rows: rows, files: files, keys: keys, circuits: circuits,
     witnesses: witnesses, checks: checks, history: history, roles: roles, url: uv, address: address,
+    circuitsTruncated: circuitsTruncated,
     historyMore: olderTotal > hl.length ? olderTotal : null,
     checksMore: checksTotal > chl.length ? checksTotal : null };
 }
@@ -4195,6 +4200,10 @@ function interfaceSection(face) {
       cell(tr, copyable(it.row.keySha256, shortHex(txt(it.row.keySha256 || ""), 10, 8), "hex"));
       cell(tr, orDash(it.row.l2));
     }, "no circuit: the check did not reach Level 2"));
+  if (face.circuitsTruncated) {
+    sec.appendChild(node("div", "the interface lists more named circuits than the indexer summarises: the first "
+      + groupDigits(face.circuits.length) + " are shown (the verification report flags the rest: circuitsTruncated)", "note err"));
+  }
   sec.appendChild(ifaceTable("witnesses the bundle's code declares", face.witnesses,
     ["witness", "origin"], function (tr, it) { cell(tr, boundedNode(it.value, NAME_MAX, "txt wrapv")); }, "no witness declared"));
   sec.appendChild(ifaceTable("check history (newest first)", face.checks,

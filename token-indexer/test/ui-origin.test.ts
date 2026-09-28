@@ -622,6 +622,18 @@ describe("the page shows the origin of every value", () => {
       expect(page.ctx.interfaceStatusView({ status: "unchecked", levels: LEVELS.unchecked }).text).toBe("unchecked");
     }
 
+    // E1a-F12: a circuit summary the indexer cut short says so
+    {
+      const cut = clone(base);
+      cut.report = { levels: { l2: { status: "passed", circuitsTruncated: true } } };
+      const drawn = drawContract(page, contractState(up, cut));
+      expect(drawn.model.face.circuitsTruncated).toBe(true);
+      expect([...drawn.root.walk()].find((el) => el.id === "interface")!.textContent)
+        .toContain(`the interface lists more named circuits than the indexer summarises: the first ${base.circuits.length} are shown`);
+      const whole = drawContract(page, contractState(up, base));
+      expect([...whole.root.walk()].find((el) => el.id === "interface")!.textContent).not.toContain("more named circuits");
+    }
+
     // E1a-F10: a failed interface read (503) is not "none published"
     {
       const routes = apiRoutes(up);
@@ -764,6 +776,17 @@ describe("the page shows the origin of every value", () => {
     const violations = snebChecks(broken).model;
     expect(violations).toContain("color: derived from 2 inputs without a link to them");
     expect(violations).toContain("status: derived from 2 inputs without a link to them");
+  });
+
+  it("negative control (E1a-F12): a cut circuit summary drawn as whole fails the check", () => {
+    const broken = SERVED_SCRIPT.replace("    circuitsTruncated: circuitsTruncated,", "    circuitsTruncated: false,");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const up = tokenFixture("uprompi");
+    const cut = clone(up.interface);
+    cut.report = { levels: { l2: { status: "passed", circuitsTruncated: true } } };
+    const drawn = drawContract(page, contractState(up, cut));
+    expect([...drawn.root.walk()].find((el) => el.id === "interface")!.textContent).not.toContain("more named circuits");
   });
 
   it("negative control (E1a-F11): an unchecked badge that denies the level it passed fails the check", () => {
