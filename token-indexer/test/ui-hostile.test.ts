@@ -32,6 +32,8 @@ const HEAVY_MS = 120_000;
  *    160 characters — the marks of hidden characters counted — and copied whole.
  *  - E1a-R6D: an earlier opaque value (and a raw event's) keeps its whole bytes in the model: two
  *    values that differ in the middle are told apart, a long one is drawn bounded and copied whole.
+ *  - E1a-R6E: a tokenUri is drawn within 160 characters in a list row and 1 000 on the token view
+ *    (head … tail, its length, where it leads, copied whole); its link is the whole URI.
  *  - E1a-R3E: at most 500 keys of a token are drawn (the rest named, with a link); a current value
  *    is drawn whole up to 2 048 drawn characters and past that on the reader's request.
  *  - E1a-R4F: a contract's token rows (at most 500, the count named with its origin) and the list's
@@ -162,6 +164,11 @@ function opaqueHistory(values: string[]): Json {
     projectionError: null, updatedHeight: current.blockHeight, updatedTxHash: current.txHash, eventId: current.eventId,
     segment: current.segment, parts: 1, phase: "guaranteed", origin: current.origin }];
   return { token: t, keys, mints: [], events, siblings: lm.contract.tokens, activity: null, calls: lm.calls ?? null, notes: [] };
+}
+/** `n` list rows (the recorded described row, each its own domain separator) with one tokenUri. */
+function uriRows(n: number, uri: string): Json[] {
+  const row0 = read("tokens.json").items.find((r: Json) => r.status === "described");
+  return Array.from({ length: n }, (_, i) => ({ ...row0, domainSep: i.toString(16).padStart(64, "0"), tokenUri: uri }));
 }
 function drawTokenState(page: Page, detail: Json): FakeElement {
   const t = detail.token;
@@ -423,6 +430,34 @@ describe("the page draws hostile values without breaking", () => {
     lpage.ctx.render();
     expect(lpage.doc.getElementById("view")!.textContent.length, "500 list rows").toBeLessThan(1_000_000);
 
+    // ── E1a-R6E: 500 list rows whose tokenUri is 8 000 DEL characters ─────────────────────────
+    {
+      const uri = `https://example.org/${"\u007f".repeat(8_000)}x`;
+      const up = loadPage();
+      up.ctx.state.list = { items: uriRows(500, uri), nextCursor: null, loaded: true };
+      up.ctx.state.route = { view: "list" };
+      up.ctx.render();
+      const lv = up.doc.getElementById("view")!;
+      expect(lv.textContent.length, "500 rows × an 8 000-DEL tokenUri, drawn").toBeLessThan(1_000_000);
+      const links = [...lv.walk()].filter((el) => el.tagName === "a" && el.href === uri);
+      expect(links.length, "each row still links the whole URI").toBe(500);
+      const wrap = links[0]!.parentNode!;
+      expect(wrap.textContent).toContain("(8\u00a0021 characters)");
+      expect(wrap.textContent, "where it leads").toContain("→ example.org");
+      [...wrap.walk()].find((el) => el.className.includes("cpbtn"))!.click();
+      await up.settle();
+      expect(up.copied[0], "the whole URI is copied").toBe(uri);
+      // the token's own view draws it within TEXT_MAX, twice (the heading's line and the facts)
+      const tp = loadPage();
+      const lm = read("token-lmoon18.json");
+      const detail = { token: { ...lm.token, tokenUri: uri }, keys: lm.metadata.keys, mints: [], events: lm.events.items,
+        siblings: lm.contract.tokens, activity: null, calls: lm.calls ?? null, notes: [] };
+      const tv = drawTokenState(tp, detail);
+      const tl = [...tv.walk()].filter((el) => el.tagName === "a" && el.href === uri);
+      expect(tl.length).toBe(2);
+      for (const a of tl) expect(a.textContent.length).toBeLessThanOrEqual(1_001);
+    }
+
     // a realistic long value (SNEB18's 677-byte metadata, LMOON18's 377-byte description) is drawn whole
     expect(read("token-lmoon18.json").metadata.keys.every((k: Json) => (k.text ?? "").length < 2_048)).toBe(true);
   }, HEAVY_MS);
@@ -470,6 +505,16 @@ describe("the page draws hostile values without breaking", () => {
     const detail = opaqueHistory(["0011223344" + "aa".repeat(23) + "ccddeeff", "0011223344" + "bb".repeat(23) + "ccddeeff"]);
     const blob = loadPage(broken).ctx.tokenModel(detail).traits.find((i: Json) => i.label === "blob");
     expect(blob.history[0].value).toBe(blob.history[1].value);
+  });
+
+  it("negative control (E1a-R6E): a tokenUri drawn whole floods the list", () => {
+    const broken = SERVED_SCRIPT.replace("  var c = clipText(parsed.label, max || TEXT_MAX);", "  var c = { text: parsed.label, cut: false, length: parsed.label.length };");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const bp = loadPage(broken);
+    bp.ctx.state.list = { items: uriRows(100, `https://example.org/${"\u007f".repeat(8_000)}x`), nextCursor: null, loaded: true };
+    bp.ctx.state.route = { view: "list" };
+    bp.ctx.render();
+    expect(bp.doc.getElementById("view")!.textContent.length).toBeGreaterThan(6_000_000);
   });
 
   it("negative control (E1a-R2D): earlier declarations and raw events drawn whole flood the view", () => {

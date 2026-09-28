@@ -1017,25 +1017,41 @@ function splitUri(uri) {
   if (href === null && local && !dest.userinfo) return { href: null, label: s, local: false, host: dest.host, userinfo: false };
   return { href: href, label: s, local: local, host: dest.host, userinfo: dest.userinfo };
 }
-function uriLink(uri) {
+// A tokenUri is drawn within max characters (NAME_MAX in a list row, TEXT_MAX on the token view):
+// past that as its head … tail with its length, where it leads (the parser's host) and a copy of the
+// whole URI — 500 list rows of an 8 000-DEL URI were 32 million drawn characters (audit 03-E1a
+// finding R6E). Its href is the whole URI (or its same-origin rewrite), never the shortened text.
+function uriLink(uri, max) {
   if (uri === null || uri === undefined || uri === "") return node("span", "-", "no");
   var parsed = splitUri(uri);
+  var c = clipText(parsed.label, max || TEXT_MAX);
+  var body;
   if (parsed.href === null && parsed.userinfo) {
-    var warn = node("span", null, "wrapv");
-    warn.appendChild(node("span", parsed.label, "hex"));
-    warn.appendChild(node("span", "  (not a link: user information before the host; it leads to "
+    body = node("span", null, "wrapv");
+    body.appendChild(node("span", c.text, "hex"));
+    body.appendChild(node("span", "  (not a link: user information before the host; it leads to "
       + clipText(parsed.host, NAME_MAX).text + ")", "err"));
-    return warn;
+  } else if (parsed.href === null) {
+    body = node("span", c.text, "hex");
+  } else {
+    body = node("a", c.text);
+    body.href = parsed.href;
+    body.rel = "noreferrer noopener";
+    body.target = "_blank";
+    body.title = shown(clipText(parsed.local ? "rewritten to this origin: " + parsed.href : parsed.label, TEXT_MAX).text) + " (opens the metadata document in a new tab)";
+    // A row click navigates to the token view; a click on the link itself must only open the document.
+    body.addEventListener("click", function (ev) { ev.stopPropagation(); });
   }
-  if (parsed.href === null) return node("span", parsed.label, "hex");
-  var a = node("a", parsed.label);
-  a.href = parsed.href;
-  a.rel = "noreferrer noopener";
-  a.target = "_blank";
-  a.title = shown(clipText(parsed.local ? "rewritten to this origin: " + parsed.href : parsed.label, TEXT_MAX).text) + " (opens the metadata document in a new tab)";
-  // A row click navigates to the token view; a click on the link itself must only open the document.
-  a.addEventListener("click", function (ev) { ev.stopPropagation(); });
-  return a;
+  if (!c.cut) return body;
+  var wrap = node("span", null, "wrapv");
+  wrap.appendChild(body);
+  wrap.appendChild(node("span", "  (" + groupDigits(c.length) + " characters)", "note"));
+  if (parsed.host !== null && !parsed.userinfo) wrap.appendChild(node("span", "  → " + clipText(parsed.host, NAME_MAX).text, "note"));
+  wrap.appendChild(node("span", "  "));
+  var cp = copyable(parsed.label, "copy", "cpbtn");
+  cp.title = "copy the whole URI (" + c.length + " characters)";
+  wrap.appendChild(cp);
+  return wrap;
 }
 // The page's own resolver link, GET /{token-name}/{id} (spec §5). The pretty form uses the
 // symbol and the piece id ("cnst:orion" under symbol CNST is the piece "orion"); the hex form
@@ -3117,7 +3133,7 @@ function renderList(main) {
     cell(tr, heightsCell(t));
     cell(tr, statusBadge(t.status));
     cell(tr, listIfaceCell(t));
-    cell(tr, uriLink(t.tokenUri));
+    cell(tr, uriLink(t.tokenUri, NAME_MAX));
     cell(tr, apiCell(t), "apicol");
     (function (token) {
       tr.addEventListener("click", function () { go(hashToken(token)); });
