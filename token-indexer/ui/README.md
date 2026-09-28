@@ -88,8 +88,9 @@ What else the page shows:
   text; a URL the parser refuses, or one with user information before its host, is not a link; a
   `localhost` tokenUri rewritten to this origin keeps exactly one leading slash (audit 03-E1a F13,
   R2B, R3F). A tokenUri is drawn within 160 characters in a list row and 1 000 on the token view —
-  past that as head … tail with its length, where it leads and a copy of the whole URI; its link is
-  the whole URI (audit 03-E1a finding R6E).
+  past that as head … tail with its length, where it leads ("this page's origin" for a rewritten
+  `localhost` URI) and a copy of the whole URI; its link is the whole URI (audit 03-E1a findings R6E,
+  R7C).
 - Characters that change the layout of the text around them or cannot be seen (bidi controls such as
   U+202E, zero-width characters, C0/C1 controls, tag characters) are drawn as a visible mark
   `⟨U+202E⟩` in text and tooltips; copying keeps the original; every piece of published text is a

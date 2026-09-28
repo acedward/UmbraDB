@@ -1046,7 +1046,13 @@ function uriLink(uri, max) {
   var wrap = node("span", null, "wrapv");
   wrap.appendChild(body);
   wrap.appendChild(node("span", "  (" + groupDigits(c.length) + " characters)", "note"));
-  if (parsed.host !== null && !parsed.userinfo) wrap.appendChild(node("span", "  → " + clipText(parsed.host, NAME_MAX).text, "note"));
+  // where the link leads: a localhost URI rewritten to a same-origin path leads to this page's own
+  // origin, not to the host it names (audit 03-E1a finding R7C)
+  if (parsed.href !== null && parsed.local) {
+    wrap.appendChild(node("span", "  → this page's origin (rewritten from " + clipText(parsed.host, NAME_MAX).text + ")", "note"));
+  } else if (parsed.host !== null && !parsed.userinfo) {
+    wrap.appendChild(node("span", "  → " + clipText(parsed.host, NAME_MAX).text, "note"));
+  }
   wrap.appendChild(node("span", "  "));
   var cp = copyable(parsed.label, "copy", "cpbtn");
   cp.title = "copy the whole URI (" + c.length + " characters)";

@@ -455,6 +455,16 @@ describe("the page draws hostile values without breaking", () => {
       [...wrap.walk()].find((el) => el.className.includes("cpbtn"))!.click();
       await up.settle();
       expect(up.copied[0], "the whole URI is copied").toBe(uri);
+      // E1a-R7C: a cut localhost URI rewritten to this origin says so, not "→ localhost"
+      const lp = loadPage();
+      const local = `http://localhost/${"a".repeat(200)}`;
+      lp.ctx.state.list = { items: uriRows(1, local), nextCursor: null, loaded: true };
+      lp.ctx.state.route = { view: "list" };
+      lp.ctx.render();
+      const la = [...lp.doc.getElementById("view")!.walk()].find((el) => el.tagName === "a" && el.href === `/${"a".repeat(200)}`)!;
+      expect(la, "rewritten to a same-origin path").toBeDefined();
+      expect(la.parentNode!.textContent).toContain("→ this page's origin (rewritten from localhost)");
+      expect(la.parentNode!.textContent).not.toContain("→ localhost");
       // the token's own view draws it within TEXT_MAX, twice (the heading's line and the facts)
       const tp = loadPage();
       const lm = read("token-lmoon18.json");
@@ -535,6 +545,16 @@ describe("the page draws hostile values without breaking", () => {
     const cellOf = (id: number): string => [...evSec.walk()].find((el) => el.tagName === "tr" && el.getAttribute("data-o") === `event:${id}`)!.textContent;
     expect(cellOf(200_000)).not.toContain("aaaaaa");
     expect(cellOf(200_001)).not.toContain("bbbbbb");
+  });
+
+  it("negative control (E1a-R7C): a rewritten localhost URI labelled with the host it names", () => {
+    const broken = SERVED_SCRIPT.replace("  if (parsed.href !== null && parsed.local) {\n", "  if (false) {\n");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const bp = loadPage(broken);
+    bp.ctx.state.list = { items: uriRows(1, `http://localhost/${"a".repeat(200)}`), nextCursor: null, loaded: true };
+    bp.ctx.state.route = { view: "list" };
+    bp.ctx.render();
+    expect(bp.doc.getElementById("view")!.textContent).toContain("→ localhost");
   });
 
   it("negative control (E1a-R2D): earlier declarations and raw events drawn whole flood the view", () => {
