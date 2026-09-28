@@ -2161,7 +2161,7 @@ function addressSection(c) {
   if (arr(c.events).length > 0) return "events";
   if (c.iface) return "interface";
   if (c.contract && arr(c.contract.tokens).length > 0) return "tokens";
-  return "calls";
+  return null;
 }
 function contractModel(c) {
   var d = c && c.contract ? c.contract : null;
@@ -2169,6 +2169,11 @@ function contractModel(c) {
   var address = d.address;
   var ctx = { address: address };
   var deployKnown = d.deployTxHash !== null && d.deployTxHash !== undefined;
+  // Without an archived deploy and with none of its other reads at hand (they failed), the address is
+  // still carried by the publication the contract route's interface summary cites (R4E).
+  var addrSec = deployKnown ? null : addressSection(c);
+  var pubEv = d.interface && d.interface.origin && d.interface.origin.evidence ? d.interface.origin.evidence : null;
+  var pubTx = pubEv && isHex(txt(pubEv.txHash)) ? txt(pubEv.txHash) : null;
   var deploy = deployKnown
     ? pageOrigin("chain", "the contract's deploy transaction in the archive", { txHash: d.deployTxHash, blockHeight: d.deployHeight })
     : pageOrigin("none", "the contract's deploy is not in the archive");
@@ -2178,8 +2183,9 @@ function contractModel(c) {
   var facts = [
     it("address", "address", address, deployKnown
       ? pageOrigin("chain", "the address the deploy transaction created", { txHash: d.deployTxHash })
-      : pageOrigin("chain", "the address its calls, declarations, publications and tokens carry"),
-      { address: address, section: addressSection(c) }),
+      : pageOrigin("chain", "the address its calls, declarations, publications and tokens carry",
+        addrSec === null && pubTx ? { txHash: pubTx } : null),
+      { address: address, section: addrSec || "calls" }),
     it("deployHeight", "deploy height", d.deployHeight, deploy),
     it("deployTxHash", "deploy tx", d.deployTxHash, deploy),
     it("lastCallHeight", "last call height", d.lastCallHeight,

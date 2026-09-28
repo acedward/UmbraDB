@@ -946,6 +946,11 @@ describe("the page shows the origin of every value", () => {
       expect(addressLink({ ...contractState({ contract: bare }, null) })).toBe(`#/contract/${a}/tokens`);
       const drawn = drawContract(page, contractState({ contract: bare }, null));
       expect(drawn.ids.has("tokens")).toBe(true);
+      // E1a-R4E: every other read failed, no token row: the publication the contract route cites
+      const pubOnly = clone(bare); pubOnly.tokens = [];
+      pubOnly.interface = clone(tokenFixture("uprompi").contract.interface);
+      const failed = { contract: pubOnly, iface: null, ifaceLoaded: false, events: [], calls: null, notes: ["x"] };
+      expect(addressLink(failed)).toBe(`#/tx/${pubOnly.interface.origin.evidence.txHash}`);
     }
     // a contract that published none: "Not available" with its reason, drawn
     const none = drawContract(page, contractState(tokenFixture("sneb18"), null));
@@ -1369,8 +1374,18 @@ describe("the page shows the origin of every value", () => {
     expect(live.doc.getElementById("view")!.textContent).toContain("no mint observed for this token yet");
   });
 
+  it("negative control (E1a-R4E): with its reads failed, an undeployed contract's address cites a section not loaded", () => {
+    const broken = SERVED_SCRIPT.replace("        addrSec === null && pubTx ? { txHash: pubTx } : null),", "        null),");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const pubOnly = clone(tokenFixture("lmoon18").contract); pubOnly.deployTxHash = null; pubOnly.tokens = [];
+    pubOnly.interface = clone(tokenFixture("uprompi").contract.interface);
+    const drawn = drawContract(page, { contract: pubOnly, iface: null, ifaceLoaded: false, events: [], calls: null, notes: [] });
+    expect(drawn.model.facts.find((i: Json) => i.field === "address").origin.links[0].href).toBe(`#/contract/${pubOnly.address}/calls`);
+  });
+
   it("negative control (E1a-R3H): an undeployed contract's address citing its (empty) events fails the check", () => {
-    const broken = SERVED_SCRIPT.replace("      { address: address, section: addressSection(c) }),", '      { address: address, section: "events" }),');
+    const broken = SERVED_SCRIPT.replace('      { address: address, section: addrSec || "calls" }),', '      { address: address, section: "events" }),');
     expect(broken).not.toBe(SERVED_SCRIPT);
     const page = loadPage(broken);
     const lm = tokenFixture("lmoon18");
