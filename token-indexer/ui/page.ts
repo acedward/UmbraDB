@@ -970,62 +970,17 @@ function go(hash) { window.location.hash = hash; }
 // this process actually listens on, the document it names is served by THIS origin, so the link
 // is rewritten to a same-origin path. A URI on any other host is left alone and rendered as it is.
 
-// Where a browser goes for an http(s) URL (WHATWG URL parsing, special schemes): tabs and newlines
-// are dropped, leading and trailing C0 controls and spaces stripped, the run of slashes and
-// backslashes after the scheme skipped; the authority ends at the first slash, backslash, "?" or
-// "#", and the host is what follows its LAST "@" (what comes before is user information). null for
-// any other scheme. A link is drawn only where its destination can be shown (audit 03-E1a finding
-// F13: a URL whose authority is "trusted.example", eighty spaces, "@evil.example", shortened for the
-// eye, read as trusted.example and led to evil.example).
+// Where a browser goes for an http(s) URL: the platform's own URL parser decides — the host it gives
+// is the host the browser will go to (percent-decoded, lower-cased, IDNA-mapped; tabs and newlines
+// dropped; the run of slashes and backslashes after the scheme skipped; user information split off),
+// so a shortened URL can always show where it leads (audit 03-E1a findings F13, R3F:
+// "%65%76%69%6c.example" is evil.example). A URL it refuses — or no parser at all — makes no link.
 function urlDest(url) {
-  var v = txt(url);
-  var n = v.length;
-  var i = 0;
-  // leading C0 controls and spaces (tab and newlines among them)
-  while (i < n && v.charCodeAt(i) <= 32) i++;
-  // the scheme, tabs and newlines inside it ignored
-  var scheme = "";
-  while (i < n && scheme.length <= 6) {
-    var sc = v.charCodeAt(i);
-    i++;
-    if (sc === 9 || sc === 10 || sc === 13) continue;
-    if (sc === 58) break;
-    scheme += String.fromCharCode(sc).toLowerCase();
-  }
-  if (scheme !== "http" && scheme !== "https") return null;
-  // the run of slashes and backslashes (and tabs and newlines) after "scheme:"
-  while (i < n) {
-    var k = v.charCodeAt(i);
-    if (k === 47 || k === 92 || k === 9 || k === 10 || k === 13) i++; else break;
-  }
-  // the authority: up to the first slash, backslash, "?" or "#" — a scan, no copy
-  var e = i;
-  while (e < n) {
-    var t = v.charCodeAt(e);
-    if (t === 47 || t === 92 || t === 63 || t === 35) break;
-    e++;
-  }
-  var end = e;
-  if (e === n) while (end > i && v.charCodeAt(end - 1) <= 32) end--; // trailing controls and spaces
-  var authority = v.slice(i, end);
-  if (authority.indexOf(String.fromCharCode(9)) >= 0 || authority.indexOf(String.fromCharCode(10)) >= 0
-    || authority.indexOf(String.fromCharCode(13)) >= 0) {
-    var clean = "";
-    for (var j = 0; j < authority.length; j++) {
-      var q = authority.charCodeAt(j);
-      if (q !== 9 && q !== 10 && q !== 13) clean += authority.charAt(j);
-    }
-    authority = clean;
-  }
-  var at = authority.lastIndexOf("@");
-  var host = at >= 0 ? authority.slice(at + 1) : authority;
-  if (host.charAt(0) === "[") {
-    var close = host.indexOf("]");
-    if (close >= 0) host = host.slice(0, close + 1);
-  } else if (host.indexOf(":") >= 0) {
-    host = host.slice(0, host.indexOf(":"));
-  }
-  return { host: host.toLowerCase(), userinfo: at >= 0, path: v.slice(e) };
+  if (typeof URL !== "function") return null;
+  var u = null;
+  try { u = new URL(txt(url)); } catch (e) { return null; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+  return { host: u.hostname, userinfo: u.username !== "" || u.password !== "", path: u.pathname + u.search + u.hash };
 }
 // The path of a same-origin rewrite: one leading slash, never two (a "//host/…" href would leave
 // this origin) and never a backslash (browsers read it as a slash). Tabs and newlines go FIRST, as a

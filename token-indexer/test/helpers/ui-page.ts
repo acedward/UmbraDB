@@ -161,7 +161,7 @@ export interface Page {
   settle(): Promise<void>;
 }
 
-export function loadPage(script = SERVED_SCRIPT, routes: Map<string, Route> = new Map()): Page {
+export function loadPage(script = SERVED_SCRIPT, routes: Map<string, Route> = new Map(), opts: { url?: boolean } = {}): Page {
   const doc = new FakeDocument();
   const requests: string[] = [];
   const copied: string[] = [];
@@ -188,6 +188,7 @@ export function loadPage(script = SERVED_SCRIPT, routes: Map<string, Route> = ne
     navigator: { clipboard: { writeText: async (v: string) => { copied.push(v); } } },
     fetch: fetchStub,
     TextDecoder,
+    ...(opts.url === false ? {} : { URL }), // the WHATWG URL parser, as in every browser
   });
   vm.runInContext(script, ctx, { filename: "served-page-script.js" });
   const fire = (type: string): void => { for (const fn of winListeners[type] ?? []) fn(fakeEvent(type)); };

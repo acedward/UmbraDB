@@ -65,9 +65,11 @@ What else the page shows:
 - A failed read of `/interface` (e.g. a 503) is drawn as "could not be read", never as "no public
   interface published" — that is said only on the API's own word (a 404, or the contract route's
   null summary) (audit 03-E1a finding F10).
-- A URL (bundle URL, tokenUri) is parsed as a browser parses it: its destination host is always
-  shown beside the shortened text, a URL with user information before its host is not a link, and a
-  `localhost` tokenUri rewritten to this origin keeps exactly one leading slash (audit 03-E1a F13).
+- A URL (bundle URL, tokenUri) is parsed by the browser's own URL parser: its destination host —
+  percent-decoded, IDNA-mapped, as the browser will go to it — is always shown beside the shortened
+  text; a URL the parser refuses, or one with user information before its host, is not a link; a
+  `localhost` tokenUri rewritten to this origin keeps exactly one leading slash (audit 03-E1a F13,
+  R2B, R3F).
 - Characters that change the layout of the text around them or cannot be seen (bidi controls such as
   U+202E, zero-width characters, C0/C1 controls, tag characters) are drawn as a visible mark
   `⟨U+202E⟩` in text and tooltips; copying keeps the original; every piece of published text is a

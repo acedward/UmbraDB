@@ -244,6 +244,15 @@ describe("the page draws hostile values without breaking", () => {
     // re-render must not parse up to 101 URLs of 262 112 bytes again
     const pub = { url: `https://bundles.example/${"p".repeat(262_000)}` };
     expect(P.ctx.urlViewOf(pub)).toBe(P.ctx.urlViewOf(pub));
+    // E1a-R3F: the host a browser goes to — percent-decoded, IDNA-mapped; an unparseable URL is no link
+    for (const [url, host] of [
+      ["https://%65%76%69%6c.example/x", "evil.example"],
+      ["https://ＥＶＩＬ.example/x", "evil.example"],
+    ] as const) {
+      expect(P.ctx.urlView(url).host, url).toBe(host);
+      expect(P.ctx.urlNode(P.ctx.urlView(url)).textContent).toContain(`→ ${host}`);
+    }
+    expect(P.ctx.urlView("https://exa mple.com/x").href).toBeNull();
     const honest = P.ctx.urlView(`https://bundles.example/${"p".repeat(300)}/index.json`);
     expect(honest.href).not.toBeNull();
     expect(P.ctx.urlNode(honest).textContent).toContain("→ bundles.example");
@@ -372,11 +381,16 @@ describe("the page draws hostile values without breaking", () => {
     expect(P.ctx.urlViewOf(pub)).not.toBe(P.ctx.urlViewOf(pub));
   });
 
-  it("negative control (E1a-R2B): collapsing slashes before dropping a TAB leaves this origin", () => {
-    const broken = SERVED_SCRIPT.replace("    if (c !== 9 && c !== 10 && c !== 13) p += path.charAt(j);", "    p += path.charAt(j);");
+  it("negative control (E1a-R2B, R3F): a destination read from the text, not the platform parser, is wrong", () => {
+    // the host taken from the text: the percent-encoded host is shown as it is, not where it leads
+    const broken = SERVED_SCRIPT.replace("return { host: u.hostname,", "return { host: txt(url).split(\"/\")[2],");
     expect(broken).not.toBe(SERVED_SCRIPT);
-    const href: string = loadPage(broken).ctx.uriLink("http://localhost/\t/evil.example/x").href;
-    expect(href.replace(/[\t\n\r]/g, "")).toBe("//evil.example/x"); // what a browser makes of it
+    const P = loadPage(broken);
+    expect(P.ctx.urlNode(P.ctx.urlView("https://%65%76%69%6c.example/x")).textContent).not.toContain("→ evil.example");
+    // and without a parser at all nothing is made a link (the page never guesses a destination)
+    const bare = loadPage(SERVED_SCRIPT, new Map(), { url: false });
+    expect(bare.ctx.urlView("https://bundles.example/index.json").href).toBeNull();
+    expect(bare.ctx.uriLink("http://localhost/\t/evil.example/x").href).toBe("");
   });
 
   it("negative control (E1a-F13): the old tokenUri rewrite leaves this origin", () => {
