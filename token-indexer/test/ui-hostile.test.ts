@@ -195,10 +195,16 @@ describe("the page draws hostile values without breaking", () => {
       [`https://trus\tted.example@evil.example/`, "evil.example"],               // a tab inside user information
       [`HTTPS://Bundles.Example:8443/${"p".repeat(200)}/index.json`, "bundles.example"],
       ["https://[::1]:8080/x", "[::1]"],
+      ["https://evil.example   ", "evil.example"],                                   // trailing spaces
+      ["https://ev\til.example/x", "evil.example"],                                 // a tab in the host
     ] as const) {
       expect(P.ctx.urlView(url).host, url.slice(0, 40)).toBe(host);
       expect(P.ctx.urlNode(P.ctx.urlView(url)).textContent).toContain(`→ ${host}`);
     }
+    // parsed once per publication: the interface payload is kept across refreshes (E1a-F4), so the
+    // re-render must not parse up to 101 URLs of 262 112 bytes again
+    const pub = { url: `https://bundles.example/${"p".repeat(262_000)}` };
+    expect(P.ctx.urlViewOf(pub)).toBe(P.ctx.urlViewOf(pub));
     const honest = P.ctx.urlView(`https://bundles.example/${"p".repeat(300)}/index.json`);
     expect(honest.href).not.toBeNull();
     expect(P.ctx.urlNode(honest).textContent).toContain("→ bundles.example");
@@ -275,6 +281,14 @@ describe("the page draws hostile values without breaking", () => {
     const dn: FakeElement = P.ctx.urlNode(P.ctx.urlView(disguised));
     expect([...dn.walk()].some((el) => el.tagName === "a" && el.href === disguised)).toBe(true);
     expect(dn.textContent).not.toContain("evil.example");
+  });
+
+  it("negative control (E1a-F13): without the per-publication cache a URL is parsed on every render", () => {
+    const broken = SERVED_SCRIPT.replace("  if (URL_VIEWS !== null && URL_VIEWS.has(p)) return URL_VIEWS.get(p);", "");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const P = loadPage(broken);
+    const pub = { url: "https://bundles.example/index.json" };
+    expect(P.ctx.urlViewOf(pub)).not.toBe(P.ctx.urlViewOf(pub));
   });
 
   it("negative control (E1a-F13): the old tokenUri rewrite leaves this origin", () => {

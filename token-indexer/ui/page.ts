@@ -978,29 +978,45 @@ function go(hash) { window.location.hash = hash; }
 // F13: a URL whose authority is "trusted.example", eighty spaces, "@evil.example", shortened for the
 // eye, read as trusted.example and led to evil.example).
 function urlDest(url) {
-  var raw = txt(url);
-  var v = "";
-  for (var i = 0; i < raw.length; i++) {
-    var c = raw.charCodeAt(i);
-    if (c !== 9 && c !== 10 && c !== 13) v += raw.charAt(i);
+  var v = txt(url);
+  var n = v.length;
+  var i = 0;
+  // leading C0 controls and spaces (tab and newlines among them)
+  while (i < n && v.charCodeAt(i) <= 32) i++;
+  // the scheme, tabs and newlines inside it ignored
+  var scheme = "";
+  while (i < n && scheme.length <= 6) {
+    var sc = v.charCodeAt(i);
+    i++;
+    if (sc === 9 || sc === 10 || sc === 13) continue;
+    if (sc === 58) break;
+    scheme += String.fromCharCode(sc).toLowerCase();
   }
-  var a = 0;
-  var b = v.length;
-  while (a < b && v.charCodeAt(a) <= 32) a++;
-  while (b > a && v.charCodeAt(b - 1) <= 32) b--;
-  v = v.slice(a, b);
-  var low = v.slice(0, 6).toLowerCase();
-  var rest = low === "https:" ? v.slice(6) : (low.slice(0, 5) === "http:" ? v.slice(5) : null);
-  if (rest === null) return null;
-  var p = 0;
-  while (p < rest.length && (rest.charAt(p) === "/" || rest.charCodeAt(p) === 92)) p++;
-  var e = p;
-  while (e < rest.length) {
-    var ch = rest.charAt(e);
-    if (ch === "/" || ch === "?" || ch === "#" || rest.charCodeAt(e) === 92) break;
+  if (scheme !== "http" && scheme !== "https") return null;
+  // the run of slashes and backslashes (and tabs and newlines) after "scheme:"
+  while (i < n) {
+    var k = v.charCodeAt(i);
+    if (k === 47 || k === 92 || k === 9 || k === 10 || k === 13) i++; else break;
+  }
+  // the authority: up to the first slash, backslash, "?" or "#" — a scan, no copy
+  var e = i;
+  while (e < n) {
+    var t = v.charCodeAt(e);
+    if (t === 47 || t === 92 || t === 63 || t === 35) break;
     e++;
   }
-  var authority = rest.slice(p, e);
+  var end = e;
+  if (e === n) while (end > i && v.charCodeAt(end - 1) <= 32) end--; // trailing controls and spaces
+  var authority = v.slice(i, end);
+  if (authority.indexOf(String.fromCharCode(9)) >= 0 || authority.indexOf(String.fromCharCode(10)) >= 0
+    || authority.indexOf(String.fromCharCode(13)) >= 0) {
+    var clean = "";
+    for (var j = 0; j < authority.length; j++) {
+      var q = authority.charCodeAt(j);
+      if (q !== 9 && q !== 10 && q !== 13) clean += authority.charAt(j);
+    }
+    authority = clean;
+  }
   var at = authority.lastIndexOf("@");
   var host = at >= 0 ? authority.slice(at + 1) : authority;
   if (host.charAt(0) === "[") {
@@ -1009,7 +1025,7 @@ function urlDest(url) {
   } else if (host.indexOf(":") >= 0) {
     host = host.slice(0, host.indexOf(":"));
   }
-  return { host: host.toLowerCase(), userinfo: at >= 0, path: rest.slice(e) };
+  return { host: host.toLowerCase(), userinfo: at >= 0, path: v.slice(e) };
 }
 // The path of a same-origin rewrite: one leading slash, never two (a "//host/…" href would leave
 // this origin) and never a backslash (browsers read it as a slash).
@@ -2006,6 +2022,17 @@ function collectItems(model) {
 // whole of it; only http(s) becomes a link.
 var URL_HEAD = 72;
 var URL_TAIL = 28;
+// A publication's URL view is computed once per publication object: the interface payload is kept
+// across refreshes while its summary is unchanged (E1a-F4), and a URL may be 262 112 bytes, so the
+// 10 s re-render must not parse up to 101 of them again.
+var URL_VIEWS = typeof WeakMap === "function" ? new WeakMap() : null;
+function urlViewOf(p) {
+  if (!p || typeof p !== "object") return urlView(null);
+  if (URL_VIEWS !== null && URL_VIEWS.has(p)) return URL_VIEWS.get(p);
+  var uv = urlView(p.url);
+  if (URL_VIEWS !== null) URL_VIEWS.set(p, uv);
+  return uv;
+}
 function urlView(url) {
   var s = url === null || url === undefined ? "" : txt(url);
   var n = s.length;
@@ -2094,7 +2121,7 @@ function interfaceModel(x, address, loaded) {
     row("l3", "Level 3", orDash(x.levels.l3) + (x.l3Reason ? ": " + x.l3Reason : ""), { diagnostic: true });
   }
   row("commitment", "commitment", x.commitment, { hex: true });
-  var uv = urlView(x.url);
+  var uv = urlViewOf(x);
   if (x.url !== null && x.url !== undefined) row("url", "bundle URL", x.url, { url: uv });
   else row("url", "bundle URL", x.urlError ? "not decodable: " + x.urlError : null, { diagnostic: true });
   row("publication", "publication", packageText(x), { txHash: x.txHash });
@@ -2156,7 +2183,7 @@ function interfaceModel(x, address, loaded) {
   for (var q = 0; q < hl.length; q++) {
     var hi = { field: "iface:history:" + hl[q].eventId, label: "publication " + hl[q].eventId,
       value: interfaceStatusView(hl[q]).text, origin: originView(hl[q].origin, ctx), row: hl[q],
-      status: interfaceStatusView(hl[q]), url: urlView(hl[q].url) };
+      status: interfaceStatusView(hl[q]), url: urlViewOf(hl[q]) };
     hi.role = { field: "iface:history:" + hl[q].eventId + ":role", label: "role", value: valueOrNull(hl[q].role),
       origin: originView(roleOrigin(hl[q]), roleCtx) };
     roles.push(hi.role);
