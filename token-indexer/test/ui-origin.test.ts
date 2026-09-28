@@ -643,6 +643,24 @@ describe("the page shows the origin of every value", () => {
       expect([...note.walk()].some((el) => el.className.includes("orig"))).toBe(true);
     }
 
+    // ── E1a-R4G: a later page that fails keeps the pages read ────────────────────────────────
+    {
+      const ss = tokenFixture("sstarpi");
+      const a = ss.token.address;
+      const base = `/v1/contracts/${a}/tokens/${ss.token.domainSep}/${ss.token.kind}/mints?limit=200`;
+      const routes = apiRoutes(ss);
+      const f201 = clone(ss); f201.token.mintCount = 201;
+      routes.set(`/v1/contracts/${a}/tokens/${ss.token.domainSep}/${ss.token.kind}`, f201.token);
+      routes.set(base, { items: Array.from({ length: 200 }, (_, i) => ({ ...ss.mints.items[0], callIndex: i })), nextCursor: "m1" });
+      routes.set(`${base}&cursor=m1`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
+      const live = await bootToken(f201, routes);
+      expect(live.ctx.state.detail.mints.length, "the 200 read are kept").toBe(200);
+      const view = live.doc.getElementById("view")!;
+      expect(view.textContent).not.toContain("no mint observed for this token yet");
+      expect(view.textContent).toContain("the first 200 of 201 mints are listed");
+      expect(view.textContent).toContain("mint history partly unavailable (the pages after the first 200 rows): 503 UNAVAILABLE");
+    }
+
     // ── E1a-F2: a key's history past the first page of the contract's events ─────────────────
     // 500 unrelated declarations first: the description (a text, a Null, a 2-part value) is on page 2.
     {
@@ -1291,6 +1309,18 @@ describe("the page shows the origin of every value", () => {
     const live = await bootToken(ss, routes, broken);
     expect(live.ctx.state.detail.mints.length).toBe(200);
     expect(live.doc.getElementById("mints")!.textContent).not.toContain("mints are listed");
+  });
+
+  it("negative control (E1a-R4G): a later failed page that discards the pages read says no mint was observed", async () => {
+    const broken = SERVED_SCRIPT.replace("      if (i === 0) throw e;\n      return { items: items, nextCursor: cursor, error: e };", "      throw e;");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const ss = tokenFixture("sstarpi");
+    const base = `/v1/contracts/${ss.token.address}/tokens/${ss.token.domainSep}/${ss.token.kind}/mints?limit=200`;
+    const routes = apiRoutes(ss);
+    routes.set(base, { items: Array.from({ length: 200 }, (_, i) => ({ ...ss.mints.items[0], callIndex: i })), nextCursor: "m1" });
+    routes.set(`${base}&cursor=m1`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
+    const live = await bootToken(ss, routes, broken);
+    expect(live.doc.getElementById("view")!.textContent).toContain("no mint observed for this token yet");
   });
 
   it("negative control (E1a-R3H): an undeployed contract's address citing its (empty) events fails the check", () => {

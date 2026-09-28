@@ -2613,18 +2613,30 @@ function callsPath(address, cursor) {
 }
 // "load more" is a page count, not a saved cursor: the 10 s refresh re-reads the same number of
 // pages, so a reader who asked for 600 NIGHT rows still has them after it fires.
+// A later page that fails keeps the pages already read: they come back with the cursor that could
+// not be followed (so the caller knows more exist) and the error (audit 03-E1a finding R4G: 200 mints
+// read, then a 503, showed "no mint observed"). Only a failed FIRST page is a failure.
 async function loadPages(pathOf, pages) {
   var items = [];
   var cursor = null;
   var next = null;
   for (var i = 0; i < (pages > 0 ? pages : 1); i++) {
-    var payload = await api(pathOf(cursor));
+    var payload;
+    try {
+      payload = await api(pathOf(cursor));
+    } catch (e) {
+      if (i === 0) throw e;
+      return { items: items, nextCursor: cursor, error: e };
+    }
     items = items.concat(itemsOf(payload));
     next = payload && payload.nextCursor ? payload.nextCursor : null;
     if (!next) break;
     cursor = next;
   }
-  return { items: items, nextCursor: next };
+  return { items: items, nextCursor: next, error: null };
+}
+function partlyNote(notes, what, p) {
+  if (p && p.error) notes.push(what + " partly unavailable (the pages after the first " + p.items.length + " rows): " + p.error.message);
 }
 async function loadToken(r) {
   var d = { token: null, keys: [], mints: [], events: [], siblings: [], activity: null,
@@ -2660,12 +2672,12 @@ async function loadTokenActivity(d) {
   if (vis === "calls-only") {
     if (!t.address) return;
     await loadPages(function (c) { return callsPath(t.address, c); }, state.act.pages).then(
-      function (p) { d.calls = p; },
+      function (p) { d.calls = p; partlyNote(d.notes, "contract calls", p); },
       function (e) { d.notes.push("contract calls unavailable: " + e.message); });
     return;
   }
   await loadPages(function (c) { return activityPath(t, c); }, state.act.pages).then(
-    function (p) { d.activity = p; },
+    function (p) { d.activity = p; partlyNote(d.notes, "transactions", p); },
     function (e) { d.notes.push("transactions unavailable: " + e.message); });
 }
 async function loadNamedToken(r, d) {
@@ -2675,10 +2687,10 @@ async function loadNamedToken(r, d) {
       function (p) { d.keys = itemsOf(p); },
       function (e) { d.notes.push("traits unavailable: " + e.message); }),
     loadPages(function (c) { return tokenBase(r) + "/mints?limit=" + MINT_LIMIT + (c ? "&cursor=" + enc(c) : ""); }, MINT_PAGES).then(
-      function (p) { d.mints = p.items; d.mintsMore = p.nextCursor !== null; },
+      function (p) { d.mints = p.items; d.mintsMore = p.nextCursor !== null; partlyNote(d.notes, "mint history", p); },
       function (e) { d.notes.push("mint history unavailable: " + e.message); }),
     loadPages(function (c) { return contractEventsPath(r.address, c); }, EVENT_PAGES).then(
-      function (p) { d.events = p.items; d.eventsMore = p.nextCursor !== null; },
+      function (p) { d.events = p.items; d.eventsMore = p.nextCursor !== null; partlyNote(d.notes, "raw events", p); },
       function (e) { d.eventsFailed = true; d.notes.push("raw events unavailable: " + e.message); }),
     // Every token row of this contract. Two things come out of it: the rows sharing this token's
     // domain separator, which the MIP (section 4) lets a consumer link as one asset's several
@@ -2733,11 +2745,11 @@ async function loadContract(address) {
   await Promise.all([
     ifaceLoad,
     loadPages(function (cur) { return contractEventsPath(address, cur); }, EVENT_PAGES).then(
-      function (p) { c.events = p.items; c.eventsMore = p.nextCursor !== null; },
+      function (p) { c.events = p.items; c.eventsMore = p.nextCursor !== null; partlyNote(c.notes, "raw events", p); },
       function (e) { c.notes.push("raw events unavailable: " + e.message); }),
     // US7: the same calls table the ledger-token page shows, under the same note.
     loadPages(function (cur) { return callsPath(address, cur); }, state.act.pages).then(
-      function (p) { c.calls = p; },
+      function (p) { c.calls = p; partlyNote(c.notes, "contract calls", p); },
       function (e) { c.notes.push("contract calls unavailable: " + e.message); })
   ]);
   state.contract = c;
