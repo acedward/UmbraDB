@@ -108,6 +108,9 @@ What else the page shows:
 - A named token's colour route and its token route are one view: following a section link from one to
   the other keeps what the section has read (its pages, its filter, what is open) (audit 03-E1a
   finding R11B).
+- A read that finishes after the route moved to another view is dropped — neither its result nor
+  its errors are drawn under the new route — and the new route is read at once (audit 03-E1a finding
+  R12A).
 - A URL (bundle URL, tokenUri) is parsed by the browser's own URL parser: its destination host —
   percent-decoded, IDNA-mapped, as the browser will go to it — is always shown beside the shortened
   text; a URL the parser refuses, or one with user information before its host, is not a link; a

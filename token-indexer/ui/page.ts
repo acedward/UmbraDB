@@ -2819,6 +2819,8 @@ async function loadToken(r) {
     await loadNamedToken(r, d);
   }
   await loadTokenActivity(d);
+  // a read that finished after the route moved to another view is not this view's (audit 03-E1a R12A)
+  if (!routeShows(r, d.token)) { state.staleRead = true; return; }
   state.detail = d;
 }
 // A "seen" row (US5) has no token route to ask, so the colour document answers for it and the row
@@ -2935,12 +2937,14 @@ async function loadContract(address) {
       function (p) { c.calls = p; partlyNote(c.notes, "contract calls", p); },
       function (e) { c.callsFailed = true; c.notes.push("contract calls unavailable: " + e.message); })
   ]);
+  if (state.route.view !== "contract" || txt(state.route.address) !== txt(address)) { state.staleRead = true; return; }
   state.contract = c;
 }
 // FR-007: the whole public decode of one transaction, computed on request from the archived bytes.
 async function loadTx(hash) {
   var keep = state.tx && state.tx.hash === hash ? state.tx.raw : false;
   var doc = await api(P_TXS + "/" + enc(hash));
+  if (state.route.view !== "tx" || txt(state.route.hash) !== txt(hash)) { state.staleRead = true; return; }
   state.tx = { hash: hash, doc: doc, raw: keep };
 }
 // FR-018: the chain-wide list behind the disclosure panel's number.
@@ -2973,6 +2977,7 @@ async function refresh() {
   var errors = [];
   var route = state.route;
   await loadStatus().then(function () {}, function (e) { errors.push("status: " + e.message); });
+  state.staleRead = false;
   try {
     if (route.view === "list") await loadList(null);
     else if (route.view === "token") await loadToken(route);
@@ -2981,6 +2986,17 @@ async function refresh() {
     else if (route.view === "offers") await loadOffers();
   } catch (e) {
     errors.push(route.view + ": " + e.message);
+  }
+  // The route moved to another view while this read ran: neither its result nor its errors are the
+  // new view's — nothing is kept or drawn, and the new route is read now (audit 03-E1a finding R12A:
+  // token A's detail drawn under token B's route consumed B's scroll target).
+  if (state.staleRead || (routeKey(state.route) !== routeKey(route)
+      && !(route.view === "token" && state.detail && routeShows(route, state.detail.token)))) {
+    state.staleRead = false;
+    state.busy = false;
+    state.again = false;
+    refresh();
+    return;
   }
   state.errors = errors;
   if (errors.length === 0) state.lastOk = new Date();
@@ -5034,12 +5050,21 @@ function render() {
 // colour cites its sections on its token route, and following such a link must keep what the section
 // has read (its pages, its filter, what is open) — or the rows that justified the citation are gone
 // at the destination (audit 03-E1a finding R11B).
+function routeIsToken(r, t) {
+  if (!t || !r || r.view !== "token") return false;
+  if (r.color) return txt(r.color) === txt(t.color) && txt(r.kind) === txt(t.kind);
+  return !!t.address && txt(r.address) === txt(t.address) && txt(r.domainSep) === txt(t.domainSep)
+    && txt(r.kind) === txt(t.kind);
+}
 function sameTokenAs(next) {
   var t = state.detail && state.detail.token;
-  if (!t || next.view !== "token" || state.route.view !== "token") return false;
-  if (next.color) return txt(next.color) === txt(t.color) && txt(next.kind) === txt(t.kind);
-  return !!t.address && txt(next.address) === txt(t.address) && txt(next.domainSep) === txt(t.domainSep)
-    && txt(next.kind) === txt(t.kind);
+  return state.route.view === "token" && routeIsToken(next, t);
+}
+// Whether the current route still shows what a read of route r loaded (the token t, for a token
+// view): the same route, or another route of the same token (R11B).
+function routeShows(r, t) {
+  if (routeKey(state.route) === routeKey(r)) return true;
+  return r.view === "token" && routeIsToken(state.route, t);
 }
 function onHashChange() {
   var next = parseHash();

@@ -1040,6 +1040,51 @@ describe("the page shows the origin of every value", () => {
       expect(live.ctx.state.act.pages).toBe(1);
     }
 
+    // ── E1a-R12A: a read that finishes after the route moved is not the new view's ─────────────
+    for (const bFails of [false, true]) {
+      const a = tokenFixture("sstarpi");
+      const b = tokenFixture("sneb18");
+      const baseA = `/v1/contracts/${a.token.address}/tokens/${a.token.domainSep}/${a.token.kind}`;
+      const baseB = `/v1/contracts/${b.token.address}/tokens/${b.token.domainSep}/${b.token.kind}`;
+      const hashB = `#/token/${b.token.address}/${b.token.domainSep}/${b.token.kind}`;
+      let live: Page | undefined;
+      let moved = false;
+      // the reader follows B's mint evidence while A's refresh is still reading A's mints
+      class Hooked extends Map<string, Json> {
+        get(k: string): Json {
+          if (k === `${baseA}/mints?limit=200` && live && live.ctx.state.detail && !moved) {
+            moved = true;
+            live.window.location.hash = `${hashB}/mints`;
+            live.ctx.onHashChange();
+          }
+          return super.get(k);
+        }
+      }
+      const routes = new Hooked([...apiRoutes(a), ...apiRoutes(b)]);
+      if (bFails) routes.set(baseB, new Reply(503, { error: { code: "UNAVAILABLE" } }));
+      live = await bootToken(a, routes);
+      const drawn: string[] = [];
+      const render0 = live.ctx.render;
+      live.ctx.render = (): void => {
+        const r = live!.ctx.state.route;
+        const t = live!.ctx.state.detail?.token;
+        if (t) drawn.push(`${String(r.domainSep)}|${String(t.domainSep)}`);
+        render0();
+      };
+      await live.ctx.refresh();
+      await live.settle();
+      expect(moved).toBe(true);
+      expect(drawn.filter((x) => x.split("|")[0] !== x.split("|")[1]), "no token drawn under another token's route").toEqual([]);
+      if (bFails) {
+        expect(live.ctx.state.detail, "B could not be read: nothing of A stays").toBeNull();
+        expect(live.ctx.state.errors.join(" ")).toContain("503");
+      } else {
+        expect(live.ctx.state.detail.token.domainSep).toBe(b.token.domainSep);
+        expect(live.ctx.state.scrollTo, "B's section was scrolled to once B was drawn").toBeNull();
+        expect(drawn.some((x) => x === `${b.token.domainSep}|${b.token.domainSep}`)).toBe(true);
+      }
+    }
+
     // ── E1a-R5D: the shielded-offers view keeps its rows and reports a later page that failed ──
     {
       const routes = new Map<string, Json>([["/internal/status", { net: "undeployed" }]]);
@@ -2015,6 +2060,39 @@ describe("the page shows the origin of every value", () => {
     live.navigate(`#/token/${ss.token.address}/${ss.token.domainSep}/${ss.token.kind}/activity`);
     await live.settle();
     expect(live.ctx.state.act.pages).toBe(1);
+  });
+
+  it("negative control (E1a-R12A): a read kept after the route moved draws A under B's route", async () => {
+    const broken = SERVED_SCRIPT.replace("  if (!routeShows(r, d.token)) { state.staleRead = true; return; }\n", "")
+      .replace("  if (state.staleRead || (routeKey(state.route) !== routeKey(route)\n", "  if (false && (routeKey(state.route) !== routeKey(route)\n");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const a = tokenFixture("sstarpi");
+    const b = tokenFixture("sneb18");
+    const baseA = `/v1/contracts/${a.token.address}/tokens/${a.token.domainSep}/${a.token.kind}`;
+    let live: Page | undefined;
+    let moved = false;
+    class Hooked extends Map<string, Json> {
+      get(k: string): Json {
+        if (k === `${baseA}/mints?limit=200` && live && live.ctx.state.detail && !moved) {
+          moved = true;
+          live.window.location.hash = `#/token/${b.token.address}/${b.token.domainSep}/${b.token.kind}/mints`;
+          live.ctx.onHashChange();
+        }
+        return super.get(k);
+      }
+    }
+    const routes = new Hooked([...apiRoutes(a), ...apiRoutes(b)]);
+    live = await bootToken(a, routes, broken);
+    const drawn: string[] = [];
+    const render0 = live.ctx.render;
+    live.ctx.render = (): void => {
+      const t = live!.ctx.state.detail?.token;
+      if (t) drawn.push(`${String(live!.ctx.state.route.domainSep)}|${String(t.domainSep)}`);
+      render0();
+    };
+    await live.ctx.refresh();
+    await live.settle();
+    expect(drawn.some((x) => x === `${b.token.domainSep}|${a.token.domainSep}`)).toBe(true);
   });
 
   it("negative control (E1a-S2): with the contract's rows unread, the family guessed from one row", async () => {
