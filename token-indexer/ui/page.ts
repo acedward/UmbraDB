@@ -2670,6 +2670,13 @@ async function loadSeenToken(r, d) {
   }
   if (d.token === null && rows.length > 0) d.token = rows[0];
   if (d.token === null) throw new Error("404 TOKEN_NOT_FOUND: no row for colour " + r.color);
+  // A colour whose row names its contract (a mint or a declaration completed it) is that token: it
+  // is read as the token route reads it — its declarations, their history and P1 — not from the
+  // colour document alone (audit 03-E1a finding R4D).
+  if (d.token.address && d.token.domainSep && !isZeroHex(txt(d.token.address))) {
+    await loadNamedToken({ address: txt(d.token.address), domainSep: txt(d.token.domainSep), kind: txt(d.token.kind) }, d);
+    return;
+  }
   d.keys = itemsOf(d.token.traits ? { items: d.token.traits } : null);
   d.mints = itemsOf(d.token.mints);
   d.mintsMore = !!(d.token.mints && d.token.mints.nextCursor);
@@ -4023,11 +4030,13 @@ function renderToken(main) {
   var back = node("a", "← all tokens");
   back.href = "#/";
   crumb.appendChild(back);
-  // A colour route (US5) has no contract to point at — that is the whole reason it exists.
-  if (r.address && !isZeroHex(r.address)) {
+  // A colour route (US5) has no contract to point at — unless the colour's row names one (R4D).
+  var known = d && d.token && d.token.address && !isZeroHex(txt(d.token.address)) ? txt(d.token.address) : null;
+  var toAddress = r.address && !isZeroHex(r.address) ? r.address : known;
+  if (toAddress) {
     crumb.appendChild(node("span", "  ·  "));
     var toContract = node("a", "its contract");
-    toContract.href = hashContract(r.address);
+    toContract.href = hashContract(toAddress);
     crumb.appendChild(toContract);
   } else if (r.color) {
     // the colour and kind are values of this token: they are shown below, each with its origin

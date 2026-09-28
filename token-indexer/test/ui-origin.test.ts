@@ -955,6 +955,27 @@ describe("the page shows the origin of every value", () => {
     // ── every origin kind met at least once ───────────────────────────────────────────────────
     expect([...kindsSeen].sort()).toEqual(["chain", "derived", "mip-0018", "none", "public-interface"]);
 
+    // ── E1a-R4D: a colour route for a NAMED token reads it as the token route does ─────────────
+    {
+      const lm = tokenFixture("lmoon18");
+      const color = "ab".repeat(32);
+      const named = { ...clone(lm.token), color };
+      const routes = apiRoutes({ ...lm, token: named });
+      routes.set(`/v1/colors/${color}`, { tokens: [{ ...named, traits: [], mints: { items: [], nextCursor: null } }] });
+      const live = loadPage(SERVED_SCRIPT, routes);
+      live.window.location.hash = `#/color/${color}/${lm.token.kind}`;
+      live.boot();
+      await live.settle();
+      expect(live.requests, "its contract's events are read").toContain(`/v1/contracts/${lm.token.address}/events?limit=500`);
+      const desc = live.ctx.tokenModel(live.ctx.state.detail).traits.find((i: Json) => i.label === "description");
+      expect(desc.history.map((h: Json) => h.eventId), "the P1 history is there").toEqual([80, 78]);
+      const view = live.doc.getElementById("view")!;
+      const crumb = [...view.walk()].find((el) => el.className === "crumb")!;
+      expect(crumb.textContent).toContain("its contract");
+      expect(crumb.textContent).not.toContain("a colour no contract has named");
+      expect(view.textContent).not.toContain("no token-metadata event from this contract");
+    }
+
     // ── E1a-R4H: a click on a list row navigates through the page's own go() ─────────────────
     {
       const rows = read("tokens.json");
@@ -1176,6 +1197,22 @@ describe("the page shows the origin of every value", () => {
     expect(link.click().defaultPrevented).toBe(true);
     await live.settle();
     expect(live.ctx.state.route.view).toBe("token");
+  });
+
+  it("negative control (E1a-R4D): a named token read from its colour document alone loses its history", async () => {
+    const broken = SERVED_SCRIPT.replace("  if (d.token.address && d.token.domainSep && !isZeroHex(txt(d.token.address))) {", "  if (false) {");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const lm = tokenFixture("lmoon18");
+    const color = "ab".repeat(32);
+    const named = { ...clone(lm.token), color };
+    const routes = apiRoutes({ ...lm, token: named });
+    routes.set(`/v1/colors/${color}`, { tokens: [{ ...named, traits: lm.metadata.keys, mints: { items: [], nextCursor: null } }] });
+    const live = loadPage(broken, routes);
+    live.window.location.hash = `#/color/${color}/${lm.token.kind}`;
+    live.boot();
+    await live.settle();
+    expect(live.requests).not.toContain(`/v1/contracts/${lm.token.address}/events?limit=500`);
+    expect(live.ctx.tokenModel(live.ctx.state.detail).traits.find((i: Json) => i.label === "description").history).toEqual([]);
   });
 
   it("negative control (E1a-R4H): a go() that assigns nothing leaves a clicked row on the list", async () => {
