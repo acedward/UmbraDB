@@ -769,6 +769,13 @@ describe("the page shows the origin of every value", () => {
     expect(clicked.defaultPrevented, "a chip's click follows its link").toBe(false);
     expect(live.window.location.hash).toBe(`#/contract/${up.token.address}/interface`);
     await live.settle();
+    // the same evidence link again: no fragment change, no hashchange — the page scrolls itself (R3K)
+    const sec2 = live.doc.getElementById("interface")!;
+    const before = sec2.scrolled;
+    const again = [...live.doc.getElementById("view")!.walk()].find((el) => el.tagName === "a" && el.className.includes("orig")
+      && el.href === `#/contract/${up.token.address}/interface`)!;
+    again.click();
+    expect(live.doc.getElementById("interface")!.scrolled, "the same link scrolls again").toBe(before + 1);
     expect(live.ctx.state.route.view).toBe("contract");
     expect(live.doc.getElementById("interface")!.scrolled).toBeGreaterThan(0);
   });
@@ -878,8 +885,8 @@ describe("the page shows the origin of every value", () => {
   });
 
   it("negative control (E1a-R2G): a chip whose click prevents navigation fails the check", async () => {
-    const broken = SERVED_SCRIPT.replace("function stopClick(ev) { ev.stopPropagation(); }",
-      "function stopClick(ev) { ev.preventDefault(); ev.stopPropagation(); }");
+    const broken = SERVED_SCRIPT.replace("  return function (ev) {\n    ev.stopPropagation();",
+      "  return function (ev) {\n    ev.preventDefault(); ev.stopPropagation();");
     expect(broken).not.toBe(SERVED_SCRIPT);
     const up = tokenFixture("uprompi");
     const live = loadPage(broken, apiRoutes(up));
@@ -891,6 +898,21 @@ describe("the page shows the origin of every value", () => {
     expect(link.click().defaultPrevented).toBe(true);
     await live.settle();
     expect(live.ctx.state.route.view).toBe("token");
+  });
+
+  it("negative control (E1a-R3K): following the same evidence link again does not scroll without the page's own scroll", async () => {
+    const broken = SERVED_SCRIPT.replace("    if (target && target.scrollIntoView) target.scrollIntoView();\n  };", "  };");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const up = tokenFixture("uprompi");
+    const live = loadPage(broken, apiRoutes(up));
+    live.window.location.hash = `#/contract/${up.token.address}/interface`;
+    live.boot();
+    await live.settle();
+    const sec = live.doc.getElementById("interface")!;
+    const before = sec.scrolled;
+    [...live.doc.getElementById("view")!.walk()].find((el) => el.tagName === "a" && el.className.includes("orig")
+      && el.href === `#/contract/${up.token.address}/interface`)!.click();
+    expect(sec.scrolled).toBe(before);
   });
 
   it("negative control (E1a-F15): a page that does not scroll to the section fails the check", async () => {

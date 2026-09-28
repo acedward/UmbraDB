@@ -191,10 +191,11 @@ export function loadPage(script = SERVED_SCRIPT, routes: Map<string, Route> = ne
   });
   vm.runInContext(script, ctx, { filename: "served-page-script.js" });
   const fire = (type: string): void => { for (const fn of winListeners[type] ?? []) fn(fakeEvent(type)); };
-  doc.navigateHook = (hash: string) => { location.hash = hash; fire("hashchange"); };
+  // As a browser: following a link to the fragment the page is already on fires no hashchange.
+  doc.navigateHook = (hash: string) => { if (location.hash === hash) return; location.hash = hash; fire("hashchange"); };
   return {
     ctx, doc, requests, copied, routes, window: win,
-    navigate(hash: string) { location.hash = hash; fire("hashchange"); },
+    navigate(hash: string) { if (location.hash === hash) return; location.hash = hash; fire("hashchange"); },
     boot() { fire("DOMContentLoaded"); },
     async settle() { for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r)); },
   };

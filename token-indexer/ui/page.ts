@@ -2322,12 +2322,36 @@ function listInterfaceView(t) {
 // view model item for item.
 
 function stopClick(ev) { ev.stopPropagation(); }
+// An evidence link: the click stays on the link (a row's own click does not run) and follows it.
+// Following the link the page is already on changes no fragment, so no hashchange fires — the
+// section it names is scrolled to here instead (audit 03-E1a finding R3K).
+// A "#…" evidence link is a route of this page; any other (the API's own answer, raw JSON) opens in
+// a new tab, so the reader keeps the view.
+function evidenceHref(a, href) {
+  a.href = href;
+  if (href.charAt(0) === "#") {
+    a.addEventListener("click", followEvidence(href));
+  } else {
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.addEventListener("click", stopClick);
+  }
+  return a;
+}
+function followEvidence(href) {
+  return function (ev) {
+    ev.stopPropagation();
+    if (window.location.hash !== href) return;
+    var f = routeOf(href).focus;
+    var target = f ? document.getElementById(f) : null;
+    if (target && target.scrollIntoView) target.scrollIntoView();
+  };
+}
 function originChip(ov) {
   var first = ov.links.length > 0 ? ov.links[0] : null;
   var chip = node(first ? "a" : "span", ov.label, "orig or-" + ov.kind + (ov.page ? " or-page" : ""));
   if (first) {
-    chip.href = first.href;
-    chip.addEventListener("click", stopClick);
+    evidenceHref(chip, first.href);
   }
   chip.title = shown(ov.label + (ov.detail ? " — " + ov.detail : ""));
   chip.setAttribute("data-origin", ov.kind);
@@ -2349,9 +2373,8 @@ function originBlock(ov) {
   for (var i = 0; i < ov.links.length; i++) {
     ev.appendChild(node("span", "  ·  "));
     var a = node("a", ov.links[i].text);
-    a.href = ov.links[i].href;
-    a.title = ov.links[i].title || ov.links[i].text;
-    a.addEventListener("click", stopClick);
+    evidenceHref(a, ov.links[i].href);
+    a.title = shown(ov.links[i].title || ov.links[i].text);
     ev.appendChild(a);
   }
   wrap.appendChild(ev);
