@@ -1978,10 +1978,10 @@ function interfaceModel(x, address, loaded) {
   var ctx = { address: address };
   if (!x) {
     return {
-      present: false,
+      present: false, unavailable: !loaded,
       rows: [{ field: "iface:none", label: "public interface", value: null,
         origin: originView(loaded ? pageOrigin("none", "this contract has published no public interface")
-          : pageOrigin("none", "the interface could not be read (see the banner)"), ctx) }],
+          : pageOrigin("none", "the interface could not be read: see partial data"), ctx) }],
       files: [], keys: [], circuits: [], witnesses: [], checks: [], history: []
     };
   }
@@ -4145,7 +4145,11 @@ function interfaceSection(face) {
   sec.appendChild(node("h2", "public interface · the current publication, what its checks established, and the older ones"));
   if (!face.present) {
     var none = marked(node("div", null, "row"), face.rows[0].field);
-    none.appendChild(node("span", "no public interface published by this contract", "no"));
+    // A request that failed is not an answer: "none published" only on the API's own word (a 404, or
+    // the contract route's null summary) — audit 03-E1a finding F10.
+    none.appendChild(node("span", face.unavailable
+      ? "the public interface could not be read (see “partial data” below); it is not known whether this contract published one"
+      : "no public interface published by this contract", face.unavailable ? "err" : "no"));
     none.appendChild(originChip(face.rows[0].origin));
     sec.appendChild(none);
     return sec;

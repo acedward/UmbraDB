@@ -12,7 +12,7 @@ and 00024-02 added (FR-016b).
 | Origin label | Drawn for | Its evidence link |
 |---|---|---|
 | **MIP-0018 declaration** (", N parts" when the package has more than one) | name, symbol, decimals, tokenUri, metadata, every trait and each earlier declaration of a key, every raw event | the package — transaction, block, position, segment, parts, phase, event ids — linked to the transaction view |
-| **Public interface** (", L1/L2/L3" / ", failed at L1" / ", unchecked" …) | the token's interface summary and every value of the contract's interface section (status, levels, commitment, URL, files, keys, circuits, witnesses, checks, older publications) | the publication — transaction, block, segment, parts, commitment, levels, checked at — linked to the contract's interface section (`#/contract/<address>/interface`) and to the publication transaction |
+| **Public interface** (", L1/L2/L3" / ", failed at L1" / ", unchecked" …) | the token's interface summary and every value of the contract's interface section (status, levels, commitment, URL, files, keys, circuits, witnesses, checks, older publications) except a publication's role, which is Derived (P2) | the publication — transaction, block, segment, parts, commitment, levels, checked at — linked to the contract's interface section (`#/contract/<address>/interface`) and to the publication transaction |
 | **Chain observation** | mints, activity rows, contract calls, the deploy facts | the transaction (or the section that lists the rows) |
 | **Derived by this indexer** | colour, status, the kind byte's two bits, heights computed from other rows, the role of a publication (`current` / `historical`, rule P2 — audit 03-E1a F9) | the rule applied and a link to the inputs it names (the contract, the mint history, the declarations, the interface section — F7); a MIP-0018 key declared more than once also names **P1** — "last write, positioned by the first part" — as the rule that picked the current value |
 | **Not available** (reason) | a value no source provides | the reason (a Null declaration also links the declaration) |
@@ -54,6 +54,9 @@ What else the page shows:
   as its head … tail with its length and copied whole (160 characters for a name or a path, 400 for
   a signature, 1 000 for other interface values); interface items are keyed by position, so no
   published name reaches an attribute (audit 03-E1a finding F5).
+- A failed read of `/interface` (e.g. a 503) is drawn as "could not be read", never as "no public
+  interface published" — that is said only on the API's own word (a 404, or the contract route's
+  null summary) (audit 03-E1a finding F10).
 - Routes may end in a section (`#/contract/<address>/interface`, `#/token/…/mints`, …), scrolled to
   once drawn. The raw-events table asks for every event of the contract (`/events?limit=500`): the
   route's `applied=false` means "rejected only", which the page had asked for since 00020.

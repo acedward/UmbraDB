@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { INTERFACE_STATUSES } from "../api/queries.js";
 import {
-  type FakeElement, type Json, type Page, SERVED_SCRIPT, loadPage, markedAncestor, marksOf,
+  type FakeElement, type Json, type Page, Reply, SERVED_SCRIPT, loadPage, markedAncestor, marksOf,
 } from "./helpers/ui-page.js";
 
 /**
@@ -607,6 +607,21 @@ describe("the page shows the origin of every value", () => {
       expect(checkDrawn(drawn.root, drawn.model.all), `outcome ${label} drawn`).toEqual([]);
       note(drawn.model.all);
     }
+    // E1a-F10: a failed interface read (503) is not "none published"
+    {
+      const routes = apiRoutes(up);
+      routes.set(`/v1/contracts/${up.token.address}/interface`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
+      const live = loadPage(SERVED_SCRIPT, routes);
+      live.window.location.hash = `#/contract/${up.token.address}`;
+      live.boot();
+      await live.settle();
+      const sec = live.doc.getElementById("interface")!;
+      expect(sec.textContent).toContain("the public interface could not be read");
+      expect(sec.textContent).not.toContain("no public interface published");
+      expect(live.doc.getElementById("view")!.textContent).toContain("public interface unavailable: 503 UNAVAILABLE");
+      const unavailable = live.ctx.contractModel(live.ctx.state.contract).face.rows[0].origin;
+      expect(unavailable.label).toBe("Not available (the interface could not be read: see partial data)");
+    }
     // a contract that published none: "Not available" with its reason, drawn
     const none = drawContract(page, contractState(tokenFixture("sneb18"), null));
     expect(none.model.face.rows[0].origin.label).toBe("Not available (this contract has published no public interface)");
@@ -734,6 +749,19 @@ describe("the page shows the origin of every value", () => {
     const violations = snebChecks(broken).model;
     expect(violations).toContain("color: derived from 2 inputs without a link to them");
     expect(violations).toContain("status: derived from 2 inputs without a link to them");
+  });
+
+  it("negative control (E1a-F10): a failed read drawn as none published fails the check", async () => {
+    const broken = SERVED_SCRIPT.replace("none.appendChild(node(\"span\", face.unavailable", "none.appendChild(node(\"span\", false");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const up = tokenFixture("uprompi");
+    const routes = apiRoutes(up);
+    routes.set(`/v1/contracts/${up.token.address}/interface`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
+    const live = loadPage(broken, routes);
+    live.window.location.hash = `#/contract/${up.token.address}`;
+    live.boot();
+    await live.settle();
+    expect(live.doc.getElementById("interface")!.textContent).toContain("no public interface published");
   });
 
   it("negative control (E1a-F9): a role labelled with the publication's origin fails the check", () => {
