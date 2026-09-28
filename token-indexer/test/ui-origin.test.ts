@@ -465,6 +465,15 @@ describe("the page shows the origin of every value", () => {
       expect(pendItem.origin.links.map((l: Json) => l.href)).toEqual([`#/tx/${pendingTx}`]);
       expect(checkModel(page, pend.model.all, { tokenIds: drawToken(page, lm).ids, contractIds: pend.ids, address: stuck.address }, knownOf(lm, stuck))).toEqual([]);
       expect(checkDrawn(pend.root, pend.model.all)).toEqual([]);
+      // E1a-R2I: first seen links the observation that set it — a mint before the first declaration
+      {
+        const f = clone(tokenFixture("sneb18"));
+        const firstDecl = Math.min(...f.events.items.filter((e: Json) => e.domainSep === f.token.domainSep).map((e: Json) => Number(e.blockHeight)));
+        f.token.firstMintHeight = firstDecl - 50; f.token.firstSeenHeight = firstDecl - 50;
+        expect(drawToken(page, f).model.facts.find((i: Json) => i.field === "firstSeenHeight").origin.links[0].href).toMatch(/\/mints$/);
+        f.token.firstMintHeight = firstDecl + 50; f.token.firstSeenHeight = firstDecl;
+        expect(drawToken(page, f).model.facts.find((i: Json) => i.field === "firstSeenHeight").origin.links[0].href).toMatch(/\/events$/);
+      }
       const seenRow = rows.find((r) => r.status === "seen")!;
       const seenColor = drawRow(page, seenRow).model.facts.find((i: Json) => i.field === "color");
       expect(seenColor.origin.links[0].href).toBe(`#/color/${seenRow.color}/${seenRow.kind}/activity`);
@@ -959,6 +968,16 @@ describe("the page shows the origin of every value", () => {
     const where: Where = { tokenIds: token.ids, contractIds: pend.ids, address: stuck.address };
     expect(checkModel(page, pend.model.all, where, knownOf(lm, stuck))).toContain(`pending:${lm.contract.deployTxHash}: derived without an evidence link`);
     expect(checkModel(page, token.model.all, where, knownOf(lm))).toContain("visibility: derived without an evidence link");
+  });
+
+  it("negative control (E1a-R2I): first seen cited by status, not by its observation, fails the check", () => {
+    const broken = SERVED_SCRIPT.replace("    { token: t, section: firstSeenSection(t, events) }));", "    idCtx));");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const f = clone(tokenFixture("sneb18"));
+    const firstDecl = Math.min(...f.events.items.filter((e: Json) => e.domainSep === f.token.domainSep).map((e: Json) => Number(e.blockHeight)));
+    f.token.firstMintHeight = firstDecl - 50; f.token.firstSeenHeight = firstDecl - 50;
+    expect(drawToken(page, f).model.facts.find((i: Json) => i.field === "firstSeenHeight").origin.links[0].href).toMatch(/\/events$/);
   });
 
   it("negative control (E1a-F8): identity evidence that always cites the declarations fails for a minted-only token", () => {

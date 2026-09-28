@@ -1791,6 +1791,24 @@ function hashTokenSection(t, section) { return hashToken(t) + "/" + enc(section)
 // Where a token's identity (domain separator, kind byte) is carried, so its evidence link lands on
 // rows that show it: its declarations when it was declared, its mints when it was only minted, the
 // public movements of a colour no contract named (audit 03-E1a finding F8).
+// The observation that set a token's first-seen height, so its evidence link lands on it: a mint at
+// that height, else a declaration of this token at that height, else — for a declared token whose
+// declaration lies beyond the events read — its declarations, else its public movements (audit
+// 03-E1a finding R2I: a described token first minted at 100 and declared at 200 cited the
+// declarations).
+function firstSeenSection(t, events) {
+  if (!t) return null;
+  if (t.status === "builtin") return identitySection(t);
+  var h = Number(t.firstSeenHeight);
+  if (t.firstMintHeight !== null && t.firstMintHeight !== undefined && Number(t.firstMintHeight) === h) return "mints";
+  var list = arr(events);
+  for (var i = 0; i < list.length; i++) {
+    var e = list[i];
+    if (e && txt(e.domainSep) === txt(t.domainSep) && Number(e.kindByte) === Number(t.kind) && Number(e.blockHeight) === h) return "events";
+  }
+  if (t.address && t.domainSep && (t.status === "declared" || t.status === "described")) return "events";
+  return "activity";
+}
 function identitySection(t) {
   if (!t) return null;
   // a built-in row (NIGHT) is known by its colour: its public movements are what the chain shows of it
@@ -1872,7 +1890,7 @@ function tokenModel(d) {
   facts.push(item("lastMintHeight", "last mint height", t.lastMintHeight, o.mints, mintCtx));
   facts.push(item("firstSeenHeight", "first seen height", t.firstSeenHeight,
     builtin ? seeded : pageOrigin("derived", "the lowest block height at which a declaration, a mint or a public movement of this token was seen"),
-    idCtx));
+    { token: t, section: firstSeenSection(t, events) }));
   facts.push(item("metadataUpdatedHeight", "metadata updated height", t.metadataUpdatedHeight,
     t.metadataUpdatedHeight === null || t.metadataUpdatedHeight === undefined
       ? pageOrigin("none", builtin ? "a built-in row carries no declaration" : "no applied declaration")
