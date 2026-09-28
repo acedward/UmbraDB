@@ -59,6 +59,10 @@ What else the page shows:
 - **The token view** gains its contract's interface summary (status and levels; the URL is on the
   contract view), the parts and phase of every trait, and, under a key declared more than once, its
   earlier declarations — a Null included — newest first.
+- A package in more than one part, or not in the guaranteed phase, carries a chip with its part count
+  and phase — on traits, earlier declarations, raw events and every publication, the current one
+  included; a `mixed` package's chip says "a publisher error (FR-002)" in its text (audit 03-E1a
+  finding R7D).
 - Every answer is read up to 64 MiB (`MAX_RESPONSE_BYTES`: a longer announced length is refused, a
   longer stream cancelled), and the contract view reads `/interface` again only when the contract
   route's summary of the publication changed or the kept document is a minute old (audit 03-E1a

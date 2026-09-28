@@ -821,6 +821,21 @@ describe("the page shows the origin of every value", () => {
       expect(ct).toContain("could not be read (see partial data below): the rows below come from the pages read");
     }
 
+    // ── E1a-R7D: a mixed-phase package is flagged as a publisher error — the current publication too
+    {
+      const up = tokenFixture("uprompi");
+      const mixedIface = clone(up.interface);
+      Object.assign(mixedIface, { parts: 2, phase: "mixed", partEventIds: [mixedIface.eventId, mixedIface.eventId + 1] });
+      const drawn = drawContract(loadPage(SERVED_SCRIPT), contractState(up, mixedIface));
+      const pubRow = [...drawn.root.walk()].find((el) => el.getAttribute("data-o") === "iface:publication")!;
+      expect(pubRow.textContent).toContain("2 parts · mixed — a publisher error (FR-002)");
+      expect(checkDrawn(drawn.root, drawn.model.all)).toEqual([]);
+      // a mixed trait on the token view: its chip says so in its text, not only in its tooltip
+      const lp2 = loadPage(SERVED_SCRIPT);
+      const chip = lp2.ctx.partsChip(2, "mixed", null);
+      expect(chip.textContent).toBe("2 parts · mixed — a publisher error (FR-002)");
+    }
+
     // ── E1a-R5D: the shielded-offers view keeps its rows and reports a later page that failed ──
     {
       const routes = new Map<string, Json>([["/internal/status", { net: "undeployed" }]]);
@@ -1642,6 +1657,17 @@ describe("the page shows the origin of every value", () => {
     Object.assign(f, { status: "failed", failedLevel: 2, levels: { l1: "passed", l2: "failed", l3: "not_run" }, witnesses: [], circuits: [],
       report: { operations: [infoRow], levels: { l2: { status: "failed", outcome: "failed", rows: [infoRow] } } } });
     expect(drawContract(loadPage(broken), contractState(up, f)).root.textContent).toContain("no witness declared");
+  });
+
+  it("negative control (E1a-R7D): the current mixed publication drawn without the publisher-error flag", () => {
+    const broken = SERVED_SCRIPT.replace("      wrap.appendChild(partsChip(r.parts, rph, \"this publication\"));\n", "");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const up = tokenFixture("uprompi");
+    const mixedIface = clone(up.interface);
+    Object.assign(mixedIface, { parts: 2, phase: "mixed", partEventIds: [mixedIface.eventId, mixedIface.eventId + 1] });
+    const drawn = drawContract(loadPage(broken), contractState(up, mixedIface));
+    const pubRow = [...drawn.root.walk()].find((el) => el.getAttribute("data-o") === "iface:publication")!;
+    expect(pubRow.textContent).not.toContain("publisher error");
   });
 
   it("negative control (E1a-S2): with the contract's rows unread, the family guessed from one row", async () => {

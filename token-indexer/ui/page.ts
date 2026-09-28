@@ -2307,7 +2307,9 @@ function interfaceModel(x, address, loaded) {
   var uv = urlViewOf(x);
   if (x.url !== null && x.url !== undefined) row("url", "bundle URL", x.url, { url: uv });
   else row("url", "bundle URL", x.urlError ? "not decodable: " + x.urlError : null, { diagnostic: true });
-  row("publication", "publication", packageText(x), { txHash: x.txHash });
+  // the current publication carries its parts and phase like the older ones: a mixed package is a
+  // publisher error, flagged here too (FR-002; audit 03-E1a finding R7D)
+  row("publication", "publication", packageText(x), { txHash: x.txHash, parts: x.parts, phase: x.phase });
   row("payload", "package payload", orDash(x.payloadLength) + " bytes · SHA-256 " + orDash(x.payloadSha256));
   row("checkedAt", "last check", x.checkedAt || "not checked yet");
   row("checks", "checks so far", x.checks);
@@ -2550,7 +2552,9 @@ function partsChip(parts, phase, what) {
   var p = Number(parts);
   var ph = phase ? txt(phase) : null;
   var mixed = ph !== null && ph !== "guaranteed";
-  var c = node("span", partsText(p) + (mixed ? " · " + ph : ""), mixed ? "pp pp-bad" : "pp");
+  // a mixed package is flagged in its visible text, not only in the tooltip (FR-002; audit 03-E1a R7D)
+  var c = node("span", partsText(p) + (mixed ? " · " + ph : "") + (ph === "mixed" ? " — a publisher error (FR-002)" : ""),
+    mixed ? "pp pp-bad" : "pp");
   c.title = (what ? what + ": " : "") + "one [Y] multi-part package in " + partsText(p)
     + (ph ? ", " + ph + " phase" : "")
     + (ph === "mixed" ? " — mixed phase is a publisher error (FR-002): shown, not dropped" : "");
@@ -4767,6 +4771,11 @@ function ifaceValue(r) {
     wrap.appendChild(boundedNode(r.value, TEXT_MAX, "txt"));
     wrap.appendChild(node("span", "  "));
     wrap.appendChild(txLink(r.txHash));
+    var rph = r.phase ? txt(r.phase) : null;
+    if (r.parts !== undefined && r.parts !== null && (Number(r.parts) > 1 || (rph !== null && rph !== "guaranteed"))) {
+      wrap.appendChild(node("span", "  "));
+      wrap.appendChild(partsChip(r.parts, rph, "this publication"));
+    }
     return wrap;
   }
   return boundedNode(r.value, TEXT_MAX, "txt wrapv");
