@@ -154,17 +154,45 @@ function contractSources(c: Json, x: Json, events: Json[] = []): Sources {
 function callSources(m: Sources, calls: Json): void {
   for (const c of calls?.items ?? []) m.set(`call:${c.txHash}:${c.segment}:${c.callIndex}`, { origin: "chain", evidence: { txHash: c.txHash } });
 }
-/** The first evidence link an origin of the API names, or null when it names no transaction. */
-function expectedFirstLink(o: Json, address: string | null): string | null {
+/** Every evidence link an origin of the API names, in order — computed from the payload alone
+ *  (E1a-R2F: every link is checked, not only the first). A string must equal the link; a RegExp
+ *  must match it. null when the origin names nothing the page can link by itself (the page then
+ *  links the section its context names, which the resolution check covers). */
+type Want = string | RegExp;
+const HEX64 = /^[0-9a-f]{64}$/;
+function expectedLinks(o: Json, address: string | null): Want[] | null {
   if (!o || typeof o !== "object") return null;
-  if (o.origin === "mip-0018") {
-    const pk = Array.isArray(o.evidence) ? o.evidence[0] : o.evidence;
-    return pk && typeof pk.txHash === "string" ? `#/tx/${pk.txHash}` : null;
+  const ev = o.evidence;
+  if (o.origin === "mip-0018" || (o.origin === "none" && ev)) {
+    const pks = (Array.isArray(ev) ? ev : ev ? [ev] : []).filter((p: Json) => p && typeof p.txHash === "string" && HEX64.test(p.txHash));
+    return pks.length === 0 ? null : pks.map((p: Json) => `#/tx/${p.txHash}`);
   }
-  if (o.origin === "public-interface") return address === null ? null : `#/contract/${address}/interface`;
-  if (o.origin === "chain") return o.evidence && typeof o.evidence.txHash === "string" ? `#/tx/${o.evidence.txHash}` : null;
+  if (o.origin === "public-interface") {
+    if (address === null) return null;
+    const out: Want[] = [`#/contract/${address}/interface`];
+    if (ev && typeof ev.txHash === "string" && HEX64.test(ev.txHash)) out.push(`#/tx/${ev.txHash}`);
+    return out;
+  }
+  if (o.origin === "chain") {
+    const out: Want[] = [];
+    if (ev && typeof ev.txHash === "string" && HEX64.test(ev.txHash)) out.push(`#/tx/${ev.txHash}`);
+    if (ev && typeof ev.contract === "string" && HEX64.test(ev.contract)) out.push(`#/contract/${ev.contract}`);
+    if (ev && ev.list === "shielded-offers") out.push("#/shielded-offers");
+    return out.length === 0 ? null : out;
+  }
+  if (o.origin === "derived") {
+    const out: Want[] = [];
+    if (ev && typeof ev === "object" && !Array.isArray(ev)) {
+      if (typeof ev.address === "string" && HEX64.test(ev.address)) out.push(`#/contract/${ev.address}`);
+      if ("mintCount" in ev) out.push(/\/mints$/);
+      if ("declared" in ev) out.push(/\/traits$/);
+      if (typeof ev.txHash === "string" && HEX64.test(ev.txHash)) out.push(`#/tx/${ev.txHash}`);
+    }
+    return out.length === 0 ? null : out;
+  }
   return null;
 }
+const wantText = (w: Want[]): string => w.map((x) => (typeof x === "string" ? x : String(x))).join(" ").slice(0, 200);
 
 // ── the checks ──────────────────────────────────────────────────────────────────────────────────
 
@@ -219,11 +247,11 @@ function checkModel(page: Page, items: Json[], where: Where, known: Known, sourc
       const inputs = src.origin === "derived" && src.evidence && typeof src.evidence === "object" && !Array.isArray(src.evidence)
         ? Object.keys(src.evidence).length : 0;
       if (inputs > 0 && o.links.length === 0) out.push(`${it.field}: derived from ${inputs} inputs without a link to them`);
-      const want = expectedFirstLink(src, where.address);
-      const got = o.links[0]?.href ?? null;
-      if (want !== null && got !== want) out.push(`${it.field}: first evidence link ${String(got).slice(0, 90)}, but its evidence is ${want.slice(0, 90)}`);
-      if (src.origin === "public-interface" && src.evidence?.txHash && !o.links.some((l: Json) => l.href === `#/tx/${src.evidence.txHash}`)) {
-        out.push(`${it.field}: a public-interface value that does not link its publication transaction`);
+      const want = expectedLinks(src, where.address);
+      const got: string[] = o.links.map((l: Json) => l.href);
+      if (want !== null) {
+        const ok = got.length === want.length && want.every((w, i) => (typeof w === "string" ? got[i] === w : w.test(got[i]!)));
+        if (!ok) out.push(`${it.field}: evidence links ${got.join(" ").slice(0, 200)}, but its evidence is ${wantText(want)}`);
       }
     }
   }
@@ -727,7 +755,21 @@ describe("the page shows the origin of every value", () => {
       'facts.push(item("decimals", "decimals", t.decimals, o.name,');
     expect(broken).not.toBe(SERVED_SCRIPT);
     const violations = snebChecks(broken).model;
-    expect(violations.some((v) => v.startsWith("decimals: first evidence link #/tx/591d1c45") && v.includes("but its evidence is #/tx/"))).toBe(true);
+    expect(violations.some((v) => v.startsWith("decimals: evidence links #/tx/591d1c45") && v.includes("but its evidence is #/tx/"))).toBe(true);
+  });
+
+  it("negative control (E1a-R2F): a SECOND evidence link to another known transaction fails the check", () => {
+    const up = tokenFixture("uprompi");
+    // the interface section stays the first link; the publication link cites the contract's deploy
+    const broken = SERVED_SCRIPT.replace('var pl = txEvidence(e.txHash, "publication tx");',
+      `var pl = txEvidence("${up.contract.deployTxHash}", "publication tx");`);
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const drawn = drawContract(page, contractState(up, up.interface));
+    const where: Where = { tokenIds: new Set(["mints", "traits", "events", "activity", "metadata", "facts"]), contractIds: drawn.ids, address: up.token.address };
+    const violations = checkModel(page, drawn.model.all, where, knownOf(up), contractSources(up.contract, up.interface, up.events.items));
+    expect(violations.some((v) => v.startsWith(`iface:status: evidence links #/contract/${up.token.address}/interface #/tx/${up.contract.deployTxHash}`))).toBe(true);
+    expect(violations.some((v) => v.includes("resolves to"))).toBe(false); // every link still resolves: only the new check sees it
   });
 
   it("negative control (E1a-F15): a value drawn with its chip in one place but not in another fails the check", () => {
