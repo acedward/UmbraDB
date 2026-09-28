@@ -913,6 +913,25 @@ describe("the page shows the origin of every value", () => {
     // ── every origin kind met at least once ───────────────────────────────────────────────────
     expect([...kindsSeen].sort()).toEqual(["chain", "derived", "mip-0018", "none", "public-interface"]);
 
+    // ── E1a-R4H: a click on a list row navigates through the page's own go() ─────────────────
+    {
+      const rows = read("tokens.json");
+      const sn = tokenFixture("sneb18");
+      const routes = apiRoutes(sn);
+      routes.set("/v1/tokens?limit=200", rows);
+      const lp = loadPage(SERVED_SCRIPT, routes);
+      lp.boot();
+      await lp.settle();
+      expect(lp.ctx.state.route.view).toBe("list");
+      const row = [...lp.doc.getElementById("view")!.walk()].find((el) => el.tagName === "tr" && el.className.startsWith("pick")
+        && el.textContent.includes("SNEB18"))!;
+      row.click();
+      await lp.settle();
+      expect(lp.window.location.hash).toBe(`#/token/${sn.token.address}/${sn.token.domainSep}/${sn.token.kind}`);
+      expect(lp.ctx.state.route.view, "the row's click navigated").toBe("token");
+      expect(lp.requests).toContain(`/v1/contracts/${sn.token.address}/tokens/${sn.token.domainSep}/${sn.token.kind}`);
+    }
+
     // ── the page as a browser runs it (E1a-F15): boot on a deep link, follow an evidence link ─
     const live = loadPage(SERVED_SCRIPT, apiRoutes(up));
     live.window.location.hash = `#/contract/${up.token.address}/interface`;
@@ -1106,6 +1125,19 @@ describe("the page shows the origin of every value", () => {
     expect(link.click().defaultPrevented).toBe(true);
     await live.settle();
     expect(live.ctx.state.route.view).toBe("token");
+  });
+
+  it("negative control (E1a-R4H): a go() that assigns nothing leaves a clicked row on the list", async () => {
+    const broken = SERVED_SCRIPT.replace("function go(hash) { window.location.hash = hash; }", "function go(hash) { }");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const routes = apiRoutes(tokenFixture("sneb18"));
+    routes.set("/v1/tokens?limit=200", read("tokens.json"));
+    const lp = loadPage(broken, routes);
+    lp.boot();
+    await lp.settle();
+    [...lp.doc.getElementById("view")!.walk()].find((el) => el.tagName === "tr" && el.className.startsWith("pick") && el.textContent.includes("SNEB18"))!.click();
+    await lp.settle();
+    expect(lp.ctx.state.route.view).toBe("list");
   });
 
   it("negative control (E1a-R3K): following the same evidence link again does not scroll without the page's own scroll", async () => {

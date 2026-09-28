@@ -153,7 +153,7 @@ export interface Page {
   /** The fake API: path (with its query) → payload. An unknown path answers 404. */
   routes: Map<string, Route>;
   window: Json;
-  /** Sets `location.hash` and fires `hashchange`, as following a link does. */
+  /** Sets `location.hash` as following a link does (a hashchange is queued; await settle()). */
   navigate(hash: string): void;
   /** Runs the DOMContentLoaded listeners (the page's boot). */
   boot(): void;
@@ -166,7 +166,20 @@ export function loadPage(script = SERVED_SCRIPT, routes: Map<string, Route> = ne
   const requests: string[] = [];
   const copied: string[] = [];
   const winListeners: Record<string, Listener[]> = {};
-  const location = { hash: "" };
+  // location.hash as a browser has it: assigning a different fragment (the page's go(), a followed
+  // link) queues a hashchange for the listeners registered at that moment; the same fragment, none
+  // (audit 03-E1a findings R3K, R4H).
+  let fragment = "";
+  const location = {
+    get hash(): string { return fragment; },
+    set hash(v: string) {
+      const next = v === "" ? "" : (String(v).startsWith("#") ? String(v) : `#${String(v)}`);
+      if (next === fragment) return;
+      fragment = next;
+      const listeners = [...(winListeners.hashchange ?? [])];
+      if (listeners.length > 0) setImmediate(() => { for (const fn of listeners) fn(fakeEvent("hashchange")); });
+    },
+  };
   const win = {
     addEventListener(type: string, fn: Listener) { (winListeners[type] ??= []).push(fn); },
     location,
@@ -192,11 +205,11 @@ export function loadPage(script = SERVED_SCRIPT, routes: Map<string, Route> = ne
   });
   vm.runInContext(script, ctx, { filename: "served-page-script.js" });
   const fire = (type: string): void => { for (const fn of winListeners[type] ?? []) fn(fakeEvent(type)); };
-  // As a browser: following a link to the fragment the page is already on fires no hashchange.
-  doc.navigateHook = (hash: string) => { if (location.hash === hash) return; location.hash = hash; fire("hashchange"); };
+  // As a browser: following a link sets the fragment (the setter above queues the hashchange).
+  doc.navigateHook = (hash: string) => { location.hash = hash; };
   return {
     ctx, doc, requests, copied, routes, window: win,
-    navigate(hash: string) { if (location.hash === hash) return; location.hash = hash; fire("hashchange"); },
+    navigate(hash: string) { location.hash = hash; },
     boot() { fire("DOMContentLoaded"); },
     async settle() { for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r)); },
   };
