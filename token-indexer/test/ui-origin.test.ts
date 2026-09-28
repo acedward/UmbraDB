@@ -110,11 +110,14 @@ function knownOf(...docs: Json[]): Known {
 // ── the API origin behind each value, computed from the payloads alone (independent of the page) ─
 
 type Sources = Map<string, Json>;
+/** An API origin tagged with the token it belongs to, so a derived value's section links can be
+ *  expected exactly (E1a-R3C) — the tag is the test's, never the page's. */
+const ofToken = (o: Json, token: Json): Json => ({ ...o, __token: token });
 const hexOf = (s: string): string => Buffer.from(s, "utf8").toString("hex");
 function tokenSources(f: TokenFixture): Sources {
   const m: Sources = new Map();
   const o = f.token.origins ?? {};
-  for (const k of ["name", "symbol", "decimals", "tokenUri", "color", "status", "metadata"]) if (o[k]) m.set(k, o[k]);
+  for (const k of ["name", "symbol", "decimals", "tokenUri", "color", "status", "metadata"]) if (o[k]) m.set(k, ofToken(o[k], f.token));
   for (const k of ["mintCount", "totalMinted", "firstMintHeight", "lastMintHeight"]) if (o.mints) m.set(k, o.mints);
   if (f.token.interface) m.set("interface", f.token.interface.origin);
   for (const kv of f.metadata.keys ?? []) m.set(`trait:${kv.keyHex ?? hexOf(kv.key)}`, kv.origin);
@@ -129,7 +132,7 @@ function tokenSources(f: TokenFixture): Sources {
 }
 function rowSources(m: Sources, s: Json): void {
   const o = s.origins ?? {};
-  for (const k of ["color", "name", "symbol", "decimals", "status"]) if (o[k]) m.set(`row:${s.domainSep}:${s.kind}:${k}`, o[k]);
+  for (const k of ["color", "name", "symbol", "decimals", "status"]) if (o[k]) m.set(`row:${s.domainSep}:${s.kind}:${k}`, ofToken(o[k], s));
   if (o.mints) m.set(`row:${s.domainSep}:${s.kind}:mints`, o.mints);
 }
 function contractSources(c: Json, x: Json, events: Json[] = []): Sources {
@@ -184,8 +187,11 @@ function expectedLinks(o: Json, address: string | null): Want[] | null {
     const out: Want[] = [];
     if (ev && typeof ev === "object" && !Array.isArray(ev)) {
       if (typeof ev.address === "string" && HEX64.test(ev.address)) out.push(`#/contract/${ev.address}`);
-      if ("mintCount" in ev) out.push(/\/mints$/);
-      if ("declared" in ev) out.push(/\/traits$/);
+      // the token's own sections, its route computed here (a colour route for a row with no contract)
+      const t = o.__token;
+      const route = t ? (t.address && t.domainSep ? `#/token/${t.address}/${t.domainSep}/${t.kind}` : `#/color/${t.color}/${t.kind}`) : null;
+      if ("mintCount" in ev) out.push(route ? `${route}/mints` : /\/mints$/);
+      if ("declared" in ev) out.push(route ? `${route}/traits` : /\/traits$/);
       if (typeof ev.txHash === "string" && HEX64.test(ev.txHash)) out.push(`#/tx/${ev.txHash}`);
     }
     return out.length === 0 ? null : out;
@@ -274,6 +280,15 @@ function checkDrawn(root: FakeElement, items: Json[]): string[] {
       c.className.split(" ").includes("orig") && c.textContent === it.origin.label
       && (first === undefined ? c.tagName === "span" : c.tagName === "a" && c.href === first.href));
     els.forEach((el, i) => { if (!hasChip(el)) out.push(`${it.field}: drawn (occurrence ${i + 1} of ${els.length}) without its origin "${it.origin.label}"`); });
+    // every evidence line drawn for it links exactly the model's links, in order (E1a-R3C)
+    const want = it.origin.links.map((l: Json) => l.href).join(" ");
+    for (const el of els) {
+      for (const line of [...el.walk()].filter((c) => c.className === "oev")) {
+        if (markedAncestor(line) !== el) continue;
+        const got = [...line.walk()].filter((c) => c.tagName === "a").map((c) => c.href).join(" ");
+        if (got !== want) out.push(`${it.field}: its evidence line links ${got.slice(0, 160)}, not ${want.slice(0, 160)}`);
+      }
+    }
   }
   for (const f of drawn.keys()) if (!wanted.has(f)) out.push(`${f}: drawn but not in the model`);
   for (const el of root.walk()) {
@@ -823,6 +838,24 @@ describe("the page shows the origin of every value", () => {
     expect(broken).not.toBe(SERVED_SCRIPT);
     const violations = snebChecks(broken).model;
     expect(violations.some((v) => v.startsWith("decimals: evidence links #/tx/591d1c45") && v.includes("but its evidence is #/tx/"))).toBe(true);
+  });
+
+  it("negative control (E1a-R3C): a drawn evidence line whose second link differs from the model fails the check", () => {
+    const broken = SERVED_SCRIPT.replace("    evidenceHref(a, ov.links[i].href);", "    evidenceHref(a, ov.links[0].href);");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const up = tokenFixture("uprompi");
+    const drawn = drawContract(page, contractState(up, up.interface));
+    expect(checkDrawn(drawn.root, drawn.model.all).some((v) => v.startsWith("iface:status: its evidence line links"))).toBe(true);
+  });
+
+  it("negative control (E1a-R3C): a derived section link to another token's route fails the check", () => {
+    const zero = `#/color/${"0".repeat(64)}/1`;
+    const broken = SERVED_SCRIPT.replace('      if (dl) { dl.text = "input: the declarations"; v.links.push(dl); }',
+      `      if (dl) { dl.text = "input: the declarations"; dl.href = "${zero}/traits"; v.links.push(dl); }`);
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const v0 = snebChecks(broken).model;
+    expect(v0.some((v) => v.startsWith("status: evidence links") && v.includes("#/color/0000000000")), JSON.stringify(v0).slice(0, 600)).toBe(true);
   });
 
   it("negative control (E1a-R2F): a SECOND evidence link to another known transaction fails the check", () => {
