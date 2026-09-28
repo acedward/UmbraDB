@@ -1600,6 +1600,8 @@ var SECTION_TEXT = {
 };
 function sectionEvidence(ctx, section) {
   var c = ctx || {};
+  // a section whose read failed shows nothing to cite (audit 03-E1a finding R5C)
+  if (c.unavailable && c.unavailable[section]) return null;
   if (c.token && c.token.address && c.token.domainSep) {
     return { href: hashTokenSection(c.token, section), text: SECTION_TEXT[section] || section,
       title: "open " + (SECTION_TEXT[section] || section) + " of this token" };
@@ -1704,6 +1706,9 @@ function originView(o, ctx) {
     if (v.links.length === 0 && c.section) {
       var sl = sectionEvidence(c, c.section);
       if (sl) v.links.push(sl);
+    }
+    if (v.links.length === 0 && c.api) {
+      v.links.push({ href: c.api, text: "the token's row (API)", title: "the token as the API serves it (raw JSON, new tab)" });
     }
   } else if (kind === "derived") {
     v.rule = o.rule ? txt(o.rule) : "(no rule given)";
@@ -1872,8 +1877,14 @@ function tokenModel(d) {
     return pk ? { blockHeight: pk.blockHeight, txPosition: pk.txPosition, eventId: eventIdsOf(pk)[0] } : null;
   }
   function declCount(keyText) { return declCountOf(asciiHex(keyText), currentOf(o[keyText])); }
+  // the sections whose read failed: never cited; the API's row of the token is cited instead (R5C)
+  var unavailable = { mints: d.mintsFailed === true, traits: d.keysFailed === true, events: d.eventsFailed === true };
   function item(field, label, value, origin, extra) {
-    var c = extra || ctx;
+    var c0 = extra || ctx;
+    var c = {};
+    for (var k0 in c0) if (own(c0, k0)) c[k0] = c0[k0];
+    c.unavailable = unavailable;
+    if (!c.api && (unavailable.mints || unavailable.traits || unavailable.events)) c.api = tokenApiHref(t);
     // A built-in row's values are the indexer's seed, a rule with no chain inputs: their evidence is
     // the seed itself, as the API serves it (audit 03-E1a findings R2A, R3A).
     if (builtin) {
@@ -2024,7 +2035,8 @@ function tokenModel(d) {
     token: t, facts: facts, disclosure: disclosure, iface: ifaceItem, metadata: metadata,
     traits: traits, mints: mints, activity: activity, calls: calls, siblings: siblings, events: ev,
     historyPartial: partial, mintsMore: d.mintsMore === true,
-    traitsMore: keysAll.length > TRAIT_ROWS ? keysAll.length : null,
+    traitsMore: keysAll.length > TRAIT_ROWS ? keysAll.length : null, keysFailed: d.keysFailed === true,
+    historyUnavailable: d.eventsFailed === true,
     // how many keys the API serves: a count of the token's own, drawn in the traits section's note
     traitsCount: keysAll.length > TRAIT_ROWS ? item("traits:count", "keys", keysAll.length,
       pageOrigin("derived", "the number of keys GET …/metadata serves for this token"),
@@ -2713,10 +2725,10 @@ async function loadNamedToken(r, d) {
   await Promise.all([
     api(tokenBase(r) + "/metadata").then(
       function (p) { d.keys = itemsOf(p); },
-      function (e) { d.notes.push("traits unavailable: " + e.message); }),
+      function (e) { d.keysFailed = true; d.notes.push("traits unavailable: " + e.message); }),
     loadPages(function (c) { return tokenBase(r) + "/mints?limit=" + MINT_LIMIT + (c ? "&cursor=" + enc(c) : ""); }, MINT_PAGES).then(
       function (p) { d.mints = p.items; d.mintsMore = p.nextCursor !== null; partlyNote(d.notes, "mint history", p); },
-      function (e) { d.notes.push("mint history unavailable: " + e.message); }),
+      function (e) { d.mintsFailed = true; d.notes.push("mint history unavailable: " + e.message); }),
     loadPages(function (c) { return contractEventsPath(r.address, c); }, EVENT_PAGES).then(
       function (p) { d.events = p.items; d.eventsMore = p.nextCursor !== null; partlyNote(d.notes, "raw events", p); },
       function (e) { d.eventsFailed = true; d.notes.push("raw events unavailable: " + e.message); }),
@@ -2774,7 +2786,7 @@ async function loadContract(address) {
     ifaceLoad,
     loadPages(function (cur) { return contractEventsPath(address, cur); }, EVENT_PAGES).then(
       function (p) { c.events = p.items; c.eventsMore = p.nextCursor !== null; partlyNote(c.notes, "raw events", p); },
-      function (e) { c.notes.push("raw events unavailable: " + e.message); }),
+      function (e) { c.eventsFailed = true; c.notes.push("raw events unavailable: " + e.message); }),
     // US7: the same calls table the ledger-token page shows, under the same note.
     loadPages(function (cur) { return callsPath(address, cur); }, state.act.pages).then(
       function (p) { c.calls = p; partlyNote(c.notes, "contract calls", p); },
@@ -4177,7 +4189,10 @@ function renderToken(main) {
   var mints = node("section");
   mints.id = "mints";
   mints.appendChild(node("h2", "mint history"));
-  if (m.mints.length === 0) {
+  if (m.mints.length === 0 && d.mintsFailed === true) {
+    // a read that failed is not an answer: nothing is said of the token's mints (audit 03-E1a R5C)
+    mints.appendChild(node("div", "the mint history could not be read (see partial data below)", "err"));
+  } else if (m.mints.length === 0) {
     mints.appendChild(node("div", t.storage === "ledger"
       ? "a ledger token is never minted natively, so it has no mint rows by construction"
       : "no mint observed for this token yet", "empty"));
@@ -4232,7 +4247,7 @@ function renderToken(main) {
 
   if (t.address) {
     main.appendChild(eventsSection(m.events, t.domainSep, "raw token-metadata events of this contract (rejected ones included)",
-      d.eventsMore === true ? t.address : null));
+      d.eventsMore === true ? t.address : null, d.eventsFailed === true));
   }
 
   if (d.notes.length > 0) {
@@ -4290,10 +4305,16 @@ function traitsSection(m) {
   traits.id = "traits";
   traits.appendChild(node("h2", "traits: every key with the declaration that set it, and the earlier ones"));
   if (m.traits.length === 0) {
-    traits.appendChild(node("div", "no key/value pairs recorded for this token", "empty"));
+    traits.appendChild(m.keysFailed
+      ? node("div", "the traits could not be read (see partial data below)", "err")
+      : node("div", "no key/value pairs recorded for this token", "empty"));
     return traits;
   }
   if (m.historyPartial) traits.appendChild(partialEventsNote(m.token.address, "the earlier declarations listed under a key"));
+  if (m.historyUnavailable) {
+    traits.appendChild(node("div", "the contract's events could not be read (see partial data below): a key's earlier "
+      + "declarations, and whether P1 chose among several, are not known here", "note err"));
+  }
   if (m.traitsMore !== null) {
     var tm = marked(node("div", null, "note err"), m.traitsCount.field);
     tm.appendChild(node("span", "the first " + groupDigits(m.traits.length) + " of " + groupDigits(m.traitsMore)
@@ -4408,11 +4429,15 @@ var EVENTS_ORDER_NOTE = "this token's own events first (highlighted), then the r
   + "event-id order — the order the scanner read them. Which declaration of a key is in force is rule P1's "
   + "choice among the APPLIED rows (block, transaction position, execution order; a multi-part package placed "
   + "by its first part); a rejected row never applies. The traits above show the result.";
-function eventsSection(items, markDomain, heading, moreOf) {
+function eventsSection(items, markDomain, heading, moreOf, failed) {
   var sec = node("section");
   sec.id = "events";
   sec.appendChild(node("h2", heading));
   if (moreOf) sec.appendChild(partialEventsNote(moreOf, "the rows below"));
+  if ((!items || items.length === 0) && failed) {
+    sec.appendChild(node("div", "the raw events could not be read (see partial data below)", "err"));
+    return sec;
+  }
   if (!items || items.length === 0) {
     sec.appendChild(node("div", "no token-metadata event from this contract", "empty"));
     return sec;
@@ -4538,7 +4563,7 @@ function renderContract(main) {
   main.appendChild(callsSection(c.calls, "calls of this contract", null, m.calls));
 
   main.appendChild(eventsSection(m.events, null, "raw token-metadata events of this contract (rejected ones included)",
-    c.eventsMore === true ? d.address : null));
+    c.eventsMore === true ? d.address : null, c.eventsFailed === true));
 
   if (c.notes.length > 0) {
     var notes = node("section");

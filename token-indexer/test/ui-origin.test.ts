@@ -664,6 +664,43 @@ describe("the page shows the origin of every value", () => {
       expect(d2.origin.detail).toContain("the latest of 5 declarations of this key");
     }
 
+    // ── E1a-R5C: a read that fails is not an answer — no absence claim, no evidence into it ────
+    {
+      const ss = tokenFixture("sstarpi");
+      const base = `/v1/contracts/${ss.token.address}/tokens/${ss.token.domainSep}/${ss.token.kind}`;
+      const f = clone(ss); f.token.firstSeenHeight = f.token.firstMintHeight;
+      const routes = apiRoutes(f);
+      routes.set(`${base}/mints?limit=200`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
+      routes.set(`${base}/metadata`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
+      routes.set(`/v1/contracts/${ss.token.address}/events?limit=500`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
+      const live = await bootToken(f, routes);
+      const view = live.doc.getElementById("view")!;
+      for (const absent of ["no mint observed", "no key/value pairs recorded", "no token-metadata event"]) expect(view.textContent).not.toContain(absent);
+      for (const said of ["the mint history could not be read", "the traits could not be read", "the raw events could not be read"]) {
+        expect(view.textContent).toContain(said);
+      }
+      const m = live.ctx.tokenModel(live.ctx.state.detail);
+      const links = (field: string): string[] => m.facts.find((i: Json) => i.field === field).origin.links.map((l: Json) => l.href);
+      expect(links("firstSeenHeight"), "first seen: a mint, but the mints could not be read").toEqual([base]);
+      expect(links("mintCount"), "the mint count's section could not be read").toEqual([base]);
+      for (const it of m.all) for (const l of it.origin.links) expect(l.href, it.field).not.toMatch(/\/(mints|traits|events)$/);
+      // only the events fail: the traits are drawn, and say their history is not known
+      const eRoutes = apiRoutes(ss);
+      eRoutes.set(`/v1/contracts/${ss.token.address}/events?limit=500`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
+      const el = await bootToken(ss, eRoutes);
+      const tsec = [...el.doc.getElementById("view")!.walk()].find((x) => x.id === "traits")!;
+      expect(tsec.textContent).toContain("the contract's events could not be read (see partial data below): a key's earlier declarations");
+      // the contract view too
+      const cRoutes = apiRoutes(ss);
+      cRoutes.set(`/v1/contracts/${ss.token.address}/events?limit=500`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
+      const cl = loadPage(SERVED_SCRIPT, cRoutes);
+      cl.window.location.hash = `#/contract/${ss.token.address}`;
+      cl.boot();
+      await cl.settle();
+      expect(cl.doc.getElementById("view")!.textContent).toContain("the raw events could not be read");
+      expect(cl.doc.getElementById("view")!.textContent).not.toContain("no token-metadata event from this contract");
+    }
+
     // ── E1a-R4G: a later page that fails keeps the pages read ────────────────────────────────
     {
       const ss = tokenFixture("sstarpi");
@@ -1403,7 +1440,21 @@ describe("the page shows the origin of every value", () => {
     expect(live.doc.getElementById("mints")!.textContent).not.toContain("mints are listed");
   });
 
-  it("negative control (E1a-R4G): a later failed page that discards the pages read says no mint was observed", async () => {
+  it("negative control (E1a-R5C): a failed mint read drawn as an empty history claims no mint", async () => {
+    const broken = SERVED_SCRIPT.replace("  if (m.mints.length === 0 && d.mintsFailed === true) {", "  if (false) {")
+      .replace("  if (c.unavailable && c.unavailable[section]) return null;\n", "");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const ss = tokenFixture("sstarpi");
+    const base = `/v1/contracts/${ss.token.address}/tokens/${ss.token.domainSep}/${ss.token.kind}`;
+    const routes = apiRoutes(ss);
+    routes.set(`${base}/mints?limit=200`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
+    const live = await bootToken(ss, routes, broken);
+    expect(live.doc.getElementById("view")!.textContent).toContain("no mint observed for this token yet");
+    const m = live.ctx.tokenModel(live.ctx.state.detail);
+    expect(m.facts.find((i: Json) => i.field === "mintCount").origin.links[0].href).toMatch(/\/mints$/);
+  });
+
+  it("negative control (E1a-R4G): a later failed page that discards the pages read loses them", async () => {
     const broken = SERVED_SCRIPT.replace("      if (i === 0) throw e;\n      return { items: items, nextCursor: cursor, error: e };", "      throw e;");
     expect(broken).not.toBe(SERVED_SCRIPT);
     const ss = tokenFixture("sstarpi");
@@ -1412,7 +1463,8 @@ describe("the page shows the origin of every value", () => {
     routes.set(base, { items: Array.from({ length: 200 }, (_, i) => ({ ...ss.mints.items[0], callIndex: i })), nextCursor: "m1" });
     routes.set(`${base}&cursor=m1`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
     const live = await bootToken(ss, routes, broken);
-    expect(live.doc.getElementById("view")!.textContent).toContain("no mint observed for this token yet");
+    expect(live.ctx.state.detail.mints.length, "the 200 rows read are lost").toBe(0);
+    expect(live.doc.getElementById("view")!.textContent).not.toContain("mints are listed");
   });
 
   it("negative control (E1a-R4E): with its reads failed, an undeployed contract's address cites a section not loaded", () => {
