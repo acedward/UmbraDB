@@ -398,6 +398,16 @@ describe("the page shows the origin of every value", () => {
         expect(checkModel(page, drawn.model.all, where, knownOf(row), tokenSources(rowFixture(row))), `${status} row: model`).toEqual([]);
         expect(checkDrawn(drawn.root, drawn.model.all), `${status} row: drawn`).toEqual([]);
       }
+      // E1a-F8: the identity (domainSep, kind) links where it is carried — declarations, or mints for
+      // a token that was only minted, or a seen colour's movements
+      const want: Record<string, string> = { seen: "activity", observed: "mints", declared: "events", described: "events" };
+      for (const row of rows.filter((r) => want[r.status] !== undefined)) {
+        const facts = drawRow(page, row).model.facts;
+        for (const field of row.address ? ["domainSep", "kind"] : ["kind"]) {
+          const first = facts.find((i: Json) => i.field === field).origin.links[0]?.href ?? "(none)";
+          expect(first, `${row.status} row: ${field}`).toMatch(new RegExp(`/${want[row.status]}$`));
+        }
+      }
       const seenRow = rows.find((r) => r.status === "seen")!;
       const seenColor = drawRow(page, seenRow).model.facts.find((i: Json) => i.field === "color");
       expect(seenColor.origin.links[0].href).toBe(`#/color/${seenRow.color}/${seenRow.kind}/activity`);
@@ -718,6 +728,14 @@ describe("the page shows the origin of every value", () => {
     const violations = snebChecks(broken).model;
     expect(violations).toContain("color: derived from 2 inputs without a link to them");
     expect(violations).toContain("status: derived from 2 inputs without a link to them");
+  });
+
+  it("negative control (E1a-F8): identity evidence that always cites the declarations fails for a minted-only token", () => {
+    const broken = SERVED_SCRIPT.replace('  return t.status === "observed" ? "mints" : "events";', '  return "events";');
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const row = (read("tokens.json").items as Json[]).find((r) => r.status === "observed")!;
+    expect(drawRow(page, row).model.facts.find((i: Json) => i.field === "domainSep").origin.links[0].href).toMatch(/\/events$/);
   });
 
   it("negative control (E1a-F6): a capped history drawn as if complete fails the check", () => {

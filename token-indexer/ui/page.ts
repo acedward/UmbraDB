@@ -1648,6 +1648,14 @@ function declaredValueText(e) {
 // ── the token view ───────────────────────────────────────────────────────────────────────────
 
 function hashTokenSection(t, section) { return hashToken(t) + "/" + enc(section); }
+// Where a token's identity (domain separator, kind byte) is carried, so its evidence link lands on
+// rows that show it: its declarations when it was declared, its mints when it was only minted, the
+// public movements of a colour no contract named (audit 03-E1a finding F8).
+function identitySection(t) {
+  if (!t || t.status === "builtin") return null;
+  if (!t.address || !t.domainSep) return "activity";
+  return t.status === "observed" ? "mints" : "events";
+}
 function valueOrNull(v) { return v === null || v === undefined || v === "" ? null : txt(v); }
 
 // Every value the token view shows, each with its origin, section by section. "all" lists every
@@ -1688,17 +1696,16 @@ function tokenModel(d) {
     builtin ? seeded : (seen ? noContract : pageOrigin("chain",
       "the contract that declared or minted this token; its deploy and calls are on the contract view",
       { contract: t.address }))));
+  var idCtx = { token: t, section: identitySection(t) };
   facts.push(item("domainSep", "domainSep", seen ? "unknown" : t.domainSep,
     builtin ? seeded : (seen ? noContract : pageOrigin("chain",
-      "MIP-0018 §4: carried by every declaration and mint of this token"))
-    , { token: t, section: "events" }));
+      "MIP-0018 §4: carried by every declaration and mint of this token")), idCtx));
   facts.push(item("kind", "kind", orDash(t.kind) + "  (" + kindLabel(t) + ")",
-    builtin ? seeded : pageOrigin("chain", "MIP-0018 §3: the kind byte carried by this token's declarations and mints"),
-    { token: t, section: seen ? "activity" : "events" }));
+    builtin ? seeded : pageOrigin("chain", "MIP-0018 §3: the kind byte carried by this token's declarations and mints"), idCtx));
   facts.push(item("privacy", "privacy", t.privacy,
-    pageOrigin("derived", "MIP-0018 §3: bit 0 of the kind byte")));
+    pageOrigin("derived", "MIP-0018 §3: bit 0 of the kind byte"), idCtx));
   facts.push(item("storage", "storage", t.storage,
-    pageOrigin("derived", "MIP-0018 §3: bit 1 of the kind byte")));
+    pageOrigin("derived", "MIP-0018 §3: bit 1 of the kind byte"), idCtx));
   // A colour seen in public data only (status seen) cites no transaction: its evidence is the
   // token's public movements (audit 03-E1a finding F7).
   facts.push(item("color", "colour", t.color, o.color, { token: t, address: t.address, section: seen ? "activity" : null }));
@@ -1713,7 +1720,8 @@ function tokenModel(d) {
   facts.push(item("firstMintHeight", "first mint height", t.firstMintHeight, o.mints, mintCtx));
   facts.push(item("lastMintHeight", "last mint height", t.lastMintHeight, o.mints, mintCtx));
   facts.push(item("firstSeenHeight", "first seen height", t.firstSeenHeight,
-    builtin ? seeded : pageOrigin("derived", "the lowest block height at which a declaration, a mint or a public movement of this token was seen")));
+    builtin ? seeded : pageOrigin("derived", "the lowest block height at which a declaration, a mint or a public movement of this token was seen"),
+    idCtx));
   facts.push(item("metadataUpdatedHeight", "metadata updated height", t.metadataUpdatedHeight,
     t.metadataUpdatedHeight === null || t.metadataUpdatedHeight === undefined
       ? pageOrigin("none", builtin ? "a built-in row carries no declaration" : "no applied declaration")
@@ -1828,9 +1836,10 @@ function siblingItems(t, fields) {
   var ctx = { token: t, address: t.address };
   var base = "row:" + t.domainSep + ":" + t.kind + ":";
   var identity = pageOrigin("chain", "MIP-0018 §3–§4: carried by every declaration and mint of this token");
+  var idCtx = { token: t, section: identitySection(t) };
   var all = {
-    domainSep: { value: t.domainSep, origin: identity, ctx: { token: t, section: "events" } },
-    kind: { value: t.kind, origin: identity, ctx: { token: t, section: "events" } },
+    domainSep: { value: t.domainSep, origin: identity, ctx: idCtx },
+    kind: { value: t.kind, origin: identity, ctx: idCtx },
     color: { value: t.color, origin: o.color, ctx: ctx },
     name: { value: t.name, origin: o.name, ctx: ctx },
     symbol: { value: t.symbol, origin: o.symbol, ctx: ctx },
