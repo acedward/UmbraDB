@@ -1429,6 +1429,28 @@ var EVENT_LIMIT = 500;
 // (EVENT_PAGES x EVENT_LIMIT events, oldest first). A contract with more says so where it matters —
 // a key's history and the P1 count are then made of the events read (audit 03-E1a finding F2).
 var EVENT_PAGES = 4;
+// The pages read are kept for EVENTS_MAX_AGE_MS: up to four pages (each up to MAX_RESPONSE_BYTES)
+// must not be downloaded again on every 10 s refresh (the rule F4 / R2C set for the interface; a
+// newer declaration meanwhile is never shown as earlier — R3G).
+var EVENTS_MAX_AGE_MS = 60000;
+function keptEvents(prev, address) {
+  if (!prev || prev.eventsAddress !== address || prev.eventsFailed === true || !prev.eventsAt) return null;
+  return Date.now() - prev.eventsAt < EVENTS_MAX_AGE_MS ? prev : null;
+}
+function contractEventsInto(target, prev, address, notes) {
+  var kept = keptEvents(prev, address);
+  target.eventsAddress = address;
+  if (kept) {
+    target.events = kept.events; target.eventsMore = kept.eventsMore; target.eventsAt = kept.eventsAt;
+    return null;
+  }
+  return loadPages(function (c) { return contractEventsPath(address, c); }, EVENT_PAGES).then(
+    function (p) {
+      target.events = p.items; target.eventsMore = p.nextCursor !== null; target.eventsAt = p.error ? 0 : Date.now();
+      partlyNote(notes, "raw events", p);
+    },
+    function (e) { target.eventsFailed = true; notes.push("raw events unavailable: " + e.message); });
+}
 
 var ORIGIN_LABELS = {
   "mip-0018": "MIP-0018 declaration",
@@ -2713,9 +2735,7 @@ async function loadNamedToken(r, d) {
     loadPages(function (c) { return tokenBase(r) + "/mints?limit=" + MINT_LIMIT + (c ? "&cursor=" + enc(c) : ""); }, MINT_PAGES).then(
       function (p) { d.mints = p.items; d.mintsMore = p.nextCursor !== null; partlyNote(d.notes, "mint history", p); },
       function (e) { d.notes.push("mint history unavailable: " + e.message); }),
-    loadPages(function (c) { return contractEventsPath(r.address, c); }, EVENT_PAGES).then(
-      function (p) { d.events = p.items; d.eventsMore = p.nextCursor !== null; partlyNote(d.notes, "raw events", p); },
-      function (e) { d.eventsFailed = true; d.notes.push("raw events unavailable: " + e.message); }),
+    contractEventsInto(d, state.detail, txt(r.address), d.notes),
     // Every token row of this contract. Two things come out of it: the rows sharing this token's
     // domain separator, which the MIP (section 4) lets a consumer link as one asset's several
     // representations, and the family chip, which is derived from how the contract's rows relate.
@@ -2768,9 +2788,7 @@ async function loadContract(address) {
   }
   await Promise.all([
     ifaceLoad,
-    loadPages(function (cur) { return contractEventsPath(address, cur); }, EVENT_PAGES).then(
-      function (p) { c.events = p.items; c.eventsMore = p.nextCursor !== null; partlyNote(c.notes, "raw events", p); },
-      function (e) { c.notes.push("raw events unavailable: " + e.message); }),
+    contractEventsInto(c, prev, address, c.notes),
     // US7: the same calls table the ledger-token page shows, under the same note.
     loadPages(function (cur) { return callsPath(address, cur); }, state.act.pages).then(
       function (p) { c.calls = p; partlyNote(c.notes, "contract calls", p); },

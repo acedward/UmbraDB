@@ -57,8 +57,8 @@ What else the page shows:
   earlier declarations — a Null included — newest first.
 - Every answer is read up to 64 MiB (`MAX_RESPONSE_BYTES`: a longer announced length is refused, a
   longer stream cancelled), and the contract view reads `/interface` again only when the contract
-  route's summary of the publication changed or the kept document is a minute old (audit 03-E1a
-  findings F4, R2C).
+  route's summary of the publication changed or the kept document is a minute old; the contract's
+  events (up to four pages) are likewise kept for a minute (audit 03-E1a findings F4, R2C, S1).
 - An earlier declaration of a key and a raw event's value are drawn within 160 characters (head …
   tail, the length, copy the whole value); a current value is drawn whole up to 2 048 drawn
   characters — every realistic long value, e.g. a 677-byte metadata document — and past that on the
