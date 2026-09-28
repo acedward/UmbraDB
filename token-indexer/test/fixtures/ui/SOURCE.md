@@ -10,8 +10,10 @@ public local-chain data only, no secret (counts-only scan before the commit: 0 h
 all HTTP 200. (`interfaces.json`, the answer of `/v1/interfaces?limit=100`, was removed in 03-E1a
 (audit finding F4): the page no longer reads that route.)
 
-Trimmed, nothing else changed: every `report` (the verification record) is dropped — the page never
-reads it; a `checkHistory` longer than 3 rows (the retried `deadline` instance had 100) is cut to its
+Trimmed, nothing else changed: every `report` (the verification record) is dropped — at capture the
+page read nothing of it; since 03-E1a (audit finding F12) it reads one flag of it,
+`report.levels.l2.circuitsTruncated`, and the test supplies that case synthetically (the recorded
+interfaces summarise every circuit, so the flag would be `false` in all of them); a `checkHistory` longer than 3 rows (the retried `deadline` instance had 100) is cut to its
 3 newest; `tokens.json` keeps 10 of the 30 rows of `/v1/tokens?limit=500` (NIGHT, DUST, one token
 of each of the four PI contracts, SNEB18, LMOON18, one `observed` and one `seen` row); JSON
 re-serialised compact.
