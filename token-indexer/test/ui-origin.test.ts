@@ -347,7 +347,8 @@ function payloadPieces(payload: Json): { pieces: Set<string>; words: Set<string>
     if (v.length >= 4) pieces.add(v.length > 80 ? v.slice(0, 80) : v);
   };
   const visit = (key: string, v: Json): void => {
-    if (Array.isArray(v)) { for (const x of v) visit(key, x); return; }
+    // a list's length is a value too, wherever the page counts it (E1a-R5B)
+    if (Array.isArray(v)) { if (v.length >= 10) pieces.add(String(v.length)); for (const x of v) visit(key, x); return; }
     if (v !== null && typeof v === "object") { for (const [k, x] of Object.entries(v)) visit(k, x); return; }
     add(key, v);
   };
@@ -678,7 +679,7 @@ describe("the page shows the origin of every value", () => {
       const view = live.doc.getElementById("view")!;
       expect(view.textContent).not.toContain("no mint observed for this token yet");
       expect(view.textContent).toContain("the first 200 of 201 mints are listed");
-      expect(view.textContent).toContain("mint history partly unavailable (the pages after the first 200 rows): 503 UNAVAILABLE");
+      expect(view.textContent).toContain("mint history partly unavailable (a later page could not be read): 503 UNAVAILABLE");
     }
 
     // ── E1a-F2: a key's history past the first page of the contract's events ─────────────────
@@ -934,7 +935,12 @@ describe("the page shows the origin of every value", () => {
       const drawn = drawContract(page, contractState(up, cut));
       expect(drawn.model.face.circuitsTruncated).toBe(true);
       expect([...drawn.root.walk()].find((el) => el.id === "interface")!.textContent)
-        .toContain(`the interface lists more named circuits than the indexer summarises: the first ${base.circuits.length} are shown`);
+        .toContain("the interface lists more named circuits than the indexer summarises: only the summarised ones are listed above");
+      // the cut is a value of the publication's check: a row and a marked occurrence, each with its origin (R5B)
+      expect(drawn.model.face.rows.find((r: Json) => r.field === "iface:circuitsTruncated").origin.kind).toBe("public-interface");
+      expect(marksOf(drawn.root).get("iface:circuitsTruncated")?.length).toBe(2);
+      expect(checkDrawn(drawn.root, drawn.model.all)).toEqual([]);
+      expect(checkPayloadShown(drawn.root, contractState(up, cut))).toEqual([]);
       const whole = drawContract(page, contractState(up, base));
       expect([...whole.root.walk()].find((el) => el.id === "interface")!.textContent).not.toContain("more named circuits");
     }
@@ -1158,6 +1164,20 @@ describe("the page shows the origin of every value", () => {
     expect(marksOf(drawn.root).get("privacy")?.length).toBe(1);
   });
 
+  it("negative control (E1a-R5B): the circuit cut drawn with its count and no origin fails the check", () => {
+    const broken = SERVED_SCRIPT.replace('    sec.appendChild(asOccurrence(cutNote, face, "circuitsTruncated"));',
+      '    sec.appendChild(node("div", "the first " + face.circuits.length + " are shown", "note err"));');
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    const up = tokenFixture("uprompi");
+    const cut = clone(up.interface);
+    cut.circuits = Array.from({ length: 12 }, (_, i) => ({ ...clone(up.interface.circuits[0]), name: `c${i}` }));
+    cut.report = { levels: { l2: { status: "passed", circuitsTruncated: true } } };
+    const drawn = drawContract(page, contractState(up, cut));
+    expect(checkPayloadShown(drawn.root, contractState(up, cut)).some((v) => v.includes('holds "12"'))).toBe(true);
+    expect(marksOf(drawn.root).get("iface:circuitsTruncated")?.length).toBe(1);
+  });
+
   it("negative control (E1a-R4C): a caption that counts its rows draws a value without an origin", () => {
     const broken = SERVED_SCRIPT.replace('  box.appendChild(node("div", heading, "h"));', '  box.appendChild(node("div", heading + " · " + items.length, "h"));');
     expect(broken).not.toBe(SERVED_SCRIPT);
@@ -1290,7 +1310,8 @@ describe("the page shows the origin of every value", () => {
   });
 
   it("negative control (E1a-F12): a cut circuit summary drawn as whole fails the check", () => {
-    const broken = SERVED_SCRIPT.replace("    circuitsTruncated: circuitsTruncated,", "    circuitsTruncated: false,");
+    const broken = SERVED_SCRIPT.replace("    circuitsTruncated: circuitsTruncated,", "    circuitsTruncated: false,")
+      .replace('  if (rl0.l2 && typeof rl0.l2 === "object" && rl0.l2.circuitsTruncated === true) {', "  if (false) {");
     expect(broken).not.toBe(SERVED_SCRIPT);
     const page = loadPage(broken);
     const up = tokenFixture("uprompi");

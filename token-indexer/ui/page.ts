@@ -2267,6 +2267,10 @@ function interfaceModel(x, address, loaded) {
       + " · flags " + (arr(x.build.flags).length === 0 ? "none" : arr(x.build.flags).map(txt).join(" ")));
   }
   row("publications", "publications of this contract", x.publications);
+  var rl0 = x.report && typeof x.report === "object" && x.report.levels && typeof x.report.levels === "object" ? x.report.levels : {};
+  if (rl0.l2 && typeof rl0.l2 === "object" && rl0.l2.circuitsTruncated === true) {
+    row("circuitsTruncated", "circuit summary", "cut short: the interface lists more named circuits than the indexer summarises");
+  }
   // Items are keyed by their position, never by a published name: a name may be megabytes (E1a-F5).
   var files = [];
   var fl = arr(x.files);
@@ -2653,7 +2657,7 @@ async function loadPages(pathOf, pages) {
   return { items: items, nextCursor: next, error: null };
 }
 function partlyNote(notes, what, p) {
-  if (p && p.error) notes.push(what + " partly unavailable (the pages after the first " + p.items.length + " rows): " + p.error.message);
+  if (p && p.error) notes.push(what + " partly unavailable (a later page could not be read): " + p.error.message);
 }
 async function loadToken(r) {
   var d = { token: null, keys: [], mints: [], events: [], siblings: [], activity: null,
@@ -4607,8 +4611,11 @@ function interfaceSection(face) {
       cell(tr, orDash(it.row.l2));
     }, "no circuit: the check did not reach Level 2"));
   if (face.circuitsTruncated) {
-    sec.appendChild(node("div", "the interface lists more named circuits than the indexer summarises: the first "
-      + groupDigits(face.circuits.length) + " are shown (the verification report flags the rest: circuitsTruncated)", "note err"));
+    // the cut is a result of the publication's check (its report says so): an occurrence of that
+    // row with its origin, and no count of its own (audit 03-E1a findings R4C, R5B)
+    var cutNote = node("div", "the interface lists more named circuits than the indexer summarises: only the summarised "
+      + "ones are listed above (the verification report flags the rest: circuitsTruncated)", "note err");
+    sec.appendChild(asOccurrence(cutNote, face, "circuitsTruncated"));
   }
   sec.appendChild(ifaceTable("witnesses the bundle's code declares", face.witnesses,
     ["witness", "origin"], function (tr, it) { cell(tr, boundedNode(it.value, NAME_MAX, "txt wrapv")); }, "no witness declared"));
