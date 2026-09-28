@@ -1575,6 +1575,25 @@ function originView(o, ctx) {
     texts.push(v.rule);
     var de = factsText(ev);
     if (de) texts.push("inputs: " + de);
+    // A derived value links the inputs it names, where the page shows them (audit 03-E1a finding
+    // F7): the contract, the token's mints, its declarations; else the section its ctx names.
+    var din = ev && typeof ev === "object" && !isArray(ev) ? ev : {};
+    if (din.address && isHex(txt(din.address))) {
+      v.links.push({ href: hashContract(txt(din.address)), text: "input: the contract",
+        title: txt(din.address) + " (open the contract)" });
+    }
+    if (own(din, "mintCount") && c.token) {
+      var mi = sectionEvidence(c, "mints");
+      if (mi) { mi.text = "input: the mint history"; v.links.push(mi); }
+    }
+    if (own(din, "declared") && c.token) {
+      var dl = sectionEvidence(c, "traits");
+      if (dl) { dl.text = "input: the declarations"; v.links.push(dl); }
+    }
+    if (v.links.length === 0 && c.section) {
+      var ds = sectionEvidence(c, c.section);
+      if (ds) v.links.push(ds);
+    }
   } else {
     v.reason = o.reason ? txt(o.reason) : "no reason given";
     v.label = ORIGIN_LABELS[kind] + " (" + v.reason + ")";
@@ -1680,7 +1699,9 @@ function tokenModel(d) {
     pageOrigin("derived", "MIP-0018 §3: bit 0 of the kind byte")));
   facts.push(item("storage", "storage", t.storage,
     pageOrigin("derived", "MIP-0018 §3: bit 1 of the kind byte")));
-  facts.push(item("color", "colour", t.color, o.color));
+  // A colour seen in public data only (status seen) cites no transaction: its evidence is the
+  // token's public movements (audit 03-E1a finding F7).
+  facts.push(item("color", "colour", t.color, o.color, { token: t, address: t.address, section: seen ? "activity" : null }));
   facts.push(item("name", "name", t.name, o.name, { token: t, address: t.address, declarations: declCount("name"), partial: partial }));
   facts.push(item("symbol", "symbol", t.symbol, o.symbol, { token: t, address: t.address, declarations: declCount("symbol"), partial: partial }));
   facts.push(item("decimals", "decimals", t.decimals, o.decimals, { token: t, address: t.address, declarations: declCount("decimals"), partial: partial }));

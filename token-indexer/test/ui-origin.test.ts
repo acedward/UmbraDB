@@ -66,6 +66,21 @@ function drawContract(page: Page, state: Json): Drawn {
   page.ctx.renderContract(root);
   return { root, ids: idsOf(root), model: page.ctx.contractModel(state) };
 }
+/** A token row of the list (tokens.json) as its own token view: a colour route for a `seen` row. */
+function rowFixture(row: Json): TokenFixture {
+  return { token: row, metadata: { keys: row.traits ?? [] }, mints: { items: [] }, contract: { tokens: [row] }, events: { items: [] },
+    activity: { items: [], nextCursor: null } };
+}
+function drawRow(page: Page, row: Json): Drawn {
+  const f = rowFixture(row);
+  page.ctx.state.route = row.address
+    ? { view: "token", address: row.address, domainSep: row.domainSep, kind: String(row.kind) }
+    : { view: "token", color: row.color, kind: String(row.kind) };
+  page.ctx.state.detail = tokenDetail(f);
+  const root = page.doc.createElement("main");
+  page.ctx.renderToken(root);
+  return { root, ids: idsOf(root), model: page.ctx.tokenModel(page.ctx.state.detail) };
+}
 function idsOf(root: FakeElement): Set<string> {
   const ids = new Set<string>();
   for (const el of root.walk()) if (el.id) ids.add(el.id);
@@ -200,6 +215,10 @@ function checkModel(page: Page, items: Json[], where: Where, known: Known, sourc
     const src = sources.get(it.field);
     if (src !== undefined) {
       if (src.origin !== o.kind) out.push(`${it.field}: origin ${o.kind}, but the API gave ${String(src.origin)}`);
+      // a derived value whose evidence names its inputs links them (E1a-F7)
+      const inputs = src.origin === "derived" && src.evidence && typeof src.evidence === "object" && !Array.isArray(src.evidence)
+        ? Object.keys(src.evidence).length : 0;
+      if (inputs > 0 && o.links.length === 0) out.push(`${it.field}: derived from ${inputs} inputs without a link to them`);
       const want = expectedFirstLink(src, where.address);
       const got = o.links[0]?.href ?? null;
       if (want !== null && got !== want) out.push(`${it.field}: first evidence link ${String(got).slice(0, 90)}, but its evidence is ${want.slice(0, 90)}`);
@@ -367,6 +386,25 @@ describe("the page shows the origin of every value", () => {
       expect(token.model.all.length, `${name}: the token view lists its values`).toBeGreaterThan(20);
       // the independent map really covered the view (a check over nothing proves nothing)
       expect(token.model.all.filter((it: Json) => tSrc.has(it.field)).length, `${name}: values with an API origin`).toBeGreaterThan(8);
+    }
+
+    // ── E1a-F7: every derived value with inputs links them; a `seen` colour links its movements ─
+    {
+      const rows = read("tokens.json").items as Json[];
+      for (const status of ["seen", "observed", "declared", "described"]) {
+        const row = rows.find((r) => r.status === status && r.address !== undefined)!;
+        const drawn = drawRow(page, row);
+        const where: Where = { tokenIds: drawn.ids, contractIds: new Set(["interface", "calls", "events", "facts"]), address: row.address ?? null };
+        expect(checkModel(page, drawn.model.all, where, knownOf(row), tokenSources(rowFixture(row))), `${status} row: model`).toEqual([]);
+        expect(checkDrawn(drawn.root, drawn.model.all), `${status} row: drawn`).toEqual([]);
+      }
+      const seenRow = rows.find((r) => r.status === "seen")!;
+      const seenColor = drawRow(page, seenRow).model.facts.find((i: Json) => i.field === "color");
+      expect(seenColor.origin.links[0].href).toBe(`#/color/${seenRow.color}/${seenRow.kind}/activity`);
+      const sneb = drawToken(page, tokenFixture("sneb18")).model.facts;
+      expect(sneb.find((i: Json) => i.field === "color").origin.links[0].href).toBe(`#/contract/${tokenFixture("sneb18").token.address}`);
+      expect(sneb.find((i: Json) => i.field === "status").origin.links.map((l: Json) => l.text))
+        .toEqual(["input: the mint history", "input: the declarations"]);
     }
 
     // ── E1a-F2: a key's history past the first page of the contract's events ─────────────────
@@ -670,6 +708,16 @@ describe("the page shows the origin of every value", () => {
     live.boot();
     await live.settle();
     expect(live.doc.getElementById("interface")!.scrolled).toBe(0);
+  });
+
+  it("negative control (E1a-F7): a derived value that does not link its inputs fails the check", () => {
+    const broken = SERVED_SCRIPT.replace("    if (din.address && isHex(txt(din.address))) {", "    if (false) {")
+      .replace('    if (own(din, "mintCount") && c.token) {', "    if (false) {")
+      .replace('    if (own(din, "declared") && c.token) {', "    if (false) {");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const violations = snebChecks(broken).model;
+    expect(violations).toContain("color: derived from 2 inputs without a link to them");
+    expect(violations).toContain("status: derived from 2 inputs without a link to them");
   });
 
   it("negative control (E1a-F6): a capped history drawn as if complete fails the check", () => {
