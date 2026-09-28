@@ -74,6 +74,11 @@ What else the page shows:
 - A failed read of `/interface` (e.g. a 503) is drawn as "could not be read", never as "no public
   interface published" — that is said only on the API's own word (a 404, or the contract route's
   null summary) (audit 03-E1a finding F10).
+- Any other read that fails — the mints, the traits, the raw events, the transactions, the contract's
+  calls, its token rows — is not an answer either: its section says it "could not be read" (never
+  "no mint observed" or the like), no value cites it (the token's or the contract's row as the API
+  serves it is cited instead), and the family is not guessed without the contract's rows (audit
+  03-E1a findings R5C, R6A, S2).
 - A URL (bundle URL, tokenUri) is parsed by the browser's own URL parser: its destination host —
   percent-decoded, IDNA-mapped, as the browser will go to it — is always shown beside the shortened
   text; a URL the parser refuses, or one with user information before its host, is not a link; a

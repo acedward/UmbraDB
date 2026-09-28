@@ -709,6 +709,47 @@ describe("the page shows the origin of every value", () => {
       expect(cl.doc.getElementById("view")!.textContent).not.toContain("no token-metadata event from this contract");
     }
 
+    // ── E1a-R6A: the transactions and the contract's calls too — a failed read is never cited ──
+    {
+      const fail = (): Reply => new Reply(503, { error: { code: "UNAVAILABLE" } });
+      const ss = tokenFixture("sstarpi");
+      const base = `/v1/contracts/${ss.token.address}/tokens/${ss.token.domainSep}/${ss.token.kind}`;
+      const routes = apiRoutes(ss);
+      routes.set(`${base}/transactions?limit=200`, fail());
+      const live = await bootToken(ss, routes);
+      const view = live.doc.getElementById("view")!;
+      expect(view.textContent).toContain("the transactions could not be read (see partial data below)");
+      expect(view.textContent).not.toContain("no archived transaction has touched this token yet");
+      const m = live.ctx.tokenModel(live.ctx.state.detail);
+      const links = (field: string): string[] => m.facts.find((i: Json) => i.field === field).origin.links.map((l: Json) => l.href);
+      expect(links("activityCount"), "the activity count: its section could not be read").toEqual([base]);
+      expect(links("lastActivityHeight")).toEqual([base]);
+      for (const it of m.all) for (const l of it.origin.links) expect(l.href, it.field).not.toMatch(/\/activity$/);
+      expect(m.facts.find((i: Json) => i.field === "activityCount").origin.links[0].text).toBe("the token's row (API)");
+      // a ledger token (calls only): its calls could not be read
+      const ls = tokenFixture("lsunpi");
+      const lRoutes = apiRoutes(ls);
+      lRoutes.set(`/v1/contracts/${ls.token.address}/calls?limit=200`, fail());
+      const lv = await bootToken(ls, lRoutes);
+      expect(lv.doc.getElementById("view")!.textContent).toContain("the contract's calls could not be read (see partial data below)");
+      const lm = lv.ctx.tokenModel(lv.ctx.state.detail);
+      for (const it of lm.all) for (const l of it.origin.links) expect(l.href, it.field).not.toMatch(/\/calls$/);
+      // the contract view: the last call height cites the contract's row, not its unread calls
+      const up = tokenFixture("uprompi");
+      const cRoutes = apiRoutes(up);
+      cRoutes.set(`/v1/contracts/${up.token.address}/calls?limit=200`, fail());
+      const cl = loadPage(SERVED_SCRIPT, cRoutes);
+      cl.window.location.hash = `#/contract/${up.token.address}`;
+      cl.boot();
+      await cl.settle();
+      expect(cl.doc.getElementById("view")!.textContent).toContain("the contract's calls could not be read (see partial data below)");
+      const cm = cl.ctx.contractModel(cl.ctx.state.contract);
+      const lastCall = cm.facts.find((i: Json) => i.field === "lastCallHeight");
+      expect(lastCall.value, "the fixture's contract has an archived call").not.toBeNull();
+      expect(lastCall.origin.links.map((l: Json) => [l.href, l.text])).toEqual([[`/v1/contracts/${up.token.address}`, "the contract's row (API)"]]);
+      for (const it of cm.all) for (const l of it.origin.links) expect(l.href, it.field).not.toMatch(/\/calls$/);
+    }
+
     // ── E1a-R5D: the shielded-offers view keeps its rows and reports a later page that failed ──
     {
       const routes = new Map<string, Json>([["/internal/status", { net: "undeployed" }]]);
@@ -1476,6 +1517,28 @@ describe("the page shows the origin of every value", () => {
     expect(live.doc.getElementById("view")!.textContent).toContain("no mint observed for this token yet");
     const m = live.ctx.tokenModel(live.ctx.state.detail);
     expect(m.facts.find((i: Json) => i.field === "mintCount").origin.links[0].href).toMatch(/\/mints$/);
+  });
+
+  it("negative control (E1a-R6A): failed transactions and calls reads still cited", async () => {
+    const broken = SERVED_SCRIPT.replace("    activity: d.activityFailed === true, calls: d.callsFailed === true };", "    activity: false, calls: false };")
+      .replace("  var unavailable = { calls: c.callsFailed === true, events: c.eventsFailed === true };", "  var unavailable = { calls: false, events: c.eventsFailed === true };");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const ss = tokenFixture("sstarpi");
+    const base = `/v1/contracts/${ss.token.address}/tokens/${ss.token.domainSep}/${ss.token.kind}`;
+    const routes = apiRoutes(ss);
+    routes.set(`${base}/transactions?limit=200`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
+    const live = await bootToken(ss, routes, broken);
+    const m = live.ctx.tokenModel(live.ctx.state.detail);
+    expect(m.facts.find((i: Json) => i.field === "activityCount").origin.links[0].href).toMatch(/\/activity$/);
+    const up = tokenFixture("uprompi");
+    const cRoutes = apiRoutes(up);
+    cRoutes.set(`/v1/contracts/${up.token.address}/calls?limit=200`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
+    const cl = loadPage(broken, cRoutes);
+    cl.window.location.hash = `#/contract/${up.token.address}`;
+    cl.boot();
+    await cl.settle();
+    const cm = cl.ctx.contractModel(cl.ctx.state.contract);
+    expect(cm.facts.find((i: Json) => i.field === "lastCallHeight").origin.links[0].href).toMatch(/\/calls$/);
   });
 
   it("negative control (E1a-S2): with the contract's rows unread, the family guessed from one row", async () => {

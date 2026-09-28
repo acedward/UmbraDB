@@ -1598,6 +1598,12 @@ var SECTION_TEXT = {
   "traits": "the traits", "events": "the raw events", "activity": "the transactions",
   "metadata": "the metadata document", "facts": "the token's values", "tokens": "the contract's tokens"
 };
+// The API's own row that carries a value (raw JSON, a new tab): the token's, or the contract's.
+function apiEvidence(c) {
+  return c.apiOf === "contract"
+    ? { href: c.api, text: "the contract's row (API)", title: "the contract as the API serves it (raw JSON, new tab)" }
+    : { href: c.api, text: "the token's row (API)", title: "the token as the API serves it (raw JSON, new tab)" };
+}
 function sectionEvidence(ctx, section) {
   var c = ctx || {};
   // a section whose read failed shows nothing to cite (audit 03-E1a finding R5C)
@@ -1707,9 +1713,7 @@ function originView(o, ctx) {
       var sl = sectionEvidence(c, c.section);
       if (sl) v.links.push(sl);
     }
-    if (v.links.length === 0 && c.api) {
-      v.links.push({ href: c.api, text: "the token's row (API)", title: "the token as the API serves it (raw JSON, new tab)" });
-    }
+    if (v.links.length === 0 && c.api) v.links.push(apiEvidence(c));
   } else if (kind === "derived") {
     v.rule = o.rule ? txt(o.rule) : "(no rule given)";
     texts.push(v.rule);
@@ -1736,9 +1740,7 @@ function originView(o, ctx) {
     var dt = txEvidence(din.txHash, "input: tx");
     if (dt) v.links.push(dt);
     if (v.links.length === 0 && c.seed) v.links.push(SEED_EVIDENCE);
-    if (v.links.length === 0 && c.api) {
-      v.links.push({ href: c.api, text: "the token's row (API)", title: "the token as the API serves it (raw JSON, new tab)" });
-    }
+    if (v.links.length === 0 && c.api) v.links.push(apiEvidence(c));
     if (v.links.length === 0 && c.section) {
       var ds = sectionEvidence(c, c.section);
       if (ds) v.links.push(ds);
@@ -1877,14 +1879,18 @@ function tokenModel(d) {
     return pk ? { blockHeight: pk.blockHeight, txPosition: pk.txPosition, eventId: eventIdsOf(pk)[0] } : null;
   }
   function declCount(keyText) { return declCountOf(asciiHex(keyText), currentOf(o[keyText])); }
-  // the sections whose read failed: never cited; the API's row of the token is cited instead (R5C)
-  var unavailable = { mints: d.mintsFailed === true, traits: d.keysFailed === true, events: d.eventsFailed === true };
+  // the sections whose read failed: never cited; the API's row of the token is cited instead (R5C;
+  // the transactions and the contract's calls too, R6A)
+  var unavailable = { mints: d.mintsFailed === true, traits: d.keysFailed === true, events: d.eventsFailed === true,
+    activity: d.activityFailed === true, calls: d.callsFailed === true };
+  var anyUnavailable = false;
+  for (var u in unavailable) if (own(unavailable, u) && unavailable[u]) anyUnavailable = true;
   function item(field, label, value, origin, extra) {
     var c0 = extra || ctx;
     var c = {};
     for (var k0 in c0) if (own(c0, k0)) c[k0] = c0[k0];
     c.unavailable = unavailable;
-    if (!c.api && (unavailable.mints || unavailable.traits || unavailable.events)) c.api = tokenApiHref(t);
+    if (!c.api && anyUnavailable) c.api = tokenApiHref(t);
     // A built-in row's values are the indexer's seed, a rule with no chain inputs: their evidence is
     // the seed itself, as the API serves it (audit 03-E1a findings R2A, R3A).
     if (builtin) {
@@ -2194,8 +2200,15 @@ function contractModel(c) {
   var deploy = deployKnown
     ? pageOrigin("chain", "the contract's deploy transaction in the archive", { txHash: d.deployTxHash, blockHeight: d.deployHeight })
     : pageOrigin("none", "the contract's deploy is not in the archive");
+  // the sections whose read failed are never cited: the contract's API row is (audit 03-E1a R6A)
+  var unavailable = { calls: c.callsFailed === true, events: c.eventsFailed === true };
   function it(field, label, value, origin, extra) {
-    return { field: field, label: label, value: valueOrNull(value), origin: originView(origin, extra || ctx) };
+    var c0 = extra || ctx;
+    var cc = {};
+    for (var k0 in c0) if (own(c0, k0)) cc[k0] = c0[k0];
+    cc.unavailable = unavailable;
+    if (!cc.api && (unavailable.calls || unavailable.events)) { cc.api = P_CONTRACTS + "/" + enc(address); cc.apiOf = "contract"; }
+    return { field: field, label: label, value: valueOrNull(value), origin: originView(origin, cc) };
   }
   var facts = [
     it("address", "address", address, deployKnown
@@ -2216,7 +2229,7 @@ function contractModel(c) {
   for (var i = 0; i < list.length && i < CONTRACT_TOKEN_ROWS; i++) tokens.push(siblingItems(list[i], CONTRACT_TOKEN_FIELDS));
   var tokensCount = list.length > CONTRACT_TOKEN_ROWS
     ? it("tokens:count", "token rows", list.length, pageOrigin("derived", "the number of token rows GET /v1/contracts/:address serves"),
-      { address: address, api: P_CONTRACTS + "/" + enc(address) })
+      { address: address, api: P_CONTRACTS + "/" + enc(address), apiOf: "contract" })
     : null;
   var pending = [];
   var pl = arr(d.pendingLookups);
@@ -2718,12 +2731,12 @@ async function loadTokenActivity(d) {
     if (!t.address) return;
     await loadPages(function (c) { return callsPath(t.address, c); }, state.act.pages).then(
       function (p) { d.calls = p; partlyNote(d.notes, "contract calls", p); },
-      function (e) { d.notes.push("contract calls unavailable: " + e.message); });
+      function (e) { d.callsFailed = true; d.notes.push("contract calls unavailable: " + e.message); });
     return;
   }
   await loadPages(function (c) { return activityPath(t, c); }, state.act.pages).then(
     function (p) { d.activity = p; partlyNote(d.notes, "transactions", p); },
-    function (e) { d.notes.push("transactions unavailable: " + e.message); });
+    function (e) { d.activityFailed = true; d.notes.push("transactions unavailable: " + e.message); });
 }
 async function loadNamedToken(r, d) {
   d.token = await api(tokenBase(r));
@@ -2795,7 +2808,7 @@ async function loadContract(address) {
     // US7: the same calls table the ledger-token page shows, under the same note.
     loadPages(function (cur) { return callsPath(address, cur); }, state.act.pages).then(
       function (p) { c.calls = p; partlyNote(c.notes, "contract calls", p); },
-      function (e) { c.notes.push("contract calls unavailable: " + e.message); })
+      function (e) { c.callsFailed = true; c.notes.push("contract calls unavailable: " + e.message); })
   ]);
   state.contract = c;
 }
@@ -3167,7 +3180,10 @@ function activitySection(t, d, items, countItem) {
   sec.appendChild(bar);
 
   if (!d.activity) {
-    sec.appendChild(node("div", "not loaded (see the banner above)", "empty"));
+    // a read that failed is not an answer (audit 03-E1a R5C, R6A)
+    sec.appendChild(d.activityFailed === true
+      ? node("div", "the transactions could not be read (see partial data below)", "err")
+      : node("div", "not loaded (see the banner above)", "empty"));
     return sec;
   }
   if (rows.length === 0) {
@@ -3436,14 +3452,16 @@ function callsNote() {
     "; what a call means for this token's balances is defined by the contract and is not readable here."));
   return box;
 }
-function callsSection(page, heading, notes, items) {
+function callsSection(page, heading, notes, items, failed) {
   var model = items || [];
   var sec = node("section");
   sec.id = "calls";
   sec.appendChild(node("h2", heading));
   sec.appendChild(callsNote());
   if (!page) {
-    sec.appendChild(node("div", "not loaded (see the banner above)", "empty"));
+    sec.appendChild(failed === true
+      ? node("div", "the contract's calls could not be read (see partial data below)", "err")
+      : node("div", "not loaded (see the banner above)", "empty"));
     return sec;
   }
   var items = page.items;
@@ -4247,7 +4265,7 @@ function renderToken(main) {
   else if (vis === "calls-only") {
     main.appendChild(callsSection(d.calls, "contract calls · this is what a ledger token publishes",
       "a ledger token has no colour and no UTXO: its balances live in its contract's state, which "
-      + "this indexer does not read. What is public is every call of the contract, listed above.", m.calls));
+      + "this indexer does not read. What is public is every call of the contract, listed above.", m.calls, d.callsFailed === true));
   } else {
     main.appendChild(activitySection(t, d, m.activity, factOf(m, "activityCount")));
   }
@@ -4567,7 +4585,7 @@ function renderContract(main) {
 
   // US7: the same table a ledger token's page shows, under the same note — a contract's calls are
   // public whatever kind of token it issues.
-  main.appendChild(callsSection(c.calls, "calls of this contract", null, m.calls));
+  main.appendChild(callsSection(c.calls, "calls of this contract", null, m.calls, c.callsFailed === true));
 
   main.appendChild(eventsSection(m.events, null, "raw token-metadata events of this contract (rejected ones included)",
     c.eventsMore === true ? d.address : null, c.eventsFailed === true));
