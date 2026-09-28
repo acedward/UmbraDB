@@ -890,6 +890,23 @@ describe("the page shows the origin of every value", () => {
       expect(unreach).not.toMatch(/did not run (Level|it)/);
     }
 
+    // ── E1a-R9B: the metadata-updated height cites where its declaration is drawn ─────────────
+    {
+      const lm = tokenFixture("lmoon18");
+      const lp = loadPage(SERVED_SCRIPT);
+      const model = lm.metadata.keys[0];
+      const tx = "cd".repeat(32);
+      const keys = Array.from({ length: 501 }, (_, i) => ({ ...clone(model), key: `k${String(i).padStart(3, "0")}`,
+        keyHex: Buffer.from(`k${String(i).padStart(3, "0")}`).toString("hex"), updatedHeight: i < 500 ? 100 + i : 9000,
+        updatedTxHash: i < 500 ? model.updatedTxHash : tx, eventId: 700_000 + i }));
+      const links = (height: number): string[] => lp.ctx.tokenModel({ ...tokenDetail(lm), token: { ...lm.token, metadataUpdatedHeight: height }, keys })
+        .facts.find((i: Json) => i.field === "metadataUpdatedHeight").origin.links.map((l: Json) => l.href);
+      expect(links(9000), "the 501st key is not drawn: its transaction").toEqual([`#/tx/${tx}`]);
+      expect(links(150), "a drawn key: the traits").toEqual([`#/token/${lm.token.address}/${lm.token.domainSep}/${lm.token.kind}/traits`]);
+      expect(links(123_456), "no key and no event at that height: the API's row")
+        .toEqual([`/v1/contracts/${lm.token.address}/tokens/${lm.token.domainSep}/${lm.token.kind}`]);
+    }
+
     // ── E1a-R5D: the shielded-offers view keeps its rows and reports a later page that failed ──
     {
       const routes = new Map<string, Json>([["/internal/status", { net: "undeployed" }]]);
@@ -1778,6 +1795,16 @@ describe("the page shows the origin of every value", () => {
     const up = tokenFixture("uprompi");
     const o = clone(read("interface-outcomes.json").deadline);
     expect(drawContract(loadPage(broken), contractState(up, o)).root.textContent).toContain("did not run Level 1");
+  });
+
+  it("negative control (E1a-R9B): the metadata-updated height always cites the traits", () => {
+    const broken = SERVED_SCRIPT.replace("  var mu = metadataUpdatedEvidence(t, arr(d.keys), events);", '  var mu = { section: "traits" };');
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const lm = tokenFixture("lmoon18");
+    const model = lm.metadata.keys[0];
+    const keys = Array.from({ length: 501 }, (_, i) => ({ ...clone(model), key: `k${i}`, updatedHeight: i < 500 ? 100 + i : 9000, updatedTxHash: "cd".repeat(32) }));
+    const m = loadPage(broken).ctx.tokenModel({ ...tokenDetail(lm), token: { ...lm.token, metadataUpdatedHeight: 9000 }, keys });
+    expect(m.facts.find((i: Json) => i.field === "metadataUpdatedHeight").origin.links[0].href).toMatch(/\/traits$/);
   });
 
   it("negative control (E1a-S2): with the contract's rows unread, the family guessed from one row", async () => {

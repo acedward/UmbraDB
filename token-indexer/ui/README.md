@@ -93,6 +93,9 @@ What else the page shows:
   03-E1a findings R5C, R6A, S2).
 - A token's identity (domain separator, kind) cites the raw events only when some of the token's own
   events are among those read; otherwise the API's row of it (audit 03-E1a finding R8B).
+- The metadata-updated height cites the traits only when the key its declaration set is among the
+  keys drawn (the first 500); otherwise that declaration's transaction, the raw events, or the API's
+  row (audit 03-E1a finding R9B).
 - A URL (bundle URL, tokenUri) is parsed by the browser's own URL parser: its destination host —
   percent-decoded, IDNA-mapped, as the browser will go to it — is always shown beside the shortened
   text; a URL the parser refuses, or one with user information before its host, is not a link; a

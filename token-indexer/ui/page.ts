@@ -1854,6 +1854,22 @@ function firstSeenSection(t, events, unknownRead) {
 function tokenApiHref(t) {
   return t.address && t.domainSep ? tokenBase(t) : P_COLORS + "/" + enc(t.color);
 }
+function metadataUpdatedEvidence(t, keys, events) {
+  var h = t.metadataUpdatedHeight;
+  if (h === null || h === undefined) return { section: "traits" };
+  for (var i = 0; i < keys.length; i++) {
+    if (!keys[i] || Number(keys[i].updatedHeight) !== Number(h)) continue;
+    if (i < TRAIT_ROWS) return { section: "traits" };
+    if (isHex(txt(keys[i].updatedTxHash))) return { section: null, txHash: txt(keys[i].updatedTxHash) };
+  }
+  var ev = arr(events);
+  for (var j = 0; j < ev.length; j++) {
+    var e = ev[j];
+    if (e && e.applied === true && Number(e.blockHeight) === Number(h) && txt(e.domainSep) === txt(t.domainSep)
+      && Number(e.kindByte) === Number(t.kind)) return { section: "events" };
+  }
+  return { section: null, api: tokenApiHref(t) };
+}
 // Whether the events read include one of this token's own (its domain separator and kind byte).
 function hasOwnEvent(events, t) {
   var l = arr(events);
@@ -1994,11 +2010,15 @@ function tokenModel(d) {
     builtin ? seeded : pageOrigin("derived", "the lowest block height at which a declaration, a mint or a public movement of this token was seen"
       + (fsSection === null ? " — the observation that set it is not among what this page read; the API's row carries the height" : "")),
     fsSection === null ? { token: t, api: tokenApiHref(t) } : { token: t, section: fsSection }));
+  // Where the latest applied declaration is shown: its key among the traits DRAWN (the first
+  // TRAIT_ROWS), else that key's own transaction, else an applied event of the token at that height
+  // among the raw events, else the API's row — the 501st key is not drawn (audit 03-E1a finding R9B).
+  var mu = metadataUpdatedEvidence(t, arr(d.keys), events);
   facts.push(item("metadataUpdatedHeight", "metadata updated height", t.metadataUpdatedHeight,
     t.metadataUpdatedHeight === null || t.metadataUpdatedHeight === undefined
       ? pageOrigin("none", builtin ? "a built-in row carries no declaration" : "no applied declaration")
-      : pageOrigin("derived", "the block of this token's latest applied MIP-0018 declaration"),
-    { token: t, section: "traits" }));
+      : pageOrigin("derived", "the block of this token's latest applied MIP-0018 declaration", mu.txHash ? { txHash: mu.txHash } : undefined),
+    mu.api ? { token: t, api: mu.api } : { token: t, section: mu.section }));
   facts.push(item("deployHeight", "deploy height", t.deployHeight,
     builtin ? seeded : (t.deployHeight === null || t.deployHeight === undefined
       ? pageOrigin("none", seen ? "no contract is known for this colour (status seen)" : "the contract's deploy is not in the archive")
