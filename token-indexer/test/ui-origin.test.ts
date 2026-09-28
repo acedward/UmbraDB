@@ -769,6 +769,36 @@ describe("the page shows the origin of every value", () => {
       expect(t2).not.toContain("not known: Level 2 reads them");
     }
 
+    // ── E1a-R6C: a later events page that fails is not the page's read budget ─────────────────
+    {
+      const lm = tokenFixture("lmoon18");
+      const a = lm.token.address;
+      const routes = apiRoutes(lm);
+      routes.set(`/v1/contracts/${a}/events?limit=500`, { items: lm.events.items, nextCursor: "c1" });
+      routes.set(`/v1/contracts/${a}/events?limit=500&cursor=c1`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
+      const live = await bootToken(lm, routes);
+      expect(live.ctx.state.detail.eventsMore, "not the read budget").toBe(false);
+      expect(live.ctx.state.detail.eventsCut).toBe(true);
+      const view = live.doc.getElementById("view")!;
+      expect(view.textContent).not.toContain("more token-metadata events than");
+      const traitsSec = [...view.walk()].find((el) => el.id === "traits")!;
+      expect(traitsSec.textContent).toContain("a later page of this contract's token-metadata events could not be read (see partial data below): "
+        + "the earlier declarations listed under a key come from the pages read");
+      const eventsSec = [...view.walk()].find((el) => el.id === "events")!;
+      expect(eventsSec.textContent).toContain("could not be read (see partial data below): the rows below come from the pages read");
+      const desc = live.ctx.tokenModel(live.ctx.state.detail).traits.find((i: Json) => i.label === "description");
+      expect(desc.origin.detail).toMatch(/the latest of at least \d+ declarations of this key \(a later page of the contract's events could not be read\)/);
+      expect(desc.origin.detail).not.toContain("first 2");
+      // the contract view says the same
+      const cl = loadPage(SERVED_SCRIPT, routes);
+      cl.window.location.hash = `#/contract/${a}`;
+      cl.boot();
+      await cl.settle();
+      const ct = cl.doc.getElementById("view")!.textContent;
+      expect(ct).not.toContain("more token-metadata events than");
+      expect(ct).toContain("could not be read (see partial data below): the rows below come from the pages read");
+    }
+
     // ── E1a-R5D: the shielded-offers view keeps its rows and reports a later page that failed ──
     {
       const routes = new Map<string, Json>([["/internal/status", { net: "undeployed" }]]);
@@ -1567,6 +1597,17 @@ describe("the page shows the origin of every value", () => {
     const unread = clone(up.interface);
     Object.assign(unread, { status: "unreachable", level: 0, levels: { l1: "not_run", l2: "not_run", l3: "not_run" }, witnesses: [], keys: [], circuits: [] });
     expect(drawContract(loadPage(broken), contractState(up, unread)).root.textContent).toContain("no witness declared");
+  });
+
+  it("negative control (E1a-R6C): a failed later events page read as the page's read budget", async () => {
+    const broken = SERVED_SCRIPT.replace("d.eventsMore = p.nextCursor !== null && !p.error; d.eventsCut = !!p.error;", "d.eventsMore = p.nextCursor !== null;");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const lm = tokenFixture("lmoon18");
+    const routes = apiRoutes(lm);
+    routes.set(`/v1/contracts/${lm.token.address}/events?limit=500`, { items: lm.events.items, nextCursor: "c1" });
+    routes.set(`/v1/contracts/${lm.token.address}/events?limit=500&cursor=c1`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
+    const live = await bootToken(lm, routes, broken);
+    expect(live.doc.getElementById("view")!.textContent).toContain("this contract has more token-metadata events than the page reads a contract's first 2\u00a0000 events");
   });
 
   it("negative control (E1a-S2): with the contract's rows unread, the family guessed from one row", async () => {

@@ -93,3 +93,7 @@ What else the page shows:
 - Routes may end in a section (`#/contract/<address>/interface`, `#/token/…/mints`, …), scrolled to
   once drawn. The raw-events table asks for every event of the contract (`/events?limit=500`): the
   route's `applied=false` means "rejected only", which the page had asked for since 00020.
+- The contract's events (the raw-events table and a key's earlier declarations) are read up to four
+  pages of 500, following the API's cursor. When more exist, the page says it stops at its first
+  2 000; when a later page fails, it says that page could not be read instead — an interrupted read
+  is not the read budget (audit 03-E1a findings F2, R6C).

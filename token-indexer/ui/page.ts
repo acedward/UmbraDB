@@ -1676,7 +1676,7 @@ function originView(o, ctx) {
     if (Number(c.declarations) > 1) {
       v.p1 = true;
       texts.push(P1_NOTE + " — the latest of " + (c.partial ? "at least " : "") + c.declarations
-        + " declarations of this key" + (c.partial ? " (" + eventsReadText() + ")" : ""));
+        + " declarations of this key" + (c.partial ? " (" + eventsReadText(c.partial) + ")" : ""));
     }
   } else if (kind === "public-interface") {
     var e = ev && typeof ev === "object" ? ev : {};
@@ -1846,7 +1846,9 @@ function tokenModel(d) {
   var seen = !t.address || !t.domainSep;
   var seeded = pageOrigin("derived", "a seeded built-in row: the ledger's own token (00020 owner decision Q7)");
   var noContract = pageOrigin("none", "no contract is known for this colour (status seen)");
-  var partial = d.eventsMore === true;
+  // the history is partial when the page stopped at its read budget ("cap") or a later page of the
+  // events could not be read ("cut") — two different things to say (audit 03-E1a finding R6C)
+  var partial = d.eventsCut === true ? "cut" : (d.eventsMore === true ? "cap" : false);
   // How many applied declarations a key has among the events read; when the contract has more
   // events than the page reads, the current declaration may lie beyond them and counts as one more.
   // Only declarations that come BEFORE the current one in P1's order count, or are listed as earlier:
@@ -2649,7 +2651,8 @@ function contractEventsPath(address, cursor) {
   if (cursor) p += "&cursor=" + enc(cursor);
   return p;
 }
-function eventsReadText() {
+function eventsReadText(why) {
+  if (why === "cut") return "a later page of the contract's events could not be read";
   return "the page reads a contract's first " + groupDigits(EVENT_PAGES * EVENT_LIMIT) + " events";
 }
 // FR-006 by (address, domainSep, kind); FR-008 by colour for a row that has no address yet (US5).
@@ -2752,7 +2755,7 @@ async function loadNamedToken(r, d) {
       function (p) { d.mints = p.items; d.mintsMore = p.nextCursor !== null; partlyNote(d.notes, "mint history", p); },
       function (e) { d.mintsFailed = true; d.notes.push("mint history unavailable: " + e.message); }),
     loadPages(function (c) { return contractEventsPath(r.address, c); }, EVENT_PAGES).then(
-      function (p) { d.events = p.items; d.eventsMore = p.nextCursor !== null; partlyNote(d.notes, "raw events", p); },
+      function (p) { d.events = p.items; d.eventsMore = p.nextCursor !== null && !p.error; d.eventsCut = !!p.error; partlyNote(d.notes, "raw events", p); },
       function (e) { d.eventsFailed = true; d.notes.push("raw events unavailable: " + e.message); }),
     // Every token row of this contract. Two things come out of it: the rows sharing this token's
     // domain separator, which the MIP (section 4) lets a consumer link as one asset's several
@@ -2807,7 +2810,7 @@ async function loadContract(address) {
   await Promise.all([
     ifaceLoad,
     loadPages(function (cur) { return contractEventsPath(address, cur); }, EVENT_PAGES).then(
-      function (p) { c.events = p.items; c.eventsMore = p.nextCursor !== null; partlyNote(c.notes, "raw events", p); },
+      function (p) { c.events = p.items; c.eventsMore = p.nextCursor !== null && !p.error; c.eventsCut = !!p.error; partlyNote(c.notes, "raw events", p); },
       function (e) { c.eventsFailed = true; c.notes.push("raw events unavailable: " + e.message); }),
     // US7: the same calls table the ledger-token page shows, under the same note.
     loadPages(function (cur) { return callsPath(address, cur); }, state.act.pages).then(
@@ -4276,7 +4279,7 @@ function renderToken(main) {
 
   if (t.address) {
     main.appendChild(eventsSection(m.events, t.domainSep, "raw token-metadata events of this contract (rejected ones included)",
-      d.eventsMore === true ? t.address : null, d.eventsFailed === true));
+      d.eventsMore === true || d.eventsCut === true ? t.address : null, d.eventsFailed === true, d.eventsCut === true ? "cut" : "cap"));
   }
 
   if (d.notes.length > 0) {
@@ -4339,7 +4342,7 @@ function traitsSection(m) {
       : node("div", "no key/value pairs recorded for this token", "empty"));
     return traits;
   }
-  if (m.historyPartial) traits.appendChild(partialEventsNote(m.token.address, "the earlier declarations listed under a key"));
+  if (m.historyPartial) traits.appendChild(partialEventsNote(m.token.address, "the earlier declarations listed under a key", m.historyPartial));
   if (m.historyUnavailable) {
     traits.appendChild(node("div", "the contract's events could not be read (see partial data below): a key's earlier "
       + "declarations, and whether P1 chose among several, are not known here", "note err"));
@@ -4441,12 +4444,16 @@ function orderEvents(events, markDomain) {
   return mine.concat(others);
 }
 
-// A contract with more events than the page reads: say so, and link the whole list (the API route,
-// raw JSON, paginated by its cursor).
-function partialEventsNote(address, what) {
+// A contract with more events than the page reads, or whose later page could not be read: say which
+// (a failed page is not the read budget, audit 03-E1a finding R6C), and link the whole list (the API
+// route, raw JSON, paginated by its cursor).
+function partialEventsNote(address, what, why) {
   var n = node("div", null, "note err");
-  n.appendChild(node("span", "this contract has more token-metadata events than " + eventsReadText() + ": "
-    + what + " come from those read, oldest first — the rest: "));
+  n.appendChild(node("span", why === "cut"
+    ? "a later page of this contract's token-metadata events could not be read (see partial data below): "
+      + what + " come from the pages read, oldest first — the rest: "
+    : "this contract has more token-metadata events than " + eventsReadText("cap") + ": "
+      + what + " come from those read, oldest first — the rest: "));
   var a = node("a", "every event (API)");
   a.href = P_CONTRACTS + "/" + enc(address) + "/events?limit=" + EVENT_LIMIT;
   a.target = "_blank";
@@ -4458,11 +4465,11 @@ var EVENTS_ORDER_NOTE = "this token's own events first (highlighted), then the r
   + "event-id order — the order the scanner read them. Which declaration of a key is in force is rule P1's "
   + "choice among the APPLIED rows (block, transaction position, execution order; a multi-part package placed "
   + "by its first part); a rejected row never applies. The traits above show the result.";
-function eventsSection(items, markDomain, heading, moreOf, failed) {
+function eventsSection(items, markDomain, heading, moreOf, failed, why) {
   var sec = node("section");
   sec.id = "events";
   sec.appendChild(node("h2", heading));
-  if (moreOf) sec.appendChild(partialEventsNote(moreOf, "the rows below"));
+  if (moreOf) sec.appendChild(partialEventsNote(moreOf, "the rows below", why));
   if ((!items || items.length === 0) && failed) {
     sec.appendChild(node("div", "the raw events could not be read (see partial data below)", "err"));
     return sec;
@@ -4592,7 +4599,7 @@ function renderContract(main) {
   main.appendChild(callsSection(c.calls, "calls of this contract", null, m.calls, c.callsFailed === true));
 
   main.appendChild(eventsSection(m.events, null, "raw token-metadata events of this contract (rejected ones included)",
-    c.eventsMore === true ? d.address : null, c.eventsFailed === true));
+    c.eventsMore === true || c.eventsCut === true ? d.address : null, c.eventsFailed === true, c.eventsCut === true ? "cut" : "cap"));
 
   if (c.notes.length > 0) {
     var notes = node("section");
