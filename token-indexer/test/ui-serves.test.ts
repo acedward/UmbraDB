@@ -378,6 +378,10 @@ describe("the token explorer page", () => {
       expect(script, `the page must know the status ${status}`).toContain(`"${status}": { cls: "if-`);
     }
     expect(script).toContain('"historical": "an older publication, kept with its own last result; never presented as current"');
+    // The list is an index: it says that each value's origin and evidence are on the token view
+    // (question Q29, default (a); audit 03-E1a finding F1).
+    expect(script).toContain('var LIST_ORIGIN_NOTE = "where each value came from');
+    expect(script).toContain('"hold up to four rows · " + LIST_ORIGIN_NOTE,');
     // The list's interface column, and the part badges of multi-part values.
     expect(script).toContain('{ label: "interface", title: IFACE_HEAD }');
     expect(script).toContain("cell(tr, listIfaceCell(t));");

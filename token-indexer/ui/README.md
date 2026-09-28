@@ -27,6 +27,9 @@ resolves.
 
 What else the page shows:
 
+- **The list** is an index: its note says that each value's origin and evidence link are on the token
+  view, one click away (organizer question Q29, default (a); audit 03-E1a finding F1 — the owner may
+  choose per-cell origin marks instead).
 - **The list** gains an `interface` column: the current publication's status — `pending`, `verified`
   with the levels passed (`L1/L2` or `L1/L2/L3`), `failed at L<n>`, `unchecked`, `unfetchable`,
   `unreachable`, `stale`; the MIP-0018 column adds a part badge (and the phase, when it is not

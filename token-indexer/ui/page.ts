@@ -2755,6 +2755,11 @@ function mipCell(t) {
   for (var i = 0; i < mp.length; i++) wrap.appendChild(partsChip(mp[i].parts, mp[i].phase, mp[i].field));
   return wrap;
 }
+// The list is an index: the origin of each value it shows — and the link to its evidence — is on the
+// token view, one click away (organizer question Q29, default (a); audit 03-E1a finding F1).
+var LIST_ORIGIN_NOTE = "where each value came from (MIP-0018 declaration, public interface, chain "
+  + "observation, derived by this indexer, not available) and the link to its evidence are on the token "
+  + "view: click the row";
 var IFACE_HEAD = "The contract's public interface: the result of its current publication and the "
   + "levels it passed (L1 files and commitment, L2 keys, L3 recompiled keys)";
 function listIfaceCell(t) {
@@ -2851,7 +2856,7 @@ function renderList(main) {
     + "hardcoded NIGHT and DUST entries, rows with status seen are colours this indexer watched move "
     + "before any contract named them, every other row comes from an observed mint or an emitted event "
     + "· a token is (contract, domainSep, kind) with the whole kind byte, so one domain separator can "
-    + "hold up to four rows",
+    + "hold up to four rows · " + LIST_ORIGIN_NOTE,
     "note"));
   main.appendChild(sec);
 }
