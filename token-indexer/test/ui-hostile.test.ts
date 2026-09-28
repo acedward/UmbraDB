@@ -17,6 +17,10 @@ import { type FakeElement, type Json, type Page, SERVED_SCRIPT, loadPage } from 
  *  - E1a-F5: bundle-derived text (circuit, argument and witness names, file paths, build fields) may
  *    be megabytes (contract-info.json ≤ 8 MiB): drawn as head … tail with its length, copied whole;
  *    items are keyed by position, so no published name reaches an attribute.
+ *  - E1a-F13: a URL is parsed as a browser does (tabs and newlines dropped, extra slashes and
+ *    backslashes after the scheme skipped, the host after the last "@"); its host is always shown,
+ *    and a URL with user information before its host is not a link; a tokenUri rewritten to this
+ *    origin keeps one leading slash (never a protocol-relative "//host").
  *
  * The page script runs in `node:vm` exactly as served (`helpers/ui-page.ts`).
  */
@@ -172,6 +176,36 @@ describe("the page draws hostile values without breaking", () => {
     await livePage.settle();
     expect(livePage.copied[0], "the copy control copies the whole name").toBe(hugeIface.name);
     expect(copyName.title).toBe(`copy the whole value (${hugeIface.name.length} characters)`);
+
+    // ── E1a-F13: where a URL leads is always in view ──────────────────────────────────────────
+    const P = loadPage();
+    const disguised = `https://trusted.example${" ".repeat(80)}@evil.example/${"x".repeat(80)}/index.json`;
+    const dv = P.ctx.urlView(disguised);
+    expect([dv.href, dv.host, dv.userinfo]).toEqual([null, "evil.example", true]);
+    const dn: FakeElement = P.ctx.urlNode(dv);
+    expect(dn.textContent).toContain("→ evil.example");
+    expect(dn.textContent).toContain("not a link: user information before the host");
+    expect([...dn.walk()].some((el) => el.tagName === "a")).toBe(false);
+    expect(dn.textContent).not.toContain("@evil.example"); // the shortened text hides it — the host line does not
+    for (const [url, host] of [
+      [`https://\\\\evil.example/${"p".repeat(200)}`, "evil.example"],       // backslashes after the scheme
+      [`https://trus\tted.example@evil.example/`, "evil.example"],               // a tab inside user information
+      [`HTTPS://Bundles.Example:8443/${"p".repeat(200)}/index.json`, "bundles.example"],
+      ["https://[::1]:8080/x", "[::1]"],
+    ] as const) {
+      expect(P.ctx.urlView(url).host, url.slice(0, 40)).toBe(host);
+      expect(P.ctx.urlNode(P.ctx.urlView(url)).textContent).toContain(`→ ${host}`);
+    }
+    const honest = P.ctx.urlView(`https://bundles.example/${"p".repeat(300)}/index.json`);
+    expect(honest.href).not.toBeNull();
+    expect(P.ctx.urlNode(honest).textContent).toContain("→ bundles.example");
+    // tokenUri: the same parser; a localhost URI rewritten to this origin never becomes "//host/…"
+    const rewrite: FakeElement = P.ctx.uriLink("http://localhost//evil.example/x");
+    expect(rewrite.href).toBe("/evil.example/x");
+    expect(P.ctx.uriLink("http://localhost:10020/constellations/orion").href).toBe("/constellations/orion");
+    const userinfo: FakeElement = P.ctx.uriLink("https://good.example@evil.example/meta.json");
+    expect([...userinfo.walk()].some((el) => el.tagName === "a")).toBe(false);
+    expect(userinfo.textContent).toContain("it leads to evil.example");
   });
 
   it("negative control (E1a-F4): without the summary key the publication is read on every refresh", async () => {
@@ -201,6 +235,23 @@ describe("the page draws hostile values without breaking", () => {
     const sizes = budgetOf(drawn.root);
     expect(sizes.text).toBeGreaterThan(sizes.baseline + 3_000_000);
     expect(sizes.longestAttribute).toBeGreaterThan(3_000_000);
+  });
+
+  it("negative control (E1a-F13): a URL linked by its prefix alone hides where it leads", () => {
+    const broken = SERVED_SCRIPT.replace("    href: dest !== null && !dest.userinfo && dest.host !== \"\" ? s : null,", "    href: linkable ? s : null,")
+      .replace("  if (uv.host !== null) {", "  if (false) {");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const P = loadPage(broken);
+    const disguised = `https://trusted.example${" ".repeat(80)}@evil.example/${"x".repeat(80)}/index.json`;
+    const dn: FakeElement = P.ctx.urlNode(P.ctx.urlView(disguised));
+    expect([...dn.walk()].some((el) => el.tagName === "a" && el.href === disguised)).toBe(true);
+    expect(dn.textContent).not.toContain("evil.example");
+  });
+
+  it("negative control (E1a-F13): the old tokenUri rewrite leaves this origin", () => {
+    const broken = SERVED_SCRIPT.replace("(local ? localPath(dest.path) : s)", "(local ? dest.path : s)");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    expect(loadPage(broken).ctx.uriLink("http://localhost//evil.example/x").href).toBe("//evil.example/x");
   });
 
   it("negative control (E1a-F3): String() on a published object stops the contract view", () => {

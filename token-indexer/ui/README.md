@@ -57,6 +57,9 @@ What else the page shows:
 - A failed read of `/interface` (e.g. a 503) is drawn as "could not be read", never as "no public
   interface published" — that is said only on the API's own word (a 404, or the contract route's
   null summary) (audit 03-E1a finding F10).
+- A URL (bundle URL, tokenUri) is parsed as a browser parses it: its destination host is always
+  shown beside the shortened text, a URL with user information before its host is not a link, and a
+  `localhost` tokenUri rewritten to this origin keeps exactly one leading slash (audit 03-E1a F13).
 - Routes may end in a section (`#/contract/<address>/interface`, `#/token/…/mints`, …), scrolled to
   once drawn. The raw-events table asks for every event of the contract (`/events?limit=500`): the
   route's `applied=false` means "rejected only", which the page had asked for since 00020.

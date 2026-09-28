@@ -938,26 +938,77 @@ function go(hash) { window.location.hash = hash; }
 // this process actually listens on, the document it names is served by THIS origin, so the link
 // is rewritten to a same-origin path. A URI on any other host is left alone and rendered as it is.
 
+// Where a browser goes for an http(s) URL (WHATWG URL parsing, special schemes): tabs and newlines
+// are dropped, leading and trailing C0 controls and spaces stripped, the run of slashes and
+// backslashes after the scheme skipped; the authority ends at the first slash, backslash, "?" or
+// "#", and the host is what follows its LAST "@" (what comes before is user information). null for
+// any other scheme. A link is drawn only where its destination can be shown (audit 03-E1a finding
+// F13: a URL whose authority is "trusted.example", eighty spaces, "@evil.example", shortened for the
+// eye, read as trusted.example and led to evil.example).
+function urlDest(url) {
+  var raw = txt(url);
+  var v = "";
+  for (var i = 0; i < raw.length; i++) {
+    var c = raw.charCodeAt(i);
+    if (c !== 9 && c !== 10 && c !== 13) v += raw.charAt(i);
+  }
+  var a = 0;
+  var b = v.length;
+  while (a < b && v.charCodeAt(a) <= 32) a++;
+  while (b > a && v.charCodeAt(b - 1) <= 32) b--;
+  v = v.slice(a, b);
+  var low = v.slice(0, 6).toLowerCase();
+  var rest = low === "https:" ? v.slice(6) : (low.slice(0, 5) === "http:" ? v.slice(5) : null);
+  if (rest === null) return null;
+  var p = 0;
+  while (p < rest.length && (rest.charAt(p) === "/" || rest.charCodeAt(p) === 92)) p++;
+  var e = p;
+  while (e < rest.length) {
+    var ch = rest.charAt(e);
+    if (ch === "/" || ch === "?" || ch === "#" || rest.charCodeAt(e) === 92) break;
+    e++;
+  }
+  var authority = rest.slice(p, e);
+  var at = authority.lastIndexOf("@");
+  var host = at >= 0 ? authority.slice(at + 1) : authority;
+  if (host.charAt(0) === "[") {
+    var close = host.indexOf("]");
+    if (close >= 0) host = host.slice(0, close + 1);
+  } else if (host.indexOf(":") >= 0) {
+    host = host.slice(0, host.indexOf(":"));
+  }
+  return { host: host.toLowerCase(), userinfo: at >= 0, path: rest.slice(e) };
+}
+// The path of a same-origin rewrite: one leading slash, never two (a "//host/…" href would leave
+// this origin) and never a backslash (browsers read it as a slash).
+function localPath(path) {
+  var i = 0;
+  while (i < path.length && (path.charAt(i) === "/" || path.charCodeAt(i) === 92)) i++;
+  return "/" + path.slice(i);
+}
 function splitUri(uri) {
   var s = txt(uri === null || uri === undefined ? "" : uri);
   var low = s.toLowerCase();
   var mark = ":" + "//";
-  var httpPrefix = "http" + mark;
-  var httpsPrefix = "https" + mark;
-  var rest = null;
-  if (low.indexOf(httpPrefix) === 0) rest = s.slice(httpPrefix.length);
-  else if (low.indexOf(httpsPrefix) === 0) rest = s.slice(httpsPrefix.length);
-  if (rest === null) return { href: null, label: s, local: false };
-  var slash = rest.indexOf("/");
-  var authority = slash < 0 ? rest : rest.slice(0, slash);
-  var path = slash < 0 ? "/" : rest.slice(slash);
-  var host = authority.split(":")[0].toLowerCase();
-  var local = host === "localhost" || host === "127.0.0.1" || host === "[" + "::1]";
-  return { href: local ? path : s, label: s, local: local };
+  var linkable = low.indexOf("http" + mark) === 0 || low.indexOf("https" + mark) === 0;
+  var dest = linkable ? urlDest(s) : null;
+  if (dest === null) return { href: null, label: s, local: false, host: null, userinfo: false };
+  var local = dest.host === "localhost" || dest.host === "127.0.0.1" || dest.host === "[" + "::1]";
+  // A URI with user information before its host is not made a link: its label reads as one host
+  // and the browser would open another.
+  var href = dest.userinfo || dest.host === "" ? null : (local ? localPath(dest.path) : s);
+  return { href: href, label: s, local: local, host: dest.host, userinfo: dest.userinfo };
 }
 function uriLink(uri) {
   if (uri === null || uri === undefined || uri === "") return node("span", "-", "no");
   var parsed = splitUri(uri);
+  if (parsed.href === null && parsed.userinfo) {
+    var warn = node("span", null, "wrapv");
+    warn.appendChild(node("span", parsed.label, "hex"));
+    warn.appendChild(node("span", "  (not a link: user information before the host; it leads to "
+      + clipText(parsed.host, NAME_MAX).text + ")", "err"));
+    return warn;
+  }
   if (parsed.href === null) return node("span", parsed.label, "hex");
   var a = node("a", parsed.label);
   a.href = parsed.href;
@@ -1930,10 +1981,12 @@ function urlView(url) {
   var low = s.slice(0, 8).toLowerCase();
   var mark = ":" + "//";
   var linkable = low.indexOf("http" + mark) === 0 || low.indexOf("https" + mark) === 0;
+  var dest = linkable ? urlDest(s) : null;
   return {
     full: s, length: n, shortened: cut,
     short: cut ? s.slice(0, URL_HEAD) + "…" + s.slice(n - URL_TAIL) : s,
-    href: linkable ? s : null
+    href: dest !== null && !dest.userinfo && dest.host !== "" ? s : null,
+    host: dest !== null ? dest.host : null, userinfo: dest !== null && dest.userinfo
   };
 }
 function contractModel(c) {
@@ -2244,6 +2297,11 @@ function urlNode(uv) {
     wrap.appendChild(node("span", uv.short, "hex"));
   }
   if (uv.shortened) wrap.appendChild(node("span", "  (" + groupDigits(uv.length) + " characters)", "note"));
+  // Where it leads, always in view: a shortened URL must not hide its host (E1a-F13).
+  if (uv.host !== null) {
+    wrap.appendChild(node("span", "  → " + clipText(uv.host, NAME_MAX).text, "note"));
+    if (uv.userinfo) wrap.appendChild(node("span", "  (not a link: user information before the host)", "err"));
+  }
   wrap.appendChild(node("span", "  "));
   var cp = copyable(uv.full, "copy", "cpbtn");
   cp.title = "copy the whole URL (" + uv.length + " characters)";
