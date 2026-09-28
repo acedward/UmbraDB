@@ -1340,7 +1340,8 @@ var INTERFACE_STATUS = {
     help: "the bundle failed the level shown and the reason says why; a newer failed publication is "
       + "the current one and is shown failed (Q14)" },
   "unchecked": { cls: "if-unav",
-    help: "a limit stopped the check (size, count or deadline): no level is claimed; retried" },
+    help: "a limit (size, count or deadline) or an unavailable contract state stopped the check before "
+      + "it finished: only the levels shown passed (L1, or none); retried" },
   "unfetchable": { cls: "if-unav",
     help: "the URL is refused by policy (not http(s), a private address, not text): no level is claimed" },
   "unreachable": { cls: "if-unav",
@@ -1410,6 +1411,9 @@ function interfaceStatusView(x) {
   if (status === "verified") text = "verified " + (passed === "" ? "(no level)" : passed);
   else if (status === "failed") text = failed === null ? "failed" : "failed at L" + failed;
   else if (status === "stale" && passed !== "") text = "stale (was " + passed + ")";
+  // The verifier stops at Level 2 with L1 passed when the contract state is unavailable or a Level 2
+  // limit is reached: the badge says what did pass (audit 03-E1a finding F11).
+  else if (status === "unchecked" && passed !== "") text = "unchecked (" + passed + " passed)";
   var notes = [];
   if (x && x.levels && status === "verified" && x.levels.l3 !== "passed") {
     notes.push("L3 " + orDash(x.levels.l3) + (x.l3Reason ? ": " + x.l3Reason : ""));

@@ -607,6 +607,21 @@ describe("the page shows the origin of every value", () => {
       expect(checkDrawn(drawn.root, drawn.model.all), `outcome ${label} drawn`).toEqual([]);
       note(drawn.model.all);
     }
+    // E1a-F11: `unchecked` after L1 passed (state unavailable, a Level 2 limit) says what passed
+    {
+      const partly = publicationAs(base, "unchecked", "current", 9_700);
+      partly.levels = { l1: "passed", l2: "not_run", l3: "not_run" }; partly.level = 1;
+      partly.reason = "Level 2: the contract state is unavailable (timeout); Level 2 was not run";
+      partly.origin.evidence.levels = clone(partly.levels);
+      const drawn = drawContract(page, contractState(up, partly));
+      expect(drawn.model.face.status.text).toBe("unchecked (L1 passed)");
+      expect(drawn.model.face.status.help).not.toContain("no level is claimed");
+      expect(drawn.model.face.status.help).toContain("only the levels shown passed");
+      expect(drawn.model.face.rows[0].origin.label).toBe("Public interface, unchecked (L1 passed)");
+      expect(checkDrawn(drawn.root, drawn.model.all)).toEqual([]);
+      expect(page.ctx.interfaceStatusView({ status: "unchecked", levels: LEVELS.unchecked }).text).toBe("unchecked");
+    }
+
     // E1a-F10: a failed interface read (503) is not "none published"
     {
       const routes = apiRoutes(up);
@@ -749,6 +764,13 @@ describe("the page shows the origin of every value", () => {
     const violations = snebChecks(broken).model;
     expect(violations).toContain("color: derived from 2 inputs without a link to them");
     expect(violations).toContain("status: derived from 2 inputs without a link to them");
+  });
+
+  it("negative control (E1a-F11): an unchecked badge that denies the level it passed fails the check", () => {
+    const broken = SERVED_SCRIPT.replace('  else if (status === "unchecked" && passed !== "") text = "unchecked (" + passed + " passed)";', "");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const page = loadPage(broken);
+    expect(page.ctx.interfaceStatusView({ status: "unchecked", levels: { l1: "passed", l2: "not_run", l3: "not_run" } }).text).toBe("unchecked");
   });
 
   it("negative control (E1a-F10): a failed read drawn as none published fails the check", async () => {
