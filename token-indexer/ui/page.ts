@@ -1836,7 +1836,7 @@ function hashTokenSection(t, section) { return hashToken(t) + "/" + enc(section)
 // updated the token), else — only when the page read all of the contract's events — a public
 // movement, where the view lists them. Anything else is not known to the page and is not guessed
 // (audit 03-E1a findings R2I, R3D, R4B): null, and the value cites the API's row that carries it.
-function firstSeenSection(t, events, unknownRead) {
+function firstSeenSection(t, events, unknownRead, activityRows) {
   if (!t || t.status === "builtin") return null;
   var h = Number(t.firstSeenHeight);
   if (t.firstMintHeight !== null && t.firstMintHeight !== undefined && Number(t.firstMintHeight) === h) return "mints";
@@ -1848,7 +1848,12 @@ function firstSeenSection(t, events, unknownRead) {
   }
   if (unknownRead) return null;
   var vis = visibilityOf(t);
-  return vis === "full" || vis === "disclosed-imbalances" ? "activity" : null;
+  if (vis !== "full" && vis !== "disclosed-imbalances") return null;
+  // the transactions section draws the newest pages read, under the reader's role filter: it holds
+  // the first observation only when a row at that height is drawn (audit 03-E1a finding R10A)
+  var rows = arr(activityRows);
+  for (var j = 0; j < rows.length; j++) if (rows[j] && Number(rows[j].blockHeight) === h) return "activity";
+  return null;
 }
 // The API's own row of a token (raw JSON), the evidence of a value the page cannot place better.
 function tokenApiHref(t) {
@@ -1895,6 +1900,22 @@ function tokenModel(d) {
   if (!t) return null;
   var o = t.origins || {};
   var events = arr(d.events);
+  // The transactions section holds what it draws: the newest pages read, under the reader's role
+  // filter (audit 03-E1a finding R10A). A height cites it only when a row at that height is drawn; a
+  // count only when every row is drawn (no filter, no further page); a fact every row carries (a seen
+  // colour, its kind) only when a row is drawn. Otherwise the token's API row carries the value.
+  var actRows = d.activity ? arr(d.activity.items) : [];
+  var actAll = !!d.activity && !d.activity.nextCursor && !d.activityRole;
+  function actAt(h) {
+    if (h === null || h === undefined) return false;
+    for (var a0 = 0; a0 < actRows.length; a0++) if (actRows[a0] && Number(actRows[a0].blockHeight) === Number(h)) return true;
+    return false;
+  }
+  function actCtx(ok, extra) {
+    var c1 = ok ? { token: t, section: "activity" } : { token: t, api: tokenApiHref(t) };
+    if (extra) for (var x0 in extra) if (own(extra, x0)) c1[x0] = extra[x0];
+    return c1;
+  }
   var decls = declarationsOf(events, t);
   var ctx = { token: t, address: t.address };
   var builtin = t.status === "builtin";
@@ -1967,6 +1988,7 @@ function tokenModel(d) {
   var idSection = identitySection(t);
   var idCtx = { token: t, section: idSection };
   if (idSection === "events" && !hasOwnEvent(events, t)) idCtx = { token: t, api: tokenApiHref(t) };
+  if (idSection === "activity" && actRows.length === 0) idCtx = { token: t, api: tokenApiHref(t) };
   facts.push(item("address", "address",
     builtin ? "built-in row, no contract" : (seen ? "unknown" : t.address),
     builtin ? seeded : (seen ? noContract : pageOrigin("chain",
@@ -1994,7 +2016,8 @@ function tokenModel(d) {
   }
   // A colour seen in public data only (status seen) cites no transaction: its evidence is the
   // token's public movements (audit 03-E1a finding F7).
-  facts.push(item("color", "colour", t.color, o.color, { token: t, address: t.address, section: seen ? "activity" : null }));
+  facts.push(item("color", "colour", t.color, o.color, seen ? actCtx(actRows.length > 0, { address: t.address })
+    : { token: t, address: t.address, section: null }));
   facts.push(item("name", "name", t.name, o.name, { token: t, address: t.address, declarations: declCount("name"), partial: partial }));
   facts.push(item("symbol", "symbol", t.symbol, o.symbol, { token: t, address: t.address, declarations: declCount("symbol"), partial: partial }));
   facts.push(item("decimals", "decimals", t.decimals, o.decimals, { token: t, address: t.address, declarations: declCount("decimals"), partial: partial }));
@@ -2009,7 +2032,7 @@ function tokenModel(d) {
   facts.push(item("totalMinted", "total minted", t.totalMinted, o.mints, mintAllCtx));
   facts.push(item("firstMintHeight", "first mint height", t.firstMintHeight, o.mints, mintCtx));
   facts.push(item("lastMintHeight", "last mint height", t.lastMintHeight, o.mints, mintAllCtx));
-  var fsSection = firstSeenSection(t, events, partial || d.eventsFailed === true);
+  var fsSection = firstSeenSection(t, events, partial || d.eventsFailed === true, actRows);
   facts.push(item("firstSeenHeight", "first seen height", t.firstSeenHeight,
     builtin ? seeded : pageOrigin("derived", "the lowest block height at which a declaration, a mint or a public movement of this token was seen"
       + (fsSection === null ? " — the observation that set it is not among what this page read; the API's row carries the height" : "")),
@@ -2033,8 +2056,8 @@ function tokenModel(d) {
     var actOrigin = vis === "not-tracked" ? pageOrigin("none", "DUST is not tracked per token: every transaction pays a fee (Q13)")
       : (vis === "calls-only" ? pageOrigin("none", "a ledger kind has no colour and so no activity row; its contract's calls are listed instead (US7)")
         : pageOrigin("chain", "00023: the counted public movements of this token in archived transactions"));
-    facts.push(item("activityCount", "activity rows", t.activityCount, actOrigin, { token: t, section: "activity" }));
-    facts.push(item("lastActivityHeight", "last activity height", t.lastActivityHeight, actOrigin, { token: t, section: "activity" }));
+    facts.push(item("activityCount", "activity rows", t.activityCount, actOrigin, actCtx(actAll)));
+    facts.push(item("lastActivityHeight", "last activity height", t.lastActivityHeight, actOrigin, actCtx(actAt(t.lastActivityHeight))));
   }
   // What the visibility decides is which section below lists this token's public data: it links it
   // (audit 03-E1a finding R2A).
@@ -2044,7 +2067,7 @@ function tokenModel(d) {
   var disclosure = [];
   if (vis === "disclosed-imbalances") {
     disclosure.push(item("disclosedTransactions", "transactions disclose this colour", t.disclosedTransactions,
-      pageOrigin("chain", "00023 US4: transactions whose offers publish this colour's net imbalance"), { token: t, section: "activity" }));
+      pageOrigin("chain", "00023 US4: transactions whose offers publish this colour's net imbalance"), actCtx(actAll)));
     disclosure.push(item("undisclosedShieldedOffers", "shielded offers publish no colour", t.undisclosedShieldedOffers,
       pageOrigin("chain", "00023 FR-018: zswap offers on this chain that publish no colour at all",
         { list: "shielded-offers" })));
@@ -2827,6 +2850,7 @@ async function loadTokenActivity(d) {
       function (e) { d.callsFailed = true; d.notes.push("contract calls unavailable: " + e.message); });
     return;
   }
+  d.activityRole = state.act.role || null;
   await loadPages(function (c) { return activityPath(t, c); }, state.act.pages).then(
     function (p) { d.activity = p; partlyNote(d.notes, "transactions", p); },
     function (e) { d.activityFailed = true; d.notes.push("transactions unavailable: " + e.message); });

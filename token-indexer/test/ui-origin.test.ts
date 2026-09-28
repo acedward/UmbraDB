@@ -529,17 +529,26 @@ describe("the page shows the origin of every value", () => {
       const want: Record<string, string> = { seen: "activity", observed: "mints", declared: "events", described: "events" };
       for (const row of rows.filter((r) => want[r.status] !== undefined)) {
         const facts = drawRow(page, row).model.facts;
-        // the declarations carry it when one of the token's own events was read (E1a-R8B)
+        // the declarations carry it when one of the token's own events was read (E1a-R8B); a seen
+        // colour's movements when one of them is drawn (E1a-R10A)
         const ownEvent = { eventId: 1, blockHeight: 1, txPosition: 0, domainSep: row.domainSep, kindByte: row.kind, keyText: "name", valType: 1, applied: true };
+        const ownMove = { txHash: "ab".repeat(32), blockHeight: row.firstSeenHeight ?? 1, color: row.color, kind: row.kind, role: "utxo_created" };
         const withOwn = want[row.status] === "events"
-          ? page.ctx.tokenModel({ ...tokenDetail(rowFixture(row)), events: [ownEvent] }).facts : facts;
+          ? page.ctx.tokenModel({ ...tokenDetail(rowFixture(row)), events: [ownEvent] }).facts
+          : (want[row.status] === "activity"
+            ? page.ctx.tokenModel({ ...tokenDetail(rowFixture(row)), activity: { items: [ownMove], nextCursor: null } }).facts : facts);
         for (const field of row.address ? ["domainSep", "kind"] : ["kind"]) {
           const first = withOwn.find((i: Json) => i.field === field).origin.links[0]?.href ?? "(none)";
           expect(first, `${row.status} row: ${field}`).toMatch(new RegExp(`/${want[row.status]}$`));
-          // E1a-R8B: none of its own events read (the row fixture reads none) → the API's row of it
+          // E1a-R8B / R10A: none of its own events read, no movement drawn (the row fixture reads
+          // none) → the API's row of it
           if (want[row.status] === "events") {
             expect(facts.find((i: Json) => i.field === field).origin.links.map((l: Json) => l.href), `${row.status} row: ${field}, no own event read`)
               .toEqual([`/v1/contracts/${row.address}/tokens/${row.domainSep}/${row.kind}`]);
+          }
+          if (want[row.status] === "activity") {
+            expect(facts.find((i: Json) => i.field === field).origin.links.map((l: Json) => l.href), `${row.status} row: ${field}, no movement drawn`)
+              .toEqual([`/v1/colors/${row.color}`]);
           }
         }
       }
@@ -576,6 +585,11 @@ describe("the page shows the origin of every value", () => {
         expect(drawToken(page, f).model.facts.find((i: Json) => i.field === "firstSeenHeight").origin.links[0].href).toMatch(/\/events$/);
         // E1a-R3D: a movement first (100), then a mint (150), then the declaration: the movement
         f.token.firstSeenHeight = firstDecl - 100; f.token.firstMintHeight = firstDecl - 50;
+        // E1a-R10A: … when that movement is among the rows drawn; else the API's row
+        const rowApi0 = `/v1/contracts/${f.token.address}/tokens/${f.token.domainSep}/${f.token.kind}`;
+        expect(drawToken(page, f).model.facts.find((i: Json) => i.field === "firstSeenHeight").origin.links.map((l: Json) => l.href),
+          "no movement at that height drawn").toEqual([rowApi0]);
+        f.activity = { items: [{ txHash: "ab".repeat(32), blockHeight: firstDecl - 100, color: f.token.color, kind: f.token.kind, role: "utxo_created" }], nextCursor: null };
         expect(drawToken(page, f).model.facts.find((i: Json) => i.field === "firstSeenHeight").origin.links[0].href).toMatch(/\/activity$/);
         // E1a-R4B: a rejected event at that height never set it; a capped or failed events read, or a
         // view that lists no movements, leaves the observation unknown — the API's row is cited
@@ -597,8 +611,13 @@ describe("the page shows the origin of every value", () => {
         expect(lmFs.origin.links.map((l: Json) => l.href)).toEqual([`/v1/contracts/${lm.token.address}/tokens/${lm.token.domainSep}/${lm.token.kind}`]);
       }
       const seenRow = rows.find((r) => r.status === "seen")!;
-      const seenColor = drawRow(page, seenRow).model.facts.find((i: Json) => i.field === "color");
+      // a seen colour's evidence is its movements — when one is drawn (E1a-R10A); else the colour's API document
+      const seenMove = { txHash: "ab".repeat(32), blockHeight: seenRow.firstSeenHeight ?? 1, color: seenRow.color, kind: seenRow.kind, role: "utxo_created" };
+      const seenColor = page.ctx.tokenModel({ ...tokenDetail(rowFixture(seenRow)), activity: { items: [seenMove], nextCursor: null } })
+        .facts.find((i: Json) => i.field === "color");
       expect(seenColor.origin.links[0].href).toBe(`#/color/${seenRow.color}/${seenRow.kind}/activity`);
+      expect(drawRow(page, seenRow).model.facts.find((i: Json) => i.field === "color").origin.links.map((l: Json) => l.href))
+        .toEqual([`/v1/colors/${seenRow.color}`]);
       const sneb = drawToken(page, tokenFixture("sneb18")).model.facts;
       expect(sneb.find((i: Json) => i.field === "color").origin.links[0].href).toBe(`#/contract/${tokenFixture("sneb18").token.address}`);
       expect(sneb.find((i: Json) => i.field === "status").origin.links.map((l: Json) => l.text))
@@ -914,6 +933,35 @@ describe("the page shows the origin of every value", () => {
       expect(links(150), "a drawn key: the traits").toEqual([`#/token/${lm.token.address}/${lm.token.domainSep}/${lm.token.kind}/traits`]);
       expect(links(123_456), "no key and no event at that height: the API's row")
         .toEqual([`/v1/contracts/${lm.token.address}/tokens/${lm.token.domainSep}/${lm.token.kind}`]);
+    }
+
+    // ── E1a-R10A: the transactions section holds what it draws — the pages read, under the filter
+    {
+      const ss = tokenFixture("sstarpi");
+      const base = `/v1/contracts/${ss.token.address}/tokens/${ss.token.domainSep}/${ss.token.kind}`;
+      const move = (h: number, role: string): Json => ({ ...clone(ss.activity.items[0]), blockHeight: h, role, txHash: h.toString(16).padStart(64, "0") });
+      const f = clone(ss); f.token.lastActivityHeight = 300; f.token.activityCount = 2;
+      const routes = apiRoutes(f);
+      routes.set(base, f.token);
+      routes.set(`${base}/transactions?limit=200`, { items: [move(300, "utxo_spent"), move(100, "utxo_created")], nextCursor: null });
+      routes.set(`${base}/transactions?limit=200&role=utxo_created`, { items: [move(100, "utxo_created")], nextCursor: null });
+      const live = await bootToken(f, routes);
+      const links = (field: string): string[] => live.ctx.tokenModel(live.ctx.state.detail).facts.find((i: Json) => i.field === field).origin.links.map((l: Json) => l.href);
+      const section = `#/token/${ss.token.address}/${ss.token.domainSep}/${ss.token.kind}/activity`;
+      expect(links("lastActivityHeight"), "every row drawn: the section").toEqual([section]);
+      expect(links("activityCount")).toEqual([section]);
+      // the reader filters to "UTXO created": block 300 is not drawn, nor is every row
+      live.ctx.state.act.role = "utxo_created";
+      await live.ctx.refresh();
+      expect(live.ctx.state.detail.activityRole).toBe("utxo_created");
+      expect(links("lastActivityHeight"), "the filtered section lacks block 300").toEqual([base]);
+      expect(links("activityCount"), "a filtered section is not every row").toEqual([base]);
+      // unfiltered but more pages than read: the count is not drawn whole; the newest height is
+      live.ctx.state.act.role = null;
+      routes.set(`${base}/transactions?limit=200`, { items: [move(300, "utxo_spent")], nextCursor: "a1" });
+      await live.ctx.refresh();
+      expect(links("activityCount")).toEqual([base]);
+      expect(links("lastActivityHeight")).toEqual([section]);
     }
 
     // ── E1a-R5D: the shielded-offers view keeps its rows and reports a later page that failed ──
@@ -1706,7 +1754,9 @@ describe("the page shows the origin of every value", () => {
     routes.set(`${base}/transactions?limit=200`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
     const live = await bootToken(ss, routes, broken);
     const m = live.ctx.tokenModel(live.ctx.state.detail);
-    expect(m.facts.find((i: Json) => i.field === "activityCount").origin.links[0].href).toMatch(/\/activity$/);
+    // (the activity count no longer cites an undrawn section at all since R10A; the visibility, which
+    // links the section it decides, still shows the unrecorded failure)
+    expect(m.facts.find((i: Json) => i.field === "visibility").origin.links[0].href).toMatch(/\/activity$/);
     const up = tokenFixture("uprompi");
     const cRoutes = apiRoutes(up);
     cRoutes.set(`/v1/contracts/${up.token.address}/calls?limit=200`, new Reply(503, { error: { code: "UNAVAILABLE" } }));
@@ -1822,6 +1872,16 @@ describe("the page shows the origin of every value", () => {
     const ss = tokenFixture("sstarpi");
     const detail = { ...tokenDetail(ss), mintsMore: true };
     expect(loadPage(broken).ctx.tokenModel(detail).facts.find((i: Json) => i.field === "lastMintHeight").origin.links[0].href).toMatch(/\/mints$/);
+  });
+
+  it("negative control (E1a-R10A): the last activity height cites a filtered section that lacks it", () => {
+    const broken = SERVED_SCRIPT.replace("actOrigin, actCtx(actAt(t.lastActivityHeight))));", "actOrigin, actCtx(true)));");
+    expect(broken).not.toBe(SERVED_SCRIPT);
+    const ss = tokenFixture("sstarpi");
+    const t = { ...clone(ss.token), lastActivityHeight: 300 };
+    const d = { ...tokenDetail(ss), token: t, activityRole: "utxo_created",
+      activity: { items: [{ ...clone(ss.activity.items[0]), blockHeight: 100, role: "utxo_created" }], nextCursor: null } };
+    expect(loadPage(broken).ctx.tokenModel(d).facts.find((i: Json) => i.field === "lastActivityHeight").origin.links[0].href).toMatch(/\/activity$/);
   });
 
   it("negative control (E1a-S2): with the contract's rows unread, the family guessed from one row", async () => {
