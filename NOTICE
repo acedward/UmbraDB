@@ -6,3 +6,55 @@ you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
+
+--------------------------------------------------------------------------------
+Public Interfaces for Compact Contracts — reference tools (compact-off-chain-circuits)
+--------------------------------------------------------------------------------
+token-indexer/interface/ contains code ported from
+
+    https://github.com/acedward/public-interfaces-for-compact-contracts
+    PR #6, commit 1cf947786d55739ec4e89aef9258ebef0d8687fa
+
+(the files and every difference are listed in token-indexer/interface/SOURCE.md),
+and the test fixtures under token-indexer/test/fixtures/interfaces/ contain
+copies of its compact/OffChainInterface.compact module. That work is licensed
+under the Apache License, Version 2.0; its NOTICE reads:
+
+    compact-off-chain-circuits
+    Copyright 2026 the compact-off-chain-circuits authors.
+
+--------------------------------------------------------------------------------
+OpenZeppelin Compact Contracts (test fixtures only)
+--------------------------------------------------------------------------------
+The test fixtures under token-indexer/test/fixtures/interfaces/b5-bundles/
+(copied from acedward/mip-public-interfaces; provenance in
+token-indexer/test/fixtures/interfaces/SOURCE.md) contain unmodified copies of
+OpenZeppelin Compact Contracts modules (src/vendor/openzeppelin/token/
+FungibleToken.compact, src/vendor/openzeppelin/utils/Utils.compact) from
+
+    https://github.com/OpenZeppelin/compact-contracts
+    tag v0.4.0-alpha.3, commit 2109614046377d883094a1d7618ecce1f26c0fe8
+
+They remain under their original licence:
+
+    MIT License
+
+    Copyright (c) 2025 Zeppelin Group Ltd
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.

@@ -89,6 +89,23 @@ export interface TokenIndexStatus {
     /** …of which the colour is NOT public, because the offer is balanced (spec §0, FR-018). */
     undisclosedShieldedOffers: number;
     contractCalls: number;
+    /** Project 00024-01 — [Y] packages under the standard's name (one per `token_metadata_events`
+     *  row of `mip-0018`), how many of them span several parts, and how many are `mixed`-phase —
+     *  a publisher error that is recorded, never dropped (spec FR-002). */
+    packages: number;
+    multipartPackages: number;
+    mixedPackages: number;
+    /** 00024-02 — public interfaces: contracts with one, their publications, and the current
+     *  publications by status (waiting = pending or stale; unavailable = unchecked or unfetchable — a
+     *  limit or a refused destination; unreachable = the host did not deliver, owner Q25). The five
+     *  status counters partition `interfaces`. */
+    interfaces: number;
+    interfacePublications: number;
+    interfacesVerified: number;
+    interfacesFailed: number;
+    interfacesWaiting: number;
+    interfacesUnavailable: number;
+    interfacesUnreachable: number;
   };
 }
 
@@ -121,6 +138,10 @@ export async function readStatus(
       events_applied: string; events_rejected: string; lookups_ok: string;
       activity_rows: string; seen_tokens: string; shielded_offers: string;
       undisclosed_shielded_offers: string; contract_calls: string;
+      packages: string; multipart_packages: string; mixed_packages: string;
+      interfaces: string; interface_publications: string; interfaces_verified: string;
+      interfaces_failed: string; interfaces_waiting: string; interfaces_unavailable: string;
+      interfaces_unreachable: string;
     }[]>`
       SELECT
         (SELECT count(*) FROM ${sql(schema)}.contracts WHERE net = ${net})                       AS contracts,
@@ -136,7 +157,30 @@ export async function readStatus(
         (SELECT count(*) FROM ${sql(schema)}.tokens WHERE net = ${net} AND status = 'seen')       AS seen_tokens,
         (SELECT count(*) FROM ${sql(schema)}.shielded_offers WHERE net = ${net})                 AS shielded_offers,
         (SELECT count(*) FROM ${sql(schema)}.shielded_offers WHERE net = ${net} AND undisclosed) AS undisclosed_shielded_offers,
-        (SELECT count(*) FROM ${sql(schema)}.contract_calls  WHERE net = ${net})                 AS contract_calls
+        (SELECT count(*) FROM ${sql(schema)}.contract_calls  WHERE net = ${net})                 AS contract_calls,
+        (SELECT count(*) FROM ${sql(schema)}.token_metadata_events
+           WHERE net = ${net} AND name_variant = 'mip-0018')                                    AS packages,
+        (SELECT count(*) FROM ${sql(schema)}.token_metadata_events
+           WHERE net = ${net} AND name_variant = 'mip-0018' AND parts > 1)                      AS multipart_packages,
+        (SELECT count(*) FROM ${sql(schema)}.token_metadata_events
+           WHERE net = ${net} AND name_variant = 'mip-0018' AND phase = 'mixed')                AS mixed_packages,
+        (SELECT count(*) FROM ${sql(schema)}.public_interfaces WHERE net = ${net})               AS interfaces,
+        (SELECT count(*) FROM ${sql(schema)}.public_interface_events WHERE net = ${net})         AS interface_publications,
+        (SELECT count(*) FROM ${sql(schema)}.public_interfaces pi
+           JOIN ${sql(schema)}.public_interface_events e ON e.net = pi.net AND e.event_id = pi.event_id
+           WHERE pi.net = ${net} AND e.status = 'verified')                                      AS interfaces_verified,
+        (SELECT count(*) FROM ${sql(schema)}.public_interfaces pi
+           JOIN ${sql(schema)}.public_interface_events e ON e.net = pi.net AND e.event_id = pi.event_id
+           WHERE pi.net = ${net} AND e.status = 'failed')                                        AS interfaces_failed,
+        (SELECT count(*) FROM ${sql(schema)}.public_interfaces pi
+           JOIN ${sql(schema)}.public_interface_events e ON e.net = pi.net AND e.event_id = pi.event_id
+           WHERE pi.net = ${net} AND e.status IN ('pending', 'stale'))                           AS interfaces_waiting,
+        (SELECT count(*) FROM ${sql(schema)}.public_interfaces pi
+           JOIN ${sql(schema)}.public_interface_events e ON e.net = pi.net AND e.event_id = pi.event_id
+           WHERE pi.net = ${net} AND e.status IN ('unchecked', 'unfetchable'))                   AS interfaces_unavailable,
+        (SELECT count(*) FROM ${sql(schema)}.public_interfaces pi
+           JOIN ${sql(schema)}.public_interface_events e ON e.net = pi.net AND e.event_id = pi.event_id
+           WHERE pi.net = ${net} AND e.status = 'unreachable')                                   AS interfaces_unreachable
     `,
     readPendingLookups(sql, schema, net, 50),
   ]);
@@ -161,6 +205,19 @@ export async function readStatus(
       shieldedOffers: Number(row.shielded_offers),
       undisclosedShieldedOffers: Number(row.undisclosed_shielded_offers),
       contractCalls: Number(row.contract_calls),
+      packages: Number(row.packages),
+      multipartPackages: Number(row.multipart_packages),
+      mixedPackages: Number(row.mixed_packages),
+      // 00024-02: contracts with a public interface, their publications, and the current ones by
+      // status (verified / failed / waiting = pending or stale / unavailable = unchecked or unfetchable /
+      // unreachable = the host did not deliver, owner Q25).
+      interfaces: Number(row.interfaces),
+      interfacePublications: Number(row.interface_publications),
+      interfacesVerified: Number(row.interfaces_verified),
+      interfacesFailed: Number(row.interfaces_failed),
+      interfacesWaiting: Number(row.interfaces_waiting),
+      interfacesUnavailable: Number(row.interfaces_unavailable),
+      interfacesUnreachable: Number(row.interfaces_unreachable),
     },
   };
 }

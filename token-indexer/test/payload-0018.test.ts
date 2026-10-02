@@ -12,7 +12,10 @@ import {
   encodeCompactUint,
   encodeInteger,
   encodeTokenMetadata,
+  encodeTokenMetadataUc1,
   eventNameOf,
+  PayloadSizeError,
+  splitIntoParts,
   integerOfValue,
   isCompleteJsonValue,
   isTokenMetadataName,
@@ -51,8 +54,29 @@ const KIND_SHIELDED_NATIVE = 1;
 const FINAL: NameVariant = "mip-0018";
 const LEGACY: NameVariant = "legacy-mip-xxxx";
 
-/** A payload with an explicit `val-type`, defaulting to 1 (UTF-8 string) for the text cases. */
+/** A MIP-0018 payload on the UC-1 layout (project 00024-01: 2-byte little-endian `val-len` at 66,
+ *  value from 68, the fewest 256-byte parts that hold it), with an explicit `val-type` defaulting to
+ *  1 (UTF-8 string) for the text cases. */
 function payload(
+  key: string | Uint8Array, value: string | Uint8Array,
+  opts: { kindByte?: number; valType?: number; valLen?: number; parts?: number; trailing?: Uint8Array } = {},
+): Uint8Array {
+  return encodeTokenMetadataUc1({
+    domainSep: DOMAIN,
+    kindByte: opts.kindByte ?? KIND_SHIELDED_NATIVE,
+    key,
+    valType: opts.valType ?? 1,
+    valLen: opts.valLen,
+    value,
+    parts: opts.parts,
+    trailing: opts.trailing,
+  });
+}
+
+/** The same declaration in the superseded DRAFT's layout (one-byte `val-len`, value from 67), for
+ *  the assertions about what the draft name does with it. UC-1 made the two layouts differ, so a
+ *  comparison across names now compares one declaration encoded twice, not one byte string. */
+function legacyPayload(
   key: string | Uint8Array, value: string | Uint8Array,
   opts: { kindByte?: number; valType?: number; valLen?: number } = {},
 ): Uint8Array {
@@ -195,7 +219,7 @@ describe("mip-0018:token-metadata[v1] payload — the final standard (MIP PR #32
     expectReject(payload("supply", new Uint8Array(32), { valType: 2 }), "val_type_rule", "32 bytes");
     // 17..31 bytes are what the draft could not carry and the standard can.
     expectApplied(payload("supply", new Uint8Array(17), { valType: 2 }), "17 bytes under the standard");
-    expect(parseLegacy(payload("supply", new Uint8Array(17), { valType: 2 })).rejectReason)
+    expect(parseLegacy(legacyPayload("supply", new Uint8Array(17), { valType: 2 })).rejectReason)
       .toBe("val_type_rule");
 
     // ── What that means for the one integer this explorer projects ───────────────────────────
@@ -215,7 +239,7 @@ describe("mip-0018:token-metadata[v1] payload — the final standard (MIP PR #32
     expect(integerOfValue(huge.valueBytes, FINAL)).toBe(((1n << 200n) - 1n).toString(10));
   });
 
-  it("[[token-0018-valtype-null]] val-type 5 is Null: val-len MUST be zero, all 189 value bytes are ignored, and it is distinct from an empty string — while the draft name rejects it outright", () => {
+  it("[[token-0018-valtype-null]] val-type 5 is Null: val-len MUST be zero, every value byte is ignored, and it is distinct from an empty string — while the draft name rejects it outright", () => {
     expect(VAL_TYPE_NULL).toBe(5);
     expect(maxValType(FINAL)).toBe(5);
     expect(maxValType(LEGACY)).toBe(4);
@@ -231,9 +255,10 @@ describe("mip-0018:token-metadata[v1] payload — the final standard (MIP PR #32
     expect(nulled.clears).toBe(true);
     expect(nulled.projectionError).toBeUndefined();
 
-    // "consumers MUST ignore all 189 value bytes" — a Null carrying junk is still a valid Null.
+    // "consumers MUST ignore all … value bytes" — a Null carrying junk is still a valid Null. Under
+    // UC-1 the value field starts at 68 (the two `val-len` bytes are 66–67).
     const junk = payload("name", new Uint8Array(0), { valType: 5, valLen: 0 });
-    junk.fill(0x41, 67); // 189 bytes of 'A' in a field the standard says carries no meaning
+    junk.fill(0x41, 68); // 188 bytes of 'A' in a field the standard says carries no meaning
     const withJunk = expectApplied(junk, "Null with junk in the ignored bytes");
     expect(withJunk.clears).toBe(true);
     expect(withJunk.valueBytes).toHaveLength(0);
@@ -261,7 +286,7 @@ describe("mip-0018:token-metadata[v1] payload — the final standard (MIP PR #32
 
     // Under the draft name 5 is reserved, so the very same payload is rejected and no value — not
     // even a cleared one — is ever recorded for it.
-    const legacyNull = parseLegacy(payload("name", new Uint8Array(0), { valType: 5 }));
+    const legacyNull = parseLegacy(legacyPayload("name", new Uint8Array(0), { valType: 5 }));
     expect(legacyNull.applied).toBe(false);
     expect(legacyNull.rejectReason).toBe("val_type_reserved");
     expect(legacyNull.clears).toBe(false);
@@ -294,8 +319,8 @@ describe("mip-0018:token-metadata[v1] payload — the final standard (MIP PR #32
 
     // The draft accepted every one of those fragments, which is what let a document be split
     // across events — and is why dropping that convention needed this rule, not a key convention.
-    expect(parseLegacy(payload("metadata/0", '{"half":', { valType: 3 })).applied).toBe(true);
-    expect(parseLegacy(payload("metadata", "", { valType: 3, valLen: 0 })).applied).toBe(true);
+    expect(parseLegacy(legacyPayload("metadata/0", '{"half":', { valType: 3 })).applied).toBe(true);
+    expect(parseLegacy(legacyPayload("metadata", "", { valType: 3, valLen: 0 })).applied).toBe(true);
 
     // A transport-valid value whose SHAPE this explorer's column cannot hold is flagged, never
     // rejected (MIP §5.2, §7.1: "Accept as a typed declaration"; shape rules "belong to a
@@ -361,7 +386,7 @@ describe("mip-0018:token-metadata[v1] payload — the final standard (MIP PR #32
 
     // The draft had no pointer rule at all, so every rejected key above is an ordinary trait there.
     for (const key of ["/metadata/a~2b", "/metadata/~", "/metadata/~2"]) {
-      expect(parseLegacy(payload(key, "x")).applied, `${key} under the draft`).toBe(true);
+      expect(parseLegacy(legacyPayload(key, "x")).applied, `${key} under the draft`).toBe(true);
     }
 
     // The syntax helper on its own, including the two forms a payload can never carry.
@@ -385,7 +410,7 @@ describe("mip-0018:token-metadata[v1] payload — the final standard (MIP PR #32
     expect(parse0018(payload("anything", new Uint8Array(0), { valType: 5 })).rejectReason).toBeUndefined();
     // …while under the draft name the range is still 5..255, so 5 and 6 reject alike there.
     for (const reserved of [5, 6, 255]) {
-      const legacy = parseLegacy(payload("anything", "x", { valType: reserved }));
+      const legacy = parseLegacy(legacyPayload("anything", "x", { valType: reserved }));
       expect(legacy.applied, `draft type ${reserved}`).toBe(false);
       expect(legacy.rejectReason, `draft type ${reserved}`).toBe("val_type_reserved");
     }
@@ -397,20 +422,30 @@ describe("mip-0018:token-metadata[v1] payload — the final standard (MIP PR #32
     expectReject(payload("name", "x", { kindByte: 255 }), "kind_unknown");
   });
 
-  it("[[token-0018-legacy-pair]] one byte string, two validators: every rule the final standard moved, read off the same payload under both names", () => {
-    /** Parse the SAME bytes under both names and report the pair. */
-    const both = (bytes: Uint8Array): {
+  it("[[token-0018-legacy-pair]] one declaration, two names: every rule the final standard moved (and, since UC-1, its layout), read off the same declaration encoded for each name", () => {
+    /** One DECLARATION — the same key, type and value — encoded in each name's layout, parsed
+     *  under that name, and the pair of verdicts reported. Since UC-1 (project 00024-01) the two
+     *  names no longer share a layout, so this compares one declaration, not one byte string. */
+    type Declaration = [key: string | Uint8Array, value: string | Uint8Array, opts?: { valType?: number; valLen?: number }];
+    const encodeBoth = (...d: Declaration): { final: Uint8Array; legacy: Uint8Array } =>
+      ({ final: payload(...d), legacy: legacyPayload(...d) });
+    const both = (bytes: { final: Uint8Array; legacy: Uint8Array }): {
       final: { applied: boolean; reason: RejectReason | undefined; projection: ProjectionError | undefined };
       legacy: { applied: boolean; reason: RejectReason | undefined; projection: ProjectionError | undefined };
     } => {
-      const f = parse0018(bytes);
-      const l = parseLegacy(bytes);
-      // Whatever the verdicts, the STRUCTURE is the same: the 256-byte layout is the one thing the
-      // two names share, so the decode never depends on the variant.
+      const f = parse0018(bytes.final);
+      const l = parseLegacy(bytes.legacy);
+      // Whatever the verdicts, the DECLARATION is the same one: same key, type, length and value.
       expect(f.keyHex).toBe(l.keyHex);
       expect(f.valType).toBe(l.valType);
       expect(f.valLen).toBe(l.valLen);
-      expect(Buffer.from(f.payload).toString("hex")).toBe(Buffer.from(l.payload).toString("hex"));
+      expect(Buffer.from(f.valueBytes).toString("hex")).toBe(Buffer.from(l.valueBytes).toString("hex"));
+      // …and the layouts differ exactly where UC-1 changed them: the first 66 bytes are shared,
+      // then the draft has a one-byte `val-len` at 66 and the value at 67, the standard a two-byte
+      // little-endian one at 66–67 and the value at 68.
+      expect(Buffer.from(bytes.final.subarray(0, 66)).toString("hex"))
+        .toBe(Buffer.from(bytes.legacy.subarray(0, 66)).toString("hex"));
+      expect(bytes.final[66]! | (bytes.final[67]! << 8)).toBe(bytes.legacy[66]);
       expect(f.nameVariant).toBe(FINAL);
       expect(l.nameVariant).toBe(LEGACY);
       return {
@@ -419,73 +454,82 @@ describe("mip-0018:token-metadata[v1] payload — the final standard (MIP PR #32
       };
     };
 
+    // (0) The layout change itself: the SAME 256 bytes are two different declarations. A draft
+    //     payload whose value starts with 'S' reads under UC-1 as a `val-len` whose high byte is
+    //     0x53 — far past one part — so the standard rejects it and the draft applies it.
+    const draftBytes = legacyPayload("name", "Shielded Star");
+    expect(parseLegacy(draftBytes).valueText).toBe("Shielded Star");
+    const misread = parse0018(draftBytes);
+    expect(misread.valLen).toBe(13 | (0x53 << 8));
+    expect(misread.rejectReason).toBe("val_len_beyond_package");
+
     // (1) A `decimals` emitted the standard's recommended way. Both accept the bytes — 16 is
     //     within either width limit — and then they disagree about what they SAY: 6 under the
     //     standard, 6·2^120 under the draft, which is why the draft's one-byte projection rule is
     //     the thing that stops the wrong number reaching a column.
-    const decimals = payload("decimals", encodeCompactUint(6, 16), { valType: 2 });
+    const decimals = encodeBoth("decimals", encodeCompactUint(6, 16), { valType: 2 });
     expect(both(decimals)).toEqual({
       final: { applied: true, reason: undefined, projection: undefined },
       legacy: { applied: true, reason: undefined, projection: "decimals_len" },
     });
-    expect(integerOfValue(parse0018(decimals).valueBytes, FINAL)).toBe("6");
-    expect(integerOfValue(parseLegacy(decimals).valueBytes, LEGACY))
+    expect(integerOfValue(parse0018(decimals.final).valueBytes, FINAL)).toBe("6");
+    expect(integerOfValue(parseLegacy(decimals.legacy).valueBytes, LEGACY))
       .toBe((6n << 120n).toString(10));
 
     // (2) A JSON fragment: the draft's whole multipart convention rested on this being legal.
-    const fragment = payload("metadata/0", '{"description":"a ne', { valType: 3 });
+    const fragment = encodeBoth("metadata/0", '{"description":"a ne', { valType: 3 });
     expect(both(fragment)).toEqual({
       final: { applied: false, reason: "val_type_rule", projection: undefined },
       legacy: { applied: true, reason: undefined, projection: undefined },
     });
 
     // (3) Null: an explicit clear under the standard, a reserved type under the draft.
-    const cleared = payload("name", new Uint8Array(0), { valType: 5 });
+    const cleared = encodeBoth("name", new Uint8Array(0), { valType: 5 });
     expect(both(cleared)).toEqual({
       final: { applied: true, reason: undefined, projection: undefined },
       legacy: { applied: false, reason: "val_type_reserved", projection: undefined },
     });
-    expect(parse0018(cleared).clears).toBe(true);
+    expect(parse0018(cleared.final).clears).toBe(true);
 
     // (4) A pointer key with a bad escape: a rejection under the standard, a plain trait before it.
-    const badPointer = payload("/metadata/a~2b", "x");
+    const badPointer = encodeBoth("/metadata/a~2b", "x");
     expect(both(badPointer)).toEqual({
       final: { applied: false, reason: "key_pointer_invalid", projection: undefined },
       legacy: { applied: true, reason: undefined, projection: undefined },
     });
 
     // (5) A 31-byte integer: the standard's widest permitted width, wider than the draft allowed.
-    const wide = payload("supply", encodeCompactUint((1n << 240n) + 7n, 31), { valType: 2 });
+    const wide = encodeBoth("supply", encodeCompactUint((1n << 240n) + 7n, 31), { valType: 2 });
     expect(both(wide)).toEqual({
       final: { applied: true, reason: undefined, projection: undefined },
       legacy: { applied: false, reason: "val_type_rule", projection: undefined },
     });
 
     // (6) A `metadata/<n>` key with a complete document: a malformed part name under the draft,
-    //     an ordinary trait under the standard, which defines no multipart representation at all.
-    const partish = payload("metadata/99", '{"a":1}', { valType: 3 });
+    //     an ordinary trait under the standard, whose long values are [Y] packages, not keys.
+    const partish = encodeBoth("metadata/99", '{"a":1}', { valType: 3 });
     expect(both(partish)).toEqual({
       final: { applied: true, reason: undefined, projection: undefined },
       legacy: { applied: true, reason: undefined, projection: "metadata_part_index" },
     });
 
     // (7) …and the case that makes all of the above worth stating: the overwhelming majority of
-    //     real payloads mean exactly the same thing under both names, which is what keeps the
+    //     declarations mean exactly the same thing under both names, which is what keeps the
     //     already-deployed reference contracts displaying correctly.
     for (const same of [
-      payload("name", "Shielded Star"),
-      payload("symbol", "SSTAR"),
-      payload("decimals", encodeInteger(6, 1), { valType: 2 }),
-      payload("metadata", '{"website":"https://example.test"}', { valType: 3 }),
-      payload("tokenUri", "https://example.test/token.json", { valType: 4 }),
-      payload("magnitude", "1.25"),
-      payload("fingerprint", new Uint8Array([0xde, 0xad]), { valType: 0 }),
+      encodeBoth("name", "Shielded Star"),
+      encodeBoth("symbol", "SSTAR"),
+      encodeBoth("decimals", encodeInteger(6, 1), { valType: 2 }),
+      encodeBoth("metadata", '{"website":"https://example.test"}', { valType: 3 }),
+      encodeBoth("tokenUri", "https://example.test/token.json", { valType: 4 }),
+      encodeBoth("magnitude", "1.25"),
+      encodeBoth("fingerprint", new Uint8Array([0xde, 0xad]), { valType: 0 }),
     ]) {
       const pair = both(same);
       expect(pair.final).toEqual(pair.legacy);
       expect(pair.final.applied).toBe(true);
-      const f = parse0018(same);
-      const l = parseLegacy(same);
+      const f = parse0018(same.final);
+      const l = parseLegacy(same.legacy);
       expect(f.valueText).toBe(l.valueText);
       if (f.valType === 2) {
         // A one-byte integer is the fixed point of the endianness change: the two readings
@@ -493,5 +537,113 @@ describe("mip-0018:token-metadata[v1] payload — the final standard (MIP PR #32
         expect(integerOfValue(f.valueBytes, FINAL)).toBe(integerOfValue(l.valueBytes, LEGACY));
       }
     }
+  });
+  it("[[multipart-0018-rules]] UC-1, every rule both ways: a 2-byte little-endian val-len (Compact Uint<16>), 188 value bytes in one part and 189 rejected, any length in more parts, beyond the package rejected with the declared length kept, bytes after the value ignored, Null, reserved types and pointer keys unchanged, the draft untouched", () => {
+    // ── The layout: val-len is Compact's Uint<16>, pinned against the runtime (UC-1) ──────────
+    const uint16 = (n: number): string => Buffer.from(toBinaryRepr(
+      new CompactTypeUnsignedInteger(65_535n, 2), BigInt(n),
+    )).toString("hex");
+    for (const n of [0, 1, 188, 189, 255, 256, 700, 32_767, 32_768, 65_535]) {
+      const bytes = payload("blob", new Uint8Array(0), { valType: 0, valLen: n, parts: 257 });
+      expect(Buffer.from(bytes.subarray(66, 68)).toString("hex"), `val-len ${n}`).toBe(uint16(n));
+      expect(parse0018(bytes).valLen, `val-len ${n}`).toBe(n);
+    }
+    expect(uint16(700)).toBe("bc02"); // the low byte first
+
+    // ── One part: 188 value bytes, and not one more ───────────────────────────────────────────
+    const full = expectApplied(payload("description", "a".repeat(188)), "188 bytes in one part");
+    expect(full.parts).toBe(1);
+    expect(full.payload).toHaveLength(256);
+    expect(full.valueBytes).toHaveLength(188);
+    // 189 declared in one part runs one byte past the package: rejected, the declared length kept.
+    const over = parse0018(payload("description", "a".repeat(188), { valLen: 189, parts: 1 }));
+    expect(over.rejectReason).toBe("val_len_beyond_package");
+    expect(over.valLen).toBe(189);
+    // …while the same 189 bytes in two parts are an ordinary declaration.
+    const two = expectApplied(payload("description", "a".repeat(189)), "189 bytes in two parts");
+    expect(two.parts).toBe(2);
+    expect(two.valueBytes).toHaveLength(189);
+
+    // ── Any length within the package (Q5: the reader sets no limit of its own) ───────────────
+    const doc = JSON.stringify({ description: "d".repeat(640), website: "https://example.test" });
+    expect(Buffer.byteLength(doc)).toBeGreaterThan(600);
+    const long = expectApplied(payload("metadata", doc, { valType: 3 }), "a ~700-byte JSON document");
+    expect(long.parts).toBe(3);
+    expect(long.valueText).toBe(doc);
+    expect(long.projectionError).toBeUndefined();
+    const four = expectApplied(payload("description", "q".repeat(400)), "~400 bytes");
+    expect(four.parts).toBe(2);
+    const kb = expectApplied(payload("notes", "k".repeat(5_000)), "several KB");
+    expect(kb.parts).toBe(20);
+    expect(kb.valueBytes).toHaveLength(5_000);
+    // The largest value the field can declare: 65 535 bytes, 257 parts.
+    const max = expectApplied(payload("blob", new Uint8Array(65_535).fill(7), { valType: 0 }), "65 535 bytes");
+    expect(max.parts).toBe(257);
+    expect(max.valueBytes).toHaveLength(65_535);
+    // …and the same declared length in one part fewer is beyond the package.
+    const short = parse0018(payload("blob", new Uint8Array(65_536 - 68 - 256).fill(7), { valType: 0, valLen: 65_535, parts: 256 }));
+    expect(short.rejectReason).toBe("val_len_beyond_package");
+    expect(short.valLen).toBe(65_535);
+    expect(short.valueBytes).toHaveLength(256 * 256 - 68); // clamped to what the package holds
+
+    // ── Beyond the package, in a multi-part package ───────────────────────────────────────────
+    const beyond = parse0018(payload("description", "b".repeat(444), { valLen: 600, parts: 2 }));
+    expect(beyond.applied).toBe(false);
+    expect(beyond.rejectReason).toBe("val_len_beyond_package");
+    expect(beyond.valLen).toBe(600);
+    expect(beyond.valueBytes).toHaveLength(444);
+    // Exactly filling the package is fine: 68 + 444 = 512.
+    expect(expectApplied(payload("description", "b".repeat(444), { parts: 2 })).valueBytes).toHaveLength(444);
+
+    // ── Bytes after the value are ignored (MIP-0018 §2.2; spec Q11) ───────────────────────────
+    // A publisher that put two declarations in one intent (breaking [Y] §5 and UC-1's one
+    // declaration per intent) produces ONE package: the first declaration followed by the second
+    // one's bytes. The first is applied; the second is not a declaration at all.
+    const name = payload("name", "Shielded Star");
+    const symbol = payload("symbol", "SSTAR");
+    const merged = new Uint8Array(512);
+    merged.set(name, 0);
+    merged.set(symbol, 256);
+    const firstOnly = expectApplied(merged, "two declarations merged into one package");
+    expect(firstOnly.keyText).toBe("name");
+    expect(firstOnly.valueText).toBe("Shielded Star");
+    expect(firstOnly.parts).toBe(2);
+    // Non-zero junk right after the value, in the same part, is ignored the same way.
+    const junk = expectApplied(payload("name", "ok", { trailing: new Uint8Array(30).fill(0x5a) }), "junk after the value");
+    expect(junk.valueText).toBe("ok");
+
+    // ── The other rules, unchanged, now on packages ───────────────────────────────────────────
+    // Null: val-len 0, in one part or in a larger package; any other length is the Null rule.
+    expect(expectApplied(payload("description", new Uint8Array(0), { valType: 5 })).clears).toBe(true);
+    expect(expectApplied(payload("description", new Uint8Array(0), { valType: 5, parts: 2 })).clears).toBe(true);
+    expectReject(payload("description", "x", { valType: 5, valLen: 1 }), "val_type_rule", "Null with val-len 1");
+    // Reserved types reject, and the TYPE is decided before the length: a reserved type with a
+    // length past the package still reports the type.
+    expectReject(payload("anything", "x".repeat(300), { valType: 6 }), "val_type_reserved", "type 6 in two parts");
+    expectReject(payload("anything", "x", { valType: 200, valLen: 60_000 }), "val_type_reserved", "type 200, val-len past the package");
+    // Pointer keys: the rule is about the key, whatever the value's length.
+    expectReject(payload("/metadata/~2", "p".repeat(300)), "key_pointer_invalid", "bad pointer, long value");
+    expect(expectApplied(payload("/metadata/description", "p".repeat(300))).keyText).toBe("/metadata/description");
+    // Integers keep their 1..31-byte rule inside a package.
+    expectApplied(payload("supply", encodeCompactUint(6, 16), { valType: 2, parts: 2 }), "Uint<128> in two parts");
+    expectReject(payload("supply", new Uint8Array(32), { valType: 2 }), "val_type_rule", "32-byte integer");
+    // JSON must still be ONE complete value — a long fragment is still a fragment.
+    expectReject(payload("metadata", `{"description":"${"f".repeat(400)}`, { valType: 3 }), "val_type_rule", "long fragment");
+
+    // ── A package is 256 · k bytes; anything else is not a package ────────────────────────────
+    for (const size of [0, 1, 255, 257, 300, 511]) {
+      expect(() => parse0018(new Uint8Array(size)), `${size} bytes`).toThrow(PayloadSizeError);
+    }
+    // splitIntoParts is the publisher's side: the parts, in order, that a reader concatenates back.
+    const parts = splitIntoParts(long.payload);
+    expect(parts).toHaveLength(3);
+    expect(Buffer.concat(parts).toString("hex")).toBe(Buffer.from(long.payload).toString("hex"));
+
+    // ── The draft name is untouched (FR-006) ──────────────────────────────────────────────────
+    // One event, one-byte val-len, `val_len_too_long` above 189, a short payload zero-extended.
+    expect(parseLegacy(legacyPayload("name", "x", { valLen: 190 })).rejectReason).toBe("val_len_too_long");
+    expect(parseLegacy(legacyPayload("name", "a".repeat(189))).applied).toBe(true);
+    expect(parseLegacy(legacyPayload("name", "ok").subarray(0, 69)).paddedFrom).toBe(69);
+    expect(() => parseLegacy(new Uint8Array(512))).toThrow(PayloadSizeError);
   });
 });

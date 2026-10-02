@@ -287,7 +287,10 @@ describe("token metadata event lookup", () => {
     db: { sql: UmbraDBSql; schema: string }, eventSource: EventSource,
   ): ReturnType<typeof lookupEventsFor> {
     return db.sql.begin(async (tx) =>
-      lookupEventsFor(tx, db.schema, NET, eventSource, { txHash: TX, address: ADDRESS, blockHeight: 100, expected: 3 }));
+      lookupEventsFor(tx, db.schema, NET, eventSource, {
+        txHash: TX, address: ADDRESS, blockHeight: 100, txPosition: 0, expected: 3,
+        emission: [{ segment: 0, guaranteed: 3, fallible: 0 }],
+      }));
   }
 
   async function tokenRow(db: { sql: UmbraDBSql; schema: string }): Promise<{

@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { encodeTokenMetadata } from "../../ingest/payload.js";
+import { encodeTokenMetadata, encodeTokenMetadataUc1, type NameVariant } from "../../ingest/payload.js";
 import { pad32 } from "../../color.js";
 
 /**
@@ -160,6 +160,58 @@ function transcript(spec: FakeTranscriptSpec | undefined): unknown {
   };
 }
 
+/** The tag a fake serialized ledger `Event` starts with — anything else makes the fake
+ *  `Event.deserialize` throw, which is how a test serves an UNDECODABLE `raw`. */
+const FAKE_EVENT_TAG = "fake-midnight:event[v1]:";
+
+/**
+ * A fake serialized ledger `Event` for one contract `Misc` event (project 00024-01): the hex the
+ * fake event indexer serves as `raw`, and the fake {@link fakeLedger}'s `Event.deserialize` turns
+ * back into the real `Event` SHAPE — `source.{transactionHash, logicalSegment, physicalSegment}` and
+ * a `contractLog` whose logged item is one `bytes(288)` atom (name then payload, trailing zeros
+ * trimmed, exactly as the ledger stores it). `logicalSegment` is 0, as the real ledger sets it for
+ * both phases.
+ */
+export function fakeRawEvent(fields: {
+  txHash: string; segment: number; address: string; nameHex: string; payloadHex: string;
+  entryPoint?: string; eventType?: string;
+}): string {
+  return Buffer.from(FAKE_EVENT_TAG + JSON.stringify(fields), "utf8").toString("hex");
+}
+
+function fakeEventDeserialize(bytes: Uint8Array): unknown {
+  const text = Buffer.from(bytes).toString("utf8");
+  if (!text.startsWith(FAKE_EVENT_TAG)) throw new Error("fake ledger: not a serialized Event");
+  const f = JSON.parse(text.slice(FAKE_EVENT_TAG.length)) as {
+    txHash: string; segment: number; address: string; nameHex: string; payloadHex: string;
+    entryPoint?: string; eventType?: string;
+  };
+  const value = Buffer.alloc(288);
+  Buffer.from(f.nameHex, "hex").copy(value, 0);
+  Buffer.from(f.payloadHex, "hex").copy(value, 32);
+  let end = value.length;
+  while (end > 0 && value[end - 1] === 0) end--;
+  return {
+    source: { transactionHash: f.txHash, logicalSegment: 0, physicalSegment: f.segment },
+    content: {
+      tag: "contractLog",
+      address: f.address,
+      entryPoint: f.entryPoint ?? "emit",
+      loggedItem: {
+        version: 1,
+        eventType: f.eventType ?? "misc",
+        data: {
+          tag: "cell",
+          content: {
+            alignment: [{ tag: "atom", value: { tag: "bytes", length: 288 } }],
+            value: [new Uint8Array(value.subarray(0, end))],
+          },
+        },
+      },
+    },
+  };
+}
+
 /** Raw bytes carrying the STANDARD transaction self-tag, so `isSystemTransaction` says no and the
  *  decoder proceeds to `Transaction.deserialize` — which the fake module below answers. */
 export function fakeRawTransaction(marker: string): Buffer {
@@ -262,6 +314,7 @@ export function fakeLedger(specs: FakeLedgerSpecs): any {
     ContractCall: FakeContractCall,
     ContractDeploy: FakeContractDeploy,
     MaintenanceUpdate: FakeMaintenanceUpdate,
+    Event: { deserialize: fakeEventDeserialize },
     addressFromKey: (key: { value?: string } | string) => {
       const value = typeof key === "string" ? key : String(key.value);
       return specs.addresses?.[value] ?? value;
@@ -288,11 +341,13 @@ export function fakeLedger(specs: FakeLedgerSpecs): any {
 }
 
 /**
- * A 256-byte `mip-xxxx:token-metadata[v1]` payload as hex — built with the encoder the parser module
- * itself exports, so the fixtures and the production parser can never drift apart.
+ * A token-metadata payload as hex — built with the encoders the parser module itself exports, so
+ * the fixtures and the production parser can never drift apart.
  *
- * `valType` defaults to 1 (UTF-8 string), which is what most of the hand-built cases want; every
- * test that exercises a type rule passes it explicitly.
+ * `nameVariant` picks the layout: the superseded draft's single 256-byte event (the default, what
+ * the pre-00024 hand-built cases were written against) or MIP-0018's UC-1 package (`256 · k`
+ * bytes, 2-byte `val-len`, project 00024-01). `valType` defaults to 1 (UTF-8 string); every test
+ * that exercises a type rule passes it explicitly.
  */
 export function metadataPayloadHex(fields: {
   domainSep: string | Uint8Array;
@@ -301,12 +356,40 @@ export function metadataPayloadHex(fields: {
   value: string | Uint8Array;
   valType?: number;
   valLen?: number;
+  nameVariant?: NameVariant;
+  parts?: number;
 }): string {
   const domainSep = typeof fields.domainSep === "string"
     ? (fields.domainSep.length === 64 ? new Uint8Array(Buffer.from(fields.domainSep, "hex")) : pad32(fields.domainSep))
     : fields.domainSep;
-  return Buffer.from(encodeTokenMetadata({
+  const common = {
     domainSep, kindByte: fields.kindByte, key: fields.key, valType: fields.valType ?? 1,
     value: fields.value, valLen: fields.valLen,
-  })).toString("hex");
+  };
+  return Buffer.from(fields.nameVariant === "mip-0018"
+    ? encodeTokenMetadataUc1({ ...common, parts: fields.parts })
+    : encodeTokenMetadata(common)).toString("hex");
+}
+
+/**
+ * A fake ledger whose `Transaction.deserialize` answers PER TRANSACTION (project 00024-01): the
+ * archive's raw bytes are `fakeRawTransaction(marker)`, and the marker picks which spec the
+ * transaction is. Lets one scan cover several synthetic transactions (e.g. [Y]'s "repeated
+ * publication" vector, one package in each of two transactions).
+ */
+export function fakeLedgerPerTransaction(byMarker: Record<string, FakeLedgerSpecs>): any {
+  const ledgers = new Map(Object.entries(byMarker).map(([marker, specs]) => [marker, fakeLedger(specs)]));
+  const any = fakeLedger({});
+  return {
+    ...any,
+    Transaction: {
+      deserialize: (_s: string, _p: string, _b: string, bytes: Uint8Array) => {
+        const text = Buffer.from(bytes).toString("utf8");
+        const marker = text.slice(text.lastIndexOf(":") + 1);
+        const ledger = ledgers.get(marker);
+        if (ledger === undefined) throw new Error(`fake ledger: no transaction spec for marker ${marker}`);
+        return ledger.Transaction.deserialize();
+      },
+    },
+  };
 }

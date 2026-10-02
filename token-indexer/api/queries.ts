@@ -1,6 +1,9 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
+import { chooseMetadata } from "../ingest/fold.js";
 import {
-  decodeUtf8, integerOfValue, valueTextOf, type NameVariant,
+  decodeUtf8, integerOfValue, metadataPartIndex, valueTextOf, type NameVariant,
 } from "../ingest/payload.js";
 import { ownerAddress } from "./bech32m.js";
 
@@ -20,7 +23,74 @@ import { ownerAddress } from "./bech32m.js";
  * byte, so they can never disagree with it.
  */
 
-export interface TokenJson {
+/* ────────────────────────────────────────────────────────────────────────────────────────────
+ * Project 00024-01 task B6 — WHERE EVERY VALUE CAME FROM (spec 00024 FR-016b, US6).
+ *
+ * "The API returns the origin with every value it serves: origin ∈ mip-0018 | public-interface |
+ * chain | derived | none plus the evidence." Additive (FR-015): no existing field changes meaning;
+ * tokens gain `origins` (one {@link OriginJson} per served value), traits, metadata events, mints
+ * and activity rows gain their own `origin`. `public-interface` joins in project 00024-02; the page
+ * starts showing these in 00024-03.
+ *
+ *  - `mip-0018` — a MIP-0018 declaration (the standard's name, or the superseded draft's, told apart
+ *    by `nameVariant`), with its PACKAGE evidence: part event ids, transaction, block, position,
+ *    segment, part count and phase.
+ *  - `chain` — a fact the ledger verified: a counted mint, an activity row, a colour seen in public
+ *    data.
+ *  - `derived` — computed by this indexer from other evidence, with the rule it applied.
+ *  - `none` — no source provides the value, with the reason.
+ * ──────────────────────────────────────────────────────────────────────────────────────────── */
+
+export type OriginKind = "mip-0018" | "public-interface" | "chain" | "derived" | "none";
+
+/** The [Y] package a MIP-0018 value came from. A draft-name declaration is a one-part "package"
+ *  with no segment and no phase: that name is not opted into [Y] (spec 00024 FR-006). */
+export interface PackageEvidenceJson {
+  /** The key whose declaration this is, when it is not implied by the field. */
+  key: string | null;
+  nameVariant: NameVariant;
+  /** Every part's indexer event id, in ledger emission order; the first is the package's id (P1). */
+  eventIds: number[];
+  txHash: string | null;
+  blockHeight: number;
+  txPosition: number;
+  segment: number | null;
+  parts: number;
+  phase: string | null;
+}
+
+export interface OriginJson {
+  origin: OriginKind;
+  /** `mip-0018`: the package (or, for a draft-name `metadata/<n>` assembly, every part key's).
+   *  `chain`: where on chain. Absent for `derived` and `none` unless the rule used some. */
+  evidence?: PackageEvidenceJson | PackageEvidenceJson[] | Record<string, unknown>;
+  /** `derived`: the rule applied. */
+  rule?: string;
+  /** `none`: why no source provides the value. */
+  reason?: string;
+}
+
+/** One origin per value a token serves. `mints` covers `mintCount`, `totalMinted`,
+ *  `firstMintHeight` and `lastMintHeight`. */
+export interface TokenOriginsJson {
+  name: OriginJson;
+  symbol: OriginJson;
+  decimals: OriginJson;
+  tokenUri: OriginJson;
+  metadata: OriginJson;
+  color: OriginJson;
+  status: OriginJson;
+  mints: OriginJson;
+}
+
+export const STATUS_RULE =
+  "MIP-0018 §7.2: an observed mint only → observed; an applied declaration only → declared; both → " +
+  "described (00023: a colour with no contract behind it → seen; the two seeded rows → builtin)";
+export const COLOR_RULE = "MIP-0018 §4: tokenType(domainSep, contractAddress), derived from the contract and its domain separator";
+const MINT_RULE = "counted mint effects of the archived transactions (00020 FR-002)";
+
+/** A token as the API serves it, before {@link TokenIndexQueries.withOrigins} adds the origins. */
+export interface TokenBaseJson {
   /** `null` while the row's status is `seen`: a colour proves a token exists, and a colour is a
    *  commitment — the contract behind it is not recoverable from it (00023 US5, FR-019). */
   address: string | null;
@@ -52,6 +122,161 @@ export interface TokenJson {
   firstSeenHeight: number;
   metadataUpdatedHeight: number | null;
   deployHeight: number | null;
+}
+
+/** A token as the API serves it: every value with its origin (spec 00024 FR-016b). */
+export interface TokenJson extends TokenBaseJson {
+  origins: TokenOriginsJson;
+  /** Project 00024-02: the token's contract's CURRENT public interface — its status and levels, with
+   *  its own origin — or `null` when the contract has published none (spec §5 `Token.interface`). */
+  interface: InterfaceSummaryJson | null;
+}
+
+/* ────────────────────────────────────────────────────────────────────────────────────────────
+ * Project 00024-02 task C8 — PUBLIC INTERFACES in the API (spec §5, FR-010, FR-016b; additive,
+ * FR-015). Every interface value carries `origin: "public-interface"` with the publication it came
+ * from and the levels it passed; `Token.interface` carries its own origin, so a token's `origins`
+ * keep exactly their 00024-01 fields.
+ * ──────────────────────────────────────────────────────────────────────────────────────────── */
+
+/** The publication statuses (spec §4 Key Entities); `historical` is a role, see `role`. */
+export const INTERFACE_STATUSES = ["pending", "verified", "failed", "unchecked", "unfetchable", "unreachable", "stale"] as const;
+
+export interface InterfaceLevelsJson {
+  l1: string | null;
+  l2: string | null;
+  l3: string | null;
+}
+
+/** The evidence of a public-interface value: the publication and what its last check established. */
+export interface InterfaceEvidenceJson {
+  eventId: number;
+  partEventIds: number[];
+  txHash: string;
+  blockHeight: number;
+  txPosition: number;
+  segment: number;
+  parts: number;
+  phase: string;
+  commitment: string;
+  status: string;
+  level: number;
+  levels: InterfaceLevelsJson;
+  checkedAt: string | null;
+}
+
+/** `Token.interface` and `GET /v1/contracts/:address` `interface` (spec §5: "`interface {status,
+ *  level}`"): no URL — a contract can have any number of tokens and a URL may be 262 112 bytes, so a
+ *  per-token copy made one contract's response hundreds of megabytes (audit 02 E2-R4B); the URL is on
+ *  `GET /v1/contracts/:address/interface`. */
+export interface InterfaceSummaryJson {
+  eventId: number;
+  status: string;
+  level: number;
+  levels: InterfaceLevelsJson;
+  l3Reason: string | null;
+  checkedAt: string | null;
+  verifiedUntil: string | null;
+  origin: OriginJson;
+}
+
+/** One publication of a contract with its own last result. */
+export interface InterfacePublicationJson {
+  eventId: number;
+  partEventIds: number[];
+  txHash: string;
+  blockHeight: number;
+  txPosition: number;
+  segment: number;
+  parts: number;
+  phase: string;
+  /** The merged package ([Y]): its length and SHA-256 — the value a `cmse verify` comparison uses. */
+  payloadLength: number;
+  payloadSha256: string;
+  commitment: string;
+  url: string | null;
+  urlError: string | null;
+  /** `current` for the newest publication (derivation P2), `historical` for every older one. */
+  role: "current" | "historical";
+  status: string;
+  level: number;
+  levels: InterfaceLevelsJson;
+  l3Reason: string | null;
+  reason: string | null;
+  failedLevel: number | null;
+  checkedAt: string | null;
+  checks: number;
+  lastVerifiedAt: string | null;
+  verifiedUntil: string | null;
+  nextCheckAt: string | null;
+  origin: OriginJson;
+}
+
+export interface InterfaceCursor {
+  height: number;
+  position: number;
+  eventId: number;
+}
+
+interface InterfaceEventRow {
+  event_id: string; part_event_ids: string[]; parts: number; segment: number; phase: string; address: Buffer;
+  tx_hash: Buffer; block_height: string; tx_position: number; payload_length: number; payload_sha256: string;
+  commitment: Buffer; url: string | null; url_error: string | null; status: string; level: number;
+  l1: string | null; l2: string | null; l3: string | null; l3_reason: string | null; reason: string | null;
+  failed_level: number | null; checked_at: Date | null; checks: number; last_verified_at: Date | null;
+  verified_until: Date | null; next_check_at: Date | null; state_block_height: string | null;
+  state_tx_hash: Buffer | null; is_current: boolean; publications: number | null;
+}
+
+const iso = (d: Date | null): string | null => (d === null ? null : d.toISOString());
+
+/** The evidence of an interface value: the publication by its identity and place, and what its last
+ *  check established. Not the URL: the value itself carries it where it is served, once (E2-R4B). */
+function interfaceEvidence(row: InterfaceEventRow): InterfaceEvidenceJson {
+  return {
+    eventId: Number(row.event_id), partEventIds: row.part_event_ids.map(Number), txHash: row.tx_hash.toString("hex"),
+    blockHeight: Number(row.block_height), txPosition: row.tx_position, segment: row.segment, parts: row.parts,
+    phase: row.phase, commitment: row.commitment.toString("hex"), status: row.status, level: row.level,
+    levels: { l1: row.l1, l2: row.l2, l3: row.l3 }, checkedAt: iso(row.checked_at),
+  };
+}
+
+const interfaceOrigin = (row: InterfaceEventRow): OriginJson => ({ origin: "public-interface", evidence: interfaceEvidence(row) as unknown as Record<string, unknown> });
+
+/**
+ * The origin of an ITEM of an interface (a file, a key, a circuit): the same publication, cited by its
+ * identity only — its URL (up to 262 112 bytes) and part ids (up to 1 024) are given once, on the
+ * interface itself. Repeating them per item let one small bundle (1 000 files, 500 circuits) make a
+ * response of hundreds of megabytes (audit 02 E2-R3D).
+ */
+const interfaceItemOrigin = (row: InterfaceEventRow): OriginJson => ({
+  origin: "public-interface",
+  evidence: {
+    eventId: Number(row.event_id), txHash: row.tx_hash.toString("hex"), commitment: row.commitment.toString("hex"),
+    status: row.status, level: row.level, levels: { l1: row.l1, l2: row.l2, l3: row.l3 }, checkedAt: iso(row.checked_at),
+  },
+});
+
+function toInterfaceSummary(row: InterfaceEventRow): InterfaceSummaryJson {
+  return {
+    eventId: Number(row.event_id), status: row.status, level: row.level, levels: { l1: row.l1, l2: row.l2, l3: row.l3 },
+    l3Reason: row.l3_reason, checkedAt: iso(row.checked_at), verifiedUntil: iso(row.verified_until),
+    origin: interfaceItemOrigin(row),
+  };
+}
+
+function toPublication(row: InterfaceEventRow): InterfacePublicationJson {
+  return {
+    eventId: Number(row.event_id), partEventIds: row.part_event_ids.map(Number), txHash: row.tx_hash.toString("hex"),
+    blockHeight: Number(row.block_height), txPosition: row.tx_position, segment: row.segment, parts: row.parts,
+    phase: row.phase, payloadLength: row.payload_length, payloadSha256: row.payload_sha256,
+    commitment: row.commitment.toString("hex"), url: row.url, urlError: row.url_error,
+    role: row.is_current ? "current" : "historical", status: row.status, level: row.level,
+    levels: { l1: row.l1, l2: row.l2, l3: row.l3 }, l3Reason: row.l3_reason, reason: row.reason,
+    failedLevel: row.failed_level, checkedAt: iso(row.checked_at), checks: row.checks,
+    lastVerifiedAt: iso(row.last_verified_at), verifiedUntil: iso(row.verified_until), nextCheckAt: iso(row.next_check_at),
+    origin: interfaceOrigin(row),
+  };
 }
 
 /** How many distinct domain separators the row's contract has, and the first five of them (by
@@ -89,7 +314,7 @@ function shieldedVisibilityOf(
   return kind === 1 ? "disclosed-imbalances" : "full";
 }
 
-function toToken(row: TokenRow): TokenJson {
+function toToken(row: TokenRow): TokenBaseJson {
   return {
     address: row.address === null ? null : row.address.toString("hex"),
     domainSep: row.domain_sep === null ? null : row.domain_sep.toString("hex"),
@@ -141,6 +366,139 @@ export interface TraitJson {
   updatedHeight: number;
   updatedTxHash: string | null;
   eventId: number;
+  /** Project 00024-01: the [Y] package that set this value — its physical intent, part count, every
+   *  part's event id (the first is `eventId`, P1), its phase, and its transaction position. `null`
+   *  segment/phase for a draft-name declaration (not opted into [Y]). */
+  segment: number | null;
+  parts: number;
+  partEventIds: number[];
+  phase: string | null;
+  txPosition: number;
+  origin: OriginJson;
+}
+
+interface KvEvidenceRow {
+  key_text: string | null; name_variant: NameVariant; updated_event_id: string; updated_height: string;
+  updated_tx_position: number; tx_hash: Buffer | null; segment: number | null; parts: number | null;
+  part_event_ids: string[] | null; phase: string | null;
+}
+
+function packageEvidence(row: KvEvidenceRow): PackageEvidenceJson {
+  const eventId = Number(row.updated_event_id);
+  return {
+    key: row.key_text,
+    nameVariant: row.name_variant,
+    eventIds: row.part_event_ids === null ? [eventId] : row.part_event_ids.map(Number),
+    txHash: row.tx_hash === null ? null : row.tx_hash.toString("hex"),
+    blockHeight: Number(row.updated_height),
+    txPosition: row.updated_tx_position,
+    segment: row.segment,
+    parts: row.parts ?? 1,
+    phase: row.phase,
+  };
+}
+
+/**
+ * The origin of every value one token serves, from the token row and the kv rows (with their
+ * packages) behind its projected columns — a pure function, so the rules are stated in one place.
+ */
+export function originsOf(
+  token: TokenBaseJson,
+  kv: readonly (KvEvidenceRow & {
+    val_type: number; projection_error: string | null;
+    /** The stored value, for the `metadata` keys (the choice between a whole document and an
+     *  assembly depends on the bytes — 01-D audit F5). */
+    val_len?: number | null; value?: Buffer | null;
+  })[],
+  /** `tokens.metadata_event_ids`: the declaration(s) the fold projected `metadata` from (01-D audit
+   *  round 3). When given, the origin cites exactly these rows; `chooseMetadata` is the fallback. */
+  metadataEventIds?: readonly string[] | null,
+): TokenOriginsJson {
+  const status: OriginJson = {
+    origin: "derived", rule: token.status === "builtin" ? "a seeded built-in row (00020 owner decision Q7)" : STATUS_RULE,
+    evidence: { mintCount: token.mintCount, declared: token.status === "declared" || token.status === "described" },
+  };
+  const mints: OriginJson = token.mintCount > 0
+    ? {
+      origin: "chain", rule: MINT_RULE,
+      evidence: { mintCount: token.mintCount, firstMintHeight: token.firstMintHeight, lastMintHeight: token.lastMintHeight },
+    }
+    : { origin: "none", reason: token.status === "builtin" ? "a built-in token is never minted by a contract" : "no observed mint" };
+
+  if (token.status === "builtin") {
+    const seeded: OriginJson = { origin: "derived", rule: "a seeded built-in row: the ledger's own token (00020 owner decision Q7)" };
+    const none: OriginJson = { origin: "none", reason: "a built-in row carries no declaration" };
+    return {
+      name: seeded, symbol: seeded, decimals: seeded, tokenUri: none, metadata: none,
+      color: token.color === null
+        ? { origin: "none", reason: "DUST has no colour on this ledger (00020 Q30)" }
+        : { origin: "derived", rule: "the ledger's native token type (nativeToken())" },
+      status, mints,
+    };
+  }
+
+  const color: OriginJson = token.kind >= 2
+    ? { origin: "none", reason: "a ledger kind has no colour (MIP-0018 §3)" }
+    : token.address === null
+      ? { origin: "chain", rule: "a colour observed in public data whose issuer is not knowable (00023 US5)", evidence: { firstSeenHeight: token.firstSeenHeight } }
+      : { origin: "derived", rule: COLOR_RULE, evidence: { address: token.address, domainSep: token.domainSep } };
+
+  if (token.address === null || token.domainSep === null) {
+    const none: OriginJson = { origin: "none", reason: "no contract is known for this colour (status seen)" };
+    return { name: none, symbol: none, decimals: none, tokenUri: none, metadata: none, color, status, mints };
+  }
+
+  const byKey = new Map(kv.map((row) => [row.key_text, row]));
+  const field = (key: string, value: unknown): OriginJson => {
+    const row = byKey.get(key);
+    if (value !== null && value !== undefined && row !== undefined) return { origin: "mip-0018", evidence: packageEvidence(row) };
+    if (row === undefined) return { origin: "none", reason: "no declaration" };
+    if (row.val_type === 5) return { origin: "none", reason: "cleared by a Null declaration", evidence: packageEvidence(row) };
+    if (row.projection_error !== null) {
+      return { origin: "none", reason: `declared but not projected: ${row.projection_error}`, evidence: packageEvidence(row) };
+    }
+    return { origin: "none", reason: "declared but not projected under this name's rules", evidence: packageEvidence(row) };
+  };
+
+  // `metadata` is either ONE declaration under the key `metadata` (MIP-0018: of any length, a [Y]
+  // package) or, under the superseded draft name only, an assembly of `metadata/<n>` parts. Which
+  // one is decided by the SAME function the fold projects with (`chooseMetadata`), so the evidence
+  // is always the declaration(s) the served document came from — never a newer part of an
+  // assembly that is incomplete or does not parse (01-D audit F5).
+  // The evidence is the ROWS the stored value came from: the ids the fold recorded with it
+  // (`tokens.metadata_event_ids`, audit round 3 — bound to the stored choice, whatever order a
+  // query returns rows in), else the same choice made again (`chooseMetadata`, round 2's N3) —
+  // never a lookup by key text, since two byte keys can share one (organizer issue 00025).
+  let metadata = field("metadata", token.metadata);
+  const isMetadataKey = (row: { key_text: string | null }): boolean =>
+    row.key_text === "metadata" || (row.key_text !== null && metadataPartIndex(row.key_text) !== undefined);
+  const stored = token.metadata === null || metadataEventIds === undefined || metadataEventIds === null
+    ? undefined
+    : metadataEventIds.map((id) => kv.find((row) => isMetadataKey(row) && row.updated_event_id === id));
+  if (stored !== undefined && stored.length > 0 && stored.every((row) => row !== undefined)) {
+    const rows = stored as (typeof kv[number])[];
+    metadata = rows.length === 1 && rows[0]!.key_text === "metadata"
+      ? { origin: "mip-0018", evidence: packageEvidence(rows[0]!) }
+      : { origin: "mip-0018", evidence: rows.map(packageEvidence) };
+  } else if (token.metadata !== null) {
+    const choice = chooseMetadata(kv
+      .filter((row) => row.key_text === "metadata" || (row.key_text !== null && metadataPartIndex(row.key_text) !== undefined))
+      .map((row) => ({ ...row, val_len: row.val_len ?? 0, value: row.value ?? Buffer.alloc(0) })));
+    if (choice.source === "assembly") {
+      metadata = { origin: "mip-0018", evidence: choice.rows.map(packageEvidence) };
+    } else if (choice.source === "whole") {
+      metadata = { origin: "mip-0018", evidence: packageEvidence(choice.rows[0]!) };
+    }
+  }
+
+  return {
+    name: field("name", token.name),
+    symbol: field("symbol", token.symbol),
+    decimals: field("decimals", token.decimals),
+    tokenUri: field("tokenUri", token.tokenUri),
+    metadata,
+    color, status, mints,
+  };
 }
 
 export interface TokenListFilters {
@@ -187,20 +545,238 @@ export function decodeCursor<T>(raw: string): T {
   return JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as T;
 }
 
+/** The read snapshot of the request being served, when there is one (01-D audit F6). */
+const requestSnapshot = new AsyncLocalStorage<UmbraDBSql>();
+
+/** Test seam (01-D audit round 2, N4): runs between a route's token read and the origins read, so
+ *  a test can commit a fold there and prove the two reads share one snapshot through HTTP. */
+export interface TokenQueryHooks {
+  beforeOrigins?: () => Promise<void>;
+}
+
 export class TokenIndexQueries {
   constructor(
-    private readonly sql: UmbraDBSql,
+    private readonly baseSql: UmbraDBSql,
     private readonly schema: string,
     private readonly net: string,
     /** The archive schema, for the `result` every activity row is served with and for the
      *  on-request transaction decode (00023 §6.4). Defaults to the conventional name so the
      *  00020/00021 call sites need no change. */
     private readonly archiveSchema: string = "chain_archive",
+    /** Test seam only. */
+    private readonly hooks: TokenQueryHooks = {},
   ) {}
+
+  /** Every statement runs in the current request's snapshot ({@link inSnapshot}), when there is one. */
+  private get sql(): UmbraDBSql { return requestSnapshot.getStore() ?? this.baseSql; }
+
+  /**
+   * Runs `fn` with EVERY query of this object inside one read-only `REPEATABLE READ` transaction —
+   * one database snapshot (01-D audit F6). A token route reads the token rows, then the declarations
+   * behind them ({@link withOrigins}), then often traits and mints: separate statements, and a fold
+   * committing between two of them could pair a value with another value's evidence (a rename, or a
+   * Null that cleared it). Inside a snapshot every statement sees the same committed state. Nested
+   * calls join the snapshot already open.
+   */
+  async inSnapshot<T>(fn: () => Promise<T>): Promise<T> {
+    if (requestSnapshot.getStore() !== undefined) return fn();
+    return this.baseSql.begin("isolation level repeatable read read only", (tx) =>
+      requestSnapshot.run(tx as unknown as UmbraDBSql, fn)) as Promise<T>;
+  }
 
   private get s(): string { return this.schema; }
 
   private get a(): string { return this.archiveSchema; }
+
+  /**
+   * Adds `origins` to every token (spec 00024 FR-016b): one query for the declarations behind the
+   * projected columns of the whole batch, then a pure function per token.
+   */
+  async withOrigins<T extends TokenBaseJson>(tokens: T[]): Promise<(T & { origins: TokenOriginsJson; interface: InterfaceSummaryJson | null })[]> {
+    await this.hooks.beforeOrigins?.();
+    const sql = this.sql;
+    const keyOf = (address: string, domainSep: string, kind: number): string => `${address}:${domainSep}:${kind}`;
+    const wanted = [...new Set(tokens
+      .filter((t) => t.status !== "builtin" && t.address !== null && t.domainSep !== null)
+      .map((t) => keyOf(t.address!, t.domainSep!, t.kind)))];
+    type OriginKvRow = KvEvidenceRow & {
+      val_type: number; projection_error: string | null; val_len: number | null; value: Buffer | null; token: string;
+    };
+    const byToken = new Map<string, OriginKvRow[]>();
+    if (wanted.length > 0) {
+      const rows = await sql<OriginKvRow[]>`
+        SELECT encode(kv.address, 'hex') || ':' || encode(kv.domain_sep, 'hex') || ':' || kv.kind::text AS token,
+               kv.key_text, kv.name_variant, kv.val_type, kv.projection_error,
+               CASE WHEN kv.key_text = 'metadata' OR kv.key_text LIKE 'metadata/%' THEN kv.val_len END AS val_len,
+               CASE WHEN kv.key_text = 'metadata' OR kv.key_text LIKE 'metadata/%' THEN kv.value END AS value,
+               kv.updated_event_id::text, kv.updated_height::text, kv.updated_tx_position,
+               e.tx_hash, e.segment, e.parts, e.part_event_ids::text[] AS part_event_ids, e.phase
+        FROM ${sql(this.s)}.token_metadata_kv kv
+        LEFT JOIN ${sql(this.s)}.token_metadata_events e
+          ON e.net = kv.net AND e.event_id = kv.updated_event_id
+        WHERE kv.net = ${this.net}
+          AND (kv.key_text IN ('name', 'symbol', 'decimals', 'tokenUri', 'metadata') OR kv.key_text LIKE 'metadata/%')
+          AND encode(kv.address, 'hex') || ':' || encode(kv.domain_sep, 'hex') || ':' || kv.kind::text
+              = ANY(${sql.array(wanted)}::text[])
+      `;
+      for (const row of rows) {
+        const list = byToken.get(row.token) ?? [];
+        list.push(row);
+        byToken.set(row.token, list);
+      }
+    }
+    // The declaration ids each token's `metadata` was projected from — read in the same snapshot
+    // as the token rows and the kv rows (the request's `inSnapshot`).
+    const metadataIds = new Map<string, string[] | null>();
+    if (wanted.length > 0) {
+      const idRows = await sql<{ token: string; ids: string[] | null }[]>`
+        SELECT encode(address, 'hex') || ':' || encode(domain_sep, 'hex') || ':' || kind::text AS token,
+               metadata_event_ids::text[] AS ids
+        FROM ${sql(this.s)}.tokens
+        WHERE net = ${this.net} AND address IS NOT NULL AND domain_sep IS NOT NULL
+          AND encode(address, 'hex') || ':' || encode(domain_sep, 'hex') || ':' || kind::text = ANY(${sql.array(wanted)}::text[])
+      `;
+      for (const row of idRows) metadataIds.set(row.token, row.ids);
+    }
+    // 00024-02: each token's contract's current public interface, in the same snapshot.
+    const interfaces = await this.interfaceSummaries([...new Set(tokens
+      .filter((t) => t.status !== "builtin" && t.address !== null).map((t) => t.address!))]);
+    return tokens.map((t) => {
+      const key = t.address === null || t.domainSep === null ? undefined : keyOf(t.address, t.domainSep, t.kind);
+      return {
+        ...t,
+        origins: originsOf(t, key === undefined ? [] : byToken.get(key) ?? [], key === undefined ? undefined : metadataIds.get(key)),
+        interface: t.status === "builtin" || t.address === null ? null : interfaces.get(t.address) ?? null,
+      };
+    });
+  }
+
+  /** The columns every interface read selects (`e` = public_interface_events, `pi` = public_interfaces). */
+  private interfaceColumns(sql: UmbraDBSql) {
+    return sql`
+      e.event_id::text, e.part_event_ids::text[] AS part_event_ids, e.parts, e.segment, e.phase, e.address, e.tx_hash,
+      e.block_height::text, e.tx_position, octet_length(e.payload) AS payload_length,
+      encode(sha256(e.payload), 'hex') AS payload_sha256, e.commitment, e.url, e.url_error, e.status, e.level,
+      e.l1, e.l2, e.l3, e.l3_reason, e.reason, e.failed_level, e.checked_at, e.checks, e.last_verified_at,
+      e.verified_until, e.next_check_at, e.state_block_height::text, e.state_tx_hash,
+      (pi.event_id IS NOT NULL AND pi.event_id = e.event_id) AS is_current, pi.publications
+    `;
+  }
+
+  /** The current public interface of each of `addresses` (lowercase hex), by address. */
+  async interfaceSummaries(addresses: string[]): Promise<Map<string, InterfaceSummaryJson>> {
+    const out = new Map<string, InterfaceSummaryJson>();
+    if (addresses.length === 0) return out;
+    const sql = this.sql;
+    const rows = await sql<InterfaceEventRow[]>`
+      SELECT ${this.interfaceColumns(sql)}
+      FROM ${sql(this.s)}.public_interfaces pi
+      JOIN ${sql(this.s)}.public_interface_events e ON e.net = pi.net AND e.event_id = pi.event_id
+      WHERE pi.net = ${this.net} AND encode(pi.address, 'hex') = ANY(${sql.array(addresses)}::text[])
+    `;
+    for (const row of rows) out.set(row.address.toString("hex"), toInterfaceSummary(row));
+    return out;
+  }
+
+  /** `GET /v1/interfaces` — contracts with an interface, newest current publication first (P2). */
+  async interfaces(filters: { status?: string; limit: number; cursor?: InterfaceCursor }): Promise<Page<InterfacePublicationJson & { address: string; publications: number }>> {
+    const sql = this.sql;
+    const c = filters.cursor;
+    const rows = await sql<InterfaceEventRow[]>`
+      SELECT ${this.interfaceColumns(sql)}
+      FROM ${sql(this.s)}.public_interfaces pi
+      JOIN ${sql(this.s)}.public_interface_events e ON e.net = pi.net AND e.event_id = pi.event_id
+      WHERE pi.net = ${this.net}
+        AND (${filters.status ?? null}::text IS NULL OR e.status = ${filters.status ?? null})
+        AND (${c === undefined ? null : c.height}::bigint IS NULL
+             OR (pi.block_height, pi.tx_position, pi.event_id) < (${c?.height ?? 0}::bigint, ${c?.position ?? 0}::int, ${c?.eventId ?? 0}::bigint))
+      ORDER BY pi.block_height DESC, pi.tx_position DESC, pi.event_id DESC
+      LIMIT ${filters.limit + 1}
+    `;
+    const items = rows.map((row) => ({ address: row.address.toString("hex"), publications: row.publications ?? 1, ...toPublication(row) }));
+    return this.paginate(items, filters.limit, (last) => encodeCursor({
+      height: last.blockHeight, position: last.txPosition, eventId: last.eventId,
+    } satisfies InterfaceCursor));
+  }
+
+  /**
+   * `GET /v1/contracts/:address/interface` — the current publication with its whole result (report,
+   * circuits, files, keys), its check history, and every older publication with its own last result
+   * (FR-010, Q14). `undefined` when the contract has published none.
+   */
+  async interfaceOf(address: string): Promise<Record<string, unknown> | undefined> {
+    const sql = this.sql;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const current = await sql<(InterfaceEventRow & { report: Record<string, any> | null; circuits: Record<string, unknown>[] | null })[]>`
+      SELECT ${this.interfaceColumns(sql)}, e.report, e.circuits
+      FROM ${sql(this.s)}.public_interfaces pi
+      JOIN ${sql(this.s)}.public_interface_events e ON e.net = pi.net AND e.event_id = pi.event_id
+      WHERE pi.net = ${this.net} AND pi.address = ${Buffer.from(address, "hex")}
+    `;
+    const row = current[0];
+    if (row === undefined) return undefined;
+    const origin = interfaceItemOrigin(row);
+    const report = row.report;
+    const checks = await sql<{ check_no: number; checked_at: Date; trigger: string; status: string; level: number; l1: string; l2: string; l3: string; l3_reason: string | null; reason: string | null; state_block_height: string | null }[]>`
+      SELECT check_no, checked_at, trigger, status, level, l1, l2, l3, l3_reason, reason, state_block_height::text
+      FROM ${sql(this.s)}.public_interface_checks
+      WHERE net = ${this.net} AND event_id = ${Number(row.event_id)}
+      ORDER BY check_no DESC
+      LIMIT 100
+    `;
+    const older = await sql<InterfaceEventRow[]>`
+      SELECT ${this.interfaceColumns(sql)}
+      FROM ${sql(this.s)}.public_interface_events e
+      LEFT JOIN ${sql(this.s)}.public_interfaces pi ON pi.net = e.net AND pi.address = e.address
+      WHERE e.net = ${this.net} AND e.address = ${Buffer.from(address, "hex")} AND e.event_id <> ${Number(row.event_id)}
+      ORDER BY e.block_height DESC, e.tx_position DESC, e.event_id DESC
+      LIMIT 100
+    `;
+    const files = Array.isArray(report?.artifacts?.files) ? report!.artifacts.files as Record<string, unknown>[] : [];
+    const keys = Array.isArray(report?.operations)
+      ? (report!.operations as { circuit: string; status: string; keySha256?: string }[])
+        .filter((r) => typeof r.keySha256 === "string").map((r) => ({ circuit: r.circuit, sha256: r.keySha256!, l2: r.status }))
+      : [];
+    return {
+      address,
+      ...toPublication(row),
+      state: row.state_block_height === null && row.state_tx_hash === null ? null
+        : { blockHeight: num(row.state_block_height), txHash: row.state_tx_hash?.toString("hex") ?? null },
+      compiler: report?.compiler ?? null,
+      build: report?.build ?? null,
+      witnesses: Array.isArray(report?.witnesses) ? report!.witnesses : [],
+      files: files.map((f) => ({ ...f, origin })),
+      keys: keys.map((k) => ({ ...k, origin })),
+      circuits: (row.circuits ?? []).map((c) => ({ ...c, origin })),
+      report,
+      checkHistory: checks.map((c) => ({
+        checkNo: c.check_no, checkedAt: c.checked_at.toISOString(), trigger: c.trigger, status: c.status, level: c.level,
+        levels: { l1: c.l1, l2: c.l2, l3: c.l3 }, l3Reason: c.l3_reason, reason: c.reason, stateBlockHeight: num(c.state_block_height),
+      })),
+      history: older.map(toPublication),
+      publications: row.publications ?? 1 + older.length,
+    };
+  }
+
+  /** `GET /v1/contracts/:address/interface/events` — every publication of the contract, newest first
+   *  (P2), each with its own last result and its role. */
+  async interfaceEvents(address: string, filters: { limit: number; cursor?: InterfaceCursor }): Promise<Page<InterfacePublicationJson>> {
+    const sql = this.sql;
+    const c = filters.cursor;
+    const rows = await sql<InterfaceEventRow[]>`
+      SELECT ${this.interfaceColumns(sql)}
+      FROM ${sql(this.s)}.public_interface_events e
+      LEFT JOIN ${sql(this.s)}.public_interfaces pi ON pi.net = e.net AND pi.address = e.address
+      WHERE e.net = ${this.net} AND e.address = ${Buffer.from(address, "hex")}
+        AND (${c === undefined ? null : c.height}::bigint IS NULL
+             OR (e.block_height, e.tx_position, e.event_id) < (${c?.height ?? 0}::bigint, ${c?.position ?? 0}::int, ${c?.eventId ?? 0}::bigint))
+      ORDER BY e.block_height DESC, e.tx_position DESC, e.event_id DESC
+      LIMIT ${filters.limit + 1}
+    `;
+    return this.paginate(rows.map(toPublication), filters.limit, (last) => encodeCursor({
+      height: last.blockHeight, position: last.txPosition, eventId: last.eventId,
+    } satisfies InterfaceCursor));
+  }
 
   async listTokens(filters: TokenListFilters): Promise<Page<TokenListItemJson>> {
     const sql = this.sql;
@@ -261,9 +837,10 @@ export class TokenIndexQueries {
       LIMIT ${filters.limit + 1}
     `;
     const keys = new Map<TokenListItemJson, Omit<TokenCursor, "kind">>();
-    const items: TokenListItemJson[] = rows.map((row) => {
+    const withOrigins = await this.withOrigins(rows.map(toToken));
+    const items: TokenListItemJson[] = rows.map((row, index) => {
       const item: TokenListItemJson = {
-        ...toToken(row),
+        ...withOrigins[index]!,
         contractDomainSeps: row.ds_count === null
           ? null
           : { count: row.ds_count, first: row.ds_first ?? [] },
@@ -298,7 +875,7 @@ export class TokenIndexQueries {
       WHERE t.net = ${this.net} AND t.color = ${Buffer.from(color, "hex")}
       ORDER BY t.kind
     `;
-    return rows.map(toToken);
+    return this.withOrigins(rows.map(toToken));
   }
 
   async token(address: string, domainSep: string, kind: number): Promise<TokenJson | undefined> {
@@ -314,7 +891,7 @@ export class TokenIndexQueries {
         AND t.domain_sep = ${Buffer.from(domainSep, "hex")} AND t.kind = ${kind}
     `;
     const row = rows[0];
-    return row === undefined ? undefined : toToken(row);
+    return row === undefined ? undefined : (await this.withOrigins([toToken(row)]))[0];
   }
 
   async tokensOfContract(address: string): Promise<TokenJson[]> {
@@ -329,7 +906,7 @@ export class TokenIndexQueries {
       WHERE t.net = ${this.net} AND t.address = ${Buffer.from(address, "hex")}
       ORDER BY t.domain_sep, t.kind
     `;
-    return rows.map(toToken);
+    return this.withOrigins(rows.map(toToken));
   }
 
   /**
@@ -352,7 +929,7 @@ export class TokenIndexQueries {
         AND t.domain_sep = ${Buffer.from(domainSep, "hex")}
       ORDER BY t.kind
     `;
-    return rows.map(toToken);
+    return this.withOrigins(rows.map(toToken));
   }
 
   async contract(address: string): Promise<{
@@ -406,14 +983,13 @@ export class TokenIndexQueries {
    *  request. Ordered by the key's text where it has one, then by its bytes. */
   async metadataKeys(address: string, domainSep: string, kind: number): Promise<TraitJson[]> {
     const sql = this.sql;
-    const rows = await sql<{
-      key_hex: string; key_text: string | null; name_variant: NameVariant; val_type: number;
-      val_len: number; value: Buffer;
-      projection_error: string | null; updated_height: string; updated_event_id: string;
-      tx_hash: Buffer | null;
-    }[]>`
+    const rows = await sql<(KvEvidenceRow & {
+      key_hex: string; val_type: number; val_len: number; value: Buffer; projection_error: string | null;
+    })[]>`
       SELECT kv.key_hex, kv.key_text, kv.name_variant, kv.val_type, kv.val_len, kv.value,
-             kv.projection_error, kv.updated_height::text, kv.updated_event_id::text, e.tx_hash
+             kv.projection_error, kv.updated_height::text, kv.updated_event_id::text,
+             kv.updated_tx_position, e.tx_hash, e.segment, e.parts,
+             e.part_event_ids::text[] AS part_event_ids, e.phase
       FROM ${sql(this.s)}.token_metadata_kv kv
       LEFT JOIN ${sql(this.s)}.token_metadata_events e
         ON e.net = kv.net AND e.event_id = kv.updated_event_id
@@ -436,6 +1012,12 @@ export class TokenIndexQueries {
         updatedHeight: Number(r.updated_height),
         updatedTxHash: r.tx_hash === null ? null : r.tx_hash.toString("hex"),
         eventId: Number(r.updated_event_id),
+        segment: r.segment,
+        parts: r.parts ?? 1,
+        partEventIds: r.part_event_ids === null ? [Number(r.updated_event_id)] : r.part_event_ids.map(Number),
+        phase: r.phase,
+        txPosition: r.updated_tx_position,
+        origin: { origin: "mip-0018", evidence: packageEvidence(r) } satisfies OriginJson,
       };
     });
   }
@@ -445,7 +1027,7 @@ export class TokenIndexQueries {
     opts: { limit: number; cursor?: { blockHeight: number; txHash: string; segment: number; callIndex: number } },
   ): Promise<Page<{
     blockHeight: number; txHash: string; txPosition: number; segment: number; callIndex: number;
-    entryPoint: string | null; kind: number; privacy: string; amount: string;
+    entryPoint: string | null; kind: number; privacy: string; amount: string; origin: OriginJson;
   }>> {
     const sql = this.sql;
     const c = opts.cursor;
@@ -476,6 +1058,10 @@ export class TokenIndexQueries {
       // A mint is native by definition, so the only thing its kind byte adds is the privacy tag.
       privacy: (r.kind & 1) === 1 ? "shielded" : "unshielded",
       amount: r.amount,
+      origin: {
+        origin: "chain", rule: MINT_RULE,
+        evidence: { txHash: r.tx_hash.toString("hex"), blockHeight: Number(r.block_height), txPosition: r.tx_position, segment: r.segment, callIndex: r.call_index },
+      } satisfies OriginJson,
     }));
     return this.paginate(items, opts.limit, (last) => encodeCursor({
       blockHeight: last.blockHeight, txHash: last.txHash, segment: last.segment, callIndex: last.callIndex,
@@ -494,6 +1080,8 @@ export class TokenIndexQueries {
     key: string; keyHex: string; keyText: string | null; valType: number; valLen: number;
     value: string; text: string | null; integer: string | null; nameVariant: NameVariant;
     applied: boolean; rejectReason: string | null;
+    txPosition: number; segment: number | null; parts: number; partEventIds: number[];
+    phase: string | null; payloadLength: number; payloadSha256: string; origin: OriginJson;
   }>> {
     const sql = this.sql;
     const rows = await sql<{
@@ -501,9 +1089,12 @@ export class TokenIndexQueries {
       key: Buffer; key_hex: string; key_text: string | null; name_variant: NameVariant;
       val_type: number; val_len: number;
       value: Buffer; applied: boolean; reject_reason: string | null;
+      tx_position: number; segment: number | null; parts: number; part_event_ids: string[];
+      phase: string | null; payload: Buffer;
     }[]>`
       SELECT event_id::text, block_height::text, tx_hash, domain_sep, kind_byte, key, key_hex,
-             key_text, name_variant, val_type, val_len, value, applied, reject_reason
+             key_text, name_variant, val_type, val_len, value, applied, reject_reason,
+             tx_position, segment, parts, part_event_ids::text[] AS part_event_ids, phase, payload
       FROM ${sql(this.s)}.token_metadata_events
       WHERE net = ${this.net} AND address = ${Buffer.from(address, "hex")}
         AND (${opts.applied === undefined ? null : opts.applied}::boolean IS NULL
@@ -538,6 +1129,24 @@ export class TokenIndexQueries {
         nameVariant: r.name_variant,
         applied: r.applied,
         rejectReason: r.reject_reason,
+        // Project 00024-01: the [Y] package this row is (a draft-name row is one event).
+        txPosition: r.tx_position,
+        segment: r.segment,
+        parts: r.parts,
+        partEventIds: r.part_event_ids.map(Number),
+        phase: r.phase,
+        // The merged payload's length and SHA-256 — what `cmse verify` reports for the same
+        // package, so the two readers can be compared without shipping the bytes (spec SC-003).
+        payloadLength: r.payload.length,
+        payloadSha256: createHash("sha256").update(r.payload).digest("hex"),
+        origin: {
+          origin: "mip-0018",
+          evidence: {
+            key: r.key_text, nameVariant: r.name_variant, eventIds: r.part_event_ids.map(Number),
+            txHash: r.tx_hash.toString("hex"), blockHeight: Number(r.block_height), txPosition: r.tx_position,
+            segment: r.segment, parts: r.parts, phase: r.phase,
+          },
+        } satisfies OriginJson,
       };
     });
     return this.paginate(items, opts.limit, (last) => encodeCursor({ eventId: last.eventId }));
@@ -549,6 +1158,7 @@ export class TokenIndexQueries {
   async registry(): Promise<Record<string, {
     address: string; domainSep: string; kind: number; privacy: string; name: string | null;
     symbol: string | null; decimals: number | null; metadata: unknown;
+    origins: Pick<TokenOriginsJson, "name" | "symbol" | "decimals" | "metadata">;
   }>> {
     const sql = this.sql;
     const rows = await sql<TokenRow[]>`
@@ -564,8 +1174,9 @@ export class TokenIndexQueries {
     const out: Record<string, {
       address: string; domainSep: string; kind: number; privacy: string; name: string | null;
       symbol: string | null; decimals: number | null; metadata: unknown;
+      origins: Pick<TokenOriginsJson, "name" | "symbol" | "decimals" | "metadata">;
     }> = {};
-    for (const row of rows.map(toToken)) {
+    for (const row of await this.withOrigins(rows.map(toToken))) {
       // A registry entry is a wallet's re-derivation check: colour ⇒ `(address, domainSep, kind)`.
       // A row that has no contract behind it (00023's `seen`) has nothing to check against, and the
       // status filter above already excludes it — this guard is what says so in the type system.
@@ -573,6 +1184,11 @@ export class TokenIndexQueries {
       out[row.color] = {
         address: row.address, domainSep: row.domainSep, kind: row.kind, privacy: row.privacy,
         name: row.name, symbol: row.symbol, decimals: row.decimals, metadata: row.metadata,
+        // Additive (00024-01, FR-016b): where each of those four values came from.
+        origins: {
+          name: row.origins.name, symbol: row.origins.symbol, decimals: row.origins.decimals,
+          metadata: row.origins.metadata,
+        },
       };
     }
     return out;
@@ -598,7 +1214,7 @@ export class TokenIndexQueries {
       ORDER BY t.first_seen_height
       LIMIT 500
     `;
-    return rows.map(toToken);
+    return this.withOrigins(rows.map(toToken));
   }
 
   /* ── project 00023: the activity reads (spec §5) ────────────────────────────────────────── */
@@ -628,6 +1244,14 @@ export class TokenIndexQueries {
       entryPoint: row.entry_point,
       callIndex: row.call_index,
       domainSep: row.domain_sep === null ? null : row.domain_sep.toString("hex"),
+      origin: {
+        origin: "chain",
+        rule: "a counted public token movement of an archived transaction (00023 FR-001/FR-002)",
+        evidence: {
+          txHash: row.tx_hash.toString("hex"), blockHeight: Number(row.block_height), txPosition: row.tx_position,
+          segment: row.segment, section: row.section, role: row.role, itemIndex: row.item_index,
+        },
+      },
       token: row.t_kind === null ? null : {
         address: row.t_address === null ? null : row.t_address.toString("hex"),
         domainSep: row.t_domain_sep === null ? null : row.t_domain_sep.toString("hex"),
@@ -952,6 +1576,8 @@ export interface ActivityJson {
   entryPoint: string | null;
   callIndex: number | null;
   domainSep: string | null;
+  /** Project 00024-01 (FR-016b): always `chain` — where on chain this movement is. */
+  origin: OriginJson;
   token: ActivityTokenJson | null;
 }
 

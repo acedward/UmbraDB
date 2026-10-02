@@ -1,7 +1,12 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import type { ISql } from "postgres";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { applyMetadataEvent, type RawContractEvent } from "./fold.js";
-import { isTokenMetadataName } from "./payload.js";
+import { MULTIPART_OPT_INS, PackageReadError, readPackages, type PartEvent } from "./packages.js";
+import { LEGACY_NAME_HEX, isTokenMetadataName } from "./payload.js";
+import { RawEventError, decodeRawMiscEvent, rawMiscEventName } from "./raw-event.js";
+import { isPublicInterfaceName } from "../interface/event.js";
+import { applyInterfacePublication } from "../interface/store.js";
 
 /**
  * Project 00020 — the event lookup (spec §6.5, FR-004). Transaction-driven, no watch list.
@@ -24,6 +29,39 @@ import { isTokenMetadataName } from "./payload.js";
  * interface, so the owner's stated next step — reading the midnight-node directly, where
  * `TransactionResult.events` carries the same `ContractLog` items — is a second implementation and
  * nothing else changes.
+ *
+ * ── Project 00024-01: opted-in names are read as [Y] packages, behind a barrier ────────────────
+ * Events of a name opted into the Multi-Part Event rule ([Y]; `mip-0018:token-metadata[v1]` and,
+ * since 00024-02, `mip-xxxx:public-interface[v1]` — {@link MULTIPART_OPT_INS}) are not folded one
+ * by one. For such a pair (audit F1, plan B2):
+ *
+ *  - **complete-response barrier**: nothing of the pair's opted-in events is grouped, stored or
+ *    folded until the WHOLE response is complete (`got == expected`) and EVERY opted-in event's
+ *    `raw` decodes into a consistent `Misc` event (`raw-event.ts`). A short response, an
+ *    undecodable `raw` or a reader error records the pending lookup and commits no package
+ *    history and no projection — so a truncated package can never be stored, and the retry (whose
+ *    first part would have the same identity) cannot be shadowed by `ON CONFLICT DO NOTHING`;
+ *  - then each event's intent is its own `EventSource.physicalSegment` (spec FR-003), its position
+ *    its indexer event id (ledger emission order), and its PHASE comes from the archived
+ *    transcripts: the ledger applies the whole guaranteed section of a transaction before any
+ *    fallible segment, so of this contract's events in this transaction, ordered by id, the first
+ *    `Σ guaranteed log ops` are guaranteed and the rest fallible ({@link multipartPartEvents});
+ *  - `readPackages` groups them ([Y] §4) and every package of the pair is folded in the caller's
+ *    database transaction — atomically with the scan batch's cursor, or with the drain's retry.
+ *
+ * Two more conditions, checked on EVERY answer before anything of it is folded — the draft-name
+ * events included (01-D audit, findings F3 and F4; round 2's N1): the answer is counted by
+ * DISTINCT event id — an identical redelivery of one id is one event, two different contents under
+ * one id make the whole answer pending ({@link distinctDeliveries}) — and no `MiscContractEvent` may
+ * hide an opted-in part: one whose typed name is opted in but has no payload, one whose `raw` is an
+ * opted-in event while its typed fields say otherwise, or one missing its typed name or payload with
+ * no `raw` to classify it by, makes the answer pending ({@link hiddenOptedInEvent}). Otherwise a
+ * complete-looking answer could still be missing a part, and the truncated package it leaves would
+ * be stored, the retry cleared and the repair shadowed by `ON CONFLICT DO NOTHING`.
+ *
+ * The superseded draft name `mip-xxxx:token-metadata[v1]` is NOT opted in (spec FR-006) and keeps
+ * its behaviour exactly: each event is folded on its own, even from a short response (the fold is
+ * idempotent on the event id and a draft event is complete by itself).
  */
 
 /** One contract event of ANY type, as the indexer serves it. Only `MiscContractEvent` carries
@@ -37,6 +75,9 @@ export interface IndexerContractEvent {
   blockHeight: number;
   nameHex: string | undefined;
   payloadHex: string | undefined;
+  /** The serialized ledger `Event` (every `ContractEvent` type carries it) — the only source of
+   *  the event's physical intent (project 00024-01, spec FR-003). */
+  rawHex: string | undefined;
 }
 
 /** Spec §6.5's interface. `IndexerEventSource` is the only implementation today. */
@@ -48,6 +89,7 @@ export const CONTRACT_EVENTS_QUERY = `query($filter: ContractEventFilter!, $limi
   contractEvents(filter: $filter, limit: $limit, offset: $offset) {
     __typename
     id
+    raw
     contractAddress
     transaction { hash block { height } }
     ... on MiscContractEvent { name payload }
@@ -155,6 +197,7 @@ export function normalizeEvent(raw: Record<string, unknown>): IndexerContractEve
     blockHeight: Number(transaction.block?.height ?? 0),
     nameHex: raw.name === undefined || raw.name === null ? undefined : unprefixed(raw.name),
     payloadHex: raw.payload === undefined || raw.payload === null ? undefined : unprefixed(raw.payload),
+    rawHex: raw.raw === undefined || raw.raw === null ? undefined : unprefixed(raw.raw),
   };
 }
 
@@ -171,21 +214,224 @@ export function isTokenMetadataEvent(event: IndexerContractEvent): boolean {
     && event.payloadHex !== undefined;
 }
 
+/** A recognised event of a name opted into [Y] — read as a part of a package, behind the barrier. */
+export function isMultipartEvent(event: IndexerContractEvent, optIns: readonly string[] = MULTIPART_OPT_INS): boolean {
+  return event.typename === "MiscContractEvent"
+    && event.nameHex !== undefined
+    && event.payloadHex !== undefined
+    && optIns.includes(event.nameHex.toLowerCase());
+}
+
+/** A recognised event of the superseded draft name — folded on its own, as before 00024. */
+function isDraftNameEvent(event: IndexerContractEvent): boolean {
+  return isTokenMetadataEvent(event) && event.nameHex!.toLowerCase() === LEGACY_NAME_HEX;
+}
+
+/**
+ * The counted `log` ops of ONE contract's calls in ONE physical intent, split by phase — what the
+ * transaction itself says that contract emitted there (00020 FR-004; project 00024-01 reads each
+ * part's phase off it, see {@link emissionByAddress}). Only COUNTED transcripts appear: a failed
+ * fallible segment's ops produced no applied event (00020 FR-002).
+ */
+export interface EmissionEntry {
+  segment: number;
+  guaranteed: number;
+  fallible: number;
+}
+
 export interface LookupPair {
   txHash: string;
   address: string;
   blockHeight: number;
+  /** The transaction's index in its block (MIP-0018 §6.2's second ordering key). */
+  txPosition: number;
   /** `log` ops counted in this call's COUNTED transcripts (spec FR-004). */
   expected: number;
+  /** The same ops, per physical intent and phase, ascending by segment. Their sum is `expected`. */
+  emission: EmissionEntry[];
+}
+
+/** The per-intent, per-phase `log` counts of every contract a transaction's calls emitted from —
+ *  built from the decoder's call records, COUNTED transcripts only (00020 FR-002). */
+export function emissionByAddress(
+  calls: readonly {
+    segment: number; address: string;
+    guaranteed: { logOps: number; counted: boolean } | undefined;
+    fallible: { logOps: number; counted: boolean } | undefined;
+  }[],
+): Map<string, EmissionEntry[]> {
+  const byAddress = new Map<string, Map<number, EmissionEntry>>();
+  for (const call of calls) {
+    const g = call.guaranteed !== undefined && call.guaranteed.counted ? call.guaranteed.logOps : 0;
+    const f = call.fallible !== undefined && call.fallible.counted ? call.fallible.logOps : 0;
+    if (g === 0 && f === 0) continue;
+    const segments = byAddress.get(call.address) ?? new Map<number, EmissionEntry>();
+    const entry = segments.get(call.segment) ?? { segment: call.segment, guaranteed: 0, fallible: 0 };
+    entry.guaranteed += g;
+    entry.fallible += f;
+    segments.set(call.segment, entry);
+    byAddress.set(call.address, segments);
+  }
+  const out = new Map<string, EmissionEntry[]>();
+  for (const [address, segments] of byAddress) {
+    out.set(address, [...segments.values()].sort((a, b) => a.segment - b.segment));
+  }
+  return out;
 }
 
 export interface LookupOutcome {
   got: number;
+  /** The pair was left in `pending_event_lookups` — its answer was short, or (00024-01) one of its
+   *  opted-in events could not be read; nothing of those was stored. */
   short: boolean;
+  /** Why the pair is pending, when it is. */
+  pendingReason?: "short" | "undecodable_raw" | "reader";
   applied: number;
   rejected: number;
   /** Events whose payload could not even be stored (Q31) — counted, never silently dropped. */
   unstorable: number;
+  /** [Y] packages folded from this answer (00024-01). */
+  packages: number;
+  /** Of those, public-interface publications stored (00024-02); `applied`/`rejected` count
+   *  MIP-0018 declarations only. */
+  publications: number;
+}
+
+/** The pair's events contradict what its own transcripts say it emitted, per intent and phase — the
+ *  scanner's model of emission would be wrong, which is refused exactly like an over-count. */
+export class EmissionModelError extends Error {
+  constructor(readonly txHash: string, readonly address: string, detail: string) {
+    super(`contract ${address} in transaction ${txHash}: ${detail} — the scanner's model of emission is wrong, refusing to continue`);
+    this.name = "EmissionModelError";
+  }
+}
+
+/** How the lookup reads an opted-in event's `raw`: the loaded ledger-v9 module (injected). */
+export interface LookupOptions {
+  ledger?: any;
+  /** Test configuration only (spec US2): names opted into [Y] other than {@link MULTIPART_OPT_INS}. */
+  optIns?: readonly string[];
+}
+
+/** Two deliveries of one event id carry the same event only if every served field is equal. */
+function sameDelivery(a: IndexerContractEvent, b: IndexerContractEvent): boolean {
+  return a.typename === b.typename && a.contractAddress === b.contractAddress && a.txHash === b.txHash
+    && a.blockHeight === b.blockHeight && a.nameHex === b.nameHex && a.payloadHex === b.payloadHex
+    && a.rawHex === b.rawHex;
+}
+
+/**
+ * One answer's events by DISTINCT indexer id (01-D audit F3). An indexer may serve an id twice (a
+ * paging overlap, a replica); that is one event, kept once, in first-delivery order. The same id
+ * with two different contents is a conflicting answer: `conflict` names it and the lookup leaves the
+ * pair pending. Counting deliveries instead of ids would let `[30, 30, 31]` pass as three parts.
+ */
+export function distinctDeliveries(delivered: readonly IndexerContractEvent[]): {
+  events: IndexerContractEvent[]; duplicates: number; conflict: string | undefined;
+} {
+  const byId = new Map<number, IndexerContractEvent>();
+  let duplicates = 0;
+  let conflict: string | undefined;
+  for (const event of delivered) {
+    const seen = byId.get(event.eventId);
+    if (seen === undefined) { byId.set(event.eventId, event); continue; }
+    duplicates++;
+    if (conflict === undefined && !sameDelivery(seen, event)) {
+      conflict = `conflicting_delivery: indexer event ${event.eventId} was delivered twice with different contents`;
+    }
+  }
+  return { events: [...byId.values()], duplicates, conflict };
+}
+
+/**
+ * The first `MiscContractEvent` of a complete answer that could be a HIDDEN part of an opted-in
+ * package, described — or `undefined` when there is none (01-D audit F4). A part is hidden when the
+ * typed fields would make {@link isMultipartEvent} skip it although it is, or may be, opted in:
+ *
+ *  - its typed name is opted in but it has no typed payload;
+ *  - its `raw` decodes to a `Misc` event of an opted-in name while its typed fields say otherwise
+ *    (another name, or no name / payload);
+ *  - its typed name or payload is missing and there is no decodable `raw` to classify it by.
+ *
+ * Any of these makes the answer pending: skipping the event would store the other parts as a
+ * truncated package and clear the retry.
+ */
+export function hiddenOptedInEvent(
+  events: readonly IndexerContractEvent[], optIns: readonly string[], ledger: any,
+): string | undefined {
+  const opted = new Set(optIns.map((n) => n.toLowerCase()));
+  for (const event of events) {
+    if (event.typename !== "MiscContractEvent" || isMultipartEvent(event, optIns)) continue;
+    const typedName = event.nameHex?.toLowerCase();
+    if (typedName !== undefined && opted.has(typedName)) {
+      return `incomplete_event: indexer event ${event.eventId} is of an opted-in name but has no typed payload`;
+    }
+    const rawName = rawMiscEventName(ledger, event.rawHex);
+    if (rawName !== undefined && opted.has(rawName)) {
+      return `hidden_part: indexer event ${event.eventId}'s \`raw\` is an opted-in event but its typed fields say ` +
+        `otherwise (name ${typedName ?? "absent"}, payload ${event.payloadHex === undefined ? "absent" : "present"})`;
+    }
+    if (rawName === undefined && (typedName === undefined || event.payloadHex === undefined)) {
+      return `incomplete_event: indexer event ${event.eventId} has no typed ${typedName === undefined ? "name" : "payload"} ` +
+        "and no decodable `raw` to tell whether it is part of an opted-in package";
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The reader's input for one COMPLETE `(transaction, contract)` answer: every opted-in event,
+ * decoded from its `raw`, with its intent, its position and its phase.
+ *
+ * The phase rule, from the ledger's own application order (`midnight-ledger` `semantics.rs`: the
+ * guaranteed section of every intent first, then each fallible segment; evidence note §01-B): of
+ * this contract's events in this transaction, ordered by indexer id, the first `G` are guaranteed —
+ * `G` being the counted guaranteed `log` ops of its calls — and the rest fallible. Checked per intent
+ * against the emission plan; a contradiction is an {@link EmissionModelError}.
+ *
+ * @throws {RawEventError} when an opted-in event's `raw` is missing, does not decode, or disagrees
+ *   with the typed fields or the pair.
+ */
+export function multipartPartEvents(
+  events: readonly IndexerContractEvent[], pair: LookupPair, net: string, opts: LookupOptions = {},
+): PartEvent[] {
+  const optIns = opts.optIns ?? MULTIPART_OPT_INS;
+  const planned = pair.emission.reduce((sum, e) => sum + e.guaranteed + e.fallible, 0);
+  if (planned !== pair.expected) {
+    throw new Error(
+      `lookup of ${pair.address} in ${pair.txHash}: the emission plan sums to ${planned}, not ${pair.expected}`,
+    );
+  }
+  const guaranteedTotal = pair.emission.reduce((sum, e) => sum + e.guaranteed, 0);
+  const ordered = [...events].sort((a, b) => a.eventId - b.eventId);
+  const perIntent = new Map(pair.emission.map((e) => [e.segment, { ...e, seenG: 0, seenF: 0 }]));
+  const parts: PartEvent[] = [];
+  ordered.forEach((event, index) => {
+    if (!isMultipartEvent(event, optIns)) return;
+    const decoded = decodeRawMiscEvent(
+      opts.ledger,
+      { eventId: event.eventId, rawHex: event.rawHex, nameHex: event.nameHex!, payloadHex: event.payloadHex! },
+      { txHash: pair.txHash, address: pair.address },
+    );
+    const phase = index < guaranteedTotal ? "guaranteed" : "fallible";
+    const plan = perIntent.get(decoded.physicalSegment);
+    if (plan === undefined) {
+      throw new EmissionModelError(pair.txHash, pair.address,
+        `event ${event.eventId} came from intent ${decoded.physicalSegment}, where its transcripts log nothing`);
+    }
+    if (phase === "guaranteed") plan.seenG++; else plan.seenF++;
+    if (plan.seenG > plan.guaranteed || plan.seenF > plan.fallible) {
+      throw new EmissionModelError(pair.txHash, pair.address,
+        `intent ${decoded.physicalSegment} logs ${plan.guaranteed} guaranteed and ${plan.fallible} fallible ` +
+        `events, but event ${event.eventId} would be one ${phase} event too many`);
+    }
+    parts.push({
+      network: net, contract: pair.address, nameHex: decoded.nameHex,
+      transactionHash: pair.txHash, segment: decoded.physicalSegment, position: event.eventId,
+      payload: decoded.payload, phase,
+    });
+  });
+  return parts;
 }
 
 export class UnexpectedEventCountError extends Error {
@@ -209,45 +455,118 @@ export function lookupBackoffMs(attempts: number): number {
 }
 
 /**
- * Fetches one `(transaction, contract)` pair's events, stores every `TokenMetadata` one, and
- * records or clears its entry in the retry queue — all on the caller's `sql`, which is the scan
- * batch's own transaction, so rows and cursor commit together (spec FR-014).
+ * Fetches one `(transaction, contract)` pair's events, stores every token-metadata declaration,
+ * and records or clears its entry in the retry queue — all on the caller's `sql`, which is the
+ * scan batch's own transaction (or the drain's), so rows and cursor commit together (spec FR-014).
+ *
+ * Draft-name events are folded one by one, as before. Opted-in events go through the barrier
+ * described in this module's header: stored only from a complete, fully decoded answer, as whole
+ * [Y] packages.
  */
 export async function lookupEventsFor(
   sql: ISql, schema: string, net: string, source: EventSource, pair: LookupPair,
+  opts: LookupOptions = {},
 ): Promise<LookupOutcome> {
-  const events = await source.eventsFor(pair.txHash, pair.address);
+  const delivered = await source.eventsFor(pair.txHash, pair.address);
+  // Counted by DISTINCT event id (01-D audit F3): a redelivered id is one event, not two parts.
+  const distinct = distinctDeliveries(delivered);
+  const events = distinct.events;
   const got = events.length;
 
   if (got > pair.expected) {
     throw new UnexpectedEventCountError(pair.txHash, pair.address, pair.expected, got);
   }
 
-  let applied = 0;
-  let rejected = 0;
-  let unstorable = 0;
+  const outcome: LookupOutcome = {
+    got, short: false, applied: 0, rejected: 0, unstorable: 0, packages: 0, publications: 0,
+  };
+  const count = (result: { unstorable: boolean; applied: boolean; stored: boolean }): void => {
+    if (result.unstorable) { outcome.unstorable++; return; }
+    if (result.applied && result.stored) outcome.applied++;
+    else if (result.stored) outcome.rejected++;
+  };
+
+  const pending = async (reason: NonNullable<LookupOutcome["pendingReason"]>, lastError: string | undefined): Promise<LookupOutcome> => {
+    await recordPendingLookup(sql, schema, net, pair, got, lastError);
+    return { ...outcome, short: true, pendingReason: reason };
+  };
+
+  // ── an answer that contradicts itself stores NOTHING, not even a draft-name event (01-D audit
+  //    F3, F4 and round 2's N1) — checked BEFORE the draft path, short answer or complete: an
+  //    event served with the draft's typed name while its `raw` is an opted-in part would otherwise
+  //    be folded as a draft declaration under the id the package's first part needs, and the
+  //    correct retry would be shadowed by `ON CONFLICT (net, event_id) DO NOTHING`.
+  const optIns = opts.optIns ?? MULTIPART_OPT_INS;
+  if (distinct.conflict !== undefined) return pending("reader", distinct.conflict);
+  const hidden = hiddenOptedInEvent(events, optIns, opts.ledger);
+  if (hidden !== undefined) return pending("reader", hidden);
+
+  // ── the superseded draft name: one event at a time, exactly as before (FR-006) ──────────────
   for (const event of events) {
-    if (!isTokenMetadataEvent(event)) continue;
+    if (!isDraftNameEvent(event)) continue;
     const raw: RawContractEvent = {
       eventId: event.eventId,
       contractAddress: pair.address,
       txHash: pair.txHash,
       blockHeight: event.blockHeight === 0 ? pair.blockHeight : event.blockHeight,
+      txPosition: pair.txPosition,
       nameHex: event.nameHex!,
       payloadHex: event.payloadHex!,
     };
-    const outcome = await applyMetadataEvent(sql, schema, net, raw);
-    if (outcome.unstorable) { unstorable++; continue; }
-    if (outcome.applied && outcome.stored) applied++;
-    else if (outcome.stored) rejected++;
+    count(await applyMetadataEvent(sql, schema, net, raw));
   }
 
-  if (got < pair.expected) {
-    await recordPendingLookup(sql, schema, net, pair, got, undefined);
-    return { got, short: true, applied, rejected, unstorable };
+  // ── the barrier (audit F1): a short answer stores NOTHING of an opted-in name ──────────────
+  if (got < pair.expected) return pending("short", undefined);
+
+  if (events.some((e) => isMultipartEvent(e, optIns))) {
+    let packages;
+    try {
+      packages = readPackages(multipartPartEvents(events, pair, net, opts), { optIns, network: net }).packages;
+    } catch (error) {
+      if (error instanceof RawEventError) return pending("undecodable_raw", error.message);
+      if (error instanceof PackageReadError) return pending("reader", `${error.reason}: ${error.message}`);
+      throw error;
+    }
+    // Complete and decoded: every package of the pair, folded in this one database transaction —
+    // a public-interface package ([B], 00024-02) becomes a publication, every other opted-in name
+    // is a MIP-0018 declaration (or, in a test configuration, the name the test opted in).
+    for (const pkg of packages) {
+      if (isPublicInterfaceName(pkg.nameHex)) {
+        const published = await applyInterfacePublication(sql, schema, net, {
+          eventId: pkg.positions[0]!,
+          partEventIds: pkg.positions,
+          contractAddress: pair.address,
+          txHash: pair.txHash,
+          blockHeight: pair.blockHeight,
+          txPosition: pair.txPosition,
+          segment: pkg.segment,
+          phase: pkg.phase,
+          payload: pkg.payload,
+        });
+        outcome.packages++;
+        if (published.stored) outcome.publications++;
+        continue;
+      }
+      const result = await applyMetadataEvent(sql, schema, net, {
+        eventId: pkg.positions[0]!,
+        partEventIds: pkg.positions,
+        contractAddress: pair.address,
+        txHash: pair.txHash,
+        blockHeight: pair.blockHeight,
+        txPosition: pair.txPosition,
+        nameHex: pkg.nameHex,
+        payloadHex: Buffer.from(pkg.payload).toString("hex"),
+        segment: pkg.segment,
+        phase: pkg.phase,
+      });
+      outcome.packages++;
+      count(result);
+    }
   }
+
   await clearPendingLookup(sql, schema, net, pair.txHash, pair.address);
-  return { got, short: false, applied, rejected, unstorable };
+  return outcome;
 }
 
 export async function recordPendingLookup(
@@ -255,13 +574,17 @@ export async function recordPendingLookup(
 ): Promise<void> {
   await sql`
     INSERT INTO ${sql(schema)}.pending_event_lookups
-      (net, tx_hash, address, block_height, expected_events, got_events, attempts, next_attempt_at, last_error)
+      (net, tx_hash, address, block_height, tx_position, expected_events, emission, got_events,
+       attempts, next_attempt_at, last_error)
     VALUES
       (${net}, ${Buffer.from(pair.txHash, "hex")}, ${Buffer.from(pair.address, "hex")}, ${pair.blockHeight},
-       ${pair.expected}, ${got}, 1, now() + ${`${lookupBackoffMs(1)} milliseconds`}::interval, ${lastError ?? null})
+       ${pair.txPosition}, ${pair.expected}, ${sql.json(pair.emission as never)}, ${got}, 1,
+       now() + ${`${lookupBackoffMs(1)} milliseconds`}::interval, ${lastError ?? null})
     ON CONFLICT (net, tx_hash, address) DO UPDATE SET
       got_events      = EXCLUDED.got_events,
       expected_events = EXCLUDED.expected_events,
+      emission        = EXCLUDED.emission,
+      tx_position     = EXCLUDED.tx_position,
       attempts        = ${sql(schema)}.pending_event_lookups.attempts + 1,
       last_error      = EXCLUDED.last_error,
       next_attempt_at = now() + (LEAST(
@@ -296,12 +619,14 @@ export interface DrainOutcome {
  * never produced the events it should have" is a fact worth keeping.
  */
 export async function drainPendingLookups(
-  sql: UmbraDBSql, schema: string, net: string, source: EventSource, opts: { limit?: number } = {},
+  sql: UmbraDBSql, schema: string, net: string, source: EventSource,
+  opts: { limit?: number } & LookupOptions = {},
 ): Promise<DrainOutcome> {
   const due = await sql<{
-    tx_hash: Buffer; address: Buffer; block_height: string; expected_events: number; attempts: number;
+    tx_hash: Buffer; address: Buffer; block_height: string; tx_position: number;
+    expected_events: number; emission: EmissionEntry[]; attempts: number;
   }[]>`
-    SELECT tx_hash, address, block_height, expected_events, attempts
+    SELECT tx_hash, address, block_height, tx_position, expected_events, emission, attempts
     FROM ${sql(schema)}.pending_event_lookups
     WHERE net = ${net} AND next_attempt_at <= now() AND attempts < ${LOOKUP_MAX_ATTEMPTS}
     ORDER BY block_height
@@ -313,11 +638,13 @@ export async function drainPendingLookups(
       txHash: row.tx_hash.toString("hex"),
       address: row.address.toString("hex"),
       blockHeight: Number(row.block_height),
+      txPosition: row.tx_position,
       expected: row.expected_events,
+      emission: row.emission,
     };
     outcome.attempted++;
     try {
-      const result = await sql.begin(async (tx) => lookupEventsFor(tx, schema, net, source, pair));
+      const result = await sql.begin(async (tx) => lookupEventsFor(tx, schema, net, source, pair, opts));
       outcome.applied += result.applied;
       if (result.short) {
         outcome.stillShort++;
@@ -326,7 +653,7 @@ export async function drainPendingLookups(
         outcome.completed++;
       }
     } catch (error) {
-      if (error instanceof UnexpectedEventCountError) throw error;
+      if (error instanceof UnexpectedEventCountError || error instanceof EmissionModelError) throw error;
       await recordPendingLookup(sql, schema, net, pair, 0, error instanceof Error ? error.message : String(error));
       outcome.stillShort++;
     }

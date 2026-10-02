@@ -98,7 +98,7 @@ describe("mip-xxxx:token-metadata[v1] payload — the superseded draft (owner Q2
 
     const name = payload("name", "Shielded Star");
     expect(name).toHaveLength(256);
-    const decoded = decodeTokenMetadata(name);
+    const decoded = decodeTokenMetadata(name, "legacy-mip-xxxx");
     expect(Buffer.from(decoded.domainSep).toString("hex")).toBe(Buffer.from(DOMAIN).toString("hex"));
     expect(decoded.kindByte).toBe(1);
     expect(decoded.privacy).toBe("shielded");
@@ -240,7 +240,7 @@ describe("mip-xxxx:token-metadata[v1] payload — the superseded draft (owner Q2
     expect(padded.payload).toHaveLength(256);
     expect(padded.valueText).toBe("ok");
     expect(Buffer.from(padded.payload).toString("hex")).toBe(Buffer.from(payload("name", "ok")).toString("hex"));
-    expect(decodeTokenMetadata(payload("name", "ok")).paddedFrom).toBeUndefined();
+    expect(decodeTokenMetadata(payload("name", "ok"), "legacy-mip-xxxx").paddedFrom).toBeUndefined();
 
     // MIP §3: the kind byte takes exactly four values. The 00020 layout read the high bits as
     // flags; they are not flags, they are simply unknown kinds.

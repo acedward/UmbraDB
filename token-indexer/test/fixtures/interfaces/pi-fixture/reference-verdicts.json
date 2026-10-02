@@ -1,0 +1,280 @@
+{
+  "tool": "acedward/mip-public-interfaces c47e64e tools/public-interface (patched [B] public-interface-verify, UC-2 + UC-3)",
+  "compiler": "compactc 0.34.0 (host compact CLI 0.2.0, compact compile +0.34.0)",
+  "urls": {
+    "short": "http://bundles.test/pi-fixture/index.json",
+    "long": "http://bundles.test/a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-pi-fixture/index.json"
+  },
+  "verdicts": [
+    {
+      "label": "valid",
+      "indexSha256": "6fc124297305d36542ef5a85276992051580c5b6b24bd73981f3f2f53fe87744",
+      "indexHash": "bb0a01afa52f34f3ef21294ad1829ee6f4f8618294f5eb36481657740b0373d2",
+      "level": 3,
+      "url": "http://bundles.test/pi-fixture/index.json",
+      "parts": 1,
+      "l1": {
+        "ok": true,
+        "hashOk": true,
+        "indexOk": true,
+        "filesOk": true,
+        "compilerOk": true,
+        "file": null,
+        "reason": null
+      },
+      "l2": {
+        "ok": true,
+        "wrapperOk": true,
+        "rows": [
+          {
+            "circuit": "guardedIncrement",
+            "status": "OK"
+          },
+          {
+            "circuit": "increment",
+            "status": "OK"
+          },
+          {
+            "circuit": "read",
+            "status": "OK"
+          }
+        ]
+      },
+      "l3": {
+        "ok": true,
+        "rows": [
+          {
+            "item": "guardedIncrement.verifier",
+            "status": "OK"
+          },
+          {
+            "item": "increment.verifier",
+            "status": "OK"
+          },
+          {
+            "item": "read.verifier",
+            "status": "OK"
+          },
+          {
+            "item": "contract/index.js",
+            "status": "OK"
+          },
+          {
+            "item": "compiler/contract-info.json",
+            "status": "OK"
+          }
+        ],
+        "versionMismatch": false,
+        "error": null
+      },
+      "witnesses": [
+        "emitterSecret"
+      ]
+    },
+    {
+      "label": "valid-two-part-url",
+      "indexSha256": "6fc124297305d36542ef5a85276992051580c5b6b24bd73981f3f2f53fe87744",
+      "indexHash": "bb0a01afa52f34f3ef21294ad1829ee6f4f8618294f5eb36481657740b0373d2",
+      "level": 3,
+      "url": "http://bundles.test/a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-a-very-long-path-segment-pi-fixture/index.json",
+      "parts": 2,
+      "l1": {
+        "ok": true,
+        "hashOk": true,
+        "indexOk": true,
+        "filesOk": true,
+        "compilerOk": true,
+        "file": null,
+        "reason": null
+      },
+      "l2": {
+        "ok": true,
+        "wrapperOk": true,
+        "rows": [
+          {
+            "circuit": "guardedIncrement",
+            "status": "OK"
+          },
+          {
+            "circuit": "increment",
+            "status": "OK"
+          },
+          {
+            "circuit": "read",
+            "status": "OK"
+          }
+        ]
+      },
+      "l3": {
+        "ok": true,
+        "rows": [
+          {
+            "item": "guardedIncrement.verifier",
+            "status": "OK"
+          },
+          {
+            "item": "increment.verifier",
+            "status": "OK"
+          },
+          {
+            "item": "read.verifier",
+            "status": "OK"
+          },
+          {
+            "item": "contract/index.js",
+            "status": "OK"
+          },
+          {
+            "item": "compiler/contract-info.json",
+            "status": "OK"
+          }
+        ],
+        "versionMismatch": false,
+        "error": null
+      },
+      "witnesses": [
+        "emitterSecret"
+      ]
+    },
+    {
+      "label": "tampered-file",
+      "indexSha256": "6fc124297305d36542ef5a85276992051580c5b6b24bd73981f3f2f53fe87744",
+      "indexHash": "bb0a01afa52f34f3ef21294ad1829ee6f4f8618294f5eb36481657740b0373d2",
+      "level": 0,
+      "url": "http://bundles.test/pi-fixture/index.json",
+      "parts": 1,
+      "l1": {
+        "ok": false,
+        "hashOk": true,
+        "indexOk": true,
+        "file": "out/contract/index.js",
+        "reason": "out/contract/index.js: sha256 4f67f34261d0470a6b8876c0a5d386fe541081e3f26b019dd88fb123a48fd080 does not match its index entry 696f9fbd6182dac9ee64df9ec599d1ae5a8c08bf2e8c419a3eb0de5497747f30"
+      },
+      "l2": null,
+      "l3": null,
+      "witnesses": []
+    },
+    {
+      "label": "wrong-hash",
+      "indexSha256": "8f21e2dd9240fa0e861703cb1ecc9e6fe085f5a5ea98ee6a178e6452cdc5660e",
+      "indexHash": "58c3c861eef15da8c241381c94876e13ffff8594c1d0025ec303d03e20adcaed",
+      "level": 0,
+      "url": "http://bundles.test/pi-fixture/index.json",
+      "parts": 1,
+      "l1": {
+        "ok": false,
+        "hashOk": false,
+        "file": "index.json",
+        "reason": "index.json's hash 58c3c861eef15da8c241381c94876e13ffff8594c1d0025ec303d03e20adcaed is not the event's commitment: this is not the index the contract committed to"
+      },
+      "l2": null,
+      "l3": null,
+      "witnesses": []
+    },
+    {
+      "label": "wrong-installed-key",
+      "indexSha256": "6fc124297305d36542ef5a85276992051580c5b6b24bd73981f3f2f53fe87744",
+      "indexHash": "bb0a01afa52f34f3ef21294ad1829ee6f4f8618294f5eb36481657740b0373d2",
+      "level": 1,
+      "url": "http://bundles.test/pi-fixture/index.json",
+      "parts": 1,
+      "l1": {
+        "ok": true,
+        "hashOk": true,
+        "indexOk": true,
+        "filesOk": true,
+        "compilerOk": true,
+        "file": null,
+        "reason": null
+      },
+      "l2": {
+        "ok": false,
+        "wrapperOk": true,
+        "rows": [
+          {
+            "circuit": "guardedIncrement",
+            "status": "OK"
+          },
+          {
+            "circuit": "increment",
+            "status": "FAIL",
+            "reason": "shipped key differs from the key on chain"
+          },
+          {
+            "circuit": "read",
+            "status": "OK"
+          }
+        ]
+      },
+      "l3": null,
+      "witnesses": [
+        "emitterSecret"
+      ]
+    },
+    {
+      "label": "compiler-0.33.0",
+      "indexSha256": "a5e47d174d2df35f18415423c8aed6552bfbe5ac41362dedec2b2bf681aa36d9",
+      "indexHash": "b528dcd30f9aab71903c80a4d23a9ed9b78dfebf2ae992883ccd3be5edad6f30",
+      "level": 3,
+      "url": "http://bundles.test/pi-fixture/index.json",
+      "parts": 1,
+      "l1": {
+        "ok": true,
+        "hashOk": true,
+        "indexOk": true,
+        "filesOk": true,
+        "compilerOk": true,
+        "file": null,
+        "reason": null
+      },
+      "l2": {
+        "ok": true,
+        "wrapperOk": true,
+        "rows": [
+          {
+            "circuit": "guardedIncrement",
+            "status": "OK"
+          },
+          {
+            "circuit": "increment",
+            "status": "OK"
+          },
+          {
+            "circuit": "read",
+            "status": "OK"
+          }
+        ]
+      },
+      "l3": {
+        "ok": true,
+        "rows": [
+          {
+            "item": "guardedIncrement.verifier",
+            "status": "OK"
+          },
+          {
+            "item": "increment.verifier",
+            "status": "OK"
+          },
+          {
+            "item": "read.verifier",
+            "status": "OK"
+          },
+          {
+            "item": "contract/index.js",
+            "status": "OK"
+          },
+          {
+            "item": "compiler/contract-info.json",
+            "status": "OK"
+          }
+        ],
+        "versionMismatch": true,
+        "error": null
+      },
+      "witnesses": [
+        "emitterSecret"
+      ]
+    }
+  ]
+}

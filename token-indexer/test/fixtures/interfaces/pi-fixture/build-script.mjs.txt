@@ -1,0 +1,124 @@
+// Builds the UmbraDB 00024-02 fixture bundle with the PATCHED public-interface tools
+// (mip-public-interfaces c47e64e, used as a library, read-only) and records the reference
+// verifier's verdict on it and on derived variants (parity evidence, audit F4).
+import { createHash } from 'node:crypto';
+import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import * as rt from '@midnight-ntwrk/compact-runtime';
+import { deployCheck } from './src/deployer.mjs';
+import { verify } from './src/verify.mjs';
+import { assemblePayload, writeIndex, readIndexFile } from './src/hash.mjs';
+
+const S = resolve('../..');
+const OUT = join(S, 'out');
+const COMPACT = join(S, 'compact-0.34.0');
+const URL_SHORT = 'http://bundles.test/pi-fixture/index.json';
+const URL_LONG = `http://bundles.test/${'a-very-long-path-segment-'.repeat(12)}pi-fixture/index.json`;
+const SECRET_HASH = createHash('sha256').update('umbradb 00024-02 fixture emitter secret (public test value)').digest();
+
+rmSync(OUT, { recursive: true, force: true });
+mkdirSync(OUT, { recursive: true });
+
+const bundleDir = join(OUT, 'bundle');
+const check = deployCheck({
+  interfaceSrc: join(S, 'contract', 'PiFixture.compact'),
+  interfaceOut: join(S, 'build', 'full'),
+  fullOut: join(S, 'build', 'full'),
+  outDir: bundleDir,
+  url: URL_SHORT,
+});
+console.log('deploy-check rows', check.rows, 'witnesses', check.witnesses, 'verifyOnly', check.verifyOnly);
+
+// A deployed state: the constructor run locally, then every circuit's verifier key installed
+// (what a deploy does; the patched tool's simulate-deploy does the same).
+const { Contract } = await import(pathToFileURL(join(S, 'build', 'full', 'contract', 'index.js')).href);
+const contract = new Contract({ emitterSecret: (ctx) => [ctx.privateState, new Uint8Array(32)] });
+const { currentContractState: state } = await contract.initialState(
+  rt.createConstructorContext({}, '0'.repeat(64)), new Uint8Array(SECRET_HASH),
+);
+for (const f of readdirSync(join(S, 'build', 'full', 'keys')).filter((f) => f.endsWith('.verifier')).sort()) {
+  const op = new rt.ContractOperation();
+  op.verifierKey = new Uint8Array(readFileSync(join(S, 'build', 'full', 'keys', f)));
+  state.setOperation(f.slice(0, -'.verifier'.length), op);
+}
+const stateHex = Buffer.from(state.serialize()).toString('hex');
+writeFileSync(join(OUT, 'state.hex'), stateHex + '\n');
+
+// A state whose `increment` key is another circuit's (for Level 2's failure).
+const wrongState = rt.ContractState.deserialize(Uint8Array.from(Buffer.from(stateHex, 'hex')));
+const swapped = new rt.ContractOperation();
+swapped.verifierKey = new Uint8Array(readFileSync(join(S, 'build', 'full', 'keys', 'read.verifier')));
+wrongState.setOperation('increment', swapped);
+writeFileSync(join(OUT, 'state-wrong-increment-key.hex'), Buffer.from(wrongState.serialize()).toString('hex') + '\n');
+
+const index = readIndexFile(bundleDir);
+const commitment = Buffer.from(index.hash, 'hex');
+const payloadShort = assemblePayload(commitment, URL_SHORT);
+const payloadLong = assemblePayload(commitment, URL_LONG);
+writeFileSync(join(OUT, 'payload-short.hex'), payloadShort.toString('hex') + '\n');
+writeFileSync(join(OUT, 'payload-long.hex'), payloadLong.toString('hex') + '\n');
+
+// ---- variants, derived exactly as the UmbraDB tests derive them -------------------------------
+function variant(name, mutate) {
+  const dir = join(OUT, 'variants', name);
+  rmSync(dir, { recursive: true, force: true });
+  cpSync(bundleDir, dir, { recursive: true });
+  mutate(dir);
+  return dir;
+}
+// tampered: one byte of out/contract/index.js flipped (size unchanged); index.json untouched.
+const tampered = variant('tampered-file', (dir) => {
+  const p = join(dir, 'out', 'contract', 'index.js');
+  const b = readFileSync(p); b[100] ^= 0x01; writeFileSync(p, b);
+});
+// wrong-hash: index.json's "hash" replaced by the sha256 of "not the commitment"; entries untouched.
+const wrongHash = variant('wrong-hash', (dir) => {
+  const p = join(dir, 'index.json');
+  const i = JSON.parse(readFileSync(p, 'utf8'));
+  i.hash = createHash('sha256').update('not the commitment').digest('hex');
+  writeFileSync(p, JSON.stringify(i, null, 2) + '\n');
+});
+// compiler-0.33.0: package.json compact.compiler = 0.33.0, index.json rebuilt (a coherent bundle that
+// names a compiler that is not installed; its keys are 0.34.0's).
+const old = variant('compiler-0.33.0', (dir) => {
+  const p = join(dir, 'package.json');
+  const pkg = JSON.parse(readFileSync(p, 'utf8'));
+  pkg.compact.compiler = '0.33.0';
+  writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
+  writeIndex(dir);
+});
+
+const indexSha = (dir) => createHash('sha256').update(readFileSync(join(dir, 'index.json'))).digest('hex');
+const hashOf = (dir) => JSON.parse(readFileSync(join(dir, 'index.json'), 'utf8')).hash;
+
+async function reference(label, { dir, payload, stateHexUsed = stateHex }) {
+  const r = await verify({
+    bundleDir: dir, eventPayload: payload, stateBytes: Buffer.from(stateHexUsed, 'hex'), level: 3, compactBin: COMPACT,
+  });
+  const l1 = r.checks.level1; const l2 = r.checks.level2; const l3 = r.checks.level3;
+  return {
+    label, indexSha256: indexSha(dir), indexHash: hashOf(dir), level: r.level, url: r.event.url, parts: r.event.parts,
+    l1: { ok: l1.ok, hashOk: l1.hashOk, indexOk: l1.indexOk, filesOk: l1.filesOk, compilerOk: l1.compilerOk, file: l1.file ?? null, reason: l1.reason ?? null },
+    l2: l2 ? { ok: l2.ok, wrapperOk: l2.wrapper.ok, rows: l2.rows } : null,
+    l3: l3 ? { ok: l3.ok, rows: l3.rows, versionMismatch: Boolean(l3.versionMismatch), error: l3.error ?? null } : null,
+    witnesses: r.witnesses ?? [],
+  };
+}
+
+const verdicts = [];
+verdicts.push(await reference('valid', { dir: bundleDir, payload: payloadShort }));
+verdicts.push(await reference('valid-two-part-url', { dir: bundleDir, payload: payloadLong }));
+verdicts.push(await reference('tampered-file', { dir: tampered, payload: payloadShort }));
+verdicts.push(await reference('wrong-hash', { dir: wrongHash, payload: payloadShort }));
+verdicts.push(await reference('wrong-installed-key', { dir: bundleDir, payload: payloadShort, stateHexUsed: readFileSync(join(OUT, 'state-wrong-increment-key.hex'), 'utf8').trim() }));
+const oldCommitment = Buffer.from(hashOf(old), 'hex');
+verdicts.push(await reference('compiler-0.33.0', { dir: old, payload: assemblePayload(oldCommitment, URL_SHORT) }));
+writeFileSync(join(OUT, 'reference-verdicts.json'), JSON.stringify({
+  tool: 'acedward/mip-public-interfaces c47e64e tools/public-interface (patched [B] public-interface-verify, UC-2 + UC-3)',
+  compiler: 'compactc 0.34.0 (host compact CLI 0.2.0, compact compile +0.34.0)',
+  urls: { short: URL_SHORT, long: URL_LONG },
+  verdicts,
+}, null, 2) + '\n');
+for (const v of verdicts) console.log(v.label, 'level', v.level, 'l1', v.l1.ok, v.l1.reason?.slice(0, 80) ?? '', 'l2', v.l2?.ok, 'l3', v.l3?.ok, v.l3?.versionMismatch ? '(versionMismatch)' : '');
+console.log('bundle files', readdirSync(bundleDir, { recursive: true }).length, 'index hash', index.hash);

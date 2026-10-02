@@ -18,6 +18,8 @@ export interface FakeEvent {
   blockHeight: number;
   nameHex?: string;
   payloadHex?: string;
+  /** The serialized ledger `Event` served as `raw` (project 00024-01) — see `fakeRawEvent`. */
+  rawHex?: string;
 }
 
 export interface FakeEventIndexer {
@@ -63,6 +65,7 @@ export async function startFakeEventIndexer(): Promise<FakeEventIndexer> {
         transaction: { hash: event.txHash, block: { height: event.blockHeight } },
         ...(event.nameHex === undefined ? {} : { name: event.nameHex }),
         ...(event.payloadHex === undefined ? {} : { payload: event.payloadHex }),
+        ...(event.rawHex === undefined ? {} : { raw: event.rawHex }),
       }));
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ data: { contractEvents: page } }));

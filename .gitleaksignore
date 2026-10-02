@@ -52,3 +52,54 @@ dfe1917f17b145fe21ff97752631552fe26c28c7:token-indexer/test/fixtures/activity/uc
 dfe1917f17b145fe21ff97752631552fe26c28c7:token-indexer/test/fixtures/activity/ucom-transfer.raw.json:generic-api-key:29
 dfe1917f17b145fe21ff97752631552fe26c28c7:token-indexer/test/fixtures/activity/ucom-transfer.raw.json:generic-api-key:38
 bd2fa466b4a30a590f77734179ad97d7db6c078c:token-indexer/test/fixtures/activity/deposit-toMap.raw.json:generic-api-key:28
+# Project 00024-01 (PR #23): two more PUBLIC-data false positives of the stock generic-api-key rule.
+#  - a7affa4, token-indexer/test/multipart-golden.test.ts: the SHA-256 pin of the fixture file
+#    `expected-tokens.json` (the word "token" in the file name reads as credential context);
+#  - 74401aa, token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json: the
+#    28 `verifierKeySha256` fields — the SHA-256 of each PUBLIC verifier key a maintenance update
+#    inserted on the local chain (the key itself is in the public transaction next to it); "Key"
+#    in the field name reads as credential context.
+# Nothing here is a credential. Exact fingerprints, as above: a new line, a re-recorded fixture or a
+# real key pasted into either file is a different fingerprint and still fails the gate.
+a7affa4c892b64c074a2bbc7eaffeba52bc784b8:token-indexer/test/multipart-golden.test.ts:generic-api-key:37
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:52
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:73
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:94
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:115
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:136
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:157
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:178
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:199
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:220
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:241
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:262
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:283
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:304
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:325
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:346
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:367
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:388
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:409
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:430
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:451
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:472
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:493
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:514
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:535
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:556
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:577
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:598
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:619
+# Project 00024-03 (PR feat/00024-03-ui): 35 more PUBLIC-data false positives of the stock
+# generic-api-key rule, all in commit 09e5e49 — the captured API payloads of the page tests
+# (token-indexer/test/fixtures/ui/, provenance in its SOURCE.md). Every hit is a `keySha256` field:
+# the SHA-256 of a PUBLIC verifier key, as the API serves it in a contract's public interface (the
+# key itself is on chain); "key" in the field name reads as credential context. The fixtures are
+# one-line JSON, so the 35 hits are three fingerprints, all on line 1 of an immutable blob:
+# token-uprompi.json 9 hits (blob cb30514e), token-sstarpi.json 8 (d8438797),
+# interface-outcomes.json 18 (dd7ff5c4) — each hit judged. Nothing here is a credential. Exact
+# fingerprints, as above: a re-recorded fixture or a real key pasted into these files is a new
+# commit, a different fingerprint, and still fails the gate.
+09e5e497967476f5b5f6845a3a201b41853c4236:token-indexer/test/fixtures/ui/token-uprompi.json:generic-api-key:1
+09e5e497967476f5b5f6845a3a201b41853c4236:token-indexer/test/fixtures/ui/token-sstarpi.json:generic-api-key:1
+09e5e497967476f5b5f6845a3a201b41853c4236:token-indexer/test/fixtures/ui/interface-outcomes.json:generic-api-key:1

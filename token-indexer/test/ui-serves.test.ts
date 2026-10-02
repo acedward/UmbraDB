@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { INTERFACE_STATUSES } from "../api/queries.js";
 import { DASHBOARD_CSP, DASHBOARD_HTML, serveUi } from "../ui/page.js";
 
 /**
@@ -17,6 +18,13 @@ import { DASHBOARD_CSP, DASHBOARD_HTML, serveUi } from "../ui/page.js";
  * No browser, no jsdom: the page's behaviour is compiled (`new Function`) rather than run, which
  * catches the realistic failure — a syntax error in a 900-line inline script that no unit test
  * imports — without pulling a DOM implementation into this repository's dependency set.
+ *
+ * Re-pinned in 00024-03 (Phase 03-B): the CSP hashes follow the new bytes by construction, the
+ * page reads one more relative route (`/v1/contracts/:address/interface`; `/v1/interfaces` was dropped
+ * by the 03-E1a audit, finding F4), the
+ * events route without "applied=false", and carries the five origin labels and the seven
+ * publication statuses. That every VALUE is drawn with its origin is `[[token-ui-origin]]`'s job
+ * (`ui-origin.test.ts`); this file keeps what the served document must say and must not contain.
  */
 
 /**
@@ -187,7 +195,7 @@ describe("the token explorer page", () => {
     // A count is grouped for reading; a height is an identifier and is never grouped.
     expect(script).toContain("function groupDigits(");
     expect(strip).toContain("groupDigits(b)");
-    expect(strip).toContain('node("b", String(head))');
+    expect(strip).toContain('node("b", txt(head))');
     // The strip redraws every second on its own interval, so the clock moves between the 10 s data
     // refreshes — which themselves are untouched.
     expect(script).toContain("window.setInterval(renderStrip, STRIP_TICK_MS)");
@@ -303,13 +311,14 @@ describe("the token explorer page", () => {
 
     // (3) The token view's subtitle says what it knows, or why it does not know it: "no symbol"
     // read like a symbol, and a bare "-" for decimals said nothing about why it was absent.
-    expect(script).toContain("function subtitleOf(");
-    expect(script).toContain('sub.appendChild(node("span", subtitleOf(t), "note"));');
+    // (00024-03 E1a-R2E: each value of the subtitle is drawn with its own origin chip.)
+    expect(script).toContain("function subtitleNode(t, m)");
+    expect(script).toContain("sub.appendChild(subtitleNode(t, m));");
     expect(script).toContain('"no symbol metadata"');
     expect(script).toContain('"no decimals metadata"');
     expect(script).toContain('"ledger token"');
     expect(script).toContain('"native token"');
-    expect(script).toContain('" · kind " + orDash(t.kind) + " (" + privacy + ") · "');
+    expect(script).toContain('part("kind", "kind " + orDash(t.kind));');
     // the retired wording, gone
     expect(script).not.toContain('" · decimals "');
 
@@ -343,6 +352,59 @@ describe("the token explorer page", () => {
     // the 10 s refresh: `render()` must never rebuild `#filters`.
     expect(script).toContain('el("filters").hidden = v !== "list";');
     expect(script).not.toContain('el("filters").innerHTML');
+
+    // ── 00024-03: where every value came from (spec 00024 US6, FR-016) ────────────────────────
+    // One more relative route, and the events route asks for every event (applied AND rejected):
+    // "applied=false" meant "rejected only" to the server since 00020, so the raw-events table had
+    // never shown an applied declaration — and a key's MIP-0018 history is made of those.
+    // …and not /v1/interfaces: whole publications (URLs of up to 262 112 bytes) for a part badge (E1a-F4)
+    expect(script).not.toContain('"/v1/interfaces"');
+    expect(script).not.toContain("loadInterfaceParts");
+    // Every answer is read up to MAX_RESPONSE_BYTES, and the interface publication again only when its
+    // summary changed (E1a-F4).
+    expect(script).toContain("var MAX_RESPONSE_BYTES = 64 * 1024 * 1024;");
+    expect(script).toContain("function ifaceKey(summary)");
+    expect(script).toContain('"/interface").then(');
+    expect(script).toContain('"/events?limit=" + EVENT_LIMIT');
+    expect(script).not.toContain('"/events?applied=false"');
+    // The five origin labels of US6, stated once.
+    for (const [kind, label] of [["mip-0018", "MIP-0018 declaration"], ["public-interface", "Public interface"],
+      ["chain", "Chain observation"], ["derived", "Derived by this indexer"], ["none", "Not available"]] as const) {
+      expect(script, `origin ${kind} must be labelled "${label}"`).toContain(`"${kind}": "${label}"`);
+    }
+    // The raw-events table says what decides the value in force — P1 among the applied rows — and no
+    // longer that the last row by event id wins (audit 03-E1a finding R3J).
+    expect(script).toContain("Which declaration of a key is in force is rule P1's");
+    expect(script).toContain("a rejected row never applies");
+    expect(script).not.toContain("so the last row of a key is the value in force");
+    // P1 is named where a key was declared more than once (US6 scenario 3).
+    expect(script).toContain('var P1_NOTE = "P1: last write, positioned by the first part";');
+    // Every publication status the API serves has its badge; "historical" is a role, not a status.
+    for (const status of INTERFACE_STATUSES) {
+      expect(script, `the page must know the status ${status}`).toContain(`"${status}": { cls: "if-`);
+    }
+    expect(script).toContain('"historical": "an older publication, kept with its own last result; never presented as current"');
+    // The list is an index: it says that each value's origin and evidence are on the token view
+    // (question Q29, default (a); audit 03-E1a finding F1).
+    expect(script).toContain('var LIST_ORIGIN_NOTE = "where each value came from');
+    expect(script).toContain('"hold up to four rows · " + LIST_ORIGIN_NOTE,');
+    // The list's interface column, and the part badges of multi-part values.
+    expect(script).toContain('{ label: "interface", title: IFACE_HEAD }');
+    expect(script).toContain("cell(tr, listIfaceCell(t));");
+    expect(script).toContain("function partsChip(");
+    // An origin's evidence link may end in a section of its view, which the page scrolls to.
+    expect(script).toContain('var FOCUS_SECTIONS = ["interface", "calls", "mints", "traits", "events", "activity", "metadata", "facts", "tokens"];');
+    expect(script).toContain('hashContract(c.address) + "/interface"');
+    // A URL of up to 262 112 bytes is shortened for the eye and copied whole; only http(s) links.
+    expect(script).toContain("var URL_HEAD = 72;");
+    expect(script).toContain("var URL_TAIL = 28;");
+    expect(style).toContain(".urlv {");
+    expect(style).toContain(".diag {");
+    // A value the API serves without an origin is labelled by the page, and says so (Q28).
+    expect(script).toContain("function pageOrigin(");
+    expect(style).toContain(".or-page { border-style: dashed; }");
+    // Wide tables scroll inside their wrapper instead of widening the page.
+    expect(style).toContain("main > * { min-width: 0; }");
 
     // ── 00023: the CSP hashes are the hashes of the bytes it serves ──────────────────────────
     const csp = res.headers.get("content-security-policy") ?? "";
@@ -550,6 +612,25 @@ describe("the token explorer page", () => {
     // A control's edge is not text, so its bar is the 3:1 of WCAG 1.4.11 — and it must clear it,
     // because a hairline that vanishes on white makes an input look like a label.
     expect(contrast(resolve("--ctl"), resolve("--bg"))).toBeGreaterThanOrEqual(3);
+
+    // 00024-03: one hue per ORIGIN and per interface-status group, each legible on its own ground
+    // and on every surface a table cell can have, and none borrowed from a tag of another meaning.
+    const ORIGINS = ["or-mip", "or-pi", "or-chain", "or-derived", "or-none", "if-ok", "if-wait", "if-unav", "pp"];
+    const originFgs = new Set<string>();
+    for (const name of ORIGINS) {
+      const fg = resolve(`--${name}-fg`);
+      resolve(`--${name}-bd`);
+      originFgs.add(fg);
+      expect(contrast(fg, resolve(`--${name}-bg`)), `${name}: text on its ground`).toBeGreaterThanOrEqual(4.5);
+      for (const surface of surfaces) expect(contrast(fg, surface), `${name} on ${surface}`).toBeGreaterThanOrEqual(4.5);
+      expect(fgs.has(fg), `${name} must not reuse a tag's hue`).toBe(false);
+    }
+    expect(originFgs.size).toBe(ORIGINS.length);
+    for (const [selector, name] of [[".or-mip-0018", "or-mip"], [".or-public-interface", "or-pi"], [".or-chain", "or-chain"],
+      [".or-derived", "or-derived"], [".ifb.if-ok", "if-ok"], [".ifb.if-wait", "if-wait"], [".ifb.if-unav", "if-unav"], [".pp", "pp"]] as const) {
+      const rule = style.slice(style.indexOf(`${selector} {`));
+      expect(rule.slice(0, rule.indexOf("}")), `${selector} must use --${name}-*`).toContain(`var(--${name}-fg)`);
+    }
   });
 
   it("serves the vendored brand font from its own origin", async () => {

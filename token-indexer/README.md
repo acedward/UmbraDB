@@ -63,10 +63,11 @@ text. This indexer therefore recognises two names and judges each under its own 
 |---|---|---|
 | `val-type` 2 | Compact `Uint<8·N>`, `1 ≤ val-len ≤ 31`, **little-endian** | unsigned **big-endian**, `1 ≤ val-len ≤ 16` |
 | `val-type` 3 | ONE complete valid JSON value (RFC 8259; scalars and arrays allowed) | valid UTF-8, nothing more |
-| `val-type` 5 | **Null** — `val-len` MUST be 0, all 189 value bytes ignored; CLEARS the key | reserved → rejects |
+| `val-type` 5 | **Null** — `val-len` MUST be 0, every value byte ignored; CLEARS the key | reserved → rejects |
 | reserved | 6–255 | 5–255 |
 | `/metadata/…` keys | MUST be valid RFC 6901 JSON Pointers (only `~0`/`~1`) or the event REJECTS | no rule; plain bytes |
-| multipart | **none** — `metadata` is one complete JSON value ≤ 189 B or nothing | `metadata/<n>`, parts `0..15`, assembled |
+| layout (UC-1, project 00024-01) | a [Y] package of `256·k` bytes: 2-byte little-endian `val-len` at 66, value from 68, any length | one 256-byte event: 1-byte `val-len`, ≤ 189 |
+| long values | a [Y] multi-part package; `metadata` is ONE complete JSON value of any length | `metadata/<n>`, parts `0..15`, assembled |
 
 Each name is spelled once, in `ingest/payload.ts` (`MIP_0018_EVENT_NAME`, `LEGACY_EVENT_NAME`), and
 every stored row carries its `name_variant` (`mip-0018` or `legacy-mip-xxxx`): on
@@ -85,6 +86,50 @@ event, and as the page's "pre-MIP name" badge.
 The pre-MIP name `TokenMetadata` that project 00020 shipped is recognised by **neither** validator:
 it is **ignored** — not stored, not rejected, not evidence of anything (MIP §1). Contracts deployed
 under that name keep whatever rows their mints created, as `observed`.
+
+### Project 00024-01: MIP-0018 values of any length, as multi-part packages
+
+MIP-0018 is amended in place (UC-1 of the organizer's `spec/00024-upstream-spec-changes.md`) and
+`mip-0018:token-metadata[v1]` follows the Multi-Part Event rule ([Y], `acedward/compact-multi-part-event`
+PR #1, adopted unchanged): the events of that name one contract emits from one intent of one
+transaction are ONE package, their 256-byte payloads concatenated in ledger emission order, and one
+package is one declaration. The draft name is not opted in and keeps its single-event path.
+
+* **Acquisition** (`ingest/events.ts`, `ingest/raw-event.ts`): the `contractEvents` query requests
+  each event's `raw`; its `EventSource.physicalSegment` is the event's intent, its indexer id its
+  position, and its phase comes from the archived transcripts (the ledger applies every intent's
+  guaranteed part before any fallible segment). Nothing of an opted-in name is grouped, stored or
+  folded until the whole `(transaction, contract)` answer is complete and every `raw` decodes — a
+  short or undecodable answer stays in `pending_event_lookups` with its reason and stores nothing.
+  "Complete" is counted by **distinct** event id (a redelivered id is one event; one id with two
+  contents is a conflicting answer), and no `MiscContractEvent` may hide an opted-in part (an
+  opted-in name without a typed payload, typed fields that contradict an opted-in `raw`, or an event
+  with neither typed name nor decodable `raw`) — each leaves the pair pending
+  (`[[multipart-lookup-integrity]]`).
+* **Reader** (`ingest/packages.ts`, ported from [Y]'s reference with `ingest/SOURCE.md`): groups by
+  (network, contract, name, transaction, segment) on every contract, restores every part to 256
+  bytes, keeps trailing zeros, records `guaranteed | fallible | mixed`; a 1 024-part safety ceiling.
+* **Decoder** (`ingest/payload.ts`): the UC-1 layout; `val_len_beyond_package` when `68 + val-len`
+  runs past the package. **Fold** (`ingest/fold.ts`): last write wins in MIP-0018 §6.2's order
+  (block, transaction position, execution order), a package positioned by its first part (P1);
+  projections have no 189-byte ceiling under the standard's name.
+* **API** (additive): every token carries `origins` for `name`, `symbol`, `decimals`, `tokenUri`,
+  `metadata`, `color`, `status` and `mints` — `mip-0018` (with the package: event ids, transaction,
+  block, position, segment, parts, phase), `chain`, `derived` (with the rule) or `none` (with the
+  reason); traits and metadata events gain `segment`, `parts`, `partEventIds`, `phase`, `txPosition`
+  and an `origin` (events also `payloadLength` and `payloadSha256` of the merged package); mints and
+  activity rows carry a `chain` origin; `/internal/status` counts `packages`, `multipartPackages` and
+  `mixedPackages`. The page is unchanged in this project. A `metadata` origin cites exactly the
+  declaration(s) the served document came from — the ids the fold stores beside it in
+  `tokens.metadata_event_ids` (its `chooseMetadata` choice) — and every data route
+  answers from ONE read-only `REPEATABLE READ` snapshot, so a value and its evidence can never come
+  from two different moments.
+* **Schema** (`005_multipart_packages`): one `token_metadata_events` row per package; `val_len` up
+  to 65 535; a fresh database per run (no migration of existing rows).
+  Values of any length are held without stalling the scanner (`[[multipart-hostile-values]]`):
+  `tokens_by_name` indexes a 256-character prefix, so a long name projects whole; a MIP-0018
+  `metadata` document nested deeper than 128 levels stays a trait flagged `metadata_too_deep` (the
+  draft name's assemblies, at most 3 024 bytes, keep their rules).
 
 ### Null clears a key, and its row stays
 
@@ -187,24 +232,28 @@ issuers' deploys at heights 360 721–360 737 and their mint calls at 364 875–
 from the public indexer with their `raw` bytes, `transactionResult` and created outputs. The scanner
 runs against those bytes through the real store and the real ledger-v9 decoder.
 
-**Two** golden corpora emitted by the **reference contracts** of
-`acedward/mip-erc7496-midnight-contracts`, produced by the real compiled Compact templates in the
-Compact simulator — because there are two event names and two validators:
+**Two** golden corpora emitted by the **reference contracts**, produced by the real compiled
+Compact contracts in the Compact simulator — because there are two event names and two validators:
 
-* `test/fixtures/contracts/` — **MIP-0018**: 66 `mip-0018:token-metadata[v1]` events, 16 mints, 15
-  colour vectors, 17 expected rows, 32 awkward payloads. Pinned on that repository's `main` @
-  `7d9f659`.
-* `test/fixtures/contracts-legacy/` — the frozen **PR #315 draft**: 69
-  `mip-xxxx:token-metadata[v1]` events and the rest of that set. This is what the Stagenet reference
-  set actually emits, and it is not being redeployed.
+* `test/fixtures/contracts/` — **MIP-0018 on UC-1** (project 00024-01): the generated MIP-18 set of
+  `acedward/mip-0018-midnight-contracts` (`LSUN18` … `LLIAR18`), 86 `mip-0018:token-metadata[v1]`
+  events forming 82 [Y] packages (one declaration each; SNEB18 `metadata` 677 B in 3 parts, LMOON18
+  `description` 377 B in 2, CNST18 Orion `metadata` 279 B in 2), 16 mints, 15 colour vectors, 17
+  expected rows, 40 awkward packages. Pinned on `feat/00024-01-mip-0018` @ `cb6c675`, with the
+  producer's own provenance in `PRODUCER-SOURCE.md`.
+* `test/fixtures/contracts-legacy/` — the frozen **PR #315 draft** (`acedward/mip-erc7496-midnight-
+  contracts`): 69 `mip-xxxx:token-metadata[v1]` events and the rest of that set. This is what the
+  Stagenet reference set actually emits, and it is not being redeployed.
 
 Each directory's `SOURCE.md` pins its repository, branch and commit and tabulates the differences.
 `contract-fixtures.test.ts` runs **every one of its four governed ids over both**, and reads the
-rules to apply out of each payload's own recorded `eventName` — so a corpus regenerated under a
+rules to apply out of each declaration's own recorded `eventName` — so a corpus regenerated under a
 third name throws rather than being silently validated under the wrong rules. The pair is the
-regression test for "two names, two validators": the same eleven contracts, the same 17 rows, two
-transports. It replays both into one Postgres container under two schemas, so the gate's container
-count does not change.
+regression test for "two names, two validators": the same eleven reference rows (the standard's
+corpus is their `…18` variant), the same 17 token rows, two transports. It replays both into one
+Postgres container under two schemas, so the gate's container count does not change.
+`multipart-golden.test.ts` (`[[multipart-0018-golden]]`) reads the same MIP-0018 corpus part by part
+through the [Y] reader, the UC-1 decoder and the fold.
 
 The hand-built payloads are kept alongside it, not replaced by it, and there are two sets:
 `test/payload.test.ts` is the **draft** validator's suite (every assertion project 00021 wrote,
@@ -212,6 +261,13 @@ unchanged) and `test/payload-0018.test.ts` is the **standard's** — seven gover
 the final text moved, ending with `[[token-0018-legacy-pair]]`, which puts single byte strings
 through both validators at once. `test/status-rules.test.ts` carries the three fold-level ids
 (`[[token-0018-null-clears]]`, `[[token-0018-no-multipart]]`, `[[token-0018-decimals-width]]`).
+
+`test/fixtures/maintenance/` holds **one staged deploy** recorded on the 00024 local chain (project
+00024-01, question Q21): CNST18's `ContractDeploy` with 11 of its 39 operations and the 28
+`MaintenanceUpdate` transactions that insert the other verifier keys. `maintenance-scan.test.ts`
+(`[[token-scan-maintenance-actions]]`) runs them through the real decoder and the scanner: the
+deploy is recorded, the updates are `maintenance` actions that are not calls, emit nothing and are
+never looked up, and the cursor moves past them. Its `SOURCE.md` names the run and the SHA-256.
 
 `test/fixtures/activity/` holds project 00023's four recorded Stagenet transactions — an unshielded
 deposit into a contract, a NIGHT pass-through, a shielded mint whose offer delta publishes its
@@ -221,8 +277,11 @@ and what each one proves.
 
 ## The payload
 
-The 256-byte layout is the one thing the two event names share, so the structural decode never
-depends on which name an event carried.
+The first 66 bytes — `domainSep`, `kind`, `key`, `val-type` — are the same under both event
+names, so the structural decode of the header never depends on which name an event carried. From
+offset 66 the two names differ (project 00024-01, UC-1): the standard's `mip-0018:token-metadata[v1]`
+is a [Y] **package** of `256·k` bytes with a 2-byte length; the superseded draft
+`mip-xxxx:token-metadata[v1]` is one 256-byte event with a 1-byte length.
 
 ```
  offset  size  field
@@ -234,33 +293,49 @@ depends on which name an event carried.
                            (MIP §5.1)
      65     1  val-type    0 opaque, 1 UTF-8 string, 2 unsigned integer (Compact `Uint<8·N>`,
                            little-endian, 1..31 bytes), 3 UTF-8 JSON (ONE complete RFC 8259 value),
-                           4 UTF-8 URI, 5 Null (`val-len` MUST be 0, the 189 bytes ignored, the key
+                           4 UTF-8 URI, 5 Null (`val-len` MUST be 0, the value bytes ignored, the key
                            cleared), 6..255 reserved → reject
-     66     1  val-len     meaningful bytes of `value`, 0..189; 0 means "present, empty" — which is
-                           NOT the same as Null (MIP §6.2)
+
+ mip-0018:token-metadata[v1] (UC-1) — the merged payload of a [Y] package, 256·k bytes (k ≥ 1)
+     66     2  val-len     unsigned 16-bit LITTLE-endian (Compact `Uint<16>`), 0..65 535; 0 means
+                           "present, empty" — NOT the same as Null (MIP §6.2); `68 + val-len` must fit
+                           the package, else `val_len_beyond_package`
+     68   val-len  value   any length; one part holds ≤ 188 bytes; bytes after the value are ignored
+
+ mip-xxxx:token-metadata[v1] (the draft, not opted into [Y]) — one event, exactly 256 bytes
+     66     1  val-len     0..189, else `val_len_too_long`
      67   189  value
 ```
+
+To publish `name = "A"` under the standard: `val-type` 1, `val-len` bytes `01 00` at 66–67, `41`
+at 68. Writing the draft's single `01` at 66 and `41` at 67 reads as a length of `0x4101` and is
+rejected.
 
 `serialize<Uint<128>, 16>(6)` is `0x06000000000000000000000000000000` (MIP Appendix A): the least
 significant byte comes first. That is not taken on trust from the MIP's prose — the governed test
 `[[token-0018-integer-endianness]]` derives those bytes from `@midnight-ntwrk/compact-runtime`
 0.19.0, the runtime the MIP names as normative for v1, and asserts this module's encoder and decoder
 agree with `toBinaryRepr` and `CompactTypeUnsignedInteger.fromValue` at widths 1, 2, 3, 16 and 31.
+The 2-byte `val-len` is checked the same way (`[[multipart-0018-rules]]`: every value 0…65 535
+against compact-runtime's `Uint<16>` serialization).
 
 One stable reject reason per transport rule: `kind_unknown`, `key_empty`, `key_pointer_invalid`,
-`val_type_reserved`, `val_len_too_long`, `val_type_rule`, `payload_size` — the same strings the
-reference contracts' negative corpus records, so a diagnostic means one thing in both. Rejected
-events are stored with their reason — a contract's malformed claim is evidence about that contract,
-and MIP §7.1 asks a consumer to keep rejection reasons available for diagnostics.
+`val_type_reserved`, `val_len_beyond_package` (standard) / `val_len_too_long` (draft),
+`val_type_rule`, `payload_size` — the same strings the reference contracts' negative corpus records,
+so a diagnostic means one thing in both. Rejected declarations are stored with their reason — a
+contract's malformed claim is evidence about that contract, and MIP §7.1 asks a consumer to keep
+rejection reasons available for diagnostics.
 
 ## A note on payload width
 
 The on-chain VM hands a `Log` event's bytes out with **trailing NULs trimmed**, while the event
 declares its full serialized length. The indexer's GraphQL `payload` field re-pads to exactly 256
 bytes, so this does not show through that source — but the node-direct event source the owner plans
-next sees the untrimmed form. The parser therefore **zero-extends** a short payload to 256 and
-records how short it arrived; only a payload longer than 256 is an error. The bytes stored in
-`token_metadata_events.payload` are always the padded 256.
+next sees the untrimmed form. The parser therefore **zero-extends** a short payload (a part) to 256
+and records how short it arrived; only a part longer than 256 is an error. The bytes stored in
+`token_metadata_events.payload` are the padded **256 per event** for the draft name and the merged
+**256·parts** of the package for the standard's name (every part restored to 256 bytes, trailing
+zeros kept — [Y] §4).
 
 ## Colour derivation
 
@@ -453,3 +528,83 @@ envelope is 00020's.
   `item_index` is a positional counter and an unsorted map would give the same row a different
   primary key on a re-scan. Lists that are genuinely ordered on chain (an offer's
   inputs/outputs/transients, an intent's actions and unshielded outputs) are never reordered.
+
+# Project 00024-02 — public interfaces, verified
+
+The indexer reads the **Public Interfaces for Compact Contracts** draft ([B],
+`acedward/public-interfaces-for-compact-contracts` PR #6): a contract's `publishBundle` emits
+`mip-xxxx:public-interface[v1]` — the 32-byte bundle commitment, then the URL of the bundle's
+`index.json`. Under UC-2 that name follows the Multi-Part Event rule, so a publication is a
+**package** (a URL longer than 224 bytes takes several `publishBundle` calls in one intent). Code:
+`interface/` (`SOURCE.md` names every ported reference file and every difference).
+
+## What happens to a publication
+
+1. **Scan** (in the scan's transaction): the package is stored `pending` in `public_interface_events`
+   with its commitment and URL (a URL that is not valid text is kept as bytes with `url_error`), and it
+   becomes its contract's current one in `public_interfaces` if it is the newest — block, transaction
+   position, then its FIRST part's event id (derivation P2). A newer publication is current whatever
+   its result; older ones are historical and keep their own last result.
+2. **Verify** (the `interfaces` loop of `serve`, outside the scan's transaction): Level 1 (the index
+   and its `hash` — compared with the commitment **before any other request** — the recomputed
+   `ecmh-jubjub-grouphash`, every listed file's size and sha256, `compiler` vs `package.json`), Level 2
+   (each shipped verifier key byte-equals the key the contract's current state installs under the same
+   name; the state comes from the indexer's `contractAction`), Level 3 **tried** with the exact compiler
+   the bundle names (`COMPACT_BIN compile +<version>`; not installed → `not_run` with the reason). The
+   bundle is fetched through the fetch guard: http(s) only, private / loopback / link-local
+   destinations refused after DNS (inside the connection's own lookup), ≤ 3 redirects, one deadline,
+   size and file-count caps. **Nothing from a bundle is executed.**
+3. **Re-verify**: the current publication every `TOKEN_INTERFACE_RECHECK_MS` (24 h), at once after a
+   maintenance update of the contract (`stale`), on demand, and — after a check that reached no
+   conclusion (`unreachable`, `unchecked`, `unfetchable`) — sooner, with **exponential backoff**: the
+   n-th consecutive retry waits `TOKEN_INTERFACE_RETRY_BASE_MS · 2^(n−1)` (30 s, 60 s, 120 s …),
+   capped at `TOKEN_INTERFACE_RETRY_CAP_MS` (1 h) and never beyond the re-check interval. A retry is a
+   whole new verification, so a host that delivers again is verified from Level 1. A result that
+   changes keeps the time the earlier verified result held (`verifiedUntil`) — a verified interface
+   whose host goes away shows `unreachable` with "verified until <time>".
+
+| status | meaning |
+|---|---|
+| `pending` | stored, not yet checked |
+| `verified` | Levels 1 and 2 passed; `level` 3 when Level 3 passed too (`l3` = `passed` / `failed` / `not_run` + reason) |
+| `failed` | a check failed on the bundle's bytes (`failedLevel` 1 or 2, `reason`) |
+| `unchecked` | a local limit stopped it (deadline, a cap) or the contract state was unavailable — never "invalid" |
+| `unfetchable` | a policy refusal: the URL is not usable text, not http(s), or its host is a private / loopback / link-local destination |
+| `unreachable` | the host did not deliver (a name that does not resolve, a refused or reset connection, a non-2xx answer — a listed file missing included —, more than 3 redirects, an unexpected `Content-Encoding`): handled before the [B] levels, no level claimed, retried with exponential backoff (owner decision Q25) |
+| `stale` | a maintenance update changed the contract since the last check; the last result is kept until it is re-checked |
+
+## Routes added
+
+| Route | Returns |
+|---|---|
+| `GET /v1/interfaces?status=&limit&cursor` | contracts with an interface, newest current publication first |
+| `GET /v1/contracts/:address/interface` | the current publication: status, level, levels, reason, commitment, URL, package evidence, state, compiler/build, files, keys, circuits (with argument types), the verification record (`report`), its check history, and every older publication (`history`); 404 if none |
+| `GET /v1/contracts/:address/interface/events?limit&cursor` | every publication of the contract, newest first, each with its role (`current` / `historical`) and its own last result |
+| `Token.interface`, `GET /v1/contracts/:address` `interface` (additive) | the current interface's status and levels (event id, L3 reason, checked / verified-until times; no URL), or `null` |
+| `GET /internal/status` (exists) | `counters` gains `interfaces`, `interfacePublications`, and the current publications by status: `interfacesVerified`, `interfacesFailed`, `interfacesWaiting` (pending or stale), `interfacesUnavailable` (unchecked or unfetchable), `interfacesUnreachable` — the five add up to `interfaces` |
+
+Every interface value carries `origin: { origin: "public-interface", evidence }`. On a publication
+(`/v1/interfaces`, `/interface`, `/interface/events`, `history`) the evidence is the publication —
+event ids, transaction, block, segment, parts, phase, commitment — and what its last check
+established (status, levels, checked at); its URL is the value's own `url` field, given once. On an
+ITEM of an interface (each of `files`, `keys`, `circuits`) and on `Token.interface` / a contract's
+`interface`, the evidence cites the publication by identity only (event id, transaction, commitment,
+status, levels, checked at): the full publication and its URL are on
+`GET /v1/contracts/:address/interface` — so no response grows with the URL (up to 262 112 bytes)
+times the number of items or tokens. A token's `origins` are unchanged: `Token.interface` carries its
+own origin.
+
+## Configuration and CLI
+
+| Variable | Default | |
+|---|---|---|
+| `TOKEN_INTERFACE_RECHECK_MS` | `86400000` | re-verify the current publications this often |
+| `TOKEN_INTERFACE_RETRY_BASE_MS` / `TOKEN_INTERFACE_RETRY_CAP_MS` | `30000` / `3600000` | exponential retry after an inconclusive check: base · 2^(n−1), capped (cap ≥ base, both ≥ 1000; a malformed value fails at startup naming the variable) |
+| `TOKEN_INTERFACE_FETCH_DEADLINE_MS` | `120000` | one deadline for every request of one bundle |
+| `TOKEN_INTERFACE_MAX_INDEX_BYTES` / `_MAX_FILES` / `_MAX_FILE_BYTES` / `_MAX_BUNDLE_BYTES` | 256 KiB / 1000 / 8 MiB / 16 MiB | Level 1 caps |
+| `TOKEN_INTERFACE_L3` / `TOKEN_INTERFACE_L3_DEADLINE_MS` / `COMPACT_BIN` | `on` / `1800000` / `compact` | Level 3 |
+| `TOKEN_INTERFACE_ALLOW_PRIVATE_HOSTS` | unset | **test-only**: `1` lets the fetch reach private hosts (the local stack's bundle server) |
+
+```
+npm run token-indexer -- verify-interfaces --address <hex>   re-verify that contract's current interface now
+```

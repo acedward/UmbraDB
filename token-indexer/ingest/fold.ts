@@ -245,19 +245,43 @@ export async function ensureSeenToken(
   return inserted.count > 0;
 }
 
-/** One contract event as the lookup delivers it, before parsing. */
+/** A [Y] package's execution phase, from the archived transcripts of its APPLIED parts
+ *  (`compact-multi-part-event` PR #1 §5; spec 00024 FR-002). `mixed` is a publisher error that is
+ *  recorded and shown, never a reason to drop the package. */
+export type PackagePhase = "guaranteed" | "fallible" | "mixed";
+
+/**
+ * One token-metadata declaration as the lookup delivers it, before parsing: a [Y] **package**
+ * under the standard's name (project 00024-01), or one event under the superseded draft name
+ * (which is not opted into [Y] and keeps its single-event behaviour, spec 00024 FR-006).
+ *
+ * A single event is the one-part case: `partEventIds` defaults to `[eventId]`.
+ */
 export interface RawContractEvent {
-  /** The indexer's own `ContractEvent.id` — the idempotency key for the whole pipeline. */
+  /** The indexer's own `ContractEvent.id` — for a package, its FIRST part's id. The idempotency
+   *  key for the whole pipeline, and (derivation P1) the package's position inside its
+   *  transaction. */
   eventId: number;
   contractAddress: string;
   txHash: string;
   blockHeight: number;
+  /** The transaction's index in its block — MIP-0018 §6.2's second ordering key. The lookup always
+   *  supplies it; a direct caller that omits it (the fixture replays) places the event at 0. */
+  txPosition?: number;
   /** The event's 32 padded name bytes as hex — `pad(32, "mip-0018:token-metadata[v1]")`, or the
    *  superseded draft name the deployed reference contracts still emit (owner Q27). This is what
    *  decides which validator runs: `nameVariantOf` maps it to a {@link NameVariant}. */
   nameHex: string;
-  /** The 256-byte payload, hex. */
+  /** The payload, hex: `256 · parts` bytes for a package (the parts concatenated in ledger
+   *  emission order, every byte kept); up to 256 for a draft-name event. */
   payloadHex: string;
+  /** Every part's indexer event id in ledger emission order; `[eventId]` when absent. */
+  partEventIds?: readonly number[];
+  /** The physical intent of every part (`EventSource.physicalSegment`). REQUIRED for the
+   *  standard's name — its rows are packages and carry their evidence (FR-003, FR-016b). */
+  segment?: number;
+  /** REQUIRED for the standard's name, like {@link segment}. */
+  phase?: PackagePhase;
 }
 
 export interface AppliedEventOutcome {
@@ -299,6 +323,27 @@ export async function applyMetadataEvent(
       + "MIP §1 says a v1 consumer ignores it, so it must never reach the fold",
     );
   }
+  const partEventIds = event.partEventIds ?? [event.eventId];
+  if (partEventIds.length === 0 || partEventIds[0] !== event.eventId) {
+    throw new Error(
+      `applyMetadataEvent: package ${event.eventId} must list its own id as its first part ` +
+      `(got [${partEventIds.join(", ")}])`,
+    );
+  }
+  if (nameVariant === "legacy-mip-xxxx" && partEventIds.length !== 1) {
+    // The draft name is not opted into [Y] (spec 00024 FR-006): nothing may group its events.
+    throw new Error(`applyMetadataEvent: draft-name event ${event.eventId} cannot be a multi-part package`);
+  }
+  if (nameVariant === "mip-0018" && (event.segment === undefined || event.phase === undefined)) {
+    // The standard's name follows [Y] (UC-1): its declarations are packages, read by the
+    // multi-part reader, and a package always knows its intent and its phase.
+    throw new Error(
+      `applyMetadataEvent: mip-0018 declaration ${event.eventId} arrived without its package ` +
+      "evidence (segment, phase) — it must come through the multi-part reader",
+    );
+  }
+  const txPosition = event.txPosition ?? 0;
+
   let parsed: ParsedTokenMetadata;
   try {
     parsed = parseTokenMetadata(new Uint8Array(Buffer.from(event.payloadHex, "hex")), nameVariant);
@@ -317,11 +362,14 @@ export async function applyMetadataEvent(
   const domainSep = Buffer.from(parsed.domainSep);
   const inserted = await sql`
     INSERT INTO ${sql(schema)}.token_metadata_events
-      (net, event_id, address, tx_hash, block_height, name_variant, payload, domain_sep, kind_byte,
+      (net, event_id, part_event_ids, parts, segment, phase, address, tx_hash, block_height,
+       tx_position, name_variant, payload, domain_sep, kind_byte,
        key, key_hex, key_text, val_type, val_len, value, applied, reject_reason)
     VALUES
-      (${net}, ${event.eventId}, ${hexBuf(event.contractAddress)}, ${hexBuf(event.txHash)}, ${event.blockHeight},
-       ${nameVariant}, ${payload}, ${domainSep}, ${parsed.kindByte},
+      (${net}, ${event.eventId}, ${`{${partEventIds.join(",")}}`}::bigint[], ${partEventIds.length},
+       ${event.segment ?? null}, ${event.phase ?? null},
+       ${hexBuf(event.contractAddress)}, ${hexBuf(event.txHash)}, ${event.blockHeight},
+       ${txPosition}, ${nameVariant}, ${payload}, ${domainSep}, ${parsed.kindByte},
        ${Buffer.from(parsed.key)}, ${parsed.keyHex}, ${parsed.keyText ?? null},
        ${parsed.valType}, ${parsed.valLen}, ${Buffer.from(parsed.value)},
        ${parsed.applied}, ${parsed.rejectReason ?? null})
@@ -347,9 +395,13 @@ export async function applyMetadataEvent(
     kind: parsed.kindByte,
   };
 
-  // Last write wins per (token, key), ordered by (block height, indexer event id) — the indexer's
-  // ids are assigned in evaluation order, so two events in one transaction order correctly
-  // (MIP §6.2). The key's identity is its trimmed BYTES (§5.1), so `key_hex` is what conflicts.
+  // Last write wins per (token, key) in MIP-0018 §6.2's canonical order: block, then transaction
+  // position in the block, then ledger execution order inside the transaction — "an indexer's
+  // monotonic event ID … does not define the normative order", so the id only breaks ties INSIDE
+  // one transaction, where it follows ledger emission order. A [Y] package is positioned by its
+  // FIRST part (derivation P1, `spec/00024-upstream-spec-changes.md`): `event.eventId` is that
+  // part's id, so two packages whose parts interleave in one transaction order by where each
+  // begins. The key's identity is its trimmed BYTES (§5.1), so `key_hex` is what conflicts.
   //
   // ── Null is a TOMBSTONE, not a DELETE (MIP-0018 §2.1 type 5, §6.2) ─────────────────────────
   // A `val-type` 5 event sets the current value of the exact key to Null. It lands here as an
@@ -368,12 +420,12 @@ export async function applyMetadataEvent(
   await sql`
     INSERT INTO ${sql(schema)}.token_metadata_kv
       (net, address, domain_sep, kind, key_hex, key_text, name_variant, val_type, val_len, value,
-       projection_error, updated_event_id, updated_height)
+       projection_error, updated_event_id, updated_height, updated_tx_position)
     VALUES
       (${net}, ${hexBuf(key.address)}, ${hexBuf(key.domainSep)}, ${key.kind},
        ${parsed.keyHex}, ${parsed.keyText ?? null}, ${nameVariant}, ${parsed.valType}, ${parsed.valLen},
        ${Buffer.from(parsed.valueBytes)}, ${parsed.projectionError ?? null},
-       ${event.eventId}, ${event.blockHeight})
+       ${event.eventId}, ${event.blockHeight}, ${txPosition})
     ON CONFLICT (net, address, domain_sep, kind, key_hex) DO UPDATE SET
       key_text         = EXCLUDED.key_text,
       name_variant     = EXCLUDED.name_variant,
@@ -382,9 +434,12 @@ export async function applyMetadataEvent(
       value            = EXCLUDED.value,
       projection_error = EXCLUDED.projection_error,
       updated_event_id = EXCLUDED.updated_event_id,
-      updated_height   = EXCLUDED.updated_height
-    WHERE (${sql(schema)}.token_metadata_kv.updated_height, ${sql(schema)}.token_metadata_kv.updated_event_id)
-          < (EXCLUDED.updated_height, EXCLUDED.updated_event_id)
+      updated_height   = EXCLUDED.updated_height,
+      updated_tx_position = EXCLUDED.updated_tx_position
+    WHERE (${sql(schema)}.token_metadata_kv.updated_height,
+           ${sql(schema)}.token_metadata_kv.updated_tx_position,
+           ${sql(schema)}.token_metadata_kv.updated_event_id)
+          < (EXCLUDED.updated_height, EXCLUDED.updated_tx_position, EXCLUDED.updated_event_id)
   `;
 
   // The event creates the row if no mint has — for ITS OWN kind byte and no other. A ledger kind
@@ -467,14 +522,15 @@ export async function recomputeToken(
     ? undefined
     : { address: row.address.toString("hex"), domainSep: row.domain_sep.toString("hex"), kind: identity.kind };
 
-  // The evidence: every APPLIED event for THIS kind byte, newest last. An event for another kind is
-  // another token's business entirely (MIP §6.3) — that is the whole of the D4 change.
+  // The evidence: every APPLIED declaration for THIS kind byte, newest last in MIP §6.2's order
+  // (block, transaction position, first part — P1). An event for another kind is another token's
+  // business entirely (MIP §6.3) — that is the whole of the D4 change.
   const events = key === undefined ? [] : await sql<{ event_id: string; block_height: string }[]>`
     SELECT event_id::text, block_height::text
     FROM ${sql(schema)}.token_metadata_events
     WHERE net = ${net} AND address = ${hexBuf(key.address)} AND domain_sep = ${hexBuf(key.domainSep)}
       AND applied AND kind_byte = ${identity.kind}
-    ORDER BY block_height, event_id
+    ORDER BY block_height, tx_position, event_id
   `;
   const hasMetadata = events.length > 0;
   const latest = events[events.length - 1];
@@ -487,7 +543,7 @@ export async function recomputeToken(
   const color = isNativeKind(identity.kind) ? tokenKey : null;
 
   const projected = key === undefined
-    ? { name: null, symbol: null, decimals: null, tokenUri: null, metadata: null }
+    ? { name: null, symbol: null, decimals: null, tokenUri: null, metadata: null, metadataEventIds: null }
     : await projectedFields(sql, schema, net, key);
 
   await sql`
@@ -499,6 +555,7 @@ export async function recomputeToken(
       decimals                  = ${projected.decimals},
       token_uri                 = ${projected.tokenUri},
       metadata                  = ${projected.metadata === null ? null : sql.json(projected.metadata as never)},
+      metadata_event_ids        = ${projected.metadataEventIds === null ? null : `{${projected.metadataEventIds.join(",")}}`}::bigint[],
       metadata_updated_height   = ${latest === undefined ? null : Number(latest.block_height)},
       metadata_updated_event_id = ${latest === undefined ? null : Number(latest.event_id)}
     WHERE net = ${net} AND token_key = ${tokenKey} AND kind = ${identity.kind}
@@ -511,6 +568,9 @@ export interface ProjectedFields {
   decimals: number | null;
   tokenUri: string | null;
   metadata: Record<string, unknown> | null;
+  /** The kv `updated_event_id`s of the declaration(s) `metadata` was projected from, in part order
+   *  (`null` with no metadata) — stored in `tokens.metadata_event_ids`. */
+  metadataEventIds: string[] | null;
 }
 
 interface KvRow {
@@ -588,61 +648,11 @@ export async function projectedFields(
 
   const decimalsRow = byKey.get("decimals");
 
-  // --- the split document -----------------------------------------------------------------
-  // `max` is taken over EVERY part that exists, projectable or not: a part carried with the wrong
-  // `val-type` is still a part the contract emitted, and the MIP's rule is that the assembly waits
-  // for it rather than quietly publishing the document without it (spec §2 edge cases, MIP §5.3).
-  let maxPart = -1;
-  for (const row of rows) {
-    if (row.key_text === null) continue;
-    // Draft-name rows only: under MIP-0018 this key is a trait and assembling it would invent a
-    // document the standard does not define (§5.4).
-    if (row.name_variant !== "legacy-mip-xxxx") continue;
-    const index = metadataPartIndex(row.key_text);
-    if (index !== undefined && index < MAX_METADATA_PARTS) maxPart = Math.max(maxPart, index);
-  }
-  let assembled: { document: string; eventId: bigint } | null = null;
-  if (maxPart >= 0) {
-    const parts: string[] = [];
-    let eventId = 0n;
-    let complete = true;
-    for (let i = 0; i <= maxPart; i++) {
-      const row = byKey.get(`metadata/${i}`);
-      const piece = text(`metadata/${i}`);
-      // A part emitted under the FINAL name is not a part (§5.4): it neither completes an assembly
-      // nor blocks one — the draft-name document simply waits for a draft-name part, as it would
-      // for a missing one.
-      if (row !== undefined && row.name_variant !== "legacy-mip-xxxx") { complete = false; break; }
-      if (row === undefined || piece === null) { complete = false; break; }
-      parts.push(piece);
-      const id = BigInt(row.updated_event_id);
-      if (id > eventId) eventId = id;
-    }
-    const document = parts.join("");
-    // Appendix A caps the assembly at 16 parts / 3 024 bytes; the per-part rules already bound it,
-    // and this is the belt that says so out loud.
-    if (complete && Buffer.byteLength(document, "utf8") <= MAX_METADATA_BYTES) {
-      assembled = { document, eventId };
-    }
-  }
-
-  const wholeRow = byKey.get("metadata");
-  const whole = wholeRow === undefined ? null
-    : { document: text("metadata") ?? "", eventId: BigInt(wholeRow.updated_event_id) };
-
-  // "A single-part `metadata` and a multi-part `metadata/<n>` for the same token SHOULD NOT both be
-  // emitted; if they are, the most recently completed one wins" (Appendix A).
-  const candidates = [assembled, whole].filter((c): c is { document: string; eventId: bigint } => c !== null);
-  candidates.sort((a, b) => (a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0));
-  let metadata: Record<string, unknown> | null = null;
-  for (const candidate of candidates) {
-    try {
-      const value: unknown = JSON.parse(candidate.document);
-      if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-        metadata = value as Record<string, unknown>;
-      }
-    } catch { /* an incomplete or malformed document simply does not project */ }
-  }
+  // --- metadata: the single declaration or the draft's split document (chooseMetadata) ---------
+  const choice = chooseMetadata(rows);
+  const metadata = choice.metadata;
+  // The rows it came from, stored beside it (01-D audit round 3) — the API cites exactly these.
+  const metadataEventIds = metadata === null ? null : choice.rows.map((row) => row.updated_event_id);
 
   return {
     name: text("name"),
@@ -658,7 +668,124 @@ export async function projectedFields(
       )),
     tokenUri: text("tokenUri"),
     metadata,
+    metadataEventIds,
   };
+}
+
+/** The fields of a `token_metadata_kv` row {@link chooseMetadata} reads. */
+export interface MetadataKvRow {
+  key_text: string | null;
+  name_variant: NameVariant;
+  val_type: number;
+  val_len: number;
+  value: Buffer;
+  projection_error: string | null;
+  updated_event_id: string;
+}
+
+/** Which declaration(s) the projected `metadata` column comes from — and the column itself. */
+export interface MetadataChoice<R extends MetadataKvRow = MetadataKvRow> {
+  metadata: Record<string, unknown> | null;
+  /** `whole`: the key `metadata`; `assembly`: the draft name's `metadata/0..n`; `null`: nothing
+   *  projects. */
+  source: "whole" | "assembly" | null;
+  /** The kv keys behind the winning candidate, in part order (`["metadata"]` for a whole one). */
+  keys: string[];
+  /** The winning candidate's ROWS themselves, in part order — the caller's own objects, so its
+   *  evidence names exactly the declarations the value came from, even when two byte keys share
+   *  one key text (01-D audit round 2, N3). */
+  rows: R[];
+}
+
+/**
+ * The `metadata` projection as ONE pure function of a token's kv rows, so the fold that writes the
+ * column and the API that says where it came from cannot disagree (01-D audit F5: the API used to
+ * pick the newest `metadata/<n>` part as evidence even when that assembly was incomplete and the
+ * column still held the whole document).
+ *
+ * The two candidates are the whole `metadata` declaration and, under the superseded draft name only,
+ * the assembly of `metadata/0..max`: every part present, projectable, type 3, at most 16 parts /
+ * 3 024 bytes (Appendix A). Of the candidates whose document parses as a JSON object, the most
+ * recently completed (highest event id behind it) wins.
+ */
+export function chooseMetadata<R extends MetadataKvRow>(rows: readonly R[]): MetadataChoice<R> {
+  // Only projectable rows with a spellable key can reach a column; a Null tombstone does not.
+  const byKey = new Map<string, R>();
+  for (const row of rows) {
+    if (row.key_text === null || row.projection_error !== null) continue;
+    if (row.val_type === VAL_TYPE_NULL) continue;
+    byKey.set(row.key_text, row);
+  }
+  const text = (k: string): string | null => {
+    const row = byKey.get(k);
+    if (row === undefined) return null;
+    return decodeUtf8(new Uint8Array(row.value.subarray(0, row.val_len))) ?? null;
+  };
+
+  // `max` is taken over EVERY part that exists, projectable or not: a part carried with the wrong
+  // `val-type` is still a part the contract emitted, and the MIP's rule is that the assembly waits
+  // for it rather than quietly publishing the document without it (spec §2 edge cases, MIP §5.3).
+  let maxPart = -1;
+  for (const row of rows) {
+    if (row.key_text === null) continue;
+    // Draft-name rows only: under MIP-0018 this key is a trait and assembling it would invent a
+    // document the standard does not define (§5.4).
+    if (row.name_variant !== "legacy-mip-xxxx") continue;
+    const index = metadataPartIndex(row.key_text);
+    if (index !== undefined && index < MAX_METADATA_PARTS) maxPart = Math.max(maxPart, index);
+  }
+
+  interface Candidate { document: string; eventId: bigint; source: "whole" | "assembly"; keys: string[]; rows: R[] }
+  let assembled: Candidate | null = null;
+  if (maxPart >= 0) {
+    const parts: string[] = [];
+    const keys: string[] = [];
+    const used: R[] = [];
+    let eventId = 0n;
+    let complete = true;
+    for (let i = 0; i <= maxPart; i++) {
+      const row = byKey.get(`metadata/${i}`);
+      const piece = text(`metadata/${i}`);
+      // A part emitted under the FINAL name is not a part (§5.4): it neither completes an assembly
+      // nor blocks one — the draft-name document simply waits for a draft-name part, as it would
+      // for a missing one.
+      if (row !== undefined && row.name_variant !== "legacy-mip-xxxx") { complete = false; break; }
+      if (row === undefined || piece === null) { complete = false; break; }
+      parts.push(piece);
+      keys.push(`metadata/${i}`);
+      used.push(row);
+      const id = BigInt(row.updated_event_id);
+      if (id > eventId) eventId = id;
+    }
+    const document = parts.join("");
+    // Appendix A caps the assembly at 16 parts / 3 024 bytes; the per-part rules already bound it,
+    // and this is the belt that says so out loud.
+    if (complete && Buffer.byteLength(document, "utf8") <= MAX_METADATA_BYTES) {
+      assembled = { document, eventId, source: "assembly", keys, rows: used };
+    }
+  }
+
+  const wholeRow = byKey.get("metadata");
+  const whole: Candidate | null = wholeRow === undefined ? null
+    : { document: text("metadata") ?? "", eventId: BigInt(wholeRow.updated_event_id), source: "whole", keys: ["metadata"], rows: [wholeRow] };
+
+  // "A single-part `metadata` and a multi-part `metadata/<n>` for the same token SHOULD NOT both be
+  // emitted; if they are, the most recently completed one wins" (Appendix A).
+  const candidates = [assembled, whole].filter((c): c is Candidate => c !== null);
+  candidates.sort((a, b) => (a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0));
+  let choice: MetadataChoice<R> = { metadata: null, source: null, keys: [], rows: [] };
+  for (const candidate of candidates) {
+    // A MIP-0018 document too deep to be written back never gets here: its row carries
+    // `metadata_too_deep` (01-D audit F2) and is not a candidate. The draft's assembly is bounded
+    // at 3 024 bytes (≤ ~1 512 levels, which serialize fine) and keeps its rules (FR-006).
+    try {
+      const value: unknown = JSON.parse(candidate.document);
+      if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+        choice = { metadata: value as Record<string, unknown>, source: candidate.source, keys: candidate.keys, rows: candidate.rows };
+      }
+    } catch { /* an incomplete or malformed document simply does not project */ }
+  }
+  return choice;
 }
 
 /** Exported for the API and the tests: the keys that become columns rather than traits. */
