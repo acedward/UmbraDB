@@ -1,0 +1,29 @@
+[
+  {
+    "segment": 63196,
+    "section": "fallible",
+    "role": "utxo_in",
+    "color": "254fc19366d929e7a5813f04a89fbc68195046f5261428e721e5d16daca8bc47",
+    "kind": 0,
+    "amount": "200000",
+    "direction": "out",
+    "owner": "db563c77b3b6ab6702720f7c1d9e2d0bfd4204c3f841460b6d03cb0079af585f",
+    "ownerKey": "schnorr:68e8d35974b5b8999722d88ef1bd6d4118dcbfaf882e623f186683d3aa19020e",
+    "intentHash": "61cfd2c6bcfb2ab52404f9e7f6a5bcb19171e56feaa0decad41ba25b87ea9c78",
+    "outputNo": 0,
+    "itemIndex": 0
+  },
+  {
+    "segment": 63196,
+    "section": "fallible",
+    "role": "contract_in",
+    "color": "254fc19366d929e7a5813f04a89fbc68195046f5261428e721e5d16daca8bc47",
+    "kind": 0,
+    "amount": "200000",
+    "direction": "in",
+    "address": "bc4fa552ea7ed042c54043f732bec591297c8cb0408b7ab54365e36b0dda094b",
+    "entryPoint": "toMap",
+    "callIndex": 0,
+    "itemIndex": 0
+  }
+]

@@ -1,0 +1,55 @@
+[
+  {
+    "segment": 15274,
+    "section": "fallible",
+    "role": "utxo_in",
+    "color": "0000000000000000000000000000000000000000000000000000000000000000",
+    "kind": 0,
+    "amount": "10",
+    "direction": "out",
+    "owner": "578d30979c33af7f74fd9fbdb331ea2057ae3ca6b5b51c144c6da501cabb968e",
+    "ownerKey": "schnorr:0f2676cbed01036f04298adc2a31530acaeed38cf82a28f5ad69624117f7c522",
+    "intentHash": "e84038c806b3567b5155fbb18f7678abf0ca0ab16879f8402ad47766b6f160d5",
+    "outputNo": 0,
+    "itemIndex": 0
+  },
+  {
+    "segment": 15274,
+    "section": "fallible",
+    "role": "utxo_out",
+    "color": "0000000000000000000000000000000000000000000000000000000000000000",
+    "kind": 0,
+    "amount": "10",
+    "direction": "in",
+    "owner": "578d30979c33af7f74fd9fbdb331ea2057ae3ca6b5b51c144c6da501cabb968e",
+    "intentHash": "9b9ec88f5b09676801cf7b30be07c9d34d377dacac6312956da2f0648d721a65",
+    "outputNo": 0,
+    "itemIndex": 0
+  },
+  {
+    "segment": 15274,
+    "section": "fallible",
+    "role": "contract_in",
+    "color": "0000000000000000000000000000000000000000000000000000000000000000",
+    "kind": 0,
+    "amount": "10",
+    "direction": "in",
+    "address": "29be1e64846cff4600c5297fa54b27d4c9296b3ccc2cdba190eaba1d64c5f116",
+    "entryPoint": "register_domain_for",
+    "callIndex": 0,
+    "itemIndex": 0
+  },
+  {
+    "segment": 15274,
+    "section": "fallible",
+    "role": "contract_out",
+    "color": "0000000000000000000000000000000000000000000000000000000000000000",
+    "kind": 0,
+    "amount": "10",
+    "direction": "out",
+    "address": "29be1e64846cff4600c5297fa54b27d4c9296b3ccc2cdba190eaba1d64c5f116",
+    "entryPoint": "register_domain_for",
+    "callIndex": 0,
+    "itemIndex": 0
+  }
+]

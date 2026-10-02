@@ -1,0 +1,109 @@
+{
+  "txHash": "69ea91eb4bf6346c1dcc0dab326740baa876664b20140c09a5df4af3f68385ca",
+  "selfReportedTxHash": "69ea91eb4bf6346c1dcc0dab326740baa876664b20140c09a5df4af3f68385ca",
+  "isSystem": false,
+  "rawBytes": 9632,
+  "identifiers": [
+    "006f24b1a62c53b26f2bc1cbe181c588c88eedd658ed35343ffe5e30e9318e8d47",
+    "00e4089fe428fefb6898ad401671c867f5344c67bdbc454573fa65e1a390bf4224"
+  ],
+  "feeSpeck": "498722307182066",
+  "bindingRandomness": true,
+  "offers": [],
+  "intents": [
+    {
+      "segment": 1,
+      "ttl": "2026-09-17T11:19:24.000Z",
+      "intentHash": "994bbe9869bedde036abe147cf799e612e5816120900aced7d3b1641cff70950",
+      "guaranteedUnshieldedOffer": null,
+      "fallibleUnshieldedOffer": null,
+      "dustActions": {
+        "ctime": "2026-09-17T10:49:06.000Z",
+        "spends": [
+          {
+            "vFee": "498722307182066",
+            "oldNullifier": "41150757830158652001951041430053432589300789595506520259998502956928391640827",
+            "newCommitment": "22521251650514505530644097856384570115922594084423453946297540882728272386280"
+          }
+        ],
+        "registrations": []
+      },
+      "actions": []
+    },
+    {
+      "segment": 15274,
+      "ttl": "2026-09-17T11:49:15.000Z",
+      "intentHash": "9b9ec88f5b09676801cf7b30be07c9d34d377dacac6312956da2f0648d721a65",
+      "guaranteedUnshieldedOffer": null,
+      "fallibleUnshieldedOffer": {
+        "counted": true,
+        "inputs": [
+          {
+            "value": "10",
+            "color": "0000000000000000000000000000000000000000000000000000000000000000",
+            "ownerKey": {
+              "tag": "schnorr",
+              "value": "0f2676cbed01036f04298adc2a31530acaeed38cf82a28f5ad69624117f7c522"
+            },
+            "ownerAddress": "578d30979c33af7f74fd9fbdb331ea2057ae3ca6b5b51c144c6da501cabb968e",
+            "spentIntentHash": "e84038c806b3567b5155fbb18f7678abf0ca0ab16879f8402ad47766b6f160d5",
+            "spentOutputNo": 0
+          }
+        ],
+        "outputs": [
+          {
+            "index": 0,
+            "value": "10",
+            "color": "0000000000000000000000000000000000000000000000000000000000000000",
+            "owner": "578d30979c33af7f74fd9fbdb331ea2057ae3ca6b5b51c144c6da501cabb968e"
+          }
+        ],
+        "signatures": 1
+      },
+      "dustActions": null,
+      "actions": [
+        {
+          "index": 0,
+          "kind": "call",
+          "address": "29be1e64846cff4600c5297fa54b27d4c9296b3ccc2cdba190eaba1d64c5f116",
+          "entryPoint": "register_domain_for",
+          "communicationCommitment": "73cbf900f00d5146f0abc3a8d863cefd32460bf680a602d59ec83bd02b3f4c040f",
+          "guaranteed": null,
+          "fallible": {
+            "ops": 91,
+            "logOps": 0,
+            "gas": {
+              "readTime": "3570000000",
+              "computeTime": "7619416584",
+              "bytesWritten": "2129",
+              "bytesDeleted": "2129"
+            },
+            "effects": {
+              "shieldedMints": [],
+              "unshieldedMints": [],
+              "unshieldedInputs": [
+                {
+                  "color": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "amount": "10"
+                }
+              ],
+              "unshieldedOutputs": [
+                {
+                  "color": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "amount": "10"
+                }
+              ],
+              "claimedShieldedReceives": [],
+              "claimedShieldedSpends": [],
+              "claimedNullifiers": [],
+              "claimedContractCalls": [],
+              "claimedUnshieldedSpends": 1
+            },
+            "counted": true
+          }
+        }
+      ]
+    }
+  ],
+  "rewards": null
+}

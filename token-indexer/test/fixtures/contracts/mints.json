@@ -1,0 +1,185 @@
+{
+  "standard": "MIP-0018 (MIP PR #325), mips/mip-0018-on-chain-token-metadata.md @ 37a3471, on the UC-1 layout (an amendment in development: 2-byte little-endian val-len at offset 66, value from offset 68, packages of 256·k bytes under the Multi-Part Event rule; see TOKEN-METADATA.md); event name \"mip-0018:token-metadata[v1]\". A consumer IGNORES every other name, including this repository's pre-MIP \"TokenMetadata\" and the #315 draft placeholder \"mip-xxxx:token-metadata[v1]\" that the Stagenet reference set in fixtures/stagenet/ was deployed with (MIP sections 1 and 8).",
+  "source": "the generated MIP-18 contracts (contracts/generated/*18.compact, compactc 0.34.0) executed in the Compact simulator (@midnight-ntwrk/compact-runtime 0.19.0); the negative corpus from contracts/probe/MetadataProbe.compact",
+  "producedBy": "scripts/export-simulator-fixtures.ts",
+  "note": "Real compiled-contract output, executed in process, one deployments/generated-matrix.json step per circuit call. Contract addresses are sha256(\"umbra:00024:<row id>\"), so everything here is reproducible. There are no block heights, transaction hashes, segments or indexer event ids: `txStandIn` is sha256(\"umbra:00024:sim:<row>:<step>\"), `segmentStandIn` is 1 (one call = one intent) and `eventId` is the emission order across the whole corpus. Every emit step is ONE package of one declaration (UC-1): `events` lists the Misc events as a chain would deliver them (256 bytes each, with `packageId` and `part`), `packages` the merged 256·k-byte payloads. Token rows are keyed by the MIP's identity `(contractAddress, domainSep, kind 0..3)`; `privacy` and `storage` are derived from the kind byte and `status` is one of observed | declared | described (MIP section 7.2). val-type 2 values are the little-endian Compact serialization of `Uint<8*val-len>` (MIP section 2.1), and `decimals` is emitted as `Uint<128>`, i.e. val-len 16. A val-type 5 (Null) package sets the key's CURRENT value to Null without erasing history: in expected-tokens.json the projected column it fed is absent and a non-projected key appears in `traits` with `valType: 5`. Last write wins in emission order, a package positioned by its first part (derivation P1).",
+  "count": 16,
+  "mints": [
+    {
+      "row": "SSTAR18",
+      "step": 4,
+      "op": "mint",
+      "contractAddress": "a30bea7cfa22232baf0aa6f2c6a58e8ac7c4b26cd7beb94ec6ee0dd9861d3f97",
+      "domainSepHex": "756d6272613a7373746172313800000000000000000000000000000000000000",
+      "kindByte": 1,
+      "kind": "shielded",
+      "amount": "5000000",
+      "colorHex": "8bcecfca7d365174819e734373edeba27e60df7d998a23dd5016a5799fc80d7e"
+    },
+    {
+      "row": "SNEB18",
+      "step": 6,
+      "op": "mint",
+      "contractAddress": "e609b09e8e0f9a1dbaadb5f60907b6742e793239ee37b4a05492f86c08d599fb",
+      "domainSepHex": "756d6272613a736e656231380000000000000000000000000000000000000000",
+      "kindByte": 1,
+      "kind": "shielded",
+      "amount": "1",
+      "colorHex": "dfe5b38c7faf9a7eb8bc3a4b702d287cc98d5ff6bf475d305562c528a9401068"
+    },
+    {
+      "row": "SNEB18",
+      "step": 7,
+      "op": "mint",
+      "contractAddress": "e609b09e8e0f9a1dbaadb5f60907b6742e793239ee37b4a05492f86c08d599fb",
+      "domainSepHex": "756d6272613a736e656231380000000000000000000000000000000000000000",
+      "kindByte": 1,
+      "kind": "shielded",
+      "amount": "2",
+      "colorHex": "dfe5b38c7faf9a7eb8bc3a4b702d287cc98d5ff6bf475d305562c528a9401068"
+    },
+    {
+      "row": "SGHOST18",
+      "step": 0,
+      "op": "mint",
+      "contractAddress": "18e53ae2351bb49ba628467c9bfbbae74cf9f330bcc17e2da8319fa64f900184",
+      "domainSepHex": "756d6272613a7367686f73743138000000000000000000000000000000000000",
+      "kindByte": 1,
+      "kind": "shielded",
+      "amount": "13",
+      "colorHex": "2e00e507662dcafa40eb5cd4fb8c4da953c21f0459f5d0c2a8c541a61b699dbd"
+    },
+    {
+      "row": "UCOM18",
+      "step": 4,
+      "op": "mint",
+      "contractAddress": "d2722c9b9df1023164e00ddfe8daaca824dd6bcfa4432b23c40055137a22dac7",
+      "domainSepHex": "756d6272613a75636f6d31380000000000000000000000000000000000000000",
+      "kindByte": 0,
+      "kind": "unshielded",
+      "amount": "2500000",
+      "colorHex": "1083c1ef99e0518fd077d6ff4151b5b866629cd71ccd6b4c2ba39ebf8dac027a"
+    },
+    {
+      "row": "UMET18",
+      "step": 0,
+      "op": "mint",
+      "contractAddress": "e72e2608db4fffa9b5446452efcd5f75bc8ecf4732c92da65c1661f5ebe89e98",
+      "domainSepHex": "756d6272613a756d657431380000000000000000000000000000000000000000",
+      "kindByte": 0,
+      "kind": "unshielded",
+      "amount": "100",
+      "colorHex": "bf41cd47b8e695cee53e6cd407598cc705c1b1f2bb9e788e09f6fc19966fa434"
+    },
+    {
+      "row": "UMET18",
+      "step": 1,
+      "op": "mint",
+      "contractAddress": "e72e2608db4fffa9b5446452efcd5f75bc8ecf4732c92da65c1661f5ebe89e98",
+      "domainSepHex": "756d6272613a756d657431380000000000000000000000000000000000000000",
+      "kindByte": 0,
+      "kind": "unshielded",
+      "amount": "200",
+      "colorHex": "bf41cd47b8e695cee53e6cd407598cc705c1b1f2bb9e788e09f6fc19966fa434"
+    },
+    {
+      "row": "UMET18",
+      "step": 2,
+      "op": "mint",
+      "contractAddress": "e72e2608db4fffa9b5446452efcd5f75bc8ecf4732c92da65c1661f5ebe89e98",
+      "domainSepHex": "756d6272613a756d657431380000000000000000000000000000000000000000",
+      "kindByte": 0,
+      "kind": "unshielded",
+      "amount": "300",
+      "colorHex": "bf41cd47b8e695cee53e6cd407598cc705c1b1f2bb9e788e09f6fc19966fa434"
+    },
+    {
+      "row": "DAUR18",
+      "step": 8,
+      "op": "mintShielded",
+      "contractAddress": "177006f79ff2f88d6f0cb002d3c45d3fbc8f57cc5632106e8b9de6eb6097bf08",
+      "domainSepHex": "756d6272613a6461757231380000000000000000000000000000000000000000",
+      "kindByte": 1,
+      "kind": "shielded",
+      "amount": "1000",
+      "colorHex": "911fe3b0973b5e82317e8f6c00b2fe14de899b6d626704e79b144cb175349c1c"
+    },
+    {
+      "row": "DAUR18",
+      "step": 9,
+      "op": "mintUnshielded",
+      "contractAddress": "177006f79ff2f88d6f0cb002d3c45d3fbc8f57cc5632106e8b9de6eb6097bf08",
+      "domainSepHex": "756d6272613a6461757231380000000000000000000000000000000000000000",
+      "kindByte": 0,
+      "kind": "unshielded",
+      "amount": "2000",
+      "colorHex": "911fe3b0973b5e82317e8f6c00b2fe14de899b6d626704e79b144cb175349c1c"
+    },
+    {
+      "row": "CNST18",
+      "step": 0,
+      "op": "mintPiece",
+      "contractAddress": "fcfe3a554f45f233eeaef7bd809e95dafdffb4396b6bfccbb86f5b967498d421",
+      "domainSepHex": "636e737431383a6f72696f6e0000000000000000000000000000000000000000",
+      "kindByte": 1,
+      "kind": "shielded",
+      "amount": "1",
+      "colorHex": "dedd927a4c6524fc786a06e9a0aa2a9b274a09524ad66bd9ceb4536c5df18cea"
+    },
+    {
+      "row": "CNST18",
+      "step": 11,
+      "op": "mintPiece",
+      "contractAddress": "fcfe3a554f45f233eeaef7bd809e95dafdffb4396b6bfccbb86f5b967498d421",
+      "domainSepHex": "636e737431383a6c797261000000000000000000000000000000000000000000",
+      "kindByte": 1,
+      "kind": "shielded",
+      "amount": "1",
+      "colorHex": "3e7036fae4bb9c5558a926085cac58f4c216da88f5b566f800bde43713a7d669"
+    },
+    {
+      "row": "CNST18",
+      "step": 19,
+      "op": "mintPiece",
+      "contractAddress": "fcfe3a554f45f233eeaef7bd809e95dafdffb4396b6bfccbb86f5b967498d421",
+      "domainSepHex": "636e737431383a6379676e757300000000000000000000000000000000000000",
+      "kindByte": 1,
+      "kind": "shielded",
+      "amount": "1",
+      "colorHex": "8400f4f09d05eeced9941d1b3fa1158940ba6d859e92795fa81edd541a063c41"
+    },
+    {
+      "row": "CNST18",
+      "step": 27,
+      "op": "mintPiece",
+      "contractAddress": "fcfe3a554f45f233eeaef7bd809e95dafdffb4396b6bfccbb86f5b967498d421",
+      "domainSepHex": "636e737431383a76656761000000000000000000000000000000000000000000",
+      "kindByte": 1,
+      "kind": "shielded",
+      "amount": "1",
+      "colorHex": "4bed0e6daf96d3b75a877562405429265de33ade2505486212d0ae6f761f508c"
+    },
+    {
+      "row": "CNST18",
+      "step": 34,
+      "op": "mintPiece",
+      "contractAddress": "fcfe3a554f45f233eeaef7bd809e95dafdffb4396b6bfccbb86f5b967498d421",
+      "domainSepHex": "636e737431383a616c7461697200000000000000000000000000000000000000",
+      "kindByte": 1,
+      "kind": "shielded",
+      "amount": "1",
+      "colorHex": "659c849727eeecb1d07c752cce6529347bb9cc39065b91fe96a774c56b049b45"
+    },
+    {
+      "row": "LLIAR18",
+      "step": 4,
+      "op": "mint",
+      "contractAddress": "6aabb21d64d0c2e1df08bb0cdbed766b4dac3e7a3a8604481d1e0b902c34a7af",
+      "domainSepHex": "756d6272613a6c6c696172313800000000000000000000000000000000000000",
+      "kindByte": 0,
+      "kind": "unshielded",
+      "amount": "7",
+      "colorHex": "27697360b6f25686e6b3fa1c88a012abde7d83a20045097daefda07916ce99e6"
+    }
+  ]
+}

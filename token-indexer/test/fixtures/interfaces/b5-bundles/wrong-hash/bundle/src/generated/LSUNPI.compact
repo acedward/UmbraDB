@@ -1,0 +1,108 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// GENERATED FILE — do not edit. Produced by scripts/generate-pi-contracts.ts from
+// deployments/reference-set.json row "LSUN" and deployments/public-interface-set.json,
+// PI variant: LSUNPI (Ledger Sun · PI). Source of truth for its `repository` declaration:
+// https://github.com/acedward/mip-public-interfaces/blob/main/contracts/generated/LSUNPI.compact
+//
+// Ledger Sun · PI (LSUNPI), 6 decimals, kind byte 2; built on OpenZeppelin Compact
+// Contracts v0.4.0-alpha.3 `FungibleToken` (vendored, contracts/vendor/openzeppelin/).
+// Covers: open form on a ledger token (OpenZeppelin FungibleToken).
+//
+// PUBLIC INTERFACE: FULL. This whole file, with the modules it imports, IS the contract's
+// published interface (the Public Interfaces draft's open form): every circuit below is
+// impure — a ledger read, a mint or transfer, or an emitting circuit — and each has a
+// verifier key on chain that Level 2 compares; there is no pure circuit (it could not be
+// verified). The emitting circuits take the emitter secret (a witness), so a consumer
+// verifies them at Levels 1-3 but cannot execute them.
+//
+// Who may emit: only the holder of the secret whose hash the constructor stores (spec 00024
+// Q12). MIP-0018: `repository` is the only key this contract declares.
+//
+// Constructor arguments: `emitterSecretHash` (`TM_emitterSecretHashOf(secret)`, computed off chain), `name_`, `symbol_`.
+// Circuits the deployment calls, in order:
+//   publishRepository
+//   mint
+//   transfer
+//   publishBundle (1 part, one guaranteed intent)
+
+pragma language_version >= 0.26.0;
+
+import CompactStandardLibrary;
+import "../TokenMetadata" prefix TM_;
+import "../OffChainInterface" prefix OCI_;
+import "../vendor/openzeppelin/token/FungibleToken" prefix Token_;
+
+export { ContractAddress, Either, Maybe, TM_emitterSecretHash };
+
+/**
+ * @param {Bytes<32>} emitterSecretHash - `TM_emitterSecretHashOf(secret)`, computed off chain;
+ *   every emitting circuit proves knowledge of `secret` through the `emitterSecret` witness.
+ * @param {Opaque<"string">} name_ - The token's name (a Compact string literal is not an Opaque<"string">).
+ * @param {Opaque<"string">} symbol_ - The token's symbol.
+ */
+constructor(emitterSecretHash: Bytes<32>, name_: Opaque<"string">, symbol_: Opaque<"string">) {
+  TM_initializeEmitter(emitterSecretHash);
+  Token_initialize(name_, symbol_, 6);
+}
+
+export circuit name(): Opaque<"string"> {
+  return Token_name();
+}
+
+export circuit symbol(): Opaque<"string"> {
+  return Token_symbol();
+}
+
+export circuit decimals(): Uint<8> {
+  return Token_decimals();
+}
+
+export circuit totalSupply(): Uint<128> {
+  return Token_totalSupply();
+}
+
+export circuit balanceOf(account: Either<Bytes<32>, ContractAddress>): Uint<128> {
+  return Token_balanceOf(account);
+}
+
+/**
+ * @description Moves `value` from the caller's account (derived from the
+ * `wit_FungibleTokenSK` witness) to `to`. Takes a witness, so a consumer verifies it
+ * but cannot execute it.
+ */
+export circuit transfer(to: Either<Bytes<32>, ContractAddress>, value: Uint<128>): Boolean {
+  return Token_transfer(disclose(to), disclose(value));
+}
+
+/**
+ * @description Credits `value` to `account` in contract state (a ledger token: no protocol
+ * mint, no colour). Deliberately open: a reference test token.
+ */
+export circuit mint(account: Either<Bytes<32>, ContractAddress>, value: Uint<128>): [] {
+  Token__mint(disclose(account), disclose(value));
+}
+
+/**
+ * @description MIP-0018: declares `repository` — the URL of this contract's
+ * own source on `main` (val-type 4 URI). One declaration, one TokenMetadata event, every
+ * byte a compile-time literal. Emitter only.
+ */
+export circuit publishRepository(): [] {
+  TM_assertEmitter();
+  // repository = "https://github.com/acedward/mip-public-interfaces/blob/main/contracts/generated/LSUNPI.compact" (val-type 4 URI, val-len 94)
+  TM_emitTokenMetadata(pad(32, "umbra:lsunpi"), 2, pad(32, "repository"), 4, 94, pad(188, "https://github.com/acedward/mip-public-interfaces/blob/main/contracts/generated/LSUNPI.compact"));
+}
+
+/**
+ * @description Public Interfaces: emits ONE part of this contract's interface pointer —
+ * the `Misc` event `mip-xxxx:public-interface[v1]` whose payload is a 256-byte part of
+ * `commitment ++ utf8(index.json URL)`, zero padded to 256·k bytes. A pointer of k > 1
+ * parts is k calls in ONE guaranteed intent, in order (the Multi-Part Event rule). The
+ * circuit writes no ledger state, so every part runs from the same state. Emitter only.
+ * @param {Bytes<256>} payload - One 256-byte part of the pointer.
+ */
+export circuit publishBundle(payload: Bytes<256>): [] {
+  TM_assertEmitter();
+  OCI_publishBundle(payload);
+}

@@ -1,0 +1,129 @@
+{
+  "standard": "MIP PR #315, mips/mip-xxxx-on-chain-token-metadata.md @ f433056; event name \"mip-xxxx:token-metadata[v1]\" (the pre-MIP \"TokenMetadata\" is ignored, MIP section 1)",
+  "source": "Compact simulator (@midnight-ntwrk/compact-runtime 0.19.0), compactc 0.34.0",
+  "producedBy": "scripts/export-simulator-fixtures.ts",
+  "note": "Real compiled-contract output, executed in process. Contract addresses are sha256(\"umbra:00020:<row id>\") so everything here is reproducible; there are no block heights, transaction hashes or indexer event ids, and `eventId` is simply the emission order across the whole corpus. Token rows are keyed by the MIP's identity `(contractAddress, domainSep, kind 0..3)`; `privacy` and `storage` are derived from the kind byte and `status` is one of observed | declared | described (MIP section 7.2).",
+  "count": 15,
+  "vectors": [
+    {
+      "row": "LSUN",
+      "contractAddress": "167d799a5be996c45174fc90c0ca1dbad27f0ba53cca4049d20a952d92481fa4",
+      "domainSepHex": "756d6272613a6c73756e00000000000000000000000000000000000000000000",
+      "domainSepText": "umbra:lsun",
+      "colorHex": "64f433105e1b3ba4537c815abd2a2ebb9c6978d46f7b4d1d8a12f1cf91bec19e",
+      "source": "ledger token — no colour exists"
+    },
+    {
+      "row": "LMOON",
+      "contractAddress": "edd0173d57a2af1076f7cf53165aa4e17afa821c2629127bb30dacc99c6f06ea",
+      "domainSepHex": "756d6272613a6c6d6f6f6e000000000000000000000000000000000000000000",
+      "domainSepText": "umbra:lmoon",
+      "colorHex": "1ce9af42a1f1f1e41128a690427fc2549a8f8325e812665d01555855fbe9baa6",
+      "source": "ledger token — no colour exists"
+    },
+    {
+      "row": "SSTAR",
+      "contractAddress": "0b119a29fbda7ff687822ec73cb12aaa1b8db47221ebf454959d7b35973804da",
+      "domainSepHex": "756d6272613a7373746172000000000000000000000000000000000000000000",
+      "domainSepText": "umbra:sstar",
+      "colorHex": "78b0493921643a05b2a5eba717c3b61e1fccca13d7bcde0a96f30067253127e3",
+      "source": "tokenColor() == persistentCommit([domainSep, address], \"midnight:derive_token\")"
+    },
+    {
+      "row": "SNEB",
+      "contractAddress": "94d81144f07b38817ad6521692e6b31af589171ad29fb68696646bc8ae698f21",
+      "domainSepHex": "756d6272613a736e656200000000000000000000000000000000000000000000",
+      "domainSepText": "umbra:sneb",
+      "colorHex": "58e5b2d090d59b65d28af6654ab3962e6e4b7b2588c7d853a9dc25a1ebc23ab3",
+      "source": "tokenColor() == persistentCommit([domainSep, address], \"midnight:derive_token\")"
+    },
+    {
+      "row": "SGHOST",
+      "contractAddress": "6d22f8c6a2755c2358c1bd38cb205a33c2142eb0951de4a882b7c169e177522c",
+      "domainSepHex": "756d6272613a7367686f73740000000000000000000000000000000000000000",
+      "domainSepText": "umbra:sghost",
+      "colorHex": "7d0695f966a9ff4c7b8ab9a72719f28ed5fd7d7344f022a318b8b2064372ab61",
+      "source": "tokenColor() == persistentCommit([domainSep, address], \"midnight:derive_token\")"
+    },
+    {
+      "row": "UCOM",
+      "contractAddress": "5e130ecc7279239557ff2c9c7d460f87b60b0346b1675394851dd97a3a26fdd7",
+      "domainSepHex": "756d6272613a75636f6d00000000000000000000000000000000000000000000",
+      "domainSepText": "umbra:ucom",
+      "colorHex": "6fca1c97e05eb5e0977d970fbf9bf3dd80ed479ac4ce0667cd20e33fede3b4c0",
+      "source": "tokenColor() == persistentCommit([domainSep, address], \"midnight:derive_token\")"
+    },
+    {
+      "row": "UMET",
+      "contractAddress": "1106c11c709b9f5dba076862120fbb4cc58d6f2e1282559768d9d43ca01951fb",
+      "domainSepHex": "756d6272613a756d657400000000000000000000000000000000000000000000",
+      "domainSepText": "umbra:umet",
+      "colorHex": "f11f726d0855332a31b3adf139a2a30fa371045a663b26e2437ddc73a39d02c5",
+      "source": "tokenColor() == persistentCommit([domainSep, address], \"midnight:derive_token\")"
+    },
+    {
+      "row": "UPROM",
+      "contractAddress": "a8cad42f2881ce0d5efe1401675809c5bc87fc840f8776ff8569308c676ef5f6",
+      "domainSepHex": "756d6272613a7570726f6d000000000000000000000000000000000000000000",
+      "domainSepText": "umbra:uprom",
+      "colorHex": "48e8b148a20025d9d07b87e85f212286a113a409ca0736e74ec3afe8310655d5",
+      "source": "tokenColor() == persistentCommit([domainSep, address], \"midnight:derive_token\")"
+    },
+    {
+      "row": "DAUR",
+      "contractAddress": "1f32a738d0234d55bce8414d4ea86a4614847b0c4aa2548a840f37e612782cb4",
+      "domainSepHex": "756d6272613a6461757200000000000000000000000000000000000000000000",
+      "domainSepText": "umbra:daur",
+      "colorHex": "e0386485c175ffe2bf128922293b78ab799e465af7529a84379f1c02eb79afc2",
+      "source": "tokenColor() == persistentCommit([domainSep, address], \"midnight:derive_token\")"
+    },
+    {
+      "row": "CNST",
+      "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
+      "domainSepHex": "636e73743a6f72696f6e00000000000000000000000000000000000000000000",
+      "domainSepText": "cnst:orion",
+      "colorHex": "46ab4b3dde60180f97e18bf190cb97c007c965b4384bb6e1f742695e0550d672",
+      "source": "tokenColor() == persistentCommit([domainSep, address], \"midnight:derive_token\")"
+    },
+    {
+      "row": "CNST",
+      "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
+      "domainSepHex": "636e73743a6c7972610000000000000000000000000000000000000000000000",
+      "domainSepText": "cnst:lyra",
+      "colorHex": "e7365e10713862aaec94986702bdaecf42604e2a2049363eb889fdfe884ce28e",
+      "source": "tokenColor() == persistentCommit([domainSep, address], \"midnight:derive_token\")"
+    },
+    {
+      "row": "CNST",
+      "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
+      "domainSepHex": "636e73743a6379676e7573000000000000000000000000000000000000000000",
+      "domainSepText": "cnst:cygnus",
+      "colorHex": "97fec186b8ae9ebc65e1640a14791942473dbf07377e1483ccd43759c64adcfb",
+      "source": "tokenColor() == persistentCommit([domainSep, address], \"midnight:derive_token\")"
+    },
+    {
+      "row": "CNST",
+      "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
+      "domainSepHex": "636e73743a766567610000000000000000000000000000000000000000000000",
+      "domainSepText": "cnst:vega",
+      "colorHex": "8107e2d2796fee3fe97a75c24763f9746e30b4129e02b287f2c1fd346648b0d7",
+      "source": "tokenColor() == persistentCommit([domainSep, address], \"midnight:derive_token\")"
+    },
+    {
+      "row": "CNST",
+      "contractAddress": "e5c9b283451b4eb0f1533a8d5c43dae9b6c4ff1c0d959dd2715a0e8ea054e1db",
+      "domainSepHex": "636e73743a616c74616972000000000000000000000000000000000000000000",
+      "domainSepText": "cnst:altair",
+      "colorHex": "d820d1e3aa89eb73987637d78590edcc17c05de43d60af0efb4ac61080e1b47d",
+      "source": "tokenColor() == persistentCommit([domainSep, address], \"midnight:derive_token\")"
+    },
+    {
+      "row": "LLIAR",
+      "contractAddress": "4df9f4f86ce86e972a411f125610555589bd2480a8dd4d390e8f205cc49fa377",
+      "domainSepHex": "756d6272613a6c6c696172000000000000000000000000000000000000000000",
+      "domainSepText": "umbra:lliar",
+      "colorHex": "da1238dce2d8d92f3707cfde043b33461283c736b4e0f82e57a3ee569efb1283",
+      "source": "tokenColor() == persistentCommit([domainSep, address], \"midnight:derive_token\")"
+    }
+  ]
+}

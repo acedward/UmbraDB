@@ -1,0 +1,82 @@
+{
+  "note": "Colour vectors recorded from live Stagenet on 2026-09-17 (project 00020, task 3.2). `expectedColor` is what token-indexer/color.ts derives; `registryTokenId` is the value effectstream/mint-test-tokens publishes for the same contract in metadata/metadata.stagenet.json; `observedUtxoTokenType` is the token type of a UTXO the mint transaction actually created (unshielded mints only). All three agree.",
+  "recordedAt": "2026-09-17",
+  "net": "stagenet",
+  "indexer": "https://indexer.stagenet.shielded.tools/api/v4/graphql",
+  "registry": "https://raw.githubusercontent.com/effectstream/mint-test-tokens/main/metadata/metadata.stagenet.json",
+  "registryRevision": "59041d2fd2acfdad53e437e5a4d2ba88a6f24e4f9e55869b66f465f3da11a0d1",
+  "vectors": [
+    {
+      "label": "twBTC",
+      "source": "mint-twBTC",
+      "address": "a112d24a943ae2344efabbb5b40cb15d931b489993440f917ce4498af063091a",
+      "domainSep": "6d696e742d746573742d746f6b656e733a747742544300000000000000000000",
+      "domainSepText": "mint-test-tokens:twBTC",
+      "kind": "shielded",
+      "expectedColor": "ad2ba014014e6ec705357be9db5d3ad6f535d4bef6576f84a461f23b313a2e8e",
+      "registryTokenId": "ad2ba014014e6ec705357be9db5d3ad6f535d4bef6576f84a461f23b313a2e8e",
+      "observedUtxoTokenType": null,
+      "registryDomainSeparator": "mint-test-tokens:twBTC"
+    },
+    {
+      "label": "twETH",
+      "source": "mint-twETH",
+      "address": "a9ea4f527261e9dcafe17ab6ee7ef3c5f7e271af9c71847aeeb259f73d9bcd34",
+      "domainSep": "6d696e742d746573742d746f6b656e733a747745544800000000000000000000",
+      "domainSepText": "mint-test-tokens:twETH",
+      "kind": "shielded",
+      "expectedColor": "2862f0f347068b6c4909079ab8e991067b71fe2263ef00c20f017eefb6e9477a",
+      "registryTokenId": "2862f0f347068b6c4909079ab8e991067b71fe2263ef00c20f017eefb6e9477a",
+      "observedUtxoTokenType": null,
+      "registryDomainSeparator": "mint-test-tokens:twETH"
+    },
+    {
+      "label": "twUSDC",
+      "source": "mint-twUSDC",
+      "address": "11e406f1a83fa87d3fafe62674c1822ad5fb13a1b31765a601f90b2563ab0ec6",
+      "domainSep": "6d696e742d746573742d746f6b656e733a747755534443000000000000000000",
+      "domainSepText": "mint-test-tokens:twUSDC",
+      "kind": "shielded",
+      "expectedColor": "e934b965a454ed6857080e9956ea83fb5542e0a860e96ce91daf35f5d7b02c9f",
+      "registryTokenId": "e934b965a454ed6857080e9956ea83fb5542e0a860e96ce91daf35f5d7b02c9f",
+      "observedUtxoTokenType": null,
+      "registryDomainSeparator": "mint-test-tokens:twUSDC"
+    },
+    {
+      "label": "twUSDM",
+      "source": "mint-twUSDM",
+      "address": "6f6dacef3dbddad25137afedadc8beb58bc4a8ee65d8c7150c21ca0bcb9bfede",
+      "domainSep": "6d696e742d746573742d746f6b656e733a74775553444d000000000000000000",
+      "domainSepText": "mint-test-tokens:twUSDM",
+      "kind": "shielded",
+      "expectedColor": "723e4cac789f6a9a39cc8eb104037ee0299e9fa7a3fcf58604cfbbc259748a87",
+      "registryTokenId": "723e4cac789f6a9a39cc8eb104037ee0299e9fa7a3fcf58604cfbbc259748a87",
+      "observedUtxoTokenType": null,
+      "registryDomainSeparator": "mint-test-tokens:twUSDM"
+    },
+    {
+      "label": "utwUSDC",
+      "source": "mint-utwUSDC",
+      "address": "473e8354fe9cd1d65d30664805ff1672fa9dee3066ae8cb92505e5f1a7a1691e",
+      "domainSep": "6d696e742d746573742d746f6b656e733a757477555344430000000000000000",
+      "domainSepText": "mint-test-tokens:utwUSDC",
+      "kind": "unshielded",
+      "expectedColor": "a9e63fe9160bbe0e5758b310db16644d7d147eed8757f13c05197c057538926d",
+      "registryTokenId": "a9e63fe9160bbe0e5758b310db16644d7d147eed8757f13c05197c057538926d",
+      "observedUtxoTokenType": "a9e63fe9160bbe0e5758b310db16644d7d147eed8757f13c05197c057538926d",
+      "registryDomainSeparator": "mint-test-tokens:utwUSDC"
+    },
+    {
+      "label": "utwBTC",
+      "source": "mint-utwBTC",
+      "address": "2e962ef4bc7f2f44056a4089fed639fc5b67aca64dc5ed66e6e508b33836b59e",
+      "domainSep": "6d696e742d746573742d746f6b656e733a757477425443000000000000000000",
+      "domainSepText": "mint-test-tokens:utwBTC",
+      "kind": "unshielded",
+      "expectedColor": "84392e97f3eb35ba7e41a575b6b77bb33e9025b39eee7bf9bc78fd17d059e575",
+      "registryTokenId": "84392e97f3eb35ba7e41a575b6b77bb33e9025b39eee7bf9bc78fd17d059e575",
+      "observedUtxoTokenType": "84392e97f3eb35ba7e41a575b6b77bb33e9025b39eee7bf9bc78fd17d059e575",
+      "registryDomainSeparator": "mint-test-tokens:utwBTC"
+    }
+  ]
+}

@@ -1,0 +1,74 @@
+{
+  "txHash": "b6c1fb95f8495557b682bd3259ecebc9e5e99e4cd6aea50ba26adf5b1cca0120",
+  "selfReportedTxHash": "b6c1fb95f8495557b682bd3259ecebc9e5e99e4cd6aea50ba26adf5b1cca0120",
+  "isSystem": false,
+  "rawBytes": 3822,
+  "identifiers": [
+    "005ca5c10d23f021585b5b5d1265d367ce5dc7b9e0b1847504efab3bce71db3629",
+    "00604b187ce0967e4e77758489d9de48774ffba44f8940f8e669e8b391c00a71ec"
+  ],
+  "feeSpeck": "48937162464431415",
+  "bindingRandomness": true,
+  "offers": [],
+  "intents": [
+    {
+      "segment": 1,
+      "ttl": "2026-09-21T23:52:44.000Z",
+      "intentHash": "0bf060597cd209486a7593d906c6ff625b959c1bb25fe26276138153256128a9",
+      "guaranteedUnshieldedOffer": null,
+      "fallibleUnshieldedOffer": {
+        "counted": true,
+        "inputs": [
+          {
+            "value": "5000000000",
+            "color": "0000000000000000000000000000000000000000000000000000000000000000",
+            "ownerKey": {
+              "tag": "schnorr",
+              "value": "13a8fd37f6feb272a19a276decc4c46f572747d4173192744ec7b6909b071315"
+            },
+            "ownerAddress": "dd50c29512c58c68a36384b6c47004f27824a5b2d9c5eb5251e10d854ffa89ad",
+            "spentIntentHash": "2894eec3160eca9595b0e819ca2acd607ddbe2e8af7defe46e193c55f11ffbba",
+            "spentOutputNo": 0
+          }
+        ],
+        "outputs": [
+          {
+            "index": 0,
+            "value": "1000000",
+            "color": "0000000000000000000000000000000000000000000000000000000000000000",
+            "owner": "e25bbbcdbf50f71282626f03e2b55b289cc6a860a520a1f7567bccd93476066e"
+          },
+          {
+            "index": 1,
+            "value": "4999000000",
+            "color": "0000000000000000000000000000000000000000000000000000000000000000",
+            "owner": "dd50c29512c58c68a36384b6c47004f27824a5b2d9c5eb5251e10d854ffa89ad"
+          }
+        ],
+        "signatures": 1
+      },
+      "dustActions": null,
+      "actions": []
+    },
+    {
+      "segment": 2,
+      "ttl": "2026-09-21T23:52:44.000Z",
+      "intentHash": "afa93da99b4f9760f52744fea123eb6cba12df865c3531443740a76da6d1beb8",
+      "guaranteedUnshieldedOffer": null,
+      "fallibleUnshieldedOffer": null,
+      "dustActions": {
+        "ctime": "2026-09-21T23:22:30.000Z",
+        "spends": [
+          {
+            "vFee": "48937162464431415",
+            "oldNullifier": "1387451381216451635991779445052846269174955307285142248489781933836368173069",
+            "newCommitment": "8130845733336258096688107719525315137179180854508936158089172941610169561205"
+          }
+        ],
+        "registrations": []
+      },
+      "actions": []
+    }
+  ],
+  "rewards": null
+}

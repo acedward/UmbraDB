@@ -96,8 +96,9 @@ export function statusesFromReport(report: JsonReport): Map<string, string[]> {
 /** The pinned count of `required` tests (change-level audit BLOCK 9(b)). Structurally PINS the
  *  manifest so silently deleting (or adding) a required entry fails the gate: {@link loadManifest}
  *  rejects a manifest whose `required` length drifts from this constant. Bump it deliberately when
- *  a required test is genuinely added/removed. */
-export const EXPECTED_REQUIRED_COUNT = 25;
+ *  a required test is genuinely added/removed. History: the manifest's `$schema-note` (latest:
+ *  143 -> 144, project 00024-03 Phase 03-E1a, Codex audit round 1, `token-ui-hostile-values`). */
+export const EXPECTED_REQUIRED_COUNT = 144;
 
 /** The pinned count of `deferred` (WHERE-gated optional-feature) tests (BLOCK 6). Structurally PINS
  *  the deferred exemption set so deleting the sole deferred entry (a green "0 deferred" gate) fails the

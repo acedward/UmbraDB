@@ -1,0 +1,42 @@
+[
+  {
+    "segment": 1,
+    "section": "guaranteed",
+    "role": "utxo_in",
+    "color": "10dbdaf2b0b0aee765b3a83517f63a0371088565aa1d4cf89ccdc1c70b298269",
+    "kind": 0,
+    "amount": "1500000",
+    "direction": "out",
+    "owner": "dd50c29512c58c68a36384b6c47004f27824a5b2d9c5eb5251e10d854ffa89ad",
+    "ownerKey": "schnorr:13a8fd37f6feb272a19a276decc4c46f572747d4173192744ec7b6909b071315",
+    "intentHash": "8d7448b205d6995b38394c459a228d06fa8d45c4b438f9d4a7ff15c9089b1e5c",
+    "outputNo": 0,
+    "itemIndex": 0
+  },
+  {
+    "segment": 1,
+    "section": "guaranteed",
+    "role": "utxo_out",
+    "color": "10dbdaf2b0b0aee765b3a83517f63a0371088565aa1d4cf89ccdc1c70b298269",
+    "kind": 0,
+    "amount": "500000",
+    "direction": "in",
+    "owner": "dd50c29512c58c68a36384b6c47004f27824a5b2d9c5eb5251e10d854ffa89ad",
+    "intentHash": "d3fe93c467828b07c39046f71fb7348fc5406ff275056a6bbe1b0ac86b40f3d0",
+    "outputNo": 0,
+    "itemIndex": 0
+  },
+  {
+    "segment": 1,
+    "section": "guaranteed",
+    "role": "utxo_out",
+    "color": "10dbdaf2b0b0aee765b3a83517f63a0371088565aa1d4cf89ccdc1c70b298269",
+    "kind": 0,
+    "amount": "1000000",
+    "direction": "in",
+    "owner": "e25bbbcdbf50f71282626f03e2b55b289cc6a860a520a1f7567bccd93476066e",
+    "intentHash": "d3fe93c467828b07c39046f71fb7348fc5406ff275056a6bbe1b0ac86b40f3d0",
+    "outputNo": 1,
+    "itemIndex": 1
+  }
+]
