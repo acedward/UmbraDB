@@ -7,8 +7,8 @@ import { decodeTokenFlows } from "../ingest/decode.js";
 import { readStatus } from "../ingest/store.js";
 import { DASHBOARD_CSP, serveUi } from "../ui/page.js";
 import {
-  TokenIndexQueries, decodeCursor,
-  type ActivityCursor, type ContractCallCursor, type ShieldedOfferCursor,
+  INTERFACE_STATUSES, TokenIndexQueries, decodeCursor,
+  type ActivityCursor, type ContractCallCursor, type InterfaceCursor, type ShieldedOfferCursor,
   type TokenCursor, type TokenJson, type TokenQueryHooks, type TraitJson,
 } from "./queries.js";
 
@@ -455,6 +455,17 @@ export function createTokenApi(opts: TokenApiOptions): Server {
       return;
     }
 
+    // /v1/interfaces — contracts with a public interface, newest current publication first (00024-02,
+    // spec §5); `status=` filters on the current publication's status.
+    if (segments[0] === "interfaces" && segments.length === 1) {
+      sendJson(res, 200, await queries.interfaces({
+        status: enumParam(query.get("status"), INTERFACE_STATUSES, "status"),
+        limit: limitParam(query.get("limit")),
+        cursor: cursorParam<InterfaceCursor>(query.get("cursor")),
+      }));
+      return;
+    }
+
     // /v1/registry.json
     if (segments[0] === "registry.json" && segments.length === 1) {
       sendJson(res, 200, {
@@ -472,7 +483,8 @@ export function createTokenApi(opts: TokenApiOptions): Server {
       if (segments.length === 2) {
         const contract = await queries.contract(address);
         const tokens = await queries.tokensOfContract(address);
-        if (contract === undefined && tokens.length === 0) throw notFound(`no contract ${address}`);
+        const iface = (await queries.interfaceSummaries([address])).get(address) ?? null;
+        if (contract === undefined && tokens.length === 0 && iface === null) throw notFound(`no contract ${address}`);
         sendJson(res, 200, {
           address,
           deployHeight: contract?.deployHeight ?? null,
@@ -480,7 +492,28 @@ export function createTokenApi(opts: TokenApiOptions): Server {
           lastCallHeight: contract?.lastCallHeight ?? null,
           tokens,
           pendingLookups: await queries.pendingLookupsForContract(address),
+          // 00024-02: the current public interface, with its origin (or null).
+          interface: iface,
         });
+        return;
+      }
+
+      // /v1/contracts/:address/interface — the current publication with its whole result, its check
+      // history and every older publication (00024-02, spec §5; FR-010: a failed newest publication
+      // is the current one, shown failed; older ones are historical).
+      if (segments[2] === "interface" && segments.length === 3) {
+        const iface = await queries.interfaceOf(address);
+        if (iface === undefined) throw notFound(`contract ${address} has published no public interface`);
+        sendJson(res, 200, iface);
+        return;
+      }
+
+      // /v1/contracts/:address/interface/events — every publication of the contract, newest first.
+      if (segments[2] === "interface" && segments[3] === "events" && segments.length === 4) {
+        sendJson(res, 200, await queries.interfaceEvents(address, {
+          limit: limitParam(query.get("limit")),
+          cursor: cursorParam<InterfaceCursor>(query.get("cursor")),
+        }));
         return;
       }
 

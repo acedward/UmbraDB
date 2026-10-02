@@ -5,7 +5,8 @@ import { backfillTransactionResults } from "../chain-archive-sync/backfill-resul
 import { loadLedgerV9 } from "../chain-archive-sync/tx-replay-decoder.js";
 import { createTokenApi, listen } from "./api/server.js";
 import { bootstrapTokenIndexSchema } from "./bootstrap.js";
-import { requireIndexerHttp, type TokenIndexerConfig } from "./config.js";
+import { DEFAULT_INTERFACE_CONFIG, requireIndexerHttp, type TokenIndexerConfig } from "./config.js";
+import { drainDepsFromConfig, drainInterfaceVerifications } from "./interface/drain.js";
 import { IndexerEventSource, drainPendingLookups } from "./ingest/events.js";
 import { TokenScanner } from "./ingest/scan.js";
 
@@ -23,6 +24,8 @@ import { TokenScanner } from "./ingest/scan.js";
  *  - **results** — fills `chain_archive.transactions.result`/`segments` for blocks archived by a
  *    sync that predates spec FR-002 (the one running on this host does). The scanner blocks on a
  *    transaction whose result it does not know, so this loop is what unblocks it.
+ *  - **interfaces** — (00024-02) verifies public-interface publications: new ones, stale ones, the
+ *    current ones again every `TOKEN_INTERFACE_RECHECK_MS`, outside the scan's transaction (FR-011).
  *  - **api** — the read-only surface, plus the page at `/ui`.
  */
 
@@ -74,6 +77,7 @@ export async function serve(
           scanned: outcome.transactionsScanned, deploys: outcome.deploys, calls: outcome.calls,
           mints: outcome.mints, lookups: outcome.lookups, lookupsShort: outcome.lookupsShort,
           eventsApplied: outcome.eventsApplied, eventsRejected: outcome.eventsRejected,
+          interfacePublications: outcome.interfacePublications, interfacesStaled: outcome.interfacesStaled,
           skippedUnknownResult: outcome.skippedUnknownResult,
           // Project 00023's five (FR-013), so a live `serve` shows the activity index filling.
           activityRows: outcome.activityRows, seenTokens: outcome.seenTokens,
@@ -91,6 +95,14 @@ export async function serve(
       const outcome = await drainPendingLookups(sql, config.schema, config.net, eventSource, { ledger });
       if (outcome.attempted > 0) jsonLog("token-indexer", "lookups.drain", { ...outcome });
       return DRAIN_INTERVAL_MS;
+    }));
+
+    // Public interfaces (00024-02): fetch, verify, store — never inside the scan's transaction.
+    const interfaceDeps = drainDepsFromConfig(config.interfaces ?? DEFAULT_INTERFACE_CONFIG, indexerHttp);
+    loops.push(loop("interfaces", signal, async () => {
+      const outcome = await drainInterfaceVerifications(sql, config.schema, config.net, interfaceDeps);
+      if (outcome.attempted > 0) jsonLog("token-indexer", "interfaces.drain", { ...outcome });
+      return outcome.attempted > 0 ? SCAN_BUSY_MS : DRAIN_INTERVAL_MS;
     }));
 
     // The archive-result drain uses its OWN client, on the archive schema.

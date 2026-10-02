@@ -6,6 +6,7 @@ import {
   type PartEvent,
 } from "../ingest/packages.js";
 import { LEGACY_NAME_HEX, MIP_0018_NAME_HEX } from "../ingest/payload.js";
+import { PUBLIC_INTERFACE_NAME_HEX } from "../interface/event.js";
 
 /**
  * Project 00024-01 task B3 — the multi-part reader at the READER level: every normative vector of
@@ -146,8 +147,9 @@ describe("multi-part reader — [Y] §4 normative vectors (reader level)", () =>
 });
 
 describe("multi-part reader — its own boundaries", () => {
-  it("opts in exactly the standard's name — never the superseded draft name — and groups every contract on its own", () => {
-    expect(MULTIPART_OPT_INS).toEqual([MIP_0018_NAME_HEX]);
+  it("opts in exactly the two standards' names — never the superseded draft name — and groups every contract on its own", () => {
+    // MIP-0018 (UC-1) and, since 00024-02, the public-interface draft [B] (UC-2).
+    expect(MULTIPART_OPT_INS).toEqual([MIP_0018_NAME_HEX, PUBLIC_INTERFACE_NAME_HEX]);
     expect(MULTIPART_OPT_INS).not.toContain(LEGACY_NAME_HEX);
     const other = "d0".repeat(32);
     const out = readPackages([

@@ -11,6 +11,15 @@
  * | `ARCHIVE_SCHEMA` | `chain_archive` | schema the archive lives in (the same name `chain-archive-sync` uses) |
  * | `TOKEN_SCAN_BATCH` | `500` | transactions decoded per scan batch |
  * | `TOKEN_LIVE_2X` | *(unset)* | opt-in marker for the live Stagenet tests only |
+ * | `TOKEN_INTERFACE_RECHECK_MS` | `86400000` (24 h) | re-verify every current public interface this often (00024 FR-011b) |
+ * | `TOKEN_INTERFACE_RETRY_BASE_MS` | `30000` (30 s) | first retry delay after a check that reached no conclusion (`unreachable` — owner Q25 —, `unchecked`, `unfetchable`); doubles per consecutive attempt |
+ * | `TOKEN_INTERFACE_RETRY_CAP_MS` | `3600000` (1 h) | the longest retry delay (also never beyond `TOKEN_INTERFACE_RECHECK_MS`); must be ≥ the base |
+ * | `TOKEN_INTERFACE_FETCH_DEADLINE_MS` | `120000` | one deadline for all requests of one bundle (FR-011) |
+ * | `TOKEN_INTERFACE_MAX_INDEX_BYTES` / `_MAX_FILES` / `_MAX_FILE_BYTES` / `_MAX_BUNDLE_BYTES` | 256 KiB / 1000 / 8 MiB / 16 MiB | Level 1 caps (beyond → `unchecked`) |
+ * | `TOKEN_INTERFACE_L3` | `on` | `off` records Level 3 `not_run` ("disabled") instead of compiling |
+ * | `TOKEN_INTERFACE_L3_DEADLINE_MS` | `1800000` | the Level 3 compile deadline (beyond → `not_run`) |
+ * | `COMPACT_BIN` | `compact` | the Compact CLI Level 3 runs as `compile +<version>` |
+ * | `TOKEN_INTERFACE_ALLOW_PRIVATE_HOSTS` | *(unset)* | **TEST-ONLY**: `1` lets the bundle fetch reach private/loopback hosts (the local stack's bundle server, spec §6.1) |
  *
  * Validated with `zod`, already a RUNTIME dependency of this repo — no new dependency, and a
  * malformed value fails at startup naming the variable rather than surfacing later as an
@@ -33,6 +42,55 @@ export const TokenIndexerEnvSchema = z.object({
   ARCHIVE_SCHEMA: z.string().min(1).default("chain_archive"),
   TOKEN_SCAN_BATCH: z.coerce.number().int().min(1).max(5_000).default(500),
   TOKEN_LIVE_2X: z.string().optional(),
+  TOKEN_INTERFACE_RECHECK_MS: z.coerce.number().int().min(1_000).default(86_400_000),
+  TOKEN_INTERFACE_RETRY_BASE_MS: z.coerce.number().int().min(1_000).default(30_000),
+  TOKEN_INTERFACE_RETRY_CAP_MS: z.coerce.number().int().min(1_000).default(3_600_000),
+  TOKEN_INTERFACE_FETCH_DEADLINE_MS: z.coerce.number().int().min(100).default(120_000),
+  TOKEN_INTERFACE_MAX_INDEX_BYTES: z.coerce.number().int().min(1).default(256 * 1024),
+  TOKEN_INTERFACE_MAX_FILES: z.coerce.number().int().min(1).default(1_000),
+  TOKEN_INTERFACE_MAX_FILE_BYTES: z.coerce.number().int().min(1).default(8 * 1024 * 1024),
+  TOKEN_INTERFACE_MAX_BUNDLE_BYTES: z.coerce.number().int().min(1).default(16 * 1024 * 1024),
+  TOKEN_INTERFACE_L3: z.enum(["on", "off"]).default("on"),
+  TOKEN_INTERFACE_L3_DEADLINE_MS: z.coerce.number().int().min(1_000).default(1_800_000),
+  COMPACT_BIN: z.string().min(1).default("compact"),
+  TOKEN_INTERFACE_ALLOW_PRIVATE_HOSTS: z.enum(["0", "1"]).optional(),
+}).superRefine((value, ctx) => {
+  if (value.TOKEN_INTERFACE_RETRY_CAP_MS < value.TOKEN_INTERFACE_RETRY_BASE_MS) {
+    ctx.addIssue({
+      code: "custom", path: ["TOKEN_INTERFACE_RETRY_CAP_MS"],
+      message: `must be at least TOKEN_INTERFACE_RETRY_BASE_MS (${value.TOKEN_INTERFACE_RETRY_BASE_MS})`,
+    });
+  }
+});
+
+/** Exponential retry backoff (owner decision Q25): the n-th consecutive inconclusive check waits
+ *  `baseMs · 2^(n−1)`, capped at `capMs` (and at the re-check interval). */
+export interface RetryBackoff {
+  baseMs: number;
+  capMs: number;
+}
+
+export const DEFAULT_RETRY_BACKOFF: RetryBackoff = Object.freeze({ baseMs: 30_000, capMs: 3_600_000 });
+
+/** Project 00024-02: how public interfaces are verified (spec FR-011, FR-011b, FR-013). */
+export interface InterfaceConfig {
+  recheckMs: number;
+  /** Retry of an `unreachable` / `unchecked` / `unfetchable` result (owner Q25). */
+  retry: RetryBackoff;
+  fetchDeadlineMs: number;
+  /** TEST-ONLY: allow private/loopback destinations (the local stack's bundle server). */
+  allowPrivateHosts: boolean;
+  limits: { maxIndexBytes: number; maxFiles: number; maxFileBytes: number; maxBundleBytes: number };
+  level3: { enabled: boolean; compactBin: string; deadlineMs: number };
+}
+
+export const DEFAULT_INTERFACE_CONFIG: InterfaceConfig = Object.freeze({
+  recheckMs: 86_400_000,
+  retry: DEFAULT_RETRY_BACKOFF,
+  fetchDeadlineMs: 120_000,
+  allowPrivateHosts: false,
+  limits: Object.freeze({ maxIndexBytes: 256 * 1024, maxFiles: 1_000, maxFileBytes: 8 * 1024 * 1024, maxBundleBytes: 16 * 1024 * 1024 }),
+  level3: Object.freeze({ enabled: true, compactBin: "compact", deadlineMs: 1_800_000 }),
 });
 
 export interface TokenIndexerConfig {
@@ -46,6 +104,8 @@ export interface TokenIndexerConfig {
   archiveSchema: string;
   scanBatch: number;
   live2x: boolean;
+  /** Public-interface verification (00024-02). Absent in older call sites: the defaults apply. */
+  interfaces?: InterfaceConfig;
 }
 
 /**
@@ -63,6 +123,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): TokenIndexerCo
     ARCHIVE_SCHEMA: env.ARCHIVE_SCHEMA,
     TOKEN_SCAN_BATCH: env.TOKEN_SCAN_BATCH,
     TOKEN_LIVE_2X: env.TOKEN_LIVE_2X,
+    TOKEN_INTERFACE_RECHECK_MS: env.TOKEN_INTERFACE_RECHECK_MS,
+    TOKEN_INTERFACE_RETRY_BASE_MS: env.TOKEN_INTERFACE_RETRY_BASE_MS,
+    TOKEN_INTERFACE_RETRY_CAP_MS: env.TOKEN_INTERFACE_RETRY_CAP_MS,
+    TOKEN_INTERFACE_FETCH_DEADLINE_MS: env.TOKEN_INTERFACE_FETCH_DEADLINE_MS,
+    TOKEN_INTERFACE_MAX_INDEX_BYTES: env.TOKEN_INTERFACE_MAX_INDEX_BYTES,
+    TOKEN_INTERFACE_MAX_FILES: env.TOKEN_INTERFACE_MAX_FILES,
+    TOKEN_INTERFACE_MAX_FILE_BYTES: env.TOKEN_INTERFACE_MAX_FILE_BYTES,
+    TOKEN_INTERFACE_MAX_BUNDLE_BYTES: env.TOKEN_INTERFACE_MAX_BUNDLE_BYTES,
+    TOKEN_INTERFACE_L3: env.TOKEN_INTERFACE_L3,
+    TOKEN_INTERFACE_L3_DEADLINE_MS: env.TOKEN_INTERFACE_L3_DEADLINE_MS,
+    COMPACT_BIN: env.COMPACT_BIN,
+    TOKEN_INTERFACE_ALLOW_PRIVATE_HOSTS: env.TOKEN_INTERFACE_ALLOW_PRIVATE_HOSTS,
   });
   if (!parsed.success) {
     const issues = parsed.error.issues
@@ -80,6 +152,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): TokenIndexerCo
     archiveSchema: value.ARCHIVE_SCHEMA,
     scanBatch: value.TOKEN_SCAN_BATCH,
     live2x: value.TOKEN_LIVE_2X === "1",
+    interfaces: {
+      recheckMs: value.TOKEN_INTERFACE_RECHECK_MS,
+      retry: { baseMs: value.TOKEN_INTERFACE_RETRY_BASE_MS, capMs: value.TOKEN_INTERFACE_RETRY_CAP_MS },
+      fetchDeadlineMs: value.TOKEN_INTERFACE_FETCH_DEADLINE_MS,
+      allowPrivateHosts: value.TOKEN_INTERFACE_ALLOW_PRIVATE_HOSTS === "1",
+      limits: {
+        maxIndexBytes: value.TOKEN_INTERFACE_MAX_INDEX_BYTES,
+        maxFiles: value.TOKEN_INTERFACE_MAX_FILES,
+        maxFileBytes: value.TOKEN_INTERFACE_MAX_FILE_BYTES,
+        maxBundleBytes: value.TOKEN_INTERFACE_MAX_BUNDLE_BYTES,
+      },
+      level3: { enabled: value.TOKEN_INTERFACE_L3 === "on", compactBin: value.COMPACT_BIN, deadlineMs: value.TOKEN_INTERFACE_L3_DEADLINE_MS },
+    },
   };
 }
 

@@ -1,3 +1,4 @@
+import { PUBLIC_INTERFACE_NAME_HEX } from "../interface/event.js";
 import type { PackagePhase } from "./fold.js";
 import { MIP_0018_NAME_HEX } from "./payload.js";
 
@@ -57,11 +58,12 @@ export const MAX_PACKAGE_PARTS = 1024;
 /**
  * The event names this indexer opts into [Y], as the lowercase hex of their 32 padded bytes.
  *
- * `mip-0018:token-metadata[v1]` — MIP-0018 amended in place (UC-1). The public-interface name
- * `mip-xxxx:public-interface[v1]` joins in project 00024-02. The superseded draft name
+ * `mip-0018:token-metadata[v1]` — MIP-0018 amended in place (UC-1). `mip-xxxx:public-interface[v1]`
+ * — the public-interface draft [B], opted in by UC-2 (project 00024-02 task C2): its publications are
+ * packages, so a bundle URL may be longer than 224 bytes. The superseded draft name
  * `mip-xxxx:token-metadata[v1]` is deliberately NOT here (spec FR-006): its events stay single.
  */
-export const MULTIPART_OPT_INS: readonly string[] = Object.freeze([MIP_0018_NAME_HEX]);
+export const MULTIPART_OPT_INS: readonly string[] = Object.freeze([MIP_0018_NAME_HEX, PUBLIC_INTERFACE_NAME_HEX]);
 
 /** One applied, decoded event of an opted-in name, as the lookup hands it to the reader. */
 export interface PartEvent {

@@ -37,7 +37,7 @@ describe("token_index migration lineage and built-in rows", () => {
     await container?.stop();
   }, 60_000);
 
-  it("[[token-migrate-seeds]] applies the lineage through 005, seeds NIGHT and DUST with the exact bytes the ledger defines, re-runs as a no-op, and rebuild empties everything but the seeds", async () => {
+  it("[[token-migrate-seeds]] applies the lineage through 006, seeds NIGHT and DUST with the exact bytes the ledger defines, re-runs as a no-op, and rebuild empties everything but the seeds", async () => {
     // --- fresh apply ---------------------------------------------------------------------
     await bootstrapTokenIndexSchema(sql, { schema, net });
     const applied = await sql<{ name: string }[]>`
@@ -45,7 +45,7 @@ describe("token_index migration lineage and built-in rows", () => {
     `;
     expect(applied.map((r) => r.name)).toEqual([
       "000_schema", "001_token_index_core", "002_mip_xxxx_layout", "003_token_activity",
-      "004_mip_0018", "005_multipart_packages",
+      "004_mip_0018", "005_multipart_packages", "006_public_interfaces",
     ]);
 
     const tables = await sql<{ table_name: string }[]>`
@@ -53,6 +53,7 @@ describe("token_index migration lineage and built-in rows", () => {
     `;
     expect(tables.map((r) => r.table_name)).toEqual([
       "_migrations", "contract_calls", "contracts", "cursors", "pending_event_lookups",
+      "public_interface_checks", "public_interface_events", "public_interfaces",
       "shielded_offers", "token_activity", "token_metadata_events", "token_metadata_kv",
       "token_mints", "tokens",
     ]);
@@ -190,6 +191,23 @@ describe("token_index migration lineage and built-in rows", () => {
       INSERT INTO ${sql(schema)}.cursors (net, kind, value)
       VALUES (${net}, 'decode', ${sql.json({ height: 5, position: 2 })})
     `;
+    // 00024-02: a publication, its contract's current pointer and one check are derived rows too.
+    await sql`
+      INSERT INTO ${sql(schema)}.public_interface_events
+        (net, event_id, part_event_ids, parts, segment, phase, address, tx_hash, block_height,
+         tx_position, payload, commitment, url_bytes, url, url_error)
+      VALUES (${net}, 9, '{9}'::bigint[], 1, 1, 'guaranteed', ${Buffer.alloc(32, 7)}, ${Buffer.alloc(32, 4)},
+              1, 0, ${Buffer.alloc(256)}, ${Buffer.alloc(32)}, ${Buffer.alloc(0)}, NULL, 'url_empty')
+    `;
+    await sql`
+      INSERT INTO ${sql(schema)}.public_interfaces (net, address, event_id, block_height, tx_position)
+      VALUES (${net}, ${Buffer.alloc(32, 7)}, 9, 1, 0)
+    `;
+    await sql`
+      INSERT INTO ${sql(schema)}.public_interface_checks
+        (net, event_id, check_no, checked_at, trigger, status, level, l1, l2, l3, reason)
+      VALUES (${net}, 9, 1, now(), 'initial', 'unfetchable', 0, 'not_run', 'not_run', 'not_run', 'url_empty')
+    `;
 
     await rebuildTokenIndex(sql, { schema, net });
 
@@ -203,6 +221,7 @@ describe("token_index migration lineage and built-in rows", () => {
     const leftovers = await sql<{
       contracts: string; cursors: string; others: string;
       activity: string; offers: string; calls: string;
+      interfaces: string; publications: string; checks: string;
     }[]>`
       SELECT
         (SELECT count(*)::text FROM ${sql(schema)}.contracts WHERE net = ${net}) AS contracts,
@@ -210,10 +229,14 @@ describe("token_index migration lineage and built-in rows", () => {
         (SELECT count(*)::text FROM ${sql(schema)}.tokens    WHERE net = ${other}) AS others,
         (SELECT count(*)::text FROM ${sql(schema)}.token_activity  WHERE net = ${net}) AS activity,
         (SELECT count(*)::text FROM ${sql(schema)}.shielded_offers WHERE net = ${net}) AS offers,
-        (SELECT count(*)::text FROM ${sql(schema)}.contract_calls  WHERE net = ${net}) AS calls
+        (SELECT count(*)::text FROM ${sql(schema)}.contract_calls  WHERE net = ${net}) AS calls,
+        (SELECT count(*)::text FROM ${sql(schema)}.public_interfaces       WHERE net = ${net}) AS interfaces,
+        (SELECT count(*)::text FROM ${sql(schema)}.public_interface_events WHERE net = ${net}) AS publications,
+        (SELECT count(*)::text FROM ${sql(schema)}.public_interface_checks WHERE net = ${net}) AS checks
     `;
     expect(leftovers[0]).toEqual({
       contracts: "0", cursors: "0", others: "2", activity: "0", offers: "0", calls: "0",
+      interfaces: "0", publications: "0", checks: "0",
     });
   }, 180_000);
 

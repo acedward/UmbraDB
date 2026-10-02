@@ -41,6 +41,10 @@ export async function rebuildTokenIndex(
   const schema = opts.schema ?? "token_index";
   const net = opts.net;
   await sql.begin(async (tx) => {
+    // 00024-02: the public-interface tables, children first (their foreign keys).
+    await tx`DELETE FROM ${tx(schema)}.public_interface_checks WHERE net = ${net}`;
+    await tx`DELETE FROM ${tx(schema)}.public_interfaces WHERE net = ${net}`;
+    await tx`DELETE FROM ${tx(schema)}.public_interface_events WHERE net = ${net}`;
     await tx`DELETE FROM ${tx(schema)}.token_activity WHERE net = ${net}`;
     await tx`DELETE FROM ${tx(schema)}.shielded_offers WHERE net = ${net}`;
     await tx`DELETE FROM ${tx(schema)}.contract_calls WHERE net = ${net}`;
