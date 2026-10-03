@@ -749,8 +749,10 @@
         td(tr, txt(e.phase) + (e.segment !== null && e.segment !== undefined ? " \u00b7 segment " + txt(e.segment) : ""));
         if (withContract) td(tr, hex64(txt(e.contractAddress)) ? link(contractHash(e.contractAddress.toLowerCase()), hexNode(e.contractAddress)) : dash(""));
         var cl = txt(e.classification);
-        var badge = h("span", cl === "accept" ? "badge ok" : cl === "reject" ? "badge bad" : "badge", cl === "accept" ? "accepted" : cl === "reject" ? "rejected" : cl);
-        badge.setAttribute("data-class", cl === "accept" || cl === "reject" ? cl : "other");
+        var badge = h("span", cl === "accept" ? "badge ok" : cl === "reject" ? "badge bad" : cl === "unresolved" ? "badge warn" : "badge",
+          cl === "accept" ? "accepted" : cl === "reject" ? "rejected" : cl === "unresolved" ? "unresolved" : cl);
+        badge.setAttribute("data-class", cl === "accept" || cl === "reject" || cl === "unresolved" ? cl : "other");
+        if (cl === "unresolved") setTitle(badge, "a log op whose logged value the raw transaction does not show; the ledger may have emitted a MIP-0018 event here; never applied");
         td(tr, badge);
         td(tr, e.reason === null || e.reason === undefined ? h("span", "no", "") : data(e.reason, CELL_MAX));
         body.appendChild(tr);
@@ -759,7 +761,8 @@
     moreButton(sec, "events", ev.more, "events");
     sec.appendChild(h("div", "note gap",
       "Chain events named mip-0018:token-metadata[v1], with their position and classification only: an event carries no value "
-      + "here (the current values are the fields above), and other events are not listed."));
+      + "here (the current values are the fields above), and other events are not listed. An unresolved row is a log op whose "
+      + "logged value the raw transaction does not show: the indexer cannot tell which event it was and never applies it."));
     main.appendChild(sec);
   }
 
