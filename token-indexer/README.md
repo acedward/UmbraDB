@@ -73,6 +73,13 @@ node --import tsx token-indexer/mip0018/serve-cli.ts --network stagenet --api-on
 
 - `sync-cli.ts` flags and environment: see its header (`--from`, `--to`, `--concurrency`, `--max-blocks`,
   `--min-interval-ms`; `SYNC_BACKOFF_*`). Without `--to` it follows the finalized tip.
+- **An archive synced before this PR cannot be scanned.** The base's `chain-archive-sync` never stored a
+  transaction's result, and migration `chain_archive/002_transaction_segments` adds the per-segment outcomes as
+  `NULL`, so such an archive has no result on any transaction: the MIP-0018 scan stops at its first regular
+  transaction ("has no stored result"; it never guesses which parts applied, owner decision Q20) and `serve` reports
+  `scanner: stalled`. The sync does not re-ingest below its cursor, so use a fresh deployment (owner decision Q7) or
+  re-sync the range with this version into a fresh schema (`ARCHIVE_SCHEMA=chain_archive_v2 … sync-cli.ts --from …`,
+  then `--archive-schema chain_archive_v2` for `scan-cli.ts` / `serve-cli.ts`).
 - `scan-cli.ts`: `--from`, `--to`, `--max-blocks`, `--schema` (default `mip0018`), `--archive-schema` (default
   `chain_archive`). The scan stops with an error at a transaction it cannot decode (never skips it). A `log` op
   whose logged value is not in the raw transaction does not stop it: it is stored as `unresolved` (see below).
