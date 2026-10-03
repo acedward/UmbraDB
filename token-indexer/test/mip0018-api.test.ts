@@ -812,6 +812,10 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     await expect(serveMain([], {})).rejects.toThrow(/usage/);
     await expect(serveMain(["--network", NET, "--port", "70000"], { PG_URL: container.getConnectionUri() })).rejects.toThrow(/--port/);
     await expect(serveMain(["--network", NET, "--genesis", "abc"], { PG_URL: container.getConnectionUri() })).rejects.toThrow(/--genesis/);
+    // Final-audit N6: an idle wait of 0 (or below 100 ms) would make the scan loop and its error back-off a hot loop.
+    for (const idle of ["0", "99"])
+      await expect(serveMain(["--network", NET, "--scan-idle-ms", idle], { PG_URL: container.getConnectionUri() })).rejects.toThrow(/--scan-idle-ms must be an integer from 100 to 3600000/);
+    await expect(serve({ sql: db.sql, network: NET, schema: db.mip, archiveSchema: db.archive, port: 0, scanIdleMs: 0 })).rejects.toThrow(/scanIdleMs/);
     await expect(serveMain(["--bogus"], { PG_URL: container.getConnectionUri() })).rejects.toThrow();
   }, 180_000);
 });

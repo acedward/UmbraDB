@@ -26,7 +26,7 @@
  * | `--genesis` | `GENESIS_HASH` | the known network's genesis hash (Stagenet), else none |
  * | `--from` | `START_HEIGHT` | the archive's first height (first scan only) |
  * | `--scan-batch` | — | `100` blocks per scan step |
- * | `--scan-idle-ms` | — | `2000` (wait at the archive's tip; also the base of the error back-off, ×5 up to 60 s) |
+ * | `--scan-idle-ms` | — | `2000` (wait at the archive's tip; also the base of the error back-off, ×5 up to 60 s); 100 to 3 600 000 — below 100 ms the loop would poll the database and the log in a hot loop (final-audit N6) |
  *
  * Logs one JSON line per event on stdout (`listening`, `scan`, `scan-error`, `stopped`). SIGINT/SIGTERM stop the
  * loop and the server and exit 0.
@@ -62,6 +62,8 @@ export interface ServeHandle {
 }
 
 const MAX_BACKOFF_MS = 60_000;
+/** Smallest `--scan-idle-ms` the CLI accepts (final-audit N6: 0 made the idle wait and the error back-off a hot loop). */
+export const MIN_SCAN_IDLE_MS = 100;
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -78,6 +80,9 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 
 /** Starts the API (and the scan loop unless `apiOnly`); resolves once the port is bound. */
 export async function serve(o: ServeOptions): Promise<ServeHandle> {
+  // Programmatic callers (tests) may poll faster than the CLI's minimum, but never with a zero or negative wait.
+  if (o.scanIdleMs !== undefined && (!Number.isSafeInteger(o.scanIdleMs) || o.scanIdleMs < 1))
+    throw new RangeError(`scanIdleMs must be a positive integer of milliseconds, got ${o.scanIdleMs}`);
   const log = o.log ?? ((line: string) => process.stdout.write(`${line}\n`));
   const host = o.host ?? "127.0.0.1";
   const stopper = new AbortController();
@@ -149,9 +154,9 @@ export async function serve(o: ServeOptions): Promise<ServeHandle> {
   };
 }
 
-function intOption(raw: string | undefined, what: string, max = Number.MAX_SAFE_INTEGER): number | undefined {
+function intOption(raw: string | undefined, what: string, max = Number.MAX_SAFE_INTEGER, min = 0): number | undefined {
   if (raw === undefined) return undefined;
-  if (!/^\d+$/.test(raw) || Number(raw) > max) throw new Error(`${what} must be an integer from 0 to ${max}`);
+  if (!/^\d+$/.test(raw) || Number(raw) > max || Number(raw) < min) throw new Error(`${what} must be an integer from ${min} to ${max}`);
   return Number(raw);
 }
 
@@ -182,7 +187,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env,
   const sql = createClient({ connectionString: url, schema });
   const from = intOption(values.from ?? env.START_HEIGHT, "--from");
   const batch = intOption(values["scan-batch"], "--scan-batch", 10_000);
-  const idle = intOption(values["scan-idle-ms"], "--scan-idle-ms", 3_600_000);
+  const idle = intOption(values["scan-idle-ms"], "--scan-idle-ms", 3_600_000, MIN_SCAN_IDLE_MS);
   let handle: ServeHandle | undefined;
   try {
     handle = await serve({
