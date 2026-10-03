@@ -12,6 +12,7 @@ import {
   type Hex32,
   type TransactionMeta,
   type TransactionRecord,
+  type TransactionSegmentResult,
   type VerifierKeyObservationRecord,
 } from "../interfaces/chain-archive-store.js";
 import { ValidationError } from "../interfaces/storage-errors.js";
@@ -66,6 +67,7 @@ interface TxRow {
   kind: string;
   protocol_version: number;
   result: string | null;
+  segments: unknown;
   raw_blob_hash: Buffer;
 }
 
@@ -96,8 +98,42 @@ function toTxMeta(row: TxRow): TransactionMeta {
     kind: row.kind as TransactionMeta["kind"],
     protocolVersion: row.protocol_version,
     result: (row.result ?? undefined) as TransactionMeta["result"],
+    ...(row.segments === null || row.segments === undefined
+      ? {}
+      : { segments: (row.segments as TransactionSegmentResult[]).map((x) => ({ id: x.id, success: x.success })) }),
     rawBlobHash: bufToHex(row.raw_blob_hash),
   };
+}
+
+/** Project 00026 (FR-002): validates and normalises a transaction's per-segment outcomes before
+ *  they are written to `transactions.segments` -- every id a `u16`, every flag a boolean, no id
+ *  twice -- and returns the JSON text stored (sorted by id), or `null` when the source reported no
+ *  list. The `transactions_segments_shape` CHECK enforces the same shape inside Postgres; this
+ *  check runs first so a bad value fails with a {@link ValidationError} naming the transaction. */
+export function segmentsJson(
+  txHash: Hex32, segments: readonly TransactionSegmentResult[] | null | undefined,
+): string | null {
+  if (segments === null || segments === undefined) return null;
+  const seen = new Set<number>();
+  const out: TransactionSegmentResult[] = [];
+  for (const seg of segments) {
+    if (!Number.isSafeInteger(seg.id) || seg.id < 0 || seg.id > 0xffff || typeof seg.success !== "boolean") {
+      throw new ValidationError(
+        `PgChainArchiveStore.segments: transaction ${txHash} has a malformed segment outcome ${JSON.stringify(seg)}`,
+        [{ path: "segments", message: "each segment needs an integer id in 0..65535 and a boolean success" }],
+      );
+    }
+    if (seen.has(seg.id)) {
+      throw new ValidationError(
+        `PgChainArchiveStore.segments: transaction ${txHash} lists segment ${seg.id} twice`,
+        [{ path: "segments", message: "duplicate segment id" }],
+      );
+    }
+    seen.add(seg.id);
+    out.push({ id: seg.id, success: seg.success });
+  }
+  out.sort((a, b) => a.id - b.id);
+  return JSON.stringify(out);
 }
 
 /**
@@ -225,12 +261,15 @@ export class PgChainArchiveStore implements ChainArchiveStore {
         VALUES (${rawHash}, 'tx_raw')
         ON CONFLICT (blob_hash, role) DO NOTHING
       `;
+      // `segments` travels as JSON text with an explicit cast, so the statement keeps ONE shape
+      // (and one prepared statement) whether or not a list is present.
+      const segments = segmentsJson(t.txHash, t.segments);
       await tx`
         INSERT INTO ${tx(this.schema)}.transactions
-          (net, tx_hash, block_height, block_hash, position, kind, protocol_version, result, raw_blob_hash)
+          (net, tx_hash, block_height, block_hash, position, kind, protocol_version, result, segments, raw_blob_hash)
         VALUES
           (${t.net}, ${hexToBuf(t.txHash)}, ${t.blockHeight}, ${hexToBuf(t.blockHash)},
-           ${t.position}, ${t.kind}, ${t.protocolVersion}, ${t.result ?? null}, ${rawHash})
+           ${t.position}, ${t.kind}, ${t.protocolVersion}, ${t.result ?? null}, ${segments}::jsonb, ${rawHash})
         ON CONFLICT DO NOTHING
       `;
     }
@@ -323,6 +362,11 @@ export class PgChainArchiveStore implements ChainArchiveStore {
         // the referenced row hasn't committed yet.
         if (txs.length > 0) await this.insertTransactionRows(tx, txs);
         if (obs.length > 0) await this.insertBridgeObservationRows(tx, obs);
+        // Project 00026 (FR-001): the sync cursor commits WITH the block -- one atomic per-block
+        // checkpoint instead of a second, separate commit after the bundle.
+        if (bundle.watermark !== undefined) {
+          await this.upsertWatermark(tx, bundle.watermark.key, bundle.watermark.value);
+        }
         return result;
       });
     } catch (err) {
@@ -433,7 +477,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
     assertHex32(txHash, "getTransactionsByHash.txHash");
     try {
       const rows = await this.sql<TxRow[]>`
-        SELECT net, tx_hash, block_height, block_hash, position, kind, protocol_version, result, raw_blob_hash
+        SELECT net, tx_hash, block_height, block_hash, position, kind, protocol_version, result, segments, raw_blob_hash
         FROM ${this.sql(this.schema)}.transactions
         WHERE net = ${net} AND tx_hash = ${hexToBuf(txHash)}
         ORDER BY block_hash
@@ -448,7 +492,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
     assertHex32(blockHash, "getTransactionsForBlock.blockHash");
     try {
       const rows = await this.sql<TxRow[]>`
-        SELECT net, tx_hash, block_height, block_hash, position, kind, protocol_version, result, raw_blob_hash
+        SELECT net, tx_hash, block_height, block_hash, position, kind, protocol_version, result, segments, raw_blob_hash
         FROM ${this.sql(this.schema)}.transactions
         WHERE net = ${net} AND block_hash = ${hexToBuf(blockHash)}
         ORDER BY position ASC
@@ -526,17 +570,25 @@ export class PgChainArchiveStore implements ChainArchiveStore {
    *  height-cursor convention. */
   async setWatermark(key: string, value: unknown): Promise<void> {
     try {
-      await this.sql`
-        INSERT INTO ${this.sql(this.schema)}.watermarks AS w (kind, key, value, updated_at)
-        VALUES ('chain_archive', ${key}, ${this.sql.json(value as JSONValue)}, now())
-        ON CONFLICT (kind, key) DO UPDATE
-        SET value = EXCLUDED.value, updated_at = now()
-        WHERE jsonb_typeof(w.value -> 'height') IS DISTINCT FROM 'number'
-           OR jsonb_typeof(EXCLUDED.value -> 'height') IS DISTINCT FROM 'number'
-           OR (EXCLUDED.value ->> 'height')::numeric > (w.value ->> 'height')::numeric
-      `;
+      await this.upsertWatermark(this.sql, key, value);
     } catch (err) {
       throw translatePostgresError(err);
     }
+  }
+
+  /** The one watermark upsert (with its monotonic `height` guard), shared by `setWatermark` and by
+   *  `putBlockBundle`'s in-transaction cursor advance (project 00026). */
+  private async upsertWatermark(
+    sql: UmbraDBSql | ChainArchiveTx, key: string, value: unknown,
+  ): Promise<void> {
+    await sql`
+      INSERT INTO ${sql(this.schema)}.watermarks AS w (kind, key, value, updated_at)
+      VALUES ('chain_archive', ${key}, ${sql.json(value as JSONValue)}, now())
+      ON CONFLICT (kind, key) DO UPDATE
+      SET value = EXCLUDED.value, updated_at = now()
+      WHERE jsonb_typeof(w.value -> 'height') IS DISTINCT FROM 'number'
+         OR jsonb_typeof(EXCLUDED.value -> 'height') IS DISTINCT FROM 'number'
+         OR (EXCLUDED.value ->> 'height')::numeric > (w.value ->> 'height')::numeric
+    `;
   }
 }

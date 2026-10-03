@@ -68,6 +68,14 @@ export interface BlockMeta {
 export type TransactionKind = "regular" | "system";
 export type TransactionResult = "success" | "partial_success" | "failure";
 
+/** One intent segment's outcome inside a transaction, as the indexer reports it
+ *  (`RegularTransaction.transactionResult.segments[]`; project 00026, spec FR-002). `id` is the
+ *  ledger segment id (a `u16`); `success` says whether that segment's fallible part applied. */
+export interface TransactionSegmentResult {
+  id: number;
+  success: boolean;
+}
+
 export interface TransactionRecord {
   net: string;
   txHash: Hex32;
@@ -77,6 +85,10 @@ export interface TransactionRecord {
   kind: TransactionKind;
   protocolVersion: number;
   result?: TransactionResult;
+  /** Per-segment outcomes (`transactions.segments`, migration `002_transaction_segments`).
+   *  Omitted/`null` = the source reported no list (the indexer sends `null` for `SUCCESS` and
+   *  `FAILURE`; a system transaction has no result at all). Stored sorted by `id`. */
+  segments?: readonly TransactionSegmentResult[] | null;
   rawBytes: Uint8Array;
 }
 
@@ -89,6 +101,8 @@ export interface TransactionMeta {
   kind: TransactionKind;
   protocolVersion: number;
   result?: TransactionResult;
+  /** As stored: `undefined` when the archive holds no list for this transaction. */
+  segments?: TransactionSegmentResult[];
   rawBlobHash: Hex32;
 }
 
@@ -113,6 +127,11 @@ export interface BlockBundle {
   block: BlockRecord;
   transactions: readonly TransactionRecord[];
   bridgeObservations: readonly BridgeObservationRecord[];
+  /** Optional watermark advanced INSIDE the same transaction as the block (project 00026, spec
+   *  FR-001's atomic per-block checkpoint): the block, its transactions, their outcomes and the
+   *  sync cursor commit together or not at all, so a kill at any point leaves either the whole
+   *  block with its cursor or neither. Same monotonic guard as {@link ChainArchiveStore.setWatermark}. */
+  watermark?: { key: string; value: unknown };
 }
 
 export type VerifierKeyScope = "protocol" | "contract";
