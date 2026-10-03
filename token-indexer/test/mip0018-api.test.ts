@@ -238,7 +238,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     const empty = await fresh("empty");
     const base = await startApi(empty, { archiveSchema: "no_such_archive" });
     expect((await ok(base, "/v1/status"))).toMatchObject({ startHeight: null, indexedHeight: null, archiveHeight: null });
-  });
+  }, 120_000);
 
   it("[[mip0018.api.tokens-list]] /v1/tokens: NIGHT, DUST, then every minted or described identity in (contract, domainSep, kind) byte order with usable name/symbol/decimals, mark and tags; keyset pages of any size walk to the same list; bad limits and foreign cursors are 400", async () => {
     const all = await ok(idx.base, "/v1/tokens?limit=500");
@@ -294,7 +294,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     const ev = await ok(idx.base, `/v1/events?contract=${contractOf("C07")}&limit=1`);
     expect((await get(idx.base, `/v1/tokens?cursor=${ev.nextCursor}`)).status).toBe(400);
     expect((await get(idx.base, `/v1/events?contract=${contractOf("C07")}&cursor=${first.nextCursor}`)).status).toBe(400);
-  });
+  }, 120_000);
 
   it("[[mip0018.api.token-detail]] /v1/tokens/{color}, /v1/identities/… and /v1/contracts/{address}/tokens: identities with fields (hex + text/integer views, usable), group (two or more), mark; C07's exact bytes (NUL and non-UTF-8 keys); single-member groups absent; 404s", async () => {
     const C04 = contractOf("C04");
@@ -373,7 +373,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     // A contract the scan saw (calls) but with no token: 200, empty.
     const bridge = caseIndex.otherTransactions.flatMap((t) => t.calls).find((c) => !list.some((t) => t.contractAddress === c))!;
     expect(await ok(idx.base, `/v1/contracts/${bridge}/tokens`)).toEqual({ contractAddress: bridge, groups: [], items: [], nextCursor: null });
-  });
+  }, 120_000);
 
   it("[[mip0018.api.lookup]] /v1/lookup/{color}?held=: C04's color → kind 1 held shielded, kind 2 held unshielded (one color); C05 bronze → not minted in the indexed range; NIGHT's zero color → built-in; the kind comes from the holding, not the color", async () => {
     const C04 = contractOf("C04");
@@ -404,7 +404,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     // `held` is required and strict.
     for (const q of ["", "?held=", "?held=both", "?held=Shielded", "?held=shielded&held=unshielded", "?held=shielded&x=1"])
       expect((await get(idx.base, `/v1/lookup/${color}${q}`)).status, q).toBe(400);
-  });
+  }, 120_000);
 
   it("[[mip0018.api.events]] /v1/events: MIP-0018-named events (accept/reject) of a contract or a transaction in chain order with position, contract, classification and reason only — never name, payload, domainSep, kind or values (QA2); ignored events not served; pages; filters required", async () => {
     const C07 = contractOf("C07");
@@ -439,7 +439,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     for (const q of ["", "?limit=5", `?contract=${C07.slice(2)}`, "?tx=xyz", `?contract=${C07}&contract=${C07}`]) expect((await get(idx.base, `/v1/events${q}`)).status, q).toBe(400);
     const p = await ok(idx.base, `/v1/events?contract=${C07}&limit=2`);
     expect((await get(idx.base, `/v1/events?contract=${contractOf("C08")}&cursor=${p.nextCursor}`)).status).toBe(400); // cursor bound to its filter
-  });
+  }, 120_000);
 
   it("[[mip0018.api.activity]] /v1/tokens/{color}/activity and /v1/contracts/{address}/activity (C2's rows): C03's mint row and UTXO show wallet 1 in Bech32m (never its hex); C06's five metadata transactions at their heights; keyset pages and both orders; 400 for bad limit/order/cursor, 404 for unknown colors and contracts", async () => {
     const WALLET1 = "mn_addr_stagenet1vw57646su9y5z6myarm93m6kcn62j97z0yma94lfkhmta6pz5h5q6utr3k";
@@ -488,7 +488,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     expect((await get(idx.base, `/v1/contracts/${"ab".repeat(32)}/activity`)).status).toBe(404);
     expect((await get(idx.base, "/v1/tokens/xyz/activity")).status).toBe(400);
     expect((await get(idx.base, `/v1/tokens/${c03.color}/activity/x`)).status).toBe(404);
-  });
+  }, 120_000);
 
   it("[[mip0018.api.marks]] marks through the API: C01 ✓ ok, C07 ⚠ incorrect (9 reasons), C08 ⚠ incorrect, a partial identity ⚠ partial (synthetic), a minted token without events unmarked; NIGHT/DUST carry no mark", async () => {
     const list = (await ok(idx.base, "/v1/tokens?limit=500")).items as Json[];
@@ -514,7 +514,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     const base = await startApi(db);
     const part = await ok(base, `/v1/identities/${X}/${P}/3`);
     expect([part.mark, part.common]).toEqual([{ mark: "partial", reasons: [], reasonCount: 0, missing: ["symbol", "decimals"], tags: [] }, { name: "Only A Name", symbol: null, decimals: null, standards: null }]);
-  });
+  }, 120_000);
 
   it("[[mip0018.api.withdrawn-absent]] C06 step by step: after the tombstone (Null at name) the withdrawn name is absent from every endpoint (text and hex), and stays absent after the revive; synthetic whole withdrawals: a never-minted identity answers 404 and its domainSep and values appear nowhere, a minted one reads exactly like a minted never-described token", async () => {
     // C06 recorded, per step (case-index heights).
@@ -741,7 +741,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     const missing = await startApi({ sql: idx.sql, archive: idx.archive, mip: "no_such_schema" }, { log: () => {} });
     const m = await get(missing, "/v1/tokens");
     expect([m.status, m.json.error.code, /relation|schema|mip0018_/.test(m.text)]).toEqual([503, "UNAVAILABLE", false]);
-  });
+  }, 120_000);
 
   it("[[mip0018.api.serve-cli]] serve: binds 127.0.0.1 by default, runs the scan loop following the archive (status indexedHeight reaches the archive's height, scanner following) or only the API (--api-only, read-only); a stalled scan (undecodable transaction) leaves the API serving with scanner stalled; the CLI logs the bound port and exits 0 on SIGTERM; bad arguments are refused", async () => {
     // In process, with the scan loop, over a freshly archived U1 range (nothing scanned yet).

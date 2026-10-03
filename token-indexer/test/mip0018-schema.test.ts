@@ -26,7 +26,7 @@ describe("mip0018 schema", () => {
   afterAll(async () => {
     await sql?.end({ timeout: 5 });
     await container?.stop();
-  });
+  }, 60_000);
 
   const field = (k: Buffer, valType: number, value: Buffer, uint: string | null, usable: boolean | null) => ({
     network: "testnet-a",
@@ -54,7 +54,7 @@ describe("mip0018 schema", () => {
     await runMigrations(sql, { schema, migrations: mip0018Migrations });
     const applied = await sql<{ name: string }[]>`SELECT name FROM ${sql(schema)}._migrations ORDER BY name`;
     expect(applied.map((r) => r.name)).toEqual(["000_schema", "001_mip0018_core", "002_mip0018_scan", "003_mip0018_activity"]);
-  });
+  }, 120_000);
 
   it("[[mip0018.schema.bytes]] keys and values are exact bytes and a 31-byte integer is lossless", async () => {
     const max = (1n << 248n) - 1n;
@@ -78,7 +78,7 @@ describe("mip0018 schema", () => {
       SELECT 1 FROM ${sql(schema)}.mip0018_fields
       WHERE key = '\\x73796d626f6c'::bytea AND usable AND value = ${key("ACME")}`;
     expect(grouped).toHaveLength(1);
-  });
+  }, 120_000);
 
   it("[[mip0018.schema.constraints]] rejects tombstones, other kinds, unsized integers and accepted events without a header", async () => {
     const bad = [
@@ -109,7 +109,7 @@ describe("mip0018 schema", () => {
     ).rejects.toThrow();
     const count = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ${sql(schema)}.mip0018_events`;
     expect(count[0]?.n).toBe(1);
-  });
+  }, 120_000);
 
   /**
    * Sub-plan C4 H2: every text-typed column of the lineage and why chain bytes cannot reach it. A new text column

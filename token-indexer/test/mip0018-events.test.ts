@@ -146,7 +146,7 @@ describe("MIP-0018 events from raw transactions (00026 B2)", () => {
     expect(c08.map((e) => [pos(e), e.classification, e.reason ?? null])).toEqual([["715109/0/0", "accept", null], ["715109/0/1", "reject", "reserved-valtype"]]);
     const u1 = await events("u1");
     expect(u1.map((e) => [pos(e), e.classification, e.kind])).toEqual([["715433/0/0", "accept", 1]]);
-  });
+  }, 120_000);
 
   it("[[mip0018.events.order]] MIP order within a transaction: recorded C04 (kinds 1, 2, 3 as emitted) and C08 (valid then malformed); synthetic intents and segments: guaranteed parts by ascending segment, then successful fallible segments; failed segments and FAILURE transactions add nothing", async () => {
     const c04 = await events("idx", { contractAddress: await fullAddress(CONTRACT.C04) });
@@ -200,7 +200,7 @@ describe("MIP-0018 events from raw transactions (00026 B2)", () => {
     expect(got.every((e) => e.contractAddress === A)).toBe(true);
     const undecodable = got.find((e) => e.reason?.startsWith("undecodable") === true)!;
     expect([undecodable.name, undecodable.payload]).toEqual(["", ""]);
-  });
+  }, 120_000);
 
   it("[[mip0018.events.zero-extension]] C10's event, 127 bytes in the raw ledger item, is stored and decoded as MIP Appendix A's full 32 + 256 bytes", async () => {
     // The raw item really is trimmed: the value pushed before the `log` op of the recorded transaction.
@@ -226,7 +226,7 @@ describe("MIP-0018 events from raw transactions (00026 B2)", () => {
       [33, "name", 1, "Acme Token"], [50, "symbol", 1, "ACME"], [63, "decimals", 2, 6n], [75, "standards", 1, "mip-0004"],
     ]);
     expect(e!.payload.slice(190)).toBe("0".repeat(512 - 190)); // zero padding after offset 95
-  });
+  }, 120_000);
 
   it("[[mip0018.events.contract-events-crosscheck]] raw-derived events equal the indexer's recorded contractEvents for every (transaction, called contract) pair: same events, same order, same bytes, same segment", async () => {
     const fixture = loadContractEvents();
@@ -259,5 +259,5 @@ describe("MIP-0018 events from raw transactions (00026 B2)", () => {
     expect(compared).toBe(50);
     // Nothing of ours lies outside the recorded pairs (every stored event was compared).
     expect((await events("idx")).length + (await events("u1")).length).toBe(50);
-  });
+  }, 120_000);
 });

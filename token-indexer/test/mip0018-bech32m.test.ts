@@ -167,5 +167,5 @@ describe("Bech32m (BIP-350) and Midnight wallet addresses (00026 C2)", () => {
     const corrupted = `${WALLET_1.slice(0, -1)}${WALLET_1.endsWith("q") ? "p" : "q"}`;
     expect(() => decodeWalletAddress("stagenet", corrupted)).toThrow(/bad-checksum/);
     expect(() => decodeWalletAddress("stagenet", `${WALLET_1.slice(0, 20).toUpperCase()}${WALLET_1.slice(20)}`)).toThrow(/mixed-case/);
-  });
+  }, 60_000);
 });

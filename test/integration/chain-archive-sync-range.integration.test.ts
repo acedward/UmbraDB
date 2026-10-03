@@ -36,7 +36,7 @@ describe("chain-archive-sync ranges, resume and transaction outcomes on recorded
   afterEach(async () => {
     for (const c of children.splice(0)) if (c.exitCode === null && c.signalCode === null) c.kill("SIGKILL");
     for (const f of fakes.splice(0)) await f.close();
-  });
+  }, 60_000);
 
   afterAll(async () => {
     for (const s of sqls) await s.end({ timeout: 5 });

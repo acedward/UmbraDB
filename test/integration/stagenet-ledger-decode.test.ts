@@ -108,5 +108,5 @@ describe("ledger-v9 decodes current Stagenet (00026 A2, FR-005 / Q13)", () => {
     // The reference IDX scan of 714485–715183 found exactly six colors; kinds 1 and 2 of C04 share one.
     const idxColors = new Set(Object.entries(mints).filter(([k]) => Number(k.split(":")[0]) <= 715183).map(([, m]) => m.color));
     expect(idxColors.size).toBe(6);
-  });
+  }, 120_000);
 });

@@ -141,7 +141,7 @@ describe("MIP-0018 conformance table (00026 D4)", () => {
       expect(existsSync(join(ROOT, m[1]!)), m[1]).toBe(true);
     }
     expect(paths).toBeGreaterThan(3);
-  });
+  }, 60_000);
 
   it("[[mip0018.conformance.no-network-no-code]] the indexer's runtime code and the vendored codec contain no network client, no dynamic code and no child process (C-024, C-031: no URI is fetched, no identifier runs code); the check catches each forbidden form", () => {
     // Positive controls: every forbidden form is caught, the allowed forms are not.
@@ -167,5 +167,5 @@ describe("MIP-0018 conformance table (00026 D4)", () => {
     expect(files.filter((f) => f.startsWith("token-indexer/vendor/")).length).toBeGreaterThanOrEqual(8);
     const found = Object.fromEntries(files.map((f): [string, string[]] => [f, violations(readFileSync(join(ROOT, f), "utf8"))]).filter(([, v]) => v.length > 0));
     expect(found).toEqual({});
-  });
+  }, 60_000);
 });

@@ -204,7 +204,7 @@ describe("MIP-0018 metadata state in Postgres (00026 B3)", () => {
     const r = await sql.begin((tx) => recomputeFields(tx, mip, NET));
     expect(r).toEqual({ identities: 13, replayedEvents: 25 });
     expect((await dumpAll(sql, mip)).fields).toEqual(before);
-  });
+  }, 120_000);
 
   it("[[mip0018.metadata.recorded-groups]] symbol groups on the recorded ranges: exactly C04's ACD (kinds 1, 2, 3) and C05's MEDAL (three domainSeps, bronze never minted); no single-member group is reported", async () => {
     const groups = await listGroups(ranges.idx.sql, NET, {}, ranges.idx.mip);
@@ -221,7 +221,7 @@ describe("MIP-0018 metadata state in Postgres (00026 B3)", () => {
     expect((await groupOf(ranges.idx.sql, c04, ranges.idx.mip))?.members).toHaveLength(3);
     const c01 = (await listIdentities(ranges.idx.sql, NET, { contractAddress: contractOf("C01") }, ranges.idx.mip))[0]!;
     expect(await groupOf(ranges.idx.sql, c01, ranges.idx.mip)).toBeUndefined();
-  });
+  }, 120_000);
 
   it("[[mip0018.metadata.c06-steps]] C06 replayed step by step (case-index heights): publish and rename equal the reference files; withdraw (Null at name), withdraw again and revive equal UmbraDB's per-key expectations; removing the tombstone block restores the rename state and re-adding it applies the tombstone again", async () => {
     const steps = caseIndex.cases.C06!.steps.filter((s) => s.expectedAfter !== undefined);

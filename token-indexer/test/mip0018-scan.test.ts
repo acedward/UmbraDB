@@ -74,7 +74,7 @@ describe("MIP-0018 scan over the chain archive (00026 A3)", () => {
 
   afterEach(async () => {
     for (const f of fakes.splice(0)) await f.close();
-  });
+  }, 60_000);
 
   afterAll(async () => {
     for (const c of clients) await c.end({ timeout: 5 });

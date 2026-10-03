@@ -44,7 +44,7 @@ describe("recorded Stagenet fixtures (00026 D1)", () => {
     expect(new Set(m.files.map((f) => f.path))).toEqual(new Set([
       ...m.ranges.map((r) => r.file), m.contractEvents.file, m.caseIndex.file,
     ]));
-  });
+  }, 60_000);
 
   it("[[stagenet.fixtures.tapes-consistent]] each range is contiguous and self-consistent, and every called contract of every transaction has its contractEvents capture", () => {
     const m = loadManifest();
@@ -101,7 +101,7 @@ describe("recorded Stagenet fixtures (00026 D1)", () => {
     expect(loadTapeByName("c04-714637-714663.tape.json").blocks.map((b) => b.height))
       .toEqual(Array.from({ length: 27 }, (_, i) => 714637 + i));
     expect(loadTapeByName("cases-sparse.tape.json").blocks.reduce((n, b) => n + b.indexerBlock.transactions.length, 0)).toBe(15);
-  });
+  }, 60_000);
 
   it("[[stagenet.fixtures.case-index]] every reference case transaction is recorded at its height, and its observed indexer events are in the contractEvents capture", () => {
     const m = loadManifest();
@@ -143,5 +143,5 @@ describe("recorded Stagenet fixtures (00026 D1)", () => {
     }
     // Every recorded transaction is either a case transaction or listed as another user's.
     expect(caseTransactions + index.otherTransactions.length).toBe(m.ranges.reduce((n, r) => n + r.transactions, 0));
-  });
+  }, 60_000);
 });

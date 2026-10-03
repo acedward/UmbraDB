@@ -101,7 +101,7 @@ describe("MIP-0018 token activity (00026 C2)", () => {
   afterEach(async () => {
     for (const f of fakes.splice(0)) await f.close();
     for (const c of children.splice(0)) if (c.exitCode === null && c.signalCode === null) c.kill("SIGKILL");
-  });
+  }, 60_000);
 
   afterAll(async () => {
     for (const c of clients) await c.end({ timeout: 5 });

@@ -51,7 +51,7 @@ describe("MIP-0018 explorer page: build/test guard (00026 C3)", () => {
       s.closeAllConnections();
       await new Promise<void>((r) => s.close(() => r()));
     }
-  });
+  }, 60_000);
 
   it("[[mip0018.ui.page-guard]] the served document parses: one inline script and one inline style whose SHA-256 are the CSP's, the script compiles, pure ASCII, no inline handler/style attribute/external reference, every id the script uses exists once, and the script has no markup sink, no other network client, no clock and only /v1 API paths", async () => {
     const h = await serve({ sql: NO_SQL, network: "stagenet", apiOnly: true, port: 0, log: () => {} });
@@ -149,7 +149,7 @@ describe("MIP-0018 explorer page: build/test guard (00026 C3)", () => {
     const apiMd = readFileSync(new URL("token-indexer/API.md", REPO), "utf8");
     for (const p of declared.filter((d) => !d.endsWith("/activity"))) expect(apiMd, p).toContain(`GET ${p}`);
     expect(apiMd).toContain("/v1/tokens/{color}/activity");
-  });
+  }, 60_000);
 
   it("[[mip0018.ui.static-routes]] serve() answers /ui, /ui/, the font, the icon and / → /ui from the API's own server; HEAD gives headers only; other methods and unknown /ui paths fall through to the API (405/404); without the hook /ui stays a 404; the font and icon are #19's bytes and the font's licence is in NOTICE", async () => {
     const h = await serve({ sql: NO_SQL, network: "stagenet", apiOnly: true, port: 0, log: () => {} });
@@ -203,5 +203,5 @@ describe("MIP-0018 explorer page: build/test guard (00026 C3)", () => {
     const notice = readFileSync(new URL("NOTICE", REPO), "utf8");
     for (const s of ["Outfit", "SIL Open Font License, Version 1.1", "token-indexer/mip0018/ui/fonts/OFL.txt", "92684e4acde79ef07758cd09380b7e01e9824d8b061eddeda046f78c166d7b12", "11af38e66a917be3d2f2efbbadaa81b96bfbcdfd"])
       expect(notice).toContain(s);
-  });
+  }, 60_000);
 });

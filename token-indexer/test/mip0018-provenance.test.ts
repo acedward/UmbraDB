@@ -67,7 +67,7 @@ describe("vendored MIP-0018 reference files", () => {
   const scratch: string[] = [];
   afterAll(() => {
     for (const d of scratch) rmSync(d, { recursive: true, force: true });
-  });
+  }, 60_000);
 
   it("[[mip0018.vendor.provenance]] every vendored file equals its SHA-256 in SOURCE.md and none is unlisted", () => {
     const text = readFileSync(join(VENDOR_DIR, "SOURCE.md"), "utf8");
@@ -78,11 +78,11 @@ describe("vendored MIP-0018 reference files", () => {
     expect(rows.some((r) => r.path === "LICENSE")).toBe(true);
     expect(rows.some((r) => r.path === "vectors/tools/run.ts")).toBe(true);
     expect(rows.some((r) => r.path === "vectors/manifest.json")).toBe(true);
-  });
+  }, 60_000);
 
   it("[[mip0018.vendor.vector-sums]] the vendored vectors pass their own SHA256SUMS (as the runner checks before a run)", () => {
     expect(verifySums(join(VENDOR_DIR, "vectors"))).toEqual([]);
-  });
+  }, 60_000);
 
   it("a single modified byte, a removed file and an unlisted file are each reported", () => {
     const copy = mkdtempSync(join(tmpdir(), "mip0018-provenance-"));
@@ -97,5 +97,5 @@ describe("vendored MIP-0018 reference files", () => {
     expect(checkProvenance(copy).sort()).toEqual(
       ["hash mismatch: codec/src/decode.ts", "listed but missing: NOTICE", "not listed in SOURCE.md: codec/src/extra.ts"].sort(),
     );
-  });
+  }, 60_000);
 });

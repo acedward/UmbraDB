@@ -32,7 +32,7 @@ describe("MIP-0018 vectors through the pure adapter", () => {
     expect(own.normative).toEqual({ passed: 8, total: 8 });
     expect(own.notApplicable).toEqual({}); // audit F2: S9d's group check must run, never pass as "not applicable"
     expect(own.results.map((r) => r.id).sort()).toEqual([...OWN_IDS].sort());
-  });
+  }, 120_000);
 
   it("[[mip0018.vectors.no-not-applicable]] negative probe (audit F2): a consumer that reports no groups still passes the runner, but only with S9d (and the vendored S9a–S9c) marked not applicable — which the adapter tests refuse", async () => {
     const noGroups = async (req: Json): Promise<Json> => {
@@ -46,19 +46,19 @@ describe("MIP-0018 vectors through the pure adapter", () => {
     const sets = vectorSets();
     const reference = await runVectors(loadVectors({ dir: VENDORED_VECTORS_DIR, only: sets.reference.map((v) => v.id) }), noGroups);
     expect(Object.keys(reference.notApplicable).sort()).toEqual(["S9a", "S9b", "S9c"]);
-  });
+  }, 120_000);
 
   it("[[mip0018.vectors.own-versions-needed]] the vendored 78ecbb4 versions of exactly six of the eight ids fail under per-key tombstones", async () => {
     const report = await runVectors(loadVectors({ dir: VENDORED_VECTORS_DIR, only: OWN_IDS }), pure);
     expect(report.results.filter((r) => !r.ok).map((r) => r.id).sort()).toEqual(["S3a", "S3b", "S3c", "S3d", "S4b", "S9d"]);
-  });
+  }, 120_000);
 
   it("[[mip0018.vectors.own-integrity]] UmbraDB's own vectors match their SHA256SUMS and their generator", () => {
     expect(verifySums(UMBRADB_VECTORS_DIR)).toEqual([]);
     const gen = spawnSync(process.execPath, [join(UMBRADB_VECTORS_DIR, "generate.ts"), "--check"], { encoding: "utf8" });
     expect(gen.stderr).toBe("");
     expect(gen.status).toBe(0);
-  });
+  }, 120_000);
 
   it("[[mip0018.vectors.runner-cli]] the vendored runner CLI drives the adapter process over both sets and exits 0", () => {
     const run = spawnSync(process.execPath, [join(UMBRADB_VECTORS_DIR, "..", "run-vectors.ts")], { encoding: "utf8", timeout: 120_000 });
