@@ -195,6 +195,27 @@ describe("MIP-0018 token activity (00026 C2)", () => {
     const first = await metadataTransactionsForContract(db.sql, NET, contract, { limit: 1 }, db.mip);
     await expect(metadataTransactionsForContract(db.sql, NET, contract, { cursor: first.nextCursor!, order: "desc" }, db.mip)).rejects.toThrow(/another listing or order/);
     await expect(activityForColor(db.sql, NET, contract, { cursor: first.nextCursor! }, db.mip)).rejects.toThrow(/another listing or order/);
+    // Final-audit N5: a cursor is accepted only in the canonical form the API issues (decode/encode round trip).
+    const issued = JSON.parse(Buffer.from(first.nextCursor!, "base64url").toString("utf8")) as { v: number; s: string; o: string; p: number[] };
+    const b64 = (text: string): string => Buffer.from(text, "utf8").toString("base64url");
+    expect(b64(JSON.stringify({ v: 1, s: issued.s, o: issued.o, p: issued.p }))).toBe(first.nextCursor); // the issued form is canonical
+    expect((await metadataTransactionsForContract(db.sql, NET, contract, { cursor: b64(JSON.stringify({ v: 1, s: issued.s, o: "asc", p: issued.p })) }, db.mip)).items).toEqual(expected.slice(1));
+    const nonCanonical: string[] = [
+      b64(JSON.stringify({ s: issued.s, v: 1, o: issued.o, p: issued.p })), // keys reordered
+      b64(JSON.stringify({ ...issued, x: 1 })), // an extra key
+      b64(JSON.stringify(issued, null, 1)), // whitespace
+      b64(JSON.stringify(issued).replace(`"p":[${issued.p[0]}`, `"p":[${issued.p[0]}.0`)), // another number spelling
+    ];
+    // Another base64url spelling of the same bytes: a set unused low bit in the last character.
+    const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const spareBits = ({ 2: 4, 3: 2 } as Record<number, number>)[first.nextCursor!.length % 4];
+    if (spareBits !== undefined) {
+      const variant = first.nextCursor!.slice(0, -1) + B64[B64.indexOf(first.nextCursor!.at(-1)!) | 1];
+      expect(Buffer.from(variant, "base64url").equals(Buffer.from(first.nextCursor!, "base64url"))).toBe(true);
+      nonCanonical.push(variant);
+    }
+    for (const cursor of nonCanonical)
+      await expect(metadataTransactionsForContract(db.sql, NET, contract, { cursor }, db.mip), cursor).rejects.toBeInstanceOf(ActivityQueryError);
     for (const bad of [{ limit: 0 }, { limit: ACTIVITY_PAGE_MAX + 1 }, { limit: 1.5 }, { cursor: "not a cursor!" }, { cursor: Buffer.from('{"v":1}').toString("base64url") }, { order: "up" as "asc" }])
       await expect(metadataTransactionsForContract(db.sql, NET, contract, bad, db.mip), JSON.stringify(bad)).rejects.toBeInstanceOf(ActivityQueryError);
     await expect(activityForColor(db.sql, NET, "00", {}, db.mip)).rejects.toThrow(/32 bytes of hex/);

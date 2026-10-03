@@ -388,6 +388,10 @@ function decodeCursor(cursor: string, subject: string, order: "asc" | "desc"): [
   const p = b.p;
   if (b.v !== 1 || !Array.isArray(p) || p.length !== 3 || !p.every((x) => Number.isSafeInteger(x) && (x as number) >= 0))
     throw new ActivityQueryError("cursor is not a cursor of this API");
+  // Final-audit N5: only the canonical form this API issues (the decode/encode round trip gives the same string):
+  // no extra or reordered keys, no whitespace, no other number or base64url spelling.
+  if (typeof b.s !== "string" || (b.o !== "asc" && b.o !== "desc") || encodeCursor({ v: 1, s: b.s, o: b.o, p: [p[0], p[1], p[2]] as [number, number, number] }) !== cursor)
+    throw new ActivityQueryError("cursor is not a cursor of this API");
   if (b.s !== subject || b.o !== order) throw new ActivityQueryError("cursor belongs to another listing or order");
   return [String(p[0]), p[1] as number, p[2] as number];
 }
