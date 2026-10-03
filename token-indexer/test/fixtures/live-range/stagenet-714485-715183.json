@@ -1,0 +1,413 @@
+{
+  "format": "umbradb-mip0018-live-range/1",
+  "$comment": "Project 00026 sub-plan D3 (spec FR-042, SC-003; owner Q11): one polite live Stagenet sync of 714485-715183 with the real programs (chain-archive-sync/sync-cli.ts, then token-indexer/mip0018/scan-cli.ts), one live run killed with SIGKILL mid-range and resumed (archive and scan), and a replay of the recorded D1 tape through the same programs, compared table by table (token-indexer/dev/range-tables.ts: every table of both schemas, wall-clock columns and the verifier_key_observations.id surrogate key excluded). Written by token-indexer/dev/live-range-check.ts; checked in CI by token-indexer/test/mip0018-live-range.test.ts (a fresh replay must give these digests). Request counts come from the fetch-meter preload (completed requests; a request in flight at the SIGKILL is not counted).",
+  "recordedAt": "2026-10-03",
+  "network": "stagenet",
+  "genesisHash": "0x2f76825abc239fecf6107c9df99016de57037b451ae57a4394b76c8cf53a9491",
+  "range": {
+    "from": 714485,
+    "to": 715183
+  },
+  "code": {
+    "branch": "00026-wip-d",
+    "commit": "6fba5463c918f7b2105c4ac1ce17835cd6cc1876",
+    "note": "sync and scan code of PR #26 head 6fba546 (the D2/D3 commits add tests and dev tools only)",
+    "node": "node:24-bookworm",
+    "ledgerV9": "1.0.0-rc.3"
+  },
+  "endpoints": {
+    "node": "https://rpc.stagenet.shielded.tools",
+    "indexer": "https://indexer.stagenet.shielded.tools/api/v4/graphql"
+  },
+  "politeness": {
+    "concurrency": 4,
+    "minIntervalMsPerEndpoint": 250,
+    "backoff": "sync-cli defaults: 1 s base, 60 s cap, 8 attempts; 429/403/5xx/transport/non-JSON retried"
+  },
+  "runs": {
+    "liveUninterrupted": {
+      "schemas": {
+        "archive": "d3_a_archive",
+        "mip": "d3_a_mip"
+      },
+      "sync": {
+        "ms": 443496,
+        "runs": [
+          {
+            "startedAt": "2026-10-03T07:33:10.124Z",
+            "ms": 443496,
+            "exit": 0,
+            "signal": null
+          }
+        ],
+        "programCounters": {
+          "batches": 4,
+          "retries": 0,
+          "throttled": 0,
+          "backoffLines": 0,
+          "loopErrors": 0
+        },
+        "requests": {
+          "total": 2109,
+          "byHostAndOperation": {
+            "rpc.stagenet.shielded.tools": {
+              "chain_getFinalizedHead": 4,
+              "chain_getHeader": 4,
+              "chain_getBlockHash": 699,
+              "chain_getBlock": 699
+            },
+            "indexer.stagenet.shielded.tools": {
+              "block": 703
+            }
+          },
+          "statuses": {
+            "200": 2109
+          },
+          "throttledAnswers": 0,
+          "nonSuccessAnswers": 0
+        }
+      },
+      "scan": {
+        "ms": 4666,
+        "runs": [
+          {
+            "startedAt": "2026-10-03T07:40:33.621Z",
+            "ms": 4666,
+            "exit": 0,
+            "signal": null
+          }
+        ]
+      }
+    },
+    "liveKilledAndResumed": {
+      "schemas": {
+        "archive": "d3_b_archive",
+        "mip": "d3_b_mip"
+      },
+      "sync": {
+        "ms": 486580,
+        "runs": [
+          {
+            "startedAt": "2026-10-03T07:41:22.921Z",
+            "ms": 198705,
+            "exit": null,
+            "signal": "SIGKILL",
+            "killedAt": 714800
+          },
+          {
+            "startedAt": "2026-10-03T07:44:41.627Z",
+            "ms": 287874,
+            "exit": 0,
+            "signal": null
+          }
+        ],
+        "archivedHeightAtKill": 714800,
+        "programCounters": {
+          "batches": 3,
+          "retries": 0,
+          "throttled": 0,
+          "backoffLines": 0,
+          "loopErrors": 0
+        },
+        "requests": {
+          "total": 2109,
+          "byHostAndOperation": {
+            "rpc.stagenet.shielded.tools": {
+              "chain_getFinalizedHead": 4,
+              "chain_getHeader": 4,
+              "chain_getBlockHash": 699,
+              "chain_getBlock": 699
+            },
+            "indexer.stagenet.shielded.tools": {
+              "block": 703
+            }
+          },
+          "statuses": {
+            "200": 2109
+          },
+          "throttledAnswers": 0,
+          "nonSuccessAnswers": 0
+        }
+      },
+      "scan": {
+        "ms": 52144,
+        "runs": [
+          {
+            "startedAt": "2026-10-03T07:49:29.501Z",
+            "ms": 39769,
+            "exit": null,
+            "signal": "SIGKILL",
+            "killedAt": 714851
+          },
+          {
+            "startedAt": "2026-10-03T07:50:09.270Z",
+            "ms": 12375,
+            "exit": 0,
+            "signal": null
+          }
+        ],
+        "scanNextHeightAtKill": 714851,
+        "maxBlocksPerBatch": 5
+      }
+    },
+    "replay": {
+      "schemas": {
+        "archive": "d3_r_archive",
+        "mip": "d3_r_mip"
+      },
+      "source": "D1 tape stagenet-714485-715183.tape.json.br via the local fake chain",
+      "sync": {
+        "ms": 5971,
+        "requests": 2109
+      },
+      "scan": {
+        "ms": 5144
+      }
+    }
+  },
+  "comparison": {
+    "identical": {
+      "liveUninterrupted=replay": true,
+      "liveUninterrupted=liveKilledAndResumed": true,
+      "replay=liveKilledAndResumed": true
+    },
+    "sha256": {
+      "a": "e7aad2bf2983bf844339e2c7f130b4fbfc99a10f9fe316095ad4ac201784880d",
+      "r": "e7aad2bf2983bf844339e2c7f130b4fbfc99a10f9fe316095ad4ac201784880d",
+      "b": "e7aad2bf2983bf844339e2c7f130b4fbfc99a10f9fe316095ad4ac201784880d"
+    }
+  },
+  "liveTables": {
+    "tables": {
+      "archive._migrations": {
+        "rows": 3,
+        "sha256": "4a802d588b66d08dc84c4174b2a2ee0367cda2df35c2906ea3cccbc2f23f1550",
+        "excluded": [
+          "applied_at (wall clock)"
+        ]
+      },
+      "archive.blocks": {
+        "rows": 699,
+        "sha256": "6071f71a1d86990eaa0d4ba5c0680af03c9bae5aae8b20f019834af785f3fdc1",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.blocks_default": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.blocks_p0": {
+        "rows": 699,
+        "sha256": "6071f71a1d86990eaa0d4ba5c0680af03c9bae5aae8b20f019834af785f3fdc1",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.blocks_p1": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.blocks_p2": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.blocks_p3": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.blocks_p4": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.bridge_observations": {
+        "rows": 1,
+        "sha256": "c1c50598f58ce65460fad0adadad63656329bc5eb55f91e0257eb576cd98d10e",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.bridge_observations_default": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.bridge_observations_p0": {
+        "rows": 1,
+        "sha256": "c1c50598f58ce65460fad0adadad63656329bc5eb55f91e0257eb576cd98d10e",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.bridge_observations_p1": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.bridge_observations_p2": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.bridge_observations_p3": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.bridge_observations_p4": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.chain_blob_roles": {
+        "rows": 1468,
+        "sha256": "09fe26526d5c577b245a56494febe7032130a7c073e5a646ca5dddaa921d9c92",
+        "excluded": []
+      },
+      "archive.chain_blobs": {
+        "rows": 1468,
+        "sha256": "038f23f0435745dbe9b5efa1b08d4e8972237e56c3d56c576a8ffdf2d4c8cccf",
+        "excluded": [
+          "created_at (wall clock)"
+        ]
+      },
+      "archive.transactions": {
+        "rows": 69,
+        "sha256": "25eed856e94e623852b519d3ee03defcf8df2565f9ada4724528dfbdfeca623f",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.transactions_default": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.transactions_p0": {
+        "rows": 69,
+        "sha256": "25eed856e94e623852b519d3ee03defcf8df2565f9ada4724528dfbdfeca623f",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.transactions_p1": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.transactions_p2": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.transactions_p3": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.transactions_p4": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.verifier_key_observations": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "id (surrogate key)",
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.watermarks": {
+        "rows": 1,
+        "sha256": "2de1a8ba0f2b2b576d8d3ef0051050ef9ea2190d0c0af6e06d8e5385a3fd4b39",
+        "excluded": [
+          "updated_at (wall clock)"
+        ]
+      },
+      "mip0018._migrations": {
+        "rows": 4,
+        "sha256": "47748b19d0fce6c7cf5668454ac9510ab6724fe3a65f373bc046bdf75b5e264a",
+        "excluded": [
+          "applied_at (wall clock)"
+        ]
+      },
+      "mip0018.mip0018_activity": {
+        "rows": 46,
+        "sha256": "d667b808dc99ec36ed1785c1753e762f7e7c15b4e93f99c7444344f5b3b5f085",
+        "excluded": []
+      },
+      "mip0018.mip0018_builtin_tokens": {
+        "rows": 2,
+        "sha256": "5a538de9b9d6bd30e2a72999e8049fd4cbcabb7c65558470bca000bc99ff43e8",
+        "excluded": []
+      },
+      "mip0018.mip0018_color_sightings": {
+        "rows": 9,
+        "sha256": "2987890d7fc7b591681aea498d80c585180202aed2ca09b50253211165fd1c8d",
+        "excluded": []
+      },
+      "mip0018.mip0018_contract_actions": {
+        "rows": 70,
+        "sha256": "969123b2b59e83613d34e254e2c72d51c0d4e2f7a9b554391849a91305d20e5e",
+        "excluded": []
+      },
+      "mip0018.mip0018_events": {
+        "rows": 49,
+        "sha256": "93afd2b9d7b6bf54b7edb61498ee703b35d365e2dd2490f0802bd9d9896f399e",
+        "excluded": []
+      },
+      "mip0018.mip0018_fields": {
+        "rows": 47,
+        "sha256": "5cae91e3059e2ca29a30c005beba609b3d0fab3b3c71f6fd59ac66d4179170a0",
+        "excluded": []
+      },
+      "mip0018.mip0018_mints": {
+        "rows": 7,
+        "sha256": "684dea25c4938dadaf51fb9797223d9fb14431d9f4ca94a38e14143a0f67080e",
+        "excluded": []
+      },
+      "mip0018.mip0018_scan": {
+        "rows": 1,
+        "sha256": "90d87ef07b9496c0fc2b9114a73abcb308111b9faf28aabc13fa50afd5b31fc7",
+        "excluded": []
+      }
+    },
+    "sha256": "e7aad2bf2983bf844339e2c7f130b4fbfc99a10f9fe316095ad4ac201784880d"
+  }
+}
