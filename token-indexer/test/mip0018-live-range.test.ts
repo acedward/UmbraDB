@@ -11,6 +11,13 @@
  * once more with the changed code and the digests replaced by that run's (never regenerated from a replay). The
  * earlier recording is kept (`previousRecording`): its three runs were identical, its archive tables equal the new
  * live run's, and only the two tables whose columns C4 changed differ.
+ *
+ * What this file records and checks for the CURRENT schema is one uninterrupted live run = the replay. The killed-
+ * and-resumed live run was repeated on the final code (`0061748`: sync SIGKILLed at 714800 and resumed, scan SIGKILLed
+ * at cursor 714851 and resumed) and gave the same digest `550be4c5…19a1` for all 35 tables; that result is recorded in
+ * the project's plan (00026 sub-plan D, assumption P03), not in this fixture. In CI, kill-and-resume is covered on
+ * fixtures by `[[archive.sync.resume-kill-identical]]`, `[[mip0018.scan.resume-identical]]` and
+ * `[[mip0018.activity.kill-resume]]` (final-audit N4: the test title claims only what is checked here).
  */
 import { readFileSync } from "node:fs";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -44,7 +51,7 @@ describe("recorded live range = fixture replay (00026 D3)", () => {
     await container?.stop();
   }, 60_000);
 
-  it("[[mip0018.live-range.replay-equals-live]] replaying the recorded 714485–715183 tape through the sync service and the scanner gives, table by table, the digests of the live Stagenet sync (every archive and mip0018 table; the live run, its killed-and-resumed twin and the replay were identical); a changed row is caught", async () => {
+  it("[[mip0018.live-range.replay-equals-live]] replaying the recorded 714485–715183 tape through the sync service and the scanner gives, table by table, the digests of the live Stagenet sync recorded with the current schema (every archive and mip0018 table; that live run = the replay); the earlier recording's live run, killed-and-resumed live run and replay were identical, and its archive tables equal the current ones; a changed row is caught", async () => {
     expect(RECORDED.format).toBe("umbradb-mip0018-live-range/1");
     expect(RECORDED.genesisHash).toBe(loadManifest().genesisHash);
     expect(RECORDED.comparison.identical).toEqual({ "liveUninterrupted=replay": true });

@@ -123,7 +123,9 @@ Fixtures:
   UmbraDB's own per-key expectations for C06's steps after the tombstone (the reference files predate per-key
   tombstones).
 - `test/fixtures/live-range/stagenet-714485-715183.json` — the recorded result of live syncs of 714485–715183: the
-  current recording (a live run with the current schema, identical to the fixture replay) and the previous one (an
+  current recording (one uninterrupted live run with the current schema, identical to the fixture replay; a killed-
+  and-resumed live run on the final code gave the same digest — recorded in the project plan, not in the file) and the
+  previous one (an
   uninterrupted run, a run killed with SIGKILL and resumed, archive and scan, and the replay, all identical; its
   archive tables equal the current run's, and only the two tables whose entry-point columns became `bytea` differ);
   CI checks a fresh replay against the current per-table digests.
