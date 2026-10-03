@@ -86,7 +86,8 @@ export interface Mip0018ScannerOptions {
   decode?: (raw: Uint8Array) => DecodedTransaction;
   /** Test seam: runs inside a block's database transaction after its rows are written, before the cursor moves. */
   onBlockWritten?: (height: number) => void | Promise<void>;
-  /** Test seam (sub-plan C2): the transaction the activity rows are read from (default: ledger-v9 deserialization). */
+  /** Test seam (sub-plan C2): the transaction the activity rows are read from (default: ledger-v9 deserialization; a
+   *  scanner given only a `decode` seam — synthetic bytes — records no activity). */
   activityTransaction?: (raw: Uint8Array) => ActivityTransactionLike;
 }
 
@@ -296,8 +297,9 @@ export class Mip0018Scanner {
       for (const m of parts.applied.maintenance)
         rows.actions.push({ ...at, segment_id: m.segment, action_index: m.actionIndex, tx_hash: txHash, action: "maintenance", contract_address: buf(m.address), entry_point: null, applied_phases: null, maintenance_counter: m.counter.toString(), maintenance_updates: m.updates });
       // Sub-plan C2: the public token flows of the applied parts and the metadata transactions (`activity.ts`).
-      const activityTx = (this.opts.activityTransaction ?? activityTransaction)(await this.archive.getBlob(tx.rawBlobHash));
-      rows.activity.push(...transactionActivity({ network: this.network, height: block.height, txIndex: tx.position, txHash: tx.txHash, tx: activityTx, outcome: parts.outcome, events: rows.events }));
+      const readActivity = this.opts.activityTransaction ?? (this.opts.decode === undefined ? activityTransaction : undefined);
+      if (readActivity !== undefined)
+        rows.activity.push(...transactionActivity({ network: this.network, height: block.height, txIndex: tx.position, txHash: tx.txHash, tx: readActivity(await this.archive.getBlob(tx.rawBlobHash)), outcome: parts.outcome, events: rows.events }));
     }
     return rows;
   }

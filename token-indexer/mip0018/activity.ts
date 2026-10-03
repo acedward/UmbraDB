@@ -18,6 +18,7 @@
 import { addressFromKey, ContractCall, Transaction } from "@midnightntwrk/ledger-v9";
 import type { ISql } from "postgres";
 import { normHex, NIGHT_COLOR, type Part, partApplied, type Phase, type TransactionOutcome } from "./applied-parts.ts";
+import { walletAddress } from "./bech32m.ts";
 import { tokenColor } from "./color.ts";
 
 /** A connection or the scan's block transaction (the same handle type as `fields.ts`). */
@@ -270,4 +271,214 @@ export async function writeActivity(tx: Queryable, schema: string, rows: readonl
 /** Removes every activity row above `height` (with the scan's `removeAbove`, in its transaction). */
 export async function removeActivityAbove(tx: Queryable, schema: string, network: string, height: number): Promise<void> {
   await tx`DELETE FROM ${tx(schema)}.mip0018_activity WHERE network = ${network} AND block_height > ${height}`;
+}
+
+/* ── Reads (what the API serves; C1 wires `GET /v1/tokens/{color}/activity` and a contract's metadata transactions) ── */
+
+/** Largest page a read returns. */
+export const ACTIVITY_PAGE_MAX = 500;
+/** Page size when none is given. */
+export const ACTIVITY_PAGE_DEFAULT = 100;
+
+/** A bad read request (limit, cursor, color, contract) — an HTTP 400 for the API. */
+export class ActivityQueryError extends Error {
+  override name = "ActivityQueryError";
+}
+
+export interface ActivityItem {
+  /** Chain position: block height, transaction position in the block, row position in the transaction. */
+  height: number;
+  txIndex: number;
+  itemIndex: number;
+  txHash: string;
+  role: ActivityRole;
+  phase?: Phase;
+  segment?: number;
+  color?: string;
+  /** Unsigned decimal; `direction` gives the sign relative to the role's subject. */
+  amount?: string;
+  direction?: "in" | "out";
+  contract?: string;
+  actionIndex?: number;
+  entryPoint?: string;
+  domainSep?: string;
+  kind?: 1 | 2;
+  /** A wallet (`UserAddress`) as Bech32m — never hex. */
+  wallet?: string;
+  /** A contract recipient (hex — never Bech32m). */
+  recipientContract?: string;
+  /** The UTXO created, or the UTXO spent. */
+  utxo?: { intentHash: string; outputIndex: number };
+  /** `metadata-event` rows: classification counts and the first event's index in the transaction's event log. */
+  events?: { accepted: number; rejected: number; firstEventIndex: number };
+}
+
+export interface ActivityPage {
+  items: ActivityItem[];
+  /** Opaque; absent on the last page. */
+  nextCursor?: string;
+}
+
+export interface ActivityPageOptions {
+  /** 1…{@link ACTIVITY_PAGE_MAX} (default {@link ACTIVITY_PAGE_DEFAULT}). */
+  limit?: number;
+  cursor?: string;
+  /** Chain order, oldest first (default) or newest first. */
+  order?: "asc" | "desc";
+}
+
+interface DbActivityRow {
+  block_height: bigint | number;
+  tx_index: number;
+  item_index: number;
+  tx_hash: Buffer;
+  role: ActivityRole;
+  phase: Phase | null;
+  segment_id: number | null;
+  color: Buffer | null;
+  amount: string | null;
+  direction: "in" | "out" | null;
+  contract_address: Buffer | null;
+  action_index: number | null;
+  entry_point: string | null;
+  domain_sep: Buffer | null;
+  kind: number | null;
+  wallet_address: Buffer | null;
+  recipient_contract: Buffer | null;
+  intent_hash: Buffer | null;
+  output_index: number | null;
+  events_accepted: number | null;
+  events_rejected: number | null;
+  first_event_index: number | null;
+}
+
+const HEX32 = /^(0x)?[0-9a-fA-F]{64}$/;
+const MAX_POSITION: [string, number, number] = ["9223372036854775807", 2147483647, 2147483647];
+const MIN_POSITION: [string, number, number] = ["-1", -1, -1];
+
+function hex32(what: string, value: string): Buffer {
+  if (!HEX32.test(value)) throw new ActivityQueryError(`${what} must be 32 bytes of hex`);
+  return Buffer.from(normHex(value), "hex");
+}
+
+interface CursorBody {
+  v: 1;
+  /** Subject: `c:<color>` or `m:<contract>`. */
+  s: string;
+  o: "asc" | "desc";
+  p: [number, number, number];
+}
+
+function encodeCursor(c: CursorBody): string {
+  return Buffer.from(JSON.stringify(c), "utf8").toString("base64url");
+}
+
+function decodeCursor(cursor: string, subject: string, order: "asc" | "desc"): [string, number, number] {
+  let c: unknown;
+  try {
+    if (!/^[A-Za-z0-9_-]{1,512}$/.test(cursor)) throw new Error("shape");
+    c = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    throw new ActivityQueryError("cursor is not a cursor of this API");
+  }
+  const b = c as Partial<CursorBody>;
+  const p = b.p;
+  if (b.v !== 1 || !Array.isArray(p) || p.length !== 3 || !p.every((x) => Number.isSafeInteger(x) && (x as number) >= 0))
+    throw new ActivityQueryError("cursor is not a cursor of this API");
+  if (b.s !== subject || b.o !== order) throw new ActivityQueryError("cursor belongs to another listing or order");
+  return [String(p[0]), p[1] as number, p[2] as number];
+}
+
+function pageOptions(o: ActivityPageOptions): { limit: number; order: "asc" | "desc" } {
+  const limit = o.limit ?? ACTIVITY_PAGE_DEFAULT;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > ACTIVITY_PAGE_MAX) throw new ActivityQueryError(`limit must be an integer from 1 to ${ACTIVITY_PAGE_MAX}`);
+  const order = o.order ?? "asc";
+  if (order !== "asc" && order !== "desc") throw new ActivityQueryError("order must be asc or desc");
+  return { limit, order };
+}
+
+/** One stored row as the API serves it (bytes as hex, wallet addresses as Bech32m, absent fields omitted). */
+export function activityItem(network: string, r: DbActivityRow): ActivityItem {
+  const h = (b: Buffer | null): string | undefined => (b === null ? undefined : b.toString("hex"));
+  const item: ActivityItem = { height: Number(r.block_height), txIndex: r.tx_index, itemIndex: r.item_index, txHash: r.tx_hash.toString("hex"), role: r.role };
+  if (r.phase !== null) item.phase = r.phase;
+  if (r.segment_id !== null) item.segment = r.segment_id;
+  if (r.color !== null) item.color = h(r.color);
+  if (r.amount !== null) item.amount = String(r.amount);
+  if (r.direction !== null) item.direction = r.direction;
+  if (r.contract_address !== null) item.contract = h(r.contract_address);
+  if (r.action_index !== null) item.actionIndex = r.action_index;
+  if (r.entry_point !== null) item.entryPoint = r.entry_point;
+  if (r.domain_sep !== null) item.domainSep = h(r.domain_sep);
+  if (r.kind !== null) item.kind = r.kind as 1 | 2;
+  if (r.wallet_address !== null) item.wallet = walletAddress(network, r.wallet_address.toString("hex"));
+  if (r.recipient_contract !== null) item.recipientContract = h(r.recipient_contract);
+  if (r.intent_hash !== null && r.output_index !== null) item.utxo = { intentHash: r.intent_hash.toString("hex"), outputIndex: r.output_index };
+  if (r.events_accepted !== null && r.events_rejected !== null && r.first_event_index !== null)
+    item.events = { accepted: r.events_accepted, rejected: r.events_rejected, firstEventIndex: r.first_event_index };
+  return item;
+}
+
+function page(network: string, rows: readonly DbActivityRow[], limit: number, subject: string, order: "asc" | "desc"): ActivityPage {
+  const items = rows.slice(0, limit).map((r) => activityItem(network, r));
+  const last = items.at(-1);
+  return rows.length > limit && last !== undefined
+    ? { items, nextCursor: encodeCursor({ v: 1, s: subject, o: order, p: [last.height, last.txIndex, last.itemIndex] }) }
+    : { items };
+}
+
+/**
+ * A color's activity in chain order (keyset pagination): its own rows (mints, UTXOs, contract flows, offer deltas)
+ * and the metadata-event rows of the contract that minted it (none for a color whose mint is outside the indexed
+ * range, e.g. NIGHT). DUST has no color and therefore no activity.
+ */
+export async function activityForColor(
+  sql: Queryable, network: string, color: string, o: ActivityPageOptions = {}, schema = "mip0018",
+): Promise<ActivityPage & { contract?: string }> {
+  const c = hex32("color", color);
+  const { limit, order } = pageOptions(o);
+  const subject = `c:${c.toString("hex")}`;
+  const [h, t, i] = o.cursor === undefined ? (order === "asc" ? MIN_POSITION : MAX_POSITION) : decodeCursor(o.cursor, subject, order);
+  const minted = await sql<{ contract_address: Buffer }[]>`
+    SELECT contract_address FROM ${sql(schema)}.mip0018_mints WHERE network = ${network} AND color = ${c} LIMIT 1`;
+  const contract = minted[0]?.contract_address ?? null;
+  const rows = order === "asc"
+    ? await sql<DbActivityRow[]>`
+        SELECT * FROM ${sql(schema)}.mip0018_activity
+        WHERE network = ${network} AND (color = ${c} OR (role = 'metadata-event' AND contract_address = ${contract}))
+          AND (block_height, tx_index, item_index) > (${h}::bigint, ${t}::int, ${i}::int)
+        ORDER BY block_height, tx_index, item_index LIMIT ${limit + 1}`
+    : await sql<DbActivityRow[]>`
+        SELECT * FROM ${sql(schema)}.mip0018_activity
+        WHERE network = ${network} AND (color = ${c} OR (role = 'metadata-event' AND contract_address = ${contract}))
+          AND (block_height, tx_index, item_index) < (${h}::bigint, ${t}::int, ${i}::int)
+        ORDER BY block_height DESC, tx_index DESC, item_index DESC LIMIT ${limit + 1}`;
+  const p = page(network, rows, limit, subject, order);
+  return contract === null ? p : { ...p, contract: contract.toString("hex") };
+}
+
+/**
+ * A contract's metadata transactions in chain order (keyset pagination): one row per transaction with accepted or
+ * rejected MIP-0018 events of that contract — what a kind-3 identity (no color) shows as its activity. Counts and
+ * the event-log reference only; never decoded values (Q15).
+ */
+export async function metadataTransactionsForContract(
+  sql: Queryable, network: string, contract: string, o: ActivityPageOptions = {}, schema = "mip0018",
+): Promise<ActivityPage> {
+  const a = hex32("contract", contract);
+  const { limit, order } = pageOptions(o);
+  const subject = `m:${a.toString("hex")}`;
+  const [h, t, i] = o.cursor === undefined ? (order === "asc" ? MIN_POSITION : MAX_POSITION) : decodeCursor(o.cursor, subject, order);
+  const rows = order === "asc"
+    ? await sql<DbActivityRow[]>`
+        SELECT * FROM ${sql(schema)}.mip0018_activity
+        WHERE network = ${network} AND role = 'metadata-event' AND contract_address = ${a}
+          AND (block_height, tx_index, item_index) > (${h}::bigint, ${t}::int, ${i}::int)
+        ORDER BY block_height, tx_index, item_index LIMIT ${limit + 1}`
+    : await sql<DbActivityRow[]>`
+        SELECT * FROM ${sql(schema)}.mip0018_activity
+        WHERE network = ${network} AND role = 'metadata-event' AND contract_address = ${a}
+          AND (block_height, tx_index, item_index) < (${h}::bigint, ${t}::int, ${i}::int)
+        ORDER BY block_height DESC, tx_index DESC, item_index DESC LIMIT ${limit + 1}`;
+  return page(network, rows, limit, subject, order);
 }
