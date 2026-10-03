@@ -11,6 +11,13 @@ Every `<case>/*.json` directly under a case folder is a byte-for-byte copy of
 recorded case index (`test/integration/fixtures/stagenet-archive/case-index.json`, `source.files`) holds for that
 reference path.
 
+Sub-plan D2 added three more verbatim copies from the same commit, used by `token-indexer/test/mip0018-cases.test.ts`
+and checked the same way: `IDX/expected.json` (the matrix colors with each identity's metadata, C05 bronze not minted),
+`IDX/index-summary.json` and `U1/index-summary.json` (the reference mint scanner's output over 714485–715183 and
+715402–715433: colors with first/last mint, deploys, the `mip-0018:token-metadata[v1]` events with position, bytes and
+classification, stats). C09 has no copy: its `expected.json` is byte-identical to C01's (same SHA-256 in the case
+index), so the test compares C01's file.
+
 ## UmbraDB's own per-key expectations (`C06/umbradb-per-key/`)
 
 The reference expectations of C06's steps after the tombstone (`expected-after-withdraw.json`,
