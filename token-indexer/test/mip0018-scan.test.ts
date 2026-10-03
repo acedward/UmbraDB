@@ -6,7 +6,7 @@
  * real `chain-archive-sync` against `fake-chain-server.ts` (no network), and synthetic archive blocks for what
  * Stagenet cannot show (a mint in a failed fallible segment, a color seen before its mint, broken archive rows).
  * Expected colors: the reference index states (midnight-experiments/mip-0018 @ daec1f1,
- * `deployments/stagenet/cases/{IDX,U1}/index/index-state.json`) and the wallet's balances (`cases/*/wallet-status.json`).
+ * `deployments/stagenet/cases/{IDX,U1}/index/index-state.json`) and the wallet's balances (`cases/<case>/wallet-status.json`).
  * One Postgres 17 container for the file; one archive schema + one `mip0018` schema per scenario.
  */
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -16,6 +16,7 @@ import type { IndexerBlock } from "../../chain-archive-sync/indexer-client.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { type ArchiveTape, type FakeChain, loadTape, startFakeChain } from "../../test/integration/fixtures/stagenet-archive/fake-chain-server.js";
+import { loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
 import { tokenColor } from "../mip0018/color.ts";
 import { main as scanCli } from "../mip0018/scan-cli.ts";
 import { Mip0018Scanner, ScanError, ScanRangeError } from "../mip0018/scan.ts";
@@ -24,7 +25,6 @@ import { blockHashOf, decodeSynthetic, putSyntheticBlocks, type SynthArchivedTx 
 
 const NET = "stagenet";
 const C04 = loadTape("c04-714637-714663.tape.json");
-const SPARSE = loadTape("cases-sparse.tape.json");
 
 const C04_CONTRACT = "86acf80ff386abb610aadbea0406039e7fe39893f440794c3c2bad86dd48570f";
 const C04_DS = "6d69702d303031383a6578616d706c653a6d756c74692d6b696e640000000000";
@@ -149,46 +149,65 @@ describe("MIP-0018 scan over the chain archive (00026 A3)", () => {
     ]);
   }, 180_000);
 
-  it("[[mip0018.scan.case-colors]] each recorded case block (C02, C03, C05 gold/silver, the IDX third-party mint, U1, the C10/U1 maintenance updates, the 714813 two-call transaction) scans to the expected rows; C05 bronze is not minted", async () => {
-    const found: Record<number, [number, string, string, string, string]> = {};
-    for (const height of [714557, 714617, 714683, 714689, 714802, 714813, 715183, 715409, 715428]) {
-      const db = await fresh("case");
-      await archiveTape(db.sql, db.archive, SPARSE, height, height);
-      const s = scanner(db);
-      await s.bootstrap();
-      const r = await s.scanOnce();
-      expect(r).toMatchObject({ scannedBlocks: 1, fromHeight: height, toHeight: height });
-      expect((await s.getCursor())?.nextHeight).toBe(height + 1); // moved past every action, maintenance included
-      const mints = await db.sql<{ kind: number; color: Buffer; contract_address: Buffer; domain_sep: Buffer; amount: string; phase: string }[]>`
-        SELECT kind, color, contract_address, domain_sep, amount::text AS amount, phase FROM ${db.sql(db.mip)}.mip0018_mints`;
-      for (const m of mints) {
-        expect(found[height]).toBeUndefined();
-        expect(m.phase).toBe("guaranteed");
-        found[height] = [m.kind, hex(m.color), hex(m.contract_address), hex(m.domain_sep), m.amount];
-        expect((await lookupColor(db.sql, NET, hex(m.color), db.mip)).found).toBe(true);
-      }
-      const actions = await db.sql<{ tx_index: number; action: string; maintenance_updates: string[] | null }[]>`
-        SELECT tx_index, action, maintenance_updates FROM ${db.sql(db.mip)}.mip0018_contract_actions ORDER BY tx_index, segment_id, action_index`;
-      if (height === 715183 || height === 715428) {
-        expect(actions).toHaveLength(1);
-        expect(actions[0]!.action).toBe("maintenance");
-        expect(actions[0]!.maintenance_updates![0]).toMatch(height === 715183 ? /^VerifierKeyRemove\(publishMetadata/ : /^VerifierKeyInsert\(publishMetadata/);
-      }
-      if (height === 714813) {
-        // Two transactions, three call actions: the measure the reference's IDX summary calls `contractCalls` counts
-        // transactions with a call (58 in 714485–715183), A2's live count was call actions (60).
-        expect(actions.map((a) => `${a.tx_index}:${a.action}`)).toEqual(["0:call", "1:call", "1:call"]);
-        const counts = await db.sql<{ calls: number; txs: number }[]>`
-          SELECT count(*)::int AS calls, count(DISTINCT tx_index)::int AS txs FROM ${db.sql(db.mip)}.mip0018_contract_actions WHERE action = 'call'`;
-        expect(counts[0]).toEqual({ calls: 3, txs: 2 });
-      }
-      if (height === 715409) {
-        // C05 bronze was published but never minted: its color resolves to nothing (here and in every other block).
-        expect((await lookupColor(db.sql, NET, tokenColor(C05_BRONZE_DS, C05_CONTRACT), db.mip)).found).toBe(false);
-      }
-    }
-    expect(found).toEqual(CASE_MINTS);
-  }, 300_000);
+  it("[[mip0018.scan.idx-u1-ranges]] the recorded IDX range 714485–715183 gives exactly the reference's 6 colors (C05 bronze not minted) and U1's range its color; deploys, maintenance updates and the 58-vs-60 call count are explained by the rows", async () => {
+    // IDX: every block of the reference's scan range (D1 recording), archived and scanned.
+    const idx = await fresh("idx");
+    const tape = loadRangeTape("idx");
+    await archiveTape(idx.sql, idx.archive, tape, 714485, 715183);
+    const s = scanner(idx);
+    await s.bootstrap();
+    expect(await scanAll(s, 250)).toBe(699);
+    const colors = await listColors(idx.sql, NET, idx.mip);
+    const got: Record<number, Array<[number, string, string, string, string]>> = {};
+    for (const c of colors) for (const [kind, k] of [[1, c.shielded], [2, c.unshielded]] as const)
+      if (k !== undefined) (got[k.firstMint.height] ??= []).push([kind, c.color, c.contractAddress, c.domainSep, k.amount]);
+    expect(colors).toHaveLength(6);
+    expect(Object.fromEntries(Object.entries(got).map(([h, v]) => [h, v[0]]))).toEqual(
+      Object.fromEntries(Object.entries(CASE_MINTS).filter(([h]) => Number(h) <= 715183).concat([
+        ["714643", [1, C04_COLOR, C04_CONTRACT, C04_DS, "100000"]], ["714649", [2, C04_COLOR, C04_CONTRACT, C04_DS, "100000"]],
+      ])),
+    );
+    for (const c of colors) expect(c.shielded === undefined || c.shielded.mints === 1).toBe(true);
+    expect((await lookupColor(idx.sql, NET, tokenColor(C05_BRONZE_DS, C05_CONTRACT), idx.mip)).found).toBe(false); // published, never minted
+    // Seen tokens of the range: exactly the six minted colors (public data shows no other color; NIGHT is a built-in).
+    const seen = await nativeTokens(idx.sql, NET, idx.mip);
+    expect(seen.map((t) => t.color).sort()).toEqual(colors.map((c) => c.color).sort());
+    expect(seen.every((t) => t.minted !== undefined)).toBe(true);
+
+    // Contract actions: 9 deploys, 1 maintenance update (C10's VerifierKeyRemove at 715183), 60 call actions in
+    // 58 transactions — the reference IDX summary's `contractCalls: 58` counts transactions with a call; A2's live
+    // count (60) was call actions. Two transactions carry two calls each (another user's bridge contracts).
+    const actions = await idx.sql<{ action: string; n: number; txs: number }[]>`
+      SELECT action, count(*)::int AS n, count(DISTINCT (block_height, tx_index))::int AS txs
+      FROM ${idx.sql(idx.mip)}.mip0018_contract_actions GROUP BY action ORDER BY action`;
+    expect(actions).toEqual([{ action: "call", n: 60, txs: 58 }, { action: "deploy", n: 9, txs: 9 }, { action: "maintenance", n: 1, txs: 1 }]);
+    const multi = await idx.sql<{ h: string; entry: string[] }[]>`
+      SELECT block_height::text AS h, array_agg(entry_point ORDER BY segment_id, action_index) AS entry
+      FROM ${idx.sql(idx.mip)}.mip0018_contract_actions WHERE action = 'call'
+      GROUP BY block_height, tx_index HAVING count(*) > 1 ORDER BY 1`;
+    expect(multi.map((m) => m.h)).toEqual(["714584", "714813"]);
+    expect(multi.find((m) => m.h === "714813")!.entry).toEqual(["startWithdraw", "signBidirectional"]);
+    const maint = await idx.sql<{ h: string; updates: string[] }[]>`
+      SELECT block_height::text AS h, maintenance_updates AS updates FROM ${idx.sql(idx.mip)}.mip0018_contract_actions WHERE action = 'maintenance'`;
+    expect(maint).toEqual([{ h: "715183", updates: ["VerifierKeyRemove(publishMetadata, v4)"] }]);
+    const txs = await idx.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM ${idx.sql(idx.archive)}.transactions WHERE net = ${NET} AND kind = 'regular'`;
+    expect(txs[0]!.n).toBe(69); // 58 with calls + 9 deploys + 1 maintenance + 1 without contract action (714807)
+
+    // U1: the mint at 715409 precedes the VerifierKeyInsert at 715428; the color resolves to U1's contract.
+    const u1 = await fresh("u1");
+    await archiveTape(u1.sql, u1.archive, loadRangeTape("u1"), 715402, 715433);
+    const su = scanner(u1);
+    await su.bootstrap();
+    expect(await scanAll(su)).toBe(32);
+    const u1Colors = await listColors(u1.sql, NET, u1.mip);
+    expect(u1Colors.map((c) => [1, c.color, c.contractAddress, c.domainSep, c.shielded?.amount])).toEqual([CASE_MINTS[715409]]);
+    expect(u1Colors[0]!.shielded!.firstMint.height).toBe(715409);
+    const u1Actions = await u1.sql<{ h: string; action: string; updates: string[] | null }[]>`
+      SELECT block_height::text AS h, action, maintenance_updates AS updates FROM ${u1.sql(u1.mip)}.mip0018_contract_actions ORDER BY block_height`;
+    expect(u1Actions.map((a) => `${a.h}:${a.action}`)).toEqual(["715403:deploy", "715409:call", "715428:maintenance", "715433:call"]);
+    expect(u1Actions.find((a) => a.action === "maintenance")!.updates![0]).toMatch(/^VerifierKeyInsert\(publishMetadata, v[34]\)$/);
+  }, 600_000);
 
   it("[[mip0018.scan.failed-parts-excluded]] a FAILURE transaction and a failed fallible segment add no mint, color, sighting or action; the guaranteed part of a partial success does", async () => {
     // Real bytes: C04's two mint transactions reported as FAILURE.
