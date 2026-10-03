@@ -12,11 +12,11 @@ metadata in Postgres, and serves it as a read-only JSON API and an explorer page
   record deletes its field; an identity with no field left is not referenced anywhere), common fields, symbol groups,
   the color lookup (`rawTokenType(domainSep, contractAddress)`), zero extension of trimmed ledger data. An event with
   any other name (other versions of this one included) is ignored like any other `Misc` event.
-- **Beyond the MIP**: hard-coded NIGHT and DUST rows, "seen" tokens (any color in
-  public data, also without a known mint), each token's activity (mints, UTXOs created/spent, contract in/out,
-  shielded offer deltas, metadata transactions) with Bech32m wallet addresses, and a ✓/⚠ mark per token (✓ = usable
-  `name`, `symbol`, `decimals`, no rejected MIP-0018 event and no unresolved log from its contract; ⚠ partial,
-  incorrect or unresolved; no mark without MIP-0018 events). The mark says the metadata is correctly published — it is not an endorsement of the token.
+- **Beyond the MIP**: hard-coded NIGHT and DUST rows, "seen" tokens (any color in public data, also without a known
+  mint), each token's activity (mints, UTXOs created/spent, contract in/out, shielded offer deltas, metadata
+  transactions) with Bech32m wallet addresses, and a ✓/⚠ mark per token (✓ = usable `name`, `symbol`, `decimals`, no
+  rejected MIP-0018 event and no unresolved log from its contract; ⚠ partial, incorrect or unresolved; no mark without
+  MIP-0018 events). The mark says the metadata is correctly published — it is not an endorsement of the token.
 - Network: **Stagenet** (Midnight node 2.x). Never fetches a URI. Block heights only (no wall-clock time).
 
 Conformance: every MUST/SHOULD of MIP-0018 at `274a84f` is mapped to a test in [CONFORMANCE.md](CONFORMANCE.md).
