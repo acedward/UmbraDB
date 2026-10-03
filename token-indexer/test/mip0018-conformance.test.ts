@@ -9,7 +9,7 @@
  *   `standards` identifier can make it run code).
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
@@ -78,9 +78,58 @@ const FORBIDDEN: Array<[string, RegExp]> = [
   ["Function constructor", /\bnew\s+Function\s*\(/],
   ["dynamic import of a computed or package specifier", /\bimport\s*\(\s*(?!["']\.{1,2}\/)/],
   ["browser network API", /\b(?:WebSocket|XMLHttpRequest|EventSource)\b/],
+  ["computed global access", /\bglobalThis\s*\[/],
 ];
 const stripComments = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`\\])\/\/.*$/gm, "$1");
 const violations = (src: string): string[] => FORBIDDEN.filter(([, re]) => re.test(stripComments(src))).map(([what]) => what);
+
+/**
+ * Final-audit N1: what the indexer's runtime may import — an ALLOWLIST, so a network client package (axios, undici,
+ * got, …) or a process/socket module cannot slip past the denylist above. Exactly the modules the runtime uses (the
+ * test fails on an unused entry too); type-only imports are erased and not counted; relative specifiers must stay in
+ * this repository and outside `node_modules`; a dynamic import must be a relative string literal.
+ */
+const ALLOWED_MODULES = new Set(["node:crypto", "node:fs", "node:http", "node:util", "postgres", "zod", "@midnightntwrk/ledger-v9"]);
+
+interface ImportUse { spec: string; typeOnly: boolean; dynamic: boolean }
+
+/** Every module specifier a source file loads: static imports and re-exports, side-effect imports, dynamic imports. */
+function importsOf(src: string): ImportUse[] {
+  const code = stripComments(src);
+  const out: ImportUse[] = [];
+  for (const m of code.matchAll(/^\s*(import|export)\s+(type\s+)?(?:[^;"']*?\s+from\s+)?["']([^"']+)["']/gm)) out.push({ spec: m[3]!, typeOnly: m[2] !== undefined, dynamic: false });
+  for (const m of code.matchAll(/\bimport\s*\(\s*([^)]*?)\s*\)/g)) {
+    const lit = /^["']([^"']+)["']$/.exec(m[1]!);
+    out.push({ spec: lit === null ? "<computed>" : lit[1]!, typeOnly: false, dynamic: true });
+  }
+  return out;
+}
+
+/** Allowlist violations of a file at `file` (repository-relative), and the relative files it loads at run time. */
+function importCheck(src: string, file: string): { bad: string[]; local: string[]; used: string[] } {
+  const bad: string[] = [];
+  const local: string[] = [];
+  const used: string[] = [];
+  for (const u of importsOf(src)) {
+    if (u.typeOnly) continue;
+    if (u.spec.startsWith("./") || u.spec.startsWith("../")) {
+      const target = relative(ROOT, resolve(ROOT, dirname(file), u.spec));
+      if (target.startsWith("..") || target.split(sep).includes("node_modules")) bad.push(`${u.spec} (outside the repository's own code)`);
+      else local.push(target);
+    } else if (u.dynamic) {
+      bad.push(`${u.spec} (dynamic import of a package or a computed specifier)`);
+    } else if (ALLOWED_MODULES.has(u.spec)) {
+      used.push(u.spec);
+    } else {
+      bad.push(`${u.spec} (not on the allowlist)`);
+    }
+  }
+  return { bad, local, used };
+}
+
+/** A relative import's source file (`.js` specifiers name their `.ts` source). */
+const sourceOf = (target: string): string | undefined =>
+  [target, target.replace(/\.js$/, ".ts")].find((t) => existsSync(join(ROOT, t)) && statSync(join(ROOT, t)).isFile());
 
 describe("MIP-0018 conformance table (00026 D4)", () => {
   it("[[mip0018.conformance.table]] CONFORMANCE.md lists exactly the 36 MUST/SHOULD requirements of MIP 274a84f, each covered by existing tests or not applicable with a reason; every cited test id, vector and path exists; sub-plan C's ids stay pending until C merges", () => {
@@ -143,7 +192,7 @@ describe("MIP-0018 conformance table (00026 D4)", () => {
     expect(paths).toBeGreaterThan(3);
   }, 60_000);
 
-  it("[[mip0018.conformance.no-network-no-code]] the indexer's runtime code and the vendored codec contain no network client, no dynamic code and no child process (C-024, C-031: no URI is fetched, no identifier runs code); the check catches each forbidden form", () => {
+  it("[[mip0018.conformance.no-network-no-code]] the indexer's runtime code and the vendored codec contain no network client, no dynamic code and no child process (C-024, C-031: no URI is fetched, no identifier runs code); the check catches each forbidden form; every module the runtime loads, through its relative import closure, is on an exact allowlist (node:crypto, node:fs, node:http, node:util, postgres, zod, @midnightntwrk/ledger-v9) — package clients such as axios, undici or got and socket/process modules are refused", () => {
     // Positive controls: every forbidden form is caught, the allowed forms are not.
     const caught = [
       "await fetch(url)", "http.request(opts)", "https.get(u)", 'import { request } from "node:http";', 'import { spawn } from "node:child_process";',
@@ -167,5 +216,45 @@ describe("MIP-0018 conformance table (00026 D4)", () => {
     expect(files.filter((f) => f.startsWith("token-indexer/vendor/")).length).toBeGreaterThanOrEqual(8);
     const found = Object.fromEntries(files.map((f): [string, string[]] => [f, violations(readFileSync(join(ROOT, f), "utf8"))]).filter(([, v]) => v.length > 0));
     expect(found).toEqual({});
+
+    // Final-audit N1 — the import allowlist. Negative controls: package network clients, socket and process modules,
+    // dynamic package imports, a relative path into node_modules; positive controls: the forms the runtime uses.
+    const notAllowed = [
+      'import axios from "axios";', 'import { request } from "undici";', 'import got from "got";', 'import * as net from "node:net";',
+      "const m = await import(name);", 'const u = await import("undici");', 'import { spawn } from "child_process";',
+      'import "node:child_process";', 'export * from "undici";', 'import x from "../../node_modules/axios/index.js";',
+      'import { connect } from "node:tls";', 'import ws from "ws";',
+    ];
+    for (const c of notAllowed) expect(importCheck(c, "token-indexer/mip0018/x.ts").bad, c).not.toEqual([]);
+    expect(violations('const f = globalThis["fe" + "tch"]; await f(u);')).toEqual(["computed global access"]);
+    const fine = [
+      'import { createServer } from "node:http";', 'import type { AddressInfo } from "node:net";', 'import postgres from "postgres";',
+      'import type { ISql } from "postgres";', 'import { z } from "zod";', 'const { Mip0018Scanner } = await import("./scan.ts");',
+      'import { createClient } from "../../src/postgres/client.js";',
+    ];
+    for (const a of fine) expect(importCheck(a, "token-indexer/mip0018/x.ts").bad, a).toEqual([]);
+
+    // The runtime and every file of this repository it loads (its relative import closure, e.g. src/postgres/*).
+    const seen = new Set<string>();
+    const queue = [...files];
+    const offending: Record<string, string[]> = {};
+    const used = new Set<string>();
+    while (queue.length > 0) {
+      const f = queue.shift()!;
+      if (seen.has(f)) continue;
+      seen.add(f);
+      const r = importCheck(readFileSync(join(ROOT, f), "utf8"), f);
+      if (r.bad.length > 0) offending[f] = r.bad;
+      for (const u of r.used) used.add(u);
+      for (const t of r.local) {
+        const src = sourceOf(t);
+        expect(src, `${f} imports ${t}`).toBeDefined();
+        queue.push(src!);
+      }
+    }
+    expect(offending).toEqual({});
+    expect([...seen].filter((f) => f.startsWith("src/")).length).toBeGreaterThan(5); // the closure reaches the base's own code
+    expect(seen.has("src/postgres/client.ts")).toBe(true);
+    expect([...used].sort()).toEqual([...ALLOWED_MODULES].sort()); // no unused entry: the allowlist is exactly what runs
   }, 60_000);
 });

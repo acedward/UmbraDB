@@ -500,7 +500,7 @@
     {
       "id": "mip0018.ui.browser-hostile-text",
       "file": "token-indexer/test/mip0018-ui-browser.test.ts",
-      "description": "Project 00026 C3 (US4 scenario 4, MIP Security considerations) + C4 H1: bidi/zero-width/NUL/control characters drawn as visible marks (never raw, not in tooltips), markup as text, URIs never fetched or linked, budgets with show all, unusable field without its value; hostile contract entry points drawn as their hex, a printable one as text."
+      "description": "Project 00026 C3 (US4 scenario 4, MIP Security considerations) + C4 H1: bidi/zero-width/NUL/control characters and (D5, final-audit F4) every Cc/Cf/Co/Cn/Cs/Zl/Zp/Default_Ignorable code point incl. U+1BCA0, U+180F and U+0600-U+0605 drawn as visible marks (never raw, not in tooltips; a look-alike symbol told apart), markup as text, URIs never fetched or linked, budgets with show all, unusable field without its value; hostile contract entry points drawn as their hex, a printable one as text."
     },
     {
       "id": "mip0018.ui.browser-withdrawn",
@@ -540,7 +540,7 @@
     {
       "id": "mip0018.conformance.no-network-no-code",
       "file": "token-indexer/test/mip0018-conformance.test.ts",
-      "description": "Project 00026 D4: the indexer's runtime code and the vendored codec contain no network client, no dynamic code and no child process (MIP C-024, C-031); positive controls for every forbidden form."
+      "description": "Project 00026 D4: the indexer's runtime code and the vendored codec contain no network client, no dynamic code and no child process (MIP C-024, C-031); positive controls for every forbidden form; D5 (final-audit N1): every module loaded through the runtime's relative import closure is on an exact allowlist, with negative controls (axios, undici, got, node:net, child_process, dynamic package imports, a path into node_modules)."
     },
     {
       "id": "mip0018.scan.hostile-entry-points",
