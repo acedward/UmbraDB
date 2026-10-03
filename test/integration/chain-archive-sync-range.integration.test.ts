@@ -116,6 +116,15 @@ describe("chain-archive-sync ranges, resume and transaction outcomes on recorded
     const resumed = await service(sql, schema, f, { startHeight: 714645, endHeight: 714655 }).syncOnce({ maxBlocks: 100 });
     expect(resumed).toMatchObject({ ingestedBlocks: 5, fromHeight: 714651, toHeight: 714655, reachedEnd: true });
     expect(() => service(sql, schema, f, { startHeight: 10, endHeight: 9 })).toThrow(SyncRangeError);
+
+    // A cursor written before 00026 (`{height}` only) resumes and keeps its archive start unknown
+    // instead of recording a guess.
+    const legacy = await freshSchema("range_legacy");
+    await legacy.sql`INSERT INTO ${legacy.sql(legacy.schema)}.watermarks (kind, key, value)
+      VALUES ('chain_archive', ${"sync_cursor:" + NET}, ${legacy.sql.json({ height: 714655 })})`;
+    const fromLegacy = await service(legacy.sql, legacy.schema, f, { endHeight: 714660 }).syncOnce({ maxBlocks: 100 });
+    expect(fromLegacy).toMatchObject({ ingestedBlocks: 5, fromHeight: 714656, toHeight: 714660, reachedEnd: true });
+    expect(await service(legacy.sql, legacy.schema, f).getSyncCursor()).toEqual({ height: 714660 });
   }, 120_000);
 
   it("[[archive.sync.outcomes-equal-indexer]] stores every transaction's result and per-segment outcomes exactly as the indexer reports them (recorded SUCCESS + synthetic PARTIAL_SUCCESS/FAILURE)", async () => {

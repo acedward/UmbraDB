@@ -373,7 +373,7 @@ export class ChainArchiveSyncService {
       const fetched = await Promise.allSettled(heights.map((h) => this.fetchBlock(h)));
       for (const outcome of fetched) {
         if (outcome.status === "rejected") throw outcome.reason;
-        await this.storeFetchedBlock(outcome.value, archiveStart ?? startHeight);
+        await this.storeFetchedBlock(outcome.value, archiveStart);
         ingested++;
       }
     }
@@ -421,7 +421,7 @@ export class ChainArchiveSyncService {
    */
   private async ingestOneBlock(height: number): Promise<void> {
     const cursor = await this.getSyncCursor();
-    await this.storeFetchedBlock(await this.fetchBlock(height), cursor?.startHeight ?? cursor?.height ?? height);
+    await this.storeFetchedBlock(await this.fetchBlock(height), cursor === undefined ? height : cursor.startHeight);
   }
 
   /**
@@ -451,7 +451,7 @@ export class ChainArchiveSyncService {
    * sync cursor (project 00026, FR-001). Called strictly in ascending height order, which is what
    * the D-parameter dedup cursor needs (it compares against the previous height's value).
    */
-  private async storeFetchedBlock(fetched: FetchedBlock, archiveStart: number): Promise<void> {
+  private async storeFetchedBlock(fetched: FetchedBlock, archiveStart: number | undefined): Promise<void> {
     const { height, blockHash, header, extrinsics, indexerBlock } = fetched;
     const blockRecord: BlockRecord = {
       net: this.net,
@@ -473,7 +473,9 @@ export class ChainArchiveSyncService {
     const { records: bridgeObservations, newDParameterJson } =
       this.buildBridgeObservationRecords(height, blockHash, indexerBlock);
 
-    const cursor: SyncCursor = { height, startHeight: archiveStart };
+    // A cursor written before 00026 has no `startHeight`; it stays unknown rather than being
+    // replaced by a guess (the first height of this run is not the archive's first height).
+    const cursor: SyncCursor = archiveStart === undefined ? { height } : { height, startHeight: archiveStart };
     await this.store.putBlockBundle({
       block: blockRecord, transactions, bridgeObservations,
       watermark: { key: this.watermarkKey(), value: cursor },
