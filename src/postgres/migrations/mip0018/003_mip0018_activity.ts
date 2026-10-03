@@ -25,7 +25,9 @@ export const name = "003_mip0018_activity";
  *   log, Q15: no decoded values). No color: a color's activity includes the metadata rows of its minting contract.
  *
  * NIGHT (color 32 zero bytes) is recorded like any color; DUST has no color and no row; nothing comes from a failed
- * segment or a FAILURE transaction. Wallet addresses are stored as their 32 raw bytes and served as Bech32m.
+ * segment or a FAILURE transaction. Wallet addresses are stored as their 32 raw bytes and served as Bech32m. A
+ * contract's `entry_point` is its exact bytes (`bytea`: entry points are arbitrary bytes on the ledger, NUL and
+ * non-UTF-8 included; sub-plan C4 H1), served as hex plus a text form only when printable.
  */
 export async function up(sql: ISql, schema: string): Promise<void> {
   assertValidSchemaName(schema);
@@ -45,7 +47,7 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       direction          text          CHECK (direction IN ('in', 'out')),
       contract_address   bytea         CHECK (octet_length(contract_address) = 32),
       action_index       integer       CHECK (action_index >= 0),
-      entry_point        text,
+      entry_point        bytea,
       domain_sep         bytea         CHECK (octet_length(domain_sep) = 32),
       kind               smallint      CHECK (kind IN (1, 2)),
       wallet_address     bytea         CHECK (octet_length(wallet_address) = 32),

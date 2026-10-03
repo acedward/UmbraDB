@@ -152,7 +152,7 @@ describe("MIP-0018 token activity (00026 C2)", () => {
       contract: C03_CONTRACT,
       items: [
         { height: 714617, txIndex: mint.txIndex, itemIndex: 0, txHash: mint.txHash, role: "utxo-created", ...at, wallet: WALLET_1, utxo: { intentHash: C03_UTXO_INTENT, outputIndex: 0 } },
-        { height: 714617, txIndex: mint.txIndex, itemIndex: 1, txHash: mint.txHash, role: "mint", ...at, contract: C03_CONTRACT, actionIndex: 0, entryPoint: "mint", domainSep: C03_DS, kind: 2, wallet: WALLET_1 },
+        { height: 714617, txIndex: mint.txIndex, itemIndex: 1, txHash: mint.txHash, role: "mint", ...at, contract: C03_CONTRACT, actionIndex: 0, entryPoint: { hex: "6d696e74", text: "mint" }, domainSep: C03_DS, kind: 2, wallet: WALLET_1 },
         { height: 714624, txIndex: publish.txIndex, itemIndex: 0, txHash: publish.txHash, role: "metadata-event", contract: C03_CONTRACT, events: { accepted: 1, rejected: 0, firstEventIndex: 0 } },
       ],
     });

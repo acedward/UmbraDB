@@ -121,10 +121,13 @@ interface ActionRow {
   tx_hash: Buffer;
   action: "call" | "deploy" | "maintenance";
   contract_address: Buffer;
-  entry_point: string | null;
+  /** The entry point's exact bytes (C4 H1: arbitrary bytes on the ledger, so `bytea`, never `text`). */
+  entry_point: Buffer | null;
   applied_phases: string[] | null;
   maintenance_counter: string | null;
+  /** ASCII renderings (`describeUpdate`); the operations' exact bytes are in `maintenance_operations`. */
   maintenance_updates: string[] | null;
+  maintenance_operations: Array<Buffer | null> | null;
 }
 
 interface BlockRows {
@@ -138,6 +141,8 @@ interface BlockRows {
 
 const hex = (b: Uint8Array): string => Buffer.from(b).toString("hex");
 const buf = (h: string): Buffer => Buffer.from(h, "hex");
+/** `bytea`'s type oid: the element type of `maintenance_operations` (`bytea[]`, may hold NULL elements). */
+const BYTEA_OID = 17;
 
 /** Segment ids whose fallible part holds something the scan records (a fallible transcript, log, mint, color, deploy or update). */
 export function fallibleSegments(d: DecodedTransaction): number[] {
@@ -270,10 +275,10 @@ export class Mip0018Scanner {
       for (const c of parts.decoded.calls) {
         const applied = c.phases.filter((phase) => partApplied({ phase, segment: c.segment }, parts.outcome));
         if (applied.length === 0) continue;
-        rows.actions.push({ ...at, segment_id: c.segment, action_index: c.actionIndex, tx_hash: txHash, action: "call", contract_address: buf(c.contractAddress), entry_point: c.entryPoint, applied_phases: applied, maintenance_counter: null, maintenance_updates: null });
+        rows.actions.push({ ...at, segment_id: c.segment, action_index: c.actionIndex, tx_hash: txHash, action: "call", contract_address: buf(c.contractAddress), entry_point: buf(c.entryPoint), applied_phases: applied, maintenance_counter: null, maintenance_updates: null, maintenance_operations: null });
       }
       for (const d of parts.applied.deploys)
-        rows.actions.push({ ...at, segment_id: d.segment, action_index: d.actionIndex, tx_hash: txHash, action: "deploy", contract_address: buf(d.address), entry_point: null, applied_phases: null, maintenance_counter: null, maintenance_updates: null });
+        rows.actions.push({ ...at, segment_id: d.segment, action_index: d.actionIndex, tx_hash: txHash, action: "deploy", contract_address: buf(d.address), entry_point: null, applied_phases: null, maintenance_counter: null, maintenance_updates: null, maintenance_operations: null });
       for (const l of parts.applied.logs) {
         if (l.eventTypeCode !== MISC_EVENT_TYPE_CODE) continue; // other MIP-0002 types say nothing about metadata
         const name = Buffer.from(l.name ?? "", "hex");
@@ -290,7 +295,7 @@ export class Mip0018Scanner {
         });
       }
       for (const m of parts.applied.maintenance)
-        rows.actions.push({ ...at, segment_id: m.segment, action_index: m.actionIndex, tx_hash: txHash, action: "maintenance", contract_address: buf(m.address), entry_point: null, applied_phases: null, maintenance_counter: m.counter.toString(), maintenance_updates: m.updates });
+        rows.actions.push({ ...at, segment_id: m.segment, action_index: m.actionIndex, tx_hash: txHash, action: "maintenance", contract_address: buf(m.address), entry_point: null, applied_phases: null, maintenance_counter: m.counter.toString(), maintenance_updates: m.updates, maintenance_operations: m.operations.map((o) => (o === null ? null : buf(o))) });
       // Sub-plan C2: the public token flows of the applied parts and the metadata transactions (`activity.ts`).
       const readActivity = this.opts.activityTransaction ?? (this.opts.decode === undefined ? activityTransaction : undefined);
       if (readActivity !== undefined)
@@ -343,10 +348,11 @@ export class Mip0018Scanner {
         await tx`
           INSERT INTO ${tx(s)}.mip0018_contract_actions
             (network, block_height, tx_index, segment_id, action_index, tx_hash, action, contract_address, entry_point,
-             applied_phases, maintenance_counter, maintenance_updates)
+             applied_phases, maintenance_counter, maintenance_updates, maintenance_operations)
           VALUES (${a.network}, ${a.block_height}, ${a.tx_index}, ${a.segment_id}, ${a.action_index}, ${a.tx_hash}, ${a.action},
                   ${a.contract_address}, ${a.entry_point}, ${a.applied_phases === null ? null : tx.array(a.applied_phases)},
-                  ${a.maintenance_counter}, ${a.maintenance_updates === null ? null : tx.array(a.maintenance_updates)})
+                  ${a.maintenance_counter}, ${a.maintenance_updates === null ? null : tx.array(a.maintenance_updates)},
+                  ${a.maintenance_operations === null ? null : tx.array(a.maintenance_operations, BYTEA_OID)})
           ON CONFLICT DO NOTHING`;
       }
       // The block's events in chain order; each accepted one is applied to the latest-value rows (sub-plan B3).

@@ -31,6 +31,7 @@
  */
 import { ContractCall, ContractDeploy, MaintenanceUpdate, Transaction } from "@midnightntwrk/ledger-v9";
 import { NAME_SIZE, PAYLOAD_SIZE, splitMiscData, toHex } from "../vendor/mip0018/codec/src/index.ts";
+import { entryPointBytes, entryPointLabel } from "./entry-point.ts";
 
 /** MIP-0002 `LogEventType` code of `Misc`. */
 export const MISC_EVENT_TYPE_CODE = 10;
@@ -68,6 +69,7 @@ export interface CallPlacement extends Part {
   actionIndex: number;
   /** 32-byte contract address, lowercase hex. */
   contractAddress: string;
+  /** The entry point's exact bytes, lowercase hex (arbitrary bytes on the ledger: NUL, non-UTF-8 — `entry-point.ts`). */
   entryPoint: string;
 }
 
@@ -102,8 +104,13 @@ export interface DecodedMaintenance extends Part {
   actionIndex: number;
   address: string;
   counter: bigint;
-  /** Each update as `<kind>(<operation>, <version>)`, e.g. `VerifierKeyInsert(publishMetadata, v3)`. */
+  /**
+   * Each update as `<kind>(<operation>, <version>)`, e.g. `VerifierKeyInsert(publishMetadata, v3)` — ASCII only: an
+   * operation that is not printable is drawn as `<bytes HEX>` (`entry-point.ts` `entryPointLabel`).
+   */
   updates: string[];
+  /** Per update, its operation's exact bytes (lowercase hex), or `null` for an update without one (`ReplaceAuthority`). */
+  operations: Array<string | null>;
 }
 
 export interface DecodedCall extends Omit<CallPlacement, "phase"> {
@@ -181,8 +188,6 @@ export function normHex(h: string): string {
   return (h.startsWith("0x") || h.startsWith("0X") ? h.slice(2) : h).toLowerCase();
 }
 
-const entryPointText = (e: Uint8Array | string): string => (typeof e === "string" ? e : Buffer.from(e).toString("utf8"));
-
 function leUint(bytes: Uint8Array): number {
   let n = 0;
   for (let i = bytes.length - 1; i >= 0; i--) n = n * 256 + (bytes[i] as number);
@@ -257,12 +262,24 @@ function zswapOfferColors(o: ZswapOfferLike): string[] {
   return [...o.deltas.keys()].map((k) => String(k));
 }
 
-/** `VerifierKeyInsert(publishMetadata, v3)`, `VerifierKeyRemove(mint, v3)`, `ReplaceAuthority`, … */
+type UpdateLike = { constructor?: { name?: string }; operation?: string | Uint8Array; version?: { version?: string }; vk?: { version?: string } };
+
+/** A maintenance update's operation (an entry point: arbitrary bytes), lowercase hex; `null` when it has none. */
+export function updateOperation(u: unknown): string | null {
+  const x = u as UpdateLike;
+  return x.operation === undefined ? null : entryPointBytes(x.operation).toString("hex");
+}
+
+/**
+ * `VerifierKeyInsert(publishMetadata, v3)`, `VerifierKeyRemove(mint, v3)`, `ReplaceAuthority`, … — ASCII only: the
+ * kind is the ledger-v9 class name and the version its `v3`/`v4` tag; an operation that is not printable is drawn as
+ * `<bytes HEX>` (its exact bytes are kept by `updateOperation`).
+ */
 export function describeUpdate(u: unknown): string {
-  const x = u as { constructor?: { name?: string }; operation?: string | Uint8Array; version?: { version?: string }; vk?: { version?: string } };
+  const x = u as UpdateLike;
   const kind = x.constructor?.name ?? "Unknown";
   if (x.operation === undefined) return kind;
-  const op = typeof x.operation === "string" ? x.operation : Buffer.from(x.operation).toString("utf8");
+  const op = entryPointLabel(entryPointBytes(x.operation));
   const version = x.version?.version ?? x.vk?.version;
   return `${kind}(${op}${version === undefined ? "" : `, ${version}`})`;
 }
@@ -313,7 +330,7 @@ export function decodeTransaction(input: Uint8Array | TransactionLike): DecodedT
     intent.actions.forEach((action, actionIndex) => {
       if (action instanceof ContractCall) {
         const contractAddress = normHex(String(action.address));
-        const entryPoint = entryPointText(action.entryPoint as Uint8Array | string);
+        const entryPoint = entryPointBytes(action.entryPoint as Uint8Array | string).toString("hex");
         const phases: Phase[] = [];
         for (const [phase, transcript, target] of [
           ["guaranteed", action.guaranteedTranscript, out],
@@ -336,6 +353,7 @@ export function decodeTransaction(input: Uint8Array | TransactionLike): DecodedT
           address: normHex(String(action.address)),
           counter: BigInt(action.counter),
           updates: action.updates.map(describeUpdate),
+          operations: action.updates.map(updateOperation),
         });
       } else {
         const name = (action as { constructor?: { name?: string } } | null)?.constructor?.name ?? typeof action;

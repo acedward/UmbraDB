@@ -10,6 +10,7 @@ import { addressFromKey, ContractCall, signatureVerifyingKey, signingKeyFromBip3
 import type { ActivityTransactionLike } from "../../mip0018/activity.ts";
 import { decodeTransaction, type DecodedTransaction, type TransactionLike } from "../../mip0018/applied-parts.ts";
 import { commonRecords, encodePayload, EVENT_NAME } from "../../vendor/mip0018/codec/src/index.ts";
+import { ledgerEntryPoint } from "./synthetic-archive.ts";
 
 const sha = (s: string): string => createHash("sha256").update(s).digest("hex");
 
@@ -44,7 +45,8 @@ export interface SynthTranscriptA {
 
 export interface SynthIntentA {
   segment: number;
-  calls?: Array<{ address: string; entryPoint: string; guaranteed?: SynthTranscriptA; fallible?: SynthTranscriptA }>;
+  /** `entryPointHex` (exact bytes) overrides `entryPoint` (text), as in `synthetic-archive.ts`. */
+  calls?: Array<{ address: string; entryPoint: string; entryPointHex?: string; guaranteed?: SynthTranscriptA; fallible?: SynthTranscriptA }>;
   /** Spends: [color, amount, wallet number, spent intent hash, spent output number] */
   guaranteedSpends?: Array<[string, string, number, string, number]>;
   fallibleSpends?: Array<[string, string, number, string, number]>;
@@ -101,7 +103,7 @@ export function syntheticActivityTx(t: SynthTxA): TransactionLike & ActivityTran
         const call = Object.create(ContractCall.prototype) as object;
         Object.defineProperties(call, {
           address: { value: c.address },
-          entryPoint: { value: c.entryPoint },
+          entryPoint: { value: ledgerEntryPoint(c.entryPoint, c.entryPointHex) },
           guaranteedTranscript: { value: transcript(c.guaranteed) },
           fallibleTranscript: { value: transcript(c.fallible) },
         });

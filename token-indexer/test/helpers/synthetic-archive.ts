@@ -29,9 +29,11 @@ export interface SynthTranscript {
 }
 
 export interface SynthAction {
-  call?: { address: string; entryPoint: string; guaranteed?: SynthTranscript; fallible?: SynthTranscript };
+  /** `entryPointHex` (exact bytes) overrides `entryPoint` (text): arbitrary entry-point bytes, as the ledger allows. */
+  call?: { address: string; entryPoint: string; entryPointHex?: string; guaranteed?: SynthTranscript; fallible?: SynthTranscript };
   deploy?: { address: string };
-  maintenance?: { address: string; updates: string[] };
+  /** An update is a class name (operation `op`, version `v4`) or a description with its operation's exact bytes. */
+  maintenance?: { address: string; updates: Array<string | { kind: string; operationHex?: string; version?: string }> };
 }
 
 export interface SynthIntent {
@@ -57,6 +59,22 @@ export interface SynthArchivedTx {
 }
 
 const sha = (s: string): string => createHash("sha256").update(s).digest("hex");
+
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+/**
+ * An entry point as ledger-v9 hands it to JavaScript (`maybe_string`, checked on rc.3 in sub-plan C4 H1.1): the
+ * string when its bytes are valid UTF-8 (NUL and bidi characters included), otherwise a `Uint8Array` of the bytes.
+ */
+export function ledgerEntryPoint(text: string, hex?: string): string | Uint8Array {
+  if (hex === undefined) return text;
+  const bytes = Uint8Array.from(Buffer.from(hex, "hex"));
+  try {
+    return strictUtf8.decode(bytes);
+  } catch {
+    return bytes;
+  }
+}
 
 function logItem(log: SynthLog) {
   const cell = (b: Uint8Array) => ({ tag: "cell", content: { value: [b], alignment: [] } });
@@ -84,7 +102,7 @@ function action(a: SynthAction): unknown {
     const c = Object.create(ContractCall.prototype) as object;
     Object.defineProperties(c, {
       address: { value: a.call.address },
-      entryPoint: { value: a.call.entryPoint },
+      entryPoint: { value: ledgerEntryPoint(a.call.entryPoint, a.call.entryPointHex) },
       guaranteedTranscript: { value: transcript(a.call.guaranteed) },
       fallibleTranscript: { value: transcript(a.call.fallible) },
     });
@@ -97,7 +115,13 @@ function action(a: SynthAction): unknown {
   }
   if (a.maintenance === undefined) return { unknown: true }; // an action the decoder does not know
   const m = Object.create(MaintenanceUpdate.prototype) as object;
-  const updates = a.maintenance.updates.map((u) => Object.assign(Object.create({ constructor: { name: u } }) as object, { operation: "op", vk: { version: "v4" } }));
+  const updates = a.maintenance.updates.map((u) => {
+    const d = typeof u === "string" ? { kind: u, operationHex: Buffer.from("op").toString("hex"), version: "v4" } : u;
+    return Object.assign(Object.create({ constructor: { name: d.kind } }) as object, {
+      ...(d.operationHex === undefined ? {} : { operation: ledgerEntryPoint("", d.operationHex) }),
+      ...(d.version === undefined ? {} : { vk: { version: d.version } }),
+    });
+  });
   Object.defineProperties(m, { address: { value: a.maintenance.address }, counter: { value: 1n }, updates: { value: updates } });
   return m;
 }

@@ -21,7 +21,9 @@ import { tokenColor } from "../mip0018/color.ts";
 import { main as scanCli } from "../mip0018/scan-cli.ts";
 import { Mip0018Scanner, ScanError, ScanRangeError } from "../mip0018/scan.ts";
 import { builtinTokens, listColors, lookupColor, nativeTokens } from "../mip0018/tokens.ts";
+import { activityForColor } from "../mip0018/activity.ts";
 import { blockHashOf, decodeSynthetic, putSyntheticBlocks, type SynthArchivedTx } from "./helpers/synthetic-archive.ts";
+import { type SynthTxA, syntheticSeams } from "./helpers/synthetic-activity.ts";
 
 const NET = "stagenet";
 const C04 = loadTape("c04-714637-714663.tape.json");
@@ -133,9 +135,9 @@ describe("MIP-0018 scan over the chain archive (00026 A3)", () => {
     expect(tokenColor(C04_DS, C04_CONTRACT)).toBe(C04_COLOR);
     expect((await lookupColor(db.sql, NET, `0x${C04_COLOR.toUpperCase()}`, db.mip)).entry?.contractAddress).toBe(C04_CONTRACT);
 
-    const actions = await db.sql<{ block_height: bigint; action: string; entry_point: string | null; applied_phases: string[] | null; contract_address: Buffer }[]>`
+    const actions = await db.sql<{ block_height: bigint; action: string; entry_point: Buffer | null; applied_phases: string[] | null; contract_address: Buffer }[]>`
       SELECT block_height, action, entry_point, applied_phases, contract_address FROM ${db.sql(db.mip)}.mip0018_contract_actions ORDER BY block_height`;
-    expect(actions.map((a) => `${a.block_height}:${a.action}:${a.entry_point ?? "-"}:${(a.applied_phases ?? []).join("+")}`)).toEqual([
+    expect(actions.map((a) => `${a.block_height}:${a.action}:${a.entry_point?.toString("latin1") ?? "-"}:${(a.applied_phases ?? []).join("+")}`)).toEqual([
       "714637:deploy:-:", "714643:call:mintShielded:guaranteed", "714649:call:mintUnshielded:guaranteed",
       "714655:call:mintLedger:guaranteed", "714663:call:publishMetadata:guaranteed",
     ]);
@@ -182,15 +184,15 @@ describe("MIP-0018 scan over the chain archive (00026 A3)", () => {
       SELECT action, count(*)::int AS n, count(DISTINCT (block_height, tx_index))::int AS txs
       FROM ${idx.sql(idx.mip)}.mip0018_contract_actions GROUP BY action ORDER BY action`;
     expect(actions).toEqual([{ action: "call", n: 60, txs: 58 }, { action: "deploy", n: 9, txs: 9 }, { action: "maintenance", n: 1, txs: 1 }]);
-    const multi = await idx.sql<{ h: string; entry: string[] }[]>`
+    const multi = await idx.sql<{ h: string; entry: Buffer[] }[]>`
       SELECT block_height::text AS h, array_agg(entry_point ORDER BY segment_id, action_index) AS entry
       FROM ${idx.sql(idx.mip)}.mip0018_contract_actions WHERE action = 'call'
       GROUP BY block_height, tx_index HAVING count(*) > 1 ORDER BY 1`;
     expect(multi.map((m) => m.h)).toEqual(["714584", "714813"]);
-    expect(multi.find((m) => m.h === "714813")!.entry).toEqual(["startWithdraw", "signBidirectional"]);
-    const maint = await idx.sql<{ h: string; updates: string[] }[]>`
-      SELECT block_height::text AS h, maintenance_updates AS updates FROM ${idx.sql(idx.mip)}.mip0018_contract_actions WHERE action = 'maintenance'`;
-    expect(maint).toEqual([{ h: "715183", updates: ["VerifierKeyRemove(publishMetadata, v4)"] }]);
+    expect(multi.find((m) => m.h === "714813")!.entry).toEqual([Buffer.from("startWithdraw"), Buffer.from("signBidirectional")]); // bytea (C4 H1)
+    const maint = await idx.sql<{ h: string; updates: string[]; ops: Buffer[] }[]>`
+      SELECT block_height::text AS h, maintenance_updates AS updates, maintenance_operations AS ops FROM ${idx.sql(idx.mip)}.mip0018_contract_actions WHERE action = 'maintenance'`;
+    expect(maint).toEqual([{ h: "715183", updates: ["VerifierKeyRemove(publishMetadata, v4)"], ops: [Buffer.from("publishMetadata")] }]);
     const txs = await idx.sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM ${idx.sql(idx.archive)}.transactions WHERE net = ${NET} AND kind = 'regular'`;
     expect(txs[0]!.n).toBe(69); // 58 with calls + 9 deploys + 1 maintenance + 1 without contract action (714807)
@@ -402,4 +404,80 @@ describe("MIP-0018 scan over the chain archive (00026 A3)", () => {
     await expect(scanCli(["--network", NET], {}, () => {})).rejects.toThrow(/usage/);
     await expect(scanCli(["--network", NET, "--to", "x"], env, () => {})).rejects.toThrow(/non-negative integer/);
   }, 120_000);
+
+  it("[[mip0018.scan.hostile-entry-points]] entry points are arbitrary bytes on the ledger (NUL, non-UTF-8, bidi, empty): calls and maintenance updates naming them are scanned without stopping, their exact bytes kept in mip0018_contract_actions (entry_point, maintenance_operations) and mip0018_activity, maintenance_updates stays ASCII, the read helper serves hex + text only when printable; negative controls: a text column refuses NUL and a UTF-8 decode is lossy", async () => {
+    // Sub-plan C4 H1/H2. Each entry point as ledger-v9 hands it over (valid UTF-8 -> string, else Uint8Array; H1.1).
+    const EPS: Array<[string, string, string | undefined]> = [
+      ["nul", "6d696e7400", undefined], // "mint\0": valid UTF-8, a JS string holding NUL
+      ["non-utf8", "fffe4100c3", undefined],
+      ["bidi", "e280ae6576696ce2808b", undefined], // U+202E evil U+200B
+      ["surrogate", "eda08041", undefined], // an encoded surrogate: not UTF-8
+      ["empty", "", undefined],
+      ["plain", "6d696e74", "mint"],
+      ["punctuation", Buffer.from("a.b-c_d:e/f").toString("hex"), "a.b-c_d:e/f"],
+      ["space", Buffer.from("a b").toString("hex"), undefined],
+    ];
+    // Negative controls: what the former `text` columns and UTF-8 decode did with these bytes.
+    const db0 = await fresh("epneg");
+    const refused = await db0.sql`SELECT ${"mint\u0000"}::text AS t`.then(() => null, (e: { code?: string }) => e.code);
+    expect(["22021", "22P05"]).toContain(refused);
+    const lossy = (h: string): string => Buffer.from(Buffer.from(h, "hex").toString("utf8"), "utf8").toString("hex");
+    expect(lossy("fffe4100c3")).not.toBe("fffe4100c3");
+    expect(lossy("eda08041")).not.toBe("eda08041");
+
+    // (a) Calls that mint (activity rows carry the entry point), through the activity seams; a later block shows the
+    // scan goes on.
+    const A = "a7".repeat(32);
+    const dsOf = (i: number): string => (i + 1).toString(16).padStart(2, "0").repeat(32);
+    const db = await fresh("ephostile");
+    const archived = (t: SynthTxA): SynthArchivedTx => ({ tx: t as unknown as SynthArchivedTx["tx"], result: "success", segments: null });
+    await putSyntheticBlocks(db.sql, db.archive, NET, 100, [
+      [archived({ hash: "e1".repeat(32), intents: [{ segment: 1, calls: EPS.map(([, h], i) => ({ address: A, entryPoint: "unused", entryPointHex: h, guaranteed: { unshieldedMints: [[dsOf(i), "1"]] } })) }] })],
+      [archived({ hash: "e2".repeat(32), intents: [{ segment: 1, calls: [{ address: A, entryPoint: "after", guaranteed: { unshieldedMints: [[dsOf(99), "1"]] } }] }] })],
+    ]);
+    const s = scanner(db, syntheticSeams);
+    await s.bootstrap();
+    expect(await scanAll(s)).toBe(2);
+    expect((await s.getCursor())!.nextHeight).toBe(102);
+    const calls = await db.sql<{ h: string; i: number; ep: Buffer }[]>`
+      SELECT block_height::text AS h, action_index AS i, entry_point AS ep FROM ${db.sql(db.mip)}.mip0018_contract_actions
+      WHERE action = 'call' ORDER BY block_height, action_index`;
+    expect(calls.map((c) => [c.h, c.i, hex(c.ep)])).toEqual([...EPS.map(([, h], i) => ["100", i, h]), ["101", 0, Buffer.from("after").toString("hex")]]);
+    const mints = await db.sql<{ i: number; ep: Buffer }[]>`
+      SELECT action_index AS i, entry_point AS ep FROM ${db.sql(db.mip)}.mip0018_activity WHERE role = 'mint' AND block_height = 100 ORDER BY item_index`;
+    expect(mints.map((m) => [m.i, hex(m.ep)])).toEqual(EPS.map(([, h], i) => [i, h]));
+    for (const [i, [label, h, text]] of EPS.entries()) {
+      const items = (await activityForColor(db.sql, NET, tokenColor(dsOf(i), A), {}, db.mip)).items;
+      expect(items.map((x) => x.entryPoint), label).toEqual([text === undefined ? { hex: h } : { hex: h, text }]);
+    }
+
+    // (b) A maintenance update whose operations are such entry points (plus one without an operation), and calls,
+    // through the decoder-only seam.
+    const dbm = await fresh("epmaint");
+    await putSyntheticBlocks(dbm.sql, dbm.archive, NET, 200, [[{
+      result: "success",
+      tx: {
+        hash: "e3".repeat(32),
+        intents: [{ segment: 1, actions: [
+          ...EPS.map(([, h]) => ({ call: { address: A, entryPoint: "unused", entryPointHex: h, guaranteed: {} } })),
+          { maintenance: { address: A, updates: [...EPS.map(([, h]) => ({ kind: "VerifierKeyRemove", operationHex: h, version: "v3" })), { kind: "ReplaceAuthority" }] } },
+        ] }],
+      },
+    }]]);
+    const sm = scanner(dbm, { decode: decodeSynthetic });
+    await sm.bootstrap();
+    expect(await scanAll(sm)).toBe(1);
+    // Operations read element by element in SQL: postgres.js 3.4 parses a NULL array element as an empty Buffer.
+    const m = await dbm.sql<{ action: string; ep: Buffer | null; updates: string[] | null; ops: string[] | null }[]>`
+      SELECT action, entry_point AS ep, maintenance_updates AS updates,
+             (SELECT array_agg(coalesce(encode(o, 'hex'), 'NULL') ORDER BY n) FROM unnest(maintenance_operations) WITH ORDINALITY AS u(o, n)) AS ops
+      FROM ${dbm.sql(dbm.mip)}.mip0018_contract_actions ORDER BY action_index`;
+    expect(m.filter((r) => r.action === "call").map((r) => hex(r.ep!))).toEqual(EPS.map(([, h]) => h));
+    const maint = m.find((r) => r.action === "maintenance")!;
+    expect(maint.ops).toEqual([...EPS.map(([, h]) => h), "NULL"]); // the empty operation is "", ReplaceAuthority has none
+    expect(maint.updates).toEqual([
+      ...EPS.map(([, h, text]) => `VerifierKeyRemove(${text ?? `<bytes ${h}>`}, v3)`), "ReplaceAuthority",
+    ]);
+    for (const u of maint.updates!) expect(/^[\x20-\x7e]+$/.test(u), u).toBe(true);
+  }, 180_000);
 });

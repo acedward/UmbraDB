@@ -119,11 +119,11 @@ describe("applied-parts decoder (00026 A3/B2)", () => {
     expect(d.mints.map((m) => `${m.phase}/${m.segment}/${m.kind}/${m.domainSep.slice(0, 4)}/${m.amount}`)).toEqual([
       "guaranteed/7/1/a1a1/100", "fallible/7/2/b2b2/7",
     ]);
-    expect(d.calls.map((c) => `${c.segment}/${c.actionIndex}/${c.entryPoint}/${c.phases.join("+")}`)).toEqual([
+    expect(d.calls.map((c) => `${c.segment}/${c.actionIndex}/${Buffer.from(c.entryPoint, "hex").toString("latin1")}/${c.phases.join("+")}`)).toEqual([
       "3/0/b/guaranteed+fallible", "3/1/c/guaranteed", "7/0/a/guaranteed+fallible",
     ]);
     expect(d.deploys).toEqual([{ phase: "fallible", segment: 7, actionIndex: 1, address: "de".repeat(32) }]);
-    expect(d.maintenance).toMatchObject([{ phase: "fallible", segment: 3, actionIndex: 2, counter: 3n, updates: ["VerifierKeyInsert(x, v3)", "ReplaceAuthority"] }]);
+    expect(d.maintenance).toMatchObject([{ phase: "fallible", segment: 3, actionIndex: 2, counter: 3n, updates: ["VerifierKeyInsert(x, v3)", "ReplaceAuthority"], operations: ["78", null] }]);
     // Colors of public data: NIGHT's zero color is never a seen token; hex normalized; ledger order.
     expect(d.sightings.map((s) => `${s.phase}/${s.segment}/${s.evidence}/${s.color.slice(0, 4)}`)).toEqual([
       "guaranteed/0/shielded-offer/dddd",
@@ -243,13 +243,14 @@ describe("applied-parts decoder on recorded Stagenet (00026 A3)", () => {
     expect(at(715183)[0]!.maintenance).toHaveLength(1);
     expect(at(715183)[0]!.maintenance[0]!.address.startsWith("048ec49a")).toBe(true); // C10's contract
     expect(at(715183)[0]!.maintenance[0]!.updates.join(" ")).toBe("VerifierKeyRemove(publishMetadata, v4)");
+    expect(at(715183)[0]!.maintenance[0]!.operations).toEqual([Buffer.from("publishMetadata").toString("hex")]);
     expect(at(715428)[0]!.maintenance[0]!.updates.join(" ")).toMatch(/^VerifierKeyInsert\(publishMetadata, v[34]\)$/);
     expect(at(715428)[0]!.maintenance[0]!.address).toBe("11010832a39954d9ccce48f6b5fce25fc789abb1d700ee45b26b69af3e5dd63b");
     // 714813: one transaction with TWO contract calls (another user's bridge withdrawal) — why a count of calls per
     // action (60 in 714485–715183) exceeds the reference's count of transactions with a call (58).
     const twoCalls = at(714813).filter((x) => x.calls.length === 2);
     expect(twoCalls).toHaveLength(1);
-    expect(twoCalls[0]!.calls.map((c) => c.entryPoint)).toEqual(["startWithdraw", "signBidirectional"]);
+    expect(twoCalls[0]!.calls.map((c) => c.entryPoint)).toEqual([Buffer.from("startWithdraw").toString("hex"), Buffer.from("signBidirectional").toString("hex")]); // exact bytes (C4 H1)
     const all = decoded.map((x) => x.d);
     expect(all.flatMap((x) => x.calls)).toHaveLength(18);
     expect(all.flatMap((x) => x.deploys)).toHaveLength(1);

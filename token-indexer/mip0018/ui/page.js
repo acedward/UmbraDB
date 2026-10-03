@@ -198,6 +198,15 @@
     return span;
   }
   function dash(title) { return setTitle(h("span", "no", "\u2014"), title); }
+  // A contract entry point (arbitrary bytes on the ledger): the API serves its hex always and a text form only
+  // when it is printable; the text is drawn as data, anything else as its hex.
+  function entryPointNode(ep) {
+    if (!ep || typeof ep !== "object") return null;
+    if (typeof ep.text === "string" && ep.text !== "") return data(ep.text, 40);
+    var hx = txt(ep.hex);
+    if (hx === "") return setTitle(h("span", "no", "(empty)"), "an empty entry point");
+    return h("span", "ep-bytes", [hexNode(hx), h("span", "note", " (bytes, not printable)")]);
+  }
 
   // \u2500\u2500 Hex \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
@@ -799,7 +808,8 @@
         if (a.events && typeof a.events === "object") det.push(txt(a.events.accepted) + " accepted \u00b7 " + txt(a.events.rejected) + " rejected");
         var dn = h("span", null, det.join(" \u00b7 "));
         if (a.utxo && typeof a.utxo === "object") { dn.appendChild(h("span", "note", " UTXO ")); dn.appendChild(hexNode(a.utxo.intentHash)); dn.appendChild(h("span", "mono", "#" + txt(a.utxo.outputIndex))); }
-        if (a.entryPoint !== undefined && a.entryPoint !== null) { dn.appendChild(h("span", "note", " entry point ")); dn.appendChild(data(a.entryPoint, 40)); }
+        var ep = entryPointNode(a.entryPoint);
+        if (ep !== null) { dn.appendChild(h("span", "note", " entry point ")); dn.appendChild(ep); }
         td(tr, dn, "wide");
         body.appendChild(tr);
       }

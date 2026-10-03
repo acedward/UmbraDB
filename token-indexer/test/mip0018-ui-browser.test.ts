@@ -354,7 +354,7 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
     expect(await page.eval<number>("document.scripts.length")).toBe(1);
   }, 300_000);
 
-  it("[[mip0018.ui.browser-activity-shape]] the activity section draws what the REAL activity endpoints answer: on the recorded IDX range C03's rows (UTXO and mint with wallet 1 in Bech32m, never its hex; the publish as a metadata transaction) and C06's five metadata transactions (identity and contract views); on synthetic blocks through the real scanner every role, Bech32m wallets, a hostile entry point as visible marks, and 'load more' with the API's own cursor", async () => {
+  it("[[mip0018.ui.browser-activity-shape]] the activity section draws what the REAL activity endpoints answer: on the recorded IDX range C03's rows (UTXO and mint with wallet 1 in Bech32m, never its hex; the publish as a metadata transaction) and C06's five metadata transactions (identity and contract views); on synthetic blocks through the real scanner every role, Bech32m wallets, a hostile entry point as its bytes (hex, never decoded text), and 'load more' with the API's own cursor", async () => {
     // Part A — the recorded IDX range, served by the real entry point (serve(): API + /ui).
     const list = (await api(idx.base, "/v1/tokens?limit=500")).json.items as Json[];
     const C03 = contractOf("C03");
@@ -409,7 +409,7 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
           fallibleSpends: [[Y, "7", 3, "22".repeat(32), 4]],
           fallibleOutputs: [[Y, "7", walletOf(2)]],
           calls: [{
-            address: A, entryPoint: "\u202Eevil\u200B", // (a NUL cannot be stored in a Postgres text column; flagged in the C plan)
+            address: A, entryPoint: "\u202Eevil\u200B", // not printable: served and drawn as its bytes (C4 H1)
             guaranteed: { logs: [acceptedEvent(DS, 2, "Gee")], unshieldedMints: [[DS, "50"]], claimed: [[minted, "user", walletOf(2), "50"]], unshieldedInputs: [["unshielded", Y, "5"]] },
             fallible: { logs: [rejectedEvent()], unshieldedOutputs: [["unshielded", Y, "3"]], claimed: [[Y, "contract", B, "3"]] },
           }],
@@ -438,7 +438,7 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
     expect(dy.slice(0, 4).map((r) => [r.role, r.cells[2]])).toEqual([
       ["contract-in", "into contract \u00b7 in"], ["utxo-spent", "UTXO spent \u00b7 out"], ["utxo-created", "UTXO created \u00b7 in"], ["contract-out", "out of contract \u00b7 out"],
     ]);
-    expect(dy[0]!.cells.join(" ")).toContain("\u27e8U+202E\u27e9evil\u27e8U+200B\u27e9"); // the hostile entry point as visible marks
+    expect(dy[0]!.cells.at(-1)).toContain("entry point e280ae65\u2026e2808b (bytes, not printable)"); // the hostile entry point as its hex
     expect(dy[1]!.wallets).toEqual([walletAddress(NET, walletOf(3))]);
     expect(dy[2]!.wallets).toEqual([walletAddress(NET, walletOf(2))]);
     expect(dy[3]!.links).toContain(`#/contract/${B}`);
@@ -555,7 +555,45 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
     expect(page.requests.some((r) => r.url.includes("example.invalid"))).toBe(false);
     expectOnlyApiCalls(page, base);
     await expectCleanConsole(page);
-  }, 240_000);
+
+    // Hostile contract entry points (sub-plan C4 H1: arbitrary bytes on the ledger): NUL, non-UTF-8, bidi and markup
+    // bytes are drawn as their hex, a printable one as text; nothing raw, no element from data.
+    const edb = await fresh("uihostileep");
+    const E = "e5".repeat(32);
+    const Y = "e7".repeat(32);
+    const EPS: Array<[string, string]> = [
+      ["6d696e7400", "entry point 6d696e7400 (bytes, not printable)"], // "mint" NUL
+      ["fffe4100c3", "entry point fffe4100c3 (bytes, not printable)"], // not UTF-8
+      [Buffer.from("\u202Eevil\u200B").toString("hex"), "entry point e280ae65\u2026e2808b (bytes, not printable)"],
+      [Buffer.from("<img src=x>").toString("hex"), "entry point 3c696d67\u20263d783e (bytes, not printable)"],
+      [Buffer.from("mint").toString("hex"), "entry point mint"],
+    ];
+    await putSyntheticBlocks(edb.sql, edb.archive, NET, 600, [[{
+      result: "success",
+      segments: null,
+      tx: { hash: "f9".repeat(32), intents: [{ segment: 1, calls: EPS.map(([h], i) => ({ address: E, entryPoint: "unused", entryPointHex: h, guaranteed: { unshieldedInputs: [["unshielded", Y, String(i + 1)]] } })) }] } as unknown as SynthArchivedTx["tx"],
+    }]]);
+    const es = scanner(edb, syntheticSeams);
+    await es.bootstrap();
+    await scanAll(es);
+    expect((await es.getCursor())!.nextHeight).toBe(601); // the scan went through
+    const ebase = await serveDb(edb);
+    const epage = await browser.newPage();
+    await epage.goto(`${ebase}/ui`);
+    await epage.waitFor("document.body.getAttribute('data-state') === 'ready'");
+    const sy = await visit(epage, `#/color/${Y}`);
+    await epage.waitFor(`document.querySelectorAll('#activity tbody tr').length === ${EPS.length}`);
+    const details = await epage.eval<string[]>("[...document.querySelectorAll('#activity tbody tr')].map((tr) => tr.cells[tr.cells.length - 1].innerText)");
+    expect(details.map((d) => d.replace(/^guaranteed \u00b7 segment 1 /, ""))).toEqual(EPS.map(([, shown]) => shown));
+    const eps = await epage.eval<Snap>(SNAP);
+    for (const snap of [sy, eps]) {
+      expect(snap.text).not.toMatch(HIDDEN_RAW);
+      for (const a of snap.attrs) expect(a).not.toMatch(HIDDEN_RAW_ATTR);
+    }
+    expect(await epage.eval<number>("document.querySelectorAll('#view img, #view script').length")).toBe(0);
+    expectOnlyApiCalls(epage, ebase);
+    await expectCleanConsole(epage);
+  }, 300_000);
 
   it("[[mip0018.ui.browser-withdrawn]] with the page open and refreshing on its own: C06 step by step — the withdrawn name is on no reachable view after the tombstone (⚠ partial: name) and stays absent after the revive; a whole identity withdrawn (synthetic) is on no reachable view — not its domainSep, name or symbol — and its direct route says only that no such identity exists; a withdrawn minted token reads like a never-described one", async () => {
     // C06 recorded, per step; the page refreshes every 600 ms, never reloaded.

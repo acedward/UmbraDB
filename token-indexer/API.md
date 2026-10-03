@@ -262,7 +262,7 @@ hex — never Bech32m. A metadata row carries counts and the first event's index
       "wallet": "mn_addr_stagenet1vw57646su9y5z6myarm93m6kcn62j97z0yma94lfkhmta6pz5h5q6utr3k",
       "utxo": { "intentHash": "0c038f28…9260", "outputIndex": 0 } },
     { "height": 714617, "txIndex": 0, "itemIndex": 1, "txHash": "2ec3accadb…", "role": "mint", "color": "8e01e392…8484", "amount": "1000000",
-      "contract": "a3df5260…5f21", "domainSep": "…", "kind": 2, "wallet": "mn_addr_stagenet1vw57646su9y5z6myarm93m6kcn62j97z0yma94lfkhmta6pz5h5q6utr3k" },
+      "contract": "a3df5260…5f21", "actionIndex": 0, "entryPoint": { "hex": "6d696e74", "text": "mint" }, "domainSep": "…", "kind": 2, "wallet": "mn_addr_stagenet1vw57646su9y5z6myarm93m6kcn62j97z0yma94lfkhmta6pz5h5q6utr3k" },
     { "height": 714624, "txIndex": 0, "itemIndex": 0, "txHash": "7f7cc752db…", "role": "metadata-event", "contract": "a3df5260…5f21",
       "events": { "accepted": 1, "rejected": 0, "firstEventIndex": 0 } }
   ],
@@ -276,6 +276,12 @@ Row fields (C2's `ActivityItem`; a field absent from a row does not apply to it)
 `utxo` (`intentHash`, `outputIndex`), `events` (`accepted`, `rejected`, `firstEventIndex`). `contractAddress` is
 `null` for a color with no indexed mint (NIGHT, a seen-only color). 404 when the color is not known in the indexed
 range (as `/v1/tokens/{color}`). `limit` 1–500 (default 100); the cursor is bound to the listing and the order.
+
+`entryPoint` (rows of a contract call: `mint`, `contract-in`, `contract-out`) is an object, because an entry point is
+arbitrary bytes on the ledger (NUL, control, bidi and non-UTF-8 bytes included): `{ "hex": "6d696e74", "text": "mint" }`
+— `hex` is always the exact bytes; `text` is present only when the entry point is printable by the ledger's own rule
+for showing an entry point as a string (non-empty, every byte an ASCII letter or digit or one of `'+-_":/\?#$^*&.`).
+Anything else is served as hex only, e.g. `{ "hex": "6d696e7400" }` for `mint` followed by a NUL byte.
 
 ### `GET /v1/contracts/{address}/activity?limit=&cursor=&order=`
 

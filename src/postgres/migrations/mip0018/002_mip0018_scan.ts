@@ -19,7 +19,13 @@ export const name = "002_mip0018_scan";
  *   or without a known mint (a mint found later completes the same color in place). NIGHT's zero color is a built-in
  *   row, never a sighting.
  * - `mip0018_contract_actions` — contract calls, deploys and maintenance updates (e.g. `VerifierKeyInsert` /
- *   `VerifierKeyRemove`) that took effect, so the scanner recognises every action and moves past it.
+ *   `VerifierKeyRemove`) that took effect, so the scanner recognises every action and moves past it. Entry points
+ *   are ARBITRARY bytes on the ledger (NUL, non-UTF-8: `onchain-state` `maybe_str`), so `entry_point` and each
+ *   update's operation (`maintenance_operations`, NULL for an update without one) are `bytea` — a `text` column
+ *   refuses NUL and would stop the scan at the first such call (sub-plan C4 H1/H2). `maintenance_updates` holds an
+ *   ASCII rendering only (`VerifierKeyInsert(publishMetadata, v3)`; a non-printable operation as `<bytes HEX>`).
+ *   Reading `maintenance_operations` from JS: postgres.js 3.4 parses a NULL array element as an empty Buffer, so read
+ *   it element by element (`unnest … WITH ORDINALITY`) where "no operation" and "empty operation" must differ.
  * - `mip0018_builtin_tokens` — NIGHT and DUST (owner decision Q3, outside MIP-0018: the protocol fixes their
  *   properties); seeded per network by the scanner.
  *
@@ -85,12 +91,16 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       tx_hash          bytea    NOT NULL CHECK (octet_length(tx_hash) = 32),
       action           text     NOT NULL CHECK (action IN ('call', 'deploy', 'maintenance')),
       contract_address bytea    NOT NULL CHECK (octet_length(contract_address) = 32),
-      entry_point      text,
+      entry_point      bytea,
       applied_phases   text[],
       maintenance_counter numeric(20,0) CHECK (maintenance_counter IS NULL OR maintenance_counter >= 0),
       maintenance_updates text[],
+      maintenance_operations bytea[],
       CHECK ((action = 'call') = (entry_point IS NOT NULL AND applied_phases IS NOT NULL)),
-      CHECK ((action = 'maintenance') = (maintenance_counter IS NOT NULL AND maintenance_updates IS NOT NULL)),
+      CHECK ((action = 'maintenance') = (maintenance_counter IS NOT NULL AND maintenance_updates IS NOT NULL
+                                         AND maintenance_operations IS NOT NULL)),
+      CHECK (maintenance_operations IS NULL
+             OR coalesce(array_length(maintenance_operations, 1), 0) = coalesce(array_length(maintenance_updates, 1), 0)),
       CHECK (applied_phases IS NULL OR (cardinality(applied_phases) BETWEEN 1 AND 2
              AND applied_phases <@ ARRAY['guaranteed', 'fallible']::text[])),
       PRIMARY KEY (network, block_height, tx_index, segment_id, action_index)

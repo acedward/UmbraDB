@@ -20,6 +20,7 @@ import type { ISql } from "postgres";
 import { normHex, NIGHT_COLOR, type Part, partApplied, type Phase, type TransactionOutcome } from "./applied-parts.ts";
 import { walletAddress } from "./bech32m.ts";
 import { tokenColor } from "./color.ts";
+import { entryPointBytes, type EntryPointJson, entryPointJson } from "./entry-point.ts";
 
 /** A connection or the scan's block transaction (the same handle type as `fields.ts`). */
 export type Queryable = ISql<{ bigint: bigint }>;
@@ -41,7 +42,8 @@ export interface ActivityRow {
   direction: "in" | "out" | null;
   contract_address: Buffer | null;
   action_index: number | null;
-  entry_point: string | null;
+  /** The entry point's exact bytes (arbitrary on the ledger; `bytea`, C4 H1). */
+  entry_point: Buffer | null;
   domain_sep: Buffer | null;
   kind: 1 | 2 | null;
   wallet_address: Buffer | null;
@@ -173,7 +175,7 @@ export function transactionActivity(input: TransactionActivityInput): ActivityRo
     intent.actions.forEach((action, actionIndex) => {
       if (!(action instanceof ContractCall)) return; // deploys and maintenance updates move no tokens
       const contract = normHex(String(action.address));
-      const entryPoint = typeof action.entryPoint === "string" ? action.entryPoint : Buffer.from(action.entryPoint as Uint8Array).toString("utf8");
+      const entryPoint = entryPointBytes(action.entryPoint as Uint8Array | string); // exact bytes, never a lossy UTF-8 decode
       for (const [phase, t] of [["guaranteed", action.guaranteedTranscript], ["fallible", action.fallibleTranscript]] as const) {
         if (t !== undefined && t !== null) transcriptRows({ phase, segment }, t as unknown as TranscriptLike, contract, actionIndex, entryPoint, txHash, add);
       }
@@ -213,7 +215,7 @@ function unshieldedOffers(segment: number, intent: IntentLike, outcome: Transact
   }
 }
 
-function transcriptRows(part: Part, t: TranscriptLike, contract: string, actionIndex: number, entryPoint: string, txHash: string, add: Add): void {
+function transcriptRows(part: Part, t: TranscriptLike, contract: string, actionIndex: number, entryPoint: Buffer, txHash: string, add: Add): void {
   const at = { contract_address: buf(contract), action_index: actionIndex, entry_point: entryPoint };
   // Recipients the transcript claims per color (unshielded only); attached to the one row that funds them.
   const claimed = new Map<string, Array<{ to: PublicAddressLike; amount: bigint }>>();
@@ -300,7 +302,8 @@ export interface ActivityItem {
   direction?: "in" | "out";
   contract?: string;
   actionIndex?: number;
-  entryPoint?: string;
+  /** The entry point: its exact bytes as hex, and a `text` form only when printable (`entry-point.ts`). */
+  entryPoint?: EntryPointJson;
   domainSep?: string;
   kind?: 1 | 2;
   /** A wallet (`UserAddress`) as Bech32m — never hex. */
@@ -340,7 +343,7 @@ interface DbActivityRow {
   direction: "in" | "out" | null;
   contract_address: Buffer | null;
   action_index: number | null;
-  entry_point: string | null;
+  entry_point: Buffer | null;
   domain_sep: Buffer | null;
   kind: number | null;
   wallet_address: Buffer | null;
@@ -408,7 +411,7 @@ export function activityItem(network: string, r: DbActivityRow): ActivityItem {
   if (r.direction !== null) item.direction = r.direction;
   if (r.contract_address !== null) item.contract = h(r.contract_address);
   if (r.action_index !== null) item.actionIndex = r.action_index;
-  if (r.entry_point !== null) item.entryPoint = r.entry_point;
+  if (r.entry_point !== null) item.entryPoint = entryPointJson(r.entry_point);
   if (r.domain_sep !== null) item.domainSep = h(r.domain_sep);
   if (r.kind !== null) item.kind = r.kind as 1 | 2;
   if (r.wallet_address !== null) item.wallet = walletAddress(network, r.wallet_address.toString("hex"));

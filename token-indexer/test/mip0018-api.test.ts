@@ -27,6 +27,7 @@ import { Mip0018Scanner } from "../mip0018/scan.ts";
 import { main as serveMain, serve } from "../mip0018/serve-cli.ts";
 import { EVENT_NAME, encodePayload, type MetadataRecord, record } from "../vendor/mip0018/codec/src/index.ts";
 import { decodeSynthetic, putSyntheticBlocks, type SynthArchivedTx, type SynthLog } from "./helpers/synthetic-archive.ts";
+import { type SynthTxA, syntheticSeams } from "./helpers/synthetic-activity.ts";
 
 const NET = "stagenet";
 const REPO = new URL("../../", import.meta.url);
@@ -587,7 +588,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     expect(after.get(`/v1/events?contract=${X}&limit=500`)!.json.items.map((e: Json) => [e.height, e.classification])).toEqual([[200, "accept"], [200, "accept"], [201, "accept"], [201, "accept"]]);
   }, 240_000);
 
-  it("[[mip0018.api.hostile-text]] hostile metadata (bidi and invisible characters, NUL and control characters, markup, non-UTF-8 keys and bytes, a long value) is returned as data: every body is pure printable ASCII with JSON escapes, parses back to the exact text, non-UTF-8 bytes only as hex; a color seen without a mint is listed last", async () => {
+  it("[[mip0018.api.hostile-text]] hostile metadata (bidi and invisible characters, NUL and control characters, markup, non-UTF-8 keys and bytes, a long value) is returned as data: every body is pure printable ASCII with JSON escapes, parses back to the exact text, non-UTF-8 bytes only as hex; a color seen without a mint is listed last; hostile contract entry points (NUL, non-UTF-8, bidi bytes) never stop the scan and are served as their exact hex, with text only when printable", async () => {
     const db = await fresh("hostile");
     const H = "a1".repeat(32);
     const D = "68".repeat(32);
@@ -652,7 +653,53 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
       const src = readFileSync(new URL(`token-indexer/mip0018/${f}`, REPO), "utf8");
       expect(src, f).not.toMatch(/\bfetch\(|node:https|\.request\(|net\.connect|from "undici"/);
     }
-  });
+
+    // Sub-plan C4 H1: contract entry points are arbitrary bytes on the ledger. Calls naming NUL, non-UTF-8 and bidi
+    // entry points mint and move tokens (activity rows carry the entry point); the scan goes through every block and
+    // the API serves each entry point as its exact hex, with `text` only for a printable one.
+    const edb = await fresh("hostileep");
+    const E = "e5".repeat(32);
+    const Y = "e7".repeat(32);
+    const EPS: Array<[string, string | undefined]> = [
+      ["6d696e7400", undefined], // "mint" NUL
+      ["fffe4100c3", undefined], // not UTF-8
+      [hexText("\u202Eevil\u200B"), undefined], // bidi + zero-width
+      [hexText("<script>"), undefined], // markup characters are not printable entry-point bytes
+      [hexText("mint"), "mint"],
+    ];
+    const dsOf = (i: number): string => (0x40 + i).toString(16).repeat(32);
+    const archived = (t: SynthTxA): SynthArchivedTx => ({ tx: t as unknown as SynthArchivedTx["tx"], result: "success", segments: null });
+    await putSyntheticBlocks(edb.sql, edb.archive, NET, 500, [
+      [archived({ hash: "f1".repeat(32), intents: [{ segment: 1, calls: EPS.map(([h], i) => ({
+        address: E, entryPoint: "unused", entryPointHex: h,
+        guaranteed: { unshieldedMints: [[dsOf(i), "1"]], unshieldedInputs: [["unshielded", Y, String(i + 1)]] },
+      })) }] })],
+      [archived({ hash: "f2".repeat(32), intents: [{ segment: 1, calls: [{ address: E, entryPoint: "later", guaranteed: { unshieldedOutputs: [["unshielded", Y, "9"]] } }] }] })],
+    ]);
+    const es = scanner(edb, syntheticSeams);
+    await es.bootstrap();
+    await scanAll(es);
+    expect((await es.getCursor())!.nextHeight).toBe(502); // never stopped
+    const ebase = await startApi(edb);
+    const ec = await crawl(ebase, [E], [`/v1/tokens/${Y}/activity?limit=500`]);
+    for (const [p, r] of ec) {
+      expect(r.status, p).toBeLessThan(500);
+      expect(/^[\x20-\x7e]*$/.test(r.text), p).toBe(true);
+      expect(r.text.includes("<"), p).toBe(false);
+    }
+    const yItems = ec.get(`/v1/tokens/${Y}/activity?limit=500`)!.json.items as Json[];
+    expect(yItems.map((i) => [i.role, i.height, i.entryPoint])).toEqual([
+      ...EPS.map(([h, text]) => ["contract-in", 500, text === undefined ? { hex: h } : { hex: h, text }]),
+      ["contract-out", 501, { hex: hexText("later"), text: "later" }],
+    ]);
+    for (const [i, [h, text]] of EPS.entries()) {
+      const mintItems = (await ok(ebase, `/v1/tokens/${tokenColor(dsOf(i), E)}/activity`)).items as Json[];
+      expect(mintItems.map((x) => [x.role, x.entryPoint])).toEqual([["mint", text === undefined ? { hex: h } : { hex: h, text }]]);
+    }
+    const rawY = ec.get(`/v1/tokens/${Y}/activity?limit=500`)!.text;
+    expect(rawY).not.toContain("\\u0000"); // no decoded text of a non-printable entry point travels, not even escaped
+    expect(rawY).not.toContain("\\u202e");
+  }, 240_000);
 
   it("[[mip0018.api.errors]] error envelope: 400 for malformed hex, kinds outside 1–3, malformed paths and parameters; 404 for unknown routes, colors, identities and contracts; 405 with Allow for other methods; 503 when the database cannot be read; never the input or internal details; HEAD answers headers only", async () => {
     const C01 = contractOf("C01");
