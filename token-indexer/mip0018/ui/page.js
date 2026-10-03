@@ -76,18 +76,16 @@
     }
   }
 
-  // Characters drawn as a visible mark: C0 controls (incl. NUL, tab, newline), DEL and C1, soft hyphen,
-  // combining grapheme joiner, Arabic letter mark, Hangul fillers, Khmer inherent vowels, Mongolian
-  // variation selectors, zero-width space/joiners and LRM/RLM, line/paragraph separators, bidi
-  // embeddings/overrides/isolates (U+202A\u2013U+202E, U+2066\u2013U+2069), word joiner and invisible operators,
-  // lone surrogates, variation selectors, BOM, interlinear annotation and other specials, musical
-  // formatting controls, tag characters.
+  // Characters drawn as a visible mark (final-audit F4: by Unicode property, not a hand-written list): every
+  // control (Cc: C0 incl. NUL, tab, newline; DEL; C1), format character (Cf: bidi embeddings, overrides, isolates and
+  // marks, zero-width characters, Arabic number signs U+0600\u2013U+0605, shorthand format controls U+1BCA0\u2013U+1BCA3,
+  // tag characters, \u2026), private-use (Co), unassigned (Cn) and surrogate (Cs) code point, line and paragraph
+  // separators (Zl, Zp), and every Default_Ignorable_Code_Point (variation selectors incl. Mongolian U+180B\u2013U+180F,
+  // Hangul fillers, combining grapheme joiner, Khmer inherent vowels, soft hyphen, \u2026): whatever a browser may draw
+  // as nothing, or let change the text around it.
+  var HIDDEN = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
   function hiddenChar(c) {
-    return c < 32 || (c >= 127 && c <= 159) || c === 173 || c === 847 || c === 1564 || c === 4447 || c === 4448
-      || c === 6068 || c === 6069 || (c >= 6155 && c <= 6158) || (c >= 8203 && c <= 8207)
-      || (c >= 8232 && c <= 8238) || (c >= 8288 && c <= 8303) || c === 12644 || (c >= 55296 && c <= 57343)
-      || (c >= 65024 && c <= 65039) || c === 65279 || c === 65440 || (c >= 65520 && c <= 65531)
-      || (c >= 119155 && c <= 119162) || (c >= 917504 && c <= 917631) || (c >= 917760 && c <= 917999);
+    return HIDDEN.test(String.fromCodePoint(c));
   }
   function hex4(c) {
     var h = c.toString(16).toUpperCase();

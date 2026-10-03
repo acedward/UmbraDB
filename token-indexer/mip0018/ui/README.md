@@ -45,12 +45,14 @@ a tick while the previous read of the same view runs, and drops a read that fini
 - **Text only.** Every value reaches the document as a text node or a DOM property (`textContent`, `title`); the
   script has no markup sink. The CSP also requires Trusted Types with no policy, so an `innerHTML`-class sink would
   throw in the browser.
-- **Visible marks.** Characters that change the layout of the text around them or cannot be seen — C0/C1 controls
-  (NUL, tab, newline, ESC …), bidi embeddings/overrides/isolates and marks (U+202A–U+202E, U+2066–U+2069, LRM/RLM,
-  ALM), zero-width characters, word joiner and invisible operators, soft hyphen, combining grapheme joiner, Hangul
-  and Khmer fillers, Mongolian and other variation selectors, line/paragraph separators, BOM, interlinear annotation
-  characters, musical formatting controls, tag characters and lone surrogates — are drawn as `⟨U+XXXX⟩`; every
-  published value is its own bidi island (`unicode-bidi: isolate`).
+- **Visible marks.** Characters that change the layout of the text around them or cannot be seen are drawn as
+  `⟨U+XXXX⟩`, decided by Unicode property (final audit F4), not by a list: every control (`Cc`: C0 incl. NUL, tab,
+  newline, ESC; DEL; C1), format character (`Cf`: bidi embeddings/overrides/isolates and marks, zero-width
+  characters, Arabic number signs U+0600–U+0605, shorthand format controls U+1BCA0–U+1BCA3, tag characters, …),
+  private-use (`Co`), unassigned (`Cn`) and surrogate (`Cs`) code point, line/paragraph separator (`Zl`, `Zp`), and
+  every `Default_Ignorable_Code_Point` (variation selectors incl. Mongolian U+180B–U+180F, Hangul fillers, combining
+  grapheme joiner, soft hyphen, …) — `/[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u`
+  in the browser's own Unicode data. Every published value is its own bidi island (`unicode-bidi: isolate`).
 - **Budgets.** A response is read up to 8 MiB; 48 drawn characters per table cell, 160 in a heading, 600 per field
   value ("show all" on request), 400 per tooltip, 500 fields per identity (read in the API's keyset pages of 100 with
   "load more fields"; the identity's `fieldCount` is shown), 20 rejection reasons per tooltip; lists of 100 rows per

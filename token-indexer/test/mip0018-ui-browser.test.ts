@@ -38,8 +38,10 @@ const WALLET_1 = "mn_addr_stagenet1vw57646su9y5z6myarm93m6kcn62j97z0yma94lfkhmta
 const SHOTS = process.env.MIP0018_UI_SCREENSHOTS;
 // Raw characters a value may carry that must never reach the drawn text or a tooltip (tab/newline excepted in
 // innerText, which uses them for layout).
-const HIDDEN_RAW = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/;
-const HIDDEN_RAW_ATTR = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/;
+// Final-audit F4: the page's own rule by Unicode property (in Node's Unicode data): every control, format, private-use,
+// unassigned and surrogate code point, line/paragraph separator and Default_Ignorable_Code_Point.
+const HIDDEN_RAW = /[\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
+const HIDDEN_RAW_ATTR = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -478,7 +480,7 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
     await expectCleanConsole(page2);
   }, 240_000);
 
-  it("[[mip0018.ui.browser-hostile-text]] hostile metadata renders as visible text: bidi/zero-width/NUL/control characters as ⟨U+XXXX⟩ marks (never raw, also not in tooltips), markup as literal text (no element, no script run), URIs as text never fetched or linked, budgets with 'show all', a partial ⚠ and an unusable field drawn without its value; a seen-only color last", async () => {
+  it("[[mip0018.ui.browser-hostile-text]] hostile metadata renders as visible text: bidi/zero-width/NUL/control characters and every other Cc/Cf/Co/Cn/Cs/Zl/Zp/Default_Ignorable code point (U+1BCA0, U+180F, U+0600–U+0605 included) as ⟨U+XXXX⟩ marks (never raw, also not in tooltips), markup as literal text (no element, no script run), URIs as text never fetched or linked, budgets with 'show all', a partial ⚠ and an unusable field drawn without its value; a seen-only color last", async () => {
     const db = await fresh("uihostile");
     const H = "a1".repeat(32);
     const D = "68".repeat(32);
@@ -610,6 +612,45 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
     expect(await epage.eval<number>("document.querySelectorAll('#view img, #view script').length")).toBe(0);
     expectOnlyApiCalls(epage, ebase);
     await expectCleanConsole(epage);
+
+    // Final-audit F4: invisible format characters a hand-written list missed are marks too (by Unicode property):
+    // a look-alike symbol (ACME + U+1BCA0) is told apart from ACME; U+180F, the Arabic number signs U+0600–U+0605,
+    // a private-use, an unassigned and a reserved default-ignorable code point are drawn as marks.
+    const fdb = await fresh("uihiddenprop");
+    const F = "f4".repeat(32);
+    const DF = "46".repeat(32);
+    const DG = "47".repeat(32);
+    await putSyntheticBlocks(fdb.sql, fdb.archive, NET, 800, [[
+      call(F, [
+        v1Log(DF, 3, [record.utf8("name", "a\u180Fb\u0600\u0605c"), record.utf8("symbol", "ACME\u{1BCA0}"),
+          record.utf8("marks", "\u0600\u0601\u0602\u0603\u0604\u0605 x\uE000y\u0378z\u{E0080}")]),
+        v1Log(DG, 3, [record.utf8("name", "Plain"), record.utf8("symbol", "ACME")]),
+      ]),
+    ]]);
+    const fsc = scanner(fdb, { decode: decodeSynthetic });
+    await fsc.bootstrap();
+    await scanAll(fsc);
+    const fbase = await serveDb(fdb);
+    const fpage = await browser.newPage();
+    await fpage.goto(`${fbase}/ui`);
+    await fpage.waitFor("document.body.getAttribute('data-route') === 'list' && document.body.getAttribute('data-state') === 'ready'");
+    const frows = await fpage.eval<Json[]>(LIST_ROWS);
+    expect(frows.slice(2).map((r) => [r.cells[1], r.cells[2]])).toEqual([
+      ["a\u27e8U+180F\u27e9b\u27e8U+0600\u27e9\u27e8U+0605\u27e9c", "ACME\u27e8U+1BCA0\u27e9"],
+      ["Plain", "ACME"],
+    ]);
+    const sf = await visit(fpage, `#/token/${F}/${DF}/3`);
+    expect(await fpage.eval<string>("document.querySelector('#view h3').innerText")).toBe("a\u27e8U+180F\u27e9b\u27e8U+0600\u27e9\u27e8U+0605\u27e9c");
+    const ff = await fpage.eval<Record<string, string>>("Object.fromEntries([...document.querySelectorAll('#fields tbody tr')].map((tr) => [tr.cells[0].innerText, tr.cells[2].innerText]))");
+    expect(ff.marks).toBe(["0600", "0601", "0602", "0603", "0604", "0605"].map((h) => `\u27e8U+${h}\u27e9`).join("") + " x\u27e8U+E000\u27e9y\u27e8U+0378\u27e9z\u27e8U+E0080\u27e9");
+    expect(ff.symbol).toBe("ACME\u27e8U+1BCA0\u27e9");
+    const fall = await crawl(fpage, ["#/"]);
+    for (const [h, snap] of [...fall, ["token", sf] as [string, Snap]]) {
+      expect(snap.text, h).not.toMatch(HIDDEN_RAW);
+      for (const a of snap.attrs) expect(a, h).not.toMatch(HIDDEN_RAW_ATTR);
+    }
+    expectOnlyApiCalls(fpage, fbase);
+    await expectCleanConsole(fpage);
   }, 300_000);
 
   it("[[mip0018.ui.browser-bounded]] final-audit F2: the page follows the API's bounded shapes — an identity's fields in keyset pages (100 rows, its field count, 'load more fields' reads the next page with the API's cursor), a group's first 100 members with its member count (identity and contract views), a 200-byte entry point drawn as its first 128 bytes with its length", async () => {
