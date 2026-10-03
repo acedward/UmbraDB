@@ -1,0 +1,12 @@
+{
+  "identities": [
+    {
+      "domainSep": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "kind": 3,
+      "visible": false,
+      "colored": false,
+      "common": {}
+    }
+  ],
+  "groups": []
+}

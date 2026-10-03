@@ -1,6 +1,7 @@
 /**
  * UmbraDB's MIP-0018 metadata state rules — one pure module (no database, no I/O), used by the pure vector adapter
- * and, through `recordEffects`, `fieldUsable` and `tokenMark`, by the Postgres apply path.
+ * and, through `recordEffects` (with `fieldUsable`), `symbolGroups`, `displayAmount` and `tokenMark`, by the Postgres
+ * apply path (`fields.ts`) and its read helpers (`metadata.ts`) — so both paths share every rule (sub-plan B3).
  *
  * Authority: MIP-0018 PR #340 head `274a84f221bcfc17e4b73e2c8b32fd8c028ea092` (per-key tombstones), sections
  * "Applying records", "Common fields" and "Symbol grouping"; owner decisions of project 00026: Q5 (only the latest
@@ -294,20 +295,7 @@ export class MetadataState {
 
   /** Symbol groups of two or more members (MIP "Symbol grouping", Q6). */
   groups(): SymbolGroup[] {
-    const byKey = new Map<string, SymbolGroup>();
-    for (const id of this.identities()) {
-      const symbol = id.fields.get(COMMON_KEY_HEX.symbol);
-      if (symbol === undefined || symbol.usable !== true) continue;
-      const g: SymbolGroup = { network: id.network, contractAddress: id.contractAddress, symbol: toHex(symbol.value), members: [] };
-      const k = JSON.stringify([g.network, g.contractAddress, g.symbol]);
-      const group = byKey.get(k) ?? g;
-      group.members.push({ domainSep: id.domainSep, kind: id.kind });
-      byKey.set(k, group);
-    }
-    return [...byKey.values()]
-      .filter((g) => g.members.length >= 2)
-      .map((g) => ({ ...g, members: g.members.sort((a, b) => byString(a.domainSep, b.domainSep) || a.kind - b.kind) }))
-      .sort((a, b) => byString(JSON.stringify([a.network, a.contractAddress, a.symbol]), JSON.stringify([b.network, b.contractAddress, b.symbol])));
+    return symbolGroups(this.identities());
   }
 
   /** Rejected MIP-0018 events of a contract on a network, in chain order (for the Q14 mark). */
@@ -326,10 +314,50 @@ export class MetadataState {
 
   /** `raw` displayed with the identity's usable `decimals`; `undefined` when there is none (no default, MIP). */
   display(ref: IdentityRef, raw: bigint): { decimals: bigint; text: string } | undefined {
-    const d = this.identity(ref)?.fields.get(COMMON_KEY_HEX.decimals);
-    if (d === undefined || d.usable !== true || d.integer === undefined) return undefined;
-    return { decimals: d.integer, text: formatAmount(raw, d.integer) };
+    return displayAmount(this.identity(ref)?.fields, raw);
   }
+}
+
+// ── Grouping and display (shared by `MetadataState` and the Postgres read helpers, `metadata.ts`) ───────────────
+
+/** What symbol grouping needs from an identity: its reference and (at least) its `symbol` field. */
+export interface GroupableIdentity extends IdentityRef {
+  fields: ReadonlyMap<string, Pick<Field, "value" | "usable">>;
+}
+
+/**
+ * The one symbol-grouping rule (MIP "Symbol grouping", Q6): identities of one (network, contractAddress) whose
+ * `symbol` is usable and has the same exact bytes form a group; only groups of two or more members are reported. An
+ * identity without a usable `symbol` is ungrouped. Members sorted by (domainSep, kind); groups by (network, contract,
+ * symbol). Input order does not matter.
+ */
+export function symbolGroups(identities: Iterable<GroupableIdentity>): SymbolGroup[] {
+  const byKey = new Map<string, SymbolGroup>();
+  for (const id of identities) {
+    const symbol = id.fields.get(COMMON_KEY_HEX.symbol);
+    if (symbol === undefined || symbol.usable !== true) continue;
+    const g: SymbolGroup = { network: id.network, contractAddress: id.contractAddress, symbol: toHex(symbol.value), members: [] };
+    const k = JSON.stringify([g.network, g.contractAddress, g.symbol]);
+    const group = byKey.get(k) ?? g;
+    group.members.push({ domainSep: id.domainSep, kind: id.kind });
+    byKey.set(k, group);
+  }
+  return [...byKey.values()]
+    .filter((g) => g.members.length >= 2)
+    .map((g) => ({ ...g, members: g.members.sort((a, b) => byString(a.domainSep, b.domainSep) || a.kind - b.kind) }))
+    .sort((a, b) => byString(JSON.stringify([a.network, a.contractAddress, a.symbol]), JSON.stringify([b.network, b.contractAddress, b.symbol])));
+}
+
+/**
+ * The one display rule (MIP S8, "Common fields"): `raw` shown with the identity's usable `decimals`; `undefined` when
+ * the identity has no fields or no usable `decimals` (no default such as 0 or 18).
+ */
+export function displayAmount(
+  fields: ReadonlyMap<string, Pick<Field, "usable" | "integer">> | undefined, raw: bigint,
+): { decimals: bigint; text: string } | undefined {
+  const d = fields?.get(COMMON_KEY_HEX.decimals);
+  if (d === undefined || d.usable !== true || d.integer === undefined) return undefined;
+  return { decimals: d.integer, text: formatAmount(raw, d.integer) };
 }
 
 // ── Marks (Q14) ──────────────────────────────────────────────────────────────────────────────────────────────────

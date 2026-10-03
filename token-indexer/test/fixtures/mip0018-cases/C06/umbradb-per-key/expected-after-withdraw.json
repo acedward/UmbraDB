@@ -1,0 +1,26 @@
+{
+  "identities": [
+    {
+      "domainSep": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "kind": 3,
+      "visible": true,
+      "colored": false,
+      "common": {
+        "symbol": "ACMP",
+        "decimals": 6,
+        "standards": "mip-0004"
+      }
+    }
+  ],
+  "groups": [
+    {
+      "symbol": "ACMP",
+      "members": [
+        {
+          "domainSep": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "kind": 3
+        }
+      ]
+    }
+  ]
+}

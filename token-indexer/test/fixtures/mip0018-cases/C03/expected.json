@@ -1,0 +1,26 @@
+{
+  "identities": [
+    {
+      "domainSep": "0x6d69702d303031383a6578616d706c653a756e736869656c6465640000000000",
+      "kind": 2,
+      "visible": true,
+      "colored": true,
+      "common": {
+        "name": "Acme Public",
+        "symbol": "APUB",
+        "decimals": 6
+      }
+    }
+  ],
+  "groups": [
+    {
+      "symbol": "APUB",
+      "members": [
+        {
+          "domainSep": "0x6d69702d303031383a6578616d706c653a756e736869656c6465640000000000",
+          "kind": 2
+        }
+      ]
+    }
+  ]
+}

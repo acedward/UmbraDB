@@ -11,10 +11,10 @@
  */
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { classifyEvent } from "../vendor/mip0018/codec/src/index.ts";
-import { fromHex, type IdentityRef, MetadataState, toHex } from "./state.ts";
+import { type Classification, classifyEvent } from "../vendor/mip0018/codec/src/index.ts";
+import { fromHex, type IdentityRef, type IdentityState, MetadataState, type ObservedEvent, type SymbolGroup, toHex } from "./state.ts";
 
-type Json = Record<string, unknown>;
+export type Json = Record<string, unknown>;
 
 function str(v: unknown, what: string): string {
   if (typeof v !== "string") throw new Error(`${what} must be a string`);
@@ -25,8 +25,15 @@ function int(v: unknown, what: string): number {
   return v;
 }
 
-function decode(req: Json): Json {
-  const c = classifyEvent({ type: str(req.type, "type"), name: fromHex(str(req.name_hex, "name_hex")), payload: fromHex(str(req.payload_hex, "payload_hex")) });
+// ── Request parsing and response shapes, shared with the Postgres adapter (`vector-adapter-pg.ts`) ────────────────
+
+/** A `decode` request's event. */
+export function decodeInput(req: Json): { type: string; name: Uint8Array; payload: Uint8Array } {
+  return { type: str(req.type, "type"), name: fromHex(str(req.name_hex, "name_hex")), payload: fromHex(str(req.payload_hex, "payload_hex")) };
+}
+
+/** The `decode` response of a classification (payload-vector `expect` shape). */
+export function decodeResponse(c: Classification): Json {
   if (c.result === "ignore") return { result: "ignore", reason: c.reason };
   if (c.result === "reject") return { result: "reject", reason: c.reason, offset: c.offset };
   return {
@@ -41,27 +48,56 @@ function decode(req: Json): Json {
   };
 }
 
-function state(req: Json): Json {
-  const s = new MetadataState();
+export type StateStep = { op: "apply"; event: ObservedEvent } | { op: "rollback"; network: string; toBlock: number };
+export interface DisplayRequest {
+  ref: IdentityRef;
+  raw: string;
+}
+
+/** A `state` request's steps (in order) and display requests. */
+export function stateInput(req: Json): { steps: StateStep[]; display: DisplayRequest[] | undefined } {
   if (!Array.isArray(req.steps)) throw new Error("steps must be an array");
-  for (const step of req.steps as Json[]) {
-    if (step.op === "apply") {
-      s.apply({
-        network: str(step.network, "network"),
-        position: { block: int(step.block, "block"), tx: int(step.tx, "tx"), event: int(step.event, "event") },
-        contractAddress: str(step.contractAddress, "contractAddress"),
-        type: str(step.type, "type"),
-        name: fromHex(str(step.name_hex, "name_hex")),
-        payload: fromHex(str(step.payload_hex, "payload_hex")),
-      });
-    } else if (step.op === "rollback") {
-      s.rollbackTo(str(step.network, "network"), int(step.toBlock, "toBlock"));
-    } else {
-      throw new Error(`unknown step op ${String(step.op)}`);
-    }
-  }
+  const steps = (req.steps as Json[]).map((step): StateStep => {
+    if (step.op === "apply")
+      return {
+        op: "apply",
+        event: {
+          network: str(step.network, "network"),
+          position: { block: int(step.block, "block"), tx: int(step.tx, "tx"), event: int(step.event, "event") },
+          contractAddress: str(step.contractAddress, "contractAddress"),
+          type: str(step.type, "type"),
+          name: fromHex(str(step.name_hex, "name_hex")),
+          payload: fromHex(str(step.payload_hex, "payload_hex")),
+        },
+      };
+    if (step.op === "rollback") return { op: "rollback", network: str(step.network, "network"), toBlock: int(step.toBlock, "toBlock") };
+    throw new Error(`unknown step op ${String(step.op)}`);
+  });
+  if (!Array.isArray(req.display)) return { steps, display: undefined };
+  const display = (req.display as Json[]).map((d) => {
+    const raw = str(d.raw, "display.raw");
+    if (!/^[0-9]+$/.test(raw)) throw new Error("display.raw must be a decimal string");
+    return {
+      ref: {
+        network: str(d.network, "display.network"),
+        contractAddress: str(d.contractAddress, "display.contractAddress"),
+        domainSep: str(d.domainSep, "display.domainSep"),
+        kind: int(d.kind, "display.kind"),
+      },
+      raw,
+    };
+  });
+  return { steps, display };
+}
+
+/** The `state` response (state-vector `expect` shape) from identities, groups and the displayed amounts. */
+export function stateResponse(
+  identities: readonly IdentityState[],
+  groups: readonly SymbolGroup[],
+  display?: ReadonlyArray<DisplayRequest & { shown: { decimals: bigint; text: string } | undefined }>,
+): Json {
   const out: Json = {
-    identities: s.identities().map((id) => ({
+    identities: identities.map((id) => ({
       network: id.network,
       contractAddress: id.contractAddress,
       domainSep: id.domainSep,
@@ -76,23 +112,27 @@ function state(req: Json): Json {
         }),
       ),
     })),
-    groups: s.groups().map((g) => ({ network: g.network, contractAddress: g.contractAddress, symbol_hex: g.symbol, members: g.members })),
+    groups: groups.map((g) => ({ network: g.network, contractAddress: g.contractAddress, symbol_hex: g.symbol, members: g.members })),
   };
-  if (Array.isArray(req.display)) {
-    out.display = (req.display as Json[]).map((d) => {
-      const ref: IdentityRef = {
-        network: str(d.network, "display.network"),
-        contractAddress: str(d.contractAddress, "display.contractAddress"),
-        domainSep: str(d.domainSep, "display.domainSep"),
-        kind: int(d.kind, "display.kind"),
-      };
-      const raw = str(d.raw, "display.raw");
-      if (!/^[0-9]+$/.test(raw)) throw new Error("display.raw must be a decimal string");
-      const shown = s.display(ref, BigInt(raw));
-      return { ...ref, raw, decimals: shown?.decimals.toString() ?? null, text: shown?.text ?? null };
-    });
-  }
+  if (display !== undefined)
+    out.display = display.map((d) => ({ ...d.ref, raw: d.raw, decimals: d.shown?.decimals.toString() ?? null, text: d.shown?.text ?? null }));
   return out;
+}
+
+// ── The pure adapter ─────────────────────────────────────────────────────────────────────────────────────────────
+
+function decode(req: Json): Json {
+  return decodeResponse(classifyEvent(decodeInput(req)));
+}
+
+function state(req: Json): Json {
+  const s = new MetadataState();
+  const { steps, display } = stateInput(req);
+  for (const step of steps) {
+    if (step.op === "apply") s.apply(step.event);
+    else s.rollbackTo(step.network, step.toBlock);
+  }
+  return stateResponse(s.identities(), s.groups(), display?.map((d) => ({ ...d, shown: s.display(d.ref, BigInt(d.raw)) })));
 }
 
 /** Answers one runner request; never throws (a failure is `{id, error}`). */

@@ -1,0 +1,26 @@
+{
+  "identities": [
+    {
+      "domainSep": "0x6d69702d303031383a6578616d706c653a66756e6769626c6500000000000000",
+      "kind": 3,
+      "visible": true,
+      "colored": false,
+      "common": {
+        "name": "Acme Gold",
+        "symbol": "AGLD",
+        "decimals": 6
+      }
+    }
+  ],
+  "groups": [
+    {
+      "symbol": "AGLD",
+      "members": [
+        {
+          "domainSep": "0x6d69702d303031383a6578616d706c653a66756e6769626c6500000000000000",
+          "kind": 3
+        }
+      ]
+    }
+  ]
+}

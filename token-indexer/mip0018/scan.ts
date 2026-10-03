@@ -26,7 +26,10 @@
  *   the chain position, classification and reason (Q15: the chain-event record; metadata values live only in the
  *   latest-value rows of sub-plan B3); `name`/`payload` stay for recomputation and are never served as metadata.
  *   `event_index` is the position among the transaction's applied `log` ops (non-`Misc` logs are not stored).
- * - `removeAbove(height)`: deletes every scanned row above a height and moves the cursor back, so the scan can be
+ * - Metadata state (sub-plan B3, `fields.ts`): each accepted event is applied to `mip0018_fields` (latest value per
+ *   key; a Null record deletes its key's row) in the same block transaction as the event rows and the cursor.
+ * - `removeAbove(height)`: deletes every scanned row above a height, recomputes the fields of the identities the
+ *   removed events touched from the remaining accepted events, and moves the cursor back, so the scan can be
  *   recomputed from there (MIP S4; UmbraDB follows finalized blocks only, so this serves tests and repairs).
  */
 import type { BlockMeta, TransactionMeta } from "../../src/interfaces/chain-archive-store.js";
@@ -45,6 +48,7 @@ import {
   type TransactionOutcome,
 } from "./applied-parts.ts";
 import { tokenColor } from "./color.ts";
+import { type EventRow, removeEventsAbove, writeEvents } from "./fields.ts";
 import { classifyEvent, MISC_EVENT_TYPE } from "../vendor/mip0018/codec/src/index.ts";
 
 /** NIGHT and DUST (owner Q3): protocol tokens, outside MIP-0018 ("their properties are fixed by the protocol"). */
@@ -102,24 +106,6 @@ export interface ScanOnceResult {
   actions: number;
   /** `Misc` events stored (any classification). */
   events: number;
-}
-
-interface EventRow {
-  network: string;
-  block_height: number;
-  tx_index: number;
-  event_index: number;
-  tx_hash: Buffer;
-  segment_id: number;
-  phase: string;
-  contract_address: Buffer;
-  event_type: string;
-  name: Buffer;
-  payload: Buffer;
-  classification: "accept" | "reject" | "ignore";
-  reason: string | null;
-  domain_sep: Buffer | null;
-  kind: number | null;
 }
 
 interface ActionRow {
@@ -334,7 +320,8 @@ export class Mip0018Scanner {
                   ${a.maintenance_counter}, ${a.maintenance_updates === null ? null : tx.array(a.maintenance_updates)})
           ON CONFLICT DO NOTHING`;
       }
-      for (const e of rows.events) await tx`INSERT INTO ${tx(s)}.mip0018_events ${tx(e as unknown as Record<string, unknown>)} ON CONFLICT DO NOTHING`;
+      // The block's events in chain order; each accepted one is applied to the latest-value rows (sub-plan B3).
+      await writeEvents(tx, s, rows.events);
       await this.opts.onBlockWritten?.(block.height);
       const moved = await tx`
         UPDATE ${tx(s)}.mip0018_scan SET next_height = ${block.height + 1}, last_block_hash = ${buf(block.blockHash)}
@@ -356,8 +343,11 @@ export class Mip0018Scanner {
     if (height + 1 > cursor.fromHeight && lastHash === undefined) throw new ScanError(`the archive has no canonical block ${height}`);
     const s = this.schema;
     await this.sql.begin(async (tx) => {
-      for (const table of ["mip0018_mints", "mip0018_color_sightings", "mip0018_contract_actions", "mip0018_events"])
+      for (const table of ["mip0018_mints", "mip0018_color_sightings", "mip0018_contract_actions"])
         await tx`DELETE FROM ${tx(s)}.${tx(table)} WHERE network = ${this.network} AND block_height > ${height}`;
+      // Events above the height go, and the fields of every identity they touched are recomputed from the remaining
+      // accepted events (MIP S4; sub-plan B3).
+      await removeEventsAbove(tx, s, this.network, height);
       const moved = await tx`
         UPDATE ${tx(s)}.mip0018_scan SET next_height = ${height + 1}, last_block_hash = ${lastHash === undefined ? null : buf(lastHash)}
         WHERE network = ${this.network} AND next_height = ${cursor.nextHeight}`;
