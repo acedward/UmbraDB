@@ -15,7 +15,9 @@
  *   reproduce the stored reason (not for a payload longer than 256 bytes, which is stored empty).
  * - `state`: steps applied in order, one transaction per step; identities and groups read per network.
  *
- *   PG_URL=postgres://… node token-indexer/mip0018/run-vectors.ts --consumer "node token-indexer/mip0018/vector-adapter-pg.ts"
+ *   PG_URL=postgres://… node token-indexer/mip0018/run-vectors.ts --consumer "node --import tsx token-indexer/mip0018/vector-adapter-pg.ts"
+ *
+ * (`--import tsx`: like `chain-archive-sync/sync-cli.ts`, this file imports `src/` modules by their `.js` names.)
  */
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -53,9 +55,17 @@ export function createPgVectorConsumer(opts: PgVectorConsumerOptions): PgVectorC
   const prefix = opts.schemaPrefix ?? "mip0018_vec";
   let n = 0;
 
+  /** DROP SCHEMA without its NOTICEs (postgres.js prints notices on stdout, which carries the runner protocol). */
+  async function dropSchema(schema: string): Promise<void> {
+    await sql.begin(async (tx) => {
+      await tx`SET LOCAL client_min_messages = warning`;
+      await tx`DROP SCHEMA IF EXISTS ${tx(schema)} CASCADE`;
+    });
+  }
+
   async function freshSchema(): Promise<string> {
     const schema = `${prefix}_${n++}`;
-    await sql`DROP SCHEMA IF EXISTS ${sql(schema)} CASCADE`;
+    await dropSchema(schema); // a leftover of an earlier run must not pass as "already migrated"
     await runMigrations(sql, { schema, migrations: mip0018Migrations });
     return schema;
   }
@@ -121,7 +131,7 @@ export function createPgVectorConsumer(opts: PgVectorConsumerOptions): PgVectorC
       } catch (e) {
         return { id: id ?? null, error: (e as Error).message };
       } finally {
-        if (schema !== undefined && opts.keepSchemas !== true) await sql`DROP SCHEMA IF EXISTS ${sql(schema)} CASCADE`;
+        if (schema !== undefined && opts.keepSchemas !== true) await dropSchema(schema);
       }
     },
   };
@@ -132,6 +142,9 @@ export function createPgVectorConsumer(opts: PgVectorConsumerOptions): PgVectorC
  * JSON response per stdout line, strictly in order.
  */
 export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  // stdout carries ONLY the protocol's JSON lines: anything logged (e.g. a server NOTICE) goes to stderr.
+  console.log = console.error;
+  console.info = console.error;
   const sql = createClient({ ...(env.PG_URL === undefined ? {} : { connectionString: env.PG_URL }), schema: "mip0018_vec" });
   const consumer = createPgVectorConsumer({ sql, schemaPrefix: env.MIP0018_VECTOR_SCHEMA_PREFIX ?? `mip0018_vec_${process.pid}` });
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });

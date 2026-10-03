@@ -55,6 +55,7 @@ async function dumpScan(sql: UmbraDBSql, schema: string): Promise<Record<string,
     sightings: norm(await sql`SELECT * FROM ${s}.mip0018_color_sightings ORDER BY network, color, evidence`),
     actions: norm(await sql`SELECT * FROM ${s}.mip0018_contract_actions ORDER BY network, block_height, tx_index, segment_id, action_index`),
     events: norm(await sql`SELECT * FROM ${s}.mip0018_events ORDER BY network, block_height, tx_index, event_index`),
+    fields: norm(await sql`SELECT * FROM ${s}.mip0018_fields ORDER BY network, contract_address, domain_sep, kind, key`), // B3
     builtins: norm(await sql`SELECT * FROM ${s}.mip0018_builtin_tokens ORDER BY network, symbol`),
   };
 }
