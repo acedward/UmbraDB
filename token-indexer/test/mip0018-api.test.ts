@@ -21,6 +21,7 @@ import { type ArchiveTape, startFakeChain } from "../../test/integration/fixture
 import { loadCaseIndex, loadManifest, loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
 import { createMip0018Api, listen, toAsciiJson } from "../mip0018/api.ts";
 import { KNOWN_GENESIS, MIP_COMMIT, VENDORED_REFERENCE } from "../mip0018/api-views.ts";
+import { decodeWalletAddress } from "../mip0018/bech32m.ts";
 import { tokenColor } from "../mip0018/color.ts";
 import { Mip0018Scanner } from "../mip0018/scan.ts";
 import { main as serveMain, serve } from "../mip0018/serve-cli.ts";
@@ -79,8 +80,8 @@ const hexText = (s: string): string => Buffer.from(s, "utf8").toString("hex");
 
 /**
  * Visits every endpoint a client can reach from the token list (and the given contracts / paths): status, every page
- * of the list, each color's detail and both lookups, each identity, each contract's tokens and events, each event
- * transaction. Returns path → response.
+ * of the list, each color's detail, activity and both lookups, each identity, each contract's tokens, activity and
+ * events, each event transaction. Returns path → response.
  */
 async function crawl(base: string, contracts: readonly string[] = [], paths: readonly string[] = []): Promise<Map<string, Resp>> {
   const out = new Map<string, Resp>();
@@ -101,6 +102,7 @@ async function crawl(base: string, contracts: readonly string[] = [], paths: rea
   for (const it of items) {
     if (it.color !== null) {
       await visit(`/v1/tokens/${it.color}`);
+      await visit(`/v1/tokens/${it.color}/activity?limit=500`);
       for (const held of ["shielded", "unshielded"]) await visit(`/v1/lookup/${it.color}?held=${held}`);
     }
     if (it.source === "identity") {
@@ -111,6 +113,7 @@ async function crawl(base: string, contracts: readonly string[] = [], paths: rea
   const txs = new Set<string>();
   for (const c of cs) {
     await visit(`/v1/contracts/${c}/tokens`);
+    await visit(`/v1/contracts/${c}/activity?limit=500`);
     const ev = await visit(`/v1/events?contract=${c}&limit=500`);
     for (const e of ev.json?.items ?? []) txs.add(e.txHash);
   }
@@ -435,6 +438,55 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     for (const q of ["", "?limit=5", `?contract=${C07.slice(2)}`, "?tx=xyz", `?contract=${C07}&contract=${C07}`]) expect((await get(idx.base, `/v1/events${q}`)).status, q).toBe(400);
     const p = await ok(idx.base, `/v1/events?contract=${C07}&limit=2`);
     expect((await get(idx.base, `/v1/events?contract=${contractOf("C08")}&cursor=${p.nextCursor}`)).status).toBe(400); // cursor bound to its filter
+  });
+
+  it("[[mip0018.api.activity]] /v1/tokens/{color}/activity and /v1/contracts/{address}/activity (C2's rows): C03's mint row and UTXO show wallet 1 in Bech32m (never its hex); C06's five metadata transactions at their heights; keyset pages and both orders; 400 for bad limit/order/cursor, 404 for unknown colors and contracts", async () => {
+    const WALLET1 = "mn_addr_stagenet1vw57646su9y5z6myarm93m6kcn62j97z0yma94lfkhmta6pz5h5q6utr3k";
+    const list = (await ok(idx.base, "/v1/tokens?limit=500")).items as Json[];
+    const C03 = contractOf("C03");
+    const c03 = list.find((t) => t.contractAddress === C03 && t.kind === 2);
+    const r = await get(idx.base, `/v1/tokens/${c03.color}/activity`);
+    expect(r.status).toBe(200);
+    expect(keysOf(r.json)).toEqual(["color", "contractAddress", "items", "nextCursor"]);
+    expect([r.json.color, r.json.contractAddress, r.json.nextCursor]).toEqual([c03.color, C03, null]);
+    const steps = Object.fromEntries(caseIndex.cases.C03!.steps.map((x) => [x.id, x]));
+    expect(r.json.items.map((i: Json) => [i.height, i.role, i.wallet ?? null, i.txHash])).toEqual([
+      [714617, "utxo-created", WALLET1, steps.mint!.txHash],
+      [714617, "mint", WALLET1, steps.mint!.txHash],
+      [714624, "metadata-event", null, steps.publish!.txHash],
+    ]);
+    const mint = r.json.items.find((i: Json) => i.role === "mint");
+    expect([mint.contract, mint.kind, mint.amount, mint.color]).toEqual([C03, 2, "1000000", c03.color]);
+    expect(r.text).not.toContain(decodeWalletAddress("stagenet", WALLET1)); // the wallet's raw hex never appears
+    // C06 (kind 3, no color): the contract's metadata transactions, counts only.
+    const C06 = contractOf("C06");
+    const all = await ok(idx.base, `/v1/contracts/${C06}/activity`);
+    expect([all.contractAddress, all.nextCursor]).toEqual([C06, null]);
+    const c06Steps = caseIndex.cases.C06!.steps.filter((x) => x.kind !== "deploy");
+    expect(all.items.map((i: Json) => [i.height, i.role, i.events, i.txHash])).toEqual(
+      c06Steps.map((x) => [x.height, "metadata-event", { accepted: 1, rejected: 0, firstEventIndex: 0 }, x.txHash]));
+    expect(all.items.map((i: Json) => i.height)).toEqual([714796, 714804, 714813, 714827, 714835]);
+    for (const i of all.items) for (const k of ["name", "payload", "value", "domainSep", "kind", "wallet"]) expect(i).not.toHaveProperty(k);
+    // Pages and orders.
+    expect((await walk(idx.base, `/v1/contracts/${C06}/activity`, 2))).toEqual({ items: all.items, pages: 3 });
+    const desc = await walk(idx.base, `/v1/contracts/${C06}/activity?order=desc`, 2);
+    expect(desc.items).toEqual([...all.items].reverse());
+    const p1 = await ok(idx.base, `/v1/contracts/${C06}/activity?limit=2`);
+    for (const q of [`order=desc&cursor=${p1.nextCursor}`, "order=up", "limit=0", "limit=501", "cursor=abc%21", "x=1", "order=asc&order=asc"])
+      expect((await get(idx.base, `/v1/contracts/${C06}/activity?${q}`)).status, q).toBe(400);
+    expect((await get(idx.base, `/v1/contracts/${contractOf("C07")}/activity?cursor=${p1.nextCursor}`)).status).toBe(400); // another listing
+    expect((await get(idx.base, `/v1/tokens/${c03.color}/activity?cursor=${p1.nextCursor}`)).status).toBe(400);
+    const err = await get(idx.base, `/v1/contracts/${C06}/activity?order=desc&cursor=${p1.nextCursor}`);
+    expect(keysOf(err.json.error)).toEqual(["code", "message"]);
+    expect(err.json.error.message).not.toContain(p1.nextCursor);
+    // A kind-3 token's activity = its contract's metadata transactions (C01: the publish).
+    expect((await ok(idx.base, `/v1/contracts/${contractOf("C01")}/activity`)).items.map((i: Json) => i.height)).toEqual([714501]);
+    // NIGHT (zero color): known, no NIGHT UTXO in the recorded ranges; unknown color / contract → 404; bad hex → 400.
+    expect(await ok(idx.base, `/v1/tokens/${"00".repeat(32)}/activity`)).toEqual({ color: "00".repeat(32), contractAddress: null, items: [], nextCursor: null });
+    expect((await get(idx.base, `/v1/tokens/${"ab".repeat(32)}/activity`)).status).toBe(404);
+    expect((await get(idx.base, `/v1/contracts/${"ab".repeat(32)}/activity`)).status).toBe(404);
+    expect((await get(idx.base, "/v1/tokens/xyz/activity")).status).toBe(400);
+    expect((await get(idx.base, `/v1/tokens/${c03.color}/activity/x`)).status).toBe(404);
   });
 
   it("[[mip0018.api.marks]] marks through the API: C01 ✓ ok, C07 ⚠ incorrect (9 reasons), C08 ⚠ incorrect, a partial identity ⚠ partial (synthetic), a minted token without events unmarked; NIGHT/DUST carry no mark", async () => {

@@ -37,7 +37,7 @@ Every error is
 
 | Status | `code` | When |
 |---:|---|---|
-| 400 | `BAD_REQUEST` | Malformed path value (hex length, kind not 1–3), unknown or repeated query parameter, bad `limit`, a cursor this endpoint did not issue, missing required parameter |
+| 400 | `BAD_REQUEST` | Malformed path value (hex length, kind not 1–3), unknown or repeated query parameter, bad `limit` or `order`, a cursor this endpoint (listing, filter, order) did not issue, missing required parameter |
 | 404 | `NOT_FOUND` | No such route, or the color / identity / contract is not known |
 | 405 | `METHOD_NOT_ALLOWED` | Any method other than `GET`/`HEAD` (header `Allow: GET, HEAD`) |
 | 503 | `UNAVAILABLE` | The database cannot be read (message is generic) |
@@ -241,11 +241,52 @@ required), in chain order (block, transaction, event — the MIP's within-transa
 
 `reason` is `null` for an accepted event. Never the event's bytes, header or values (QA2).
 
-### `GET /v1/tokens/{color}/activity` — pending sub-plan C2
+### `GET /v1/tokens/{color}/activity?limit=&cursor=&order=`
 
-The transactions that touched a token (mint, UTXO out/in, contract in/out, metadata events), heights only, wallet
-addresses in Bech32m (`mn_addr_stagenet1…`; never for contracts, colors or hashes). Keyset-paginated like every list.
-Wired once C2's read helper is merged; the exact row shape is added here then.
+The transactions that touched a token (sub-plan C2's rows; roles and rules: questions Q26, assumption A16): the
+color's own rows (`mint`, `utxo-created`, `utxo-spent`, `contract-in`, `contract-out`, `shielded-offer`) and the
+`metadata-event` rows of the contract that minted it, in chain order (`order=asc`, default) or newest first
+(`order=desc`). Heights only. Wallet addresses are Bech32m (`mn_addr_stagenet1…`); contracts, colors and hashes are
+hex — never Bech32m. A metadata row carries counts and the first event's index, never values. C03's token
+(abridged: hashes shortened, optional fields such as `phase`/`segment`/`direction` shown only where certain):
+
+```json
+{
+  "color": "8e01e392…8484",
+  "contractAddress": "a3df52605d8b7210aa3e5cdc82de4bb2911975bc42c1a68be77044723b705f21",
+  "items": [
+    { "height": 714617, "txIndex": 0, "itemIndex": 0, "txHash": "2ec3accadb…", "role": "utxo-created",
+      "color": "8e01e392…8484", "amount": "1000000",
+      "wallet": "mn_addr_stagenet1vw57646su9y5z6myarm93m6kcn62j97z0yma94lfkhmta6pz5h5q6utr3k",
+      "utxo": { "intentHash": "0c038f28…9260", "outputIndex": 0 } },
+    { "height": 714617, "txIndex": 0, "itemIndex": 1, "txHash": "2ec3accadb…", "role": "mint", "color": "8e01e392…8484", "amount": "1000000",
+      "contract": "a3df5260…5f21", "domainSep": "…", "kind": 2, "wallet": "mn_addr_stagenet1vw57646su9y5z6myarm93m6kcn62j97z0yma94lfkhmta6pz5h5q6utr3k" },
+    { "height": 714624, "txIndex": 0, "itemIndex": 0, "txHash": "7f7cc752db…", "role": "metadata-event", "contract": "a3df5260…5f21",
+      "events": { "accepted": 1, "rejected": 0, "firstEventIndex": 0 } }
+  ],
+  "nextCursor": null
+}
+```
+
+Row fields (C2's `ActivityItem`; a field absent from a row does not apply to it): `height`, `txIndex`, `itemIndex`,
+`txHash`, `role`, `phase`, `segment`, `color`, `amount` (unsigned decimal) with `direction` (`in`/`out`), `contract`,
+`actionIndex`, `entryPoint`, `domainSep` and `kind` (mint rows), `wallet` (Bech32m), `recipientContract` (hex),
+`utxo` (`intentHash`, `outputIndex`), `events` (`accepted`, `rejected`, `firstEventIndex`). `contractAddress` is
+`null` for a color with no indexed mint (NIGHT, a seen-only color). 404 when the color is not known in the indexed
+range (as `/v1/tokens/{color}`). `limit` 1–500 (default 100); the cursor is bound to the listing and the order.
+
+### `GET /v1/contracts/{address}/activity?limit=&cursor=&order=`
+
+A contract's metadata transactions — the activity of a kind-3 identity, which has no color: one `metadata-event` row
+per transaction with accepted or rejected MIP-0018 events of that contract (counts and the first event's index;
+never values or the identity). Same paging and errors; 404 when the scan never saw the contract.
+
+```json
+{ "contractAddress": "9d93b919…40e3",
+  "items": [ { "height": 714796, "txIndex": 0, "itemIndex": 0, "txHash": "71fb2c2d9a…", "role": "metadata-event", "contract": "9d93b919…40e3",
+               "events": { "accepted": 1, "rejected": 0, "firstEventIndex": 0 } } ],
+  "nextCursor": "…" }
+```
 
 ## Running
 

@@ -17,6 +17,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import {
+  type ActivityOptions,
+  contractActivity,
   contractTokens,
   DEFAULT_SCHEMAS,
   decodeCursor,
@@ -30,6 +32,7 @@ import {
   parseTokensCursor,
   type ScannerState,
   status,
+  tokenActivity,
   tokenByColor,
   tokensPage,
   type ViewContext,
@@ -93,6 +96,14 @@ function cursorParam<T>(raw: string | undefined, parse: (v: unknown) => T | unde
   const c = decoded === undefined ? undefined : parse(decoded);
   if (c === undefined) throw badRequest("cursor is not a cursor this endpoint issued");
   return c;
+}
+
+/** `limit`, `cursor` and `order` of the activity listings (C2's helpers check the cursor against listing and order). */
+function activityParams(q: ReadonlyMap<string, string>): ActivityOptions {
+  const order = q.get("order");
+  if (order !== undefined && order !== "asc" && order !== "desc") throw badRequest("order must be asc or desc");
+  const cursor = q.get("cursor");
+  return { limit: limitParam(q.get("limit")), ...(cursor === undefined ? {} : { cursor }), ...(order === undefined ? {} : { order }) };
 }
 
 /** Query parameters of a route: only `allowed` names, each at most once, none empty. */
@@ -161,6 +172,8 @@ export function createMip0018Api(opts: Mip0018ApiOptions): Server {
 
   function toApiError(error: unknown): ApiError {
     if (error instanceof ApiError) return error;
+    // C2's read helpers refuse a bad limit, order or cursor with messages that never echo the input.
+    if (error instanceof Error && error.name === "ActivityQueryError") return badRequest(error.message);
     const message = error instanceof Error ? error.message : String(error);
     if (isDatabaseError(error)) {
       log(JSON.stringify({ event: "api-error", status: 503, error: message }));
@@ -214,6 +227,20 @@ export function createMip0018Api(opts: Mip0018ApiOptions): Server {
       return {
         params: [],
         run: async (ctx) => orNotFound(await tokenByColor(ctx, color), "no token with this color in the indexed range"),
+      };
+    }
+    if (a === "tokens" && s.length === 3 && c === "activity") {
+      const color = hex32(b!, "color");
+      return {
+        params: ["limit", "cursor", "order"],
+        run: async (ctx, q) => orNotFound(await tokenActivity(ctx, color, activityParams(q)), "no token with this color in the indexed range"),
+      };
+    }
+    if (a === "contracts" && s.length === 3 && c === "activity") {
+      const address = hex32(b!, "address");
+      return {
+        params: ["limit", "cursor", "order"],
+        run: async (ctx, q) => orNotFound(await contractActivity(ctx, address, activityParams(q)), "no such contract in the indexed range"),
       };
     }
     if (a === "identities" && s.length === 4) {

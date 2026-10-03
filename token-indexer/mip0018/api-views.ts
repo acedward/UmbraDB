@@ -14,6 +14,7 @@
  * - Never fetches anything; heights only.
  */
 import { MIP0018_SCHEMA } from "../../src/postgres/migrations/mip0018/index.js";
+import type { ActivityItem } from "./activity.ts";
 import type { Queryable } from "./fields.ts";
 import { contractRejections, getIdentity, groupOf, listGroups, listIdentities } from "./metadata.ts";
 import {
@@ -453,8 +454,8 @@ export async function tokenByColor(ctx: ViewContext, color: string): Promise<Tok
 
 export interface ContractTokensJson extends Page<TokenSummaryJson> { contractAddress: string; groups: GroupJson[] }
 
-/** `GET /v1/contracts/{address}/tokens`; `undefined` = the scan never saw the contract (404). */
-export async function contractTokens(ctx: ViewContext, contract: string, limit: number, cursor: ContractTokensCursor | undefined): Promise<ContractTokensJson | undefined> {
+/** Whether the scan saw the contract: an applied call, deploy or update, a mint, or a current field. */
+async function contractKnown(ctx: ViewContext, contract: string): Promise<boolean> {
   const { sql } = ctx;
   const s = sql(ctx.schema);
   const address = buf(contract);
@@ -462,7 +463,13 @@ export async function contractTokens(ctx: ViewContext, contract: string, limit: 
     SELECT EXISTS (SELECT 1 FROM ${s}.mip0018_contract_actions WHERE network = ${ctx.network} AND contract_address = ${address})
         OR EXISTS (SELECT 1 FROM ${s}.mip0018_mints WHERE network = ${ctx.network} AND contract_address = ${address})
         OR EXISTS (SELECT 1 FROM ${s}.mip0018_fields WHERE network = ${ctx.network} AND contract_address = ${address}) AS known`;
-  if (known?.known !== true) return undefined;
+  return known?.known === true;
+}
+
+/** `GET /v1/contracts/{address}/tokens`; `undefined` = the scan never saw the contract (404). */
+export async function contractTokens(ctx: ViewContext, contract: string, limit: number, cursor: ContractTokensCursor | undefined): Promise<ContractTokensJson | undefined> {
+  const { sql } = ctx;
+  if (!(await contractKnown(ctx, contract))) return undefined;
   const keys = await identityKeys(ctx, { contract, limit: limit + 1, ...(cursor === undefined ? {} : { after: [contract, cursor.k[0], cursor.k[1]] as [string, string, number] }) });
   const page = keys.slice(0, limit);
   const last = page[page.length - 1];
@@ -472,6 +479,50 @@ export async function contractTokens(ctx: ViewContext, contract: string, limit: 
     items: await identitySummaries(ctx, page),
     nextCursor: keys.length > limit && last !== undefined ? encodeCursor({ e: "contract-tokens", c: contract, k: [last.domainSep, last.kind] } satisfies ContractTokensCursor) : null,
   };
+}
+
+// ── Activity (sub-plan C2's rows and read helpers) ──────────────────────────────────────────────────────────────
+
+/** Paging of the activity listings: C2's helpers validate the cursor (bound to its listing and order). */
+export interface ActivityOptions { limit: number; cursor?: string; order?: "asc" | "desc" }
+
+/** One activity row as C2's `activityItem` shapes it (wallets as Bech32m, bytes as hex, heights only). */
+export type ActivityItemJson = ActivityItem;
+
+export interface TokenActivityJson extends Page<ActivityItemJson> {
+  color: string;
+  /** The contract that minted the color (its metadata transactions are part of the listing), or `null`. */
+  contractAddress: string | null;
+}
+
+export interface ContractActivityJson extends Page<ActivityItemJson> { contractAddress: string }
+
+/** C2's module, loaded on first use (it imports ledger-v9; an API-only process loads it only for activity). */
+const activityModule = () => import("./activity.ts");
+
+/**
+ * `GET /v1/tokens/{color}/activity`: the color's transactions (mint, UTXOs created/spent, contract in/out, offer
+ * deltas) and the metadata transactions of its minting contract (Q26/A16), keyset-paginated; `undefined` = the color
+ * is not known in the indexed range (404, as `/v1/tokens/{color}`).
+ */
+export async function tokenActivity(ctx: ViewContext, color: string, o: ActivityOptions): Promise<TokenActivityJson | undefined> {
+  const builtin = (await builtinTokens(ctx.sql, ctx.network, ctx.schema)).some((b) => b.color === color);
+  if (!builtin && !(await lookupColor(ctx.sql, ctx.network, color, ctx.schema)).found && (await sightings(ctx, { color })).length === 0) return undefined;
+  const { activityForColor } = await activityModule();
+  const p = await activityForColor(ctx.sql, ctx.network, color, o, ctx.schema);
+  return { color, contractAddress: p.contract ?? null, items: p.items, nextCursor: p.nextCursor ?? null };
+}
+
+/**
+ * `GET /v1/contracts/{address}/activity`: the contract's metadata transactions (one row per transaction with accepted
+ * or rejected MIP-0018 events: counts and the event-log position, never values) — the activity of a kind-3 identity,
+ * which has no color. `undefined` = the scan never saw the contract (404).
+ */
+export async function contractActivity(ctx: ViewContext, contract: string, o: ActivityOptions): Promise<ContractActivityJson | undefined> {
+  if (!(await contractKnown(ctx, contract))) return undefined;
+  const { metadataTransactionsForContract } = await activityModule();
+  const p = await metadataTransactionsForContract(ctx.sql, ctx.network, contract, o, ctx.schema);
+  return { contractAddress: contract, items: p.items, nextCursor: p.nextCursor ?? null };
 }
 
 export interface ScanRange { from: number; to: number }
