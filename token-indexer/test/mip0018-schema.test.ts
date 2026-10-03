@@ -48,12 +48,12 @@ describe("mip0018 schema", () => {
     const tables = await sql<{ table_name: string }[]>`
       SELECT table_name FROM information_schema.tables WHERE table_schema = ${schema} ORDER BY table_name`;
     expect(tables.map((t) => t.table_name)).toEqual([
-      "_migrations", "mip0018_builtin_tokens", "mip0018_color_sightings", "mip0018_contract_actions", "mip0018_events",
-      "mip0018_fields", "mip0018_mints", "mip0018_scan",
-    ]); // 002_mip0018_scan (A3/B2) adds the scan tables
+      "_migrations", "mip0018_activity", "mip0018_builtin_tokens", "mip0018_color_sightings", "mip0018_contract_actions",
+      "mip0018_events", "mip0018_fields", "mip0018_mints", "mip0018_scan",
+    ]); // 002_mip0018_scan (A3/B2) adds the scan tables; 003_mip0018_activity (C2) the activity rows
     await runMigrations(sql, { schema, migrations: mip0018Migrations });
     const applied = await sql<{ name: string }[]>`SELECT name FROM ${sql(schema)}._migrations ORDER BY name`;
-    expect(applied.map((r) => r.name)).toEqual(["000_schema", "001_mip0018_core", "002_mip0018_scan"]);
+    expect(applied.map((r) => r.name)).toEqual(["000_schema", "001_mip0018_core", "002_mip0018_scan", "003_mip0018_activity"]);
   });
 
   it("[[mip0018.schema.bytes]] keys and values are exact bytes and a 31-byte integer is lossless", async () => {
