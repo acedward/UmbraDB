@@ -36,6 +36,7 @@ import { parseArgs } from "node:util";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { createMip0018Api, listen } from "./api.ts";
 import type { ScannerState } from "./api-views.ts";
+import { serveUi } from "./ui/page.ts";
 
 export interface ServeOptions {
   sql: UmbraDBSql;
@@ -123,6 +124,7 @@ export async function serve(o: ServeOptions): Promise<ServeHandle> {
     ...(o.archiveSchema === undefined ? {} : { archiveSchema: o.archiveSchema }),
     ...(o.genesisHash === undefined ? {} : { genesisHash: o.genesisHash }),
     scannerState: () => state,
+    ui: serveUi, // the explorer page at /ui (sub-plan C3; it reads only this API)
   });
   let port: number;
   try {
