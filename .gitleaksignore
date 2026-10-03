@@ -25,14 +25,14 @@ be646fcff58052a77e848914a79ccef2279cf78f:nix/midnight-env/test-wallets/preview-t
 # avoid creating the same adjacency when this test is next changed.
 e5f53f5122c973556531ce07c696a32e9f911b5f:evm-rpc/test/not-implemented.test.ts:generic-api-key:31
 
-# PR #19's branches (feat/00020-token-indexer and its children feat/0002[0-4]-*) are fetched by the
-# full-history scan (`--log-opts=--all` after a fetch-depth 0 checkout), so every PR into this base
-# sees their findings. All of them are `generic-api-key` hits on PUBLIC chain data in #19's
+# The branches of acedward/UmbraDB PR #19 (feat/00020-token-indexer and its children
+# feat/0002[0-4]-*) are fetched by the full-history scan (`--log-opts=--all` after a fetch-depth 0
+# checkout). All their findings are `generic-api-key` hits on PUBLIC chain data in that PR's
 # token-indexer test fixtures (contract addresses, token types, transaction hashes, registry ids),
-# and #19 suppresses exactly these fingerprints in its own .gitleaksignore. They are listed here by
-# exact fingerprint (7 commits that exist only on those branches), so nothing on this branch is
-# suppressed. Verified 2026-10-03 with gitleaks v8.28.0 over a fresh full clone (739 commits):
-# 79 findings / 47 fingerprints before, none after.
+# and that PR suppresses the same fingerprints in its own .gitleaksignore. They are listed here by
+# exact fingerprint (7 commits that exist only on those branches), so nothing else is suppressed.
+# gitleaks v8.28.0 over a full clone (739 commits, 2026-10-03): 79 findings / 47 fingerprints
+# without these entries, none with them.
 09e5e497967476f5b5f6845a3a201b41853c4236:token-indexer/test/fixtures/ui/interface-outcomes.json:generic-api-key:1
 09e5e497967476f5b5f6845a3a201b41853c4236:token-indexer/test/fixtures/ui/token-sstarpi.json:generic-api-key:1
 09e5e497967476f5b5f6845a3a201b41853c4236:token-indexer/test/fixtures/ui/token-uprompi.json:generic-api-key:1

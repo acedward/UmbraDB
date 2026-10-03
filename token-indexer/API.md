@@ -1,18 +1,18 @@
 # MIP-0018 token indexer — read-only JSON API (contract)
 
-Project 00026, sub-plan C1. The API serves what the MIP-0018 scan stored in Postgres (schema `mip0018`): the
-NIGHT/DUST rows, every token identity that is minted or described, the colors seen in public data, the current
-metadata fields, symbol groups, ✓/⚠ marks, the color lookup and the chain events with their classification.
+The API serves what the MIP-0018 scan stored in Postgres (schema `mip0018`): the NIGHT/DUST rows, every token identity
+that is minted or described, the colors seen in public data, the current metadata fields, symbol groups, ✓/⚠ marks,
+the color lookup and the chain events with their classification.
 
-Authority: MIP-0018 PR #340 head `274a84f221bcfc17e4b73e2c8b32fd8c028ea092` (final text, per-key tombstones). Nothing
-of an earlier draft is served. The explorer page (sub-plan C3) uses only these endpoints.
+Authority: MIP-0018 at `274a84f221bcfc17e4b73e2c8b32fd8c028ea092` (PR #340 head; per-key tombstones). The explorer page
+uses only these endpoints.
 
 - Server: `node:http`, no framework. `GET` and `HEAD` only. Read-only: every request runs in one
   `REPEATABLE READ READ ONLY` transaction, so all parts of one answer come from one database state.
 - Entry point: `token-indexer/mip0018/serve-cli.ts` (see [Running](#running)).
 - Implementation: `token-indexer/mip0018/api.ts` (routes, validation, errors) and `api-views.ts` (queries, shapes).
-- The explorer page (`GET /ui`, sub-plan C3, `token-indexer/mip0018/ui/README.md`) is served by `serve()` through the
-  server's optional `ui` hook; `createMip0018Api` without the hook answers `/ui` with 404 like any unknown path.
+- The explorer page (`GET /ui`, `token-indexer/mip0018/ui/README.md`) is served by `serve()` through the server's
+  optional `ui` hook; `createMip0018Api` without the hook answers `/ui` with 404 like any unknown path.
 
 ## General rules
 
@@ -24,10 +24,10 @@ of an earlier draft is served. The explorer page (sub-plan C3) uses only these e
 | No defaults | A common field that was never set, or whose current value is unusable, is `null` in `common`; no default such as 0 or 18 decimals. |
 | Hostile text | Text is data. The JSON body is pure ASCII: every non-ASCII character (bidi controls, zero-width characters, …) and `<`, `>`, `&` are written as `\uXXXX` escapes; control characters (NUL …) are JSON escapes. Parsing the JSON gives the exact text back. |
 | Not referenced after withdrawal | A token identity exists only while one of its fields has a value (MIP "Applying records", per-key tombstones). Once its last field is deleted it is not referenced anywhere — not in listings, lookups, groups, events or the contract view — exactly as if it had never been described: a never-minted one answers 404, a minted one is shown only as a minted token (`described: false`, no fields, no group). A deleted field's earlier values are never served. |
-| Events carry no values | The event endpoint serves position, contract, classification and reason only — never an event's name, payload, header (`domainSep`, `kind`) or decoded values (mid-project audit QA2, Q15). Only MIP-0018-named events (`accept`, `reject`) and `unresolved` logs are served; other `Misc` events (`ignore`) are not (Q19). |
-| Marks | `mark` is decided by one function (`state.ts` `tokenMark`, owner Q14 (a)): `ok` (✓) usable `name`, `symbol` and `decimals`, no rejected MIP-0018 event and no unresolved log from the token's contract; `partial` (⚠) one of the three missing or unusable; `incorrect` (⚠) the contract has a rejected MIP-0018 event (reasons listed in chain order); `unresolved` (⚠) the contract has no rejected event but has an `unresolved` log — a `log` op whose value the raw transaction does not show, so it may have published, renamed or withdrawn metadata this indexer cannot read (final audit re-check R1, A23; reason `unresolved-log`); `none` no metadata, no rejected event and no unresolved log. Precedence: `incorrect`, `unresolved`, then the identity's own fields. Usable `standards` identifiers are returned as `tags` (self-declared, never proof). Current state only (assumption A13). |
-| Groups | Symbol groups as the MIP defines them: identities of one contract with the same usable `symbol` bytes; only groups of two or more members (Q6). |
-| Bounded cost | How many keys an identity has, how many events a contract rejected and how many identities share a symbol are chosen by whoever calls the contract (final audit F2). No answer grows with them: list rows and marks read only the four common keys and a rejection count plus the first 100 reasons; an identity's fields come in keyset pages (`fieldCount` counts them); a group lists its first 100 members (`memberCount` counts them); an entry point is served as at most its first 128 bytes; an activity page reads only the rows it serves, never a withdrawn identity's hidden metadata transactions (final audit re-check R3); at most 8 requests run at once (503 `BUSY` beyond, `Retry-After: 1`). |
+| Events carry no values | The event endpoint serves position, contract, classification and reason only — never an event's name, payload, header (`domainSep`, `kind`) or decoded values. Only MIP-0018-named events (`accept`, `reject`) and `unresolved` logs are served; other `Misc` events (`ignore`) are not. |
+| Marks | `mark` is decided by one function (`state.ts` `tokenMark`): `ok` (✓) usable `name`, `symbol` and `decimals`, no rejected MIP-0018 event and no unresolved log from the token's contract; `partial` (⚠) one of the three missing or unusable; `incorrect` (⚠) the contract has a rejected MIP-0018 event (reasons listed in chain order); `unresolved` (⚠) the contract has no rejected event but has an `unresolved` log — a `log` op whose value the raw transaction does not show, so it may have published, renamed or withdrawn metadata this indexer cannot read (reason `unresolved-log`); `none` no metadata, no rejected event and no unresolved log. Precedence: `incorrect`, `unresolved`, then the identity's own fields. Usable `standards` identifiers are returned as `tags` (self-declared, never proof). Current state only. |
+| Groups | Symbol groups as the MIP defines them: identities of one contract with the same usable `symbol` bytes; only groups of two or more members. |
+| Bounded cost | How many keys an identity has, how many events a contract rejected and how many identities share a symbol are chosen by whoever calls the contract. No answer grows with them: list rows and marks read only the four common keys and a rejection count plus the first 100 reasons; an identity's fields come in keyset pages (`fieldCount` counts them); a group lists its first 100 members (`memberCount` counts them); an entry point is served as at most its first 128 bytes; an activity page reads only the rows it serves, never a withdrawn identity's hidden metadata transactions; at most 8 requests run at once (503 `BUSY` beyond, `Retry-After: 1`). |
 | NIGHT / DUST | Protocol tokens, outside MIP-0018; served as built-in rows with no mark. NIGHT's color is 32 zero bytes; DUST has no color. |
 
 ### Errors
@@ -110,7 +110,7 @@ parsed list, `[]` for an empty value).
 common keys and `null` for any other key.
 
 **Group** — `{ "symbol": { "hex": "414344", "utf8": "ACD" }, "memberCount": 3, "members": [ { "domainSep": "6d69…", "kind": 1 }, … ] }`:
-the first 100 members by `(domainSep, kind)`; `memberCount` counts them all (final audit F2).
+the first 100 members by `(domainSep, kind)`; `memberCount` counts them all.
 
 **TokenSummary** — one row of the token list:
 
@@ -163,7 +163,7 @@ moves, so pages are stable while the scan writes); `fieldCount` counts all of th
 page through `/v1/identities/…?cursor=` (`null` on the last). `commonFields` = the current rows of the common keys
 present (`name`, `symbol`, `decimals`, `standards`), so a client can draw an unusable common field without paging.
 
-A minted identity that is not (or no longer) described: `described: false`, `common` all `null`, `commonFields: []`,
+A minted identity without fields (never described, or withdrawn): `described: false`, `common` all `null`, `commonFields: []`,
 `fields: []`, `fieldCount: 0`, `group: null`, `mark` from its contract's rejections and unresolved logs only
 (`incorrect`, `unresolved` or `none`).
 
@@ -197,7 +197,7 @@ limitation"); `null` before the scan's schema exists.
 
 Page of TokenSummary: NIGHT, DUST, then identities by `(contractAddress, domainSep, kind)`, then seen colors by color.
 
-Keyset pages are stable while the scan commits blocks (final audit N3): a row's key never changes, and a row never
+Keyset pages are stable while the scan commits blocks: a row's key never changes, and a row never
 moves to another section. A seen color is one whose first sighting comes BEFORE its first indexed mint (or that has
 none) — both chain positions are fixed once indexed — so a seen color whose mint is indexed later keeps its seen row
 and gains an identity row; a reader holding a cursor past that identity still reaches the seen row. A color first seen
@@ -238,7 +238,7 @@ includes a withdrawn, never-minted one). `/v1/tokens/{color}` and `/v1/lookup` e
 ```
 
 `items` = the contract's identities (minted or described) by `(domainSep, kind)`; `groups` = the symbol groups (two or
-more members) of the identities on THIS page, each a bounded Group (final audit F2) — a client merges them across
+more members) of the identities on THIS page, each a bounded Group — a client merges them across
 pages. 404 when the contract is not known to the scan (no applied call, deploy, update, mint or field).
 
 ### `GET /v1/lookup/{color}?held=shielded|unshielded`
@@ -255,7 +255,7 @@ holding (`shielded` → 1, `unshielded` → 2), not by the color. `held` is requ
 |---|---|
 | `identity` | a mint of the color was indexed; `identity` = that pair with the held kind (possibly `described: false`) |
 | `builtin` | NIGHT's zero color held unshielded (`builtin` filled) |
-| `shielded-zero-color` | the zero color held shielded (`found: false`): the ledger's default shielded token type (ledger `ShieldedTokenType([0; 32])`, "for testing"), not NIGHT — NIGHT is the unshielded zero type (`coin.rs` `NIGHT`) — and never a contract's color, so no MIP-0018 metadata exists for it (final audit N7) |
+| `shielded-zero-color` | the zero color held shielded (`found: false`): the ledger's default shielded token type (ledger `ShieldedTokenType([0; 32])`, "for testing"), not NIGHT — NIGHT is the unshielded zero type (`coin.rs` `NIGHT`) — and never a contract's color, so no MIP-0018 metadata exists for it |
 | `not-minted-in-indexed-range` | no mint of the color in the scanned range (`found: false`); `seen` = `{ firstSeen, evidence }` when the color appeared in public data, else `null` |
 
 ### `GET /v1/events?contract=&tx=&limit=&cursor=`
@@ -269,9 +269,9 @@ least one filter required), in chain order (block, transaction, event — the MI
   "nextCursor": null }
 ```
 
-`reason` is `null` for an accepted event. Never the event's bytes, header or values (QA2).
+`reason` is `null` for an accepted event. Never the event's bytes, header or values.
 
-`classification: "unresolved"` (final audit F1): a `log` op of an applied part whose logged value the raw transaction
+`classification: "unresolved"`: a `log` op of an applied part whose logged value the raw transaction
 does not show — `reason` `log-operand-not-pushed` (its operand comes from the contract's state, not from a `push` right
 before it) or `log-conditionally-executed` (it runs on some paths of the program only). The ledger may have emitted a
 MIP-0018 event there; the indexer cannot know which, so it never applies it. `eventIndex` counts the transaction's
@@ -279,21 +279,20 @@ applied `log` ops the ledger may run, unresolved ones included (a `log` op no su
 
 ### `GET /v1/tokens/{color}/activity?limit=&cursor=&order=`
 
-The transactions that touched a token (sub-plan C2's rows; roles and rules: questions Q26, assumption A16): the
-color's own rows (`mint`, `utxo-created`, `utxo-spent`, `contract-in`, `contract-out`, `shielded-offer`) and the
-`metadata-event` rows of the contract that minted it, in chain order (`order=asc`, default) or newest first
-(`order=desc`). Heights only. Wallet addresses are Bech32m (`mn_addr_stagenet1…`); contracts, colors and hashes are
-hex — never Bech32m. A metadata row carries counts and the first event's index, never values; it counts only rejected
-events and accepted events of an identity's current description, and a transaction with neither is not listed (final
-audit F3 and re-check R2: a withdrawn identity is not referenced in metadata history, and an identity's history starts
-at its last revival — an accepted event counts only when the identity has a field now, the event came after its last
-withdrawal, and the identity had a field after the event; so a revived identity's transactions from before its
-withdrawal, the withdrawal itself and a Null-only event while it had no field are never listed). A page costs what it serves:
-the color's own rows and its contract's listed metadata transactions are read by index range scans of at most
-`limit + 1` rows each; a withdrawn identity's metadata transactions are not in the scanned index at all (final audit
-re-check R3; right after a withdrawal, until vacuum reclaims them, its deleted entries are skipped at about one index
-page per hundred). C03's token
-(abridged: hashes shortened, optional fields such as `phase`/`segment`/`direction` shown only where certain):
+The transactions that touched a token: the color's own rows (`mint`, `utxo-created`, `utxo-spent`, `contract-in`,
+`contract-out`, `shielded-offer`) and the `metadata-event` rows of the contract that minted it, in chain order
+(`order=asc`, default) or newest first (`order=desc`). Heights only. Wallet addresses are Bech32m
+(`mn_addr_stagenet1…`); contracts, colors and hashes are hex — never Bech32m. A metadata row carries counts and the
+first event's index, never values; it counts only rejected events and accepted events of an identity's current
+description, and a transaction with neither is not listed (a withdrawn identity is not referenced in metadata history,
+and an identity's history starts at its last revival — an accepted event counts only when the identity has a field
+now, the event came after its last withdrawal, and the identity had a field after the event; so a revived identity's
+transactions from before its withdrawal, the withdrawal itself and a Null-only event while it had no field are never
+listed). A page costs what it serves: the color's own rows and its contract's listed metadata transactions are read by
+index range scans of at most `limit + 1` rows each; a withdrawn identity's metadata transactions are not in the
+scanned index at all (right after a withdrawal, until vacuum reclaims them, its deleted entries are skipped at about
+one index page per hundred). C03's token (abridged: hashes shortened, optional fields such as
+`phase`/`segment`/`direction` shown only where certain):
 
 ```json
 {
@@ -313,7 +312,7 @@ page per hundred). C03's token
 }
 ```
 
-Row fields (C2's `ActivityItem`; a field absent from a row does not apply to it): `height`, `txIndex`, `itemIndex`,
+Row fields (`ActivityItem`; a field absent from a row does not apply to it): `height`, `txIndex`, `itemIndex`,
 `txHash`, `role`, `phase`, `segment`, `color`, `amount` (unsigned decimal) with `direction` (`in`/`out`), `contract`,
 `actionIndex`, `entryPoint`, `domainSep` and `kind` (mint rows), `wallet` (Bech32m), `recipientContract` (hex),
 `utxo` (`intentHash`, `outputIndex`), `events` (`accepted`, `rejected`, `firstEventIndex`). `contractAddress` is
@@ -325,16 +324,15 @@ arbitrary bytes on the ledger (NUL, control, bidi and non-UTF-8 bytes included):
 — `hex` is always the exact bytes; `text` is present only when the entry point is printable by the ledger's own rule
 for showing an entry point as a string (non-empty, every byte an ASCII letter or digit or one of `'+-_":/\?#$^*&.`).
 Anything else is served as hex only, e.g. `{ "hex": "6d696e7400" }` for `mint` followed by a NUL byte. An entry point
-longer than 128 bytes is served as its first 128 bytes, its full `length` and `truncated: true`, never as text (final
-audit F2: every activity row of a call repeats its entry point).
+longer than 128 bytes is served as its first 128 bytes, its full `length` and `truncated: true`, never as text (every
+activity row of a call repeats its entry point).
 
 ### `GET /v1/contracts/{address}/activity?limit=&cursor=&order=`
 
 A contract's metadata transactions — the activity of a kind-3 identity, which has no color: one `metadata-event` row
 per transaction with rejected MIP-0018 events of that contract or accepted ones of an identity's current description
-(counts and the first counted event's index; never values or the identity; final audit F3, re-check R2: the same rule
-as a color's activity; bounded by the page, re-check R3). Same paging and errors; 404 when the scan never saw the
-contract.
+(counts and the first counted event's index; never values or the identity; the same rule as a color's activity;
+bounded by the page). Same paging and errors; 404 when the scan never saw the contract.
 
 ```json
 { "contractAddress": "9d93b919…40e3",

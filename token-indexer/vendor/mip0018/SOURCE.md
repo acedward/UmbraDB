@@ -10,9 +10,9 @@ below in CI and fails on any modified, missing or unlisted file.
 | Upstream | `https://github.com/midnight-experiments/mip-0018.git`, branch `main` |
 | Pinned at | **`daec1f19747b09f4e245885ab0dd9ecc789a82ce`** ("toolchain.json: Prettier formatting", 2026-10-02) |
 | License | Apache-2.0 (upstream `LICENSE` and `NOTICE` vendored next to this file; UmbraDB is Apache-2.0 too) |
-| MIP text the upstream files were written against | MIP-0018 PR #340 @ `78ecbb4b1ba57371e84fe45f705991ab7b996a61` |
-| MIP text UmbraDB implements | MIP-0018 PR #340 head **`274a84f221bcfc17e4b73e2c8b32fd8c028ea092`** (per-key tombstones) — the diff `78ecbb4 → 274a84f` changes only the tombstone rule, the S1/S3/S4/S9 tests and the grouping wording; the payload format, the three checks, the value types and the event name are unchanged, so the codec's classification is the final MIP's |
-| Vendored on | 2026-10-02, UmbraDB project 00026 (sub-plan B, task B1; decision Q18 in the project's questions file) |
+| MIP text the upstream files are written against | MIP-0018 PR #340 @ `78ecbb4b1ba57371e84fe45f705991ab7b996a61` |
+| MIP text UmbraDB implements | MIP-0018 PR #340 head **`274a84f221bcfc17e4b73e2c8b32fd8c028ea092`** (per-key tombstones). The two texts define the same payload format, checks, value types and event name, so the codec classifies events exactly as `274a84f` requires; they differ in the tombstone rule, the S1/S3/S4/S9 tests and the grouping wording |
+| Vendored on | 2026-10-02 |
 
 Vendored parts:
 
@@ -21,17 +21,17 @@ Vendored parts:
 - `vectors/` — the vectors (`manifest.json`, `SHA256SUMS`, `README.md`, `schema/`, `payload/`, `state/`,
   `informative/`: 110 vectors, 67 normative and 43 informative) and the runner (`tools/run.ts` with the three files it
   imports: `runner-core.ts`, `compare.ts`, `common.ts`), plus `package.json`/`tsconfig.json` as upstream has them.
-  The runner checks `SHA256SUMS` itself before every run (197 entries). The upstream `package.json` still exports
+  The runner checks `SHA256SUMS` itself before every run (197 entries). The upstream `package.json` exports
   `./validate` (`tools/validate.ts`), which is not vendored; nothing here resolves that package name.
 
-What is **not** vendored, on purpose (owner decision Q17): the reference consumer (`packages/consumer`, whole-identity
-tombstones of `78ecbb4`), the codec's own unit tests (they import `@mip0018/vectors` by package name, which this
-path-import layout does not resolve; the codec is exercised here through every payload vector instead), the vectors'
-own tests, the generator (`tools/generate.ts`), the schema validator (`tools/validate.ts`, needs `ajv`) and
-`tools/bytes.ts` (used only by those). UmbraDB's state rules (per-key tombstones, Q16) are its own code in
-`token-indexer/mip0018/state.ts`; UmbraDB's own versions of the eight state vectors that `274a84f` changed (S1a,
-S3a–S3d, S4a/S4b, S9d) live in `token-indexer/mip0018/vectors-umbradb/` with their own provenance, and are run instead
-of the vendored files with the same ids.
+What is **not** vendored: the reference consumer (`packages/consumer`, whole-identity tombstones of `78ecbb4`), the
+codec's own unit tests (they import `@mip0018/vectors` by package name, which this path-import layout does not
+resolve; the codec is exercised here through every payload vector instead), the vectors' own tests, the generator
+(`tools/generate.ts`), the schema validator (`tools/validate.ts`, needs `ajv`) and `tools/bytes.ts` (used only by
+those). UmbraDB's state rules (per-key tombstones) are its own code in `token-indexer/mip0018/state.ts`; UmbraDB's own
+`274a84f` versions of the eight state vectors whose expected results differ between the two texts (S1a, S3a–S3d,
+S4a/S4b, S9d) live in `token-indexer/mip0018/vectors-umbradb/` with their own provenance, and are run instead of the
+vendored files with the same ids.
 
 How UmbraDB uses the files: plain path imports (`token-indexer/vendor/mip0018/codec/src/index.ts`), no npm `file:`
 dependency; the root `tsconfig.json` sets `allowImportingTsExtensions` (it is `noEmit`) so `tsc` accepts the `.ts`
@@ -263,7 +263,7 @@ specifiers the upstream sources use. The runner is started as upstream documents
 | `vectors/tools/runner-core.ts` | `vectors/tools/runner-core.ts` | `83cea1d295e4623622746ef20b611b6124a552434326a12585a1dd75b17cb782` |
 | `vectors/tsconfig.json` | `vectors/tsconfig.json` | `cb6faae9b1e50f96a5022c3c3deea257b630f53cb49e8cd2417746c36bc7a810` |
 
-## Re-check
+## Verify
 
 ```sh
 git -C <clone of midnight-experiments/mip-0018> rev-parse HEAD     # daec1f19747b09f4e245885ab0dd9ecc789a82ce

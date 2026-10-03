@@ -1,4 +1,4 @@
-# UmbraDB token indexer — MIP-0018 (final)
+# UmbraDB token indexer — MIP-0018
 
 The token indexer reads finalized Midnight blocks from UmbraDB's chain archive, finds every token minted or seen in
 public data, decodes MIP-0018 token-metadata events from the archived raw transactions, keeps each token's current
@@ -6,21 +6,20 @@ metadata in Postgres, and serves it as a read-only JSON API and an explorer page
 
 ## What it implements
 
-- **MIP-0018, final text only**: [`midnightntwrk/midnight-improvement-proposals` PR #340 @ `274a84f221bcfc17e4b73e2c8b32fd8c028ea092`](https://github.com/midnightntwrk/midnight-improvement-proposals/blob/274a84f221bcfc17e4b73e2c8b32fd8c028ea092/mips/mip-0018-on-chain-token-metadata.md)
+- **MIP-0018 at `274a84f` only**: [`midnightntwrk/midnight-improvement-proposals` PR #340 @ `274a84f221bcfc17e4b73e2c8b32fd8c028ea092`](https://github.com/midnightntwrk/midnight-improvement-proposals/blob/274a84f221bcfc17e4b73e2c8b32fd8c028ea092/mips/mip-0018-on-chain-token-metadata.md)
   (SHA-256 `e64fe1429b9f7589077f1323572cf5c3ffa90c7c96690242a9e76d2658058d8b`): `Misc` events named exactly
   `mip-0018:token-metadata[v1]`, the payload checks, value types, latest value per key, **per-key tombstones** (a Null
   record deletes its field; an identity with no field left is not referenced anywhere), common fields, symbol groups,
-  the color lookup (`rawTokenType(domainSep, contractAddress)`), zero extension of trimmed ledger data.
-- **Not compatible with earlier drafts of MIP-0018.** Nothing of an earlier layout is decoded, stored or served; an
-  event with any other name (other versions included) is ignored like any other `Misc` event.
-- **Beyond the MIP** (owner decisions, project 00026 Q3): hard-coded NIGHT and DUST rows, "seen" tokens (any color in
+  the color lookup (`rawTokenType(domainSep, contractAddress)`), zero extension of trimmed ledger data. An event with
+  any other name (other versions of this one included) is ignored like any other `Misc` event.
+- **Beyond the MIP**: hard-coded NIGHT and DUST rows, "seen" tokens (any color in
   public data, also without a known mint), each token's activity (mints, UTXOs created/spent, contract in/out,
   shielded offer deltas, metadata transactions) with Bech32m wallet addresses, and a ✓/⚠ mark per token (✓ = usable
   `name`, `symbol`, `decimals`, no rejected MIP-0018 event and no unresolved log from its contract; ⚠ partial,
   incorrect or unresolved; no mark without MIP-0018 events). The mark says the metadata is correctly published — it is not an endorsement of the token.
 - Network: **Stagenet** (Midnight node 2.x). Never fetches a URI. Block heights only (no wall-clock time).
 
-Conformance: every MUST/SHOULD of the final text is mapped to a test in [CONFORMANCE.md](CONFORMANCE.md).
+Conformance: every MUST/SHOULD of MIP-0018 at `274a84f` is mapped to a test in [CONFORMANCE.md](CONFORMANCE.md).
 
 ## Architecture
 
@@ -40,7 +39,7 @@ Postgres schema chain_archive      blocks, raw transactions, per-transaction res
    ▼
 Postgres schema mip0018            mints (color table), color sightings, contract actions, events (classification,
    │                               no values served), fields (latest value per key), each identity's last
-   │                               withdrawal and the events activity may list (its history since its last revival),
+   │                               withdrawal and the events activity may list (its history from its last revival on),
    │                               activity, NIGHT/DUST, cursor — one transaction per block
    │  read helpers: tokens.ts, metadata.ts, events.ts, activity.ts
    ▼
@@ -74,20 +73,10 @@ node --import tsx token-indexer/mip0018/serve-cli.ts --network stagenet --api-on
 
 - `sync-cli.ts` flags and environment: see its header (`--from`, `--to`, `--concurrency`, `--max-blocks`,
   `--min-interval-ms`; `SYNC_BACKOFF_*`). Without `--to` it follows the finalized tip.
-- **An archive synced before this PR cannot be scanned.** The base's `chain-archive-sync` never stored a
-  transaction's result, and migration `chain_archive/002_transaction_segments` adds the per-segment outcomes as
-  `NULL`, so such an archive has no result on any transaction: the MIP-0018 scan stops at its first regular
-  transaction ("has no stored result"; it never guesses which parts applied, owner decision Q20) and `serve` reports
-  `scanner: stalled`. The sync does not re-ingest below its cursor, so use a fresh deployment (owner decision Q7) or
-  re-sync the range with this version into a fresh schema (`ARCHIVE_SCHEMA=chain_archive_v2 … sync-cli.ts --from …`,
-  then `--archive-schema chain_archive_v2` for `scan-cli.ts` / `serve-cli.ts`).
-- **A `mip0018` schema created by an earlier build of this PR must be dropped and recreated.** The `mip0018`
-  migrations (`src/postgres/migrations/mip0018/`) were edited in place before the first release (the schema is new,
-  owner decision Q7: fresh deployment), and the migration runner records applied migrations by name only, so it never
-  re-runs an edited one: such a schema keeps the earlier tables, checks and indexes (for example the CHECK that refuses
-  `unresolved` event rows, or a missing table), and the scan or the API fails on it. Drop it
-  (`DROP SCHEMA mip0018 CASCADE`, or the schema given with `--schema`) and start `scan-cli.ts` / `serve-cli.ts` again:
-  the schema is recreated and the scan rebuilds every row from the chain archive (nothing in it is primary data).
+- The scan needs each transaction's result and per-segment outcomes in the archive, which `sync-cli.ts` stores. At a
+  regular transaction without a stored result it stops ("has no stored result"; it never guesses which parts
+  applied), and `serve` reports `scanner: stalled`.
+- Nothing in the `mip0018` schema is primary data: the scan builds every row from the chain archive.
 - `scan-cli.ts`: `--from`, `--to`, `--max-blocks`, `--schema` (default `mip0018`), `--archive-schema` (default
   `chain_archive`). The scan stops with an error at a transaction it cannot decode (never skips it). A `log` op
   whose logged value is not in the raw transaction does not stop it: it is stored as `unresolved` (see below).
@@ -99,7 +88,7 @@ node --import tsx token-indexer/mip0018/serve-cli.ts --network stagenet --api-on
 The ledger's `log` op logs whatever value is on top of the contract's VM stack; the ledger turns a well-formed
 `[version, type, data]` triple into an event of that type and any other value into a `Misc` event (version 0) whose
 data is the whole value (`midnight-ledger` v2.0.0-rc.4 `onchain-vm/src/vm.rs` `decode_event`). The indexer applies
-exactly that rule — but it reads events from the raw transactions (owner decision Q4), and a raw transaction shows the
+exactly that rule — but it reads events from the raw transactions, and a raw transaction shows the
 logged value only when the VM reaches the `log` op straight from a `push` op right before it. Every recorded Stagenet
 event has that shape (Compact emits `push [version, type, data]; log`).
 
@@ -111,9 +100,8 @@ never applies it, serves it in `/v1/events` with its position, and counts such r
 (`unresolvedEvents`). While a contract has an unresolved log, its tokens' metadata in this indexer may differ from what
 the ledger emitted (MIP "Applying records": state MUST equal every accepted event), so none of its tokens keeps a
 clean ✓: each is marked ⚠ `unresolved` (reason `unresolved-log`, with the count and the first positions), or ⚠
-`incorrect` when the contract also has a rejected event. A `log` op that no successful run
-of the program reaches logs nothing, on the ledger and here. Decision and alternatives: project 00026 Q33, assumption
-A23 (under review by the owner).
+`incorrect` when the contract also has a rejected event. A `log` op that no successful run of the program reaches
+logs nothing, on the ledger and here.
 
 ## Tests and fixtures
 
@@ -125,7 +113,7 @@ network: Stagenet data comes from recorded fixtures.
 |---|---|
 | MIP vectors through two adapters (pure state module; real Postgres path): 59 reference normative, 43 informative, 8 UmbraDB versions | `test/mip0018-vectors.test.ts`, `test/mip0018-vectors-pg.test.ts` |
 | Decoder, scan, events, metadata state, activity, Bech32m, schema | `test/mip0018-{applied-parts,scan,events,metadata,activity,bech32m,schema,state}.test.ts` |
-| The twelve Stagenet cases (C01–C10, IDX, U1) against the reference's expectations | `test/mip0018-metadata.test.ts`, `test/mip0018-cases.test.ts` (coverage table: project 00026 sub-plan D) |
+| The twelve Stagenet cases (C01–C10, IDX, U1) against the reference's expectations | `test/mip0018-metadata.test.ts`, `test/mip0018-cases.test.ts` |
 | Recorded live range = replay | `test/mip0018-live-range.test.ts` |
 | Conformance table and the no-network check | `test/mip0018-conformance.test.ts` |
 | API and page | `test/mip0018-api.test.ts`, `test/mip0018-ui-*.test.ts` |
@@ -137,23 +125,18 @@ Fixtures:
   `manifest.json` holds the source endpoints, genesis hash and SHA-256 of every file. The fake chain server replays them
   over HTTP to the unchanged sync service.
 - `test/fixtures/mip0018-cases/` — the reference's case expectations, copied verbatim (SHA-256 checked) plus
-  UmbraDB's own per-key expectations for C06's steps after the tombstone (the reference files predate per-key
-  tombstones).
-- `test/fixtures/live-range/stagenet-714485-715183.json` — the recorded result of live syncs of 714485–715183: the
-  current recording (one uninterrupted live run with the current schema, identical to the fixture replay) and, nested,
-  the two before it — the C4 recording (one live run = its replay; it lacks only the two tables added for the final
-  audit's re-check, each identity's last withdrawal and the listed events; a killed-and-resumed live run on that code
-  gave the same digest, recorded in the project plan) and the D3 recording (an uninterrupted run, a run killed with
-  SIGKILL and resumed, archive and scan, and the replay, all identical; only the two tables whose entry-point columns
-  became `bytea` differ from C4's). All three agree on every archive table. CI checks a fresh replay against the
-  current per-table digests.
+  UmbraDB's own per-key expectations for C06's steps after the tombstone (the reference files are written for MIP
+  `78ecbb4`, where a Null record withdraws the whole identity).
+- `test/fixtures/live-range/stagenet-714485-715183.json` — the recorded result of a live sync and scan of
+  714485–715183 (one uninterrupted run against live Stagenet; every table of both schemas identical to the fixture
+  replay), with its per-table digests. CI checks a fresh replay against them.
 
 Development check against live Stagenet (polite; not CI):
 
 ```sh
-PG_URL=… node --import tsx token-indexer/dev/live-range-check.ts live --tag a --from 714485 --to 715183 --out /tmp/d3
-PG_URL=… node --import tsx token-indexer/dev/live-range-check.ts replay --tag r --range idx --out /tmp/d3
-PG_URL=… node --import tsx token-indexer/dev/live-range-check.ts compare --tags a,r --out /tmp/d3
+PG_URL=… node --import tsx token-indexer/dev/live-range-check.ts live --tag a --from 714485 --to 715183 --out /tmp/live-range
+PG_URL=… node --import tsx token-indexer/dev/live-range-check.ts replay --tag r --range idx --out /tmp/live-range
+PG_URL=… node --import tsx token-indexer/dev/live-range-check.ts compare --tags a,r --out /tmp/live-range
 ```
 
 ## Vendored code and provenance
@@ -162,25 +145,24 @@ PG_URL=… node --import tsx token-indexer/dev/live-range-check.ts compare --tag
 vectors and the vector runner of [`midnight-experiments/mip-0018`](https://github.com/midnight-experiments/mip-0018)
 @ `daec1f19747b09f4e245885ab0dd9ecc789a82ce` (Apache-2.0; `LICENSE`, `NOTICE`). `vendor/mip0018/SOURCE.md` lists every
 file with its SHA-256; `[[mip0018.vendor.provenance]]` fails on any changed, missing or unlisted file. The vendored
-files are never edited. The state rules are UmbraDB's own (`mip0018/state.ts`); the reference vectors were written
-for an earlier pin of the MIP, so UmbraDB keeps its own `274a84f` versions of S1a, S3a–S3d, S4a/S4b and S9d in
-`mip0018/vectors-umbradb/` (generator with `--check`, SHA256SUMS).
+files are never edited. The state rules are UmbraDB's own (`mip0018/state.ts`); the reference vectors are written
+for MIP `78ecbb4`, where a Null record withdraws the whole identity, so UmbraDB runs its own `274a84f` versions of
+S1a, S3a–S3d, S4a/S4b and S9d from `mip0018/vectors-umbradb/` (generator with `--check`, SHA256SUMS) instead of the
+vendored files with those ids.
 
-Other copies: the explorer's Outfit font and icon come from PR #19 (`NOTICE`, OFL 1.1).
+Other copies: the explorer's Outfit font and icon come from the explorer in acedward/UmbraDB PR #19 (`NOTICE`, OFL
+1.1).
 
-## Owner decisions
-
-The project's decisions (questions Q1–Q31 of project 00026) are summarized here; the executor's assumptions are
-**under review by the owner** and listed in the PR description of acedward/UmbraDB#26.
+## Design decisions
 
 | Topic | Decision |
 |---|---|
-| Authority | The final MIP text only; no compatibility with earlier drafts (spec; Q16/Q17: per-key tombstones). |
-| Vendoring | Codec, vectors and runner vendored verbatim; the reference repository is never changed (Q2, Q17, Q18). |
-| Events | Decoded from archived raw transactions, applied parts only, with the ledger's `decode_event` rule; the indexer's `contractEvents` is a test cross-check (Q4, Q9); logs the raw transaction does not show are stored as `unresolved`, never applied (final audit F1, Q33). |
-| State | Latest value per key, no history; a tombstone deletes its key; an identity with no keys is not referenced; shared entries derived from the field rows (Q5, Q15, Q16, Q24). |
-| Groups | As the MIP defines them, two or more members (Q6). |
-| Scope extras | NIGHT/DUST rows, seen tokens, activity with Bech32m, ✓/⚠ marks with `standards` tags (Q3, Q14). |
-| Schema | Fresh `mip0018` lineage, no migration from PR #19 (Q7, Q21). |
-| Network and data | Stagenet only; CI on recorded fixtures, development on live `--from/--to` ranges (Q8, Q11). |
-| Ledger | `@midnightntwrk/ledger-v9` 1.0.0-rc.3 decodes current Stagenet (Q13). |
+| Authority | MIP-0018 at `274a84f` only, with per-key tombstones. |
+| Vendoring | The reference codec, vectors and runner, verbatim (`vendor/mip0018/SOURCE.md`); the state rules are UmbraDB's own. |
+| Events | Decoded from archived raw transactions, applied parts only, with the ledger's `decode_event` rule; the indexer's `contractEvents` is a test cross-check; logs the raw transaction does not show are stored as `unresolved`, never applied. |
+| State | Latest value per key, no history; a tombstone deletes its key; an identity with no keys is not referenced; shared entries derived from the field rows. |
+| Groups | As the MIP defines them, two or more members. |
+| Scope extras | NIGHT/DUST rows, seen tokens, activity with Bech32m, ✓/⚠ marks with `standards` tags. |
+| Schema | Its own `mip0018` migration lineage (`src/postgres/migrations/mip0018/`). |
+| Network and data | Stagenet only; CI on recorded fixtures, development on live `--from/--to` ranges. |
+| Ledger | `@midnightntwrk/ledger-v9` 1.0.0-rc.3 decodes current Stagenet. |

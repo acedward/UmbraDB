@@ -1,8 +1,8 @@
 # The MIP-0018 token explorer page
 
-Project 00026, sub-plan C3 (spec FR-030; US4, US5). One document at `GET /ui`, served by the token indexer's own
-process (`serve()` in `../serve-cli.ts` passes `serveUi` to the API server as its `ui` hook), reading **only** the
-read-only JSON API of the same origin (`../../API.md`). No database access, no other origin, no URI ever fetched.
+One document at `GET /ui`, served by the token indexer's own process (`serve()` in `../serve-cli.ts` passes `serveUi`
+to the API server as its `ui` hook), reading **only** the read-only JSON API of the same origin (`../../API.md`). No
+database access, no other origin, no URI ever fetched.
 
 | File | Role |
 |---|---|
@@ -12,17 +12,19 @@ read-only JSON API of the same origin (`../../API.md`). No database access, no o
 | `fonts/Outfit-Variable-latin.woff2`, `fonts/OFL.txt` | The Midnight brand face Outfit (SIL OFL 1.1; see `NOTICE`), served at `/ui/outfit.woff2` |
 | `favicon.ico` | The Midnight mark, served at `/ui/favicon.ico` and `/favicon.ico` |
 
-The font, its licence and the icon are byte-identical copies of PR #19's (`feat/00020-token-indexer @ 11af38e`,
-`token-indexer/ui/`); font SHA-256 `92684e4acde79ef07758cd09380b7e01e9824d8b061eddeda046f78c166d7b12`, icon
+The font, its licence and the icon are byte-identical copies of the explorer in acedward/UmbraDB PR #19
+(`feat/00020-token-indexer @ 11af38e`, `token-indexer/ui/`); font SHA-256
+`92684e4acde79ef07758cd09380b7e01e9824d8b061eddeda046f78c166d7b12`, icon
 `b41509ad57381debefaba6fb3e2e478c1e38ea8afc5e6f11ecd1aeaba4e14c45`.
 
-## Look (after PR #19's explorer)
+## Look
 
-The Midnight style of #19's page: Outfit, a white surface with black type and one blue (`#0000fe`), the header with
-the Midnight wordmark, a rule and the title, tab navigation and a status strip; grey panel sections with small dim
-headings; tables with hover rows (NIGHT/DUST rows tinted); kind chips (shielded purple, unshielded blue, ledger teal
-dashed, seen violet dashed); hex shortened head…tail, whole in the tooltip, copied on click; monospaced heights,
-amounts and hex. Not taken: #19's origins model, tokenUri links/resolver, external links and wall-clock times.
+The Midnight style (the look of the explorer in acedward/UmbraDB PR #19): Outfit, a white surface with black type and
+one blue (`#0000fe`), the header with the Midnight wordmark, a rule and the title, tab navigation and a status strip;
+grey panel sections with small dim headings; tables with hover rows (NIGHT/DUST rows tinted); kind chips (shielded
+purple, unshielded blue, ledger teal dashed, seen violet dashed); hex shortened head…tail, whole in the tooltip,
+copied on click; monospaced heights, amounts and hex. The page has no origins model, no URI links or resolver, no
+external links and no wall-clock time.
 
 ## Routes
 
@@ -36,9 +38,9 @@ amounts and hex. Not taken: #19's origins model, tokenUri links/resolver, extern
 | `#/tx/<hash>` | the MIP-0018 events of a transaction | `/v1/events?tx=` |
 | `#/status` | the API's status | `/v1/status` (also read on every refresh for the strip) |
 
-The activity endpoints are answered by sub-plan C1/C2; until a server has them, a 404 is drawn as "activity is not
-served by this API yet". The page refreshes the current view every 10 s (`/ui?refresh=<ms>`, 500 – 3 600 000), skips
-a tick while the previous read of the same view runs, and drops a read that finishes after the route moved.
+A 404 from an activity endpoint is drawn as "activity is not served by this API". The page refreshes the current view
+every 10 s (`/ui?refresh=<ms>`, 500 – 3 600 000), skips a tick while the previous read of the same view runs, and
+drops a read that finishes after the route moved.
 
 ## Safety (MIP-0018 Security considerations: untrusted input, off-chain content, self-declared standards)
 
@@ -46,7 +48,7 @@ a tick while the previous read of the same view runs, and drops a read that fini
   script has no markup sink. The CSP also requires Trusted Types with no policy, so an `innerHTML`-class sink would
   throw in the browser.
 - **Visible marks.** Characters that change the layout of the text around them or cannot be seen are drawn as
-  `⟨U+XXXX⟩`, decided by Unicode property (final audit F4), not by a list: every control (`Cc`: C0 incl. NUL, tab,
+  `⟨U+XXXX⟩`, decided by Unicode property, not by a list: every control (`Cc`: C0 incl. NUL, tab,
   newline, ESC; DEL; C1), format character (`Cf`: bidi embeddings/overrides/isolates and marks, zero-width
   characters, Arabic number signs U+0600–U+0605, shorthand format controls U+1BCA0–U+1BCA3, tag characters, …),
   private-use (`Co`), unassigned (`Cn`) and surrogate (`Cs`) code point, line/paragraph separator (`Zl`, `Zp`), and
@@ -57,7 +59,7 @@ a tick while the previous read of the same view runs, and drops a read that fini
   value ("show all" on request), 400 per tooltip, 500 fields per identity (read in the API's keyset pages of 100 with
   "load more fields"; the identity's `fieldCount` is shown), 20 rejection reasons per tooltip; lists of 100 rows per
   page, "load more" up to 50 pages; a group shows the API's first 100 members and its member count; the contract view
-  merges the groups of the token pages it read (final audit F2).
+  merges the groups of the token pages it read.
 - **No fetch, no link from data.** A URI value (type 4) is text, labelled as never fetched; the only links are the
   page's own hash routes, built from validated 32-byte hex. Nothing is loaded from any other origin
   (`default-src 'none'`, `connect-src 'self'`, `img-src 'self'`, `font-src 'self'`).
