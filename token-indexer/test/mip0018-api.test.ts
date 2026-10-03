@@ -375,6 +375,43 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     expect(await ok(idx.base, `/v1/contracts/${bridge}/tokens`)).toEqual({ contractAddress: bridge, groups: [], items: [], nextCursor: null });
   }, 120_000);
 
+  it("[[mip0018.api.tokens-stable-order]] final-audit N3: a reader paging /v1/tokens never loses a token that existed when paging began — a color seen in public data before its first mint keeps its seen row (same key) after the mint is indexed, while its identity row appears among the identities; a color first seen in its own mint transaction is never a seen row", async () => {
+    const Z = "11".repeat(32); // the minting contract sorts before Y, so its identity row lands BEHIND a cursor past Y
+    const Y = "fe".repeat(32);
+    const DS = "5a".repeat(32);
+    const T = tokenColor(DS, Z);
+    const DS2 = "5b".repeat(32);
+    const T2 = tokenColor(DS2, Z);
+    const db = await fresh("stable");
+    const archived = (t: SynthTxA): SynthArchivedTx => ({ tx: t as unknown as SynthArchivedTx["tx"], result: "success", segments: null });
+    await putSyntheticBlocks(db.sql, db.archive, NET, 400, [
+      // 400: Y describes a kind-3 token; T is seen in an unshielded output before any mint of it.
+      [archived({ hash: "a0".repeat(32), intents: [{ segment: 1, guaranteedOutputs: [[T, "1", "77".repeat(32)]],
+        calls: [{ address: Y, entryPoint: "meta", guaranteed: { logs: [v1Log("5c".repeat(32), 3, [record.utf8("name", "Ledger")]).data] } }] }] })],
+      // 401: Z mints T (now indexed) and T2, which shows its color only in this same transaction.
+      [archived({ hash: "a1".repeat(32), intents: [{ segment: 1, guaranteedOutputs: [[T2, "1", "77".repeat(32)]],
+        calls: [{ address: Z, entryPoint: "mint", guaranteed: { unshieldedMints: [[DS, "5"], [DS2, "5"]] } }] }] })],
+    ]);
+    const until = async (to: number): Promise<void> => {
+      const s = scanner(db, { ...syntheticSeams, toHeight: to });
+      await s.bootstrap();
+      await scanAll(s);
+    };
+    await until(400);
+    const base = await startApi(db);
+    const first = await ok(base, "/v1/tokens?limit=3");
+    expect(first.items.map((t: Json) => t.id)).toEqual(["builtin/NIGHT", "builtin/DUST", `identity/${Y}/${"5c".repeat(32)}/3`]);
+    expect((await ok(base, `/v1/tokens?limit=3&cursor=${first.nextCursor}`)).items.map((t: Json) => t.id)).toEqual([`color/${T}`]);
+    await until(401); // T's mint is indexed while the reader holds a cursor past Y's identity
+    const rest = await ok(base, `/v1/tokens?limit=10&cursor=${first.nextCursor}`);
+    expect(rest.items.map((t: Json) => [t.id, t.contractAddress, t.domainSep])).toEqual([[`color/${T}`, Z, DS]]); // not lost
+    expect(rest.items[0].note).toMatch(/before its first indexed mint/);
+    // A fresh walk sees both rows of T (the identity and the seen color), and T2 only as an identity.
+    const all = (await walk(base, "/v1/tokens", 2)).items.map((t: Json) => t.id);
+    expect(all).toEqual(["builtin/NIGHT", "builtin/DUST", `identity/${Z}/${DS}/2`, `identity/${Z}/${DS2}/2`, `identity/${Y}/${"5c".repeat(32)}/3`, `color/${T}`]);
+    expect(all).not.toContain(`color/${T2}`);
+  }, 120_000);
+
   it("[[mip0018.api.lookup]] /v1/lookup/{color}?held=: C04's color → kind 1 held shielded, kind 2 held unshielded (one color); C05 bronze → not minted in the indexed range; NIGHT's zero color → built-in; the kind comes from the holding, not the color", async () => {
     const C04 = contractOf("C04");
     const list = (await ok(idx.base, "/v1/tokens?limit=500")).items as Json[];

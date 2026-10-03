@@ -129,7 +129,7 @@ common keys and `null` for any other key.
 |---|---|---|
 | `builtin` | NIGHT, DUST | `kind`, `contractAddress`, `domainSep` `null`; `name`/`symbol`/`decimals` the protocol values; `note`; `mark` `null` |
 | `identity` | an identity that is minted (kinds 1/2) or described (any kind) | `color` = the minted color (kinds 1/2 with an indexed mint), else `null`; `minted` = MintStats of this kind or `null`; `name`/`symbol`/`decimals` = usable values or `null`; `described` = has fields now |
-| `seen` | a color seen in public data (unshielded UTXOs, offer deltas, contract unshielded effects) with no indexed mint | `color`, `firstSeen` (Position), `evidence` (`unshielded-utxo`, `shielded-offer`, `contract-unshielded`); `mark.mark` `none` |
+| `seen` | a color seen in public data (unshielded UTXOs, offer deltas, contract unshielded effects) before its first indexed mint, or never minted | `color`, `firstSeen` (Position), `evidence` (`unshielded-utxo`, `shielded-offer`, `contract-unshielded`); `mark.mark` `none`; when a mint was indexed later: `contractAddress`, `domainSep` and a `note` (its identities are listed among the identities) |
 
 `kindName`: 1 `shielded`, 2 `unshielded`, 3 `ledger`.
 
@@ -182,6 +182,13 @@ metadata may differ from the ledger's events; README "Known limitation"); `null`
 ### `GET /v1/tokens?limit=&cursor=`
 
 Page of TokenSummary: NIGHT, DUST, then identities by `(contractAddress, domainSep, kind)`, then seen colors by color.
+
+Keyset pages are stable while the scan commits blocks (final audit N3): a row's key never changes, and a row never
+moves to another section. A seen color is one whose first sighting comes BEFORE its first indexed mint (or that has
+none) — both chain positions are fixed once indexed — so a seen color whose mint is indexed later keeps its seen row
+and gains an identity row; a reader holding a cursor past that identity still reaches the seen row. A color first seen
+in its own mint transaction (the usual case) is listed only through its identity. A row can still disappear (an
+identity withdrawn before any mint of it), and a new row appears in its key position.
 
 ### `GET /v1/tokens/{color}`
 

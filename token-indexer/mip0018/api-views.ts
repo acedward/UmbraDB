@@ -261,24 +261,37 @@ function mintStatsJson(m: MintAgg, fields: ReadonlyMap<string, Field> | undefine
 interface Seen { color: string; firstSeen: PositionJson; evidence: string[] }
 
 /**
- * Colors seen in public data: one color, or (`unmintedAfter`) a page of the colors with no indexed mint, by color.
- * `firstSeen` is the first sighting; `evidence` the kinds of public data that showed the color.
+ * Colors seen in public data: one color, or (`seenFirst`) a page of the list's seen colors, by color — the colors
+ * whose first sighting comes before any indexed mint of them (or that have none). `firstSeen` is the first sighting;
+ * `evidence` the kinds of public data that showed the color.
+ *
+ * Final-audit N3 (stable keyset pages, A17): membership of the seen section must not change when a block is scanned.
+ * A color's first sighting and first mint are chain positions that never move on the finalized chain, so "seen
+ * before its first mint" is decided once: a seen color that gets minted later STAYS in the seen section (with the
+ * same key) while its identity row appears in the identity section — a reader paging through the list never loses it.
+ * A color first seen in its own mint transaction (the usual case: a mint shows its color in the same transaction) is
+ * never a seen row.
  */
-async function sightings(ctx: ViewContext, o: { color?: string; unminted?: boolean; after?: string; limit?: number }): Promise<Seen[]> {
+async function sightings(ctx: ViewContext, o: { color?: string; seenFirst?: boolean; after?: string; limit?: number }): Promise<Seen[]> {
   const { sql } = ctx;
   const s = sql(ctx.schema);
   const rows = await sql<{ color: Buffer; h: bigint; i: number; x: Buffer; evidence: string[] }[]>`
-    SELECT c.color,
-           (array_agg(c.block_height ORDER BY c.block_height, c.tx_index))[1] AS h,
-           (array_agg(c.tx_index ORDER BY c.block_height, c.tx_index))[1] AS i,
-           (array_agg(c.tx_hash ORDER BY c.block_height, c.tx_index))[1] AS x,
-           array_agg(DISTINCT c.evidence ORDER BY c.evidence) AS evidence
-    FROM ${s}.mip0018_color_sightings c
-    WHERE c.network = ${ctx.network}
-      ${o.color === undefined ? sql`` : sql`AND c.color = ${buf(o.color)}`}
-      ${o.after === undefined ? sql`` : sql`AND c.color > ${buf(o.after)}`}
-      ${o.unminted === true ? sql`AND NOT EXISTS (SELECT 1 FROM ${s}.mip0018_mints m WHERE m.network = c.network AND m.color = c.color)` : sql``}
-    GROUP BY c.color ORDER BY c.color
+    SELECT f.color, f.h, f.i, f.x,
+           (SELECT array_agg(DISTINCT e.evidence ORDER BY e.evidence) FROM ${s}.mip0018_color_sightings e
+            WHERE e.network = ${ctx.network} AND e.color = f.color) AS evidence
+    FROM (
+      SELECT DISTINCT ON (c.color) c.color, c.block_height AS h, c.tx_index AS i, c.tx_hash AS x
+      FROM ${s}.mip0018_color_sightings c
+      WHERE c.network = ${ctx.network}
+        ${o.color === undefined ? sql`` : sql`AND c.color = ${buf(o.color)}`}
+        ${o.after === undefined ? sql`` : sql`AND c.color > ${buf(o.after)}`}
+      ORDER BY c.color, c.block_height, c.tx_index
+    ) f
+    WHERE TRUE
+      ${o.seenFirst === true ? sql`AND NOT EXISTS (
+        SELECT 1 FROM ${s}.mip0018_mints m
+        WHERE m.network = ${ctx.network} AND m.color = f.color AND (m.block_height, m.tx_index) <= (f.h, f.i))` : sql``}
+    ORDER BY f.color
     ${o.limit === undefined ? sql`` : sql`LIMIT ${o.limit}`}`;
   return rows.map((r) => ({ color: hexOf(r.color), firstSeen: { height: Number(r.h), txIndex: r.i, txHash: hexOf(r.x) }, evidence: [...r.evidence] }));
 }
@@ -377,15 +390,21 @@ function builtinSummary(b: BuiltinToken): TokenSummaryJson {
   };
 }
 
-function seenSummary(s: Seen): TokenSummaryJson {
+function seenSummary(s: Seen, mintedLater: { contractAddress: string; domainSep: string } | undefined): TokenSummaryJson {
   return {
-    id: `color/${s.color}`, source: "seen", kind: null, kindName: null, color: s.color, contractAddress: null, domainSep: null,
+    id: `color/${s.color}`, source: "seen", kind: null, kindName: null, color: s.color,
+    contractAddress: mintedLater?.contractAddress ?? null, domainSep: mintedLater?.domainSep ?? null,
     name: null, symbol: null, decimals: null, described: false, minted: null, firstSeen: s.firstSeen, evidence: s.evidence,
-    mark: markJson(undefined, []), note: null,
+    mark: markJson(undefined, []),
+    note: mintedLater === undefined ? null : "seen in public data before its first indexed mint; its minting contract's identities are listed among the identities",
   };
 }
 
-/** `GET /v1/tokens`: NIGHT, DUST, then identities by (contract, domainSep, kind), then seen-only colors by color. */
+/**
+ * `GET /v1/tokens`: NIGHT, DUST, then identities by (contract, domainSep, kind), then the colors seen before their
+ * first indexed mint (or never minted) by color. Every key is fixed once its row exists, so keyset pages never skip a
+ * token that existed when paging began (final-audit N3).
+ */
 export async function tokensPage(ctx: ViewContext, limit: number, cursor: TokensCursor | undefined): Promise<Page<TokenSummaryJson>> {
   const want = limit + 1;
   const rows: Array<{ item: TokenSummaryJson; cursor: TokensCursor }> = [];
@@ -407,8 +426,11 @@ export async function tokensPage(ctx: ViewContext, limit: number, cursor: Tokens
     });
   }
   if (rows.length < want) {
-    const seen = await sightings(ctx, { unminted: true, limit: want - rows.length, ...(cursor?.s === 2 ? { after: cursor.k[0] } : {}) });
-    for (const s of seen) rows.push({ item: seenSummary(s), cursor: { e: "tokens", s: 2, k: [s.color] } });
+    const seen = await sightings(ctx, { seenFirst: true, limit: want - rows.length, ...(cursor?.s === 2 ? { after: cursor.k[0] } : {}) });
+    for (const s of seen) {
+      const { entry } = await lookupColor(ctx.sql, ctx.network, s.color, ctx.schema);
+      rows.push({ item: seenSummary(s, entry), cursor: { e: "tokens", s: 2, k: [s.color] } });
+    }
   }
   const page = rows.slice(0, limit);
   return { items: page.map((r) => r.item), nextCursor: rows.length > limit ? encodeCursor(page[page.length - 1]!.cursor) : null };
