@@ -230,7 +230,8 @@ holding (`shielded` → 1, `unshielded` → 2), not by the color. `held` is requ
 | `result` | When |
 |---|---|
 | `identity` | a mint of the color was indexed; `identity` = that pair with the held kind (possibly `described: false`) |
-| `builtin` | NIGHT's zero color (`builtin` filled) |
+| `builtin` | NIGHT's zero color held unshielded (`builtin` filled) |
+| `shielded-zero-color` | the zero color held shielded (`found: false`): the ledger's default shielded token type (ledger `ShieldedTokenType([0; 32])`, "for testing"), not NIGHT — NIGHT is the unshielded zero type (`coin.rs` `NIGHT`) — and never a contract's color, so no MIP-0018 metadata exists for it (final audit N7) |
 | `not-minted-in-indexed-range` | no mint of the color in the scanned range (`found: false`); `seen` = `{ firstSeen, evidence }` when the color appeared in public data, else `null` |
 
 ### `GET /v1/events?contract=&tx=&limit=&cursor=`

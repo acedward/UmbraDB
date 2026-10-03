@@ -542,7 +542,7 @@ export interface LookupJson {
   color: string;
   held: "shielded" | "unshielded";
   found: boolean;
-  result: "identity" | "builtin" | "not-minted-in-indexed-range";
+  result: "identity" | "builtin" | "shielded-zero-color" | "not-minted-in-indexed-range";
   builtin: BuiltinJson | null;
   identity: IdentityDetailJson | null;
   seen: { firstSeen: PositionJson; evidence: string[] } | null;
@@ -556,6 +556,11 @@ export async function lookup(ctx: ViewContext, color: string, held: "shielded" |
     color, held, builtin: null, identity: null, seen: null,
     indexedRange: range === undefined || range.indexed === null ? null : { from: range.from, to: range.indexed },
   };
+  // Final-audit N7 (ledger v2.0.0-rc.4 `coin-structure/src/coin.rs` `NIGHT = UnshieldedTokenType([0; 32])`;
+  // `ledger-wasm/src/lib.rs` `shieldedToken()` = `ShieldedTokenType([0; 32])`, "default shielded token type for
+  // testing"): the zero color is NIGHT only when held unshielded. Held shielded it is the ledger's default shielded
+  // token type — not NIGHT, and no contract mints it (a contract's color is a hash), so no MIP-0018 metadata exists.
+  if (held === "shielded" && color === "00".repeat(32)) return { ...base, found: false, result: "shielded-zero-color" };
   const builtin = (await builtinTokens(ctx.sql, ctx.network, ctx.schema)).find((b) => b.color === color);
   if (builtin !== undefined) return { ...base, found: true, result: "builtin", builtin: builtinJson(builtin) };
   const { entry } = await lookupColor(ctx.sql, ctx.network, color, ctx.schema);

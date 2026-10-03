@@ -400,6 +400,11 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     // NIGHT: the built-in row; DUST has no color (list only).
     const night = await ok(idx.base, `/v1/lookup/${"00".repeat(32)}?held=unshielded`);
     expect([night.found, night.result, night.builtin.symbol, night.builtin.color, night.identity]).toEqual([true, "builtin", "NIGHT", "00".repeat(32), null]);
+    // Final-audit N7: the zero color held SHIELDED is the ledger's default shielded token type, not NIGHT.
+    expect(await ok(idx.base, `/v1/lookup/${"00".repeat(32)}?held=shielded`)).toEqual({
+      color: "00".repeat(32), held: "shielded", found: false, result: "shielded-zero-color", builtin: null, identity: null, seen: null,
+      indexedRange: { from: 714485, to: 715183 },
+    });
     expect(list.find((t) => t.symbol === "DUST")).toMatchObject({ source: "builtin", color: null, decimals: "15", mark: null });
     // `held` is required and strict.
     for (const q of ["", "?held=", "?held=both", "?held=Shielded", "?held=shielded&held=unshielded", "?held=shielded&x=1"])
