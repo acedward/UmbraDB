@@ -508,6 +508,14 @@ export class ChainArchiveSyncService {
     const segments = reported.segments === null || reported.segments === undefined
       ? undefined
       : reported.segments.map((s) => ({ id: s.id, success: s.success }));
+    // Project 00026 (FR-002, mid-project audit F1): a partial success says that SOME fallible segments failed; without
+    // the per-segment list nobody can tell which parts applied, so the block is not archived with that outcome.
+    if (result === "partial_success" && (segments === undefined || segments.length === 0)) {
+      throw new Error(
+        `indexer reported PARTIAL_SUCCESS without per-segment outcomes for transaction ${hexNoPrefix(tx.hash)} at height ${height}; ` +
+        "the archive cannot tell which fallible segments applied; retry later",
+      );
+    }
     return {
       ...(result === undefined ? {} : { result }),
       ...(segments === undefined ? {} : { segments }),

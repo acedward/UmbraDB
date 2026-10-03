@@ -3,7 +3,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
-import type { IndexerBlock } from "../../chain-archive-sync/indexer-client.js";
+import type { IndexerBlock, IndexerTransactionResult } from "../../chain-archive-sync/indexer-client.js";
 import { ChainArchiveSyncService, mapTransactionResult, SyncRangeError } from "../../chain-archive-sync/sync-service.js";
 import { dumpArchive } from "./fixtures/stagenet-archive/archive-digest.js";
 import { loadTape, startFakeChain, type FakeChain } from "./fixtures/stagenet-archive/fake-chain-server.js";
@@ -138,17 +138,21 @@ describe("chain-archive-sync ranges, resume and transaction outcomes on recorded
     ]);
   }, 120_000);
 
-  it("[[archive.sync.outcomes-guard]] an unknown status or a regular transaction without a result stops the sync at that block with nothing written for it", async () => {
-    for (const bad of [
-      { status: "SOMETHING_NEW", segments: null },
-      null,
-    ]) {
+  it("[[archive.sync.outcomes-guard]] an unknown status, a regular transaction without a result, or a PARTIAL_SUCCESS without per-segment outcomes stops the sync at that block with nothing written for it", async () => {
+    const cases: Array<[IndexerTransactionResult | null, RegExp]> = [
+      [{ status: "SOMETHING_NEW", segments: null }, /unknown indexer TransactionResultStatus/],
+      [null, /no transactionResult/],
+      // Mid-project audit F1 (00026): which fallible segments applied is unknown without the list.
+      [{ status: "PARTIAL_SUCCESS", segments: null }, /PARTIAL_SUCCESS without per-segment outcomes/],
+      [{ status: "PARTIAL_SUCCESS", segments: [] }, /PARTIAL_SUCCESS without per-segment outcomes/],
+    ];
+    for (const [bad, error] of cases) {
       const block = structuredClone(tape.blocks.find((b) => b.height === 714643)!.indexerBlock);
       block.transactions[0]!.transactionResult = bad;
       const f = await fake({ indexerOverrides: new Map([[714643, block]]) });
       const { sql, schema } = await freshSchema("guard");
       const svc = service(sql, schema, f, { startHeight: FROM, endHeight: TO });
-      await expect(svc.syncOnce({ maxBlocks: 100 })).rejects.toThrow(bad === null ? /no transactionResult/ : /unknown indexer TransactionResultStatus/);
+      await expect(svc.syncOnce({ maxBlocks: 100 })).rejects.toThrow(error);
       expect(await svc.getSyncedHeight()).toBe(714642);
       const at = await sql`SELECT 1 FROM ${sql(schema)}.blocks WHERE height = 714643`;
       expect(at).toHaveLength(0);
@@ -216,10 +220,14 @@ describe("chain-archive-sync ranges, resume and transaction outcomes on recorded
     }
     first.kill("SIGKILL");
     await firstExit;
-    const afterKill = (await cursorOf(killed.sql, killed.schema))!;
+    // Cursor and block count in ONE statement (one snapshot): a COMMIT the killed client had already sent may still
+    // land after it died, so two separate reads could straddle it (seen once under load: cursor 9 blocks, count 10).
+    const [snap] = await killed.sql<{ n: number; value: { height: number } | null }[]>`
+      SELECT (SELECT count(*)::int FROM ${killed.sql(killed.schema)}.blocks) AS n,
+             (SELECT value FROM ${killed.sql(killed.schema)}.watermarks WHERE kind = 'chain_archive' AND key = ${"sync_cursor:" + NET}) AS value`;
+    const afterKill = snap!.value!.height;
     expect(afterKill).toBeLessThan(TO); // killed mid-range
-    const archivedAfterKill = await killed.sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ${killed.sql(killed.schema)}.blocks`;
-    expect(archivedAfterKill[0]!.n).toBe(afterKill - FROM + 1); // the checkpoint never runs ahead of or behind the data
+    expect(snap!.n).toBe(afterKill - FROM + 1); // the checkpoint never runs ahead of or behind the data
 
     // 2. Restart with the same arguments: it resumes at cursor + 1 and exits 0 at --to.
     const second = runCli(killed.schema);

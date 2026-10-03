@@ -30,7 +30,22 @@ describe("MIP-0018 vectors through the pure adapter", () => {
     const own = await runVectors(loadVectors({ dir: UMBRADB_VECTORS_DIR }), pure);
     expect(failures(own)).toEqual([]);
     expect(own.normative).toEqual({ passed: 8, total: 8 });
+    expect(own.notApplicable).toEqual({}); // audit F2: S9d's group check must run, never pass as "not applicable"
     expect(own.results.map((r) => r.id).sort()).toEqual([...OWN_IDS].sort());
+  });
+
+  it("[[mip0018.vectors.no-not-applicable]] negative probe (audit F2): a consumer that reports no groups still passes the runner, but only with S9d (and the vendored S9a–S9c) marked not applicable — which the adapter tests refuse", async () => {
+    const noGroups = async (req: Json): Promise<Json> => {
+      const res = handleRequest(JSON.parse(JSON.stringify(req)));
+      delete res.groups;
+      return res;
+    };
+    const own = await runVectors(loadVectors({ dir: UMBRADB_VECTORS_DIR }), noGroups);
+    expect(own.normative).toEqual({ passed: 8, total: 8 }); // the runner alone cannot see it …
+    expect(Object.keys(own.notApplicable)).toEqual(["S9d"]); // … the not-applicable guard does
+    const sets = vectorSets();
+    const reference = await runVectors(loadVectors({ dir: VENDORED_VECTORS_DIR, only: sets.reference.map((v) => v.id) }), noGroups);
+    expect(Object.keys(reference.notApplicable).sort()).toEqual(["S9a", "S9b", "S9c"]);
   });
 
   it("[[mip0018.vectors.own-versions-needed]] the vendored 78ecbb4 versions of exactly six of the eight ids fail under per-key tombstones", async () => {
@@ -50,6 +65,7 @@ describe("MIP-0018 vectors through the pure adapter", () => {
     expect(run.status, run.stderr).toBe(0);
     expect(run.stdout).toContain("normative: 59/59 passed; informative: 43/43 passed");
     expect(run.stdout).toContain("normative: 8/8 passed");
+    expect(run.stdout).not.toMatch(/^\s*n\/a:/m); // audit F2: every group and display check ran
   }, 130_000);
 
   it("adapter errors are answered per request, never by exiting", () => {

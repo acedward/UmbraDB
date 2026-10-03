@@ -280,17 +280,20 @@ export class MetadataState {
     else this.identitiesByKey.set(k, { ref, fields });
   }
 
-  /** Every identity that currently has at least one field, sorted by (network, contract, domainSep, kind). */
+  /**
+   * Every identity that currently has at least one field, sorted by (network, contract, domainSep, kind). Each
+   * `fields` is a snapshot (a copy): later events never change a map already handed out (mid-project audit F3).
+   */
   identities(): IdentityState[] {
     return [...this.identitiesByKey.values()]
-      .map(({ ref, fields }) => ({ ...ref, fields }))
+      .map(({ ref, fields }) => ({ ...ref, fields: new Map(fields) }))
       .sort((a, b) => byString(identityKey(a), identityKey(b)));
   }
 
-  /** One identity, or `undefined` when it has no field (then it is not referenced anywhere). */
+  /** One identity (its fields as a snapshot), or `undefined` when it has no field (then it is not referenced anywhere). */
   identity(ref: IdentityRef): IdentityState | undefined {
     const v = this.identitiesByKey.get(identityKey({ ...ref, contractAddress: ref.contractAddress.toLowerCase(), domainSep: ref.domainSep.toLowerCase() }));
-    return v === undefined ? undefined : { ...v.ref, fields: v.fields };
+    return v === undefined ? undefined : { ...v.ref, fields: new Map(v.fields) };
   }
 
   /** Symbol groups of two or more members (MIP "Symbol grouping", Q6). */
@@ -306,7 +309,11 @@ export class MetadataState {
       .map((r) => ({ position: r.event.position, reason: (r.classification as { reason: string }).reason }));
   }
 
-  /** Whether the contract has any accepted or rejected MIP-0018 event on the network. */
+  /**
+   * Whether the contract has any accepted or rejected MIP-0018 event on the network — contract-level chain activity
+   * only (Q15). Never an input to a mark or a listing: it stays `true` after every identity of the contract was
+   * withdrawn, and a withdrawn identity must read exactly like one never described (mid-project audit F3, A13).
+   */
   hasEvents(network: string, contractAddress: string): boolean {
     const contract = contractAddress.toLowerCase();
     return (this.retained.get(network) ?? []).some((r) => r.event.contractAddress.toLowerCase() === contract);
@@ -376,7 +383,10 @@ export interface TokenMark {
 }
 
 export interface MarkInput {
-  /** The token's identity fields, or `undefined` when the identity has none (absent: never described or withdrawn). */
+  /**
+   * The token's identity fields, or `undefined` when the identity has none (absent: never described or withdrawn). An
+   * empty map means the same as `undefined` (one normal form, mid-project audit F3).
+   */
   fields: ReadonlyMap<string, Pick<Field, "valType" | "value" | "usable">> | undefined;
   /** Reasons of every rejected MIP-0018 event of the token's contract (on its network), in chain order. */
   contractRejections: readonly string[];
@@ -389,11 +399,14 @@ export interface MarkInput {
  *   publish) and its contract has no rejected event;
  * - ⚠ partial — the identity exists but one of the three is missing or unusable;
  * - no mark — neither (no MIP-0018 event, or an identity withdrawn by per-key tombstones and never revived).
+ * The mark depends on CURRENT state only (orchestrator decision on audit QA1, assumption A13): an absent identity —
+ * never described, or withdrawn — has no fields, no `missing` list and no tags, and is marked from its contract's
+ * rejections alone (⚠ incorrect when there is one, otherwise no mark); its history is never consulted.
  * Usable `standards` identifiers are returned as tags. A future standard declared in `standards` may redefine what
  * the marks mean for its tokens (Q14); none exists now, so no identifier changes the result.
  */
 export function tokenMark(input: MarkInput): TokenMark {
-  const fields = input.fields;
+  const fields = input.fields === undefined || input.fields.size === 0 ? undefined : input.fields;
   const tags: string[] = [];
   const standards = fields?.get(COMMON_KEY_HEX.standards);
   if (standards !== undefined && standards.usable === true)
@@ -402,7 +415,7 @@ export function tokenMark(input: MarkInput): TokenMark {
   if (fields !== undefined)
     for (const name of ["name", "symbol", "decimals"] as const) if (fields.get(COMMON_KEY_HEX[name])?.usable !== true) missing.push(name);
   if (input.contractRejections.length > 0) return { mark: "incorrect", reasons: [...input.contractRejections], missing, tags };
-  if (fields === undefined || fields.size === 0) return { mark: "none", reasons: [], missing: [], tags: [] };
+  if (fields === undefined) return { mark: "none", reasons: [], missing: [], tags: [] };
   return { mark: missing.length === 0 ? "ok" : "partial", reasons: [], missing, tags };
 }
 

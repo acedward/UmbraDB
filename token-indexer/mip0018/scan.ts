@@ -16,8 +16,8 @@
  *   network fails instead of interleaving. Every insert is idempotent, so a block scanned again (after
  *   `removeAbove`) yields the same rows.
  * - Checks (never skipped silently): consecutive heights, each block's parent = the last scanned block, a stored
- *   result for every regular transaction, the recomputed transaction hash = the archived one, a decodable
- *   transaction, one (contract, domainSep) per color.
+ *   result for every regular transaction, the outcome of every fallible segment of a partial success (audit F1), the
+ *   recomputed transaction hash = the archived one, a decodable transaction, one (contract, domainSep) per color.
  * - Events: every applied `log` op whose item is a MIP-0002 `Misc` event, in the MIP's order (block, transaction,
  *   then within the transaction the guaranteed part of every intent by ascending segment id, then each successful
  *   fallible segment; actions and operations in order). `name ‖ payload` was zero-extended to 288 bytes before the
@@ -133,6 +133,15 @@ interface BlockRows {
 
 const hex = (b: Uint8Array): string => Buffer.from(b).toString("hex");
 const buf = (h: string): Buffer => Buffer.from(h, "hex");
+
+/** Segment ids whose fallible part holds something the scan records (a fallible transcript, log, mint, color, deploy or update). */
+export function fallibleSegments(d: DecodedTransaction): number[] {
+  const ids = new Set<number>();
+  for (const c of d.calls) if (c.phases.includes("fallible")) ids.add(c.segment);
+  for (const xs of [d.logs, d.mints, d.sightings, d.deploys, d.maintenance] as Array<ReadonlyArray<{ phase: string; segment: number }>>)
+    for (const x of xs) if (x.phase === "fallible") ids.add(x.segment);
+  return [...ids].sort((a, b) => a - b);
+}
 
 export class Mip0018Scanner {
   private readonly sql: UmbraDBSql;
@@ -293,6 +302,16 @@ export class Mip0018Scanner {
       throw new ScanError(`transaction ${tx.txHash} at ${block.height}: ${(e as Error).message}`);
     }
     if (decoded.hash !== tx.txHash) throw new ScanError(`transaction at ${block.height}: recomputed hash ${decoded.hash} differs from the archived ${tx.txHash}`);
+    if (outcome.result === "partial_success") {
+      // Mid-project audit F1 (Q20, FR-002): a partial success must say, for every segment that holds fallible content,
+      // whether it applied; a missing list or a missing segment would silently drop parts that did apply.
+      const listed = new Set((outcome.segments ?? []).map((s) => s.id));
+      const missing = fallibleSegments(decoded).filter((s) => !listed.has(s));
+      if (outcome.segments === null || outcome.segments === undefined || outcome.segments.length === 0 || missing.length > 0)
+        throw new ScanError(
+          `transaction ${tx.txHash} at ${block.height} is a partial success without the outcome of ${outcome.segments === null || outcome.segments === undefined || outcome.segments.length === 0 ? "any segment" : `segment(s) ${missing.join(", ")}`}; the archive must record every fallible segment's outcome`,
+        );
+    }
     return { decoded, outcome, applied: appliedParts(decoded, outcome) };
   }
 

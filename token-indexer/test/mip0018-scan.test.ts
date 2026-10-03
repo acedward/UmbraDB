@@ -328,7 +328,7 @@ describe("MIP-0018 scan over the chain archive (00026 A3)", () => {
     expect(await dumpScan(db.sql, db.mip)).toEqual(full);
   }, 180_000);
 
-  it("[[mip0018.scan.range-guards]] --from/--to, the archive's end, and inconsistent archive rows (gap, parent, result, hash, undecodable) stop the scan with an error", async () => {
+  it("[[mip0018.scan.range-guards]] --from/--to, the archive's end, and inconsistent archive rows (gap, parent, result, partial success without segment outcomes, hash, undecodable) stop the scan with an error", async () => {
     const db = await fresh("range");
     await archiveTape(db.sql, db.archive, C04, 714637, 714650);
     await scanner(db).bootstrap();
@@ -353,6 +353,21 @@ describe("MIP-0018 scan over the chain archive (00026 A3)", () => {
       ["hash", [[{ result: "success", tx: { hash: "e2".repeat(32) }, archivedHash: "e3".repeat(32) }]], /differs from the archived/],
       ["parent", [[ok], [ok]], /parent/, (h) => (h === 301 ? "ff".repeat(32) : blockHashOf(NET, h - 1))],
       ["undecodable", [[{ result: "success", tx: { hash: "e4".repeat(32), intents: [{ segment: 1, actions: [{}] }] } }]], /e4e4.*at 300: .*unknown contract action/],
+      // Mid-project audit F1: a partial success must give the outcome of every segment holding fallible content.
+      ...([
+        ["partialnull", null, /partial success without the outcome of any segment/],
+        ["partialempty", [], /partial success without the outcome of any segment/],
+        ["partialmissing", [{ id: 4, success: true }], /partial success without the outcome of segment\(s\) 5/],
+      ] as const).map(([name, segments, error]): [string, SynthArchivedTx[][], RegExp] => [name, [[{
+        result: "partial_success", segments: segments === null ? null : [...segments],
+        tx: {
+          hash: "e5".repeat(32),
+          intents: [
+            { segment: 4, actions: [{ call: { address: "c5".repeat(32), entryPoint: "g", guaranteed: { shieldedMints: [["04".repeat(32), "1"]] } } }] },
+            { segment: 5, actions: [{ call: { address: "c5".repeat(32), entryPoint: "f", fallible: { unshieldedMints: [["05".repeat(32), "1"]] } } }] },
+          ],
+        },
+      }]], error]),
     ];
     for (const [name, blocks, error, parentOf] of cases) {
       const bad = await fresh(`bad${name}`);

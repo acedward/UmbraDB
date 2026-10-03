@@ -23,6 +23,7 @@ const A = "aa".repeat(32);
 const B = "bb".repeat(32);
 const DS1 = "11".repeat(32);
 const DS2 = "22".repeat(32);
+const DS3 = "33".repeat(32);
 const ds = (hex: string): Uint8Array => Uint8Array.from(Buffer.from(hex, "hex"));
 const ref = (kind: number, domainSep = DS1, contractAddress = A): IdentityRef => ({ network: NET, contractAddress, domainSep, kind });
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -49,7 +50,9 @@ describe("per-key tombstones (Q16, MIP 274a84f Applying records)", () => {
     const emit = emitter(s);
     emit(1, [record.utf8("name", "Gold"), record.utf8("symbol", "ACME"), record.uint("decimals", 6), record.utf8("standards", "mip-0011")]);
     emit(1, [record.utf8("name", "Two"), record.utf8("symbol", "ACME")], { domainSep: DS2 });
+    emit(1, [record.utf8("symbol", "ACME")], { domainSep: DS3 }); // a third member: the group outlives one member's Null (audit F2)
     expect(s.groups()).toHaveLength(1);
+    expect(s.groups()[0]!.members).toHaveLength(3);
 
     emit(1, [record.tombstone("name")]);
     expect(keys(s, ref(1))).toEqual(["symbol", "decimals", "standards"]);
@@ -58,11 +61,14 @@ describe("per-key tombstones (Q16, MIP 274a84f Applying records)", () => {
     expect(keys(s, ref(1))).toEqual(["symbol", "decimals", "standards"]);
 
     emit(1, [record.tombstone("symbol")]);
-    expect(s.groups()).toEqual([]); // a Null at its symbol removes it from the group (S9)
+    // A Null at its symbol removes ONLY that member from the group (S9); the two others keep it.
+    expect(s.groups().map((g) => g.members)).toEqual([[{ domainSep: DS2, kind: 1 }, { domainSep: DS3, kind: 1 }]]);
 
+    const held = s.identity(ref(1))!.fields; // a snapshot (audit F3): later events never change it
     emit(1, [record.tombstone("decimals"), record.tombstone("standards")]);
+    expect(held.size).toBe(2);
     expect(s.identity(ref(1))).toBeUndefined();
-    expect(s.identities().map((i) => i.domainSep)).toEqual([DS2]);
+    expect(s.identities().map((i) => i.domainSep)).toEqual([DS2, DS3]);
     expect(s.display(ref(1), 100n)).toBeUndefined();
     expect(JSON.stringify(s.identities())).not.toContain(DS1);
 
@@ -206,5 +212,24 @@ describe("Q14 marks (one function)", () => {
 
     emit(3, [record.utf8("standards", "mip-0004  x")]);
     expect(tokenMark({ fields: fieldsOf(s, ref(3)), contractRejections: [] })).toMatchObject({ mark: "partial", tags: [] });
+  });
+
+  it("[[mip0018.state.marks-current-state]] a withdrawn identity is marked exactly like one never described (current state only, A13): ⚠ incorrect from its contract's rejections, otherwise none; an empty field map is the same as none (audit F3)", () => {
+    const s = new MetadataState();
+    const emit = emitter(s);
+    emit(3, [record.utf8("name", "Gone"), record.utf8("symbol", "GONE"), record.uint("decimals", 2), record.utf8("standards", "mip-0004")]);
+    emit(3, [record.tombstone("name"), record.tombstone("symbol"), record.tombstone("decimals"), record.tombstone("standards")]);
+    const withdrawn = fieldsOf(s, ref(3));
+    const never = fieldsOf(s, ref(3, DS3));
+    expect(withdrawn).toBeUndefined();
+    expect(never).toBeUndefined();
+    for (const rejections of [[], ["reserved-valtype"]]) {
+      const forms = [withdrawn, never, new Map()].map((fields) => tokenMark({ fields, contractRejections: rejections }));
+      expect(forms[0]).toEqual(rejections.length === 0
+        ? { mark: "none", reasons: [], missing: [], tags: [] }
+        : { mark: "incorrect", reasons: ["reserved-valtype"], missing: [], tags: [] });
+      expect(forms[1]).toEqual(forms[0]);
+      expect(forms[2]).toEqual(forms[0]);
+    }
   });
 });
