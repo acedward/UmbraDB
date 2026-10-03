@@ -6,6 +6,11 @@
  * `fixtures/live-range/stagenet-714485-715183.json`. This test replays the D1 tape through the same sync service and
  * scanner (no network) and requires the same digest for every table of both schemas — archive and `mip0018` (blocks,
  * transactions, blobs, cursor, events, fields, mints, sightings, actions, activity, built-in rows, scan cursor).
+ *
+ * Sub-plan C4 changed column types (entry points and maintenance operations as `bytea`), so the range was synced live
+ * once more with the changed code and the digests replaced by that run's (never regenerated from a replay). The
+ * earlier recording is kept (`previousRecording`): its three runs were identical, its archive tables equal the new
+ * live run's, and only the two tables whose columns C4 changed differ.
  */
 import { readFileSync } from "node:fs";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -22,6 +27,7 @@ const NET = "stagenet";
 const RECORDED = JSON.parse(readFileSync(new URL("./fixtures/live-range/stagenet-714485-715183.json", import.meta.url), "utf8")) as {
   format: string; genesisHash: string; range: { from: number; to: number };
   comparison: { identical: Record<string, boolean>; sha256: Record<string, string> }; liveTables: RangeTables;
+  previousRecording: { code: { commit: string }; comparison: { identical: Record<string, boolean>; sha256: Record<string, string> }; liveTables: RangeTables };
 };
 
 describe("recorded live range = fixture replay (00026 D3)", () => {
@@ -41,8 +47,17 @@ describe("recorded live range = fixture replay (00026 D3)", () => {
   it("[[mip0018.live-range.replay-equals-live]] replaying the recorded 714485–715183 tape through the sync service and the scanner gives, table by table, the digests of the live Stagenet sync (every archive and mip0018 table; the live run, its killed-and-resumed twin and the replay were identical); a changed row is caught", async () => {
     expect(RECORDED.format).toBe("umbradb-mip0018-live-range/1");
     expect(RECORDED.genesisHash).toBe(loadManifest().genesisHash);
-    expect(Object.values(RECORDED.comparison.identical)).toEqual([true, true, true]);
+    expect(RECORDED.comparison.identical).toEqual({ "liveUninterrupted=replay": true });
     expect(new Set(Object.values(RECORDED.comparison.sha256)).size).toBe(1);
+    expect(Object.values(RECORDED.comparison.sha256)[0]).toBe(RECORDED.liveTables.sha256);
+    // The earlier recording (code before sub-plan C4): live, killed-and-resumed live and replay were identical; two
+    // independent live syncs agree on every archive table; only the tables whose columns C4 changed differ.
+    const prev = RECORDED.previousRecording;
+    expect(Object.values(prev.comparison.identical)).toEqual([true, true, true]);
+    expect(new Set([...Object.values(prev.comparison.sha256), prev.liveTables.sha256]).size).toBe(1);
+    expect(Object.keys(prev.liveTables.tables).sort()).toEqual(Object.keys(RECORDED.liveTables.tables).sort());
+    expect(compareTables(prev.liveTables, RECORDED.liveTables).map((d) => d.split(":")[0]).sort())
+      .toEqual(["mip0018.mip0018_activity", "mip0018.mip0018_contract_actions"]);
     const { from, to } = RECORDED.range;
 
     const archive = "replay_archive";
