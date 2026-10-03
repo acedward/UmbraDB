@@ -1,0 +1,65 @@
+/**
+ * Read side of the event log `mip0018_events` (sub-plan B2; the API of sub-plan C builds on it): every `Misc` event of
+ * an applied part, in the MIP's chain order, with its classification. Q15: the event log is the chain-event record
+ * (position, contract, classification, reason); the raw `name`/`payload` are returned for recomputation and tests and
+ * must never be served as metadata.
+ */
+import type { UmbraDBSql } from "../../src/postgres/client.js";
+import { MIP0018_SCHEMA } from "../../src/postgres/migrations/mip0018/index.js";
+
+export interface LoggedEvent {
+  height: number;
+  txIndex: number;
+  /** Position among the applied `log` ops of the transaction (ledger order). */
+  eventIndex: number;
+  txHash: string;
+  segment: number;
+  phase: "guaranteed" | "fallible";
+  contractAddress: string;
+  eventType: string;
+  /** Zero-extended `name` (32 bytes) and `payload` (256 bytes), hex; empty when the logged data was not one item. */
+  name: string;
+  payload: string;
+  classification: "accept" | "reject" | "ignore";
+  reason: string | undefined;
+  /** Accepted events only. */
+  domainSep: string | undefined;
+  kind: number | undefined;
+}
+
+const hex = (b: Uint8Array): string => Buffer.from(b).toString("hex");
+const buf = (h: string): Buffer => Buffer.from(h.replace(/^0x/, "").toLowerCase(), "hex");
+
+/** Events of a network in chain order, optionally of one contract and/or one transaction. */
+export async function listEvents(
+  sql: UmbraDBSql, network: string, filter: { contractAddress?: string; txHash?: string } = {}, schema = MIP0018_SCHEMA,
+): Promise<LoggedEvent[]> {
+  const rows = await sql<{
+    block_height: bigint; tx_index: number; event_index: number; tx_hash: Buffer | null; segment_id: number | null; phase: string | null;
+    contract_address: Buffer; event_type: string; name: Buffer; payload: Buffer; classification: LoggedEvent["classification"];
+    reason: string | null; domain_sep: Buffer | null; kind: number | null;
+  }[]>`
+    SELECT block_height, tx_index, event_index, tx_hash, segment_id, phase, contract_address, event_type, name, payload,
+           classification, reason, domain_sep, kind
+    FROM ${sql(schema)}.mip0018_events
+    WHERE network = ${network}
+      ${filter.contractAddress === undefined ? sql`` : sql`AND contract_address = ${buf(filter.contractAddress)}`}
+      ${filter.txHash === undefined ? sql`` : sql`AND tx_hash = ${buf(filter.txHash)}`}
+    ORDER BY block_height, tx_index, event_index`;
+  return rows.map((r) => ({
+    height: Number(r.block_height), txIndex: r.tx_index, eventIndex: r.event_index,
+    txHash: r.tx_hash === null ? "" : hex(r.tx_hash), segment: r.segment_id ?? 0, phase: (r.phase ?? "guaranteed") as LoggedEvent["phase"],
+    contractAddress: hex(r.contract_address), eventType: r.event_type, name: hex(r.name), payload: hex(r.payload),
+    classification: r.classification, reason: r.reason ?? undefined,
+    domainSep: r.domain_sep === null ? undefined : hex(r.domain_sep), kind: r.kind ?? undefined,
+  }));
+}
+
+/** Classification counts of a contract's events (accepted, rejected, ignored), e.g. for the Q14 marks. */
+export async function eventCounts(sql: UmbraDBSql, network: string, contractAddress: string, schema = MIP0018_SCHEMA): Promise<{ events: number; accepted: number; rejected: number; ignored: number }> {
+  const rows = await sql<{ classification: string; n: number }[]>`
+    SELECT classification, count(*)::int AS n FROM ${sql(schema)}.mip0018_events
+    WHERE network = ${network} AND contract_address = ${buf(contractAddress)} GROUP BY classification`;
+  const n = (c: string): number => rows.find((r) => r.classification === c)?.n ?? 0;
+  return { events: n("accept") + n("reject") + n("ignore"), accepted: n("accept"), rejected: n("reject"), ignored: n("ignore") };
+}

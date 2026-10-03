@@ -3,7 +3,9 @@
  * finalized blocks in height order, decodes each regular transaction once with the applied-parts decoder, keeps only
  * the parts that took effect (the archived result and per-segment outcomes), and records — per block, atomically,
  * together with its own cursor — the mints and their colors (MIP "Lookup"), the colors seen in public data (owner Q3),
- * the contract calls, deploys and maintenance updates.
+ * the contract calls, deploys and maintenance updates (sub-plan A3), and every `Misc` event of an applied part with
+ * its classification under the final MIP (sub-plan B2, Q4 (c): events come from the raw transactions; the indexer's
+ * `contractEvents` is only a test cross-check).
  *
  * - Source: the `chain_archive` schema written by `chain-archive-sync` (finalized blocks only, a contiguous range
  *   `[startHeight, height]` recorded in its `sync_cursor:<net>` watermark). The scan never reads past that height.
@@ -16,6 +18,14 @@
  * - Checks (never skipped silently): consecutive heights, each block's parent = the last scanned block, a stored
  *   result for every regular transaction, the recomputed transaction hash = the archived one, a decodable
  *   transaction, one (contract, domainSep) per color.
+ * - Events: every applied `log` op whose item is a MIP-0002 `Misc` event, in the MIP's order (block, transaction,
+ *   then within the transaction the guaranteed part of every intent by ascending segment id, then each successful
+ *   fallible segment; actions and operations in order). `name ‖ payload` was zero-extended to 288 bytes before the
+ *   split (decoder); the contract address is the call's, never the payload's. Classified with the vendored reference
+ *   codec: accept, reject (reason) or ignore (another name, `[v2]`, data that is not one 288-byte item). The row keeps
+ *   the chain position, classification and reason (Q15: the chain-event record; metadata values live only in the
+ *   latest-value rows of sub-plan B3); `name`/`payload` stay for recomputation and are never served as metadata.
+ *   `event_index` is the position among the transaction's applied `log` ops (non-`Misc` logs are not stored).
  * - `removeAbove(height)`: deletes every scanned row above a height and moves the cursor back, so the scan can be
  *   recomputed from there (MIP S4; UmbraDB follows finalized blocks only, so this serves tests and repairs).
  */
@@ -29,11 +39,13 @@ import {
   appliedParts,
   decodeTransaction,
   type DecodedTransaction,
+  MISC_EVENT_TYPE_CODE,
   NIGHT_COLOR,
   partApplied,
   type TransactionOutcome,
 } from "./applied-parts.ts";
 import { tokenColor } from "./color.ts";
+import { classifyEvent, MISC_EVENT_TYPE } from "../vendor/mip0018/codec/src/index.ts";
 
 /** NIGHT and DUST (owner Q3): protocol tokens, outside MIP-0018 ("their properties are fixed by the protocol"). */
 export const BUILTIN_TOKENS = [
@@ -88,6 +100,26 @@ export interface ScanOnceResult {
   mints: number;
   sightings: number;
   actions: number;
+  /** `Misc` events stored (any classification). */
+  events: number;
+}
+
+interface EventRow {
+  network: string;
+  block_height: number;
+  tx_index: number;
+  event_index: number;
+  tx_hash: Buffer;
+  segment_id: number;
+  phase: string;
+  contract_address: Buffer;
+  event_type: string;
+  name: Buffer;
+  payload: Buffer;
+  classification: "accept" | "reject" | "ignore";
+  reason: string | null;
+  domain_sep: Buffer | null;
+  kind: number | null;
 }
 
 interface ActionRow {
@@ -109,6 +141,7 @@ interface BlockRows {
   mints: Array<Record<string, unknown>>;
   sightings: Array<Record<string, unknown>>;
   actions: ActionRow[];
+  events: EventRow[];
   transactions: number;
 }
 
@@ -186,7 +219,7 @@ export class Mip0018Scanner {
   async scanOnce(o: { maxBlocks?: number } = {}): Promise<ScanOnceResult> {
     const maxBlocks = o.maxBlocks ?? 100;
     if (!Number.isSafeInteger(maxBlocks) || maxBlocks < 1) throw new ScanRangeError(`maxBlocks must be a positive integer, got ${maxBlocks}`);
-    const result: ScanOnceResult = { scannedBlocks: 0, fromHeight: undefined, toHeight: undefined, archiveHeight: undefined, reachedEnd: false, transactions: 0, mints: 0, sightings: 0, actions: 0 };
+    const result: ScanOnceResult = { scannedBlocks: 0, fromHeight: undefined, toHeight: undefined, archiveHeight: undefined, reachedEnd: false, transactions: 0, mints: 0, sightings: 0, actions: 0, events: 0 };
     const archive = await this.archiveRange();
     if (archive === undefined) return result;
     result.archiveHeight = archive.height;
@@ -208,6 +241,7 @@ export class Mip0018Scanner {
         result.mints += rows.mints.length;
         result.sightings += rows.sightings.length;
         result.actions += rows.actions.length;
+        result.events += rows.events.length;
       }
       if (cursor.nextHeight <= end) throw new ScanError(`the archive has no canonical block ${cursor.nextHeight} (archive cursor at ${archive.height})`);
     }
@@ -217,7 +251,7 @@ export class Mip0018Scanner {
 
   /** Decodes one block's archived transactions into rows (no write). */
   private async blockRows(block: BlockMeta): Promise<BlockRows> {
-    const rows: BlockRows = { mints: [], sightings: [], actions: [], transactions: 0 };
+    const rows: BlockRows = { mints: [], sightings: [], actions: [], events: [], transactions: 0 };
     const txs = await this.archive.getTransactionsForBlock(this.network, block.blockHash);
     for (const tx of txs) {
       if (tx.kind !== "regular") continue; // system transactions carry no contract actions
@@ -240,6 +274,21 @@ export class Mip0018Scanner {
       }
       for (const d of parts.applied.deploys)
         rows.actions.push({ ...at, segment_id: d.segment, action_index: d.actionIndex, tx_hash: txHash, action: "deploy", contract_address: buf(d.address), entry_point: null, applied_phases: null, maintenance_counter: null, maintenance_updates: null });
+      for (const l of parts.applied.logs) {
+        if (l.eventTypeCode !== MISC_EVENT_TYPE_CODE) continue; // other MIP-0002 types say nothing about metadata
+        const name = Buffer.from(l.name ?? "", "hex");
+        const payload = Buffer.from(l.payload ?? "", "hex");
+        const c = l.undecodable === undefined
+          ? classifyEvent({ type: MISC_EVENT_TYPE, name, payload })
+          : { result: "ignore" as const, reason: `undecodable-data: ${l.undecodable}` };
+        rows.events.push({
+          ...at, event_index: l.eventIndex, tx_hash: txHash, segment_id: l.segment, phase: l.phase,
+          contract_address: buf(l.contractAddress), event_type: MISC_EVENT_TYPE, name, payload,
+          classification: c.result, reason: c.result === "accept" ? null : c.reason,
+          domain_sep: c.result === "accept" ? Buffer.from(c.header.domainSep) : null,
+          kind: c.result === "accept" ? c.header.kind : null,
+        });
+      }
       for (const m of parts.applied.maintenance)
         rows.actions.push({ ...at, segment_id: m.segment, action_index: m.actionIndex, tx_hash: txHash, action: "maintenance", contract_address: buf(m.address), entry_point: null, applied_phases: null, maintenance_counter: m.counter.toString(), maintenance_updates: m.updates });
     }
@@ -285,6 +334,7 @@ export class Mip0018Scanner {
                   ${a.maintenance_counter}, ${a.maintenance_updates === null ? null : tx.array(a.maintenance_updates)})
           ON CONFLICT DO NOTHING`;
       }
+      for (const e of rows.events) await tx`INSERT INTO ${tx(s)}.mip0018_events ${tx(e as unknown as Record<string, unknown>)} ON CONFLICT DO NOTHING`;
       await this.opts.onBlockWritten?.(block.height);
       const moved = await tx`
         UPDATE ${tx(s)}.mip0018_scan SET next_height = ${block.height + 1}, last_block_hash = ${buf(block.blockHash)}
