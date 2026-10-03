@@ -8,7 +8,7 @@
  *     [--from <height>] [--scan-batch 100] [--scan-idle-ms 2000] [--genesis 0x…]
  *
  * The chain archive is filled by `chain-archive-sync/sync-cli.ts` (finalized blocks, `--from/--to` ranges or the
- * tip); `serve` scans what is archived and answers the API. Decision (C1, assumption A17): the scan loop runs in the
+ * tip); `serve` scans what is archived and answers the API. Decision (C1, Q28, assumption A18): the scan loop runs in the
  * serving process by default, as in the guide's `serve`, so one command keeps the API current while the archive
  * grows; the scan's cursor moves by compare-and-set, so a second scanner of the same network (another `serve`, or
  * `scan-cli.ts`) fails instead of interleaving. A scan error (Q20: an undecodable transaction stops the scan at its
@@ -36,6 +36,7 @@ import { parseArgs } from "node:util";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { createMip0018Api, listen } from "./api.ts";
 import type { ScannerState } from "./api-views.ts";
+import { serveUi } from "./ui/page.ts";
 
 export interface ServeOptions {
   sql: UmbraDBSql;
@@ -123,6 +124,7 @@ export async function serve(o: ServeOptions): Promise<ServeHandle> {
     ...(o.archiveSchema === undefined ? {} : { archiveSchema: o.archiveSchema }),
     ...(o.genesisHash === undefined ? {} : { genesisHash: o.genesisHash }),
     scannerState: () => state,
+    ui: serveUi, // the explorer page at /ui (sub-plan C3; it reads only this API)
   });
   let port: number;
   try {

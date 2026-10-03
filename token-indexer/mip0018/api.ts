@@ -68,6 +68,11 @@ export interface Mip0018ApiOptions {
   scannerState?: () => ScannerState;
   /** Server-side log line (errors), default stderr. */
   log?: (line: string) => void;
+  /**
+   * Static routes answered before the API (sub-plan C3: the explorer page, `ui/page.ts` `serveUi`); returns `true`
+   * when it answered the request. Default: none (`/ui` is then a 404 like any unknown path).
+   */
+  ui?: (req: IncomingMessage, res: ServerResponse) => boolean;
 }
 
 // ── Input validation ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -156,6 +161,7 @@ export function createMip0018Api(opts: Mip0018ApiOptions): Server {
   const log = opts.log ?? ((line: string) => process.stderr.write(`${line}\n`));
 
   return createServer((req, res) => {
+    if (opts.ui?.(req, res) === true) return;
     const head = (req.method ?? "GET").toUpperCase() === "HEAD";
     void handle(req).then(
       (body) => send(res, 200, body, head),
