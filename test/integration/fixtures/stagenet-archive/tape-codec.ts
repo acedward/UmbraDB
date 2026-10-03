@@ -4,8 +4,8 @@ import type { ArchiveTape, TapeBlock } from "./fake-chain-server.js";
 import { canonicalJson } from "./archive-digest.js";
 
 /**
- * Compact on-disk form of a Stagenet archive tape (project 00026, sub-plan D1: recorded fixtures for
- * CI, target < 1 MB for 731 blocks).
+ * Compact on-disk form of a Stagenet archive tape (recorded fixtures for CI, target < 1 MB for 731
+ * blocks).
  *
  * A tape (`record-tape.ts`) holds, per height, exactly what the two public endpoints answered:
  * `chain_getBlockHash`, `chain_getBlock` and the indexer's `block(offset:{height})`. The only large
@@ -106,7 +106,7 @@ export function decompressFor(path: string, data: Buffer): string {
   return data.toString("utf8");
 }
 
-/** Reads a tape file: an A2 `*.tape.json` (plain) or a compact `*.tape.json.{gz,br}`. */
+/** Reads a tape file: a plain `*.tape.json` or a compact `*.tape.json.{gz,br}`. */
 export function readTapeFile(path: string): ArchiveTape & Record<string, unknown> {
   const parsed = JSON.parse(decompressFor(path, readFileSync(path))) as (ArchiveTape | CompactTape) & Record<string, unknown>;
   return parsed.format === COMPACT_TAPE_FORMAT

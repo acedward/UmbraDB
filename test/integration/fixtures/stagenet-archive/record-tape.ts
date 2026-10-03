@@ -1,10 +1,10 @@
 /**
- * Records Stagenet "archive tapes" (project 00026, Q11: recorded fixtures for CI, captured from live
- * development runs): for each height, exactly what `ChainArchiveSyncService` asks the two public
- * endpoints -- the node's `chain_getBlockHash` / `chain_getBlock` results and the indexer's
- * `block(offset:{height})` answer to `BLOCK_BY_HEIGHT_QUERY` (with `__typename` and the
- * per-transaction `transactionResult`). `fake-chain-server.ts` serves a tape back over real HTTP,
- * so CI replays the sync with no network.
+ * Records Stagenet "archive tapes" (recorded fixtures for CI, captured from live development runs):
+ * for each height, exactly what `ChainArchiveSyncService` asks the two public endpoints -- the
+ * node's `chain_getBlockHash` / `chain_getBlock` results and the indexer's `block(offset:{height})`
+ * answer to `BLOCK_BY_HEIGHT_QUERY` (with `__typename` and the per-transaction
+ * `transactionResult`). `fake-chain-server.ts` serves a tape back over real HTTP, so CI replays the
+ * sync with no network.
  *
  * Polite by construction: the clients' public-host pacing (one request start per 250 ms per
  * endpoint), the sync's own bounded back-off on 429/403/5xx, bounded fetch concurrency. Refuses to
@@ -12,15 +12,14 @@
  *
  * Modes (inside the node:24 container, from the repo root, `node --import tsx <this file> ...`):
  *
- * 1. `--heights <list> --out <file>` (sub-plan A2): one paced fetch per listed height, written as a
+ * 1. `--heights <list> --out <file>`: one paced fetch per listed height, written as a
  *    plain tape. `--heights` takes heights and inclusive ranges, e.g. `714501,714557-714559`.
- * 2. `--capture --range <from>-<to>[:<name>] [--range ...] --pg <postgres url> --raw-out <file>`
- *    (sub-plan D1): a LIVE `--from/--to` sync of each range with the unchanged
- *    `ChainArchiveSyncService` into a fresh schema, recording every endpoint answer it reads (a
- *    recording `fetchImpl`); then the digest of each archive it wrote (`archive-digest.ts`); then
- *    the indexer's `contractEvents` (all event types, in the indexer's order) for every
- *    (transaction, called contract) pair of the recorded blocks. Writes one uncompressed raw
- *    capture (kept out of the repository).
+ * 2. `--capture --range <from>-<to>[:<name>] [--range ...] --pg <postgres url> --raw-out <file>`:
+ *    a LIVE `--from/--to` sync of each range with the unchanged `ChainArchiveSyncService` into a
+ *    fresh schema, recording every endpoint answer it reads (a recording `fetchImpl`); then the
+ *    digest of each archive it wrote (`archive-digest.ts`); then the indexer's `contractEvents`
+ *    (all event types, in the indexer's order) for every (transaction, called contract) pair of the
+ *    recorded blocks. Writes one uncompressed raw capture (kept out of the repository).
  * 3. `--pack --raw <file> --out-dir <dir> [--cases <dir> --reference-commit <sha>]` (no network):
  *    the committed fixtures -- one compact tape per range, the contract events, the case index
  *    (when the reference cases folder is given, else the existing one is kept) and `manifest.json`
@@ -60,7 +59,7 @@ const log = (event: string, fields: Record<string, unknown> = {}): void => {
 };
 
 // ---------------------------------------------------------------------------------------------
-// Mode 1 (A2): one paced fetch per height.
+// Mode 1: one paced fetch per height.
 // ---------------------------------------------------------------------------------------------
 
 async function recordHeights(values: { heights?: string; out?: string; node: string; indexer: string; comment: string }): Promise<void> {
@@ -93,7 +92,7 @@ async function recordHeights(values: { heights?: string; out?: string; node: str
 
   const tape = {
     $comment:
-      "Stagenet archive tape for UmbraDB project 00026 (recorded fixture, Q11). Public, finalized chain data read " +
+      "Stagenet archive tape for UmbraDB (recorded fixture). Public, finalized chain data read " +
       "with test/integration/fixtures/stagenet-archive/record-tape.ts; served back by fake-chain-server.ts. " +
       values.comment,
     network: "stagenet",
@@ -111,7 +110,7 @@ async function recordHeights(values: { heights?: string; out?: string; node: str
 }
 
 // ---------------------------------------------------------------------------------------------
-// Mode 2 (D1): live sync with a recording fetch, archive digest, contractEvents.
+// Mode 2: live sync with a recording fetch, archive digest, contractEvents.
 // ---------------------------------------------------------------------------------------------
 
 /** Every request the capture makes, by operation, with every non-2xx/transport outcome counted too;
@@ -413,7 +412,7 @@ async function capture(values: { range?: string[]; pg?: string; "raw-out"?: stri
       const blocks = assembleTape(rec, r.from, r.to);
       const tape = {
         $comment:
-          `Stagenet archive tape for UmbraDB project 00026 (sub-plan D1, recorded fixture, Q11): every answer a live ` +
+          `Stagenet archive tape for UmbraDB (recorded fixture): every answer a live ` +
           `polite sync of ${r.from}-${r.to} read from the public node and indexer (record-tape.ts --capture).`,
         network: NET,
         genesisHash: STAGENET_GENESIS,
@@ -461,13 +460,13 @@ async function capture(values: { range?: string[]; pg?: string; "raw-out"?: stri
 }
 
 // ---------------------------------------------------------------------------------------------
-// Mode 3 (D1): pack the committed fixtures (no network).
+// Mode 3: pack the committed fixtures (no network).
 // ---------------------------------------------------------------------------------------------
 
-/** Target for all fixture files together (sub-plan D1: "< 1 MB"). */
+/** Target for all fixture files together ("< 1 MB"). */
 export const SIZE_TARGET_BYTES = 1_000_000;
 
-/** The former A2 tapes, now slices of the recorded ranges (`loadTape` keeps their names working). */
+/** Named slices of the recorded ranges (`loadTape` serves them by name). */
 const ALIASES: FixtureManifest["aliases"] = {
   "c04-714637-714663.tape.json": {
     heights: "714637-714663",
@@ -475,7 +474,7 @@ const ALIASES: FixtureManifest["aliases"] = {
   },
   "cases-sparse.tape.json": {
     heights: "714501,714557,714617,714683,714689,714802,714813,714891,715109,715177,715183,715409,715428,715433",
-    comment: "One block per 00013 Stagenet case transaction kind: C01 publish 714501, C02 shielded mint 714557, C03 unshielded mint 714617, C05 mints 714683/714689, IDX third-party shielded mint 714802, C06 withdraw 714813, C07 raw emitter 714891, C08 two events 715109, C10 publish 715177 and VerifierKeyRemove 715183, U1 mint 715409, VerifierKeyInsert 715428, upgraded call 715433.",
+    comment: "One block per reference Stagenet case transaction kind: C01 publish 714501, C02 shielded mint 714557, C03 unshielded mint 714617, C05 mints 714683/714689, IDX third-party shielded mint 714802, C06 withdraw 714813, C07 raw emitter 714891, C08 two events 715109, C10 publish 715177 and VerifierKeyRemove 715183, U1 mint 715409, VerifierKeyInsert 715428, upgraded call 715433.",
   },
 };
 
@@ -521,8 +520,8 @@ function pack(values: { raw?: string; "out-dir"?: string; cases?: string; "refer
     format: CONTRACT_EVENTS_FORMAT,
     $comment:
       "The Stagenet indexer's contractEvents (all event types, in the indexer's order) for every (transaction, called " +
-      "contract) pair of the recorded ranges -- the test-only cross-check of UmbraDB's raw-transaction event decoding " +
-      "(project 00026, Q4 (c)). Captured by record-tape.ts --capture right after the live sync; read-only public data.",
+      "contract) pair of the recorded ranges -- the test-only cross-check of UmbraDB's raw-transaction event decoding. " +
+      "Captured by record-tape.ts --capture right after the live sync; read-only public data.",
     indexerUrl: raw.indexerUrl,
     recordedAt: raw.recordedAt,
     query: raw.contractEvents.query,
@@ -555,7 +554,7 @@ function pack(values: { raw?: string; "out-dir"?: string; cases?: string; "refer
   const manifest: FixtureManifest = {
     format: FIXTURE_MANIFEST_FORMAT,
     $comment:
-      "Recorded Stagenet fixtures of UmbraDB project 00026 (sub-plan D1; spec FR-041/FR-042, Q11). Public, finalized, " +
+      "Recorded Stagenet fixtures of UmbraDB. Public, finalized, " +
       "read-only chain data captured once by a live polite sync (record-tape.ts --capture) and packed by record-tape.ts " +
       "--pack. CI replays the tapes through the unchanged chain-archive-sync and must reproduce each range's live archive " +
       "digest (test/integration/stagenet-fixtures*.test.ts).",

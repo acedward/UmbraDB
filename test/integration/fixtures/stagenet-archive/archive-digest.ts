@@ -2,12 +2,11 @@ import { createHash } from "node:crypto";
 import type { UmbraDBSql } from "../../../../src/postgres/client.js";
 
 /**
- * What "the same archive" means for project 00026 (spec SC-003, sub-plans A2 and D1): every
- * `chain_archive` table, every column except the wall-clock ones (`synced_at`, `created_at`,
- * `updated_at`), in primary-key order, bytes as lowercase hex. Used by the A2 kill-and-resume test
- * (two runs compared row by row), by `record-tape.ts --capture` (the digest of the LIVE Stagenet sync
- * stored in the fixture manifest) and by the fixture replay test (the replayed archive must have the
- * same digest).
+ * What "the same archive" means for the range tests: every `chain_archive` table, every column
+ * except the wall-clock ones (`synced_at`, `created_at`, `updated_at`), in primary-key order, bytes
+ * as lowercase hex. Used by the archive sync's kill-and-resume test (two runs compared row by row),
+ * by `record-tape.ts --capture` (the digest of the LIVE Stagenet sync stored in the fixture
+ * manifest) and by the fixture replay test (the replayed archive must have the same digest).
  */
 export async function dumpArchive(sql: UmbraDBSql, schema: string): Promise<Record<string, unknown[]>> {
   const s = sql(schema);

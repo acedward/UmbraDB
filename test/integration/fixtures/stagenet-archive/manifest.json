@@ -1,6 +1,6 @@
 {
  "format": "umbradb-stagenet-fixtures/1",
- "$comment": "Recorded Stagenet fixtures of UmbraDB project 00026 (sub-plan D1; spec FR-041/FR-042, Q11). Public, finalized, read-only chain data captured once by a live polite sync (record-tape.ts --capture) and packed by record-tape.ts --pack. CI replays the tapes through the unchanged chain-archive-sync and must reproduce each range's live archive digest (test/integration/stagenet-fixtures*.test.ts).",
+ "$comment": "Recorded Stagenet fixtures of UmbraDB. Public, finalized, read-only chain data captured once by a live polite sync (record-tape.ts --capture) and packed by record-tape.ts --pack. CI replays the tapes through the unchanged chain-archive-sync and must reproduce each range's live archive digest (test/integration/stagenet-fixtures*.test.ts).",
  "network": "stagenet",
  "genesisHash": "0x2f76825abc239fecf6107c9df99016de57037b451ae57a4394b76c8cf53a9491",
  "nodeUrl": "https://rpc.stagenet.shielded.tools",
@@ -169,36 +169,36 @@
   },
   "cases-sparse.tape.json": {
    "heights": "714501,714557,714617,714683,714689,714802,714813,714891,715109,715177,715183,715409,715428,715433",
-   "comment": "One block per 00013 Stagenet case transaction kind: C01 publish 714501, C02 shielded mint 714557, C03 unshielded mint 714617, C05 mints 714683/714689, IDX third-party shielded mint 714802, C06 withdraw 714813, C07 raw emitter 714891, C08 two events 715109, C10 publish 715177 and VerifierKeyRemove 715183, U1 mint 715409, VerifierKeyInsert 715428, upgraded call 715433."
+   "comment": "One block per reference Stagenet case transaction kind: C01 publish 714501, C02 shielded mint 714557, C03 unshielded mint 714617, C05 mints 714683/714689, IDX third-party shielded mint 714802, C06 withdraw 714813, C07 raw emitter 714891, C08 two events 715109, C10 publish 715177 and VerifierKeyRemove 715183, U1 mint 715409, VerifierKeyInsert 715428, upgraded call 715433."
   }
  },
  "files": [
   {
    "path": "stagenet-714485-715183.tape.json.br",
-   "bytes": 841900,
-   "sha256": "2576065ec841027ce69f6e9d23eb78601bf854059c3e91ac4ad7a960c60ae669",
+   "bytes": 841792,
+   "sha256": "014875e6b864a53f5f51f5419a71a5019450826a81f3a82e012b34591c1815b2",
    "role": "tape"
   },
   {
    "path": "stagenet-715402-715433.tape.json.br",
-   "bytes": 43612,
-   "sha256": "238bf38eacaee3f1e4d8cf99ba7ef7698f6ff54a9b47fb70ec46f0435b57c506",
+   "bytes": 43583,
+   "sha256": "bdc6b4dccfff3983e50ea373d6a79c5e41d660234ad7425e994af55266df4923",
    "role": "tape"
   },
   {
    "path": "stagenet-contract-events.json.gz",
-   "bytes": 10546,
-   "sha256": "458f1f7cbadd814e34b53bac83bd545d08218d0bb0dc089cf324326a4d110ee7",
+   "bytes": 10522,
+   "sha256": "4e1eef37f4cf07427d4d7e9c2f80d144cdb157a91a94dc19c2d1021973f25e1a",
    "role": "contract-events"
   },
   {
    "path": "case-index.json",
-   "bytes": 39061,
-   "sha256": "8777bd3fa8852095e4bc57e2fb4f4cb39f9a768d0dbd4ede8f82fc5a9bd5562b",
+   "bytes": 39032,
+   "sha256": "5296c3d575b9c5508343faefba25aa3159e6a9c888409b85b44c60e151261382",
    "role": "case-index"
   }
  ],
- "totalBytes": 935119,
+ "totalBytes": 934929,
  "sizeTargetBytes": 1000000,
  "totalRequests": 2333
 }

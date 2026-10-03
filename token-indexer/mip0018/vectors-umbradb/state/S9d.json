@@ -6,7 +6,7 @@
   },
   "normative": true,
   "description": "Symbol grouping (MIP 274a84f S9): after S9a, a Null record at the kind-3 member's \"symbol\" (block 2) removes it from the group of contract A's \"ACME\"; that identity keeps its name and stays ungrouped.",
-  "basis": "UmbraDB's own version (project 00026, owner decisions Q16/Q17, executor decision Q18): written from the Testing text of MIP-0018 PR #340 head 274a84f (per-key tombstones) because the vendored reference vector of the same id implements 78ecbb4 (whole-identity tombstones).",
+  "basis": "UmbraDB's own version: written from the Testing text of MIP-0018 PR #340 head 274a84f (per-key tombstones); the vendored reference vector of the same id implements 78ecbb4 (whole-identity tombstones).",
   "steps": [
     {
       "op": "apply",

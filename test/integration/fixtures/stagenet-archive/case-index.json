@@ -1,6 +1,6 @@
 {
  "format": "umbradb-stagenet-case-index/1",
- "$comment": "Which recorded Stagenet transactions belong to the MIP-0018 reference cases (project 00026, sub-plan D1). Built by record-tape.ts --pack from the reference repository (read-only); every case transaction was found in the recorded tapes at the reference's inclusion height and block hash.",
+ "$comment": "Which recorded Stagenet transactions belong to the MIP-0018 reference cases. Built by record-tape.ts --pack from the reference repository (read-only); every case transaction was found in the recorded tapes at the reference's inclusion height and block hash.",
  "source": {
   "repository": "https://github.com/midnight-experiments/mip-0018",
   "commit": "daec1f19747b09f4e245885ab0dd9ecc789a82ce",

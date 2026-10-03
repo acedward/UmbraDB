@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Generates UmbraDB's own versions of the eight MIP-0018 state vectors whose Testing text changed between the vendored
+ * Generates UmbraDB's own versions of the eight MIP-0018 state vectors whose Testing text differs between the vendored
  * reference vectors (MIP PR #340 @ `78ecbb4`, whole-identity tombstones) and the MIP text UmbraDB implements
- * (PR #340 head `274a84f`, per-key tombstones; project 00026 Q16, Q17, Q18): S1a, S3a, S3b, S3c, S3d, S4a, S4b, S9d.
+ * (PR #340 head `274a84f`, per-key tombstones): S1a, S3a, S3b, S3c, S3d, S4a, S4b, S9d.
  *
  *   node token-indexer/mip0018/vectors-umbradb/generate.ts           # write state/*.json, manifest.json, SHA256SUMS
  *   node token-indexer/mip0018/vectors-umbradb/generate.ts --check   # fail on any difference (CI)
@@ -23,7 +23,7 @@ const VENDORED = join(HERE, "..", "..", "vendor", "mip0018", "vectors");
 
 type Json = Record<string, unknown>;
 
-/** The MIP text these vectors implement (local copy: research/00026-mip-0018-token-indexer/mip-0018@274a84f.md). */
+/** The MIP text these vectors implement. */
 const MIP = {
   id: "MIP-0018",
   repository: "midnightntwrk/midnight-improvement-proposals",
@@ -34,7 +34,7 @@ const MIP = {
   pr: "https://github.com/midnightntwrk/midnight-improvement-proposals/pull/340",
 };
 const BASIS =
-  "UmbraDB's own version (project 00026, owner decisions Q16/Q17, executor decision Q18): written from the Testing text of MIP-0018 PR #340 head 274a84f (per-key tombstones) because the vendored reference vector of the same id implements 78ecbb4 (whole-identity tombstones).";
+  "UmbraDB's own version: written from the Testing text of MIP-0018 PR #340 head 274a84f (per-key tombstones); the vendored reference vector of the same id implements 78ecbb4 (whole-identity tombstones).";
 
 const NAME_HEX = "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000";
 const A = "aa".repeat(32);
@@ -117,7 +117,7 @@ const KIND3_UNCHANGED = identity(3, [
 const KIND1_WITHOUT_NAME = identity(1, [textField("symbol", "GLD", true), uintField("decimals", 6, true), textField("standards", "mip-0011", true)]);
 /**
  * MIP S9 ("Kinds 1 and 3 of one contract with symbol = "ACME" form one group"): while kinds 1 and 3 both carry the
- * usable symbol "GLD", they are one group (final-audit N2). When kind 1 has no fields (S3c, S3d — whose kind 1 has no
+ * usable symbol "GLD", they are one group. When kind 1 has no fields (S3c, S3d — whose kind 1 has no
  * symbol —, S4b) there is no group of two or more; the vendored comparer cannot compare an empty group list without
  * marking it not applicable, so those three state the absence through their identities and the vector test asserts
  * the adapter's empty group list directly.

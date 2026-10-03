@@ -7,13 +7,13 @@ import {
 } from "./stagenet-fixtures.js";
 
 /**
- * Builds `case-index.json` (project 00026, sub-plan D1 task 4): for each Stagenet case of the
- * MIP-0018 reference (`deployments/stagenet/cases/{C01…C10,IDX,U1}` of
- * `midnight-experiments/mip-0018`, read-only), which transactions it submitted, at which heights,
- * where they sit in the recorded ranges, and which reference expectation applies (C06 per step).
- * Every transaction of a case is looked up in the recorded tapes; a case transaction that is not
- * recorded is an error. Transactions of the ranges that belong to no case are listed separately
- * (other Stagenet users -- e.g. the third-party mint IDX counts as its sixth color).
+ * Builds `case-index.json`: for each Stagenet case of the MIP-0018 reference
+ * (`deployments/stagenet/cases/{C01…C10,IDX,U1}` of `midnight-experiments/mip-0018`, read-only),
+ * which transactions it submitted, at which heights, where they sit in the recorded ranges, and
+ * which reference expectation applies (C06 per step). Every transaction of a case is looked up in
+ * the recorded tapes; a case transaction that is not recorded is an error. Transactions of the
+ * ranges that belong to no case are listed separately (other Stagenet users -- e.g. the third-party
+ * mint IDX counts as its sixth color).
  *
  * Runs only at pack time (the reference checkout is not available in CI); the result is committed
  * with the SHA-256 of every reference file it was built from.
@@ -147,7 +147,7 @@ export function buildCaseIndex(opts: {
   return {
     format: CASE_INDEX_FORMAT,
     $comment:
-      "Which recorded Stagenet transactions belong to the MIP-0018 reference cases (project 00026, sub-plan D1). " +
+      "Which recorded Stagenet transactions belong to the MIP-0018 reference cases. " +
       "Built by record-tape.ts --pack from the reference repository (read-only); every case transaction was " +
       "found in the recorded tapes at the reference's inclusion height and block hash.",
     source: { repository: opts.repository, commit: opts.commit, path: opts.casesPath, files },

@@ -6,7 +6,7 @@
   },
   "normative": true,
   "description": "Tombstone (MIP 274a84f S3): name/symbol/decimals/standards for kinds 1 and 3 under one domainSep (block 1), then a Null record at key \"name\" for kind 1 (block 2): kind 1 keeps symbol, decimals and standards and has no name; kind 3 is unchanged; kinds 1 and 3 share the usable symbol \"GLD\" and form one group (S9).",
-  "basis": "UmbraDB's own version (project 00026, owner decisions Q16/Q17, executor decision Q18): written from the Testing text of MIP-0018 PR #340 head 274a84f (per-key tombstones) because the vendored reference vector of the same id implements 78ecbb4 (whole-identity tombstones).",
+  "basis": "UmbraDB's own version: written from the Testing text of MIP-0018 PR #340 head 274a84f (per-key tombstones); the vendored reference vector of the same id implements 78ecbb4 (whole-identity tombstones).",
   "steps": [
     {
       "op": "apply",

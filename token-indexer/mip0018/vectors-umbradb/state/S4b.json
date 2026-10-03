@@ -6,7 +6,7 @@
   },
   "normative": true,
   "description": "Reorganization (MIP 274a84f S4): S4a, then block 5 is added again: kind 1's last fields are deleted again and kind 1 is not referenced anywhere; kind 3 is unchanged.",
-  "basis": "UmbraDB's own version (project 00026, owner decisions Q16/Q17, executor decision Q18): written from the Testing text of MIP-0018 PR #340 head 274a84f (per-key tombstones) because the vendored reference vector of the same id implements 78ecbb4 (whole-identity tombstones).",
+  "basis": "UmbraDB's own version: written from the Testing text of MIP-0018 PR #340 head 274a84f (per-key tombstones); the vendored reference vector of the same id implements 78ecbb4 (whole-identity tombstones).",
   "steps": [
     {
       "op": "apply",

@@ -8,10 +8,10 @@ import { type ContractEventsPair, loadTapeByName } from "./stagenet-fixtures.js"
  * Serves a recorded Stagenet archive tape (`record-tape.ts`) back over real HTTP, on 127.0.0.1 and
  * an ephemeral port, as a Substrate JSON-RPC node (`POST /rpc`) and a Midnight indexer GraphQL
  * endpoint (`POST /graphql`) -- exactly the calls `ChainArchiveSyncService` makes, so the sync and
- * the CLI run unchanged against recorded data (project 00026, Q11: CI replays fixtures, no network).
+ * the CLI run unchanged against recorded data (CI replays fixtures, no network).
  *
  * Also answers `chain_getBlockHash(0)` with the tape's genesis hash and, when given the recorded
- * `contractEvents` pairs, the indexer's `contractEvents` query (sub-plan D1).
+ * `contractEvents` pairs, the indexer's `contractEvents` query.
  *
  * Test seams: per-height indexer overrides (synthetic transaction outcomes on real bytes), a
  * per-response delay (to kill a CLI mid-range), throttling injection (429/403/5xx with
@@ -32,7 +32,7 @@ export interface ArchiveTape {
   blocks: TapeBlock[];
 }
 
-/** A tape of this folder by file name: a plain A2 tape, a compact range tape, or one of the
+/** A tape of this folder by file name: a plain tape, a compact range tape, or one of the
  *  manifest's aliases (a slice of the recorded ranges; see `stagenet-fixtures.ts`). */
 export function loadTape(fileName: string): ArchiveTape {
   return loadTapeByName(fileName);
