@@ -1,0 +1,82 @@
+{
+  "format": "mip0018-vectors/1",
+  "mip": {
+    "id": "MIP-0018",
+    "repository": "midnightntwrk/midnight-improvement-proposals",
+    "commit": "274a84f221bcfc17e4b73e2c8b32fd8c028ea092",
+    "path": "mips/mip-0018-on-chain-token-metadata.md",
+    "sha256": "e64fe1429b9f7589077f1323572cf5c3ffa90c7c96690242a9e76d2658058d8b",
+    "url": "https://github.com/midnightntwrk/midnight-improvement-proposals/blob/274a84f221bcfc17e4b73e2c8b32fd8c028ea092/mips/mip-0018-on-chain-token-metadata.md",
+    "pr": "https://github.com/midnightntwrk/midnight-improvement-proposals/pull/340"
+  },
+  "eventName": {
+    "text": "mip-0018:token-metadata[v1]",
+    "hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000"
+  },
+  "generator": "token-indexer/mip0018/vectors-umbradb/generate.ts",
+  "counts": {
+    "normative-payload": 0,
+    "normative-state": 8,
+    "informative-payload": 0,
+    "informative-state": 0,
+    "total": 8
+  },
+  "vectors": [
+    {
+      "id": "S1a",
+      "kind": "state",
+      "file": "state/S1a.json",
+      "testId": "S1",
+      "normative": true
+    },
+    {
+      "id": "S3a",
+      "kind": "state",
+      "file": "state/S3a.json",
+      "testId": "S3",
+      "normative": true
+    },
+    {
+      "id": "S3b",
+      "kind": "state",
+      "file": "state/S3b.json",
+      "testId": "S3",
+      "normative": true
+    },
+    {
+      "id": "S3c",
+      "kind": "state",
+      "file": "state/S3c.json",
+      "testId": "S3",
+      "normative": true
+    },
+    {
+      "id": "S3d",
+      "kind": "state",
+      "file": "state/S3d.json",
+      "testId": "S3",
+      "normative": true
+    },
+    {
+      "id": "S4a",
+      "kind": "state",
+      "file": "state/S4a.json",
+      "testId": "S4",
+      "normative": true
+    },
+    {
+      "id": "S4b",
+      "kind": "state",
+      "file": "state/S4b.json",
+      "testId": "S4",
+      "normative": true
+    },
+    {
+      "id": "S9d",
+      "kind": "state",
+      "file": "state/S9d.json",
+      "testId": "S9",
+      "normative": true
+    }
+  ]
+}

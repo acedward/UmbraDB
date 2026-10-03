@@ -1,0 +1,28 @@
+{
+  "name": "@mip0018/codec",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Dependency-free MIP-0018 TokenMetadata codec: encode, decode, validate and classify Misc events.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./internal": "./src/internal.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@mip0018/vectors": "0.1.0",
+    "@types/node": "24.19.1",
+    "typescript": "6.0.3",
+    "vitest": "5.0.3"
+  }
+}

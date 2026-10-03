@@ -1,5 +1,5 @@
 {
-  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 25) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
+  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 36) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
   "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` — those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early — that would re-open the exact self-skip hole this manifest closes.",
   "required": [
     {
@@ -166,6 +166,61 @@
       "id": "archive.ledger.stagenet-decode",
       "file": "test/integration/stagenet-ledger-decode.test.ts",
       "description": "00026 A2 (FR-005, Q13): the pinned ledger-v9 decodes every recorded 00013 Stagenet case transaction (hash, actions, mint effects) and rawTokenType reproduces the IDX/U1 colors."
+    },
+    {
+      "id": "mip0018.vendor.provenance",
+      "file": "token-indexer/test/mip0018-provenance.test.ts",
+      "description": "Project 00026 B1: every vendored MIP-0018 reference file (codec, vectors, runner; daec1f1) equals its SHA-256 in token-indexer/vendor/mip0018/SOURCE.md; a modified, missing or unlisted file fails (spec FR-011)."
+    },
+    {
+      "id": "mip0018.vendor.vector-sums",
+      "file": "token-indexer/test/mip0018-provenance.test.ts",
+      "description": "Project 00026 B1: the vendored MIP-0018 vectors pass their own SHA256SUMS, as the runner checks before a run."
+    },
+    {
+      "id": "mip0018.schema.fresh-lineage",
+      "file": "token-indexer/test/mip0018-schema.test.ts",
+      "description": "Project 00026 B1: the mip0018 migration lineage creates exactly mip0018_events and mip0018_fields (no history tables, Q5/Q7) and re-running is a no-op."
+    },
+    {
+      "id": "mip0018.schema.bytes",
+      "file": "token-indexer/test/mip0018-schema.test.ts",
+      "description": "Project 00026 B1: keys and values are exact bytea (NUL and non-UTF-8 keys) and a 31-byte unsigned integer is lossless (FR-014)."
+    },
+    {
+      "id": "mip0018.schema.constraints",
+      "file": "token-indexer/test/mip0018-schema.test.ts",
+      "description": "Project 00026 B1: the schema refuses stored tombstones, kinds outside 1-3, unsized integers and accepted events without a header."
+    },
+    {
+      "id": "mip0018.state.per-key-tombstone",
+      "file": "token-indexer/test/mip0018-state.test.ts",
+      "description": "Project 00026 B1: per-key tombstones (MIP 274a84f, Q16): a Null deletes only its key, a Null for a missing key is a no-op, deleting every key leaves the identity absent from listings, lookups, groups and display, a later record revives only that field."
+    },
+    {
+      "id": "mip0018.state.marks",
+      "file": "token-indexer/test/mip0018-state.test.ts",
+      "description": "Project 00026 B1: the Q14 mark function (ok / partial / incorrect with reasons / none, usable standards as tags)."
+    },
+    {
+      "id": "mip0018.vectors.pure-adapter",
+      "file": "token-indexer/test/mip0018-vectors.test.ts",
+      "description": "Project 00026 B1 (SC-001, pure adapter): 59/59 reference normative + 43/43 informative vendored vectors and UmbraDB's 8 own versions (S1a, S3a-S3d, S4a/S4b, S9d; MIP 274a84f) pass through the vendored runner core."
+    },
+    {
+      "id": "mip0018.vectors.own-versions-needed",
+      "file": "token-indexer/test/mip0018-vectors.test.ts",
+      "description": "Project 00026 B1: the vendored 78ecbb4 versions of exactly S3a, S3b, S3c, S3d, S4b, S9d fail under per-key tombstones (why UmbraDB runs its own versions)."
+    },
+    {
+      "id": "mip0018.vectors.own-integrity",
+      "file": "token-indexer/test/mip0018-vectors.test.ts",
+      "description": "Project 00026 B1: UmbraDB's own vectors match their SHA256SUMS and their generator's --check."
+    },
+    {
+      "id": "mip0018.vectors.runner-cli",
+      "file": "token-indexer/test/mip0018-vectors.test.ts",
+      "description": "Project 00026 B1: the vendored runner CLI drives the pure adapter process over both vector sets and exits 0."
     }
   ],
   "deferred": [

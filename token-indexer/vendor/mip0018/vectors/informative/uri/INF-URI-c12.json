@@ -1,0 +1,34 @@
+{
+  "id": "INF-URI-c12",
+  "mip": {
+    "commit": "78ecbb4b1ba57371e84fe45f705991ab7b996a61",
+    "testId": "INF-URI"
+  },
+  "normative": false,
+  "description": "URI (valType 4) value \"HTTPS://ACME.EXAMPLE/\": accepted under the RFC 3986 URI rule (scheme required, fragment allowed, ASCII only).",
+  "basis": "Owner ruling Q20 (follow ERC-721: RFC 3986 `URI`), MIP-0018 Value types. Verdict = strict RFC 3986 grammar (investigation/rfc3986.mjs) = Python rfc3987 rule URI (investigation/py.json); they agree on 26/26.",
+  "event": {
+    "type": "Misc",
+    "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+    "payload_hex": "11111111111111111111111111111111111111111111111111111111111111110303757269041548545450533a2f2f41434d452e4558414d504c452f00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "payload_file": "INF-URI-c12.bin"
+  },
+  "expect": {
+    "result": "accept",
+    "header": {
+      "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+      "kind": 3
+    },
+    "records": [
+      {
+        "offset": 33,
+        "key_hex": "757269",
+        "key_text": "uri",
+        "valType": 4,
+        "value_hex": "48545450533a2f2f41434d452e4558414d504c452f",
+        "value_text": "HTTPS://ACME.EXAMPLE/"
+      }
+    ],
+    "contentEnd": 60
+  }
+}

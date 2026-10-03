@@ -1,0 +1,870 @@
+{
+  "format": "mip0018-vectors/1",
+  "mip": {
+    "id": "MIP-0018",
+    "repository": "midnightntwrk/midnight-improvement-proposals",
+    "commit": "78ecbb4b1ba57371e84fe45f705991ab7b996a61",
+    "path": "mips/mip-0018-on-chain-token-metadata.md",
+    "sha256": "b9092746ecf5660496535688a2dea152eb23d932b6eeb6b5a182c23426eec1a1",
+    "url": "https://github.com/midnightntwrk/midnight-improvement-proposals/blob/78ecbb4b1ba57371e84fe45f705991ab7b996a61/mips/mip-0018-on-chain-token-metadata.md",
+    "pr": "https://github.com/midnightntwrk/midnight-improvement-proposals/pull/340"
+  },
+  "eventName": {
+    "text": "mip-0018:token-metadata[v1]",
+    "hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000"
+  },
+  "generator": "vectors/tools/generate.ts",
+  "counts": {
+    "normative-payload": 40,
+    "normative-state": 27,
+    "informative-payload": 34,
+    "informative-state": 9,
+    "total": 110
+  },
+  "vectors": [
+    {
+      "id": "A1",
+      "kind": "payload",
+      "file": "payload/A1.json",
+      "bin": "payload/A1.bin",
+      "testId": "A1",
+      "normative": true
+    },
+    {
+      "id": "A2a",
+      "kind": "payload",
+      "file": "payload/A2a.json",
+      "bin": "payload/A2a.bin",
+      "testId": "A2",
+      "normative": true
+    },
+    {
+      "id": "A2b",
+      "kind": "payload",
+      "file": "payload/A2b.json",
+      "bin": "payload/A2b.bin",
+      "testId": "A2",
+      "normative": true
+    },
+    {
+      "id": "A3a",
+      "kind": "payload",
+      "file": "payload/A3a.json",
+      "bin": "payload/A3a.bin",
+      "testId": "A3",
+      "normative": true
+    },
+    {
+      "id": "A3b",
+      "kind": "payload",
+      "file": "payload/A3b.json",
+      "bin": "payload/A3b.bin",
+      "testId": "A3",
+      "normative": true
+    },
+    {
+      "id": "A3c",
+      "kind": "payload",
+      "file": "payload/A3c.json",
+      "bin": "payload/A3c.bin",
+      "testId": "A3",
+      "normative": true
+    },
+    {
+      "id": "A4a",
+      "kind": "payload",
+      "file": "payload/A4a.json",
+      "bin": "payload/A4a.bin",
+      "testId": "A4",
+      "normative": true
+    },
+    {
+      "id": "A4b",
+      "kind": "payload",
+      "file": "payload/A4b.json",
+      "bin": "payload/A4b.bin",
+      "testId": "A4",
+      "normative": true
+    },
+    {
+      "id": "A5a",
+      "kind": "payload",
+      "file": "payload/A5a.json",
+      "bin": "payload/A5a.bin",
+      "testId": "A5",
+      "normative": true
+    },
+    {
+      "id": "A5b",
+      "kind": "payload",
+      "file": "payload/A5b.json",
+      "bin": "payload/A5b.bin",
+      "testId": "A5",
+      "normative": true
+    },
+    {
+      "id": "A5c",
+      "kind": "payload",
+      "file": "payload/A5c.json",
+      "bin": "payload/A5c.bin",
+      "testId": "A5",
+      "normative": true
+    },
+    {
+      "id": "R1",
+      "kind": "payload",
+      "file": "payload/R1.json",
+      "bin": "payload/R1.bin",
+      "testId": "R1",
+      "normative": true
+    },
+    {
+      "id": "R2a",
+      "kind": "payload",
+      "file": "payload/R2a.json",
+      "bin": "payload/R2a.bin",
+      "testId": "R2",
+      "normative": true
+    },
+    {
+      "id": "R2b",
+      "kind": "payload",
+      "file": "payload/R2b.json",
+      "bin": "payload/R2b.bin",
+      "testId": "R2",
+      "normative": true
+    },
+    {
+      "id": "R2c",
+      "kind": "payload",
+      "file": "payload/R2c.json",
+      "bin": "payload/R2c.bin",
+      "testId": "R2",
+      "normative": true
+    },
+    {
+      "id": "R2d",
+      "kind": "payload",
+      "file": "payload/R2d.json",
+      "bin": "payload/R2d.bin",
+      "testId": "R2",
+      "normative": true
+    },
+    {
+      "id": "R2e",
+      "kind": "payload",
+      "file": "payload/R2e.json",
+      "bin": "payload/R2e.bin",
+      "testId": "R2",
+      "normative": true
+    },
+    {
+      "id": "R2f",
+      "kind": "payload",
+      "file": "payload/R2f.json",
+      "bin": "payload/R2f.bin",
+      "testId": "R2",
+      "normative": true
+    },
+    {
+      "id": "R3a",
+      "kind": "payload",
+      "file": "payload/R3a.json",
+      "bin": "payload/R3a.bin",
+      "testId": "R3",
+      "normative": true
+    },
+    {
+      "id": "R3b",
+      "kind": "payload",
+      "file": "payload/R3b.json",
+      "bin": "payload/R3b.bin",
+      "testId": "R3",
+      "normative": true
+    },
+    {
+      "id": "R4a",
+      "kind": "payload",
+      "file": "payload/R4a.json",
+      "bin": "payload/R4a.bin",
+      "testId": "R4",
+      "normative": true
+    },
+    {
+      "id": "R4b",
+      "kind": "payload",
+      "file": "payload/R4b.json",
+      "bin": "payload/R4b.bin",
+      "testId": "R4",
+      "normative": true
+    },
+    {
+      "id": "R4c",
+      "kind": "payload",
+      "file": "payload/R4c.json",
+      "bin": "payload/R4c.bin",
+      "testId": "R4",
+      "normative": true
+    },
+    {
+      "id": "R4d",
+      "kind": "payload",
+      "file": "payload/R4d.json",
+      "bin": "payload/R4d.bin",
+      "testId": "R4",
+      "normative": true
+    },
+    {
+      "id": "R4e",
+      "kind": "payload",
+      "file": "payload/R4e.json",
+      "bin": "payload/R4e.bin",
+      "testId": "R4",
+      "normative": true
+    },
+    {
+      "id": "R5a",
+      "kind": "payload",
+      "file": "payload/R5a.json",
+      "bin": "payload/R5a.bin",
+      "testId": "R5",
+      "normative": true
+    },
+    {
+      "id": "R5b",
+      "kind": "payload",
+      "file": "payload/R5b.json",
+      "bin": "payload/R5b.bin",
+      "testId": "R5",
+      "normative": true
+    },
+    {
+      "id": "R5c",
+      "kind": "payload",
+      "file": "payload/R5c.json",
+      "bin": "payload/R5c.bin",
+      "testId": "R5",
+      "normative": true
+    },
+    {
+      "id": "R5d",
+      "kind": "payload",
+      "file": "payload/R5d.json",
+      "bin": "payload/R5d.bin",
+      "testId": "R5",
+      "normative": true
+    },
+    {
+      "id": "R5e",
+      "kind": "payload",
+      "file": "payload/R5e.json",
+      "bin": "payload/R5e.bin",
+      "testId": "R5",
+      "normative": true
+    },
+    {
+      "id": "R5f",
+      "kind": "payload",
+      "file": "payload/R5f.json",
+      "bin": "payload/R5f.bin",
+      "testId": "R5",
+      "normative": true
+    },
+    {
+      "id": "R5g",
+      "kind": "payload",
+      "file": "payload/R5g.json",
+      "bin": "payload/R5g.bin",
+      "testId": "R5",
+      "normative": true
+    },
+    {
+      "id": "R5h",
+      "kind": "payload",
+      "file": "payload/R5h.json",
+      "bin": "payload/R5h.bin",
+      "testId": "R5",
+      "normative": true
+    },
+    {
+      "id": "R6a",
+      "kind": "payload",
+      "file": "payload/R6a.json",
+      "bin": "payload/R6a.bin",
+      "testId": "R6",
+      "normative": true
+    },
+    {
+      "id": "R6b",
+      "kind": "payload",
+      "file": "payload/R6b.json",
+      "bin": "payload/R6b.bin",
+      "testId": "R6",
+      "normative": true
+    },
+    {
+      "id": "I1a",
+      "kind": "payload",
+      "file": "payload/I1a.json",
+      "bin": "payload/I1a.bin",
+      "testId": "IGNORE",
+      "normative": true
+    },
+    {
+      "id": "I1b",
+      "kind": "payload",
+      "file": "payload/I1b.json",
+      "bin": "payload/I1b.bin",
+      "testId": "IGNORE",
+      "normative": true
+    },
+    {
+      "id": "I2a",
+      "kind": "payload",
+      "file": "payload/I2a.json",
+      "bin": "payload/I2a.bin",
+      "testId": "IGNORE",
+      "normative": true
+    },
+    {
+      "id": "I2b",
+      "kind": "payload",
+      "file": "payload/I2b.json",
+      "bin": "payload/I2b.bin",
+      "testId": "IGNORE",
+      "normative": true
+    },
+    {
+      "id": "I3",
+      "kind": "payload",
+      "file": "payload/I3.json",
+      "bin": "payload/I3.bin",
+      "testId": "IGNORE",
+      "normative": true
+    },
+    {
+      "id": "A3a-state",
+      "kind": "state",
+      "file": "state/A3a-state.json",
+      "testId": "A3",
+      "normative": true
+    },
+    {
+      "id": "A4b-state",
+      "kind": "state",
+      "file": "state/A4b-state.json",
+      "testId": "A4",
+      "normative": true
+    },
+    {
+      "id": "A5a-state",
+      "kind": "state",
+      "file": "state/A5a-state.json",
+      "testId": "A5",
+      "normative": true
+    },
+    {
+      "id": "A5b-state",
+      "kind": "state",
+      "file": "state/A5b-state.json",
+      "testId": "A5",
+      "normative": true
+    },
+    {
+      "id": "A5c-state",
+      "kind": "state",
+      "file": "state/A5c-state.json",
+      "testId": "A5",
+      "normative": true
+    },
+    {
+      "id": "S1a",
+      "kind": "state",
+      "file": "state/S1a.json",
+      "testId": "S1",
+      "normative": true
+    },
+    {
+      "id": "S1b",
+      "kind": "state",
+      "file": "state/S1b.json",
+      "testId": "S1",
+      "normative": true
+    },
+    {
+      "id": "S2a",
+      "kind": "state",
+      "file": "state/S2a.json",
+      "testId": "S2",
+      "normative": true
+    },
+    {
+      "id": "S2b",
+      "kind": "state",
+      "file": "state/S2b.json",
+      "testId": "S2",
+      "normative": true
+    },
+    {
+      "id": "S3a",
+      "kind": "state",
+      "file": "state/S3a.json",
+      "testId": "S3",
+      "normative": true
+    },
+    {
+      "id": "S3b",
+      "kind": "state",
+      "file": "state/S3b.json",
+      "testId": "S3",
+      "normative": true
+    },
+    {
+      "id": "S3c",
+      "kind": "state",
+      "file": "state/S3c.json",
+      "testId": "S3",
+      "normative": true
+    },
+    {
+      "id": "S3d",
+      "kind": "state",
+      "file": "state/S3d.json",
+      "testId": "S3",
+      "normative": true
+    },
+    {
+      "id": "S4a",
+      "kind": "state",
+      "file": "state/S4a.json",
+      "testId": "S4",
+      "normative": true
+    },
+    {
+      "id": "S4b",
+      "kind": "state",
+      "file": "state/S4b.json",
+      "testId": "S4",
+      "normative": true
+    },
+    {
+      "id": "S5a",
+      "kind": "state",
+      "file": "state/S5a.json",
+      "testId": "S5",
+      "normative": true
+    },
+    {
+      "id": "S5b",
+      "kind": "state",
+      "file": "state/S5b.json",
+      "testId": "S5",
+      "normative": true
+    },
+    {
+      "id": "S5c",
+      "kind": "state",
+      "file": "state/S5c.json",
+      "testId": "S5",
+      "normative": true
+    },
+    {
+      "id": "S6a",
+      "kind": "state",
+      "file": "state/S6a.json",
+      "testId": "S6",
+      "normative": true
+    },
+    {
+      "id": "S6b",
+      "kind": "state",
+      "file": "state/S6b.json",
+      "testId": "S6",
+      "normative": true
+    },
+    {
+      "id": "S7a",
+      "kind": "state",
+      "file": "state/S7a.json",
+      "testId": "S7",
+      "normative": true
+    },
+    {
+      "id": "S7b",
+      "kind": "state",
+      "file": "state/S7b.json",
+      "testId": "S7",
+      "normative": true
+    },
+    {
+      "id": "S8",
+      "kind": "state",
+      "file": "state/S8.json",
+      "testId": "S8",
+      "normative": true
+    },
+    {
+      "id": "S9a",
+      "kind": "state",
+      "file": "state/S9a.json",
+      "testId": "S9",
+      "normative": true
+    },
+    {
+      "id": "S9b",
+      "kind": "state",
+      "file": "state/S9b.json",
+      "testId": "S9",
+      "normative": true
+    },
+    {
+      "id": "S9c",
+      "kind": "state",
+      "file": "state/S9c.json",
+      "testId": "S9",
+      "normative": true
+    },
+    {
+      "id": "S9d",
+      "kind": "state",
+      "file": "state/S9d.json",
+      "testId": "S9",
+      "normative": true
+    },
+    {
+      "id": "INF-URI-c01",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c01.json",
+      "bin": "informative/uri/INF-URI-c01.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c02",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c02.json",
+      "bin": "informative/uri/INF-URI-c02.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c03",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c03.json",
+      "bin": "informative/uri/INF-URI-c03.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c04",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c04.json",
+      "bin": "informative/uri/INF-URI-c04.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c05",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c05.json",
+      "bin": "informative/uri/INF-URI-c05.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c06",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c06.json",
+      "bin": "informative/uri/INF-URI-c06.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c07",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c07.json",
+      "bin": "informative/uri/INF-URI-c07.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c08",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c08.json",
+      "bin": "informative/uri/INF-URI-c08.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c09",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c09.json",
+      "bin": "informative/uri/INF-URI-c09.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c10",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c10.json",
+      "bin": "informative/uri/INF-URI-c10.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c11",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c11.json",
+      "bin": "informative/uri/INF-URI-c11.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c12",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c12.json",
+      "bin": "informative/uri/INF-URI-c12.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c13",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c13.json",
+      "bin": "informative/uri/INF-URI-c13.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c14",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c14.json",
+      "bin": "informative/uri/INF-URI-c14.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c15",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c15.json",
+      "bin": "informative/uri/INF-URI-c15.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c16",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c16.json",
+      "bin": "informative/uri/INF-URI-c16.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c17",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c17.json",
+      "bin": "informative/uri/INF-URI-c17.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c18",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c18.json",
+      "bin": "informative/uri/INF-URI-c18.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c19",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c19.json",
+      "bin": "informative/uri/INF-URI-c19.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c20",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c20.json",
+      "bin": "informative/uri/INF-URI-c20.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c21",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c21.json",
+      "bin": "informative/uri/INF-URI-c21.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c22",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c22.json",
+      "bin": "informative/uri/INF-URI-c22.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c23",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c23.json",
+      "bin": "informative/uri/INF-URI-c23.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c24",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c24.json",
+      "bin": "informative/uri/INF-URI-c24.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c25",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c25.json",
+      "bin": "informative/uri/INF-URI-c25.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-URI-c26",
+      "kind": "payload",
+      "file": "informative/uri/INF-URI-c26.json",
+      "bin": "informative/uri/INF-URI-c26.bin",
+      "testId": "INF-URI",
+      "normative": false
+    },
+    {
+      "id": "INF-STD-1",
+      "kind": "state",
+      "file": "informative/state/INF-STD-1.json",
+      "testId": "INF-STANDARDS",
+      "normative": false
+    },
+    {
+      "id": "INF-STD-2",
+      "kind": "state",
+      "file": "informative/state/INF-STD-2.json",
+      "testId": "INF-STANDARDS",
+      "normative": false
+    },
+    {
+      "id": "INF-STD-3",
+      "kind": "state",
+      "file": "informative/state/INF-STD-3.json",
+      "testId": "INF-STANDARDS",
+      "normative": false
+    },
+    {
+      "id": "INF-STD-4",
+      "kind": "state",
+      "file": "informative/state/INF-STD-4.json",
+      "testId": "INF-STANDARDS",
+      "normative": false
+    },
+    {
+      "id": "INF-STD-5",
+      "kind": "state",
+      "file": "informative/state/INF-STD-5.json",
+      "testId": "INF-STANDARDS",
+      "normative": false
+    },
+    {
+      "id": "INF-STD-6",
+      "kind": "state",
+      "file": "informative/state/INF-STD-6.json",
+      "testId": "INF-STANDARDS",
+      "normative": false
+    },
+    {
+      "id": "INF-STD-7",
+      "kind": "state",
+      "file": "informative/state/INF-STD-7.json",
+      "testId": "INF-STANDARDS",
+      "normative": false
+    },
+    {
+      "id": "INF-COMMON-1",
+      "kind": "state",
+      "file": "informative/state/INF-COMMON-1.json",
+      "testId": "INF-COMMON",
+      "normative": false
+    },
+    {
+      "id": "INF-ZEXT-1",
+      "kind": "payload",
+      "file": "informative/zero-extension/INF-ZEXT-1.json",
+      "bin": "informative/zero-extension/INF-ZEXT-1.bin",
+      "testId": "INF-ZEXT",
+      "normative": false
+    },
+    {
+      "id": "INF-ZEXT-2",
+      "kind": "payload",
+      "file": "informative/zero-extension/INF-ZEXT-2.json",
+      "bin": "informative/zero-extension/INF-ZEXT-2.bin",
+      "testId": "INF-ZEXT",
+      "normative": false
+    },
+    {
+      "id": "INF-ZEXT-3",
+      "kind": "payload",
+      "file": "informative/zero-extension/INF-ZEXT-3.json",
+      "bin": "informative/zero-extension/INF-ZEXT-3.bin",
+      "testId": "INF-ZEXT",
+      "normative": false
+    },
+    {
+      "id": "INF-ZEXT-4",
+      "kind": "payload",
+      "file": "informative/zero-extension/INF-ZEXT-4.json",
+      "bin": "informative/zero-extension/INF-ZEXT-4.bin",
+      "testId": "INF-ZEXT",
+      "normative": false
+    },
+    {
+      "id": "INF-ZEXT-5",
+      "kind": "payload",
+      "file": "informative/zero-extension/INF-ZEXT-5.json",
+      "bin": "informative/zero-extension/INF-ZEXT-5.bin",
+      "testId": "INF-ZEXT",
+      "normative": false
+    },
+    {
+      "id": "INF-ZEXT-6",
+      "kind": "payload",
+      "file": "informative/zero-extension/INF-ZEXT-6.json",
+      "bin": "informative/zero-extension/INF-ZEXT-6.bin",
+      "testId": "INF-ZEXT",
+      "normative": false
+    },
+    {
+      "id": "INF-ZEXT-7",
+      "kind": "payload",
+      "file": "informative/zero-extension/INF-ZEXT-7.json",
+      "bin": "informative/zero-extension/INF-ZEXT-7.bin",
+      "testId": "INF-ZEXT",
+      "normative": false
+    },
+    {
+      "id": "INF-ZEXT-8",
+      "kind": "payload",
+      "file": "informative/zero-extension/INF-ZEXT-8.json",
+      "bin": "informative/zero-extension/INF-ZEXT-8.bin",
+      "testId": "INF-ZEXT",
+      "normative": false
+    },
+    {
+      "id": "INF-ZEXT-S1",
+      "kind": "state",
+      "file": "informative/zero-extension/INF-ZEXT-S1.json",
+      "testId": "INF-ZEXT",
+      "normative": false
+    }
+  ]
+}
