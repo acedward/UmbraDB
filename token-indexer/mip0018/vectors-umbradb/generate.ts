@@ -115,6 +115,20 @@ const KIND3_UNCHANGED = identity(3, [
   textField("standards", "mip-0004", true),
 ]);
 const KIND1_WITHOUT_NAME = identity(1, [textField("symbol", "GLD", true), uintField("decimals", 6, true), textField("standards", "mip-0011", true)]);
+/**
+ * MIP S9 ("Kinds 1 and 3 of one contract with symbol = "ACME" form one group"): while kinds 1 and 3 both carry the
+ * usable symbol "GLD", they are one group (final-audit N2). When kind 1 has no fields (S3c, S3d — whose kind 1 has no
+ * symbol —, S4b) there is no group of two or more; the vendored comparer cannot compare an empty group list without
+ * marking it not applicable, so those three state the absence through their identities and the vector test asserts
+ * the adapter's empty group list directly.
+ */
+const GLD_GROUP = {
+  network: NET,
+  contractAddress: A,
+  symbol_hex: utf8Hex("GLD"),
+  symbol_text: "GLD",
+  members: [{ domainSep: DS1, kind: 1 }, { domainSep: DS1, kind: 3 }],
+};
 
 function vector(id: string, testId: string, description: string, steps: Json[], expect: Json): Json {
   return { id, mip: { commit: MIP.commit, testId }, normative: true, description, basis: BASIS, steps, expect };
@@ -172,9 +186,9 @@ function build(): Map<string, Json> {
     vector(
       "S3a",
       "S3",
-      'Tombstone (MIP 274a84f S3): name/symbol/decimals/standards for kinds 1 and 3 under one domainSep (block 1), then a Null record at key "name" for kind 1 (block 2): kind 1 keeps symbol, decimals and standards and has no name; kind 3 is unchanged.',
+      'Tombstone (MIP 274a84f S3): name/symbol/decimals/standards for kinds 1 and 3 under one domainSep (block 1), then a Null record at key "name" for kind 1 (block 2): kind 1 keeps symbol, decimals and standards and has no name; kind 3 is unchanged; kinds 1 and 3 share the usable symbol "GLD" and form one group (S9).',
       [PUBLISH_1, PUBLISH_3, NULL_NAME_1],
-      { identities: [KIND1_WITHOUT_NAME, KIND3_UNCHANGED] },
+      { identities: [KIND1_WITHOUT_NAME, KIND3_UNCHANGED], groups: [GLD_GROUP] },
     ),
   );
   v.set(
@@ -184,7 +198,7 @@ function build(): Map<string, Json> {
       "S3",
       'Tombstone (MIP 274a84f S3): after S3a, a second Null at "name" (block 3) and a Null at a key with no value, "retire" (block 4), change nothing.',
       [PUBLISH_1, PUBLISH_3, NULL_NAME_1, NULL_NAME_AGAIN_1, NULL_RETIRE_1],
-      { identities: [KIND1_WITHOUT_NAME, KIND3_UNCHANGED] },
+      { identities: [KIND1_WITHOUT_NAME, KIND3_UNCHANGED], groups: [GLD_GROUP] },
     ),
   );
   v.set(
@@ -212,9 +226,9 @@ function build(): Map<string, Json> {
     vector(
       "S4a",
       "S4",
-      "Reorganization (MIP 274a84f S4): S3c, then the block that deleted kind 1's last fields (block 5) is removed: those fields (symbol, decimals, standards) are restored; name stays deleted (its Null is in block 2).",
+      "Reorganization (MIP 274a84f S4): S3c, then the block that deleted kind 1's last fields (block 5) is removed: those fields (symbol, decimals, standards) are restored; name stays deleted (its Null is in block 2); kinds 1 and 3 form the 'GLD' group again (S9).",
       [PUBLISH_1, PUBLISH_3, NULL_NAME_1, NULL_NAME_AGAIN_1, NULL_RETIRE_1, NULL_REST_1, { op: "rollback", network: NET, toBlock: 4 }],
-      { identities: [KIND1_WITHOUT_NAME, KIND3_UNCHANGED] },
+      { identities: [KIND1_WITHOUT_NAME, KIND3_UNCHANGED], groups: [GLD_GROUP] },
     ),
   );
   v.set(

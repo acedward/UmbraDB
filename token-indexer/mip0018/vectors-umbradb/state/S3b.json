@@ -131,6 +131,24 @@
           }
         }
       }
+    ],
+    "groups": [
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "symbol_hex": "474c44",
+        "symbol_text": "GLD",
+        "members": [
+          {
+            "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+            "kind": 1
+          },
+          {
+            "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+            "kind": 3
+          }
+        ]
+      }
     ]
   }
 }

@@ -5,7 +5,7 @@
     "testId": "S4"
   },
   "normative": true,
-  "description": "Reorganization (MIP 274a84f S4): S3c, then the block that deleted kind 1's last fields (block 5) is removed: those fields (symbol, decimals, standards) are restored; name stays deleted (its Null is in block 2).",
+  "description": "Reorganization (MIP 274a84f S4): S3c, then the block that deleted kind 1's last fields (block 5) is removed: those fields (symbol, decimals, standards) are restored; name stays deleted (its Null is in block 2); kinds 1 and 3 form the 'GLD' group again (S9).",
   "basis": "UmbraDB's own version (project 00026, owner decisions Q16/Q17, executor decision Q18): written from the Testing text of MIP-0018 PR #340 head 274a84f (per-key tombstones) because the vendored reference vector of the same id implements 78ecbb4 (whole-identity tombstones).",
   "steps": [
     {
@@ -146,6 +146,24 @@
             "usable": true
           }
         }
+      }
+    ],
+    "groups": [
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "symbol_hex": "474c44",
+        "symbol_text": "GLD",
+        "members": [
+          {
+            "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+            "kind": 1
+          },
+          {
+            "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+            "kind": 3
+          }
+        ]
       }
     ]
   }
