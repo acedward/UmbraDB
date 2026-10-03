@@ -1,15 +1,17 @@
-import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { fileURLToPath } from "node:url";
 import type { IndexerBlock } from "../../../../chain-archive-sync/indexer-client.js";
 import type { SubstrateBlock } from "../../../../chain-archive-sync/node-rpc-client.js";
+import { type ContractEventsPair, loadTapeByName } from "./stagenet-fixtures.js";
 
 /**
  * Serves a recorded Stagenet archive tape (`record-tape.ts`) back over real HTTP, on 127.0.0.1 and
  * an ephemeral port, as a Substrate JSON-RPC node (`POST /rpc`) and a Midnight indexer GraphQL
  * endpoint (`POST /graphql`) -- exactly the calls `ChainArchiveSyncService` makes, so the sync and
  * the CLI run unchanged against recorded data (project 00026, Q11: CI replays fixtures, no network).
+ *
+ * Also answers `chain_getBlockHash(0)` with the tape's genesis hash and, when given the recorded
+ * `contractEvents` pairs, the indexer's `contractEvents` query (sub-plan D1).
  *
  * Test seams: per-height indexer overrides (synthetic transaction outcomes on real bytes), a
  * per-response delay (to kill a CLI mid-range), throttling injection (429/403/5xx with
@@ -30,9 +32,10 @@ export interface ArchiveTape {
   blocks: TapeBlock[];
 }
 
+/** A tape of this folder by file name: a plain A2 tape, a compact range tape, or one of the
+ *  manifest's aliases (a slice of the recorded ranges; see `stagenet-fixtures.ts`). */
 export function loadTape(fileName: string): ArchiveTape {
-  const path = fileURLToPath(new URL(`./${fileName}`, import.meta.url));
-  return JSON.parse(readFileSync(path, "utf8")) as ArchiveTape;
+  return loadTapeByName(fileName);
 }
 
 export interface Throttle {
@@ -54,6 +57,10 @@ export interface FakeChainOptions {
   /** Milliseconds every response waits before being sent. */
   delayMs?: number;
   throttles?: Throttle[];
+  /** Recorded `contractEvents` answers (`loadContractEvents().pairs`); the indexer endpoint then
+   *  answers `contractEvents(filter: { contractAddress, transactionHash }, limit, offset)` from them,
+   *  in the recorded order. Without it every such query answers an empty list. */
+  contractEvents?: readonly ContractEventsPair[];
 }
 
 export interface FakeChain {
@@ -104,6 +111,7 @@ export async function startFakeChain(tape: ArchiveTape, opts: FakeChainOptions =
       }
       case "chain_getBlockHash": {
         const b = byHeight.get(params[0] as number);
+        if (b === undefined && params[0] === 0) return tape.genesisHash;
         return b === undefined ? null : b.blockHash;
       }
       case "chain_getHeader":
@@ -129,11 +137,20 @@ export async function startFakeChain(tape: ArchiveTape, opts: FakeChainOptions =
         return;
       }
       if (req.url === "/graphql") {
-        const height = (body.variables as { height?: number } | undefined)?.height;
-        const op = typeof height === "number" ? "indexer.block" : "indexer.tip";
+        const variables = (body.variables ?? {}) as { height?: number; filter?: Record<string, unknown>; limit?: number; offset?: number };
+        const height = variables.height;
+        const isEvents = String(body.query).includes("contractEvents");
+        const op = typeof height === "number" ? "indexer.block" : isEvents ? "indexer.contractEvents" : "indexer.tip";
         count(op);
         if (throttled(op, res)) return;
-        if (typeof height === "number") {
+        if (isEvents) {
+          const f = variables.filter ?? {};
+          const pair = opts.contractEvents?.find((p) =>
+            p.contractAddress === noPrefix(String(f.contractAddress ?? "")) && p.txHash === noPrefix(String(f.transactionHash ?? "")));
+          const offset = variables.offset ?? 0;
+          const events = (pair?.events ?? []).slice(offset, offset + (variables.limit ?? 500));
+          send(res, 200, { data: { contractEvents: events } });
+        } else if (typeof height === "number") {
           const block = opts.indexerOverrides?.get(height) ?? byHeight.get(height)?.indexerBlock ?? null;
           send(res, 200, { data: { block } });
         } else {

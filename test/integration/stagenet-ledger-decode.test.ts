@@ -12,8 +12,9 @@ import { loadTape } from "./fixtures/stagenet-archive/fake-chain-server.js";
  * reproduces exactly the colors the reference's IDX scan and the wallet observed. No
  * `@midnight-ntwrk/compact-runtime` is needed: the color comes from ledger-v9 itself.
  *
- * Fixtures: `fixtures/stagenet-archive/{c04-714637-714663,cases-sparse}.tape.json` (recorded with
- * `record-tape.ts`). The same tapes drive the archive sync tests.
+ * Fixtures: `loadTape("c04-714637-714663.tape.json")` and `loadTape("cases-sparse.tape.json")` --
+ * since D1 slices of the recorded IDX and U1 ranges (`fixtures/stagenet-archive/manifest.json`,
+ * aliases). The same tapes drive the archive sync tests.
  */
 
 const LEDGER_VERSION = "1.0.0-rc.3";

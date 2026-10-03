@@ -5,12 +5,14 @@ import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import type { IndexerBlock } from "../../chain-archive-sync/indexer-client.js";
 import { ChainArchiveSyncService, mapTransactionResult, SyncRangeError } from "../../chain-archive-sync/sync-service.js";
+import { dumpArchive } from "./fixtures/stagenet-archive/archive-digest.js";
 import { loadTape, startFakeChain, type FakeChain } from "./fixtures/stagenet-archive/fake-chain-server.js";
 
 /**
  * Project 00026, sub-plan A2 (spec FR-001, FR-002; US6): `--from/--to` ranges, the atomic per-block
  * checkpoint, kill-and-resume and the per-transaction outcomes -- against REAL Stagenet data
- * recorded once (`fixtures/stagenet-archive/c04-714637-714663.tape.json`, case C04 of the MIP-0018
+ * recorded once (`loadTape("c04-714637-714663.tape.json")`: since D1 a slice of the recorded IDX range
+ * `fixtures/stagenet-archive/stagenet-714485-715183.tape.json.br`; case C04 of the MIP-0018
  * reference: deploy, shielded mint, unshielded mint, ledger mint, publish) and served back over
  * HTTP by `fake-chain-server.ts`, into a real Postgres 17 (Testcontainers). No network.
  */
@@ -19,35 +21,6 @@ const NET = "stagenet";
 const FROM = 714637;
 const TO = 714663;
 const tape = loadTape("c04-714637-714663.tape.json");
-
-const hex = (b: Buffer | null): string | null => (b === null ? null : b.toString("hex"));
-
-/** Every archive table, every column except the wall-clock ones (`synced_at`, `created_at`,
- *  `updated_at`), in primary-key order -- what "byte-identical tables" means for a resumed run. */
-async function dumpArchive(sql: UmbraDBSql, schema: string): Promise<Record<string, unknown[]>> {
-  const s = sql(schema);
-  const blocks = await sql`
-    SELECT net, block_hash, height::text AS height, parent_hash, state_root, extrinsics_root, author,
-           header_blob_hash, body_blob_hash, is_canonical, status, finalized
-    FROM ${s}.blocks ORDER BY net, height, block_hash`;
-  const transactions = await sql`
-    SELECT net, tx_hash, block_height::text AS block_height, block_hash, position, kind, protocol_version,
-           result, segments, raw_blob_hash
-    FROM ${s}.transactions ORDER BY net, block_height, block_hash, tx_hash`;
-  const bridge = await sql`
-    SELECT net, block_height::text AS block_height, block_hash, observation_index, kind, raw_blob_hash
-    FROM ${s}.bridge_observations ORDER BY net, block_height, block_hash, observation_index`;
-  const blobs = await sql`SELECT hash, data, size_bytes FROM ${s}.chain_blobs ORDER BY hash`;
-  const roles = await sql`SELECT blob_hash, role FROM ${s}.chain_blob_roles ORDER BY blob_hash, role`;
-  const watermarks = await sql`SELECT kind, key, value FROM ${s}.watermarks ORDER BY kind, key`;
-  const vks = await sql`SELECT count(*)::int AS n FROM ${s}.verifier_key_observations`;
-  const norm = (rows: readonly Record<string, unknown>[]): unknown[] => rows.map((r) =>
-    Object.fromEntries(Object.entries(r).map(([k, v]) => [k, Buffer.isBuffer(v) ? hex(v) : v])));
-  return {
-    blocks: norm(blocks), transactions: norm(transactions), bridge_observations: norm(bridge),
-    chain_blobs: norm(blobs), chain_blob_roles: norm(roles), watermarks: norm(watermarks), verifier_key_observations: norm(vks),
-  };
-}
 
 describe("chain-archive-sync ranges, resume and transaction outcomes on recorded Stagenet (00026 A2)", () => {
   let container: StartedPostgreSqlContainer;
