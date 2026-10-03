@@ -291,7 +291,9 @@ transactions from before its withdrawal, the withdrawal itself and a Null-only e
 listed). A page costs what it serves: the color's own rows and its contract's listed metadata transactions are read by
 index range scans of at most `limit + 1` rows each; a withdrawn identity's metadata transactions are not in the
 scanned index at all (right after a withdrawal, until vacuum reclaims them, its deleted entries are skipped at about
-one index page per hundred). C03's token (abridged: hashes shortened, optional fields such as
+one index page per hundred). These reads run with sequential and bitmap scans disabled for their own statements, so
+the cost holds whatever the table statistics say (e.g. statistics taken while a withdrawal had left the listed events
+nearly empty). C03's token (abridged: hashes shortened, optional fields such as
 `phase`/`segment`/`direction` shown only where certain):
 
 ```json
@@ -332,7 +334,8 @@ activity row of a call repeats its entry point).
 A contract's metadata transactions — the activity of a kind-3 identity, which has no color: one `metadata-event` row
 per transaction with rejected MIP-0018 events of that contract or accepted ones of an identity's current description
 (counts and the first counted event's index; never values or the identity; the same rule as a color's activity;
-bounded by the page). Same paging and errors; 404 when the scan never saw the contract.
+bounded by the page, whatever the table statistics say). Same paging and errors; 404 when the scan never saw the
+contract.
 
 ```json
 { "contractAddress": "9d93b919…40e3",

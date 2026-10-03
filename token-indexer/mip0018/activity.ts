@@ -428,6 +428,37 @@ export function activityItem(network: string, r: DbActivityRow): ActivityItem {
   return item;
 }
 
+/**
+ * Runs a listing's statements with sequential and bitmap scans disabled, so that every table access is the index scan
+ * the statement is written for, whatever the planner's statistics say. Statistics taken while a table held almost no
+ * live rows on many pages — the listed events right after a withdrawal emptied them and (auto)vacuum analyzed the
+ * table — make the planner cost the refilled table as nearly empty; it then reads the whole table for every probe of
+ * the skip scan, even for a primary-key lookup, and no form of the query avoids that. The settings are
+ * transaction-local (`set_config(…, true)`): inside the caller's transaction they are reset before returning (a failed
+ * statement aborts that transaction, which resets them too); otherwise the statements run in their own read-only
+ * transaction.
+ */
+async function withIndexScans<T>(sql: Queryable, read: (q: Queryable) => Promise<T>): Promise<T> {
+  const disable = async (q: Queryable) =>
+    (await q<{ seq: string; bitmap: string }[]>`
+      SELECT p.seq, p.bitmap, set_config('enable_seqscan', 'off', true), set_config('enable_bitmapscan', 'off', true)
+      FROM (SELECT current_setting('enable_seqscan') AS seq, current_setting('enable_bitmapscan') AS bitmap OFFSET 0) p`)[0]!;
+  const handle = sql as unknown as {
+    savepoint?: unknown;
+    begin: (options: string, cb: (tx: Queryable) => Promise<T>) => Promise<T>;
+  };
+  if (typeof handle.savepoint !== "function") {
+    return handle.begin("read only", async (tx) => {
+      await disable(tx);
+      return read(tx);
+    });
+  }
+  const previous = await disable(sql);
+  const result = await read(sql);
+  await sql`SELECT set_config('enable_seqscan', ${previous.seq}, true), set_config('enable_bitmapscan', ${previous.bitmap}, true)`;
+  return result;
+}
+
 /** The stored columns of an activity row as a listing serves them (an entry point as its first bytes and its length). */
 function rowColumns(sql: Queryable) {
   return sql`
@@ -448,7 +479,7 @@ function rowColumns(sql: Queryable) {
  * with one probe; the transaction's stored `metadata-event` row and the counts of its
  * listed events are read by key. Events of withdrawn identities are not in the listed table at all, so hidden history
  * is never read, however long it is. The recursion is read lazily and yields the transactions in chain order (as the
- * token list's identity skip scan in `api-views.ts`), so `LIMIT n` ends it.
+ * token list's identity skip scan in `api-views.ts`), so `LIMIT n` ends it. Run through `withIndexScans`.
  */
 function metadataRows(
   sql: Queryable, schema: string, network: string, contract: Buffer, pos: readonly [string, number, number], order: "asc" | "desc", n: number,
@@ -479,6 +510,7 @@ function metadataRows(
       SELECT ${rowColumns(sql)} FROM ${s}.mip0018_activity a
       WHERE a.network = ${network} AND a.role = 'metadata-event' AND a.contract_address = ${contract}
         AND a.block_height = g.block_height AND a.tx_index = g.tx_index
+      ORDER BY a.item_index -- the key order of mip0018_activity_metadata_idx
       LIMIT 1 -- one row per (transaction, contract); the LIMIT also keeps this a lookup per transaction, never a join over all
     ) a
     CROSS JOIN LATERAL (
@@ -507,6 +539,8 @@ function page(network: string, rows: readonly DbActivityRow[], limit: number, su
  * description (a withdrawn identity's metadata transactions are not referenced, nor a revived identity's transactions
  * from before its last withdrawal). DUST has no color and therefore no activity. Bounded by the page: at most
  * `limit + 1` rows of each kind are read — the color's own rows by an ordered index range scan, the metadata transactions by `metadataRows` — then merged in chain order.
+ * The minting contract comes from the color's first mint (every mint of a color has the same contract). The
+ * statements run through `withIndexScans`.
  */
 export async function activityForColor(
   sql: Queryable, network: string, color: string, o: ActivityPageOptions = {}, schema = "mip0018",
@@ -516,25 +550,29 @@ export async function activityForColor(
   const subject = `c:${c.toString("hex")}`;
   const pos = o.cursor === undefined ? (order === "asc" ? MIN_POSITION : MAX_POSITION) : decodeCursor(o.cursor, subject, order);
   const [h, t, i] = pos;
-  const s = sql(schema);
-  const minted = await sql<{ contract_address: Buffer }[]>`
-    SELECT contract_address FROM ${s}.mip0018_mints WHERE network = ${network} AND color = ${c} LIMIT 1`;
-  const contract = minted[0]?.contract_address ?? null;
-  const own = order === "asc"
-    ? sql`
-        SELECT ${rowColumns(sql)}, a.events_accepted, a.events_rejected, a.first_event_index FROM ${s}.mip0018_activity a
-        WHERE a.network = ${network} AND a.color = ${c} AND (a.block_height, a.tx_index, a.item_index) > (${h}::bigint, ${t}::int, ${i}::int)
-        ORDER BY a.block_height, a.tx_index, a.item_index LIMIT ${limit + 1}`
-    : sql`
-        SELECT ${rowColumns(sql)}, a.events_accepted, a.events_rejected, a.first_event_index FROM ${s}.mip0018_activity a
-        WHERE a.network = ${network} AND a.color = ${c} AND (a.block_height, a.tx_index, a.item_index) < (${h}::bigint, ${t}::int, ${i}::int)
-        ORDER BY a.block_height DESC, a.tx_index DESC, a.item_index DESC LIMIT ${limit + 1}`;
-  const rows = contract === null
-    ? await sql<DbActivityRow[]>`${own}`
-    : await sql<DbActivityRow[]>`
-        SELECT * FROM ((${own}) UNION ALL (${metadataRows(sql, schema, network, contract, pos, order, limit + 1)})) u
-        ORDER BY ${order === "asc" ? sql`u.block_height, u.tx_index, u.item_index` : sql`u.block_height DESC, u.tx_index DESC, u.item_index DESC`}
-        LIMIT ${limit + 1}`;
+  const { contract, rows } = await withIndexScans(sql, async (q) => {
+    const s = q(schema);
+    const minted = await q<{ contract_address: Buffer }[]>`
+      SELECT contract_address FROM ${s}.mip0018_mints WHERE network = ${network} AND color = ${c}
+      ORDER BY block_height, tx_index, mint_index LIMIT 1`; // the key order of mip0018_mints_color_idx
+    const contract = minted[0]?.contract_address ?? null;
+    const own = order === "asc"
+      ? q`
+          SELECT ${rowColumns(q)}, a.events_accepted, a.events_rejected, a.first_event_index FROM ${s}.mip0018_activity a
+          WHERE a.network = ${network} AND a.color = ${c} AND (a.block_height, a.tx_index, a.item_index) > (${h}::bigint, ${t}::int, ${i}::int)
+          ORDER BY a.block_height, a.tx_index, a.item_index LIMIT ${limit + 1}`
+      : q`
+          SELECT ${rowColumns(q)}, a.events_accepted, a.events_rejected, a.first_event_index FROM ${s}.mip0018_activity a
+          WHERE a.network = ${network} AND a.color = ${c} AND (a.block_height, a.tx_index, a.item_index) < (${h}::bigint, ${t}::int, ${i}::int)
+          ORDER BY a.block_height DESC, a.tx_index DESC, a.item_index DESC LIMIT ${limit + 1}`;
+    const rows = contract === null
+      ? await q<DbActivityRow[]>`${own}`
+      : await q<DbActivityRow[]>`
+          SELECT * FROM ((${own}) UNION ALL (${metadataRows(q, schema, network, contract, pos, order, limit + 1)})) u
+          ORDER BY ${order === "asc" ? q`u.block_height, u.tx_index, u.item_index` : q`u.block_height DESC, u.tx_index DESC, u.item_index DESC`}
+          LIMIT ${limit + 1}`;
+    return { contract, rows };
+  });
   const p = page(network, rows, limit, subject, order);
   return contract === null ? p : { ...p, contract: contract.toString("hex") };
 }
@@ -543,7 +581,7 @@ export async function activityForColor(
  * A contract's metadata transactions in chain order (keyset pagination): one row per transaction with listed MIP-0018
  * events of that contract — rejected ones, or accepted ones of an identity's current description — what a kind-3
  * identity (no color) shows as its activity. Counts and the event-log reference only;
- * never decoded values. Bounded by the page (`metadataRows`).
+ * never decoded values. Bounded by the page (`metadataRows`, run through `withIndexScans`).
  */
 export async function metadataTransactionsForContract(
   sql: Queryable, network: string, contract: string, o: ActivityPageOptions = {}, schema = "mip0018",
@@ -552,6 +590,6 @@ export async function metadataTransactionsForContract(
   const { limit, order } = pageOptions(o);
   const subject = `m:${a.toString("hex")}`;
   const pos = o.cursor === undefined ? (order === "asc" ? MIN_POSITION : MAX_POSITION) : decodeCursor(o.cursor, subject, order);
-  const rows = await sql<DbActivityRow[]>`${metadataRows(sql, schema, network, a, pos, order, limit + 1)}`;
+  const rows = await withIndexScans(sql, (q) => q<DbActivityRow[]>`${metadataRows(q, schema, network, a, pos, order, limit + 1)}`);
   return page(network, rows, limit, subject, order);
 }
