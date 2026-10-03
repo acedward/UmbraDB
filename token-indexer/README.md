@@ -1,8 +1,5 @@
 # UmbraDB token indexer — MIP-0018 (final)
 
-> **Draft — finalized after sub-plan C merges** (project 00026, sub-plan D4). Items marked † (the API, `serve` and the
-> explorer page) come from sub-plan C and are not yet in this branch.
-
 The token indexer reads finalized Midnight blocks from UmbraDB's chain archive, finds every token minted or seen in
 public data, decodes MIP-0018 token-metadata events from the archived raw transactions, keeps each token's current
 metadata in Postgres, and serves it as a read-only JSON API and an explorer page.
@@ -44,7 +41,7 @@ Postgres schema mip0018            mints (color table), color sightings, contrac
    │                               one transaction per block
    │  read helpers: tokens.ts, metadata.ts, events.ts, activity.ts
    ▼
-read-only JSON API (api.ts) †  ──►  explorer page GET /ui (ui/) †
+read-only JSON API (api.ts)  ──►  explorer page GET /ui (ui/)
 ```
 
 Everything a block adds commits in one Postgres transaction with the scan cursor, so a kill at any point resumes
@@ -66,9 +63,9 @@ NODE_URL=https://rpc.stagenet.shielded.tools INDEXER_URL=https://indexer.stagene
 # 2a. Scan the archived range into the mip0018 schema (exits at --to or at the archive's end; resumable).
 node --import tsx token-indexer/mip0018/scan-cli.ts --network stagenet --from 714485 --to 715183
 
-# 2b. Or serve: the API plus the scan loop following the archive (default 127.0.0.1:10026)  †
+# 2b. Or serve: the API plus the scan loop following the archive (default 127.0.0.1:10026)
 node --import tsx token-indexer/mip0018/serve-cli.ts --network stagenet
-#     read-only replica: no scan, no migration                                                 †
+#     read-only replica: no scan, no migration
 node --import tsx token-indexer/mip0018/serve-cli.ts --network stagenet --api-only
 ```
 
@@ -76,13 +73,13 @@ node --import tsx token-indexer/mip0018/serve-cli.ts --network stagenet --api-on
   `--min-interval-ms`; `SYNC_BACKOFF_*`). Without `--to` it follows the finalized tip.
 - `scan-cli.ts`: `--from`, `--to`, `--max-blocks`, `--schema` (default `mip0018`), `--archive-schema` (default
   `chain_archive`). The scan stops with an error at a transaction it cannot decode (never skips it).
-- API: [API.md](API.md) † (endpoints, JSON shapes, errors, pagination). Explorer page: `GET /ui`,
-  [ui/README.md](mip0018/ui/README.md) †.
+- API: [API.md](API.md) (endpoints, JSON shapes, errors, pagination). Explorer page: `GET /ui`,
+  [ui/README.md](mip0018/ui/README.md).
 
 ## Tests and fixtures
 
 All tests run in the repository's required gate (`npm run test:conformance -- --maxWorkers=2`, Vitest +
-Testcontainers Postgres 17; the page's browser tests † need a Chromium — see the page README). No test touches the
+Testcontainers Postgres 17; the page's browser tests need a Chromium — see the page README). No test touches the
 network: Stagenet data comes from recorded fixtures.
 
 | What | Where |
@@ -92,7 +89,7 @@ network: Stagenet data comes from recorded fixtures.
 | The twelve Stagenet cases (C01–C10, IDX, U1) against the reference's expectations | `test/mip0018-metadata.test.ts`, `test/mip0018-cases.test.ts` (coverage table: project 00026 sub-plan D) |
 | Recorded live range = replay | `test/mip0018-live-range.test.ts` |
 | Conformance table and the no-network check | `test/mip0018-conformance.test.ts` |
-| API † and page † | `test/mip0018-api.test.ts`, `test/mip0018-ui-*.test.ts` |
+| API and page | `test/mip0018-api.test.ts`, `test/mip0018-ui-*.test.ts` |
 
 Fixtures:
 
@@ -125,7 +122,7 @@ files are never edited. The state rules are UmbraDB's own (`mip0018/state.ts`); 
 for an earlier pin of the MIP, so UmbraDB keeps its own `274a84f` versions of S1a, S3a–S3d, S4a/S4b and S9d in
 `mip0018/vectors-umbradb/` (generator with `--check`, SHA256SUMS).
 
-Other copies: the explorer's Outfit font and icon come from PR #19 (`NOTICE`, OFL 1.1) †.
+Other copies: the explorer's Outfit font and icon come from PR #19 (`NOTICE`, OFL 1.1).
 
 ## Owner decisions
 

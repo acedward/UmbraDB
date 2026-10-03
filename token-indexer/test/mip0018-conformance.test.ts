@@ -28,15 +28,11 @@ const REQUIREMENTS_SHA256 = "c5795004bb00485a677fc65512b9c18aeba0df9fdc4827aab6f
 const REQUIREMENT_ROWS = 36;
 
 /**
- * Draft state (sub-plan D4, "finalized after C merges"): sub-plan C's API and page tests the table cites (marked †)
- * are not in this branch yet. Each must still be ABSENT; once C is merged and one appears, this test fails so the
- * table is finalized (remove the † marks and the "Pending" row, empty this list).
+ * Pending ids (sub-plan D4 drafts): none. The table was finalized after sub-plan C merged (project 00026); a future
+ * draft row may again cite a not-yet-written test as `[[id]]`† and list it here, and the check below fails as soon as
+ * that test exists.
  */
-const cIds = (area: "api" | "ui", names: string[]): string[] => names.map((n) => `mip0018.${area}.${n}`);
-const PENDING_AFTER_C_MERGE = [
-  ...cIds("api", ["events", "hostile-text", "lookup", "withdrawn-absent", "tokens-list", "token-detail"]),
-  ...cIds("ui", ["browser-hostile-text", "browser-routes", "browser-withdrawn", "page-guard"]),
-];
+const PENDING_AFTER_C_MERGE: string[] = [];
 
 const normalize = (s: string): string => s.replace(/\\\|/g, "|").replace(/\s+/g, " ").trim();
 const unlink = (s: string): string => s.replace(/\[([^\]]*)\]\([^)\s]*\)/g, "$1");
