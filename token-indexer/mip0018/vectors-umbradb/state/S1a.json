@@ -1,0 +1,43 @@
+{
+  "id": "S1a",
+  "mip": {
+    "commit": "274a84f221bcfc17e4b73e2c8b32fd8c028ea092",
+    "testId": "S1"
+  },
+  "normative": true,
+  "description": "Order within an event (MIP 274a84f S1): for kind 1, name = \"A\" (33), a Null record at key \"name\" (41) and name = \"B\" (48) leave the identity with only name = \"B\".",
+  "basis": "UmbraDB's own version (project 00026, owner decisions Q16/Q17, executor decision Q18): written from the Testing text of MIP-0018 PR #340 head 274a84f (per-key tombstones) because the vendored reference vector of the same id implements 78ecbb4 (whole-identity tombstones).",
+  "steps": [
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 1,
+      "tx": 0,
+      "event": 0,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "111111111111111111111111111111111111111111111111111111111111111101046e616d65010141046e616d650500046e616d650101420000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "expect": {
+    "identities": [
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+        "kind": 1,
+        "visible": true,
+        "fields": {
+          "6e616d65": {
+            "key_text": "name",
+            "valType": 1,
+            "value_hex": "42",
+            "value_text": "B",
+            "usable": true
+          }
+        }
+      }
+    ]
+  }
+}
