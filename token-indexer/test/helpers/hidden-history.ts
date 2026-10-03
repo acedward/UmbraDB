@@ -1,11 +1,10 @@
 /**
- * Many metadata transactions of one identity, seeded fast (project 00026 D6, final-audit re-check R3, after the
- * auditor's probe P4). The real apply path (`writeEvents`) and activity writer (`transactionActivity` +
- * `writeActivity`) write ONE publish transaction of the identity (a single `name` record); its rows in every table
- * keyed by chain position (`mip0018_events`, `mip0018_activity` and, where the schema has it, `mip0018_listed_events`)
- * are then cloned at the following heights — what the same path writes for each further publish of the same value,
- * where only the height and the transaction hash differ — and the field row moves to the last height.
- * `[[mip0018.activity.bounded-cost]]` checks the clone against the real path on a small count.
+ * Many metadata transactions of one identity, seeded fast. The real apply path (`writeEvents`) and activity writer
+ * (`transactionActivity` + `writeActivity`) write ONE publish transaction of the identity (a single `name` record); its
+ * rows in every table keyed by chain position (`mip0018_events`, `mip0018_activity` and, where the schema has it,
+ * `mip0018_listed_events`) are then cloned at the following heights — what the same path writes for each further
+ * publish of the same value, where only the height and the transaction hash differ — and the field row moves to the
+ * last height. `[[mip0018.activity.bounded-cost]]` checks the clone against the real path on a small count.
  */
 import { createHash } from "node:crypto";
 import { type ActivityTransactionLike, transactionActivity, writeActivity } from "../../mip0018/activity.ts";

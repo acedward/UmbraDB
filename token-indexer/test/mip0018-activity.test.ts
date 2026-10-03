@@ -1,8 +1,8 @@
 /**
- * Token activity (project 00026, sub-plan C2; owner Q3; spec FR-021, US5): the activity rows the MIP-0018 scan writes
- * per applied transaction, and the keyset-paginated reads the API serves.
+ * Token activity: the activity rows the MIP-0018 scan writes per applied transaction, and the keyset-paginated reads
+ * the API serves.
  *
- * Data: the recorded Stagenet ranges of sub-plan D1 (`loadRangeTape("idx" | "u1")`, `case-index.json` — which
+ * Data: the recorded Stagenet ranges (`loadRangeTape("idx" | "u1")`, `case-index.json` — which
  * transaction belongs to which reference case step), archived by the real `chain-archive-sync` against the fake chain
  * server, and synthetic transactions (`helpers/synthetic-activity.ts`) for what Stagenet's recorded ranges do not show
  * (unshielded spends, contract inputs/outputs, fallible parts, failed segments, NIGHT UTXOs, DUST-tagged effects).
@@ -97,7 +97,7 @@ async function all(read: (cursor?: string) => Promise<{ items: ActivityItem[]; n
 
 const txOrder = (items: ActivityItem[]): string[] => [...new Map(items.map((i) => [`${i.height}:${i.txIndex}`, i.txHash])).values()];
 
-describe("MIP-0018 token activity (00026 C2)", () => {
+describe("MIP-0018 token activity", () => {
   let container: StartedPostgreSqlContainer;
   const clients: UmbraDBSql[] = [];
   const fakes: FakeChain[] = [];
@@ -205,7 +205,7 @@ describe("MIP-0018 token activity (00026 C2)", () => {
     const first = await metadataTransactionsForContract(db.sql, NET, contract, { limit: 1 }, db.mip);
     await expect(metadataTransactionsForContract(db.sql, NET, contract, { cursor: first.nextCursor!, order: "desc" }, db.mip)).rejects.toThrow(/another listing or order/);
     await expect(activityForColor(db.sql, NET, contract, { cursor: first.nextCursor! }, db.mip)).rejects.toThrow(/another listing or order/);
-    // Final-audit N5: a cursor is accepted only in the canonical form the API issues (decode/encode round trip).
+    // A cursor is accepted only in the canonical form the API issues (decode/encode round trip).
     const issued = JSON.parse(Buffer.from(first.nextCursor!, "base64url").toString("utf8")) as { v: number; s: string; o: string; p: number[] };
     const b64 = (text: string): string => Buffer.from(text, "utf8").toString("base64url");
     expect(b64(JSON.stringify({ v: 1, s: issued.s, o: issued.o, p: issued.p }))).toBe(first.nextCursor); // the issued form is canonical
@@ -285,7 +285,7 @@ describe("MIP-0018 token activity (00026 C2)", () => {
     expect(fromRows.length).toBe(metadataRows);
     const totals = await idx.sql<{ a: number; r: number }[]>`
       SELECT sum(events_accepted)::int AS a, sum(events_rejected)::int AS r FROM ${idx.sql(idx.mip)}.mip0018_activity WHERE role = 'metadata-event'`;
-    expect(totals[0]).toEqual({ a: 25, r: 10 }); // B2: 35 v1-named events of the range = 25 accepted + 10 rejected
+    expect(totals[0]).toEqual({ a: 25, r: 10 }); // 35 v1-named events of the range = 25 accepted + 10 rejected
     const c07 = await all((c) => metadataTransactionsForContract(idx.sql, NET, CASES.cases.C07!.contract!, c === undefined ? {} : { cursor: c }, idx.mip));
     expect([c07.length, c07.filter((i) => i.events!.accepted === 1).length, c07.filter((i) => i.events!.rejected === 1).length]).toEqual([18, 9, 9]); // 4 ignored steps: no row
     const c08 = await metadataTransactionsForContract(idx.sql, NET, CASES.cases.C08!.contract!, {}, idx.mip);
@@ -294,7 +294,7 @@ describe("MIP-0018 token activity (00026 C2)", () => {
     expect((await activityForColor(idx.sql, NET, NIGHT_COLOR, {}, idx.mip))).toEqual({ items: [] });
   }, 600_000);
 
-  it("[[mip0018.activity.withdrawn-history]] final-audit F3 and re-check R2: a color's and a contract's activity list metadata transactions only for rejected events and accepted events of an identity's current description — a withdrawn native token's publish and withdrawal transactions disappear from its color and its contract (its mints stay), a sibling's stay until it is withdrawn too, rejected events stay; a revived identity's history starts at its revival (its transactions from before the withdrawal and a Null-only event while it had no field stay hidden), and an event that deletes every field and sets one again is the new start; the last withdrawal of each identity is recorded; removeAbove restores the earlier listings exactly; C06's per-key steps never empty its identity, so its rows stay at every step", async () => {
+  it("[[mip0018.activity.withdrawn-history]] a color's and a contract's activity list metadata transactions only for rejected events and accepted events of an identity's current description — a withdrawn native token's publish and withdrawal transactions disappear from its color and its contract (its mints stay), a sibling's stay until it is withdrawn too, rejected events stay; a revived identity's history starts at its revival (its transactions from before the withdrawal and a Null-only event while it had no field stay hidden), and an event that deletes every field and sets one again is the new start; the last withdrawal of each identity is recorded; removeAbove restores the earlier listings exactly; C06's per-key steps never empty its identity, so its rows stay at every step", async () => {
     const Y = "c3".repeat(32);
     const DS1 = "d1".repeat(32);
     const DS2 = "d2".repeat(32);
@@ -354,7 +354,7 @@ describe("MIP-0018 token activity (00026 C2)", () => {
     expect(await withdrawals()).toEqual(["1@303.2", "3@305.2"]);
     await until(306); // a Null-only event of the withdrawn kind 1: it describes nothing, so it is not listed
     expect(await contractRows()).toEqual(["302:0/1"]);
-    await until(307); // kind 1 revived: its history starts here — 300, 303 and 306 stay hidden (re-check R2, Q34)
+    await until(307); // kind 1 revived: its history starts here — 300, 303 and 306 stay hidden
     expect(await contractRows()).toEqual(["302:0/1", "307:1/0"]);
     expect(await colorRows()).toEqual(["300:mint", "302:meta:0/1", "304:mint", "307:meta:1/0"]);
     await until(308);
@@ -396,7 +396,7 @@ describe("MIP-0018 token activity (00026 C2)", () => {
     }
   }, 300_000);
 
-  it("[[mip0018.activity.bounded-cost]] final-audit re-check R3 (the auditor's probe P4): an activity page costs what it serves, never what it hides — 100 000 metadata transactions of a withdrawn identity behind one visible rejected event, and 100 000 visible ones of a sibling: the color's and the contract's listings in both orders read at most 100 + 20 buffers per row a page may read (auto_explain, independent of host load; before the first vacuum after the withdrawal its dead index entries add at most one buffer per 20 hidden rows) and answer through the API within a generous latency budget; the seeding equals the real apply path; the withdrawal that hides 100 000 rows is one bounded delete", async () => {
+  it("[[mip0018.activity.bounded-cost]] an activity page costs what it serves, never what it hides — 100 000 metadata transactions of a withdrawn identity behind one visible rejected event, and 100 000 visible ones of a sibling: the color's and the contract's listings in both orders read at most 100 + 20 buffers per row a page may read (auto_explain, independent of host load; before the first vacuum after the withdrawal its dead index entries add at most one buffer per 20 hidden rows) and answer through the API within a generous latency budget; the seeding equals the real apply path; the withdrawal that hides 100 000 rows is one bounded delete", async () => {
     const N = 100_000;
     const migrated = async (prefix: string) => {
       const db = await fresh(prefix);
@@ -413,7 +413,7 @@ describe("MIP-0018 token activity (00026 C2)", () => {
     expect([realDump.events!.length, realDump.activity!.length, realDump.listed!.length]).toEqual([3, 3, 3]);
     expect(await dump(seeded.sql, seeded.mip)).toEqual(realDump);
 
-    // 2. Probe P4: contract Y mints T (kind 1), publishes it N times, withdraws it, then emits one rejected event.
+    // 2. Hidden history: contract Y mints T (kind 1), publishes it N times, withdraws it, then emits one rejected event.
     const db = await migrated("bounded");
     const s = db.sql(db.mip);
     const Y = { network: NET, contract: "c4".repeat(32), domainSep: "d4".repeat(32), kind: 1 as const };
@@ -462,16 +462,16 @@ describe("MIP-0018 token activity (00026 C2)", () => {
       const rejected = `${1001 + N}:0/1`;
       // Right after the withdrawal its deleted listed rows are dead index entries until (auto)vacuum reclaims them; a scan
       // that starts before them steps over them (about one index page per hundred, never their activity rows). Recorded
-      // and held to a fraction of a buffer per hidden row — the pre-R3 listing read about 4 per hidden row.
-      const transient = await measure("P4 contract limit=1 before vacuum", contract({ limit: 1 }), 2);
+      // and held to a fraction of a buffer per hidden row.
+      const transient = await measure("hidden contract limit=1 before vacuum", contract({ limit: 1 }), 2);
       expect(transient.items).toEqual([rejected]);
       expect(transient.buffers, "dead entries before vacuum").toBeLessThanOrEqual(N / 20);
       for (const table of ["mip0018_listed_events", "mip0018_activity", "mip0018_events"]) await ex.unsafe(`VACUUM (ANALYZE) "${db.mip}"."${table}"`);
       measured.length = 0;
-      expect((await measure("P4 contract limit=1", contract({ limit: 1 }), 2)).items).toEqual([rejected]);
-      expect((await measure("P4 contract limit=100 desc", contract({ limit: 100, order: "desc" }), 101)).items).toEqual([rejected]);
-      expect((await measure("P4 color limit=1", colorOf({ limit: 1 }), 4)).items).toEqual(["999:mint"]);
-      expect((await measure("P4 color limit=100 desc", colorOf({ limit: 100, order: "desc" }), 202)).items).toEqual([rejected, "999:mint"]);
+      expect((await measure("hidden contract limit=1", contract({ limit: 1 }), 2)).items).toEqual([rejected]);
+      expect((await measure("hidden contract limit=100 desc", contract({ limit: 100, order: "desc" }), 101)).items).toEqual([rejected]);
+      expect((await measure("hidden color limit=1", colorOf({ limit: 1 }), 4)).items).toEqual(["999:mint"]);
+      expect((await measure("hidden color limit=100 desc", colorOf({ limit: 100, order: "desc" }), 202)).items).toEqual([rejected, "999:mint"]);
 
       // 3. A visible history as long: a sibling identity with N publishes after it. Pages stay bounded by their size.
       const Z = { ...Y, domainSep: "d5".repeat(32), kind: 3 as const };
@@ -489,7 +489,7 @@ describe("MIP-0018 token activity (00026 C2)", () => {
 
       // The bound: at most 100 buffers plus 20 per row a page may read (its own rows and its metadata transactions, each
       // at most limit + 1) — tens for a page of one, about a thousand for a page of 100, whatever is hidden or listed
-      // around it. The pre-R3 listing read about 4 buffers per HIDDEN metadata transaction (403 094 for P4's limit=1).
+      // around it.
       console.log(JSON.stringify({ N, seedMs, withdrawMs, transientBuffers: transient.buffers, measured: measured.map(({ q, buffers }) => ({ q, buffers })) }));
       for (const m of measured) expect(m.buffers, m.q).toBeLessThanOrEqual(100 + 20 * m.rowsRead);
     } finally {

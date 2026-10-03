@@ -1,5 +1,5 @@
 /**
- * Synthetic transactions for the token-activity tests (project 00026, sub-plan C2): what the recorded Stagenet ranges
+ * Synthetic transactions for the token-activity tests: what the recorded Stagenet ranges
  * do not contain — unshielded spends, contract inputs/outputs with recipients, fallible parts, failed segments, NIGHT
  * UTXOs, DUST-tagged effects. A JSON description (the archived "raw bytes") becomes ONE object that serves both the
  * applied-parts decoder (`decodeTransaction`, real `ContractCall` prototype) and the activity reader. Spend owners are

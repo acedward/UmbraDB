@@ -1,5 +1,5 @@
 /**
- * Bech32m (BIP-350) and the Midnight wallet-address form (project 00026, sub-plan C2; owner decision Q3).
+ * Bech32m (BIP-350) and the Midnight wallet-address form.
  *
  * Vectors: BIP-350 "Test vectors for Bech32m" and "Test vectors for v0-v16 native segregated witness addresses",
  * copied from https://github.com/bitcoin/bips/blob/master/bip-0350.mediawiki (fetched 2026-10-03, file SHA-256
@@ -78,7 +78,7 @@ const WALLET_1_SHIELDED = "mn_shield-addr_stagenet1emrpxc3lmnytr5nl9wzkp0agas2eg
 const WALLET_1_COIN_PUBLIC_KEY = "cec613623fdcc8b1d27f2b8560bfa8ec1594053c0c549df15072e875fc81c2e7";
 const WALLET_1_DUST = "mn_dust_stagenet1wwjujztruwqkkem9mgdl26kx4w4ksdjx7qyrgmcegxve44468ex52wvf9a6";
 
-describe("Bech32m (BIP-350) and Midnight wallet addresses (00026 C2)", () => {
+describe("Bech32m (BIP-350) and Midnight wallet addresses", () => {
   it("[[mip0018.bech32m.bip350-vectors]] BIP-350's valid strings decode and re-encode, its invalid strings fail for the stated reason, and its segwit vectors hold at the Bech32m layer", () => {
     for (const v of VALID) {
       const { hrp, words } = decodeBech32mWords(v);

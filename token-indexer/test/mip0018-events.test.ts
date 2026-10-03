@@ -1,14 +1,13 @@
 /**
- * MIP-0018 events from the archived raw transactions (project 00026, sub-plan B2; spec FR-004, FR-010; Q4 (c), Q15):
- * the scan's event log — order, zero extension, classification — on the recorded Stagenet ranges of sub-plan D1 (IDX
- * 714485–715183, U1 715402–715433) and on synthetic multi-intent transactions, and the test cross-check against the
- * indexer's recorded `contractEvents`.
+ * MIP-0018 events from the archived raw transactions: the scan's event log — order, zero extension, classification — on
+ * the recorded Stagenet ranges (IDX 714485–715183, U1 715402–715433) and on synthetic multi-intent transactions, and
+ * the test cross-check against the indexer's recorded `contractEvents`.
  *
  * Expected classifications: the reference repository (read-only, midnight-experiments/mip-0018 @ daec1f1):
  * `deployments/stagenet/cases/C07/expect/<step>.json` and `C08/expect/emit-two.json` (result and reason per event),
  * `cases/{C07,C08}/expected.json` (`counts`), `cases/IDX/index/index-state.json` (35 events named
- * `mip-0018:token-metadata[v1]`: position, result, reason, payload — compared position by position on 2026-10-03, all
- * equal; the accepted and rejected positions are listed below). The C10 payload is MIP Appendix A (A1).
+ * `mip-0018:token-metadata[v1]`: position, result, reason, payload — compared position by position, all equal;
+ * the accepted and rejected positions are listed below). The C10 payload is MIP Appendix A (A1).
  */
 import { Event, Transaction } from "@midnightntwrk/ledger-v9";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -59,7 +58,7 @@ const IDX_REJECTED = [
 const V1 = toHex(EVENT_NAME);
 const pos = (e: LoggedEvent): string => `${e.height}/${e.txIndex}/${e.eventIndex}`;
 
-describe("MIP-0018 events from raw transactions (00026 B2)", () => {
+describe("MIP-0018 events from raw transactions", () => {
   let container: StartedPostgreSqlContainer;
   const clients: UmbraDBSql[] = [];
   let counter = 0;
@@ -201,7 +200,7 @@ describe("MIP-0018 events from raw transactions (00026 B2)", () => {
     expect([undecodable.name, undecodable.payload]).toEqual(["", ""]);
   }, 120_000);
 
-  it("[[mip0018.events.unresolved-logs]] final-audit F1: a bare logged value is a Misc version-0 event and is applied like the triple form; a log op whose value the raw transaction does not show (operand not pushed, or run on some paths only) is stored as unresolved with its reason, never applied, served by /v1/events and counted by /v1/status; a log op no successful run reaches leaves no row; the scan never stops on them", async () => {
+  it("[[mip0018.events.unresolved-logs]] a bare logged value is a Misc version-0 event and is applied like the triple form; a log op whose value the raw transaction does not show (operand not pushed, or run on some paths only) is stored as unresolved with its reason, never applied, served by /v1/events and counted by /v1/status; a log op no successful run reaches leaves no row; the scan never stops on them", async () => {
     const A = "b5".repeat(32);
     const DS = "33".repeat(32);
     const item = (records: Parameters<typeof encodePayload>[1]): string => {
@@ -229,8 +228,8 @@ describe("MIP-0018 events from raw transactions (00026 B2)", () => {
     await s.bootstrap();
     expect(await s.scanOnce()).toMatchObject({ scannedBlocks: 2, toHeight: 701, events: 4 }); // never stops on them
     const got = await listEvents(db.sql, NET, {}, db.mip);
-    // One row per log op the ledger may run (4 of the 5 log ops): the pre-D5 decoder stored 3 rows here — the bare
-    // event and the dup-fed log dropped without a trace, the conditional and the never-run log applied as accepted.
+    // One row per log op the ledger may run (4 of the 5 log ops): the triple and the bare event are accepted, the dup-fed
+    // and the conditional log are `unresolved`, and the never-run log leaves no row.
     expect(got.map((e) => [e.eventIndex, e.classification, e.reason ?? null, e.eventType])).toEqual([
       [0, "accept", null, "Misc"], [1, "accept", null, "Misc"],
       [2, "unresolved", "log-operand-not-pushed", "Unknown"], [3, "unresolved", "log-conditionally-executed", "Unknown"],
@@ -300,7 +299,7 @@ describe("MIP-0018 events from raw transactions (00026 B2)", () => {
       ours.forEach((e, i) => {
         const x = theirs[i]!;
         expect(e.txIndex).toBe(pair.txPosition);
-        // The indexer serves an EMPTY name/payload when the logged item is shorter than 32 bytes (research §4 P2).
+        // The indexer serves an EMPTY name/payload when the logged item is shorter than 32 bytes.
         const item = (e.name + e.payload).replace(/(00)+$/, "");
         const view = item.length < 64 ? ["", ""] : [e.name, e.payload];
         expect([x.name?.replace(/^0x/, "").toLowerCase(), x.payload?.replace(/^0x/, "").toLowerCase()], pos(e)).toEqual(view);

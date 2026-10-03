@@ -1,5 +1,5 @@
 /**
- * A minimal Chrome DevTools Protocol driver for the explorer page's browser tests (project 00026, sub-plan C3) —
+ * A minimal Chrome DevTools Protocol driver for the explorer page's browser tests —
  * no npm dependency: Node's own `WebSocket` client and a headless Chromium or Chrome binary.
  *
  * Where the browser comes from (`findBrowser`): `MIP0018_UI_BROWSER` or `CHROME_BIN` when set; else the Chromium of

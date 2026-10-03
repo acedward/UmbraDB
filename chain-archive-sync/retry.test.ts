@@ -5,8 +5,8 @@ import { defaultMinIntervalMs, isPublicEndpoint, parseRetryAfterMs, RequestPacer
 import { classifyEndpointError, withRetry } from "./retry.js";
 import { parseArchiveSyncArgs } from "./sync-cli.js";
 
-/** Project 00026 (polite public-endpoint access): unit level, no network, no Postgres. */
-describe("polite public-endpoint access (00026 A2)", () => {
+/** Polite public-endpoint access: unit level, no network, no Postgres. */
+describe("polite public-endpoint access", () => {
   it("classifies only throttling, outages, transport failures and non-JSON bodies as retryable", () => {
     const cases: [unknown, boolean, number | undefined][] = [
       [new NodeRpcError("x", undefined, 429, 2_000), true, 429],

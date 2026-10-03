@@ -1,5 +1,5 @@
 /**
- * The applied-parts decoder (`token-indexer/mip0018/applied-parts.ts`, sub-plans A3/B2): ledger execution order,
+ * The applied-parts decoder (`token-indexer/mip0018/applied-parts.ts`): ledger execution order,
  * the applied-parts filter, zero extension of raw `Misc` data, colors — on a synthetic multi-intent transaction and
  * on the recorded Stagenet transactions of the MIP-0018 reference cases (A2 tapes, no network).
  *
@@ -101,7 +101,7 @@ const synthetic: TransactionLike = {
   ]),
 };
 
-describe("applied-parts decoder (00026 A3/B2)", () => {
+describe("applied-parts decoder", () => {
   const d = decodeTransaction(synthetic);
 
   it("[[mip0018.decoder.ledger-order]] guaranteed part of every intent (ascending segment), then each fallible segment; actions and ops in order; trimmed Misc data zero-extended to 288", () => {
@@ -179,7 +179,7 @@ describe("applied-parts decoder (00026 A3/B2)", () => {
     const atoms = (...bs: number[][]) => ({ tag: "cell", content: { value: bs.map((b) => Uint8Array.from(b)), alignment: [] } });
     const wrapped = logItem("Hi");
     const bare = wrapped.content[2]!; // the same 288-byte name ‖ payload item (trailing zeros dropped), logged without the triple
-    // The audit's probe P1: both are a Misc event named mip-0018:token-metadata[v1] with the same name and payload.
+    // Both are a Misc event named mip-0018:token-metadata[v1] with the same name and payload.
     const w = readLogItem(wrapped);
     const b = readLogItem(bare);
     expect(w).toMatchObject({ form: "versioned", version: 1, eventTypeCode: 10, eventType: "Misc", name: toHex(EVENT_NAME) });
@@ -277,7 +277,7 @@ const WALLET_COLORS: Record<string, [string[], string[]]> = {
 
 const noPrefix = (h: string): string => (h.startsWith("0x") ? h.slice(2) : h).toLowerCase();
 
-describe("applied-parts decoder on recorded Stagenet (00026 A3)", () => {
+describe("applied-parts decoder on recorded Stagenet", () => {
   const tapes = [loadTape("c04-714637-714663.tape.json"), loadTape("cases-sparse.tape.json")];
   const decoded = tapes.flatMap((t) => t.blocks.flatMap((b) => b.indexerBlock.transactions.map((tx) => ({
     height: b.height,
@@ -329,7 +329,7 @@ describe("applied-parts decoder on recorded Stagenet (00026 A3)", () => {
     // action (60 in 714485–715183) exceeds the reference's count of transactions with a call (58).
     const twoCalls = at(714813).filter((x) => x.calls.length === 2);
     expect(twoCalls).toHaveLength(1);
-    expect(twoCalls[0]!.calls.map((c) => c.entryPoint)).toEqual([Buffer.from("startWithdraw").toString("hex"), Buffer.from("signBidirectional").toString("hex")]); // exact bytes (C4 H1)
+    expect(twoCalls[0]!.calls.map((c) => c.entryPoint)).toEqual([Buffer.from("startWithdraw").toString("hex"), Buffer.from("signBidirectional").toString("hex")]); // exact bytes
     const all = decoded.map((x) => x.d);
     expect(all.flatMap((x) => x.calls)).toHaveLength(18);
     expect(all.flatMap((x) => x.deploys)).toHaveLength(1);

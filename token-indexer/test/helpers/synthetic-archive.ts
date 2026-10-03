@@ -1,6 +1,6 @@
 /**
- * Synthetic archive blocks for the MIP-0018 scan tests (project 00026 A3/B2): what real Stagenet bytes cannot cover
- * (a mint in a failed fallible segment, a color seen before its mint, several intents and segments, broken archive
+ * Synthetic archive blocks for the MIP-0018 scan tests: what real Stagenet bytes cannot cover (a mint in a failed
+ * fallible segment, a color seen before its mint, several intents and segments, broken archive
  * rows). Blocks are written through the real archive store (`putBlockBundle`, with the sync cursor watermark); each
  * transaction's "raw bytes" are a JSON description that `decodeSynthetic` turns into the decoder's `TransactionLike`
  * — real `ContractCall` / `ContractDeploy` / `MaintenanceUpdate` prototypes, so the applied-parts decoder runs
@@ -23,7 +23,7 @@ export interface SynthLog {
 export type SynthValue = { cell: string } | { cells: string[] } | { array: SynthValue[] } | { null: true };
 
 /**
- * One op of a hand-built transcript program (final-audit F1): `log` alone logs whatever is on the stack; `{ log }`
+ * One op of a hand-built transcript program: `log` alone logs whatever is on the stack; `{ log }`
  * is the usual `push [1, type, data]` + `log` pair; `push` pushes any value; `dup`, `branch` and `jmp` take their
  * argument (`branch`/`jmp`: the `skip`).
  */
@@ -75,7 +75,7 @@ const sha = (s: string): string => createHash("sha256").update(s).digest("hex");
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 /**
- * An entry point as ledger-v9 hands it to JavaScript (`maybe_string`, checked on rc.3 in sub-plan C4 H1.1): the
+ * An entry point as ledger-v9 hands it to JavaScript (`maybe_string`, checked on ledger-v9 1.0.0-rc.3): the
  * string when its bytes are valid UTF-8 (NUL and bidi characters included), otherwise a `Uint8Array` of the bytes.
  */
 export function ledgerEntryPoint(text: string, hex?: string): string | Uint8Array {

@@ -1,21 +1,20 @@
 /**
- * Stagenet case comparison — the gaps (project 00026, sub-plan D2; spec FR-041, SC-002). The other dimensions of the
- * twelve cases are covered where they were built (sub-plan D, "D2 coverage table"): states at the range end
- * (`[[mip0018.metadata.recorded-cases]]`), C06 per step, groups, bytes, classification, colors, activity of colors.
- * This file adds what no test compared yet:
+ * Stagenet case comparison beyond the per-module tests. The other dimensions of the twelve cases are covered by those
+ * tests: states at the range end (`[[mip0018.metadata.recorded-cases]]`), C06 per step, groups, bytes, classification,
+ * colors, activity of colors. This file compares:
  *
  * - every case replayed only UP TO ITS OWN LAST BLOCK (the cases' expectations describe that moment), with the cases
  *   still to come absent at that point; C09 (a refused call, no transaction) = C01's state, unchanged;
  * - IDX and U1 against the reference's OWN index files (`IDX/expected.json`, `IDX/index-summary.json`,
  *   `U1/index-summary.json`: colors with first/last mints, deploys, the 35 v1-named events with position, bytes and
  *   classification, stats, last block), instead of constants typed into a test;
- * - the ✓/⚠ mark and `standards` tags of EVERY case identity (Q14 (a), A13), derived from the reference expectations
+ * - the ✓/⚠ mark and `standards` tags of EVERY case identity, derived from the reference expectations
  *   and the reference index's rejections — an oracle independent of UmbraDB's `tokenMark`;
  * - every case contract's metadata transactions = the transactions the reference index lists for it.
  *
  * Expectations are never edited: verbatim copies of `midnight-experiments/mip-0018 @ daec1f1` in
- * `fixtures/mip0018-cases/` (SHA-256 checked against the D1 case index), UmbraDB's own per-key C06 files for the steps
- * after the tombstone (Q16/Q17). Single-member groups are excluded on both sides (Q6).
+ * `fixtures/mip0018-cases/` (SHA-256 checked against the recorded case index), UmbraDB's own per-key C06 files for the steps
+ * after the tombstone. Single-member groups are excluded on both sides.
  */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -80,7 +79,7 @@ function commonOf(id: IdentityState): Record<string, unknown> {
 }
 
 /** UmbraDB's state of one contract against an expectation ([] when equal): identities, visibility, colored, common
- *  fields, every field's bytes/type/usable flag where the expectation lists them, groups of two or more (Q6), counts. */
+ *  fields, every field's bytes/type/usable flag where the expectation lists them, groups of two or more, counts. */
 async function caseDifferences(sql: UmbraDBSql, schema: string, contract: string, expected: ExpectedState): Promise<string[]> {
   const d: string[] = [];
   const got = new Map((await listIdentities(sql, NET, { contractAddress: contract }, schema)).map((i) => [`${i.domainSep}/${i.kind}`, i]));
@@ -105,7 +104,7 @@ async function caseDifferences(sql: UmbraDBSql, schema: string, contract: string
   const wantGroups = expected.groups.map((g) => ({ symbol: g.symbol, members: g.members.map((m) => `${norm(m.domainSep)}/${m.kind}`) }));
   if (multi(gotGroups) !== multi(wantGroups)) d.push(`groups ${multi(gotGroups)}, expected ${multi(wantGroups)}`);
   if (expected.counts !== undefined) {
-    // The reference's counts have no `unresolved` (a D5 classification): none may exist in the recorded cases.
+    // The reference's counts have no `unresolved` (an UmbraDB classification): none may exist in the recorded cases.
     const { unresolved, ...c } = await eventCounts(sql, NET, contract, schema);
     if (unresolved !== 0) d.push(`unresolved ${unresolved}`);
     if (canon(c) !== canon(expected.counts)) d.push(`counts ${canon(c)}, expected ${canon(expected.counts)}`);
@@ -113,7 +112,7 @@ async function caseDifferences(sql: UmbraDBSql, schema: string, contract: string
   return d;
 }
 
-describe("Stagenet case comparison — gaps (00026 D2)", () => {
+describe("Stagenet case comparison — gaps", () => {
   let container: StartedPostgreSqlContainer;
   const clients: UmbraDBSql[] = [];
   let counter = 0;
@@ -180,7 +179,7 @@ describe("Stagenet case comparison — gaps (00026 D2)", () => {
   }, 60_000);
 
   it("[[mip0018.cases.stop-heights]] each case replayed only up to its own last block equals its expectation while every later case is still absent; earlier cases stay equal; C09 (refused call, no transaction) leaves C01's state unchanged; U1 at its last block", async () => {
-    // The copies used here are the reference's bytes (C06's per-key file is UmbraDB's own, Q16/Q17).
+    // The copies used here are the reference's bytes (C06's per-key file is UmbraDB's own).
     const recorded = new Map(caseIndex.source.files.map((f) => [f.path, f.sha256]));
     for (const c of ["C01", "C02", "C03", "C04", "C05", "C07", "C08", "C10", "U1"]) expect(sha(`${c}/expected.json`), c).toBe(recorded.get(`deployments/stagenet/cases/${c}/expected.json`));
     const IDX_CASES = ["C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C10"].sort((a, b) => Math.max(...heightsOf(a)) - Math.max(...heightsOf(b)));
@@ -256,7 +255,7 @@ describe("Stagenet case comparison — gaps (00026 D2)", () => {
         deploys[r.contract.toString("hex")] = { height: Number(r.height), blockHash: await blockHash(Number(r.height)), txHash: r.tx.toString("hex") };
       const events: Record<string, RefEvent[]> = {};
       for (const e of (await listEvents(sql, NET, {}, db.mip)).filter((x) => x.name === V1)) {
-        // entry_point is bytea (sub-plan C4 H1: arbitrary bytes on the ledger); the reference index writes it as text.
+        // entry_point is bytea (arbitrary bytes on the ledger); the reference index writes it as text.
         const calls = await sql<{ entry: Buffer }[]>`
           SELECT entry_point AS entry FROM ${m}.mip0018_contract_actions
           WHERE network = ${NET} AND action = 'call' AND block_height = ${e.height} AND tx_index = ${e.txIndex}
@@ -274,7 +273,7 @@ describe("Stagenet case comparison — gaps (00026 D2)", () => {
         transactions: await count(sql`SELECT count(*)::int AS n FROM ${a}.transactions WHERE net = ${NET} AND kind = 'regular'`),
         contractCalls: await count(sql`SELECT count(DISTINCT (block_height, tx_index))::int AS n FROM ${m}.mip0018_contract_actions WHERE network = ${NET} AND action = 'call'`),
         deploys: Object.keys(deploys).length,
-        decodeErrors: 0, // the scan stops at an undecodable transaction (Q20); it reached the end
+        decodeErrors: 0, // the scan stops at an undecodable transaction; it reached the end
         mints: mints.length,
         events: Object.values(events).flat().length,
       };
@@ -321,12 +320,12 @@ describe("Stagenet case comparison — gaps (00026 D2)", () => {
     expect(Object.values(caseIndex.cases).some((c) => c.contract === extra[0]!.contractAddress)).toBe(false);
   }, 120_000);
 
-  it("[[mip0018.cases.marks]] the ✓/⚠ mark and standards tags of every case identity — at the range end and after each C06 step — equal Q14 (a) applied to the reference expectations and the reference index's rejections (an oracle independent of tokenMark); the third party's minted token has no mark", async () => {
+  it("[[mip0018.cases.marks]] the ✓/⚠ mark and standards tags of every case identity — at the range end and after each C06 step — equal the mark rule applied to the reference expectations and the reference index's rejections (an oracle independent of tokenMark); the third party's minted token has no mark", async () => {
     const idxRef = read<IndexSummary>("IDX/index-summary.json");
     const u1Ref = read<IndexSummary>("U1/index-summary.json");
     const rejections = (contract: string): string[] =>
       [...(idxRef.events[contract] ?? []), ...(u1Ref.events[contract] ?? [])].filter((e) => e.result === "reject").map((e) => e.reason!);
-    /** Q14 (a), owner-confirmed: ⚠ incorrect when the contract has a rejected MIP-0018 event; ✓ when name, symbol and
+    /** The mark rule: ⚠ incorrect when the contract has a rejected MIP-0018 event; ✓ when name, symbol and
      *  decimals are usable; ⚠ partial otherwise; usable `standards` identifiers as tags. */
     const oracle = (e: ExpectedIdentity, contract: string) => {
       const missing = (["name", "symbol", "decimals"] as const).filter((k) => e.common[k] === undefined);
@@ -410,7 +409,7 @@ describe("Stagenet case comparison — gaps (00026 D2)", () => {
       rows[c] = items.length;
     }
     expect(rows).toEqual({ C01: 1, C02: 1, C03: 1, C04: 1, C05: 3, C06: 5, C07: 18, C08: 1, C10: 1, U1: 1 });
-    // C07: 22 event-emitting steps, the four I-steps (other names) are not metadata transactions (Q19, A16).
+    // C07: 22 event-emitting steps, the four I-steps (other names) are not metadata transactions.
     const c07Steps = caseIndex.cases.C07!.steps.filter((s) => (s.observedEventIds ?? []).length > 0).map((s) => s.id);
     expect(c07Steps).toHaveLength(22);
     const c07Tx = new Set((await all(full.idx, contractOf("C07"))).map((i) => i.txHash));

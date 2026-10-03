@@ -1,6 +1,6 @@
 /**
- * The `mip0018` migration lineage (fresh schema, project 00026 Q7): two tables, exact bytes, lossless integers,
- * constraints that keep tombstones and earlier layouts out. One Postgres 17 container for the file.
+ * The `mip0018` migration lineage: its tables, exact bytes, lossless integers, constraints that keep tombstones and
+ * other layouts out. One Postgres 17 container for the file.
  */
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -44,14 +44,14 @@ describe("mip0018 schema", () => {
     updated_record: 0,
   });
 
-  it("[[mip0018.schema.fresh-lineage]] creates exactly the event log and the latest-value table, and re-running is a no-op", async () => {
+  it("[[mip0018.schema.fresh-lineage]] creates exactly the lineage's tables (event log, latest-value fields, withdrawals, listed events, scan cursor, mints, color sightings, contract actions, built-in tokens, activity; no history table), and re-running is a no-op", async () => {
     const tables = await sql<{ table_name: string }[]>`
       SELECT table_name FROM information_schema.tables WHERE table_schema = ${schema} ORDER BY table_name`;
     expect(tables.map((t) => t.table_name)).toEqual([
       "_migrations", "mip0018_activity", "mip0018_builtin_tokens", "mip0018_color_sightings", "mip0018_contract_actions",
       "mip0018_events", "mip0018_fields", "mip0018_listed_events", "mip0018_mints", "mip0018_scan", "mip0018_withdrawals",
-    ]); // 002_mip0018_scan (A3/B2) adds the scan tables; 003_mip0018_activity (C2) the activity rows; 001 also holds the
-    // withdrawals and listed events (final-audit re-check R2/R3)
+    ]); // 001_mip0018_core: events, fields, withdrawals, listed events; 002_mip0018_scan: the scan tables;
+    // 003_mip0018_activity: the activity rows
     await runMigrations(sql, { schema, migrations: mip0018Migrations });
     const applied = await sql<{ name: string }[]>`SELECT name FROM ${sql(schema)}._migrations ORDER BY name`;
     expect(applied.map((r) => r.name)).toEqual(["000_schema", "001_mip0018_core", "002_mip0018_scan", "003_mip0018_activity"]);
@@ -113,8 +113,8 @@ describe("mip0018 schema", () => {
   }, 120_000);
 
   /**
-   * Sub-plan C4 H2: every text-typed column of the lineage and why chain bytes cannot reach it. A new text column
-   * fails this test until it is classified here (and in the C plan's H2 table); chain-derived bytes go to `bytea`.
+   * Every text-typed column of the lineage and why chain bytes cannot reach it. A new text column
+   * fails this test until it is classified here; chain-derived bytes go to `bytea`.
    */
   const TEXT_COLUMNS: Record<string, "config" | "vocabulary" | "code-ascii" | "code-constant"> = {
     "mip0018_activity.direction": "vocabulary", // CHECK in ('in', 'out')

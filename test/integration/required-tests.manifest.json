@@ -130,472 +130,472 @@
     {
       "id": "archive.sync.range-from-to",
       "file": "test/integration/chain-archive-sync-range.integration.test.ts",
-      "description": "00026 A2 (FR-001): --from/--to ingests exactly the range, records the archive start in the cursor, makes no request once the range is complete, and refuses a --from that would leave a gap or lies below the archive start."
+      "description": "--from/--to ingests exactly the range, records the archive start in the cursor, makes no request once the range is complete, and refuses a --from that would leave a gap or lies below the archive start."
     },
     {
       "id": "archive.sync.outcomes-equal-indexer",
       "file": "test/integration/chain-archive-sync-range.integration.test.ts",
-      "description": "00026 A2 (FR-002): every archived transaction's result and per-segment outcomes equal the indexer's (recorded Stagenet SUCCESS + synthetic PARTIAL_SUCCESS/FAILURE on real bytes)."
+      "description": "every archived transaction's result and per-segment outcomes equal the indexer's (recorded Stagenet SUCCESS + synthetic PARTIAL_SUCCESS/FAILURE on real bytes)."
     },
     {
       "id": "archive.sync.outcomes-guard",
       "file": "test/integration/chain-archive-sync-range.integration.test.ts",
-      "description": "00026 A2 (FR-002): an unknown TransactionResultStatus or a RegularTransaction without a result stops the sync at that block with nothing written for it."
+      "description": "an unknown TransactionResultStatus or a RegularTransaction without a result stops the sync at that block with nothing written for it."
     },
     {
       "id": "archive.sync.polite-retry",
       "file": "test/integration/chain-archive-sync-range.integration.test.ts",
-      "description": "00026 A2: 429 (Retry-After) / 403 / 503 / an HTML 200 from the endpoints are retried with back-off, counted, and the range still completes."
+      "description": "429 (Retry-After) / 403 / 503 / an HTML 200 from the endpoints are retried with back-off, counted, and the range still completes."
     },
     {
       "id": "archive.sync.resume-kill-identical",
       "file": "test/integration/chain-archive-sync-range.integration.test.ts",
-      "description": "00026 A2 (FR-001, US6): SIGKILL of the CLI during a --from/--to run, then a restart, leaves every archive table identical to an uninterrupted run (wall-clock columns excluded); the cursor never runs ahead of or behind the data."
+      "description": "SIGKILL of the CLI during a --from/--to run, then a restart, leaves every archive table identical to an uninterrupted run (wall-clock columns excluded); the cursor never runs ahead of or behind the data."
     },
     {
       "id": "archive.store.outcomes-roundtrip",
       "file": "test/postgres/chain-archive-store.test.ts",
-      "description": "00026 A2 (FR-002): transactions.segments round-trips next to result (sorted, null = no list); malformed lists are rejected by the store and by the transactions_segments_shape CHECK."
+      "description": "transactions.segments round-trips next to result (sorted, null = no list); malformed lists are rejected by the store and by the transactions_segments_shape CHECK."
     },
     {
       "id": "archive.store.checkpoint-atomic",
       "file": "test/postgres/chain-archive-store.test.ts",
-      "description": "00026 A2 (FR-001): putBlockBundle's watermark commits with the block, rolls back with a failed bundle, and never moves backwards."
+      "description": "putBlockBundle's watermark commits with the block, rolls back with a failed bundle, and never moves backwards."
     },
     {
       "id": "archive.ledger.stagenet-decode",
       "file": "test/integration/stagenet-ledger-decode.test.ts",
-      "description": "00026 A2 (FR-005, Q13): the pinned ledger-v9 decodes every recorded 00013 Stagenet case transaction (hash, actions, mint effects) and rawTokenType reproduces the IDX/U1 colors."
+      "description": "the pinned ledger-v9 decodes every recorded Stagenet case transaction (hash, actions, mint effects) and rawTokenType reproduces the IDX/U1 colors."
     },
     {
       "id": "mip0018.vendor.provenance",
       "file": "token-indexer/test/mip0018-provenance.test.ts",
-      "description": "Project 00026 B1: every vendored MIP-0018 reference file (codec, vectors, runner; daec1f1) equals its SHA-256 in token-indexer/vendor/mip0018/SOURCE.md; a modified, missing or unlisted file fails (spec FR-011)."
+      "description": "every vendored MIP-0018 reference file (codec, vectors, runner; daec1f1) equals its SHA-256 in token-indexer/vendor/mip0018/SOURCE.md; a modified, missing or unlisted file fails."
     },
     {
       "id": "mip0018.vendor.vector-sums",
       "file": "token-indexer/test/mip0018-provenance.test.ts",
-      "description": "Project 00026 B1: the vendored MIP-0018 vectors pass their own SHA256SUMS, as the runner checks before a run."
+      "description": "the vendored MIP-0018 vectors pass their own SHA256SUMS, as the runner checks before a run."
     },
     {
       "id": "mip0018.schema.fresh-lineage",
       "file": "token-indexer/test/mip0018-schema.test.ts",
-      "description": "Project 00026 B1: the mip0018 migration lineage creates exactly mip0018_events and mip0018_fields (no history tables, Q5/Q7) and re-running is a no-op."
+      "description": "the mip0018 migration lineage creates exactly its tables (event log, latest-value fields, withdrawals, listed events, scan cursor, mints, color sightings, contract actions, built-in tokens, activity; no history table) and re-running is a no-op."
     },
     {
       "id": "mip0018.schema.bytes",
       "file": "token-indexer/test/mip0018-schema.test.ts",
-      "description": "Project 00026 B1: keys and values are exact bytea (NUL and non-UTF-8 keys) and a 31-byte unsigned integer is lossless (FR-014)."
+      "description": "keys and values are exact bytea (NUL and non-UTF-8 keys) and a 31-byte unsigned integer is lossless."
     },
     {
       "id": "mip0018.schema.constraints",
       "file": "token-indexer/test/mip0018-schema.test.ts",
-      "description": "Project 00026 B1: the schema refuses stored tombstones, kinds outside 1-3, unsized integers and accepted events without a header."
+      "description": "the schema refuses stored tombstones, kinds outside 1-3, unsized integers and accepted events without a header."
     },
     {
       "id": "mip0018.state.per-key-tombstone",
       "file": "token-indexer/test/mip0018-state.test.ts",
-      "description": "Project 00026 B1: per-key tombstones (MIP 274a84f, Q16): a Null deletes only its key, a Null for a missing key is a no-op, deleting every key leaves the identity absent from listings, lookups, groups and display, a later record revives only that field."
+      "description": "per-key tombstones (MIP 274a84f): a Null deletes only its key, a Null for a missing key is a no-op, deleting every key leaves the identity absent from listings, lookups, groups and display, a later record revives only that field."
     },
     {
       "id": "mip0018.state.marks",
       "file": "token-indexer/test/mip0018-state.test.ts",
-      "description": "Project 00026 B1: the Q14 mark function (ok / partial / incorrect with reasons / none, usable standards as tags)."
+      "description": "the mark function (ok / partial / incorrect with reasons / unresolved / none; precedence incorrect, unresolved, fields; usable standards as tags)."
     },
     {
       "id": "mip0018.vectors.pure-adapter",
       "file": "token-indexer/test/mip0018-vectors.test.ts",
-      "description": "Project 00026 B1 (SC-001, pure adapter): 59/59 reference normative + 43/43 informative vendored vectors and UmbraDB's 8 own versions (S1a, S3a-S3d, S4a/S4b, S9d; MIP 274a84f) pass through the vendored runner core."
+      "description": "Pure adapter: 59/59 reference normative + 43/43 informative vendored vectors and UmbraDB's 8 own versions (S1a, S3a-S3d, S4a/S4b, S9d; MIP 274a84f) pass through the vendored runner core."
     },
     {
       "id": "mip0018.vectors.own-versions-needed",
       "file": "token-indexer/test/mip0018-vectors.test.ts",
-      "description": "Project 00026 B1: the vendored 78ecbb4 versions of exactly S3a, S3b, S3c, S3d, S4b, S9d fail under per-key tombstones (why UmbraDB runs its own versions)."
+      "description": "the vendored 78ecbb4 versions of exactly S3a, S3b, S3c, S3d, S4b, S9d fail under per-key tombstones (why UmbraDB runs its own versions)."
     },
     {
       "id": "mip0018.vectors.own-integrity",
       "file": "token-indexer/test/mip0018-vectors.test.ts",
-      "description": "Project 00026 B1: UmbraDB's own vectors match their SHA256SUMS and their generator's --check."
+      "description": "UmbraDB's own vectors match their SHA256SUMS and their generator's --check."
     },
     {
       "id": "mip0018.vectors.runner-cli",
       "file": "token-indexer/test/mip0018-vectors.test.ts",
-      "description": "Project 00026 B1: the vendored runner CLI drives the pure adapter process over both vector sets and exits 0."
+      "description": "the vendored runner CLI drives the pure adapter process over both vector sets and exits 0."
     },
     {
       "id": "stagenet.fixtures.manifest",
       "file": "test/integration/stagenet-fixtures.test.ts",
-      "description": "00026 D1 (FR-041/FR-042, Q11): every recorded Stagenet fixture file matches its manifest SHA-256 and size; provenance (endpoints, genesis, queries) and the < 1 MB size target hold."
+      "description": "every recorded Stagenet fixture file matches its manifest SHA-256 and size; provenance (endpoints, genesis, queries) and the < 1 MB size target hold."
     },
     {
       "id": "stagenet.fixtures.tapes-consistent",
       "file": "test/integration/stagenet-fixtures.test.ts",
-      "description": "00026 D1: the IDX (714485-715183) and U1 (715402-715433) tapes are contiguous, node and indexer answers agree, and every (transaction, called contract) pair has its contractEvents capture in the indexer's order."
+      "description": "the IDX (714485-715183) and U1 (715402-715433) tapes are contiguous, node and indexer answers agree, and every (transaction, called contract) pair has its contractEvents capture in the indexer's order."
     },
     {
       "id": "stagenet.fixtures.case-index",
       "file": "test/integration/stagenet-fixtures.test.ts",
-      "description": "00026 D1: every C01-C10/IDX/U1 reference case transaction is in the tapes at its height and position, and its observed indexer event ids are in the contractEvents capture."
+      "description": "every C01-C10/IDX/U1 reference case transaction is in the tapes at its height and position, and its observed indexer event ids are in the contractEvents capture."
     },
     {
       "id": "stagenet.fixtures.replay-equals-live",
       "file": "test/integration/stagenet-fixtures-replay.integration.test.ts",
-      "description": "00026 D1 (SC-003, Q11): replaying each recorded range through the unchanged chain-archive-sync into Postgres reproduces the archive digest of the live polite sync taken at capture time."
+      "description": "replaying each recorded range through the unchanged chain-archive-sync into Postgres reproduces the archive digest of the live polite sync taken at capture time."
     },
     {
       "id": "mip0018.decoder.ledger-order",
       "file": "token-indexer/test/mip0018-applied-parts.test.ts",
-      "description": "Project 00026 A3/B2: the applied-parts decoder lists logs, mints, deploys, maintenance and colors in the ledger's execution order (guaranteed part of every intent by ascending segment, then each fallible segment) and zero-extends trimmed Misc data to 288 bytes."
+      "description": "the applied-parts decoder lists logs, mints, deploys, maintenance and colors in the ledger's execution order (guaranteed part of every intent by ascending segment, then each fallible segment) and zero-extends trimmed Misc data to 288 bytes."
     },
     {
       "id": "mip0018.decoder.applied-filter",
       "file": "token-indexer/test/mip0018-applied-parts.test.ts",
-      "description": "Project 00026 A3/B2: only applied parts count — FAILURE applies nothing, PARTIAL_SUCCESS keeps the guaranteed part and the successful segments (a segment missing from the list counts as failed)."
+      "description": "only applied parts count — FAILURE applies nothing, PARTIAL_SUCCESS keeps the guaranteed part and the successful segments (a segment missing from the list counts as failed)."
     },
     {
       "id": "mip0018.decoder.unknown-action",
       "file": "token-indexer/test/mip0018-applied-parts.test.ts",
-      "description": "Project 00026 A3: an unknown contract action, unreadable bytes or a log of another shape is reported, never skipped silently."
+      "description": "an unknown contract action, unreadable bytes or a log of another shape is reported, never skipped silently."
     },
     {
       "id": "mip0018.decoder.stagenet-mints",
       "file": "token-indexer/test/mip0018-applied-parts.test.ts",
-      "description": "Project 00026 A3: recorded Stagenet mints give the reference colors, contracts, domainSeps and kinds (kinds 1 and 2 of C04 share one color) and every wallet-observed color of C02-C05/U1."
+      "description": "recorded Stagenet mints give the reference colors, contracts, domainSeps and kinds (kinds 1 and 2 of C04 share one color) and every wallet-observed color of C02-C05/U1."
     },
     {
       "id": "mip0018.decoder.stagenet-actions",
       "file": "token-indexer/test/mip0018-applied-parts.test.ts",
-      "description": "Project 00026 A3: recorded deploys, maintenance updates (C10 VerifierKeyRemove, U1 VerifierKeyInsert), the two-call transaction of 714813 and C10's 127-byte raw item are decoded."
+      "description": "recorded deploys, maintenance updates (C10 VerifierKeyRemove, U1 VerifierKeyInsert), the two-call transaction of 714813 and C10's 127-byte raw item are decoded."
     },
     {
       "id": "mip0018.scan.c04-colors",
       "file": "token-indexer/test/mip0018-scan.test.ts",
-      "description": "Project 00026 A3: the scan of C04's archived range gives one color for its shielded and unshielded mints, its deploy and calls, and the NIGHT/DUST rows."
+      "description": "the scan of C04's archived range gives one color for its shielded and unshielded mints, its deploy and calls, and the NIGHT/DUST rows."
     },
     {
       "id": "mip0018.scan.idx-u1-ranges",
       "file": "token-indexer/test/mip0018-scan.test.ts",
-      "description": "Project 00026 A3: the recorded IDX range 714485-715183 gives exactly the reference's 6 colors (C05 bronze not minted), U1's range its color; 60 call actions in 58 transactions, 9 deploys, 1 maintenance update."
+      "description": "the recorded IDX range 714485-715183 gives exactly the reference's 6 colors (C05 bronze not minted), U1's range its color; 60 call actions in 58 transactions, 9 deploys, 1 maintenance update."
     },
     {
       "id": "mip0018.scan.failed-parts-excluded",
       "file": "token-indexer/test/mip0018-scan.test.ts",
-      "description": "Project 00026 A3: a FAILURE transaction and a failed fallible segment add no mint, color, sighting or action; the guaranteed part of a partial success does."
+      "description": "a FAILURE transaction and a failed fallible segment add no mint, color, sighting or action; the guaranteed part of a partial success does."
     },
     {
       "id": "mip0018.scan.seen-then-minted",
       "file": "token-indexer/test/mip0018-scan.test.ts",
-      "description": "Project 00026 A3 (Q3): a color seen in public data before its mint is listed as seen, then completed in place by the mint."
+      "description": "a color seen in public data before its mint is listed as seen, then completed in place by the mint."
     },
     {
       "id": "mip0018.scan.resume-identical",
       "file": "token-indexer/test/mip0018-scan.test.ts",
-      "description": "Project 00026 A3: batches, restarts and a crash inside a block give the same tables as one uninterrupted scan; a cursor moved by another writer is refused."
+      "description": "batches, restarts and a crash inside a block give the same tables as one uninterrupted scan; a cursor moved by another writer is refused."
     },
     {
       "id": "mip0018.scan.remove-above",
       "file": "token-indexer/test/mip0018-scan.test.ts",
-      "description": "Project 00026 A3/B3: removing everything above a height and scanning again gives the same tables."
+      "description": "removing everything above a height and scanning again gives the same tables."
     },
     {
       "id": "mip0018.scan.range-guards",
       "file": "token-indexer/test/mip0018-scan.test.ts",
-      "description": "Project 00026 A3: --from/--to, the archive's end and inconsistent archive rows (gap, parent, result, hash, undecodable) stop the scan with an error."
+      "description": "--from/--to, the archive's end and inconsistent archive rows (gap, parent, result, hash, undecodable) stop the scan with an error."
     },
     {
       "id": "mip0018.scan.cli",
       "file": "token-indexer/test/mip0018-scan.test.ts",
-      "description": "Project 00026 A3: the scan CLI scans an archived range to --to and resumes at its cursor."
+      "description": "the scan CLI scans an archived range to --to and resumes at its cursor."
     },
     {
       "id": "mip0018.events.classification",
       "file": "token-indexer/test/mip0018-events.test.ts",
-      "description": "Project 00026 B2: every Misc event of the recorded ranges is stored with its classification — C07 9/9/4 step by step, C08 1/1/0, the reference IDX scan's 35 v1 events position by position, other names ignored."
+      "description": "every Misc event of the recorded ranges is stored with its classification — C07 9/9/4 step by step, C08 1/1/0, the reference IDX scan's 35 v1 events position by position, other names ignored."
     },
     {
       "id": "mip0018.events.order",
       "file": "token-indexer/test/mip0018-events.test.ts",
-      "description": "Project 00026 B2: events follow the MIP order within a transaction (recorded C04; synthetic intents and segments); failed segments and FAILURE transactions add nothing."
+      "description": "events follow the MIP order within a transaction (recorded C04; synthetic intents and segments); failed segments and FAILURE transactions add nothing."
     },
     {
       "id": "mip0018.events.zero-extension",
       "file": "token-indexer/test/mip0018-events.test.ts",
-      "description": "Project 00026 B2: C10's event, a 127-byte raw ledger item, is stored and decoded as MIP Appendix A's full 32 + 256 bytes."
+      "description": "C10's event, a 127-byte raw ledger item, is stored and decoded as MIP Appendix A's full 32 + 256 bytes."
     },
     {
       "id": "mip0018.events.contract-events-crosscheck",
       "file": "token-indexer/test/mip0018-events.test.ts",
-      "description": "Project 00026 B2 (Q4 (c)): raw-derived events equal the indexer's recorded contractEvents for every (transaction, called contract) pair — same events, order, bytes and segment."
+      "description": "raw-derived events equal the indexer's recorded contractEvents for every (transaction, called contract) pair — same events, order, bytes and segment."
     },
     {
       "id": "mip0018.state.marks-current-state",
       "file": "token-indexer/test/mip0018-state.test.ts",
-      "description": "Project 00026 B3 (audit F3, A13): a withdrawn identity is marked exactly like one never described — from its contract's rejections only; an empty field map is the same as none."
+      "description": "a withdrawn identity is marked exactly like one never described — from its contract's rejections only; an empty field map is the same as none."
     },
     {
       "id": "mip0018.vectors.no-not-applicable",
       "file": "token-indexer/test/mip0018-vectors.test.ts",
-      "description": "Project 00026 B3 (audit F2): negative probe — a consumer reporting no groups passes the runner only with S9d (and S9a–S9c) not applicable, which the adapter tests refuse."
+      "description": "negative control — a consumer reporting no groups passes the runner only with S3a, S3b, S4a, S9d (and the vendored S9a–S9c) not applicable, which the adapter tests refuse."
     },
     {
       "id": "mip0018.vectors.pg-adapter",
       "file": "token-indexer/test/mip0018-vectors-pg.test.ts",
-      "description": "Project 00026 B3 (FR-040, SC-001): 59/59 reference normative + 43/43 informative + 8/8 UmbraDB vectors through the Postgres write path and read helpers, no check not applicable, every response equal to the pure adapter's."
+      "description": "59/59 reference normative + 43/43 informative + 8/8 UmbraDB vectors through the Postgres write path and read helpers, no check not applicable, every response equal to the pure adapter's."
     },
     {
       "id": "mip0018.vectors.pg-runner-cli",
       "file": "token-indexer/test/mip0018-vectors-pg.test.ts",
-      "description": "Project 00026 B3: the vendored runner CLI drives the Postgres adapter process over both vector sets and exits 0 with every check applicable."
+      "description": "the vendored runner CLI drives the Postgres adapter process over both vector sets and exits 0 with every check applicable."
     },
     {
       "id": "mip0018.metadata.recorded-cases",
       "file": "token-indexer/test/mip0018-metadata.test.ts",
-      "description": "Project 00026 B3 (SC-002 state part): every recorded case's state equals its expectation (reference files, SHA-256 checked; C06 UmbraDB's per-key state); a full recompute from the log changes nothing."
+      "description": "every recorded case's state equals its expectation (reference files, SHA-256 checked; C06 UmbraDB's per-key state); a full recompute from the log changes nothing."
     },
     {
       "id": "mip0018.metadata.recorded-groups",
       "file": "token-indexer/test/mip0018-metadata.test.ts",
-      "description": "Project 00026 B3 (FR-013, Q6): symbol groups on the recorded ranges are exactly C04's ACD and C05's MEDAL; no single-member group."
+      "description": "symbol groups on the recorded ranges are exactly C04's ACD and C05's MEDAL; no single-member group."
     },
     {
       "id": "mip0018.metadata.c06-steps",
       "file": "token-indexer/test/mip0018-metadata.test.ts",
-      "description": "Project 00026 B3 (Q16/Q17, S4 on chain): C06 step by step equals the reference (publish, rename) and UmbraDB's per-key expectations (withdraw, withdraw again, revive); removing and re-adding the tombstone block."
+      "description": "MIP S4 on chain: C06 step by step equals the reference (publish, rename) and UmbraDB's per-key expectations (withdraw, withdraw again, revive); removing and re-adding the tombstone block."
     },
     {
       "id": "mip0018.metadata.shared-rows",
       "file": "token-indexer/test/mip0018-metadata.test.ts",
-      "description": "Project 00026 B3 (Q15, FR-012): withdrawing one of two identities of a contract leaves the shared entries, withdrawing the last removes them; mints stay; a revive sets only its field; removeAbove restores both."
+      "description": "withdrawing one of two identities of a contract leaves the shared entries, withdrawing the last removes them; mints stay; a revive sets only its field; removeAbove restores both."
     },
     {
       "id": "mip0018.metadata.bytes",
       "file": "token-indexer/test/mip0018-metadata.test.ts",
-      "description": "Project 00026 B3 (FR-014, Q10): C07's NUL, non-UTF-8, 220-byte keys and 219-byte values round-trip as bytes; a 31-byte integer is lossless."
+      "description": "C07's NUL, non-UTF-8, 220-byte keys and 219-byte values round-trip as bytes; a 31-byte integer is lossless."
     },
     {
       "id": "mip0018.metadata.marks",
       "file": "token-indexer/test/mip0018-metadata.test.ts",
-      "description": "Project 00026 B3 (Q14 (a), A13): C01/C10 ✓, C07/C08 ⚠ incorrect with reasons, a partial token ⚠ partial, a minted token without events no mark, a withdrawn identity marked from its contract's rejections only."
+      "description": "C01/C10 ✓, C07/C08 ⚠ incorrect with reasons, a partial token ⚠ partial, a minted token without events no mark, a withdrawn identity marked from its contract's rejections only."
     },
     {
       "id": "mip0018.metadata.resume-across-tombstone",
       "file": "token-indexer/test/mip0018-metadata.test.ts",
-      "description": "Project 00026 B3 (SC-003): a crash inside the C06 tombstone block rolls back its fields; batches, restarts and the crash give tables (fields included) identical to an uninterrupted scan."
+      "description": "a crash inside the C06 tombstone block rolls back its fields; batches, restarts and the crash give tables (fields included) identical to an uninterrupted scan."
     },
     {
       "id": "mip0018.bech32m.bip350-vectors",
       "file": "token-indexer/test/mip0018-bech32m.test.ts",
-      "description": "Project 00026 C2: Bech32m codec passes BIP-350's valid/invalid strings and segwit vectors at the Bech32m layer."
+      "description": "Bech32m codec passes BIP-350's valid/invalid strings and segwit vectors at the Bech32m layer."
     },
     {
       "id": "mip0018.bech32m.recorded",
       "file": "token-indexer/test/mip0018-bech32m.test.ts",
-      "description": "Project 00026 C2: C03's recorded mint output encodes to wallet 1's recorded mn_addr_stagenet address; recorded addresses round-trip; HRP rule; refusals."
+      "description": "C03's recorded mint output encodes to wallet 1's recorded mn_addr_stagenet address; recorded addresses round-trip; HRP rule; refusals."
     },
     {
       "id": "mip0018.activity.c03-mint",
       "file": "token-indexer/test/mip0018-activity.test.ts",
-      "description": "Project 00026 C2 (US5): C03's mint row shows mn_addr_stagenet1vw57…; its UTXO (intentHash(0)) and metadata transaction follow in chain order."
+      "description": "C03's mint row shows mn_addr_stagenet1vw57…; its UTXO (intentHash(0)) and metadata transaction follow in chain order."
     },
     {
       "id": "mip0018.activity.c06-metadata",
       "file": "token-indexer/test/mip0018-activity.test.ts",
-      "description": "Project 00026 C2 (US5): C06's five metadata transactions at their heights without values; keyset pages in both orders; bad requests refused."
+      "description": "C06's five metadata transactions at their heights without values; keyset pages in both orders; bad requests refused."
     },
     {
       "id": "mip0018.activity.idx-cases",
       "file": "token-indexer/test/mip0018-activity.test.ts",
-      "description": "Project 00026 C2: on the recorded IDX/U1 ranges each color's activity = its case's transactions; mint rows = mint table; metadata rows = event log."
+      "description": "on the recorded IDX/U1 ranges each color's activity = its case's transactions; mint rows = mint table; metadata rows = event log."
     },
     {
       "id": "mip0018.activity.failed-parts",
       "file": "token-indexer/test/mip0018-activity.test.ts",
-      "description": "Project 00026 C2: nothing of a failed segment or FAILURE transaction; all public flows of a success (spends, outputs, NIGHT, contract in/out, deltas); recipient rules."
+      "description": "nothing of a failed segment or FAILURE transaction; all public flows of a success (spends, outputs, NIGHT, contract in/out, deltas); recipient rules."
     },
     {
       "id": "mip0018.activity.remove-above",
       "file": "token-indexer/test/mip0018-activity.test.ts",
-      "description": "Project 00026 C2: removeAbove deletes activity above a height; a rescan restores it exactly."
+      "description": "removeAbove deletes activity above a height; a rescan restores it exactly."
     },
     {
       "id": "mip0018.activity.kill-resume",
       "file": "token-indexer/test/mip0018-activity.test.ts",
-      "description": "Project 00026 C2: the scan CLI SIGKILLed inside a block transaction leaves none of its rows; a restart equals an uninterrupted scan."
+      "description": "the scan CLI SIGKILLed inside a block transaction leaves none of its rows; a restart equals an uninterrupted scan."
     },
     {
       "id": "mip0018.api.status",
       "file": "token-indexer/test/mip0018-api.test.ts",
-      "description": "Project 00026 C1 (FR-022): /v1/status serves network, genesis (= the recorded fixture's), start/indexed/archive heights, the MIP pin 274a84f and the vendored commit daec1f1 (checked against SOURCE.md and the own vectors' manifest)."
+      "description": "/v1/status serves network, genesis (= the recorded fixture's), start/indexed/archive heights, the MIP pin 274a84f and the vendored commit daec1f1 (checked against SOURCE.md and the own vectors' manifest)."
     },
     {
       "id": "mip0018.api.tokens-list",
       "file": "token-indexer/test/mip0018-api.test.ts",
-      "description": "Project 00026 C1 (FR-020, Q27): /v1/tokens = NIGHT, DUST, every minted or described identity in byte order with usable name/symbol/decimals, mark and tags; keyset pages of any size walk to the same list; bad limits and foreign cursors are 400."
+      "description": "/v1/tokens = NIGHT, DUST, every minted or described identity in byte order with usable name/symbol/decimals, mark and tags; keyset pages of any size walk to the same list; bad limits and foreign cursors are 400."
     },
     {
       "id": "mip0018.api.token-detail",
       "file": "token-indexer/test/mip0018-api.test.ts",
-      "description": "Project 00026 C1 (FR-022): token by color, identity and contract tokens with fields (hex + text/integer views, usable), groups of two or more, marks; C07's exact bytes incl. NUL and non-UTF-8 keys; 404s."
+      "description": "token by color, identity and contract tokens with fields (hex + text/integer views, usable), groups of two or more, marks; C07's exact bytes incl. NUL and non-UTF-8 keys; 404s."
     },
     {
       "id": "mip0018.api.lookup",
       "file": "token-indexer/test/mip0018-api.test.ts",
-      "description": "Project 00026 C1 (US1, MIP Lookup): C04's color resolves to kind 1 held shielded and kind 2 held unshielded; C05 bronze is not minted in the indexed range; NIGHT's zero color is the built-in row; held is required."
+      "description": "MIP Lookup: C04's color resolves to kind 1 held shielded and kind 2 held unshielded; C05 bronze is not minted in the indexed range; NIGHT's zero color is the built-in row; held is required."
     },
     {
       "id": "mip0018.api.events",
       "file": "token-indexer/test/mip0018-api.test.ts",
-      "description": "Project 00026 C1 (QA2, Q15, Q19): /v1/events serves accept/reject events of a contract or transaction in chain order with position, contract, classification and reason only; ignored events and stored bytes are never served."
+      "description": "/v1/events serves accept/reject events of a contract or transaction in chain order with position, contract, classification and reason only; ignored events and stored bytes are never served."
     },
     {
       "id": "mip0018.api.marks",
       "file": "token-indexer/test/mip0018-api.test.ts",
-      "description": "Project 00026 C1 (Q14 (a), US4): C01 ok, C07 and C08 incorrect with their reasons, a partial identity partial, a minted token without events unmarked, NIGHT/DUST without a mark — through the API."
+      "description": "C01 ok, C07 and C08 incorrect with their reasons, a partial identity partial, a minted token without events unmarked, NIGHT/DUST without a mark — through the API."
     },
     {
       "id": "mip0018.api.withdrawn-absent",
       "file": "token-indexer/test/mip0018-api.test.ts",
-      "description": "Project 00026 C1 (MIP 274a84f Applying records, Q5/Q15/Q16): after C06's tombstone the withdrawn name is absent from every endpoint; a wholly withdrawn identity is 404 and appears nowhere; a withdrawn minted identity reads like a never-described one."
+      "description": "MIP 274a84f Applying records: after C06's tombstone the withdrawn name is absent from every endpoint; a wholly withdrawn identity is 404 and appears nowhere; a withdrawn minted identity reads like a never-described one."
     },
     {
       "id": "mip0018.api.hostile-text",
       "file": "token-indexer/test/mip0018-api.test.ts",
-      "description": "Project 00026 C1 (MIP Consuming, US4) + C4 H1: bidi/invisible/control characters, markup and non-UTF-8 bytes are served as data in pure-ASCII JSON that parses back exactly; non-UTF-8 only as hex; hostile contract entry points (NUL, non-UTF-8, bidi) never stop the scan and are served as exact hex, text only when printable; the API modules hold no network client."
+      "description": "MIP Consuming: bidi/invisible/control characters, markup and non-UTF-8 bytes are served as data in pure-ASCII JSON that parses back exactly; non-UTF-8 only as hex; hostile contract entry points (NUL, non-UTF-8, bidi) never stop the scan and are served as exact hex, text only when printable; the API modules hold no network client."
     },
     {
       "id": "mip0018.api.errors",
       "file": "token-indexer/test/mip0018-api.test.ts",
-      "description": "Project 00026 C1 (FR-022): 400/404/405/503 error envelope without input echo or internal details; strict hex lengths, kinds 1-3, parameters; HEAD answers headers only."
+      "description": "400/404/405/503 error envelope without input echo or internal details; strict hex lengths, kinds 1-3, parameters; HEAD answers headers only."
     },
     {
       "id": "mip0018.api.serve-cli",
       "file": "token-indexer/test/mip0018-api.test.ts",
-      "description": "Project 00026 C1 (Q28): serve binds 127.0.0.1, runs the scan loop following the archive (or API only), logs the bound port, exits 0 on SIGTERM, refuses bad arguments."
+      "description": "serve binds 127.0.0.1, runs the scan loop following the archive (or API only), logs the bound port, exits 0 on SIGTERM, refuses bad arguments."
     },
     {
       "id": "mip0018.api.activity",
       "file": "token-indexer/test/mip0018-api.test.ts",
-      "description": "Project 00026 C1+C2 (FR-021, US5): /v1/tokens/{color}/activity and /v1/contracts/{address}/activity serve C2's rows; C03's mint row and UTXO carry wallet 1 in Bech32m (never hex); C06's five metadata transactions at their heights; keyset pages in both orders; 400/404."
+      "description": "/v1/tokens/{color}/activity and /v1/contracts/{address}/activity serve the stored activity rows; C03's mint row and UTXO carry wallet 1 in Bech32m (never hex); C06's five metadata transactions at their heights; keyset pages in both orders; 400/404."
     },
     {
       "id": "mip0018.ui.page-guard",
       "file": "token-indexer/test/mip0018-ui-page.test.ts",
-      "description": "Project 00026 C3 (FR-030, PR #19 backtick lesson): the served page parses, its CSP hashes are its inline script/style bytes, the script compiles (stray-backtick negative control), pure ASCII, no handler/style/src attribute or external reference, no markup sink, clock or other network client, only /v1 API paths."
+      "description": "the served page parses, its CSP hashes are its inline script/style bytes, the script compiles (stray-backtick negative control), pure ASCII, no handler/style/src attribute or external reference, no markup sink, clock or other network client, only /v1 API paths."
     },
     {
       "id": "mip0018.ui.static-routes",
       "file": "token-indexer/test/mip0018-ui-page.test.ts",
-      "description": "Project 00026 C3: serve() answers /ui, the font, the icon and / -> /ui from the API server; other methods and unknown /ui paths fall through to the API; no page without the hook; font licence in NOTICE."
+      "description": "serve() answers /ui, the font, the icon and / -> /ui from the API server; other methods and unknown /ui paths fall through to the API; no page without the hook; font licence in NOTICE."
     },
     {
       "id": "mip0018.ui.browser-routes",
       "file": "token-indexer/test/mip0018-ui-browser.test.ts",
-      "description": "Project 00026 C3 (US4/US5, SC-004): real headless browser on the recorded IDX range: NIGHT/DUST first, every API row with its mark and tags, every route renders, activity as the API answers, only same-origin page/API requests, no CSP violation or console error."
+      "description": "real headless browser on the recorded IDX range: NIGHT/DUST first, every API row with its mark and tags, every route renders, activity as the API answers, only same-origin page/API requests, no CSP violation or console error."
     },
     {
       "id": "mip0018.ui.browser-activity-shape",
       "file": "token-indexer/test/mip0018-ui-browser.test.ts",
-      "description": "Project 00026 C3+C1 (FR-021, US5): the activity section draws what the real activity endpoints answer: C03's UTXO and mint rows with wallet 1 in Bech32m (never hex) and its publish, C06's five metadata transactions on the identity and contract views; on synthetic blocks through the real scanner every role, Bech32m wallets, a hostile entry point as its hex (never decoded text), and load more with the API's cursor."
+      "description": "the activity section draws what the real activity endpoints answer: C03's UTXO and mint rows with wallet 1 in Bech32m (never hex) and its publish, C06's five metadata transactions on the identity and contract views; on synthetic blocks through the real scanner every role, Bech32m wallets, a hostile entry point as its hex (never decoded text), and load more with the API's cursor."
     },
     {
       "id": "mip0018.ui.browser-hostile-text",
       "file": "token-indexer/test/mip0018-ui-browser.test.ts",
-      "description": "Project 00026 C3 (US4 scenario 4, MIP Security considerations) + C4 H1: bidi/zero-width/NUL/control characters and (D5, final-audit F4) every Cc/Cf/Co/Cn/Cs/Zl/Zp/Default_Ignorable code point incl. U+1BCA0, U+180F and U+0600-U+0605 drawn as visible marks (never raw, not in tooltips; a look-alike symbol told apart), markup as text, URIs never fetched or linked, budgets with show all, unusable field without its value; hostile contract entry points drawn as their hex, a printable one as text."
+      "description": "MIP Security considerations: bidi/zero-width/NUL/control characters and every Cc/Cf/Co/Cn/Cs/Zl/Zp/Default_Ignorable code point incl. U+1BCA0, U+180F and U+0600-U+0605 drawn as visible marks (never raw, not in tooltips; a look-alike symbol told apart), markup as text, URIs never fetched or linked, budgets with show all, unusable field without its value; hostile contract entry points drawn as their hex, a printable one as text."
     },
     {
       "id": "mip0018.ui.browser-withdrawn",
       "file": "token-indexer/test/mip0018-ui-browser.test.ts",
-      "description": "Project 00026 C3 (Q15/Q16, MIP Applying records): with the page refreshing on its own, C06's withdrawn name and a synthetic wholly withdrawn identity appear on no reachable view; its direct route says no such identity."
+      "description": "MIP Applying records: with the page refreshing on its own, C06's withdrawn name and a synthetic wholly withdrawn identity appear on no reachable view; its direct route says no such identity."
     },
     {
       "id": "mip0018.cases.stop-heights",
       "file": "token-indexer/test/mip0018-cases.test.ts",
-      "description": "Project 00026 D2: each Stagenet case replayed up to its own last block equals its expectation (later cases absent, earlier ones unchanged); C09 leaves C01's state unchanged; U1 at its last block."
+      "description": "each Stagenet case replayed up to its own last block equals its expectation (later cases absent, earlier ones unchanged); C09 leaves C01's state unchanged; U1 at its last block."
     },
     {
       "id": "mip0018.cases.reference-index",
       "file": "token-indexer/test/mip0018-cases.test.ts",
-      "description": "Project 00026 D2: IDX and U1 equal the reference's own index files (expected.json colors and identities, index-summary colors/mints, deploys, v1 events with position and classification, stats, last block); exactly 6 IDX colors, C05 bronze not minted."
+      "description": "IDX and U1 equal the reference's own index files (expected.json colors and identities, index-summary colors/mints, deploys, v1 events with position and classification, stats, last block); exactly 6 IDX colors, C05 bronze not minted."
     },
     {
       "id": "mip0018.cases.marks",
       "file": "token-indexer/test/mip0018-cases.test.ts",
-      "description": "Project 00026 D2: every case identity's mark and standards tags (range end and each C06 step) equal Q14 (a) applied to the reference expectations and the reference index's rejections; the third party's minted token has no mark."
+      "description": "every case identity's mark and standards tags (range end and each C06 step) equal the mark rule applied to the reference expectations and the reference index's rejections; the third party's minted token has no mark."
     },
     {
       "id": "mip0018.cases.activity",
       "file": "token-indexer/test/mip0018-cases.test.ts",
-      "description": "Project 00026 D2: every case contract's metadata transactions equal the transactions the reference index lists for it, with their counts; C05 bronze has no color activity."
+      "description": "every case contract's metadata transactions equal the transactions the reference index lists for it, with their counts; C05 bronze has no color activity."
     },
     {
       "id": "mip0018.live-range.replay-equals-live",
       "file": "token-indexer/test/mip0018-live-range.test.ts",
-      "description": "Project 00026 D3: a replay of the recorded 714485-715183 tape through the sync service and the scanner equals, table by table (archive and mip0018), the digests recorded from the live Stagenet sync with the current schema (that uninterrupted live run = the replay; re-recorded live in D6 when two derived tables were added; the earlier recordings, C4 and D3, differ only in the tables their schema changes touched, and D3's uninterrupted and killed-and-resumed runs were identical; the killed-and-resumed run on the C4 code is recorded in the project plan, final-audit N4); a changed row is caught."
+      "description": "a replay of the recorded 714485-715183 tape through the sync service and the scanner equals, table by table (archive and mip0018), the digests recorded from the live Stagenet sync (that uninterrupted live run = the replay); a changed row is caught."
     },
     {
       "id": "mip0018.conformance.table",
       "file": "token-indexer/test/mip0018-conformance.test.ts",
-      "description": "Project 00026 D4: token-indexer/CONFORMANCE.md lists exactly the 36 MUST/SHOULD requirements of MIP 274a84f (SHA-256 of the extracted list), each covered or not applicable with a reason; every cited test id, vector and path exists; sub-plan C ids stay pending until C merges."
+      "description": "token-indexer/CONFORMANCE.md lists exactly the 36 MUST/SHOULD requirements of MIP 274a84f (SHA-256 of the extracted list), each covered or not applicable with a reason; every cited test id, vector and path exists."
     },
     {
       "id": "mip0018.conformance.no-network-no-code",
       "file": "token-indexer/test/mip0018-conformance.test.ts",
-      "description": "Project 00026 D4: the indexer's runtime code and the vendored codec contain no network client, no dynamic code and no child process (MIP C-024, C-031); positive controls for every forbidden form; D5 (final-audit N1): every module loaded through the runtime's relative import closure is on an exact allowlist, with negative controls (axios, undici, got, node:net, child_process, dynamic package imports, a path into node_modules)."
+      "description": "the indexer's runtime code and the vendored codec contain no network client, no dynamic code and no child process (MIP C-024, C-031); positive controls for every forbidden form; every module loaded through the runtime's relative import closure is on an exact allowlist, with negative controls (axios, undici, got, node:net, child_process, dynamic package imports, a path into node_modules)."
     },
     {
       "id": "mip0018.scan.hostile-entry-points",
       "file": "token-indexer/test/mip0018-scan.test.ts",
-      "description": "Project 00026 C4 H1/H2 (ledger maybe_str: entry points are arbitrary bytes): calls and maintenance updates naming NUL, non-UTF-8, bidi or empty entry points never stop the scan; their exact bytes are kept as bytea in mip0018_contract_actions and mip0018_activity; maintenance_updates stays ASCII; hex + text only when printable; negative controls (text refuses NUL, UTF-8 decode is lossy)."
+      "description": "Entry points are arbitrary bytes (ledger maybe_str): calls and maintenance updates naming NUL, non-UTF-8, bidi or empty entry points never stop the scan; their exact bytes are stored as bytea in mip0018_contract_actions and mip0018_activity; maintenance_updates stays ASCII; hex + text only when printable; negative controls (text refuses NUL, UTF-8 decode is lossy)."
     },
     {
       "id": "mip0018.schema.text-columns",
       "file": "token-indexer/test/mip0018-schema.test.ts",
-      "description": "Project 00026 C4 H2: every text column of the mip0018 lineage is classified (operator configuration, fixed vocabulary, code-generated ASCII, code constant); entry points and other chain byte strings are bytea; event_type, reason and maintenance_updates refuse anything but printable ASCII; a NUL cannot reach a text column."
+      "description": "every text column of the mip0018 lineage is classified (operator configuration, fixed vocabulary, code-generated ASCII, code constant); entry points and other chain byte strings are bytea; event_type, reason and maintenance_updates refuse anything but printable ASCII; a NUL cannot reach a text column."
     },
     {
       "id": "mip0018.decoder.log-semantics",
       "file": "token-indexer/test/mip0018-applied-parts.test.ts",
-      "description": "Project 00026 D5 (final-audit F1): logged values follow the ledger's decode_event (a well-formed [u32, LogEventType, data] triple has its type, any other value is Misc version 0 with the whole value as data, a single cell split name || payload after zero-extension); the transcript program's forward-only branch/jmp control flow decides whether a log op is resolved (operand pushed right before it, on every successful path), unresolved (operand not pushed, or conditionally executed) or never run."
+      "description": "logged values follow the ledger's decode_event (a well-formed [u32, LogEventType, data] triple has its type, any other value is Misc version 0 with the whole value as data, a single cell split name || payload after zero-extension); the transcript program's forward-only branch/jmp control flow decides whether a log op is resolved (operand pushed right before it, on every successful path), unresolved (operand not pushed, or conditionally executed) or never run."
     },
     {
       "id": "mip0018.events.unresolved-logs",
       "file": "token-indexer/test/mip0018-events.test.ts",
-      "description": "Project 00026 D5 (final-audit F1): through the real scan and API, a bare logged value is applied as a Misc event; a log op whose value the raw transaction does not show is stored as unresolved with its reason, never applied, served in /v1/events and counted in /v1/status; a never-run log op leaves no row; the scan never stops on them (negative control: the pre-D5 decoder stored a different set of rows)."
+      "description": "through the real scan and API, a bare logged value is applied as a Misc event; a log op whose value the raw transaction does not show is stored as unresolved with its reason, never applied, served in /v1/events and counted in /v1/status; a never-run log op leaves no row; the scan never stops on them."
     },
     {
       "id": "mip0018.activity.withdrawn-history",
       "file": "token-indexer/test/mip0018-activity.test.ts",
-      "description": "Project 00026 D5 (final-audit F3; MIP 'Applying records': a withdrawn identity is not referenced in metadata history): a color's and a contract's activity list metadata transactions only for rejected events and accepted events of identities that exist now; a withdrawn native token's publish and withdrawal transactions disappear while its mints stay; a sibling's rows stay until it is withdrawn; a revive lists the identity again; C06's per-key steps keep every row."
+      "description": "MIP 'Applying records': a withdrawn identity is not referenced in metadata history: a color's and a contract's activity list metadata transactions only for rejected events and accepted events of an identity's current description; a withdrawn native token's publish and withdrawal transactions disappear while its mints stay; a sibling's rows stay until it is withdrawn; a revived identity's history starts at its revival; removeAbove restores the earlier listings; C06's per-key steps keep every row."
     },
     {
       "id": "mip0018.api.tokens-stable-order",
       "file": "token-indexer/test/mip0018-api.test.ts",
-      "description": "Project 00026 D5 (final-audit N3, A17): a reader paging /v1/tokens never loses a token that existed when paging began: a color seen before its first mint keeps its seen row (same key) after the mint is indexed while its identity row appears; a color first seen in its own mint transaction is never a seen row."
+      "description": "a reader paging /v1/tokens never loses a token that existed when paging began: a color seen before its first mint keeps its seen row (same key) after the mint is indexed while its identity row appears; a color first seen in its own mint transaction is never a seen row."
     },
     {
       "id": "mip0018.api.bounded-cost",
       "file": "token-indexer/test/mip0018-api.test.ts",
-      "description": "Project 00026 D5 (final-audit F2): with an identity of 50 000 keys, 50 000 rejected and 50 000 ignored events of its contract, a 2 001-member symbol group and a 100 000-byte entry point, every API answer stays small and within a generous latency budget: list rows and marks read only the common keys and the first 100 reasons (reasonCount = all), identity fields come in keyset pages with fieldCount, groups list 100 members with memberCount, events page over served rows only, entry points are served as 128 bytes plus their length."
+      "description": "with an identity of 50 000 keys, 50 000 rejected and 50 000 ignored events of its contract, a 2 001-member symbol group and a 100 000-byte entry point, every API answer stays small and within a generous latency budget: list rows and marks read only the common keys and the first 100 reasons (reasonCount = all), identity fields come in keyset pages with fieldCount, groups list 100 members with memberCount, events page over served rows only, entry points are served as 128 bytes plus their length."
     },
     {
       "id": "mip0018.api.concurrency-cap",
       "file": "token-indexer/test/mip0018-api.test.ts",
-      "description": "Project 00026 D5 (final-audit F2, A18): at most maxConcurrentRequests API requests run at once (default 8, below the pool's 10); the next is answered at once with 503 BUSY and Retry-After before any database work; capacity returns when a request finishes; a cap below 1 is refused."
+      "description": "at most maxConcurrentRequests API requests run at once (default 8, below the pool's 10); the next is answered at once with 503 BUSY and Retry-After before any database work; capacity returns when a request finishes; a cap below 1 is refused."
     },
     {
       "id": "mip0018.ui.browser-bounded",
       "file": "token-indexer/test/mip0018-ui-browser.test.ts",
-      "description": "Project 00026 D5 (final-audit F2): in a real browser the page follows the API's bounded shapes: an identity's fields in keyset pages (100 rows, the field count, 'load more fields' with the API's cursor), a group's first 100 members with its member count on the identity and contract views, a 200-byte entry point drawn as its first 128 bytes with its length."
+      "description": "in a real browser the page follows the API's bounded shapes: an identity's fields in keyset pages (100 rows, the field count, 'load more fields' with the API's cursor), a group's first 100 members with its member count on the identity and contract views, a 200-byte entry point drawn as its first 128 bytes with its length."
     },
     {
       "id": "mip0018.api.unresolved-mark",
       "file": "token-indexer/test/mip0018-api.test.ts",
-      "description": "Project 00026 D6 (final-audit re-check R1, A23): an unresolved log of a contract (a rename or withdrawal the raw transaction does not show) takes the clean mark from every identity of that contract: list rows, identity detail, color, lookup and contract views answer 'unresolved' with the reason unresolved-log, the count and the positions (first 100 of many); with a rejected event as well the mark is 'incorrect' and its reasons end with unresolved-log; another contract keeps 'ok'."
+      "description": "an unresolved log of a contract (a rename or withdrawal the raw transaction does not show) takes the clean mark from every identity of that contract: list rows, identity detail, color, lookup and contract views answer 'unresolved' with the reason unresolved-log, the count and the positions (first 100 of many); with a rejected event as well the mark is 'incorrect' and its reasons end with unresolved-log; another contract keeps 'ok'."
     },
     {
       "id": "mip0018.activity.bounded-cost",
       "file": "token-indexer/test/mip0018-activity.test.ts",
-      "description": "Project 00026 D6 (final-audit re-check R3, probe P4): 100 000 metadata transactions of a withdrawn identity behind one visible rejected event, and 100 000 visible ones of a sibling: the color's and the contract's activity pages in both orders read at most 100 + 20 buffers per row a page may read (auto_explain; before the first vacuum after the withdrawal, its dead index entries add at most one buffer per 20 hidden rows) and answer through the API within a generous latency budget; the fast seeding equals the real apply path on a small count; the withdrawal that hides 100 000 listed rows is one bounded delete."
+      "description": "100 000 metadata transactions of a withdrawn identity behind one visible rejected event, and 100 000 visible ones of a sibling: the color's and the contract's activity pages in both orders read at most 100 + 20 buffers per row a page may read (auto_explain; before the first vacuum after the withdrawal, its dead index entries add at most one buffer per 20 hidden rows) and answer through the API within a generous latency budget; the fast seeding equals the real apply path on a small count; the withdrawal that hides 100 000 listed rows is one bounded delete."
     }
   ],
   "deferred": [

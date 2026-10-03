@@ -1,8 +1,8 @@
 /**
- * The MIP-0018 scan over the chain archive (project 00026, sub-plan A3): mints → colors (MIP "Lookup"), seen tokens,
+ * The MIP-0018 scan over the chain archive: mints → colors (MIP "Lookup"), seen tokens,
  * NIGHT/DUST rows, contract deploys/calls/maintenance; one atomic checkpoint per block; resume and recompute.
  *
- * Data: the recorded Stagenet tapes of sub-plan A2 (`test/integration/fixtures/stagenet-archive/`), archived by the
+ * Data: the recorded Stagenet tapes (`test/integration/fixtures/stagenet-archive/`), archived by the
  * real `chain-archive-sync` against `fake-chain-server.ts` (no network), and synthetic archive blocks for what
  * Stagenet cannot show (a mint in a failed fallible segment, a color seen before its mint, broken archive rows).
  * Expected colors: the reference index states (midnight-experiments/mip-0018 @ daec1f1,
@@ -57,12 +57,12 @@ async function dumpScan(sql: UmbraDBSql, schema: string): Promise<Record<string,
     sightings: norm(await sql`SELECT * FROM ${s}.mip0018_color_sightings ORDER BY network, color, evidence`),
     actions: norm(await sql`SELECT * FROM ${s}.mip0018_contract_actions ORDER BY network, block_height, tx_index, segment_id, action_index`),
     events: norm(await sql`SELECT * FROM ${s}.mip0018_events ORDER BY network, block_height, tx_index, event_index`),
-    fields: norm(await sql`SELECT * FROM ${s}.mip0018_fields ORDER BY network, contract_address, domain_sep, kind, key`), // B3
+    fields: norm(await sql`SELECT * FROM ${s}.mip0018_fields ORDER BY network, contract_address, domain_sep, kind, key`),
     builtins: norm(await sql`SELECT * FROM ${s}.mip0018_builtin_tokens ORDER BY network, symbol`),
   };
 }
 
-describe("MIP-0018 scan over the chain archive (00026 A3)", () => {
+describe("MIP-0018 scan over the chain archive", () => {
   let container: StartedPostgreSqlContainer;
   const clients: UmbraDBSql[] = [];
   const fakes: FakeChain[] = [];
@@ -153,7 +153,7 @@ describe("MIP-0018 scan over the chain archive (00026 A3)", () => {
   }, 180_000);
 
   it("[[mip0018.scan.idx-u1-ranges]] the recorded IDX range 714485–715183 gives exactly the reference's 6 colors (C05 bronze not minted) and U1's range its color; deploys, maintenance updates and the 58-vs-60 call count are explained by the rows", async () => {
-    // IDX: every block of the reference's scan range (D1 recording), archived and scanned.
+    // IDX: every block of the reference's scan range (recorded tape), archived and scanned.
     const idx = await fresh("idx");
     const tape = loadRangeTape("idx");
     await archiveTape(idx.sql, idx.archive, tape, 714485, 715183);
@@ -178,8 +178,8 @@ describe("MIP-0018 scan over the chain archive (00026 A3)", () => {
     expect(seen.every((t) => t.minted !== undefined)).toBe(true);
 
     // Contract actions: 9 deploys, 1 maintenance update (C10's VerifierKeyRemove at 715183), 60 call actions in
-    // 58 transactions — the reference IDX summary's `contractCalls: 58` counts transactions with a call; A2's live
-    // count (60) was call actions. Two transactions carry two calls each (another user's bridge contracts).
+    // 58 transactions — the reference IDX summary's `contractCalls: 58` counts transactions with a call. Two
+    // transactions carry two calls each (another user's bridge contracts).
     const actions = await idx.sql<{ action: string; n: number; txs: number }[]>`
       SELECT action, count(*)::int AS n, count(DISTINCT (block_height, tx_index))::int AS txs
       FROM ${idx.sql(idx.mip)}.mip0018_contract_actions GROUP BY action ORDER BY action`;
@@ -189,7 +189,7 @@ describe("MIP-0018 scan over the chain archive (00026 A3)", () => {
       FROM ${idx.sql(idx.mip)}.mip0018_contract_actions WHERE action = 'call'
       GROUP BY block_height, tx_index HAVING count(*) > 1 ORDER BY 1`;
     expect(multi.map((m) => m.h)).toEqual(["714584", "714813"]);
-    expect(multi.find((m) => m.h === "714813")!.entry).toEqual([Buffer.from("startWithdraw"), Buffer.from("signBidirectional")]); // bytea (C4 H1)
+    expect(multi.find((m) => m.h === "714813")!.entry).toEqual([Buffer.from("startWithdraw"), Buffer.from("signBidirectional")]); // bytea
     const maint = await idx.sql<{ h: string; updates: string[]; ops: Buffer[] }[]>`
       SELECT block_height::text AS h, maintenance_updates AS updates, maintenance_operations AS ops FROM ${idx.sql(idx.mip)}.mip0018_contract_actions WHERE action = 'maintenance'`;
     expect(maint).toEqual([{ h: "715183", updates: ["VerifierKeyRemove(publishMetadata, v4)"], ops: [Buffer.from("publishMetadata")] }]);
@@ -356,7 +356,7 @@ describe("MIP-0018 scan over the chain archive (00026 A3)", () => {
       ["hash", [[{ result: "success", tx: { hash: "e2".repeat(32) }, archivedHash: "e3".repeat(32) }]], /differs from the archived/],
       ["parent", [[ok], [ok]], /parent/, (h) => (h === 301 ? "ff".repeat(32) : blockHashOf(NET, h - 1))],
       ["undecodable", [[{ result: "success", tx: { hash: "e4".repeat(32), intents: [{ segment: 1, actions: [{}] }] } }]], /e4e4.*at 300: .*unknown contract action/],
-      // Mid-project audit F1: a partial success must give the outcome of every segment holding fallible content.
+      // A partial success must give the outcome of every segment holding fallible content.
       ...([
         ["partialnull", null, /partial success without the outcome of any segment/],
         ["partialempty", [], /partial success without the outcome of any segment/],
@@ -406,7 +406,7 @@ describe("MIP-0018 scan over the chain archive (00026 A3)", () => {
   }, 120_000);
 
   it("[[mip0018.scan.hostile-entry-points]] entry points are arbitrary bytes on the ledger (NUL, non-UTF-8, bidi, empty): calls and maintenance updates naming them are scanned without stopping, their exact bytes kept in mip0018_contract_actions (entry_point, maintenance_operations) and mip0018_activity, maintenance_updates stays ASCII, the read helper serves hex + text only when printable; negative controls: a text column refuses NUL and a UTF-8 decode is lossy", async () => {
-    // Sub-plan C4 H1/H2. Each entry point as ledger-v9 hands it over (valid UTF-8 -> string, else Uint8Array; H1.1).
+    // Each entry point as ledger-v9 hands it over (valid UTF-8 -> string, else Uint8Array).
     const EPS: Array<[string, string, string | undefined]> = [
       ["nul", "6d696e7400", undefined], // "mint\0": valid UTF-8, a JS string holding NUL
       ["non-utf8", "fffe4100c3", undefined],

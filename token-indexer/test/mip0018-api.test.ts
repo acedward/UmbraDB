@@ -1,12 +1,11 @@
 /**
- * The MIP-0018 read-only JSON API (project 00026, sub-plan C1; contract `token-indexer/API.md`; spec FR-020…FR-022,
- * US1/US2/US5; MIP `274a84f` "Lookup", "Applying records", "Common fields", "Symbol grouping", "Consuming").
+ * The MIP-0018 read-only JSON API (contract `token-indexer/API.md`; MIP `274a84f` "Lookup", "Applying records",
+ * "Common fields", "Symbol grouping", "Consuming").
  *
- * Data: the recorded Stagenet IDX range (sub-plan D1, `loadRangeTape("idx")`) archived by the real sync against the
- * fake chain and scanned by the real scanner; C06's lifecycle replayed step by step (case-index heights); synthetic
- * archive blocks for what Stagenet does not show (a whole identity withdrawn, a minted identity withdrawn, a partial
- * token, a color seen without a mint, hostile text). Every assertion goes through HTTP against a server bound to
- * 127.0.0.1 on a free port.
+ * Data: the recorded Stagenet IDX range (`loadRangeTape("idx")`) archived by the real sync against the fake chain and
+ * scanned by the real scanner; C06's lifecycle replayed step by step (case-index heights); synthetic archive blocks for
+ * what Stagenet does not show (a whole identity withdrawn, a minted identity withdrawn, a partial token, a color seen
+ * without a mint, hostile text). Every assertion goes through HTTP against a server bound to 127.0.0.1 on a free port.
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -79,7 +78,7 @@ const MARK_KEYS = ["mark", "missing", "reasonCount", "reasons", "tags", "unresol
 const FIELD_KEYS = ["key", "updatedAt", "usable", "valType", "valTypeName", "value"];
 const EVENT_KEYS = ["classification", "contractAddress", "eventIndex", "height", "phase", "reason", "segment", "txHash", "txIndex"];
 const hexText = (s: string): string => Buffer.from(s, "utf8").toString("hex");
-/** A mark's `unresolved` when the contract has no unresolved log (final-audit re-check R1). */
+/** A mark's `unresolved` when the contract has no unresolved log. */
 const NO_UNRESOLVED = { count: 0, positions: [] };
 
 /**
@@ -152,7 +151,7 @@ function call(address: string, logs: SynthLog[], extra: { shieldedMints?: Array<
 }
 const nullAll = (...keys: string[]): MetadataRecord[] => keys.map((k) => record.tombstone(k));
 
-describe("MIP-0018 read-only API (00026 C1)", () => {
+describe("MIP-0018 read-only API", () => {
   let container: StartedPostgreSqlContainer;
   const clients: UmbraDBSql[] = [];
   const servers: Server[] = [];
@@ -257,7 +256,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     const order = ids.map((t) => `${t.contractAddress}/${t.domainSep}/${t.kind}`);
     expect([...order].sort()).toEqual(order);
     expect(new Set(order).size).toBe(order.length);
-    // 13 described identities (B3 recorded cases) + 1 minted, never described (the third party's kind-1 token) = 14.
+    // 13 described identities (recorded cases) + 1 minted, never described (the third party's kind-1 token) = 14.
     expect(ids).toHaveLength(14);
     expect(ids.filter((t) => t.described).length).toBe(13);
     const thirdParty = ids.filter((t) => !t.described);
@@ -316,7 +315,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
       expect(i.group.symbol).toEqual({ hex: hexText("ACD"), utf8: "ACD" });
       expect(i.group.members.map((m: Json) => m.kind)).toEqual([1, 2, 3]);
       expect(i.group.memberCount).toBe(3);
-      // Final-audit F2: fields are one keyset page in key byte order, counted; the common keys' raw rows are served too.
+      // Fields are one keyset page in key byte order, counted; the common keys' raw rows are served too.
       expect([i.fieldCount, i.fieldsNextCursor, i.fields.map((f: Json) => f.key.utf8)]).toEqual([3, null, ["decimals", "name", "symbol"]]);
       expect(i.commonFields.map((f: Json) => f.key.utf8).sort()).toEqual(["decimals", "name", "symbol"]);
       expect(i.mark).toEqual({ mark: "ok", reasons: [], reasonCount: 0, unresolved: NO_UNRESOLVED, missing: [], tags: [] });
@@ -341,7 +340,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     expect((await get(idx.base, `/v1/identities/${contractOf("C01")}/${"ab".repeat(32)}/3`)).status).toBe(404);
     const c01 = list.find((t) => t.contractAddress === contractOf("C01"));
     expect((await get(idx.base, `/v1/identities/${contractOf("C01")}/${c01.domainSep}/1`)).status).toBe(404); // C01 describes kind 3 only
-    expect((await ok(idx.base, `/v1/identities/${contractOf("C01")}/${c01.domainSep}/3`)).group).toBeNull(); // alone with AGLD: no group (Q6)
+    expect((await ok(idx.base, `/v1/identities/${contractOf("C01")}/${c01.domainSep}/3`)).group).toBeNull(); // alone with AGLD: no group
 
     // C07's fields byte for byte (keys with a NUL inside and non-UTF-8 keys, 220-byte key, 219-byte value).
     type ExpectedField = { valType: number; value_hex: string; usable?: boolean };
@@ -382,7 +381,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     expect(await ok(idx.base, `/v1/contracts/${bridge}/tokens`)).toEqual({ contractAddress: bridge, groups: [], items: [], nextCursor: null });
   }, 120_000);
 
-  it("[[mip0018.api.tokens-stable-order]] final-audit N3: a reader paging /v1/tokens never loses a token that existed when paging began — a color seen in public data before its first mint keeps its seen row (same key) after the mint is indexed, while its identity row appears among the identities; a color first seen in its own mint transaction is never a seen row", async () => {
+  it("[[mip0018.api.tokens-stable-order]] a reader paging /v1/tokens never loses a token that existed when paging began — a color seen in public data before its first mint keeps its seen row (same key) after the mint is indexed, while its identity row appears among the identities; a color first seen in its own mint transaction is never a seen row", async () => {
     const Z = "11".repeat(32); // the minting contract sorts before Y, so its identity row lands BEHIND a cursor past Y
     const Y = "fe".repeat(32);
     const DS = "5a".repeat(32);
@@ -419,7 +418,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     expect(all).not.toContain(`color/${T2}`);
   }, 120_000);
 
-  it("[[mip0018.api.bounded-cost]] final-audit F2: chain-controlled cardinalities do not grow answers — an identity with 50 000 keys, 50 000 rejected events and 50 000 ignored events of its contract, a 2 001-member symbol group and a 100 000-byte entry point: list rows and marks read only the common keys and the first 100 reasons (reasonCount = all), the identity's fields come in keyset pages with fieldCount, groups list their first 100 members with memberCount, events page over the served rows only, activity serves an entry point's first 128 bytes with its length; every answer is small and within a generous latency budget", async () => {
+  it("[[mip0018.api.bounded-cost]] chain-controlled cardinalities do not grow answers — an identity with 50 000 keys, 50 000 rejected events and 50 000 ignored events of its contract, a 2 001-member symbol group and a 100 000-byte entry point: list rows and marks read only the common keys and the first 100 reasons (reasonCount = all), the identity's fields come in keyset pages with fieldCount, groups list their first 100 members with memberCount, events page over the served rows only, activity serves an entry point's first 128 bytes with its length; every answer is small and within a generous latency budget", async () => {
     const X = "c0".repeat(32);
     const DA = "da".repeat(32);
     const C = "cc".repeat(32);
@@ -509,7 +508,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     await timed("/v1/status", 4_000);
   }, 300_000);
 
-  it("[[mip0018.api.concurrency-cap]] final-audit F2: at most maxConcurrentRequests API requests run at once; the next is answered at once with 503 BUSY and Retry-After, never queued; capacity returns when a request finishes; a cap below 1 is refused", async () => {
+  it("[[mip0018.api.concurrency-cap]] at most maxConcurrentRequests API requests run at once; the next is answered at once with 503 BUSY and Retry-After, never queued; capacity returns when a request finishes; a cap below 1 is refused", async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => { release = r; });
     let started = 0;
@@ -554,7 +553,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     // NIGHT: the built-in row; DUST has no color (list only).
     const night = await ok(idx.base, `/v1/lookup/${"00".repeat(32)}?held=unshielded`);
     expect([night.found, night.result, night.builtin.symbol, night.builtin.color, night.identity]).toEqual([true, "builtin", "NIGHT", "00".repeat(32), null]);
-    // Final-audit N7: the zero color held SHIELDED is the ledger's default shielded token type, not NIGHT.
+    // The zero color held SHIELDED is the ledger's default shielded token type, not NIGHT.
     expect(await ok(idx.base, `/v1/lookup/${"00".repeat(32)}?held=shielded`)).toEqual({
       color: "00".repeat(32), held: "shielded", found: false, result: "shielded-zero-color", builtin: null, identity: null, seen: null,
       indexedRange: { from: 714485, to: 715183 },
@@ -565,7 +564,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
       expect((await get(idx.base, `/v1/lookup/${color}${q}`)).status, q).toBe(400);
   }, 120_000);
 
-  it("[[mip0018.api.events]] /v1/events: MIP-0018-named events (accept/reject) of a contract or a transaction in chain order with position, contract, classification and reason only — never name, payload, domainSep, kind or values (QA2); ignored events not served; pages; filters required", async () => {
+  it("[[mip0018.api.events]] /v1/events: MIP-0018-named events (accept/reject) of a contract or a transaction in chain order with position, contract, classification and reason only — never name, payload, domainSep, kind or values; ignored events not served; pages; filters required", async () => {
     const C07 = contractOf("C07");
     const all = await ok(idx.base, `/v1/events?contract=${C07}&limit=500`);
     expect(all.items.map((e: Json) => e.classification).sort()).toEqual([...Array(9).fill("accept"), ...Array(9).fill("reject")]); // 4 ignored not served
@@ -600,7 +599,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     expect((await get(idx.base, `/v1/events?contract=${contractOf("C08")}&cursor=${p.nextCursor}`)).status).toBe(400); // cursor bound to its filter
   }, 120_000);
 
-  it("[[mip0018.api.activity]] /v1/tokens/{color}/activity and /v1/contracts/{address}/activity (C2's rows): C03's mint row and UTXO show wallet 1 in Bech32m (never its hex); C06's five metadata transactions at their heights; keyset pages and both orders; 400 for bad limit/order/cursor, 404 for unknown colors and contracts", async () => {
+  it("[[mip0018.api.activity]] /v1/tokens/{color}/activity and /v1/contracts/{address}/activity: C03's mint row and UTXO show wallet 1 in Bech32m (never its hex); C06's five metadata transactions at their heights; keyset pages and both orders; 400 for bad limit/order/cursor, 404 for unknown colors and contracts", async () => {
     const WALLET1 = "mn_addr_stagenet1vw57646su9y5z6myarm93m6kcn62j97z0yma94lfkhmta6pz5h5q6utr3k";
     const list = (await ok(idx.base, "/v1/tokens?limit=500")).items as Json[];
     const C03 = contractOf("C03");
@@ -675,7 +674,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     expect([part.mark, part.common]).toEqual([{ mark: "partial", reasons: [], reasonCount: 0, unresolved: NO_UNRESOLVED, missing: ["symbol", "decimals"], tags: [] }, { name: "Only A Name", symbol: null, decimals: null, standards: null }]);
   }, 120_000);
 
-  it("[[mip0018.api.unresolved-mark]] final-audit re-check R1: an unresolved log of a contract (its rename or withdrawal the raw transaction does not show) takes the clean ✓ from every identity of that contract — described, minted-only, list row, detail, color, lookup and contract view all answer ⚠ unresolved with the reason unresolved-log, the count and the log's position (bounded: the first 100 of many); with a rejected event as well the mark is ⚠ incorrect and its reasons end with unresolved-log; another contract keeps ✓", async () => {
+  it("[[mip0018.api.unresolved-mark]] an unresolved log of a contract (its rename or withdrawal the raw transaction does not show) takes the clean ✓ from every identity of that contract — described, minted-only, list row, detail, color, lookup and contract view all answer ⚠ unresolved with the reason unresolved-log, the count and the log's position (bounded: the first 100 of many); with a rejected event as well the mark is ⚠ incorrect and its reasons end with unresolved-log; another contract keeps ✓", async () => {
     const Y = "c7".repeat(32); // ✓, then a rename whose operand comes from `dup` (log-operand-not-pushed)
     const Z = "c8".repeat(32); // ✓, then a withdrawal inside a branch (log-conditionally-executed)
     const W = "c9".repeat(32); // ✓, then a rejected event and an unresolved log
@@ -891,7 +890,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
       expect(src, f).not.toMatch(/\bfetch\(|node:https|\.request\(|net\.connect|from "undici"/);
     }
 
-    // Sub-plan C4 H1: contract entry points are arbitrary bytes on the ledger. Calls naming NUL, non-UTF-8 and bidi
+    // Contract entry points are arbitrary bytes on the ledger. Calls naming NUL, non-UTF-8 and bidi
     // entry points mint and move tokens (activity rows carry the entry point); the scan goes through every block and
     // the API serves each entry point as its exact hex, with `text` only for a printable one.
     const edb = await fresh("hostileep");
@@ -1004,7 +1003,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
       await h.stop();
     }
 
-    // A scan that cannot proceed (Q20: an undecodable transaction stops the scan at its block) does not take the API
+    // A scan that cannot proceed (an undecodable transaction stops the scan at its block) does not take the API
     // down: status says `stalled`, the other endpoints answer, the cursor stays before the block.
     const bad = await fresh("stall");
     await putSyntheticBlocks(bad.sql, bad.archive, NET, 50, [[call("c3".repeat(32), [])]]); // JSON bytes: not a ledger transaction
@@ -1049,7 +1048,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     await expect(serveMain([], {})).rejects.toThrow(/usage/);
     await expect(serveMain(["--network", NET, "--port", "70000"], { PG_URL: container.getConnectionUri() })).rejects.toThrow(/--port/);
     await expect(serveMain(["--network", NET, "--genesis", "abc"], { PG_URL: container.getConnectionUri() })).rejects.toThrow(/--genesis/);
-    // Final-audit N6: an idle wait of 0 (or below 100 ms) would make the scan loop and its error back-off a hot loop.
+    // An idle wait of 0 (or below 100 ms) would make the scan loop and its error back-off a hot loop.
     for (const idle of ["0", "99"])
       await expect(serveMain(["--network", NET, "--scan-idle-ms", idle], { PG_URL: container.getConnectionUri() })).rejects.toThrow(/--scan-idle-ms must be an integer from 100 to 3600000/);
     await expect(serve({ sql: db.sql, network: NET, schema: db.mip, archiveSchema: db.archive, port: 0, scanIdleMs: 0 })).rejects.toThrow(/scanIdleMs/);

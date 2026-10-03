@@ -1,10 +1,9 @@
 /**
- * MIP-0018 vector conformance through UmbraDB's POSTGRES adapter (project 00026 sub-plan B3; spec FR-040, SC-001):
- * the vendored runner core, unchanged, drives every vector — the 59 reference normative + 43 informative vectors and
- * UmbraDB's own 8 (MIP `274a84f`, per-key tombstones) — through the production write path (`fields.ts`) into a fresh
- * `mip0018` schema per request, and reads the state back with the read helpers the API serves (`metadata.ts`). The
- * responses must equal the pure adapter's, request by request (S4 rollback, S7 independence and S9 groups included),
- * and no check may pass as "not applicable" (mid-project audit F2).
+ * MIP-0018 vector conformance through UmbraDB's POSTGRES adapter: the vendored runner core, unchanged, drives every
+ * vector — the 59 reference normative + 43 informative vectors and UmbraDB's own 8 (MIP `274a84f`, per-key tombstones)
+ * — through the production write path (`fields.ts`) into a fresh `mip0018` schema per request, and reads the state back
+ * with the read helpers the API serves (`metadata.ts`). The responses must equal the pure adapter's, request by request
+ * (S4 rollback, S7 independence and S9 groups included), and no check may pass as "not applicable".
  */
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
@@ -19,7 +18,7 @@ import { createPgVectorConsumer } from "../mip0018/vector-adapter-pg.ts";
 const failures = (report: Awaited<ReturnType<typeof runVectors>>): string[] =>
   report.results.filter((r) => !r.ok).map((r) => `${r.id}: ${r.failures.join("; ")}`);
 
-describe("MIP-0018 vectors through the Postgres adapter (00026 B3)", () => {
+describe("MIP-0018 vectors through the Postgres adapter", () => {
   let container: StartedPostgreSqlContainer;
   let sql: UmbraDBSql;
 

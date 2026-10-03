@@ -1,9 +1,9 @@
 /**
- * The explorer page's build/test guard (project 00026, sub-plan C3; spec FR-030, FR-043; the PR #19 lesson "a backtick
- * in the inline page script broke the build"). No database and no browser: the served document is fetched over HTTP
- * from the real entry point (`serve()`), parsed, its CSP checked against the bytes it carries, its script compiled,
- * and the script and markup scanned for every way a value could become markup or a request could leave the origin.
- * The browser-level behaviour is `mip0018-ui-browser.test.ts`.
+ * The explorer page's build/test guard (a backtick in an inline page script must not be able to break the build). No
+ * database and no browser: the served document is fetched over HTTP from the real entry point (`serve()`), parsed, its
+ * CSP checked against the bytes it carries, its script compiled, and the script and markup scanned for every way a
+ * value could become markup or a request could leave the origin. The browser-level behaviour is
+ * `mip0018-ui-browser.test.ts`.
  */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -41,7 +41,7 @@ function tags(html: string): Array<{ name: string; end: boolean; self: boolean; 
   return out;
 }
 
-describe("MIP-0018 explorer page: build/test guard (00026 C3)", () => {
+describe("MIP-0018 explorer page: build/test guard", () => {
   const servers: Server[] = [];
   const handles: ServeHandle[] = [];
 
@@ -143,7 +143,7 @@ describe("MIP-0018 explorer page: build/test guard (00026 C3)", () => {
     expect(code).toContain('var API = "/v1";');
     const firstSegments = [...code.matchAll(/apiPath\(\s*\[\s*"([a-z]+)"/g)].map((m) => m[1]!);
     expect(new Set(firstSegments)).toEqual(new Set(["status", "tokens", "identities", "contracts", "events"]));
-    // The endpoints the header comment declares are the API's (API.md) plus the two pending activity endpoints.
+    // The endpoints the header comment declares are the API's (API.md), the two activity endpoints included.
     const declared = [...script.matchAll(/^ \*   GET (\/v1\/\S+)/gm)].map((m) => m[1]!.split("?")[0]!);
     expect(declared).toEqual(["/v1/status", "/v1/tokens", "/v1/tokens/{color}", "/v1/identities/{contract}/{domainSep}/{kind}", "/v1/contracts/{address}/tokens", "/v1/events", "/v1/tokens/{color}/activity", "/v1/contracts/{address}/activity"]);
     const apiMd = readFileSync(new URL("token-indexer/API.md", REPO), "utf8");
@@ -151,7 +151,7 @@ describe("MIP-0018 explorer page: build/test guard (00026 C3)", () => {
     expect(apiMd).toContain("/v1/tokens/{color}/activity");
   }, 60_000);
 
-  it("[[mip0018.ui.static-routes]] serve() answers /ui, /ui/, the font, the icon and / → /ui from the API's own server; HEAD gives headers only; other methods and unknown /ui paths fall through to the API (405/404); without the hook /ui stays a 404; the font and icon are #19's bytes and the font's licence is in NOTICE", async () => {
+  it("[[mip0018.ui.static-routes]] serve() answers /ui, /ui/, the font, the icon and / → /ui from the API's own server; HEAD gives headers only; other methods and unknown /ui paths fall through to the API (405/404); without the hook /ui stays a 404; the font and icon are the explorer's bytes from acedward/UmbraDB PR #19 and the font's licence is in NOTICE", async () => {
     const h = await serve({ sql: NO_SQL, network: "stagenet", apiOnly: true, port: 0, log: () => {} });
     handles.push(h);
     expect(h.host).toBe("127.0.0.1");
@@ -184,7 +184,7 @@ describe("MIP-0018 explorer page: build/test guard (00026 C3)", () => {
       expect(r.status, p).toBe(404);
       expect(r.headers.get("content-type"), p).toBe("application/json; charset=utf-8");
     }
-    // Without the hook (createMip0018Api alone) the page does not exist — C1's behaviour is unchanged.
+    // Without the hook (createMip0018Api alone) the page does not exist.
     const bare = createMip0018Api({ sql: NO_SQL, network: "stagenet", log: () => {} });
     servers.push(bare);
     const bareBase = `http://127.0.0.1:${await listen(bare, 0)}`;
@@ -197,7 +197,7 @@ describe("MIP-0018 explorer page: build/test guard (00026 C3)", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(serveUi({ method: "DELETE", url: "/ui" } as any, fakeRes as any)).toBe(false);
     expect(touched).toBe(false);
-    // Licence and provenance: the font is #19's file, its OFL text sits beside it, NOTICE names both.
+    // Licence and provenance: the font is the file of acedward/UmbraDB PR #19, its OFL text sits beside it, NOTICE names both.
     expect(sha256(read("fonts/Outfit-Variable-latin.woff2"))).toBe("92684e4acde79ef07758cd09380b7e01e9824d8b061eddeda046f78c166d7b12");
     expect(read("fonts/OFL.txt").toString("utf8")).toMatch(/^Copyright 2021 The Outfit Project Authors[\s\S]*SIL OPEN FONT LICENSE Version 1\.1/);
     const notice = readFileSync(new URL("NOTICE", REPO), "utf8");

@@ -1,6 +1,6 @@
 /**
- * The MIP-0018 conformance table (project 00026, sub-plan D4; spec SC-006): `token-indexer/CONFORMANCE.md` maps every
- * MUST/SHOULD of the final MIP (`274a84f`) to UmbraDB tests or "not applicable". This file keeps the table honest:
+ * The MIP-0018 conformance table: `token-indexer/CONFORMANCE.md` maps every MUST/SHOULD of MIP-0018 at `274a84f` to
+ * UmbraDB tests or "not applicable". This file keeps the table honest:
  *
  * - `[[mip0018.conformance.table]]` — the rows are exactly the MIP's requirements (a SHA-256 of the extracted list),
  *   every row is resolved, and every test id, vector and path the table cites exists;
@@ -28,11 +28,10 @@ const REQUIREMENTS_SHA256 = "c5795004bb00485a677fc65512b9c18aeba0df9fdc4827aab6f
 const REQUIREMENT_ROWS = 36;
 
 /**
- * Pending ids (sub-plan D4 drafts): none. The table was finalized after sub-plan C merged (project 00026); a future
- * draft row may again cite a not-yet-written test as `[[id]]`† and list it here, and the check below fails as soon as
- * that test exists.
+ * Pending ids: a row may cite a test that does not exist yet as `[[id]]`† and list its id here; the check below fails as
+ * soon as that test exists. None.
  */
-const PENDING_AFTER_C_MERGE: string[] = [];
+const PENDING_IDS: string[] = [];
 
 const normalize = (s: string): string => s.replace(/\\\|/g, "|").replace(/\s+/g, " ").trim();
 const unlink = (s: string): string => s.replace(/\[([^\]]*)\]\([^)\s]*\)/g, "$1");
@@ -84,10 +83,10 @@ const stripComments = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, 
 const violations = (src: string): string[] => FORBIDDEN.filter(([, re]) => re.test(stripComments(src))).map(([what]) => what);
 
 /**
- * Final-audit N1: what the indexer's runtime may import — an ALLOWLIST, so a network client package (axios, undici,
- * got, …) or a process/socket module cannot slip past the denylist above. Exactly the modules the runtime uses (the
- * test fails on an unused entry too); type-only imports are erased and not counted; relative specifiers must stay in
- * this repository and outside `node_modules`; a dynamic import must be a relative string literal.
+ * What the indexer's runtime may import — an ALLOWLIST, so a network client package (axios, undici, got, …) or a
+ * process/socket module cannot slip past the denylist above. Exactly the modules the runtime uses (the test fails on an
+ * unused entry too); type-only imports are erased and not counted; relative specifiers must stay in this repository and
+ * outside `node_modules`; a dynamic import must be a relative string literal.
  */
 const ALLOWED_MODULES = new Set(["node:crypto", "node:fs", "node:http", "node:util", "postgres", "zod", "@midnightntwrk/ledger-v9"]);
 
@@ -131,8 +130,8 @@ function importCheck(src: string, file: string): { bad: string[]; local: string[
 const sourceOf = (target: string): string | undefined =>
   [target, target.replace(/\.js$/, ".ts")].find((t) => existsSync(join(ROOT, t)) && statSync(join(ROOT, t)).isFile());
 
-describe("MIP-0018 conformance table (00026 D4)", () => {
-  it("[[mip0018.conformance.table]] CONFORMANCE.md lists exactly the 36 MUST/SHOULD requirements of MIP 274a84f, each covered by existing tests or not applicable with a reason; every cited test id, vector and path exists; sub-plan C's ids stay pending until C merges", () => {
+describe("MIP-0018 conformance table", () => {
+  it("[[mip0018.conformance.table]] CONFORMANCE.md lists exactly the 36 MUST/SHOULD requirements of MIP 274a84f, each covered by existing tests or not applicable with a reason; every cited test id, vector and path exists", () => {
     const rs = rows();
     expect(rs.map((r) => r.id)).toEqual(Array.from({ length: REQUIREMENT_ROWS }, (_, i) => `C-${String(i + 1).padStart(3, "0")}`));
     const list = rs.map((r) => [r.id, normalize(r.section), r.level, normalize(unlink(r.text))]);
@@ -150,20 +149,20 @@ describe("MIP-0018 conformance table (00026 D4)", () => {
     const covered = rs.filter((r) => r.status === "covered").length;
     expect(DOC).toContain(`**${covered} covered, ${rs.length - covered} not applicable**`);
 
-    // Test ids: in the required manifest or a `[[id]]` token of a test file — or, while this is a draft, pending (†).
+    // Test ids: in the required manifest or a `[[id]]` token of a test file — or pending (†).
     const manifest = JSON.parse(readFileSync(join(ROOT, "test/integration/required-tests.manifest.json"), "utf8")) as { required: Array<{ id: string }> };
     const known = new Set(manifest.required.map((r) => r.id));
     for (const f of walk(".", [".test.ts"])) for (const m of readFileSync(join(ROOT, f), "utf8").matchAll(/\[\[([a-z0-9.:-]+)\]\]/g)) known.add(m[1]!);
     const cited = new Set([...DOC.matchAll(/\[\[([a-z0-9.-]+)\]\]/g)].map((m) => m[1]!));
     const marked = new Set([...DOC.matchAll(/\[\[([a-z0-9.-]+)\]\]`†/g)].map((m) => m[1]!));
-    expect([...marked].sort()).toEqual([...PENDING_AFTER_C_MERGE].sort());
-    for (const id of PENDING_AFTER_C_MERGE)
-      expect(known.has(id), `${id} is present now: finalize CONFORMANCE.md (drop † and the Pending row) and empty PENDING_AFTER_C_MERGE`).toBe(false);
+    expect([...marked].sort()).toEqual([...PENDING_IDS].sort());
+    for (const id of PENDING_IDS)
+      expect(known.has(id), `${id} exists: drop its † in CONFORMANCE.md and remove it from PENDING_IDS`).toBe(false);
     const missing = [...cited].filter((id) => !known.has(id) && !marked.has(id));
     expect(missing).toEqual([]);
     expect(cited.size).toBeGreaterThan(40);
     // A pending id is always written with its † (never cited unmarked elsewhere in the table).
-    for (const id of PENDING_AFTER_C_MERGE)
+    for (const id of PENDING_IDS)
       expect(DOC.split(`[[${id}]]`).length - 1, id).toBe(DOC.split(`[[${id}]]\`†`).length - 1);
 
     // Vectors: vendored ids, and `*` = UmbraDB's own 274a84f version.
@@ -208,7 +207,7 @@ describe("MIP-0018 conformance table (00026 D4)", () => {
 
     // Runtime code: everything under token-indexer/mip0018 except the vector tooling (adapters, generator, runner
     // wrapper — test-only programs that talk to the vendored runner over stdin/stdout or spawn it), plus the vendored
-    // codec. The browser page's own script (`ui/page.js`) is checked by the page guard of sub-plan C.
+    // codec. The browser page's own script (`ui/page.js`) is checked by the page guard (`mip0018-ui-page.test.ts`).
     const devOnly = new Set(["token-indexer/mip0018/run-vectors.ts", "token-indexer/mip0018/vector-adapter.ts", "token-indexer/mip0018/vector-adapter-pg.ts"]);
     const files = [...walk("token-indexer/mip0018", [".ts"]).filter((f) => !devOnly.has(f) && !f.startsWith("token-indexer/mip0018/vectors-umbradb/")),
       ...walk("token-indexer/vendor/mip0018/codec/src", [".ts"])];
@@ -217,7 +216,7 @@ describe("MIP-0018 conformance table (00026 D4)", () => {
     const found = Object.fromEntries(files.map((f): [string, string[]] => [f, violations(readFileSync(join(ROOT, f), "utf8"))]).filter(([, v]) => v.length > 0));
     expect(found).toEqual({});
 
-    // Final-audit N1 — the import allowlist. Negative controls: package network clients, socket and process modules,
+    // The import allowlist. Negative controls: package network clients, socket and process modules,
     // dynamic package imports, a relative path into node_modules; positive controls: the forms the runtime uses.
     const notAllowed = [
       'import axios from "axios";', 'import { request } from "undici";', 'import got from "got";', 'import * as net from "node:net";',
@@ -253,7 +252,7 @@ describe("MIP-0018 conformance table (00026 D4)", () => {
       }
     }
     expect(offending).toEqual({});
-    expect([...seen].filter((f) => f.startsWith("src/")).length).toBeGreaterThan(5); // the closure reaches the base's own code
+    expect([...seen].filter((f) => f.startsWith("src/")).length).toBeGreaterThan(5); // the closure reaches the repository's own src/ code
     expect(seen.has("src/postgres/client.ts")).toBe(true);
     expect([...used].sort()).toEqual([...ALLOWED_MODULES].sort()); // no unused entry: the allowlist is exactly what runs
   }, 60_000);

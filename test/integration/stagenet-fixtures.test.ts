@@ -8,16 +8,16 @@ import {
 import { BLOCK_BY_HEIGHT_QUERY } from "../../chain-archive-sync/indexer-client.js";
 
 /**
- * Project 00026, sub-plan D1 (spec FR-041/FR-042, Q11): the recorded Stagenet fixtures are what
- * their manifest says they are -- every file's SHA-256 and size, the two contiguous ranges (the
- * reference IDX scan 714485–715183 and U1's 715402–715433) with internally consistent node and
- * indexer answers, a `contractEvents` capture for every (transaction, called contract) pair, and a
- * case index whose every transaction is found in the tapes. No network, no database.
+ * The recorded Stagenet fixtures are what their manifest says they are -- every file's SHA-256 and
+ * size, the two contiguous ranges (the reference IDX scan 714485–715183 and U1's 715402–715433)
+ * with internally consistent node and indexer answers, a `contractEvents` capture for every
+ * (transaction, called contract) pair, and a case index whose every transaction is found in the
+ * tapes. No network, no database.
  */
 
 const noPrefix = (h: string): string => (h.startsWith("0x") ? h.slice(2) : h).toLowerCase();
 
-describe("recorded Stagenet fixtures (00026 D1)", () => {
+describe("recorded Stagenet fixtures", () => {
   it("[[stagenet.fixtures.manifest]] every fixture file matches the manifest's SHA-256 and size; provenance and size recorded", () => {
     const m = loadManifest();
     expect(m.format).toBe("umbradb-stagenet-fixtures/1");
@@ -25,7 +25,7 @@ describe("recorded Stagenet fixtures (00026 D1)", () => {
     expect(m.genesisHash).toBe(STAGENET_GENESIS);
     expect(m.nodeUrl).toBe("https://rpc.stagenet.shielded.tools");
     expect(m.indexerUrl).toBe("https://indexer.stagenet.shielded.tools/api/v4/graphql");
-    expect(m.queries.indexerBlockSha256).toBe(sha256Hex(BLOCK_BY_HEIGHT_QUERY)); // the sync still asks what was recorded
+    expect(m.queries.indexerBlockSha256).toBe(sha256Hex(BLOCK_BY_HEIGHT_QUERY)); // the sync asks what was recorded
     expect(m.queries.contractEventsSha256).toBe(sha256Hex(CONTRACT_EVENTS_QUERY));
     expect(m.ranges.map((r) => [r.name, r.from, r.to])).toEqual([["idx", 714485, 715183], ["u1", 715402, 715433]]);
 
@@ -35,7 +35,7 @@ describe("recorded Stagenet fixtures (00026 D1)", () => {
       expect(sha256Hex(data), f.path).toBe(f.sha256);
     }
     expect(m.totalBytes).toBe(m.files.reduce((n, f) => n + f.bytes, 0));
-    expect(m.totalBytes).toBeLessThan(m.sizeTargetBytes); // D1's "< 1 MB" target, kept from growing
+    expect(m.totalBytes).toBeLessThan(m.sizeTargetBytes); // the "< 1 MB" size target
 
     // Exactly the listed data files (plus the manifest and the TypeScript helpers) live in the folder.
     const listed = new Set([...m.files.map((f) => f.path), "manifest.json"]);

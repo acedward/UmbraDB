@@ -1,17 +1,17 @@
 /**
- * UmbraDB's MIP-0018 metadata state in Postgres (project 00026, sub-plan B3; spec FR-012…FR-015, FR-020; MIP
- * `274a84f` "Applying records", "Common fields", "Symbol grouping"): the scan applies every accepted event to the
- * latest-value rows in its block transaction, a Null record deletes its key's row, an identity with no row is not
- * referenced by any read helper, `removeAbove` recomputes exactly, and the marks and groups come from the pure module.
+ * UmbraDB's MIP-0018 metadata state in Postgres (MIP `274a84f` "Applying records", "Common fields", "Symbol grouping"):
+ * the scan applies every accepted event to the latest-value rows in its block transaction, a Null record deletes its
+ * key's row, an identity with no row is not referenced by any read helper, `removeAbove` recomputes exactly, and the
+ * marks and groups come from the pure module.
  *
- * Data: the recorded Stagenet ranges of sub-plan D1 (`loadRangeTape`), archived by the real sync against the fake
+ * Data: the recorded Stagenet ranges (`loadRangeTape`), archived by the real sync against the fake
  * chain and scanned by the real scanner; synthetic archive blocks for what Stagenet does not show (a whole withdrawal,
  * shared rows, a partial token, a 31-byte integer).
  *
  * Expectations: the reference's case files (midnight-experiments/mip-0018 @ daec1f1, copied verbatim into
  * `fixtures/mip0018-cases/`, SHA-256 checked against `case-index.json`), and — for C06's steps after the tombstone —
- * UmbraDB's own per-key expectations (`fixtures/mip0018-cases/C06/umbradb-per-key/`, Q16/Q17; provenance in that
- * folder's README). Single-member groups are excluded on both sides (Q6).
+ * UmbraDB's own per-key expectations (`fixtures/mip0018-cases/C06/umbradb-per-key/`; provenance in that
+ * folder's README). Single-member groups are excluded on both sides.
  */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -89,7 +89,7 @@ async function differences(sql: UmbraDBSql, schema: string, contract: string, ex
   const wantGroups = expected.groups.map((g) => ({ symbol: g.symbol, members: g.members.map((m) => `${norm(m.domainSep)}/${m.kind}`) }));
   if (multi(gotGroups) !== multi(wantGroups)) d.push(`groups ${multi(gotGroups)}, expected ${multi(wantGroups)}`);
   if (expected.counts !== undefined) {
-    // The reference's counts have no `unresolved` (a D5 classification): none may exist in the recorded cases.
+    // The reference's counts have no `unresolved` (an UmbraDB classification): none may exist in the recorded cases.
     const { unresolved, ...c } = await eventCounts(sql, NET, contract, schema);
     if (unresolved !== 0) d.push(`unresolved ${unresolved}`);
     if (canon(c) !== canon(expected.counts)) d.push(`counts ${canon(c)}, expected ${canon(expected.counts)}`);
@@ -124,7 +124,7 @@ function v1Log(domainSep: string, kind: number, records: MetadataRecord[]): Synt
 }
 const nullAll = (...keys: string[]): MetadataRecord[] => keys.map((k) => record.tombstone(k));
 
-describe("MIP-0018 metadata state in Postgres (00026 B3)", () => {
+describe("MIP-0018 metadata state in Postgres", () => {
   let container: StartedPostgreSqlContainer;
   const clients: UmbraDBSql[] = [];
   let counter = 0;
@@ -202,7 +202,7 @@ describe("MIP-0018 metadata state in Postgres (00026 B3)", () => {
     // The reference's identity-wide C06 expectation does NOT describe the per-key state (why UmbraDB keeps its own).
     expect(await differences(ranges.idx.sql, ranges.idx.mip, contractOf("C06"), readCase("C06/expected.json"))).not.toEqual([]);
 
-    // Incremental apply = replay of the stored log (fields, and the withdrawals and listed events of re-check R2).
+    // Incremental apply = replay of the stored log (fields, withdrawals and listed events).
     const { sql, mip } = ranges.idx;
     const derived = (d: Record<string, unknown[]>) => ({ fields: d.fields, withdrawals: d.withdrawals, listed: d.listed });
     const before = derived(await dumpAll(sql, mip));
@@ -251,7 +251,7 @@ describe("MIP-0018 metadata state in Postgres (00026 B3)", () => {
     expect(await keys()).toEqual(["decimals", "standards", "name", "symbol"]);
     const events = await chainEvents(db.sql, NET, { contractAddress: C06 }, db.mip);
     expect(events.map((e) => [e.height, e.classification, e.identity?.kind])).toEqual([[714796, "accept", 3], [714804, "accept", 3], [714813, "accept", 3], [714827, "accept", 3], [714835, "accept", 3]]);
-    expect(events.every((e) => !("name" in e) && !("payload" in e))).toBe(true); // QA2: never the bytes
+    expect(events.every((e) => !("name" in e) && !("payload" in e))).toBe(true); // never the bytes
 
     // S4 on recorded data: remove the tombstone block (and everything after), then add the blocks again.
     const full = await dumpAll(db.sql, db.mip);
@@ -264,7 +264,7 @@ describe("MIP-0018 metadata state in Postgres (00026 B3)", () => {
     expect(await dumpAll(db.sql, db.mip)).toEqual(full);
   }, 180_000);
 
-  it("[[mip0018.metadata.shared-rows]] two identities of one contract (Q15): withdrawing one removes it from every read helper while the shared entries stay; withdrawing the last removes the shared entries too; mints stay; a later record revives only that field; removeAbove restores both", async () => {
+  it("[[mip0018.metadata.shared-rows]] two identities of one contract: withdrawing one removes it from every read helper while the shared entries stay; withdrawing the last removes the shared entries too; mints stay; a later record revives only that field; removeAbove restores both", async () => {
     const db = await fresh("shared");
     const X = "c7".repeat(32);
     const DS = "77".repeat(32);
@@ -322,7 +322,7 @@ describe("MIP-0018 metadata state in Postgres (00026 B3)", () => {
     await s.scanOnce({ maxBlocks: 1 });
     const revived = await getIdentity(db.sql, k3, db.mip);
     expect([...revived!.fields.keys()]).toEqual([COMMON_KEY_HEX.name]); // nothing from before the tombstones returns
-    // Re-check R2: the revived identity's history starts at its revival — its earlier events stay unattributed.
+    // The revived identity's history starts at its revival — its earlier events stay unattributed.
     expect((await view()).events).toEqual(["100:-", "100:-", "101:-", "102:-", "103:3"]);
     expect(await tokenMarkOf(db.sql, k3, db.mip)).toEqual({ mark: "partial", reasons: [], missing: ["symbol", "decimals"], tags: [] });
     expect((await view()).contracts).toEqual([{ contractAddress: X, identities: 1 }]);
@@ -370,7 +370,7 @@ describe("MIP-0018 metadata state in Postgres (00026 B3)", () => {
     expect(await displayAmountOf(db.sql, ref, 5n, db.mip)).toEqual({ decimals: max, text: `5e-${max}` }); // bounded, exact
   }, 120_000);
 
-  it("[[mip0018.metadata.marks]] marks and tags through Postgres (Q14 (a), A13): C01 ✓; C10 ✓ with tag mip-0004; C07 ⚠ incorrect with its 9 reasons in chain order; C08 ⚠ incorrect; a synthetic partial token ⚠ partial; a minted token without events no mark; a withdrawn identity marked from its contract's rejections only", async () => {
+  it("[[mip0018.metadata.marks]] marks and tags through Postgres: C01 ✓; C10 ✓ with tag mip-0004; C07 ⚠ incorrect with its 9 reasons in chain order; C08 ⚠ incorrect; a synthetic partial token ⚠ partial; a minted token without events no mark; a withdrawn identity marked from its contract's rejections only", async () => {
     const { sql, mip } = ranges.idx;
     const only = async (c: string) => (await listIdentities(sql, NET, { contractAddress: contractOf(c) }, mip))[0]!;
     expect(await tokenMarkOf(sql, await only("C01"), mip)).toEqual({ mark: "ok", reasons: [], missing: [], tags: [] });
@@ -384,7 +384,7 @@ describe("MIP-0018 metadata state in Postgres (00026 B3)", () => {
     expect(await tokenMarkOf(sql, { network: NET, contractAddress: minted.contractAddress, domainSep: minted.domainSep, kind: 1 }, mip)).toEqual({ mark: "none", reasons: [], missing: [], tags: [] });
 
     // Synthetic: a token publishing only `name` (⚠ partial); a withdrawn identity on a contract without and with a
-    // rejected event — marked exactly like one never described (current state only, A13).
+    // rejected event — marked exactly like one never described (current state only).
     const db = await fresh("marks");
     const P = "d1".repeat(32);
     const W = "d2".repeat(32);

@@ -1,14 +1,14 @@
 /**
- * The explorer page in a real browser (project 00026, sub-plan C3; spec FR-030, US4/US5, SC-004; plan C Testing rows
- * "Page" and "Tombstone"). Headless Chromium/Chrome driven over the DevTools protocol (`helpers/cdp-browser.ts`, no
- * npm dependency); the page is served by the real entry point `serve()` (API + `/ui` hook) bound to 127.0.0.1.
+ * The explorer page in a real browser. Headless Chromium/Chrome driven over the DevTools protocol
+ * (`helpers/cdp-browser.ts`, no npm dependency); the page is served by the real entry point `serve()` (API + `/ui`
+ * hook) bound to 127.0.0.1.
  *
- * Data: the recorded Stagenet IDX range (sub-plan D1 tapes) archived by the real sync against the fake chain and
+ * Data: the recorded Stagenet IDX range (the recorded tapes) archived by the real sync against the fake chain and
  * scanned by the real scanner; C06's lifecycle replayed step by step while the page stays open (periodic refresh);
  * synthetic archive blocks for what Stagenet does not show (hostile text, a partial and an unusable token, a whole
- * identity withdrawn, a color seen without a mint). The activity sections read the real activity endpoints (C1 over
- * C2's rows): `[[mip0018.ui.browser-activity-shape]]` checks them on the recorded range (C03, C06) and on synthetic
- * blocks scanned by the real scanner with C2's synthetic activity transactions (every role, load more).
+ * identity withdrawn, a color seen without a mint). The activity sections read the real activity endpoints:
+ * `[[mip0018.ui.browser-activity-shape]]` checks them on the recorded range (C03, C06) and on synthetic blocks scanned
+ * by the real scanner with synthetic activity transactions (`helpers/synthetic-activity.ts`; every role, load more).
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH (see
  * `ui/README.md`). `MIP0018_UI_SCREENSHOTS=<dir>` saves PNGs of the list and some views (never committed).
@@ -38,7 +38,7 @@ const WALLET_1 = "mn_addr_stagenet1vw57646su9y5z6myarm93m6kcn62j97z0yma94lfkhmta
 const SHOTS = process.env.MIP0018_UI_SCREENSHOTS;
 // Raw characters a value may carry that must never reach the drawn text or a tooltip (tab/newline excepted in
 // innerText, which uses them for layout).
-// Final-audit F4: the page's own rule by Unicode property (in Node's Unicode data): every control, format, private-use,
+// The page's own rule by Unicode property (in Node's Unicode data): every control, format, private-use,
 // unassigned and surrogate code point, line/paragraph separator and Default_Ignorable_Code_Point.
 const HIDDEN_RAW = /[\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
 const HIDDEN_RAW_ATTR = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
@@ -143,7 +143,7 @@ const nullAll = (...keys: string[]): MetadataRecord[] => keys.map((k) => record.
 
 const browserExe = findBrowser();
 
-describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
+describe("MIP-0018 explorer page in a real browser", () => {
   let container: StartedPostgreSqlContainer;
   let browser: Browser;
   const clients: UmbraDBSql[] = [];
@@ -279,7 +279,7 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
       expect(r.cells[3], t.id).toBe(`${t.kind} \u00b7 ${t.kindName}`);
       expect(r.cells[5], t.id).toBe(t.mark.tags.join(""));
       expect(r.href, t.id).toBe(`#/token/${t.contractAddress}/${t.domainSep}/${t.kind}`);
-      // C4 H4: every identity row shows its domainSep — the printable label, else the short hex.
+      // Every identity row shows its domainSep — the printable label, else the short hex.
       expect(r.domainSeps, t.id).toEqual([t.domainSep]);
       expect(r.cells[4], t.id).toContain(asciiLabel(t.domainSep) ?? `${t.domainSep.slice(0, 8)}\u2026${t.domainSep.slice(-6)}`);
     }
@@ -341,8 +341,8 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
     const c03 = api16.find((t) => t.contractAddress === C03 && t.kind === 2);
     const act = await api(idx.base, `/v1/tokens/${c03.color}/activity`);
     const s03 = await visit(page, `#/token/${C03}/${c03.domainSep}/2`);
-    expect(act.status).toBe(200); // served since C1 wired C2's rows
-    expect(s03.view).not.toContain("activity is not served by this API yet");
+    expect(act.status).toBe(200);
+    expect(s03.view).not.toContain("activity is not served by this API");
     expect(await page.eval<number>("document.querySelectorAll('#activity tbody tr').length")).toBe(act.json.items.length);
     expect(await page.eval<string[]>("[...document.querySelectorAll('#activity .wallet')].map((w) => w.textContent)")).toContain(WALLET_1);
 
@@ -410,7 +410,7 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
     expectOnlyApiCalls(page, idx.base);
     await expectCleanConsole(page);
 
-    // Part B — synthetic blocks through the real scanner (C2's synthetic activity transactions) and the real endpoint.
+    // Part B — synthetic blocks through the real scanner (`helpers/synthetic-activity.ts`) and the real endpoint.
     const db = await fresh("uiact");
     const A = "a1".repeat(32); // the minting contract
     const B = "b2".repeat(32); // a contract recipient
@@ -428,7 +428,7 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
           fallibleSpends: [[Y, "7", 3, "22".repeat(32), 4]],
           fallibleOutputs: [[Y, "7", walletOf(2)]],
           calls: [{
-            address: A, entryPoint: "\u202Eevil\u200B", // not printable: served and drawn as its bytes (C4 H1)
+            address: A, entryPoint: "\u202Eevil\u200B", // not printable: served and drawn as its bytes
             guaranteed: { logs: [acceptedEvent(DS, 2, "Gee")], unshieldedMints: [[DS, "50"]], claimed: [[minted, "user", walletOf(2), "50"]], unshieldedInputs: [["unshielded", Y, "5"]] },
             fallible: { logs: [rejectedEvent()], unshieldedOutputs: [["unshielded", Y, "3"]], claimed: [[Y, "contract", B, "3"]] },
           }],
@@ -480,7 +480,7 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
     await expectCleanConsole(page2);
   }, 240_000);
 
-  it("[[mip0018.ui.browser-hostile-text]] hostile metadata renders as visible text: bidi/zero-width/NUL/control characters and every other Cc/Cf/Co/Cn/Cs/Zl/Zp/Default_Ignorable code point (U+1BCA0, U+180F, U+0600–U+0605 included) as ⟨U+XXXX⟩ marks (never raw, also not in tooltips), markup as literal text (no element, no script run), URIs as text never fetched or linked, budgets with 'show all', a partial ⚠ and an unusable field drawn without its value; a seen-only color last; a contract's unresolved log drawn with its badge, and its tokens marked ⚠ unresolved with the reason and position (re-check R1)", async () => {
+  it("[[mip0018.ui.browser-hostile-text]] hostile metadata renders as visible text: bidi/zero-width/NUL/control characters and every other Cc/Cf/Co/Cn/Cs/Zl/Zp/Default_Ignorable code point (U+1BCA0, U+180F, U+0600–U+0605 included) as ⟨U+XXXX⟩ marks (never raw, also not in tooltips), markup as literal text (no element, no script run), URIs as text never fetched or linked, budgets with 'show all', a partial ⚠ and an unusable field drawn without its value; a seen-only color last; a contract's unresolved log drawn with its badge, and its tokens marked ⚠ unresolved with the reason and position", async () => {
     const db = await fresh("uihostile");
     const H = "a1".repeat(32);
     const D = "68".repeat(32);
@@ -575,7 +575,7 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
     expectOnlyApiCalls(page, base);
     await expectCleanConsole(page);
 
-    // Hostile contract entry points (sub-plan C4 H1: arbitrary bytes on the ledger): NUL, non-UTF-8, bidi and markup
+    // Hostile contract entry points (arbitrary bytes on the ledger): NUL, non-UTF-8, bidi and markup
     // bytes are drawn as their hex, a printable one as text; nothing raw, no element from data.
     const edb = await fresh("uihostileep");
     const E = "e5".repeat(32);
@@ -613,7 +613,7 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
     expectOnlyApiCalls(epage, ebase);
     await expectCleanConsole(epage);
 
-    // Final-audit F4: invisible format characters a hand-written list missed are marks too (by Unicode property):
+    // Invisible format characters a hand-written list missed are marks too (by Unicode property):
     // a look-alike symbol (ACME + U+1BCA0) is told apart from ACME; U+180F, the Arabic number signs U+0600–U+0605,
     // a private-use, an unassigned and a reserved default-ignorable code point are drawn as marks.
     const fdb = await fresh("uihiddenprop");
@@ -626,7 +626,7 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
           record.utf8("marks", "\u0600\u0601\u0602\u0603\u0604\u0605 x\uE000y\u0378z\u{E0080}")]),
         v1Log(DG, 3, [record.utf8("name", "Plain"), record.utf8("symbol", "ACME")]),
       ]),
-      // Final-audit F1: a log op fed by `dup` (the raw transaction does not show the logged value) → an unresolved row.
+      // A log op fed by `dup` (the raw transaction does not show the logged value) → an unresolved row.
       { result: "success", tx: { hash: "f5".repeat(32), intents: [{ segment: 1, actions: [{ call: { address: F, entryPoint: "meta",
         guaranteed: { program: [{ push: { cell: "01" } }, { dup: 0 }, "log"] } } }] }] } },
     ]]);
@@ -647,11 +647,11 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
     const ff = await fpage.eval<Record<string, string>>("Object.fromEntries([...document.querySelectorAll('#fields tbody tr')].map((tr) => [tr.cells[0].innerText, tr.cells[2].innerText]))");
     expect(ff.marks).toBe(["0600", "0601", "0602", "0603", "0604", "0605"].map((h) => `\u27e8U+${h}\u27e9`).join("") + " x\u27e8U+E000\u27e9y\u27e8U+0378\u27e9z\u27e8U+E0080\u27e9");
     expect(ff.symbol).toBe("ACME\u27e8U+1BCA0\u27e9");
-    // Final-audit F1: the contract's unresolved log is listed with its own badge and explanation, and counted in the status view.
+    // The contract's unresolved log is listed with its own badge and explanation, and counted in the status view.
     expect(await fpage.eval<Json>("(() => { const b = document.querySelector('#events [data-class=\"unresolved\"]'); return b ? { text: b.textContent, title: b.title } : null; })()"))
       .toEqual({ text: "unresolved", title: "a log op whose logged value the raw transaction does not show; the ledger may have emitted a MIP-0018 event here; never applied" });
     expect(sf.view).toContain("log-operand-not-pushed");
-    // Final-audit re-check R1: a contract with an unresolved log never keeps a clean mark — each of its tokens is
+    // A contract with an unresolved log never keeps a clean mark — each of its tokens is
     // ⚠ unresolved, with the reason and the log's position in the mark section and the tooltip.
     expect(frows.slice(2).map((r) => [r.mark, r.markText])).toEqual([["unresolved", "\u26a0"], ["unresolved", "\u26a0"]]);
     expect(frows[2].title).toContain("\u26a0 unresolved: its contract has 1 unresolved log (unresolved-log:");
@@ -668,7 +668,7 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
     await expectCleanConsole(fpage);
   }, 300_000);
 
-  it("[[mip0018.ui.browser-bounded]] final-audit F2: the page follows the API's bounded shapes — an identity's fields in keyset pages (100 rows, its field count, 'load more fields' reads the next page with the API's cursor), a group's first 100 members with its member count (identity and contract views), a 200-byte entry point drawn as its first 128 bytes with its length", async () => {
+  it("[[mip0018.ui.browser-bounded]] the page follows the API's bounded shapes — an identity's fields in keyset pages (100 rows, its field count, 'load more fields' reads the next page with the API's cursor), a group's first 100 members with its member count (identity and contract views), a 200-byte entry point drawn as its first 128 bytes with its length", async () => {
     const db = await fresh("uibounded");
     const A = "b7".repeat(32);
     const DA = "da".repeat(32);
@@ -753,7 +753,7 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
     expectOnlyApiCalls(page, base);
     await expectCleanConsole(page);
 
-    // Synthetic whole withdrawals (C1's blocks): Z kind 3 never minted; M kind 1 minted + described + withdrawn; N minted only.
+    // Synthetic whole withdrawals: Z kind 3 never minted; M kind 1 minted + described + withdrawn; N minted only.
     const sdb = await fresh("uiwithdraw");
     const X = "c2".repeat(32);
     const Z = "7a".repeat(32); // ASCII "zzzz…": the page would draw it as text

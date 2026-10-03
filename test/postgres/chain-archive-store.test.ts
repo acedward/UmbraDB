@@ -414,11 +414,11 @@ describe("PgChainArchiveStore", () => {
   });
 
   /**
-   * Project 00026 (spec FR-001 / FR-002): `transactions.segments` (migration
-   * `002_transaction_segments`) round-trips next to `result`, its shape is enforced in Postgres,
-   * and `putBlockBundle`'s optional `watermark` commits atomically WITH the block.
+   * `transactions.segments` (migration `002_transaction_segments`) round-trips next to `result`,
+   * its shape is enforced in Postgres, and `putBlockBundle`'s optional `watermark` commits
+   * atomically WITH the block.
    */
-  describe("00026: transaction outcomes and the atomic per-block checkpoint", () => {
+  describe("transaction outcomes and the atomic per-block checkpoint", () => {
     function outcomeBundle(net: string, height: number, tag: number) {
       const blockHash = h(height, tag);
       const block = { ...makeBlock(net, height, blockHash, h(0), tag), isCanonical: true, status: "canonical" as const, finalized: true };

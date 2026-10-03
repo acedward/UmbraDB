@@ -1,5 +1,5 @@
 /**
- * MIP-0018 vector conformance through UmbraDB's pure adapter (spec 00026 FR-040, SC-001): the vendored runner core,
+ * MIP-0018 vector conformance through UmbraDB's pure adapter: the vendored runner core,
  * unchanged, over the vendored vectors minus the eight ids UmbraDB keeps its own versions of, then over those own
  * versions (MIP `274a84f`, per-key tombstones) — in process and through the real runner CLI and adapter process.
  */
@@ -30,9 +30,9 @@ describe("MIP-0018 vectors through the pure adapter", () => {
     const own = await runVectors(loadVectors({ dir: UMBRADB_VECTORS_DIR }), pure);
     expect(failures(own)).toEqual([]);
     expect(own.normative).toEqual({ passed: 8, total: 8 });
-    expect(own.notApplicable).toEqual({}); // audit F2: S9d's group check must run, never pass as "not applicable"
+    expect(own.notApplicable).toEqual({}); // S9d's group check must run, never pass as "not applicable"
     expect(own.results.map((r) => r.id).sort()).toEqual([...OWN_IDS].sort());
-    // Final-audit N2: where the 274a84f text implies a group the own vectors expect it (S3a, S3b, S4a: kinds 1 and 3
+    // Where the 274a84f text implies a group the own vectors expect it (S3a, S3b, S4a: kinds 1 and 3
     // with "GLD"); where kind 1 has no fields (S3c, S4b) or no symbol (S3d) there is no group — asserted on the
     // adapter's own answer, because the vendored comparer marks an empty group list "not applicable".
     const vectors = loadVectors({ dir: UMBRADB_VECTORS_DIR });
@@ -46,7 +46,7 @@ describe("MIP-0018 vectors through the pure adapter", () => {
     }
   }, 120_000);
 
-  it("[[mip0018.vectors.no-not-applicable]] negative probe (audit F2): a consumer that reports no groups still passes the runner, but only with S3a, S3b, S4a, S9d (and the vendored S9a–S9c) marked not applicable — which the adapter tests refuse", async () => {
+  it("[[mip0018.vectors.no-not-applicable]] negative control: a consumer that reports no groups still passes the runner, but only with S3a, S3b, S4a, S9d (and the vendored S9a–S9c) marked not applicable — which the adapter tests refuse", async () => {
     const noGroups = async (req: Json): Promise<Json> => {
       const res = handleRequest(JSON.parse(JSON.stringify(req)));
       delete res.groups;
@@ -54,7 +54,7 @@ describe("MIP-0018 vectors through the pure adapter", () => {
     };
     const own = await runVectors(loadVectors({ dir: UMBRADB_VECTORS_DIR }), noGroups);
     expect(own.normative).toEqual({ passed: 8, total: 8 }); // the runner alone cannot see it …
-    expect(Object.keys(own.notApplicable).sort()).toEqual(["S3a", "S3b", "S4a", "S9d"]); // … the not-applicable guard does (final-audit N2: S3a, S3b, S4a check groups too)
+    expect(Object.keys(own.notApplicable).sort()).toEqual(["S3a", "S3b", "S4a", "S9d"]); // … the not-applicable guard does (S3a, S3b, S4a check groups too)
     const sets = vectorSets();
     const reference = await runVectors(loadVectors({ dir: VENDORED_VECTORS_DIR, only: sets.reference.map((v) => v.id) }), noGroups);
     expect(Object.keys(reference.notApplicable).sort()).toEqual(["S9a", "S9b", "S9c"]);
@@ -77,7 +77,7 @@ describe("MIP-0018 vectors through the pure adapter", () => {
     expect(run.status, run.stderr).toBe(0);
     expect(run.stdout).toContain("normative: 59/59 passed; informative: 43/43 passed");
     expect(run.stdout).toContain("normative: 8/8 passed");
-    expect(run.stdout).not.toMatch(/^\s*n\/a:/m); // audit F2: every group and display check ran
+    expect(run.stdout).not.toMatch(/^\s*n\/a:/m); // every group and display check ran
   }, 130_000);
 
   it("adapter errors are answered per request, never by exiting", () => {

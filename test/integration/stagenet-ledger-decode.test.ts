@@ -5,16 +5,14 @@ import { describe, expect, it } from "vitest";
 import { loadTape } from "./fixtures/stagenet-archive/fake-chain-server.js";
 
 /**
- * Project 00026, sub-plan A2 / spec FR-005 (Q13: "the ledger-v9 / compact-runtime versions that
- * decode current Stagenet"): the pinned `@midnightntwrk/ledger-v9` decodes every recorded Stagenet
- * transaction of the MIP-0018 reference cases (00013, heights 714485–715433) -- hash recomputed
+ * The ledger-v9 version decodes current Stagenet: the pinned `@midnightntwrk/ledger-v9` decodes every recorded
+ * Stagenet transaction of the MIP-0018 reference cases (heights 714485–715433) -- hash recomputed
  * equal to the indexer's, every action classified, mint effects read -- and its `rawTokenType`
  * reproduces exactly the colors the reference's IDX scan and the wallet observed. No
  * `@midnight-ntwrk/compact-runtime` is needed: the color comes from ledger-v9 itself.
  *
  * Fixtures: `loadTape("c04-714637-714663.tape.json")` and `loadTape("cases-sparse.tape.json")` --
- * since D1 slices of the recorded IDX and U1 ranges (`fixtures/stagenet-archive/manifest.json`,
- * aliases). The same tapes drive the archive sync tests.
+ * slices of the recorded IDX and U1 ranges (`fixtures/stagenet-archive/manifest.json`, aliases). The same tapes drive the archive sync tests.
  */
 
 const LEDGER_VERSION = "1.0.0-rc.3";
@@ -40,8 +38,8 @@ interface LooseTranscript {
 
 const norm = (h: string): string => (h.startsWith("0x") ? h.slice(2) : h).toLowerCase();
 
-describe("ledger-v9 decodes current Stagenet (00026 A2, FR-005 / Q13)", () => {
-  it("[[archive.ledger.stagenet-decode]] the pinned ledger-v9 decodes every recorded 00013 case transaction and reproduces the IDX/U1 colors", () => {
+describe("ledger-v9 decodes current Stagenet", () => {
+  it("[[archive.ledger.stagenet-decode]] the pinned ledger-v9 decodes every recorded reference case transaction and reproduces the IDX/U1 colors", () => {
     const installed = JSON.parse(readFileSync(join(process.cwd(), "node_modules/@midnightntwrk/ledger-v9/package.json"), "utf8")) as { version: string };
     expect(installed.version).toBe(LEDGER_VERSION);
 
@@ -96,7 +94,7 @@ describe("ledger-v9 decodes current Stagenet (00026 A2, FR-005 / Q13)", () => {
     expect(actionKinds["714637"]).toEqual(["deploy"]); // C04 deploy
     expect(actionKinds["715183"]).toEqual(["maintenance"]); // C10 VerifierKeyRemove
     expect(actionKinds["715428"]).toEqual(["maintenance"]); // U1 VerifierKeyInsert
-    expect(logOps).toBe(11); // observed on these 20 transactions (events are sub-plan B2's subject)
+    expect(logOps).toBe(11); // observed on these 20 transactions (events are tested in the token indexer's event tests)
 
     expect(Object.keys(mints).sort()).toEqual(Object.keys(EXPECTED_MINTS).sort());
     for (const [key, expected] of Object.entries(EXPECTED_MINTS)) {

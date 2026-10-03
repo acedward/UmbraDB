@@ -3,7 +3,7 @@
  *
  * `SOURCE.md` lists every vendored file with the SHA-256 of its upstream bytes at the pinned commit. This test
  * recomputes each hash and fails on a modified, missing or unlisted file, so a vendored file can only change through
- * a deliberate re-vendor that also updates `SOURCE.md` (spec 00026 FR-011).
+ * a deliberate re-vendor that also updates `SOURCE.md`.
  */
 import { createHash } from "node:crypto";
 import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";

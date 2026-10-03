@@ -8,18 +8,17 @@ import { startFakeChain } from "./fixtures/stagenet-archive/fake-chain-server.js
 import { loadManifest, loadRangeTape } from "./fixtures/stagenet-archive/stagenet-fixtures.js";
 
 /**
- * Project 00026, sub-plan D1 (spec FR-041/FR-042, SC-003; Q11): CI's replay data source. Each
- * recorded Stagenet range (the reference IDX scan 714485–715183 and U1's 715402–715433) is served
- * back over HTTP by `fake-chain-server.ts` and synced with the UNCHANGED `ChainArchiveSyncService`
- * into a fresh schema of a real Postgres 17 (Testcontainers). The archive it writes must have
- * exactly the digest of the archive the LIVE polite sync of the same range wrote at capture time
- * (`manifest.json` → `ranges[].liveSync.archiveDigest`; every table, every column but the
- * wall-clock ones). No network.
+ * CI's replay data source. Each recorded Stagenet range (the reference IDX scan 714485–715183 and
+ * U1's 715402–715433) is served back over HTTP by `fake-chain-server.ts` and synced with the
+ * UNCHANGED `ChainArchiveSyncService` into a fresh schema of a real Postgres 17 (Testcontainers).
+ * The archive it writes must have exactly the digest of the archive the LIVE polite sync of the
+ * same range wrote at capture time (`manifest.json` → `ranges[].liveSync.archiveDigest`; every
+ * table, every column but the wall-clock ones). No network.
  */
 
 const NET = "stagenet";
 
-describe("Stagenet fixture replay = live archive (00026 D1)", () => {
+describe("Stagenet fixture replay = live archive", () => {
   let container: StartedPostgreSqlContainer;
   const sqls: UmbraDBSql[] = [];
 
@@ -69,7 +68,7 @@ describe("Stagenet fixture replay = live archive (00026 D1)", () => {
     }
 
     // Negative control: the same replay with ONE transaction outcome changed (U1's publish at
-    // 715433 reported as PARTIAL_SUCCESS) no longer matches the live digest -- the comparison sees
+    // 715433 reported as PARTIAL_SUCCESS) does not match the live digest -- the comparison sees
     // a single stored field.
     const u1 = manifest.ranges.find((r) => r.name === "u1")!;
     const tape = loadRangeTape("u1");

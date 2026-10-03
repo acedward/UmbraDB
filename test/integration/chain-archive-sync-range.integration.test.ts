@@ -9,9 +9,8 @@ import { dumpArchive } from "./fixtures/stagenet-archive/archive-digest.js";
 import { loadTape, startFakeChain, type FakeChain } from "./fixtures/stagenet-archive/fake-chain-server.js";
 
 /**
- * Project 00026, sub-plan A2 (spec FR-001, FR-002; US6): `--from/--to` ranges, the atomic per-block
- * checkpoint, kill-and-resume and the per-transaction outcomes -- against REAL Stagenet data
- * recorded once (`loadTape("c04-714637-714663.tape.json")`: since D1 a slice of the recorded IDX range
+ * `--from/--to` ranges, the atomic per-block checkpoint, kill-and-resume and the per-transaction outcomes -- against
+ * REAL Stagenet data recorded once (`loadTape("c04-714637-714663.tape.json")`: a slice of the recorded IDX range
  * `fixtures/stagenet-archive/stagenet-714485-715183.tape.json.br`; case C04 of the MIP-0018
  * reference: deploy, shielded mint, unshielded mint, ledger mint, publish) and served back over
  * HTTP by `fake-chain-server.ts`, into a real Postgres 17 (Testcontainers). No network.
@@ -22,7 +21,7 @@ const FROM = 714637;
 const TO = 714663;
 const tape = loadTape("c04-714637-714663.tape.json");
 
-describe("chain-archive-sync ranges, resume and transaction outcomes on recorded Stagenet (00026 A2)", () => {
+describe("chain-archive-sync ranges, resume and transaction outcomes on recorded Stagenet", () => {
   let container: StartedPostgreSqlContainer;
   const sqls: UmbraDBSql[] = [];
   const fakes: FakeChain[] = [];
@@ -90,7 +89,7 @@ describe("chain-archive-sync ranges, resume and transaction outcomes on recorded
     expect(resumed).toMatchObject({ ingestedBlocks: 5, fromHeight: 714651, toHeight: 714655, reachedEnd: true });
     expect(() => service(sql, schema, f, { startHeight: 10, endHeight: 9 })).toThrow(SyncRangeError);
 
-    // A cursor written before 00026 (`{height}` only) resumes and keeps its archive start unknown
+    // A cursor without `startHeight` (`{height}` only) resumes and keeps its archive start unknown
     // instead of recording a guess.
     const legacy = await freshSchema("range_legacy");
     await legacy.sql`INSERT INTO ${legacy.sql(legacy.schema)}.watermarks (kind, key, value)
@@ -142,7 +141,7 @@ describe("chain-archive-sync ranges, resume and transaction outcomes on recorded
     const cases: Array<[IndexerTransactionResult | null, RegExp]> = [
       [{ status: "SOMETHING_NEW", segments: null }, /unknown indexer TransactionResultStatus/],
       [null, /no transactionResult/],
-      // Mid-project audit F1 (00026): which fallible segments applied is unknown without the list.
+      // Which fallible segments applied is unknown without the list.
       [{ status: "PARTIAL_SUCCESS", segments: null }, /PARTIAL_SUCCESS without per-segment outcomes/],
       [{ status: "PARTIAL_SUCCESS", segments: [] }, /PARTIAL_SUCCESS without per-segment outcomes/],
     ];

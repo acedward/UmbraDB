@@ -1,7 +1,6 @@
 /**
- * UmbraDB's MIP-0018 state rules (MIP PR #340 head `274a84f`; project 00026 Q5, Q6, Q14, Q15, Q16), beyond what the
- * vectors cover: per-key tombstones at row level, "not referenced at all", chain order, rollback, common fields,
- * display and the Q14 mark.
+ * UmbraDB's MIP-0018 state rules (MIP PR #340 head `274a84f`), beyond what the vectors cover: per-key tombstones at row
+ * level, "not referenced at all", chain order, rollback, common fields, display and the mark.
  */
 import { describe, expect, it } from "vitest";
 import { EVENT_NAME, encodePayload, type MetadataRecord, record } from "../vendor/mip0018/codec/src/index.ts";
@@ -45,13 +44,13 @@ function emitter(state: MetadataState) {
 const keys = (s: MetadataState, r: IdentityRef): string[] =>
   [...(s.identity(r)?.fields.keys() ?? [])].map((k) => Buffer.from(k, "hex").toString("utf8"));
 
-describe("per-key tombstones (Q16, MIP 274a84f Applying records)", () => {
+describe("per-key tombstones (MIP 274a84f Applying records)", () => {
   it("[[mip0018.state.per-key-tombstone]] a Null deletes only its key; a Null for a missing key is a no-op; deleting every key withdraws the identity everywhere; a later record revives only that field", () => {
     const s = new MetadataState();
     const emit = emitter(s);
     emit(1, [record.utf8("name", "Gold"), record.utf8("symbol", "ACME"), record.uint("decimals", 6), record.utf8("standards", "mip-0011")]);
     emit(1, [record.utf8("name", "Two"), record.utf8("symbol", "ACME")], { domainSep: DS2 });
-    emit(1, [record.utf8("symbol", "ACME")], { domainSep: DS3 }); // a third member: the group outlives one member's Null (audit F2)
+    emit(1, [record.utf8("symbol", "ACME")], { domainSep: DS3 }); // a third member: the group outlives one member's Null
     expect(s.groups()).toHaveLength(1);
     expect(s.groups()[0]!.members).toHaveLength(3);
 
@@ -65,7 +64,7 @@ describe("per-key tombstones (Q16, MIP 274a84f Applying records)", () => {
     // A Null at its symbol removes ONLY that member from the group (S9); the two others keep it.
     expect(s.groups().map((g) => g.members)).toEqual([[{ domainSep: DS2, kind: 1 }, { domainSep: DS3, kind: 1 }]]);
 
-    const held = s.identity(ref(1))!.fields; // a snapshot (audit F3): later events never change it
+    const held = s.identity(ref(1))!.fields; // a snapshot: later events never change it
     emit(1, [record.tombstone("decimals"), record.tombstone("standards")]);
     expect(held.size).toBe(2);
     expect(s.identity(ref(1))).toBeUndefined();
@@ -97,7 +96,7 @@ describe("per-key tombstones (Q16, MIP 274a84f Applying records)", () => {
     expect(s.identity(ref(3, DS1, B))).toBeUndefined();
   });
 
-  it("a rejected event applies none of its records and is kept as the contract's rejection", () => {
+  it("a rejected event applies none of its records and is stored as the contract's rejection", () => {
     const s = new MetadataState();
     const emit = emitter(s);
     emit(3, [record.utf8("name", "Kept")]);
@@ -183,7 +182,7 @@ describe("common fields (MIP 274a84f Common fields)", () => {
   });
 });
 
-describe("Q14 marks (one function)", () => {
+describe("marks (one function)", () => {
   const fieldsOf = (s: MetadataState, r: IdentityRef) => s.identity(r)?.fields;
 
   it("[[mip0018.state.marks]] ✓ complete, ⚠ partial, ⚠ incorrect (contract rejection, reasons shown), ⚠ unresolved (the contract has unresolved logs: reason unresolved-log, never a clean ✓), no mark without events or after withdrawal; usable standards as tags", () => {
@@ -214,7 +213,7 @@ describe("Q14 marks (one function)", () => {
     emit(3, [record.utf8("standards", "mip-0004  x")]);
     expect(tokenMark({ fields: fieldsOf(s, ref(3)), contractRejections: [] })).toMatchObject({ mark: "partial", tags: [] });
 
-    // Final-audit re-check R1: unresolved logs of the contract — ⚠ unresolved for a complete, a partial and an absent
+    // Unresolved logs of the contract — ⚠ unresolved for a complete, a partial and an absent
     // identity (the unresolved log may have described, renamed or withdrawn it); ⚠ incorrect wins, its reasons end with
     // `unresolved-log`; zero unresolved logs change nothing.
     expect(tokenMark({ fields: fieldsOf(s, ref(3, DS2)), contractRejections: [], contractUnresolvedLogs: 0 }).mark).toBe("partial");
@@ -230,7 +229,7 @@ describe("Q14 marks (one function)", () => {
       .toEqual({ mark: "incorrect", reasons: ["no-records", "unresolved-log"], missing: [], tags: [] });
   });
 
-  it("[[mip0018.state.marks-current-state]] a withdrawn identity is marked exactly like one never described (current state only, A13): ⚠ incorrect from its contract's rejections, otherwise none; an empty field map is the same as none (audit F3)", () => {
+  it("[[mip0018.state.marks-current-state]] a withdrawn identity is marked exactly like one never described (current state only): ⚠ incorrect from its contract's rejections, otherwise none; an empty field map is the same as none", () => {
     const s = new MetadataState();
     const emit = emitter(s);
     emit(3, [record.utf8("name", "Gone"), record.utf8("symbol", "GONE"), record.uint("decimals", 2), record.utf8("standards", "mip-0004")]);
