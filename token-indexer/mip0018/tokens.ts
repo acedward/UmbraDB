@@ -4,8 +4,8 @@
  * a color seen before its mint is completed in place — same row, now with its contract and domainSep), and the
  * NIGHT/DUST rows. Pure queries; no writes.
  */
-import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { MIP0018_SCHEMA } from "../../src/postgres/migrations/mip0018/index.js";
+import type { Queryable } from "./fields.ts";
 
 export interface MintRef {
   height: number;
@@ -59,7 +59,7 @@ interface MintAgg {
   first_tx_hash: Buffer;
 }
 
-async function colorEntries(sql: UmbraDBSql, schema: string, network: string, color?: string): Promise<Map<string, ColorEntry>> {
+async function colorEntries(sql: Queryable, schema: string, network: string, color?: string): Promise<Map<string, ColorEntry>> {
   const rows = await sql<MintAgg[]>`
     SELECT DISTINCT ON (color, kind)
            color, contract_address, domain_sep, kind,
@@ -82,7 +82,7 @@ async function colorEntries(sql: UmbraDBSql, schema: string, network: string, co
 }
 
 /** The MIP's Lookup table: every color minted in the scanned range, by color. */
-export async function listColors(sql: UmbraDBSql, network: string, schema = MIP0018_SCHEMA): Promise<ColorEntry[]> {
+export async function listColors(sql: Queryable, network: string, schema = MIP0018_SCHEMA): Promise<ColorEntry[]> {
   return [...(await colorEntries(sql, schema, network)).values()];
 }
 
@@ -91,13 +91,13 @@ export async function listColors(sql: UmbraDBSql, network: string, schema = MIP0
  * holding is what the user holds (a shielded coin → kind 1, an unshielded UTXO → kind 2), not the color.
  * `found: false` = not minted in the scanned range.
  */
-export async function lookupColor(sql: UmbraDBSql, network: string, color: string, schema = MIP0018_SCHEMA): Promise<{ found: boolean; entry?: ColorEntry }> {
+export async function lookupColor(sql: Queryable, network: string, color: string, schema = MIP0018_SCHEMA): Promise<{ found: boolean; entry?: ColorEntry }> {
   const entry = (await colorEntries(sql, schema, network, color.toLowerCase())).get(color.replace(/^0x/, "").toLowerCase());
   return entry === undefined ? { found: false } : { found: true, entry };
 }
 
 /** Every native token color seen in public data or minted, ordered by first appearance. */
-export async function nativeTokens(sql: UmbraDBSql, network: string, schema = MIP0018_SCHEMA): Promise<NativeToken[]> {
+export async function nativeTokens(sql: Queryable, network: string, schema = MIP0018_SCHEMA): Promise<NativeToken[]> {
   const rows = await sql<{ color: Buffer; block_height: bigint; tx_index: number; tx_hash: Buffer; evidence: string | null }[]>`
     SELECT color, block_height, tx_index, tx_hash, evidence FROM ${sql(schema)}.mip0018_color_sightings WHERE network = ${network}
     UNION ALL
@@ -118,7 +118,7 @@ export async function nativeTokens(sql: UmbraDBSql, network: string, schema = MI
 }
 
 /** NIGHT and DUST (outside MIP-0018; seeded per network by the scanner). */
-export async function builtinTokens(sql: UmbraDBSql, network: string, schema = MIP0018_SCHEMA): Promise<BuiltinToken[]> {
+export async function builtinTokens(sql: Queryable, network: string, schema = MIP0018_SCHEMA): Promise<BuiltinToken[]> {
   const rows = await sql<{ symbol: "NIGHT" | "DUST"; name: string; decimals: number; color: Buffer | null; note: string }[]>`
     SELECT symbol, name, decimals, color, note FROM ${sql(schema)}.mip0018_builtin_tokens
     WHERE network = ${network} ORDER BY CASE symbol WHEN 'NIGHT' THEN 0 ELSE 1 END`;

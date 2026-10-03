@@ -78,7 +78,9 @@ the previous page). A page is
 `amount` is the exact sum (decimal string); `amountDisplay` is `amount / 10^decimals` with the identity's usable
 `decimals` (MIP "Common fields"), or `null` when it has none.
 
-**Mark** — `{ "mark": "ok" | "partial" | "incorrect" | "none", "reasons": ["reserved-valtype"], "missing": ["decimals"], "tags": ["mip-0004"] }`.
+**Mark** — `{ "mark": "ok" | "partial" | "incorrect" | "none", "reasons": ["reserved-valtype"], "reasonCount": 1, "missing": ["decimals"], "tags": ["mip-0004"] }`.
+`reasons` lists the first 100 rejection reasons of the contract in chain order, `reasonCount` all of them (every
+rejected event is in `/v1/events`); `missing` (for `partial`) names the unusable or absent common keys.
 
 **Common** — the usable common fields only: `{ "name": "Acme Gold", "symbol": "AGLD", "decimals": "6", "standards": ["mip-0004"] }`
 (each `null` when absent or unusable; `decimals` is a decimal string — it can be up to 2^248 − 1; `standards` is the
@@ -116,7 +118,7 @@ common keys and `null` for any other key.
   "described": true,
   "minted": null,
   "firstSeen": null, "evidence": [],
-  "mark": { "mark": "ok", "reasons": [], "missing": [], "tags": [] },
+  "mark": { "mark": "ok", "reasons": [], "reasonCount": 0, "missing": [], "tags": [] },
   "note": null
 }
 ```
@@ -143,7 +145,7 @@ common keys and `null` for any other key.
   "common": { "name": "Acme Dollar", "symbol": "ACD", "decimals": "2", "standards": null },
   "fields": [ Field, … ],
   "group": { "symbol": { "hex": "414344", "utf8": "ACD" }, "members": [ … 3 members … ] },
-  "mark": { "mark": "ok", "reasons": [], "missing": [], "tags": [] }
+  "mark": { "mark": "ok", "reasons": [], "reasonCount": 0, "missing": [], "tags": [] }
 }
 ```
 
