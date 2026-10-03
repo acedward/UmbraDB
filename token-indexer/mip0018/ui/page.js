@@ -639,7 +639,9 @@
 
   function tokenRows(sec, items, withContract) {
     var labels = [{ label: "MIP-0018", title: MARK_HEAD }, "name", "symbol", "kind"];
-    if (withContract) labels.push("color / contract");
+    // The domainSep is on every identity row: several identities of one contract may share a name, symbol and kind
+    // (C05's three "Acme Medals"), and only it tells them apart. Its printable label, else its short hex.
+    if (withContract) labels.push({ label: "contract / domainSep / color", title: "the minting contract, the token's domainSep (its printable label, else hex) and its color" });
     else labels.push("domainSep / color");
     labels.push({ label: "standards", title: "usable standards identifiers (self-declared tags)" }, "decimals", "minted");
     var body = table(sec, labels);
@@ -660,7 +662,12 @@
         where.appendChild(link(contractHash(t.contractAddress.toLowerCase()), hexNode(t.contractAddress)));
         where.appendChild(document.createTextNode(" "));
       }
-      if (!withContract && t.domainSep) { where.appendChild(domainNode(t.domainSep)); where.appendChild(document.createTextNode(" ")); }
+      if (t.source === "identity" && hex64(txt(t.domainSep))) {
+        var ds = domainNode(t.domainSep.toLowerCase());
+        ds.setAttribute("data-domainsep", t.domainSep.toLowerCase());
+        where.appendChild(ds);
+        where.appendChild(document.createTextNode(" "));
+      }
       if (hex64(txt(t.color))) where.appendChild(link(colorHash(t.color.toLowerCase()), hexNode(t.color)));
       else if (t.source === "builtin") where.appendChild(h("span", "no", "no color"));
       else if (t.source === "identity" && t.kind !== 3) where.appendChild(setTitle(h("span", "no", "no indexed mint"), "described, but no mint of this identity in the indexed range"));

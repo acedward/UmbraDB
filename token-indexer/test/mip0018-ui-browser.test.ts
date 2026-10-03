@@ -108,8 +108,16 @@ const LIST_ROWS = `[...document.querySelectorAll('#view section table')[0].query
   const mk = tr.querySelector('td.mipcol .mk');
   return { mark: mk ? mk.getAttribute('data-mark') : null, markText: mk ? mk.textContent : null, title: mk ? mk.title : null,
     cells: [...tr.cells].map((c) => c.innerText), href: (tr.querySelector('a[href]') || {}).getAttribute ? tr.querySelector('a[href]').getAttribute('href') : null,
+    domainSeps: [...tr.querySelectorAll('[data-domainsep]')].map((e) => e.getAttribute('data-domainsep')),
     nameTitle: (tr.cells[1].querySelector('.d') || {}).title || null };
 })`;
+
+/** The page's label of a domainSep (`asciiOf` in page.js): printable ASCII once trailing zero bytes are dropped. */
+function asciiLabel(hex: string): string | null {
+  const b = [...Buffer.from(hex, "hex")];
+  while (b.length > 0 && b[b.length - 1] === 0) b.pop();
+  return b.length > 0 && b.every((x) => x >= 32 && x <= 126) ? Buffer.from(b).toString("latin1") : null;
+}
 
 /** A `Misc` log item `name ‖ payload` for synthetic blocks, with trailing zeros dropped as the ledger does. */
 function v1Log(domainSep: string, kind: number, records: MetadataRecord[]): SynthLog {
@@ -269,7 +277,16 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
       expect(r.cells[3], t.id).toBe(`${t.kind} \u00b7 ${t.kindName}`);
       expect(r.cells[5], t.id).toBe(t.mark.tags.join(""));
       expect(r.href, t.id).toBe(`#/token/${t.contractAddress}/${t.domainSep}/${t.kind}`);
+      // C4 H4: every identity row shows its domainSep — the printable label, else the short hex.
+      expect(r.domainSeps, t.id).toEqual([t.domainSep]);
+      expect(r.cells[4], t.id).toContain(asciiLabel(t.domainSep) ?? `${t.domainSep.slice(0, 8)}\u2026${t.domainSep.slice(-6)}`);
     }
+    // Identities sharing name, symbol and kind (C05's three "Acme Medals", kind 1) differ in the list by their label.
+    const medals = rows.filter((_, i) => api16[i].contractAddress === contractOf("C05"));
+    expect(medals).toHaveLength(3);
+    expect(new Set(medals.map((r) => `${r.cells[1]}|${r.cells[2]}|${r.cells[3]}`)).size).toBe(1);
+    expect(medals.map((r) => r.cells[4].split(" ")[1]).sort()).toEqual(
+      ["mip-0018:example:family:bronze", "mip-0018:example:family:gold", "mip-0018:example:family:silver"]);
     const byContract = (c: string): Json[] => rows.filter((_, i) => api16[i].contractAddress === contractOf(c));
     expect(byContract("C01").map((r) => [r.mark, r.markText])).toEqual([["ok", "\u2713"]]);
     expect(byContract("C01")[0].title).toMatch(/^\u2713 correct: usable name, symbol and decimals/);
