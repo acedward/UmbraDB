@@ -5,7 +5,7 @@
  * a read-only clone of the reference given by `REFERENCE_DIR`.
  *
  *   PG_URL=… REFERENCE_DIR=/ref node --import tsx token-indexer/dev/reference-compare.ts \
- *     --archive d3_r_archive --mip d3_r_mip --u1-archive … --u1-mip … --cases token-indexer/test/fixtures/mip0018-cases --out FILE
+ *     --archive live_range_r_archive --mip live_range_r_mip --u1-archive … --u1-mip … --cases token-indexer/test/fixtures/mip0018-cases --out FILE
  *
  * UmbraDB's state of each case contract is projected into the reference's expected-state shape (identities with
  * `visible`, `colored`, usable `common`, every field; symbol groups; classification counts) and compared twice:

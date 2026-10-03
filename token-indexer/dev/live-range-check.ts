@@ -4,8 +4,8 @@
  * digest this script records (`token-indexer/test/mip0018-live-range.test.ts`).
  *
  * Every run uses the REAL command-line programs as child processes — `chain-archive-sync/sync-cli.ts` (archive) and
- * `token-indexer/mip0018/scan-cli.ts` (MIP-0018 scan) — each run in its own pair of schemas `d3_<tag>_archive` /
- * `d3_<tag>_mip`:
+ * `token-indexer/mip0018/scan-cli.ts` (MIP-0018 scan) — each run in its own pair of schemas
+ * `live_range_<tag>_archive` / `live_range_<tag>_mip`:
  *
  *   PG_URL=postgres://… node --import tsx token-indexer/dev/live-range-check.ts live --tag a --from 714485 --to 715183 --out DIR
  *   PG_URL=… … live    --tag b --from 714485 --to 715183 --kill-archive-at 714800 --kill-scan-at 714850 --out DIR
@@ -31,7 +31,7 @@ const METER = join(REPO, "token-indexer/dev/fetch-meter.ts");
 const SYNC_CLI = join(REPO, "chain-archive-sync/sync-cli.ts");
 const SCAN_CLI = join(REPO, "token-indexer/mip0018/scan-cli.ts");
 
-const schemasOf = (tag: string): { archive: string; mip: string } => ({ archive: `d3_${tag}_archive`, mip: `d3_${tag}_mip` });
+const schemasOf = (tag: string): { archive: string; mip: string } => ({ archive: `live_range_${tag}_archive`, mip: `live_range_${tag}_mip` });
 const now = (): number => Date.now();
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
