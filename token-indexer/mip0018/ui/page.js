@@ -167,7 +167,11 @@
     for (var j = 0; j < p.length; j++) {
       var s = p[j].s;
       if (used + s.length > limit) {
-        if (!p[j].m) span.appendChild(document.createTextNode(cut(s, limit - used)));
+        if (!p[j].m) {
+          var piece = cut(s, limit - used);
+          span.appendChild(document.createTextNode(piece));
+          used += piece.length;
+        }
         clipped = true;
         break;
       }
