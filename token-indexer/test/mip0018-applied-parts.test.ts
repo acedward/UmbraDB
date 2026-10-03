@@ -14,6 +14,7 @@ import { loadTape } from "../../test/integration/fixtures/stagenet-archive/fake-
 import {
   appliedParts,
   decodeTransaction,
+  logSites,
   NIGHT_COLOR,
   partApplied,
   RawDecodeError,
@@ -160,16 +161,94 @@ describe("applied-parts decoder (00026 A3/B2)", () => {
     const unknown: TransactionLike = { transactionHash: () => "00".repeat(32), intents: new Map([[1, { actions: [{ some: "thing" }] }]]) };
     expect(() => decodeTransaction(unknown)).toThrow(RawDecodeError);
     expect(() => decodeTransaction(Uint8Array.from([1, 2, 3]))).toThrow(RawDecodeError);
-    expect(readLogItem({ tag: "cell" })).toMatchObject({ eventType: null, undecodable: expect.stringContaining("array") });
+    // A cell without atoms is no `[version, type, data]` triple: the ledger logs it as a `Misc` item that is no 288-byte item.
+    expect(readLogItem({ tag: "cell" })).toMatchObject({ form: "bare", eventType: "Misc", undecodable: expect.stringContaining("neither") });
     const tooLong = { tag: "array", content: [{ tag: "cell", content: { value: [Uint8Array.from([1])] } }, { tag: "cell", content: { value: [Uint8Array.from([10])] } }, { tag: "cell", content: { value: [new Uint8Array(289).fill(1)] } }] };
     expect(readLogItem(tooLong)).toMatchObject({ eventType: "Misc", undecodable: expect.stringContaining("289") });
     const twoAtoms = { tag: "array", content: [{ tag: "cell", content: { value: [Uint8Array.from([1])] } }, { tag: "cell", content: { value: [Uint8Array.from([10])] } }, { tag: "cell", content: { value: [Uint8Array.from([1]), Uint8Array.from([2])] } }] };
-    expect(readLogItem(twoAtoms)).toMatchObject({ undecodable: expect.stringContaining("single cell atom") });
+    expect(readLogItem(twoAtoms)).toMatchObject({ form: "versioned", undecodable: expect.stringContaining("cell of one atom") });
     const other = readLogItem(logItem("x", 2));
-    expect(other).toEqual({ version: 1, eventTypeCode: 2, eventType: "ShieldedMint" }); // not Misc: no name/payload read
+    expect(other).toEqual({ form: "versioned", version: 1, eventTypeCode: 2, eventType: "ShieldedMint" }); // not Misc: no name/payload read
     const program = { program: ["log"], effects: { shieldedMints: new Map(), unshieldedMints: new Map() } };
     const lone = decodeTransaction({ transactionHash: () => "00".repeat(32), intents: new Map([[1, { actions: [call("z", program as never)] }]]) });
-    expect(lone.logs[0]).toMatchObject({ undecodable: expect.stringContaining("not pushed") });
+    expect(lone.logs[0]).toMatchObject({ unresolved: "log-operand-not-pushed", eventType: null }); // reported, never dropped
+  });
+
+  it("[[mip0018.decoder.log-semantics]] logged values follow the ledger's decode_event (a well-formed [u32, LogEventType, data] triple has its type; any other value is Misc version 0 with the whole value as data); a log op whose value the raw transaction does not show is unresolved (operand not pushed, or run on some paths only); a log op no successful run reaches logs nothing", () => {
+    const cell = (b: Uint8Array | number[]) => ({ tag: "cell", content: { value: [Uint8Array.from(b)], alignment: [] } });
+    const atoms = (...bs: number[][]) => ({ tag: "cell", content: { value: bs.map((b) => Uint8Array.from(b)), alignment: [] } });
+    const wrapped = logItem("Hi");
+    const bare = wrapped.content[2]!; // the same 288-byte name ‖ payload item (trailing zeros dropped), logged without the triple
+    // The audit's probe P1: both are a Misc event named mip-0018:token-metadata[v1] with the same name and payload.
+    const w = readLogItem(wrapped);
+    const b = readLogItem(bare);
+    expect(w).toMatchObject({ form: "versioned", version: 1, eventTypeCode: 10, eventType: "Misc", name: toHex(EVENT_NAME) });
+    expect(b).toMatchObject({ form: "bare", version: 0, eventTypeCode: 10, eventType: "Misc", name: toHex(EVENT_NAME) });
+    expect(b.payload).toBe(w.payload);
+    expect(labelOf(b.payload!)).toBe("Hi");
+    // Triples the ledger does not accept as versioned items are bare Misc values (their data = the whole array).
+    const triple = (ver: unknown, et: unknown, data: unknown = bare) => ({ tag: "array", content: [ver, et, data] });
+    for (const [what, v] of [
+      ["version above u32", triple(cell([0, 0, 0, 0, 1]), cell([10]))],
+      ["version atom over 16 bytes", triple(cell([1, ...new Array(16).fill(0)]), cell([10]))],
+      ["version cell without atoms", triple({ tag: "cell", content: { value: [], alignment: [] } }, cell([10]))],
+      ["version of two atoms", triple(atoms([1], [0]), cell([10]))],
+      ["event type 11", triple(cell([1]), cell([11]))],
+      ["event type above u8", triple(cell([1]), cell([10, 1]))],
+      ["event type not a cell", triple(cell([1]), { tag: "null" })],
+      ["two elements", { tag: "array", content: [cell([1]), cell([10])] }],
+      ["four elements", { tag: "array", content: [cell([1]), cell([10]), bare, cell([0])] }],
+    ] as const) {
+      expect(readLogItem(v), what).toMatchObject({ form: "bare", version: 0, eventType: "Misc", undecodable: expect.stringContaining("neither") });
+    }
+    // Ledger integer rules: a 16-byte little-endian atom is a valid u32 1 (u128 range, then u32).
+    expect(readLogItem(triple(cell([1, ...new Array(15).fill(0)]), cell([10, 0])))).toMatchObject({ form: "versioned", version: 1, eventType: "Misc", name: toHex(EVENT_NAME) });
+    expect(readLogItem(triple(cell([0xff, 0xff, 0xff, 0xff]), cell([10])))).toMatchObject({ form: "versioned", version: 0xffff_ffff });
+    // Other bare shapes: a null, a map-less array, a cell of two atoms, an oversized cell.
+    expect(readLogItem({ tag: "null" })).toMatchObject({ form: "bare", undecodable: expect.any(String) });
+    expect(readLogItem(atoms([1], [2]))).toMatchObject({ form: "bare", undecodable: expect.stringContaining("neither") });
+    expect(readLogItem(cell(new Array(289).fill(1)))).toMatchObject({ form: "bare", undecodable: "Misc data is 289 bytes (> 288)" });
+    // A versioned Misc triple whose data is not one cell.
+    expect(readLogItem(triple(cell([1]), cell([10]), { tag: "array", content: [] }))).toMatchObject({ form: "versioned", undecodable: "Misc data is not a cell of one atom" });
+
+    // Control flow (ledger vm.rs: after op p the VM goes on at p + 1, or p + 1 + skip after jmp / a branch whose cell is not empty).
+    const X = { push: { storage: false, value: wrapped } };
+    const pushCell = (b: number[]) => ({ push: { storage: false, value: cell(b) } });
+    const statuses = (p: unknown[]) => logSites(p).map((s) => (s.status === "unresolved" ? `${s.opIndex}:${s.reason}` : `${s.opIndex}:${s.status}`));
+    expect(statuses([X, "log"])).toEqual(["1:resolved"]);
+    expect(statuses(["log"])).toEqual(["0:log-operand-not-pushed"]);
+    expect(statuses([X, { dup: { n: 0 } }, "log"])).toEqual(["2:log-operand-not-pushed"]);
+    expect(statuses([X, { swap: { n: 0 } }, "log"])).toEqual(["2:log-operand-not-pushed"]);
+    expect(statuses([{ jmp: { skip: 2 } }, X, "log"])).toEqual(["2:never"]); // jumped over: the ledger logs nothing
+    // A branch on a value of the contract's state: the skipped block runs on some paths only.
+    expect(statuses([{ dup: { n: 0 } }, { branch: { skip: 2 } }, X, "log", { noop: { n: 1 } }])).toEqual(["3:log-conditionally-executed"]);
+    // The paths meet again before the log: it runs on every path, from the push right before it.
+    expect(statuses([{ dup: { n: 0 } }, { branch: { skip: 1 } }, { noop: { n: 1 } }, X, "log"])).toEqual(["4:resolved"]);
+    // A branch that lands ON the log: on that path the pushed value was skipped.
+    expect(statuses([{ dup: { n: 0 } }, { branch: { skip: 1 } }, X, "log"])).toEqual(["3:log-operand-not-pushed"]);
+    // A branch on a pushed constant is decided: the empty cell does not skip, any other cell does.
+    expect(statuses([pushCell([]), { branch: { skip: 2 } }, X, "log", { noop: { n: 1 } }])).toEqual(["3:resolved"]);
+    expect(statuses([pushCell([1]), { branch: { skip: 2 } }, X, "log", { noop: { n: 1 } }])).toEqual(["3:never"]);
+    expect(statuses([pushCell([0]), { branch: { skip: 2 } }, X, "log", { noop: { n: 1 } }])).toEqual(["3:never"]); // one zero byte is not empty
+    // A run that jumps past the end fails: only the other path succeeds; with no successful path nothing is logged.
+    expect(statuses([{ dup: { n: 0 } }, { branch: { skip: 1 } }, { jmp: { skip: 99 } }, X, "log"])).toEqual(["4:resolved"]);
+    expect(statuses([X, "log", { jmp: { skip: 9 } }])).toEqual(["1:never"]);
+    expect(() => logSites([{ jmp: {} }])).toThrow(RawDecodeError);
+    // Hostile sizes stay linear-ish: 20 000 ops with branches.
+    const big: unknown[] = [];
+    for (let i = 0; i < 5_000; i++) big.push({ dup: { n: 0 } }, { branch: { skip: 1 } }, X, "log");
+    const t0 = performance.now();
+    expect(logSites(big).filter((s) => s.status !== "unresolved")).toHaveLength(0);
+    expect(performance.now() - t0).toBeLessThan(5_000);
+
+    // In a transaction: unresolved logs keep their place in ledger order; never-run logs take none.
+    const tr = (p: unknown[]) => ({ program: p, effects: { shieldedMints: new Map(), unshieldedMints: new Map() } });
+    const d2 = decodeTransaction({
+      transactionHash: () => "01".repeat(32),
+      intents: new Map([[1, { actions: [call("w", tr([X, "log", { push: { storage: false, value: bare } }, "log", { dup: { n: 0 } }, "log", { jmp: { skip: 2 } }, X, "log"]) as never)] }]]),
+    });
+    expect(d2.logs.map((l) => `${l.opIndex}:${l.unresolved ?? `${l.form}/${l.eventType}`}`)).toEqual(["1:versioned/Misc", "3:bare/Misc", "5:log-operand-not-pushed"]);
+    expect(appliedParts(d2, { result: "success" }).logs.map((l) => l.eventIndex)).toEqual([0, 1, 2]);
   });
 });
 

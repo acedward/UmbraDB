@@ -18,10 +18,12 @@ import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.j
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { type ArchiveTape, startFakeChain } from "../../test/integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadContractEvents, loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
+import { createMip0018Api, listen } from "../mip0018/api.ts";
 import { eventCounts, listEvents, type LoggedEvent } from "../mip0018/events.ts";
+import { listIdentities } from "../mip0018/metadata.ts";
 import { Mip0018Scanner } from "../mip0018/scan.ts";
 import { decodePayload, EVENT_NAME, encodePayload, record, toHex } from "../vendor/mip0018/codec/src/index.ts";
-import { decodeSynthetic, putSyntheticBlocks, type SynthArchivedTx, type SynthLog } from "./helpers/synthetic-archive.ts";
+import { decodeSynthetic, putSyntheticBlocks, type SynthArchivedTx, type SynthLog, type SynthOp } from "./helpers/synthetic-archive.ts";
 
 const NET = "stagenet";
 
@@ -131,13 +133,10 @@ describe("MIP-0018 events from raw transactions (00026 B2)", () => {
       const range = c === "U1" ? "u1" : "idx";
       counts[c] = await eventCounts(ranges[range]!.sql, NET, await fullAddress(prefix), ranges[range]!.mip);
     }
+    const c = (events: number, accepted: number, rejected: number, ignored: number) => ({ events, accepted, rejected, ignored, unresolved: 0 });
     expect(counts).toEqual({
-      C01: { events: 1, accepted: 1, rejected: 0, ignored: 0 }, C02: { events: 1, accepted: 1, rejected: 0, ignored: 0 },
-      C03: { events: 1, accepted: 1, rejected: 0, ignored: 0 }, C04: { events: 3, accepted: 3, rejected: 0, ignored: 0 },
-      C05: { events: 3, accepted: 3, rejected: 0, ignored: 0 }, C06: { events: 5, accepted: 5, rejected: 0, ignored: 0 },
-      C07: { events: 22, accepted: 9, rejected: 9, ignored: 4 }, C08: { events: 2, accepted: 1, rejected: 1, ignored: 0 },
-      C10: { events: 1, accepted: 1, rejected: 0, ignored: 0 }, U1: { events: 1, accepted: 1, rejected: 0, ignored: 0 },
-      bridgeA: { events: 6, accepted: 0, rejected: 0, ignored: 6 }, bridgeB: { events: 4, accepted: 0, rejected: 0, ignored: 4 },
+      C01: c(1, 1, 0, 0), C02: c(1, 1, 0, 0), C03: c(1, 1, 0, 0), C04: c(3, 3, 0, 0), C05: c(3, 3, 0, 0), C06: c(5, 5, 0, 0),
+      C07: c(22, 9, 9, 4), C08: c(2, 1, 1, 0), C10: c(1, 1, 0, 0), U1: c(1, 1, 0, 0), bridgeA: c(6, 0, 0, 6), bridgeB: c(4, 0, 0, 4),
     });
 
     const c07 = await events("idx", { contractAddress: await fullAddress(CONTRACT.C07) });
@@ -200,6 +199,66 @@ describe("MIP-0018 events from raw transactions (00026 B2)", () => {
     expect(got.every((e) => e.contractAddress === A)).toBe(true);
     const undecodable = got.find((e) => e.reason?.startsWith("undecodable") === true)!;
     expect([undecodable.name, undecodable.payload]).toEqual(["", ""]);
+  }, 120_000);
+
+  it("[[mip0018.events.unresolved-logs]] final-audit F1: a bare logged value is a Misc version-0 event and is applied like the triple form; a log op whose value the raw transaction does not show (operand not pushed, or run on some paths only) is stored as unresolved with its reason, never applied, served by /v1/events and counted by /v1/status; a log op no successful run reaches leaves no row; the scan never stops on them", async () => {
+    const A = "b5".repeat(32);
+    const DS = "33".repeat(32);
+    const item = (records: Parameters<typeof encodePayload>[1]): string => {
+      const data = Buffer.from([...EVENT_NAME, ...encodePayload({ domainSep: Uint8Array.from(Buffer.from(DS, "hex")), kind: 3 }, records)]);
+      let end = data.length;
+      while (end > 0 && data[end - 1] === 0) end--;
+      return data.subarray(0, end).toString("hex");
+    };
+    // ops: 0 push / 1 log (the usual triple) · 2 push / 3 log (the same kind of item, bare) · 4 push / 5 dup / 6 log
+    // (operand from dup) · 7 dup / 8 branch on it / 9 push / 10 log (skipped on some paths) / 11 noop · 12 jmp over
+    // 13 push / 14 log (never run).
+    const tx = {
+      hash: "d5".repeat(32),
+      intents: [{ segment: 1, actions: [{ call: { address: A, entryPoint: "publish", guaranteed: { program: [
+        { log: { data: item([record.utf8("name", "Alpha")]) } },
+        { push: { cell: item([record.utf8("symbol", "BB")]) } }, "log",
+        { push: { cell: "01" } }, { dup: 0 }, "log",
+        { dup: 0 }, { branch: 2 }, { log: { data: item([record.utf8("name", "Conditional")]) } }, "noop",
+        { jmp: 2 }, { log: { data: item([record.uint("decimals", 6n, 1)]) } },
+      ] as SynthOp[] } } }] }],
+    };
+    const db = await fresh("unresolved");
+    await putSyntheticBlocks(db.sql, db.archive, NET, 700, [[{ tx, result: "success" }], []]);
+    const s = new Mip0018Scanner({ sql: db.sql, network: NET, schema: db.mip, archiveSchema: db.archive, decode: decodeSynthetic });
+    await s.bootstrap();
+    expect(await s.scanOnce()).toMatchObject({ scannedBlocks: 2, toHeight: 701, events: 4 }); // never stops on them
+    const got = await listEvents(db.sql, NET, {}, db.mip);
+    // One row per log op the ledger may run (4 of the 5 log ops): the pre-D5 decoder stored 3 rows here — the bare
+    // event and the dup-fed log dropped without a trace, the conditional and the never-run log applied as accepted.
+    expect(got.map((e) => [e.eventIndex, e.classification, e.reason ?? null, e.eventType])).toEqual([
+      [0, "accept", null, "Misc"], [1, "accept", null, "Misc"],
+      [2, "unresolved", "log-operand-not-pushed", "Unknown"], [3, "unresolved", "log-conditionally-executed", "Unknown"],
+    ]);
+    expect(got.filter((e) => e.classification === "unresolved").every((e) => e.name === "" && e.payload === "" && e.domainSep === undefined)).toBe(true);
+    // State: the bare event is applied (symbol), the unresolved and never-run ones are not (no "Conditional", no decimals).
+    const [identity] = await listIdentities(db.sql, NET, { contractAddress: A }, db.mip);
+    expect([...identity!.fields.values()].map((f) => `${Buffer.from(f.key).toString()}=${Buffer.from(f.value).toString("hex")}`)).toEqual([
+      `name=${Buffer.from("Alpha").toString("hex")}`, `symbol=${Buffer.from("BB").toString("hex")}`,
+    ]);
+    expect(await eventCounts(db.sql, NET, A, db.mip)).toEqual({ events: 4, accepted: 2, rejected: 0, ignored: 0, unresolved: 2 });
+
+    // Served: position and reason in /v1/events, the count in /v1/status.
+    const server = createMip0018Api({ sql: db.sql, network: NET, schema: db.mip, archiveSchema: db.archive });
+    const port = await listen(server, 0, "127.0.0.1");
+    try {
+      const base = `http://127.0.0.1:${port}`;
+      const ev = (await (await fetch(`${base}/v1/events?contract=${A}`)).json()) as { items: Array<Record<string, unknown>> };
+      expect(ev.items.map((e) => [e.eventIndex, e.classification, e.reason])).toEqual([
+        [0, "accept", null], [1, "accept", null], [2, "unresolved", "log-operand-not-pushed"], [3, "unresolved", "log-conditionally-executed"],
+      ]);
+      expect(ev.items[2]).toEqual({ height: 700, txIndex: 0, txHash: "d5".repeat(32), eventIndex: 2, segment: 1, phase: "guaranteed", contractAddress: A, classification: "unresolved", reason: "log-operand-not-pushed" });
+      const st = (await (await fetch(`${base}/v1/status`)).json()) as { unresolvedEvents: number; indexedHeight: number };
+      expect(st).toMatchObject({ unresolvedEvents: 2, indexedHeight: 701 });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
   }, 120_000);
 
   it("[[mip0018.events.zero-extension]] C10's event, 127 bytes in the raw ledger item, is stored and decoded as MIP Appendix A's full 32 + 256 bytes", async () => {

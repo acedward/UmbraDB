@@ -576,24 +576,25 @@ export interface EventJson {
   segment: number | null;
   phase: string | null;
   contractAddress: string;
-  classification: "accept" | "reject";
+  /** `unresolved` (final-audit F1): a `log` op whose logged value the raw transaction does not show; never applied. */
+  classification: "accept" | "reject" | "unresolved";
   reason: string | null;
 }
 
 /**
- * `GET /v1/events`: MIP-0018-named events (accept/reject) of a contract and/or a transaction, in chain order. The
- * query selects only position, contract, classification and reason (QA2 (a)): the stored name, payload and header
- * never leave the database through the API.
+ * `GET /v1/events`: MIP-0018-named events (accept/reject) and unresolved logs of a contract and/or a transaction, in
+ * chain order. The query selects only position, contract, classification and reason (QA2 (a)): the stored name,
+ * payload and header never leave the database through the API.
  */
 export async function eventsPage(ctx: ViewContext, filter: EventFilter, limit: number, cursor: EventsCursor | undefined): Promise<Page<EventJson>> {
   const { sql } = ctx;
   const rows = await sql<{
     block_height: bigint; tx_index: number; event_index: number; tx_hash: Buffer | null; segment_id: number | null; phase: string | null;
-    contract_address: Buffer; classification: "accept" | "reject"; reason: string | null;
+    contract_address: Buffer; classification: EventJson["classification"]; reason: string | null;
   }[]>`
     SELECT block_height, tx_index, event_index, tx_hash, segment_id, phase, contract_address, classification, reason
     FROM ${sql(ctx.schema)}.mip0018_events
-    WHERE network = ${ctx.network} AND classification IN ('accept', 'reject')
+    WHERE network = ${ctx.network} AND classification IN ('accept', 'reject', 'unresolved')
       ${filter.contract === undefined ? sql`` : sql`AND contract_address = ${buf(filter.contract)}`}
       ${filter.tx === undefined ? sql`` : sql`AND tx_hash = ${buf(filter.tx)}`}
       ${cursor === undefined ? sql`` : sql`AND (block_height, tx_index, event_index) > (${cursor.k[0]}::bigint, ${cursor.k[1]}::int, ${cursor.k[2]}::int)`}
@@ -623,6 +624,12 @@ export interface StatusJson {
   mip: { id: "MIP-0018"; commit: string };
   vendored: { repository: string; commit: string };
   scanner: ScannerState;
+  /**
+   * `log` ops whose logged value the raw transaction does not show (final-audit F1): stored as `unresolved`, never
+   * applied; a contract's metadata may differ from what the ledger emitted while it has any. `null` before the scan's
+   * schema exists.
+   */
+  unresolvedEvents: number | null;
 }
 
 /** `GET /v1/status`. */
@@ -637,6 +644,12 @@ export async function status(ctx: ViewContext, genesisHash: string | null, scann
     const h = r?.value?.height;
     if (typeof h === "number" && Number.isSafeInteger(h)) archiveHeight = h;
   }
+  let unresolvedEvents: number | null = null;
+  if (range !== undefined) {
+    const [u] = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM ${sql(ctx.schema)}.mip0018_events WHERE network = ${ctx.network} AND classification = 'unresolved'`;
+    unresolvedEvents = u?.n ?? 0;
+  }
   return {
     network: ctx.network,
     genesisHash,
@@ -646,6 +659,7 @@ export async function status(ctx: ViewContext, genesisHash: string | null, scann
     mip: { id: "MIP-0018", commit: MIP_COMMIT },
     vendored: { ...VENDORED_REFERENCE },
     scanner,
+    unresolvedEvents,
   };
 }
 

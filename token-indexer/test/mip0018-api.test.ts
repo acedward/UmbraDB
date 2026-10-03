@@ -222,7 +222,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     expect(r.status).toBe(200);
     expect(r.json).toEqual({
       network: NET, genesisHash: loadManifest().genesisHash, startHeight: 714485, indexedHeight: 715183, archiveHeight: 715183,
-      mip: { id: "MIP-0018", commit: MIP_COMMIT }, vendored: { ...VENDORED_REFERENCE }, scanner: "off",
+      mip: { id: "MIP-0018", commit: MIP_COMMIT }, vendored: { ...VENDORED_REFERENCE }, scanner: "off", unresolvedEvents: 0,
     });
     expect(KNOWN_GENESIS.stagenet).toBe(loadManifest().genesisHash);
     const source = readFileSync(new URL("token-indexer/vendor/mip0018/SOURCE.md", REPO), "utf8");

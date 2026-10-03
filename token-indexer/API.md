@@ -24,7 +24,7 @@ of an earlier draft is served. The explorer page (sub-plan C3) uses only these e
 | No defaults | A common field that was never set, or whose current value is unusable, is `null` in `common`; no default such as 0 or 18 decimals. |
 | Hostile text | Text is data. The JSON body is pure ASCII: every non-ASCII character (bidi controls, zero-width characters, …) and `<`, `>`, `&` are written as `\uXXXX` escapes; control characters (NUL …) are JSON escapes. Parsing the JSON gives the exact text back. |
 | Not referenced after withdrawal | A token identity exists only while one of its fields has a value (MIP "Applying records", per-key tombstones). Once its last field is deleted it is not referenced anywhere — not in listings, lookups, groups, events or the contract view — exactly as if it had never been described: a never-minted one answers 404, a minted one is shown only as a minted token (`described: false`, no fields, no group). A deleted field's earlier values are never served. |
-| Events carry no values | The event endpoint serves position, contract, classification and reason only — never an event's name, payload, header (`domainSep`, `kind`) or decoded values (mid-project audit QA2, Q15). Only MIP-0018-named events (`accept`, `reject`) are served; other `Misc` events (`ignore`) are not (Q19). |
+| Events carry no values | The event endpoint serves position, contract, classification and reason only — never an event's name, payload, header (`domainSep`, `kind`) or decoded values (mid-project audit QA2, Q15). Only MIP-0018-named events (`accept`, `reject`) and `unresolved` logs are served; other `Misc` events (`ignore`) are not (Q19). |
 | Marks | `mark` is decided by one function (`state.ts` `tokenMark`, owner Q14 (a)): `ok` (✓) usable `name`, `symbol` and `decimals` and no rejected MIP-0018 event from the token's contract; `partial` (⚠) one of the three missing or unusable; `incorrect` (⚠) the contract has a rejected MIP-0018 event (reasons listed in chain order); `none` no metadata and no rejected event. Usable `standards` identifiers are returned as `tags` (self-declared, never proof). Current state only (assumption A13). |
 | Groups | Symbol groups as the MIP defines them: identities of one contract with the same usable `symbol` bytes; only groups of two or more members (Q6). |
 | NIGHT / DUST | Protocol tokens, outside MIP-0018; served as built-in rows with no mark. NIGHT's color is 32 zero bytes; DUST has no color. |
@@ -167,14 +167,17 @@ A minted identity that is not (or no longer) described: `described: false`, `com
   "archiveHeight": 715183,
   "mip": { "id": "MIP-0018", "commit": "274a84f221bcfc17e4b73e2c8b32fd8c028ea092" },
   "vendored": { "repository": "https://github.com/midnight-experiments/mip-0018", "commit": "daec1f19747b09f4e245885ab0dd9ecc789a82ce" },
-  "scanner": "following"
+  "scanner": "following",
+  "unresolvedEvents": 0
 }
 ```
 
 `startHeight` = the scan's first height, `indexedHeight` = the last scanned height (the scan cursor), `archiveHeight`
 = the chain archive's last height (all `null` before anything is scanned/archived). `genesisHash` is the configured
 network's (`null` when unknown). `scanner`: `following` (this process runs the scan loop), `stalled` (the loop's last
-attempt failed; it retries), `off` (API only).
+attempt failed; it retries), `off` (API only). `unresolvedEvents` = the stored `log` ops whose logged value the raw
+transaction does not show (`unresolved` in `/v1/events`; never applied — while a contract has one, its tokens'
+metadata may differ from the ledger's events; README "Known limitation"); `null` before the scan's schema exists.
 
 ### `GET /v1/tokens?limit=&cursor=`
 
@@ -232,8 +235,8 @@ holding (`shielded` → 1, `unshielded` → 2), not by the color. `held` is requ
 
 ### `GET /v1/events?contract=&tx=&limit=&cursor=`
 
-The MIP-0018-named events (`accept`, `reject`) of one contract and/or one transaction (at least one filter
-required), in chain order (block, transaction, event — the MIP's within-transaction order):
+The MIP-0018-named events (`accept`, `reject`) and the `unresolved` logs of one contract and/or one transaction (at
+least one filter required), in chain order (block, transaction, event — the MIP's within-transaction order):
 
 ```json
 { "items": [ { "height": 715109, "txIndex": 0, "txHash": "75c43430…", "eventIndex": 1, "segment": 53948, "phase": "guaranteed",
@@ -242,6 +245,12 @@ required), in chain order (block, transaction, event — the MIP's within-transa
 ```
 
 `reason` is `null` for an accepted event. Never the event's bytes, header or values (QA2).
+
+`classification: "unresolved"` (final audit F1): a `log` op of an applied part whose logged value the raw transaction
+does not show — `reason` `log-operand-not-pushed` (its operand comes from the contract's state, not from a `push` right
+before it) or `log-conditionally-executed` (it runs on some paths of the program only). The ledger may have emitted a
+MIP-0018 event there; the indexer cannot know which, so it never applies it. `eventIndex` counts the transaction's
+applied `log` ops the ledger may run, unresolved ones included (a `log` op no successful run reaches takes no index).
 
 ### `GET /v1/tokens/{color}/activity?limit=&cursor=&order=`
 

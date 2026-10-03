@@ -28,6 +28,17 @@
  * What applied (spec FR-002, owner Q9): a FAILURE applies nothing; otherwise the guaranteed part applies, and a
  * fallible part only when its segment succeeded (`SUCCESS`: every segment; `PARTIAL_SUCCESS`: a segment listed with
  * `success: true` — one missing from the list counts as failed).
+ *
+ * Logged values (final-audit F1; ledger v2.0.0-rc.4 `onchain-vm/src/vm.rs` `Log`, `try_decode_event`, `decode_event`):
+ * the ledger's `log` op logs the value on top of the VM stack. A value that is a well-formed `[u32, LogEventType, data]`
+ * triple is an event of that type; ANY other value is a `Misc` event, version 0, whose data is the whole value. The
+ * decoder reproduces that rule exactly when the raw transaction shows the logged value, i.e. when the only way the VM
+ * reaches the `log` op is straight from a `push` op right before it (`logSites`: the program's forward-only
+ * `branch`/`jmp` control flow is followed; a `branch` whose condition is a value pushed right before it is decided).
+ * A `log` op the VM never executes in a successful run logs nothing (as on the ledger). A `log` op whose operand comes
+ * from anything else (`dup`, `swap`, `idx`, `concat`, …, i.e. from the contract's state), or that runs only on some
+ * paths (a `branch` on a value of the contract's state), cannot be read from the raw transaction: it is reported as
+ * `unresolved` with its reason — never skipped and never applied (scan: an `unresolved` event row).
  */
 import { ContractCall, ContractDeploy, MaintenanceUpdate, Transaction } from "@midnightntwrk/ledger-v9";
 import { NAME_SIZE, PAYLOAD_SIZE, splitMiscData, toHex } from "../vendor/mip0018/codec/src/index.ts";
@@ -73,17 +84,24 @@ export interface CallPlacement extends Part {
   entryPoint: string;
 }
 
+/** Why a `log` op's event cannot be known from the raw transaction (an `unresolved` event row; never applied). */
+export type UnresolvedReason = "log-operand-not-pushed" | "log-conditionally-executed";
+
 export interface DecodedLog extends CallPlacement {
   /** Index of the `log` op in its transcript program. */
   opIndex: number;
+  /** Set when the logged value cannot be read from the raw transaction; then version and type are `null`. */
+  unresolved?: UnresolvedReason;
   version: number | null;
   eventTypeCode: number | null;
-  /** MIP-0002 `LogEventType` name (`Misc` for code 10), or `null` when unknown. */
+  /** MIP-0002 `LogEventType` name (`Misc` for code 10), or `null` when unresolved. */
   eventType: string | null;
+  /** `versioned`: a well-formed `[u32, LogEventType, data]` triple; `bare`: any other value (ledger: `Misc`, version 0). */
+  form?: "versioned" | "bare";
   /** `Misc` only: the data item zero-extended to 288 bytes, split — lowercase hex of 32 and 256 bytes. */
   name?: string;
   payload?: string;
-  /** Why a log could not be read as a `Misc` `name ‖ payload` (when it has another shape). */
+  /** Why a `Misc` event's data could not be read as one `name ‖ payload` item (stored as `ignore`). */
   undecodable?: string;
 }
 
@@ -188,49 +206,168 @@ export function normHex(h: string): string {
   return (h.startsWith("0x") || h.startsWith("0X") ? h.slice(2) : h).toLowerCase();
 }
 
-function leUint(bytes: Uint8Array): number {
-  let n = 0;
-  for (let i = bytes.length - 1; i >= 0; i--) n = n * 256 + (bytes[i] as number);
-  return n;
-}
-
-function singleAtom(v: Encoded | undefined): Uint8Array | undefined {
+/** A cell's atoms (`EncodedStateValue` `{tag: "cell", content: AlignedValue}`), or `undefined` for anything else. */
+function cellAtoms(v: Encoded | undefined): Uint8Array[] | undefined {
   if (v?.tag !== "cell") return undefined;
-  const atoms = (v.content as Aligned).value;
-  return atoms.length === 1 ? atoms[0] : atoms.length === 0 ? new Uint8Array(0) : undefined;
+  const atoms = (v.content as Partial<Aligned> | undefined)?.value;
+  return Array.isArray(atoms) && atoms.every((a) => a instanceof Uint8Array) ? atoms : undefined;
 }
 
-/** Reads the `VersionedLogItem` `[version, eventType, data]` pushed right before a `log` op. */
-export function readLogItem(pushed: unknown): Pick<DecodedLog, "version" | "eventTypeCode" | "eventType" | "name" | "payload" | "undecodable"> {
-  const v = pushed as Encoded | undefined;
-  if (v?.tag !== "array" || !Array.isArray(v.content) || v.content.length !== 3) {
-    return { version: null, eventTypeCode: null, eventType: null, undecodable: "not a [version, eventType, data] array" };
-  }
-  const [ver, et, data] = v.content as Encoded[];
-  const verBytes = singleAtom(ver);
-  const etBytes = singleAtom(et);
-  const version = verBytes === undefined ? null : leUint(verBytes);
-  const eventTypeCode = etBytes === undefined ? null : leUint(etBytes);
-  const eventType = eventTypeCode === null ? null : (LOG_EVENT_TYPES[eventTypeCode] ?? null);
-  const out: ReturnType<typeof readLogItem> = { version, eventTypeCode, eventType };
+/**
+ * The ledger's `u32::try_from(&ValueSlice)` / `u8::try_from(&ValueSlice)` (`base-crypto/src/fab/conversions.rs`): a cell
+ * of exactly one atom of at most 16 bytes, little-endian, at most `max`; otherwise `undefined`.
+ */
+function uintOfCell(v: Encoded | undefined, max: bigint): number | undefined {
+  const atoms = cellAtoms(v);
+  if (atoms === undefined || atoms.length !== 1) return undefined;
+  const a = atoms[0]!;
+  if (a.length > 16) return undefined;
+  let n = 0n;
+  for (let i = a.length - 1; i >= 0; i--) n = (n << 8n) | BigInt(a[i]!);
+  return n <= max ? Number(n) : undefined;
+}
+
+/** The ledger's `try_decode_event`: an array of exactly three, `[u32 version, LogEventType (0–10), data]`. */
+function tryVersioned(v: Encoded | undefined): { version: number; code: number; data: Encoded | undefined } | undefined {
+  if (v?.tag !== "array" || !Array.isArray(v.content) || v.content.length !== 3) return undefined;
+  const [ver, et, data] = v.content as Array<Encoded | undefined>;
+  const version = uintOfCell(ver, 0xffff_ffffn);
+  const code = uintOfCell(et, 0xffn);
+  if (version === undefined || code === undefined || code >= LOG_EVENT_TYPES.length) return undefined;
+  return { version, code, data };
+}
+
+export type LogItem = Required<Pick<DecodedLog, "form">> & { version: number; eventTypeCode: number; eventType: string } & Pick<DecodedLog, "name" | "payload" | "undecodable">;
+
+/**
+ * The event a logged value is, by the ledger's `decode_event` (`onchain-vm/src/vm.rs`): a well-formed
+ * `[version, eventType, data]` triple is an event of that type; any other value is a `Misc` event, version 0, whose
+ * data is the whole value. `Misc` data that is a cell of one atom of at most 288 bytes is zero-extended to 288 bytes
+ * and split `name ‖ payload` (MIP "Consuming"); any other data cannot be read as one item (`undecodable`).
+ */
+export function readLogItem(pushed: unknown): LogItem {
+  const value = pushed as Encoded | undefined;
+  const v = tryVersioned(value);
+  const form = v === undefined ? "bare" : "versioned";
+  const version = v?.version ?? 0;
+  const eventTypeCode = v?.code ?? MISC_EVENT_TYPE_CODE;
+  const out: LogItem = { form, version, eventTypeCode, eventType: LOG_EVENT_TYPES[eventTypeCode]! };
   if (eventTypeCode !== MISC_EVENT_TYPE_CODE) return out;
-  const atom = singleAtom(data);
-  if (atom === undefined) return { ...out, undecodable: "Misc data is not a single cell atom" };
+  const atoms = cellAtoms(v === undefined ? value : v.data);
+  if (atoms === undefined || atoms.length !== 1)
+    return { ...out, undecodable: v === undefined ? "the logged value is neither a [version, type, data] triple nor a cell of one atom" : "Misc data is not a cell of one atom" };
+  const atom = atoms[0]!;
   const split = splitMiscData(atom); // zero-extends the whole item to 288 bytes, then splits 32 | 256
   if (split === undefined) return { ...out, undecodable: `Misc data is ${atom.length} bytes (> ${MISC_DATA_SIZE})` };
   return { ...out, name: toHex(split.name), payload: toHex(split.payload) };
 }
 
+/** What the raw transaction says about one `log` op of a transcript program. */
+export type LogSite =
+  | { opIndex: number; status: "resolved"; pushed: unknown }
+  | { opIndex: number; status: "never" }
+  | { opIndex: number; status: "unresolved"; reason: UnresolvedReason };
+
+const opKind = (op: unknown): string | undefined =>
+  typeof op === "string" ? op : op !== null && typeof op === "object" ? Object.keys(op)[0] : undefined;
+
+function skipOf(op: unknown, kind: "branch" | "jmp", at: number): number {
+  const skip = (op as Record<string, { skip?: unknown } | undefined>)[kind]?.skip;
+  if (typeof skip !== "number" || !Number.isSafeInteger(skip) || skip < 0) throw new RawDecodeError(`op ${at}: ${kind} without a valid skip`);
+  return skip;
+}
+
+/**
+ * The `log` ops of a transcript program and whether the raw transaction shows what each one logs. The VM runs the
+ * program forward; after op `p` it continues at `p + 1`, or at `p + 1 + skip` after a `jmp` and after a `branch` whose
+ * popped condition is not the empty cell (ledger `vm.rs`, end of the op loop). A successful run ends exactly at the
+ * program's end. So, over the paths from the first op to the end:
+ * - a `log` op on no such path never logs (`never`: the ledger emits nothing for it);
+ * - a `log` op not on every such path runs only for some contract states (`unresolved`, `log-conditionally-executed`);
+ * - a `log` op on every path whose only way in is the fall-through from a `push` op logs that pushed value
+ *   (`resolved`); any other `log` op logs a value made from the contract's state (`unresolved`, `log-operand-not-pushed`).
+ * A `branch` whose only way in is the fall-through from a `push` op is decided by that pushed value. Pure; never
+ * throws on hostile control flow (a jump past the end is a failing path, which a successful run does not take).
+ */
+export function logSites(program: readonly unknown[]): LogSite[] {
+  const n = program.length;
+  const kinds = program.map(opKind);
+  const reach = new Array<boolean>(n + 1).fill(false);
+  const preds: number[][] = Array.from({ length: n + 1 }, () => []);
+  const succs: number[][] = Array.from({ length: n }, () => []);
+  if (n > 0) reach[0] = true;
+  const onlyFromPush = (p: number): boolean => p >= 1 && kinds[p - 1] === "push" && preds[p]!.length === 1 && preds[p]![0] === p - 1;
+  for (let p = 0; p < n; p++) {
+    if (!reach[p]) continue;
+    const kind = kinds[p];
+    let targets: number[];
+    if (kind === "jmp") {
+      targets = [p + 1 + skipOf(program[p], "jmp", p)];
+    } else if (kind === "branch") {
+      const skip = skipOf(program[p], "branch", p);
+      if (onlyFromPush(p)) {
+        const cond = (program[p - 1] as { push: { value: unknown } }).push.value as Encoded;
+        const atoms = cellAtoms(cond);
+        // `branch` pops a cell (anything else fails the run); the empty single-atom cell means "do not skip".
+        targets = atoms === undefined ? [] : atoms.length === 1 && atoms[0]!.length === 0 ? [p + 1] : [p + 1 + skip];
+      } else {
+        targets = [p + 1, p + 1 + skip];
+      }
+    } else {
+      targets = [p + 1];
+    }
+    for (const t of new Set(targets)) {
+      if (t > n) continue; // runs past the end: the ledger fails the run
+      succs[p]!.push(t);
+      preds[t]!.push(p);
+      reach[t] = true;
+    }
+  }
+  // Ops on a path that ends at the program's end (a successful run).
+  const live = new Array<boolean>(n + 1).fill(false);
+  live[n] = reach[n]!;
+  for (let p = n - 1; p >= 0; p--) live[p] = reach[p]! && succs[p]!.some((t) => live[t]);
+  // Immediate dominators over the live ops (forward edges only: index order is a topological order).
+  const idom = new Array<number>(n + 1).fill(-1);
+  const always = new Array<boolean>(n + 1).fill(false);
+  if (live[n]) {
+    idom[0] = 0;
+    const intersect = (a: number, b: number): number => {
+      while (a !== b) {
+        while (a > b) a = idom[a]!;
+        while (b > a) b = idom[b]!;
+      }
+      return a;
+    };
+    for (let v = 1; v <= n; v++) {
+      if (!live[v]) continue;
+      const ps = preds[v]!.filter((u) => live[u]);
+      idom[v] = ps.reduce((d, u) => intersect(d, u));
+    }
+    for (let w = n; ; w = idom[w]!) {
+      always[w] = true;
+      if (w === 0) break;
+    }
+  }
+  const sites: LogSite[] = [];
+  for (let i = 0; i < n; i++) {
+    if (kinds[i] !== "log") continue;
+    if (!live[i]) sites.push({ opIndex: i, status: "never" });
+    else if (!always[i]) sites.push({ opIndex: i, status: "unresolved", reason: "log-conditionally-executed" });
+    else if (kinds[i - 1] === "push" && preds[i]!.filter((u) => live[u]).every((u) => u === i - 1))
+      sites.push({ opIndex: i, status: "resolved", pushed: (program[i - 1] as { push: { value: unknown } }).push.value });
+    else sites.push({ opIndex: i, status: "unresolved", reason: "log-operand-not-pushed" });
+  }
+  return sites;
+}
+
 function transcriptParts(t: Transcript, place: CallPlacement): { logs: DecodedLog[]; mints: DecodedMint[]; sightings: ColorSighting[] } {
   const logs: DecodedLog[] = [];
-  t.program.forEach((op, i) => {
-    if (op !== "log") return;
-    const prev = t.program[i - 1] as { push?: { value: unknown } } | undefined;
-    const item = prev?.push !== undefined
-      ? readLogItem(prev.push.value)
-      : { version: null, eventTypeCode: null, eventType: null, undecodable: "the logged value was not pushed right before the log op" };
-    logs.push({ ...place, opIndex: i, ...item });
-  });
+  for (const site of logSites(t.program)) {
+    if (site.status === "never") continue; // the VM never runs it in a successful run: the ledger logs nothing
+    if (site.status === "unresolved") logs.push({ ...place, opIndex: site.opIndex, unresolved: site.reason, version: null, eventTypeCode: null, eventType: null });
+    else logs.push({ ...place, opIndex: site.opIndex, ...readLogItem(site.pushed) });
+  }
   const mints: DecodedMint[] = [];
   for (const [kind, map] of [[1, t.effects.shieldedMints], [2, t.effects.unshieldedMints]] as const) {
     for (const [ds, amount] of [...map].map(([d, a]) => [normHex(String(d)), a] as const).sort(([a], [b]) => byString(a, b))) {

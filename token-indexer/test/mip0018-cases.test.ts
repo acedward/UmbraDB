@@ -105,7 +105,9 @@ async function caseDifferences(sql: UmbraDBSql, schema: string, contract: string
   const wantGroups = expected.groups.map((g) => ({ symbol: g.symbol, members: g.members.map((m) => `${norm(m.domainSep)}/${m.kind}`) }));
   if (multi(gotGroups) !== multi(wantGroups)) d.push(`groups ${multi(gotGroups)}, expected ${multi(wantGroups)}`);
   if (expected.counts !== undefined) {
-    const c = await eventCounts(sql, NET, contract, schema);
+    // The reference's counts have no `unresolved` (a D5 classification): none may exist in the recorded cases.
+    const { unresolved, ...c } = await eventCounts(sql, NET, contract, schema);
+    if (unresolved !== 0) d.push(`unresolved ${unresolved}`);
     if (canon(c) !== canon(expected.counts)) d.push(`counts ${canon(c)}, expected ${canon(expected.counts)}`);
   }
   return d;
@@ -214,7 +216,7 @@ describe("Stagenet case comparison — gaps (00026 D2)", () => {
     expect(c09.steps.every((s) => s.txHash === undefined && s.height === undefined)).toBe(true);
     expect(recorded.get("deployments/stagenet/cases/C09/expected.json")).toBe(recorded.get("deployments/stagenet/cases/C01/expected.json"));
     expect(await caseDifferences(db.sql, db.mip, contractOf("C09"), read<ExpectedState>("C01/expected.json"))).toEqual([]);
-    expect(await eventCounts(db.sql, NET, contractOf("C09"), db.mip)).toEqual({ events: 1, accepted: 1, rejected: 0, ignored: 0 });
+    expect(await eventCounts(db.sql, NET, contractOf("C09"), db.mip)).toEqual({ events: 1, accepted: 1, rejected: 0, ignored: 0, unresolved: 0 });
 
     // U1 at its last block (715433, the publish after the VerifierKeyInsert).
     const u1 = await freshMip("u1");

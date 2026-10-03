@@ -11,7 +11,8 @@ export const name = "001_mip0018_core";
  * - `mip0018_events` — one row per observed `Misc` event the indexer classified, at its chain position (Q15: the
  *   chain-event record — position, contract, classification, reason). The raw `name`/`payload` bytes are kept so the
  *   state can be recomputed after blocks above a height are removed (MIP "Applying records", vector S4); they are
- *   never served as metadata.
+ *   never served as metadata. `unresolved` (final-audit F1): a `log` op whose logged value the raw transaction does
+ *   not show (event type `Unknown`, no bytes, a reason); never applied.
  * - `mip0018_fields` — one row per field `(network, contract_address, domain_sep, kind, key)` holding only its current
  *   value (Q5: no history table). A Null record deletes its row (Q16, per-key tombstones). A token identity exists
  *   only while it has at least one row here; with no rows it MUST NOT be referenced anywhere.
@@ -40,12 +41,14 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       event_type       text     NOT NULL CHECK (event_type ~ '^[A-Za-z]{1,32}$'),
       name             bytea    NOT NULL CHECK (octet_length(name) <= 32),
       payload          bytea    NOT NULL CHECK (octet_length(payload) <= 256),
-      classification   text     NOT NULL CHECK (classification IN ('accept', 'reject', 'ignore')),
+      classification   text     NOT NULL CHECK (classification IN ('accept', 'reject', 'ignore', 'unresolved')),
       reason           text     CHECK (reason IS NULL OR reason ~ '^[\\x20-\\x7e]+$'),
       domain_sep       bytea    CHECK (domain_sep IS NULL OR octet_length(domain_sep) = 32),
       kind             smallint CHECK (kind IS NULL OR kind IN (1, 2, 3)),
       CHECK ((classification = 'accept') = (reason IS NULL)),
       CHECK (classification <> 'accept' OR (domain_sep IS NOT NULL AND kind IS NOT NULL)),
+      CHECK (classification <> 'unresolved'
+             OR (octet_length(name) = 0 AND octet_length(payload) = 0 AND domain_sep IS NULL AND kind IS NULL)),
       PRIMARY KEY (network, block_height, tx_index, event_index)
     )
   `;
@@ -54,6 +57,11 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       ON ${sql(schema)}.mip0018_events (network, contract_address, block_height, tx_index, event_index)
   `;
   await sql`CREATE INDEX mip0018_events_tx_hash_idx ON ${sql(schema)}.mip0018_events (tx_hash) WHERE tx_hash IS NOT NULL`;
+  // `/v1/status` counts the unresolved rows of a network (final-audit F1) without reading the other events.
+  await sql`
+    CREATE INDEX mip0018_events_unresolved_idx
+      ON ${sql(schema)}.mip0018_events (network) WHERE classification = 'unresolved'
+  `;
 
   await sql`
     CREATE TABLE ${sql(schema)}.mip0018_fields (

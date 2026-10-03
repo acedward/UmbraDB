@@ -20,7 +20,7 @@ export interface LoggedEvent {
   /** Zero-extended `name` (32 bytes) and `payload` (256 bytes), hex; empty when the logged data was not one item. */
   name: string;
   payload: string;
-  classification: "accept" | "reject" | "ignore";
+  classification: "accept" | "reject" | "ignore" | "unresolved";
   reason: string | undefined;
   /** Accepted events only. */
   domainSep: string | undefined;
@@ -55,11 +55,16 @@ export async function listEvents(
   }));
 }
 
-/** Classification counts of a contract's events (accepted, rejected, ignored), e.g. for the Q14 marks. */
-export async function eventCounts(sql: UmbraDBSql, network: string, contractAddress: string, schema = MIP0018_SCHEMA): Promise<{ events: number; accepted: number; rejected: number; ignored: number }> {
+/** Classification counts of a contract's events (accepted, rejected, ignored, unresolved), e.g. for the Q14 marks. */
+export async function eventCounts(
+  sql: UmbraDBSql, network: string, contractAddress: string, schema = MIP0018_SCHEMA,
+): Promise<{ events: number; accepted: number; rejected: number; ignored: number; unresolved: number }> {
   const rows = await sql<{ classification: string; n: number }[]>`
     SELECT classification, count(*)::int AS n FROM ${sql(schema)}.mip0018_events
     WHERE network = ${network} AND contract_address = ${buf(contractAddress)} GROUP BY classification`;
   const n = (c: string): number => rows.find((r) => r.classification === c)?.n ?? 0;
-  return { events: n("accept") + n("reject") + n("ignore"), accepted: n("accept"), rejected: n("reject"), ignored: n("ignore") };
+  return {
+    events: n("accept") + n("reject") + n("ignore") + n("unresolved"),
+    accepted: n("accept"), rejected: n("reject"), ignored: n("ignore"), unresolved: n("unresolved"),
+  };
 }

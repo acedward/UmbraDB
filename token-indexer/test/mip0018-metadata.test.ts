@@ -89,7 +89,9 @@ async function differences(sql: UmbraDBSql, schema: string, contract: string, ex
   const wantGroups = expected.groups.map((g) => ({ symbol: g.symbol, members: g.members.map((m) => `${norm(m.domainSep)}/${m.kind}`) }));
   if (multi(gotGroups) !== multi(wantGroups)) d.push(`groups ${multi(gotGroups)}, expected ${multi(wantGroups)}`);
   if (expected.counts !== undefined) {
-    const c = await eventCounts(sql, NET, contract, schema);
+    // The reference's counts have no `unresolved` (a D5 classification): none may exist in the recorded cases.
+    const { unresolved, ...c } = await eventCounts(sql, NET, contract, schema);
+    if (unresolved !== 0) d.push(`unresolved ${unresolved}`);
     if (canon(c) !== canon(expected.counts)) d.push(`counts ${canon(c)}, expected ${canon(expected.counts)}`);
   }
   return d;

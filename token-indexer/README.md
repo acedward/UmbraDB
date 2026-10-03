@@ -33,6 +33,8 @@ Postgres schema chain_archive      blocks, raw transactions, per-transaction res
    │  token-indexer/mip0018/scan.ts (scan-cli.ts, or the loop inside serve)
    │    applied-parts.ts  decode each raw transaction (ledger-v9); keep only applied parts (guaranteed part
    │                      unless FAILURE, each fallible segment only if it succeeded), in ledger order
+   │                      read each logged value with the ledger's own decode_event rule; a log op whose
+   │                      value the raw transaction does not show → unresolved (see "Known limitation")
    │    vendored codec    classify each Misc event: accept / reject (reason) / ignore
    │    state.ts          per-key rules (one pure module, also used by the vector adapters)
    ▼
@@ -72,9 +74,29 @@ node --import tsx token-indexer/mip0018/serve-cli.ts --network stagenet --api-on
 - `sync-cli.ts` flags and environment: see its header (`--from`, `--to`, `--concurrency`, `--max-blocks`,
   `--min-interval-ms`; `SYNC_BACKOFF_*`). Without `--to` it follows the finalized tip.
 - `scan-cli.ts`: `--from`, `--to`, `--max-blocks`, `--schema` (default `mip0018`), `--archive-schema` (default
-  `chain_archive`). The scan stops with an error at a transaction it cannot decode (never skips it).
+  `chain_archive`). The scan stops with an error at a transaction it cannot decode (never skips it). A `log` op
+  whose logged value is not in the raw transaction does not stop it: it is stored as `unresolved` (see below).
 - API: [API.md](API.md) (endpoints, JSON shapes, errors, pagination). Explorer page: `GET /ui`,
   [ui/README.md](mip0018/ui/README.md).
+
+## Known limitation: events the raw transaction does not show
+
+The ledger's `log` op logs whatever value is on top of the contract's VM stack; the ledger turns a well-formed
+`[version, type, data]` triple into an event of that type and any other value into a `Misc` event (version 0) whose
+data is the whole value (`midnight-ledger` v2.0.0-rc.4 `onchain-vm/src/vm.rs` `decode_event`). The indexer applies
+exactly that rule — but it reads events from the raw transactions (owner decision Q4), and a raw transaction shows the
+logged value only when the VM reaches the `log` op straight from a `push` op right before it. Every recorded Stagenet
+event has that shape (Compact emits `push [version, type, data]; log`).
+
+A `log` op whose operand comes from anything else (`dup`, `swap`, `idx`, …: the contract's state), or that runs on
+some paths of the program only (a `branch` on a value of the contract's state), cannot be read without the contract's
+state. The scan does not stop on it (anyone could halt the indexer with a hand-built circuit) and does not drop it: it
+stores an event row classified `unresolved` with its reason (`log-operand-not-pushed`, `log-conditionally-executed`),
+never applies it, serves it in `/v1/events` with its position, and counts such rows in `/v1/status`
+(`unresolvedEvents`). While a contract has an unresolved log, its tokens' metadata in this indexer may differ from what
+the ledger emitted (MIP "Applying records": state MUST equal every accepted event). A `log` op that no successful run
+of the program reaches logs nothing, on the ledger and here. Decision and alternatives: project 00026 Q33, assumption
+A23 (under review by the owner).
 
 ## Tests and fixtures
 
@@ -135,7 +157,7 @@ The project's decisions (questions Q1–Q31 of project 00026) are summarized her
 |---|---|
 | Authority | The final MIP text only; no compatibility with earlier drafts (spec; Q16/Q17: per-key tombstones). |
 | Vendoring | Codec, vectors and runner vendored verbatim; the reference repository is never changed (Q2, Q17, Q18). |
-| Events | Decoded from archived raw transactions, applied parts only; the indexer's `contractEvents` is a test cross-check (Q4, Q9). |
+| Events | Decoded from archived raw transactions, applied parts only, with the ledger's `decode_event` rule; the indexer's `contractEvents` is a test cross-check (Q4, Q9); logs the raw transaction does not show are stored as `unresolved`, never applied (final audit F1, Q33). |
 | State | Latest value per key, no history; a tombstone deletes its key; an identity with no keys is not referenced; shared entries derived from the field rows (Q5, Q15, Q16, Q24). |
 | Groups | As the MIP defines them, two or more members (Q6). |
 | Scope extras | NIGHT/DUST rows, seen tokens, activity with Bech32m, ✓/⚠ marks with `standards` tags (Q3, Q14). |

@@ -165,15 +165,16 @@ export interface ChainEvent {
   phase: "guaranteed" | "fallible" | undefined;
   contractAddress: string;
   eventType: string;
-  classification: "accept" | "reject" | "ignore";
+  classification: "accept" | "reject" | "ignore" | "unresolved";
   reason: string | undefined;
   /** The identity an ACCEPTED event described — only while that identity still has a field (else omitted). */
   identity?: { domainSep: string; kind: number };
 }
 
 /**
- * Chain events of a network in chain order, optionally of one contract / one transaction. By default only the
- * MIP-0018 events (`accept`, `reject`); `includeIgnored` adds the `ignore` rows (other names, other types; Q19).
+ * Chain events of a network in chain order, optionally of one contract / one transaction. By default the MIP-0018
+ * events (`accept`, `reject`) and the `unresolved` logs (final-audit F1: what they log is not in the raw transaction);
+ * `includeIgnored` adds the `ignore` rows (other names, other types; Q19).
  */
 export async function chainEvents(
   sql: Queryable, network: string, filter: { contractAddress?: string; txHash?: string; includeIgnored?: boolean } = {}, schema = MIP0018_SCHEMA,
@@ -192,7 +193,7 @@ export async function chainEvents(
            )) AS described
     FROM ${s}.mip0018_events e
     WHERE e.network = ${network}
-      ${filter.includeIgnored === true ? sql`` : sql`AND e.classification IN ('accept', 'reject')`}
+      ${filter.includeIgnored === true ? sql`` : sql`AND e.classification IN ('accept', 'reject', 'unresolved')`}
       ${filter.contractAddress === undefined ? sql`` : sql`AND e.contract_address = ${buf(filter.contractAddress)}`}
       ${filter.txHash === undefined ? sql`` : sql`AND e.tx_hash = ${buf(filter.txHash)}`}
     ORDER BY e.block_height, e.tx_index, e.event_index`;

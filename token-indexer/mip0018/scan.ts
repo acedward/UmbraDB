@@ -18,14 +18,21 @@
  * - Checks (never skipped silently): consecutive heights, each block's parent = the last scanned block, a stored
  *   result for every regular transaction, the outcome of every fallible segment of a partial success (audit F1), the
  *   recomputed transaction hash = the archived one, a decodable transaction, one (contract, domainSep) per color.
- * - Events: every applied `log` op whose item is a MIP-0002 `Misc` event, in the MIP's order (block, transaction,
+ * - Events: every applied `log` op whose event is a MIP-0002 `Misc` event, in the MIP's order (block, transaction,
  *   then within the transaction the guaranteed part of every intent by ascending segment id, then each successful
- *   fallible segment; actions and operations in order). `name ‖ payload` was zero-extended to 288 bytes before the
- *   split (decoder); the contract address is the call's, never the payload's. Classified with the vendored reference
- *   codec: accept, reject (reason) or ignore (another name, `[v2]`, data that is not one 288-byte item). The row keeps
- *   the chain position, classification and reason (Q15: the chain-event record; metadata values live only in the
- *   latest-value rows of sub-plan B3); `name`/`payload` stay for recomputation and are never served as metadata.
- *   `event_index` is the position among the transaction's applied `log` ops (non-`Misc` logs are not stored).
+ *   fallible segment; actions and operations in order). The logged value is read with the ledger's own `decode_event`
+ *   rule (final-audit F1: a well-formed `[version, type, data]` triple has that type, any other value is `Misc`
+ *   version 0 with the whole value as data); `name ‖ payload` was zero-extended to 288 bytes before the split
+ *   (decoder); the contract address is the call's, never the payload's. Classified with the vendored reference
+ *   codec: accept, reject (reason) or ignore (another name, `[v2]`, data that is not one 288-byte item). A `log` op
+ *   whose logged value the raw transaction does not show (its operand is not pushed right before it, or it runs only
+ *   on some paths of the program) is stored as `unresolved` with its reason (`log-operand-not-pushed`,
+ *   `log-conditionally-executed`): never applied, never skipped, and the scan goes on (a stop would let anyone halt
+ *   the indexer with a hand-built circuit). The row keeps the chain position, classification and reason (Q15: the
+ *   chain-event record; metadata values live only in the latest-value rows of sub-plan B3); `name`/`payload` stay
+ *   for recomputation and are never served as metadata. `event_index` is the position among the transaction's
+ *   applied `log` ops that the ledger may run (a resolved event of another MIP-0002 type takes a position but is not
+ *   stored).
  * - Metadata state (sub-plan B3, `fields.ts`): each accepted event is applied to `mip0018_fields` (latest value per
  *   key; a Null record deletes its key's row) in the same block transaction as the event rows and the cursor.
  * - `removeAbove(height)`: deletes every scanned row above a height, recomputes the fields of the identities the
@@ -57,6 +64,9 @@ export const BUILTIN_TOKENS = [
   { symbol: "NIGHT", name: "NIGHT", decimals: 6, color: NIGHT_COLOR, note: "Protocol token (outside MIP-0018): the unshielded native token, color 32 zero bytes." },
   { symbol: "DUST", name: "DUST", decimals: 15, color: null, note: "Protocol token (outside MIP-0018): the fee resource; it has no color." },
 ] as const;
+
+/** `event_type` of an `unresolved` event row: the logged value, and so the event's MIP-0002 type, is unknown. */
+export const UNRESOLVED_EVENT_TYPE = "Unknown";
 
 export class ScanError extends Error {
   override name = "ScanError";
@@ -280,7 +290,16 @@ export class Mip0018Scanner {
       for (const d of parts.applied.deploys)
         rows.actions.push({ ...at, segment_id: d.segment, action_index: d.actionIndex, tx_hash: txHash, action: "deploy", contract_address: buf(d.address), entry_point: null, applied_phases: null, maintenance_counter: null, maintenance_updates: null, maintenance_operations: null });
       for (const l of parts.applied.logs) {
-        if (l.eventTypeCode !== MISC_EVENT_TYPE_CODE) continue; // other MIP-0002 types say nothing about metadata
+        if (l.unresolved !== undefined) {
+          // Final-audit F1 (b): what this `log` op logs is not in the raw transaction — recorded, never applied.
+          rows.events.push({
+            ...at, event_index: l.eventIndex, tx_hash: txHash, segment_id: l.segment, phase: l.phase,
+            contract_address: buf(l.contractAddress), event_type: UNRESOLVED_EVENT_TYPE, name: Buffer.alloc(0), payload: Buffer.alloc(0),
+            classification: "unresolved", reason: l.unresolved, domain_sep: null, kind: null,
+          });
+          continue;
+        }
+        if (l.eventTypeCode !== MISC_EVENT_TYPE_CODE) continue; // a resolved event of another MIP-0002 type says nothing about metadata
         const name = Buffer.from(l.name ?? "", "hex");
         const payload = Buffer.from(l.payload ?? "", "hex");
         const c = l.undecodable === undefined

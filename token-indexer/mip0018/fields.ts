@@ -49,7 +49,8 @@ export interface EventRow {
   name: Buffer;
   /** Zero-extended to 256 bytes; empty when the observed payload was longer (never applied). */
   payload: Buffer;
-  classification: "accept" | "reject" | "ignore";
+  /** `unresolved` (final-audit F1): a `log` op whose logged value the raw transaction does not show; never applied. */
+  classification: "accept" | "reject" | "ignore" | "unresolved";
   reason: string | null;
   domain_sep: Buffer | null;
   kind: number | null;

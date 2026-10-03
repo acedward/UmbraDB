@@ -19,8 +19,20 @@ export interface SynthLog {
   data: string;
 }
 
+/** A VM value as hex (JSON-safe): a cell of one atom, a cell of several atoms, an array, or null. */
+export type SynthValue = { cell: string } | { cells: string[] } | { array: SynthValue[] } | { null: true };
+
+/**
+ * One op of a hand-built transcript program (final-audit F1): `log` alone logs whatever is on the stack; `{ log }`
+ * is the usual `push [1, type, data]` + `log` pair; `push` pushes any value; `dup`, `branch` and `jmp` take their
+ * argument (`branch`/`jmp`: the `skip`).
+ */
+export type SynthOp = "log" | "noop" | { log: SynthLog } | { push: SynthValue } | { dup: number } | { branch: number } | { jmp: number };
+
 export interface SynthTranscript {
   logs?: SynthLog[];
+  /** A whole program instead of `logs` (each `{ log }` op is a `push` + `log` pair). */
+  program?: SynthOp[];
   /** [domainSep hex, amount] */
   shieldedMints?: Array<[string, string]>;
   unshieldedMints?: Array<[string, string]>;
@@ -81,10 +93,32 @@ function logItem(log: SynthLog) {
   return { tag: "array", content: [cell(Uint8Array.from([1])), cell(Uint8Array.from([log.eventType ?? 10])), cell(Uint8Array.from(Buffer.from(log.data, "hex")))] };
 }
 
+function encodedValue(v: SynthValue): unknown {
+  const atom = (h: string) => Uint8Array.from(Buffer.from(h, "hex"));
+  if ("cell" in v) return { tag: "cell", content: { value: [atom(v.cell)], alignment: [] } };
+  if ("cells" in v) return { tag: "cell", content: { value: v.cells.map(atom), alignment: [] } };
+  if ("array" in v) return { tag: "array", content: v.array.map(encodedValue) };
+  return { tag: "null" };
+}
+
+function programOf(ops: readonly SynthOp[]): unknown[] {
+  const program: unknown[] = [];
+  for (const op of ops) {
+    if (op === "log") program.push("log");
+    else if (op === "noop") program.push({ noop: { n: 1 } });
+    else if ("log" in op) program.push({ push: { storage: false, value: logItem(op.log) } }, "log");
+    else if ("push" in op) program.push({ push: { storage: false, value: encodedValue(op.push) } });
+    else if ("dup" in op) program.push({ dup: { n: op.dup } });
+    else if ("branch" in op) program.push({ branch: { skip: op.branch } });
+    else program.push({ jmp: { skip: op.jmp } });
+  }
+  return program;
+}
+
 function transcript(t: SynthTranscript | undefined) {
   if (t === undefined) return undefined;
-  const program: unknown[] = [];
-  for (const l of t.logs ?? []) program.push({ push: { value: logItem(l) } }, "log");
+  const program: unknown[] = t.program === undefined ? [] : programOf(t.program);
+  for (const l of t.program === undefined ? (t.logs ?? []) : []) program.push({ push: { value: logItem(l) } }, "log");
   return {
     program,
     effects: {
