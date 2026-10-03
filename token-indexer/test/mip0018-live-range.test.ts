@@ -7,15 +7,17 @@
  * scanner (no network) and requires the same digest for every table of both schemas — archive and `mip0018` (blocks,
  * transactions, blobs, cursor, events, fields, mints, sightings, actions, activity, built-in rows, scan cursor).
  *
- * Sub-plan C4 changed column types (entry points and maintenance operations as `bytea`), so the range was synced live
- * once more with the changed code and the digests replaced by that run's (never regenerated from a replay). The
- * earlier recording is kept (`previousRecording`): its three runs were identical, its archive tables equal the new
- * live run's, and only the two tables whose columns C4 changed differ.
+ * Sub-plan C4 changed column types (entry points and maintenance operations as `bytea`), and sub-plan D6 (final-audit
+ * re-check R2/R3) added two derived tables (`mip0018_withdrawals`, `mip0018_listed_events`); each time the range was
+ * synced live once more with the changed code and the digests replaced by that run's (never regenerated from a
+ * replay). The earlier recordings are kept, nested (`previousRecording`): the C4 recording (one live run = its replay)
+ * differs from the current one only by the two tables D6 added, and the D3 recording before it (three identical runs)
+ * differs from the C4 one only in the two tables whose columns C4 changed; all three agree on every archive table.
  *
- * What this file records and checks for the CURRENT schema is one uninterrupted live run = the replay. The killed-
- * and-resumed live run was repeated on the final code (`0061748`: sync SIGKILLed at 714800 and resumed, scan SIGKILLed
- * at cursor 714851 and resumed) and gave the same digest `550be4c5…19a1` for all 35 tables; that result is recorded in
- * the project's plan (00026 sub-plan D, assumption P03), not in this fixture. In CI, kill-and-resume is covered on
+ * What this file records and checks for the CURRENT schema is one uninterrupted live run = the replay. A killed-
+ * and-resumed live run was repeated on the C4 code (`0061748`: sync SIGKILLed at 714800 and resumed, scan SIGKILLed
+ * at cursor 714851 and resumed) and gave that recording's digest `550be4c5…19a1` for all 35 tables; that result is
+ * recorded in the project's plan (00026 sub-plan D, assumption P03), not in this fixture. In CI, kill-and-resume is covered on
  * fixtures by `[[archive.sync.resume-kill-identical]]`, `[[mip0018.scan.resume-identical]]` and
  * `[[mip0018.activity.kill-resume]]` (final-audit N4: the test title claims only what is checked here).
  */
@@ -34,8 +36,9 @@ const NET = "stagenet";
 const RECORDED = JSON.parse(readFileSync(new URL("./fixtures/live-range/stagenet-714485-715183.json", import.meta.url), "utf8")) as {
   format: string; genesisHash: string; range: { from: number; to: number };
   comparison: { identical: Record<string, boolean>; sha256: Record<string, string> }; liveTables: RangeTables;
-  previousRecording: { code: { commit: string }; comparison: { identical: Record<string, boolean>; sha256: Record<string, string> }; liveTables: RangeTables };
+  previousRecording: Recording & { previousRecording: Recording };
 };
+interface Recording { code: { commit: string }; comparison: { identical: Record<string, boolean>; sha256: Record<string, string> }; liveTables: RangeTables }
 
 describe("recorded live range = fixture replay (00026 D3)", () => {
   let container: StartedPostgreSqlContainer;
@@ -51,19 +54,27 @@ describe("recorded live range = fixture replay (00026 D3)", () => {
     await container?.stop();
   }, 60_000);
 
-  it("[[mip0018.live-range.replay-equals-live]] replaying the recorded 714485–715183 tape through the sync service and the scanner gives, table by table, the digests of the live Stagenet sync recorded with the current schema (every archive and mip0018 table; that live run = the replay); the earlier recording's live run, killed-and-resumed live run and replay were identical, and its archive tables equal the current ones; a changed row is caught", async () => {
+  it("[[mip0018.live-range.replay-equals-live]] replaying the recorded 714485–715183 tape through the sync service and the scanner gives, table by table, the digests of the live Stagenet sync recorded with the current schema (every archive and mip0018 table; that live run = the replay); the earlier recordings (C4: live = replay; D3: live, killed-and-resumed live and replay identical) differ from it only in the tables their schema changes touched, and all agree on every archive table; a changed row is caught", async () => {
     expect(RECORDED.format).toBe("umbradb-mip0018-live-range/1");
     expect(RECORDED.genesisHash).toBe(loadManifest().genesisHash);
     expect(RECORDED.comparison.identical).toEqual({ "liveUninterrupted=replay": true });
     expect(new Set(Object.values(RECORDED.comparison.sha256)).size).toBe(1);
     expect(Object.values(RECORDED.comparison.sha256)[0]).toBe(RECORDED.liveTables.sha256);
-    // The earlier recording (code before sub-plan C4): live, killed-and-resumed live and replay were identical; two
-    // independent live syncs agree on every archive table; only the tables whose columns C4 changed differ.
-    const prev = RECORDED.previousRecording;
-    expect(Object.values(prev.comparison.identical)).toEqual([true, true, true]);
-    expect(new Set([...Object.values(prev.comparison.sha256), prev.liveTables.sha256]).size).toBe(1);
-    expect(Object.keys(prev.liveTables.tables).sort()).toEqual(Object.keys(RECORDED.liveTables.tables).sort());
-    expect(compareTables(prev.liveTables, RECORDED.liveTables).map((d) => d.split(":")[0]).sort())
+    // The C4 recording (before D6): one live run = its replay; it differs from the current recording only by the two
+    // tables D6 added (every shared table, archive and mip0018, is identical).
+    const c4 = RECORDED.previousRecording;
+    expect(c4.comparison.identical).toEqual({ "liveUninterrupted=replay": true });
+    expect(new Set([...Object.values(c4.comparison.sha256), c4.liveTables.sha256]).size).toBe(1);
+    expect(compareTables(c4.liveTables, RECORDED.liveTables)).toEqual([
+      "mip0018.mip0018_listed_events: only in second", "mip0018.mip0018_withdrawals: only in second",
+    ]);
+    // The D3 recording (code before sub-plan C4): live, killed-and-resumed live and replay were identical; three
+    // independent live syncs agree on every archive table; only the tables whose columns C4 changed differ from C4's.
+    const d3 = c4.previousRecording;
+    expect(Object.values(d3.comparison.identical)).toEqual([true, true, true]);
+    expect(new Set([...Object.values(d3.comparison.sha256), d3.liveTables.sha256]).size).toBe(1);
+    expect(Object.keys(d3.liveTables.tables).sort()).toEqual(Object.keys(c4.liveTables.tables).sort());
+    expect(compareTables(d3.liveTables, c4.liveTables).map((d) => d.split(":")[0]).sort())
       .toEqual(["mip0018.mip0018_activity", "mip0018.mip0018_contract_actions"]);
     const { from, to } = RECORDED.range;
 
@@ -93,8 +104,9 @@ describe("recorded live range = fixture replay (00026 D3)", () => {
     // Every table of both schemas was compared, including the token tables the scan writes.
     for (const t of ["archive.blocks", "archive.transactions", "archive.chain_blobs", "archive.watermarks", "mip0018.mip0018_events",
       "mip0018.mip0018_fields", "mip0018.mip0018_mints", "mip0018.mip0018_color_sightings", "mip0018.mip0018_contract_actions",
-      "mip0018.mip0018_activity", "mip0018.mip0018_builtin_tokens", "mip0018.mip0018_scan"])
+      "mip0018.mip0018_activity", "mip0018.mip0018_builtin_tokens", "mip0018.mip0018_scan", "mip0018.mip0018_listed_events"])
       expect(digest.tables[t]?.rows, t).toBeGreaterThan(0);
+    expect(digest.tables["mip0018.mip0018_withdrawals"]?.rows).toBe(0); // C06 deletes one key at a time: never a whole withdrawal
 
     // Negative control: one changed field value is reported for exactly that table.
     await sql`UPDATE ${sql("replay_mip")}.mip0018_fields SET value = value || '\\x00'::bytea

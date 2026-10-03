@@ -530,7 +530,7 @@
     {
       "id": "mip0018.live-range.replay-equals-live",
       "file": "token-indexer/test/mip0018-live-range.test.ts",
-      "description": "Project 00026 D3: a replay of the recorded 714485-715183 tape through the sync service and the scanner equals, table by table (archive and mip0018), the digests recorded from the live Stagenet sync with the current schema (that uninterrupted live run = the replay; the earlier recording's uninterrupted and killed-and-resumed runs were identical; the killed-and-resumed run on the final code is recorded in the project plan, final-audit N4); a changed row is caught."
+      "description": "Project 00026 D3: a replay of the recorded 714485-715183 tape through the sync service and the scanner equals, table by table (archive and mip0018), the digests recorded from the live Stagenet sync with the current schema (that uninterrupted live run = the replay; re-recorded live in D6 when two derived tables were added; the earlier recordings, C4 and D3, differ only in the tables their schema changes touched, and D3's uninterrupted and killed-and-resumed runs were identical; the killed-and-resumed run on the C4 code is recorded in the project plan, final-audit N4); a changed row is caught."
     },
     {
       "id": "mip0018.conformance.table",
