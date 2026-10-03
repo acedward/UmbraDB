@@ -39,8 +39,9 @@ Postgres schema chain_archive      blocks, raw transactions, per-transaction res
    │    state.ts          per-key rules (one pure module, also used by the vector adapters)
    ▼
 Postgres schema mip0018            mints (color table), color sightings, contract actions, events (classification,
-   │                               no values served), fields (latest value per key), activity, NIGHT/DUST, cursor —
-   │                               one transaction per block
+   │                               no values served), fields (latest value per key), each identity's last
+   │                               withdrawal and the events activity may list (its history since its last revival),
+   │                               activity, NIGHT/DUST, cursor — one transaction per block
    │  read helpers: tokens.ts, metadata.ts, events.ts, activity.ts
    ▼
 read-only JSON API (api.ts)  ──►  explorer page GET /ui (ui/)

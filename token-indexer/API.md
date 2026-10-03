@@ -284,9 +284,11 @@ color's own rows (`mint`, `utxo-created`, `utxo-spent`, `contract-in`, `contract
 `metadata-event` rows of the contract that minted it, in chain order (`order=asc`, default) or newest first
 (`order=desc`). Heights only. Wallet addresses are Bech32m (`mn_addr_stagenet1…`); contracts, colors and hashes are
 hex — never Bech32m. A metadata row carries counts and the first event's index, never values; it counts only rejected
-events and accepted events of an identity that exists now, and a transaction with neither is not listed (final audit
-F3: a withdrawn identity is not referenced in metadata history; when it is described again, its transactions are
-listed again). C03's token
+events and accepted events of an identity's current description, and a transaction with neither is not listed (final
+audit F3 and re-check R2: a withdrawn identity is not referenced in metadata history, and an identity's history starts
+at its last revival — an accepted event counts only when the identity has a field now, the event came after its last
+withdrawal, and the identity had a field after the event; so a revived identity's transactions from before its
+withdrawal, the withdrawal itself and a Null-only event while it had no field are never listed). C03's token
 (abridged: hashes shortened, optional fields such as `phase`/`segment`/`direction` shown only where certain):
 
 ```json
@@ -325,9 +327,9 @@ audit F2: every activity row of a call repeats its entry point).
 ### `GET /v1/contracts/{address}/activity?limit=&cursor=&order=`
 
 A contract's metadata transactions — the activity of a kind-3 identity, which has no color: one `metadata-event` row
-per transaction with rejected MIP-0018 events of that contract or accepted ones of an identity that exists now
-(counts and the first counted event's index; never values or the identity; final audit F3). Same paging and errors;
-404 when the scan never saw the contract.
+per transaction with rejected MIP-0018 events of that contract or accepted ones of an identity's current description
+(counts and the first counted event's index; never values or the identity; final audit F3, re-check R2: the same rule
+as a color's activity). Same paging and errors; 404 when the scan never saw the contract.
 
 ```json
 { "contractAddress": "9d93b919…40e3",
