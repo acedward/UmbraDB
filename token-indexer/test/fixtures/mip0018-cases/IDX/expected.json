@@ -1,0 +1,123 @@
+{
+  "colors": [
+    {
+      "case": "C02",
+      "domainSep": "0x6d69702d303031383a6578616d706c653a736869656c64656400000000000000",
+      "kind": 1,
+      "minted": true,
+      "identity": {
+        "domainSep": "0x6d69702d303031383a6578616d706c653a736869656c64656400000000000000",
+        "kind": 1,
+        "visible": true,
+        "colored": true,
+        "common": {
+          "name": "Acme Shield",
+          "symbol": "ASHD",
+          "decimals": 6
+        }
+      }
+    },
+    {
+      "case": "C03",
+      "domainSep": "0x6d69702d303031383a6578616d706c653a756e736869656c6465640000000000",
+      "kind": 2,
+      "minted": true,
+      "identity": {
+        "domainSep": "0x6d69702d303031383a6578616d706c653a756e736869656c6465640000000000",
+        "kind": 2,
+        "visible": true,
+        "colored": true,
+        "common": {
+          "name": "Acme Public",
+          "symbol": "APUB",
+          "decimals": 6
+        }
+      }
+    },
+    {
+      "case": "C04",
+      "domainSep": "0x6d69702d303031383a6578616d706c653a6d756c74692d6b696e640000000000",
+      "kind": 1,
+      "minted": true,
+      "identity": {
+        "domainSep": "0x6d69702d303031383a6578616d706c653a6d756c74692d6b696e640000000000",
+        "kind": 1,
+        "visible": true,
+        "colored": true,
+        "common": {
+          "name": "Acme Dollar",
+          "symbol": "ACD",
+          "decimals": 2
+        }
+      }
+    },
+    {
+      "case": "C04",
+      "domainSep": "0x6d69702d303031383a6578616d706c653a6d756c74692d6b696e640000000000",
+      "kind": 2,
+      "minted": true,
+      "identity": {
+        "domainSep": "0x6d69702d303031383a6578616d706c653a6d756c74692d6b696e640000000000",
+        "kind": 2,
+        "visible": true,
+        "colored": true,
+        "common": {
+          "name": "Acme Dollar",
+          "symbol": "ACD",
+          "decimals": 2
+        }
+      }
+    },
+    {
+      "case": "C05",
+      "domainSep": "0x6d69702d303031383a6578616d706c653a66616d696c793a676f6c6400000000",
+      "kind": 1,
+      "minted": true,
+      "identity": {
+        "domainSep": "0x6d69702d303031383a6578616d706c653a66616d696c793a676f6c6400000000",
+        "kind": 1,
+        "visible": true,
+        "colored": true,
+        "common": {
+          "name": "Acme Medals",
+          "symbol": "MEDAL",
+          "decimals": 0
+        }
+      }
+    },
+    {
+      "case": "C05",
+      "domainSep": "0x6d69702d303031383a6578616d706c653a66616d696c793a73696c7665720000",
+      "kind": 1,
+      "minted": true,
+      "identity": {
+        "domainSep": "0x6d69702d303031383a6578616d706c653a66616d696c793a73696c7665720000",
+        "kind": 1,
+        "visible": true,
+        "colored": true,
+        "common": {
+          "name": "Acme Medals",
+          "symbol": "MEDAL",
+          "decimals": 0
+        }
+      }
+    },
+    {
+      "case": "C05",
+      "domainSep": "0x6d69702d303031383a6578616d706c653a66616d696c793a62726f6e7a650000",
+      "kind": 1,
+      "minted": false,
+      "identity": {
+        "domainSep": "0x6d69702d303031383a6578616d706c653a66616d696c793a62726f6e7a650000",
+        "kind": 1,
+        "visible": true,
+        "colored": true,
+        "common": {
+          "name": "Acme Medals",
+          "symbol": "MEDAL",
+          "decimals": 0
+        }
+      }
+    }
+  ]
+}
