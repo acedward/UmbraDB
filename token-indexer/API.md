@@ -11,6 +11,8 @@ of an earlier draft is served. The explorer page (sub-plan C3) uses only these e
   `REPEATABLE READ READ ONLY` transaction, so all parts of one answer come from one database state.
 - Entry point: `token-indexer/mip0018/serve-cli.ts` (see [Running](#running)).
 - Implementation: `token-indexer/mip0018/api.ts` (routes, validation, errors) and `api-views.ts` (queries, shapes).
+- The explorer page (`GET /ui`, sub-plan C3, `token-indexer/mip0018/ui/README.md`) is served by `serve()` through the
+  server's optional `ui` hook; `createMip0018Api` without the hook answers `/ui` with 404 like any unknown path.
 
 ## General rules
 
