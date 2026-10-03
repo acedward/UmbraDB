@@ -19,6 +19,7 @@ import type { Queryable } from "./fields.ts";
 import {
   boundedGroup,
   contractRejectionSummary,
+  contractUnresolvedSummary,
   describedKinds,
   type IdentityCommon,
   identityCommons,
@@ -46,6 +47,8 @@ export const KNOWN_GENESIS: Readonly<Record<string, string>> = {
 };
 /** At most this many rejection reasons are listed in a mark (all are counted in `reasonCount`; all are in the events). */
 export const MAX_MARK_REASONS = 100;
+/** At most this many unresolved-log positions are listed in a mark (all are counted in `unresolved.count`; re-check R1). */
+export const MAX_MARK_UNRESOLVED = 100;
 /** At most this many members are listed in a symbol group (all are counted in `memberCount`; final-audit F2). */
 export const MAX_GROUP_MEMBERS = 100;
 /** An identity's fields are served in keyset pages of this size unless `limit` says otherwise (final-audit F2). */
@@ -62,7 +65,20 @@ export interface ViewContext {
 
 export interface PositionJson { height: number; txIndex: number; txHash: string }
 export interface MintStatsJson { firstMint: PositionJson; mints: number; amount: string; amountDisplay: string | null }
-export interface MarkJson { mark: "ok" | "partial" | "incorrect" | "none"; reasons: string[]; reasonCount: number; missing: string[]; tags: string[] }
+export interface EventPositionJson { height: number; txIndex: number; eventIndex: number }
+/**
+ * A token's MIP-0018 mark (`state.ts` `tokenMark`). `reasons`: the first {@link MAX_MARK_REASONS} rejection reasons of
+ * the contract in chain order, then `unresolved-log` when it has unresolved logs; `reasonCount`: all its rejected
+ * events; `unresolved`: how many unresolved logs it has and the first {@link MAX_MARK_UNRESOLVED} positions (re-check R1).
+ */
+export interface MarkJson {
+  mark: "ok" | "partial" | "incorrect" | "unresolved" | "none";
+  reasons: string[];
+  reasonCount: number;
+  unresolved: { count: number; positions: EventPositionJson[] };
+  missing: string[];
+  tags: string[];
+}
 export interface CommonJson { name: string | null; symbol: string | null; decimals: string | null; standards: string[] | null }
 export interface BytesJson { hex: string; utf8: string | null }
 export interface FieldJson {
@@ -175,17 +191,40 @@ export function commonJson(fields: ReadonlyMap<string, Field> | undefined): Comm
   };
 }
 
-/** Rejections of a contract as a mark needs them (F2): the count and the first {@link MAX_MARK_REASONS} reasons. */
-export interface RejectionSummary { count: number; reasons: readonly string[] }
-const NO_REJECTIONS: RejectionSummary = { count: 0, reasons: [] };
+/**
+ * What a mark needs of a contract (F2: bounded): its rejected events — the count and the first {@link MAX_MARK_REASONS}
+ * reasons — and its unresolved logs — the count and the first {@link MAX_MARK_UNRESOLVED} positions (re-check R1).
+ */
+export interface RejectionSummary {
+  count: number;
+  reasons: readonly string[];
+  unresolved: { count: number; positions: readonly EventPositionJson[] };
+}
+const NO_REJECTIONS: RejectionSummary = { count: 0, reasons: [], unresolved: { count: 0, positions: [] } };
+
+/** A contract's mark inputs (bounded reads from the partial indexes of rejected and unresolved rows). */
+async function contractMarkSummary(ctx: ViewContext, contract: string): Promise<RejectionSummary> {
+  const [rejected, unresolved] = await Promise.all([
+    contractRejectionSummary(ctx.sql, ctx.network, contract, MAX_MARK_REASONS, ctx.schema),
+    contractUnresolvedSummary(ctx.sql, ctx.network, contract, MAX_MARK_UNRESOLVED, ctx.schema),
+  ]);
+  return { ...rejected, unresolved };
+}
 
 /**
  * The Q14 mark of a token from its common fields (whether it has any field at all: `described`) and its contract's
- * rejections (`state.ts` `tokenMark`; final-audit F2: never all keys or all rejections).
+ * rejections and unresolved logs (`state.ts` `tokenMark`; final-audit F2: never all keys or all rejections).
  */
 export function markJson(common: IdentityCommon | undefined, rejections: RejectionSummary): MarkJson {
-  const m = tokenMark({ fields: common?.fields, described: common?.described ?? false, contractRejections: rejections.reasons.slice(0, MAX_MARK_REASONS) });
-  return { mark: m.mark, reasons: [...m.reasons], reasonCount: rejections.count, missing: [...m.missing], tags: [...m.tags] };
+  const m = tokenMark({
+    fields: common?.fields, described: common?.described ?? false,
+    contractRejections: rejections.reasons.slice(0, MAX_MARK_REASONS), contractUnresolvedLogs: rejections.unresolved.count,
+  });
+  return {
+    mark: m.mark, reasons: [...m.reasons], reasonCount: rejections.count,
+    unresolved: { count: rejections.unresolved.count, positions: rejections.unresolved.positions.slice(0, MAX_MARK_UNRESOLVED).map((p) => ({ ...p })) },
+    missing: [...m.missing], tags: [...m.tags],
+  };
 }
 
 export const groupJson = (g: SymbolGroup & { memberCount?: number }): GroupJson =>
@@ -385,10 +424,10 @@ async function identityKeys(ctx: ViewContext, o: { contract?: string; after?: [s
   return merged;
 }
 
-/** Each contract's rejection summary (F2: a count and the first reasons, never every rejected event). */
+/** Each contract's mark summary (F2: counts and the first reasons / positions, never every rejected or unresolved event). */
 async function rejectionSummaries(ctx: ViewContext, contracts: readonly string[]): Promise<Map<string, RejectionSummary>> {
   const out = new Map<string, RejectionSummary>();
-  for (const c of new Set(contracts)) out.set(c, await contractRejectionSummary(ctx.sql, ctx.network, c, MAX_MARK_REASONS, ctx.schema));
+  for (const c of new Set(contracts)) out.set(c, await contractMarkSummary(ctx, c));
   return out;
 }
 
@@ -451,7 +490,7 @@ export async function identityDetail(
     ? await identityFieldsPage(ctx.sql, full, { limit, ...(o.fieldsCursor === undefined ? {} : { afterKeyHex: o.fieldsCursor.k }) }, ctx.schema)
     : { fields: [], more: false, count: 0 };
   const last = page.fields[page.fields.length - 1];
-  const rejections = await contractRejectionSummary(ctx.sql, ctx.network, ref.contractAddress, MAX_MARK_REASONS, ctx.schema);
+  const rejections = await contractMarkSummary(ctx, ref.contractAddress);
   return {
     network: ctx.network,
     contractAddress: ref.contractAddress,

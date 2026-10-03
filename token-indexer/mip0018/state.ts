@@ -369,12 +369,22 @@ export function displayAmount(
 
 // ── Marks (Q14) ──────────────────────────────────────────────────────────────────────────────────────────────────
 
-export type MarkKind = "ok" | "partial" | "incorrect" | "none";
+export type MarkKind = "ok" | "partial" | "incorrect" | "unresolved" | "none";
+
+/**
+ * The reason a mark carries when the token's contract has `unresolved` logs (final-audit re-check R1): `log` ops whose
+ * logged value the raw transaction does not show, so the contract may have published, renamed or withdrawn metadata
+ * that this indexer cannot read (assumption A23).
+ */
+export const UNRESOLVED_LOG_REASON = "unresolved-log";
 
 export interface TokenMark {
-  /** ✓ ok, ⚠ partial, ⚠ incorrect, or no mark. */
+  /** ✓ ok, ⚠ partial, ⚠ incorrect, ⚠ unresolved, or no mark. */
   mark: MarkKind;
-  /** `incorrect`: the reasons of the contract's rejected MIP-0018 events, in chain order. */
+  /**
+   * The reasons of the contract's rejected MIP-0018 events, in chain order (`incorrect`), followed by
+   * {@link UNRESOLVED_LOG_REASON} once when the contract has unresolved logs (`unresolved`, or `incorrect` with both).
+   */
   reasons: string[];
   /** `partial`: which of `name`, `symbol`, `decimals` are missing or unusable. */
   missing: Array<"name" | "symbol" | "decimals">;
@@ -398,18 +408,30 @@ export interface MarkInput {
    * the first ones (the mark only needs to know whether there is one; the API lists at most 100 and counts the rest).
    */
   contractRejections: readonly string[];
+  /**
+   * How many `unresolved` logs the token's contract has on its network (final-audit re-check R1; default 0): `log` ops
+   * of applied parts whose logged value the raw transaction does not show (never applied, A23).
+   */
+  contractUnresolvedLogs?: number;
 }
 
 /**
  * The one place that decides a token's MIP-0018 mark (Q14 (a), owner-confirmed 2026-10-02):
  * - ⚠ incorrect — the token's contract has a rejected MIP-0018 event (the reasons are shown);
+ * - ⚠ unresolved — the token's contract has no rejected event but has an `unresolved` log (final-audit re-check R1,
+ *   assumption A23): a `log` op whose value the raw transaction does not show, so the contract may have published,
+ *   renamed or withdrawn metadata this indexer cannot read; the reason `unresolved-log` is shown. A ⚠ variant of its
+ *   own rather than ⚠ incorrect: nothing says the contract published anything malformed, only that UmbraDB cannot
+ *   verify what it published — but a token of such a contract never keeps a clean ✓;
  * - ✓ ok — the identity exists with usable `name`, `symbol` and `decimals` (the keys the MIP says issuers SHOULD
- *   publish) and its contract has no rejected event;
+ *   publish) and its contract has no rejected event and no unresolved log;
  * - ⚠ partial — the identity exists but one of the three is missing or unusable;
- * - no mark — neither (no MIP-0018 event, or an identity withdrawn by per-key tombstones and never revived).
+ * - no mark — none of these (no MIP-0018 event, or an identity withdrawn by per-key tombstones and never revived).
+ * Precedence: incorrect, then unresolved, then the identity's own fields. When the contract has both rejected events
+ * and unresolved logs, the mark is ⚠ incorrect and its reasons end with `unresolved-log`.
  * The mark depends on CURRENT state only (orchestrator decision on audit QA1, assumption A13): an absent identity —
  * never described, or withdrawn — has no fields, no `missing` list and no tags, and is marked from its contract's
- * rejections alone (⚠ incorrect when there is one, otherwise no mark); its history is never consulted.
+ * rejections and unresolved logs alone (⚠ incorrect, ⚠ unresolved, otherwise no mark); its history is never consulted.
  * Usable `standards` identifiers are returned as tags. A future standard declared in `standards` may redefine what
  * the marks mean for its tokens (Q14); none exists now, so no identifier changes the result.
  */
@@ -423,7 +445,9 @@ export function tokenMark(input: MarkInput): TokenMark {
   const missing: TokenMark["missing"] = [];
   if (fields !== undefined)
     for (const name of ["name", "symbol", "decimals"] as const) if (fields.get(COMMON_KEY_HEX[name])?.usable !== true) missing.push(name);
-  if (input.contractRejections.length > 0) return { mark: "incorrect", reasons: [...input.contractRejections], missing, tags };
+  const unresolved = (input.contractUnresolvedLogs ?? 0) > 0 ? [UNRESOLVED_LOG_REASON] : [];
+  if (input.contractRejections.length > 0) return { mark: "incorrect", reasons: [...input.contractRejections, ...unresolved], missing, tags };
+  if (unresolved.length > 0) return { mark: "unresolved", reasons: unresolved, missing, tags };
   if (fields === undefined) return { mark: "none", reasons: [], missing: [], tags: [] };
   return { mark: missing.length === 0 ? "ok" : "partial", reasons: [], missing, tags };
 }

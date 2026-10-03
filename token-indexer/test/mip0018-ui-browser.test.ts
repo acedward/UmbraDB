@@ -480,7 +480,7 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
     await expectCleanConsole(page2);
   }, 240_000);
 
-  it("[[mip0018.ui.browser-hostile-text]] hostile metadata renders as visible text: bidi/zero-width/NUL/control characters and every other Cc/Cf/Co/Cn/Cs/Zl/Zp/Default_Ignorable code point (U+1BCA0, U+180F, U+0600–U+0605 included) as ⟨U+XXXX⟩ marks (never raw, also not in tooltips), markup as literal text (no element, no script run), URIs as text never fetched or linked, budgets with 'show all', a partial ⚠ and an unusable field drawn without its value; a seen-only color last", async () => {
+  it("[[mip0018.ui.browser-hostile-text]] hostile metadata renders as visible text: bidi/zero-width/NUL/control characters and every other Cc/Cf/Co/Cn/Cs/Zl/Zp/Default_Ignorable code point (U+1BCA0, U+180F, U+0600–U+0605 included) as ⟨U+XXXX⟩ marks (never raw, also not in tooltips), markup as literal text (no element, no script run), URIs as text never fetched or linked, budgets with 'show all', a partial ⚠ and an unusable field drawn without its value; a seen-only color last; a contract's unresolved log drawn with its badge, and its tokens marked ⚠ unresolved with the reason and position (re-check R1)", async () => {
     const db = await fresh("uihostile");
     const H = "a1".repeat(32);
     const D = "68".repeat(32);
@@ -651,6 +651,13 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
     expect(await fpage.eval<Json>("(() => { const b = document.querySelector('#events [data-class=\"unresolved\"]'); return b ? { text: b.textContent, title: b.title } : null; })()"))
       .toEqual({ text: "unresolved", title: "a log op whose logged value the raw transaction does not show; the ledger may have emitted a MIP-0018 event here; never applied" });
     expect(sf.view).toContain("log-operand-not-pushed");
+    // Final-audit re-check R1: a contract with an unresolved log never keeps a clean mark — each of its tokens is
+    // ⚠ unresolved, with the reason and the log's position in the mark section and the tooltip.
+    expect(frows.slice(2).map((r) => [r.mark, r.markText])).toEqual([["unresolved", "\u26a0"], ["unresolved", "\u26a0"]]);
+    expect(frows[2].title).toContain("\u26a0 unresolved: its contract has 1 unresolved log (unresolved-log:");
+    expect(await fpage.eval<Json>("(() => { const b = document.querySelector('#view .badge[data-mark]'); return [b.getAttribute('data-mark'), b.textContent]; })()"))
+      .toEqual(["unresolved", "\u26a0 MIP-0018 unresolved"]);
+    expect(sf.view).toContain("unresolved-log at height 800, transaction 1, event 0");
     expect((await visit(fpage, "#/status")).view).toMatch(/unresolved logs\s+1/);
     const fall = await crawl(fpage, ["#/"]);
     for (const [h, snap] of [...fall, ["token", sf] as [string, Snap]]) {

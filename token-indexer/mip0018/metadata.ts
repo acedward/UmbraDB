@@ -136,14 +136,16 @@ export async function contractRejections(sql: Queryable, network: string, contra
 
 /**
  * A token identity's MIP-0018 mark and `standards` tags (Q14 (a)), decided by the pure module's `tokenMark` from the
- * identity's current fields (none when it is not described) and its contract's rejected events.
+ * identity's current fields (none when it is not described), its contract's rejected events and its contract's
+ * unresolved logs (final-audit re-check R1).
  */
 export async function tokenMarkOf(sql: Queryable, ref: IdentityRef, schema = MIP0018_SCHEMA): Promise<TokenMark> {
-  const [identity, rejections] = await Promise.all([
+  const [identity, rejections, unresolved] = await Promise.all([
     getIdentity(sql, ref, schema),
     contractRejections(sql, ref.network, ref.contractAddress, schema),
+    contractUnresolvedSummary(sql, ref.network, ref.contractAddress, 0, schema),
   ]);
-  return tokenMark({ fields: identity?.fields, contractRejections: rejections.map((r) => r.reason) });
+  return tokenMark({ fields: identity?.fields, contractRejections: rejections.map((r) => r.reason), contractUnresolvedLogs: unresolved.count });
 }
 
 /** Contracts of a network with at least one described identity (derived from the field rows), by address. */
@@ -278,6 +280,25 @@ export async function contractRejectionSummary(
     SELECT reason FROM ${s}.mip0018_events WHERE network = ${network} AND contract_address = ${contract} AND classification = 'reject'
     ORDER BY block_height, tx_index, event_index LIMIT ${limit}`;
   return { count: c?.n ?? 0, reasons: rows.map((r) => r.reason) };
+}
+
+/**
+ * A contract's `unresolved` logs for a mark (final-audit re-check R1): how many, and the chain positions of the first
+ * `limit` in chain order — from the partial index of unresolved rows alone (bounded like the rejections: the count is
+ * an index-only scan, the positions a LIMIT).
+ */
+export async function contractUnresolvedSummary(
+  sql: Queryable, network: string, contractAddress: string, limit: number, schema = MIP0018_SCHEMA,
+): Promise<{ count: number; positions: Array<{ height: number; txIndex: number; eventIndex: number }> }> {
+  const s = sql(schema);
+  const contract = buf(contractAddress);
+  const [c] = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM ${s}.mip0018_events WHERE network = ${network} AND contract_address = ${contract} AND classification = 'unresolved'`;
+  const rows = limit <= 0 || (c?.n ?? 0) === 0 ? [] : await sql<{ block_height: bigint; tx_index: number; event_index: number }[]>`
+    SELECT block_height, tx_index, event_index FROM ${s}.mip0018_events
+    WHERE network = ${network} AND contract_address = ${contract} AND classification = 'unresolved'
+    ORDER BY block_height, tx_index, event_index LIMIT ${limit}`;
+  return { count: c?.n ?? 0, positions: rows.map((r) => ({ height: Number(r.block_height), txIndex: r.tx_index, eventIndex: r.event_index })) };
 }
 
 /**

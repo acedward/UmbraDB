@@ -16,8 +16,8 @@ metadata in Postgres, and serves it as a read-only JSON API and an explorer page
 - **Beyond the MIP** (owner decisions, project 00026 Q3): hard-coded NIGHT and DUST rows, "seen" tokens (any color in
   public data, also without a known mint), each token's activity (mints, UTXOs created/spent, contract in/out,
   shielded offer deltas, metadata transactions) with Bech32m wallet addresses, and a ✓/⚠ mark per token (✓ = usable
-  `name`, `symbol`, `decimals` and no rejected MIP-0018 event from its contract; ⚠ partial or incorrect; no mark
-  without MIP-0018 events). The mark says the metadata is correctly published — it is not an endorsement of the token.
+  `name`, `symbol`, `decimals`, no rejected MIP-0018 event and no unresolved log from its contract; ⚠ partial,
+  incorrect or unresolved; no mark without MIP-0018 events). The mark says the metadata is correctly published — it is not an endorsement of the token.
 - Network: **Stagenet** (Midnight node 2.x). Never fetches a URI. Block heights only (no wall-clock time).
 
 Conformance: every MUST/SHOULD of the final text is mapped to a test in [CONFORMANCE.md](CONFORMANCE.md).
@@ -108,7 +108,9 @@ state. The scan does not stop on it (anyone could halt the indexer with a hand-b
 stores an event row classified `unresolved` with its reason (`log-operand-not-pushed`, `log-conditionally-executed`),
 never applies it, serves it in `/v1/events` with its position, and counts such rows in `/v1/status`
 (`unresolvedEvents`). While a contract has an unresolved log, its tokens' metadata in this indexer may differ from what
-the ledger emitted (MIP "Applying records": state MUST equal every accepted event). A `log` op that no successful run
+the ledger emitted (MIP "Applying records": state MUST equal every accepted event), so none of its tokens keeps a
+clean ✓: each is marked ⚠ `unresolved` (reason `unresolved-log`, with the count and the first positions), or ⚠
+`incorrect` when the contract also has a rejected event. A `log` op that no successful run
 of the program reaches logs nothing, on the ledger and here. Decision and alternatives: project 00026 Q33, assumption
 A23 (under review by the owner).
 

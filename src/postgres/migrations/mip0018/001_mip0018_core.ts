@@ -57,10 +57,12 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       ON ${sql(schema)}.mip0018_events (network, contract_address, block_height, tx_index, event_index)
   `;
   await sql`CREATE INDEX mip0018_events_tx_hash_idx ON ${sql(schema)}.mip0018_events (tx_hash) WHERE tx_hash IS NOT NULL`;
-  // `/v1/status` counts the unresolved rows of a network (final-audit F1) without reading the other events.
+  // `/v1/status` counts the unresolved rows of a network (final-audit F1), and a mark counts a contract's unresolved
+  // rows and lists the first positions (final-audit re-check R1), without reading the other events.
   await sql`
     CREATE INDEX mip0018_events_unresolved_idx
-      ON ${sql(schema)}.mip0018_events (network) WHERE classification = 'unresolved'
+      ON ${sql(schema)}.mip0018_events (network, contract_address, block_height, tx_index, event_index)
+      WHERE classification = 'unresolved'
   `;
   // Final-audit F2 (bounded API reads; the number of a contract's events is chosen by its callers): a mark counts the
   // contract's rejected events and lists the first reasons from this index alone; `/v1/events?contract=` pages through

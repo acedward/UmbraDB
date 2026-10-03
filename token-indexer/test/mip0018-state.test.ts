@@ -16,6 +16,7 @@ import {
   tokenMark,
   toHex,
   type IdentityRef,
+  UNRESOLVED_LOG_REASON,
 } from "../mip0018/state.ts";
 
 const NET = "testnet-a";
@@ -185,7 +186,7 @@ describe("common fields (MIP 274a84f Common fields)", () => {
 describe("Q14 marks (one function)", () => {
   const fieldsOf = (s: MetadataState, r: IdentityRef) => s.identity(r)?.fields;
 
-  it("[[mip0018.state.marks]] ✓ complete, ⚠ partial, ⚠ incorrect (contract rejection, reasons shown), no mark without events or after withdrawal; usable standards as tags", () => {
+  it("[[mip0018.state.marks]] ✓ complete, ⚠ partial, ⚠ incorrect (contract rejection, reasons shown), ⚠ unresolved (the contract has unresolved logs: reason unresolved-log, never a clean ✓), no mark without events or after withdrawal; usable standards as tags", () => {
     const s = new MetadataState();
     const emit = emitter(s);
     emit(3, [record.utf8("name", "Acme"), record.utf8("symbol", "ACME"), record.uint("decimals", 6), record.utf8("standards", "mip-0004 mip-0004 x")]);
@@ -212,6 +213,21 @@ describe("Q14 marks (one function)", () => {
 
     emit(3, [record.utf8("standards", "mip-0004  x")]);
     expect(tokenMark({ fields: fieldsOf(s, ref(3)), contractRejections: [] })).toMatchObject({ mark: "partial", tags: [] });
+
+    // Final-audit re-check R1: unresolved logs of the contract — ⚠ unresolved for a complete, a partial and an absent
+    // identity (the unresolved log may have described, renamed or withdrawn it); ⚠ incorrect wins, its reasons end with
+    // `unresolved-log`; zero unresolved logs change nothing.
+    expect(tokenMark({ fields: fieldsOf(s, ref(3, DS2)), contractRejections: [], contractUnresolvedLogs: 0 }).mark).toBe("partial");
+    emit(3, [record.utf8("name", "Acme"), record.utf8("symbol", "ACME"), record.uint("decimals", 6)], { domainSep: DS3 });
+    expect(tokenMark({ fields: fieldsOf(s, ref(3, DS3)), contractRejections: [] }).mark).toBe("ok");
+    expect(tokenMark({ fields: fieldsOf(s, ref(3, DS3)), contractRejections: [], contractUnresolvedLogs: 2 }))
+      .toEqual({ mark: "unresolved", reasons: [UNRESOLVED_LOG_REASON], missing: [], tags: [] });
+    expect(tokenMark({ fields: fieldsOf(s, ref(3, DS2)), contractRejections: [], contractUnresolvedLogs: 1 }))
+      .toEqual({ mark: "unresolved", reasons: ["unresolved-log"], missing: ["symbol", "decimals"], tags: [] });
+    expect(tokenMark({ fields: undefined, contractRejections: [], contractUnresolvedLogs: 1 }))
+      .toEqual({ mark: "unresolved", reasons: ["unresolved-log"], missing: [], tags: [] });
+    expect(tokenMark({ fields: fieldsOf(s, ref(3, DS3)), contractRejections: ["no-records"], contractUnresolvedLogs: 1 }))
+      .toEqual({ mark: "incorrect", reasons: ["no-records", "unresolved-log"], missing: [], tags: [] });
   });
 
   it("[[mip0018.state.marks-current-state]] a withdrawn identity is marked exactly like one never described (current state only, A13): ⚠ incorrect from its contract's rejections, otherwise none; an empty field map is the same as none (audit F3)", () => {

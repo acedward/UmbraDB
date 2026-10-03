@@ -21,12 +21,13 @@ import { type ArchiveTape, startFakeChain } from "../../test/integration/fixture
 import { loadCaseIndex, loadManifest, loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
 import { createMip0018Api, listen, toAsciiJson } from "../mip0018/api.ts";
 import { KNOWN_GENESIS, MIP_COMMIT, VENDORED_REFERENCE } from "../mip0018/api-views.ts";
+import { contractUnresolvedSummary } from "../mip0018/metadata.ts";
 import { decodeWalletAddress } from "../mip0018/bech32m.ts";
 import { tokenColor } from "../mip0018/color.ts";
 import { Mip0018Scanner } from "../mip0018/scan.ts";
 import { main as serveMain, serve } from "../mip0018/serve-cli.ts";
 import { EVENT_NAME, encodePayload, type MetadataRecord, record } from "../vendor/mip0018/codec/src/index.ts";
-import { decodeSynthetic, putSyntheticBlocks, type SynthArchivedTx, type SynthLog } from "./helpers/synthetic-archive.ts";
+import { decodeSynthetic, putSyntheticBlocks, type SynthArchivedTx, type SynthLog, type SynthOp, type SynthTranscript } from "./helpers/synthetic-archive.ts";
 import { type SynthTxA, syntheticSeams } from "./helpers/synthetic-activity.ts";
 
 const NET = "stagenet";
@@ -74,10 +75,12 @@ async function walk(base: string, path: string, limit: number): Promise<{ items:
 const keysOf = (o: object): string[] => Object.keys(o).sort();
 const SUMMARY_KEYS = ["color", "contractAddress", "decimals", "described", "domainSep", "evidence", "firstSeen", "id", "kind", "kindName", "mark", "minted", "name", "note", "source", "symbol"];
 const DETAIL_KEYS = ["color", "common", "commonFields", "contractAddress", "described", "domainSep", "fieldCount", "fields", "fieldsNextCursor", "group", "kind", "kindName", "mark", "minted", "network"];
-const MARK_KEYS = ["mark", "missing", "reasonCount", "reasons", "tags"];
+const MARK_KEYS = ["mark", "missing", "reasonCount", "reasons", "tags", "unresolved"];
 const FIELD_KEYS = ["key", "updatedAt", "usable", "valType", "valTypeName", "value"];
 const EVENT_KEYS = ["classification", "contractAddress", "eventIndex", "height", "phase", "reason", "segment", "txHash", "txIndex"];
 const hexText = (s: string): string => Buffer.from(s, "utf8").toString("hex");
+/** A mark's `unresolved` when the contract has no unresolved log (final-audit re-check R1). */
+const NO_UNRESOLVED = { count: 0, positions: [] };
 
 /**
  * Visits every endpoint a client can reach from the token list (and the given contracts / paths): status, every page
@@ -316,7 +319,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
       // Final-audit F2: fields are one keyset page in key byte order, counted; the common keys' raw rows are served too.
       expect([i.fieldCount, i.fieldsNextCursor, i.fields.map((f: Json) => f.key.utf8)]).toEqual([3, null, ["decimals", "name", "symbol"]]);
       expect(i.commonFields.map((f: Json) => f.key.utf8).sort()).toEqual(["decimals", "name", "symbol"]);
-      expect(i.mark).toEqual({ mark: "ok", reasons: [], reasonCount: 0, missing: [], tags: [] });
+      expect(i.mark).toEqual({ mark: "ok", reasons: [], reasonCount: 0, unresolved: NO_UNRESOLVED, missing: [], tags: [] });
       for (const f of i.fields) expect(keysOf(f)).toEqual(FIELD_KEYS);
       const byKey = Object.fromEntries(i.fields.map((f: Json) => [f.key.utf8, f]));
       expect(byKey.name.value).toEqual({ hex: hexText("Acme Dollar"), text: "Acme Dollar" });
@@ -653,7 +656,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     expect(mark("C07")).toEqual(["incorrect"]);
     expect(mark("C08")).toEqual(["incorrect"]);
     expect(mark("C04")).toEqual(["ok", "ok", "ok"]);
-    expect(list.filter((t) => t.source === "identity" && !t.described).map((t) => t.mark)).toEqual([{ mark: "none", reasons: [], reasonCount: 0, missing: [], tags: [] }]);
+    expect(list.filter((t) => t.source === "identity" && !t.described).map((t) => t.mark)).toEqual([{ mark: "none", reasons: [], reasonCount: 0, unresolved: NO_UNRESOLVED, missing: [], tags: [] }]);
     expect(list.filter((t) => t.source === "builtin").map((t) => t.mark)).toEqual([null, null]);
     // Detail and list agree.
     const c08 = list.find((t) => t.contractAddress === contractOf("C08"));
@@ -669,7 +672,85 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     await scanAll(s);
     const base = await startApi(db);
     const part = await ok(base, `/v1/identities/${X}/${P}/3`);
-    expect([part.mark, part.common]).toEqual([{ mark: "partial", reasons: [], reasonCount: 0, missing: ["symbol", "decimals"], tags: [] }, { name: "Only A Name", symbol: null, decimals: null, standards: null }]);
+    expect([part.mark, part.common]).toEqual([{ mark: "partial", reasons: [], reasonCount: 0, unresolved: NO_UNRESOLVED, missing: ["symbol", "decimals"], tags: [] }, { name: "Only A Name", symbol: null, decimals: null, standards: null }]);
+  }, 120_000);
+
+  it("[[mip0018.api.unresolved-mark]] final-audit re-check R1: an unresolved log of a contract (its rename or withdrawal the raw transaction does not show) takes the clean ✓ from every identity of that contract — described, minted-only, list row, detail, color, lookup and contract view all answer ⚠ unresolved with the reason unresolved-log, the count and the log's position (bounded: the first 100 of many); with a rejected event as well the mark is ⚠ incorrect and its reasons end with unresolved-log; another contract keeps ✓", async () => {
+    const Y = "c7".repeat(32); // ✓, then a rename whose operand comes from `dup` (log-operand-not-pushed)
+    const Z = "c8".repeat(32); // ✓, then a withdrawal inside a branch (log-conditionally-executed)
+    const W = "c9".repeat(32); // ✓, then a rejected event and an unresolved log
+    const K = "ca".repeat(32); // control: ✓ throughout
+    const U = "cb".repeat(32); // 120 unresolved logs in one transaction (bounded positions)
+    const D1 = "71".repeat(32);
+    const D2 = "72".repeat(32);
+    const full = (ds: string, kind: number, name: string): SynthLog =>
+      v1Log(ds, kind, [record.utf8("name", name), record.utf8("symbol", name.slice(0, 3).toUpperCase()), record.uint("decimals", 6n, 1)]);
+    let n = 0;
+    const tx = (address: string, guaranteed: SynthTranscript): SynthArchivedTx => ({
+      result: "success",
+      tx: { hash: createHash("sha256").update(`r1:${n++}`).digest("hex"), intents: [{ segment: 1, actions: [{ call: { address, entryPoint: "meta", guaranteed } }] }] },
+    });
+    const evil = v1Log(D1, 1, [record.utf8("name", "Evil")]).data;
+    const db = await fresh("unresolvedmark");
+    await putSyntheticBlocks(db.sql, db.archive, NET, 40, [
+      [
+        tx(Y, { logs: [full(D1, 1, "Yacht"), full(D2, 3, "Yawl")], shieldedMints: [[D1, "100"]] }),
+        tx(Z, { logs: [full(D1, 1, "Zebra")], shieldedMints: [[D1, "7"], [D2, "8"]] }), // Z's D2: minted, never described
+        tx(W, { logs: [full(D1, 3, "Walrus")] }),
+        tx(K, { logs: [full(D1, 3, "Kite")] }),
+      ],
+      [
+        tx(Y, { program: [{ push: { cell: evil } }, { dup: 0 }, "log"] }),
+        tx(Z, { program: [{ dup: 0 }, { branch: 2 }, { log: v1Log(D1, 1, nullAll("name", "symbol", "decimals")) }, "noop"] }),
+        tx(W, { logs: [{ data: Buffer.from(EVENT_NAME).toString("hex") }] }), // all-zero payload → rejected
+        tx(W, { program: [{ push: { cell: "01" } }, { dup: 0 }, "log"] }),
+        tx(U, { program: Array.from({ length: 120 }, (): SynthOp[] => [{ push: { cell: "02" } }, { dup: 0 }, "log"]).flat() }),
+      ],
+    ]);
+    const until = async (to: number): Promise<void> => {
+      const s = scanner(db, { decode: decodeSynthetic, toHeight: to });
+      await s.bootstrap();
+      await scanAll(s);
+    };
+    const base = await startApi(db);
+    const marks = async (): Promise<Record<string, string>> => Object.fromEntries(((await ok(base, "/v1/tokens?limit=500")).items as Json[])
+      .filter((t) => t.source === "identity").map((t) => [`${t.contractAddress.slice(0, 2)}/${t.domainSep.slice(0, 2)}/${t.kind}`, t.mark.mark]));
+
+    await until(40); // every contract published with ordinary push; log → ✓ (Z's never-described D2: no mark)
+    expect(await marks()).toEqual({ "c7/71/1": "ok", "c7/72/3": "ok", "c8/71/1": "ok", "c8/72/1": "none", "c9/71/3": "ok", "ca/71/3": "ok" });
+
+    await until(41);
+    expect(await marks()).toEqual({
+      "c7/71/1": "unresolved", "c7/72/3": "unresolved", "c8/71/1": "unresolved", "c8/72/1": "unresolved",
+      "c9/71/3": "incorrect", "ca/71/3": "ok",
+    });
+    // The unresolved rename and withdrawal were never applied (their values are unknown): Y's name is still the old
+    // one and Z's identity still exists — which is exactly why their marks lose the ✓.
+    const y = await ok(base, `/v1/identities/${Y}/${D1}/1`);
+    expect([y.common.name, y.mark]).toEqual(["Yacht", {
+      mark: "unresolved", reasons: ["unresolved-log"], reasonCount: 0,
+      unresolved: { count: 1, positions: [{ height: 41, txIndex: 0, eventIndex: 0 }] }, missing: [], tags: [],
+    }]);
+    const z = await ok(base, `/v1/identities/${Z}/${D1}/1`);
+    expect([z.described, z.common.name, z.mark.mark, z.mark.unresolved]).toEqual([true, "Zebra", "unresolved", { count: 1, positions: [{ height: 41, txIndex: 1, eventIndex: 0 }] }]);
+    expect((await ok(base, `/v1/identities/${Z}/${D2}/1`)).mark).toMatchObject({ mark: "unresolved", reasons: ["unresolved-log"], missing: [] });
+    // Every view of Y's color, and the contract's own token list, answer the same mark.
+    const T = tokenColor(D1, Y);
+    expect((await ok(base, `/v1/tokens/${T}`)).identities.map((i: Json) => i.mark)).toEqual([y.mark]);
+    expect((await ok(base, `/v1/lookup/${T}?held=shielded`)).identity.mark).toEqual(y.mark);
+    expect((await ok(base, `/v1/contracts/${Y}/tokens`)).items.map((i: Json) => i.mark.mark)).toEqual(["unresolved", "unresolved"]);
+    // A rejected event as well: ⚠ incorrect, the reasons end with unresolved-log.
+    const [rejected] = (await ok(base, `/v1/events?contract=${W}`)).items.filter((e: Json) => e.classification === "reject");
+    expect((await ok(base, `/v1/identities/${W}/${D1}/3`)).mark).toEqual({
+      mark: "incorrect", reasons: [rejected.reason, "unresolved-log"], reasonCount: 1,
+      unresolved: { count: 1, positions: [{ height: 41, txIndex: 3, eventIndex: 0 }] }, missing: [], tags: [],
+    });
+    expect((await ok(base, `/v1/identities/${K}/${D1}/3`)).mark).toEqual({ mark: "ok", reasons: [], reasonCount: 0, unresolved: NO_UNRESOLVED, missing: [], tags: [] });
+    // Bounded like the rejections: U's 120 unresolved logs → the count and the first 100 positions (U has no identity,
+    // so its summary — what every mark of its tokens would carry — is read through the helper the API uses).
+    const u = await contractUnresolvedSummary(db.sql, NET, U, 100, db.mip);
+    expect([u.count, u.positions.length, u.positions[0], u.positions[99]]).toEqual([120, 100, { height: 41, txIndex: 4, eventIndex: 0 }, { height: 41, txIndex: 4, eventIndex: 99 }]);
+    expect((await ok(base, "/v1/status")).unresolvedEvents).toBe(123);
   }, 120_000);
 
   it("[[mip0018.api.withdrawn-absent]] C06 step by step: after the tombstone (Null at name) the withdrawn name is absent from every endpoint (text and hex), and stays absent after the revive; synthetic whole withdrawals: a never-minted identity answers 404 and its domainSep and values appear nowhere, a minted one reads exactly like a minted never-described token", async () => {
@@ -775,7 +856,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     }
     const d = c.get(`/v1/identities/${H}/${D}/3`)!.json;
     expect(d.common).toEqual({ name, symbol, decimals: "3", standards: ["mip-0004", tag] });
-    expect(d.mark).toEqual({ mark: "ok", reasons: [], reasonCount: 0, missing: [], tags: ["mip-0004", tag] });
+    expect(d.mark).toEqual({ mark: "ok", reasons: [], reasonCount: 0, unresolved: NO_UNRESOLVED, missing: [], tags: ["mip-0004", tag] });
     const byHex = Object.fromEntries(d.fields.map((f: Json) => [f.key.hex, f]));
     expect(byHex.fffe).toMatchObject({ key: { hex: "fffe", utf8: null }, valType: 0, valTypeName: "bytes", value: { hex: "c328" }, usable: null });
     expect(keysOf(byHex.fffe.value)).toEqual(["hex"]);

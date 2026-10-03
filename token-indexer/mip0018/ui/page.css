@@ -111,6 +111,7 @@ td.mipcol { text-align: center; }
 .mk-ok { color: var(--tag-described-fg); }
 .mk-partial { color: var(--tag-observed-fg); }
 .mk-incorrect { color: var(--bad); }
+.mk-unresolved { color: var(--tag-observed-fg); }
 .dir-in { color: var(--tag-described-fg); }
 .dir-out { color: var(--tag-observed-fg); }
 .dir-mint { color: var(--accent); }

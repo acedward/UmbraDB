@@ -599,24 +599,37 @@
     return setTitle(h("span", "chip k-" + name, t.kind + " \u00b7 " + name), "kind " + t.kind + ": native " + (t.kind === 3 ? "ledger token (no color)" : name + " token"));
   }
 
-  // The MIP-0018 mark (owner Q14 (a), decided by the API): \u2713 correct, \u26a0 partial or incorrect with the
+  // The MIP-0018 mark (owner Q14 (a), decided by the API): \u2713 correct, \u26a0 partial, incorrect or unresolved with the
   // reason in its tooltip, nothing when the token has no MIP-0018 event.
-  var MARK_HEAD = "MIP-0018 mark: \u2713 usable name, symbol and decimals and no rejected MIP-0018 event from the token's contract; "
-    + "\u26a0 partial (one of the three missing or unusable) or incorrect (its contract has a rejected MIP-0018 event); "
+  var MARK_HEAD = "MIP-0018 mark: \u2713 usable name, symbol and decimals, no rejected MIP-0018 event and no unresolved log from the token's contract; "
+    + "\u26a0 partial (one of the three missing or unusable), incorrect (its contract has a rejected MIP-0018 event) or "
+    + "unresolved (its contract has a log op whose logged value the indexer cannot read, so its metadata here may differ from the ledger's events); "
     + "empty: no MIP-0018 event";
-  var MARK_KINDS = { ok: 1, partial: 1, incorrect: 1, none: 1 };
+  var MARK_KINDS = { ok: 1, partial: 1, incorrect: 1, unresolved: 1, none: 1 };
   function markOf(m) { return m && typeof m.mark === "string" && MARK_KINDS[m.mark] ? m.mark : null; }
+  // Unresolved logs of the token's contract (re-check R1): how many, and the reason "unresolved-log".
+  function unresolvedCount(m) {
+    var u = m && m.unresolved;
+    return u && typeof u.count === "number" && u.count > 0 ? u.count : 0;
+  }
+  function unresolvedText(m) {
+    var n = unresolvedCount(m);
+    return n + " unresolved log" + (n === 1 ? "" : "s") + " (unresolved-log: a log op whose logged value the indexer cannot read from the raw "
+      + "transaction; the contract may have published, renamed or withdrawn metadata not shown here)";
+  }
   function markText(m) {
     var k = markOf(m);
-    if (k === "ok") return "\u2713 correct: usable name, symbol and decimals, and no rejected MIP-0018 event from its contract";
+    var miss = m && arr(m.missing).length > 0 ? "; also missing or unusable: " + arr(m.missing).map(txt).join(", ") : "";
+    if (k === "ok") return "\u2713 correct: usable name, symbol and decimals, and no rejected MIP-0018 event or unresolved log from its contract";
     if (k === "partial") return "\u26a0 partial: missing or unusable: " + arr(m.missing).map(txt).join(", ");
     if (k === "incorrect") {
-      var rs = arr(m.reasons).map(txt);
+      var rs = arr(m.reasons).filter(function (r) { return r !== "unresolved-log"; }).map(txt);
       var n = typeof m.reasonCount === "number" ? m.reasonCount : rs.length;
       var named = rs.slice(0, REASONS_MAX).join(", ") + (n > Math.min(rs.length, REASONS_MAX) ? ", \u2026" : "");
-      var miss = arr(m.missing).length > 0 ? "; also missing or unusable: " + arr(m.missing).map(txt).join(", ") : "";
-      return "\u26a0 incorrect: its contract has " + n + " rejected MIP-0018 event" + (n === 1 ? "" : "s") + ": " + named + miss;
+      var un = unresolvedCount(m) > 0 ? "; and " + unresolvedText(m) : "";
+      return "\u26a0 incorrect: its contract has " + n + " rejected MIP-0018 event" + (n === 1 ? "" : "s") + ": " + named + un + miss;
     }
+    if (k === "unresolved") return "\u26a0 unresolved: its contract has " + unresolvedText(m) + miss;
     return "no MIP-0018 event: no mark";
   }
   function markNode(m) {
@@ -625,14 +638,16 @@
     if (k === "ok") n = h("span", "mk mk-ok", "\u2713");
     else if (k === "partial") n = h("span", "mk mk-partial", "\u26a0");
     else if (k === "incorrect") n = h("span", "mk mk-incorrect", "\u26a0");
+    else if (k === "unresolved") n = h("span", "mk mk-unresolved", "\u26a0");
     else n = h("span", "mk", "");
     n.setAttribute("data-mark", k || "none");
     return setTitle(n, markText(m));
   }
   function markBadge(m) {
     var k = markOf(m);
-    var cls = k === "ok" ? "badge ok" : k === "partial" ? "badge warn" : k === "incorrect" ? "badge bad" : "badge";
-    var label = k === "ok" ? "\u2713 MIP-0018 correct" : k === "partial" ? "\u26a0 MIP-0018 partial" : k === "incorrect" ? "\u26a0 MIP-0018 incorrect" : "no MIP-0018 event";
+    var cls = k === "ok" ? "badge ok" : k === "partial" || k === "unresolved" ? "badge warn" : k === "incorrect" ? "badge bad" : "badge";
+    var label = k === "ok" ? "\u2713 MIP-0018 correct" : k === "partial" ? "\u26a0 MIP-0018 partial" : k === "incorrect" ? "\u26a0 MIP-0018 incorrect"
+      : k === "unresolved" ? "\u26a0 MIP-0018 unresolved" : "no MIP-0018 event";
     var b = h("span", cls, label);
     b.setAttribute("data-mark", k || "none");
     return setTitle(b, markText(m));
@@ -951,12 +966,21 @@
 
     var ms = section("MIP-0018 mark");
     ms.appendChild(h("div", "row", [markBadge(t.mark), h("span", null, markText(t.mark))]));
-    var reasons = t.mark ? arr(t.mark.reasons) : [];
+    var reasons = t.mark ? arr(t.mark.reasons).filter(function (r) { return r !== "unresolved-log"; }) : [];
     if (reasons.length > 0) {
       var rl = h("ol", "gap");
       for (var j = 0; j < reasons.length; j++) rl.appendChild(h("li", "mono", data(reasons[j], CELL_MAX)));
       ms.appendChild(rl);
       if (typeof t.mark.reasonCount === "number" && t.mark.reasonCount > reasons.length) ms.appendChild(h("div", "note", "the first " + reasons.length + " of " + t.mark.reasonCount + " rejections; every rejected event is in the events below"));
+    }
+    var un = unresolvedCount(t.mark);
+    if (un > 0) {
+      var ul = h("ul", "gap unresolved-at");
+      var at = arr(t.mark.unresolved.positions);
+      for (var u = 0; u < at.length && u < REASONS_MAX; u++)
+        ul.appendChild(h("li", "mono", "unresolved-log at height " + txt(at[u].height) + ", transaction " + txt(at[u].txIndex) + ", event " + txt(at[u].eventIndex)));
+      ms.appendChild(ul);
+      if (un > Math.min(at.length, REASONS_MAX)) ms.appendChild(h("div", "note", "the first " + Math.min(at.length, REASONS_MAX) + " of " + un + " unresolved logs; every one is in the events below"));
     }
     ms.appendChild(h("div", "note gap", "Standards tags are self-declared: a claim, never proof of conformance."));
     main.appendChild(ms);
