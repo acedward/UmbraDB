@@ -221,6 +221,26 @@
       "id": "mip0018.vectors.runner-cli",
       "file": "token-indexer/test/mip0018-vectors.test.ts",
       "description": "Project 00026 B1: the vendored runner CLI drives the pure adapter process over both vector sets and exits 0."
+    },
+    {
+      "id": "stagenet.fixtures.manifest",
+      "file": "test/integration/stagenet-fixtures.test.ts",
+      "description": "00026 D1 (FR-041/FR-042, Q11): every recorded Stagenet fixture file matches its manifest SHA-256 and size; provenance (endpoints, genesis, queries) and the < 1 MB size target hold."
+    },
+    {
+      "id": "stagenet.fixtures.tapes-consistent",
+      "file": "test/integration/stagenet-fixtures.test.ts",
+      "description": "00026 D1: the IDX (714485-715183) and U1 (715402-715433) tapes are contiguous, node and indexer answers agree, and every (transaction, called contract) pair has its contractEvents capture in the indexer's order."
+    },
+    {
+      "id": "stagenet.fixtures.case-index",
+      "file": "test/integration/stagenet-fixtures.test.ts",
+      "description": "00026 D1: every C01-C10/IDX/U1 reference case transaction is in the tapes at its height and position, and its observed indexer event ids are in the contractEvents capture."
+    },
+    {
+      "id": "stagenet.fixtures.replay-equals-live",
+      "file": "test/integration/stagenet-fixtures-replay.integration.test.ts",
+      "description": "00026 D1 (SC-003, Q11): replaying each recorded range through the unchanged chain-archive-sync into Postgres reproduces the archive digest of the live polite sync taken at capture time."
     }
   ],
   "deferred": [
