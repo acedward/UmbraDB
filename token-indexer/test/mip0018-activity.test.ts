@@ -24,6 +24,7 @@ import { NIGHT_COLOR } from "../mip0018/applied-parts.ts";
 import { walletAddress } from "../mip0018/bech32m.ts";
 import { tokenColor } from "../mip0018/color.ts";
 import { Mip0018Scanner } from "../mip0018/scan.ts";
+import { EVENT_NAME, encodePayload, record } from "../vendor/mip0018/codec/src/index.ts";
 import { putSyntheticBlocks, type SynthArchivedTx } from "./helpers/synthetic-archive.ts";
 import {
   acceptedEvent, rejectedEvent, synthIntentHash, syntheticActivityTx, syntheticSeams, type SynthTxA, walletOf,
@@ -283,6 +284,77 @@ describe("MIP-0018 token activity (00026 C2)", () => {
     // NIGHT: no NIGHT UTXO in the recorded ranges; DUST has no color, so no listing exists for it.
     expect((await activityForColor(idx.sql, NET, NIGHT_COLOR, {}, idx.mip))).toEqual({ items: [] });
   }, 600_000);
+
+  it("[[mip0018.activity.withdrawn-history]] final-audit F3: a color's and a contract's activity list metadata transactions only for rejected events and accepted events of identities that exist now — a withdrawn native token's publish and withdrawal transactions disappear from its color and its contract (its mints stay), a sibling's stay until it is withdrawn too, rejected events stay; a revive lists the identity's transactions again (existence rule); C06's per-key steps never empty its identity, so its rows stay at every step", async () => {
+    const Y = "c3".repeat(32);
+    const DS1 = "d1".repeat(32);
+    const DS2 = "d2".repeat(32);
+    const T = tokenColor(DS1, Y);
+    const item = (ds: string, kind: 1 | 3, records: Parameters<typeof encodePayload>[1]): string =>
+      Buffer.concat([EVENT_NAME, encodePayload({ domainSep: Buffer.from(ds, "hex"), kind }, records)]).toString("hex");
+    const withdraw = (ds: string, kind: 1 | 3) => item(ds, kind, ["name", "symbol", "decimals"].map((k) => record.tombstone(k)));
+    let n = 0;
+    const tx = (calls: NonNullable<SynthTxA["intents"]>[number]["calls"]): SynthArchivedTx => ({
+      result: "success", tx: { hash: (++n).toString(16).padStart(2, "0").repeat(32), intents: [{ segment: 1, calls }] } as unknown as SynthArchivedTx["tx"],
+    });
+    const call = (t: { logs?: string[]; shieldedMints?: Array<[string, string]> }) => [{ address: Y, entryPoint: "meta", guaranteed: t }];
+    const db = await fresh("wd");
+    await putSyntheticBlocks(db.sql, db.archive, NET, 300, [
+      [tx(call({ shieldedMints: [[DS1, "100"]], logs: [acceptedEvent(DS1, 1, "Token")] }))], // 300 mint + publish kind 1
+      [tx(call({ logs: [acceptedEvent(DS2, 3, "Sibling")] }))], // 301 sibling kind 3
+      [tx(call({ logs: [rejectedEvent()] }))], // 302 rejected
+      [tx(call({ logs: [withdraw(DS1, 1)] }))], // 303 kind 1 withdrawn (all three keys)
+      [tx(call({ shieldedMints: [[DS1, "5"]] }))], // 304 another mint of T, no event
+      [tx(call({ logs: [withdraw(DS2, 3)] }))], // 305 sibling withdrawn
+      [tx(call({ logs: [item(DS1, 1, [record.utf8("name", "Again")])] }))], // 306 kind 1 revived (name only)
+    ]);
+    const until = async (to: number): Promise<void> => {
+      const s = scanner(db, { ...syntheticSeams, toHeight: to });
+      await s.bootstrap();
+      for (;;) {
+        const r = await s.scanOnce({ maxBlocks: 50 });
+        if (r.scannedBlocks === 0 || r.reachedEnd) return;
+      }
+    };
+    const colorRows = async () => (await all((c) => activityForColor(db.sql, NET, T, c === undefined ? {} : { cursor: c }, db.mip)))
+      .map((i) => (i.role === "metadata-event" ? `${i.height}:meta:${i.events!.accepted}/${i.events!.rejected}` : `${i.height}:${i.role}`));
+    const contractRows = async () => (await all((c) => metadataTransactionsForContract(db.sql, NET, Y, c === undefined ? {} : { cursor: c }, db.mip)))
+      .map((i) => `${i.height}:${i.events!.accepted}/${i.events!.rejected}`);
+
+    await until(302); // before any withdrawal: everything listed
+    expect(await colorRows()).toEqual(["300:mint", "300:meta:1/0", "301:meta:1/0", "302:meta:0/1"]);
+    expect(await contractRows()).toEqual(["300:1/0", "301:1/0", "302:0/1"]);
+    await until(304); // kind 1 withdrawn: its publish (300) and withdrawal (303) are not referenced; its mints stay
+    expect(await colorRows()).toEqual(["300:mint", "301:meta:1/0", "302:meta:0/1", "304:mint"]);
+    expect(await contractRows()).toEqual(["301:1/0", "302:0/1"]);
+    // The stored rows are unchanged (the chain events stay in the log): only the listing filters them.
+    const stored = await db.sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ${db.sql(db.mip)}.mip0018_activity WHERE role = 'metadata-event'`;
+    expect(stored[0]!.n).toBe(4);
+    await until(305); // the sibling withdrawn too: only the rejected event's transaction is left
+    expect(await colorRows()).toEqual(["300:mint", "302:meta:0/1", "304:mint"]);
+    expect(await contractRows()).toEqual(["302:0/1"]);
+    await until(306); // kind 1 revived: it exists again, so its transactions are listed again (existence rule, Q34)
+    expect(await contractRows()).toEqual(["300:1/0", "302:0/1", "303:1/0", "306:1/0"]);
+    // firstEventIndex counts only listed events; keyset pages and the descending order agree.
+    expect((await all((c) => metadataTransactionsForContract(db.sql, NET, Y, { limit: 1, order: "desc", ...(c === undefined ? {} : { cursor: c }) }, db.mip))).map((i) => i.height)).toEqual([306, 303, 302, 300]);
+
+    // C06 (recorded, per-key): its withdraw steps delete one key at a time, so the identity always exists and every
+    // metadata transaction stays listed after each step.
+    const c06 = await fresh("wd_c06");
+    await archiveTape(c06, IDX, 714485, 714835);
+    const steps = ["publish", "rename", "withdraw", "withdraw-again", "revive"].map((id) => stepOf("C06", id));
+    const contract = CASES.cases.C06!.contract!;
+    for (const [k, step] of steps.entries()) {
+      const s = scanner(c06, { toHeight: step.height });
+      await s.bootstrap();
+      for (;;) {
+        const r = await s.scanOnce({ maxBlocks: 400 });
+        if (r.scannedBlocks === 0 || r.reachedEnd) break;
+      }
+      const rows = await all((c) => metadataTransactionsForContract(c06.sql, NET, contract, c === undefined ? {} : { cursor: c }, c06.mip));
+      expect(rows.map((i) => i.height), `C06 after ${["publish", "rename", "withdraw", "withdraw-again", "revive"][k]}`).toEqual(steps.slice(0, k + 1).map((x) => x.height));
+    }
+  }, 300_000);
 
   it("[[mip0018.activity.failed-parts]] nothing of a failed segment or a FAILURE transaction; all public flows of a successful one (spends, outputs, NIGHT, contract in/out with recipients, deltas); edge rules", async () => {
     const A = "a1".repeat(32);

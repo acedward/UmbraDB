@@ -426,6 +426,38 @@ export function activityItem(network: string, r: DbActivityRow): ActivityItem {
   return item;
 }
 
+/**
+ * The columns a listing returns. A `metadata-event` row's counts are recomputed from the event log at read time
+ * (final-audit F3; MIP "Applying records": a withdrawn identity MUST NOT be referenced in metadata history): only
+ * rejected events (they describe no identity) and accepted events of an identity that has a field NOW count; a row
+ * with neither is not listed (`listedRow`). Values are never read.
+ */
+function listingColumns(sql: Queryable, schema: string) {
+  return sql`
+    a.block_height, a.tx_index, a.item_index, a.tx_hash, a.role, a.phase, a.segment_id, a.color, a.amount, a.direction,
+    a.contract_address, a.action_index, a.entry_point, a.domain_sep, a.kind, a.wallet_address, a.recipient_contract,
+    a.intent_hash, a.output_index,
+    CASE WHEN a.role = 'metadata-event' THEN m.accepted ELSE a.events_accepted END AS events_accepted,
+    CASE WHEN a.role = 'metadata-event' THEN m.rejected ELSE a.events_rejected END AS events_rejected,
+    CASE WHEN a.role = 'metadata-event' THEN m.first ELSE a.first_event_index END AS first_event_index
+    FROM ${sql(schema)}.mip0018_activity a
+    LEFT JOIN LATERAL (
+      SELECT count(*) FILTER (WHERE e.classification = 'accept')::int AS accepted,
+             count(*) FILTER (WHERE e.classification = 'reject')::int AS rejected,
+             min(e.event_index) AS first
+      FROM ${sql(schema)}.mip0018_events e
+      WHERE a.role = 'metadata-event'
+        AND e.network = a.network AND e.block_height = a.block_height AND e.tx_index = a.tx_index
+        AND e.contract_address = a.contract_address
+        AND (e.classification = 'reject' OR (e.classification = 'accept' AND EXISTS (
+          SELECT 1 FROM ${sql(schema)}.mip0018_fields f
+          WHERE f.network = e.network AND f.contract_address = e.contract_address AND f.domain_sep = e.domain_sep AND f.kind = e.kind)))
+    ) m ON TRUE`;
+}
+
+/** A row is listed unless it is a metadata-event row with nothing left to show (see `listingColumns`). */
+const listedRow = (sql: Queryable) => sql`(a.role <> 'metadata-event' OR m.first IS NOT NULL)`;
+
 function page(network: string, rows: readonly DbActivityRow[], limit: number, subject: string, order: "asc" | "desc"): ActivityPage {
   const items = rows.slice(0, limit).map((r) => activityItem(network, r));
   const last = items.at(-1);
@@ -437,7 +469,8 @@ function page(network: string, rows: readonly DbActivityRow[], limit: number, su
 /**
  * A color's activity in chain order (keyset pagination): its own rows (mints, UTXOs, contract flows, offer deltas)
  * and the metadata-event rows of the contract that minted it (none for a color whose mint is outside the indexed
- * range, e.g. NIGHT). DUST has no color and therefore no activity.
+ * range, e.g. NIGHT) — counting only rejected events and accepted events of identities that exist now (final-audit
+ * F3: a withdrawn identity's metadata transactions are not referenced). DUST has no color and therefore no activity.
  */
 export async function activityForColor(
   sql: Queryable, network: string, color: string, o: ActivityPageOptions = {}, schema = "mip0018",
@@ -451,23 +484,23 @@ export async function activityForColor(
   const contract = minted[0]?.contract_address ?? null;
   const rows = order === "asc"
     ? await sql<DbActivityRow[]>`
-        SELECT * FROM ${sql(schema)}.mip0018_activity
-        WHERE network = ${network} AND (color = ${c} OR (role = 'metadata-event' AND contract_address = ${contract}))
-          AND (block_height, tx_index, item_index) > (${h}::bigint, ${t}::int, ${i}::int)
-        ORDER BY block_height, tx_index, item_index LIMIT ${limit + 1}`
+        SELECT ${listingColumns(sql, schema)}
+        WHERE a.network = ${network} AND (a.color = ${c} OR (a.role = 'metadata-event' AND a.contract_address = ${contract}))
+          AND (a.block_height, a.tx_index, a.item_index) > (${h}::bigint, ${t}::int, ${i}::int) AND ${listedRow(sql)}
+        ORDER BY a.block_height, a.tx_index, a.item_index LIMIT ${limit + 1}`
     : await sql<DbActivityRow[]>`
-        SELECT * FROM ${sql(schema)}.mip0018_activity
-        WHERE network = ${network} AND (color = ${c} OR (role = 'metadata-event' AND contract_address = ${contract}))
-          AND (block_height, tx_index, item_index) < (${h}::bigint, ${t}::int, ${i}::int)
-        ORDER BY block_height DESC, tx_index DESC, item_index DESC LIMIT ${limit + 1}`;
+        SELECT ${listingColumns(sql, schema)}
+        WHERE a.network = ${network} AND (a.color = ${c} OR (a.role = 'metadata-event' AND a.contract_address = ${contract}))
+          AND (a.block_height, a.tx_index, a.item_index) < (${h}::bigint, ${t}::int, ${i}::int) AND ${listedRow(sql)}
+        ORDER BY a.block_height DESC, a.tx_index DESC, a.item_index DESC LIMIT ${limit + 1}`;
   const p = page(network, rows, limit, subject, order);
   return contract === null ? p : { ...p, contract: contract.toString("hex") };
 }
 
 /**
- * A contract's metadata transactions in chain order (keyset pagination): one row per transaction with accepted or
- * rejected MIP-0018 events of that contract — what a kind-3 identity (no color) shows as its activity. Counts and
- * the event-log reference only; never decoded values (Q15).
+ * A contract's metadata transactions in chain order (keyset pagination): one row per transaction with rejected
+ * MIP-0018 events of that contract or accepted ones of an identity that exists now (final-audit F3) — what a kind-3
+ * identity (no color) shows as its activity. Counts and the event-log reference only; never decoded values (Q15).
  */
 export async function metadataTransactionsForContract(
   sql: Queryable, network: string, contract: string, o: ActivityPageOptions = {}, schema = "mip0018",
@@ -478,14 +511,14 @@ export async function metadataTransactionsForContract(
   const [h, t, i] = o.cursor === undefined ? (order === "asc" ? MIN_POSITION : MAX_POSITION) : decodeCursor(o.cursor, subject, order);
   const rows = order === "asc"
     ? await sql<DbActivityRow[]>`
-        SELECT * FROM ${sql(schema)}.mip0018_activity
-        WHERE network = ${network} AND role = 'metadata-event' AND contract_address = ${a}
-          AND (block_height, tx_index, item_index) > (${h}::bigint, ${t}::int, ${i}::int)
-        ORDER BY block_height, tx_index, item_index LIMIT ${limit + 1}`
+        SELECT ${listingColumns(sql, schema)}
+        WHERE a.network = ${network} AND a.role = 'metadata-event' AND a.contract_address = ${a}
+          AND (a.block_height, a.tx_index, a.item_index) > (${h}::bigint, ${t}::int, ${i}::int) AND ${listedRow(sql)}
+        ORDER BY a.block_height, a.tx_index, a.item_index LIMIT ${limit + 1}`
     : await sql<DbActivityRow[]>`
-        SELECT * FROM ${sql(schema)}.mip0018_activity
-        WHERE network = ${network} AND role = 'metadata-event' AND contract_address = ${a}
-          AND (block_height, tx_index, item_index) < (${h}::bigint, ${t}::int, ${i}::int)
-        ORDER BY block_height DESC, tx_index DESC, item_index DESC LIMIT ${limit + 1}`;
+        SELECT ${listingColumns(sql, schema)}
+        WHERE a.network = ${network} AND a.role = 'metadata-event' AND a.contract_address = ${a}
+          AND (a.block_height, a.tx_index, a.item_index) < (${h}::bigint, ${t}::int, ${i}::int) AND ${listedRow(sql)}
+        ORDER BY a.block_height DESC, a.tx_index DESC, a.item_index DESC LIMIT ${limit + 1}`;
   return page(network, rows, limit, subject, order);
 }
