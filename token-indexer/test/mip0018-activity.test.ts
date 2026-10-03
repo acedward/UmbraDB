@@ -71,6 +71,9 @@ async function dump(sql: UmbraDBSql, schema: string): Promise<Record<string, unk
     scan: norm(await sql`SELECT * FROM ${s}.mip0018_scan ORDER BY network`),
     mints: norm(await sql`SELECT * FROM ${s}.mip0018_mints ORDER BY network, block_height, tx_index, mint_index`),
     events: norm(await sql`SELECT * FROM ${s}.mip0018_events ORDER BY network, block_height, tx_index, event_index`),
+    fields: norm(await sql`SELECT * FROM ${s}.mip0018_fields ORDER BY network, contract_address, domain_sep, kind, key`),
+    withdrawals: norm(await sql`SELECT * FROM ${s}.mip0018_withdrawals ORDER BY network, contract_address, domain_sep, kind`),
+    listed: norm(await sql`SELECT * FROM ${s}.mip0018_listed_events ORDER BY network, block_height, tx_index, event_index`),
   };
 }
 
@@ -285,7 +288,7 @@ describe("MIP-0018 token activity (00026 C2)", () => {
     expect((await activityForColor(idx.sql, NET, NIGHT_COLOR, {}, idx.mip))).toEqual({ items: [] });
   }, 600_000);
 
-  it("[[mip0018.activity.withdrawn-history]] final-audit F3: a color's and a contract's activity list metadata transactions only for rejected events and accepted events of identities that exist now — a withdrawn native token's publish and withdrawal transactions disappear from its color and its contract (its mints stay), a sibling's stay until it is withdrawn too, rejected events stay; a revive lists the identity's transactions again (existence rule); C06's per-key steps never empty its identity, so its rows stay at every step", async () => {
+  it("[[mip0018.activity.withdrawn-history]] final-audit F3 and re-check R2: a color's and a contract's activity list metadata transactions only for rejected events and accepted events of an identity's current description — a withdrawn native token's publish and withdrawal transactions disappear from its color and its contract (its mints stay), a sibling's stay until it is withdrawn too, rejected events stay; a revived identity's history starts at its revival (its transactions from before the withdrawal and a Null-only event while it had no field stay hidden), and an event that deletes every field and sets one again is the new start; the last withdrawal of each identity is recorded; removeAbove restores the earlier listings exactly; C06's per-key steps never empty its identity, so its rows stay at every step", async () => {
     const Y = "c3".repeat(32);
     const DS1 = "d1".repeat(32);
     const DS2 = "d2".repeat(32);
@@ -303,16 +306,21 @@ describe("MIP-0018 token activity (00026 C2)", () => {
       [tx(call({ shieldedMints: [[DS1, "100"]], logs: [acceptedEvent(DS1, 1, "Token")] }))], // 300 mint + publish kind 1
       [tx(call({ logs: [acceptedEvent(DS2, 3, "Sibling")] }))], // 301 sibling kind 3
       [tx(call({ logs: [rejectedEvent()] }))], // 302 rejected
-      [tx(call({ logs: [withdraw(DS1, 1)] }))], // 303 kind 1 withdrawn (all three keys)
+      [tx(call({ logs: [withdraw(DS1, 1)] }))], // 303 kind 1 withdrawn (all three keys; the last at record 2)
       [tx(call({ shieldedMints: [[DS1, "5"]] }))], // 304 another mint of T, no event
       [tx(call({ logs: [withdraw(DS2, 3)] }))], // 305 sibling withdrawn
-      [tx(call({ logs: [item(DS1, 1, [record.utf8("name", "Again")])] }))], // 306 kind 1 revived (name only)
+      [tx(call({ logs: [item(DS1, 1, [record.tombstone("name")])] }))], // 306 a Null-only event while kind 1 has no field
+      [tx(call({ logs: [item(DS1, 1, [record.utf8("name", "Again")])] }))], // 307 kind 1 revived (name only)
+      [tx(call({ logs: [item(DS1, 1, [record.utf8("symbol", "AG")])] }))], // 308 kind 1 described further
+      // 309 one event deletes every field (the last at record 1) and sets one again: a withdrawal and a revival at once
+      [tx(call({ logs: [item(DS1, 1, [record.tombstone("name"), record.tombstone("symbol"), record.utf8("name", "Reset")])] }))],
     ]);
+    const s = scanner(db, syntheticSeams);
     const until = async (to: number): Promise<void> => {
-      const s = scanner(db, { ...syntheticSeams, toHeight: to });
-      await s.bootstrap();
+      const sc = scanner(db, { ...syntheticSeams, toHeight: to });
+      await sc.bootstrap();
       for (;;) {
-        const r = await s.scanOnce({ maxBlocks: 50 });
+        const r = await sc.scanOnce({ maxBlocks: 50 });
         if (r.scannedBlocks === 0 || r.reachedEnd) return;
       }
     };
@@ -320,23 +328,49 @@ describe("MIP-0018 token activity (00026 C2)", () => {
       .map((i) => (i.role === "metadata-event" ? `${i.height}:meta:${i.events!.accepted}/${i.events!.rejected}` : `${i.height}:${i.role}`));
     const contractRows = async () => (await all((c) => metadataTransactionsForContract(db.sql, NET, Y, c === undefined ? {} : { cursor: c }, db.mip)))
       .map((i) => `${i.height}:${i.events!.accepted}/${i.events!.rejected}`);
+    const withdrawals = async () => (await db.sql<{ k: number; h: string; r: number }[]>`
+      SELECT kind AS k, block_height::text AS h, record_index AS r FROM ${db.sql(db.mip)}.mip0018_withdrawals ORDER BY kind`).map((w) => `${w.k}@${w.h}.${w.r}`);
 
     await until(302); // before any withdrawal: everything listed
     expect(await colorRows()).toEqual(["300:mint", "300:meta:1/0", "301:meta:1/0", "302:meta:0/1"]);
     expect(await contractRows()).toEqual(["300:1/0", "301:1/0", "302:0/1"]);
+    expect(await withdrawals()).toEqual([]);
     await until(304); // kind 1 withdrawn: its publish (300) and withdrawal (303) are not referenced; its mints stay
     expect(await colorRows()).toEqual(["300:mint", "301:meta:1/0", "302:meta:0/1", "304:mint"]);
     expect(await contractRows()).toEqual(["301:1/0", "302:0/1"]);
-    // The stored rows are unchanged (the chain events stay in the log): only the listing filters them.
+    expect(await withdrawals()).toEqual(["1@303.2"]);
+    // The stored rows are unchanged (the chain events stay in the log): only the listing hides them.
     const stored = await db.sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ${db.sql(db.mip)}.mip0018_activity WHERE role = 'metadata-event'`;
     expect(stored[0]!.n).toBe(4);
     await until(305); // the sibling withdrawn too: only the rejected event's transaction is left
     expect(await colorRows()).toEqual(["300:mint", "302:meta:0/1", "304:mint"]);
     expect(await contractRows()).toEqual(["302:0/1"]);
-    await until(306); // kind 1 revived: it exists again, so its transactions are listed again (existence rule, Q34)
-    expect(await contractRows()).toEqual(["300:1/0", "302:0/1", "303:1/0", "306:1/0"]);
+    expect(await withdrawals()).toEqual(["1@303.2", "3@305.2"]);
+    await until(306); // a Null-only event of the withdrawn kind 1: it describes nothing, so it is not listed
+    expect(await contractRows()).toEqual(["302:0/1"]);
+    await until(307); // kind 1 revived: its history starts here — 300, 303 and 306 stay hidden (re-check R2, Q34)
+    expect(await contractRows()).toEqual(["302:0/1", "307:1/0"]);
+    expect(await colorRows()).toEqual(["300:mint", "302:meta:0/1", "304:mint", "307:meta:1/0"]);
+    await until(308);
+    expect(await contractRows()).toEqual(["302:0/1", "307:1/0", "308:1/0"]);
+    await until(309); // the reset event withdraws kind 1 (at its record 1) and describes it again: it is the new start
+    expect(await contractRows()).toEqual(["302:0/1", "309:1/0"]);
+    expect(await withdrawals()).toEqual(["1@309.1", "3@305.2"]);
     // firstEventIndex counts only listed events; keyset pages and the descending order agree.
-    expect((await all((c) => metadataTransactionsForContract(db.sql, NET, Y, { limit: 1, order: "desc", ...(c === undefined ? {} : { cursor: c }) }, db.mip))).map((i) => i.height)).toEqual([306, 303, 302, 300]);
+    expect((await all((c) => metadataTransactionsForContract(db.sql, NET, Y, { limit: 1, order: "desc", ...(c === undefined ? {} : { cursor: c }) }, db.mip))).map((i) => i.height)).toEqual([309, 302]);
+    expect((await all((c) => activityForColor(db.sql, NET, T, { limit: 1, order: "desc", ...(c === undefined ? {} : { cursor: c }) }, db.mip))).map((i) => `${i.height}:${i.role}`))
+      .toEqual(["309:metadata-event", "304:mint", "302:metadata-event", "300:mint"]);
+
+    // removeAbove restores the earlier listings and withdrawal rows exactly; a rescan gives the same tables.
+    const full = await dump(db.sql, db.mip);
+    await s.removeAbove(308); // the reset is gone: 307 and 308 are listed again, the withdrawal is 303's
+    expect(await contractRows()).toEqual(["302:0/1", "307:1/0", "308:1/0"]);
+    expect(await withdrawals()).toEqual(["1@303.2", "3@305.2"]);
+    await s.removeAbove(302); // both withdrawals gone: everything listed again
+    expect(await contractRows()).toEqual(["300:1/0", "301:1/0", "302:0/1"]);
+    expect(await withdrawals()).toEqual([]);
+    await until(309);
+    expect(await dump(db.sql, db.mip)).toEqual(full);
 
     // C06 (recorded, per-key): its withdraw steps delete one key at a time, so the identity always exists and every
     // metadata transaction stays listed after each step.

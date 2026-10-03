@@ -11,7 +11,8 @@
  * in `mip0018_fields`. Every helper below reads identities from those rows only, so an identity whose last field was
  * deleted appears in no listing, lookup, group, display or event view — as if it had never been described — while
  * the chain events themselves stay in the log (position, contract, classification, reason; `chainEvents` omits the
- * identity of an accepted event whose identity no longer exists and never returns event bytes).
+ * identity of an accepted event that is not in its identity's current metadata history — the identity no longer
+ * exists, or the event came before its last withdrawal (re-check R2) — and never returns event bytes).
  */
 import { MIP0018_SCHEMA } from "../../src/postgres/migrations/mip0018/index.js";
 import type { Queryable } from "./fields.ts";
@@ -169,7 +170,10 @@ export interface ChainEvent {
   eventType: string;
   classification: "accept" | "reject" | "ignore" | "unresolved";
   reason: string | undefined;
-  /** The identity an ACCEPTED event described — only while that identity still has a field (else omitted). */
+  /**
+   * The identity an ACCEPTED event described — only while the event belongs to the identity's current metadata
+   * history (the identity has a field, and the event came after its last withdrawal: re-check R2); else omitted.
+   */
   identity?: { domainSep: string; kind: number };
 }
 
@@ -190,8 +194,8 @@ export async function chainEvents(
     SELECT e.block_height, e.tx_index, e.event_index, e.tx_hash, e.segment_id, e.phase, e.contract_address, e.event_type,
            e.classification, e.reason, e.domain_sep, e.kind,
            (e.classification = 'accept' AND EXISTS (
-             SELECT 1 FROM ${s}.mip0018_fields f
-             WHERE f.network = e.network AND f.contract_address = e.contract_address AND f.domain_sep = e.domain_sep AND f.kind = e.kind
+             SELECT 1 FROM ${s}.mip0018_listed_events l
+             WHERE l.network = e.network AND l.block_height = e.block_height AND l.tx_index = e.tx_index AND l.event_index = e.event_index
            )) AS described
     FROM ${s}.mip0018_events e
     WHERE e.network = ${network}

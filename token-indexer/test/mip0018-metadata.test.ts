@@ -110,6 +110,8 @@ async function dumpAll(sql: UmbraDBSql, schema: string): Promise<Record<string, 
     actions: rows(await sql`SELECT * FROM ${s}.mip0018_contract_actions ORDER BY network, block_height, tx_index, segment_id, action_index`),
     events: rows(await sql`SELECT * FROM ${s}.mip0018_events ORDER BY network, block_height, tx_index, event_index`),
     fields: rows(await sql`SELECT * FROM ${s}.mip0018_fields ORDER BY network, contract_address, domain_sep, kind, key`),
+    withdrawals: rows(await sql`SELECT * FROM ${s}.mip0018_withdrawals ORDER BY network, contract_address, domain_sep, kind`),
+    listed: rows(await sql`SELECT * FROM ${s}.mip0018_listed_events ORDER BY network, block_height, tx_index, event_index`),
   };
 }
 
@@ -200,12 +202,14 @@ describe("MIP-0018 metadata state in Postgres (00026 B3)", () => {
     // The reference's identity-wide C06 expectation does NOT describe the per-key state (why UmbraDB keeps its own).
     expect(await differences(ranges.idx.sql, ranges.idx.mip, contractOf("C06"), readCase("C06/expected.json"))).not.toEqual([]);
 
-    // Incremental apply = replay of the stored log.
+    // Incremental apply = replay of the stored log (fields, and the withdrawals and listed events of re-check R2).
     const { sql, mip } = ranges.idx;
-    const before = (await dumpAll(sql, mip)).fields;
+    const derived = (d: Record<string, unknown[]>) => ({ fields: d.fields, withdrawals: d.withdrawals, listed: d.listed });
+    const before = derived(await dumpAll(sql, mip));
+    expect([before.withdrawals!.length, before.listed!.length]).toEqual([0, 35]); // per-key C06 never empties; 25 accepted + 10 rejected
     const r = await sql.begin((tx) => recomputeFields(tx, mip, NET));
     expect(r).toEqual({ identities: 13, replayedEvents: 25 });
-    expect((await dumpAll(sql, mip)).fields).toEqual(before);
+    expect(derived(await dumpAll(sql, mip))).toEqual(before);
   }, 120_000);
 
   it("[[mip0018.metadata.recorded-groups]] symbol groups on the recorded ranges: exactly C04's ACD (kinds 1, 2, 3) and C05's MEDAL (three domainSeps, bronze never minted); no single-member group is reported", async () => {
@@ -318,6 +322,8 @@ describe("MIP-0018 metadata state in Postgres (00026 B3)", () => {
     await s.scanOnce({ maxBlocks: 1 });
     const revived = await getIdentity(db.sql, k3, db.mip);
     expect([...revived!.fields.keys()]).toEqual([COMMON_KEY_HEX.name]); // nothing from before the tombstones returns
+    // Re-check R2: the revived identity's history starts at its revival — its earlier events stay unattributed.
+    expect((await view()).events).toEqual(["100:-", "100:-", "101:-", "102:-", "103:3"]);
     expect(await tokenMarkOf(db.sql, k3, db.mip)).toEqual({ mark: "partial", reasons: [], missing: ["symbol", "decimals"], tags: [] });
     expect((await view()).contracts).toEqual([{ contractAddress: X, identities: 1 }]);
 

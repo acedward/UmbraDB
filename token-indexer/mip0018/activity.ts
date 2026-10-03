@@ -429,10 +429,12 @@ export function activityItem(network: string, r: DbActivityRow): ActivityItem {
 }
 
 /**
- * The columns a listing returns. A `metadata-event` row's counts are recomputed from the event log at read time
- * (final-audit F3; MIP "Applying records": a withdrawn identity MUST NOT be referenced in metadata history): only
- * rejected events (they describe no identity) and accepted events of an identity that has a field NOW count; a row
- * with neither is not listed (`listedRow`). Values are never read.
+ * The columns a listing returns. A `metadata-event` row's counts are the transaction's LISTED events of the contract
+ * (`mip0018_listed_events`, kept by the apply path; MIP "Applying records": a withdrawn identity MUST NOT be referenced
+ * in metadata history): rejected events (they describe no identity) and accepted events of an identity's current
+ * description — the identity has a field now and the event came after its last withdrawal (final-audit F3, re-check
+ * R2: an identity's history starts at its last revival). A row with none is not listed (`listedRow`). Values are
+ * never read.
  */
 function listingColumns(sql: Queryable, schema: string) {
   return sql`
@@ -446,16 +448,13 @@ function listingColumns(sql: Queryable, schema: string) {
     CASE WHEN a.role = 'metadata-event' THEN m.first ELSE a.first_event_index END AS first_event_index
     FROM ${sql(schema)}.mip0018_activity a
     LEFT JOIN LATERAL (
-      SELECT count(*) FILTER (WHERE e.classification = 'accept')::int AS accepted,
-             count(*) FILTER (WHERE e.classification = 'reject')::int AS rejected,
-             min(e.event_index) AS first
-      FROM ${sql(schema)}.mip0018_events e
+      SELECT count(*) FILTER (WHERE l.classification = 'accept')::int AS accepted,
+             count(*) FILTER (WHERE l.classification = 'reject')::int AS rejected,
+             min(l.event_index) AS first
+      FROM ${sql(schema)}.mip0018_listed_events l
       WHERE a.role = 'metadata-event'
-        AND e.network = a.network AND e.block_height = a.block_height AND e.tx_index = a.tx_index
-        AND e.contract_address = a.contract_address
-        AND (e.classification = 'reject' OR (e.classification = 'accept' AND EXISTS (
-          SELECT 1 FROM ${sql(schema)}.mip0018_fields f
-          WHERE f.network = e.network AND f.contract_address = e.contract_address AND f.domain_sep = e.domain_sep AND f.kind = e.kind)))
+        AND l.network = a.network AND l.contract_address = a.contract_address
+        AND l.block_height = a.block_height AND l.tx_index = a.tx_index
     ) m ON TRUE`;
 }
 
@@ -473,8 +472,9 @@ function page(network: string, rows: readonly DbActivityRow[], limit: number, su
 /**
  * A color's activity in chain order (keyset pagination): its own rows (mints, UTXOs, contract flows, offer deltas)
  * and the metadata-event rows of the contract that minted it (none for a color whose mint is outside the indexed
- * range, e.g. NIGHT) — counting only rejected events and accepted events of identities that exist now (final-audit
- * F3: a withdrawn identity's metadata transactions are not referenced). DUST has no color and therefore no activity.
+ * range, e.g. NIGHT) — counting only listed events: rejected ones, and accepted ones of an identity's current
+ * description (final-audit F3, re-check R2: a withdrawn identity's metadata transactions are not referenced, nor a
+ * revived identity's transactions from before its last withdrawal). DUST has no color and therefore no activity.
  */
 export async function activityForColor(
   sql: Queryable, network: string, color: string, o: ActivityPageOptions = {}, schema = "mip0018",
@@ -502,9 +502,10 @@ export async function activityForColor(
 }
 
 /**
- * A contract's metadata transactions in chain order (keyset pagination): one row per transaction with rejected
- * MIP-0018 events of that contract or accepted ones of an identity that exists now (final-audit F3) — what a kind-3
- * identity (no color) shows as its activity. Counts and the event-log reference only; never decoded values (Q15).
+ * A contract's metadata transactions in chain order (keyset pagination): one row per transaction with listed MIP-0018
+ * events of that contract — rejected ones, or accepted ones of an identity's current description (final-audit F3,
+ * re-check R2) — what a kind-3 identity (no color) shows as its activity. Counts and the event-log reference only;
+ * never decoded values (Q15).
  */
 export async function metadataTransactionsForContract(
   sql: Queryable, network: string, contract: string, o: ActivityPageOptions = {}, schema = "mip0018",

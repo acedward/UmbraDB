@@ -49,8 +49,9 @@ describe("mip0018 schema", () => {
       SELECT table_name FROM information_schema.tables WHERE table_schema = ${schema} ORDER BY table_name`;
     expect(tables.map((t) => t.table_name)).toEqual([
       "_migrations", "mip0018_activity", "mip0018_builtin_tokens", "mip0018_color_sightings", "mip0018_contract_actions",
-      "mip0018_events", "mip0018_fields", "mip0018_mints", "mip0018_scan",
-    ]); // 002_mip0018_scan (A3/B2) adds the scan tables; 003_mip0018_activity (C2) the activity rows
+      "mip0018_events", "mip0018_fields", "mip0018_listed_events", "mip0018_mints", "mip0018_scan", "mip0018_withdrawals",
+    ]); // 002_mip0018_scan (A3/B2) adds the scan tables; 003_mip0018_activity (C2) the activity rows; 001 also holds the
+    // withdrawals and listed events (final-audit re-check R2/R3)
     await runMigrations(sql, { schema, migrations: mip0018Migrations });
     const applied = await sql<{ name: string }[]>`SELECT name FROM ${sql(schema)}._migrations ORDER BY name`;
     expect(applied.map((r) => r.name)).toEqual(["000_schema", "001_mip0018_core", "002_mip0018_scan", "003_mip0018_activity"]);
@@ -136,9 +137,12 @@ describe("mip0018 schema", () => {
     "mip0018_events.phase": "vocabulary",
     "mip0018_events.reason": "code-ascii", // the codec's reason vocabulary or a fixed decoder message with numbers
     "mip0018_fields.network": "config",
+    "mip0018_listed_events.classification": "vocabulary", // CHECK in ('accept', 'reject')
+    "mip0018_listed_events.network": "config",
     "mip0018_mints.network": "config",
     "mip0018_mints.phase": "vocabulary",
     "mip0018_scan.network": "config",
+    "mip0018_withdrawals.network": "config",
   };
 
   it("[[mip0018.schema.text-columns]] every text column of the lineage is classified (operator configuration, fixed vocabulary, code-generated ASCII, code constant); entry points and every other chain byte string are bytea; the code-generated free-text columns refuse anything but printable ASCII and a NUL never reaches a text column", async () => {

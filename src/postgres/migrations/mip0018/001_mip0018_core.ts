@@ -16,6 +16,10 @@ export const name = "001_mip0018_core";
  * - `mip0018_fields` — one row per field `(network, contract_address, domain_sep, kind, key)` holding only its current
  *   value (Q5: no history table). A Null record deletes its row (Q16, per-key tombstones). A token identity exists
  *   only while it has at least one row here; with no rows it MUST NOT be referenced anywhere.
+ * - `mip0018_withdrawals` and `mip0018_listed_events` (final-audit re-check R2/R3) — each identity's last withdrawal,
+ *   and the events activity may list as metadata history (rejected events; accepted events of an identity's current
+ *   description, i.e. since its last revival). Derived state like the fields: written with them by the apply path and
+ *   rebuilt with them by the recompute.
  *
  * Keys and values are `bytea` (Q10/FR-014: exact bytes, NUL and non-UTF-8 keys); unsigned integers (`val_type` 2,
  * 1–31 bytes little-endian) are also kept losslessly as `numeric` for queries.
@@ -102,5 +106,54 @@ export async function up(sql: ISql, schema: string): Promise<void> {
     CREATE INDEX mip0018_fields_symbol_idx
       ON ${sql(schema)}.mip0018_fields (network, contract_address, value)
       WHERE key = '\\x73796d626f6c'::bytea AND usable
+  `;
+
+  // Final-audit re-check R2: per identity, its LAST withdrawal — the position of the record that deleted its last
+  // field row. Written by the apply path in the scan's block transaction; rebuilt with the identity's fields when
+  // `removeAbove` recomputes it. One row per identity that was ever withdrawn.
+  await sql`
+    CREATE TABLE ${sql(schema)}.mip0018_withdrawals (
+      network          text     NOT NULL CHECK (length(network) > 0),
+      contract_address bytea    NOT NULL CHECK (octet_length(contract_address) = 32),
+      domain_sep       bytea    NOT NULL CHECK (octet_length(domain_sep) = 32),
+      kind             smallint NOT NULL CHECK (kind IN (1, 2, 3)),
+      block_height     bigint   NOT NULL CHECK (block_height >= 0),
+      tx_index         integer  NOT NULL CHECK (tx_index >= 0),
+      event_index      integer  NOT NULL CHECK (event_index >= 0),
+      record_index     integer  NOT NULL CHECK (record_index >= 0),
+      PRIMARY KEY (network, contract_address, domain_sep, kind)
+    )
+  `;
+  // Final-audit re-check R2/R3: the events activity may reference — the identities' metadata history (MIP "Applying
+  // records": a withdrawn identity MUST NOT be referenced in metadata history; "a later non-Null record describes it
+  // again"). Every rejected event (it describes no identity), and each accepted event after which its identity has a
+  // field, until that identity is withdrawn again: a withdrawal deletes the identity's accepted rows here, so an
+  // identity's history starts at its last revival. Activity listings read only these rows (bounded by what they
+  // serve, never by hidden rows); the event log itself is unchanged.
+  await sql`
+    CREATE TABLE ${sql(schema)}.mip0018_listed_events (
+      network          text     NOT NULL CHECK (length(network) > 0),
+      block_height     bigint   NOT NULL,
+      tx_index         integer  NOT NULL,
+      event_index      integer  NOT NULL,
+      contract_address bytea    NOT NULL CHECK (octet_length(contract_address) = 32),
+      classification   text     NOT NULL CHECK (classification IN ('accept', 'reject')),
+      domain_sep       bytea    CHECK (domain_sep IS NULL OR octet_length(domain_sep) = 32),
+      kind             smallint CHECK (kind IS NULL OR kind IN (1, 2, 3)),
+      CHECK ((classification = 'accept') = (domain_sep IS NOT NULL AND kind IS NOT NULL)),
+      PRIMARY KEY (network, block_height, tx_index, event_index),
+      FOREIGN KEY (network, block_height, tx_index, event_index)
+        REFERENCES ${sql(schema)}.mip0018_events (network, block_height, tx_index, event_index) ON DELETE CASCADE
+    )
+  `;
+  // A contract's listed metadata transactions in chain order (index skip scan by (block, tx)).
+  await sql`
+    CREATE INDEX mip0018_listed_events_contract_idx
+      ON ${sql(schema)}.mip0018_listed_events (network, contract_address, block_height, tx_index, event_index) INCLUDE (classification)
+  `;
+  // A withdrawal deletes exactly the identity's listed accepted rows.
+  await sql`
+    CREATE INDEX mip0018_listed_events_identity_idx
+      ON ${sql(schema)}.mip0018_listed_events (network, contract_address, domain_sep, kind) WHERE classification = 'accept'
   `;
 }

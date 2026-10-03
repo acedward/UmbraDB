@@ -25,6 +25,14 @@
  *   are independent (MIP S6: an update to one leaves the others unchanged), so the rest of the table is untouched.
  *   `recomputeFields` rebuilds a whole network the same way (repair; test oracle).
  * - Only `accept` rows are ever applied; `reject` rows feed the Q14 mark, `ignore` rows nothing (Q19).
+ * - Metadata history (final-audit re-check R2/R3; MIP "Applying records": a withdrawn identity MUST NOT be referenced
+ *   in metadata history, and "a later non-Null record describes it again, with only that field"): when a record
+ *   deletes an identity's LAST field row, its withdrawal position is recorded (`mip0018_withdrawals`) and its listed
+ *   accepted events are deleted from `mip0018_listed_events`; after each accepted event, the event is listed when its
+ *   identity has a field. So an identity's history starts at its last revival: an event that withdrew it, a Null-only
+ *   event while it had no field, and everything before its last withdrawal are never listed. Every rejected event is
+ *   listed (it describes no identity). Activity reads only listed events (`activity.ts`). Each listed row is deleted
+ *   at most once, so a withdrawal costs at most the rows its identity's current description added.
  */
 import type { ISql } from "postgres";
 import { assertValidSchemaName } from "../../src/postgres/client.js";
@@ -130,6 +138,8 @@ export async function writeEvents(tx: Queryable, schema: string, rows: readonly 
     if (row.classification === "accept") {
       await applyAccepted(tx, schema, row);
       accepted++;
+    } else if (row.classification === "reject") {
+      await listEvent(tx, schema, row, null);
     }
   }
   return { events: rows.length, accepted };
@@ -155,9 +165,49 @@ interface StoredAccepted {
   kind: number | null;
 }
 
+interface IdentityKey { network: string; contract: Buffer; domainSep: Buffer; kind: number }
+
+/** Lists an event as metadata history (`identity` = its identity for an accepted event, `null` for a rejected one). */
+async function listEvent(
+  tx: Queryable, schema: string, row: { network: string; block_height: number | bigint; tx_index: number; event_index: number; contract_address: Buffer },
+  identity: IdentityKey | null,
+): Promise<void> {
+  await tx`
+    INSERT INTO ${tx(schema)}.mip0018_listed_events
+      (network, block_height, tx_index, event_index, contract_address, classification, domain_sep, kind)
+    VALUES (${row.network}, ${row.block_height}, ${row.tx_index}, ${row.event_index}, ${row.contract_address},
+            ${identity === null ? "reject" : "accept"}, ${identity?.domainSep ?? null}, ${identity?.kind ?? null})`;
+}
+
+async function hasField(tx: Queryable, schema: string, id: IdentityKey): Promise<boolean> {
+  const rows = await tx`
+    SELECT 1 FROM ${tx(schema)}.mip0018_fields
+    WHERE network = ${id.network} AND contract_address = ${id.contract} AND domain_sep = ${id.domainSep} AND kind = ${id.kind} LIMIT 1`;
+  return rows.length > 0;
+}
+
+/**
+ * The identity's last field row was just deleted (re-check R2): record the withdrawal's position and delete the
+ * identity's listed accepted events — its metadata history is gone (MIP "Applying records").
+ */
+async function withdraw(tx: Queryable, schema: string, id: IdentityKey, at: ChainPosition, record: number): Promise<void> {
+  const t = tx(schema);
+  await tx`
+    INSERT INTO ${t}.mip0018_withdrawals (network, contract_address, domain_sep, kind, block_height, tx_index, event_index, record_index)
+    VALUES (${id.network}, ${id.contract}, ${id.domainSep}, ${id.kind}, ${at.block}, ${at.tx}, ${at.event}, ${record})
+    ON CONFLICT (network, contract_address, domain_sep, kind) DO UPDATE SET
+      block_height = EXCLUDED.block_height, tx_index = EXCLUDED.tx_index, event_index = EXCLUDED.event_index, record_index = EXCLUDED.record_index`;
+  await tx`
+    DELETE FROM ${t}.mip0018_listed_events
+    WHERE network = ${id.network} AND contract_address = ${id.contract} AND domain_sep = ${id.domainSep} AND kind = ${id.kind}
+      AND classification = 'accept'`;
+}
+
 /**
  * Applies one accepted event's records to the latest-value rows: the codec decodes the stored bytes again, the pure
- * module's `recordEffects` gives the ordered set/delete effects, and each effect becomes one upsert or delete.
+ * module's `recordEffects` gives the ordered set/delete effects, and each effect becomes one upsert or delete. A
+ * delete that leaves the identity without a field is a withdrawal; the event is listed as metadata history when the
+ * identity has a field after it (re-check R2).
  */
 async function applyAccepted(tx: Queryable, schema: string, row: StoredAccepted): Promise<void> {
   const c = classifyEvent({ type: row.event_type, name: row.name, payload: row.payload });
@@ -167,13 +217,14 @@ async function applyAccepted(tx: Queryable, schema: string, row: StoredAccepted)
   if (row.domain_sep === null || !row.domain_sep.equals(Buffer.from(c.header.domainSep)) || row.kind !== c.header.kind)
     throw new MetadataStoreError(`stored event ${JSON.stringify(at)} on ${row.network}: its identity columns differ from its payload header`);
   const t = tx(schema);
-  const id = { network: row.network, contract: row.contract_address, domainSep: row.domain_sep, kind: row.kind };
+  const id: IdentityKey = { network: row.network, contract: row.contract_address, domainSep: row.domain_sep, kind: row.kind };
   for (const e of recordEffects(c.records)) {
     const key = Buffer.from(e.key);
     if (e.op === "delete") {
-      await tx`
+      const deleted = await tx`
         DELETE FROM ${t}.mip0018_fields
         WHERE network = ${id.network} AND contract_address = ${id.contract} AND domain_sep = ${id.domainSep} AND kind = ${id.kind} AND key = ${key}`;
+      if (deleted.count > 0 && !(await hasField(tx, schema, id))) await withdraw(tx, schema, id, at, e.record);
       continue;
     }
     const uint = e.integer === undefined ? null : e.integer.toString();
@@ -189,6 +240,16 @@ async function applyAccepted(tx: Queryable, schema: string, row: StoredAccepted)
         updated_block = EXCLUDED.updated_block, updated_tx = EXCLUDED.updated_tx,
         updated_event = EXCLUDED.updated_event, updated_record = EXCLUDED.updated_record`;
   }
+  if (await hasField(tx, schema, id)) await listEvent(tx, schema, row, id);
+}
+
+/** Deletes everything the apply path derived for one identity: fields, withdrawal row, listed accepted events. */
+async function clearIdentity(tx: Queryable, schema: string, id: IdentityKey): Promise<void> {
+  const t = tx(schema);
+  const at = tx`network = ${id.network} AND contract_address = ${id.contract} AND domain_sep = ${id.domainSep} AND kind = ${id.kind}`;
+  await tx`DELETE FROM ${t}.mip0018_fields WHERE ${at}`;
+  await tx`DELETE FROM ${t}.mip0018_withdrawals WHERE ${at}`;
+  await tx`DELETE FROM ${t}.mip0018_listed_events WHERE ${at} AND classification = 'accept'`;
 }
 
 /** Re-applies, in chain order, the stored accepted events of one identity (its rows must be gone already). */
@@ -206,7 +267,10 @@ async function replayIdentity(tx: Queryable, schema: string, network: string, co
 /**
  * Removes every event above `height` on `network` and recomputes the fields of exactly the identities those events
  * touched, from the accepted events that remain (MIP S4: removing a tombstone block restores the earlier state; adding
- * it again applies the tombstones again). Runs in the caller's transaction.
+ * it again applies the tombstones again). Runs in the caller's transaction. The listed events above the height go with
+ * their events (foreign key, `ON DELETE CASCADE`); each touched identity's withdrawal row and listed accepted events
+ * are rebuilt with its fields by the same replay (re-check R2), so a removed withdrawal lists the identity's earlier
+ * history again exactly as before it.
  */
 export async function removeEventsAbove(
   tx: Queryable, schema: string, network: string, height: number,
@@ -221,9 +285,7 @@ export async function removeEventsAbove(
   const removed = await tx`DELETE FROM ${t}.mip0018_events WHERE network = ${network} AND block_height > ${height}`;
   let replayedEvents = 0;
   for (const id of touched) {
-    await tx`
-      DELETE FROM ${t}.mip0018_fields
-      WHERE network = ${network} AND contract_address = ${id.contract_address} AND domain_sep = ${id.domain_sep} AND kind = ${id.kind}`;
+    await clearIdentity(tx, schema, { network, contract: id.contract_address, domainSep: id.domain_sep, kind: id.kind });
     replayedEvents += await replayIdentity(tx, schema, network, id.contract_address, id.domain_sep, id.kind);
   }
   return { removedEvents: removed.count, recomputedIdentities: touched.length, replayedEvents };
@@ -231,12 +293,19 @@ export async function removeEventsAbove(
 
 /**
  * Rebuilds every field of `network` from the stored accepted events (deletes the network's rows, then replays each
- * identity in chain order). A repair tool and a test oracle: on a consistent store it changes nothing.
+ * identity in chain order), with the withdrawal rows and the listed events (rejected events listed again from the log;
+ * re-check R2). A repair tool and a test oracle: on a consistent store it changes nothing.
  */
 export async function recomputeFields(tx: Queryable, schema: string, network: string): Promise<{ identities: number; replayedEvents: number }> {
   assertValidSchemaName(schema);
   const t = tx(schema);
   await tx`DELETE FROM ${t}.mip0018_fields WHERE network = ${network}`;
+  await tx`DELETE FROM ${t}.mip0018_withdrawals WHERE network = ${network}`;
+  await tx`DELETE FROM ${t}.mip0018_listed_events WHERE network = ${network}`;
+  await tx`
+    INSERT INTO ${t}.mip0018_listed_events (network, block_height, tx_index, event_index, contract_address, classification, domain_sep, kind)
+    SELECT network, block_height, tx_index, event_index, contract_address, 'reject', NULL, NULL FROM ${t}.mip0018_events
+    WHERE network = ${network} AND classification = 'reject'`;
   const ids = await tx<{ contract_address: Buffer; domain_sep: Buffer; kind: number }[]>`
     SELECT DISTINCT contract_address, domain_sep, kind FROM ${t}.mip0018_events
     WHERE network = ${network} AND classification = 'accept' ORDER BY contract_address, domain_sep, kind`;
