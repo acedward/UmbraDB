@@ -644,7 +644,7 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     expect([m.status, m.json.error.code, /relation|schema|mip0018_/.test(m.text)]).toEqual([503, "UNAVAILABLE", false]);
   });
 
-  it("[[mip0018.api.serve-cli]] serve: binds 127.0.0.1 by default, runs the scan loop following the archive (status indexedHeight reaches the archive's height, scanner following) or only the API (--api-only, read-only); the CLI logs the bound port and exits 0 on SIGTERM; bad arguments are refused", async () => {
+  it("[[mip0018.api.serve-cli]] serve: binds 127.0.0.1 by default, runs the scan loop following the archive (status indexedHeight reaches the archive's height, scanner following) or only the API (--api-only, read-only); a stalled scan (undecodable transaction) leaves the API serving with scanner stalled; the CLI logs the bound port and exits 0 on SIGTERM; bad arguments are refused", async () => {
     // In process, with the scan loop, over a freshly archived U1 range (nothing scanned yet).
     const db = await fresh("serve");
     await archiveTape(db, loadRangeTape("u1"), 715402, 715433);
@@ -666,6 +666,27 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
       expect(logs.some((l) => JSON.parse(l).event === "scan")).toBe(true);
     } finally {
       await h.stop();
+    }
+
+    // A scan that cannot proceed (Q20: an undecodable transaction stops the scan at its block) does not take the API
+    // down: status says `stalled`, the other endpoints answer, the cursor stays before the block.
+    const bad = await fresh("stall");
+    await putSyntheticBlocks(bad.sql, bad.archive, NET, 50, [[call("c3".repeat(32), [])]]); // JSON bytes: not a ledger transaction
+    const slogs: string[] = [];
+    const hs = await serve({ sql: bad.sql, network: NET, schema: bad.mip, archiveSchema: bad.archive, port: 0, scanIdleMs: 20, log: (l) => slogs.push(l) });
+    try {
+      const base = `http://127.0.0.1:${hs.port}`;
+      let st: Json;
+      for (let i = 0; i < 200; i++) {
+        st = await ok(base, "/v1/status");
+        if (st.scanner === "stalled") break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(st).toMatchObject({ scanner: "stalled", startHeight: 50, indexedHeight: null, archiveHeight: 50 });
+      expect((await ok(base, "/v1/tokens")).items.map((t: Json) => t.symbol)).toEqual(["NIGHT", "DUST"]);
+      expect(slogs.some((l) => JSON.parse(l).event === "scan-error")).toBe(true);
+    } finally {
+      await hs.stop();
     }
 
     // The CLI as a child process, API only, over the IDX schema; default host; SIGTERM → exit 0.
