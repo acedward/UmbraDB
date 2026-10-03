@@ -80,6 +80,13 @@ node --import tsx token-indexer/mip0018/serve-cli.ts --network stagenet --api-on
   `scanner: stalled`. The sync does not re-ingest below its cursor, so use a fresh deployment (owner decision Q7) or
   re-sync the range with this version into a fresh schema (`ARCHIVE_SCHEMA=chain_archive_v2 … sync-cli.ts --from …`,
   then `--archive-schema chain_archive_v2` for `scan-cli.ts` / `serve-cli.ts`).
+- **A `mip0018` schema created by an earlier build of this PR must be dropped and recreated.** The `mip0018`
+  migrations (`src/postgres/migrations/mip0018/`) were edited in place before the first release (the schema is new,
+  owner decision Q7: fresh deployment), and the migration runner records applied migrations by name only, so it never
+  re-runs an edited one: such a schema keeps the earlier tables, checks and indexes (for example the CHECK that refuses
+  `unresolved` event rows, or a missing table), and the scan or the API fails on it. Drop it
+  (`DROP SCHEMA mip0018 CASCADE`, or the schema given with `--schema`) and start `scan-cli.ts` / `serve-cli.ts` again:
+  the schema is recreated and the scan rebuilds every row from the chain archive (nothing in it is primary data).
 - `scan-cli.ts`: `--from`, `--to`, `--max-blocks`, `--schema` (default `mip0018`), `--archive-schema` (default
   `chain_archive`). The scan stops with an error at a transaction it cannot decode (never skips it). A `log` op
   whose logged value is not in the raw transaction does not stop it: it is stored as `unresolved` (see below).

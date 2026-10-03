@@ -18,6 +18,14 @@ import type { Migration } from "../../migrate.js";
  *
  * `003_mip0018_activity` (sub-plan C2): the token activity rows (public token flows and metadata transactions) the
  * same scan writes per applied transaction.
+ *
+ * Edited in place before the first release (final-audit re-check R4): this lineage is new in PR #26 and unreleased, so
+ * its migrations were changed in place (C4: entry points as `bytea`; D5: `unresolved` events and the bounded-read
+ * indexes) instead of adding upgrade migrations (owner decision Q7: fresh
+ * deployment). `runMigrations` records applied migrations by name only and never re-runs an edited one, so a `mip0018`
+ * schema created by an earlier build of PR #26 keeps its earlier tables and checks: drop it and let the scan recreate it
+ * (every row is rebuilt from the chain archive; `token-indexer/README.md`, "How to run"). After the first release,
+ * changes go into new migrations.
  */
 export const mip0018Migrations: Migration[] = [migration000, mip0018Core, mip0018Scan, mip0018Activity];
 
