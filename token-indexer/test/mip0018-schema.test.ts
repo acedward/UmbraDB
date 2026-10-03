@@ -47,10 +47,13 @@ describe("mip0018 schema", () => {
   it("[[mip0018.schema.fresh-lineage]] creates exactly the event log and the latest-value table, and re-running is a no-op", async () => {
     const tables = await sql<{ table_name: string }[]>`
       SELECT table_name FROM information_schema.tables WHERE table_schema = ${schema} ORDER BY table_name`;
-    expect(tables.map((t) => t.table_name)).toEqual(["_migrations", "mip0018_events", "mip0018_fields"]);
+    expect(tables.map((t) => t.table_name)).toEqual([
+      "_migrations", "mip0018_builtin_tokens", "mip0018_color_sightings", "mip0018_contract_actions", "mip0018_events",
+      "mip0018_fields", "mip0018_mints", "mip0018_scan",
+    ]); // 002_mip0018_scan (A3/B2) adds the scan tables
     await runMigrations(sql, { schema, migrations: mip0018Migrations });
     const applied = await sql<{ name: string }[]>`SELECT name FROM ${sql(schema)}._migrations ORDER BY name`;
-    expect(applied.map((r) => r.name)).toEqual(["000_schema", "001_mip0018_core"]);
+    expect(applied.map((r) => r.name)).toEqual(["000_schema", "001_mip0018_core", "002_mip0018_scan"]);
   });
 
   it("[[mip0018.schema.bytes]] keys and values are exact bytes and a 31-byte integer is lossless", async () => {

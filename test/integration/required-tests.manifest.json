@@ -1,5 +1,5 @@
 {
-  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 36) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
+  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 65) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
   "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` — those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early — that would re-open the exact self-skip hole this manifest closes.",
   "required": [
     {
@@ -241,6 +241,91 @@
       "id": "stagenet.fixtures.replay-equals-live",
       "file": "test/integration/stagenet-fixtures-replay.integration.test.ts",
       "description": "00026 D1 (SC-003, Q11): replaying each recorded range through the unchanged chain-archive-sync into Postgres reproduces the archive digest of the live polite sync taken at capture time."
+    },
+    {
+      "id": "mip0018.decoder.ledger-order",
+      "file": "token-indexer/test/mip0018-applied-parts.test.ts",
+      "description": "Project 00026 A3/B2: the applied-parts decoder lists logs, mints, deploys, maintenance and colors in the ledger's execution order (guaranteed part of every intent by ascending segment, then each fallible segment) and zero-extends trimmed Misc data to 288 bytes."
+    },
+    {
+      "id": "mip0018.decoder.applied-filter",
+      "file": "token-indexer/test/mip0018-applied-parts.test.ts",
+      "description": "Project 00026 A3/B2: only applied parts count — FAILURE applies nothing, PARTIAL_SUCCESS keeps the guaranteed part and the successful segments (a segment missing from the list counts as failed)."
+    },
+    {
+      "id": "mip0018.decoder.unknown-action",
+      "file": "token-indexer/test/mip0018-applied-parts.test.ts",
+      "description": "Project 00026 A3: an unknown contract action, unreadable bytes or a log of another shape is reported, never skipped silently."
+    },
+    {
+      "id": "mip0018.decoder.stagenet-mints",
+      "file": "token-indexer/test/mip0018-applied-parts.test.ts",
+      "description": "Project 00026 A3: recorded Stagenet mints give the reference colors, contracts, domainSeps and kinds (kinds 1 and 2 of C04 share one color) and every wallet-observed color of C02-C05/U1."
+    },
+    {
+      "id": "mip0018.decoder.stagenet-actions",
+      "file": "token-indexer/test/mip0018-applied-parts.test.ts",
+      "description": "Project 00026 A3: recorded deploys, maintenance updates (C10 VerifierKeyRemove, U1 VerifierKeyInsert), the two-call transaction of 714813 and C10's 127-byte raw item are decoded."
+    },
+    {
+      "id": "mip0018.scan.c04-colors",
+      "file": "token-indexer/test/mip0018-scan.test.ts",
+      "description": "Project 00026 A3: the scan of C04's archived range gives one color for its shielded and unshielded mints, its deploy and calls, and the NIGHT/DUST rows."
+    },
+    {
+      "id": "mip0018.scan.idx-u1-ranges",
+      "file": "token-indexer/test/mip0018-scan.test.ts",
+      "description": "Project 00026 A3: the recorded IDX range 714485-715183 gives exactly the reference's 6 colors (C05 bronze not minted), U1's range its color; 60 call actions in 58 transactions, 9 deploys, 1 maintenance update."
+    },
+    {
+      "id": "mip0018.scan.failed-parts-excluded",
+      "file": "token-indexer/test/mip0018-scan.test.ts",
+      "description": "Project 00026 A3: a FAILURE transaction and a failed fallible segment add no mint, color, sighting or action; the guaranteed part of a partial success does."
+    },
+    {
+      "id": "mip0018.scan.seen-then-minted",
+      "file": "token-indexer/test/mip0018-scan.test.ts",
+      "description": "Project 00026 A3 (Q3): a color seen in public data before its mint is listed as seen, then completed in place by the mint."
+    },
+    {
+      "id": "mip0018.scan.resume-identical",
+      "file": "token-indexer/test/mip0018-scan.test.ts",
+      "description": "Project 00026 A3: batches, restarts and a crash inside a block give the same tables as one uninterrupted scan; a cursor moved by another writer is refused."
+    },
+    {
+      "id": "mip0018.scan.remove-above",
+      "file": "token-indexer/test/mip0018-scan.test.ts",
+      "description": "Project 00026 A3/B3: removing everything above a height and scanning again gives the same tables."
+    },
+    {
+      "id": "mip0018.scan.range-guards",
+      "file": "token-indexer/test/mip0018-scan.test.ts",
+      "description": "Project 00026 A3: --from/--to, the archive's end and inconsistent archive rows (gap, parent, result, hash, undecodable) stop the scan with an error."
+    },
+    {
+      "id": "mip0018.scan.cli",
+      "file": "token-indexer/test/mip0018-scan.test.ts",
+      "description": "Project 00026 A3: the scan CLI scans an archived range to --to and resumes at its cursor."
+    },
+    {
+      "id": "mip0018.events.classification",
+      "file": "token-indexer/test/mip0018-events.test.ts",
+      "description": "Project 00026 B2: every Misc event of the recorded ranges is stored with its classification — C07 9/9/4 step by step, C08 1/1/0, the reference IDX scan's 35 v1 events position by position, other names ignored."
+    },
+    {
+      "id": "mip0018.events.order",
+      "file": "token-indexer/test/mip0018-events.test.ts",
+      "description": "Project 00026 B2: events follow the MIP order within a transaction (recorded C04; synthetic intents and segments); failed segments and FAILURE transactions add nothing."
+    },
+    {
+      "id": "mip0018.events.zero-extension",
+      "file": "token-indexer/test/mip0018-events.test.ts",
+      "description": "Project 00026 B2: C10's event, a 127-byte raw ledger item, is stored and decoded as MIP Appendix A's full 32 + 256 bytes."
+    },
+    {
+      "id": "mip0018.events.contract-events-crosscheck",
+      "file": "token-indexer/test/mip0018-events.test.ts",
+      "description": "Project 00026 B2 (Q4 (c)): raw-derived events equal the indexer's recorded contractEvents for every (transaction, called contract) pair — same events, order, bytes and segment."
     }
   ],
   "deferred": [
