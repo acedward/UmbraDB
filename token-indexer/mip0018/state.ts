@@ -214,6 +214,8 @@ interface Retained {
 }
 
 const identityKey = (r: IdentityRef): string => JSON.stringify([r.network, r.contractAddress, r.domainSep, r.kind]);
+/** Code-unit order (locale-independent, deterministic). */
+const byString = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 /**
  * In-memory MIP-0018 metadata state over any number of networks. Pure: no database, no clock, no I/O. The Postgres
@@ -281,7 +283,7 @@ export class MetadataState {
   identities(): IdentityState[] {
     return [...this.identitiesByKey.values()]
       .map(({ ref, fields }) => ({ ...ref, fields }))
-      .sort((a, b) => identityKey(a).localeCompare(identityKey(b)));
+      .sort((a, b) => byString(identityKey(a), identityKey(b)));
   }
 
   /** One identity, or `undefined` when it has no field (then it is not referenced anywhere). */
@@ -304,8 +306,8 @@ export class MetadataState {
     }
     return [...byKey.values()]
       .filter((g) => g.members.length >= 2)
-      .map((g) => ({ ...g, members: g.members.sort((a, b) => a.domainSep.localeCompare(b.domainSep) || a.kind - b.kind) }))
-      .sort((a, b) => JSON.stringify([a.network, a.contractAddress, a.symbol]).localeCompare(JSON.stringify([b.network, b.contractAddress, b.symbol])));
+      .map((g) => ({ ...g, members: g.members.sort((a, b) => byString(a.domainSep, b.domainSep) || a.kind - b.kind) }))
+      .sort((a, b) => byString(JSON.stringify([a.network, a.contractAddress, a.symbol]), JSON.stringify([b.network, b.contractAddress, b.symbol])));
   }
 
   /** Rejected MIP-0018 events of a contract on a network, in chain order (for the Q14 mark). */
