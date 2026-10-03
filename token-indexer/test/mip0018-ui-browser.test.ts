@@ -626,6 +626,9 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
           record.utf8("marks", "\u0600\u0601\u0602\u0603\u0604\u0605 x\uE000y\u0378z\u{E0080}")]),
         v1Log(DG, 3, [record.utf8("name", "Plain"), record.utf8("symbol", "ACME")]),
       ]),
+      // Final-audit F1: a log op fed by `dup` (the raw transaction does not show the logged value) → an unresolved row.
+      { result: "success", tx: { hash: "f5".repeat(32), intents: [{ segment: 1, actions: [{ call: { address: F, entryPoint: "meta",
+        guaranteed: { program: [{ push: { cell: "01" } }, { dup: 0 }, "log"] } } }] }] } },
     ]]);
     const fsc = scanner(fdb, { decode: decodeSynthetic });
     await fsc.bootstrap();
@@ -644,6 +647,11 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
     const ff = await fpage.eval<Record<string, string>>("Object.fromEntries([...document.querySelectorAll('#fields tbody tr')].map((tr) => [tr.cells[0].innerText, tr.cells[2].innerText]))");
     expect(ff.marks).toBe(["0600", "0601", "0602", "0603", "0604", "0605"].map((h) => `\u27e8U+${h}\u27e9`).join("") + " x\u27e8U+E000\u27e9y\u27e8U+0378\u27e9z\u27e8U+E0080\u27e9");
     expect(ff.symbol).toBe("ACME\u27e8U+1BCA0\u27e9");
+    // Final-audit F1: the contract's unresolved log is listed with its own badge and explanation, and counted in the status view.
+    expect(await fpage.eval<Json>("(() => { const b = document.querySelector('#events [data-class=\"unresolved\"]'); return b ? { text: b.textContent, title: b.title } : null; })()"))
+      .toEqual({ text: "unresolved", title: "a log op whose logged value the raw transaction does not show; the ledger may have emitted a MIP-0018 event here; never applied" });
+    expect(sf.view).toContain("log-operand-not-pushed");
+    expect((await visit(fpage, "#/status")).view).toMatch(/unresolved logs\s+1/);
     const fall = await crawl(fpage, ["#/"]);
     for (const [h, snap] of [...fall, ["token", sf] as [string, Snap]]) {
       expect(snap.text, h).not.toMatch(HIDDEN_RAW);

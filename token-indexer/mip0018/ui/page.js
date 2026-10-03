@@ -1115,6 +1115,9 @@
     kvRow(g, "indexed height", txt(st.indexedHeight));
     kvRow(g, "archive height", txt(st.archiveHeight));
     kvRow(g, "scanner", txt(st.scanner));
+    if (typeof st.unresolvedEvents === "number")
+      kvRow(g, "unresolved logs", setTitle(h("span", st.unresolvedEvents > 0 ? "badge warn" : null, txt(st.unresolvedEvents)),
+        "log ops whose logged value the raw transaction does not show; never applied (see the events of their contracts)"));
     kvRow(g, "MIP", st.mip ? txt(st.mip.id) + " @ " + txt(st.mip.commit) : null);
     kvRow(g, "vendored reference", st.vendored ? txt(st.vendored.repository) + " @ " + txt(st.vendored.commit) : null);
     kvRow(g, "page refresh", "every " + (REFRESH_MS / 1000) + " s");
