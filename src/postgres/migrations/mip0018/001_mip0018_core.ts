@@ -18,8 +18,10 @@ export const name = "001_mip0018_core";
  *   only while it has at least one row here; with no rows it MUST NOT be referenced anywhere.
  * - `mip0018_withdrawals` and `mip0018_listed_events` (final-audit re-check R2/R3) — each identity's last withdrawal,
  *   and the events activity may list as metadata history (rejected events; accepted events of an identity's current
- *   description, i.e. since its last revival). Derived state like the fields: written with them by the apply path and
- *   rebuilt with them by the recompute.
+ *   description, i.e. since its last revival; one row per listed event of `mip0018_events`, same position). Derived
+ *   state like the fields: written with them by the apply path, deleted with their events and rebuilt by the
+ *   recompute. A withdrawal deletes rows here; their dead index entries are reclaimed by (auto)vacuum, until which an
+ *   index scan that starts before them steps over them (about one index page per hundred).
  *
  * Keys and values are `bytea` (Q10/FR-014: exact bytes, NUL and non-UTF-8 keys); unsigned integers (`val_type` 2,
  * 1–31 bytes little-endian) are also kept losslessly as `numeric` for queries.
@@ -141,15 +143,10 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       domain_sep       bytea    CHECK (domain_sep IS NULL OR octet_length(domain_sep) = 32),
       kind             smallint CHECK (kind IS NULL OR kind IN (1, 2, 3)),
       CHECK ((classification = 'accept') = (domain_sep IS NOT NULL AND kind IS NOT NULL)),
-      PRIMARY KEY (network, block_height, tx_index, event_index),
-      FOREIGN KEY (network, block_height, tx_index, event_index)
-        REFERENCES ${sql(schema)}.mip0018_events (network, block_height, tx_index, event_index) ON DELETE CASCADE
+      -- A contract's listed events in chain order: the activity listings' index skip scan by (block, tx). The only
+      -- index ordered by position, so no plan can walk other contracts' rows instead (final-audit re-check R3).
+      PRIMARY KEY (network, contract_address, block_height, tx_index, event_index) INCLUDE (classification)
     )
-  `;
-  // A contract's listed metadata transactions in chain order (index skip scan by (block, tx)).
-  await sql`
-    CREATE INDEX mip0018_listed_events_contract_idx
-      ON ${sql(schema)}.mip0018_listed_events (network, contract_address, block_height, tx_index, event_index) INCLUDE (classification)
   `;
   // A withdrawal deletes exactly the identity's listed accepted rows.
   await sql`

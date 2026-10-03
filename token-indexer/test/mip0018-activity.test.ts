@@ -18,7 +18,7 @@ import { type ArchiveTape, type FakeChain, startFakeChain } from "../../test/int
 import { loadCaseIndex, loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
 import {
   ACTIVITY_PAGE_MAX, type ActivityItem, ActivityDecodeError, activityForColor, ActivityQueryError, metadataTransactionsForContract,
-  transactionActivity,
+  transactionActivity, writeActivity,
 } from "../mip0018/activity.ts";
 import { NIGHT_COLOR } from "../mip0018/applied-parts.ts";
 import { walletAddress } from "../mip0018/bech32m.ts";
@@ -29,6 +29,12 @@ import { putSyntheticBlocks, type SynthArchivedTx } from "./helpers/synthetic-ar
 import {
   acceptedEvent, rejectedEvent, synthIntentHash, syntheticActivityTx, syntheticSeams, type SynthTxA, walletOf,
 } from "./helpers/synthetic-activity.ts";
+import postgres from "postgres";
+import { runMigrations } from "../../src/postgres/migrate.js";
+import { mip0018Migrations } from "../../src/postgres/migrations/mip0018/index.js";
+import { createMip0018Api, listen } from "../mip0018/api.ts";
+import type { Queryable } from "../mip0018/fields.ts";
+import { eventAt, seedPublishes, txHashAt, writeMetadataTx } from "./helpers/hidden-history.ts";
 
 const NET = "stagenet";
 const IDX = loadRangeTape("idx");
@@ -389,6 +395,128 @@ describe("MIP-0018 token activity (00026 C2)", () => {
       expect(rows.map((i) => i.height), `C06 after ${["publish", "rename", "withdraw", "withdraw-again", "revive"][k]}`).toEqual(steps.slice(0, k + 1).map((x) => x.height));
     }
   }, 300_000);
+
+  it("[[mip0018.activity.bounded-cost]] final-audit re-check R3 (the auditor's probe P4): an activity page costs what it serves, never what it hides — 100 000 metadata transactions of a withdrawn identity behind one visible rejected event, and 100 000 visible ones of a sibling: the color's and the contract's listings in both orders read at most 100 + 20 buffers per row a page may read (auto_explain, independent of host load; before the first vacuum after the withdrawal its dead index entries add at most one buffer per 20 hidden rows) and answer through the API within a generous latency budget; the seeding equals the real apply path; the withdrawal that hides 100 000 rows is one bounded delete", async () => {
+    const N = 100_000;
+    const migrated = async (prefix: string) => {
+      const db = await fresh(prefix);
+      await runMigrations(db.sql, { schema: db.mip, migrations: mip0018Migrations });
+      return db;
+    };
+    // 1. The fast seeding (one publish through the real paths, the rest cloned) equals the real paths on a small count.
+    const small = { network: NET, contract: "b1".repeat(32), domainSep: "e1".repeat(32), kind: 3 as const };
+    const seeded = await migrated("bcseed");
+    const real = await migrated("bcreal");
+    await seedPublishes(seeded.sql, seeded.mip, small, 1000, 3);
+    for (const h of [1000, 1001, 1002]) await real.sql.begin((tx) => writeMetadataTx(tx as unknown as Queryable, real.mip, [eventAt(small, h, [record.utf8("name", "Spam")])]));
+    const realDump = await dump(real.sql, real.mip);
+    expect([realDump.events!.length, realDump.activity!.length, realDump.listed!.length]).toEqual([3, 3, 3]);
+    expect(await dump(seeded.sql, seeded.mip)).toEqual(realDump);
+
+    // 2. Probe P4: contract Y mints T (kind 1), publishes it N times, withdraws it, then emits one rejected event.
+    const db = await migrated("bounded");
+    const s = db.sql(db.mip);
+    const Y = { network: NET, contract: "c4".repeat(32), domainSep: "d4".repeat(32), kind: 1 as const };
+    const T = tokenColor(Y.domainSep, Y.contract);
+    const ycontract = Buffer.from(Y.contract, "hex");
+    await db.sql`
+      INSERT INTO ${s}.mip0018_mints (network, block_height, tx_index, mint_index, tx_hash, phase, segment_id, action_index, contract_address, domain_sep, kind, amount, color)
+      VALUES (${NET}, 999, 0, 0, ${Buffer.from(txHashAt(999), "hex")}, 'guaranteed', 1, 0, ${ycontract}, ${Buffer.from(Y.domainSep, "hex")}, 1, 100, ${Buffer.from(T, "hex")})`;
+    await writeActivity(db.sql as unknown as Queryable, db.mip, transactionActivity({
+      network: NET, height: 999, txIndex: 0, txHash: txHashAt(999), outcome: { result: "success", segments: null }, events: [],
+      tx: syntheticActivityTx({ hash: txHashAt(999), intents: [{ segment: 1, calls: [{ address: Y.contract, entryPoint: "mint", guaranteed: { shieldedMints: [[Y.domainSep, "100"]] } }] }] }),
+    }));
+    let at = Date.now();
+    await seedPublishes(db.sql, db.mip, Y, 1000, N);
+    const seedMs = Date.now() - at;
+    at = Date.now();
+    await db.sql.begin((tx) => writeMetadataTx(tx as unknown as Queryable, db.mip, [eventAt(Y, 1000 + N, [record.tombstone("name")])]));
+    const withdrawMs = Date.now() - at;
+    await db.sql.begin((tx) => writeMetadataTx(tx as unknown as Queryable, db.mip, [eventAt(Y, 1001 + N, "reject")]));
+    const count = async (table: string) => Number((await db.sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ${s}.${db.sql(table)} WHERE network = ${NET}`)[0]!.n);
+    expect([await count("mip0018_events"), await count("mip0018_activity"), await count("mip0018_listed_events")]).toEqual([N + 2, N + 3, 1]);
+    expect((await db.sql<{ h: number; r: number }[]>`SELECT block_height::int AS h, record_index AS r FROM ${s}.mip0018_withdrawals`).map((w) => ({ ...w })))
+      .toEqual([{ h: 1000 + N, r: 0 }]);
+
+    // Reads through a session with auto_explain: every statement's plan, with its buffer count.
+    const notices: string[] = [];
+    const ex = postgres(container.getConnectionUri(), { max: 1, onnotice: (n) => notices.push(String(n.message)), types: { bigint: postgres.BigInt } });
+    try {
+      for (const set of ["LOAD 'auto_explain'", "SET auto_explain.log_min_duration = 0", "SET auto_explain.log_analyze = on",
+        "SET auto_explain.log_buffers = on", "SET auto_explain.log_timing = off", "SET auto_explain.log_format = 'json'", "SET client_min_messages = log"])
+        await ex.unsafe(set);
+      const measured: Array<{ q: string; buffers: number; rowsRead: number; items: string[] }> = [];
+      const measure = async (q: string, read: () => Promise<{ items: ActivityItem[]; nextCursor?: string }>, rowsRead: number) => {
+        notices.length = 0;
+        const p = await read();
+        const plans = notices.filter((m) => m.includes("\"Plan\"")).map((m) => JSON.parse(m.slice(m.indexOf("{"))) as { Plan: Record<string, number> });
+        expect(plans.length, q).toBeGreaterThan(0);
+        const buffers = plans.reduce((a, x) => a + (x.Plan["Shared Hit Blocks"] ?? 0) + (x.Plan["Shared Read Blocks"] ?? 0), 0);
+        const items = p.items.map((i) => `${i.height}:${i.role === "metadata-event" ? `${i.events!.accepted}/${i.events!.rejected}` : i.role}`);
+        measured.push({ q, buffers, rowsRead, items });
+        return { ...p, buffers, items };
+      };
+      const sqlx = ex as unknown as Queryable;
+      const contract = (o: Parameters<typeof metadataTransactionsForContract>[3]) => () => metadataTransactionsForContract(sqlx, NET, Y.contract, o, db.mip);
+      const colorOf = (o: Parameters<typeof activityForColor>[3]) => () => activityForColor(sqlx, NET, T, o, db.mip);
+      const rejected = `${1001 + N}:0/1`;
+      // Right after the withdrawal its deleted listed rows are dead index entries until (auto)vacuum reclaims them; a scan
+      // that starts before them steps over them (about one index page per hundred, never their activity rows). Recorded
+      // and held to a fraction of a buffer per hidden row — the pre-R3 listing read about 4 per hidden row.
+      const transient = await measure("P4 contract limit=1 before vacuum", contract({ limit: 1 }), 2);
+      expect(transient.items).toEqual([rejected]);
+      expect(transient.buffers, "dead entries before vacuum").toBeLessThanOrEqual(N / 20);
+      for (const table of ["mip0018_listed_events", "mip0018_activity", "mip0018_events"]) await ex.unsafe(`VACUUM (ANALYZE) "${db.mip}"."${table}"`);
+      measured.length = 0;
+      expect((await measure("P4 contract limit=1", contract({ limit: 1 }), 2)).items).toEqual([rejected]);
+      expect((await measure("P4 contract limit=100 desc", contract({ limit: 100, order: "desc" }), 101)).items).toEqual([rejected]);
+      expect((await measure("P4 color limit=1", colorOf({ limit: 1 }), 4)).items).toEqual(["999:mint"]);
+      expect((await measure("P4 color limit=100 desc", colorOf({ limit: 100, order: "desc" }), 202)).items).toEqual([rejected, "999:mint"]);
+
+      // 3. A visible history as long: a sibling identity with N publishes after it. Pages stay bounded by their size.
+      const Z = { ...Y, domainSep: "d5".repeat(32), kind: 3 as const };
+      await seedPublishes(db.sql, db.mip, Z, 200_000, N);
+      const first = await measure("visible contract limit=100", contract({ limit: 100 }), 101);
+      expect([first.items.length, first.items[0], first.items[1], first.items[99]]).toEqual([100, rejected, "200000:1/0", "200098:1/0"]);
+      const second = await measure("visible contract limit=100 page 2", contract({ limit: 100, cursor: first.nextCursor! }), 101);
+      expect([second.items[0], second.items[99]]).toEqual(["200099:1/0", "200198:1/0"]);
+      expect((await measure("visible contract limit=1 desc", contract({ limit: 1, order: "desc" }), 2)).items).toEqual([`${199_999 + N}:1/0`]);
+      const colorDesc = await measure("visible color limit=100 desc", colorOf({ limit: 100, order: "desc" }), 202);
+      expect([colorDesc.items.length, colorDesc.items[0], colorDesc.items[99]]).toEqual([100, `${199_999 + N}:1/0`, `${199_900 + N}:1/0`]);
+      const colorFirst = await measure("visible color limit=1", colorOf({ limit: 1 }), 4);
+      expect(colorFirst.items).toEqual(["999:mint"]);
+      expect((await measure("visible color limit=2 page 2", colorOf({ limit: 2, cursor: colorFirst.nextCursor! }), 6)).items).toEqual([rejected, "200000:1/0"]);
+
+      // The bound: at most 100 buffers plus 20 per row a page may read (its own rows and its metadata transactions, each
+      // at most limit + 1) — tens for a page of one, about a thousand for a page of 100, whatever is hidden or listed
+      // around it. The pre-R3 listing read about 4 buffers per HIDDEN metadata transaction (403 094 for P4's limit=1).
+      console.log(JSON.stringify({ N, seedMs, withdrawMs, transientBuffers: transient.buffers, measured: measured.map(({ q, buffers }) => ({ q, buffers })) }));
+      for (const m of measured) expect(m.buffers, m.q).toBeLessThanOrEqual(100 + 20 * m.rowsRead);
+    } finally {
+      await ex.end({ timeout: 5 });
+    }
+
+    // 4. Through the API (read-only snapshot per request), within a generous latency budget for a loaded host.
+    const server = createMip0018Api({ sql: db.sql, network: NET, schema: db.mip, archiveSchema: db.archive });
+    const port = await listen(server, 0, "127.0.0.1");
+    try {
+      const timings: Record<string, number> = {};
+      for (const path of [`/v1/contracts/${Y.contract}/activity?limit=1`, `/v1/contracts/${Y.contract}/activity?limit=100&order=desc`,
+        `/v1/tokens/${T}/activity?limit=1`, `/v1/tokens/${T}/activity?limit=100&order=desc`]) {
+        const started = Date.now();
+        const r = await fetch(`http://127.0.0.1:${port}${path}`);
+        const body = (await r.json()) as { items: unknown[] };
+        timings[path.replace(/[0-9a-f]{64}/, "…")] = Date.now() - started;
+        expect([r.status, body.items.length > 0]).toEqual([200, true]);
+        expect(timings[path.replace(/[0-9a-f]{64}/, "…")], path).toBeLessThan(2_000);
+      }
+      console.log(JSON.stringify({ apiMs: timings }));
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+    expect(withdrawMs, "hiding N listed rows is one bounded delete in the withdrawal's block transaction").toBeLessThan(60_000);
+  }, 600_000);
 
   it("[[mip0018.activity.failed-parts]] nothing of a failed segment or a FAILURE transaction; all public flows of a successful one (spends, outputs, NIGHT, contract in/out with recipients, deltas); edge rules", async () => {
     const A = "a1".repeat(32);

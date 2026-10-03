@@ -195,7 +195,8 @@ export async function chainEvents(
            e.classification, e.reason, e.domain_sep, e.kind,
            (e.classification = 'accept' AND EXISTS (
              SELECT 1 FROM ${s}.mip0018_listed_events l
-             WHERE l.network = e.network AND l.block_height = e.block_height AND l.tx_index = e.tx_index AND l.event_index = e.event_index
+             WHERE l.network = e.network AND l.contract_address = e.contract_address
+               AND l.block_height = e.block_height AND l.tx_index = e.tx_index AND l.event_index = e.event_index
            )) AS described
     FROM ${s}.mip0018_events e
     WHERE e.network = ${network}

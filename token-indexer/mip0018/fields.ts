@@ -268,9 +268,8 @@ async function replayIdentity(tx: Queryable, schema: string, network: string, co
  * Removes every event above `height` on `network` and recomputes the fields of exactly the identities those events
  * touched, from the accepted events that remain (MIP S4: removing a tombstone block restores the earlier state; adding
  * it again applies the tombstones again). Runs in the caller's transaction. The listed events above the height go with
- * their events (foreign key, `ON DELETE CASCADE`); each touched identity's withdrawal row and listed accepted events
- * are rebuilt with its fields by the same replay (re-check R2), so a removed withdrawal lists the identity's earlier
- * history again exactly as before it.
+ * their events; each touched identity's withdrawal row and listed accepted events are rebuilt with its fields by the
+ * same replay (re-check R2), so a removed withdrawal lists the identity's earlier history again exactly as before it.
  */
 export async function removeEventsAbove(
   tx: Queryable, schema: string, network: string, height: number,
@@ -282,6 +281,7 @@ export async function removeEventsAbove(
     SELECT DISTINCT contract_address, domain_sep, kind FROM ${t}.mip0018_events
     WHERE network = ${network} AND block_height > ${height} AND classification = 'accept'
     ORDER BY contract_address, domain_sep, kind`;
+  await tx`DELETE FROM ${t}.mip0018_listed_events WHERE network = ${network} AND block_height > ${height}`;
   const removed = await tx`DELETE FROM ${t}.mip0018_events WHERE network = ${network} AND block_height > ${height}`;
   let replayedEvents = 0;
   for (const id of touched) {

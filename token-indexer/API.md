@@ -27,7 +27,7 @@ of an earlier draft is served. The explorer page (sub-plan C3) uses only these e
 | Events carry no values | The event endpoint serves position, contract, classification and reason only — never an event's name, payload, header (`domainSep`, `kind`) or decoded values (mid-project audit QA2, Q15). Only MIP-0018-named events (`accept`, `reject`) and `unresolved` logs are served; other `Misc` events (`ignore`) are not (Q19). |
 | Marks | `mark` is decided by one function (`state.ts` `tokenMark`, owner Q14 (a)): `ok` (✓) usable `name`, `symbol` and `decimals`, no rejected MIP-0018 event and no unresolved log from the token's contract; `partial` (⚠) one of the three missing or unusable; `incorrect` (⚠) the contract has a rejected MIP-0018 event (reasons listed in chain order); `unresolved` (⚠) the contract has no rejected event but has an `unresolved` log — a `log` op whose value the raw transaction does not show, so it may have published, renamed or withdrawn metadata this indexer cannot read (final audit re-check R1, A23; reason `unresolved-log`); `none` no metadata, no rejected event and no unresolved log. Precedence: `incorrect`, `unresolved`, then the identity's own fields. Usable `standards` identifiers are returned as `tags` (self-declared, never proof). Current state only (assumption A13). |
 | Groups | Symbol groups as the MIP defines them: identities of one contract with the same usable `symbol` bytes; only groups of two or more members (Q6). |
-| Bounded cost | How many keys an identity has, how many events a contract rejected and how many identities share a symbol are chosen by whoever calls the contract (final audit F2). No answer grows with them: list rows and marks read only the four common keys and a rejection count plus the first 100 reasons; an identity's fields come in keyset pages (`fieldCount` counts them); a group lists its first 100 members (`memberCount` counts them); an entry point is served as at most its first 128 bytes; at most 8 requests run at once (503 `BUSY` beyond, `Retry-After: 1`). |
+| Bounded cost | How many keys an identity has, how many events a contract rejected and how many identities share a symbol are chosen by whoever calls the contract (final audit F2). No answer grows with them: list rows and marks read only the four common keys and a rejection count plus the first 100 reasons; an identity's fields come in keyset pages (`fieldCount` counts them); a group lists its first 100 members (`memberCount` counts them); an entry point is served as at most its first 128 bytes; an activity page reads only the rows it serves, never a withdrawn identity's hidden metadata transactions (final audit re-check R3); at most 8 requests run at once (503 `BUSY` beyond, `Retry-After: 1`). |
 | NIGHT / DUST | Protocol tokens, outside MIP-0018; served as built-in rows with no mark. NIGHT's color is 32 zero bytes; DUST has no color. |
 
 ### Errors
@@ -288,7 +288,11 @@ events and accepted events of an identity's current description, and a transacti
 audit F3 and re-check R2: a withdrawn identity is not referenced in metadata history, and an identity's history starts
 at its last revival — an accepted event counts only when the identity has a field now, the event came after its last
 withdrawal, and the identity had a field after the event; so a revived identity's transactions from before its
-withdrawal, the withdrawal itself and a Null-only event while it had no field are never listed). C03's token
+withdrawal, the withdrawal itself and a Null-only event while it had no field are never listed). A page costs what it serves:
+the color's own rows and its contract's listed metadata transactions are read by index range scans of at most
+`limit + 1` rows each; a withdrawn identity's metadata transactions are not in the scanned index at all (final audit
+re-check R3; right after a withdrawal, until vacuum reclaims them, its deleted entries are skipped at about one index
+page per hundred). C03's token
 (abridged: hashes shortened, optional fields such as `phase`/`segment`/`direction` shown only where certain):
 
 ```json
@@ -329,7 +333,8 @@ audit F2: every activity row of a call repeats its entry point).
 A contract's metadata transactions — the activity of a kind-3 identity, which has no color: one `metadata-event` row
 per transaction with rejected MIP-0018 events of that contract or accepted ones of an identity's current description
 (counts and the first counted event's index; never values or the identity; final audit F3, re-check R2: the same rule
-as a color's activity). Same paging and errors; 404 when the scan never saw the contract.
+as a color's activity; bounded by the page, re-check R3). Same paging and errors; 404 when the scan never saw the
+contract.
 
 ```json
 { "contractAddress": "9d93b919…40e3",
