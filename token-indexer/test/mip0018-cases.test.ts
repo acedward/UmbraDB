@@ -254,14 +254,15 @@ describe("Stagenet case comparison — gaps (00026 D2)", () => {
         deploys[r.contract.toString("hex")] = { height: Number(r.height), blockHash: await blockHash(Number(r.height)), txHash: r.tx.toString("hex") };
       const events: Record<string, RefEvent[]> = {};
       for (const e of (await listEvents(sql, NET, {}, db.mip)).filter((x) => x.name === V1)) {
-        const calls = await sql<{ entry: string }[]>`
+        // entry_point is bytea (sub-plan C4 H1: arbitrary bytes on the ledger); the reference index writes it as text.
+        const calls = await sql<{ entry: Buffer }[]>`
           SELECT entry_point AS entry FROM ${m}.mip0018_contract_actions
           WHERE network = ${NET} AND action = 'call' AND block_height = ${e.height} AND tx_index = ${e.txIndex}
             AND segment_id = ${e.segment} AND contract_address = ${Buffer.from(e.contractAddress, "hex")}`;
         expect(calls, `entry point of ${e.height}/${e.eventIndex}`).toHaveLength(1);
         (events[e.contractAddress] ??= []).push({
           block: { height: e.height, hash: await blockHash(e.height) }, txHash: e.txHash, txIndex: e.txIndex, eventIndex: e.eventIndex,
-          phase: e.phase, segment: e.segment, entryPoint: calls[0]!.entry, name: e.name, payload: e.payload, result: e.classification,
+          phase: e.phase, segment: e.segment, entryPoint: new TextDecoder("utf-8", { fatal: true }).decode(calls[0]!.entry), name: e.name, payload: e.payload, result: e.classification,
           ...(e.reason === undefined ? {} : { reason: e.reason }), ...(e.domainSep === undefined ? {} : { domainSep: e.domainSep }), ...(e.kind === undefined ? {} : { kind: e.kind }),
         });
       }
