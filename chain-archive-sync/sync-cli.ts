@@ -4,20 +4,19 @@
  * Usage: `npm run archive:sync -- [--from <height>] [--to <height>] [--concurrency <n>]
  *        [--max-blocks <n>] [--min-interval-ms <ms>]`
  *
- * `--from`/`--to` (project 00026, spec FR-001 / Q11) archive a chosen range of FINALIZED blocks for
- * development: `--from` is where a FIRST run begins (a resumed run continues at the cursor; a
- * `--from` that would leave a gap, or that lies below the archive's first height, is refused);
- * with `--to` the process exits 0 once the cursor reaches that height (waiting for finality if the
- * chain is not there yet). Without `--to` it follows the finalized tip forever, as at the base.
- * Every block commits atomically with its cursor, so a kill at any point resumes with no gap and no
- * duplicate.
+ * `--from`/`--to` archive a chosen range of FINALIZED blocks for development: `--from` is where a
+ * FIRST run begins (a resumed run continues at the cursor; a `--from` that would leave a gap, or
+ * that lies below the archive's first height, is refused); with `--to` the process exits 0 once the
+ * cursor reaches that height (waiting for finality if the chain is not there yet). Without `--to`
+ * it follows the finalized tip forever. Every block commits atomically with its cursor, so a kill
+ * at any point resumes with no gap and no duplicate.
  *
  * **Environment** (flags win over the environment):
  *
  * | Variable | Default | Meaning |
  * |---|---|---|
  * | `ARCHIVE_PG` | *(required)* | Postgres connection string for the archive database |
- * | `NET` | `preprod` | network id stored in `chain_archive.*.net` (this project: `stagenet`) |
+ * | `NET` | `preprod` | network id stored in `chain_archive.*.net` (e.g. `stagenet`) |
  * | `ARCHIVE_SCHEMA` | `chain_archive` | schema the lineage is bootstrapped into |
  * | `NODE_URL` | `https://rpc.preprod.midnight.network` | Substrate JSON-RPC endpoint |
  * | `INDEXER_URL` | `https://indexer.preprod.midnight.network/api/v4/graphql` | indexer GraphQL endpoint |

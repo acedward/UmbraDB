@@ -1,5 +1,5 @@
 /**
- * Request meter for development range syncs (project 00026, sub-plan D3): preloaded with
+ * Request meter for development range syncs: preloaded with
  * `node --import tsx --import ./token-indexer/dev/fetch-meter.ts <cli>`, it wraps the global `fetch` and appends ONE
  * JSON line per request to `$FETCH_METER_OUT` — host, operation (the JSON-RPC `method` or the first GraphQL field),
  * HTTP status (or the error name), duration — so request counts stay exact even when the process is killed with

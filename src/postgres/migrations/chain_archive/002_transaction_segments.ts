@@ -2,7 +2,7 @@ import type { ISql } from "postgres";
 import { assertValidSchemaName } from "../../client.js";
 
 /**
- * Per-segment transaction outcomes in the chain archive (project 00026, spec FR-002).
+ * Per-segment transaction outcomes in the chain archive.
  *
  * A Midnight transaction in a finalized block has an outcome — `SUCCESS`, `PARTIAL_SUCCESS` or
  * `FAILURE` — and its raw bytes keep every intent segment as submitted, including the transcripts

@@ -82,7 +82,7 @@ function hexNoPrefix(hex: string): string {
 const SYSTEM_TX_TAG = "midnight:system-transaction";
 
 /**
- * Project 00026 (spec FR-002): the indexer's `TransactionResultStatus` mapped onto the archive's
+ * The indexer's `TransactionResultStatus` mapped onto the archive's
  * `transactions.result` enum. `undefined` = the source reported no result (a `SystemTransaction`
  * or `BridgeClaimTransaction` has no `transactionResult` field); it stays NULL, never defaulted to
  * `success`, because a consumer that cannot tell "succeeded" from "unknown" would count parts the
@@ -103,8 +103,8 @@ export function mapTransactionResult(status: string | undefined): TransactionRes
   }
 }
 
-/** Raised for a `--from`/`--to` request the archive cannot honour without a gap or a backfill
- *  (project 00026, FR-001). Never retried: the operator has to pick another range or schema. */
+/** Raised for a `--from`/`--to` request the archive cannot honour without a gap or a backfill.
+ *  Never retried: the operator has to pick another range or schema. */
 export class SyncRangeError extends Error {
   constructor(message: string) {
     super(message);
@@ -112,9 +112,10 @@ export class SyncRangeError extends Error {
   }
 }
 
-/** The sync cursor stored under `sync_cursor:<net>`: the last archived height plus (since 00026)
- *  the first height this archive ever ingested, so a later `--from` below it is refused instead of
- *  leaving a silent hole. `startHeight` is absent on a cursor written before 00026. */
+/** The sync cursor stored under `sync_cursor:<net>`: the last archived height plus the first
+ *  height this archive ever ingested, so a later `--from` below it is refused instead of leaving a
+ *  silent hole. `startHeight` is optional: a cursor without it leaves the archive's first height
+ *  unknown. */
 export interface SyncCursor {
   height: number;
   startHeight?: number;
@@ -136,14 +137,14 @@ export interface ChainArchiveSyncServiceOptions {
   schema?: string;
   node: NodeRpcClientOptions;
   indexer: IndexerClientOptions;
-  /** Project 00026 (FR-001, `--from`): where a FIRST run (no cursor yet) begins; default genesis
-   *  (0). Once a cursor exists it is the only authority: a value inside the archived range is a
-   *  no-op (resume continues at cursor + 1), a value above cursor + 1 or below the archive's first
-   *  height is refused with {@link SyncRangeError}. The first archived block may therefore have no
-   *  archived parent; no reader may assume the archive begins at genesis. */
+  /** `--from`: where a FIRST run (no cursor yet) begins; default genesis (0). Once a cursor exists
+   *  it is the only authority: a value inside the archived range is a no-op (resume continues at
+   *  cursor + 1), a value above cursor + 1 or below the archive's first height is refused with
+   *  {@link SyncRangeError}. The first archived block may therefore have no archived parent; no
+   *  reader may assume the archive begins at genesis. */
   startHeight?: number;
-  /** Project 00026 (FR-001, `--to`): the last height to ingest, inclusive. `syncOnce` never goes
-   *  past it and reports `reachedEnd` once the cursor is there. */
+  /** `--to`: the last height to ingest, inclusive. `syncOnce` never goes past it and reports
+   *  `reachedEnd` once the cursor is there. */
   endHeight?: number;
   /** How many heights are FETCHED at once (bounded 1..16). Blocks are still WRITTEN strictly in
    *  ascending height order, one atomic checkpoint each. Default 1. */
@@ -161,7 +162,7 @@ export interface SyncOnceResult {
   /** `min(node finalized head, indexer tip)`; `undefined` when the call returned before asking
    *  (the configured `endHeight` was already reached). */
   targetTipHeight: number | undefined;
-  /** Project 00026: the cursor after this call has reached the configured `endHeight`. */
+  /** The cursor after this call has reached the configured `endHeight`. */
   reachedEnd: boolean;
   /** Network calls retried after a retryable failure, and how many of those were 429/403. */
   retries: number;
@@ -206,10 +207,10 @@ export class ChainArchiveSyncService {
   private readonly signal: AbortSignal | undefined;
   private counters: RetryCounters = { retries: 0, throttled: 0 };
   /** Last-seen D-parameter, used to dedupe `bridge_observations` inserts so a chain with an
-   *  unchanging D-parameter does not get one near-duplicate row per block. Project 00026: when it
-   *  is unknown (a fresh service instance resuming an existing archive) it is re-seeded from the
-   *  last archived observation before the next block is written -- at the base a restart
-   *  re-inserted one observation, so a killed-and-resumed sync did not equal an uninterrupted one. */
+   *  unchanging D-parameter does not get one near-duplicate row per block. When it is unknown (a
+   *  fresh service instance resuming an existing archive) it is re-seeded from the last archived
+   *  observation before the next block is written, so a killed-and-resumed sync writes the same
+   *  rows as an uninterrupted one. */
   private lastDParameterJson: string | undefined;
 
   constructor(opts: ChainArchiveSyncServiceOptions) {
@@ -270,9 +271,9 @@ export class ChainArchiveSyncService {
   }
 
   /**
-   * Resolves where the next batch starts (project 00026, FR-001) and refuses a range the archive
-   * cannot honour: never a gap (a `--from` above cursor + 1) and never a silent hole below the
-   * archive's first height (a `--from` below it cannot be backfilled into one cursor).
+   * Resolves where the next batch starts and refuses a range the archive cannot honour: never a gap
+   * (a `--from` above cursor + 1) and never a silent hole below the archive's first height (a
+   * `--from` below it cannot be backfilled into one cursor).
    */
   private resolveStart(cursor: SyncCursor | undefined): { start: number; archiveStart: number | undefined } {
     if (cursor === undefined) {
@@ -448,8 +449,8 @@ export class ChainArchiveSyncService {
   /**
    * The STORE half: builds every record from already-fetched data and writes ONE atomic bundle --
    * block, transactions with their results and per-segment outcomes, bridge observations AND the
-   * sync cursor (project 00026, FR-001). Called strictly in ascending height order, which is what
-   * the D-parameter dedup cursor needs (it compares against the previous height's value).
+   * sync cursor. Called strictly in ascending height order, which is what the D-parameter dedup
+   * cursor needs (it compares against the previous height's value).
    */
   private async storeFetchedBlock(fetched: FetchedBlock, archiveStart: number | undefined): Promise<void> {
     const { height, blockHash, header, extrinsics, indexerBlock } = fetched;
@@ -473,8 +474,8 @@ export class ChainArchiveSyncService {
     const { records: bridgeObservations, newDParameterJson } =
       this.buildBridgeObservationRecords(height, blockHash, indexerBlock);
 
-    // A cursor written before 00026 has no `startHeight`; it stays unknown rather than being
-    // replaced by a guess (the first height of this run is not the archive's first height).
+    // A cursor without `startHeight` keeps it unknown rather than having it replaced by a guess (the
+    // first height of this run is not the archive's first height).
     const cursor: SyncCursor = archiveStart === undefined ? { height } : { height, startHeight: archiveStart };
     await this.store.putBlockBundle({
       block: blockRecord, transactions, bridgeObservations,
@@ -489,7 +490,7 @@ export class ChainArchiveSyncService {
     }
   }
 
-  /** Project 00026 (FR-002): the result and per-segment outcomes of one indexer transaction. A
+  /** The result and per-segment outcomes of one indexer transaction. A
    *  `RegularTransaction` without a result is an error (the indexer has not reported it; the block
    *  is retried rather than archived with an unknown outcome). */
   private transactionOutcome(
@@ -508,8 +509,8 @@ export class ChainArchiveSyncService {
     const segments = reported.segments === null || reported.segments === undefined
       ? undefined
       : reported.segments.map((s) => ({ id: s.id, success: s.success }));
-    // Project 00026 (FR-002, mid-project audit F1): a partial success says that SOME fallible segments failed; without
-    // the per-segment list nobody can tell which parts applied, so the block is not archived with that outcome.
+    // A partial success says that SOME fallible segments failed; without the per-segment list nobody can tell which
+    // parts applied, so the block is not archived with that outcome.
     if (result === "partial_success" && (segments === undefined || segments.length === 0)) {
       throw new Error(
         `indexer reported PARTIAL_SUCCESS without per-segment outcomes for transaction ${hexNoPrefix(tx.hash)} at height ${height}; ` +

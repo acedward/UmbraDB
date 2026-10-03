@@ -1,4 +1,4 @@
-/* MIP-0018 token explorer (project 00026, sub-plan C3). The look follows PR #19's explorer page
+/* MIP-0018 token explorer. The look follows the explorer page of acedward/UmbraDB PR #19
    (token-indexer/ui/page.ts @ 11af38e): Midnight brand, light surface, black type, one blue; the brand
    face Outfit (SIL OFL 1.1, ui/fonts/OFL.txt) served by this process; hex, heights and amounts in a
    monospaced face because they are data to compare. Served inline and allowed by its SHA-256 in the
@@ -19,7 +19,7 @@
   --sans: "Outfit", "Avenir Next", "Century Gothic", ui-sans-serif, system-ui, -apple-system,
     "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
-  /* Tag colours (PR #19): one hue per meaning; background ~12-15 % tint, border ~40 %, dark text. */
+  /* Tag colours (as in that explorer): one hue per meaning; background ~12-15 % tint, border ~40 %, dark text. */
   --tag-builtin-bg: #ececec; --tag-builtin-bd: #b4b4b4; --tag-builtin-fg: #2b2b2b;
   --tag-observed-bg: #fdf1d9; --tag-observed-bd: #e0aa4f; --tag-observed-fg: #8a5200;
   --tag-described-bg: #e3f3e8; --tag-described-bd: #7cc192; --tag-described-fg: #1b6b37;
@@ -86,7 +86,7 @@ tr.built td { background: var(--zebra); }
 .crumb { color: var(--dim); font-size: 13px; }
 .gap { margin-top: 10px; }
 /* Data text: every value a publisher chose is its own bidirectional island, so right-to-left text in a
-   name cannot reorder the label or the chip beside it (PR #19 audit F14). */
+   name cannot reorder the label or the chip beside it. */
 .d { unicode-bidi: isolate; overflow-wrap: anywhere; }
 td .d { display: inline-block; max-width: 42ch; overflow: hidden; text-overflow: clip; vertical-align: top; }
 td.wide { white-space: normal; max-width: 60ch; }

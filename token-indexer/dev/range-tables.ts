@@ -1,7 +1,6 @@
 /**
- * What "identical tables" means for project 00026's range checks (spec SC-003, sub-plan D3): EVERY base table of the
- * chain-archive schema and of the `mip0018` schema — found in the catalog, not listed by hand, so a table added later
- * is compared too — with every column except
+ * What "identical tables" means for the range checks: EVERY base table of the chain-archive schema and of the `mip0018`
+ * schema — found in the catalog, not listed by hand, so a table added later is compared too — with every column except
  *
  * - wall-clock columns (any `timestamp`/`date`/`time`/`interval` type: `synced_at`, `created_at`, `updated_at`,
  *   `applied_at`), which record when a row was written, not what the chain says; and

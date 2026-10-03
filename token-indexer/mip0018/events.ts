@@ -1,7 +1,7 @@
 /**
- * Read side of the event log `mip0018_events` (sub-plan B2; the API of sub-plan C builds on it): every `Misc` event of
- * an applied part, in the MIP's chain order, with its classification. Q15: the event log is the chain-event record
- * (position, contract, classification, reason); the raw `name`/`payload` are returned for recomputation and tests and
+ * Read side of the event log `mip0018_events` (the API builds on it): every `Misc` event of an applied part, in the
+ * MIP's chain order, with its classification. The event log is the chain-event record (position, contract,
+ * classification, reason); the raw `name`/`payload` are returned for recomputation and tests and
  * must never be served as metadata.
  */
 import type { UmbraDBSql } from "../../src/postgres/client.js";
@@ -55,7 +55,7 @@ export async function listEvents(
   }));
 }
 
-/** Classification counts of a contract's events (accepted, rejected, ignored, unresolved), e.g. for the Q14 marks. */
+/** Classification counts of a contract's events (accepted, rejected, ignored, unresolved), e.g. for the marks. */
 export async function eventCounts(
   sql: UmbraDBSql, network: string, contractAddress: string, schema = MIP0018_SCHEMA,
 ): Promise<{ events: number; accepted: number; rejected: number; ignored: number; unresolved: number }> {

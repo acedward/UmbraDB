@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 /**
- * UmbraDB's Postgres MIP-0018 vector adapter (project 00026, sub-plan B3; spec FR-040, SC-001): the runner contract of
- * the vendored vectors answered through the REAL store — every request gets a fresh `mip0018` schema (the lineage's
- * migrations), its events go through the production write path (`fields.ts` `writeEvents`: event log + per-key
- * latest-value rows, in a transaction), a rollback through the production recompute (`removeEventsAbove`, the one
- * `Mip0018Scanner.removeAbove` uses), and the answer is read back with the read helpers the API serves
- * (`metadata.ts` `listIdentities`, `listGroups`, `displayAmountOf`; `events.ts` `listEvents`). Request parsing and the
- * response shapes are the pure adapter's (`vector-adapter.ts`), so the two adapters differ only in where the state
- * lives.
+ * UmbraDB's Postgres MIP-0018 vector adapter: the runner contract of the vendored vectors answered through the REAL
+ * store — every request gets a fresh `mip0018` schema (the lineage's migrations), its events go through the production
+ * write path (`fields.ts` `writeEvents`: event log + per-key latest-value rows, in a transaction), a rollback through
+ * the production recompute (`removeEventsAbove`, the one `Mip0018Scanner.removeAbove` uses), and the answer is read
+ * back with the read helpers the API serves (`metadata.ts` `listIdentities`, `listGroups`, `displayAmountOf`;
+ * `events.ts` `listEvents`). Request parsing and the response shapes are the pure adapter's (`vector-adapter.ts`), so
+ * the two adapters differ only in where the state lives.
  *
  * - `decode`: the event is written to the log of a fresh schema at (block 1, tx 0, event 0) of a placeholder contract
  *   and read back; the result and reason are the stored row's, the header and records of an accepted event are decoded
@@ -79,7 +78,7 @@ export function createPgVectorConsumer(opts: PgVectorConsumerOptions): PgVectorC
     const e = stored[0]!;
     const again = classifyEvent({ type: e.eventType, name: Buffer.from(e.name, "hex"), payload: Buffer.from(e.payload, "hex") });
     if (e.classification === "accept") {
-      if (again.result !== "accept") throw new Error(`stored accepted event no longer decodes (${again.result})`);
+      if (again.result !== "accept") throw new Error(`stored accepted event does not decode from its stored bytes (${again.result})`);
       if (again.header.kind !== e.kind || Buffer.from(again.header.domainSep).toString("hex") !== e.domainSep)
         throw new Error("stored identity columns differ from the stored payload header");
       return decodeResponse(again);

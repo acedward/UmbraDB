@@ -36,11 +36,10 @@ export interface SubstrateBlock {
 
 export class NodeRpcError extends Error {
   /**
-   * Project 00026 (polite public-endpoint access): `httpStatus` is set exactly when the transport
-   * completed with a non-2xx status (429/403/5xx are the throttling/outage answers the sync backs
-   * off on), with `retryAfterMs` from a `Retry-After` header; `cause` is set exactly when the
-   * transport itself failed (DNS, connection, timeout abort). An error with neither is a JSON-RPC
-   * protocol error, which is never retried.
+   * `httpStatus` is set exactly when the transport completed with a non-2xx status (429/403/5xx are
+   * the throttling/outage answers the sync backs off on), with `retryAfterMs` from a `Retry-After`
+   * header; `cause` is set exactly when the transport itself failed (DNS, connection, timeout
+   * abort). An error with neither is a JSON-RPC protocol error, which is never retried.
    */
   constructor(
     message: string, readonly cause?: unknown, readonly httpStatus?: number, readonly retryAfterMs?: number,
@@ -78,7 +77,7 @@ export interface NodeRpcClientOptions {
   /** Per-request timeout in milliseconds -- a hung/black-holed node otherwise stalls the entire
    *  sync service indefinitely with no way to recover (Fix 3). Default: 20_000. */
   timeoutMs?: number;
-  /** Minimum spacing between two request starts (project 00026). Default: 250 ms for a public
+  /** Minimum spacing between two request starts. Default: 250 ms for a public
    *  Midnight host (`polite-http.ts`), 0 otherwise. */
   minIntervalMs?: number;
 }

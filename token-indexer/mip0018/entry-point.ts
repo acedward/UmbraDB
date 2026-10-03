@@ -1,5 +1,5 @@
 /**
- * Contract entry points as BYTES (project 00026, sub-plan C4 task H1).
+ * Contract entry points as BYTES.
  *
  * The ledger stores an entry point as arbitrary bytes (`EntryPointBuf(Vec<u8>)`; ledger `v2.0.0-rc.4`
  * `onchain-state/src/state.rs` `maybe_str`: "This is to permit arbitrary bytes"), so a call — or a maintenance update's
@@ -8,12 +8,12 @@
  * anything else → `Uint8Array`), which is lossless; this module turns either form back into the exact bytes, which
  * UmbraDB stores as `bytea` (`mip0018_contract_actions.entry_point`, `.maintenance_operations`,
  * `mip0018_activity.entry_point`) — never as `text`, which Postgres refuses for NUL (one such call would otherwise
- * stop the scan for good, Q20).
+ * stop the scan for good).
  *
  * Display: an entry point gets a text form only when it is "printable" by the ledger's own rule for presenting an
  * entry point as a string (`maybe_str`: every byte an ASCII letter or digit or one of `'+-_":/\?#$^*&.`), and it is
  * not empty. Everything else (NUL, controls, spaces, bidi or other non-ASCII characters, non-UTF-8 bytes) is served
- * as hex only. The rule is UmbraDB's display choice (questions file Q32 / assumption A22).
+ * as hex only. The rule is UmbraDB's display choice.
  */
 
 /** The bytes the ledger stored for an entry point, from ledger-v9's JS form (`Uint8Array | string`). */
@@ -38,7 +38,7 @@ export function entryPointText(bytes: Uint8Array): string | null {
 }
 
 /**
- * At most this many bytes of an entry point are served (final-audit F2): an entry point is arbitrary bytes of any
+ * At most this many bytes of an entry point are served: an entry point is arbitrary bytes of any
  * length and every activity row of a call repeats it, so a long one would inflate every page of the tokens it touches.
  * Compact entry points are short identifiers; a longer one is served as its first bytes with its `length`.
  */

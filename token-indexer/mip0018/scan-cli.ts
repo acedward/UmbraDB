@@ -1,5 +1,5 @@
 /**
- * Runs the MIP-0018 scan over an already archived block range (project 00026 A3/B2; development ranges per Q11):
+ * Runs the MIP-0018 scan over an already archived block range:
  *
  *   PG_URL=postgres://… node --import tsx token-indexer/mip0018/scan-cli.ts --network stagenet [--from N] [--to M]
  *     [--max-blocks 100] [--schema mip0018] [--archive-schema chain_archive]

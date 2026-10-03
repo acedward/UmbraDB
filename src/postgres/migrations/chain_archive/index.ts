@@ -46,6 +46,6 @@ export const chainArchiveMigrations: Migration[] = [migration000, chainArchiveCo
 // `001_chain_archive_core.ts`'s own header comment and the design doc's "Revision history — v4"
 // note for the full reasoning.
 //
-// 00026 note: `transactionSegments` (`002_transaction_segments.ts`) adds `transactions.segments`
+// `transactionSegments` (`002_transaction_segments.ts`) adds `transactions.segments`
 // (jsonb, the indexer's per-segment `{id, success}` list) next to the existing `result` column, so
 // a consumer decoding archived raw bytes can count only the parts of a transaction that applied.

@@ -4,9 +4,9 @@ import { assertValidSchemaName } from "../../client.js";
 export const name = "002_mip0018_scan";
 
 /**
- * The MIP-0018 scan over the chain archive (project 00026, sub-plans A3/B2): what one pass over the archived raw
- * transactions records next to the event log of `001_mip0018_core`, in the same `mip0018` lineage (fresh schema,
- * Q7) so that a block's mints, colors, actions, events and the scan cursor commit in ONE transaction.
+ * The MIP-0018 scan over the chain archive: what one pass over the archived raw transactions records next to the event
+ * log of `001_mip0018_core`, in the same `mip0018` lineage so that a block's mints, colors, actions, events and the
+ * scan cursor commit in ONE transaction.
  *
  * - `mip0018_scan` — the scan cursor per network: the first scanned height, the next height to scan and the hash of
  *   the last scanned block (its parent check). Independent of the archive's own sync cursor.
@@ -15,19 +15,19 @@ export const name = "002_mip0018_scan";
  *   never read from a value. The MIP's table `color → (contractAddress, domainSep)` is a query over these rows; one
  *   color has exactly one (contract, domainSep) — kinds 1 and 2 share it.
  * - `mip0018_color_sightings` — the FIRST place each token color appears in public data per kind of evidence
- *   (unshielded UTXO, Zswap offer delta, a contract's unshielded effect) — the seen tokens of owner decision Q3, with
- *   or without a known mint (a mint found later completes the same color in place). NIGHT's zero color is a built-in
- *   row, never a sighting.
+ *   (unshielded UTXO, Zswap offer delta, a contract's unshielded effect) — the seen tokens, with or without a known
+ *   mint (a mint found later completes the same color in place). NIGHT's zero color is a built-in row, never a
+ *   sighting.
  * - `mip0018_contract_actions` — contract calls, deploys and maintenance updates (e.g. `VerifierKeyInsert` /
- *   `VerifierKeyRemove`) that took effect, so the scanner recognises every action and moves past it. Entry points
- *   are ARBITRARY bytes on the ledger (NUL, non-UTF-8: `onchain-state` `maybe_str`), so `entry_point` and each
- *   update's operation (`maintenance_operations`, NULL for an update without one) are `bytea` — a `text` column
- *   refuses NUL and would stop the scan at the first such call (sub-plan C4 H1/H2). `maintenance_updates` holds an
- *   ASCII rendering only (`VerifierKeyInsert(publishMetadata, v3)`; a non-printable operation as `<bytes HEX>`).
- *   Reading `maintenance_operations` from JS: postgres.js 3.4 parses a NULL array element as an empty Buffer, so read
+ *   `VerifierKeyRemove`) that took effect, so the scanner recognises every action and moves past it. Entry points are
+ *   ARBITRARY bytes on the ledger (NUL, non-UTF-8: `onchain-state` `maybe_str`), so `entry_point` and each update's
+ *   operation (`maintenance_operations`, NULL for an update without one) are `bytea` — a `text` column refuses NUL and
+ *   would stop the scan at the first such call. `maintenance_updates` holds an ASCII rendering only
+ *   (`VerifierKeyInsert(publishMetadata, v3)`; a non-printable operation as `<bytes HEX>`). Reading
+ *   `maintenance_operations` from JS: postgres.js 3.4 parses a NULL array element as an empty Buffer, so read
  *   it element by element (`unnest … WITH ORDINALITY`) where "no operation" and "empty operation" must differ.
- * - `mip0018_builtin_tokens` — NIGHT and DUST (owner decision Q3, outside MIP-0018: the protocol fixes their
- *   properties); seeded per network by the scanner.
+ * - `mip0018_builtin_tokens` — NIGHT and DUST (outside MIP-0018: the protocol fixes their properties); seeded per
+ *   network by the scanner.
  *
  * Every row carries its chain position; removing everything above a height (and resetting the cursor) restores the
  * state of a scan that stopped there — first-sighting rows included, since a first sighting above the height had no
@@ -66,7 +66,7 @@ export async function up(sql: ISql, schema: string): Promise<void> {
     )
   `;
   await sql`CREATE INDEX mip0018_mints_color_idx ON ${sql(schema)}.mip0018_mints (network, color, block_height, tx_index, mint_index)`;
-  // (contract, domainSep, kind) order: the token list's index skip scan over minted identities (final-audit F2).
+  // (contract, domainSep, kind) order: the token list's index skip scan over minted identities.
   await sql`CREATE INDEX mip0018_mints_contract_idx ON ${sql(schema)}.mip0018_mints (network, contract_address, domain_sep, kind)`;
 
   await sql`

@@ -1,19 +1,18 @@
 /**
- * The Postgres apply path of UmbraDB's MIP-0018 metadata state (project 00026, sub-plan B3): the event log
- * `mip0018_events` and the latest-value rows `mip0018_fields` (one row per {network, contract, domainSep, kind, key};
- * Q5: no history).
+ * The Postgres apply path of UmbraDB's MIP-0018 metadata state: the event log `mip0018_events` and the latest-value
+ * rows `mip0018_fields` (one row per {network, contract, domainSep, kind, key}; no history).
  *
  * ONE state implementation: this module never decides a rule itself. Each accepted event is classified by the
  * vendored reference codec and its records are turned into ordered set/delete effects by `recordEffects` of the pure
  * state module (`state.ts`, which also computes the `usable` flag with `fieldUsable`); the effects are applied to rows:
  *
  * - `set` → the field's row is inserted or overwritten (latest wins; the replaced value is gone — no fallback);
- * - `delete` (a Null record, Q16 per-key tombstone) → the field's row is deleted; a Null for a field without a row
+ * - `delete` (a Null record, a per-key tombstone) → the field's row is deleted; a Null for a field without a row
  *   deletes nothing (no effect).
  *
  * An identity exists only while it has a row. Nothing else is stored for it: the token list entry of a kind-3
  * identity, a contract's metadata entry and the symbol groups are DERIVED from these rows by the read helpers
- * (`metadata.ts`), so they disappear with the identity's last row (Q15: "the last tombstone removes the shared"),
+ * (`metadata.ts`), so they disappear with the identity's last row (the last tombstone removes the shared entries),
  * while mints, seen colors and NIGHT/DUST rows (other facts, other tables) stay.
  *
  * - Chain order: events are written strictly after the network's last stored event (`ChainOrderError` otherwise),
@@ -21,18 +20,18 @@
  *   Postgres transaction (`scan.ts`).
  * - Recompute (MIP "Applying records", vector S4): `removeEventsAbove` deletes the events above a height and rebuilds
  *   exactly the identities those events touched, by re-applying that identity's remaining accepted events from the
- *   stored log (raw `name`/`payload` were kept for this, B1) in chain order with the same `applyAccepted`. Identities
+ *   stored log (raw `name`/`payload` are kept for this) in chain order with the same `applyAccepted`. Identities
  *   are independent (MIP S6: an update to one leaves the others unchanged), so the rest of the table is untouched.
  *   `recomputeFields` rebuilds a whole network the same way (repair; test oracle).
- * - Only `accept` rows are ever applied; `reject` rows feed the Q14 mark, `ignore` rows nothing (Q19).
- * - Metadata history (final-audit re-check R2/R3; MIP "Applying records": a withdrawn identity MUST NOT be referenced
- *   in metadata history, and "a later non-Null record describes it again, with only that field"): when a record
- *   deletes an identity's LAST field row, its withdrawal position is recorded (`mip0018_withdrawals`) and its listed
- *   accepted events are deleted from `mip0018_listed_events`; after each accepted event, the event is listed when its
- *   identity has a field. So an identity's history starts at its last revival: an event that withdrew it, a Null-only
- *   event while it had no field, and everything before its last withdrawal are never listed. Every rejected event is
- *   listed (it describes no identity). Activity reads only listed events (`activity.ts`). Each listed row is deleted
- *   at most once, so a withdrawal costs at most the rows its identity's current description added.
+ * - Only `accept` rows are ever applied; `reject` rows feed the mark, `ignore` rows nothing.
+ * - Metadata history (MIP "Applying records": a withdrawn identity MUST NOT be referenced in metadata history, and "a
+ *   later non-Null record describes it again, with only that field"): when a record deletes an identity's LAST field
+ *   row, its withdrawal position is recorded (`mip0018_withdrawals`) and its listed accepted events are deleted from
+ *   `mip0018_listed_events`; after each accepted event, the event is listed when its identity has a field. So an
+ *   identity's history starts at its last revival: an event that withdrew it, a Null-only event while it had no field,
+ *   and everything before its last withdrawal are never listed. Every rejected event is listed (it describes no
+ *   identity). Activity reads only listed events (`activity.ts`). Each listed row is deleted at most once, so a
+ *   withdrawal costs at most the rows its identity's current description added.
  */
 import type { ISql } from "postgres";
 import { assertValidSchemaName } from "../../src/postgres/client.js";
@@ -57,7 +56,7 @@ export interface EventRow {
   name: Buffer;
   /** Zero-extended to 256 bytes; empty when the observed payload was longer (never applied). */
   payload: Buffer;
-  /** `unresolved` (final-audit F1): a `log` op whose logged value the raw transaction does not show; never applied. */
+  /** `unresolved`: a `log` op whose logged value the raw transaction does not show; never applied. */
   classification: "accept" | "reject" | "ignore" | "unresolved";
   reason: string | null;
   domain_sep: Buffer | null;
@@ -187,7 +186,7 @@ async function hasField(tx: Queryable, schema: string, id: IdentityKey): Promise
 }
 
 /**
- * The identity's last field row was just deleted (re-check R2): record the withdrawal's position and delete the
+ * The identity's last field row was just deleted: record the withdrawal's position and delete the
  * identity's listed accepted events — its metadata history is gone (MIP "Applying records").
  */
 async function withdraw(tx: Queryable, schema: string, id: IdentityKey, at: ChainPosition, record: number): Promise<void> {
@@ -207,7 +206,7 @@ async function withdraw(tx: Queryable, schema: string, id: IdentityKey, at: Chai
  * Applies one accepted event's records to the latest-value rows: the codec decodes the stored bytes again, the pure
  * module's `recordEffects` gives the ordered set/delete effects, and each effect becomes one upsert or delete. A
  * delete that leaves the identity without a field is a withdrawal; the event is listed as metadata history when the
- * identity has a field after it (re-check R2).
+ * identity has a field after it.
  */
 async function applyAccepted(tx: Queryable, schema: string, row: StoredAccepted): Promise<void> {
   const c = classifyEvent({ type: row.event_type, name: row.name, payload: row.payload });
@@ -269,7 +268,7 @@ async function replayIdentity(tx: Queryable, schema: string, network: string, co
  * touched, from the accepted events that remain (MIP S4: removing a tombstone block restores the earlier state; adding
  * it again applies the tombstones again). Runs in the caller's transaction. The listed events above the height go with
  * their events; each touched identity's withdrawal row and listed accepted events are rebuilt with its fields by the
- * same replay (re-check R2), so a removed withdrawal lists the identity's earlier history again exactly as before it.
+ * same replay, so a removed withdrawal lists the identity's earlier history again exactly as before it.
  */
 export async function removeEventsAbove(
   tx: Queryable, schema: string, network: string, height: number,
@@ -293,8 +292,8 @@ export async function removeEventsAbove(
 
 /**
  * Rebuilds every field of `network` from the stored accepted events (deletes the network's rows, then replays each
- * identity in chain order), with the withdrawal rows and the listed events (rejected events listed again from the log;
- * re-check R2). A repair tool and a test oracle: on a consistent store it changes nothing.
+ * identity in chain order), with the withdrawal rows and the listed events (rejected events listed again from the log).
+ * A repair tool and a test oracle: on a consistent store it changes nothing.
  */
 export async function recomputeFields(tx: Queryable, schema: string, network: string): Promise<{ identities: number; replayedEvents: number }> {
   assertValidSchemaName(schema);

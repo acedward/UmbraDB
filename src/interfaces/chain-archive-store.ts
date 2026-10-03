@@ -69,8 +69,8 @@ export type TransactionKind = "regular" | "system";
 export type TransactionResult = "success" | "partial_success" | "failure";
 
 /** One intent segment's outcome inside a transaction, as the indexer reports it
- *  (`RegularTransaction.transactionResult.segments[]`; project 00026, spec FR-002). `id` is the
- *  ledger segment id (a `u16`); `success` says whether that segment's fallible part applied. */
+ *  (`RegularTransaction.transactionResult.segments[]`). `id` is the ledger segment id (a `u16`);
+ *  `success` says whether that segment's fallible part applied. */
 export interface TransactionSegmentResult {
   id: number;
   success: boolean;
@@ -127,10 +127,10 @@ export interface BlockBundle {
   block: BlockRecord;
   transactions: readonly TransactionRecord[];
   bridgeObservations: readonly BridgeObservationRecord[];
-  /** Optional watermark advanced INSIDE the same transaction as the block (project 00026, spec
-   *  FR-001's atomic per-block checkpoint): the block, its transactions, their outcomes and the
-   *  sync cursor commit together or not at all, so a kill at any point leaves either the whole
-   *  block with its cursor or neither. Same monotonic guard as {@link ChainArchiveStore.setWatermark}. */
+  /** Optional watermark advanced INSIDE the same transaction as the block (an atomic per-block
+   *  checkpoint): the block, its transactions, their outcomes and the sync cursor commit together
+   *  or not at all, so a kill at any point leaves either the whole block with its cursor or
+   *  neither. Same monotonic guard as {@link ChainArchiveStore.setWatermark}. */
   watermark?: { key: string; value: unknown };
 }
 

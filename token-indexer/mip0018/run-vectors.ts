@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * UmbraDB's MIP-0018 conformance run (spec 00026 FR-040): the vendored runner, unchanged, over
+ * UmbraDB's MIP-0018 conformance run: the vendored runner, unchanged, over
  *   1. the vendored vectors except the eight ids UmbraDB keeps its own versions of, and
  *   2. UmbraDB's own versions of those ids (`./vectors-umbradb`, MIP `274a84f`, per-key tombstones),
  * so each id is run exactly once, from UmbraDB's version when one exists.

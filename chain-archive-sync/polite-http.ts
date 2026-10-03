@@ -1,7 +1,7 @@
 /**
- * Politeness helpers shared by the node RPC and indexer GraphQL clients (project 00026, Q9 / FR-001:
- * live Stagenet ranges are read from PUBLIC endpoints, so every request is paced and every throttling
- * answer is honoured). Lives outside `src/` like the clients themselves.
+ * Politeness helpers shared by the node RPC and indexer GraphQL clients (live Stagenet ranges are read
+ * from PUBLIC endpoints, so every request is paced and every throttling answer is honoured). Lives
+ * outside `src/` like the clients themselves.
  */
 
 /** Parses an HTTP `Retry-After` header in its delta-seconds form (the form the public Midnight

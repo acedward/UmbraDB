@@ -1,10 +1,10 @@
 /*
- * MIP-0018 token explorer: the page script (project 00026, sub-plan C3; spec FR-030, US4/US5).
+ * MIP-0018 token explorer: the page script.
  *
  * Served inline in the one document of GET /ui (ui/page.ts) and allowed by its SHA-256 in the page's
  * Content-Security-Policy. It is a plain script file (no template literal around it), so a backtick,
- * a backslash or a dollar-brace here is ordinary JavaScript \u2014 the class of bug that broke PR #19's
- * build cannot happen; the guard test still loads the generated document and compiles this script.
+ * a backslash or a dollar-brace here is ordinary JavaScript \u2014 a stray character cannot break the build;
+ * the guard test still loads the generated document and compiles this script.
  *
  * Every API path this page reads (relative, this origin only; contract: token-indexer/API.md):
  *   GET /v1/status
@@ -13,8 +13,8 @@
  *   GET /v1/identities/{contract}/{domainSep}/{kind}
  *   GET /v1/contracts/{address}/tokens?limit=&cursor=
  *   GET /v1/events?contract=&tx=&limit=&cursor=
- *   GET /v1/tokens/{color}/activity?limit=&cursor=        (C1/C2; a 404 means "not served by this API yet")
- *   GET /v1/contracts/{address}/activity?limit=&cursor=   (C1/C2; a 404 means "not served by this API yet")
+ *   GET /v1/tokens/{color}/activity?limit=&cursor=        (a 404 means "not served by this API")
+ *   GET /v1/contracts/{address}/activity?limit=&cursor=   (a 404 means "not served by this API")
  *
  * Safety properties (MIP-0018 Security considerations, "Untrusted input"): every value reaches the
  * document as a text node or through a DOM property (textContent, title) \u2014 nothing is ever parsed as
@@ -35,7 +35,7 @@
   var HEAD_MAX = 160;                     // drawn characters of a name in a view's heading
   var VALUE_MAX = 600;                    // drawn characters of a field value before "show all"
   var TITLE_MAX = 400;                    // characters of a tooltip
-  var FIELDS_MAX = 500;                   // fields read and drawn per identity (the API pages them, final-audit F2)
+  var FIELDS_MAX = 500;                   // fields read and drawn per identity (the API pages them)
   var REASONS_MAX = 20;                   // rejection reasons named in a tooltip
   var ZERO = "0000000000000000000000000000000000000000000000000000000000000000";
   var REFRESH_MS = refreshInterval();
@@ -76,7 +76,7 @@
     }
   }
 
-  // Characters drawn as a visible mark (final-audit F4: by Unicode property, not a hand-written list): every
+  // Characters drawn as a visible mark (by Unicode property, not a hand-written list): every
   // control (Cc: C0 incl. NUL, tab, newline; DEL; C1), format character (Cf: bidi embeddings, overrides, isolates and
   // marks, zero-width characters, Arabic number signs U+0600\u2013U+0605, shorthand format controls U+1BCA0\u2013U+1BCA3,
   // tag characters, \u2026), private-use (Co), unassigned (Cn) and surrogate (Cs) code point, line and paragraph
@@ -408,7 +408,7 @@
     } while (cursor !== null && n < pages);
     return { items: items, more: cursor !== null, first: first, pages: all };
   }
-  // An identity's fields come in keyset pages (final-audit F2): read as many pages as the reader asked for, at most
+  // An identity's fields come in keyset pages: read as many pages as the reader asked for, at most
   // FIELDS_MAX fields; the rest of the answer is the first page's.
   async function identityPages(r) {
     var pathOf = function (c) { return apiPath(["identities", r.contract, r.domainSep, r.kind], { limit: PAGE, cursor: c }); };
@@ -436,7 +436,7 @@
       return { failed: true, status: e && e.status, error: e };
     }
   }
-  // The activity endpoints may not exist yet (C1/C2): a 404 is "not served", anything else "could not be read".
+  // An activity endpoint that answers 404 is "not served"; any other failure is "could not be read".
   async function activity(segments, errors) {
     try {
       return await readPages(function (c) { return apiPath(segments, { limit: PAGE, cursor: c }); }, pagesOf("activity"));
@@ -599,7 +599,7 @@
     return setTitle(h("span", "chip k-" + name, t.kind + " \u00b7 " + name), "kind " + t.kind + ": native " + (t.kind === 3 ? "ledger token (no color)" : name + " token"));
   }
 
-  // The MIP-0018 mark (owner Q14 (a), decided by the API): \u2713 correct, \u26a0 partial, incorrect or unresolved with the
+  // The MIP-0018 mark (decided by the API): \u2713 correct, \u26a0 partial, incorrect or unresolved with the
   // reason in its tooltip, nothing when the token has no MIP-0018 event.
   var MARK_HEAD = "MIP-0018 mark: \u2713 usable name, symbol and decimals, no rejected MIP-0018 event and no unresolved log from the token's contract; "
     + "\u26a0 partial (one of the three missing or unusable), incorrect (its contract has a rejected MIP-0018 event) or "
@@ -607,7 +607,7 @@
     + "empty: no MIP-0018 event";
   var MARK_KINDS = { ok: 1, partial: 1, incorrect: 1, unresolved: 1, none: 1 };
   function markOf(m) { return m && typeof m.mark === "string" && MARK_KINDS[m.mark] ? m.mark : null; }
-  // Unresolved logs of the token's contract (re-check R1): how many, and the reason "unresolved-log".
+  // Unresolved logs of the token's contract: how many, and the reason "unresolved-log".
   function unresolvedCount(m) {
     var u = m && m.unresolved;
     return u && typeof u.count === "number" && u.count > 0 ? u.count : 0;
@@ -814,7 +814,7 @@
     var sec = section("activity: transactions that touched it", "activity");
     if (!act) { sec.appendChild(h("div", "empty", "loading\u2026")); main.appendChild(sec); return; }
     if (act.unavailable) {
-      var na = h("div", "empty", "activity is not served by this API yet (" + act.path + " answered 404)");
+      var na = h("div", "empty", "activity is not served by this API (" + act.path + " answered 404)");
       na.setAttribute("data-activity", "unavailable");
       sec.appendChild(na);
       main.appendChild(sec);
@@ -1084,7 +1084,7 @@
     moreButton(ts, "tokens", d.tokens.more, "tokens");
     main.appendChild(ts);
     var gs = section("symbol groups");
-    // Each page of tokens carries the groups of its identities (final-audit F2): merge the pages read, by symbol.
+    // Each page of tokens carries the groups of its identities: merge the pages read, by symbol.
     var groups = [];
     var seenSymbols = {};
     var tokenPages = arr(d.tokens.pages);

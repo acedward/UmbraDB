@@ -3,18 +3,17 @@
  * operations of contract calls, the `shieldedMints` / `unshieldedMints` effects, contract deploys, maintenance
  * updates, and the token colors visible in public data — each placed in its part of the transaction, in the ledger's
  * execution order; and the filter that keeps only the parts that took effect. ONE module, used by the mint table and
- * seen tokens (sub-plan A3) and by the metadata events (sub-plan B2): one deserialization per transaction.
+ * seen tokens and by the metadata events: one deserialization per transaction.
  *
- * Port (UmbraDB's own code, not vendored — project 00026 Q17) of `decodeTransaction`, `readLogItem`, `partApplied`
- * and `applied` from the MIP-0018 reference implementation, `packages/midnight/src/raw.ts` of
- * https://github.com/midnight-experiments/mip-0018 @ daec1f19747b09f4e245885ab0dd9ecc789a82ce (Apache-2.0,
- * © the mip-0018 reference authors; see `token-indexer/vendor/mip0018/LICENSE` and `NOTICE`). Changes from the
- * reference: UmbraDB's archive outcome shape (`success` / `partial_success` / `failure` + `{id, success}` segments);
- * an unknown contract action is an error instead of being skipped (PR #19 lesson: a scanner must not silently pass
- * over what it cannot classify); deploys and maintenance updates are placed in their segment's fallible part (see
- * `partApplied`); the token colors of public data (unshielded offers, Zswap offer deltas, unshielded transcript
- * effects) are collected for the seen-token list (owner Q3); amounts and colors are sorted so that the ledger's
- * random `Map` order never leaks into stored rows.
+ * Port (UmbraDB's own code, not vendored) of `decodeTransaction`, `readLogItem`, `partApplied` and `applied` from the
+ * MIP-0018 reference implementation, `packages/midnight/src/raw.ts` of https://github.com/midnight-experiments/mip-0018
+ * @ daec1f19747b09f4e245885ab0dd9ecc789a82ce (Apache-2.0, © the mip-0018 reference authors; see
+ * `token-indexer/vendor/mip0018/LICENSE` and `NOTICE`). Differences from the reference: UmbraDB's archive outcome shape
+ * (`success` / `partial_success` / `failure` + `{id, success}` segments); an unknown contract action is an error
+ * instead of being skipped (a scanner must not silently pass over what it cannot classify); deploys and maintenance
+ * updates are placed in their segment's fallible part (see `partApplied`); the token colors of public data (unshielded
+ * offers, Zswap offer deltas, unshielded transcript effects) are collected for the seen-token list; amounts and colors
+ * are sorted so that the ledger's random `Map` order never leaks into stored rows.
  *
  * Authority: MIP-0018 PR #340 head `274a84f`:
  * - "Applying records": within a transaction, events are in the ledger's execution order — the guaranteed part of
@@ -25,11 +24,11 @@
  *   zero bytes of the WHOLE item dropped, so it is zero-extended to 288 before it is split (never name and payload
  *   separately).
  *
- * What applied (spec FR-002, owner Q9): a FAILURE applies nothing; otherwise the guaranteed part applies, and a
+ * What applied: a FAILURE applies nothing; otherwise the guaranteed part applies, and a
  * fallible part only when its segment succeeded (`SUCCESS`: every segment; `PARTIAL_SUCCESS`: a segment listed with
  * `success: true` — one missing from the list counts as failed).
  *
- * Logged values (final-audit F1; ledger v2.0.0-rc.4 `onchain-vm/src/vm.rs` `Log`, `try_decode_event`, `decode_event`):
+ * Logged values (ledger v2.0.0-rc.4 `onchain-vm/src/vm.rs` `Log`, `try_decode_event`, `decode_event`):
  * the ledger's `log` op logs the value on top of the VM stack. A value that is a well-formed `[u32, LogEventType, data]`
  * triple is an event of that type; ANY other value is a `Misc` event, version 0, whose data is the whole value. The
  * decoder reproduces that rule exactly when the raw transaction shows the logged value, i.e. when the only way the VM

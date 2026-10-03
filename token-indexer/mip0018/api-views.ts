@@ -1,16 +1,15 @@
 /**
- * Queries and JSON shapes of the MIP-0018 read-only API (project 00026, sub-plan C1; the contract is
- * `token-indexer/API.md`). Every function reads through the caller's `Queryable` — the API passes one read-only
+ * Queries and JSON shapes of the MIP-0018 read-only API (the contract is `token-indexer/API.md`). Every function reads through the caller's `Queryable` — the API passes one read-only
  * REPEATABLE READ transaction per request, so all parts of one answer come from one database state.
  *
- * Rules are never decided here: fields, groups, display and marks come from the B3 read helpers (`metadata.ts`) and
- * the pure state module (`state.ts`: `tokenMark`, `displayAmount`, `parseStandards`); colors and NIGHT/DUST from the
- * A3 read helpers (`tokens.ts`). This module only selects rows and shapes JSON:
+ * Rules are never decided here: fields, groups, display and marks come from the read helpers (`metadata.ts`) and the
+ * pure state module (`state.ts`: `tokenMark`, `displayAmount`, `parseStandards`); colors and NIGHT/DUST from the read
+ * helpers of the scan tables (`tokens.ts`). This module only selects rows and shapes JSON:
  *
- * - "Not referenced after withdrawal" (MIP `274a84f` "Applying records"): identities come from the field rows (B3)
- *   and the mint table only, so a withdrawn identity is shown exactly as if it had never been described.
- * - Events (mid-project audit QA2 (a), Q15, Q19): the event query selects position, contract, classification and
- *   reason of `accept`/`reject` rows only — the stored name, payload and header are never read by the API.
+ * - "Not referenced after withdrawal" (MIP `274a84f` "Applying records"): identities come from the field rows and
+ *   the mint table only, so a withdrawn identity is shown exactly as if it had never been described.
+ * - Events: the event query selects position, contract, classification and reason of `accept`, `reject` and
+ *   `unresolved` rows only — the stored name, payload and header are never read by the API.
  * - Never fetches anything; heights only.
  */
 import { MIP0018_SCHEMA } from "../../src/postgres/migrations/mip0018/index.js";
@@ -41,17 +40,17 @@ import { type BuiltinToken, builtinTokens, lookupColor } from "./tokens.ts";
 export const MIP_COMMIT = "274a84f221bcfc17e4b73e2c8b32fd8c028ea092";
 /** The reference commit the codec, vectors and runner are vendored from (`token-indexer/vendor/mip0018/SOURCE.md`). */
 export const VENDORED_REFERENCE = { repository: "https://github.com/midnight-experiments/mip-0018", commit: "daec1f19747b09f4e245885ab0dd9ecc789a82ce" } as const;
-/** Genesis hashes of the networks this indexer knows (Q8: Stagenet only; verified by the D1 capture). */
+/** Genesis hashes of the networks this indexer knows (Stagenet only; the same hash as the recorded Stagenet fixtures). */
 export const KNOWN_GENESIS: Readonly<Record<string, string>> = {
   stagenet: "0x2f76825abc239fecf6107c9df99016de57037b451ae57a4394b76c8cf53a9491",
 };
 /** At most this many rejection reasons are listed in a mark (all are counted in `reasonCount`; all are in the events). */
 export const MAX_MARK_REASONS = 100;
-/** At most this many unresolved-log positions are listed in a mark (all are counted in `unresolved.count`; re-check R1). */
+/** At most this many unresolved-log positions are listed in a mark (all are counted in `unresolved.count`). */
 export const MAX_MARK_UNRESOLVED = 100;
-/** At most this many members are listed in a symbol group (all are counted in `memberCount`; final-audit F2). */
+/** At most this many members are listed in a symbol group (all are counted in `memberCount`). */
 export const MAX_GROUP_MEMBERS = 100;
-/** An identity's fields are served in keyset pages of this size unless `limit` says otherwise (final-audit F2). */
+/** An identity's fields are served in keyset pages of this size unless `limit` says otherwise. */
 export const DEFAULT_FIELDS_LIMIT = 100;
 
 export interface ViewContext {
@@ -69,7 +68,7 @@ export interface EventPositionJson { height: number; txIndex: number; eventIndex
 /**
  * A token's MIP-0018 mark (`state.ts` `tokenMark`). `reasons`: the first {@link MAX_MARK_REASONS} rejection reasons of
  * the contract in chain order, then `unresolved-log` when it has unresolved logs; `reasonCount`: all its rejected
- * events; `unresolved`: how many unresolved logs it has and the first {@link MAX_MARK_UNRESOLVED} positions (re-check R1).
+ * events; `unresolved`: how many unresolved logs it has and the first {@link MAX_MARK_UNRESOLVED} positions.
  */
 export interface MarkJson {
   mark: "ok" | "partial" | "incorrect" | "unresolved" | "none";
@@ -89,7 +88,7 @@ export interface FieldJson {
   usable: boolean | null;
   updatedAt: { height: number; txIndex: number; eventIndex: number; record: number };
 }
-/** A symbol group: its first {@link MAX_GROUP_MEMBERS} members by (domainSep, kind) and how many it has (F2). */
+/** A symbol group: its first {@link MAX_GROUP_MEMBERS} members by (domainSep, kind) and how many it has. */
 export interface GroupJson { symbol: BytesJson; memberCount: number; members: Array<{ domainSep: string; kind: number }> }
 export type KindName = "shielded" | "unshielded" | "ledger";
 export interface TokenSummaryJson {
@@ -122,7 +121,7 @@ export interface IdentityDetailJson {
   common: CommonJson;
   /** The current fields of the common keys present (the raw view behind `common`, e.g. an unusable `decimals`). */
   commonFields: FieldJson[];
-  /** One keyset page of the current fields in key byte order (final-audit F2); `fieldCount` counts them all. */
+  /** One keyset page of the current fields in key byte order; `fieldCount` counts them all. */
   fields: FieldJson[];
   fieldCount: number;
   /** Cursor of the next page of `fields` (`/v1/identities/…?cursor=`), `null` on the last. */
@@ -192,8 +191,8 @@ export function commonJson(fields: ReadonlyMap<string, Field> | undefined): Comm
 }
 
 /**
- * What a mark needs of a contract (F2: bounded): its rejected events — the count and the first {@link MAX_MARK_REASONS}
- * reasons — and its unresolved logs — the count and the first {@link MAX_MARK_UNRESOLVED} positions (re-check R1).
+ * What a mark needs of a contract (bounded): its rejected events — the count and the first {@link MAX_MARK_REASONS}
+ * reasons — and its unresolved logs — the count and the first {@link MAX_MARK_UNRESOLVED} positions.
  */
 export interface RejectionSummary {
   count: number;
@@ -212,8 +211,8 @@ async function contractMarkSummary(ctx: ViewContext, contract: string): Promise<
 }
 
 /**
- * The Q14 mark of a token from its common fields (whether it has any field at all: `described`) and its contract's
- * rejections and unresolved logs (`state.ts` `tokenMark`; final-audit F2: never all keys or all rejections).
+ * The mark of a token from its common fields (whether it has any field at all: `described`) and its contract's
+ * rejections and unresolved logs (`state.ts` `tokenMark`; never all keys or all rejections).
  */
 export function markJson(common: IdentityCommon | undefined, rejections: RejectionSummary): MarkJson {
   const m = tokenMark({
@@ -301,7 +300,7 @@ interface MintAgg { color: string; contractAddress: string; domainSep: string; k
 
 const identityKey = (contract: string, domainSep: string, kind: number): string => `${contract}/${domainSep}/${kind}`;
 
-/** Mint aggregates of exactly the given identities (final-audit F2: never every identity of their contracts). */
+/** Mint aggregates of exactly the given identities (never every identity of their contracts). */
 async function mintAggregates(ctx: ViewContext, keys: readonly IdKey[]): Promise<Map<string, MintAgg>> {
   const out = new Map<string, MintAgg>();
   const native = keys.filter((k) => k.kind !== 3);
@@ -341,7 +340,7 @@ interface Seen { color: string; firstSeen: PositionJson; evidence: string[] }
  * whose first sighting comes before any indexed mint of them (or that have none). `firstSeen` is the first sighting;
  * `evidence` the kinds of public data that showed the color.
  *
- * Final-audit N3 (stable keyset pages, A17): membership of the seen section must not change when a block is scanned.
+ * Stable keyset pages: membership of the seen section must not change when a block is scanned.
  * A color's first sighting and first mint are chain positions that never move on the finalized chain, so "seen
  * before its first mint" is decided once: a seen color that gets minted later STAYS in the seen section (with the
  * same key) while its identity row appears in the identity section — a reader paging through the list never loses it.
@@ -378,7 +377,7 @@ interface IdKey { contractAddress: string; domainSep: string; kind: number }
 
 /**
  * Up to `limit` distinct (contract, domainSep, kind) of one table after `after`, by an index skip scan: one index
- * probe per identity returned, however many rows (keys, mints) each identity has (final-audit F2).
+ * probe per identity returned, however many rows (keys, mints) each identity has.
  */
 async function distinctIdentities(
   ctx: ViewContext, table: "mip0018_fields" | "mip0018_mints", o: { contract?: string; after?: [string, string, number]; limit: number },
@@ -424,14 +423,14 @@ async function identityKeys(ctx: ViewContext, o: { contract?: string; after?: [s
   return merged;
 }
 
-/** Each contract's mark summary (F2: counts and the first reasons / positions, never every rejected or unresolved event). */
+/** Each contract's mark summary (counts and the first reasons / positions, never every rejected or unresolved event). */
 async function rejectionSummaries(ctx: ViewContext, contracts: readonly string[]): Promise<Map<string, RejectionSummary>> {
   const out = new Map<string, RejectionSummary>();
   for (const c of new Set(contracts)) out.set(c, await contractMarkSummary(ctx, c));
   return out;
 }
 
-/** List rows for the given identities: their COMMON fields only, mints and marks (final-audit F2). */
+/** List rows for the given identities: their COMMON fields only, mints and marks. */
 async function identitySummaries(ctx: ViewContext, keys: readonly IdKey[]): Promise<TokenSummaryJson[]> {
   const mints = await mintAggregates(ctx, keys);
   const reasons = await rejectionSummaries(ctx, keys.map((k) => k.contractAddress));
@@ -463,7 +462,7 @@ async function identitySummaries(ctx: ViewContext, keys: readonly IdKey[]): Prom
   return out;
 }
 
-/** The bounded group of an identity from its usable `symbol` (F2: a member count and the first members). */
+/** The bounded group of an identity from its usable `symbol` (a member count and the first members). */
 async function groupFor(ctx: ViewContext, ref: IdKey, common: IdentityCommon): Promise<GroupJson | null> {
   const symbol = common.fields.get(COMMON_KEY_HEX.symbol);
   if (symbol === undefined || symbol.usable !== true) return null;
@@ -474,7 +473,7 @@ async function groupFor(ctx: ViewContext, ref: IdKey, common: IdentityCommon): P
 /**
  * One identity, or `undefined` when it is neither described nor minted (a withdrawn, never-minted identity included:
  * it is not referenced). `known` = the caller resolved it through the mint table (a lookup), so it is answered even
- * without a mint of that kind; `color` is then the held color. Bounded whatever the identity holds (final-audit F2):
+ * without a mint of that kind; `color` is then the held color. Bounded whatever the identity holds:
  * one keyset page of fields (`fieldsLimit`, after the key of `fieldsCursor`) with `fieldCount`, the common fields, a
  * bounded group and a mark from the common fields and a rejection summary.
  */
@@ -536,7 +535,7 @@ function seenSummary(s: Seen, mintedLater: { contractAddress: string; domainSep:
 /**
  * `GET /v1/tokens`: NIGHT, DUST, then identities by (contract, domainSep, kind), then the colors seen before their
  * first indexed mint (or never minted) by color. Every key is fixed once its row exists, so keyset pages never skip a
- * token that existed when paging began (final-audit N3).
+ * token that existed when paging began.
  */
 export async function tokensPage(ctx: ViewContext, limit: number, cursor: TokensCursor | undefined): Promise<Page<TokenSummaryJson>> {
   const want = limit + 1;
@@ -623,7 +622,7 @@ async function contractKnown(ctx: ViewContext, contract: string): Promise<boolea
 
 /**
  * `GET /v1/contracts/{address}/tokens`; `undefined` = the scan never saw the contract (404). `groups` = the groups of
- * this page's identities, each bounded (final-audit F2: never every group of a contract).
+ * this page's identities, each bounded (never every group of a contract).
  */
 export async function contractTokens(ctx: ViewContext, contract: string, limit: number, cursor: ContractTokensCursor | undefined): Promise<ContractTokensJson | undefined> {
   if (!(await contractKnown(ctx, contract))) return undefined;
@@ -646,12 +645,12 @@ export async function contractTokens(ctx: ViewContext, contract: string, limit: 
   };
 }
 
-// ── Activity (sub-plan C2's rows and read helpers) ──────────────────────────────────────────────────────────────
+// ── Activity (the rows and read helpers of `activity.ts`) ───────────────────────────────────────────────────────
 
-/** Paging of the activity listings: C2's helpers validate the cursor (bound to its listing and order). */
+/** Paging of the activity listings: the `activity.ts` helpers validate the cursor (bound to its listing and order). */
 export interface ActivityOptions { limit: number; cursor?: string; order?: "asc" | "desc" }
 
-/** One activity row as C2's `activityItem` shapes it (wallets as Bech32m, bytes as hex, heights only). */
+/** One activity row as `activity.ts` `activityItem` shapes it (wallets as Bech32m, bytes as hex, heights only). */
 export type ActivityItemJson = ActivityItem;
 
 export interface TokenActivityJson extends Page<ActivityItemJson> {
@@ -662,12 +661,12 @@ export interface TokenActivityJson extends Page<ActivityItemJson> {
 
 export interface ContractActivityJson extends Page<ActivityItemJson> { contractAddress: string }
 
-/** C2's module, loaded on first use (it imports ledger-v9; an API-only process loads it only for activity). */
+/** `activity.ts`, loaded on first use (it imports ledger-v9; an API-only process loads it only for activity). */
 const activityModule = () => import("./activity.ts");
 
 /**
  * `GET /v1/tokens/{color}/activity`: the color's transactions (mint, UTXOs created/spent, contract in/out, offer
- * deltas) and the metadata transactions of its minting contract (Q26/A16), keyset-paginated; `undefined` = the color
+ * deltas) and the metadata transactions of its minting contract, keyset-paginated; `undefined` = the color
  * is not known in the indexed range (404, as `/v1/tokens/{color}`).
  */
 export async function tokenActivity(ctx: ViewContext, color: string, o: ActivityOptions): Promise<TokenActivityJson | undefined> {
@@ -721,7 +720,7 @@ export async function lookup(ctx: ViewContext, color: string, held: "shielded" |
     color, held, builtin: null, identity: null, seen: null,
     indexedRange: range === undefined || range.indexed === null ? null : { from: range.from, to: range.indexed },
   };
-  // Final-audit N7 (ledger v2.0.0-rc.4 `coin-structure/src/coin.rs` `NIGHT = UnshieldedTokenType([0; 32])`;
+  // The zero color held shielded (ledger v2.0.0-rc.4 `coin-structure/src/coin.rs` `NIGHT = UnshieldedTokenType([0; 32])`;
   // `ledger-wasm/src/lib.rs` `shieldedToken()` = `ShieldedTokenType([0; 32])`, "default shielded token type for
   // testing"): the zero color is NIGHT only when held unshielded. Held shielded it is the ledger's default shielded
   // token type — not NIGHT, and no contract mints it (a contract's color is a hash), so no MIP-0018 metadata exists.
@@ -746,14 +745,14 @@ export interface EventJson {
   segment: number | null;
   phase: string | null;
   contractAddress: string;
-  /** `unresolved` (final-audit F1): a `log` op whose logged value the raw transaction does not show; never applied. */
+  /** `unresolved`: a `log` op whose logged value the raw transaction does not show; never applied. */
   classification: "accept" | "reject" | "unresolved";
   reason: string | null;
 }
 
 /**
  * `GET /v1/events`: MIP-0018-named events (accept/reject) and unresolved logs of a contract and/or a transaction, in
- * chain order. The query selects only position, contract, classification and reason (QA2 (a)): the stored name,
+ * chain order. The query selects only position, contract, classification and reason: the stored name,
  * payload and header never leave the database through the API.
  */
 export async function eventsPage(ctx: ViewContext, filter: EventFilter, limit: number, cursor: EventsCursor | undefined): Promise<Page<EventJson>> {
@@ -795,7 +794,7 @@ export interface StatusJson {
   vendored: { repository: string; commit: string };
   scanner: ScannerState;
   /**
-   * `log` ops whose logged value the raw transaction does not show (final-audit F1): stored as `unresolved`, never
+   * `log` ops whose logged value the raw transaction does not show: stored as `unresolved`, never
    * applied; a contract's metadata may differ from what the ledger emitted while it has any. `null` before the scan's
    * schema exists.
    */

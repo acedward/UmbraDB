@@ -105,11 +105,11 @@ function toTxMeta(row: TxRow): TransactionMeta {
   };
 }
 
-/** Project 00026 (FR-002): validates and normalises a transaction's per-segment outcomes before
- *  they are written to `transactions.segments` -- every id a `u16`, every flag a boolean, no id
- *  twice -- and returns the list stored (sorted by id), or `null` when the source reported no
- *  list. The `transactions_segments_shape` CHECK enforces the same shape inside Postgres; this
- *  check runs first so a bad value fails with a {@link ValidationError} naming the transaction. */
+/** Validates and normalises a transaction's per-segment outcomes before they are written to
+ *  `transactions.segments` -- every id a `u16`, every flag a boolean, no id twice -- and returns
+ *  the list stored (sorted by id), or `null` when the source reported no list. The
+ *  `transactions_segments_shape` CHECK enforces the same shape inside Postgres; this check runs
+ *  first so a bad value fails with a {@link ValidationError} naming the transaction. */
 export function normalizeSegments(
   txHash: Hex32, segments: readonly TransactionSegmentResult[] | null | undefined,
 ): TransactionSegmentResult[] | null {
@@ -263,7 +263,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
       `;
       // `segments` goes through `tx.json` (a jsonb parameter, never a pre-stringified string:
       // postgres.js serialises a string bound to a jsonb parameter as a JSON *string* scalar,
-      // which the `transactions_segments_shape` CHECK rejects -- observed while writing this).
+      // which the `transactions_segments_shape` CHECK rejects).
       const segments = normalizeSegments(t.txHash, t.segments);
       await tx`
         INSERT INTO ${tx(this.schema)}.transactions
@@ -363,8 +363,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
         // the referenced row hasn't committed yet.
         if (txs.length > 0) await this.insertTransactionRows(tx, txs);
         if (obs.length > 0) await this.insertBridgeObservationRows(tx, obs);
-        // Project 00026 (FR-001): the sync cursor commits WITH the block -- one atomic per-block
-        // checkpoint instead of a second, separate commit after the bundle.
+        // The sync cursor commits WITH the block: one atomic per-block checkpoint.
         if (bundle.watermark !== undefined) {
           await this.upsertWatermark(tx, bundle.watermark.key, bundle.watermark.value);
         }
@@ -578,7 +577,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
   }
 
   /** The one watermark upsert (with its monotonic `height` guard), shared by `setWatermark` and by
-   *  `putBlockBundle`'s in-transaction cursor advance (project 00026). */
+   *  `putBlockBundle`'s in-transaction cursor advance. */
   private async upsertWatermark(
     sql: UmbraDBSql | ChainArchiveTx, key: string, value: unknown,
   ): Promise<void> {

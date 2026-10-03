@@ -1,8 +1,7 @@
 /**
- * Read side of the scan tables (sub-plan A3; the API of sub-plan C builds on these): the MIP's color table
- * (`color → (contractAddress, domainSep)`, kinds minted), the native tokens seen in public data or minted (owner Q3:
- * a color seen before its mint is completed in place — same row, now with its contract and domainSep), and the
- * NIGHT/DUST rows. Pure queries; no writes.
+ * Read side of the scan tables (the API builds on these): the MIP's color table (`color → (contractAddress,
+ * domainSep)`, kinds minted), the native tokens seen in public data or minted (a color seen before its mint is completed
+ * in place — same row, now with its contract and domainSep), and the NIGHT/DUST rows. Pure queries; no writes.
  */
 import { MIP0018_SCHEMA } from "../../src/postgres/migrations/mip0018/index.js";
 import type { Queryable } from "./fields.ts";

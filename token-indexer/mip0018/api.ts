@@ -1,7 +1,6 @@
 /**
- * The MIP-0018 read-only JSON API (project 00026, sub-plan C1; spec FR-020…FR-022; contract: `token-indexer/API.md`).
- * Node's own `http`, no framework — the pattern of the UmbraDB services (PR #19's token API was read as a guide for
- * the pattern only: keyset pagination, one error envelope, a read snapshot per request).
+ * The MIP-0018 read-only JSON API (contract: `token-indexer/API.md`). Node's own `http`, no framework — the pattern of
+ * the UmbraDB services: keyset pagination, one error envelope, a read snapshot per request.
  *
  * - `GET`/`HEAD` only (405 otherwise, with `Allow`); strict input: 32-byte hex path values, kinds 1–3, no unknown or
  *   repeated query parameters, `limit` 1–500, cursors only as issued (bound to their endpoint and filter).
@@ -11,10 +10,10 @@
  *   internal details (database and unexpected errors are logged server-side and answered generically).
  * - JSON bodies are pure ASCII: every non-ASCII character and `<`, `>`, `&` are `\uXXXX` escapes, so hostile text
  *   (bidi controls, invisible characters) never travels raw; JSON.parse gives the exact text back.
- * - Bounded cost (final-audit F2): no answer reads all keys of an identity, all rejected events of a contract or all
- *   members of a group (`api-views.ts`), and at most `maxConcurrentRequests` requests run at once (default 8, below
- *   the connection pool's 10, so the scan loop of the same `serve` process always gets a connection); beyond that a
- *   request is answered at once with 503 `BUSY` and `Retry-After: 1`.
+ * - Bounded cost: no answer reads all keys of an identity, all rejected events of a contract or all members of a group
+ *   (`api-views.ts`), and at most `maxConcurrentRequests` requests run at once (default 8, below the connection pool's
+ *   10, so the scan loop of the same `serve` process always gets a connection); beyond that a request is answered at
+ *   once with 503 `BUSY` and `Retry-After: 1`.
  * - Never fetches a URI or anything remote; heights only.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -45,7 +44,7 @@ import {
 
 export const MAX_LIMIT = 500;
 export const DEFAULT_LIMIT = 100;
-/** Requests answered at once by default (final-audit F2); more are refused with 503 `BUSY`. */
+/** Requests answered at once by default; more are refused with 503 `BUSY`. */
 export const DEFAULT_MAX_CONCURRENT_REQUESTS = 8;
 
 export class ApiError extends Error {
@@ -76,8 +75,8 @@ export interface Mip0018ApiOptions {
   /** Server-side log line (errors), default stderr. */
   log?: (line: string) => void;
   /**
-   * Static routes answered before the API (sub-plan C3: the explorer page, `ui/page.ts` `serveUi`); returns `true`
-   * when it answered the request. Default: none (`/ui` is then a 404 like any unknown path).
+   * Static routes answered before the API (the explorer page, `ui/page.ts` `serveUi`); returns `true` when it answered
+   * the request. Default: none (`/ui` is then a 404 like any unknown path).
    */
   ui?: (req: IncomingMessage, res: ServerResponse) => boolean;
   /** API requests run at once (default {@link DEFAULT_MAX_CONCURRENT_REQUESTS}); more are answered 503 `BUSY`. */
@@ -112,7 +111,7 @@ function cursorParam<T>(raw: string | undefined, parse: (v: unknown) => T | unde
   return c;
 }
 
-/** `limit`, `cursor` and `order` of the activity listings (C2's helpers check the cursor against listing and order). */
+/** `limit`, `cursor` and `order` of the activity listings (`activity.ts` binds a cursor to its listing and order). */
 function activityParams(q: ReadonlyMap<string, string>): ActivityOptions {
   const order = q.get("order");
   if (order !== undefined && order !== "asc" && order !== "desc") throw badRequest("order must be asc or desc");
@@ -195,7 +194,7 @@ export function createMip0018Api(opts: Mip0018ApiOptions): Server {
 
   function toApiError(error: unknown): ApiError {
     if (error instanceof ApiError) return error;
-    // C2's read helpers refuse a bad limit, order or cursor with messages that never echo the input.
+    // The activity read helpers refuse a bad limit, order or cursor with messages that never echo the input.
     if (error instanceof Error && error.name === "ActivityQueryError") return badRequest(error.message);
     const message = error instanceof Error ? error.message : String(error);
     if (isDatabaseError(error)) {

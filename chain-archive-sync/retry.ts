@@ -2,9 +2,8 @@ import { IndexerClientError, IndexerClientParseError } from "./indexer-client.js
 import { NodeRpcError, NodeRpcParseError } from "./node-rpc-client.js";
 
 /**
- * Bounded retry with exponential back-off for calls to the PUBLIC node and indexer endpoints
- * (project 00026; the lesson PR #19's archive hardening recorded, re-implemented here). Applied per
- * network call, so one throttled request does not throw away the blocks already archived in a batch,
+ * Bounded retry with exponential back-off for calls to the PUBLIC node and indexer endpoints. Applied
+ * per network call, so one throttled request does not throw away the blocks already archived in a batch,
  * and the sync resumes by itself once the endpoint answers again.
  *
  * Retryable: HTTP 429 (rate limited), 403 (what a WAF in front of a public endpoint answers when it

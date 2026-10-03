@@ -2,8 +2,7 @@
 /**
  * UmbraDB's pure MIP-0018 vector adapter: the runner contract of the vendored vectors
  * (`token-indexer/vendor/mip0018/vectors/README.md`, "Runner contract") over the vendored codec and UmbraDB's own
- * state module (`./state.ts`). No database — the Postgres adapter (sub-plan B3) answers the same requests through the
- * real store.
+ * state module (`./state.ts`). No database — the Postgres adapter answers the same requests through the real store.
  *
  *   node token-indexer/vendor/mip0018/vectors/tools/run.ts --consumer "node token-indexer/mip0018/vector-adapter.ts"
  *

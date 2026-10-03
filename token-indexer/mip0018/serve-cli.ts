@@ -1,21 +1,21 @@
 /**
- * `serve` of the MIP-0018 token indexer (project 00026, sub-plan C1): the read-only JSON API (`api.ts`, contract
- * `token-indexer/API.md`) over the existing Postgres and — unless `--api-only` — the MIP-0018 scan loop following the
- * chain archive's cursor, in one process.
+ * `serve` of the MIP-0018 token indexer: the read-only JSON API (`api.ts`, contract `token-indexer/API.md`) over the
+ * existing Postgres and — unless `--api-only` — the MIP-0018 scan loop following the chain archive's cursor, in one
+ * process.
  *
  *   PG_URL=postgres://… node --import tsx token-indexer/mip0018/serve-cli.ts --network stagenet
  *     [--host 127.0.0.1] [--port 10026] [--schema mip0018] [--archive-schema chain_archive] [--api-only]
  *     [--from <height>] [--scan-batch 100] [--scan-idle-ms 2000] [--genesis 0x…]
  *
  * The chain archive is filled by `chain-archive-sync/sync-cli.ts` (finalized blocks, `--from/--to` ranges or the
- * tip); `serve` scans what is archived and answers the API. Decision (C1, Q28, assumption A18): the scan loop runs in the
- * serving process by default, as in the guide's `serve`, so one command keeps the API current while the archive
- * grows; the scan's cursor moves by compare-and-set, so a second scanner of the same network (another `serve`, or
- * `scan-cli.ts`) fails instead of interleaving. A scan error (Q20: an undecodable transaction stops the scan at its
- * block) is logged and retried with back-off while the API keeps serving; `/v1/status` reports `scanner: stalled`.
- * `--api-only` runs no scan and no migration (read-only; the schema must exist). The API answers at most 8 requests at
- * once (503 `BUSY` beyond; final-audit F2), below the connection pool's 10, so API load cannot take every connection
- * from the scan loop of the same process; a public deployment can still serve from `--api-only` replicas.
+ * tip); `serve` scans what is archived and answers the API. The scan loop runs in the serving process by default, so
+ * one command keeps the API current while the archive grows; the scan's cursor moves by compare-and-set, so a second
+ * scanner of the same network (another `serve`, or `scan-cli.ts`) fails instead of interleaving. A scan error (an
+ * undecodable transaction stops the scan at its block) is logged and retried with back-off while the API keeps
+ * serving; `/v1/status` reports `scanner: stalled`. `--api-only` runs no scan and no migration (read-only; the schema
+ * must exist). The API answers at most 8 requests at once (503 `BUSY` beyond), below the connection pool's 10, so API
+ * load cannot take every connection from the scan loop of the same process; a public deployment can also serve from
+ * `--api-only` replicas.
  *
  * | Flag | Environment | Default |
  * |---|---|---|
@@ -28,7 +28,7 @@
  * | `--genesis` | `GENESIS_HASH` | the known network's genesis hash (Stagenet), else none |
  * | `--from` | `START_HEIGHT` | the archive's first height (first scan only) |
  * | `--scan-batch` | — | `100` blocks per scan step |
- * | `--scan-idle-ms` | — | `2000` (wait at the archive's tip; also the base of the error back-off, ×5 up to 60 s); 100 to 3 600 000 — below 100 ms the loop would poll the database and the log in a hot loop (final-audit N6) |
+ * | `--scan-idle-ms` | — | `2000` (wait at the archive's tip; also the base of the error back-off, ×5 up to 60 s); 100 to 3 600 000 — below 100 ms the loop would poll the database and the log in a hot loop |
  *
  * Logs one JSON line per event on stdout (`listening`, `scan`, `scan-error`, `stopped`). SIGINT/SIGTERM stop the
  * loop and the server and exit 0.
@@ -64,7 +64,7 @@ export interface ServeHandle {
 }
 
 const MAX_BACKOFF_MS = 60_000;
-/** Smallest `--scan-idle-ms` the CLI accepts (final-audit N6: 0 made the idle wait and the error back-off a hot loop). */
+/** Smallest `--scan-idle-ms` the CLI accepts (0 made the idle wait and the error back-off a hot loop). */
 export const MIN_SCAN_IDLE_MS = 100;
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -131,7 +131,7 @@ export async function serve(o: ServeOptions): Promise<ServeHandle> {
     ...(o.archiveSchema === undefined ? {} : { archiveSchema: o.archiveSchema }),
     ...(o.genesisHash === undefined ? {} : { genesisHash: o.genesisHash }),
     scannerState: () => state,
-    ui: serveUi, // the explorer page at /ui (sub-plan C3; it reads only this API)
+    ui: serveUi, // the explorer page at /ui (it reads only this API)
   });
   let port: number;
   try {

@@ -1,6 +1,5 @@
 /**
- * Bech32m (BIP-350) and the Midnight wallet-address form built on it (project 00026, sub-plan C2; owner decision Q3:
- * "bech32m for all wallets").
+ * Bech32m (BIP-350) and the Midnight wallet-address form built on it: every wallet address is served as Bech32m.
  *
  * - The checksum layer is BIP-173's algorithm with BIP-350's constant `0x2bc830a3`; a string that is only valid under
  *   the original Bech32 constant (1) is rejected (no string is valid under both).
@@ -13,7 +12,7 @@
  *   that wallet as `mn_addr_stagenet1vw57646su9y5z6myarm93m6kcn62j97z0yma94lfkhmta6pz5h5q6utr3k`
  *   (`deployments/stagenet/README.md` of midnight-experiments/mip-0018 @ daec1f1; test `[[mip0018.bech32m.recorded]]`).
  *   The Stagenet network id is `stagenet` (the reference's `packages/midnight/src/network.ts`).
- * - Scope (owner Q3): Bech32m for wallet addresses only — never for contract addresses, colors, transaction or intent
+ * - Scope: Bech32m for wallet addresses only — never for contract addresses, colors, transaction or intent
  *   hashes, which stay hex. Shielded (`mn_shield-addr_…`) and DUST (`mn_dust_…`) addresses never appear in the public
  *   data the activity rows are built from (a shielded output is a commitment; DUST has no activity rows), so only the
  *   unshielded form has a helper here; the generic encoder covers the others if they are ever needed.

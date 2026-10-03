@@ -1,14 +1,14 @@
 /**
  * UmbraDB's MIP-0018 metadata state rules — one pure module (no database, no I/O), used by the pure vector adapter
  * and, through `recordEffects` (with `fieldUsable`), `symbolGroups`, `displayAmount` and `tokenMark`, by the Postgres
- * apply path (`fields.ts`) and its read helpers (`metadata.ts`) — so both paths share every rule (sub-plan B3).
+ * apply path (`fields.ts`) and its read helpers (`metadata.ts`) — so both paths share every rule.
  *
- * Authority: MIP-0018 PR #340 head `274a84f221bcfc17e4b73e2c8b32fd8c028ea092` (per-key tombstones), sections
- * "Applying records", "Common fields" and "Symbol grouping"; owner decisions of project 00026: Q5 (only the latest
- * value per key, no history), Q6 (groups of two or more members), Q14 (marks), Q15/Q16 (a Null record deletes its
- * key's row; an identity whose last field is deleted is not referenced anywhere). Classification and decoding are the
- * vendored reference codec's (`token-indexer/vendor/mip0018/codec`, verbatim; Q2/Q17); everything below is UmbraDB's
- * own code — the reference consumer (whole-identity tombstones of `78ecbb4`) is not used.
+ * Authority: MIP-0018 PR #340 head `274a84f221bcfc17e4b73e2c8b32fd8c028ea092` (per-key tombstones), sections "Applying
+ * records", "Common fields" and "Symbol grouping": only the latest value per key, no history; groups of two or more
+ * members; a Null record deletes its key's row; an identity whose last field is deleted is not referenced anywhere;
+ * plus UmbraDB's ✓/⚠ marks. Classification and decoding are the vendored reference codec's
+ * (`token-indexer/vendor/mip0018/codec`, verbatim); everything below is UmbraDB's own code — the reference consumer
+ * (whole-identity tombstones of `78ecbb4`) is not used.
  *
  * - Applying records: accepted events in chain order (block, transaction, event, then record). A non-Null record
  *   sets its field's current value (latest wins; the replaced value is dropped, never a fallback). A Null record
@@ -195,7 +195,7 @@ export interface SymbolGroup {
   contractAddress: string;
   /** The exact `symbol` bytes, hex. */
   symbol: string;
-  /** Sorted by (domainSep, kind); always two or more (Q6). */
+  /** Sorted by (domainSep, kind); always two or more. */
   members: Array<{ domainSep: string; kind: number }>;
 }
 
@@ -282,7 +282,7 @@ export class MetadataState {
 
   /**
    * Every identity that currently has at least one field, sorted by (network, contract, domainSep, kind). Each
-   * `fields` is a snapshot (a copy): later events never change a map already handed out (mid-project audit F3).
+   * `fields` is a snapshot (a copy): later events never change a map already handed out.
    */
   identities(): IdentityState[] {
     return [...this.identitiesByKey.values()]
@@ -296,12 +296,12 @@ export class MetadataState {
     return v === undefined ? undefined : { ...v.ref, fields: new Map(v.fields) };
   }
 
-  /** Symbol groups of two or more members (MIP "Symbol grouping", Q6). */
+  /** Symbol groups of two or more members (MIP "Symbol grouping"). */
   groups(): SymbolGroup[] {
     return symbolGroups(this.identities());
   }
 
-  /** Rejected MIP-0018 events of a contract on a network, in chain order (for the Q14 mark). */
+  /** Rejected MIP-0018 events of a contract on a network, in chain order (for the mark). */
   rejections(network: string, contractAddress: string): Rejection[] {
     const contract = contractAddress.toLowerCase();
     return (this.retained.get(network) ?? [])
@@ -311,8 +311,8 @@ export class MetadataState {
 
   /**
    * Whether the contract has any accepted or rejected MIP-0018 event on the network — contract-level chain activity
-   * only (Q15). Never an input to a mark or a listing: it stays `true` after every identity of the contract was
-   * withdrawn, and a withdrawn identity must read exactly like one never described (mid-project audit F3, A13).
+   * only. Never an input to a mark or a listing: it stays `true` after every identity of the contract was
+   * withdrawn, and a withdrawn identity must read exactly like one never described.
    */
   hasEvents(network: string, contractAddress: string): boolean {
     const contract = contractAddress.toLowerCase();
@@ -333,7 +333,7 @@ export interface GroupableIdentity extends IdentityRef {
 }
 
 /**
- * The one symbol-grouping rule (MIP "Symbol grouping", Q6): identities of one (network, contractAddress) whose
+ * The one symbol-grouping rule (MIP "Symbol grouping"): identities of one (network, contractAddress) whose
  * `symbol` is usable and has the same exact bytes form a group; only groups of two or more members are reported. An
  * identity without a usable `symbol` is ungrouped. Members sorted by (domainSep, kind); groups by (network, contract,
  * symbol). Input order does not matter.
@@ -367,14 +367,14 @@ export function displayAmount(
   return { decimals: d.integer, text: formatAmount(raw, d.integer) };
 }
 
-// ── Marks (Q14) ──────────────────────────────────────────────────────────────────────────────────────────────────
+// ── Marks ──────────────────────────────────────────────────────────────────────────────────────────────────
 
 export type MarkKind = "ok" | "partial" | "incorrect" | "unresolved" | "none";
 
 /**
- * The reason a mark carries when the token's contract has `unresolved` logs (final-audit re-check R1): `log` ops whose
+ * The reason a mark carries when the token's contract has `unresolved` logs: `log` ops whose
  * logged value the raw transaction does not show, so the contract may have published, renamed or withdrawn metadata
- * that this indexer cannot read (assumption A23).
+ * that this indexer cannot read.
  */
 export const UNRESOLVED_LOG_REASON = "unresolved-log";
 
@@ -395,12 +395,12 @@ export interface TokenMark {
 export interface MarkInput {
   /**
    * The token's identity fields, or `undefined` when the identity has none (absent: never described or withdrawn). An
-   * empty map means the same as `undefined` (one normal form, mid-project audit F3).
+   * empty map means the same as `undefined` (one normal form).
    */
   fields: ReadonlyMap<string, Pick<Field, "valType" | "value" | "usable">> | undefined;
   /**
-   * Whether the identity has any field, when `fields` holds only some of them (final-audit F2: the API reads only the
-   * four common keys); omitted = decided from `fields` as before.
+   * Whether the identity has any field, when `fields` holds only some of them (the API reads only the four common
+   * keys); omitted = decided from `fields`.
    */
   described?: boolean;
   /**
@@ -409,31 +409,31 @@ export interface MarkInput {
    */
   contractRejections: readonly string[];
   /**
-   * How many `unresolved` logs the token's contract has on its network (final-audit re-check R1; default 0): `log` ops
-   * of applied parts whose logged value the raw transaction does not show (never applied, A23).
+   * How many `unresolved` logs the token's contract has on its network (default 0): `log` ops of applied parts whose
+   * logged value the raw transaction does not show (never applied).
    */
   contractUnresolvedLogs?: number;
 }
 
 /**
- * The one place that decides a token's MIP-0018 mark (Q14 (a), owner-confirmed 2026-10-02):
+ * The one place that decides a token's MIP-0018 mark:
  * - ⚠ incorrect — the token's contract has a rejected MIP-0018 event (the reasons are shown);
- * - ⚠ unresolved — the token's contract has no rejected event but has an `unresolved` log (final-audit re-check R1,
- *   assumption A23): a `log` op whose value the raw transaction does not show, so the contract may have published,
- *   renamed or withdrawn metadata this indexer cannot read; the reason `unresolved-log` is shown. A ⚠ variant of its
- *   own rather than ⚠ incorrect: nothing says the contract published anything malformed, only that UmbraDB cannot
- *   verify what it published — but a token of such a contract never keeps a clean ✓;
+ * - ⚠ unresolved — the token's contract has no rejected event but has an `unresolved` log: a `log` op whose value the
+ *   raw transaction does not show, so the contract may have published, renamed or withdrawn metadata this indexer
+ *   cannot read; the reason `unresolved-log` is shown. A ⚠ variant of its own rather than ⚠ incorrect: nothing says the
+ *   contract published anything malformed, only that UmbraDB cannot verify what it published — but a token of such a
+ *   contract never keeps a clean ✓;
  * - ✓ ok — the identity exists with usable `name`, `symbol` and `decimals` (the keys the MIP says issuers SHOULD
  *   publish) and its contract has no rejected event and no unresolved log;
  * - ⚠ partial — the identity exists but one of the three is missing or unusable;
  * - no mark — none of these (no MIP-0018 event, or an identity withdrawn by per-key tombstones and never revived).
  * Precedence: incorrect, then unresolved, then the identity's own fields. When the contract has both rejected events
  * and unresolved logs, the mark is ⚠ incorrect and its reasons end with `unresolved-log`.
- * The mark depends on CURRENT state only (orchestrator decision on audit QA1, assumption A13): an absent identity —
+ * The mark depends on CURRENT state only: an absent identity —
  * never described, or withdrawn — has no fields, no `missing` list and no tags, and is marked from its contract's
  * rejections and unresolved logs alone (⚠ incorrect, ⚠ unresolved, otherwise no mark); its history is never consulted.
  * Usable `standards` identifiers are returned as tags. A future standard declared in `standards` may redefine what
- * the marks mean for its tokens (Q14); none exists now, so no identifier changes the result.
+ * the marks mean for its tokens; none exists now, so no identifier changes the result.
  */
 export function tokenMark(input: MarkInput): TokenMark {
   const described = input.described ?? (input.fields !== undefined && input.fields.size > 0);

@@ -1,8 +1,7 @@
 /**
- * Development check of a live Stagenet range against the recorded fixtures (project 00026, sub-plan D3; spec FR-042,
- * SC-003; owner Q11: CI uses recorded fixtures, development syncs FROM–TO ranges live). Not a CI test: it talks to the
- * public Stagenet endpoints. CI compares a replay with the digest this script records
- * (`token-indexer/test/mip0018-live-range.test.ts`).
+ * Development check of a live Stagenet range against the recorded fixtures (CI uses recorded fixtures; development
+ * syncs FROM–TO ranges live). Not a CI test: it talks to the public Stagenet endpoints. CI compares a replay with the
+ * digest this script records (`token-indexer/test/mip0018-live-range.test.ts`).
  *
  * Every run uses the REAL command-line programs as child processes — `chain-archive-sync/sync-cli.ts` (archive) and
  * `token-indexer/mip0018/scan-cli.ts` (MIP-0018 scan) — each run in its own pair of schemas `d3_<tag>_archive` /
@@ -10,7 +9,7 @@
  *
  *   PG_URL=postgres://… node --import tsx token-indexer/dev/live-range-check.ts live --tag a --from 714485 --to 715183 --out DIR
  *   PG_URL=… … live    --tag b --from 714485 --to 715183 --kill-archive-at 714800 --kill-scan-at 714850 --out DIR
- *   PG_URL=… … replay  --tag r --range idx --out DIR      (the D1 tape, served by the local fake chain, same programs)
+ *   PG_URL=… … replay  --tag r --range idx --out DIR      (the recorded tape, served by the local fake chain, same programs)
  *   PG_URL=… … compare --tags a,r,b --out DIR            (every table of both schemas, wall-clock columns excluded)
  *
  * `live` is polite by construction: the sync program's own defaults (4 heights in flight, ≥ 250 ms between request

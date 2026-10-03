@@ -4,10 +4,9 @@ import { assertValidSchemaName } from "../../client.js";
 export const name = "003_mip0018_activity";
 
 /**
- * Token activity (project 00026, sub-plan C2; owner decision Q3: keep the transaction/activity view; spec FR-021):
- * one row per PUBLIC token flow of an applied part of a transaction, written by the MIP-0018 scan in the same block
- * transaction as its mints, events and cursor (`token-indexer/mip0018/activity.ts`), and removed with them above a
- * height. Heights and positions only — no wall-clock time.
+ * Token activity: one row per PUBLIC token flow of an applied part of a transaction, written by the MIP-0018 scan in
+ * the same block transaction as its mints, events and cursor (`token-indexer/mip0018/activity.ts`), and removed with
+ * them above a height. Heights and positions only — no wall-clock time.
  *
  * Roles (`direction` is relative to the role's subject; amounts are unsigned):
  * - `mint` — a `shieldedMints` (kind 1) / `unshieldedMints` (kind 2) effect: contract, domainSep, kind, amount, the
@@ -21,13 +20,13 @@ export const name = "003_mip0018_activity";
  * - `shielded-offer` — a Zswap offer delta (the public net imbalance of a color in an offer; balanced shielded
  *   transfers publish none): `in` = into the shielded pool (negative delta), `out` = out of it.
  * - `metadata-event` — one row per (transaction, contract) whose applied parts carry accepted or rejected MIP-0018
- *   events (never `ignore`, Q19): counts and the first event's index in `mip0018_events` (a reference to the event
- *   log, Q15: no decoded values). No color: a color's activity includes the metadata rows of its minting contract.
+ *   events (never `ignore`): counts and the first event's index in `mip0018_events` (a reference to the event log, no
+ *   decoded values). No color: a color's activity includes the metadata rows of its minting contract.
  *
  * NIGHT (color 32 zero bytes) is recorded like any color; DUST has no color and no row; nothing comes from a failed
  * segment or a FAILURE transaction. Wallet addresses are stored as their 32 raw bytes and served as Bech32m. A
  * contract's `entry_point` is its exact bytes (`bytea`: entry points are arbitrary bytes on the ledger, NUL and
- * non-UTF-8 included; sub-plan C4 H1), served as hex plus a text form only when printable.
+ * non-UTF-8 included), served as hex plus a text form only when printable.
  */
 export async function up(sql: ISql, schema: string): Promise<void> {
   assertValidSchemaName(schema);

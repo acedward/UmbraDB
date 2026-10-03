@@ -1,11 +1,10 @@
 /**
- * The MIP-0018 scan over the chain archive (project 00026, sub-plans A3/B2): ONE loop that reads the archived
- * finalized blocks in height order, decodes each regular transaction once with the applied-parts decoder, keeps only
- * the parts that took effect (the archived result and per-segment outcomes), and records — per block, atomically,
- * together with its own cursor — the mints and their colors (MIP "Lookup"), the colors seen in public data (owner Q3),
- * the contract calls, deploys and maintenance updates (sub-plan A3), and every `Misc` event of an applied part with
- * its classification under the final MIP (sub-plan B2, Q4 (c): events come from the raw transactions; the indexer's
- * `contractEvents` is only a test cross-check).
+ * The MIP-0018 scan over the chain archive: ONE loop that reads the archived finalized blocks in height order, decodes
+ * each regular transaction once with the applied-parts decoder, keeps only the parts that took effect (the archived
+ * result and per-segment outcomes), and records — per block, atomically, together with its own cursor — the mints and
+ * their colors (MIP "Lookup"), the colors seen in public data, the contract calls, deploys and maintenance updates, and
+ * every `Misc` event of an applied part with its classification under MIP-0018 (events come from the raw transactions;
+ * the indexer's `contractEvents` is only a test cross-check).
  *
  * - Source: the `chain_archive` schema written by `chain-archive-sync` (finalized blocks only, a contiguous range
  *   `[startHeight, height]` recorded in its `sync_cursor:<net>` watermark). The scan never reads past that height.
@@ -16,25 +15,24 @@
  *   network fails instead of interleaving. Every insert is idempotent, so a block scanned again (after
  *   `removeAbove`) yields the same rows.
  * - Checks (never skipped silently): consecutive heights, each block's parent = the last scanned block, a stored
- *   result for every regular transaction, the outcome of every fallible segment of a partial success (audit F1), the
+ *   result for every regular transaction, the outcome of every fallible segment of a partial success, the
  *   recomputed transaction hash = the archived one, a decodable transaction, one (contract, domainSep) per color.
- * - Events: every applied `log` op whose event is a MIP-0002 `Misc` event, in the MIP's order (block, transaction,
- *   then within the transaction the guaranteed part of every intent by ascending segment id, then each successful
- *   fallible segment; actions and operations in order). The logged value is read with the ledger's own `decode_event`
- *   rule (final-audit F1: a well-formed `[version, type, data]` triple has that type, any other value is `Misc`
- *   version 0 with the whole value as data); `name ‖ payload` was zero-extended to 288 bytes before the split
- *   (decoder); the contract address is the call's, never the payload's. Classified with the vendored reference
- *   codec: accept, reject (reason) or ignore (another name, `[v2]`, data that is not one 288-byte item). A `log` op
- *   whose logged value the raw transaction does not show (its operand is not pushed right before it, or it runs only
- *   on some paths of the program) is stored as `unresolved` with its reason (`log-operand-not-pushed`,
- *   `log-conditionally-executed`): never applied, never skipped, and the scan goes on (a stop would let anyone halt
- *   the indexer with a hand-built circuit). The row keeps the chain position, classification and reason (Q15: the
- *   chain-event record; metadata values live only in the latest-value rows of sub-plan B3); `name`/`payload` stay
- *   for recomputation and are never served as metadata. `event_index` is the position among the transaction's
- *   applied `log` ops that the ledger may run (a resolved event of another MIP-0002 type takes a position but is not
- *   stored).
- * - Metadata state (sub-plan B3, `fields.ts`): each accepted event is applied to `mip0018_fields` (latest value per
- *   key; a Null record deletes its key's row) in the same block transaction as the event rows and the cursor.
+ * - Events: every applied `log` op whose event is a MIP-0002 `Misc` event, in the MIP's order (block, transaction, then
+ *   within the transaction the guaranteed part of every intent by ascending segment id, then each successful fallible
+ *   segment; actions and operations in order). The logged value is read with the ledger's own `decode_event` rule (a
+ *   well-formed `[version, type, data]` triple has that type, any other value is `Misc` version 0 with the whole value
+ *   as data); `name ‖ payload` was zero-extended to 288 bytes before the split (decoder); the contract address is the
+ *   call's, never the payload's. Classified with the vendored reference codec: accept, reject (reason) or ignore
+ *   (another name, `[v2]`, data that is not one 288-byte item). A `log` op whose logged value the raw transaction does
+ *   not show (its operand is not pushed right before it, or it runs only on some paths of the program) is stored as
+ *   `unresolved` with its reason (`log-operand-not-pushed`, `log-conditionally-executed`): never applied, never
+ *   skipped, and the scan goes on (a stop would let anyone halt the indexer with a hand-built circuit). The row keeps
+ *   the chain position, classification and reason (the chain-event record; metadata values live only in the
+ *   latest-value rows); `name`/`payload` stay for recomputation and are never served as metadata. `event_index` is the
+ *   position among the transaction's applied `log` ops that the ledger may run (a resolved event of another MIP-0002
+ *   type takes a position but is not stored).
+ * - Metadata state (`fields.ts`): each accepted event is applied to `mip0018_fields` (latest value per key; a Null
+ *   record deletes its key's row) in the same block transaction as the event rows and the cursor.
  * - `removeAbove(height)`: deletes every scanned row above a height, recomputes the fields of the identities the
  *   removed events touched from the remaining accepted events, and moves the cursor back, so the scan can be
  *   recomputed from there (MIP S4; UmbraDB follows finalized blocks only, so this serves tests and repairs).
@@ -59,7 +57,7 @@ import { tokenColor } from "./color.ts";
 import { type EventRow, removeEventsAbove, writeEvents } from "./fields.ts";
 import { classifyEvent, MISC_EVENT_TYPE } from "../vendor/mip0018/codec/src/index.ts";
 
-/** NIGHT and DUST (owner Q3): protocol tokens, outside MIP-0018 ("their properties are fixed by the protocol"). */
+/** NIGHT and DUST: protocol tokens, outside MIP-0018 ("their properties are fixed by the protocol"). */
 export const BUILTIN_TOKENS = [
   { symbol: "NIGHT", name: "NIGHT", decimals: 6, color: NIGHT_COLOR, note: "Protocol token (outside MIP-0018): the unshielded native token, color 32 zero bytes." },
   { symbol: "DUST", name: "DUST", decimals: 15, color: null, note: "Protocol token (outside MIP-0018): the fee resource; it has no color." },
@@ -100,7 +98,7 @@ export interface Mip0018ScannerOptions {
   decode?: (raw: Uint8Array) => DecodedTransaction;
   /** Test seam: runs inside a block's database transaction after its rows are written, before the cursor moves. */
   onBlockWritten?: (height: number) => void | Promise<void>;
-  /** Test seam (sub-plan C2): the transaction the activity rows are read from (default: ledger-v9 deserialization; a
+  /** Test seam: the transaction the activity rows are read from (default: ledger-v9 deserialization; a
    *  scanner given only a `decode` seam — synthetic bytes — records no activity). */
   activityTransaction?: (raw: Uint8Array) => ActivityTransactionLike;
 }
@@ -131,7 +129,7 @@ interface ActionRow {
   tx_hash: Buffer;
   action: "call" | "deploy" | "maintenance";
   contract_address: Buffer;
-  /** The entry point's exact bytes (C4 H1: arbitrary bytes on the ledger, so `bytea`, never `text`). */
+  /** The entry point's exact bytes (arbitrary bytes on the ledger, so `bytea`, never `text`). */
   entry_point: Buffer | null;
   applied_phases: string[] | null;
   maintenance_counter: string | null;
@@ -291,7 +289,7 @@ export class Mip0018Scanner {
         rows.actions.push({ ...at, segment_id: d.segment, action_index: d.actionIndex, tx_hash: txHash, action: "deploy", contract_address: buf(d.address), entry_point: null, applied_phases: null, maintenance_counter: null, maintenance_updates: null, maintenance_operations: null });
       for (const l of parts.applied.logs) {
         if (l.unresolved !== undefined) {
-          // Final-audit F1 (b): what this `log` op logs is not in the raw transaction — recorded, never applied.
+          // What this `log` op logs is not in the raw transaction — recorded, never applied.
           rows.events.push({
             ...at, event_index: l.eventIndex, tx_hash: txHash, segment_id: l.segment, phase: l.phase,
             contract_address: buf(l.contractAddress), event_type: UNRESOLVED_EVENT_TYPE, name: Buffer.alloc(0), payload: Buffer.alloc(0),
@@ -315,7 +313,7 @@ export class Mip0018Scanner {
       }
       for (const m of parts.applied.maintenance)
         rows.actions.push({ ...at, segment_id: m.segment, action_index: m.actionIndex, tx_hash: txHash, action: "maintenance", contract_address: buf(m.address), entry_point: null, applied_phases: null, maintenance_counter: m.counter.toString(), maintenance_updates: m.updates, maintenance_operations: m.operations.map((o) => (o === null ? null : buf(o))) });
-      // Sub-plan C2: the public token flows of the applied parts and the metadata transactions (`activity.ts`).
+      // The public token flows of the applied parts and the metadata transactions (`activity.ts`).
       const readActivity = this.opts.activityTransaction ?? (this.opts.decode === undefined ? activityTransaction : undefined);
       if (readActivity !== undefined)
         rows.activity.push(...transactionActivity({ network: this.network, height: block.height, txIndex: tx.position, txHash: tx.txHash, tx: readActivity(await this.archive.getBlob(tx.rawBlobHash)), outcome: parts.outcome, events: rows.events }));
@@ -336,7 +334,7 @@ export class Mip0018Scanner {
     }
     if (decoded.hash !== tx.txHash) throw new ScanError(`transaction at ${block.height}: recomputed hash ${decoded.hash} differs from the archived ${tx.txHash}`);
     if (outcome.result === "partial_success") {
-      // Mid-project audit F1 (Q20, FR-002): a partial success must say, for every segment that holds fallible content,
+      // A partial success must say, for every segment that holds fallible content,
       // whether it applied; a missing list or a missing segment would silently drop parts that did apply.
       const listed = new Set((outcome.segments ?? []).map((s) => s.id));
       const missing = fallibleSegments(decoded).filter((s) => !listed.has(s));
@@ -362,7 +360,7 @@ export class Mip0018Scanner {
         await tx`INSERT INTO ${tx(s)}.mip0018_mints ${tx(m)} ON CONFLICT DO NOTHING`;
       }
       for (const r of rows.sightings) await tx`INSERT INTO ${tx(s)}.mip0018_color_sightings ${tx(r)} ON CONFLICT DO NOTHING`;
-      await writeActivity(tx, s, rows.activity); // sub-plan C2
+      await writeActivity(tx, s, rows.activity);
       for (const a of rows.actions) {
         await tx`
           INSERT INTO ${tx(s)}.mip0018_contract_actions
@@ -374,7 +372,7 @@ export class Mip0018Scanner {
                   ${a.maintenance_operations === null ? null : tx.array(a.maintenance_operations, BYTEA_OID)})
           ON CONFLICT DO NOTHING`;
       }
-      // The block's events in chain order; each accepted one is applied to the latest-value rows (sub-plan B3).
+      // The block's events in chain order; each accepted one is applied to the latest-value rows.
       await writeEvents(tx, s, rows.events);
       await this.opts.onBlockWritten?.(block.height);
       const moved = await tx`
@@ -400,13 +398,13 @@ export class Mip0018Scanner {
       for (const table of ["mip0018_mints", "mip0018_color_sightings", "mip0018_contract_actions"])
         await tx`DELETE FROM ${tx(s)}.${tx(table)} WHERE network = ${this.network} AND block_height > ${height}`;
       // Events above the height go, and the fields of every identity they touched are recomputed from the remaining
-      // accepted events (MIP S4; sub-plan B3).
+      // accepted events (MIP S4).
       await removeEventsAbove(tx, s, this.network, height);
       const moved = await tx`
         UPDATE ${tx(s)}.mip0018_scan SET next_height = ${height + 1}, last_block_hash = ${lastHash === undefined ? null : buf(lastHash)}
         WHERE network = ${this.network} AND next_height = ${cursor.nextHeight}`;
       if (moved.count !== 1) throw new ScanError(`the ${this.network} scan cursor moved during removeAbove`);
-      await removeActivityAbove(tx, s, this.network, height); // sub-plan C2
+      await removeActivityAbove(tx, s, this.network, height);
     });
   }
 }

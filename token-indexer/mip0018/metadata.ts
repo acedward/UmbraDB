@@ -1,18 +1,18 @@
 /**
- * Read helpers of UmbraDB's MIP-0018 metadata state in Postgres (project 00026, sub-plan B3) — the functions the
- * API of sub-plan C serves and the Postgres vector adapter reads the state back with. Pure queries, no writes.
+ * Read helpers of UmbraDB's MIP-0018 metadata state in Postgres — the functions the API serves and the Postgres vector
+ * adapter reads the state back with. Pure queries, no writes.
  *
  * Every rule comes from the pure state module (`state.ts`): fields are returned in the module's own `IdentityState`
  * shape (current value, `usable` flag computed by `fieldUsable` when the value was set), groups are computed by
  * `symbolGroups`, amounts by `displayAmount`, marks and `standards` tags by `tokenMark` — so the Postgres path and the
  * pure adapter cannot disagree on a rule.
  *
- * "Not referenced at all" (MIP `274a84f` "Applying records", Q5/Q15/Q16): an identity exists only while it has a row
- * in `mip0018_fields`. Every helper below reads identities from those rows only, so an identity whose last field was
- * deleted appears in no listing, lookup, group, display or event view — as if it had never been described — while
- * the chain events themselves stay in the log (position, contract, classification, reason; `chainEvents` omits the
- * identity of an accepted event that is not in its identity's current metadata history — the identity no longer
- * exists, or the event came before its last withdrawal (re-check R2) — and never returns event bytes).
+ * "Not referenced at all" (MIP `274a84f` "Applying records"): an identity exists only while it has a row in
+ * `mip0018_fields`. Every helper below reads identities from those rows only, so an identity whose last field was
+ * deleted appears in no listing, lookup, group, display or event view — as if it had never been described — while the
+ * chain events themselves stay in the log (position, contract, classification, reason; `chainEvents` omits the identity
+ * of an accepted event that is not in its identity's current metadata history — the identity does not exist now, or the
+ * event came before its last withdrawal — and never returns event bytes).
  */
 import { MIP0018_SCHEMA } from "../../src/postgres/migrations/mip0018/index.js";
 import type { Queryable } from "./fields.ts";
@@ -136,9 +136,9 @@ export async function contractRejections(sql: Queryable, network: string, contra
 }
 
 /**
- * A token identity's MIP-0018 mark and `standards` tags (Q14 (a)), decided by the pure module's `tokenMark` from the
+ * A token identity's MIP-0018 mark and `standards` tags, decided by the pure module's `tokenMark` from the
  * identity's current fields (none when it is not described), its contract's rejected events and its contract's
- * unresolved logs (final-audit re-check R1).
+ * unresolved logs.
  */
 export async function tokenMarkOf(sql: Queryable, ref: IdentityRef, schema = MIP0018_SCHEMA): Promise<TokenMark> {
   const [identity, rejections, unresolved] = await Promise.all([
@@ -157,7 +157,7 @@ export async function listMetadataContracts(sql: Queryable, network: string, sch
   return rows.map((r) => ({ contractAddress: toHex(r.contract_address), identities: r.identities }));
 }
 
-/** A chain event as it may be served (Q15): position, contract, classification, reason — never its bytes. */
+/** A chain event as it may be served: position, contract, classification, reason — never its bytes. */
 export interface ChainEvent {
   height: number;
   txIndex: number;
@@ -172,15 +172,15 @@ export interface ChainEvent {
   reason: string | undefined;
   /**
    * The identity an ACCEPTED event described — only while the event belongs to the identity's current metadata
-   * history (the identity has a field, and the event came after its last withdrawal: re-check R2); else omitted.
+   * history (the identity has a field, and the event came after its last withdrawal); else omitted.
    */
   identity?: { domainSep: string; kind: number };
 }
 
 /**
  * Chain events of a network in chain order, optionally of one contract / one transaction. By default the MIP-0018
- * events (`accept`, `reject`) and the `unresolved` logs (final-audit F1: what they log is not in the raw transaction);
- * `includeIgnored` adds the `ignore` rows (other names, other types; Q19).
+ * events (`accept`, `reject`) and the `unresolved` logs (what they log is not in the raw transaction);
+ * `includeIgnored` adds the `ignore` rows (other names, other types).
  */
 export async function chainEvents(
   sql: Queryable, network: string, filter: { contractAddress?: string; txHash?: string; includeIgnored?: boolean } = {}, schema = MIP0018_SCHEMA,
@@ -215,7 +215,7 @@ export async function chainEvents(
   });
 }
 
-// ── Bounded reads for the API (final-audit F2) ─────────────────────────────────────────────────────────────────────
+// ── Bounded reads for the API ─────────────────────────────────────────────────────────────────────
 //
 // How many keys an identity carries, how many identities share a symbol and how many events a contract has rejected
 // are chosen by whoever calls that contract. The API therefore never reads all of them: list rows and marks read only
@@ -288,7 +288,7 @@ export async function contractRejectionSummary(
 }
 
 /**
- * A contract's `unresolved` logs for a mark (final-audit re-check R1): how many, and the chain positions of the first
+ * A contract's `unresolved` logs for a mark: how many, and the chain positions of the first
  * `limit` in chain order — from the partial index of unresolved rows alone (bounded like the rejections: the count is
  * an index-only scan, the positions a LIMIT).
  */

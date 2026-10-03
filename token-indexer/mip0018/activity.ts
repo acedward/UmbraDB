@@ -1,13 +1,13 @@
 /**
- * Token activity (project 00026, sub-plan C2; owner decision Q3; spec FR-021, US5): the public token flows of every
- * applied transaction part, written by the MIP-0018 scan (`scan.ts`, one call per transaction inside the block's
- * Postgres transaction) into `mip0018_activity` (migration `003_mip0018_activity`, where the roles are described),
- * and the keyset-paginated reads the API serves (`activityForColor`, `metadataTransactionsForContract`).
+ * Token activity: the public token flows of every applied transaction part, written by the MIP-0018 scan (`scan.ts`,
+ * one call per transaction inside the block's Postgres transaction) into `mip0018_activity` (migration
+ * `003_mip0018_activity`, where the roles are described), and the keyset-paginated reads the API serves
+ * (`activityForColor`, `metadataTransactionsForContract`).
  *
- * Fresh code; PR #19's `decodeTokenFlows` (00023) was read as an idea source only. Pitfalls carried over: the output
- * of a guaranteed unshielded offer belongs to the UTXO `intentHash(0)`, of a fallible one to `intentHash(segment)`;
- * an intent's output numbering runs over its guaranteed outputs, then its fallible ones (whether or not they
- * applied); ledger `Map`s iterate in random order, so every effect map is sorted.
+ * Ledger rules this module depends on: the output of a guaranteed unshielded offer belongs to the UTXO
+ * `intentHash(0)`, of a fallible one to `intentHash(segment)`; an intent's output numbering runs over its guaranteed
+ * outputs, then its fallible ones (whether or not they applied); ledger `Map`s iterate in random order, so every
+ * effect map is sorted.
  *
  * What is public and therefore shown: unshielded UTXOs (owner, amount), a contract's unshielded effects, Zswap offer
  * deltas (an unbalanced offer's net amount per color — a balanced shielded transfer publishes nothing), mint effects,
@@ -42,7 +42,7 @@ export interface ActivityRow {
   direction: "in" | "out" | null;
   contract_address: Buffer | null;
   action_index: number | null;
-  /** The entry point's exact bytes (arbitrary on the ledger; `bytea`, C4 H1). */
+  /** The entry point's exact bytes (arbitrary on the ledger; `bytea`). */
   entry_point: Buffer | null;
   domain_sep: Buffer | null;
   kind: 1 | 2 | null;
@@ -246,7 +246,7 @@ function transcriptRows(part: Part, t: TranscriptLike, contract: string, actionI
     add(part, { role: "contract-out", ...at, color: buf(color), amount: amount.toString(), direction: "out", ...recipient(color, amount) });
 }
 
-/** One row per contract with accepted or rejected MIP-0018 events in the transaction (never `ignore`, Q19). */
+/** One row per contract with accepted or rejected MIP-0018 events in the transaction (never `ignore`). */
 function metadataDrafts(input: TransactionActivityInput): Draft[] {
   const byContract = new Map<string, { contract: Buffer; accepted: number; rejected: number; first: number }>();
   const events = input.events
@@ -275,7 +275,7 @@ export async function removeActivityAbove(tx: Queryable, schema: string, network
   await tx`DELETE FROM ${tx(schema)}.mip0018_activity WHERE network = ${network} AND block_height > ${height}`;
 }
 
-/* ── Reads (what the API serves; C1 wires `GET /v1/tokens/{color}/activity` and a contract's metadata transactions) ── */
+/* ── Reads (what the API serves: `GET /v1/tokens/{color}/activity` and `GET /v1/contracts/{address}/activity`) ─────── */
 
 /** Largest page a read returns. */
 export const ACTIVITY_PAGE_MAX = 500;
@@ -390,7 +390,7 @@ function decodeCursor(cursor: string, subject: string, order: "asc" | "desc"): [
   const p = b.p;
   if (b.v !== 1 || !Array.isArray(p) || p.length !== 3 || !p.every((x) => Number.isSafeInteger(x) && (x as number) >= 0))
     throw new ActivityQueryError("cursor is not a cursor of this API");
-  // Final-audit N5: only the canonical form this API issues (the decode/encode round trip gives the same string):
+  // Only the canonical form this API issues (the decode/encode round trip gives the same string):
   // no extra or reordered keys, no whitespace, no other number or base64url spelling.
   if (typeof b.s !== "string" || (b.o !== "asc" && b.o !== "desc") || encodeCursor({ v: 1, s: b.s, o: b.o, p: [p[0], p[1], p[2]] as [number, number, number] }) !== cursor)
     throw new ActivityQueryError("cursor is not a cursor of this API");
@@ -442,11 +442,10 @@ function rowColumns(sql: Queryable) {
  * one row per transaction with a LISTED event of the contract (`mip0018_listed_events`, kept by the apply path; MIP
  * "Applying records": a withdrawn identity MUST NOT be referenced in metadata history) — its rejected events (they
  * describe no identity) and the accepted events of an identity's current description, which has a field now and
- * began at its last revival (final-audit F3, re-check R2). Counts and the first listed event's index; values are never
- * read.
+ * began at its last revival. Counts and the first listed event's index; values are never read.
  *
- * Bounded by what it serves (final-audit re-check R3): a recursive index skip scan over the contract's listed events
- * finds each next transaction with one probe; the transaction's stored `metadata-event` row and the counts of its
+ * Bounded by what it serves: a recursive index skip scan over the contract's listed events finds each next transaction
+ * with one probe; the transaction's stored `metadata-event` row and the counts of its
  * listed events are read by key. Events of withdrawn identities are not in the listed table at all, so hidden history
  * is never read, however long it is. The recursion is read lazily and yields the transactions in chain order (as the
  * token list's identity skip scan in `api-views.ts`), so `LIMIT n` ends it.
@@ -505,10 +504,9 @@ function page(network: string, rows: readonly DbActivityRow[], limit: number, su
  * A color's activity in chain order (keyset pagination): its own rows (mints, UTXOs, contract flows, offer deltas)
  * and the metadata transactions of the contract that minted it (none for a color whose mint is outside the indexed
  * range, e.g. NIGHT) — counting only listed events: rejected ones, and accepted ones of an identity's current
- * description (final-audit F3, re-check R2: a withdrawn identity's metadata transactions are not referenced, nor a
- * revived identity's transactions from before its last withdrawal). DUST has no color and therefore no activity.
- * Bounded by the page (re-check R3): at most `limit + 1` rows of each kind are read — the color's own rows by an
- * ordered index range scan, the metadata transactions by `metadataRows` — then merged in chain order.
+ * description (a withdrawn identity's metadata transactions are not referenced, nor a revived identity's transactions
+ * from before its last withdrawal). DUST has no color and therefore no activity. Bounded by the page: at most
+ * `limit + 1` rows of each kind are read — the color's own rows by an ordered index range scan, the metadata transactions by `metadataRows` — then merged in chain order.
  */
 export async function activityForColor(
   sql: Queryable, network: string, color: string, o: ActivityPageOptions = {}, schema = "mip0018",
@@ -543,9 +541,9 @@ export async function activityForColor(
 
 /**
  * A contract's metadata transactions in chain order (keyset pagination): one row per transaction with listed MIP-0018
- * events of that contract — rejected ones, or accepted ones of an identity's current description (final-audit F3,
- * re-check R2) — what a kind-3 identity (no color) shows as its activity. Counts and the event-log reference only;
- * never decoded values (Q15). Bounded by the page (re-check R3, `metadataRows`).
+ * events of that contract — rejected ones, or accepted ones of an identity's current description — what a kind-3
+ * identity (no color) shows as its activity. Counts and the event-log reference only;
+ * never decoded values. Bounded by the page (`metadataRows`).
  */
 export async function metadataTransactionsForContract(
   sql: Queryable, network: string, contract: string, o: ActivityPageOptions = {}, schema = "mip0018",

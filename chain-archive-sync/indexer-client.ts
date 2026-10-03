@@ -15,7 +15,7 @@ import { defaultMinIntervalMs, parseRetryAfterMs, RequestPacer } from "./polite-
  */
 
 export class IndexerClientError extends Error {
-  /** Same contract as `NodeRpcError` (project 00026): `httpStatus` (+ `retryAfterMs`) set => the
+  /** Same contract as `NodeRpcError`: `httpStatus` (+ `retryAfterMs`) set => the
    *  transport completed with a non-2xx status; `cause` set => the transport itself failed;
    *  neither => a GraphQL protocol error, which is never retried. */
   constructor(
@@ -37,7 +37,7 @@ export class IndexerClientParseError extends Error {
   }
 }
 
-/** The indexer's `TransactionResultStatus` (project 00026, spec FR-002). */
+/** The indexer's `TransactionResultStatus`. */
 export type IndexerTransactionStatus = "SUCCESS" | "PARTIAL_SUCCESS" | "FAILURE";
 
 /** `RegularTransaction.transactionResult`. `segments` is `null` for `SUCCESS` and `FAILURE` (the
@@ -72,12 +72,12 @@ export interface IndexerClientOptions {
   /** Per-request timeout in milliseconds -- a hung/black-holed indexer otherwise stalls the
    *  entire sync service indefinitely with no way to recover (Fix 3). Default: 20_000. */
   timeoutMs?: number;
-  /** Minimum spacing between two request starts (project 00026). Default: 250 ms for a public
+  /** Minimum spacing between two request starts. Default: 250 ms for a public
    *  Midnight host (`polite-http.ts`), 0 otherwise. */
   minIntervalMs?: number;
 }
 
-/** The per-height block query (project 00026 adds `__typename` and the per-transaction result). */
+/** The per-height block query, with each transaction's `__typename` and result. */
 export const BLOCK_BY_HEIGHT_QUERY = `query($height: Int!) {
         block(offset: { height: $height }) {
           hash height

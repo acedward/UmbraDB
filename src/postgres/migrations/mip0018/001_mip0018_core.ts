@@ -6,30 +6,30 @@ export const name = "001_mip0018_core";
 /**
  * MIP-0018 (PR #340 head `274a84f`) token metadata: the chain-event log and the latest value of every field.
  *
- * A fresh schema (project 00026, Q7): nothing here upgrades or reads an earlier token-indexer layout. Two tables only:
+ * The tables:
  *
- * - `mip0018_events` — one row per observed `Misc` event the indexer classified, at its chain position (Q15: the
- *   chain-event record — position, contract, classification, reason). The raw `name`/`payload` bytes are kept so the
- *   state can be recomputed after blocks above a height are removed (MIP "Applying records", vector S4); they are
- *   never served as metadata. `unresolved` (final-audit F1): a `log` op whose logged value the raw transaction does
- *   not show (event type `Unknown`, no bytes, a reason); never applied.
+ * - `mip0018_events` — one row per observed `Misc` event the indexer classified, at its chain position (the chain-event
+ *   record: position, contract, classification, reason). The raw `name`/`payload` bytes are kept so the state can be
+ *   recomputed after blocks above a height are removed (MIP "Applying records", vector S4); they are never served as
+ *   metadata. `unresolved`: a `log` op whose logged value the raw transaction does not show (event type `Unknown`, no
+ *   bytes, a reason); never applied.
  * - `mip0018_fields` — one row per field `(network, contract_address, domain_sep, kind, key)` holding only its current
- *   value (Q5: no history table). A Null record deletes its row (Q16, per-key tombstones). A token identity exists
- *   only while it has at least one row here; with no rows it MUST NOT be referenced anywhere.
- * - `mip0018_withdrawals` and `mip0018_listed_events` (final-audit re-check R2/R3) — each identity's last withdrawal,
- *   and the events activity may list as metadata history (rejected events; accepted events of an identity's current
- *   description, i.e. since its last revival; one row per listed event of `mip0018_events`, same position). Derived
- *   state like the fields: written with them by the apply path, deleted with their events and rebuilt by the
- *   recompute. A withdrawal deletes rows here; their dead index entries are reclaimed by (auto)vacuum, until which an
- *   index scan that starts before them steps over them (about one index page per hundred).
+ *   value (no history table). A Null record deletes its row (per-key tombstones). A token identity exists only while it
+ *   has at least one row here; with no rows it MUST NOT be referenced anywhere.
+ * - `mip0018_withdrawals` and `mip0018_listed_events` — each identity's last withdrawal, and the events activity may
+ *   list as metadata history (rejected events; accepted events of an identity's current description, i.e. from its last
+ *   revival on; one row per listed event of `mip0018_events`, same position). Derived state like the fields: written
+ *   with them by the apply path, deleted with their events and rebuilt by the recompute. A withdrawal deletes rows
+ *   here; their dead index entries are reclaimed by (auto)vacuum, until which an index scan that starts before them
+ *   steps over them (about one index page per hundred).
  *
- * Keys and values are `bytea` (Q10/FR-014: exact bytes, NUL and non-UTF-8 keys); unsigned integers (`val_type` 2,
+ * Keys and values are `bytea` (exact bytes, NUL and non-UTF-8 keys included); unsigned integers (`val_type` 2,
  * 1–31 bytes little-endian) are also kept losslessly as `numeric` for queries.
  *
- * Text columns never hold chain bytes (sub-plan C4 H2): `network` is the operator's configuration, `phase` and
- * `classification` are fixed vocabularies, and `event_type` / `reason` are written by UmbraDB's code (the MIP-0002
- * type name; the vendored codec's reason vocabulary or a fixed decoder message with numbers) — their CHECKs hold them
- * to ASCII, so no chain-derived NUL or non-UTF-8 byte can reach a `text` column and stop the scan.
+ * Text columns never hold chain bytes: `network` is the operator's configuration, `phase` and `classification` are
+ * fixed vocabularies, and `event_type` / `reason` are written by UmbraDB's code (the MIP-0002 type name; the vendored
+ * codec's reason vocabulary or a fixed decoder message with numbers) — their CHECKs hold them to ASCII, so no
+ * chain-derived NUL or non-UTF-8 byte can reach a `text` column and stop the scan.
  */
 export async function up(sql: ISql, schema: string): Promise<void> {
   assertValidSchemaName(schema);
@@ -63,16 +63,16 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       ON ${sql(schema)}.mip0018_events (network, contract_address, block_height, tx_index, event_index)
   `;
   await sql`CREATE INDEX mip0018_events_tx_hash_idx ON ${sql(schema)}.mip0018_events (tx_hash) WHERE tx_hash IS NOT NULL`;
-  // `/v1/status` counts the unresolved rows of a network (final-audit F1), and a mark counts a contract's unresolved
-  // rows and lists the first positions (final-audit re-check R1), without reading the other events.
+  // `/v1/status` counts the unresolved rows of a network, and a mark counts a contract's unresolved rows and lists the
+  // first positions, without reading the other events.
   await sql`
     CREATE INDEX mip0018_events_unresolved_idx
       ON ${sql(schema)}.mip0018_events (network, contract_address, block_height, tx_index, event_index)
       WHERE classification = 'unresolved'
   `;
-  // Final-audit F2 (bounded API reads; the number of a contract's events is chosen by its callers): a mark counts the
-  // contract's rejected events and lists the first reasons from this index alone; `/v1/events?contract=` pages through
-  // the served classifications without stepping over `ignore` rows.
+  // Bounded API reads (the number of a contract's events is chosen by its callers): a mark counts the contract's
+  // rejected events and lists the first reasons from this index alone; `/v1/events?contract=` pages through the served
+  // classifications without stepping over `ignore` rows.
   await sql`
     CREATE INDEX mip0018_events_reject_idx
       ON ${sql(schema)}.mip0018_events (network, contract_address, block_height, tx_index, event_index) INCLUDE (reason)
@@ -110,9 +110,9 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       WHERE key = '\\x73796d626f6c'::bytea AND usable
   `;
 
-  // Final-audit re-check R2: per identity, its LAST withdrawal — the position of the record that deleted its last
-  // field row. Written by the apply path in the scan's block transaction; rebuilt with the identity's fields when
-  // `removeAbove` recomputes it. One row per identity that was ever withdrawn.
+  // Per identity, its LAST withdrawal — the position of the record that deleted its last field row. Written by the
+  // apply path in the scan's block transaction; rebuilt with the identity's fields when `removeAbove` recomputes it.
+  // One row per identity that was ever withdrawn.
   await sql`
     CREATE TABLE ${sql(schema)}.mip0018_withdrawals (
       network          text     NOT NULL CHECK (length(network) > 0),
@@ -126,12 +126,12 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       PRIMARY KEY (network, contract_address, domain_sep, kind)
     )
   `;
-  // Final-audit re-check R2/R3: the events activity may reference — the identities' metadata history (MIP "Applying
-  // records": a withdrawn identity MUST NOT be referenced in metadata history; "a later non-Null record describes it
-  // again"). Every rejected event (it describes no identity), and each accepted event after which its identity has a
-  // field, until that identity is withdrawn again: a withdrawal deletes the identity's accepted rows here, so an
-  // identity's history starts at its last revival. Activity listings read only these rows (bounded by what they
-  // serve, never by hidden rows); the event log itself is unchanged.
+  // The events activity may reference — the identities' metadata history (MIP "Applying records": a withdrawn identity
+  // MUST NOT be referenced in metadata history; "a later non-Null record describes it again"). Every rejected event (it
+  // describes no identity), and each accepted event after which its identity has a field, until that identity is
+  // withdrawn again: a withdrawal deletes the identity's accepted rows here, so an identity's history starts at its
+  // last revival. Activity listings read only these rows (bounded by what they serve, never by hidden rows); the event
+  // log itself is unchanged.
   await sql`
     CREATE TABLE ${sql(schema)}.mip0018_listed_events (
       network          text     NOT NULL CHECK (length(network) > 0),
@@ -144,7 +144,7 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       kind             smallint CHECK (kind IS NULL OR kind IN (1, 2, 3)),
       CHECK ((classification = 'accept') = (domain_sep IS NOT NULL AND kind IS NOT NULL)),
       -- A contract's listed events in chain order: the activity listings' index skip scan by (block, tx). The only
-      -- index ordered by position, so no plan can walk other contracts' rows instead (final-audit re-check R3).
+      -- index ordered by position, so no plan can walk other contracts' rows instead.
       PRIMARY KEY (network, contract_address, block_height, tx_index, event_index) INCLUDE (classification)
     )
   `;
