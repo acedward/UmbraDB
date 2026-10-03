@@ -1,5 +1,6 @@
 import * as migration000 from "../000_schema.js";
 import * as mip0018Core from "./001_mip0018_core.js";
+import * as mip0018Scan from "./002_mip0018_scan.js";
 import type { Migration } from "../../migrate.js";
 
 /**
@@ -9,8 +10,12 @@ import type { Migration } from "../../migrate.js";
  * independent `mip0018._migrations` table, and a caller selects this lineage with
  * `runMigrations(sql, { schema: MIP0018_SCHEMA, migrations: mip0018Migrations })`. Nothing in `src/` imports it; the
  * token indexer (`token-indexer/`) and its tests apply it explicitly.
+ *
+ * `002_mip0018_scan` (sub-plans A3/B2): the scan cursor, mints, color sightings, contract actions and the NIGHT/DUST
+ * rows written by the scan over the chain archive, in the same schema as the event log so that one block commits in
+ * one transaction.
  */
-export const mip0018Migrations: Migration[] = [migration000, mip0018Core];
+export const mip0018Migrations: Migration[] = [migration000, mip0018Core, mip0018Scan];
 
 /** The conventional schema name this lineage lives in. */
 export const MIP0018_SCHEMA = "mip0018";
