@@ -6,16 +6,16 @@
  * Data: the recorded Stagenet IDX range (sub-plan D1 tapes) archived by the real sync against the fake chain and
  * scanned by the real scanner; C06's lifecycle replayed step by step while the page stays open (periodic refresh);
  * synthetic archive blocks for what Stagenet does not show (hostile text, a partial and an unusable token, a whole
- * identity withdrawn, a color seen without a mint). The activity endpoints are not in this branch yet (C1 wires them
- * after C2): the routes test asserts whatever the API answers (404 → the "not served" note; 200 → the rows), and
- * `[[mip0018.ui.browser-activity-shape]]` renders C2's documented row shape from a stub route of the test server.
+ * identity withdrawn, a color seen without a mint). The activity sections read the real activity endpoints (C1 over
+ * C2's rows): `[[mip0018.ui.browser-activity-shape]]` checks them on the recorded range (C03, C06) and on synthetic
+ * blocks scanned by the real scanner with C2's synthetic activity transactions (every role, load more).
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH (see
  * `ui/README.md`). `MIP0018_UI_SCREENSHOTS=<dir>` saves PNGs of the list and some views (never committed).
  */
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
-import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import type { Server } from "node:http";
 import { join } from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -24,13 +24,14 @@ import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.j
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { type ArchiveTape, startFakeChain } from "../../test/integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadCaseIndex, loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
-import { createMip0018Api, listen } from "../mip0018/api.ts";
 import { Mip0018Scanner } from "../mip0018/scan.ts";
 import { serve, type ServeHandle } from "../mip0018/serve-cli.ts";
-import { serveUi } from "../mip0018/ui/page.ts";
+import { walletAddress } from "../mip0018/bech32m.ts";
+import { tokenColor } from "../mip0018/color.ts";
 import { EVENT_NAME, encodePayload, type MetadataRecord, record } from "../vendor/mip0018/codec/src/index.ts";
 import { Browser, findBrowser, type Page } from "./helpers/cdp-browser.ts";
 import { decodeSynthetic, putSyntheticBlocks, type SynthArchivedTx, type SynthLog } from "./helpers/synthetic-archive.ts";
+import { acceptedEvent, rejectedEvent, type SynthTxA, syntheticSeams, walletOf } from "./helpers/synthetic-activity.ts";
 
 const NET = "stagenet";
 const WALLET_1 = "mn_addr_stagenet1vw57646su9y5z6myarm93m6kcn62j97z0yma94lfkhmta6pz5h5q6utr3k";
@@ -213,7 +214,7 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
   }
 
   /** No CSP violation, no uncaught exception, no console error/warning; browser log errors only for expected 404s (`allowed`). */
-  async function expectCleanConsole(page: Page, allowed = /\/activity(\?|$)/): Promise<void> {
+  async function expectCleanConsole(page: Page, allowed = /(?!)/): Promise<void> {
     expect(await page.eval<string[]>("window.__cspViolations")).toEqual([]);
     expect(page.exceptions).toEqual([]);
     expect(page.console.filter((c) => c.type === "error" || c.type === "warning" || c.type === "assert")).toEqual([]);
@@ -321,14 +322,10 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
     const c03 = api16.find((t) => t.contractAddress === C03 && t.kind === 2);
     const act = await api(idx.base, `/v1/tokens/${c03.color}/activity`);
     const s03 = await visit(page, `#/token/${C03}/${c03.domainSep}/2`);
-    if (act.status === 404) {
-      expect(await page.eval<string | null>("(document.querySelector('#activity [data-activity]') || {}).getAttribute ? document.querySelector('#activity [data-activity]').getAttribute('data-activity') : null")).toBe("unavailable");
-      expect(s03.view).toContain("activity is not served by this API yet");
-    } else {
-      expect(act.status).toBe(200);
-      expect(await page.eval<number>("document.querySelectorAll('#activity tbody tr').length")).toBe(act.json.items.length);
-      expect(await page.eval<string[]>("[...document.querySelectorAll('#activity .wallet')].map((w) => w.textContent)")).toContain(WALLET_1);
-    }
+    expect(act.status).toBe(200); // served since C1 wired C2's rows
+    expect(s03.view).not.toContain("activity is not served by this API yet");
+    expect(await page.eval<number>("document.querySelectorAll('#activity tbody tr').length")).toBe(act.json.items.length);
+    expect(await page.eval<string[]>("[...document.querySelectorAll('#activity .wallet')].map((w) => w.textContent)")).toContain(WALLET_1);
 
     // Contract view of C04: three identities, the ACD group with three member links; tx view of C08's emitTwo.
     const sc = await visit(page, `#/contract/${C04}`);
@@ -357,80 +354,112 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
     expect(await page.eval<number>("document.scripts.length")).toBe(1);
   }, 300_000);
 
-  it("[[mip0018.ui.browser-activity-shape]] the activity section draws C2's documented row shape (stub route until C1 serves it): every role, Bech32m wallets exactly as served (never hex), heights, tx links, a hostile entry point as visible marks, an unknown role as text, keyset 'load more' with the API's cursor; a 404 says 'not served yet'", async () => {
+  it("[[mip0018.ui.browser-activity-shape]] the activity section draws what the REAL activity endpoints answer: on the recorded IDX range C03's rows (UTXO and mint with wallet 1 in Bech32m, never its hex; the publish as a metadata transaction) and C06's five metadata transactions (identity and contract views); on synthetic blocks through the real scanner every role, Bech32m wallets, a hostile entry point as visible marks, and 'load more' with the API's own cursor", async () => {
+    // Part A — the recorded IDX range, served by the real entry point (serve(): API + /ui).
     const list = (await api(idx.base, "/v1/tokens?limit=500")).json.items as Json[];
     const C03 = contractOf("C03");
     const c03 = list.find((t) => t.contractAddress === C03 && t.kind === 2);
-    const mintTx = stepTx("C03", "mint");
-    const publishTx = stepTx("C03", "publish");
-    const intent = "0c".repeat(32);
-    const rowsFor: Record<string, Json[]> = {
-      [`tokens/${c03.color}`]: [
-        { height: 714617, txIndex: 0, itemIndex: 0, txHash: mintTx, role: "utxo-created", phase: "guaranteed", color: c03.color, amount: "1000000", direction: "in", wallet: WALLET_1, utxo: { intentHash: intent, outputIndex: 0 } },
-        { height: 714617, txIndex: 0, itemIndex: 1, txHash: mintTx, role: "mint", phase: "guaranteed", color: c03.color, amount: "1000000", contract: C03, domainSep: c03.domainSep, kind: 2, wallet: WALLET_1, actionIndex: 0, entryPoint: "mint" },
-        { height: 714624, txIndex: 0, itemIndex: 0, txHash: publishTx, role: "metadata-event", contract: C03, events: { accepted: 1, rejected: 0, firstEventIndex: 0 } },
-        { height: 714700, txIndex: 1, itemIndex: 0, txHash: "ab".repeat(32), role: "contract-in", phase: "fallible", segment: 5, color: c03.color, amount: "5", direction: "in", contract: C03, entryPoint: "\u202Eevil\u0000" },
-        { height: 714701, txIndex: 0, itemIndex: 0, txHash: "cd".repeat(32), role: "contract-out", phase: "guaranteed", color: c03.color, amount: "4", direction: "out", contract: C03, recipientContract: contractOf("C04") },
-        { height: 714702, txIndex: 0, itemIndex: 0, txHash: "ef".repeat(32), role: "utxo-spent", phase: "guaranteed", color: c03.color, amount: "1000000", direction: "out", wallet: WALLET_1, utxo: { intentHash: intent, outputIndex: 0 } },
-        { height: 714703, txIndex: 0, itemIndex: 0, txHash: "12".repeat(32), role: "shielded-offer", phase: "guaranteed", color: c03.color, amount: "7", direction: "out" },
-        { height: 714704, txIndex: 0, itemIndex: 0, txHash: "34".repeat(32), role: "future-role" },
-      ],
-      [`contracts/${contractOf("C06")}`]: [
-        { height: 714796, txIndex: 0, itemIndex: 0, txHash: stepTx("C06", "publish"), role: "metadata-event", contract: contractOf("C06"), events: { accepted: 1, rejected: 0, firstEventIndex: 0 } },
-      ],
-    };
-    const PAGE_SIZE = 3;
-    const stub = (req: IncomingMessage, res: ServerResponse): boolean => {
-      const u = new URL(req.url ?? "/", "http://stub.invalid");
-      const m = /^\/v1\/(tokens|contracts)\/([0-9a-f]{64})\/activity$/.exec(u.pathname);
-      if (m === null) return serveUi(req, res);
-      const rows = rowsFor[`${m[1]}/${m[2]}`];
-      const send = (status: number, body: Json): true => {
-        const text = JSON.stringify(body);
-        res.writeHead(status, { "content-type": "application/json; charset=utf-8", "content-length": String(Buffer.byteLength(text)) });
-        res.end(text);
-        return true;
-      };
-      if (rows === undefined) return send(404, { error: { code: "NOT_FOUND", message: "no such route" } });
-      const cursor = u.searchParams.get("cursor");
-      const start = cursor === null ? 0 : Number(cursor.slice(1));
-      const next = start + PAGE_SIZE < rows.length ? `p${start + PAGE_SIZE}` : null;
-      return send(200, { items: rows.slice(start, start + PAGE_SIZE), nextCursor: next, ...(m[1] === "tokens" ? { contract: C03 } : {}) });
-    };
-    const server = createMip0018Api({ sql: idx.sql, network: NET, schema: idx.mip, archiveSchema: idx.archive, ui: stub, log: () => {} });
-    servers.push(server);
-    const base = `http://127.0.0.1:${await listen(server, 0, "127.0.0.1")}`;
+    const act = await api(idx.base, `/v1/tokens/${c03.color}/activity`);
+    expect(act.status).toBe(200);
     const page = await browser.newPage();
-    await page.goto(`${base}/ui#/token/${C03}/${c03.domainSep}/2`);
-    await page.waitFor(`document.body.getAttribute('data-state') === 'ready' && document.querySelectorAll('#activity tbody tr').length === ${PAGE_SIZE}`);
-    for (let pages = 1; pages < 3; pages++) {
-      await page.eval("[...document.querySelectorAll('#activity button')].find((b) => b.textContent.startsWith('load more')).click()");
-      await page.waitFor(`document.querySelectorAll('#activity tbody tr').length === ${Math.min(8, PAGE_SIZE * (pages + 1))}`);
-    }
-    expect(await page.eval<number>("[...document.querySelectorAll('#activity button')].filter((b) => b.textContent.startsWith('load more')).length")).toBe(0);
-    const drawn = await page.eval<Json[]>("[...document.querySelectorAll('#activity tbody tr')].map((tr) => ({ role: tr.getAttribute('data-role'), cells: [...tr.cells].map((c) => c.innerText), wallets: [...tr.querySelectorAll('.wallet')].map((w) => w.textContent), links: [...tr.querySelectorAll('a[href]')].map((a) => a.getAttribute('href')) }))");
-    expect(drawn.map((r) => r.role)).toEqual(["utxo-created", "mint", "metadata-event", "contract-in", "contract-out", "utxo-spent", "shielded-offer", "other"]);
-    expect(drawn.map((r) => r.cells[0])).toEqual(["714617", "714617", "714624", "714700", "714701", "714702", "714703", "714704"]);
-    expect(drawn.map((r) => r.cells[2])).toEqual(["UTXO created \u00b7 in", "mint", "metadata event", "into contract \u00b7 in", "out of contract \u00b7 out", "UTXO spent \u00b7 out", "shielded offer delta \u00b7 out", "future-role"]);
-    expect(drawn.flatMap((r) => r.wallets)).toEqual([WALLET_1, WALLET_1, WALLET_1]);
-    expect(drawn[0].links).toEqual([`#/tx/${mintTx}`]);
-    expect(drawn[2].cells[5]).toBe("1 accepted \u00b7 0 rejected");
-    expect(drawn[3].cells[5]).toContain("fallible \u00b7 segment 5");
-    expect(drawn[3].cells[5]).toContain("\u27e8U+202E\u27e9evil\u27e8U+0000\u27e9");
-    expect(drawn[4].links).toContain(`#/contract/${contractOf("C04")}`);
-    const text = await page.eval<string>("document.body.innerText");
-    expect(text).not.toMatch(HIDDEN_RAW);
-    expect(text).not.toContain("63a9ed57"); // wallet 1 as hex: never
-    await shot(page, "activity-c03-stub.png");
-    // A kind-3 identity reads its contract's activity; a contract without the route answers 404 → the note.
+    await page.goto(`${idx.base}/ui`);
+    await page.waitFor("document.body.getAttribute('data-state') === 'ready'");
+    await visit(page, `#/token/${C03}/${c03.domainSep}/2`);
+    await page.waitFor(`document.querySelectorAll('#activity tbody tr').length === ${act.json.items.length}`);
+    const rowsNow = (): Promise<Json[]> => page.eval<Json[]>("[...document.querySelectorAll('#activity tbody tr')].map((tr) => ({ role: tr.getAttribute('data-role'), cells: [...tr.cells].map((c) => c.innerText), wallets: [...tr.querySelectorAll('.wallet')].map((w) => w.textContent), links: [...tr.querySelectorAll('a[href]')].map((a) => a.getAttribute('href')) }))");
+    const d03 = await rowsNow();
+    expect(d03.map((r) => [r.role, r.cells[0]])).toEqual((act.json.items as Json[]).map((i) => [i.role, String(i.height)]));
+    expect(d03.map((r) => [r.role, r.cells[0], r.cells[2]])).toEqual([["utxo-created", "714617", "UTXO created \u00b7 in"], ["mint", "714617", "mint \u00b7 in"], ["metadata-event", "714624", "metadata event"]]);
+    expect(d03.flatMap((r) => r.wallets)).toEqual([WALLET_1, WALLET_1]);
+    expect(d03[0]!.links).toContain(`#/tx/${stepTx("C03", "mint")}`);
+    expect(d03[2]!.links).toContain(`#/tx/${stepTx("C03", "publish")}`);
+    expect(d03[2]!.cells[5]).toBe("1 accepted \u00b7 0 rejected");
+    expect(await page.eval<string>("document.body.innerText")).not.toContain("63a9ed57"); // wallet 1 as hex: never
+    await shot(page, "activity-c03.png");
+    // C06 (kind 3, no color): its contract's metadata transactions, on the identity and on the contract view.
     const C06 = contractOf("C06");
-    await visit(page, `#/token/${C06}/${"11".repeat(32)}/3`);
-    await page.waitFor("document.querySelectorAll('#activity tbody tr').length === 1");
-    await visit(page, `#/contract/${contractOf("C01")}`);
-    expect(await page.eval<string>("document.querySelector('#activity [data-activity]').getAttribute('data-activity')")).toBe("unavailable");
-    expectOnlyApiCalls(page, base);
+    const c06Heights = ["714796", "714804", "714813", "714827", "714835"];
+    for (const hash of [`#/token/${C06}/${"11".repeat(32)}/3`, `#/contract/${C06}`]) {
+      await visit(page, hash);
+      await page.waitFor("document.querySelectorAll('#activity tbody tr').length === 5", 30_000, hash);
+      const d06 = await rowsNow();
+      expect(d06.map((r) => [r.role, r.cells[0], r.cells[r.cells.length - 1]]), hash).toEqual(c06Heights.map((h) => ["metadata-event", h, "1 accepted \u00b7 0 rejected"]));
+    }
+    // NIGHT: known, no NIGHT UTXO in the recorded range → "no activity"; no "not served" note anywhere.
+    await visit(page, `#/color/${"0".repeat(64)}`);
+    expect(await page.eval<string>("document.querySelector('#activity [data-activity]').getAttribute('data-activity')")).toBe("empty");
+    expectOnlyApiCalls(page, idx.base);
     await expectCleanConsole(page);
-  }, 180_000);
+
+    // Part B — synthetic blocks through the real scanner (C2's synthetic activity transactions) and the real endpoint.
+    const db = await fresh("uiact");
+    const A = "a1".repeat(32); // the minting contract
+    const B = "b2".repeat(32); // a contract recipient
+    const DS = "0d".repeat(32);
+    const Y = "e7".repeat(32); // a color seen in UTXOs and contract flows
+    const X = "f8".repeat(32); // a color seen in Zswap deltas
+    const minted = tokenColor(DS, A);
+    const archived = (t: SynthTxA): SynthArchivedTx => ({ tx: t as unknown as SynthArchivedTx["tx"], result: "success", segments: null });
+    await putSyntheticBlocks(db.sql, db.archive, NET, 100, [
+      [archived({
+        hash: "c1".repeat(32),
+        guaranteedDeltas: [[X, "-10"]],
+        intents: [{
+          segment: 5,
+          fallibleSpends: [[Y, "7", 3, "22".repeat(32), 4]],
+          fallibleOutputs: [[Y, "7", walletOf(2)]],
+          calls: [{
+            address: A, entryPoint: "\u202Eevil\u200B", // (a NUL cannot be stored in a Postgres text column; flagged in the C plan)
+            guaranteed: { logs: [acceptedEvent(DS, 2, "Gee")], unshieldedMints: [[DS, "50"]], claimed: [[minted, "user", walletOf(2), "50"]], unshieldedInputs: [["unshielded", Y, "5"]] },
+            fallible: { logs: [rejectedEvent()], unshieldedOutputs: [["unshielded", Y, "3"]], claimed: [[Y, "contract", B, "3"]] },
+          }],
+        }],
+      })],
+      // 110 more UTXOs of color Y: its listing needs a second API page.
+      [archived({ hash: "c2".repeat(32), intents: [{ segment: 1, guaranteedOutputs: Array.from({ length: 110 }, () => [Y, "1", walletOf(1)] as [string, string, string]) }] })],
+    ]);
+    const s = scanner(db, syntheticSeams);
+    await s.bootstrap();
+    await scanAll(s);
+    const base = await serveDb(db);
+    const yAct = await api(base, `/v1/tokens/${Y}/activity?limit=500`);
+    expect(yAct.json.items).toHaveLength(114);
+    const page2 = await browser.newPage();
+    await page2.goto(`${base}/ui`);
+    await page2.waitFor("document.body.getAttribute('data-state') === 'ready'");
+    await visit(page2, `#/color/${Y}`);
+    await page2.waitFor("document.querySelectorAll('#activity tbody tr').length === 100");
+    await page2.eval("[...document.querySelectorAll('#activity button')].find((b) => b.textContent.startsWith('load more')).click()");
+    await page2.waitFor("document.querySelectorAll('#activity tbody tr').length === 114");
+    expect(await page2.eval<number>("[...document.querySelectorAll('#activity button')].filter((b) => b.textContent.startsWith('load more')).length")).toBe(0);
+    const rows2 = (): Promise<Json[]> => page2.eval<Json[]>("[...document.querySelectorAll('#activity tbody tr')].map((tr) => ({ role: tr.getAttribute('data-role'), cells: [...tr.cells].map((c) => c.innerText), wallets: [...tr.querySelectorAll('.wallet')].map((w) => w.textContent), links: [...tr.querySelectorAll('a[href]')].map((a) => a.getAttribute('href')) }))");
+    const dy = await rows2();
+    expect(dy.map((r) => r.role)).toEqual((yAct.json.items as Json[]).map((i) => i.role));
+    expect(dy.slice(0, 4).map((r) => [r.role, r.cells[2]])).toEqual([
+      ["contract-in", "into contract \u00b7 in"], ["utxo-spent", "UTXO spent \u00b7 out"], ["utxo-created", "UTXO created \u00b7 in"], ["contract-out", "out of contract \u00b7 out"],
+    ]);
+    expect(dy[0]!.cells.join(" ")).toContain("\u27e8U+202E\u27e9evil\u27e8U+200B\u27e9"); // the hostile entry point as visible marks
+    expect(dy[1]!.wallets).toEqual([walletAddress(NET, walletOf(3))]);
+    expect(dy[2]!.wallets).toEqual([walletAddress(NET, walletOf(2))]);
+    expect(dy[3]!.links).toContain(`#/contract/${B}`);
+    expect(dy.slice(4).every((r) => r.role === "utxo-created" && r.wallets[0] === walletAddress(NET, walletOf(1)))).toBe(true);
+    const text = await page2.eval<string>("document.body.innerText");
+    expect(text).not.toMatch(HIDDEN_RAW);
+    for (const n of [1, 2, 3]) expect(text).not.toContain(walletOf(n).slice(0, 16)); // wallets never as hex
+    // The minted color: the mint with its recipient wallet and the minting contract's metadata transaction.
+    await visit(page2, `#/color/${minted}`);
+    await page2.waitFor("document.querySelectorAll('#activity tbody tr').length === 2");
+    const dm = await rows2();
+    expect(dm.map((r) => [r.role, r.wallets])).toEqual([["mint", [walletAddress(NET, walletOf(2))]], ["metadata-event", []]]);
+    expect(dm[1]!.cells[dm[1]!.cells.length - 1]).toBe("1 accepted \u00b7 1 rejected"); // details: the last column (a color view adds one)
+    // The Zswap delta of X.
+    await visit(page2, `#/color/${X}`);
+    await page2.waitFor("document.querySelectorAll('#activity tbody tr').length === 1");
+    expect((await rows2()).map((r) => [r.role, r.cells[2]])).toEqual([["shielded-offer", "shielded offer delta \u00b7 in"]]);
+    await shot(page2, "activity-synthetic.png");
+    expectOnlyApiCalls(page2, base);
+    await expectCleanConsole(page2);
+  }, 240_000);
 
   it("[[mip0018.ui.browser-hostile-text]] hostile metadata renders as visible text: bidi/zero-width/NUL/control characters as ⟨U+XXXX⟩ marks (never raw, also not in tooltips), markup as literal text (no element, no script run), URIs as text never fetched or linked, budgets with 'show all', a partial ⚠ and an unusable field drawn without its value; a seen-only color last", async () => {
     const db = await fresh("uihostile");

@@ -495,7 +495,7 @@
     {
       "id": "mip0018.ui.browser-activity-shape",
       "file": "token-indexer/test/mip0018-ui-browser.test.ts",
-      "description": "Project 00026 C3 (FR-021): the activity section draws the documented row shape (every role, Bech32m wallets exactly as served, heights, tx links, hostile entry point as marks, keyset load more); a 404 says not served yet."
+      "description": "Project 00026 C3+C1 (FR-021, US5): the activity section draws what the real activity endpoints answer: C03's UTXO and mint rows with wallet 1 in Bech32m (never hex) and its publish, C06's five metadata transactions on the identity and contract views; on synthetic blocks through the real scanner every role, Bech32m wallets, a hostile entry point as visible marks, and load more with the API's cursor."
     },
     {
       "id": "mip0018.ui.browser-hostile-text",
