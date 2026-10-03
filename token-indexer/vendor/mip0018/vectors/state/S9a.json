@@ -1,0 +1,416 @@
+{
+  "id": "S9a",
+  "mip": {
+    "commit": "78ecbb4b1ba57371e84fe45f705991ab7b996a61",
+    "testId": "S9"
+  },
+  "normative": true,
+  "description": "Symbol grouping: Contract A on testnet-a: kinds 1 and 3 under domainSep 0x11 and kind 1 under 0x22 with symbol \"ACME\"; also \"acme\" (0x33), \" ACME\" (0x44), a type-0 \"ACME\" (0x55), key \"SYMBOL\" (0x66) and no symbol (0x77). Contract B on testnet-a and contract A on testnet-b each publish \"ACME\" under 0x11 kind 1. Kinds 1 and 3 of 0x11 and kind 1 of 0x22 form one group; the other contract, the other network, \"acme\" and \" ACME\" are separate groups; the type-0 symbol, the key \"SYMBOL\" and the missing symbol are ungrouped.",
+  "steps": [
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 1,
+      "tx": 0,
+      "event": 0,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "111111111111111111111111111111111111111111111111111111111111111101046e616d65010d41636d6520536869656c6465640673796d626f6c010441434d4500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 1,
+      "tx": 0,
+      "event": 1,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "111111111111111111111111111111111111111111111111111111111111111103046e616d65010b41636d65204c65646765720673796d626f6c010441434d45000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 1,
+      "tx": 0,
+      "event": 2,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "222222222222222222222222222222222222222222222222222222222222222201046e616d65010841636d652054776f0673796d626f6c010441434d45000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 1,
+      "tx": 1,
+      "event": 0,
+      "contractAddress": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "111111111111111111111111111111111111111111111111111111111111111101046e616d65010e4f7468657220436f6e74726163740673796d626f6c010441434d45000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 1,
+      "tx": 2,
+      "event": 0,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "333333333333333333333333333333333333333333333333333333333333333303046e616d65010a4c6f77657220436173650673796d626f6c010461636d6500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 1,
+      "tx": 2,
+      "event": 1,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "444444444444444444444444444444444444444444444444444444444444444403046e616d65010d4c656164696e672053706163650673796d626f6c01052041434d45000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 1,
+      "tx": 2,
+      "event": 2,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "555555555555555555555555555555555555555555555555555555555555555503046e616d65010c42797465732053796d626f6c0673796d626f6c000441434d450000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 1,
+      "tx": 2,
+      "event": 3,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "666666666666666666666666666666666666666666666666666666666666666603046e616d6501095570706572204b65790653594d424f4c010441434d450000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 1,
+      "tx": 2,
+      "event": 4,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "777777777777777777777777777777777777777777777777777777777777777703046e616d6501094e6f2053796d626f6c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "op": "apply",
+      "network": "testnet-b",
+      "block": 1,
+      "tx": 0,
+      "event": 0,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "111111111111111111111111111111111111111111111111111111111111111101046e616d65010d4f74686572204e6574776f726b0673796d626f6c010441434d4500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "expect": {
+    "identities": [
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+        "kind": 1,
+        "visible": true,
+        "fields": {
+          "6e616d65": {
+            "key_text": "name",
+            "valType": 1,
+            "value_hex": "41636d6520536869656c646564",
+            "value_text": "Acme Shielded",
+            "usable": true
+          },
+          "73796d626f6c": {
+            "key_text": "symbol",
+            "valType": 1,
+            "value_hex": "41434d45",
+            "value_text": "ACME",
+            "usable": true
+          }
+        }
+      },
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+        "kind": 3,
+        "visible": true,
+        "fields": {
+          "6e616d65": {
+            "key_text": "name",
+            "valType": 1,
+            "value_hex": "41636d65204c6564676572",
+            "value_text": "Acme Ledger",
+            "usable": true
+          },
+          "73796d626f6c": {
+            "key_text": "symbol",
+            "valType": 1,
+            "value_hex": "41434d45",
+            "value_text": "ACME",
+            "usable": true
+          }
+        }
+      },
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "domainSep": "2222222222222222222222222222222222222222222222222222222222222222",
+        "kind": 1,
+        "visible": true,
+        "fields": {
+          "6e616d65": {
+            "key_text": "name",
+            "valType": 1,
+            "value_hex": "41636d652054776f",
+            "value_text": "Acme Two",
+            "usable": true
+          },
+          "73796d626f6c": {
+            "key_text": "symbol",
+            "valType": 1,
+            "value_hex": "41434d45",
+            "value_text": "ACME",
+            "usable": true
+          }
+        }
+      },
+      {
+        "network": "testnet-a",
+        "contractAddress": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+        "kind": 1,
+        "visible": true,
+        "fields": {
+          "6e616d65": {
+            "key_text": "name",
+            "valType": 1,
+            "value_hex": "4f7468657220436f6e7472616374",
+            "value_text": "Other Contract",
+            "usable": true
+          },
+          "73796d626f6c": {
+            "key_text": "symbol",
+            "valType": 1,
+            "value_hex": "41434d45",
+            "value_text": "ACME",
+            "usable": true
+          }
+        }
+      },
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "domainSep": "3333333333333333333333333333333333333333333333333333333333333333",
+        "kind": 3,
+        "visible": true,
+        "fields": {
+          "6e616d65": {
+            "key_text": "name",
+            "valType": 1,
+            "value_hex": "4c6f7765722043617365",
+            "value_text": "Lower Case",
+            "usable": true
+          },
+          "73796d626f6c": {
+            "key_text": "symbol",
+            "valType": 1,
+            "value_hex": "61636d65",
+            "value_text": "acme",
+            "usable": true
+          }
+        }
+      },
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "domainSep": "4444444444444444444444444444444444444444444444444444444444444444",
+        "kind": 3,
+        "visible": true,
+        "fields": {
+          "6e616d65": {
+            "key_text": "name",
+            "valType": 1,
+            "value_hex": "4c656164696e67205370616365",
+            "value_text": "Leading Space",
+            "usable": true
+          },
+          "73796d626f6c": {
+            "key_text": "symbol",
+            "valType": 1,
+            "value_hex": "2041434d45",
+            "value_text": " ACME",
+            "usable": true
+          }
+        }
+      },
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "domainSep": "5555555555555555555555555555555555555555555555555555555555555555",
+        "kind": 3,
+        "visible": true,
+        "fields": {
+          "6e616d65": {
+            "key_text": "name",
+            "valType": 1,
+            "value_hex": "42797465732053796d626f6c",
+            "value_text": "Bytes Symbol",
+            "usable": true
+          },
+          "73796d626f6c": {
+            "key_text": "symbol",
+            "valType": 0,
+            "value_hex": "41434d45",
+            "usable": false
+          }
+        }
+      },
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "domainSep": "6666666666666666666666666666666666666666666666666666666666666666",
+        "kind": 3,
+        "visible": true,
+        "fields": {
+          "6e616d65": {
+            "key_text": "name",
+            "valType": 1,
+            "value_hex": "5570706572204b6579",
+            "value_text": "Upper Key",
+            "usable": true
+          },
+          "53594d424f4c": {
+            "key_text": "SYMBOL",
+            "valType": 1,
+            "value_hex": "41434d45",
+            "value_text": "ACME"
+          }
+        }
+      },
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "domainSep": "7777777777777777777777777777777777777777777777777777777777777777",
+        "kind": 3,
+        "visible": true,
+        "fields": {
+          "6e616d65": {
+            "key_text": "name",
+            "valType": 1,
+            "value_hex": "4e6f2053796d626f6c",
+            "value_text": "No Symbol",
+            "usable": true
+          }
+        }
+      },
+      {
+        "network": "testnet-b",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+        "kind": 1,
+        "visible": true,
+        "fields": {
+          "6e616d65": {
+            "key_text": "name",
+            "valType": 1,
+            "value_hex": "4f74686572204e6574776f726b",
+            "value_text": "Other Network",
+            "usable": true
+          },
+          "73796d626f6c": {
+            "key_text": "symbol",
+            "valType": 1,
+            "value_hex": "41434d45",
+            "value_text": "ACME",
+            "usable": true
+          }
+        }
+      }
+    ],
+    "groups": [
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "symbol_hex": "41434d45",
+        "symbol_text": "ACME",
+        "members": [
+          {
+            "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+            "kind": 1
+          },
+          {
+            "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+            "kind": 3
+          },
+          {
+            "domainSep": "2222222222222222222222222222222222222222222222222222222222222222",
+            "kind": 1
+          }
+        ]
+      },
+      {
+        "network": "testnet-a",
+        "contractAddress": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "symbol_hex": "41434d45",
+        "symbol_text": "ACME",
+        "members": [
+          {
+            "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+            "kind": 1
+          }
+        ]
+      },
+      {
+        "network": "testnet-b",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "symbol_hex": "41434d45",
+        "symbol_text": "ACME",
+        "members": [
+          {
+            "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+            "kind": 1
+          }
+        ]
+      },
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "symbol_hex": "61636d65",
+        "symbol_text": "acme",
+        "members": [
+          {
+            "domainSep": "3333333333333333333333333333333333333333333333333333333333333333",
+            "kind": 3
+          }
+        ]
+      },
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "symbol_hex": "2041434d45",
+        "symbol_text": " ACME",
+        "members": [
+          {
+            "domainSep": "4444444444444444444444444444444444444444444444444444444444444444",
+            "kind": 3
+          }
+        ]
+      }
+    ]
+  }
+}

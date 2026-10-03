@@ -1,0 +1,21 @@
+{
+  "id": "INF-ZEXT-7",
+  "mip": {
+    "commit": "78ecbb4b1ba57371e84fe45f705991ab7b996a61",
+    "testId": "INF-ZEXT"
+  },
+  "normative": false,
+  "description": "A 257-byte payload (A1 followed by one more zero byte): longer than 256 bytes, so it cannot be decoded as defined in the MIP and the event is rejected.",
+  "basis": "MIP \"Consuming\" (78ecbb4): \"Some sources drop trailing zero bytes; consumers MUST treat missing trailing bytes as zero, so that every `name` is 32 bytes and every `payload` 256 bytes, before decoding.\" The expected result is the full form's.",
+  "event": {
+    "type": "Misc",
+    "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+    "payload_hex": "111111111111111111111111111111111111111111111111111111111111111103046e616d65010a41636d6520546f6b656e0673796d626f6c010441434d4508646563696d616c73020106097374616e646172647301086d69702d30303034000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "payload_file": "INF-ZEXT-7.bin"
+  },
+  "expect": {
+    "result": "reject",
+    "reason": "bad-payload-length",
+    "offset": 0
+  }
+}

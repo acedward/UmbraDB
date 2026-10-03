@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
+import { verifySums } from "../vendor/mip0018/vectors/tools/common.ts";
 
 const VENDOR_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "vendor", "mip0018");
 const PINNED_COMMIT = "daec1f19747b09f4e245885ab0dd9ecc789a82ce";
@@ -75,6 +76,12 @@ describe("vendored MIP-0018 reference files", () => {
     const rows = parseSourceRows(text);
     expect(rows.some((r) => r.path === "codec/src/decode.ts")).toBe(true);
     expect(rows.some((r) => r.path === "LICENSE")).toBe(true);
+    expect(rows.some((r) => r.path === "vectors/tools/run.ts")).toBe(true);
+    expect(rows.some((r) => r.path === "vectors/manifest.json")).toBe(true);
+  });
+
+  it("[[mip0018.vendor.vector-sums]] the vendored vectors pass their own SHA256SUMS (as the runner checks before a run)", () => {
+    expect(verifySums(join(VENDOR_DIR, "vectors"))).toEqual([]);
   });
 
   it("a single modified byte, a removed file and an unlisted file are each reported", () => {

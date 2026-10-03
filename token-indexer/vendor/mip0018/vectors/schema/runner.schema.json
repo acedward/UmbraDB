@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/midnight-experiments/mip-0018/vectors/schema/runner.schema.json",
+  "title": "MIP-0018 vector runner protocol (one JSON object per line)",
+  "description": "The runner starts the consumer command, writes one request per line to its stdin and reads exactly one response per line from its stdout, in order. Any language can implement this contract. Requests are `$defs/request`; responses are `$defs/response`.",
+  "anyOf": [{ "$ref": "#/$defs/request" }, { "$ref": "#/$defs/response" }],
+  "$defs": {
+    "decodeRequest": {
+      "description": "Classify and decode one observed event.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "op", "type", "name_hex", "payload_hex"],
+      "properties": {
+        "id": { "$ref": "payload.schema.json#/$defs/vectorId" },
+        "op": { "const": "decode" },
+        "type": { "$ref": "payload.schema.json#/$defs/eventType" },
+        "name_hex": { "$ref": "payload.schema.json#/$defs/observedNameHex" },
+        "payload_hex": { "$ref": "payload.schema.json#/$defs/observedPayloadHex" }
+      }
+    },
+    "stateRequest": {
+      "description": "Start from an empty state, apply the steps in order, then report the state (and display the requested amounts).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "op", "steps"],
+      "properties": {
+        "id": { "$ref": "payload.schema.json#/$defs/vectorId" },
+        "op": { "const": "state" },
+        "steps": { "type": "array", "minItems": 1, "items": { "$ref": "state.schema.json#/$defs/step" } },
+        "display": { "type": "array", "items": { "$ref": "state.schema.json#/$defs/displayQuery" } }
+      }
+    },
+    "request": { "oneOf": [{ "$ref": "#/$defs/decodeRequest" }, { "$ref": "#/$defs/stateRequest" }] },
+    "decodeResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "result"],
+      "properties": {
+        "id": { "$ref": "payload.schema.json#/$defs/vectorId" },
+        "result": { "enum": ["accept", "reject", "ignore"] },
+        "reason": { "type": "string" },
+        "offset": { "type": "integer", "minimum": 0, "maximum": 256 },
+        "header": { "$ref": "payload.schema.json#/$defs/header" },
+        "records": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["offset", "key_hex", "valType", "value_hex"],
+            "properties": {
+              "offset": { "type": "integer" },
+              "key_hex": { "$ref": "payload.schema.json#/$defs/hex" },
+              "valType": { "type": "integer" },
+              "value_hex": { "$ref": "payload.schema.json#/$defs/hex" },
+              "decoded": { "$ref": "payload.schema.json#/$defs/uintDecimal" }
+            }
+          }
+        },
+        "contentEnd": { "type": "integer", "minimum": 0, "maximum": 256 }
+      },
+      "allOf": [{ "if": { "properties": { "result": { "const": "accept" } } }, "then": { "required": ["header", "records"] } }]
+    },
+    "stateResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "identities"],
+      "properties": {
+        "id": { "$ref": "payload.schema.json#/$defs/vectorId" },
+        "identities": {
+          "description": "Every identity of the vector, with at least its common keys (other keys may be left out). A hidden identity without fields may be omitted.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["network", "contractAddress", "domainSep", "kind", "visible", "fields"],
+            "properties": {
+              "network": { "type": "string" },
+              "contractAddress": { "$ref": "payload.schema.json#/$defs/hex32" },
+              "domainSep": { "$ref": "payload.schema.json#/$defs/hex32" },
+              "kind": { "type": "integer" },
+              "visible": { "type": "boolean" },
+              "colored": { "type": "boolean" },
+              "fields": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "required": ["valType", "value_hex"],
+                  "properties": {
+                    "valType": { "type": "integer" },
+                    "value_hex": { "$ref": "payload.schema.json#/$defs/hex" },
+                    "usable": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "groups": {
+          "description": "Optional: omit (or send null or []) when the consumer does not group symbols (MIP Testing S9).",
+          "type": ["array", "null"],
+          "items": { "$ref": "state.schema.json#/$defs/group" }
+        },
+        "display": {
+          "description": "Optional: omit (or send null) when the consumer does not display amounts (MIP Testing S8).",
+          "type": ["array", "null"],
+          "items": { "$ref": "state.schema.json#/$defs/display" }
+        }
+      }
+    },
+    "errorResponse": {
+      "description": "The consumer could not process the request (counts as a failure of that vector).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "error"],
+      "properties": {
+        "id": { "type": ["string", "null"] },
+        "error": { "type": "string" }
+      }
+    },
+    "response": { "anyOf": [{ "$ref": "#/$defs/errorResponse" }, { "$ref": "#/$defs/decodeResponse" }, { "$ref": "#/$defs/stateResponse" }] }
+  }
+}

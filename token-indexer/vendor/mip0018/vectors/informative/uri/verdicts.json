@@ -1,0 +1,162 @@
+{
+  "rule": "RFC 3986 URI (scheme required, fragment allowed, ASCII only)",
+  "basis": "Q20 / MIP-0018 Value types",
+  "cases": [
+    {
+      "case": "c01",
+      "value": "https://acme.example/logo.png",
+      "verdict": "accept",
+      "vector": "INF-URI-c01.json"
+    },
+    {
+      "case": "c02",
+      "value": "https://acme.example/logo.png#v2",
+      "verdict": "accept",
+      "vector": "INF-URI-c02.json"
+    },
+    {
+      "case": "c03",
+      "value": "https://ä.example/logo.png",
+      "verdict": "reject",
+      "vector": "INF-URI-c03.json"
+    },
+    {
+      "case": "c04",
+      "value": "https://acme.example/ä.png",
+      "verdict": "reject",
+      "vector": "INF-URI-c04.json"
+    },
+    {
+      "case": "c05",
+      "value": "https://acme.example/a%20b.png",
+      "verdict": "accept",
+      "vector": "INF-URI-c05.json"
+    },
+    {
+      "case": "c06",
+      "value": "https://acme.example/a b.png",
+      "verdict": "reject",
+      "vector": "INF-URI-c06.json"
+    },
+    {
+      "case": "c07",
+      "value": "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
+      "verdict": "accept",
+      "vector": "INF-URI-c07.json"
+    },
+    {
+      "case": "c08",
+      "value": "ar://bNbA3TEQVL60xlgCcqdz4ZPHFZ711cZ3hmkpGttDt_U",
+      "verdict": "accept",
+      "vector": "INF-URI-c08.json"
+    },
+    {
+      "case": "c09",
+      "value": "data:image/png;base64,iVBORw0KGgo=",
+      "verdict": "accept",
+      "vector": "INF-URI-c09.json"
+    },
+    {
+      "case": "c10",
+      "value": "mailto:issuer@acme.example",
+      "verdict": "accept",
+      "vector": "INF-URI-c10.json"
+    },
+    {
+      "case": "c11",
+      "value": "urn:isbn:0451450523",
+      "verdict": "accept",
+      "vector": "INF-URI-c11.json"
+    },
+    {
+      "case": "c12",
+      "value": "HTTPS://ACME.EXAMPLE/",
+      "verdict": "accept",
+      "vector": "INF-URI-c12.json"
+    },
+    {
+      "case": "c13",
+      "value": "https:///path",
+      "verdict": "accept",
+      "vector": "INF-URI-c13.json"
+    },
+    {
+      "case": "c14",
+      "value": "https:acme.example",
+      "verdict": "accept",
+      "vector": "INF-URI-c14.json"
+    },
+    {
+      "case": "c15",
+      "value": "/relative/path",
+      "verdict": "reject",
+      "vector": "INF-URI-c15.json"
+    },
+    {
+      "case": "c16",
+      "value": "//acme.example/x",
+      "verdict": "reject",
+      "vector": "INF-URI-c16.json"
+    },
+    {
+      "case": "c17",
+      "value": "https://acme.example\\logo.png",
+      "verdict": "reject",
+      "vector": "INF-URI-c17.json"
+    },
+    {
+      "case": "c18",
+      "value": "https://[::1]/",
+      "verdict": "accept",
+      "vector": "INF-URI-c18.json"
+    },
+    {
+      "case": "c19",
+      "value": "https://acme.example:99999/",
+      "verdict": "accept",
+      "vector": "INF-URI-c19.json"
+    },
+    {
+      "case": "c20",
+      "value": "javascript:alert(1)",
+      "verdict": "accept",
+      "vector": "INF-URI-c20.json"
+    },
+    {
+      "case": "c21",
+      "value": "",
+      "verdict": "reject",
+      "vector": "INF-URI-c21.json"
+    },
+    {
+      "case": "c22",
+      "value": " https://acme.example/",
+      "verdict": "reject",
+      "vector": "INF-URI-c22.json"
+    },
+    {
+      "case": "c23",
+      "value": "https://acme.example/%zz",
+      "verdict": "reject",
+      "vector": "INF-URI-c23.json"
+    },
+    {
+      "case": "c24",
+      "value": "https://user:pass@acme.example/",
+      "verdict": "accept",
+      "vector": "INF-URI-c24.json"
+    },
+    {
+      "case": "c25",
+      "value": "https://acme.example/?q=ä",
+      "verdict": "reject",
+      "vector": "INF-URI-c25.json"
+    },
+    {
+      "case": "c26",
+      "value": "x:",
+      "verdict": "accept",
+      "vector": "INF-URI-c26.json"
+    }
+  ]
+}

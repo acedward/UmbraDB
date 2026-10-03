@@ -1,0 +1,21 @@
+{
+  "id": "INF-ZEXT-6",
+  "mip": {
+    "commit": "78ecbb4b1ba57371e84fe45f705991ab7b996a61",
+    "testId": "INF-ZEXT"
+  },
+  "normative": false,
+  "description": "An empty payload with the v1 name: zero-extended it is 256 zero bytes, so kind is 0 and the event is rejected.",
+  "basis": "MIP \"Consuming\" (78ecbb4): \"Some sources drop trailing zero bytes; consumers MUST treat missing trailing bytes as zero, so that every `name` is 32 bytes and every `payload` 256 bytes, before decoding.\" The expected result is the full form's.",
+  "event": {
+    "type": "Misc",
+    "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+    "payload_hex": "",
+    "payload_file": "INF-ZEXT-6.bin"
+  },
+  "expect": {
+    "result": "reject",
+    "reason": "bad-kind",
+    "offset": 32
+  }
+}

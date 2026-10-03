@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/midnight-experiments/mip-0018/vectors/schema/state.schema.json",
+  "title": "MIP-0018 state vector",
+  "description": "A sequence of observed events (and reorganizations) applied in chain order, and the consumer state that must result. Only the properties present in `expect` are compared.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "mip", "normative", "description", "steps", "expect"],
+  "properties": {
+    "id": { "$ref": "payload.schema.json#/$defs/vectorId" },
+    "mip": { "$ref": "payload.schema.json#/$defs/mipRef" },
+    "normative": { "type": "boolean" },
+    "description": { "type": "string", "minLength": 1 },
+    "basis": { "type": "string", "minLength": 1 },
+    "steps": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/step" } },
+    "expect": { "$ref": "#/$defs/stateExpectation" }
+  },
+  "if": { "properties": { "normative": { "const": true } } },
+  "then": {
+    "description": "Normative vectors carry the full 32-byte name and 256-byte payload in every step, as the MIP's Testing items do.",
+    "properties": {
+      "steps": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name_hex": { "$ref": "payload.schema.json#/$defs/hex32" },
+            "payload_hex": { "$ref": "payload.schema.json#/$defs/hex256" }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "network": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "position": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "identity": {
+      "type": "object",
+      "required": ["network", "contractAddress", "domainSep", "kind"],
+      "properties": {
+        "network": { "$ref": "#/$defs/network" },
+        "contractAddress": { "$ref": "payload.schema.json#/$defs/hex32" },
+        "domainSep": { "$ref": "payload.schema.json#/$defs/hex32" },
+        "kind": { "type": "integer", "minimum": 1, "maximum": 3 }
+      }
+    },
+    "applyStep": {
+      "description": "One observed event. `contractAddress` is the address of the contract the event is bound to (from the event record, never from the payload). Steps are given in chain order per network: (block, tx, event) strictly increasing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "network", "block", "tx", "event", "contractAddress", "type", "name_hex", "payload_hex"],
+      "properties": {
+        "op": { "const": "apply" },
+        "network": { "$ref": "#/$defs/network" },
+        "block": { "$ref": "#/$defs/position" },
+        "tx": { "$ref": "#/$defs/position" },
+        "event": { "$ref": "#/$defs/position" },
+        "contractAddress": { "$ref": "payload.schema.json#/$defs/hex32" },
+        "type": { "$ref": "payload.schema.json#/$defs/eventType" },
+        "name_hex": { "$ref": "payload.schema.json#/$defs/observedNameHex" },
+        "payload_hex": { "$ref": "payload.schema.json#/$defs/observedPayloadHex" }
+      }
+    },
+    "rollbackStep": {
+      "description": "A reorganization on one network: every block above `toBlock` is removed from the canonical chain.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "network", "toBlock"],
+      "properties": {
+        "op": { "const": "rollback" },
+        "network": { "$ref": "#/$defs/network" },
+        "toBlock": { "$ref": "#/$defs/position" }
+      }
+    },
+    "step": { "oneOf": [{ "$ref": "#/$defs/applyStep" }, { "$ref": "#/$defs/rollbackStep" }] },
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["valType", "value_hex"],
+      "properties": {
+        "key_text": { "description": "Informative: the key as text when printable.", "type": "string" },
+        "valType": { "type": "integer", "minimum": 0, "maximum": 4 },
+        "value_hex": { "type": "string", "pattern": "^([0-9a-f]{2}){0,255}$" },
+        "value_text": { "description": "Informative: the value as text when printable.", "type": "string" },
+        "usable": {
+          "description": "Common keys (`name`, `symbol`, `decimals`, `standards`) only: whether the current value has the type and form the MIP requires.",
+          "type": "boolean"
+        }
+      }
+    },
+    "identityState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["network", "contractAddress", "domainSep", "kind", "visible", "fields"],
+      "properties": {
+        "network": { "$ref": "#/$defs/network" },
+        "contractAddress": { "$ref": "payload.schema.json#/$defs/hex32" },
+        "domainSep": { "$ref": "payload.schema.json#/$defs/hex32" },
+        "kind": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "visible": { "type": "boolean" },
+        "colored": {
+          "description": "Whether the consumer derives a color `tokenType(domainSep, contractAddress)` for this identity (kinds 1 and 2 only).",
+          "type": "boolean"
+        },
+        "fields": {
+          "description": "Current value per key; property names are the key bytes in lowercase hex.",
+          "type": "object",
+          "propertyNames": { "pattern": "^([0-9a-f]{2}){1,255}$" },
+          "additionalProperties": { "$ref": "#/$defs/field" }
+        }
+      }
+    },
+    "group": {
+      "description": "Visible identities of one (network, contractAddress) whose usable `symbol` has these exact bytes. Expectations list every visible identity with a usable symbol in exactly one group (single-member groups included); the runner compares only groups of two or more members, and a consumer that reports none passes (MIP Testing S9: no groups at all, or exactly the following groups).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["network", "contractAddress", "symbol_hex", "members"],
+      "properties": {
+        "network": { "$ref": "#/$defs/network" },
+        "contractAddress": { "$ref": "payload.schema.json#/$defs/hex32" },
+        "symbol_hex": { "type": "string", "pattern": "^([0-9a-f]{2}){1,255}$" },
+        "symbol_text": { "type": "string" },
+        "members": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["domainSep", "kind"],
+            "properties": {
+              "domainSep": { "$ref": "payload.schema.json#/$defs/hex32" },
+              "kind": { "type": "integer", "minimum": 1, "maximum": 3 }
+            }
+          }
+        }
+      }
+    },
+    "displayQuery": {
+      "description": "A raw amount of one identity to display with that identity's current usable `decimals`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["network", "contractAddress", "domainSep", "kind", "raw"],
+      "properties": {
+        "network": { "$ref": "#/$defs/network" },
+        "contractAddress": { "$ref": "payload.schema.json#/$defs/hex32" },
+        "domainSep": { "$ref": "payload.schema.json#/$defs/hex32" },
+        "kind": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "raw": { "$ref": "payload.schema.json#/$defs/uintDecimal" }
+      }
+    },
+    "display": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["network", "contractAddress", "domainSep", "kind", "raw", "decimals", "text"],
+      "properties": {
+        "network": { "$ref": "#/$defs/network" },
+        "contractAddress": { "$ref": "payload.schema.json#/$defs/hex32" },
+        "domainSep": { "$ref": "payload.schema.json#/$defs/hex32" },
+        "kind": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "raw": { "$ref": "payload.schema.json#/$defs/uintDecimal" },
+        "decimals": { "anyOf": [{ "$ref": "payload.schema.json#/$defs/uintDecimal" }, { "type": "null" }] },
+        "text": { "anyOf": [{ "type": "string" }, { "type": "null" }] }
+      }
+    },
+    "stateExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identities"],
+      "properties": {
+        "identities": { "type": "array", "items": { "$ref": "#/$defs/identityState" } },
+        "groups": { "type": "array", "items": { "$ref": "#/$defs/group" } },
+        "display": { "type": "array", "items": { "$ref": "#/$defs/display" } }
+      }
+    }
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "id": "INF-ZEXT-1",
+  "mip": {
+    "commit": "78ecbb4b1ba57371e84fe45f705991ab7b996a61",
+    "testId": "INF-ZEXT"
+  },
+  "normative": false,
+  "description": "A1 with the payload's 161 trailing zero bytes dropped (95 bytes): accepted exactly as A1.",
+  "basis": "MIP \"Consuming\" (78ecbb4): \"Some sources drop trailing zero bytes; consumers MUST treat missing trailing bytes as zero, so that every `name` is 32 bytes and every `payload` 256 bytes, before decoding.\" The expected result is the full form's.",
+  "event": {
+    "type": "Misc",
+    "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+    "payload_hex": "111111111111111111111111111111111111111111111111111111111111111103046e616d65010a41636d6520546f6b656e0673796d626f6c010441434d4508646563696d616c73020106097374616e646172647301086d69702d30303034",
+    "payload_file": "INF-ZEXT-1.bin"
+  },
+  "expect": {
+    "result": "accept",
+    "header": {
+      "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+      "kind": 3
+    },
+    "records": [
+      {
+        "offset": 33,
+        "key_hex": "6e616d65",
+        "key_text": "name",
+        "valType": 1,
+        "value_hex": "41636d6520546f6b656e",
+        "value_text": "Acme Token"
+      },
+      {
+        "offset": 50,
+        "key_hex": "73796d626f6c",
+        "key_text": "symbol",
+        "valType": 1,
+        "value_hex": "41434d45",
+        "value_text": "ACME"
+      },
+      {
+        "offset": 63,
+        "key_hex": "646563696d616c73",
+        "key_text": "decimals",
+        "valType": 2,
+        "value_hex": "06",
+        "decoded": "6"
+      },
+      {
+        "offset": 75,
+        "key_hex": "7374616e6461726473",
+        "key_text": "standards",
+        "valType": 1,
+        "value_hex": "6d69702d30303034",
+        "value_text": "mip-0004"
+      }
+    ],
+    "contentEnd": 95
+  }
+}
