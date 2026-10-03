@@ -11,6 +11,10 @@
  *   internal details (database and unexpected errors are logged server-side and answered generically).
  * - JSON bodies are pure ASCII: every non-ASCII character and `<`, `>`, `&` are `\uXXXX` escapes, so hostile text
  *   (bidi controls, invisible characters) never travels raw; JSON.parse gives the exact text back.
+ * - Bounded cost (final-audit F2): no answer reads all keys of an identity, all rejected events of a contract or all
+ *   members of a group (`api-views.ts`), and at most `maxConcurrentRequests` requests run at once (default 8, below
+ *   the connection pool's 10, so the scan loop of the same `serve` process always gets a connection); beyond that a
+ *   request is answered at once with 503 `BUSY` and `Retry-After: 1`.
  * - Never fetches a URI or anything remote; heights only.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -29,6 +33,7 @@ import {
   lookup,
   parseContractTokensCursor,
   parseEventsCursor,
+  parseFieldsCursor,
   parseTokensCursor,
   type ScannerState,
   status,
@@ -40,6 +45,8 @@ import {
 
 export const MAX_LIMIT = 500;
 export const DEFAULT_LIMIT = 100;
+/** Requests answered at once by default (final-audit F2); more are refused with 503 `BUSY`. */
+export const DEFAULT_MAX_CONCURRENT_REQUESTS = 8;
 
 export class ApiError extends Error {
   override name = "ApiError";
@@ -73,6 +80,8 @@ export interface Mip0018ApiOptions {
    * when it answered the request. Default: none (`/ui` is then a 404 like any unknown path).
    */
   ui?: (req: IncomingMessage, res: ServerResponse) => boolean;
+  /** API requests run at once (default {@link DEFAULT_MAX_CONCURRENT_REQUESTS}); more are answered 503 `BUSY`. */
+  maxConcurrentRequests?: number;
 }
 
 // ── Input validation ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -159,11 +168,19 @@ export function createMip0018Api(opts: Mip0018ApiOptions): Server {
   const archiveSchema = opts.archiveSchema ?? DEFAULT_SCHEMAS.archiveSchema;
   const genesis = opts.genesisHash !== undefined ? opts.genesisHash : (KNOWN_GENESIS[opts.network] ?? null);
   const log = opts.log ?? ((line: string) => process.stderr.write(`${line}\n`));
+  const maxConcurrent = opts.maxConcurrentRequests ?? DEFAULT_MAX_CONCURRENT_REQUESTS;
+  if (!Number.isSafeInteger(maxConcurrent) || maxConcurrent < 1) throw new RangeError(`maxConcurrentRequests must be a positive integer, got ${maxConcurrent}`);
+  let inFlight = 0;
 
   return createServer((req, res) => {
     if (opts.ui?.(req, res) === true) return;
     const head = (req.method ?? "GET").toUpperCase() === "HEAD";
-    void handle(req).then(
+    if (inFlight >= maxConcurrent) {
+      send(res, 503, { error: { code: "BUSY", message: "too many requests in progress; retry shortly" } }, head, { "retry-after": "1" });
+      return;
+    }
+    inFlight++;
+    void handle(req).finally(() => { inFlight--; }).then(
       (body) => send(res, 200, body, head),
       (error: unknown) => {
         const e = toApiError(error);
@@ -251,7 +268,16 @@ export function createMip0018Api(opts: Mip0018ApiOptions): Server {
     }
     if (a === "identities" && s.length === 4) {
       const ref = { contractAddress: hex32(b!, "contract"), domainSep: hex32(c!, "domainSep"), kind: kindParam(d!) };
-      return { params: [], run: async (ctx) => orNotFound(await identityDetail(ctx, ref), "no such token identity") };
+      return {
+        params: ["limit", "cursor"],
+        run: async (ctx, q) => {
+          const fieldsCursor = cursorParam(q.get("cursor"), (v) => parseFieldsCursor(v, ref));
+          return orNotFound(
+            await identityDetail(ctx, ref, { fieldsLimit: limitParam(q.get("limit")), ...(fieldsCursor === undefined ? {} : { fieldsCursor }) }),
+            "no such token identity",
+          );
+        },
+      };
     }
     if (a === "contracts" && s.length === 3 && c === "tokens") {
       const address = hex32(b!, "address");

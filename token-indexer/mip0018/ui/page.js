@@ -35,7 +35,7 @@
   var HEAD_MAX = 160;                     // drawn characters of a name in a view's heading
   var VALUE_MAX = 600;                    // drawn characters of a field value before "show all"
   var TITLE_MAX = 400;                    // characters of a tooltip
-  var FIELDS_MAX = 500;                   // fields drawn per identity
+  var FIELDS_MAX = 500;                   // fields read and drawn per identity (the API pages them, final-audit F2)
   var REASONS_MAX = 20;                   // rejection reasons named in a tooltip
   var ZERO = "0000000000000000000000000000000000000000000000000000000000000000";
   var REFRESH_MS = refreshInterval();
@@ -202,6 +202,7 @@
   // when it is printable; the text is drawn as data, anything else as its hex.
   function entryPointNode(ep) {
     if (!ep || typeof ep !== "object") return null;
+    if (ep.truncated === true) return h("span", "ep-bytes", [hexNode(txt(ep.hex)), h("span", "note", " (bytes; the first " + (txt(ep.hex).length / 2) + " of " + txt(ep.length) + ")")]);
     if (typeof ep.text === "string" && ep.text !== "") return data(ep.text, 40);
     var hx = txt(ep.hex);
     if (hx === "") return setTitle(h("span", "no", "(empty)"), "an empty entry point");
@@ -397,15 +398,36 @@
     var items = [];
     var cursor = null;
     var first = null;
+    var all = [];
     var n = 0;
     do {
       var page = await api(pathOf(cursor));
       if (first === null) first = page;
+      all.push(page);
       items = items.concat(arr(page.items));
       cursor = typeof page.nextCursor === "string" && page.nextCursor !== "" ? page.nextCursor : null;
       n++;
     } while (cursor !== null && n < pages);
-    return { items: items, more: cursor !== null, first: first };
+    return { items: items, more: cursor !== null, first: first, pages: all };
+  }
+  // An identity's fields come in keyset pages (final-audit F2): read as many pages as the reader asked for, at most
+  // FIELDS_MAX fields; the rest of the answer is the first page's.
+  async function identityPages(r) {
+    var pathOf = function (c) { return apiPath(["identities", r.contract, r.domainSep, r.kind], { limit: PAGE, cursor: c }); };
+    var first = await api(pathOf(null));
+    var fields = arr(first.fields);
+    var next = function (p) { return typeof p.fieldsNextCursor === "string" && p.fieldsNextCursor !== "" ? p.fieldsNextCursor : null; };
+    var cursor = next(first);
+    var n = 1;
+    while (cursor !== null && n < pagesOf("fields") && fields.length < FIELDS_MAX) {
+      var page = await api(pathOf(cursor));
+      fields = fields.concat(arr(page.fields));
+      cursor = next(page);
+      n++;
+    }
+    first.fields = fields;
+    first.moreFields = cursor !== null;
+    return first;
   }
   function pagesOf(name) { return state.pages[name] || 1; }
   async function soft(promise, errors) {
@@ -439,7 +461,7 @@
       d.list = await soft(readPages(function (c) { return apiPath(["tokens"], { limit: PAGE, cursor: c }); }, pagesOf("list")), errors);
     } else if (r.view === "identity") {
       try {
-        d.identity = await api(apiPath(["identities", r.contract, r.domainSep, r.kind]));
+        d.identity = await identityPages(r);
       } catch (e) {
         if (e.status === 404) d.notFound = true;
         else { errors.push(e.message); d.failed = true; }
@@ -723,7 +745,7 @@
       if (k === "standards") return arr(v).length === 0 ? h("span", "no", "none claimed (empty value)") : tagChips({ tags: v });
       return data(v, HEAD_MAX, "common:" + k);
     }
-    var fields = arr(d.fields);
+    var fields = arr(d.commonFields).concat(arr(d.fields));
     for (var i = 0; i < fields.length; i++) {
       if (fields[i] && fields[i].key && fields[i].key.utf8 === k) return fieldValue(fields[i], null);
     }
@@ -881,6 +903,8 @@
 
     var fs = section("current fields", "fields");
     var fields = arr(t.fields);
+    var fieldCount = typeof t.fieldCount === "number" ? t.fieldCount : fields.length;
+    if (fieldCount > 0) fs.appendChild(h("div", "note", fieldCount + " field" + (fieldCount === 1 ? "" : "s") + ", in key byte order"));
     if (fields.length === 0) fs.appendChild(h("div", "empty", "no field"));
     else {
       var fb = table(fs, ["key", "type", "value", "usable", "set at"]);
@@ -897,7 +921,10 @@
         td(tr, "block " + txt(u.height) + " \u00b7 tx " + txt(u.txIndex) + " \u00b7 event " + txt(u.eventIndex) + " \u00b7 record " + txt(u.record));
         fb.appendChild(tr);
       }
-      if (fields.length > FIELDS_MAX) fs.appendChild(h("div", "note", (fields.length - FIELDS_MAX) + " more fields are not drawn"));
+      if (t.moreFields) {
+        if (fields.length >= FIELDS_MAX) fs.appendChild(h("div", "note", (fieldCount - fields.length) + " more fields exist; this page reads at most " + FIELDS_MAX + " of them"));
+        else moreButton(fs, "fields", true, "fields");
+      }
     }
     fs.appendChild(h("div", "note gap", "Only the latest value of each key is kept; a deleted field and its earlier values are never shown."));
     main.appendChild(fs);
@@ -916,6 +943,8 @@
         gl.appendChild(here ? h("b", null, lab) : link(tokenHash(r.contract, mb.domainSep.toLowerCase(), mb.kind), lab));
       }
       gs.appendChild(gl);
+      if (typeof t.group.memberCount === "number" && t.group.memberCount > members.length)
+        gs.appendChild(h("div", "note", "the first " + members.length + " of " + t.group.memberCount + " members"));
       gs.appendChild(h("div", "note gap", "Presentation only: identities of this contract with the same usable symbol. A group never spans contracts."));
     } else {
       gs.appendChild(h("div", "empty", "no group (a group is two or more identities of one contract with the same usable symbol)"));
@@ -1033,7 +1062,19 @@
     moreButton(ts, "tokens", d.tokens.more, "tokens");
     main.appendChild(ts);
     var gs = section("symbol groups");
-    var groups = d.tokens.first ? arr(d.tokens.first.groups) : [];
+    // Each page of tokens carries the groups of its identities (final-audit F2): merge the pages read, by symbol.
+    var groups = [];
+    var seenSymbols = {};
+    var tokenPages = arr(d.tokens.pages);
+    for (var pi = 0; pi < tokenPages.length; pi++) {
+      var pg = arr(tokenPages[pi] && tokenPages[pi].groups);
+      for (var gi = 0; gi < pg.length; gi++) {
+        var key = txt(pg[gi] && pg[gi].symbol && pg[gi].symbol.hex);
+        if (own(seenSymbols, key)) continue;
+        seenSymbols[key] = true;
+        groups.push(pg[gi]);
+      }
+    }
     if (groups.length === 0) gs.appendChild(h("div", "empty", "no group (a group is two or more identities with the same usable symbol)"));
     for (var i = 0; i < groups.length; i++) {
       var gr = groups[i] || {};
@@ -1045,6 +1086,7 @@
         if (hex64(txt(mb.domainSep)) && (mb.kind === 1 || mb.kind === 2 || mb.kind === 3))
           row.appendChild(link(tokenHash(r.address, mb.domainSep.toLowerCase(), mb.kind), [domainNode(mb.domainSep), " \u00b7 " + KIND_NAMES[mb.kind]]));
       }
+      if (typeof gr.memberCount === "number" && gr.memberCount > members.length) row.appendChild(h("span", "note", "the first " + members.length + " of " + gr.memberCount + " members"));
       gs.appendChild(row);
     }
     main.appendChild(gs);

@@ -20,7 +20,7 @@ import type { ISql } from "postgres";
 import { normHex, NIGHT_COLOR, type Part, partApplied, type Phase, type TransactionOutcome } from "./applied-parts.ts";
 import { walletAddress } from "./bech32m.ts";
 import { tokenColor } from "./color.ts";
-import { entryPointBytes, type EntryPointJson, entryPointJson } from "./entry-point.ts";
+import { ENTRY_POINT_MAX_BYTES, entryPointBytes, type EntryPointJson, entryPointJson } from "./entry-point.ts";
 
 /** A connection or the scan's block transaction (the same handle type as `fields.ts`). */
 export type Queryable = ISql<{ bigint: bigint }>;
@@ -343,7 +343,9 @@ interface DbActivityRow {
   direction: "in" | "out" | null;
   contract_address: Buffer | null;
   action_index: number | null;
+  /** At most {@link ENTRY_POINT_MAX_BYTES} bytes (the listing reads a prefix); `entry_point_length` = the full length. */
   entry_point: Buffer | null;
+  entry_point_length?: number | null;
   domain_sep: Buffer | null;
   kind: number | null;
   wallet_address: Buffer | null;
@@ -415,7 +417,7 @@ export function activityItem(network: string, r: DbActivityRow): ActivityItem {
   if (r.direction !== null) item.direction = r.direction;
   if (r.contract_address !== null) item.contract = h(r.contract_address);
   if (r.action_index !== null) item.actionIndex = r.action_index;
-  if (r.entry_point !== null) item.entryPoint = entryPointJson(r.entry_point);
+  if (r.entry_point !== null) item.entryPoint = entryPointJson(r.entry_point, r.entry_point_length ?? r.entry_point.length);
   if (r.domain_sep !== null) item.domainSep = h(r.domain_sep);
   if (r.kind !== null) item.kind = r.kind as 1 | 2;
   if (r.wallet_address !== null) item.wallet = walletAddress(network, r.wallet_address.toString("hex"));
@@ -435,7 +437,9 @@ export function activityItem(network: string, r: DbActivityRow): ActivityItem {
 function listingColumns(sql: Queryable, schema: string) {
   return sql`
     a.block_height, a.tx_index, a.item_index, a.tx_hash, a.role, a.phase, a.segment_id, a.color, a.amount, a.direction,
-    a.contract_address, a.action_index, a.entry_point, a.domain_sep, a.kind, a.wallet_address, a.recipient_contract,
+    a.contract_address, a.action_index,
+    substring(a.entry_point FROM 1 FOR ${ENTRY_POINT_MAX_BYTES}) AS entry_point, octet_length(a.entry_point) AS entry_point_length,
+    a.domain_sep, a.kind, a.wallet_address, a.recipient_contract,
     a.intent_hash, a.output_index,
     CASE WHEN a.role = 'metadata-event' THEN m.accepted ELSE a.events_accepted END AS events_accepted,
     CASE WHEN a.role = 'metadata-event' THEN m.rejected ELSE a.events_rejected END AS events_rejected,

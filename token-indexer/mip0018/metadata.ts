@@ -207,3 +207,127 @@ export async function chainEvents(
     return e;
   });
 }
+
+// ── Bounded reads for the API (final-audit F2) ─────────────────────────────────────────────────────────────────────
+//
+// How many keys an identity carries, how many identities share a symbol and how many events a contract has rejected
+// are chosen by whoever calls that contract. The API therefore never reads all of them: list rows and marks read only
+// the four common keys, rejections as a count plus the first reasons, an identity's fields one keyset page at a time,
+// a group as a member count plus the first members. Every query below is an index range scan bounded by its LIMIT
+// (or an index-only count).
+
+const COMMON_KEY_BYTES: readonly Buffer[] = [COMMON_KEY_HEX.name, COMMON_KEY_HEX.symbol, COMMON_KEY_HEX.decimals, COMMON_KEY_HEX.standards].map(buf);
+const FIELD_COLUMNS = (sql: Queryable) => sql`
+  f.contract_address, f.domain_sep, f.kind, f.key, f.val_type, f.value, f.uint_value::text AS uint_value, f.usable,
+  f.updated_block, f.updated_tx, f.updated_event, f.updated_record`;
+
+function fieldOf(r: FieldRow): Field {
+  const f: Field = {
+    key: Uint8Array.from(r.key),
+    valType: r.val_type,
+    value: Uint8Array.from(r.value),
+    position: { block: Number(r.updated_block), tx: r.updated_tx, event: r.updated_event, record: r.updated_record },
+  };
+  if (r.uint_value !== null) f.integer = BigInt(r.uint_value);
+  if (r.usable !== null) f.usable = r.usable;
+  return f;
+}
+
+/** An identity key as the API keeps it: lowercase hex and the kind. */
+export interface IdentityKey { contractAddress: string; domainSep: string; kind: number }
+export const identityKeyOf = (k: IdentityKey): string => `${k.contractAddress}/${k.domainSep}/${k.kind}`;
+
+/** What a list row and a mark need of an identity: its common fields only, and whether it has any field at all. */
+export interface IdentityCommon { described: boolean; fields: Map<string, Field> }
+
+/** The common fields (`name`, `symbol`, `decimals`, `standards`) and the described flag of each given identity. */
+export async function identityCommons(
+  sql: Queryable, network: string, keys: readonly IdentityKey[], schema = MIP0018_SCHEMA,
+): Promise<Map<string, IdentityCommon>> {
+  const out = new Map<string, IdentityCommon>(keys.map((k) => [identityKeyOf(k), { described: false, fields: new Map() }]));
+  if (keys.length === 0) return out;
+  const s = sql(schema);
+  const cs = sql.array(keys.map((k) => k.contractAddress));
+  const ds = sql.array(keys.map((k) => k.domainSep));
+  const ks = sql.array(keys.map((k) => String(k.kind)));
+  const described = await sql<{ c: string; d: string; k: number }[]>`
+    SELECT i.c, i.d, i.k FROM unnest(${cs}::text[], ${ds}::text[], ${ks}::text[]::int[]) AS i(c, d, k)
+    WHERE EXISTS (SELECT 1 FROM ${s}.mip0018_fields f
+                  WHERE f.network = ${network} AND f.contract_address = decode(i.c, 'hex') AND f.domain_sep = decode(i.d, 'hex') AND f.kind = i.k)`;
+  for (const r of described) out.get(`${r.c}/${r.d}/${r.k}`)!.described = true;
+  const rows = await sql<FieldRow[]>`
+    SELECT ${FIELD_COLUMNS(sql)}
+    FROM unnest(${cs}::text[], ${ds}::text[], ${ks}::text[]::int[]) AS i(c, d, k)
+    JOIN ${s}.mip0018_fields f
+      ON f.network = ${network} AND f.contract_address = decode(i.c, 'hex') AND f.domain_sep = decode(i.d, 'hex') AND f.kind = i.k
+     AND f.key IN (${COMMON_KEY_BYTES[0]!}, ${COMMON_KEY_BYTES[1]!}, ${COMMON_KEY_BYTES[2]!}, ${COMMON_KEY_BYTES[3]!})
+    ORDER BY f.contract_address, f.domain_sep, f.kind, f.updated_block, f.updated_tx, f.updated_event, f.updated_record`;
+  for (const r of rows) out.get(identityKeyOf({ contractAddress: toHex(r.contract_address), domainSep: toHex(r.domain_sep), kind: r.kind }))!.fields.set(toHex(r.key), fieldOf(r));
+  return out;
+}
+
+/** A contract's rejected MIP-0018 events for a mark: how many, and the reasons of the first `limit` in chain order. */
+export async function contractRejectionSummary(
+  sql: Queryable, network: string, contractAddress: string, limit: number, schema = MIP0018_SCHEMA,
+): Promise<{ count: number; reasons: string[] }> {
+  const s = sql(schema);
+  const contract = buf(contractAddress);
+  const [c] = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM ${s}.mip0018_events WHERE network = ${network} AND contract_address = ${contract} AND classification = 'reject'`;
+  const rows = await sql<{ reason: string }[]>`
+    SELECT reason FROM ${s}.mip0018_events WHERE network = ${network} AND contract_address = ${contract} AND classification = 'reject'
+    ORDER BY block_height, tx_index, event_index LIMIT ${limit}`;
+  return { count: c?.n ?? 0, reasons: rows.map((r) => r.reason) };
+}
+
+/**
+ * One keyset page of an identity's current fields, in key byte order (stable while the scan writes: a key never
+ * moves), after `afterKeyHex`; `count` is the identity's number of fields.
+ */
+export async function identityFieldsPage(
+  sql: Queryable, ref: IdentityRef, o: { limit: number; afterKeyHex?: string }, schema = MIP0018_SCHEMA,
+): Promise<{ fields: Field[]; more: boolean; count: number }> {
+  const s = sql(schema);
+  const at = sql`f.network = ${ref.network} AND f.contract_address = ${buf(ref.contractAddress)} AND f.domain_sep = ${buf(ref.domainSep)} AND f.kind = ${ref.kind}`;
+  const rows = await sql<FieldRow[]>`
+    SELECT ${FIELD_COLUMNS(sql)} FROM ${s}.mip0018_fields f
+    WHERE ${at} ${o.afterKeyHex === undefined ? sql`` : sql`AND f.key > ${buf(o.afterKeyHex)}`}
+    ORDER BY f.key LIMIT ${o.limit + 1}`;
+  const [c] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ${s}.mip0018_fields f WHERE ${at}`;
+  return { fields: rows.slice(0, o.limit).map(fieldOf), more: rows.length > o.limit, count: c?.n ?? 0 };
+}
+
+/**
+ * The symbol group of an identity whose usable `symbol` is `symbol`: its member count and its first `limit` members
+ * by (domainSep, kind); `undefined` when it has fewer than two members. The grouping rule stays `symbolGroups`'s:
+ * the members read are the rows with that exact usable symbol in the contract, and the pure rule groups them.
+ */
+export async function boundedGroup(
+  sql: Queryable, ref: IdentityRef, symbol: Uint8Array, limit: number, schema = MIP0018_SCHEMA,
+): Promise<(SymbolGroup & { memberCount: number }) | undefined> {
+  const s = sql(schema);
+  const at = sql`network = ${ref.network} AND contract_address = ${buf(ref.contractAddress)} AND key = ${SYMBOL_KEY} AND usable AND value = ${Buffer.from(symbol)}`;
+  const [c] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ${s}.mip0018_fields WHERE ${at}`;
+  const memberCount = c?.n ?? 0;
+  if (memberCount < 2) return undefined;
+  const rows = await sql<{ domain_sep: Buffer; kind: number; value: Buffer; usable: boolean | null }[]>`
+    SELECT domain_sep, kind, value, usable FROM ${s}.mip0018_fields WHERE ${at} ORDER BY domain_sep, kind LIMIT ${Math.max(limit, 2)}`;
+  const [group] = symbolGroups(rows.map((r) => ({
+    network: ref.network, contractAddress: ref.contractAddress.replace(/^0x/, "").toLowerCase(), domainSep: toHex(r.domain_sep), kind: r.kind,
+    fields: new Map([[COMMON_KEY_HEX.symbol, { value: Uint8Array.from(r.value), ...(r.usable === null ? {} : { usable: r.usable }) }]]),
+  })));
+  return group === undefined ? undefined : { ...group, members: group.members.slice(0, limit), memberCount };
+}
+
+/** The kinds described for one (contract, domainSep) — at most three rows, whatever the number of keys. */
+export async function describedKinds(sql: Queryable, network: string, contractAddress: string, domainSep: string, schema = MIP0018_SCHEMA): Promise<number[]> {
+  const s = sql(schema);
+  const out: number[] = [];
+  for (const kind of [1, 2, 3]) {
+    const [r] = await sql<{ e: boolean }[]>`
+      SELECT EXISTS (SELECT 1 FROM ${s}.mip0018_fields WHERE network = ${network} AND contract_address = ${buf(contractAddress)}
+                     AND domain_sep = ${buf(domainSep)} AND kind = ${kind}) AS e`;
+    if (r?.e === true) out.push(kind);
+  }
+  return out;
+}

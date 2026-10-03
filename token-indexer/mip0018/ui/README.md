@@ -52,8 +52,10 @@ a tick while the previous read of the same view runs, and drops a read that fini
   characters, musical formatting controls, tag characters and lone surrogates — are drawn as `⟨U+XXXX⟩`; every
   published value is its own bidi island (`unicode-bidi: isolate`).
 - **Budgets.** A response is read up to 8 MiB; 48 drawn characters per table cell, 160 in a heading, 600 per field
-  value ("show all" on request), 400 per tooltip, 500 fields per identity, 20 rejection reasons per tooltip; lists of
-  100 rows per page, "load more" up to 50 pages.
+  value ("show all" on request), 400 per tooltip, 500 fields per identity (read in the API's keyset pages of 100 with
+  "load more fields"; the identity's `fieldCount` is shown), 20 rejection reasons per tooltip; lists of 100 rows per
+  page, "load more" up to 50 pages; a group shows the API's first 100 members and its member count; the contract view
+  merges the groups of the token pages it read (final audit F2).
 - **No fetch, no link from data.** A URI value (type 4) is text, labelled as never fetched; the only links are the
   page's own hash routes, built from validated 32-byte hex. Nothing is loaded from any other origin
   (`default-src 'none'`, `connect-src 'self'`, `img-src 'self'`, `font-src 'self'`).

@@ -73,7 +73,7 @@ async function walk(base: string, path: string, limit: number): Promise<{ items:
 
 const keysOf = (o: object): string[] => Object.keys(o).sort();
 const SUMMARY_KEYS = ["color", "contractAddress", "decimals", "described", "domainSep", "evidence", "firstSeen", "id", "kind", "kindName", "mark", "minted", "name", "note", "source", "symbol"];
-const DETAIL_KEYS = ["color", "common", "contractAddress", "described", "domainSep", "fields", "group", "kind", "kindName", "mark", "minted", "network"];
+const DETAIL_KEYS = ["color", "common", "commonFields", "contractAddress", "described", "domainSep", "fieldCount", "fields", "fieldsNextCursor", "group", "kind", "kindName", "mark", "minted", "network"];
 const MARK_KEYS = ["mark", "missing", "reasonCount", "reasons", "tags"];
 const FIELD_KEYS = ["key", "updatedAt", "usable", "valType", "valTypeName", "value"];
 const EVENT_KEYS = ["classification", "contractAddress", "eventIndex", "height", "phase", "reason", "segment", "txHash", "txIndex"];
@@ -312,6 +312,10 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
       expect(i.common).toEqual({ name: "Acme Dollar", symbol: "ACD", decimals: "2", standards: null });
       expect(i.group.symbol).toEqual({ hex: hexText("ACD"), utf8: "ACD" });
       expect(i.group.members.map((m: Json) => m.kind)).toEqual([1, 2, 3]);
+      expect(i.group.memberCount).toBe(3);
+      // Final-audit F2: fields are one keyset page in key byte order, counted; the common keys' raw rows are served too.
+      expect([i.fieldCount, i.fieldsNextCursor, i.fields.map((f: Json) => f.key.utf8)]).toEqual([3, null, ["decimals", "name", "symbol"]]);
+      expect(i.commonFields.map((f: Json) => f.key.utf8).sort()).toEqual(["decimals", "name", "symbol"]);
       expect(i.mark).toEqual({ mark: "ok", reasons: [], reasonCount: 0, missing: [], tags: [] });
       for (const f of i.fields) expect(keysOf(f)).toEqual(FIELD_KEYS);
       const byKey = Object.fromEntries(i.fields.map((f: Json) => [f.key.utf8, f]));
@@ -411,6 +415,116 @@ describe("MIP-0018 read-only API (00026 C1)", () => {
     expect(all).toEqual(["builtin/NIGHT", "builtin/DUST", `identity/${Z}/${DS}/2`, `identity/${Z}/${DS2}/2`, `identity/${Y}/${"5c".repeat(32)}/3`, `color/${T}`]);
     expect(all).not.toContain(`color/${T2}`);
   }, 120_000);
+
+  it("[[mip0018.api.bounded-cost]] final-audit F2: chain-controlled cardinalities do not grow answers — an identity with 50 000 keys, 50 000 rejected events and 50 000 ignored events of its contract, a 2 001-member symbol group and a 100 000-byte entry point: list rows and marks read only the common keys and the first 100 reasons (reasonCount = all), the identity's fields come in keyset pages with fieldCount, groups list their first 100 members with memberCount, events page over the served rows only, activity serves an entry point's first 128 bytes with its length; every answer is small and within a generous latency budget", async () => {
+    const X = "c0".repeat(32);
+    const DA = "da".repeat(32);
+    const C = "cc".repeat(32);
+    const N = 50_000;
+    const db = await fresh("bounded");
+    const archived = (t: SynthTxA): SynthArchivedTx => ({ tx: t as unknown as SynthArchivedTx["tx"], result: "success", segments: null });
+    const LONG = "ab".repeat(100_000); // a 100 000-byte entry point (not UTF-8)
+    await putSyntheticBlocks(db.sql, db.archive, NET, 900, [
+      [archived({ hash: "b0".repeat(32), intents: [{ segment: 1, calls: [{ address: X, entryPoint: "unused", entryPointHex: LONG, guaranteed: { unshieldedInputs: [["unshielded", C, "7"]] } }] }] })],
+    ]);
+    const sc = scanner(db, syntheticSeams);
+    await sc.bootstrap();
+    await scanAll(sc);
+    const s = db.sql(db.mip);
+    const x = Buffer.from(X, "hex");
+    const da = Buffer.from(DA, "hex");
+    const utf8 = (t: string) => Buffer.from(t, "utf8");
+    // The hostile cardinalities, written straight into the tables the API reads.
+    await db.sql`
+      INSERT INTO ${s}.mip0018_fields (network, contract_address, domain_sep, kind, key, val_type, value, uint_value, usable,
+                                       updated_block, updated_tx, updated_event, updated_record)
+      SELECT ${NET}, ${x}, ${da}, 3, convert_to('k' || lpad(i::text, 6, '0'), 'UTF8'), 1, decode('76', 'hex'), NULL, NULL, 1000 + i / 50, 0, 0, i % 50
+      FROM generate_series(1, ${N}) AS i`;
+    for (const [key, valType, value, uint] of [["name", 1, utf8("Big"), null], ["symbol", 1, utf8("SPAM"), null], ["decimals", 2, Buffer.from([6]), "6"]] as const)
+      await db.sql`INSERT INTO ${s}.mip0018_fields VALUES (${NET}, ${x}, ${da}, 3, ${utf8(key)}, ${valType}, ${value}, ${uint}, true, 999, 0, 0, 0)`;
+    await db.sql`
+      INSERT INTO ${s}.mip0018_fields (network, contract_address, domain_sep, kind, key, val_type, value, uint_value, usable,
+                                       updated_block, updated_tx, updated_event, updated_record)
+      SELECT ${NET}, ${x}, decode('ee' || lpad(to_hex(i), 62, '0'), 'hex'), 3, ${utf8("symbol")}, 1, ${utf8("SPAM")}, NULL, true, 999, 0, 1, i
+      FROM generate_series(1, 2000) AS i`;
+    await db.sql`
+      INSERT INTO ${s}.mip0018_events (network, block_height, tx_index, event_index, tx_hash, segment_id, phase, contract_address,
+                                       event_type, name, payload, classification, reason, domain_sep, kind)
+      SELECT ${NET}, 500, i, 0, NULL, 1, 'guaranteed', ${x}, 'Misc', decode('', 'hex'), decode('', 'hex'), 'ignore', 'other-name', NULL, NULL
+      FROM generate_series(0, ${N - 1}) AS i`;
+    await db.sql`
+      INSERT INTO ${s}.mip0018_events (network, block_height, tx_index, event_index, tx_hash, segment_id, phase, contract_address,
+                                       event_type, name, payload, classification, reason, domain_sep, kind)
+      SELECT ${NET}, 2000 + i, 0, 0, NULL, 1, 'guaranteed', ${x}, 'Misc', decode('', 'hex'), decode('', 'hex'), 'reject', 'no-records', NULL, NULL
+      FROM generate_series(1, ${N}) AS i`;
+    await db.sql`ANALYZE ${s}.mip0018_fields`;
+    await db.sql`ANALYZE ${s}.mip0018_events`;
+    const base = await startApi(db);
+    const BUDGET_MS = 5_000; // generous: a loaded shared host; the bound that matters is the size
+    const timed = async (path: string, maxBytes: number): Promise<Json> => {
+      const t0 = performance.now();
+      const r = await get(base, path);
+      const ms = performance.now() - t0;
+      expect(r.status, `${path}: ${r.text.slice(0, 200)}`).toBe(200);
+      expect(r.text.length, path).toBeLessThan(maxBytes);
+      expect(ms, path).toBeLessThan(BUDGET_MS);
+      return r.json;
+    };
+
+    // The token list: the big identity's row reads only its common fields; its mark lists 100 reasons of 50 000.
+    const list = await timed("/v1/tokens?limit=4", 16_000);
+    const big = list.items.find((t: Json) => t.domainSep === DA)!;
+    expect([big.name, big.symbol, big.decimals, big.described]).toEqual(["Big", "SPAM", "6", true]);
+    expect([big.mark.mark, big.mark.reasons.length, big.mark.reasonCount]).toEqual(["incorrect", 100, N]);
+    // The identity: one page of fields (key byte order), all counted; the common fields; a bounded group.
+    const id = await timed(`/v1/identities/${X}/${DA}/3`, 96_000);
+    expect([id.fields.length, id.fieldCount, typeof id.fieldsNextCursor]).toEqual([100, N + 3, "string"]);
+    expect(id.commonFields.map((f: Json) => f.key.utf8).sort()).toEqual(["decimals", "name", "symbol"]);
+    expect(id.common).toEqual({ name: "Big", symbol: "SPAM", decimals: "6", standards: null });
+    expect([id.group.memberCount, id.group.members.length, id.mark.reasonCount, id.mark.reasons.length]).toEqual([2001, 100, N, 100]);
+    // Keyset pages of 500 continue in key order, bound to the identity.
+    let cursor = id.fieldsNextCursor as string;
+    let lastKey = id.fields.at(-1).key.hex as string;
+    for (let page = 0; page < 3; page++) {
+      const p = await timed(`/v1/identities/${X}/${DA}/3?limit=500&cursor=${cursor}`, 160_000);
+      expect(p.fields.length).toBe(500);
+      expect(p.fields[0].key.hex > lastKey).toBe(true);
+      expect(p.fields.every((f: Json, i: number) => i === 0 || f.key.hex > p.fields[i - 1].key.hex)).toBe(true);
+      lastKey = p.fields.at(-1).key.hex;
+      cursor = p.fieldsNextCursor;
+    }
+    expect((await get(base, `/v1/identities/${X}/${"db".repeat(32)}/3?cursor=${cursor}`)).status).toBe(400); // bound to its identity
+    // The contract's tokens: the groups of the page's identities, each with its first 100 members.
+    const ct = await timed(`/v1/contracts/${X}/tokens?limit=10`, 48_000);
+    expect(ct.groups.map((g: Json) => [g.symbol.utf8, g.memberCount, g.members.length])).toEqual([["SPAM", 2001, 100]]);
+    // Events of the contract: the served rows only, a page at a time.
+    const ev = await timed(`/v1/events?contract=${X}&limit=20`, 16_000);
+    expect([ev.items.length, ev.items.every((e: Json) => e.classification === "reject"), typeof ev.nextCursor]).toEqual([20, true, "string"]);
+    // Activity: the 100 000-byte entry point is served as its first 128 bytes and its length.
+    const act = await timed(`/v1/tokens/${C}/activity`, 8_000);
+    expect(act.items.map((i: Json) => [i.role, i.entryPoint])).toEqual([["contract-in", { hex: "ab".repeat(128), length: 100_000, truncated: true }]]);
+    await timed("/v1/status", 4_000);
+  }, 300_000);
+
+  it("[[mip0018.api.concurrency-cap]] final-audit F2: at most maxConcurrentRequests API requests run at once; the next is answered at once with 503 BUSY and Retry-After, never queued; capacity returns when a request finishes; a cap below 1 is refused", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let started = 0;
+    const stub = { begin: async () => { started++; await gate; return { held: true }; } } as unknown as UmbraDBSql;
+    const server = createMip0018Api({ sql: stub, network: NET, maxConcurrentRequests: 2 });
+    servers.push(server);
+    const base = `http://127.0.0.1:${await listen(server, 0, "127.0.0.1")}`;
+    const held = [get(base, "/v1/status"), get(base, "/v1/status")];
+    for (let i = 0; i < 200 && started < 2; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(started).toBe(2);
+    const busy = await get(base, "/v1/tokens");
+    expect([busy.status, busy.json.error.code, busy.headers.get("retry-after")]).toEqual([503, "BUSY", "1"]);
+    expect(started).toBe(2); // refused before any database work
+    release();
+    expect((await Promise.all(held)).map((r) => [r.status, r.json])).toEqual([[200, { held: true }], [200, { held: true }]]);
+    expect((await get(base, "/v1/status")).status).toBe(200);
+    expect(() => createMip0018Api({ sql: stub, network: NET, maxConcurrentRequests: 0 })).toThrow(/maxConcurrentRequests/);
+  }, 60_000);
 
   it("[[mip0018.api.lookup]] /v1/lookup/{color}?held=: C04's color → kind 1 held shielded, kind 2 held unshielded (one color); C05 bronze → not minted in the indexed range; NIGHT's zero color → built-in; the kind comes from the holding, not the color", async () => {
     const C04 = contractOf("C04");

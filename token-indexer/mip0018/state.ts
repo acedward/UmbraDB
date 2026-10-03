@@ -388,7 +388,15 @@ export interface MarkInput {
    * empty map means the same as `undefined` (one normal form, mid-project audit F3).
    */
   fields: ReadonlyMap<string, Pick<Field, "valType" | "value" | "usable">> | undefined;
-  /** Reasons of every rejected MIP-0018 event of the token's contract (on its network), in chain order. */
+  /**
+   * Whether the identity has any field, when `fields` holds only some of them (final-audit F2: the API reads only the
+   * four common keys); omitted = decided from `fields` as before.
+   */
+  described?: boolean;
+  /**
+   * Reasons of the rejected MIP-0018 events of the token's contract (on its network), in chain order — all of them, or
+   * the first ones (the mark only needs to know whether there is one; the API lists at most 100 and counts the rest).
+   */
   contractRejections: readonly string[];
 }
 
@@ -406,7 +414,8 @@ export interface MarkInput {
  * the marks mean for its tokens (Q14); none exists now, so no identifier changes the result.
  */
 export function tokenMark(input: MarkInput): TokenMark {
-  const fields = input.fields === undefined || input.fields.size === 0 ? undefined : input.fields;
+  const described = input.described ?? (input.fields !== undefined && input.fields.size > 0);
+  const fields = described ? (input.fields ?? new Map<string, Pick<Field, "valType" | "value" | "usable">>()) : undefined;
   const tags: string[] = [];
   const standards = fields?.get(COMMON_KEY_HEX.standards);
   if (standards !== undefined && standards.usable === true)

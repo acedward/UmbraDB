@@ -66,7 +66,8 @@ export async function up(sql: ISql, schema: string): Promise<void> {
     )
   `;
   await sql`CREATE INDEX mip0018_mints_color_idx ON ${sql(schema)}.mip0018_mints (network, color, block_height, tx_index, mint_index)`;
-  await sql`CREATE INDEX mip0018_mints_contract_idx ON ${sql(schema)}.mip0018_mints (network, contract_address, domain_sep)`;
+  // (contract, domainSep, kind) order: the token list's index skip scan over minted identities (final-audit F2).
+  await sql`CREATE INDEX mip0018_mints_contract_idx ON ${sql(schema)}.mip0018_mints (network, contract_address, domain_sep, kind)`;
 
   await sql`
     CREATE TABLE ${sql(schema)}.mip0018_color_sightings (

@@ -612,6 +612,57 @@ describe("MIP-0018 explorer page in a real browser (00026 C3)", () => {
     await expectCleanConsole(epage);
   }, 300_000);
 
+  it("[[mip0018.ui.browser-bounded]] final-audit F2: the page follows the API's bounded shapes — an identity's fields in keyset pages (100 rows, its field count, 'load more fields' reads the next page with the API's cursor), a group's first 100 members with its member count (identity and contract views), a 200-byte entry point drawn as its first 128 bytes with its length", async () => {
+    const db = await fresh("uibounded");
+    const A = "b7".repeat(32);
+    const DA = "da".repeat(32);
+    const Y = "e8".repeat(32);
+    const keys = Array.from({ length: 150 }, (_, i) => `k${String(i).padStart(3, "0")}`);
+    const chunks: string[][] = [];
+    for (let i = 0; i < keys.length; i += 30) chunks.push(keys.slice(i, i + 30));
+    const logs = [
+      v1Log(DA, 3, [record.utf8("name", "Big"), record.utf8("symbol", "GRP")]).data,
+      ...chunks.map((c) => v1Log(DA, 3, c.map((k) => record.utf8(k, ""))).data),
+      ...Array.from({ length: 102 }, (_, i) => v1Log(`ee${String(i).padStart(62, "0")}`, 3, [record.utf8("symbol", "GRP")]).data),
+    ];
+    await putSyntheticBlocks(db.sql, db.archive, NET, 700, [[{
+      result: "success",
+      segments: null,
+      tx: { hash: "f7".repeat(32), intents: [{ segment: 1, calls: [
+        { address: A, entryPoint: "meta", guaranteed: { logs } },
+        { address: A, entryPoint: "unused", entryPointHex: "cd".repeat(200), guaranteed: { unshieldedInputs: [["unshielded", Y, "1"]] } },
+      ] }] } as unknown as SynthArchivedTx["tx"],
+    }]]);
+    const s = scanner(db, syntheticSeams);
+    await s.bootstrap();
+    await scanAll(s);
+    const base = await serveDb(db);
+    const page = await browser.newPage();
+    await page.goto(`${base}/ui`);
+    await page.waitFor("document.body.getAttribute('data-state') === 'ready'");
+    const rowsOf = "document.querySelectorAll('#fields tbody tr').length";
+    const sa = await visit(page, `#/token/${A}/${DA}/3`);
+    expect(await page.eval<number>(rowsOf)).toBe(100);
+    expect(sa.view).toContain("152 fields, in key byte order");
+    expect(sa.view).toContain("the first 100 of 103 members");
+    const firstKeys = await page.eval<string[]>("[...document.querySelectorAll('#fields tbody tr')].map((tr) => tr.cells[0].innerText)");
+    expect(firstKeys.slice(0, 3)).toEqual(["k000", "k001", "k002"]); // key byte order
+    await page.eval("[...document.querySelectorAll('#fields button')].find((b) => b.textContent === 'load more fields').click()");
+    await page.waitFor(`${rowsOf} === 152`, 30_000, "second page of fields");
+    expect(await page.eval<number>("[...document.querySelectorAll('#fields button')].filter((b) => b.textContent === 'load more fields').length")).toBe(0);
+    expect(page.requests.some((r) => /\/v1\/identities\/[0-9a-f]{64}\/[0-9a-f]{64}\/3\?limit=100&cursor=/.test(r.url))).toBe(true);
+    // The contract view: the group merged from the token pages read, with its member count.
+    const sc = await visit(page, `#/contract/${A}`);
+    expect(sc.view).toContain("the first 100 of 103 members");
+    // The 200-byte entry point: its first 128 bytes and its length.
+    await visit(page, `#/color/${Y}`);
+    await page.waitFor("document.querySelectorAll('#activity tbody tr').length === 1");
+    const detail = await page.eval<string>("[...document.querySelectorAll('#activity tbody tr')][0].innerText");
+    expect(detail).toContain("(bytes; the first 128 of 200)");
+    expectOnlyApiCalls(page, base);
+    await expectCleanConsole(page);
+  }, 300_000);
+
   it("[[mip0018.ui.browser-withdrawn]] with the page open and refreshing on its own: C06 step by step — the withdrawn name is on no reachable view after the tombstone (⚠ partial: name) and stays absent after the revive; a whole identity withdrawn (synthetic) is on no reachable view — not its domainSep, name or symbol — and its direct route says only that no such identity exists; a withdrawn minted token reads like a never-described one", async () => {
     // C06 recorded, per step; the page refreshes every 600 ms, never reloaded.
     const db = await fresh("uic06");

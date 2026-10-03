@@ -62,6 +62,19 @@ export async function up(sql: ISql, schema: string): Promise<void> {
     CREATE INDEX mip0018_events_unresolved_idx
       ON ${sql(schema)}.mip0018_events (network) WHERE classification = 'unresolved'
   `;
+  // Final-audit F2 (bounded API reads; the number of a contract's events is chosen by its callers): a mark counts the
+  // contract's rejected events and lists the first reasons from this index alone; `/v1/events?contract=` pages through
+  // the served classifications without stepping over `ignore` rows.
+  await sql`
+    CREATE INDEX mip0018_events_reject_idx
+      ON ${sql(schema)}.mip0018_events (network, contract_address, block_height, tx_index, event_index) INCLUDE (reason)
+      WHERE classification = 'reject'
+  `;
+  await sql`
+    CREATE INDEX mip0018_events_served_idx
+      ON ${sql(schema)}.mip0018_events (network, contract_address, block_height, tx_index, event_index)
+      WHERE classification IN ('accept', 'reject', 'unresolved')
+  `;
 
   await sql`
     CREATE TABLE ${sql(schema)}.mip0018_fields (

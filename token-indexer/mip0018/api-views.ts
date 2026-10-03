@@ -16,13 +16,20 @@
 import { MIP0018_SCHEMA } from "../../src/postgres/migrations/mip0018/index.js";
 import type { ActivityItem } from "./activity.ts";
 import type { Queryable } from "./fields.ts";
-import { contractRejections, getIdentity, groupOf, listGroups, listIdentities } from "./metadata.ts";
+import {
+  boundedGroup,
+  contractRejectionSummary,
+  describedKinds,
+  type IdentityCommon,
+  identityCommons,
+  identityFieldsPage,
+  identityKeyOf,
+} from "./metadata.ts";
 import {
   COMMON_KEY_HEX,
   displayAmount,
   type Field,
   type IdentityRef,
-  type IdentityState,
   parseStandards,
   type SymbolGroup,
   tokenMark,
@@ -39,6 +46,10 @@ export const KNOWN_GENESIS: Readonly<Record<string, string>> = {
 };
 /** At most this many rejection reasons are listed in a mark (all are counted in `reasonCount`; all are in the events). */
 export const MAX_MARK_REASONS = 100;
+/** At most this many members are listed in a symbol group (all are counted in `memberCount`; final-audit F2). */
+export const MAX_GROUP_MEMBERS = 100;
+/** An identity's fields are served in keyset pages of this size unless `limit` says otherwise (final-audit F2). */
+export const DEFAULT_FIELDS_LIMIT = 100;
 
 export interface ViewContext {
   sql: Queryable;
@@ -62,7 +73,8 @@ export interface FieldJson {
   usable: boolean | null;
   updatedAt: { height: number; txIndex: number; eventIndex: number; record: number };
 }
-export interface GroupJson { symbol: BytesJson; members: Array<{ domainSep: string; kind: number }> }
+/** A symbol group: its first {@link MAX_GROUP_MEMBERS} members by (domainSep, kind) and how many it has (F2). */
+export interface GroupJson { symbol: BytesJson; memberCount: number; members: Array<{ domainSep: string; kind: number }> }
 export type KindName = "shielded" | "unshielded" | "ledger";
 export interface TokenSummaryJson {
   id: string;
@@ -92,7 +104,13 @@ export interface IdentityDetailJson {
   minted: MintStatsJson | null;
   described: boolean;
   common: CommonJson;
+  /** The current fields of the common keys present (the raw view behind `common`, e.g. an unusable `decimals`). */
+  commonFields: FieldJson[];
+  /** One keyset page of the current fields in key byte order (final-audit F2); `fieldCount` counts them all. */
   fields: FieldJson[];
+  fieldCount: number;
+  /** Cursor of the next page of `fields` (`/v1/identities/…?cursor=`), `null` on the last. */
+  fieldsNextCursor: string | null;
   group: GroupJson | null;
   mark: MarkJson;
 }
@@ -157,13 +175,21 @@ export function commonJson(fields: ReadonlyMap<string, Field> | undefined): Comm
   };
 }
 
-/** The Q14 mark of a token from its current fields and its contract's rejection reasons (`state.ts` `tokenMark`). */
-export function markJson(fields: ReadonlyMap<string, Field> | undefined, reasons: readonly string[]): MarkJson {
-  const m = tokenMark({ fields, contractRejections: reasons });
-  return { mark: m.mark, reasons: m.reasons.slice(0, MAX_MARK_REASONS), reasonCount: m.reasons.length, missing: [...m.missing], tags: [...m.tags] };
+/** Rejections of a contract as a mark needs them (F2): the count and the first {@link MAX_MARK_REASONS} reasons. */
+export interface RejectionSummary { count: number; reasons: readonly string[] }
+const NO_REJECTIONS: RejectionSummary = { count: 0, reasons: [] };
+
+/**
+ * The Q14 mark of a token from its common fields (whether it has any field at all: `described`) and its contract's
+ * rejections (`state.ts` `tokenMark`; final-audit F2: never all keys or all rejections).
+ */
+export function markJson(common: IdentityCommon | undefined, rejections: RejectionSummary): MarkJson {
+  const m = tokenMark({ fields: common?.fields, described: common?.described ?? false, contractRejections: rejections.reasons.slice(0, MAX_MARK_REASONS) });
+  return { mark: m.mark, reasons: [...m.reasons], reasonCount: rejections.count, missing: [...m.missing], tags: [...m.tags] };
 }
 
-export const groupJson = (g: SymbolGroup): GroupJson => ({ symbol: bytesJson(buf(g.symbol)), members: g.members.map((m) => ({ ...m })) });
+export const groupJson = (g: SymbolGroup & { memberCount?: number }): GroupJson =>
+  ({ symbol: bytesJson(buf(g.symbol)), memberCount: g.memberCount ?? g.members.length, members: g.members.slice(0, MAX_GROUP_MEMBERS).map((m) => ({ ...m })) });
 
 const builtinJson = (b: BuiltinToken): BuiltinJson => ({ symbol: b.symbol, name: b.name, decimals: String(b.decimals), color: b.color ?? null, note: b.note });
 
@@ -208,6 +234,17 @@ export function parseContractTokensCursor(v: unknown, contract: string): Contrac
   return isHex32(c.k[0]) && isKind(c.k[1]) ? (c as ContractTokensCursor) : undefined;
 }
 
+/** Fields cursor of `/v1/identities/…`: bound to the identity; the last key returned (hex). */
+export interface FieldsCursor { e: "fields"; i: [string, string, number]; k: string }
+
+export function parseFieldsCursor(v: unknown, ref: IdKey): FieldsCursor | undefined {
+  if (typeof v !== "object" || v === null) return undefined;
+  const c = v as { e?: unknown; i?: unknown; k?: unknown };
+  if (c.e !== "fields" || !Array.isArray(c.i) || c.i.length !== 3 || Object.keys(c).length !== 3) return undefined;
+  if (c.i[0] !== ref.contractAddress || c.i[1] !== ref.domainSep || c.i[2] !== ref.kind) return undefined;
+  return typeof c.k === "string" && /^(?:[0-9a-f]{2}){1,220}$/.test(c.k) ? (c as FieldsCursor) : undefined;
+}
+
 export interface EventFilter { contract?: string; tx?: string }
 export interface EventsCursor { e: "events"; f: [string | null, string | null]; k: [number, number, number] }
 
@@ -225,25 +262,25 @@ interface MintAgg { color: string; contractAddress: string; domainSep: string; k
 
 const identityKey = (contract: string, domainSep: string, kind: number): string => `${contract}/${domainSep}/${kind}`;
 
-/** Mint aggregates per (contract, domainSep, kind) of the given contracts (optionally one domainSep / kind). */
-async function mintAggregates(ctx: ViewContext, contracts: readonly string[], only?: { domainSep?: string; kind?: number }): Promise<Map<string, MintAgg>> {
+/** Mint aggregates of exactly the given identities (final-audit F2: never every identity of their contracts). */
+async function mintAggregates(ctx: ViewContext, keys: readonly IdKey[]): Promise<Map<string, MintAgg>> {
   const out = new Map<string, MintAgg>();
-  if (contracts.length === 0) return out;
+  const native = keys.filter((k) => k.kind !== 3);
+  if (native.length === 0) return out;
   const { sql } = ctx;
   const rows = await sql<{
     color: Buffer; contract_address: Buffer; domain_sep: Buffer; kind: number; mints: number; amount: string;
     block_height: bigint; tx_index: number; tx_hash: Buffer;
   }[]>`
-    SELECT DISTINCT ON (contract_address, domain_sep, kind)
-           color, contract_address, domain_sep, kind, (count(*) OVER w)::int AS mints, (sum(amount) OVER w)::text AS amount,
-           block_height, tx_index, tx_hash
-    FROM ${sql(ctx.schema)}.mip0018_mints
-    WHERE network = ${ctx.network}
-      AND contract_address IN (SELECT decode(h, 'hex') FROM unnest(${sql.array([...contracts])}::text[]) AS h)
-      ${only?.domainSep === undefined ? sql`` : sql`AND domain_sep = ${buf(only.domainSep)}`}
-      ${only?.kind === undefined ? sql`` : sql`AND kind = ${only.kind}`}
-    WINDOW w AS (PARTITION BY contract_address, domain_sep, kind)
-    ORDER BY contract_address, domain_sep, kind, block_height, tx_index, mint_index`;
+    SELECT DISTINCT ON (m.contract_address, m.domain_sep, m.kind)
+           m.color, m.contract_address, m.domain_sep, m.kind, (count(*) OVER w)::int AS mints, (sum(m.amount) OVER w)::text AS amount,
+           m.block_height, m.tx_index, m.tx_hash
+    FROM unnest(${sql.array(native.map((k) => k.contractAddress))}::text[], ${sql.array(native.map((k) => k.domainSep))}::text[],
+                ${sql.array(native.map((k) => String(k.kind)))}::text[]::int[]) AS i(c, d, k)
+    JOIN ${sql(ctx.schema)}.mip0018_mints m
+      ON m.network = ${ctx.network} AND m.contract_address = decode(i.c, 'hex') AND m.domain_sep = decode(i.d, 'hex') AND m.kind = i.k
+    WINDOW w AS (PARTITION BY m.contract_address, m.domain_sep, m.kind)
+    ORDER BY m.contract_address, m.domain_sep, m.kind, m.block_height, m.tx_index, m.mint_index`;
   for (const r of rows) {
     const a: MintAgg = {
       color: hexOf(r.color), contractAddress: hexOf(r.contract_address), domainSep: hexOf(r.domain_sep), kind: r.kind,
@@ -300,35 +337,71 @@ async function sightings(ctx: ViewContext, o: { color?: string; seenFirst?: bool
 
 interface IdKey { contractAddress: string; domainSep: string; kind: number }
 
-/** Identities that are described (field rows) or minted (mint table), in (contract, domainSep, kind) byte order. */
-async function identityKeys(ctx: ViewContext, o: { contract?: string; after?: [string, string, number]; limit: number }): Promise<IdKey[]> {
+/**
+ * Up to `limit` distinct (contract, domainSep, kind) of one table after `after`, by an index skip scan: one index
+ * probe per identity returned, however many rows (keys, mints) each identity has (final-audit F2).
+ */
+async function distinctIdentities(
+  ctx: ViewContext, table: "mip0018_fields" | "mip0018_mints", o: { contract?: string; after?: [string, string, number]; limit: number },
+): Promise<IdKey[]> {
   const { sql } = ctx;
-  const s = sql(ctx.schema);
+  const t = sql`${sql(ctx.schema)}.${sql(table)}`;
+  const scope = o.contract === undefined ? sql`` : sql`AND contract_address = ${buf(o.contract)}`;
+  const start = o.after === undefined ? sql`` : sql`AND (contract_address, domain_sep, kind) > (${buf(o.after[0])}, ${buf(o.after[1])}, ${o.after[2]}::smallint)`;
   const rows = await sql<{ contract_address: Buffer; domain_sep: Buffer; kind: number }[]>`
-    SELECT contract_address, domain_sep, kind FROM (
-      SELECT contract_address, domain_sep, kind FROM ${s}.mip0018_fields WHERE network = ${ctx.network}
-      UNION
-      SELECT contract_address, domain_sep, kind FROM ${s}.mip0018_mints WHERE network = ${ctx.network}
-    ) ids
-    WHERE TRUE
-      ${o.contract === undefined ? sql`` : sql`AND contract_address = ${buf(o.contract)}`}
-      ${o.after === undefined ? sql`` : sql`AND (contract_address, domain_sep, kind) > (${buf(o.after[0])}, ${buf(o.after[1])}, ${o.after[2]}::smallint)`}
-    ORDER BY contract_address, domain_sep, kind
-    LIMIT ${o.limit}`;
+    WITH RECURSIVE ids AS (
+      (SELECT contract_address, domain_sep, kind FROM ${t}
+       WHERE network = ${ctx.network} ${scope} ${start}
+       ORDER BY contract_address, domain_sep, kind LIMIT 1)
+      UNION ALL
+      SELECT n.contract_address, n.domain_sep, n.kind FROM ids CROSS JOIN LATERAL (
+        SELECT contract_address, domain_sep, kind FROM ${t}
+        WHERE network = ${ctx.network} ${scope}
+          AND (contract_address, domain_sep, kind) > (ids.contract_address, ids.domain_sep, ids.kind)
+        ORDER BY contract_address, domain_sep, kind LIMIT 1) n
+    )
+    SELECT contract_address, domain_sep, kind FROM ids LIMIT ${o.limit}`;
   return rows.map((r) => ({ contractAddress: hexOf(r.contract_address), domainSep: hexOf(r.domain_sep), kind: r.kind }));
 }
 
-/** List rows for the given identities (their current fields, mints and marks). */
+const compareKey = (a: IdKey, b: IdKey): number =>
+  a.contractAddress < b.contractAddress ? -1 : a.contractAddress > b.contractAddress ? 1
+    : a.domainSep < b.domainSep ? -1 : a.domainSep > b.domainSep ? 1 : a.kind - b.kind;
+
+/** Identities that are described (field rows) or minted (mint table), in (contract, domainSep, kind) byte order. */
+async function identityKeys(ctx: ViewContext, o: { contract?: string; after?: [string, string, number]; limit: number }): Promise<IdKey[]> {
+  const [described, minted] = await Promise.all([distinctIdentities(ctx, "mip0018_fields", o), distinctIdentities(ctx, "mip0018_mints", o)]);
+  const merged: IdKey[] = [];
+  let i = 0;
+  let j = 0;
+  while (merged.length < o.limit && (i < described.length || j < minted.length)) {
+    const a = described[i];
+    const b = minted[j];
+    const c = a === undefined ? 1 : b === undefined ? -1 : compareKey(a, b);
+    if (c <= 0) i++;
+    if (c >= 0) j++;
+    merged.push((c <= 0 ? a : b)!);
+  }
+  return merged;
+}
+
+/** Each contract's rejection summary (F2: a count and the first reasons, never every rejected event). */
+async function rejectionSummaries(ctx: ViewContext, contracts: readonly string[]): Promise<Map<string, RejectionSummary>> {
+  const out = new Map<string, RejectionSummary>();
+  for (const c of new Set(contracts)) out.set(c, await contractRejectionSummary(ctx.sql, ctx.network, c, MAX_MARK_REASONS, ctx.schema));
+  return out;
+}
+
+/** List rows for the given identities: their COMMON fields only, mints and marks (final-audit F2). */
 async function identitySummaries(ctx: ViewContext, keys: readonly IdKey[]): Promise<TokenSummaryJson[]> {
-  const contracts = [...new Set(keys.map((k) => k.contractAddress))];
-  const mints = await mintAggregates(ctx, contracts);
-  const reasons = new Map<string, string[]>();
-  for (const c of contracts) reasons.set(c, (await contractRejections(ctx.sql, ctx.network, c, ctx.schema)).map((r) => r.reason));
+  const mints = await mintAggregates(ctx, keys);
+  const reasons = await rejectionSummaries(ctx, keys.map((k) => k.contractAddress));
+  const commons = await identityCommons(ctx.sql, ctx.network, keys, ctx.schema);
   const out: TokenSummaryJson[] = [];
   for (const k of keys) {
-    const identity = await getIdentity(ctx.sql, { network: ctx.network, ...k }, ctx.schema);
+    const identity = commons.get(identityKeyOf(k))!;
     const mint = mints.get(identityKey(k.contractAddress, k.domainSep, k.kind));
-    const common = commonJson(identity?.fields);
+    const common = commonJson(identity.fields);
     out.push({
       id: `identity/${k.contractAddress}/${k.domainSep}/${k.kind}`,
       source: "identity",
@@ -340,29 +413,45 @@ async function identitySummaries(ctx: ViewContext, keys: readonly IdKey[]): Prom
       name: common.name,
       symbol: common.symbol,
       decimals: common.decimals,
-      described: identity !== undefined,
-      minted: mint === undefined ? null : mintStatsJson(mint, identity?.fields),
+      described: identity.described,
+      minted: mint === undefined ? null : mintStatsJson(mint, identity.fields),
       firstSeen: null,
       evidence: [],
-      mark: markJson(identity?.fields, reasons.get(k.contractAddress) ?? []),
+      mark: markJson(identity, reasons.get(k.contractAddress) ?? NO_REJECTIONS),
       note: null,
     });
   }
   return out;
 }
 
+/** The bounded group of an identity from its usable `symbol` (F2: a member count and the first members). */
+async function groupFor(ctx: ViewContext, ref: IdKey, common: IdentityCommon): Promise<GroupJson | null> {
+  const symbol = common.fields.get(COMMON_KEY_HEX.symbol);
+  if (symbol === undefined || symbol.usable !== true) return null;
+  const g = await boundedGroup(ctx.sql, { network: ctx.network, ...ref }, symbol.value, MAX_GROUP_MEMBERS, ctx.schema);
+  return g === undefined ? null : groupJson(g);
+}
+
 /**
- * One identity in full, or `undefined` when it is neither described nor minted (a withdrawn, never-minted identity
- * included: it is not referenced). `known` = the caller resolved it through the mint table (a lookup), so it is
- * answered even without a mint of that kind; `color` is then the held color.
+ * One identity, or `undefined` when it is neither described nor minted (a withdrawn, never-minted identity included:
+ * it is not referenced). `known` = the caller resolved it through the mint table (a lookup), so it is answered even
+ * without a mint of that kind; `color` is then the held color. Bounded whatever the identity holds (final-audit F2):
+ * one keyset page of fields (`fieldsLimit`, after the key of `fieldsCursor`) with `fieldCount`, the common fields, a
+ * bounded group and a mark from the common fields and a rejection summary.
  */
-export async function identityDetail(ctx: ViewContext, ref: IdKey, o: { known?: { color: string } } = {}): Promise<IdentityDetailJson | undefined> {
+export async function identityDetail(
+  ctx: ViewContext, ref: IdKey, o: { known?: { color: string }; fieldsLimit?: number; fieldsCursor?: FieldsCursor } = {},
+): Promise<IdentityDetailJson | undefined> {
   const full: IdentityRef = { network: ctx.network, ...ref };
-  const identity: IdentityState | undefined = await getIdentity(ctx.sql, full, ctx.schema);
-  const mint = ref.kind === 3 ? undefined : (await mintAggregates(ctx, [ref.contractAddress], { domainSep: ref.domainSep, kind: ref.kind })).get(identityKey(ref.contractAddress, ref.domainSep, ref.kind));
-  if (identity === undefined && mint === undefined && o.known === undefined) return undefined;
-  const reasons = (await contractRejections(ctx.sql, ctx.network, ref.contractAddress, ctx.schema)).map((r) => r.reason);
-  const group = identity === undefined ? undefined : await groupOf(ctx.sql, full, ctx.schema);
+  const identity = (await identityCommons(ctx.sql, ctx.network, [ref], ctx.schema)).get(identityKeyOf(ref))!;
+  const mint = ref.kind === 3 ? undefined : (await mintAggregates(ctx, [ref])).get(identityKey(ref.contractAddress, ref.domainSep, ref.kind));
+  if (!identity.described && mint === undefined && o.known === undefined) return undefined;
+  const limit = o.fieldsLimit ?? DEFAULT_FIELDS_LIMIT;
+  const page = identity.described
+    ? await identityFieldsPage(ctx.sql, full, { limit, ...(o.fieldsCursor === undefined ? {} : { afterKeyHex: o.fieldsCursor.k }) }, ctx.schema)
+    : { fields: [], more: false, count: 0 };
+  const last = page.fields[page.fields.length - 1];
+  const rejections = await contractRejectionSummary(ctx.sql, ctx.network, ref.contractAddress, MAX_MARK_REASONS, ctx.schema);
   return {
     network: ctx.network,
     contractAddress: ref.contractAddress,
@@ -370,12 +459,17 @@ export async function identityDetail(ctx: ViewContext, ref: IdKey, o: { known?: 
     kind: ref.kind,
     kindName: KIND_NAMES[ref.kind]!,
     color: mint?.color ?? o.known?.color ?? null,
-    minted: mint === undefined ? null : mintStatsJson(mint, identity?.fields),
-    described: identity !== undefined,
-    common: commonJson(identity?.fields),
-    fields: identity === undefined ? [] : [...identity.fields.values()].map(fieldJson),
-    group: group === undefined ? null : groupJson(group),
-    mark: markJson(identity?.fields, reasons),
+    minted: mint === undefined ? null : mintStatsJson(mint, identity.fields),
+    described: identity.described,
+    common: commonJson(identity.fields),
+    commonFields: [...identity.fields.values()].map(fieldJson),
+    fields: page.fields.map(fieldJson),
+    fieldCount: page.count,
+    fieldsNextCursor: page.more && last !== undefined
+      ? encodeCursor({ e: "fields", i: [ref.contractAddress, ref.domainSep, ref.kind], k: hexOf(last.key) } satisfies FieldsCursor)
+      : null,
+    group: identity.described ? await groupFor(ctx, ref, identity) : null,
+    mark: markJson(identity, rejections),
   };
 }
 
@@ -395,7 +489,7 @@ function seenSummary(s: Seen, mintedLater: { contractAddress: string; domainSep:
     id: `color/${s.color}`, source: "seen", kind: null, kindName: null, color: s.color,
     contractAddress: mintedLater?.contractAddress ?? null, domainSep: mintedLater?.domainSep ?? null,
     name: null, symbol: null, decimals: null, described: false, minted: null, firstSeen: s.firstSeen, evidence: s.evidence,
-    mark: markJson(undefined, []),
+    mark: markJson(undefined, NO_REJECTIONS),
     note: mintedLater === undefined ? null : "seen in public data before its first indexed mint; its minting contract's identities are listed among the identities",
   };
 }
@@ -468,8 +562,8 @@ export async function tokenByColor(ctx: ViewContext, color: string): Promise<Tok
       if (d !== undefined) out.identities.push(d);
     }
     const shown = new Set(out.identities.map((d) => d.kind));
-    for (const id of await listIdentities(ctx.sql, ctx.network, { contractAddress: entry.contractAddress, domainSep: entry.domainSep }, ctx.schema))
-      if (!shown.has(id.kind)) out.related.push({ contractAddress: id.contractAddress, domainSep: id.domainSep, kind: id.kind });
+    for (const kind of await describedKinds(ctx.sql, ctx.network, entry.contractAddress, entry.domainSep, ctx.schema))
+      if (!shown.has(kind)) out.related.push({ contractAddress: entry.contractAddress, domainSep: entry.domainSep, kind });
   }
   return out;
 }
@@ -488,16 +582,26 @@ async function contractKnown(ctx: ViewContext, contract: string): Promise<boolea
   return known?.known === true;
 }
 
-/** `GET /v1/contracts/{address}/tokens`; `undefined` = the scan never saw the contract (404). */
+/**
+ * `GET /v1/contracts/{address}/tokens`; `undefined` = the scan never saw the contract (404). `groups` = the groups of
+ * this page's identities, each bounded (final-audit F2: never every group of a contract).
+ */
 export async function contractTokens(ctx: ViewContext, contract: string, limit: number, cursor: ContractTokensCursor | undefined): Promise<ContractTokensJson | undefined> {
-  const { sql } = ctx;
   if (!(await contractKnown(ctx, contract))) return undefined;
   const keys = await identityKeys(ctx, { contract, limit: limit + 1, ...(cursor === undefined ? {} : { after: [contract, cursor.k[0], cursor.k[1]] as [string, string, number] }) });
   const page = keys.slice(0, limit);
   const last = page[page.length - 1];
+  const commons = await identityCommons(ctx.sql, ctx.network, page, ctx.schema);
+  const groups = new Map<string, GroupJson>();
+  for (const k of page) {
+    const symbol = commons.get(identityKeyOf(k))!.fields.get(COMMON_KEY_HEX.symbol);
+    if (symbol === undefined || symbol.usable !== true || groups.has(hexOf(symbol.value))) continue;
+    const g = await groupFor(ctx, k, commons.get(identityKeyOf(k))!);
+    if (g !== null) groups.set(hexOf(symbol.value), g);
+  }
   return {
     contractAddress: contract,
-    groups: (await listGroups(sql, ctx.network, { contractAddress: contract }, ctx.schema)).map(groupJson),
+    groups: [...groups.values()].sort((a, b) => (a.symbol.hex < b.symbol.hex ? -1 : a.symbol.hex > b.symbol.hex ? 1 : 0)),
     items: await identitySummaries(ctx, page),
     nextCursor: keys.length > limit && last !== undefined ? encodeCursor({ e: "contract-tokens", c: contract, k: [last.domainSep, last.kind] } satisfies ContractTokensCursor) : null,
   };

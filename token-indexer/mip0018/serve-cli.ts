@@ -13,7 +13,9 @@
  * grows; the scan's cursor moves by compare-and-set, so a second scanner of the same network (another `serve`, or
  * `scan-cli.ts`) fails instead of interleaving. A scan error (Q20: an undecodable transaction stops the scan at its
  * block) is logged and retried with back-off while the API keeps serving; `/v1/status` reports `scanner: stalled`.
- * `--api-only` runs no scan and no migration (read-only; the schema must exist).
+ * `--api-only` runs no scan and no migration (read-only; the schema must exist). The API answers at most 8 requests at
+ * once (503 `BUSY` beyond; final-audit F2), below the connection pool's 10, so API load cannot take every connection
+ * from the scan loop of the same process; a public deployment can still serve from `--api-only` replicas.
  *
  * | Flag | Environment | Default |
  * |---|---|---|

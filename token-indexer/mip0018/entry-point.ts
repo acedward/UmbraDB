@@ -37,13 +37,29 @@ export function entryPointText(bytes: Uint8Array): string | null {
   return Buffer.from(bytes).toString("latin1"); // ASCII only here, so latin1 = UTF-8 = the bytes
 }
 
-/** How the API serves an entry point: always the exact bytes as hex; `text` only when it is printable. */
+/**
+ * At most this many bytes of an entry point are served (final-audit F2): an entry point is arbitrary bytes of any
+ * length and every activity row of a call repeats it, so a long one would inflate every page of the tokens it touches.
+ * Compact entry points are short identifiers; a longer one is served as its first bytes with its `length`.
+ */
+export const ENTRY_POINT_MAX_BYTES = 128;
+
+/**
+ * How the API serves an entry point: the exact bytes as hex; `text` only when it is printable. An entry point longer
+ * than {@link ENTRY_POINT_MAX_BYTES} is served as its first bytes (`hex`), its `length` and `truncated: true`, never
+ * as text.
+ */
 export interface EntryPointJson {
   hex: string;
   text?: string;
+  length?: number;
+  truncated?: true;
 }
 
-export function entryPointJson(bytes: Uint8Array): EntryPointJson {
+/** `bytes` = the entry point, or its first bytes when `length` (its full length) is larger. */
+export function entryPointJson(bytes: Uint8Array, length = bytes.length): EntryPointJson {
+  if (length > bytes.length || bytes.length > ENTRY_POINT_MAX_BYTES)
+    return { hex: Buffer.from(bytes.subarray(0, ENTRY_POINT_MAX_BYTES)).toString("hex"), length, truncated: true };
   const text = entryPointText(bytes);
   const out: EntryPointJson = { hex: Buffer.from(bytes).toString("hex") };
   if (text !== null) out.text = text;

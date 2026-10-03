@@ -27,6 +27,7 @@ of an earlier draft is served. The explorer page (sub-plan C3) uses only these e
 | Events carry no values | The event endpoint serves position, contract, classification and reason only — never an event's name, payload, header (`domainSep`, `kind`) or decoded values (mid-project audit QA2, Q15). Only MIP-0018-named events (`accept`, `reject`) and `unresolved` logs are served; other `Misc` events (`ignore`) are not (Q19). |
 | Marks | `mark` is decided by one function (`state.ts` `tokenMark`, owner Q14 (a)): `ok` (✓) usable `name`, `symbol` and `decimals` and no rejected MIP-0018 event from the token's contract; `partial` (⚠) one of the three missing or unusable; `incorrect` (⚠) the contract has a rejected MIP-0018 event (reasons listed in chain order); `none` no metadata and no rejected event. Usable `standards` identifiers are returned as `tags` (self-declared, never proof). Current state only (assumption A13). |
 | Groups | Symbol groups as the MIP defines them: identities of one contract with the same usable `symbol` bytes; only groups of two or more members (Q6). |
+| Bounded cost | How many keys an identity has, how many events a contract rejected and how many identities share a symbol are chosen by whoever calls the contract (final audit F2). No answer grows with them: list rows and marks read only the four common keys and a rejection count plus the first 100 reasons; an identity's fields come in keyset pages (`fieldCount` counts them); a group lists its first 100 members (`memberCount` counts them); an entry point is served as at most its first 128 bytes; at most 8 requests run at once (503 `BUSY` beyond, `Retry-After: 1`). |
 | NIGHT / DUST | Protocol tokens, outside MIP-0018; served as built-in rows with no mark. NIGHT's color is 32 zero bytes; DUST has no color. |
 
 ### Errors
@@ -43,6 +44,7 @@ Every error is
 | 404 | `NOT_FOUND` | No such route, or the color / identity / contract is not known |
 | 405 | `METHOD_NOT_ALLOWED` | Any method other than `GET`/`HEAD` (header `Allow: GET, HEAD`) |
 | 503 | `UNAVAILABLE` | The database cannot be read (message is generic) |
+| 503 | `BUSY` | More API requests are in progress than the server answers at once (default 8; header `Retry-After: 1`); refused before any database work |
 | 500 | `INTERNAL` | Anything else (message is generic) |
 
 Messages name the parameter, never echo the input, and never carry internal details (no SQL, stack or driver text).
@@ -104,7 +106,8 @@ parsed list, `[]` for an empty value).
 2 `uint` (`integer`), 3 `json` (`text`), 4 `uri` (`text`; never fetched). `usable` is `true`/`false` for the four
 common keys and `null` for any other key.
 
-**Group** — `{ "symbol": { "hex": "414344", "utf8": "ACD" }, "members": [ { "domainSep": "6d69…", "kind": 1 }, … ] }`.
+**Group** — `{ "symbol": { "hex": "414344", "utf8": "ACD" }, "memberCount": 3, "members": [ { "domainSep": "6d69…", "kind": 1 }, … ] }`:
+the first 100 members by `(domainSep, kind)`; `memberCount` counts them all (final audit F2).
 
 **TokenSummary** — one row of the token list:
 
@@ -145,14 +148,20 @@ common keys and `null` for any other key.
   "minted": { "firstMint": { … }, "mints": 1, "amount": "100000", "amountDisplay": "1000.00" },
   "described": true,
   "common": { "name": "Acme Dollar", "symbol": "ACD", "decimals": "2", "standards": null },
-  "fields": [ Field, … ],
-  "group": { "symbol": { "hex": "414344", "utf8": "ACD" }, "members": [ … 3 members … ] },
+  "commonFields": [ Field, … ],
+  "fields": [ Field, … ], "fieldCount": 3, "fieldsNextCursor": null,
+  "group": { "symbol": { "hex": "414344", "utf8": "ACD" }, "memberCount": 3, "members": [ … 3 members … ] },
   "mark": { "mark": "ok", "reasons": [], "reasonCount": 0, "missing": [], "tags": [] }
 }
 ```
 
-A minted identity that is not (or no longer) described: `described: false`, `common` all `null`, `fields: []`,
-`group: null`, `mark` from its contract's rejections only (`incorrect` or `none`).
+`fields` is ONE keyset page of the current fields in key byte order (default 100, `limit` up to 500; a key never
+moves, so pages are stable while the scan writes); `fieldCount` counts all of them; `fieldsNextCursor` reads the next
+page through `/v1/identities/…?cursor=` (`null` on the last). `commonFields` = the current rows of the common keys
+present (`name`, `symbol`, `decimals`, `standards`), so a client can draw an unusable common field without paging.
+
+A minted identity that is not (or no longer) described: `described: false`, `common` all `null`, `commonFields: []`,
+`fields: []`, `fieldCount: 0`, `group: null`, `mark` from its contract's rejections only (`incorrect` or `none`).
 
 ## Endpoints
 
@@ -211,9 +220,11 @@ The token(s) of one color:
 - A color only seen: `contractAddress`/`domainSep` `null`, `identities: []`.
 - Anything else: 404.
 
-### `GET /v1/identities/{contract}/{domainSep}/{kind}`
+### `GET /v1/identities/{contract}/{domainSep}/{kind}?limit=&cursor=`
 
-IdentityDetail. 404 when the identity is neither described nor minted (this includes a withdrawn, never-minted one).
+IdentityDetail with one page of its fields (`limit` 1–500, default 100; `cursor` = a `fieldsNextCursor` of this
+identity — a cursor of another identity is a 400). 404 when the identity is neither described nor minted (this
+includes a withdrawn, never-minted one). `/v1/tokens/{color}` and `/v1/lookup` embed the first page.
 
 ### `GET /v1/contracts/{address}/tokens?limit=&cursor=`
 
@@ -221,8 +232,9 @@ IdentityDetail. 404 when the identity is neither described nor minted (this incl
 { "contractAddress": "f2d1b6eb…51d6", "groups": [ Group, … ], "items": [ TokenSummary, … ], "nextCursor": null }
 ```
 
-`items` = the contract's identities (minted or described) by `(domainSep, kind)`; `groups` = all its symbol groups of
-two or more members. 404 when the contract is not known to the scan (no applied call, deploy, update, mint or field).
+`items` = the contract's identities (minted or described) by `(domainSep, kind)`; `groups` = the symbol groups (two or
+more members) of the identities on THIS page, each a bounded Group (final audit F2) — a client merges them across
+pages. 404 when the contract is not known to the scan (no applied call, deploy, update, mint or field).
 
 ### `GET /v1/lookup/{color}?held=shielded|unshielded`
 
@@ -301,7 +313,9 @@ range (as `/v1/tokens/{color}`). `limit` 1–500 (default 100); the cursor is bo
 arbitrary bytes on the ledger (NUL, control, bidi and non-UTF-8 bytes included): `{ "hex": "6d696e74", "text": "mint" }`
 — `hex` is always the exact bytes; `text` is present only when the entry point is printable by the ledger's own rule
 for showing an entry point as a string (non-empty, every byte an ASCII letter or digit or one of `'+-_":/\?#$^*&.`).
-Anything else is served as hex only, e.g. `{ "hex": "6d696e7400" }` for `mint` followed by a NUL byte.
+Anything else is served as hex only, e.g. `{ "hex": "6d696e7400" }` for `mint` followed by a NUL byte. An entry point
+longer than 128 bytes is served as its first 128 bytes, its full `length` and `truncated: true`, never as text (final
+audit F2: every activity row of a call repeats its entry point).
 
 ### `GET /v1/contracts/{address}/activity?limit=&cursor=&order=`
 
