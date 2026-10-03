@@ -1,0 +1,92 @@
+{
+  "identities": [
+    {
+      "domainSep": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "kind": 3,
+      "visible": true,
+      "colored": false,
+      "common": {
+        "name": "Acme",
+        "symbol": "ACME",
+        "decimals": 6
+      },
+      "fields": {
+        "76": {
+          "key_text": "v",
+          "valType": 0,
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9da"
+        },
+        "64617461": {
+          "key_text": "data",
+          "valType": 0,
+          "value_hex": "010000"
+        },
+        "6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b": {
+          "key_text": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+          "valType": 0,
+          "value_hex": ""
+        },
+        "73796d626f6c": {
+          "key_text": "symbol",
+          "valType": 1,
+          "value_hex": "41434d45",
+          "usable": true
+        },
+        "73796d626f6c00": {
+          "key_text": "symbol\u0000",
+          "valType": 1,
+          "value_hex": "5a5a5a"
+        },
+        "ff6b6579": {
+          "key_text": "�key",
+          "valType": 1,
+          "value_hex": "6f6b"
+        },
+        "646563696d616c73": {
+          "key_text": "decimals",
+          "valType": 2,
+          "value_hex": "06000000000000000000000000000000",
+          "usable": true
+        },
+        "6e616d65": {
+          "key_text": "name",
+          "valType": 1,
+          "value_hex": "41636d65",
+          "usable": true
+        },
+        "6e6f7465": {
+          "key_text": "note",
+          "valType": 1,
+          "value_hex": ""
+        },
+        "626c6f62": {
+          "key_text": "blob",
+          "valType": 0,
+          "value_hex": ""
+        },
+        "6d657461": {
+          "key_text": "meta",
+          "valType": 3,
+          "value_hex": "6e756c6c"
+        }
+      }
+    }
+  ],
+  "groups": [
+    {
+      "symbol": "ACME",
+      "members": [
+        {
+          "domainSep": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "kind": 3
+        }
+      ]
+    }
+  ],
+  "counts": {
+    "events": 22,
+    "accepted": 9,
+    "rejected": 9,
+    "ignored": 4
+  }
+}

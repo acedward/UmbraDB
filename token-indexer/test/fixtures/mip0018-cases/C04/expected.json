@@ -1,0 +1,56 @@
+{
+  "identities": [
+    {
+      "domainSep": "0x6d69702d303031383a6578616d706c653a6d756c74692d6b696e640000000000",
+      "kind": 1,
+      "visible": true,
+      "colored": true,
+      "common": {
+        "name": "Acme Dollar",
+        "symbol": "ACD",
+        "decimals": 2
+      }
+    },
+    {
+      "domainSep": "0x6d69702d303031383a6578616d706c653a6d756c74692d6b696e640000000000",
+      "kind": 2,
+      "visible": true,
+      "colored": true,
+      "common": {
+        "name": "Acme Dollar",
+        "symbol": "ACD",
+        "decimals": 2
+      }
+    },
+    {
+      "domainSep": "0x6d69702d303031383a6578616d706c653a6d756c74692d6b696e640000000000",
+      "kind": 3,
+      "visible": true,
+      "colored": false,
+      "common": {
+        "name": "Acme Dollar",
+        "symbol": "ACD",
+        "decimals": 2
+      }
+    }
+  ],
+  "groups": [
+    {
+      "symbol": "ACD",
+      "members": [
+        {
+          "domainSep": "0x6d69702d303031383a6578616d706c653a6d756c74692d6b696e640000000000",
+          "kind": 1
+        },
+        {
+          "domainSep": "0x6d69702d303031383a6578616d706c653a6d756c74692d6b696e640000000000",
+          "kind": 2
+        },
+        {
+          "domainSep": "0x6d69702d303031383a6578616d706c653a6d756c74692d6b696e640000000000",
+          "kind": 3
+        }
+      ]
+    }
+  ]
+}

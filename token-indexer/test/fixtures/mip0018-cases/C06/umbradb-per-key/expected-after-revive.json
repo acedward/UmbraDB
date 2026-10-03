@@ -1,0 +1,27 @@
+{
+  "identities": [
+    {
+      "domainSep": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "kind": 3,
+      "visible": true,
+      "colored": false,
+      "common": {
+        "name": "Acme Again",
+        "symbol": "ACMA",
+        "decimals": 6,
+        "standards": "mip-0004"
+      }
+    }
+  ],
+  "groups": [
+    {
+      "symbol": "ACMA",
+      "members": [
+        {
+          "domainSep": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "kind": 3
+        }
+      ]
+    }
+  ]
+}

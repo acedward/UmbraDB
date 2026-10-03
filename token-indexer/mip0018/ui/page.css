@@ -1,0 +1,131 @@
+/* MIP-0018 token explorer. The look follows the explorer page of acedward/UmbraDB PR #19
+   (token-indexer/ui/page.ts @ 11af38e): Midnight brand, light surface, black type, one blue; the brand
+   face Outfit (SIL OFL 1.1, ui/fonts/OFL.txt) served by this process; hex, heights and amounts in a
+   monospaced face because they are data to compare. Served inline and allowed by its SHA-256 in the
+   page's Content-Security-Policy (ui/page.ts). No style attribute exists anywhere on the page. */
+@font-face {
+  font-family: "Outfit"; font-style: normal; font-weight: 100 900; font-display: swap;
+  src: url("/ui/outfit.woff2") format("woff2");
+}
+:root {
+  --md-black: #0a0a0a; --md-white: #ffffff; --md-blue: #0000fe; --md-grey: #cccccc;
+  --md-grey-light: #e6e6e6; --md-muted: #5f5f5f;
+  --bg: var(--md-white); --panel: #f6f6f6; --panel2: #efefef; --line: #dddddd;
+  --rule: var(--md-grey);
+  --ink: var(--md-black); --dim: var(--md-muted); --accent: var(--md-blue);
+  --bad: #b3261e; --bad-bg: #fdecec; --bad-fg: #8c1d18;
+  --hover: var(--md-grey-light); --zebra: #ededed;
+  --tint-blue: #e8e8ff; --ctl: #8f8f8f;
+  --sans: "Outfit", "Avenir Next", "Century Gothic", ui-sans-serif, system-ui, -apple-system,
+    "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  /* Tag colours (as in that explorer): one hue per meaning; background ~12-15 % tint, border ~40 %, dark text. */
+  --tag-builtin-bg: #ececec; --tag-builtin-bd: #b4b4b4; --tag-builtin-fg: #2b2b2b;
+  --tag-observed-bg: #fdf1d9; --tag-observed-bd: #e0aa4f; --tag-observed-fg: #8a5200;
+  --tag-described-bg: #e3f3e8; --tag-described-bd: #7cc192; --tag-described-fg: #1b6b37;
+  --tag-seen-bg: #ece9fb; --tag-seen-bd: #a89ae2; --tag-seen-fg: #4527a0;
+  --tag-unknown-bg: #f0f0f0; --tag-unknown-bd: #c2c2c2; --tag-unknown-fg: #616161;
+  --tag-shielded-bg: #f7ecfd; --tag-shielded-bd: #c79ae8; --tag-shielded-fg: #6b21a8;
+  --tag-unshielded-bg: #e6f1fa; --tag-unshielded-bd: #85b6db; --tag-unshielded-fg: #13558c;
+  --tag-ledger-bg: #e2f4f3; --tag-ledger-bd: #78c2be; --tag-ledger-fg: #0f6b68;
+  --tag-std-bg: var(--tint-blue); --tag-std-bd: #9b9bfb; --tag-std-fg: var(--md-blue);
+  --tag-bad-bg: var(--bad-bg); --tag-bad-bd: #e3a29f; --tag-bad-fg: var(--bad-fg);
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.55 var(--sans); -webkit-font-smoothing: antialiased;
+}
+a { color: var(--ink); text-decoration: underline; text-decoration-color: var(--rule);
+  text-underline-offset: 3px; }
+a:hover { text-decoration-color: var(--accent); }
+header { padding: 22px 28px 0; border-bottom: 1px solid var(--rule); }
+.brand { display: flex; align-items: center; gap: 14px; color: var(--ink); }
+.brand svg { height: 22px; width: auto; display: block; }
+.brand .rule { width: 1px; height: 22px; background: var(--rule); }
+h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.015em; }
+.brand .sub { color: var(--dim); font-size: 13px; font-weight: 500; }
+nav.tabs { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 18px 0 0; }
+nav.tabs a { padding: 8px 16px; color: var(--dim); text-decoration: none; font-weight: 500;
+  border-bottom: 2px solid transparent; margin-bottom: -1px; }
+nav.tabs a:hover { color: var(--ink); }
+nav.tabs a.on { color: var(--ink); border-bottom-color: var(--accent); }
+nav.tabs .sep { flex: 1 1 auto; }
+.strip { color: var(--dim); font-size: 12px; white-space: nowrap; margin-right: 10px; }
+.strip b { color: var(--ink); font-weight: 600; font-family: var(--mono); font-size: 11.5px; }
+.strip .stale { color: var(--bad); font-weight: 600; }
+.banner { margin: 14px 28px 0; padding: 10px 14px; border: 1px solid var(--bad);
+  background: var(--bad-bg); color: var(--bad-fg); font-size: 13px; white-space: pre-wrap; }
+main { padding: 18px 28px 40px; display: grid; gap: 18px; }
+main > * { min-width: 0; }
+section { background: var(--panel); border: 1px solid var(--line); padding: 18px 20px; }
+h2 { margin: 0 0 14px; font-size: 13px; font-weight: 500; color: var(--dim); letter-spacing: 0.02em; }
+h3 { margin: 0 0 6px; font-size: 20px; font-weight: 700; letter-spacing: -0.012em; }
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: var(--dim); font-weight: 500; font-size: 12px; padding: 6px 10px 8px;
+  border-bottom: 1px solid var(--rule); white-space: nowrap; }
+td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+tr:last-child td { border-bottom: none; }
+tbody tr.pick { cursor: pointer; }
+tbody tr.pick:hover td { background: var(--hover); }
+tr.built td { background: var(--zebra); }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 5px 18px; font-size: 13px; }
+.kv .k { color: var(--dim); }
+.kv .v { min-width: 0; overflow-wrap: anywhere; }
+.num { text-align: right; font-family: var(--mono); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.hex, .mono { font-family: var(--mono); font-size: 12.5px; }
+.hex { color: var(--dim); }
+.wallet { font-family: var(--mono); font-size: 12px; white-space: normal; word-break: break-all; }
+.note { color: var(--dim); font-size: 12px; }
+.err { color: var(--bad); font-size: 12.5px; }
+.empty { color: var(--dim); padding: 12px 2px; font-size: 13px; }
+.no { color: var(--dim); }
+.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.crumb { color: var(--dim); font-size: 13px; }
+.gap { margin-top: 10px; }
+/* Data text: every value a publisher chose is its own bidirectional island, so right-to-left text in a
+   name cannot reorder the label or the chip beside it. */
+.d { unicode-bidi: isolate; overflow-wrap: anywhere; }
+td .d { display: inline-block; max-width: 42ch; overflow: hidden; text-overflow: clip; vertical-align: top; }
+td.wide { white-space: normal; max-width: 60ch; }
+.mark-vis { color: var(--tag-observed-fg); font-family: var(--mono); font-size: 0.85em; }
+.badge, .chip { display: inline-block; padding: 0 7px; margin-right: 6px; font-size: 11px; font-weight: 500;
+  border: 1px solid var(--tag-unknown-bd); color: var(--tag-unknown-fg); background: var(--tag-unknown-bg);
+  white-space: nowrap; }
+.k-shielded { color: var(--tag-shielded-fg); border-color: var(--tag-shielded-bd); background: var(--tag-shielded-bg); }
+.k-unshielded { color: var(--tag-unshielded-fg); border-color: var(--tag-unshielded-bd); background: var(--tag-unshielded-bg); }
+.k-ledger { color: var(--tag-ledger-fg); border-color: var(--tag-ledger-bd); background: var(--tag-ledger-bg); border-style: dashed; }
+.k-builtin { color: var(--tag-builtin-fg); border-color: var(--tag-builtin-bd); background: var(--tag-builtin-bg); }
+.k-seen { color: var(--tag-seen-fg); border-color: var(--tag-seen-bd); background: var(--tag-seen-bg); border-style: dashed; }
+.std { color: var(--tag-std-fg); border-color: var(--tag-std-bd); background: var(--tag-std-bg); }
+.ok { color: var(--tag-described-fg); border-color: var(--tag-described-bd); background: var(--tag-described-bg); }
+.warn { color: var(--tag-observed-fg); border-color: var(--tag-observed-bd); background: var(--tag-observed-bg); }
+.bad { color: var(--tag-bad-fg); border-color: var(--tag-bad-bd); background: var(--tag-bad-bg); }
+/* The MIP-0018 mark column: check correct, warning partial or incorrect (reason in the tooltip), empty when the
+   token has no MIP-0018 event - a cross in every other row would read as a failure, and "nothing
+   published" is not one. */
+td.mipcol { text-align: center; }
+.mk { display: inline-block; min-width: 1.6em; font-size: 15px; line-height: 1; font-weight: 700; cursor: help; }
+.mk-ok { color: var(--tag-described-fg); }
+.mk-partial { color: var(--tag-observed-fg); }
+.mk-incorrect { color: var(--bad); }
+.mk-unresolved { color: var(--tag-observed-fg); }
+.dir-in { color: var(--tag-described-fg); }
+.dir-out { color: var(--tag-observed-fg); }
+.dir-mint { color: var(--accent); }
+.dir-meta { color: var(--tag-std-fg); }
+.cp { cursor: pointer; text-decoration: underline dotted; text-decoration-color: var(--ctl);
+  text-underline-offset: 3px; }
+.cp.copied { color: var(--md-white); background: var(--accent); text-decoration: none; }
+.cpbuf { position: fixed; top: -1000px; left: -1000px; opacity: 0; }
+button { font: inherit; font-size: 13px; font-weight: 500; padding: 6px 14px; cursor: pointer;
+  background: var(--md-white); color: var(--ink); border: 1px solid var(--ctl); }
+button:hover:enabled { border-color: var(--ink); }
+button:disabled { opacity: 0.4; cursor: default; }
+button.mini { padding: 1px 9px; font-size: 11.5px; margin-left: 6px; }
+button#now { background: var(--accent); border-color: var(--accent); color: var(--md-white); }
+button#now:hover:enabled { background: #0000c4; border-color: #0000c4; }
+.val { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+.foot { padding: 0 28px 28px; color: var(--dim); font-size: 12px; max-width: 120ch; }

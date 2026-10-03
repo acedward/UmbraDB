@@ -1,0 +1,342 @@
+{
+  "format": "umbradb-mip0018-live-range/1",
+  "$comment": "The recorded result of a live sync and scan of Stagenet blocks 714485-715183 with this repository's programs (chain-archive-sync/sync-cli.ts, then token-indexer/mip0018/scan-cli.ts; polite defaults), written from the outputs of token-indexer/dev/live-range-check.ts: one uninterrupted live run and a replay of the recorded tape through the same programs, compared table by table (token-indexer/dev/range-tables.ts: every table of both schemas, wall-clock columns and the verifier_key_observations.id surrogate key excluded); the two are identical. liveTables holds the live run's per-table digests. Request counts come from the fetch-meter preload (token-indexer/dev/fetch-meter.ts). Checked in CI by token-indexer/test/mip0018-live-range.test.ts.",
+  "recordedAt": "2026-10-03",
+  "network": "stagenet",
+  "genesisHash": "0x2f76825abc239fecf6107c9df99016de57037b451ae57a4394b76c8cf53a9491",
+  "range": {
+    "from": 714485,
+    "to": 715183
+  },
+  "runtime": {
+    "node": "node:24-bookworm",
+    "ledgerV9": "1.0.0-rc.3"
+  },
+  "endpoints": {
+    "node": "https://rpc.stagenet.shielded.tools",
+    "indexer": "https://indexer.stagenet.shielded.tools/api/v4/graphql"
+  },
+  "politeness": {
+    "concurrency": 4,
+    "minIntervalMsPerEndpoint": 250,
+    "backoff": "sync-cli defaults: 1 s base, 60 s cap, 8 attempts; 429/403/5xx/transport/non-JSON retried"
+  },
+  "runs": {
+    "liveUninterrupted": {
+      "sync": {
+        "ms": 469584,
+        "runs": [
+          {
+            "startedAt": "2026-10-03T14:18:06.176Z",
+            "ms": 469583,
+            "exit": 0,
+            "signal": null
+          }
+        ],
+        "programCounters": {
+          "batches": 4,
+          "retries": 2,
+          "throttled": 0,
+          "backoffLines": 2,
+          "loopErrors": 0
+        },
+        "requests": {
+          "total": 2111,
+          "byHostAndOperation": {
+            "rpc.stagenet.shielded.tools": {
+              "chain_getFinalizedHead": 4,
+              "chain_getHeader": 4,
+              "chain_getBlockHash": 699,
+              "chain_getBlock": 699
+            },
+            "indexer.stagenet.shielded.tools": {
+              "block": 705
+            }
+          },
+          "statuses": {
+            "200": 2109,
+            "error:TimeoutError": 2
+          },
+          "throttledAnswers": 0,
+          "nonSuccessAnswers": 2
+        }
+      },
+      "scan": {
+        "ms": 4823,
+        "runs": [
+          {
+            "startedAt": "2026-10-03T14:25:55.760Z",
+            "ms": 4823,
+            "exit": 0,
+            "signal": null
+          }
+        ]
+      },
+      "finalArchivedHeight": 715183,
+      "finalScanNext": 715184,
+      "infrastructure": "private Postgres 17 on a private Docker network, no published ports; the programs ran in node:24-bookworm"
+    },
+    "replay": {
+      "source": "test/integration/fixtures/stagenet-archive/stagenet-714485-715183.tape.json.br via the local fake chain",
+      "sync": {
+        "ms": 5022,
+        "requests": 2109
+      },
+      "scan": {
+        "ms": 4394
+      }
+    }
+  },
+  "comparison": {
+    "identical": {
+      "liveUninterrupted=replay": true
+    },
+    "sha256": {
+      "liveUninterrupted": "af6583d03da69ffd52a31fd89e663fe7892cf45aaf7234d9fc213c335dbc832c",
+      "replay": "af6583d03da69ffd52a31fd89e663fe7892cf45aaf7234d9fc213c335dbc832c"
+    }
+  },
+  "liveTables": {
+    "tables": {
+      "archive._migrations": {
+        "rows": 3,
+        "sha256": "4a802d588b66d08dc84c4174b2a2ee0367cda2df35c2906ea3cccbc2f23f1550",
+        "excluded": [
+          "applied_at (wall clock)"
+        ]
+      },
+      "archive.blocks": {
+        "rows": 699,
+        "sha256": "6071f71a1d86990eaa0d4ba5c0680af03c9bae5aae8b20f019834af785f3fdc1",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.blocks_default": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.blocks_p0": {
+        "rows": 699,
+        "sha256": "6071f71a1d86990eaa0d4ba5c0680af03c9bae5aae8b20f019834af785f3fdc1",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.blocks_p1": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.blocks_p2": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.blocks_p3": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.blocks_p4": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.bridge_observations": {
+        "rows": 1,
+        "sha256": "c1c50598f58ce65460fad0adadad63656329bc5eb55f91e0257eb576cd98d10e",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.bridge_observations_default": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.bridge_observations_p0": {
+        "rows": 1,
+        "sha256": "c1c50598f58ce65460fad0adadad63656329bc5eb55f91e0257eb576cd98d10e",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.bridge_observations_p1": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.bridge_observations_p2": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.bridge_observations_p3": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.bridge_observations_p4": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.chain_blob_roles": {
+        "rows": 1468,
+        "sha256": "09fe26526d5c577b245a56494febe7032130a7c073e5a646ca5dddaa921d9c92",
+        "excluded": []
+      },
+      "archive.chain_blobs": {
+        "rows": 1468,
+        "sha256": "038f23f0435745dbe9b5efa1b08d4e8972237e56c3d56c576a8ffdf2d4c8cccf",
+        "excluded": [
+          "created_at (wall clock)"
+        ]
+      },
+      "archive.transactions": {
+        "rows": 69,
+        "sha256": "25eed856e94e623852b519d3ee03defcf8df2565f9ada4724528dfbdfeca623f",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.transactions_default": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.transactions_p0": {
+        "rows": 69,
+        "sha256": "25eed856e94e623852b519d3ee03defcf8df2565f9ada4724528dfbdfeca623f",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.transactions_p1": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.transactions_p2": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.transactions_p3": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.transactions_p4": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.verifier_key_observations": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "id (surrogate key)",
+          "synced_at (wall clock)"
+        ]
+      },
+      "archive.watermarks": {
+        "rows": 1,
+        "sha256": "2de1a8ba0f2b2b576d8d3ef0051050ef9ea2190d0c0af6e06d8e5385a3fd4b39",
+        "excluded": [
+          "updated_at (wall clock)"
+        ]
+      },
+      "mip0018._migrations": {
+        "rows": 4,
+        "sha256": "47748b19d0fce6c7cf5668454ac9510ab6724fe3a65f373bc046bdf75b5e264a",
+        "excluded": [
+          "applied_at (wall clock)"
+        ]
+      },
+      "mip0018.mip0018_activity": {
+        "rows": 46,
+        "sha256": "5d872864484e0c8348cf2b4b4cbb2f5a299db4cd07cebb5a90e6bf13d1256ee2",
+        "excluded": []
+      },
+      "mip0018.mip0018_builtin_tokens": {
+        "rows": 2,
+        "sha256": "5a538de9b9d6bd30e2a72999e8049fd4cbcabb7c65558470bca000bc99ff43e8",
+        "excluded": []
+      },
+      "mip0018.mip0018_color_sightings": {
+        "rows": 9,
+        "sha256": "2987890d7fc7b591681aea498d80c585180202aed2ca09b50253211165fd1c8d",
+        "excluded": []
+      },
+      "mip0018.mip0018_contract_actions": {
+        "rows": 70,
+        "sha256": "5bd8fe5d7d2a5efa8e27682c973f4c3644482a9af2fcd01448dcd5d9064b5e69",
+        "excluded": []
+      },
+      "mip0018.mip0018_events": {
+        "rows": 49,
+        "sha256": "93afd2b9d7b6bf54b7edb61498ee703b35d365e2dd2490f0802bd9d9896f399e",
+        "excluded": []
+      },
+      "mip0018.mip0018_fields": {
+        "rows": 47,
+        "sha256": "5cae91e3059e2ca29a30c005beba609b3d0fab3b3c71f6fd59ac66d4179170a0",
+        "excluded": []
+      },
+      "mip0018.mip0018_listed_events": {
+        "rows": 35,
+        "sha256": "590276fbf134e6f5455529a289729a2283f4943b2912c3bbce2aeed0da81dc19",
+        "excluded": []
+      },
+      "mip0018.mip0018_mints": {
+        "rows": 7,
+        "sha256": "684dea25c4938dadaf51fb9797223d9fb14431d9f4ca94a38e14143a0f67080e",
+        "excluded": []
+      },
+      "mip0018.mip0018_scan": {
+        "rows": 1,
+        "sha256": "90d87ef07b9496c0fc2b9114a73abcb308111b9faf28aabc13fa50afd5b31fc7",
+        "excluded": []
+      },
+      "mip0018.mip0018_withdrawals": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": []
+      }
+    },
+    "sha256": "af6583d03da69ffd52a31fd89e663fe7892cf45aaf7234d9fc213c335dbc832c"
+  }
+}

@@ -1,5 +1,6 @@
 import * as migration000 from "../000_schema.js";
 import * as chainArchiveCore from "./001_chain_archive_core.js";
+import * as transactionSegments from "./002_transaction_segments.js";
 import type { Migration } from "../../migrate.js";
 
 /**
@@ -29,7 +30,7 @@ import type { Migration } from "../../migrate.js";
  * lineage, design-stage only, gated on design-council ratification before any real wiring or
  * live apply.
  */
-export const chainArchiveMigrations: Migration[] = [migration000, chainArchiveCore];
+export const chainArchiveMigrations: Migration[] = [migration000, chainArchiveCore, transactionSegments];
 
 // v3 note: `chainArchiveCore` now also creates `chain_archive_assert_blob_role` (a shared
 // plpgsql helper) and one thin `BEFORE INSERT OR UPDATE` trigger per blob-referencing table
@@ -44,3 +45,7 @@ export const chainArchiveMigrations: Migration[] = [migration000, chainArchiveCo
 // now includes `tag` (and no longer includes `first_seen_height`) — see
 // `001_chain_archive_core.ts`'s own header comment and the design doc's "Revision history — v4"
 // note for the full reasoning.
+//
+// `transactionSegments` (`002_transaction_segments.ts`) adds `transactions.segments`
+// (jsonb, the indexer's per-segment `{id, success}` list) next to the existing `result` column, so
+// a consumer decoding archived raw bytes can count only the parts of a transaction that applied.

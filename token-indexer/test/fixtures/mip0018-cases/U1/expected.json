@@ -1,0 +1,26 @@
+{
+  "identities": [
+    {
+      "domainSep": "0x6d69702d303031383a6578616d706c653a757067726164650000000000000000",
+      "kind": 1,
+      "visible": true,
+      "colored": true,
+      "common": {
+        "name": "Legacy Token",
+        "symbol": "LGCY",
+        "decimals": 6
+      }
+    }
+  ],
+  "groups": [
+    {
+      "symbol": "LGCY",
+      "members": [
+        {
+          "domainSep": "0x6d69702d303031383a6578616d706c653a757067726164650000000000000000",
+          "kind": 1
+        }
+      ]
+    }
+  ]
+}

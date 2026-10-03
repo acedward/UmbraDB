@@ -1,0 +1,28 @@
+{
+  "identities": [
+    {
+      "domainSep": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "kind": 3,
+      "visible": true,
+      "colored": false,
+      "common": {
+        "name": "Good"
+      },
+      "fields": {
+        "6e616d65": {
+          "key_text": "name",
+          "valType": 1,
+          "value_hex": "476f6f64",
+          "usable": true
+        }
+      }
+    }
+  ],
+  "groups": [],
+  "counts": {
+    "events": 2,
+    "accepted": 1,
+    "rejected": 1,
+    "ignored": 0
+  }
+}

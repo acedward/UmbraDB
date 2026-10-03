@@ -24,3 +24,59 @@ be646fcff58052a77e848914a79ccef2279cf78f:nix/midnight-env/test-wallets/preview-t
 # The current list separates the literals and leaves `eth_createAccessList` last in its group to
 # avoid creating the same adjacency when this test is next changed.
 e5f53f5122c973556531ce07c696a32e9f911b5f:evm-rpc/test/not-implemented.test.ts:generic-api-key:31
+
+# The branches of acedward/UmbraDB PR #19 (feat/00020-token-indexer and its children
+# feat/0002[0-4]-*) are fetched by the full-history scan (`--log-opts=--all` after a fetch-depth 0
+# checkout). All their findings are `generic-api-key` hits on PUBLIC chain data in that PR's
+# token-indexer test fixtures (contract addresses, token types, transaction hashes, registry ids),
+# and that PR suppresses the same fingerprints in its own .gitleaksignore. They are listed here by
+# exact fingerprint (7 commits that exist only on those branches), so nothing else is suppressed.
+# gitleaks v8.28.0 over a full clone (739 commits, 2026-10-03): 79 findings / 47 fingerprints
+# without these entries, none with them.
+09e5e497967476f5b5f6845a3a201b41853c4236:token-indexer/test/fixtures/ui/interface-outcomes.json:generic-api-key:1
+09e5e497967476f5b5f6845a3a201b41853c4236:token-indexer/test/fixtures/ui/token-sstarpi.json:generic-api-key:1
+09e5e497967476f5b5f6845a3a201b41853c4236:token-indexer/test/fixtures/ui/token-uprompi.json:generic-api-key:1
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/color-vectors.json:generic-api-key:17
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/color-vectors.json:generic-api-key:29
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/color-vectors.json:generic-api-key:41
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/color-vectors.json:generic-api-key:53
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/color-vectors.json:generic-api-key:65
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/color-vectors.json:generic-api-key:66
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/color-vectors.json:generic-api-key:77
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/color-vectors.json:generic-api-key:78
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/scan/mint-utwBTC.raw.json:generic-api-key:26
+4e06464af1cee9149d5bf8b62025fdb45a83465f:token-indexer/test/fixtures/scan/mint-utwUSDC.raw.json:generic-api-key:26
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:115
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:136
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:157
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:178
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:199
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:220
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:241
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:262
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:283
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:304
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:325
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:346
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:367
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:388
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:409
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:430
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:451
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:472
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:493
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:514
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:52
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:535
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:556
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:577
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:598
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:619
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:73
+74401aa31f2f141e0fa2ef915f5b3695abd07662:token-indexer/test/fixtures/maintenance/cnst18-staged-deploy.transactions.json:generic-api-key:94
+7b03bc4cb9f0e1448860ca9dfebdc6951f1b6a57:token-indexer/color.ts:generic-api-key:34
+a7affa4c892b64c074a2bbc7eaffeba52bc784b8:token-indexer/test/multipart-golden.test.ts:generic-api-key:37
+bd2fa466b4a30a590f77734179ad97d7db6c078c:token-indexer/test/fixtures/activity/deposit-toMap.raw.json:generic-api-key:28
+dfe1917f17b145fe21ff97752631552fe26c28c7:token-indexer/test/fixtures/activity/ucom-transfer.raw.json:generic-api-key:22
+dfe1917f17b145fe21ff97752631552fe26c28c7:token-indexer/test/fixtures/activity/ucom-transfer.raw.json:generic-api-key:29
+dfe1917f17b145fe21ff97752631552fe26c28c7:token-indexer/test/fixtures/activity/ucom-transfer.raw.json:generic-api-key:38

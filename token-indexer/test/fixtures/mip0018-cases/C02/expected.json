@@ -1,0 +1,26 @@
+{
+  "identities": [
+    {
+      "domainSep": "0x6d69702d303031383a6578616d706c653a736869656c64656400000000000000",
+      "kind": 1,
+      "visible": true,
+      "colored": true,
+      "common": {
+        "name": "Acme Shield",
+        "symbol": "ASHD",
+        "decimals": 6
+      }
+    }
+  ],
+  "groups": [
+    {
+      "symbol": "ASHD",
+      "members": [
+        {
+          "domainSep": "0x6d69702d303031383a6578616d706c653a736869656c64656400000000000000",
+          "kind": 1
+        }
+      ]
+    }
+  ]
+}

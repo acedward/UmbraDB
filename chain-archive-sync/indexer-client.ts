@@ -1,4 +1,5 @@
 import { publicEndpoint, publicErrorCause, publicErrorMessage } from "../wallet-monitor/log.js";
+import { defaultMinIntervalMs, parseRetryAfterMs, RequestPacer } from "./polite-http.js";
 
 /**
  * Minimal Midnight indexer GraphQL client -- plain `fetch`, no SDK dependency. Grounded against
@@ -14,7 +15,12 @@ import { publicEndpoint, publicErrorCause, publicErrorMessage } from "../wallet-
  */
 
 export class IndexerClientError extends Error {
-  constructor(message: string, readonly cause?: unknown) {
+  /** Same contract as `NodeRpcError`: `httpStatus` (+ `retryAfterMs`) set => the
+   *  transport completed with a non-2xx status; `cause` set => the transport itself failed;
+   *  neither => a GraphQL protocol error, which is never retried. */
+  constructor(
+    message: string, readonly cause?: unknown, readonly httpStatus?: number, readonly retryAfterMs?: number,
+  ) {
     super(message);
     this.name = "IndexerClientError";
   }
@@ -31,10 +37,26 @@ export class IndexerClientParseError extends Error {
   }
 }
 
+/** The indexer's `TransactionResultStatus`. */
+export type IndexerTransactionStatus = "SUCCESS" | "PARTIAL_SUCCESS" | "FAILURE";
+
+/** `RegularTransaction.transactionResult`. `segments` is `null` for `SUCCESS` and `FAILURE` (the
+ *  indexer lists segments only for `PARTIAL_SUCCESS`); confirmed live on Stagenet (2026-10-02). */
+export interface IndexerTransactionResult {
+  status: string;
+  segments: { id: number; success: boolean }[] | null;
+}
+
 export interface IndexerTransaction {
+  /** `RegularTransaction` | `SystemTransaction` | ... -- requested so the sync can tell a regular
+   *  transaction whose result is missing (an error) from a type that has no result field. */
+  __typename?: string;
   hash: string;
   protocolVersion: number;
   raw: string; // 0x-free hex (indexer's HexEncoded scalar has no 0x prefix, confirmed live)
+  /** Present only on `RegularTransaction`: the field is declared on that concrete type, not on the
+   *  `Transaction` interface, hence the inline fragment in {@link BLOCK_BY_HEIGHT_QUERY}. */
+  transactionResult?: IndexerTransactionResult | null;
 }
 
 export interface IndexerBlock {
@@ -50,7 +72,22 @@ export interface IndexerClientOptions {
   /** Per-request timeout in milliseconds -- a hung/black-holed indexer otherwise stalls the
    *  entire sync service indefinitely with no way to recover (Fix 3). Default: 20_000. */
   timeoutMs?: number;
+  /** Minimum spacing between two request starts. Default: 250 ms for a public
+   *  Midnight host (`polite-http.ts`), 0 otherwise. */
+  minIntervalMs?: number;
 }
+
+/** The per-height block query, with each transaction's `__typename` and result. */
+export const BLOCK_BY_HEIGHT_QUERY = `query($height: Int!) {
+        block(offset: { height: $height }) {
+          hash height
+          transactions {
+            __typename hash protocolVersion raw
+            ... on RegularTransaction { transactionResult { status segments { id success } } }
+          }
+          systemParameters { dParameter { numPermissionedCandidates numRegisteredCandidates } }
+        }
+      }`;
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 
@@ -59,15 +96,23 @@ export class IndexerClient {
   private readonly publicUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly pacer: RequestPacer;
 
   constructor(opts: IndexerClientOptions) {
     this.url = opts.url;
     this.publicUrl = publicEndpoint(opts.url);
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.pacer = new RequestPacer(opts.minIntervalMs ?? defaultMinIntervalMs(opts.url));
+  }
+
+  /** The effective request spacing (logged by the CLI). */
+  get minIntervalMs(): number {
+    return this.pacer.minIntervalMs;
   }
 
   private async query<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
+    await this.pacer.wait();
     let res: Response;
     try {
       res = await this.fetchImpl(this.url, {
@@ -82,7 +127,10 @@ export class IndexerClient {
       );
     }
     if (!res.ok) {
-      throw new IndexerClientError(`GraphQL HTTP ${res.status} from ${this.publicUrl}`);
+      throw new IndexerClientError(
+        `GraphQL HTTP ${res.status} from ${this.publicUrl}`,
+        undefined, res.status, parseRetryAfterMs(res.headers.get("retry-after")),
+      );
     }
     let body: { data?: T; errors?: { message: string }[] };
     try {
@@ -113,16 +161,7 @@ export class IndexerClient {
   }
 
   async getBlockByHeight(height: number): Promise<IndexerBlock | undefined> {
-    const data = await this.query<{ block: IndexerBlock | null }>(
-      `query($height: Int!) {
-        block(offset: { height: $height }) {
-          hash height
-          transactions { hash protocolVersion raw }
-          systemParameters { dParameter { numPermissionedCandidates numRegisteredCandidates } }
-        }
-      }`,
-      { height },
-    );
+    const data = await this.query<{ block: IndexerBlock | null }>(BLOCK_BY_HEIGHT_QUERY, { height });
     return data.block ?? undefined;
   }
 }

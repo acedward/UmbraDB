@@ -1,0 +1,74 @@
+{
+  "id": "INF-ZEXT-S1",
+  "mip": {
+    "commit": "78ecbb4b1ba57371e84fe45f705991ab7b996a61",
+    "testId": "INF-ZEXT"
+  },
+  "normative": false,
+  "description": "Reducer: A1, then name = \"Beta\", both observed with the name and payload trimmed: the identity is visible with name \"Beta\" and A1's other three fields, exactly as with the full forms.",
+  "basis": "MIP \"Consuming\" (78ecbb4): \"Some sources drop trailing zero bytes; consumers MUST treat missing trailing bytes as zero, so that every `name` is 32 bytes and every `payload` 256 bytes, before decoding.\" The expected result is the full form's.",
+  "steps": [
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 1,
+      "tx": 0,
+      "event": 0,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d",
+      "payload_hex": "111111111111111111111111111111111111111111111111111111111111111103046e616d65010a41636d6520546f6b656e0673796d626f6c010441434d4508646563696d616c73020106097374616e646172647301086d69702d30303034"
+    },
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 2,
+      "tx": 0,
+      "event": 0,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d",
+      "payload_hex": "111111111111111111111111111111111111111111111111111111111111111103046e616d65010442657461"
+    }
+  ],
+  "expect": {
+    "identities": [
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+        "kind": 3,
+        "visible": true,
+        "fields": {
+          "6e616d65": {
+            "key_text": "name",
+            "valType": 1,
+            "value_hex": "42657461",
+            "value_text": "Beta",
+            "usable": true
+          },
+          "73796d626f6c": {
+            "key_text": "symbol",
+            "valType": 1,
+            "value_hex": "41434d45",
+            "value_text": "ACME",
+            "usable": true
+          },
+          "646563696d616c73": {
+            "key_text": "decimals",
+            "valType": 2,
+            "value_hex": "06",
+            "usable": true
+          },
+          "7374616e6461726473": {
+            "key_text": "standards",
+            "valType": 1,
+            "value_hex": "6d69702d30303034",
+            "value_text": "mip-0004",
+            "usable": true
+          }
+        }
+      }
+    ]
+  }
+}

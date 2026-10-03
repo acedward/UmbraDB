@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/midnight-experiments/mip-0018/vectors/schema/manifest.schema.json",
+  "title": "MIP-0018 vector manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "mip", "eventName", "generator", "counts", "vectors"],
+  "properties": {
+    "format": { "const": "mip0018-vectors/1" },
+    "mip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "repository", "commit", "path", "sha256", "url", "pr"],
+      "properties": {
+        "id": { "const": "MIP-0018" },
+        "repository": { "const": "midnightntwrk/midnight-improvement-proposals" },
+        "commit": { "const": "78ecbb4b1ba57371e84fe45f705991ab7b996a61" },
+        "path": { "const": "mips/mip-0018-on-chain-token-metadata.md" },
+        "sha256": { "const": "b9092746ecf5660496535688a2dea152eb23d932b6eeb6b5a182c23426eec1a1" },
+        "url": { "type": "string", "pattern": "^https://github\\.com/" },
+        "pr": { "type": "string", "pattern": "^https://github\\.com/" }
+      }
+    },
+    "eventName": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "hex"],
+      "properties": {
+        "text": { "const": "mip-0018:token-metadata[v1]" },
+        "hex": { "$ref": "payload.schema.json#/$defs/hex32" }
+      }
+    },
+    "generator": { "type": "string" },
+    "counts": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "vectors": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "file", "testId", "normative"],
+        "properties": {
+          "id": { "$ref": "payload.schema.json#/$defs/vectorId" },
+          "kind": { "enum": ["payload", "state"] },
+          "file": { "type": "string", "pattern": "^[A-Za-z0-9._/-]+\\.json$" },
+          "bin": { "type": "string", "pattern": "^[A-Za-z0-9._/-]+\\.bin$" },
+          "testId": { "type": "string" },
+          "normative": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}

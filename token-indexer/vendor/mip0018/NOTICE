@@ -1,0 +1,15 @@
+MIP-0018 reference implementation (midnight-experiments/mip-0018)
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This repository depends on, but does not include, the following official
+components, each under its own licence:
+
+- Compact toolchain (midnightntwrk/compact releases)
+- Midnight node, indexer and proof server Docker images (midnightntwrk/*)
+- Midnight.js, the Midnight Wallet SDK and the ledger WASM packages (npm scopes
+  @midnight-ntwrk and @midnightntwrk)
+- OpenZeppelin Compact Contracts (npm @openzeppelin/compact-contracts, MIT)
+
+MIP-0018 itself is maintained in midnightntwrk/midnight-improvement-proposals
+and is referenced by link and hash, not copied.

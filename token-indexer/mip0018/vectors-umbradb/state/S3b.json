@@ -1,0 +1,154 @@
+{
+  "id": "S3b",
+  "mip": {
+    "commit": "274a84f221bcfc17e4b73e2c8b32fd8c028ea092",
+    "testId": "S3"
+  },
+  "normative": true,
+  "description": "Tombstone (MIP 274a84f S3): after S3a, a second Null at \"name\" (block 3) and a Null at a key with no value, \"retire\" (block 4), change nothing.",
+  "basis": "UmbraDB's own version: written from the Testing text of MIP-0018 PR #340 head 274a84f (per-key tombstones); the vendored reference vector of the same id implements 78ecbb4 (whole-identity tombstones).",
+  "steps": [
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 1,
+      "tx": 0,
+      "event": 0,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "111111111111111111111111111111111111111111111111111111111111111101046e616d650104476f6c640673796d626f6c0103474c4408646563696d616c73020106097374616e646172647301086d69702d30303131000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 1,
+      "tx": 0,
+      "event": 1,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "111111111111111111111111111111111111111111111111111111111111111103046e616d650104476f6c640673796d626f6c0103474c4408646563696d616c73020106097374616e646172647301086d69702d30303034000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 2,
+      "tx": 0,
+      "event": 0,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "111111111111111111111111111111111111111111111111111111111111111101046e616d650500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 3,
+      "tx": 0,
+      "event": 0,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "111111111111111111111111111111111111111111111111111111111111111101046e616d650500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 4,
+      "tx": 0,
+      "event": 0,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "11111111111111111111111111111111111111111111111111111111111111110106726574697265050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "expect": {
+    "identities": [
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+        "kind": 1,
+        "visible": true,
+        "fields": {
+          "73796d626f6c": {
+            "key_text": "symbol",
+            "valType": 1,
+            "value_hex": "474c44",
+            "value_text": "GLD",
+            "usable": true
+          },
+          "646563696d616c73": {
+            "key_text": "decimals",
+            "valType": 2,
+            "value_hex": "06",
+            "usable": true
+          },
+          "7374616e6461726473": {
+            "key_text": "standards",
+            "valType": 1,
+            "value_hex": "6d69702d30303131",
+            "value_text": "mip-0011",
+            "usable": true
+          }
+        }
+      },
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+        "kind": 3,
+        "visible": true,
+        "fields": {
+          "6e616d65": {
+            "key_text": "name",
+            "valType": 1,
+            "value_hex": "476f6c64",
+            "value_text": "Gold",
+            "usable": true
+          },
+          "73796d626f6c": {
+            "key_text": "symbol",
+            "valType": 1,
+            "value_hex": "474c44",
+            "value_text": "GLD",
+            "usable": true
+          },
+          "646563696d616c73": {
+            "key_text": "decimals",
+            "valType": 2,
+            "value_hex": "06",
+            "usable": true
+          },
+          "7374616e6461726473": {
+            "key_text": "standards",
+            "valType": 1,
+            "value_hex": "6d69702d30303034",
+            "value_text": "mip-0004",
+            "usable": true
+          }
+        }
+      }
+    ],
+    "groups": [
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "symbol_hex": "474c44",
+        "symbol_text": "GLD",
+        "members": [
+          {
+            "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+            "kind": 1
+          },
+          {
+            "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+            "kind": 3
+          }
+        ]
+      }
+    ]
+  }
+}

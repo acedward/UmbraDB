@@ -1,0 +1,149 @@
+{
+  "id": "S6a",
+  "mip": {
+    "commit": "78ecbb4b1ba57371e84fe45f705991ab7b996a61",
+    "testId": "S6"
+  },
+  "normative": true,
+  "description": "Separate identities: the same records under kinds 1, 2 and 3 create three identities; renaming kind 2 leaves kinds 1 and 3 unchanged; kinds 1 and 2 get a color, kind 3 does not.",
+  "steps": [
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 1,
+      "tx": 0,
+      "event": 0,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "111111111111111111111111111111111111111111111111111111111111111101046e616d65010441636d650673796d626f6c010441434d4508646563696d616c7302010600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 1,
+      "tx": 0,
+      "event": 1,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "111111111111111111111111111111111111111111111111111111111111111102046e616d65010441636d650673796d626f6c010441434d4508646563696d616c7302010600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 1,
+      "tx": 0,
+      "event": 2,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "111111111111111111111111111111111111111111111111111111111111111103046e616d65010441636d650673796d626f6c010441434d4508646563696d616c7302010600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 2,
+      "tx": 0,
+      "event": 0,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "111111111111111111111111111111111111111111111111111111111111111102046e616d65010f41636d6520556e736869656c646564000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "expect": {
+    "identities": [
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+        "kind": 1,
+        "visible": true,
+        "colored": true,
+        "fields": {
+          "6e616d65": {
+            "key_text": "name",
+            "valType": 1,
+            "value_hex": "41636d65",
+            "value_text": "Acme",
+            "usable": true
+          },
+          "73796d626f6c": {
+            "key_text": "symbol",
+            "valType": 1,
+            "value_hex": "41434d45",
+            "value_text": "ACME",
+            "usable": true
+          },
+          "646563696d616c73": {
+            "key_text": "decimals",
+            "valType": 2,
+            "value_hex": "06",
+            "usable": true
+          }
+        }
+      },
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+        "kind": 2,
+        "visible": true,
+        "colored": true,
+        "fields": {
+          "6e616d65": {
+            "key_text": "name",
+            "valType": 1,
+            "value_hex": "41636d6520556e736869656c646564",
+            "value_text": "Acme Unshielded",
+            "usable": true
+          },
+          "73796d626f6c": {
+            "key_text": "symbol",
+            "valType": 1,
+            "value_hex": "41434d45",
+            "value_text": "ACME",
+            "usable": true
+          },
+          "646563696d616c73": {
+            "key_text": "decimals",
+            "valType": 2,
+            "value_hex": "06",
+            "usable": true
+          }
+        }
+      },
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+        "kind": 3,
+        "visible": true,
+        "colored": false,
+        "fields": {
+          "6e616d65": {
+            "key_text": "name",
+            "valType": 1,
+            "value_hex": "41636d65",
+            "value_text": "Acme",
+            "usable": true
+          },
+          "73796d626f6c": {
+            "key_text": "symbol",
+            "valType": 1,
+            "value_hex": "41434d45",
+            "value_text": "ACME",
+            "usable": true
+          },
+          "646563696d616c73": {
+            "key_text": "decimals",
+            "valType": 2,
+            "value_hex": "06",
+            "usable": true
+          }
+        }
+      }
+    ]
+  }
+}
