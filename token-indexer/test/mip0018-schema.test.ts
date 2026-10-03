@@ -110,4 +110,72 @@ describe("mip0018 schema", () => {
     const count = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ${sql(schema)}.mip0018_events`;
     expect(count[0]?.n).toBe(1);
   });
+
+  /**
+   * Sub-plan C4 H2: every text-typed column of the lineage and why chain bytes cannot reach it. A new text column
+   * fails this test until it is classified here (and in the C plan's H2 table); chain-derived bytes go to `bytea`.
+   */
+  const TEXT_COLUMNS: Record<string, "config" | "vocabulary" | "code-ascii" | "code-constant"> = {
+    "mip0018_activity.direction": "vocabulary", // CHECK in ('in', 'out')
+    "mip0018_activity.network": "config", // the operator's --network / NET
+    "mip0018_activity.phase": "vocabulary",
+    "mip0018_activity.role": "vocabulary",
+    "mip0018_builtin_tokens.name": "code-constant", // NIGHT / DUST, seeded by the scanner
+    "mip0018_builtin_tokens.network": "config",
+    "mip0018_builtin_tokens.note": "code-constant",
+    "mip0018_builtin_tokens.symbol": "vocabulary",
+    "mip0018_color_sightings.evidence": "vocabulary",
+    "mip0018_color_sightings.network": "config",
+    "mip0018_contract_actions.action": "vocabulary",
+    "mip0018_contract_actions.applied_phases": "vocabulary", // text[] <@ {guaranteed, fallible}
+    "mip0018_contract_actions.maintenance_updates": "code-ascii", // text[]: ledger class name, `<bytes HEX>` or a printable entry point, v3/v4
+    "mip0018_contract_actions.network": "config",
+    "mip0018_events.classification": "vocabulary",
+    "mip0018_events.event_type": "code-ascii", // the MIP-0002 type name
+    "mip0018_events.network": "config",
+    "mip0018_events.phase": "vocabulary",
+    "mip0018_events.reason": "code-ascii", // the codec's reason vocabulary or a fixed decoder message with numbers
+    "mip0018_fields.network": "config",
+    "mip0018_mints.network": "config",
+    "mip0018_mints.phase": "vocabulary",
+    "mip0018_scan.network": "config",
+  };
+
+  it("[[mip0018.schema.text-columns]] every text column of the lineage is classified (operator configuration, fixed vocabulary, code-generated ASCII, code constant); entry points and every other chain byte string are bytea; the code-generated free-text columns refuse anything but printable ASCII and a NUL never reaches a text column", async () => {
+    const cols = await sql<{ t: string; c: string; udt: string }[]>`
+      SELECT table_name AS t, column_name AS c, udt_name AS udt FROM information_schema.columns
+      WHERE table_schema = ${schema} AND table_name LIKE 'mip0018%'
+        AND udt_name IN ('text', '_text', 'varchar', '_varchar', 'bpchar', '_bpchar', 'name', 'json', '_json', 'jsonb', '_jsonb')
+      ORDER BY 1, 2`;
+    expect(cols.map((r) => `${r.t}.${r.c}`)).toEqual(Object.keys(TEXT_COLUMNS).sort());
+    const bytea = await sql<{ t: string; c: string; udt: string }[]>`
+      SELECT table_name AS t, column_name AS c, udt_name AS udt FROM information_schema.columns
+      WHERE table_schema = ${schema} AND table_name LIKE 'mip0018%'
+        AND column_name IN ('entry_point', 'maintenance_operations', 'name', 'payload', 'key', 'value', 'reason') ORDER BY 1, 2`;
+    expect(bytea.map((r) => `${r.t}.${r.c}:${r.udt}`)).toEqual([
+      "mip0018_activity.entry_point:bytea", "mip0018_builtin_tokens.name:text", "mip0018_contract_actions.entry_point:bytea",
+      "mip0018_contract_actions.maintenance_operations:_bytea", "mip0018_events.name:bytea", "mip0018_events.payload:bytea",
+      "mip0018_events.reason:text", "mip0018_fields.key:bytea", "mip0018_fields.value:bytea",
+    ]);
+    // The code-generated free-text columns hold printable ASCII only.
+    const event = {
+      network: "testnet-a", block_height: 9, tx_index: 0, event_index: 0, contract_address: A, event_type: "Misc",
+      name: Buffer.alloc(32), payload: Buffer.alloc(256), classification: "reject", reason: "no-records", domain_sep: null, kind: null,
+    };
+    for (const bad of [{ reason: "no-records\u00e9" }, { reason: "a\u202Eb" }, { reason: "" }, { event_type: "Mi sc" }, { event_type: "Misc\u00e9" }])
+      await expect(sql`INSERT INTO ${sql(schema)}.mip0018_events ${sql({ ...event, ...bad })}`, JSON.stringify(bad)).rejects.toMatchObject({ code: "23514" });
+    await sql`INSERT INTO ${sql(schema)}.mip0018_events ${sql({ ...event, reason: "undecodable-data: Misc data is 289 bytes (> 288)" })}`;
+    const action = (updates: string[]) => sql`
+      INSERT INTO ${sql(schema)}.mip0018_contract_actions
+        (network, block_height, tx_index, segment_id, action_index, tx_hash, action, contract_address, maintenance_counter,
+         maintenance_updates, maintenance_operations)
+      VALUES ('testnet-a', 9, 0, 1, ${updates.length}, ${Buffer.alloc(32, 1)}, 'maintenance', ${A}, 1,
+              ${sql.array(updates)}, ${sql.array(updates.map(() => Buffer.from("op")), 17)})`;
+    for (const bad of [["VerifierKeyRemove(caf\u00e9, v3)"], ["ok", "X(\u202Eevil, v3)"]])
+      await expect(action(bad), bad.join()).rejects.toMatchObject({ code: "23514" });
+    await action(["VerifierKeyRemove(<bytes 6d696e7400>, v3)"]);
+    // And a NUL cannot be sent to a text column at all (why entry points are bytea): 22021 / 22P05.
+    const nul = await sql`SELECT ${"a\u0000b"}::text AS t`.then(() => null, (e: { code?: string }) => e.code);
+    expect(["22021", "22P05"]).toContain(nul);
+  }, 60_000);
 });

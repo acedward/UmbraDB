@@ -18,6 +18,11 @@ export const name = "001_mip0018_core";
  *
  * Keys and values are `bytea` (Q10/FR-014: exact bytes, NUL and non-UTF-8 keys); unsigned integers (`val_type` 2,
  * 1–31 bytes little-endian) are also kept losslessly as `numeric` for queries.
+ *
+ * Text columns never hold chain bytes (sub-plan C4 H2): `network` is the operator's configuration, `phase` and
+ * `classification` are fixed vocabularies, and `event_type` / `reason` are written by UmbraDB's code (the MIP-0002
+ * type name; the vendored codec's reason vocabulary or a fixed decoder message with numbers) — their CHECKs hold them
+ * to ASCII, so no chain-derived NUL or non-UTF-8 byte can reach a `text` column and stop the scan.
  */
 export async function up(sql: ISql, schema: string): Promise<void> {
   assertValidSchemaName(schema);
@@ -32,11 +37,11 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       segment_id       integer  CHECK (segment_id IS NULL OR segment_id >= 0),
       phase            text     CHECK (phase IS NULL OR phase IN ('guaranteed', 'fallible')),
       contract_address bytea    NOT NULL CHECK (octet_length(contract_address) = 32),
-      event_type       text     NOT NULL,
+      event_type       text     NOT NULL CHECK (event_type ~ '^[A-Za-z]{1,32}$'),
       name             bytea    NOT NULL CHECK (octet_length(name) <= 32),
       payload          bytea    NOT NULL CHECK (octet_length(payload) <= 256),
       classification   text     NOT NULL CHECK (classification IN ('accept', 'reject', 'ignore')),
-      reason           text,
+      reason           text     CHECK (reason IS NULL OR reason ~ '^[\\x20-\\x7e]+$'),
       domain_sep       bytea    CHECK (domain_sep IS NULL OR octet_length(domain_sep) = 32),
       kind             smallint CHECK (kind IS NULL OR kind IN (1, 2, 3)),
       CHECK ((classification = 'accept') = (reason IS NULL)),

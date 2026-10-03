@@ -101,6 +101,8 @@ export async function up(sql: ISql, schema: string): Promise<void> {
                                          AND maintenance_operations IS NOT NULL)),
       CHECK (maintenance_operations IS NULL
              OR coalesce(array_length(maintenance_operations, 1), 0) = coalesce(array_length(maintenance_updates, 1), 0)),
+      CHECK (maintenance_updates IS NULL OR (array_position(maintenance_updates, NULL) IS NULL
+             AND array_to_string(maintenance_updates, '') ~ '^[\\x20-\\x7e]*$')),
       CHECK (applied_phases IS NULL OR (cardinality(applied_phases) BETWEEN 1 AND 2
              AND applied_phases <@ ARRAY['guaranteed', 'fallible']::text[])),
       PRIMARY KEY (network, block_height, tx_index, segment_id, action_index)
