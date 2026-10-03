@@ -11,7 +11,8 @@ import { loadTape, startFakeChain, type FakeChain } from "./fixtures/stagenet-ar
 /**
  * Project 00026, sub-plan A2 (spec FR-001, FR-002; US6): `--from/--to` ranges, the atomic per-block
  * checkpoint, kill-and-resume and the per-transaction outcomes -- against REAL Stagenet data
- * recorded once (`fixtures/stagenet-archive/c04-714637-714663.tape.json`, case C04 of the MIP-0018
+ * recorded once (`loadTape("c04-714637-714663.tape.json")`: since D1 a slice of the recorded IDX range
+ * `fixtures/stagenet-archive/stagenet-714485-715183.tape.json.br`; case C04 of the MIP-0018
  * reference: deploy, shielded mint, unshielded mint, ledger mint, publish) and served back over
  * HTTP by `fake-chain-server.ts`, into a real Postgres 17 (Testcontainers). No network.
  */

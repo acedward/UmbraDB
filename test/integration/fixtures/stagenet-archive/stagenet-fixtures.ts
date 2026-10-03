@@ -9,8 +9,10 @@ import { parseHeights, readJsonFile, readTapeFile, sliceTapes } from "./tape-cod
  * recorded fixtures, development syncs live `--from/--to` ranges). Everything is described by
  * `manifest.json` in this folder, written by `record-tape.ts --pack` from one polite live capture:
  *
- * - one compact tape per contiguous range (`stagenet-<from>-<to>.tape.json.gz`): every answer the
- *   archive sync read from the node RPC and the indexer GraphQL for every height of the range;
+ * - one compact tape per contiguous range (`stagenet-<from>-<to>.tape.json.br`, brotli -- gzip did
+ *   not fit the 1 MB target; inspect with `node -e "process.stdout.write(require('node:zlib')
+ *   .brotliDecompressSync(require('node:fs').readFileSync(process.argv[1])))" <file>`): every answer
+ *   the archive sync read from the node RPC and the indexer GraphQL for every height of the range;
  * - `stagenet-contract-events.json.gz`: the indexer's `contractEvents` (all types, in the indexer's
  *   order) for every (transaction, called contract) pair of those blocks -- the test-only
  *   cross-check of the raw-transaction event decoding (Q4 (c));
@@ -188,7 +190,8 @@ export function loadManifest(): FixtureManifest {
   return manifestCache;
 }
 
-/** The full tape of one recorded range (`idx` / `u1`). */
+/** The full tape of one recorded range (`idx` / `u1`). A cached instance shared by every caller in
+ *  the process (and by the aliased slices): `structuredClone` a block before changing it. */
 export function loadRangeTape(name: string): ArchiveTape {
   const cached = tapeCache.get(name);
   if (cached !== undefined) return cached;

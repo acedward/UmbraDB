@@ -57,7 +57,7 @@ export interface FakeChainOptions {
   /** Milliseconds every response waits before being sent. */
   delayMs?: number;
   throttles?: Throttle[];
-  /** Recorded `contractEvents` answers (`stagenet-contract-events.json.gz`); the indexer endpoint then
+  /** Recorded `contractEvents` answers (`loadContractEvents().pairs`); the indexer endpoint then
    *  answers `contractEvents(filter: { contractAddress, transactionHash }, limit, offset)` from them,
    *  in the recorded order. Without it every such query answers an empty list. */
   contractEvents?: readonly ContractEventsPair[];
