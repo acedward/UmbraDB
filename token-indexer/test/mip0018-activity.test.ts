@@ -396,7 +396,7 @@ describe("MIP-0018 token activity", () => {
     }
   }, 300_000);
 
-  it("[[mip0018.activity.bounded-cost]] an activity page costs what it serves, never what it hides — 100 000 metadata transactions of a withdrawn identity behind one visible rejected event, and 100 000 visible ones of a sibling: the color's and the contract's listings in both orders read at most 100 + 20 buffers per row a page may read (auto_explain, independent of host load; before the first vacuum after the withdrawal its dead index entries add at most one buffer per 20 hidden rows) and answer through the API within a generous latency budget; the seeding equals the real apply path; the withdrawal that hides 100 000 rows is one bounded delete", async () => {
+  it("[[mip0018.activity.bounded-cost]] an activity page costs what it serves, never what it hides, whatever the planner's statistics say — 100 000 metadata transactions of a withdrawn identity behind one visible rejected event, and 100 000 visible ones of a sibling: with no statistics, with statistics taken while the listed events held two live rows on pages the sibling's rows then fill again, and with fresh statistics, the color's and the contract's listings in both orders read at most 100 + 20 buffers per row a page may read (auto_explain, independent of host load), while in the stale state the listing's skip-scan step and a primary-key lookup planned without the listings' settings read the whole listed table; before the first vacuum after the withdrawal its dead index entries add at most one buffer per 20 hidden rows; the API answers within a generous latency budget; the seeding equals the real apply path; the withdrawal that hides 100 000 rows is one bounded delete", async () => {
     const N = 100_000;
     const migrated = async (prefix: string) => {
       const db = await fresh(prefix);
@@ -416,6 +416,10 @@ describe("MIP-0018 token activity", () => {
     // 2. Hidden history: contract Y mints T (kind 1), publishes it N times, withdraws it, then emits one rejected event.
     const db = await migrated("bounded");
     const s = db.sql(db.mip);
+    // The planner's statistics change only where this test changes them: autovacuum is off for the scenario's tables.
+    for (const { t } of await db.sql<{ t: string }[]>`
+      SELECT table_name AS t FROM information_schema.tables WHERE table_schema = ${db.mip} AND table_type = 'BASE TABLE'`)
+      await db.sql.unsafe(`ALTER TABLE "${db.mip}"."${t}" SET (autovacuum_enabled = false)`);
     const Y = { network: NET, contract: "c4".repeat(32), domainSep: "d4".repeat(32), kind: 1 as const };
     const T = tokenColor(Y.domainSep, Y.contract);
     const ycontract = Buffer.from(Y.contract, "hex");
@@ -441,17 +445,20 @@ describe("MIP-0018 token activity", () => {
     // Reads through a session with auto_explain: every statement's plan, with its buffer count.
     const notices: string[] = [];
     const ex = postgres(container.getConnectionUri(), { max: 1, onnotice: (n) => notices.push(String(n.message)), types: { bigint: postgres.BigInt } });
+    const tables = ["mip0018_listed_events", "mip0018_activity", "mip0018_events"].map((t) => `"${db.mip}"."${t}"`);
     try {
       for (const set of ["LOAD 'auto_explain'", "SET auto_explain.log_min_duration = 0", "SET auto_explain.log_analyze = on",
         "SET auto_explain.log_buffers = on", "SET auto_explain.log_timing = off", "SET auto_explain.log_format = 'json'", "SET client_min_messages = log"])
         await ex.unsafe(set);
       const measured: Array<{ q: string; buffers: number; rowsRead: number; items: string[] }> = [];
+      const buffersOf = (): number => notices.filter((m) => m.includes("\"Plan\""))
+        .map((m) => JSON.parse(m.slice(m.indexOf("{"))) as { Plan: Record<string, number> })
+        .reduce((a, x) => a + (x.Plan["Shared Hit Blocks"] ?? 0) + (x.Plan["Shared Read Blocks"] ?? 0), 0);
       const measure = async (q: string, read: () => Promise<{ items: ActivityItem[]; nextCursor?: string }>, rowsRead: number) => {
         notices.length = 0;
         const p = await read();
-        const plans = notices.filter((m) => m.includes("\"Plan\"")).map((m) => JSON.parse(m.slice(m.indexOf("{"))) as { Plan: Record<string, number> });
-        expect(plans.length, q).toBeGreaterThan(0);
-        const buffers = plans.reduce((a, x) => a + (x.Plan["Shared Hit Blocks"] ?? 0) + (x.Plan["Shared Read Blocks"] ?? 0), 0);
+        expect(notices.some((m) => m.includes("\"Plan\"")), q).toBe(true);
+        const buffers = buffersOf();
         const items = p.items.map((i) => `${i.height}:${i.role === "metadata-event" ? `${i.events!.accepted}/${i.events!.rejected}` : i.role}`);
         measured.push({ q, buffers, rowsRead, items });
         return { ...p, buffers, items };
@@ -460,37 +467,75 @@ describe("MIP-0018 token activity", () => {
       const contract = (o: Parameters<typeof metadataTransactionsForContract>[3]) => () => metadataTransactionsForContract(sqlx, NET, Y.contract, o, db.mip);
       const colorOf = (o: Parameters<typeof activityForColor>[3]) => () => activityForColor(sqlx, NET, T, o, db.mip);
       const rejected = `${1001 + N}:0/1`;
-      // Right after the withdrawal its deleted listed rows are dead index entries until (auto)vacuum reclaims them; a scan
+      // Right after the withdrawal its deleted listed rows are dead index entries until vacuum reclaims them; a scan
       // that starts before them steps over them (about one index page per hundred, never their activity rows). Recorded
-      // and held to a fraction of a buffer per hidden row.
+      // and held to a fraction of a buffer per hidden row. The tables have never been analyzed here.
       const transient = await measure("hidden contract limit=1 before vacuum", contract({ limit: 1 }), 2);
       expect(transient.items).toEqual([rejected]);
       expect(transient.buffers, "dead entries before vacuum").toBeLessThanOrEqual(N / 20);
-      for (const table of ["mip0018_listed_events", "mip0018_activity", "mip0018_events"]) await ex.unsafe(`VACUUM (ANALYZE) "${db.mip}"."${table}"`);
+      for (const table of tables) await ex.unsafe(`VACUUM ${table}`); // reclaims them; still no column statistics
       measured.length = 0;
-      expect((await measure("hidden contract limit=1", contract({ limit: 1 }), 2)).items).toEqual([rejected]);
-      expect((await measure("hidden contract limit=100 desc", contract({ limit: 100, order: "desc" }), 101)).items).toEqual([rejected]);
-      expect((await measure("hidden color limit=1", colorOf({ limit: 1 }), 4)).items).toEqual(["999:mint"]);
-      expect((await measure("hidden color limit=100 desc", colorOf({ limit: 100, order: "desc" }), 202)).items).toEqual([rejected, "999:mint"]);
+      expect((await measure("no statistics: hidden contract limit=1", contract({ limit: 1 }), 2)).items).toEqual([rejected]);
+      expect((await measure("no statistics: hidden contract limit=100 desc", contract({ limit: 100, order: "desc" }), 101)).items).toEqual([rejected]);
+      expect((await measure("no statistics: hidden color limit=1", colorOf({ limit: 1 }), 4)).items).toEqual(["999:mint"]);
+      expect((await measure("no statistics: hidden color limit=100 desc", colorOf({ limit: 100, order: "desc" }), 202)).items).toEqual([rejected, "999:mint"]);
 
-      // 3. A visible history as long: a sibling identity with N publishes after it. Pages stay bounded by their size.
+      // 3. A visible history as long: a sibling identity with N publishes after it. Pages stay bounded by their size in
+      // every statistics state.
       const Z = { ...Y, domainSep: "d5".repeat(32), kind: 3 as const };
       await seedPublishes(db.sql, db.mip, Z, 200_000, N);
-      const first = await measure("visible contract limit=100", contract({ limit: 100 }), 101);
-      expect([first.items.length, first.items[0], first.items[1], first.items[99]]).toEqual([100, rejected, "200000:1/0", "200098:1/0"]);
-      const second = await measure("visible contract limit=100 page 2", contract({ limit: 100, cursor: first.nextCursor! }), 101);
-      expect([second.items[0], second.items[99]]).toEqual(["200099:1/0", "200198:1/0"]);
-      expect((await measure("visible contract limit=1 desc", contract({ limit: 1, order: "desc" }), 2)).items).toEqual([`${199_999 + N}:1/0`]);
-      const colorDesc = await measure("visible color limit=100 desc", colorOf({ limit: 100, order: "desc" }), 202);
-      expect([colorDesc.items.length, colorDesc.items[0], colorDesc.items[99]]).toEqual([100, `${199_999 + N}:1/0`, `${199_900 + N}:1/0`]);
-      const colorFirst = await measure("visible color limit=1", colorOf({ limit: 1 }), 4);
-      expect(colorFirst.items).toEqual(["999:mint"]);
-      expect((await measure("visible color limit=2 page 2", colorOf({ limit: 2, cursor: colorFirst.nextCursor! }), 6)).items).toEqual([rejected, "200000:1/0"]);
+      const pages = async (state: string) => {
+        expect((await measure(`${state}: contract limit=1`, contract({ limit: 1 }), 2)).items).toEqual([rejected]);
+        const first = await measure(`${state}: visible contract limit=100`, contract({ limit: 100 }), 101);
+        expect([first.items.length, first.items[0], first.items[1], first.items[99]]).toEqual([100, rejected, "200000:1/0", "200098:1/0"]);
+        const second = await measure(`${state}: visible contract limit=100 page 2`, contract({ limit: 100, cursor: first.nextCursor! }), 101);
+        expect([second.items[0], second.items[99]]).toEqual(["200099:1/0", "200198:1/0"]);
+        expect((await measure(`${state}: visible contract limit=1 desc`, contract({ limit: 1, order: "desc" }), 2)).items).toEqual([`${199_999 + N}:1/0`]);
+        const colorDesc = await measure(`${state}: visible color limit=100 desc`, colorOf({ limit: 100, order: "desc" }), 202);
+        expect([colorDesc.items.length, colorDesc.items[0], colorDesc.items[99]]).toEqual([100, `${199_999 + N}:1/0`, `${199_900 + N}:1/0`]);
+        const colorFirst = await measure(`${state}: visible color limit=1`, colorOf({ limit: 1 }), 4);
+        expect(colorFirst.items).toEqual(["999:mint"]);
+        expect((await measure(`${state}: visible color limit=2 page 2`, colorOf({ limit: 2, cursor: colorFirst.nextCursor! }), 6)).items).toEqual([rejected, "200000:1/0"]);
+      };
+      await pages("no statistics");
+
+      // Stale statistics: the listed events analyzed while they held two live rows (the rejected event and the
+      // sibling's first publish) on the pages that the sibling's other rows then fill again — what a withdrawal of a
+      // long history followed by (auto)vacuum and new metadata transactions leaves.
+      const listed = `"${db.mip}".mip0018_listed_events`;
+      await ex.unsafe(`CREATE TEMP TABLE refill AS SELECT * FROM ${listed} WHERE network = $1 AND block_height > 200000`, [NET]);
+      await ex.unsafe(`DELETE FROM ${listed} WHERE network = $1 AND block_height > 200000`, [NET]);
+      await ex.unsafe(`VACUUM ${listed}`);
+      for (const table of tables) await ex.unsafe(`ANALYZE ${table}`);
+      await ex.unsafe(`INSERT INTO ${listed} SELECT * FROM refill`);
+      await ex.unsafe("DROP TABLE refill");
+      const [stats] = await ex.unsafe<{ reltuples: number; relpages: number }[]>(
+        `SELECT reltuples::int AS reltuples, relpages FROM pg_class WHERE oid = '${listed}'::regclass`);
+      expect([stats!.reltuples, stats!.relpages > 1_000], "the listed table's statistics count two rows on its many pages").toEqual([2, true]);
+      expect(await count("mip0018_listed_events")).toBe(N + 1);
+      // Negative control: in this state the listing's skip-scan step (`ORDER BY` its index columns, `LIMIT 1`) and even a
+      // primary-key lookup, planned without the listings' settings, read the whole listed table.
+      const control: Record<string, number> = {};
+      for (const [q, text, params] of [
+        ["skip-scan step", `SELECT block_height, tx_index FROM ${listed} WHERE network = $1 AND contract_address = $2
+          AND (block_height, tx_index) > ($3::bigint, 0) ORDER BY block_height, tx_index LIMIT 1`, [NET, ycontract, 200_050]],
+        ["primary-key lookup", `SELECT classification FROM ${listed} WHERE network = $1 AND contract_address = $2
+          AND block_height = $3 AND tx_index = 0 AND event_index = 0`, [NET, ycontract, 200_050]],
+      ] as const) {
+        notices.length = 0;
+        expect(await ex.unsafe(text, [...params] as never[]), q).toHaveLength(1);
+        control[q] = buffersOf();
+        expect(control[q], `${q} without the settings`).toBeGreaterThanOrEqual(stats!.relpages);
+      }
+      await pages("stale statistics");
+
+      for (const table of tables) await ex.unsafe(`ANALYZE ${table}`);
+      await pages("fresh statistics");
 
       // The bound: at most 100 buffers plus 20 per row a page may read (its own rows and its metadata transactions, each
       // at most limit + 1) — tens for a page of one, about a thousand for a page of 100, whatever is hidden or listed
-      // around it.
-      console.log(JSON.stringify({ N, seedMs, withdrawMs, transientBuffers: transient.buffers, measured: measured.map(({ q, buffers }) => ({ q, buffers })) }));
+      // around it and whatever the statistics say.
+      console.log(JSON.stringify({ N, seedMs, withdrawMs, transientBuffers: transient.buffers, control, measured: measured.map(({ q, buffers }) => ({ q, buffers })) }));
       for (const m of measured) expect(m.buffers, m.q).toBeLessThanOrEqual(100 + 20 * m.rowsRead);
     } finally {
       await ex.end({ timeout: 5 });

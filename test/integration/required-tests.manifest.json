@@ -595,7 +595,7 @@
     {
       "id": "mip0018.activity.bounded-cost",
       "file": "token-indexer/test/mip0018-activity.test.ts",
-      "description": "100 000 metadata transactions of a withdrawn identity behind one visible rejected event, and 100 000 visible ones of a sibling: the color's and the contract's activity pages in both orders read at most 100 + 20 buffers per row a page may read (auto_explain; before the first vacuum after the withdrawal, its dead index entries add at most one buffer per 20 hidden rows) and answer through the API within a generous latency budget; the fast seeding equals the real apply path on a small count; the withdrawal that hides 100 000 listed rows is one bounded delete."
+      "description": "100 000 metadata transactions of a withdrawn identity behind one visible rejected event, and 100 000 visible ones of a sibling: with no statistics, with statistics taken while the listed events held two live rows on pages that later fill again, and with fresh statistics, the color's and the contract's activity pages in both orders read at most 100 + 20 buffers per row a page may read (auto_explain); in the stale state the listing's skip-scan step and a primary-key lookup planned without the listings' settings read the whole listed table (negative control); before the first vacuum after the withdrawal, its dead index entries add at most one buffer per 20 hidden rows; the API answers within a generous latency budget; the fast seeding equals the real apply path on a small count; the withdrawal that hides 100 000 listed rows is one bounded delete."
     }
   ],
   "deferred": [
