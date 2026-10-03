@@ -36,6 +36,7 @@ import type { BlockMeta, TransactionMeta } from "../../src/interfaces/chain-arch
 import { PgChainArchiveStore } from "../../src/postgres/chain-archive-store.js";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
+import { type ActivityRow, activityTransaction, type ActivityTransactionLike, removeActivityAbove, transactionActivity, writeActivity } from "./activity.ts";
 import { MIP0018_SCHEMA, mip0018Migrations } from "../../src/postgres/migrations/mip0018/index.js";
 import {
   type AppliedParts,
@@ -89,6 +90,9 @@ export interface Mip0018ScannerOptions {
   decode?: (raw: Uint8Array) => DecodedTransaction;
   /** Test seam: runs inside a block's database transaction after its rows are written, before the cursor moves. */
   onBlockWritten?: (height: number) => void | Promise<void>;
+  /** Test seam (sub-plan C2): the transaction the activity rows are read from (default: ledger-v9 deserialization; a
+   *  scanner given only a `decode` seam — synthetic bytes — records no activity). */
+  activityTransaction?: (raw: Uint8Array) => ActivityTransactionLike;
 }
 
 export interface ScanOnceResult {
@@ -128,6 +132,7 @@ interface BlockRows {
   sightings: Array<Record<string, unknown>>;
   actions: ActionRow[];
   events: EventRow[];
+  activity: ActivityRow[];
   transactions: number;
 }
 
@@ -246,7 +251,7 @@ export class Mip0018Scanner {
 
   /** Decodes one block's archived transactions into rows (no write). */
   private async blockRows(block: BlockMeta): Promise<BlockRows> {
-    const rows: BlockRows = { mints: [], sightings: [], actions: [], events: [], transactions: 0 };
+    const rows: BlockRows = { mints: [], sightings: [], actions: [], events: [], activity: [], transactions: 0 };
     const txs = await this.archive.getTransactionsForBlock(this.network, block.blockHash);
     for (const tx of txs) {
       if (tx.kind !== "regular") continue; // system transactions carry no contract actions
@@ -286,6 +291,10 @@ export class Mip0018Scanner {
       }
       for (const m of parts.applied.maintenance)
         rows.actions.push({ ...at, segment_id: m.segment, action_index: m.actionIndex, tx_hash: txHash, action: "maintenance", contract_address: buf(m.address), entry_point: null, applied_phases: null, maintenance_counter: m.counter.toString(), maintenance_updates: m.updates });
+      // Sub-plan C2: the public token flows of the applied parts and the metadata transactions (`activity.ts`).
+      const readActivity = this.opts.activityTransaction ?? (this.opts.decode === undefined ? activityTransaction : undefined);
+      if (readActivity !== undefined)
+        rows.activity.push(...transactionActivity({ network: this.network, height: block.height, txIndex: tx.position, txHash: tx.txHash, tx: readActivity(await this.archive.getBlob(tx.rawBlobHash)), outcome: parts.outcome, events: rows.events }));
     }
     return rows;
   }
@@ -329,6 +338,7 @@ export class Mip0018Scanner {
         await tx`INSERT INTO ${tx(s)}.mip0018_mints ${tx(m)} ON CONFLICT DO NOTHING`;
       }
       for (const r of rows.sightings) await tx`INSERT INTO ${tx(s)}.mip0018_color_sightings ${tx(r)} ON CONFLICT DO NOTHING`;
+      await writeActivity(tx, s, rows.activity); // sub-plan C2
       for (const a of rows.actions) {
         await tx`
           INSERT INTO ${tx(s)}.mip0018_contract_actions
@@ -371,6 +381,7 @@ export class Mip0018Scanner {
         UPDATE ${tx(s)}.mip0018_scan SET next_height = ${height + 1}, last_block_hash = ${lastHash === undefined ? null : buf(lastHash)}
         WHERE network = ${this.network} AND next_height = ${cursor.nextHeight}`;
       if (moved.count !== 1) throw new ScanError(`the ${this.network} scan cursor moved during removeAbove`);
+      await removeActivityAbove(tx, s, this.network, height); // sub-plan C2
     });
   }
 }

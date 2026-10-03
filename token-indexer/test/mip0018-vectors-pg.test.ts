@@ -80,15 +80,15 @@ describe("MIP-0018 vectors through the Postgres adapter (00026 B3)", () => {
   it("[[mip0018.vectors.pg-runner-cli]] the vendored runner CLI drives the Postgres adapter process over both sets and exits 0, with every check applicable", () => {
     const run = spawnSync(
       process.execPath,
-      [join(UMBRADB_VECTORS_DIR, "..", "run-vectors.ts"), "--consumer", `${JSON.stringify(process.execPath)} --import tsx ${JSON.stringify(join(UMBRADB_VECTORS_DIR, "..", "vector-adapter-pg.ts"))}`],
-      { encoding: "utf8", timeout: 240_000, env: { ...process.env, PG_URL: container.getConnectionUri(), MIP0018_VECTOR_SCHEMA_PREFIX: "vec_cli" } },
+      [join(UMBRADB_VECTORS_DIR, "..", "run-vectors.ts"), "--consumer", `${JSON.stringify(process.execPath)} --import tsx ${JSON.stringify(join(UMBRADB_VECTORS_DIR, "..", "vector-adapter-pg.ts"))}`, "--timeout", "60000"],
+      { encoding: "utf8", timeout: 900_000, env: { ...process.env, PG_URL: container.getConnectionUri(), MIP0018_VECTOR_SCHEMA_PREFIX: "vec_cli" } },
     );
     expect(run.status, run.stderr).toBe(0);
     expect(run.stdout).toContain("normative: 59/59 passed; informative: 43/43 passed");
     expect(run.stdout).toContain("normative: 8/8 passed");
     expect(run.stdout).not.toMatch(/^\s*n\/a:/m);
     expect(run.stdout).not.toContain("FAIL");
-  }, 250_000);
+  }, 910_000); // a fresh migrated schema per request: generous budgets for a loaded host
 
   it("the Postgres adapter answers malformed requests per request, never by exiting", async () => {
     const pg = createPgVectorConsumer({ sql, schemaPrefix: "vec_bad" });

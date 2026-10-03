@@ -5,7 +5,7 @@
  *   2. UmbraDB's own versions of those ids (`./vectors-umbradb`, MIP `274a84f`, per-key tombstones),
  * so each id is run exactly once, from UmbraDB's version when one exists.
  *
- *   node token-indexer/mip0018/run-vectors.ts [--consumer "<cmd>"] [--normative-only] [--notes]
+ *   node token-indexer/mip0018/run-vectors.ts [--consumer "<cmd>"] [--normative-only] [--notes] [--timeout <ms>]
  *
  * The default consumer is the pure adapter (`./vector-adapter.ts`); the Postgres adapter is passed with `--consumer`.
  * Exit status: 0 when both runs pass every normative vector, otherwise the larger runner exit status.
@@ -51,7 +51,13 @@ function main(argv: string[]): number {
       if (v === undefined) throw new Error("--consumer needs a value");
       consumer = v;
     } else if (a === "--normative-only" || a === "--notes") pass.push(a);
-    else throw new Error(`unknown argument: ${String(a)}`);
+    else if (a === "--timeout") {
+      // Per-request timeout of the vendored runner (its default is 10 s). The Postgres adapter migrates a fresh
+      // schema per request, which can exceed 10 s on a loaded host; a late reply then reads as "unexpected output".
+      const v = argv[++i];
+      if (v === undefined || !/^[1-9][0-9]*$/.test(v)) throw new Error("--timeout needs a positive integer (ms)");
+      pass.push(a, v);
+    } else throw new Error(`unknown argument: ${String(a)}`);
   }
   const sets = vectorSets();
   const runs: Array<{ label: string; args: string[] }> = [
