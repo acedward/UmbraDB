@@ -126,6 +126,46 @@
       "id": "differential.reference.import-clean",
       "file": "test/postgres/differential-equivalence.test.ts",
       "description": "Differential reference import-cleanliness (change-level round-3 BLOCK 4): a static audit that the in-repo reference imports nothing outside the repo - directly AND through its relative-import closure - catching bare import, dynamic import() and require(), and rejecting any @midnightntwrk/indexer/consumer/wallet specifier. Required-enforced so skipping/removing it turns the gate red by id."
+    },
+    {
+      "id": "archive.sync.range-from-to",
+      "file": "test/integration/chain-archive-sync-range.integration.test.ts",
+      "description": "00026 A2 (FR-001): --from/--to ingests exactly the range, records the archive start in the cursor, makes no request once the range is complete, and refuses a --from that would leave a gap or lies below the archive start."
+    },
+    {
+      "id": "archive.sync.outcomes-equal-indexer",
+      "file": "test/integration/chain-archive-sync-range.integration.test.ts",
+      "description": "00026 A2 (FR-002): every archived transaction's result and per-segment outcomes equal the indexer's (recorded Stagenet SUCCESS + synthetic PARTIAL_SUCCESS/FAILURE on real bytes)."
+    },
+    {
+      "id": "archive.sync.outcomes-guard",
+      "file": "test/integration/chain-archive-sync-range.integration.test.ts",
+      "description": "00026 A2 (FR-002): an unknown TransactionResultStatus or a RegularTransaction without a result stops the sync at that block with nothing written for it."
+    },
+    {
+      "id": "archive.sync.polite-retry",
+      "file": "test/integration/chain-archive-sync-range.integration.test.ts",
+      "description": "00026 A2: 429 (Retry-After) / 403 / 503 / an HTML 200 from the endpoints are retried with back-off, counted, and the range still completes."
+    },
+    {
+      "id": "archive.sync.resume-kill-identical",
+      "file": "test/integration/chain-archive-sync-range.integration.test.ts",
+      "description": "00026 A2 (FR-001, US6): SIGKILL of the CLI during a --from/--to run, then a restart, leaves every archive table identical to an uninterrupted run (wall-clock columns excluded); the cursor never runs ahead of or behind the data."
+    },
+    {
+      "id": "archive.store.outcomes-roundtrip",
+      "file": "test/postgres/chain-archive-store.test.ts",
+      "description": "00026 A2 (FR-002): transactions.segments round-trips next to result (sorted, null = no list); malformed lists are rejected by the store and by the transactions_segments_shape CHECK."
+    },
+    {
+      "id": "archive.store.checkpoint-atomic",
+      "file": "test/postgres/chain-archive-store.test.ts",
+      "description": "00026 A2 (FR-001): putBlockBundle's watermark commits with the block, rolls back with a failed bundle, and never moves backwards."
+    },
+    {
+      "id": "archive.ledger.stagenet-decode",
+      "file": "test/integration/stagenet-ledger-decode.test.ts",
+      "description": "00026 A2 (FR-005, Q13): the pinned ledger-v9 decodes every recorded 00013 Stagenet case transaction (hash, actions, mint effects) and rawTokenType reproduces the IDX/U1 colors."
     }
   ],
   "deferred": [

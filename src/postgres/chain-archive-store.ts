@@ -107,12 +107,12 @@ function toTxMeta(row: TxRow): TransactionMeta {
 
 /** Project 00026 (FR-002): validates and normalises a transaction's per-segment outcomes before
  *  they are written to `transactions.segments` -- every id a `u16`, every flag a boolean, no id
- *  twice -- and returns the JSON text stored (sorted by id), or `null` when the source reported no
+ *  twice -- and returns the list stored (sorted by id), or `null` when the source reported no
  *  list. The `transactions_segments_shape` CHECK enforces the same shape inside Postgres; this
  *  check runs first so a bad value fails with a {@link ValidationError} naming the transaction. */
-export function segmentsJson(
+export function normalizeSegments(
   txHash: Hex32, segments: readonly TransactionSegmentResult[] | null | undefined,
-): string | null {
+): TransactionSegmentResult[] | null {
   if (segments === null || segments === undefined) return null;
   const seen = new Set<number>();
   const out: TransactionSegmentResult[] = [];
@@ -133,7 +133,7 @@ export function segmentsJson(
     out.push({ id: seg.id, success: seg.success });
   }
   out.sort((a, b) => a.id - b.id);
-  return JSON.stringify(out);
+  return out;
 }
 
 /**
@@ -261,15 +261,16 @@ export class PgChainArchiveStore implements ChainArchiveStore {
         VALUES (${rawHash}, 'tx_raw')
         ON CONFLICT (blob_hash, role) DO NOTHING
       `;
-      // `segments` travels as JSON text with an explicit cast, so the statement keeps ONE shape
-      // (and one prepared statement) whether or not a list is present.
-      const segments = segmentsJson(t.txHash, t.segments);
+      // `segments` goes through `tx.json` (a jsonb parameter, never a pre-stringified string:
+      // postgres.js serialises a string bound to a jsonb parameter as a JSON *string* scalar,
+      // which the `transactions_segments_shape` CHECK rejects -- observed while writing this).
+      const segments = normalizeSegments(t.txHash, t.segments);
       await tx`
         INSERT INTO ${tx(this.schema)}.transactions
           (net, tx_hash, block_height, block_hash, position, kind, protocol_version, result, segments, raw_blob_hash)
         VALUES
           (${t.net}, ${hexToBuf(t.txHash)}, ${t.blockHeight}, ${hexToBuf(t.blockHash)},
-           ${t.position}, ${t.kind}, ${t.protocolVersion}, ${t.result ?? null}, ${segments}::jsonb, ${rawHash})
+           ${t.position}, ${t.kind}, ${t.protocolVersion}, ${t.result ?? null}, ${segments === null ? null : tx.json(segments as unknown as JSONValue)}::jsonb, ${rawHash})
         ON CONFLICT DO NOTHING
       `;
     }
