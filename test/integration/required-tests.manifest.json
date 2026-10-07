@@ -218,6 +218,11 @@
       "description": "MIP Keys (S10): only defined keys are served and prove existence in the pure state — an undefined key is stored, never served and makes no identity exist; deleting the last defined key withdraws the identity although undefined keys remain; a standard's key is served only while declared; rollback recomputes."
     },
     {
+      "id": "mip0018.state.lengths",
+      "file": "token-indexer/test/mip0018-state.test.ts",
+      "description": "MIP Common fields / S11: name keeps its first 64 and symbol its first 12 grapheme clusters, cut before storing and still usable; ZWJ sequences, flags and combining marks never split; two symbols sharing their first 12 characters group (negative control: the uncut values do not)."
+    },
+    {
       "id": "mip0018.vectors.pure-adapter",
       "file": "token-indexer/test/mip0018-vectors.test.ts",
       "description": "Pure adapter: 66/66 vendored normative + 43/43 informative vectors and UmbraDB's own A3c pass through the vendored runner core, with groups and display compared."
@@ -391,6 +396,11 @@
       "id": "mip0018.metadata.defined-keys",
       "file": "token-indexer/test/mip0018-metadata.test.ts",
       "description": "MIP Keys through the scan and Postgres: defined flag per stored key; an undefined-only identity is not referenced; dropping the standard that defined the last served key withdraws the identity (withdrawal row, listed history deleted); a revival lists only its own events; recompute and removeAbove exact; negative control on existence by any stored row."
+    },
+    {
+      "id": "mip0018.metadata.lengths",
+      "file": "token-indexer/test/mip0018-metadata.test.ts",
+      "description": "MIP S11 through the scan and Postgres: a 70-character name and two 15-character symbols are stored as their first 64 / 12 grapheme clusters, stay usable, and the symbols sharing their first 12 characters group."
     },
     {
       "id": "mip0018.metadata.marks",

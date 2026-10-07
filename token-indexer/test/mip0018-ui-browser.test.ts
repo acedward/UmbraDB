@@ -494,6 +494,8 @@ describe("MIP-0018 explorer page in a real browser", () => {
     const desc = "\u0000\u0001\u001b[31mred\u001b[0m & \"q\"";
     const html = "<img src=x onerror=\"window.__pwned=1\"><b>bold</b>";
     const rlm = "\u200F".repeat(70);
+    // 66 characters (grapheme clusters; "X" + 50 ZWJ is one): stored as its first 64, drawn as 464 characters.
+    const longName = `${"W".repeat(60)}X${"\u200D".repeat(50)}${"W".repeat(5)}`;
     const ctl = "\u0001".repeat(216);
     await putSyntheticBlocks(db.sql, db.archive, NET, 300, [[
       call(H, [
@@ -506,7 +508,7 @@ describe("MIP-0018 explorer page in a real browser", () => {
         v1Log(D, 3, [record.utf8("html", html), record.utf8("js", "javascript:window.__pwned=2")]),
         v1Log(D, 3, [record.utf8("k", rlm)]),
         v1Log(D, 3, [record.utf8("ctl", ctl)]),
-        v1Log(L, 3, [record.utf8("name", "W".repeat(200))]),
+        v1Log(L, 3, [record.utf8("name", longName)]),
         v1Log(L, 3, [record.utf8("symbol", "LONG"), record.uint("decimals", 0)]),
         v1Log(P, 3, [record.utf8("name", "Only A Name")]),
         v1Log(U, 3, [record.utf8("name", "Unusable Decimals"), record.utf8("symbol", "UNU"), record.utf8("decimals", "six")]),
@@ -558,11 +560,13 @@ describe("MIP-0018 explorer page in a real browser", () => {
     expect(sd.text).not.toMatch(HIDDEN_RAW);
     for (const a of sd.attrs) expect(a).not.toMatch(HIDDEN_RAW_ATTR);
     await shot(page, "token-hostile.png");
-    // L: heading within budget, whole on request.
+    // L: the name cut to its first 64 characters when stored (MIP "Common fields"); the heading within budget, whole on
+    // request.
+    const zwj = "\u27e8U+200D\u27e9";
     await visit(page, `#/token/${H}/${L}/3`);
-    expect(await page.eval<string>("document.querySelector('#view h3').innerText")).toBe(`${"W".repeat(160)}\u2026show all (200 characters)`);
+    expect(await page.eval<string>("document.querySelector('#view h3').innerText")).toBe(`${"W".repeat(60)}X${zwj.repeat(12)}\u2026show all (464 characters)`);
     await page.eval("document.querySelector('#view h3 button').click()");
-    await page.waitFor(`document.querySelector('#view h3').innerText === ${JSON.stringify("W".repeat(200))}`);
+    await page.waitFor(`document.querySelector('#view h3').innerText === ${JSON.stringify(`${"W".repeat(60)}X${zwj.repeat(50)}WWW`)}`);
     // U: the unusable decimals is drawn as unusable, never its bytes or text; the mark says why.
     const su = await visit(page, `#/token/${H}/${U}/3`);
     expect(su.view).toContain("unusable \u2014 no value shown");

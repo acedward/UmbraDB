@@ -20,6 +20,8 @@
  *   standard from `standards` stops its keys counting. A later record of a defined key describes it again.
  * - Reorganization (S4): every classified event is retained per network; `rollbackTo` drops the events above a block
  *   and recomputes that network's state from the retained events (UmbraDB itself follows finalized blocks only).
+ * - Lengths: a `name` keeps its first 64 and a `symbol` its first 12 characters (grapheme clusters, UAX #29, Node's
+ *   `Intl.Segmenter`), cut before storing; an over-length value stays usable.
  * - Common fields: `name`/`symbol` usable when a non-empty UTF-8 string, `decimals` when an unsigned integer,
  *   `standards` when a well-formed list, `image` when a URI (type 4), `image_sha256` when exactly 32 bytes (type 0); an
  *   unusable field shows no value and never falls back; no defaults; the image keys never affect a mark.
@@ -188,14 +190,48 @@ export type FieldEffect =
     }
   | { op: "delete"; record: number; keyHex: string; key: Uint8Array };
 
-/** The field effects of an accepted event's records, in order (MIP "Applying records"). */
+// ── Lengths (MIP "Common fields": `name` 1–64 and `symbol` 1–12 characters) ─────────────────────────────────────
+
+/** The most characters a value keeps, by key hex: `name` 64, `symbol` 12 (a character is a grapheme cluster, UAX #29). */
+export const MAX_CHARACTERS: Readonly<Record<string, number>> = { [COMMON_KEY_HEX.name]: 64, [COMMON_KEY_HEX.symbol]: 12 };
+const graphemes = new Intl.Segmenter("en", { granularity: "grapheme" });
+
+/** The first `max` characters (grapheme clusters, Node's `Intl.Segmenter`) of `text`; never splits a cluster. */
+export function firstCharacters(text: string, max: number): string {
+  if (text.length <= max) return text; // fewer UTF-16 code units than `max` means fewer clusters too
+  let out = "";
+  let n = 0;
+  for (const { segment } of graphemes.segment(text)) {
+    if (n === max) break;
+    out += segment;
+    n++;
+  }
+  return out;
+}
+
+/**
+ * A `name` or `symbol` text value (type 1) cut to its first 64 / 12 characters ("consumers SHOULD discard any extra
+ * characters"); every other value unchanged. The cut happens before the value is stored, so the stored, served,
+ * grouped and marked value is the cut one; a cut value stays usable.
+ */
+export function lengthLimited(keyHex: string, valType: number, value: Uint8Array): Uint8Array {
+  const max = MAX_CHARACTERS[keyHex];
+  if (max === undefined || valType !== ValType.Utf8) return value;
+  const text = decodeText(value);
+  if (text === undefined) return value; // not reached for an accepted event: type-1 values are valid UTF-8
+  const kept = firstCharacters(text, max);
+  return kept.length === text.length ? value : enc.encode(kept);
+}
+
+/** The field effects of an accepted event's records, in order (MIP "Applying records"); `name`/`symbol` cut to length. */
 export function recordEffects(records: readonly DecodedRecord[]): FieldEffect[] {
   return records.map((r, record) => {
     const keyHex = toHex(r.key);
     if (r.valType === ValType.Null) return { op: "delete", record, keyHex, key: r.key };
-    const effect: FieldEffect = { op: "set", record, keyHex, key: r.key, valType: r.valType, value: r.value };
+    const value = lengthLimited(keyHex, r.valType, r.value);
+    const effect: FieldEffect = { op: "set", record, keyHex, key: r.key, valType: r.valType, value };
     if (r.valType === ValType.UInt) effect.integer = r.integer;
-    const usable = fieldUsable(keyHex, r.valType, r.value);
+    const usable = fieldUsable(keyHex, r.valType, value);
     if (usable !== undefined) effect.usable = usable;
     return effect;
   });

@@ -410,6 +410,32 @@ describe("MIP-0018 metadata state in Postgres", () => {
     expect(await derived()).toEqual(full);
   }, 120_000);
 
+  it("[[mip0018.metadata.lengths]] through the scan and Postgres, a 70-character name and two 15-character symbols are stored as their first 64 / 12 characters (grapheme clusters, an emoji ZWJ sequence kept whole), stay usable, and the two symbols that share their first 12 characters group together", async () => {
+    const db = await fresh("lengths");
+    const X = "1e".repeat(32);
+    const DS = "1f".repeat(32);
+    const family = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}";
+    const name = `${"N".repeat(63)}${family}${"x".repeat(6)}`; // 70 characters
+    await putSyntheticBlocks(db.sql, db.archive, NET, 300, [[{ result: "success" as const, tx: {
+      hash: "1d".repeat(32),
+      intents: [{ segment: 1, actions: [{ call: { address: X, entryPoint: "meta", guaranteed: { logs: [
+        v1Log(DS, 1, [record.utf8("name", name), record.utf8("symbol", "ACMEDOLLARUSONE")]),
+        v1Log(DS, 3, [record.utf8("name", "Short"), record.utf8("symbol", "ACMEDOLLARUSTWO")]),
+      ] } } }] }],
+    } }]]);
+    const s = scanner(db, { decode: decodeSynthetic });
+    await s.bootstrap();
+    await scanAll(s);
+    const rows = await db.sql<{ kind: number; key: Buffer; value: Buffer; usable: boolean }[]>`
+      SELECT kind, key, value, usable FROM ${db.sql(db.mip)}.mip0018_fields ORDER BY kind, key`;
+    expect(rows.map((r) => [r.kind, r.key.toString(), r.value.toString("utf8"), r.usable])).toEqual([
+      [1, "name", `${"N".repeat(63)}${family}`, true], [1, "symbol", "ACMEDOLLARUS", true],
+      [3, "name", "Short", true], [3, "symbol", "ACMEDOLLARUS", true],
+    ]);
+    expect((await listGroups(db.sql, NET, {}, db.mip)).map((g) => [Buffer.from(g.symbol, "hex").toString(), g.members.map((m) => m.kind)])).toEqual([["ACMEDOLLARUS", [1, 3]]]);
+    expect((await tokenMarkOf(db.sql, { network: NET, contractAddress: X, domainSep: DS, kind: 1 }, db.mip)).missing).toEqual(["decimals"]); // name and symbol usable
+  }, 120_000);
+
   it("[[mip0018.metadata.bytes]] C07's stored keys and values are exact bytes (a NUL inside a key, a 220-byte key, a 219-byte value, empty values, a 16-byte integer); the event with a non-UTF-8 key is rejected whole, so that key is not stored; a 31-byte integer is stored losslessly", async () => {
     const { sql, mip } = ranges.idx;
     const raw = await sql<{ key: Buffer; value: Buffer; val_type: number; uint_value: string | null; usable: boolean | null }[]>`

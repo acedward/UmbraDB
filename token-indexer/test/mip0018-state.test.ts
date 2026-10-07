@@ -8,11 +8,14 @@ import {
   ChainOrderError,
   COMMON_KEY_HEX,
   fieldUsable,
+  firstCharacters,
   IMAGE_KEY_HEX,
+  lengthLimited,
   formatAmount,
   MetadataState,
   parseStandards,
   recordEffects,
+  symbolGroups,
   tokenMark,
   toHex,
   type IdentityRef,
@@ -226,6 +229,39 @@ describe("common fields (MIP Common fields)", () => {
     emit(1, [record.uri("image", "https://example.org/x.png")], { domainSep: DS2 });
     expect(keys(s, ref(1, DS2))).toEqual(["image"]);
     expect(tokenMark({ fields: s.identity(ref(1, DS2))!.fields, contractRejections: [] }).mark).toBe("partial");
+  });
+
+  it("[[mip0018.state.lengths]] name keeps its first 64 and symbol its first 12 characters (grapheme clusters, UAX #29), cut before storing: a 70-character name and a 15-character symbol (S11) stay usable as 64 / 12; emoji ZWJ sequences, flags and combining marks are never split; two symbols that share their first 12 characters form one group", () => {
+    const text = (s0: MetadataState, r: IdentityRef, key: "name" | "symbol") => Buffer.from(s0.identity(r)!.fields.get(COMMON_KEY_HEX[key])!.value).toString("utf8");
+    const s = new MetadataState();
+    const emit = emitter(s);
+    emit(3, [record.utf8("name", "N".repeat(70)), record.utf8("symbol", "ABCDEFGHIJKLMNO")]);
+    expect([text(s, ref(3), "name"), text(s, ref(3), "symbol")]).toEqual(["N".repeat(64), "ABCDEFGHIJKL"]);
+    expect([...s.identity(ref(3))!.fields.values()].map((f) => f.usable)).toEqual([true, true]);
+    // At the cut: a family emoji (a ZWJ sequence of 5 code points) is one character, kept whole or dropped whole.
+    const family = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}";
+    emit(3, [record.utf8("name", `${"a".repeat(63)}${family}zz`)], { domainSep: DS2 });
+    expect(text(s, ref(3, DS2), "name")).toBe(`${"a".repeat(63)}${family}`);
+    emit(3, [record.utf8("name", `${"a".repeat(64)}${family}`)], { domainSep: DS2 });
+    expect(text(s, ref(3, DS2), "name")).toBe("a".repeat(64));
+    // Combining marks stay with their base; a flag (two regional indicators) is one character.
+    emit(3, [record.utf8("symbol", "e\u0301".repeat(13))], { domainSep: DS3 });
+    expect(text(s, ref(3, DS3), "symbol")).toBe("e\u0301".repeat(12));
+    emit(3, [record.utf8("symbol", "ABCDEFGHIJK\u{1F1FA}\u{1F1F8}\u{1F1FA}\u{1F1F8}")], { domainSep: DS3 });
+    expect(text(s, ref(3, DS3), "symbol")).toBe("ABCDEFGHIJK\u{1F1FA}\u{1F1F8}");
+    // Exactly at the limit, and other keys: unchanged.
+    expect(firstCharacters("x".repeat(64), 64)).toBe("x".repeat(64));
+    expect(lengthLimited(toHex(enc("other")), 1, enc("y".repeat(100)))).toEqual(enc("y".repeat(100)));
+    expect(lengthLimited(COMMON_KEY_HEX.symbol, 0, enc("y".repeat(20)))).toEqual(enc("y".repeat(20))); // bytes: not text
+    // Grouping uses the cut value: two 15-character symbols with the same first 12 characters are one group.
+    const g = new MetadataState();
+    const ge = emitter(g);
+    ge(1, [record.utf8("symbol", "ACMEDOLLARUSONE")]);
+    ge(3, [record.utf8("symbol", "ACMEDOLLARUSTWO")]);
+    expect(g.groups().map((x) => [Buffer.from(x.symbol, "hex").toString(), x.members.map((m) => m.kind)])).toEqual([["ACMEDOLLARUS", [1, 3]]]);
+    // Negative control: grouping the uncut values would give no group.
+    const uncut = (symbol: string, kind: number) => ({ network: NET, contractAddress: A, domainSep: DS1, kind, fields: new Map([[COMMON_KEY_HEX.symbol, { value: enc(symbol), usable: true }]]) });
+    expect(symbolGroups([uncut("ACMEDOLLARUSONE", 1), uncut("ACMEDOLLARUSTWO", 3)])).toEqual([]);
   });
 
   it("formatAmount is exact for every width and bounded for absurd decimals", () => {

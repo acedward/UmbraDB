@@ -13,7 +13,8 @@ metadata in Postgres, and serves it as a read-only JSON API and an explorer page
   check), latest value per key, **per-key tombstones** (a Null record deletes its field), **defined keys only** (every
   key is stored, but only the common fields and keys of a standard the token declares are served, and only they make
   a token exist; an identity without one is not referenced anywhere), common fields incl. `image` / `image_sha256`
-  (usable as a URI / exactly 32 bytes), symbol groups,
+  (usable as a URI / exactly 32 bytes), `name` / `symbol` cut to their first 64 / 12 characters (grapheme clusters,
+  Node's `Intl.Segmenter`) before they are stored — the stored, served and grouped value is the cut one — symbol groups,
   the color lookup (`rawTokenType(domainSep, contractAddress)`), zero extension of trimmed ledger data. An event with
   any other name (other versions of this one included) is ignored like any other `Misc` event.
 - **Beyond the MIP**: hard-coded NIGHT and DUST rows, "seen" tokens (any color in public data, also without a known
