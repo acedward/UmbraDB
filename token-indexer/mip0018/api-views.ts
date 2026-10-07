@@ -219,7 +219,7 @@ async function contractMarkSummary(ctx: ViewContext, contract: string): Promise<
 }
 
 /**
- * The mark of a token from its common fields (whether it has any field at all: `described`) and its contract's
+ * The mark of a token from its common fields (whether it exists, i.e. has a defined field: `described`) and its contract's
  * rejections and unresolved logs (`state.ts` `tokenMark`; never all keys or all rejections).
  */
 export function markJson(common: IdentityCommon | undefined, rejections: RejectionSummary): MarkJson {

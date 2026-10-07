@@ -518,8 +518,8 @@ export interface MarkInput {
    */
   fields: ReadonlyMap<string, Pick<Field, "valType" | "value" | "usable">> | undefined;
   /**
-   * Whether the identity has any field, when `fields` holds only some of them (the API reads only the four common
-   * keys); omitted = decided from `fields`.
+   * Whether the identity exists (has a defined field), when `fields` holds only some of them (the API reads only the
+   * four common keys); omitted = decided from `fields`.
    */
   described?: boolean;
   /**

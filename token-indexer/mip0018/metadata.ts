@@ -245,7 +245,7 @@ function fieldOf(r: FieldRow): Field {
 export interface IdentityKey { contractAddress: string; domainSep: string; kind: number }
 export const identityKeyOf = (k: IdentityKey): string => `${k.contractAddress}/${k.domainSep}/${k.kind}`;
 
-/** What a list row and a mark need of an identity: its common fields only, and whether it has any field at all. */
+/** What a list row and a mark need of an identity: its common fields only, and whether it exists (has a defined field). */
 export interface IdentityCommon { described: boolean; fields: Map<string, Field> }
 
 /** The common fields (`name`, `symbol`, `decimals`, `standards`) and the described flag of each given identity. */
