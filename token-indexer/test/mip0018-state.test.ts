@@ -1,5 +1,5 @@
 /**
- * UmbraDB's MIP-0018 state rules (MIP PR #340 head `274a84f`), beyond what the vectors cover: per-key tombstones at row
+ * UmbraDB's MIP-0018 state rules (MIP-0018 as in PR #372), beyond what the vectors cover: per-key tombstones at row
  * level, "not referenced at all", chain order, rollback, common fields, display and the mark.
  */
 import { describe, expect, it } from "vitest";
@@ -44,7 +44,7 @@ function emitter(state: MetadataState) {
 const keys = (s: MetadataState, r: IdentityRef): string[] =>
   [...(s.identity(r)?.fields.keys() ?? [])].map((k) => Buffer.from(k, "hex").toString("utf8"));
 
-describe("per-key tombstones (MIP 274a84f Applying records)", () => {
+describe("per-key tombstones (MIP Applying records)", () => {
   it("[[mip0018.state.per-key-tombstone]] a Null deletes only its key; a Null for a missing key is a no-op; deleting every key withdraws the identity everywhere; a later record revives only that field", () => {
     const s = new MetadataState();
     const emit = emitter(s);
@@ -125,7 +125,7 @@ describe("per-key tombstones (MIP 274a84f Applying records)", () => {
   });
 });
 
-describe("common fields (MIP 274a84f Common fields)", () => {
+describe("common fields (MIP Common fields)", () => {
   it("usable forms, no fallback to an earlier usable value, no defaults", () => {
     expect(fieldUsable(COMMON_KEY_HEX.name, 1, enc("Acme"))).toBe(true);
     expect(fieldUsable(COMMON_KEY_HEX.name, 1, enc(""))).toBe(false);

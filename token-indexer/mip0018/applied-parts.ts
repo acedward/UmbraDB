@@ -15,7 +15,7 @@
  * offers, Zswap offer deltas, unshielded transcript effects) are collected for the seen-token list; amounts and colors
  * are sorted so that the ledger's random `Map` order never leaks into stored rows.
  *
- * Authority: MIP-0018 PR #340 head `274a84f`:
+ * Authority: MIP-0018 as in PR #372:
  * - "Applying records": within a transaction, events are in the ledger's execution order — the guaranteed part of
  *   every intent (in ascending segment id), then each successful fallible segment (in ascending segment id); within
  *   a part, actions and their operations in order.
@@ -63,7 +63,7 @@ export const LOG_EVENT_TYPES = [
   "Misc",
 ] as const;
 
-/** The color of NIGHT (and of the shielded native token): 32 zero bytes. A built-in row, never a seen token. */
+/** The color of NIGHT (and of the ledger's default shielded token type): 32 zero bytes. A built-in row, never a seen token. */
 export const NIGHT_COLOR = "00".repeat(32);
 
 export type Phase = "guaranteed" | "fallible";

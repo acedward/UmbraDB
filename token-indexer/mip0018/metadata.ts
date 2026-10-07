@@ -7,7 +7,7 @@
  * `symbolGroups`, amounts by `displayAmount`, marks and `standards` tags by `tokenMark` — so the Postgres path and the
  * pure adapter cannot disagree on a rule.
  *
- * "Not referenced at all" (MIP `274a84f` "Applying records"): an identity exists only while it has a row in
+ * "Not referenced at all" (MIP "Applying records"): an identity exists only while it has a row in
  * `mip0018_fields`. Every helper below reads identities from those rows only, so an identity whose last field was
  * deleted appears in no listing, lookup, group, display or event view — as if it had never been described — while the
  * chain events themselves stay in the log (position, contract, classification, reason; `chainEvents` omits the identity

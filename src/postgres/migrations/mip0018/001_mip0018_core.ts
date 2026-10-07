@@ -4,7 +4,7 @@ import { assertValidSchemaName } from "../../client.js";
 export const name = "001_mip0018_core";
 
 /**
- * MIP-0018 (PR #340 head `274a84f`) token metadata: the chain-event log and the latest value of every field.
+ * MIP-0018 (as in PR #372) token metadata: the chain-event log and the latest value of every field.
  *
  * The tables:
  *

@@ -6,8 +6,8 @@ metadata in Postgres, and serves it as a read-only JSON API and an explorer page
 
 ## What it implements
 
-- **MIP-0018 at `274a84f` only**: [`midnightntwrk/midnight-improvement-proposals` PR #340 @ `274a84f221bcfc17e4b73e2c8b32fd8c028ea092`](https://github.com/midnightntwrk/midnight-improvement-proposals/blob/274a84f221bcfc17e4b73e2c8b32fd8c028ea092/mips/mip-0018-on-chain-token-metadata.md)
-  (SHA-256 `e64fe1429b9f7589077f1323572cf5c3ffa90c7c96690242a9e76d2658058d8b`): `Misc` events named exactly
+- **MIP-0018 as in [`midnightntwrk/midnight-improvement-proposals` PR #372](https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372)** (followed as it moves; checked
+  against its head `338ea194bbe7c4e5d1829234a503b7c1b11ebf0f`): `Misc` events named exactly
   `mip-0018:token-metadata[v1]`, the payload checks, value types, latest value per key, **per-key tombstones** (a Null
   record deletes its field; an identity with no field left is not referenced anywhere), common fields, symbol groups,
   the color lookup (`rawTokenType(domainSep, contractAddress)`), zero extension of trimmed ledger data. An event with
@@ -19,7 +19,7 @@ metadata in Postgres, and serves it as a read-only JSON API and an explorer page
   MIP-0018 events). The mark says the metadata is correctly published — it is not an endorsement of the token.
 - Network: **Stagenet** (Midnight node 2.x). Never fetches a URI. Block heights only (no wall-clock time).
 
-Conformance: every MUST/SHOULD of MIP-0018 at `274a84f` is mapped to a test in [CONFORMANCE.md](CONFORMANCE.md).
+Conformance: [CONFORMANCE.md](CONFORMANCE.md) maps the MIP's MUST/SHOULD requirements to tests.
 
 ## Architecture
 
@@ -154,7 +154,7 @@ Other copies: the explorer's Outfit font and icon come from the explorer in aced
 
 | Topic | Decision |
 |---|---|
-| Authority | MIP-0018 at `274a84f` only, with per-key tombstones. |
+| Authority | MIP-0018 as in PR #372 only (followed as it moves), with per-key tombstones. |
 | Vendoring | The reference codec, vectors and runner, verbatim (`vendor/mip0018/SOURCE.md`); the state rules are UmbraDB's own. |
 | Events | Decoded from archived raw transactions, applied parts only, with the ledger's `decode_event` rule; the indexer's `contractEvents` is a test cross-check; logs the raw transaction does not show are stored as `unresolved`, never applied. |
 | State | Latest value per key, no history; a tombstone deletes its key; an identity with no keys is not referenced; shared entries derived from the field rows. |

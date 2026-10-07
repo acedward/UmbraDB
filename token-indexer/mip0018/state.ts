@@ -3,12 +3,11 @@
  * and, through `recordEffects` (with `fieldUsable`), `symbolGroups`, `displayAmount` and `tokenMark`, by the Postgres
  * apply path (`fields.ts`) and its read helpers (`metadata.ts`) — so both paths share every rule.
  *
- * Authority: MIP-0018 PR #340 head `274a84f221bcfc17e4b73e2c8b32fd8c028ea092` (per-key tombstones), sections "Applying
- * records", "Common fields" and "Symbol grouping": only the latest value per key, no history; groups of two or more
- * members; a Null record deletes its key's row; an identity whose last field is deleted is not referenced anywhere;
- * plus UmbraDB's ✓/⚠ marks. Classification and decoding are the vendored reference codec's
- * (`token-indexer/vendor/mip0018/codec`, verbatim); everything below is UmbraDB's own code — the reference consumer
- * (whole-identity tombstones of `78ecbb4`) is not used.
+ * Authority: MIP-0018 as in PR #372 (per-key tombstones), sections "Applying records", "Common fields" and "Symbol
+ * grouping": only the latest value per key, no history; groups of two or more members; a Null record deletes its key's
+ * row; an identity whose last field is deleted is not referenced anywhere; plus UmbraDB's ✓/⚠ marks. Classification
+ * and decoding are the vendored reference codec's (`token-indexer/vendor/mip0018/codec`, verbatim); everything below
+ * is UmbraDB's own code — the reference consumer is not used.
  *
  * - Applying records: accepted events in chain order (block, transaction, event, then record). A non-Null record
  *   sets its field's current value (latest wins; the replaced value is dropped, never a fallback). A Null record

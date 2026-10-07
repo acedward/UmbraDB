@@ -294,7 +294,7 @@ describe("MIP-0018 token activity", () => {
     expect((await activityForColor(idx.sql, NET, NIGHT_COLOR, {}, idx.mip))).toEqual({ items: [] });
   }, 600_000);
 
-  it("[[mip0018.activity.withdrawn-history]] a color's and a contract's activity list metadata transactions only for rejected events and accepted events of an identity's current description — a withdrawn native token's publish and withdrawal transactions disappear from its color and its contract (its mints stay), a sibling's stay until it is withdrawn too, rejected events stay; a revived identity's history starts at its revival (its transactions from before the withdrawal and a Null-only event while it had no field stay hidden), and an event that deletes every field and sets one again is the new start; the last withdrawal of each identity is recorded; removeAbove restores the earlier listings exactly; C06's per-key steps never empty its identity, so its rows stay at every step", async () => {
+  it("[[mip0018.activity.withdrawn-history]] a color's and a contract's activity list metadata transactions only for rejected events and accepted events of an identity's current description — a withdrawn contract-issued UTXO token's publish and withdrawal transactions disappear from its color and its contract (its mints stay), a sibling's stay until it is withdrawn too, rejected events stay; a revived identity's history starts at its revival (its transactions from before the withdrawal and a Null-only event while it had no field stay hidden), and an event that deletes every field and sets one again is the new start; the last withdrawal of each identity is recorded; removeAbove restores the earlier listings exactly; C06's per-key steps never empty its identity, so its rows stay at every step", async () => {
     const Y = "c3".repeat(32);
     const DS1 = "d1".repeat(32);
     const DS2 = "d2".repeat(32);
@@ -641,7 +641,7 @@ describe("MIP-0018 token activity", () => {
     expect(recipientOf(call({ shieldedMints: [[DS, "50"]], claimed: [[minted, "user", walletOf(1), "50"]] }))).toEqual([null]); // a shielded mint has no public recipient
     expect(recipientOf(call({ unshieldedMints: [[DS, "50"]], claimed: [[minted, "contract", B, "50"]] }))).toEqual([B]);
     expect(() => pure(call({ unshieldedInputs: [["weird", Y, "1"]] }))).toThrow(ActivityDecodeError);
-    expect(pure({ hash: "d1".repeat(32), guaranteedDeltas: [[NIGHT_COLOR, "-5"]] })).toEqual([]); // shielded native token: not NIGHT
+    expect(pure({ hash: "d1".repeat(32), guaranteedDeltas: [[NIGHT_COLOR, "-5"]] })).toEqual([]); // the default shielded token type: not NIGHT
   }, 180_000);
 
   it("[[mip0018.activity.remove-above]] removeAbove deletes the activity above a height and a rescan restores it exactly", async () => {

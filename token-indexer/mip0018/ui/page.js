@@ -590,13 +590,14 @@
     for (var i = 0; i < extra.length; i++) { c.appendChild(document.createTextNode("  \u00b7  ")); c.appendChild(extra[i]); }
     main.appendChild(c);
   }
-  var KIND_NAMES = { 1: "shielded", 2: "unshielded", 3: "ledger" };
+  var KIND_NAMES = { 1: "shielded-utxo", 2: "unshielded-utxo", 3: "contract-token" };
+  var KIND_TITLES = { 1: "a shielded contract-issued UTXO token", 2: "an unshielded contract-issued UTXO token", 3: "a contract token (no color)" };
   function kindChip(t) {
     if (t.source === "builtin") return setTitle(h("span", "chip k-builtin", "built-in"), "a protocol token (outside MIP-0018)");
     if (t.source === "seen") return setTitle(h("span", "chip k-seen", "seen"), "a color seen in public data with no indexed mint: its contract is not known");
     var name = KIND_NAMES[t.kind];
     if (!name) return h("span", "chip", txt(t.kind));
-    return setTitle(h("span", "chip k-" + name, t.kind + " \u00b7 " + name), "kind " + t.kind + ": native " + (t.kind === 3 ? "ledger token (no color)" : name + " token"));
+    return setTitle(h("span", "chip k-" + name, t.kind + " \u00b7 " + name), "kind " + t.kind + ": " + KIND_TITLES[t.kind]);
   }
 
   // The MIP-0018 mark (decided by the API): \u2713 correct, \u26a0 partial, incorrect or unresolved with the
@@ -896,7 +897,7 @@
     kvRow(g, "domainSep", h("span", null, [domainNode(t.domainSep), " ", hexFull(t.domainSep)]));
     kvRow(g, "kind", kindChip({ source: "identity", kind: t.kind }));
     if (hex64(txt(t.color))) kvRow(g, "color", link(colorHash(t.color.toLowerCase()), hexFull(t.color)));
-    else kvRow(g, "color", h("span", "no", t.kind === 3 ? "none (a ledger token has no color)" : "none: no mint of this identity in the indexed range"));
+    else kvRow(g, "color", h("span", "no", t.kind === 3 ? "none (a contract token has no color)" : "none: no mint of this identity in the indexed range"));
     if (t.minted) {
       var fm = t.minted.firstMint || {};
       kvRow(g, "first mint", h("span", null, ["block " + txt(fm.height) + " ", hex64(txt(fm.txHash)) ? link(txHash(fm.txHash.toLowerCase()), hexNode(fm.txHash)) : null]));

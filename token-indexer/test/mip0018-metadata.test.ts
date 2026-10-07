@@ -1,5 +1,5 @@
 /**
- * UmbraDB's MIP-0018 metadata state in Postgres (MIP `274a84f` "Applying records", "Common fields", "Symbol grouping"):
+ * UmbraDB's MIP-0018 metadata state in Postgres (MIP "Applying records", "Common fields", "Symbol grouping"):
  * the scan applies every accepted event to the latest-value rows in its block transaction, a Null record deletes its
  * key's row, an identity with no row is not referenced by any read helper, `removeAbove` recomputes exactly, and the
  * marks and groups come from the pure module.

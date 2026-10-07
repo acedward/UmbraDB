@@ -1,6 +1,6 @@
 /**
  * Read side of the scan tables (the API builds on these): the MIP's color table (`color → (contractAddress,
- * domainSep)`, kinds minted), the native tokens seen in public data or minted (a color seen before its mint is completed
+ * domainSep)`, kinds minted), the contract-issued UTXO tokens seen in public data or minted (a color seen before its mint is completed
  * in place — same row, now with its contract and domainSep), and the NIGHT/DUST rows. Pure queries; no writes.
  */
 import { MIP0018_SCHEMA } from "../../src/postgres/migrations/mip0018/index.js";
@@ -95,7 +95,7 @@ export async function lookupColor(sql: Queryable, network: string, color: string
   return entry === undefined ? { found: false } : { found: true, entry };
 }
 
-/** Every native token color seen in public data or minted, ordered by first appearance. */
+/** Every token color seen in public data or minted, ordered by first appearance. */
 export async function nativeTokens(sql: Queryable, network: string, schema = MIP0018_SCHEMA): Promise<NativeToken[]> {
   const rows = await sql<{ color: Buffer; block_height: bigint; tx_index: number; tx_hash: Buffer; evidence: string | null }[]>`
     SELECT color, block_height, tx_index, tx_hash, evidence FROM ${sql(schema)}.mip0018_color_sightings WHERE network = ${network}

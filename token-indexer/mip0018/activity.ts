@@ -13,7 +13,7 @@
  * deltas (an unbalanced offer's net amount per color — a balanced shielded transfer publishes nothing), mint effects,
  * and the chain position of MIP-0018 events. Nothing of a failed segment or a FAILURE transaction (same rule as the
  * mints and events: `partApplied`). DUST has no color and no row; NIGHT's unshielded UTXOs are recorded under color
- * 32 zero bytes; a Zswap delta of the zero color (the shielded native token, not NIGHT) is not recorded.
+ * 32 zero bytes; a Zswap delta of the zero color (the ledger's default shielded token type, not NIGHT) is not recorded.
  */
 import { addressFromKey, ContractCall, Transaction } from "@midnightntwrk/ledger-v9";
 import type { ISql } from "postgres";
@@ -161,7 +161,7 @@ export function transactionActivity(input: TransactionActivityInput): ActivityRo
     if (offer === undefined || offer === null) return;
     const deltas = [...offer.deltas].map(([c, v]) => [normHex(String(c)), BigInt(v)] as const).sort(([a], [b]) => byString(a, b));
     for (const [color, delta] of deltas) {
-      if (color === NIGHT_COLOR || delta === 0n) continue; // the zero color here is the shielded native token, not NIGHT
+      if (color === NIGHT_COLOR || delta === 0n) continue; // the zero color here is the ledger's default shielded token type, not NIGHT
       add(part, { role: "shielded-offer", color: buf(color), amount: (delta < 0n ? -delta : delta).toString(), direction: delta < 0n ? "in" : "out" });
     }
   };

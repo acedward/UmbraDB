@@ -4,8 +4,8 @@ The API serves what the MIP-0018 scan stored in Postgres (schema `mip0018`): the
 that is minted or described, the colors seen in public data, the current metadata fields, symbol groups, ✓/⚠ marks,
 the color lookup and the chain events with their classification.
 
-Authority: MIP-0018 at `274a84f221bcfc17e4b73e2c8b32fd8c028ea092` (PR #340 head; per-key tombstones). The explorer page
-uses only these endpoints.
+Authority: MIP-0018 as in [PR #372](https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372) (followed as it moves; checked against its head
+`338ea194bbe7c4e5d1829234a503b7c1b11ebf0f`). The explorer page uses only these endpoints.
 
 - Server: `node:http`, no framework. `GET` and `HEAD` only. Read-only: every request runs in one
   `REPEATABLE READ READ ONLY` transaction, so all parts of one answer come from one database state.
@@ -118,7 +118,7 @@ the first 100 members by `(domainSep, kind)`; `memberCount` counts them all.
 {
   "id": "identity/98a90519…7dcf/6d69702d…0000/3",
   "source": "identity",
-  "kind": 3, "kindName": "ledger",
+  "kind": 3, "kindName": "contract-token",
   "color": null,
   "contractAddress": "98a90519419e2ebb514b7c6ce87ee7f6f4f9753d9ee6f533c5d1c25b9d437dcf",
   "domainSep": "6d69702d303031383a6578616d706c653a66756e6769626c6500000000000000",
@@ -137,7 +137,8 @@ the first 100 members by `(domainSep, kind)`; `memberCount` counts them all.
 | `identity` | an identity that is minted (kinds 1/2) or described (any kind) | `color` = the minted color (kinds 1/2 with an indexed mint), else `null`; `minted` = MintStats of this kind or `null`; `name`/`symbol`/`decimals` = usable values or `null`; `described` = has fields now |
 | `seen` | a color seen in public data (unshielded UTXOs, offer deltas, contract unshielded effects) before its first indexed mint, or never minted | `color`, `firstSeen` (Position), `evidence` (`unshielded-utxo`, `shielded-offer`, `contract-unshielded`); `mark.mark` `none`; when a mint was indexed later: `contractAddress`, `domainSep` and a `note` (its identities are listed among the identities) |
 
-`kindName`: 1 `shielded`, 2 `unshielded`, 3 `ledger`.
+`kindName` (MIP-0018 token kinds): 1 `shielded-utxo` and 2 `unshielded-utxo` (contract-issued UTXO tokens, with a color),
+3 `contract-token` (a token represented by contract logic; no color).
 
 **IdentityDetail** — one token identity:
 
@@ -146,7 +147,7 @@ the first 100 members by `(domainSep, kind)`; `memberCount` counts them all.
   "network": "stagenet",
   "contractAddress": "86acf80ff386abb610aadbea0406039e7fe39893f440794c3c2bad86dd48570f",
   "domainSep": "6d69702d303031383a6578616d706c653a6d756c74692d6b696e640000000000",
-  "kind": 1, "kindName": "shielded",
+  "kind": 1, "kindName": "shielded-utxo",
   "color": "04239924…bc16",
   "minted": { "firstMint": { … }, "mints": 1, "amount": "100000", "amountDisplay": "1000.00" },
   "described": true,
@@ -178,8 +179,8 @@ A minted identity without fields (never described, or withdrawn): `described: fa
   "startHeight": 714485,
   "indexedHeight": 715183,
   "archiveHeight": 715183,
-  "mip": { "id": "MIP-0018", "commit": "274a84f221bcfc17e4b73e2c8b32fd8c028ea092" },
-  "vendored": { "repository": "https://github.com/midnight-experiments/mip-0018", "commit": "daec1f19747b09f4e245885ab0dd9ecc789a82ce" },
+  "mip": { "id": "MIP-0018", "pr": 372, "url": "https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372", "checkedHead": "338ea194bbe7c4e5d1829234a503b7c1b11ebf0f" },
+  "vendored": { "repository": "https://github.com/midnight-experiments/mip-0018", "commit": "e8295792d9363be37ff2f7f716c740fcdf3f195e" },
   "scanner": "following",
   "unresolvedEvents": 0
 }
@@ -187,7 +188,9 @@ A minted identity without fields (never described, or withdrawn): `described: fa
 
 `startHeight` = the scan's first height, `indexedHeight` = the last scanned height (the scan cursor), `archiveHeight`
 = the chain archive's last height (all `null` before anything is scanned/archived). `genesisHash` is the configured
-network's (`null` when unknown). `scanner`: `following` (this process runs the scan loop), `stalled` (the loop's last
+network's (`null` when unknown). `mip` names the MIP text the indexer implements: the proposal PR it follows and
+`checkedHead`, the PR head commit this build was checked against. `vendored` is the reference commit the codec and
+vectors are copied from. `scanner`: `following` (this process runs the scan loop), `stalled` (the loop's last
 attempt failed; it retries), `off` (API only). `unresolvedEvents` = the stored `log` ops whose logged value the raw
 transaction does not show (`unresolved` in `/v1/events`; never applied — while a contract has one, its tokens'
 metadata may differ from the ledger's events and their mark is ⚠ `unresolved` or `incorrect`; README "Known

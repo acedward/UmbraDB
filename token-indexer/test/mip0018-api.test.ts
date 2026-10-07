@@ -1,5 +1,5 @@
 /**
- * The MIP-0018 read-only JSON API (contract `token-indexer/API.md`; MIP `274a84f` "Lookup", "Applying records",
+ * The MIP-0018 read-only JSON API (contract `token-indexer/API.md`; MIP "Lookup", "Applying records",
  * "Common fields", "Symbol grouping", "Consuming").
  *
  * Data: the recorded Stagenet IDX range (`loadRangeTape("idx")`) archived by the real sync against the fake chain and
@@ -19,7 +19,7 @@ import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { type ArchiveTape, startFakeChain } from "../../test/integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadCaseIndex, loadManifest, loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
 import { createMip0018Api, listen, toAsciiJson } from "../mip0018/api.ts";
-import { KNOWN_GENESIS, MIP_COMMIT, VENDORED_REFERENCE } from "../mip0018/api-views.ts";
+import { KNOWN_GENESIS, MIP_PIN, VENDORED_REFERENCE } from "../mip0018/api-views.ts";
 import { contractUnresolvedSummary } from "../mip0018/metadata.ts";
 import { decodeWalletAddress } from "../mip0018/bech32m.ts";
 import { tokenColor } from "../mip0018/color.ts";
@@ -224,11 +224,19 @@ describe("MIP-0018 read-only API", () => {
     expect(r.status).toBe(200);
     expect(r.json).toEqual({
       network: NET, genesisHash: loadManifest().genesisHash, startHeight: 714485, indexedHeight: 715183, archiveHeight: 715183,
-      mip: { id: "MIP-0018", commit: MIP_COMMIT }, vendored: { ...VENDORED_REFERENCE }, scanner: "off", unresolvedEvents: 0,
+      mip: { id: "MIP-0018", pr: 372, url: "https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372", checkedHead: MIP_PIN.checkedHead },
+      vendored: { ...VENDORED_REFERENCE }, scanner: "off", unresolvedEvents: 0,
     });
     expect(KNOWN_GENESIS.stagenet).toBe(loadManifest().genesisHash);
     const source = readFileSync(new URL("token-indexer/vendor/mip0018/SOURCE.md", REPO), "utf8");
     expect(source).toContain(`| Pinned at | **\`${VENDORED_REFERENCE.commit}\`**`);
+    // The checked head is a full commit id, and the docs name the same PR and head.
+    expect(MIP_PIN.checkedHead).toMatch(/^[0-9a-f]{40}$/);
+    for (const doc of ["token-indexer/README.md", "token-indexer/API.md", "token-indexer/CONFORMANCE.md"]) {
+      const text = readFileSync(new URL(doc, REPO), "utf8");
+      expect(text, doc).toContain(MIP_PIN.url);
+      expect(text, doc).toContain(MIP_PIN.checkedHead);
+    }
     // Headers of every JSON answer.
     expect(r.headers.get("content-type")).toBe("application/json; charset=utf-8");
     expect(r.headers.get("x-content-type-options")).toBe("nosniff");
@@ -261,7 +269,7 @@ describe("MIP-0018 read-only API", () => {
     expect(thirdParty.map((t) => [t.kind, t.name, t.symbol, t.mark.mark, t.minted?.amount, t.color?.slice(0, 8)])).toEqual([[1, null, null, "none", "1040000", "e5afe273"]]);
     // Rows of the recorded cases.
     const row = (c: string, kind: number): Json[] => ids.filter((t) => t.contractAddress === contractOf(c) && t.kind === kind);
-    expect(row("C01", 3).map((t) => [t.name, t.symbol, t.decimals, t.color, t.kindName, t.mark.mark, t.minted])).toEqual([["Acme Gold", "AGLD", "6", null, "ledger", "ok", null]]);
+    expect(row("C01", 3).map((t) => [t.name, t.symbol, t.decimals, t.color, t.kindName, t.mark.mark, t.minted])).toEqual([["Acme Gold", "AGLD", "6", null, "contract-token", "ok", null]]);
     const c04 = [1, 2, 3].map((k) => row("C04", k)[0]);
     expect(c04.map((t) => [t.kind, t.name, t.color?.slice(0, 8) ?? null, t.minted?.amount ?? null, t.minted?.amountDisplay ?? null])).toEqual([
       [1, "Acme Dollar", "04239924", "100000", "1000.00"], [2, "Acme Dollar", "04239924", "100000", "1000.00"], [3, "Acme Dollar", null, null, null],

@@ -195,7 +195,7 @@
     {
       "id": "mip0018.state.per-key-tombstone",
       "file": "token-indexer/test/mip0018-state.test.ts",
-      "description": "per-key tombstones (MIP 274a84f): a Null deletes only its key, a Null for a missing key is a no-op, deleting every key leaves the identity absent from listings, lookups, groups and display, a later record revives only that field."
+      "description": "per-key tombstones: a Null deletes only its key, a Null for a missing key is a no-op, deleting every key leaves the identity absent from listings, lookups, groups and display, a later record revives only that field."
     },
     {
       "id": "mip0018.state.marks",
@@ -445,7 +445,7 @@
     {
       "id": "mip0018.api.withdrawn-absent",
       "file": "token-indexer/test/mip0018-api.test.ts",
-      "description": "MIP 274a84f Applying records: after C06's tombstone the withdrawn name is absent from every endpoint; a wholly withdrawn identity is 404 and appears nowhere; a withdrawn minted identity reads like a never-described one."
+      "description": "MIP Applying records: after C06's tombstone the withdrawn name is absent from every endpoint; a wholly withdrawn identity is 404 and appears nowhere; a withdrawn minted identity reads like a never-described one."
     },
     {
       "id": "mip0018.api.hostile-text",
@@ -555,7 +555,7 @@
     {
       "id": "mip0018.activity.withdrawn-history",
       "file": "token-indexer/test/mip0018-activity.test.ts",
-      "description": "MIP 'Applying records': a withdrawn identity is not referenced in metadata history: a color's and a contract's activity list metadata transactions only for rejected events and accepted events of an identity's current description; a withdrawn native token's publish and withdrawal transactions disappear while its mints stay; a sibling's rows stay until it is withdrawn; a revived identity's history starts at its revival; removeAbove restores the earlier listings; C06's per-key steps keep every row."
+      "description": "MIP 'Applying records': a withdrawn identity is not referenced in metadata history: a color's and a contract's activity list metadata transactions only for rejected events and accepted events of an identity's current description; a withdrawn contract-issued UTXO token's publish and withdrawal transactions disappear while its mints stay; a sibling's rows stay until it is withdrawn; a revived identity's history starts at its revival; removeAbove restores the earlier listings; C06's per-key steps keep every row."
     },
     {
       "id": "mip0018.api.tokens-stable-order",

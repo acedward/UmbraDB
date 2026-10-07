@@ -6,7 +6,7 @@
  * pure state module (`state.ts`: `tokenMark`, `displayAmount`, `parseStandards`); colors and NIGHT/DUST from the read
  * helpers of the scan tables (`tokens.ts`). This module only selects rows and shapes JSON:
  *
- * - "Not referenced after withdrawal" (MIP `274a84f` "Applying records"): identities come from the field rows and
+ * - "Not referenced after withdrawal" (MIP "Applying records"): identities come from the field rows and
  *   the mint table only, so a withdrawn identity is shown exactly as if it had never been described.
  * - Events: the event query selects position, contract, classification and reason of `accept`, `reject` and
  *   `unresolved` rows only — the stored name, payload and header are never read by the API.
@@ -36,8 +36,16 @@ import {
 } from "./state.ts";
 import { type BuiltinToken, builtinTokens, lookupColor } from "./tokens.ts";
 
-/** MIP-0018 text UmbraDB implements (PR #340 head, per-key tombstones). */
-export const MIP_COMMIT = "274a84f221bcfc17e4b73e2c8b32fd8c028ea092";
+/**
+ * MIP-0018 text UmbraDB implements: midnightntwrk/midnight-improvement-proposals PR #372, followed as it moves;
+ * `checkedHead` = the PR head commit this build was checked against.
+ */
+export const MIP_PIN = {
+  id: "MIP-0018",
+  pr: 372,
+  url: "https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372",
+  checkedHead: "338ea194bbe7c4e5d1829234a503b7c1b11ebf0f",
+} as const;
 /** The reference commit the codec, vectors and runner are vendored from (`token-indexer/vendor/mip0018/SOURCE.md`). */
 export const VENDORED_REFERENCE = { repository: "https://github.com/midnight-experiments/mip-0018", commit: "e8295792d9363be37ff2f7f716c740fcdf3f195e" } as const;
 /** Genesis hashes of the networks this indexer knows (Stagenet only; the same hash as the recorded Stagenet fixtures). */
@@ -90,7 +98,7 @@ export interface FieldJson {
 }
 /** A symbol group: its first {@link MAX_GROUP_MEMBERS} members by (domainSep, kind) and how many it has. */
 export interface GroupJson { symbol: BytesJson; memberCount: number; members: Array<{ domainSep: string; kind: number }> }
-export type KindName = "shielded" | "unshielded" | "ledger";
+export type KindName = "shielded-utxo" | "unshielded-utxo" | "contract-token";
 export interface TokenSummaryJson {
   id: string;
   source: "builtin" | "identity" | "seen";
@@ -138,7 +146,7 @@ const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const hexOf = (b: Uint8Array): string => Buffer.from(b).toString("hex");
 const buf = (h: string): Buffer => Buffer.from(h, "hex");
 const VAL_TYPE_NAMES = ["bytes", "utf8", "uint", "json", "uri"] as const;
-const KIND_NAMES: Record<number, KindName> = { 1: "shielded", 2: "unshielded", 3: "ledger" };
+const KIND_NAMES: Record<number, KindName> = { 1: "shielded-utxo", 2: "unshielded-utxo", 3: "contract-token" };
 
 /** Strict UTF-8 text of `bytes`, or `null` when they are not valid UTF-8 (then only the hex is served). */
 export function utf8OrNull(bytes: Uint8Array): string | null {
@@ -790,7 +798,7 @@ export interface StatusJson {
   startHeight: number | null;
   indexedHeight: number | null;
   archiveHeight: number | null;
-  mip: { id: "MIP-0018"; commit: string };
+  mip: { id: "MIP-0018"; pr: number; url: string; checkedHead: string };
   vendored: { repository: string; commit: string };
   scanner: ScannerState;
   /**
@@ -825,7 +833,7 @@ export async function status(ctx: ViewContext, genesisHash: string | null, scann
     startHeight: range?.from ?? null,
     indexedHeight: range?.indexed ?? null,
     archiveHeight,
-    mip: { id: "MIP-0018", commit: MIP_COMMIT },
+    mip: { ...MIP_PIN },
     vendored: { ...VENDORED_REFERENCE },
     scanner,
     unresolvedEvents,

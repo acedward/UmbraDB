@@ -6,7 +6,7 @@
  *                                                                                   pad(32, "midnight:derive_token"))
  *
  * computed with ledger-v9's `rawTokenType` (the code the ledger itself runs). One color serves the shielded (kind 1)
- * and the unshielded (kind 2) representation; a ledger token (kind 3) never has one. A color MUST always be computed,
+ * and the unshielded (kind 2) representation; a contract token (kind 3) never has one. A color MUST always be computed,
  * never read from a value.
  *
  * Port of `packages/midnight/src/color.ts` of https://github.com/midnight-experiments/mip-0018 @ daec1f1

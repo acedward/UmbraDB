@@ -27,7 +27,7 @@
   --tag-unknown-bg: #f0f0f0; --tag-unknown-bd: #c2c2c2; --tag-unknown-fg: #616161;
   --tag-shielded-bg: #f7ecfd; --tag-shielded-bd: #c79ae8; --tag-shielded-fg: #6b21a8;
   --tag-unshielded-bg: #e6f1fa; --tag-unshielded-bd: #85b6db; --tag-unshielded-fg: #13558c;
-  --tag-ledger-bg: #e2f4f3; --tag-ledger-bd: #78c2be; --tag-ledger-fg: #0f6b68;
+  --tag-contract-bg: #e2f4f3; --tag-contract-bd: #78c2be; --tag-contract-fg: #0f6b68;
   --tag-std-bg: var(--tint-blue); --tag-std-bd: #9b9bfb; --tag-std-fg: var(--md-blue);
   --tag-bad-bg: var(--bad-bg); --tag-bad-bd: #e3a29f; --tag-bad-fg: var(--bad-fg);
 }
@@ -94,9 +94,9 @@ td.wide { white-space: normal; max-width: 60ch; }
 .badge, .chip { display: inline-block; padding: 0 7px; margin-right: 6px; font-size: 11px; font-weight: 500;
   border: 1px solid var(--tag-unknown-bd); color: var(--tag-unknown-fg); background: var(--tag-unknown-bg);
   white-space: nowrap; }
-.k-shielded { color: var(--tag-shielded-fg); border-color: var(--tag-shielded-bd); background: var(--tag-shielded-bg); }
-.k-unshielded { color: var(--tag-unshielded-fg); border-color: var(--tag-unshielded-bd); background: var(--tag-unshielded-bg); }
-.k-ledger { color: var(--tag-ledger-fg); border-color: var(--tag-ledger-bd); background: var(--tag-ledger-bg); border-style: dashed; }
+.k-shielded-utxo { color: var(--tag-shielded-fg); border-color: var(--tag-shielded-bd); background: var(--tag-shielded-bg); }
+.k-unshielded-utxo { color: var(--tag-unshielded-fg); border-color: var(--tag-unshielded-bd); background: var(--tag-unshielded-bg); }
+.k-contract-token { color: var(--tag-contract-fg); border-color: var(--tag-contract-bd); background: var(--tag-contract-bg); border-style: dashed; }
 .k-builtin { color: var(--tag-builtin-fg); border-color: var(--tag-builtin-bd); background: var(--tag-builtin-bg); }
 .k-seen { color: var(--tag-seen-fg); border-color: var(--tag-seen-bd); background: var(--tag-seen-bg); border-style: dashed; }
 .std { color: var(--tag-std-fg); border-color: var(--tag-std-bd); background: var(--tag-std-bg); }

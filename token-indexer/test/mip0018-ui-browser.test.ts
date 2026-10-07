@@ -520,7 +520,7 @@ describe("MIP-0018 explorer page in a real browser", () => {
     await page.waitFor("document.body.getAttribute('data-route') === 'list' && document.body.getAttribute('data-state') === 'ready'");
     const rows = await page.eval<Json[]>(LIST_ROWS);
     // NIGHT, DUST, D, L, P, U (by domainSep bytes), then the seen color.
-    expect(rows.map((r) => r.cells[3])).toEqual(["built-in", "built-in", "3 \u00b7 ledger", "3 \u00b7 ledger", "3 \u00b7 ledger", "3 \u00b7 ledger", "seen"]);
+    expect(rows.map((r) => r.cells[3])).toEqual(["built-in", "built-in", "3 \u00b7 contract-token", "3 \u00b7 contract-token", "3 \u00b7 contract-token", "3 \u00b7 contract-token", "seen"]);
     const [, , rd, rl, rp, ru, rs] = rows;
     expect(rd.cells[1]).toBe("\u27e8U+202E\u27e9gnp.exe\u27e8U+200B\u27e9\u27e8U+0000\u27e9<script>alert(1)<\u2026");
     expect(rd.nameTitle).toBe("drawn 48 of 56 characters");

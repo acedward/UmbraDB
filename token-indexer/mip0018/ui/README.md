@@ -21,8 +21,8 @@ The font, its licence and the icon are byte-identical copies of the explorer in 
 
 The Midnight style (the look of the explorer in acedward/UmbraDB PR #19): Outfit, a white surface with black type and
 one blue (`#0000fe`), the header with the Midnight wordmark, a rule and the title, tab navigation and a status strip;
-grey panel sections with small dim headings; tables with hover rows (NIGHT/DUST rows tinted); kind chips (shielded
-purple, unshielded blue, ledger teal dashed, seen violet dashed); hex shortened head…tail, whole in the tooltip,
+grey panel sections with small dim headings; tables with hover rows (NIGHT/DUST rows tinted); kind chips (shielded-utxo
+purple, unshielded-utxo blue, contract-token teal dashed, seen violet dashed); hex shortened head…tail, whole in the tooltip,
 copied on click; monospaced heights, amounts and hex. The page has no origins model, no URI links or resolver, no
 external links and no wall-clock time.
 
