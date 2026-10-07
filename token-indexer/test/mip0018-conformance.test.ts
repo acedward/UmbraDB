@@ -5,8 +5,11 @@
  * - `[[mip0018.conformance.table]]` — the rows are exactly the MIP's requirements (a SHA-256 of the extracted list),
  *   every row is resolved, and every test id, vector and path the table cites exists;
  * - `[[mip0018.conformance.no-network-no-code]]` — the static half of C-024 / C-031: the indexer's runtime code and the
- *   vendored codec contain no network client, no dynamic code and no child process (so no URI is ever fetched and no
- *   `standards` identifier can make it run code).
+ *   vendored codec contain no network client, no dynamic code and no child process (so no `standards` identifier can
+ *   make it run code), except ONE module: the background image fetcher (`image-fetcher.ts`), the only code that may
+ *   resolve names and open connections, held to its own exact allowlist;
+ * - `[[mip0018.conformance.fetcher-isolated]]` — the scan and the API never load the image fetcher (their import
+ *   closures exclude it); only `serve` does.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -90,6 +93,14 @@ const violations = (src: string): string[] => FORBIDDEN.filter(([, re]) => re.te
  */
 const ALLOWED_MODULES = new Set(["node:crypto", "node:fs", "node:http", "node:util", "postgres", "zod", "@midnightntwrk/ledger-v9"]);
 
+/** The one runtime module that may use the network: the background image fetcher of `serve`. */
+const NETWORK_MODULE = "token-indexer/mip0018/image-fetcher.ts";
+/** What the network module may load beyond {@link ALLOWED_MODULES}, exactly: name resolution, TCP, TLS. */
+const NETWORK_MODULES = new Set(["node:dns/promises", "node:net", "node:tls"]);
+/** The forbidden forms the network module contains (an HTTP client import, socket modules) — and no other. */
+const NETWORK_FORMS = ["client import from node:http", "network / process / vm module"];
+const allowlistOf = (file: string): ReadonlySet<string> => (file === NETWORK_MODULE ? new Set([...ALLOWED_MODULES, ...NETWORK_MODULES]) : ALLOWED_MODULES);
+
 interface ImportUse { spec: string; typeOnly: boolean; dynamic: boolean }
 
 /** Every module specifier a source file loads: static imports and re-exports, side-effect imports, dynamic imports. */
@@ -104,8 +115,12 @@ function importsOf(src: string): ImportUse[] {
   return out;
 }
 
-/** Allowlist violations of a file at `file` (repository-relative), and the relative files it loads at run time. */
+/**
+ * Allowlist violations of a file at `file` (repository-relative), and the relative files it loads at run time. The
+ * network module is held to its own allowlist ({@link allowlistOf}).
+ */
 function importCheck(src: string, file: string): { bad: string[]; local: string[]; used: string[] } {
+  const allowed = allowlistOf(file);
   const bad: string[] = [];
   const local: string[] = [];
   const used: string[] = [];
@@ -117,7 +132,7 @@ function importCheck(src: string, file: string): { bad: string[]; local: string[
       else local.push(target);
     } else if (u.dynamic) {
       bad.push(`${u.spec} (dynamic import of a package or a computed specifier)`);
-    } else if (ALLOWED_MODULES.has(u.spec)) {
+    } else if (allowed.has(u.spec)) {
       used.push(u.spec);
     } else {
       bad.push(`${u.spec} (not on the allowlist)`);
@@ -129,6 +144,22 @@ function importCheck(src: string, file: string): { bad: string[]; local: string[
 /** A relative import's source file (`.js` specifiers name their `.ts` source). */
 const sourceOf = (target: string): string | undefined =>
   [target, target.replace(/\.js$/, ".ts")].find((t) => existsSync(join(ROOT, t)) && statSync(join(ROOT, t)).isFile());
+
+/** Every repository file `entry` loads at run time (static and dynamic relative imports), `entry` included. */
+function closureOf(entry: string, read: (f: string) => string = (f) => readFileSync(join(ROOT, f), "utf8")): Set<string> {
+  const seen = new Set<string>();
+  const queue = [entry];
+  while (queue.length > 0) {
+    const f = queue.shift()!;
+    if (seen.has(f)) continue;
+    seen.add(f);
+    for (const t of importCheck(read(f), f).local) {
+      const src = sourceOf(t);
+      if (src !== undefined) queue.push(src);
+    }
+  }
+  return seen;
+}
 
 describe("MIP-0018 conformance table", () => {
   it("[[mip0018.conformance.table]] CONFORMANCE.md lists exactly the 36 MUST/SHOULD requirements of MIP 274a84f, each covered by existing tests or not applicable with a reason; every cited test id, vector and path exists", () => {
@@ -191,7 +222,7 @@ describe("MIP-0018 conformance table", () => {
     expect(paths).toBeGreaterThan(3);
   }, 60_000);
 
-  it("[[mip0018.conformance.no-network-no-code]] the indexer's runtime code and the vendored codec contain no network client, no dynamic code and no child process (C-024, C-031: no URI is fetched, no identifier runs code); the check catches each forbidden form; every module the runtime loads, through its relative import closure, is on an exact allowlist (node:crypto, node:fs, node:http, node:util, postgres, zod, @midnightntwrk/ledger-v9) — package clients such as axios, undici or got and socket/process modules are refused", () => {
+  it("[[mip0018.conformance.no-network-no-code]] the indexer's runtime code and the vendored codec contain no network client, no dynamic code and no child process (C-024, C-031: no URI is fetched, no identifier runs code); the check catches each forbidden form; every module the runtime loads, through its relative import closure, is on an exact allowlist (node:crypto, node:fs, node:http, node:util, postgres, zod, @midnightntwrk/ledger-v9) — package clients such as axios, undici or got and socket/process modules are refused; the one exception is the image fetcher, the only module allowed an HTTP client and name resolution, TCP and TLS (node:dns/promises, node:net, node:tls, exactly), still refused everything else; a network import anywhere else is refused", () => {
     // Positive controls: every forbidden form is caught, the allowed forms are not.
     const caught = [
       "await fetch(url)", "http.request(opts)", "https.get(u)", 'import { request } from "node:http";', 'import { spawn } from "node:child_process";',
@@ -214,7 +245,10 @@ describe("MIP-0018 conformance table", () => {
     for (const f of ["scan.ts", "applied-parts.ts", "state.ts", "fields.ts", "metadata.ts", "tokens.ts", "activity.ts"]) expect(files).toContain(`token-indexer/mip0018/${f}`);
     expect(files.filter((f) => f.startsWith("token-indexer/vendor/")).length).toBeGreaterThanOrEqual(8);
     const found = Object.fromEntries(files.map((f): [string, string[]] => [f, violations(readFileSync(join(ROOT, f), "utf8"))]).filter(([, v]) => v.length > 0));
-    expect(found).toEqual({});
+    // Only the image fetcher holds network forms, and only an HTTP client import and socket modules (never fetch(),
+    // require, eval, dynamic code or a browser API).
+    expect(found).toEqual({ [NETWORK_MODULE]: NETWORK_FORMS });
+    expect(files).toContain(NETWORK_MODULE);
 
     // The import allowlist. Negative controls: package network clients, socket and process modules,
     // dynamic package imports, a relative path into node_modules; positive controls: the forms the runtime uses.
@@ -232,19 +266,30 @@ describe("MIP-0018 conformance table", () => {
       'import { createClient } from "../../src/postgres/client.js";',
     ];
     for (const a of fine) expect(importCheck(a, "token-indexer/mip0018/x.ts").bad, a).toEqual([]);
+    // The network module's own allowlist: name resolution, TCP and TLS there and nowhere else; everything else refused
+    // there too.
+    const network = ['import { lookup } from "node:dns/promises";', 'import { connect, isIP } from "node:net";', 'import { connect } from "node:tls";'];
+    for (const n of network) {
+      expect(importCheck(n, NETWORK_MODULE).bad, n).toEqual([]);
+      expect(importCheck(n, "token-indexer/mip0018/x.ts").bad, n).not.toEqual([]);
+      expect(importCheck(n, "token-indexer/mip0018/images.ts").bad, n).not.toEqual([]);
+    }
+    for (const c of [...notAllowed.filter((c) => !c.includes("node:net") && !c.includes("node:tls")), 'import { lookup } from "node:dns";', 'import * as vm from "node:vm";'])
+      expect(importCheck(c, NETWORK_MODULE).bad, c).not.toEqual([]);
 
     // The runtime and every file of this repository it loads (its relative import closure, e.g. src/postgres/*).
     const seen = new Set<string>();
     const queue = [...files];
     const offending: Record<string, string[]> = {};
     const used = new Set<string>();
+    const usedByNetwork = new Set<string>();
     while (queue.length > 0) {
       const f = queue.shift()!;
       if (seen.has(f)) continue;
       seen.add(f);
       const r = importCheck(readFileSync(join(ROOT, f), "utf8"), f);
       if (r.bad.length > 0) offending[f] = r.bad;
-      for (const u of r.used) used.add(u);
+      for (const u of r.used) (f === NETWORK_MODULE ? usedByNetwork : used).add(u);
       for (const t of r.local) {
         const src = sourceOf(t);
         expect(src, `${f} imports ${t}`).toBeDefined();
@@ -255,5 +300,26 @@ describe("MIP-0018 conformance table", () => {
     expect([...seen].filter((f) => f.startsWith("src/")).length).toBeGreaterThan(5); // the closure reaches the repository's own src/ code
     expect(seen.has("src/postgres/client.ts")).toBe(true);
     expect([...used].sort()).toEqual([...ALLOWED_MODULES].sort()); // no unused entry: the allowlist is exactly what runs
+    expect([...usedByNetwork].filter((m) => !ALLOWED_MODULES.has(m)).sort()).toEqual([...NETWORK_MODULES].sort());
+  }, 60_000);
+
+  it("[[mip0018.conformance.fetcher-isolated]] the scan never loads the image fetcher and the API never fetches: the import closures of the scan (scan.ts, scan-cli.ts) and of the API (api.ts) exclude image-fetcher.ts, while serve-cli.ts loads it (positive control); a scan that imported it would be caught (negative control)", () => {
+    for (const entry of ["token-indexer/mip0018/scan.ts", "token-indexer/mip0018/scan-cli.ts", "token-indexer/mip0018/api.ts", "token-indexer/mip0018/api-views.ts", "token-indexer/mip0018/images.ts"]) {
+      const c = closureOf(entry);
+      expect(c.size, entry).toBeGreaterThan(entry.endsWith("images.ts") ? 3 : 5);
+      expect(c.has(NETWORK_MODULE), entry).toBe(false);
+    }
+    expect(closureOf("token-indexer/mip0018/scan.ts").has("token-indexer/mip0018/applied-parts.ts")).toBe(true);
+    const serve = closureOf("token-indexer/mip0018/serve-cli.ts");
+    expect(serve.has(NETWORK_MODULE)).toBe(true);
+    expect(serve.has("token-indexer/mip0018/scan.ts")).toBe(true);
+    // Negative control: the same walk over a scan that imports the fetcher (statically or dynamically) finds it.
+    for (const line of ['import { ImageFetcher } from "./image-fetcher.ts";', 'const f = await import("./image-fetcher.ts");']) {
+      const read = (f: string): string => {
+        const src = readFileSync(join(ROOT, f), "utf8");
+        return f === "token-indexer/mip0018/scan.ts" ? `${src}\n${line}\n` : src;
+      };
+      expect(closureOf("token-indexer/mip0018/scan.ts", read).has(NETWORK_MODULE), line).toBe(true);
+    }
   }, 60_000);
 });

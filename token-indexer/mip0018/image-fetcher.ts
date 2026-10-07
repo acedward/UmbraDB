@@ -12,12 +12,14 @@
  *   private (RFC 1918, RFC 4193), shared/CGNAT, link-local, multicast, documentation, benchmarking, reserved and
  *   cloud-metadata addresses are refused, IPv4 and IPv6 alike; an IPv4 address carried in IPv6 (IPv4-mapped, NAT64,
  *   6to4) is checked as that IPv4 address; outside 2000::/3 nothing is fetched. One refused address refuses the host.
- * - The connection goes to the address that was checked (the dialer gets the address, never the name), so a second
- *   DNS answer cannot change the target; TLS still verifies the certificate against the host name.
+ * - The connection goes to the address that was checked (the dialer gets the address, never the name, and checks it
+ *   once more), so a second DNS answer cannot change the target; TLS still verifies the certificate against the host
+ *   name.
  * - At most 3 redirects; a redirect target is checked like the first URL.
  * - Size cap (2 MiB by default; a larger `Content-Length` or body is cut), a connect timeout (resolution, connection
  *   and TLS) and a response timeout (first byte to last byte), a per-host and per-address rate limit (one request per
- *   second by default) and a global concurrency limit (4 by default).
+ *   second by default; an image whose host is busy waits for its turn, never counted as a failure) and a global
+ *   concurrency limit (4 by default).
  * - Only a `200` answer is content; `Accept-Encoding: identity` and an encoded answer is refused (no decompression).
  *
  * Results (`images.ts` `classifyContent`): `verified`, `unverified`, `mismatch`, `not-image`; a request that yields
@@ -206,8 +208,11 @@ export interface DialTarget {
 /** Opens a connection to exactly `target.address` (never resolving a name); resolves once it is connected. */
 export type Dialer = (target: DialTarget, signal: AbortSignal) => Promise<Duplex>;
 
-/** TCP, or TLS with the certificate checked against the URL's host name, to the checked address. */
-export const systemDialer: Dialer = (t, signal) =>
+/**
+ * TCP, or TLS with the certificate checked against the URL's host name, to exactly `target.address` — no address
+ * check (`systemDialer` adds it).
+ */
+export const connectTo: Dialer = (t, signal) =>
   new Promise<Duplex>((resolve, reject) => {
     const socket: Socket = t.tls
       ? tlsConnect({
@@ -236,6 +241,12 @@ export const systemDialer: Dialer = (t, signal) =>
     if (signal.aborted) abort();
     else signal.addEventListener("abort", abort, { once: true });
   });
+
+/** The production dialer: `connectTo`, after checking the address once more (the fetch has checked it already). */
+export const systemDialer: Dialer = (t, signal) => {
+  const refused = addressRefusal(t.address);
+  return refused === undefined ? connectTo(t, signal) : Promise.reject(new Error(`address refused: ${refused}`));
+};
 
 // ── Rate limit ───────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -290,7 +301,11 @@ export interface FetchDeps extends FetchLimits {
   limiter: RateLimiter;
 }
 
-export type FetchOutcome = { ok: true; bytes: Buffer } | { ok: false; reason: string };
+/**
+ * A fetch's outcome: the body, or a failure with a reason word. `retryInMs` (reason `rate-limited`): the host or
+ * address is busy for longer than a fetch waits; the row is given back, due again then, and nothing counts as checked.
+ */
+export type FetchOutcome = { ok: true; bytes: Buffer } | { ok: false; reason: string; retryInMs?: number };
 
 const USER_AGENT = "UmbraDB-token-indexer (MIP-0018 image check)";
 const fail = (reason: string): FetchOutcome => ({ ok: false, reason });
@@ -439,8 +454,9 @@ export async function fetchImage(rawUrl: string, d: FetchDeps, stop: AbortSignal
     if (addresses.some((a) => addressRefusal(a.address) !== undefined)) return fail("address-refused");
     const target = addresses[0]!;
 
-    const wait = d.limiter.reserve([`host:${host.toLowerCase()}`, `address:${target.address.toLowerCase()}`], 2 * d.perHostIntervalMs);
-    if (wait === undefined) return fail("rate-limited");
+    const keys = [`host:${host.toLowerCase()}`, `address:${target.address.toLowerCase()}`];
+    const wait = d.limiter.reserve(keys, 2 * d.perHostIntervalMs);
+    if (wait === undefined) return { ok: false, reason: "rate-limited", retryInMs: d.limiter.readyIn(keys) };
     if (wait > 0) await pause(wait, stop);
 
     let socket: Duplex | "timeout";
@@ -649,6 +665,7 @@ export class ImageFetcher {
       if (e instanceof FetchStopped) return releaseImage(this.sql, this.schema, item, 0);
       throw e;
     }
+    if (!out.ok && out.retryInMs !== undefined) return releaseImage(this.sql, this.schema, item, out.retryInMs);
     if (out.ok) {
       const r = classifyContent(out.bytes, item.imageSha256.length === 32 ? item.imageSha256 : null);
       await recordImageContent(this.sql, this.schema, item, r, this.schedule);

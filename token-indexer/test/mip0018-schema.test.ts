@@ -44,17 +44,17 @@ describe("mip0018 schema", () => {
     updated_record: 0,
   });
 
-  it("[[mip0018.schema.fresh-lineage]] creates exactly the lineage's tables (event log, latest-value fields, withdrawals, listed events, scan cursor, mints, color sightings, contract actions, built-in tokens, activity; no history table), and re-running is a no-op", async () => {
+  it("[[mip0018.schema.fresh-lineage]] creates exactly the lineage's tables (event log, latest-value fields, withdrawals, listed events, scan cursor, mints, color sightings, contract actions, built-in tokens, activity, token images; no history table), and re-running is a no-op", async () => {
     const tables = await sql<{ table_name: string }[]>`
       SELECT table_name FROM information_schema.tables WHERE table_schema = ${schema} ORDER BY table_name`;
     expect(tables.map((t) => t.table_name)).toEqual([
       "_migrations", "mip0018_activity", "mip0018_builtin_tokens", "mip0018_color_sightings", "mip0018_contract_actions",
-      "mip0018_events", "mip0018_fields", "mip0018_listed_events", "mip0018_mints", "mip0018_scan", "mip0018_withdrawals",
+      "mip0018_events", "mip0018_fields", "mip0018_images", "mip0018_listed_events", "mip0018_mints", "mip0018_scan", "mip0018_withdrawals",
     ]); // 001_mip0018_core: events, fields, withdrawals, listed events; 002_mip0018_scan: the scan tables;
-    // 003_mip0018_activity: the activity rows
+    // 003_mip0018_activity: the activity rows; 004_mip0018_images: the token-image cache
     await runMigrations(sql, { schema, migrations: mip0018Migrations });
     const applied = await sql<{ name: string }[]>`SELECT name FROM ${sql(schema)}._migrations ORDER BY name`;
-    expect(applied.map((r) => r.name)).toEqual(["000_schema", "001_mip0018_core", "002_mip0018_scan", "003_mip0018_activity"]);
+    expect(applied.map((r) => r.name)).toEqual(["000_schema", "001_mip0018_core", "002_mip0018_scan", "003_mip0018_activity", "004_mip0018_images"]);
   }, 120_000);
 
   it("[[mip0018.schema.bytes]] keys and values are exact bytes and a 31-byte integer is lossless", async () => {
@@ -137,6 +137,9 @@ describe("mip0018 schema", () => {
     "mip0018_events.phase": "vocabulary",
     "mip0018_events.reason": "code-ascii", // the codec's reason vocabulary or a fixed decoder message with numbers
     "mip0018_fields.network": "config",
+    "mip0018_images.content_type": "vocabulary", // CHECK in the four raster types
+    "mip0018_images.reason": "code-ascii", // the image fetcher's own reason words, CHECK ^[a-z0-9-]{1,40}$
+    "mip0018_images.status": "vocabulary",
     "mip0018_listed_events.classification": "vocabulary", // CHECK in ('accept', 'reject')
     "mip0018_listed_events.network": "config",
     "mip0018_mints.network": "config",
@@ -159,7 +162,7 @@ describe("mip0018 schema", () => {
     expect(bytea.map((r) => `${r.t}.${r.c}:${r.udt}`)).toEqual([
       "mip0018_activity.entry_point:bytea", "mip0018_builtin_tokens.name:text", "mip0018_contract_actions.entry_point:bytea",
       "mip0018_contract_actions.maintenance_operations:_bytea", "mip0018_events.name:bytea", "mip0018_events.payload:bytea",
-      "mip0018_events.reason:text", "mip0018_fields.key:bytea", "mip0018_fields.value:bytea",
+      "mip0018_events.reason:text", "mip0018_fields.key:bytea", "mip0018_fields.value:bytea", "mip0018_images.reason:text",
     ]);
     // The code-generated free-text columns hold printable ASCII only.
     const event = {
