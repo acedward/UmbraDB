@@ -8,6 +8,7 @@ import {
   ChainOrderError,
   COMMON_KEY_HEX,
   fieldUsable,
+  IMAGE_KEY_HEX,
   formatAmount,
   MetadataState,
   parseStandards,
@@ -154,6 +155,32 @@ describe("common fields (MIP Common fields)", () => {
     expect(parseStandards(enc("mip-0004\tmip-0011"))).toBeUndefined();
     expect(parseStandards(enc("a\u007fb"))).toBeUndefined();
     expect(parseStandards(enc("x y x\u0085y"))).toEqual(["x y", "x\u0085y"]);
+  });
+
+  it("[[mip0018.state.image-keys]] image keys (MIP Common fields, S12): `image` is usable only as a URI (type 4), `image_sha256` only as exactly 32 bytes (type 0); a 31-byte hash or a text image is unusable; neither changes a mark", () => {
+    expect(fieldUsable(IMAGE_KEY_HEX.image, 4, enc("https://example.org/acme.png"))).toBe(true);
+    expect(fieldUsable(IMAGE_KEY_HEX.image, 1, enc("https://example.org/acme.png"))).toBe(false);
+    expect(fieldUsable(IMAGE_KEY_HEX.image, 0, enc("https://example.org/acme.png"))).toBe(false);
+    expect(fieldUsable(IMAGE_KEY_HEX.imageSha256, 0, new Uint8Array(32).fill(7))).toBe(true);
+    expect(fieldUsable(IMAGE_KEY_HEX.imageSha256, 0, new Uint8Array(31).fill(7))).toBe(false);
+    expect(fieldUsable(IMAGE_KEY_HEX.imageSha256, 0, new Uint8Array(33).fill(7))).toBe(false);
+    expect(fieldUsable(IMAGE_KEY_HEX.imageSha256, 1, enc("a".repeat(32)))).toBe(false);
+
+    // Through the state (A6 and S12's unusable hash), and the mark of a complete token with usable, unusable or no images.
+    const s = new MetadataState();
+    const emit = emitter(s);
+    const common = [record.utf8("name", "Acme"), record.utf8("symbol", "ACME"), record.uint("decimals", 6)];
+    emit(3, [...common, record.uri("image", "https://example.org/acme.png"), record.bytes("image_sha256", new Uint8Array(32).fill(0xab))]);
+    emit(3, common, { domainSep: DS2 });
+    emit(3, [...common, record.utf8("image", "acme.png"), record.bytes("image_sha256", new Uint8Array(31).fill(0xab))], { domainSep: DS3 });
+    const usable = (domainSep: string) => [IMAGE_KEY_HEX.image, IMAGE_KEY_HEX.imageSha256].map((k) => s.identity(ref(3, domainSep))!.fields.get(k)?.usable);
+    expect([usable(DS1), usable(DS2), usable(DS3)]).toEqual([[true, true], [undefined, undefined], [false, false]]);
+    for (const d of [DS1, DS2, DS3])
+      expect(tokenMark({ fields: s.identity(ref(3, d))!.fields, contractRejections: [] }), d).toEqual({ mark: "ok", reasons: [], missing: [], tags: [] });
+    // Image keys are common fields: an identity described only by `image` exists, and its mark is partial.
+    emit(1, [record.uri("image", "https://example.org/x.png")], { domainSep: DS2 });
+    expect(keys(s, ref(1, DS2))).toEqual(["image"]);
+    expect(tokenMark({ fields: s.identity(ref(1, DS2))!.fields, contractRejections: [] }).mark).toBe("partial");
   });
 
   it("formatAmount is exact for every width and bounded for absurd decimals", () => {

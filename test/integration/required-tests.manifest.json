@@ -208,6 +208,11 @@
       "description": "the mark function (ok / partial / incorrect with reasons / unresolved / none; precedence incorrect, unresolved, fields; usable standards as tags)."
     },
     {
+      "id": "mip0018.state.image-keys",
+      "file": "token-indexer/test/mip0018-state.test.ts",
+      "description": "MIP Common fields / S12: image is usable only as a URI (type 4), image_sha256 only as exactly 32 bytes (type 0); a 31-byte hash or a text image is unusable; neither changes a mark."
+    },
+    {
       "id": "mip0018.vectors.pure-adapter",
       "file": "token-indexer/test/mip0018-vectors.test.ts",
       "description": "Pure adapter: 66/66 vendored normative + 43/43 informative vectors and UmbraDB's own A3c pass through the vendored runner core, with groups and display compared."

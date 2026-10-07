@@ -17,7 +17,8 @@
  * - Reorganization (S4): every classified event is retained per network; `rollbackTo` drops the events above a block
  *   and recomputes that network's state from the retained events (UmbraDB itself follows finalized blocks only).
  * - Common fields: `name`/`symbol` usable when a non-empty UTF-8 string, `decimals` when an unsigned integer,
- *   `standards` when a well-formed list; an unusable field shows no value and never falls back; no defaults.
+ *   `standards` when a well-formed list, `image` when a URI (type 4), `image_sha256` when exactly 32 bytes (type 0); an
+ *   unusable field shows no value and never falls back; no defaults; the image keys never affect a mark.
  * - Symbol grouping: identities of one (network, contractAddress) with the same usable `symbol` bytes; only groups of
  *   two or more members are reported.
  */
@@ -36,14 +37,22 @@ import { classifyMip0018Event } from "./classify.ts";
 const enc = new TextEncoder();
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
-/** The MIP's common keys, as hex. */
+/** The common keys a token list row and a mark read (`name`, `symbol`, `decimals`, `standards`), as hex. */
 export const COMMON_KEY_HEX = {
   name: toHex(enc.encode("name")),
   symbol: toHex(enc.encode("symbol")),
   decimals: toHex(enc.encode("decimals")),
   standards: toHex(enc.encode("standards")),
 } as const;
-const COMMON_KEYS: ReadonlySet<string> = new Set(Object.values(COMMON_KEY_HEX));
+/** The image keys of the common fields (`image`, `image_sha256`), as hex. Neither affects a mark. */
+export const IMAGE_KEY_HEX = {
+  image: toHex(enc.encode("image")),
+  imageSha256: toHex(enc.encode("image_sha256")),
+} as const;
+/** Every key of the MIP's common fields: `name`, `symbol`, `decimals`, `standards`, `image`, `image_sha256`. */
+const COMMON_KEYS: ReadonlySet<string> = new Set([...Object.values(COMMON_KEY_HEX), ...Object.values(IMAGE_KEY_HEX)]);
+/** `image_sha256` is usable only as exactly this many bytes (MIP "Common fields", Testing S12). */
+export const IMAGE_SHA256_BYTES = 32;
 
 /**
  * `standards` (MIP "Common fields"): identifiers separated by single spaces (0x20); an identifier is non-empty and has
@@ -90,6 +99,10 @@ export function fieldUsable(keyHex: string, valType: number, value: Uint8Array):
       return valType === ValType.UInt;
     case COMMON_KEY_HEX.standards:
       return valType === ValType.Utf8 && parseStandards(value) !== undefined;
+    case IMAGE_KEY_HEX.image:
+      return valType === ValType.Uri; // an accepted type-4 value is a valid RFC 3986 URI (the codec checked it)
+    case IMAGE_KEY_HEX.imageSha256:
+      return valType === ValType.Bytes && value.length === IMAGE_SHA256_BYTES;
     default:
       return undefined;
   }
@@ -178,7 +191,7 @@ export interface Field {
   valType: number;
   value: Uint8Array;
   integer?: bigint;
-  /** Given for the four common keys only. */
+  /** Given for the keys of the common fields only. */
   usable?: boolean;
   /** Where the current value was set. */
   position: ChainPosition & { record: number };
@@ -453,7 +466,7 @@ export function tokenMark(input: MarkInput): TokenMark {
 
 // ── Helpers for adapters ─────────────────────────────────────────────────────────────────────────────────────────
 
-/** Whether a key hex is one of the four common keys. */
+/** Whether a key hex is a key of the common fields (the six keys the MIP defines). */
 export function isCommonKey(keyHex: string): boolean {
   return COMMON_KEYS.has(keyHex);
 }
