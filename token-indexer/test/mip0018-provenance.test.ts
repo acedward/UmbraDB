@@ -14,7 +14,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { verifySums } from "../vendor/mip0018/vectors/tools/common.ts";
 
 const VENDOR_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "vendor", "mip0018");
-const PINNED_COMMIT = "daec1f19747b09f4e245885ab0dd9ecc789a82ce";
+const PINNED_COMMIT = "e8295792d9363be37ff2f7f716c740fcdf3f195e";
 
 interface Row {
   path: string;

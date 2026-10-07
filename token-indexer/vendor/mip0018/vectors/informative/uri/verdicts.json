@@ -1,6 +1,6 @@
 {
   "rule": "RFC 3986 URI (scheme required, fragment allowed, ASCII only)",
-  "basis": "Q20 / MIP-0018 Value types",
+  "basis": "MIP-0018 Value types",
   "cases": [
     {
       "case": "c01",

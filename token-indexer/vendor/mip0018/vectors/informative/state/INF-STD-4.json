@@ -1,7 +1,7 @@
 {
   "id": "INF-STD-4",
   "mip": {
-    "commit": "78ecbb4b1ba57371e84fe45f705991ab7b996a61",
+    "commit": "274a84f221bcfc17e4b73e2c8b32fd8c028ea092",
     "testId": "INF-STANDARDS"
   },
   "normative": false,
@@ -27,7 +27,6 @@
         "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
         "kind": 3,
-        "visible": true,
         "fields": {
           "7374616e6461726473": {
             "key_text": "standards",

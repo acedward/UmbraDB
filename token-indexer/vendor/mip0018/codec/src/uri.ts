@@ -1,10 +1,10 @@
-// valType 4: the RFC 3986 `URI` rule, as ERC-721 `tokenURI` uses it (owner ruling Q20; MIP-0018 Value types):
+// valType 4: the RFC 3986 `URI` rule (MIP-0018 Value types; the URI definition ERC-721 `tokenURI` uses):
 //
 //   URI = scheme ":" hier-part [ "?" query ] [ "#" fragment ]
 //
 // A scheme is required (relative references are rejected), a fragment is allowed, and every character is ASCII
 // (RFC 3986 has no non-ASCII characters; they must be percent-encoded). Values are only checked — never fetched,
-// resolved or normalised. Grammar transcribed from RFC 3986 Appendix A (same as the F1 investigation's
+// resolved or normalised. Grammar transcribed from RFC 3986 Appendix A (same as the URI investigation's
 // `rfc3986.mjs`, which agrees with Python `rfc3987`'s rule `URI` on all 26 investigation cases).
 //
 // The regular expression has no nested unbounded quantifiers over overlapping classes; inputs are at most 219

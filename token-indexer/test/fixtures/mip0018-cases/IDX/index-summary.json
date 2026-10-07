@@ -2,7 +2,7 @@
   "mode": "subscription",
   "blocksThisRun": 699,
   "requests": 2,
-  "seconds": 6.4,
+  "seconds": 10,
   "state": "deployments/stagenet/cases/IDX/index/index-state.json",
   "kind": "mip0018-index-state",
   "schema": 1,
@@ -809,5 +809,5 @@
     "events": 35
   },
   "errors": [],
-  "updatedAt": "2026-10-02T09:14:25.568Z"
+  "updatedAt": "2026-10-03T03:47:49.201Z"
 }

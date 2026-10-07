@@ -85,9 +85,22 @@ export const record = {
   /** JSON text, stored as given (not re-serialised). */
   json: (key: string | Uint8Array, text: string): MetadataRecord => ({ key: utf8(key), valType: ValType.Json, value: utf8(text) }),
   uri: (key: string | Uint8Array, uri: string): MetadataRecord => ({ key: utf8(key), valType: ValType.Uri, value: utf8(uri) }),
-  /** A tombstone: withdraws the whole token identity, whatever the key. */
-  tombstone: (key: string | Uint8Array = 'retire'): MetadataRecord => ({ key: utf8(key), valType: ValType.Null, value: new Uint8Array(0) }),
+  /**
+   * A Null record (tombstone) at `key`: deletes that field (MIP "Applying records"). To withdraw a token, emit a Null
+   * record for each of its keys in one event — `withdrawRecords()` for the common four.
+   */
+  tombstone: (key: string | Uint8Array): MetadataRecord => ({ key: utf8(key), valType: ValType.Null, value: new Uint8Array(0) }),
 };
+
+/**
+ * Withdraws a token: Null records at `name`, `symbol`, `decimals` and `standards`, in that order (39 bytes; the same
+ * records as the Compact module's `withdraw(domainSep, kind)`). A token identity exists only while one of its fields
+ * has a value, so once every key it has is deleted consumers do not reference it. A token with keys beyond these
+ * four adds a Null record for each of them (`[...withdrawRecords(), record.tombstone('logo')]`).
+ */
+export function withdrawRecords(): MetadataRecord[] {
+  return ['name', 'symbol', 'decimals', 'standards'].map((key) => record.tombstone(key));
+}
 
 /** The common fields (`name`, `symbol`, `decimals` as `Uint<8>`, optional `standards`) as records, in that order. */
 export function commonRecords(fields: {

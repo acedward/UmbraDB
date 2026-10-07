@@ -219,7 +219,7 @@ describe("MIP-0018 read-only API", () => {
     await container?.stop();
   }, 60_000);
 
-  it("[[mip0018.api.status]] status: network, genesis (= the recorded fixture's), start/indexed/archive heights, MIP pin and vendored commit (= SOURCE.md and the own vectors' manifest), scanner off", async () => {
+  it("[[mip0018.api.status]] status: network, genesis (= the recorded fixture's), start/indexed/archive heights, MIP pin and vendored commit (= SOURCE.md), scanner off", async () => {
     const r = await get(idx.base, "/v1/status");
     expect(r.status).toBe(200);
     expect(r.json).toEqual({
@@ -229,8 +229,6 @@ describe("MIP-0018 read-only API", () => {
     expect(KNOWN_GENESIS.stagenet).toBe(loadManifest().genesisHash);
     const source = readFileSync(new URL("token-indexer/vendor/mip0018/SOURCE.md", REPO), "utf8");
     expect(source).toContain(`| Pinned at | **\`${VENDORED_REFERENCE.commit}\`**`);
-    const own = JSON.parse(readFileSync(new URL("token-indexer/mip0018/vectors-umbradb/manifest.json", REPO), "utf8")) as { mip: { commit: string } };
-    expect(own.mip.commit).toBe(MIP_COMMIT);
     // Headers of every JSON answer.
     expect(r.headers.get("content-type")).toBe("application/json; charset=utf-8");
     expect(r.headers.get("x-content-type-options")).toBe("nosniff");

@@ -7,14 +7,14 @@ import { fileURLToPath } from 'node:url';
 /** Absolute path of the `vectors/` folder. */
 export const VECTORS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-/** The pinned MIP text every vector implements (Q12: link the PR, pin the commit and its SHA-256). */
+/** The pinned MIP text every vector implements (the proposal PR, the pinned commit and its SHA-256). */
 export const MIP = {
   id: 'MIP-0018',
   repository: 'midnightntwrk/midnight-improvement-proposals',
-  commit: '78ecbb4b1ba57371e84fe45f705991ab7b996a61',
+  commit: '274a84f221bcfc17e4b73e2c8b32fd8c028ea092',
   path: 'mips/mip-0018-on-chain-token-metadata.md',
-  sha256: 'b9092746ecf5660496535688a2dea152eb23d932b6eeb6b5a182c23426eec1a1',
-  url: 'https://github.com/midnightntwrk/midnight-improvement-proposals/blob/78ecbb4b1ba57371e84fe45f705991ab7b996a61/mips/mip-0018-on-chain-token-metadata.md',
+  sha256: 'e64fe1429b9f7589077f1323572cf5c3ffa90c7c96690242a9e76d2658058d8b',
+  url: 'https://github.com/midnightntwrk/midnight-improvement-proposals/blob/274a84f221bcfc17e4b73e2c8b32fd8c028ea092/mips/mip-0018-on-chain-token-metadata.md',
   pr: 'https://github.com/midnightntwrk/midnight-improvement-proposals/pull/340',
 } as const;
 

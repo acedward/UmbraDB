@@ -8,10 +8,8 @@
  * chain and scanned by the real scanner; synthetic archive blocks for what Stagenet does not show (a whole withdrawal,
  * shared rows, a partial token, a 31-byte integer).
  *
- * Expectations: the reference's case files (midnight-experiments/mip-0018 @ daec1f1, copied verbatim into
- * `fixtures/mip0018-cases/`, SHA-256 checked against `case-index.json`), and — for C06's steps after the tombstone —
- * UmbraDB's own per-key expectations (`fixtures/mip0018-cases/C06/umbradb-per-key/`; provenance in that
- * folder's README). Single-member groups are excluded on both sides.
+ * Expectations: the reference's case files (copied verbatim into `fixtures/mip0018-cases/`, SHA-256 checked against
+ * that folder's `SOURCE.md`). Single-member groups are excluded on both sides.
  */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -32,15 +30,15 @@ import { Mip0018Scanner } from "../mip0018/scan.ts";
 import { COMMON_KEY_HEX, type IdentityRef, type IdentityState, parseStandards, type SymbolGroup } from "../mip0018/state.ts";
 import { listColors, nativeTokens } from "../mip0018/tokens.ts";
 import { EVENT_NAME, encodePayload, type MetadataRecord, record } from "../vendor/mip0018/codec/src/index.ts";
+import { CASES_DIR, caseCopyProblems } from "./helpers/case-source.ts";
 import { decodeSynthetic, putSyntheticBlocks, type SynthLog } from "./helpers/synthetic-archive.ts";
 
 const NET = "stagenet";
-const CASES_DIR = new URL("./fixtures/mip0018-cases/", import.meta.url);
 
 // ── Expected-state shape (the reference's `expected.json`) ───────────────────────────────────────────────────────
 
 interface ExpectedField { key_text?: string; valType: number; value_hex: string; usable?: boolean }
-interface ExpectedIdentity { domainSep: string; kind: number; visible: boolean; colored: boolean; common: Record<string, unknown>; fields?: Record<string, ExpectedField> }
+interface ExpectedIdentity { domainSep: string; kind: number; colored: boolean; common: Record<string, unknown>; fields?: Record<string, ExpectedField> }
 interface ExpectedState { identities: ExpectedIdentity[]; groups: Array<{ symbol: string; members: Array<{ domainSep: string; kind: number }> }>; counts?: Record<string, number> }
 
 const readCase = (path: string): ExpectedState => JSON.parse(readFileSync(new URL(path, CASES_DIR), "utf8")) as ExpectedState;
@@ -68,14 +66,12 @@ async function differences(sql: UmbraDBSql, schema: string, contract: string, ex
   const d: string[] = [];
   const ids = await listIdentities(sql, NET, { contractAddress: contract }, schema);
   const got = new Map(ids.map((i) => [`${i.domainSep}/${i.kind}`, i]));
-  // A hidden identity with no fields (the reference's whole-identity tombstone) equals an absent one.
-  const want = new Map(expected.identities.filter((e) => e.visible || Object.keys(e.common).length > 0 || Object.keys(e.fields ?? {}).length > 0).map((e) => [`${norm(e.domainSep)}/${e.kind}`, e]));
+  const want = new Map(expected.identities.map((e) => [`${norm(e.domainSep)}/${e.kind}`, e]));
   for (const k of want.keys()) if (!got.has(k)) d.push(`identity ${k} expected, absent`);
   for (const k of got.keys()) if (!want.has(k)) d.push(`identity ${k} present, not expected`);
   for (const [k, e] of want) {
     const g = got.get(k);
     if (g === undefined) continue;
-    if (!e.visible) d.push(`identity ${k}: expected hidden with values (not a per-key state)`);
     if (e.colored !== (g.kind !== 3)) d.push(`identity ${k}: colored`);
     if (canon(commonOf(g)) !== canon(e.common)) d.push(`identity ${k}: common ${canon(commonOf(g))}, expected ${canon(e.common)}`);
     if (e.fields !== undefined) {
@@ -184,23 +180,18 @@ describe("MIP-0018 metadata state in Postgres", () => {
     await container?.stop();
   }, 60_000);
 
-  it("[[mip0018.metadata.recorded-cases]] every recorded case's state equals its expectation (C01–C05, C07, C08, C10, U1 reference files; C06 UmbraDB's per-key final state); the copies are the reference's bytes; a full recompute from the log changes nothing", async () => {
-    // The verbatim copies: SHA-256 equal to what the recorded case index holds for the reference paths.
-    const recorded = new Map(caseIndex.source.files.map((f) => [f.path, f.sha256]));
-    const copies = ["C01", "C02", "C03", "C04", "C05", "C07", "C08", "C10", "U1"].map((c) => `${c}/expected.json`)
-      .concat(["expected.json", "expected-after-publish.json", "expected-after-rename.json", "expected-after-withdraw.json", "expected-after-withdraw-again.json", "expected-after-revive.json"].map((f) => `C06/${f}`));
-    for (const f of copies)
-      expect(createHash("sha256").update(readFileSync(new URL(f, CASES_DIR))).digest("hex"), f).toBe(recorded.get(`deployments/stagenet/cases/${f}`));
+  it("[[mip0018.metadata.recorded-cases]] every recorded case's state equals its expectation (C01–C08, C10, U1 reference files); the copies are the reference's bytes; a full recompute from the log changes nothing", async () => {
+    // The verbatim copies: SHA-256 equal to the provenance table.
+    expect(caseCopyProblems()).toEqual([]);
 
     const results: Record<string, string[]> = {};
-    for (const c of ["C01", "C02", "C03", "C04", "C05", "C07", "C08", "C10", "U1"]) {
+    for (const c of ["C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C10", "U1"]) {
       const range = c === "U1" ? ranges.u1 : ranges.idx;
       results[c] = await differences(range.sql, range.mip, contractOf(c), readCase(`${c}/expected.json`));
     }
-    results.C06 = await differences(ranges.idx.sql, ranges.idx.mip, contractOf("C06"), readCase("C06/umbradb-per-key/expected.json"));
     expect(results).toEqual({ C01: [], C02: [], C03: [], C04: [], C05: [], C06: [], C07: [], C08: [], C10: [], U1: [] });
-    // The reference's identity-wide C06 expectation does NOT describe the per-key state (why UmbraDB keeps its own).
-    expect(await differences(ranges.idx.sql, ranges.idx.mip, contractOf("C06"), readCase("C06/expected.json"))).not.toEqual([]);
+    // Negative control: an earlier step's expectation does not describe C06's final state.
+    expect(await differences(ranges.idx.sql, ranges.idx.mip, contractOf("C06"), readCase("C06/expected-after-withdraw.json"))).not.toEqual([]);
 
     // Incremental apply = replay of the stored log (fields, withdrawals and listed events).
     const { sql, mip } = ranges.idx;
@@ -229,10 +220,9 @@ describe("MIP-0018 metadata state in Postgres", () => {
     expect(await groupOf(ranges.idx.sql, c01, ranges.idx.mip)).toBeUndefined();
   }, 120_000);
 
-  it("[[mip0018.metadata.c06-steps]] C06 replayed step by step (case-index heights): publish and rename equal the reference files; withdraw (Null at name), withdraw again and revive equal UmbraDB's per-key expectations; removing the tombstone block restores the rename state and re-adding it applies the tombstone again", async () => {
+  it("[[mip0018.metadata.c06-steps]] C06 replayed step by step (case-index heights): publish, rename, withdraw (Null at name), withdraw again and revive equal the reference files; removing the tombstone block restores the rename state and re-adding it applies the tombstone again", async () => {
     const steps = caseIndex.cases.C06!.steps.filter((s) => s.expectedAfter !== undefined);
     expect(steps.map((s) => [s.id, s.height])).toEqual([["publish", 714796], ["rename", 714804], ["withdraw", 714813], ["withdraw-again", 714827], ["revive", 714835]]);
-    const perKey = new Set(["withdraw", "withdraw-again", "revive"]);
     const db = await fresh("c06");
     await archiveTape(db, loadRangeTape("idx"), 714789, 714835);
     await scanner(db).bootstrap();
@@ -241,10 +231,7 @@ describe("MIP-0018 metadata state in Postgres", () => {
     for (const step of steps) {
       await scanAll(scanner(db, { toHeight: step.height! }));
       expect((await scanner(db).getCursor())?.nextHeight).toBe(step.height! + 1);
-      const own = perKey.has(step.id);
-      const expected = readCase(own ? `C06/umbradb-per-key/${step.expectedAfter!}` : `C06/${step.expectedAfter!}`);
-      expect(await differences(db.sql, db.mip, C06, expected), step.id).toEqual([]);
-      if (own) expect(await differences(db.sql, db.mip, C06, readCase(`C06/${step.expectedAfter!}`)), `${step.id} (reference, 78ecbb4)`).not.toEqual([]);
+      expect(await differences(db.sql, db.mip, C06, readCase(`C06/${step.expectedAfter!}`)), step.id).toEqual([]);
     }
     // Row level: the withdraw deleted exactly the `name` row; the revive re-set name and symbol only.
     const keys = async () => [...((await getIdentity(db.sql, ref, db.mip))?.fields.keys() ?? [])].map((k) => Buffer.from(k, "hex").toString());
@@ -259,7 +246,7 @@ describe("MIP-0018 metadata state in Postgres", () => {
     expect(await differences(db.sql, db.mip, C06, readCase("C06/expected-after-rename.json"))).toEqual([]);
     expect(await keys()).toEqual(["decimals", "standards", "name", "symbol"]); // the rename's name/symbol are current again
     await scanAll(scanner(db, { toHeight: 714813 }));
-    expect(await differences(db.sql, db.mip, C06, readCase("C06/umbradb-per-key/expected-after-withdraw.json"))).toEqual([]);
+    expect(await differences(db.sql, db.mip, C06, readCase("C06/expected-after-withdraw.json"))).toEqual([]);
     await scanAll(scanner(db));
     expect(await dumpAll(db.sql, db.mip)).toEqual(full);
   }, 180_000);

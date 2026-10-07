@@ -1,12 +1,12 @@
 {
   "id": "INF-ZEXT-S1",
   "mip": {
-    "commit": "78ecbb4b1ba57371e84fe45f705991ab7b996a61",
+    "commit": "274a84f221bcfc17e4b73e2c8b32fd8c028ea092",
     "testId": "INF-ZEXT"
   },
   "normative": false,
-  "description": "Reducer: A1, then name = \"Beta\", both observed with the name and payload trimmed: the identity is visible with name \"Beta\" and A1's other three fields, exactly as with the full forms.",
-  "basis": "MIP \"Consuming\" (78ecbb4): \"Some sources drop trailing zero bytes; consumers MUST treat missing trailing bytes as zero, so that every `name` is 32 bytes and every `payload` 256 bytes, before decoding.\" The expected result is the full form's.",
+  "description": "Reducer: A1, then name = \"Beta\", both observed with the name and payload trimmed: the identity has name \"Beta\" and A1's other three fields, exactly as with the full forms.",
+  "basis": "MIP \"Consuming\": \"Some sources drop trailing zero bytes; consumers MUST treat missing trailing bytes as zero, so that every `name` is 32 bytes and every `payload` 256 bytes, before decoding.\" The expected result is the full form's.",
   "steps": [
     {
       "op": "apply",
@@ -38,7 +38,6 @@
         "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
         "kind": 3,
-        "visible": true,
         "fields": {
           "6e616d65": {
             "key_text": "name",

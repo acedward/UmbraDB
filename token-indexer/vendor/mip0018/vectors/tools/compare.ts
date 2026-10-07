@@ -2,8 +2,10 @@
 //
 // - Only properties present in `expect` are compared.
 // - `reason` and `offset` of a decode result are informative: a difference is a note, never a failure.
-// - Identities: a hidden identity with no fields is equivalent to an absent one (a consumer may delete instead of
-//   hide). The remaining identities must match exactly as a set, keyed by (network, contractAddress, domainSep, kind).
+// - Identities (MIP "Applying records": "A token identity exists only while at least one of its fields has a value.
+//   Once its last field is deleted, consumers MUST NOT reference the identity at all"): the reported identities must
+//   match the expected ones exactly as a set, keyed by (network, contractAddress, domainSep, kind). A reported
+//   identity without fields fails, as does one the expectation does not list.
 // - Fields: valType and value_hex always; `usable` when the expectation has it. The four common keys (`name`,
 //   `symbol`, `decimals`, `standards`) must be reported; any other key is optional (MIP "Consuming": "Indexers MAY
 //   index only some tokens or keys") — a missing one is a note, a reported one must match. A reported key the
@@ -87,37 +89,35 @@ function identityKey(o: Json): string {
   return [o.network, lower(o.contractAddress), lower(o.domainSep), o.kind].join('|');
 }
 
-function isEmptyHidden(o: Json): boolean {
-  return o.visible === false && (!isObj(o.fields) || Object.keys(o.fields).length === 0);
-}
-
 function compareIdentities(expected: Json[], got: unknown, failures: string[], notes: string[]): void {
   if (!Array.isArray(got)) {
     failures.push('identities: missing or not an array');
     return;
   }
   const exp = new Map<string, Json>();
-  for (const e of expected) if (!isEmptyHidden(e)) exp.set(identityKey(e), e);
+  for (const e of expected) exp.set(identityKey(e), e);
   const act = new Map<string, Json>();
   for (const g of got as Json[]) {
     if (!isObj(g)) {
       failures.push('identities: entry is not an object');
       continue;
     }
-    if (isEmptyHidden(g)) continue;
     const k = identityKey(g);
+    if (!isObj(g.fields) || Object.keys(g.fields).length === 0) {
+      failures.push(
+        `identity ${k}: reported without fields — an identity whose last field was deleted MUST NOT be referenced at all ("Applying records")`,
+      );
+      continue;
+    }
     if (act.has(k)) failures.push(`identity ${k}: reported twice`);
     act.set(k, g);
   }
   for (const [k, e] of exp) {
     const g = act.get(k);
     if (g === undefined) {
-      failures.push(
-        `identity ${k}: expected ${e.visible === true ? 'visible' : 'hidden'} with ${Object.keys(e.fields as Json).length} field(s), not reported (or hidden and empty)`,
-      );
+      failures.push(`identity ${k}: expected with ${Object.keys(e.fields as Json).length} field(s), not reported`);
       continue;
     }
-    if (g.visible !== e.visible) failures.push(`identity ${k}: visible expected ${String(e.visible)}, got ${String(g.visible)}`);
     if (e.colored !== undefined && g.colored !== e.colored)
       failures.push(`identity ${k}: colored expected ${String(e.colored)}, got ${String(g.colored)}`);
     const ef = e.fields as Json;
@@ -144,9 +144,11 @@ function compareIdentities(expected: Json[], got: unknown, failures: string[], n
     }
     for (const key of gfLower.keys()) if (!(key in ef)) failures.push(`identity ${k}: unexpected field ${key}`);
   }
-  for (const k of act.keys())
+  for (const [k, g] of act)
     if (!exp.has(k))
-      failures.push(`identity ${k}: not expected (reported ${act.get(k)?.visible === true ? 'visible' : 'hidden with fields'})`);
+      failures.push(
+        `identity ${k}: not expected (reported with ${Object.keys(g.fields as Json).length} field(s); an identity with no field left is not referenced)`,
+      );
 }
 
 /** Groups of two or more members: (network, contractAddress, symbol_hex) → sorted members. Duplicate keys fail. */

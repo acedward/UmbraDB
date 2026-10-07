@@ -1,4 +1,4 @@
-// MIP-0018 constants (pinned text: midnightntwrk/midnight-improvement-proposals@78ecbb4b, "Event", "Payload",
+// MIP-0018 constants (pinned text: midnightntwrk/midnight-improvement-proposals@274a84f2, "Event", "Payload",
 // "Value types", "Token identity and authority").
 
 /** The event name text; the 32-byte name is this text followed by zero bytes. */

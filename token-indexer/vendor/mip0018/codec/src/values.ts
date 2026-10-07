@@ -75,7 +75,7 @@ export function checkValue(valType: number, value: Uint8Array, rules: CodecRules
       const text = rules.utf8 ? decodeUtf8(value) : lossyUtf8.decode(value);
       if (text === undefined) return 'invalid-utf8';
       if (rules.json) {
-        // Owner ruling F2: the platform JSON parser on the strictly decoded text decides "one complete JSON value".
+        // The platform JSON parser on the strictly decoded text decides "one complete UTF-8 JSON value" (RFC 8259).
         try {
           JSON.parse(text);
         } catch {

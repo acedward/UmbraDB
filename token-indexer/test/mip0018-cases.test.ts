@@ -12,11 +12,9 @@
  *   and the reference index's rejections — an oracle independent of UmbraDB's `tokenMark`;
  * - every case contract's metadata transactions = the transactions the reference index lists for it.
  *
- * Expectations are never edited: verbatim copies of `midnight-experiments/mip-0018 @ daec1f1` in
- * `fixtures/mip0018-cases/` (SHA-256 checked against the recorded case index), UmbraDB's own per-key C06 files for the steps
- * after the tombstone. Single-member groups are excluded on both sides.
+ * Expectations are never edited: verbatim copies of the reference's case files in `fixtures/mip0018-cases/` (SHA-256
+ * checked against that folder's `SOURCE.md`). Single-member groups are excluded on both sides.
  */
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -33,16 +31,16 @@ import { Mip0018Scanner } from "../mip0018/scan.ts";
 import { COMMON_KEY_HEX, type IdentityState, parseStandards } from "../mip0018/state.ts";
 import { listColors, lookupColor } from "../mip0018/tokens.ts";
 import { EVENT_NAME } from "../vendor/mip0018/codec/src/index.ts";
+import { CASES_DIR, caseCopyProblems, upstreamSha } from "./helpers/case-source.ts";
 
 const NET = "stagenet";
-const CASES_DIR = new URL("./fixtures/mip0018-cases/", import.meta.url);
 const V1 = Buffer.from(EVENT_NAME).toString("hex");
 const dec = new TextDecoder();
 
 // ── The reference's shapes (expected.json, index-summary.json) ────────────────────────────────────────────────────
 
 interface ExpectedField { key_text?: string; valType: number; value_hex: string; usable?: boolean }
-interface ExpectedIdentity { domainSep: string; kind: number; visible: boolean; colored: boolean; common: Record<string, unknown>; fields?: Record<string, ExpectedField> }
+interface ExpectedIdentity { domainSep: string; kind: number; colored: boolean; common: Record<string, unknown>; fields?: Record<string, ExpectedField> }
 interface ExpectedState { identities: ExpectedIdentity[]; groups: Array<{ symbol: string; members: Array<{ domainSep: string; kind: number }> }>; counts?: Record<string, number> }
 interface IdxExpected { colors: Array<{ case: string; domainSep: string; kind: number; minted: boolean; identity: ExpectedIdentity }> }
 interface MintPoint { height: number; blockHash: string; txHash: string }
@@ -60,7 +58,6 @@ interface IndexSummary {
 }
 
 const read = <T>(path: string): T => JSON.parse(readFileSync(new URL(path, CASES_DIR), "utf8")) as T;
-const sha = (path: string): string => createHash("sha256").update(readFileSync(new URL(path, CASES_DIR))).digest("hex");
 const norm = (h: string): string => h.replace(/^0x/, "").toLowerCase();
 const canon = (v: unknown): string => JSON.stringify(v, (_k, x: unknown) =>
   x !== null && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, (x as Record<string, unknown>)[k]])) : x);
@@ -78,7 +75,7 @@ function commonOf(id: IdentityState): Record<string, unknown> {
   return c;
 }
 
-/** UmbraDB's state of one contract against an expectation ([] when equal): identities, visibility, colored, common
+/** UmbraDB's state of one contract against an expectation ([] when equal): identities, colored, common
  *  fields, every field's bytes/type/usable flag where the expectation lists them, groups of two or more, counts. */
 async function caseDifferences(sql: UmbraDBSql, schema: string, contract: string, expected: ExpectedState): Promise<string[]> {
   const d: string[] = [];
@@ -89,7 +86,6 @@ async function caseDifferences(sql: UmbraDBSql, schema: string, contract: string
   for (const [k, e] of want) {
     const g = got.get(k);
     if (g === undefined) continue;
-    if (e.visible !== true) d.push(`identity ${k}: expected hidden`);
     if (e.colored !== (g.kind !== 3)) d.push(`identity ${k}: colored`);
     if (canon(commonOf(g)) !== canon(e.common)) d.push(`identity ${k}: common ${canon(commonOf(g))}, expected ${canon(e.common)}`);
     if (e.fields !== undefined) {
@@ -179,11 +175,10 @@ describe("Stagenet case comparison — gaps", () => {
   }, 60_000);
 
   it("[[mip0018.cases.stop-heights]] each case replayed only up to its own last block equals its expectation while every later case is still absent; earlier cases stay equal; C09 (refused call, no transaction) leaves C01's state unchanged; U1 at its last block", async () => {
-    // The copies used here are the reference's bytes (C06's per-key file is UmbraDB's own).
-    const recorded = new Map(caseIndex.source.files.map((f) => [f.path, f.sha256]));
-    for (const c of ["C01", "C02", "C03", "C04", "C05", "C07", "C08", "C10", "U1"]) expect(sha(`${c}/expected.json`), c).toBe(recorded.get(`deployments/stagenet/cases/${c}/expected.json`));
+    // The copies used here are the reference's bytes.
+    expect(caseCopyProblems()).toEqual([]);
     const IDX_CASES = ["C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C10"].sort((a, b) => Math.max(...heightsOf(a)) - Math.max(...heightsOf(b)));
-    const expectation = (c: string): ExpectedState => read<ExpectedState>(c === "C06" ? "C06/umbradb-per-key/expected.json" : `${c}/expected.json`);
+    const expectation = (c: string): ExpectedState => read<ExpectedState>(`${c}/expected.json`);
     const db = await freshMip("idx");
     const checked: string[] = [];
     for (const stop of IDX_CASES) {
@@ -203,17 +198,16 @@ describe("Stagenet case comparison — gaps", () => {
       }
     }
     expect(checked).toHaveLength(45); // 9 + 8 + … + 1 comparisons
-    // Negative controls: the comparison sees a wrong expectation (another case's file; C06's 78ecbb4 reference file,
-    // identity-wide tombstones, which the per-key state must NOT match).
+    // Negative controls: the comparison sees a wrong expectation (another case's file; an earlier C06 step's file).
     expect(await caseDifferences(db.sql, db.mip, contractOf("C02"), expectation("C03"))).not.toEqual([]);
-    expect(await caseDifferences(db.sql, db.mip, contractOf("C06"), read<ExpectedState>("C06/expected.json"))).not.toEqual([]);
+    expect(await caseDifferences(db.sql, db.mip, contractOf("C06"), read<ExpectedState>("C06/expected-after-withdraw.json"))).not.toEqual([]);
 
     // C09: the non-owner's call was refused while it was built, so no transaction exists; its expectation is
     // byte-identical to C01's, and C01's contract carries exactly C01's one event at the end of the range.
     const c09 = caseIndex.cases.C09!;
     expect(c09.contract).toBe(contractOf("C01"));
     expect(c09.steps.every((s) => s.txHash === undefined && s.height === undefined)).toBe(true);
-    expect(recorded.get("deployments/stagenet/cases/C09/expected.json")).toBe(recorded.get("deployments/stagenet/cases/C01/expected.json"));
+    expect(upstreamSha("deployments/stagenet/cases/C09/expected.json")).toBe(upstreamSha("deployments/stagenet/cases/C01/expected.json"));
     expect(await caseDifferences(db.sql, db.mip, contractOf("C09"), read<ExpectedState>("C01/expected.json"))).toEqual([]);
     expect(await eventCounts(db.sql, NET, contractOf("C09"), db.mip)).toEqual({ events: 1, accepted: 1, rejected: 0, ignored: 0, unresolved: 0 });
 
@@ -224,8 +218,7 @@ describe("Stagenet case comparison — gaps", () => {
   }, 300_000);
 
   it("[[mip0018.cases.reference-index]] IDX and U1 equal the reference's own index files: expected.json (5 matrix colors, C04's two kinds on one color, C05 bronze not minted, each identity's metadata), index-summary.json (colors with first and last mint, deploys, the v1-named events with position, entry point, bytes and classification, stats, last block); exactly 6 colors in 714485–715183", async () => {
-    const recorded = new Map(caseIndex.source.files.map((f) => [f.path, f.sha256]));
-    for (const f of ["IDX/expected.json", "IDX/index-summary.json", "U1/index-summary.json"]) expect(sha(f), f).toBe(recorded.get(`deployments/stagenet/cases/${f}`));
+    expect(caseCopyProblems()).toEqual([]);
     const genesis = `0x${norm(loadManifest().genesisHash)}`;
 
     /** UmbraDB's tables in the reference index's shape. */
@@ -307,7 +300,7 @@ describe("Stagenet case comparison — gaps", () => {
       }
       const id = await getIdentity(sql, { network: NET, contractAddress: contract, domainSep: norm(e.domainSep), kind: e.kind }, mip);
       expect(id, `${e.case} identity`).toBeDefined();
-      expect({ domainSep: `0x${id!.domainSep}`, kind: id!.kind, visible: true, colored: id!.kind !== 3, common: commonOf(id!) }).toEqual(e.identity);
+      expect({ domainSep: `0x${id!.domainSep}`, kind: id!.kind, colored: id!.kind !== 3, common: commonOf(id!) }).toEqual(e.identity);
     }
     // Exactly 6 colors: the 5 matrix colors (C04's kinds share one) + the third party's mint at 714802 (no case).
     const colors = await listColors(sql, NET, mip);
@@ -346,7 +339,7 @@ describe("Stagenet case comparison — gaps", () => {
     const summary: Record<string, string[]> = {};
     for (const c of ["C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C09", "C10", "U1"]) {
       const db = c === "U1" ? full.u1 : full.idx;
-      const file = c === "C06" ? "C06/umbradb-per-key/expected.json" : c === "C09" ? "C01/expected.json" : `${c}/expected.json`;
+      const file = c === "C09" ? "C01/expected.json" : `${c}/expected.json`;
       const { got, want } = await marksOf(db, contractOf(c), read<ExpectedState>(file));
       expect(got, c).toEqual(want);
       summary[c] = Object.values(got as Record<string, { mark: string; tags: string[] }>).map((m) => m.mark + (m.tags.length > 0 ? `+${m.tags.join(",")}` : ""));
@@ -357,17 +350,16 @@ describe("Stagenet case comparison — gaps", () => {
     });
     // Every identity of the cases' contracts was checked (none left out of the expectations).
     for (const c of ["C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C10"])
-      expect((await listIdentities(full.idx.sql, NET, { contractAddress: contractOf(c) }, full.idx.mip)).length, c).toBe(read<ExpectedState>(c === "C06" ? "C06/umbradb-per-key/expected.json" : `${c}/expected.json`).identities.length);
+      expect((await listIdentities(full.idx.sql, NET, { contractAddress: contractOf(c) }, full.idx.mip)).length, c).toBe(read<ExpectedState>(`${c}/expected.json`).identities.length);
 
     // C06 step by step: ✓ after publish and rename, ⚠ partial (no name) after the withdraw and the withdraw again,
     // ✓ after the revive — each from the step's expectation through the same oracle.
     const steps = caseIndex.cases.C06!.steps.filter((s) => s.expectedAfter !== undefined);
-    const perKey = new Set(["withdraw", "withdraw-again", "revive"]);
     const db = await freshMip("idx");
     const seen: string[] = [];
     for (const s of steps) {
       await scanTo(db, s.height!);
-      const { got, want } = await marksOf(db, contractOf("C06"), read<ExpectedState>(perKey.has(s.id) ? `C06/umbradb-per-key/${s.expectedAfter!}` : `C06/${s.expectedAfter!}`));
+      const { got, want } = await marksOf(db, contractOf("C06"), read<ExpectedState>(`C06/${s.expectedAfter!}`));
       expect(got, s.id).toEqual(want);
       seen.push(`${s.id}:${Object.values(got as Record<string, { mark: string; missing: string[] }>).map((m) => m.mark + (m.missing.length > 0 ? `(${m.missing.join(",")})` : "")).join()}`);
     }

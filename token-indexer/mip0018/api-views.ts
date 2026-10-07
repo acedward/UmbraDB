@@ -39,7 +39,7 @@ import { type BuiltinToken, builtinTokens, lookupColor } from "./tokens.ts";
 /** MIP-0018 text UmbraDB implements (PR #340 head, per-key tombstones). */
 export const MIP_COMMIT = "274a84f221bcfc17e4b73e2c8b32fd8c028ea092";
 /** The reference commit the codec, vectors and runner are vendored from (`token-indexer/vendor/mip0018/SOURCE.md`). */
-export const VENDORED_REFERENCE = { repository: "https://github.com/midnight-experiments/mip-0018", commit: "daec1f19747b09f4e245885ab0dd9ecc789a82ce" } as const;
+export const VENDORED_REFERENCE = { repository: "https://github.com/midnight-experiments/mip-0018", commit: "e8295792d9363be37ff2f7f716c740fcdf3f195e" } as const;
 /** Genesis hashes of the networks this indexer knows (Stagenet only; the same hash as the recorded Stagenet fixtures). */
 export const KNOWN_GENESIS: Readonly<Record<string, string>> = {
   stagenet: "0x2f76825abc239fecf6107c9df99016de57037b451ae57a4394b76c8cf53a9491",

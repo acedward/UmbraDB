@@ -8,10 +8,10 @@
  *     --archive live_range_r_archive --mip live_range_r_mip --u1-archive … --u1-mip … --cases token-indexer/test/fixtures/mip0018-cases --out FILE
  *
  * UmbraDB's state of each case contract is projected into the reference's expected-state shape (identities with
- * `visible`, `colored`, usable `common`, every field; symbol groups; classification counts) and compared twice:
+ * `colored`, usable `common`, every field; symbol groups; classification counts) and compared twice:
  * (1) as the reference compares — every group, so UmbraDB's missing single-member groups show up (UmbraDB groups
  * only two or more members), and (2) with single-member groups removed from the expectation. C06 is compared
- * per step: the reference files (`78ecbb4`, identity-wide tombstones) and UmbraDB's per-key files.
+ * per step.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -43,7 +43,7 @@ async function observed(sql: UmbraDBSql, schema: string, contract: string): Prom
         else common[name] = dec.decode(f.value);
       }
       return {
-        domainSep: `0x${i.domainSep}`, kind: i.kind, visible: true, colored: i.kind !== 3, common,
+        domainSep: `0x${i.domainSep}`, kind: i.kind, colored: i.kind !== 3, common,
         fields: Object.fromEntries([...i.fields].map(([k, f]) => [k, {
           key_text: dec.decode(Buffer.from(k, "hex")), valType: f.valType, value_hex: Buffer.from(f.value).toString("hex"),
           ...(f.usable === undefined ? {} : { usable: f.usable }),
@@ -96,11 +96,7 @@ async function main(): Promise<void> {
         const contract = caseIndex.cases.C06!.contract!;
         const obs = await observed(stepSql, stepSchema, contract);
         const reference = readCase(`C06/${s.expectedAfter!}`);
-        results[`C06 ${s.id} vs reference (78ecbb4)`] = { raw: compareState(obs, reference).differences, twoOrMore: compareState(obs, withoutSingleGroups(reference)).differences };
-        if (["withdraw", "withdraw-again", "revive"].includes(s.id)) {
-          const own = readCase(`C06/umbradb-per-key/${s.expectedAfter!}`);
-          results[`C06 ${s.id} vs UmbraDB per-key`] = { raw: compareState(obs, own).differences, twoOrMore: compareState(obs, withoutSingleGroups(own)).differences };
-        }
+        results[`C06 ${s.id}`] = { raw: compareState(obs, reference).differences, twoOrMore: compareState(obs, withoutSingleGroups(reference)).differences };
       }
       await stepSql`DROP SCHEMA IF EXISTS ${stepSql(stepSchema)} CASCADE`;
     } finally {

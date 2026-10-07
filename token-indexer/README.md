@@ -111,7 +111,7 @@ network: Stagenet data comes from recorded fixtures.
 
 | What | Where |
 |---|---|
-| MIP vectors through two adapters (pure state module; real Postgres path): 59 reference normative, 43 informative, 8 UmbraDB versions | `test/mip0018-vectors.test.ts`, `test/mip0018-vectors-pg.test.ts` |
+| MIP vectors through two adapters (pure state module; real Postgres path): 67 normative, 43 informative | `test/mip0018-vectors.test.ts`, `test/mip0018-vectors-pg.test.ts` |
 | Decoder, scan, events, metadata state, activity, Bech32m, schema | `test/mip0018-{applied-parts,scan,events,metadata,activity,bech32m,schema,state}.test.ts` |
 | The twelve Stagenet cases (C01–C10, IDX, U1) against the reference's expectations | `test/mip0018-metadata.test.ts`, `test/mip0018-cases.test.ts` |
 | Recorded live range = replay | `test/mip0018-live-range.test.ts` |
@@ -124,9 +124,8 @@ Fixtures:
   (node + indexer answers, brotli tapes, 935 KB), the indexer's `contractEvents` for the cross-check, the case index;
   `manifest.json` holds the source endpoints, genesis hash and SHA-256 of every file. The fake chain server replays them
   over HTTP to the unchanged sync service.
-- `test/fixtures/mip0018-cases/` — the reference's case expectations, copied verbatim (SHA-256 checked) plus
-  UmbraDB's own per-key expectations for C06's steps after the tombstone (the reference files are written for MIP
-  `78ecbb4`, where a Null record withdraws the whole identity).
+- `test/fixtures/mip0018-cases/` — the reference's case expectations, copied verbatim (`SOURCE.md`: SHA-256 of
+  every copy, checked by the tests).
 - `test/fixtures/live-range/stagenet-714485-715183.json` — the recorded result of a live sync and scan of
   714485–715183 (one uninterrupted run against live Stagenet; every table of both schemas identical to the fixture
   replay), with its per-table digests. CI checks a fresh replay against them.
@@ -143,12 +142,10 @@ PG_URL=… node --import tsx token-indexer/dev/live-range-check.ts compare --tag
 
 `vendor/mip0018/` holds, byte for byte, the reference implementation's codec (`packages/codec`), the language-neutral
 vectors and the vector runner of [`midnight-experiments/mip-0018`](https://github.com/midnight-experiments/mip-0018)
-@ `daec1f19747b09f4e245885ab0dd9ecc789a82ce` (Apache-2.0; `LICENSE`, `NOTICE`). `vendor/mip0018/SOURCE.md` lists every
+@ `e8295792d9363be37ff2f7f716c740fcdf3f195e` (Apache-2.0; `LICENSE`, `NOTICE`). `vendor/mip0018/SOURCE.md` lists every
 file with its SHA-256; `[[mip0018.vendor.provenance]]` fails on any changed, missing or unlisted file. The vendored
-files are never edited. The state rules are UmbraDB's own (`mip0018/state.ts`); the reference vectors are written
-for MIP `78ecbb4`, where a Null record withdraws the whole identity, so UmbraDB runs its own `274a84f` versions of
-S1a, S3a–S3d, S4a/S4b and S9d from `mip0018/vectors-umbradb/` (generator with `--check`, SHA256SUMS) instead of the
-vendored files with those ids.
+files are never edited. The state rules are UmbraDB's own (`mip0018/state.ts`); every vendored vector runs through
+both adapters.
 
 Other copies: the explorer's Outfit font and icon come from the explorer in acedward/UmbraDB PR #19 (`NOTICE`, OFL
 1.1).

@@ -66,20 +66,20 @@
       "properties": {
         "id": { "$ref": "payload.schema.json#/$defs/vectorId" },
         "identities": {
-          "description": "Every identity of the vector, with at least its common keys (other keys may be left out). A hidden identity without fields may be omitted.",
+          "description": "Every token identity that exists (has at least one field), with at least its common keys (other keys may be left out). An identity whose last field was deleted MUST NOT be reported (MIP \"Applying records\").",
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["network", "contractAddress", "domainSep", "kind", "visible", "fields"],
+            "required": ["network", "contractAddress", "domainSep", "kind", "fields"],
             "properties": {
               "network": { "type": "string" },
               "contractAddress": { "$ref": "payload.schema.json#/$defs/hex32" },
               "domainSep": { "$ref": "payload.schema.json#/$defs/hex32" },
               "kind": { "type": "integer" },
-              "visible": { "type": "boolean" },
               "colored": { "type": "boolean" },
               "fields": {
                 "type": "object",
+                "minProperties": 1,
                 "additionalProperties": {
                   "type": "object",
                   "required": ["valType", "value_hex"],

@@ -1,5 +1,5 @@
 // The decoder's MIP rules as switches. Every switch is ON in the public API; they exist only so the rule-mutation
-// test (SC-001) can disable one rule at a time and show that at least one normative vector then fails.
+// test can disable one rule at a time and show that at least one normative vector then fails.
 // Not part of the public API (exported from `@mip0018/codec/internal`).
 
 export interface CodecRules {

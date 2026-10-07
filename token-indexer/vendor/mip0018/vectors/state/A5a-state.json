@@ -1,11 +1,11 @@
 {
   "id": "A5a-state",
   "mip": {
-    "commit": "78ecbb4b1ba57371e84fe45f705991ab7b996a61",
+    "commit": "274a84f221bcfc17e4b73e2c8b32fd8c028ea092",
     "testId": "A5"
   },
   "normative": true,
-  "description": "Non-tombstones (state): after name = \"Acme\" and an empty string at \"note\", the identity is visible with both fields.",
+  "description": "Non-tombstones (state): after name = \"Acme\" and an empty string at \"note\", the identity has both fields.",
   "steps": [
     {
       "op": "apply",
@@ -26,7 +26,6 @@
         "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
         "kind": 3,
-        "visible": true,
         "fields": {
           "6e616d65": {
             "key_text": "name",

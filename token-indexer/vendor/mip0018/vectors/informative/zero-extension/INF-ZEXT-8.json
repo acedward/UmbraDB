@@ -1,12 +1,12 @@
 {
   "id": "INF-ZEXT-8",
   "mip": {
-    "commit": "78ecbb4b1ba57371e84fe45f705991ab7b996a61",
+    "commit": "274a84f221bcfc17e4b73e2c8b32fd8c028ea092",
     "testId": "INF-ZEXT"
   },
   "normative": false,
   "description": "A 33-byte name (the v1 name followed by one more zero byte) with the A1 payload: not the 32-byte v1 name, so the event is ignored (\"any other name\").",
-  "basis": "MIP \"Consuming\" (78ecbb4): \"Some sources drop trailing zero bytes; consumers MUST treat missing trailing bytes as zero, so that every `name` is 32 bytes and every `payload` 256 bytes, before decoding.\" The expected result is the full form's. Zero extension only adds missing bytes; a longer name is another name (MIP \"Event\": consumers MUST ignore Misc events with any other name).",
+  "basis": "MIP \"Consuming\": \"Some sources drop trailing zero bytes; consumers MUST treat missing trailing bytes as zero, so that every `name` is 32 bytes and every `payload` 256 bytes, before decoding.\" The expected result is the full form's. Zero extension only adds missing bytes; a longer name is another name (MIP \"Event\": consumers MUST ignore Misc events with any other name).",
   "event": {
     "type": "Misc",
     "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d000000000000",

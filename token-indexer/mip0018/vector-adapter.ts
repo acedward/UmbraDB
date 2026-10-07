@@ -101,7 +101,6 @@ export function stateResponse(
       contractAddress: id.contractAddress,
       domainSep: id.domainSep,
       kind: id.kind,
-      visible: true,
       colored: id.kind !== 3,
       fields: Object.fromEntries(
         [...id.fields].map(([keyHex, f]) => {

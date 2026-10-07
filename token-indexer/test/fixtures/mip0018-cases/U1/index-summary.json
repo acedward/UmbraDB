@@ -2,7 +2,7 @@
   "mode": "subscription",
   "blocksThisRun": 32,
   "requests": 2,
-  "seconds": 2.2,
+  "seconds": 2.7,
   "state": "deployments/stagenet/cases/U1/index/index-state.json",
   "kind": "mip0018-index-state",
   "schema": 1,
@@ -76,5 +76,5 @@
     "events": 1
   },
   "errors": [],
-  "updatedAt": "2026-10-02T09:38:26.820Z"
+  "updatedAt": "2026-10-03T03:48:47.555Z"
 }

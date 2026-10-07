@@ -165,9 +165,11 @@ describe("MIP-0018 conformance table", () => {
     for (const id of PENDING_IDS)
       expect(DOC.split(`[[${id}]]`).length - 1, id).toBe(DOC.split(`[[${id}]]\`†`).length - 1);
 
-    // Vectors: vendored ids, and `*` = UmbraDB's own 274a84f version.
-    const vendored = new Set((JSON.parse(readFileSync(join(ROOT, "token-indexer/vendor/mip0018/vectors/manifest.json"), "utf8")) as { vectors: Array<{ id: string }> }).vectors.map((v) => v.id));
-    const own = new Set((JSON.parse(readFileSync(join(ROOT, "token-indexer/mip0018/vectors-umbradb/manifest.json"), "utf8")) as { vectors: Array<{ id: string }> }).vectors.map((v) => v.id));
+    // Vectors: vendored ids, and `*` = UmbraDB's own version (`token-indexer/mip0018/vectors-umbradb/`, when present).
+    const ids = (path: string): Set<string> => new Set((JSON.parse(readFileSync(join(ROOT, path), "utf8")) as { vectors: Array<{ id: string }> }).vectors.map((v) => v.id));
+    const vendored = ids("token-indexer/vendor/mip0018/vectors/manifest.json");
+    const ownManifest = "token-indexer/mip0018/vectors-umbradb/manifest.json";
+    const own = existsSync(join(ROOT, ownManifest)) ? ids(ownManifest) : new Set<string>();
     let vectorCount = 0;
     for (const r of rs) {
       if (r.vectors === "—") continue;

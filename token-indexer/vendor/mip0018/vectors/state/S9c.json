@@ -1,7 +1,7 @@
 {
   "id": "S9c",
   "mip": {
-    "commit": "78ecbb4b1ba57371e84fe45f705991ab7b996a61",
+    "commit": "274a84f221bcfc17e4b73e2c8b32fd8c028ea092",
     "testId": "S9"
   },
   "normative": true,
@@ -136,7 +136,6 @@
         "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
         "kind": 1,
-        "visible": true,
         "fields": {
           "6e616d65": {
             "key_text": "name",
@@ -159,7 +158,6 @@
         "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
         "kind": 3,
-        "visible": true,
         "fields": {
           "6e616d65": {
             "key_text": "name",
@@ -182,7 +180,6 @@
         "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "domainSep": "2222222222222222222222222222222222222222222222222222222222222222",
         "kind": 1,
-        "visible": true,
         "fields": {
           "6e616d65": {
             "key_text": "name",
@@ -205,7 +202,6 @@
         "contractAddress": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
         "kind": 1,
-        "visible": true,
         "fields": {
           "6e616d65": {
             "key_text": "name",
@@ -228,7 +224,6 @@
         "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "domainSep": "3333333333333333333333333333333333333333333333333333333333333333",
         "kind": 3,
-        "visible": true,
         "fields": {
           "6e616d65": {
             "key_text": "name",
@@ -251,7 +246,6 @@
         "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "domainSep": "4444444444444444444444444444444444444444444444444444444444444444",
         "kind": 3,
-        "visible": true,
         "fields": {
           "6e616d65": {
             "key_text": "name",
@@ -274,7 +268,6 @@
         "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "domainSep": "5555555555555555555555555555555555555555555555555555555555555555",
         "kind": 3,
-        "visible": true,
         "fields": {
           "6e616d65": {
             "key_text": "name",
@@ -296,7 +289,6 @@
         "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "domainSep": "6666666666666666666666666666666666666666666666666666666666666666",
         "kind": 3,
-        "visible": true,
         "fields": {
           "6e616d65": {
             "key_text": "name",
@@ -318,7 +310,6 @@
         "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "domainSep": "7777777777777777777777777777777777777777777777777777777777777777",
         "kind": 3,
-        "visible": true,
         "fields": {
           "6e616d65": {
             "key_text": "name",
@@ -334,7 +325,6 @@
         "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
         "kind": 1,
-        "visible": true,
         "fields": {
           "6e616d65": {
             "key_text": "name",

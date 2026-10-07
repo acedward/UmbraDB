@@ -89,29 +89,30 @@
       }
     },
     "identityState": {
+      "description": "A token identity that exists: it has at least one field with a value. An identity whose last field was deleted is not referenced at all (MIP \"Applying records\"), so expectations leave it out.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["network", "contractAddress", "domainSep", "kind", "visible", "fields"],
+      "required": ["network", "contractAddress", "domainSep", "kind", "fields"],
       "properties": {
         "network": { "$ref": "#/$defs/network" },
         "contractAddress": { "$ref": "payload.schema.json#/$defs/hex32" },
         "domainSep": { "$ref": "payload.schema.json#/$defs/hex32" },
         "kind": { "type": "integer", "minimum": 1, "maximum": 3 },
-        "visible": { "type": "boolean" },
         "colored": {
           "description": "Whether the consumer derives a color `tokenType(domainSep, contractAddress)` for this identity (kinds 1 and 2 only).",
           "type": "boolean"
         },
         "fields": {
-          "description": "Current value per key; property names are the key bytes in lowercase hex.",
+          "description": "Current value per key; property names are the key bytes in lowercase hex. Never empty.",
           "type": "object",
+          "minProperties": 1,
           "propertyNames": { "pattern": "^([0-9a-f]{2}){1,255}$" },
           "additionalProperties": { "$ref": "#/$defs/field" }
         }
       }
     },
     "group": {
-      "description": "Visible identities of one (network, contractAddress) whose usable `symbol` has these exact bytes. Expectations list every visible identity with a usable symbol in exactly one group (single-member groups included); the runner compares only groups of two or more members, and a consumer that reports none passes (MIP Testing S9: no groups at all, or exactly the following groups).",
+      "description": "Identities of one (network, contractAddress) whose usable `symbol` has these exact bytes. Expectations list every identity with a usable symbol in exactly one group (single-member groups included); the runner compares only groups of two or more members, and a consumer that reports none passes (MIP Testing S9: no groups at all, or exactly the following groups).",
       "type": "object",
       "additionalProperties": false,
       "required": ["network", "contractAddress", "symbol_hex", "members"],

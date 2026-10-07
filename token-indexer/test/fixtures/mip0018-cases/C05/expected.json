@@ -3,7 +3,6 @@
     {
       "domainSep": "0x6d69702d303031383a6578616d706c653a66616d696c793a676f6c6400000000",
       "kind": 1,
-      "visible": true,
       "colored": true,
       "common": {
         "name": "Acme Medals",
@@ -14,7 +13,6 @@
     {
       "domainSep": "0x6d69702d303031383a6578616d706c653a66616d696c793a73696c7665720000",
       "kind": 1,
-      "visible": true,
       "colored": true,
       "common": {
         "name": "Acme Medals",
@@ -25,7 +23,6 @@
     {
       "domainSep": "0x6d69702d303031383a6578616d706c653a66616d696c793a62726f6e7a650000",
       "kind": 1,
-      "visible": true,
       "colored": true,
       "common": {
         "name": "Acme Medals",

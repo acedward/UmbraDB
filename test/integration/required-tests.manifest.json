@@ -170,7 +170,7 @@
     {
       "id": "mip0018.vendor.provenance",
       "file": "token-indexer/test/mip0018-provenance.test.ts",
-      "description": "every vendored MIP-0018 reference file (codec, vectors, runner; daec1f1) equals its SHA-256 in token-indexer/vendor/mip0018/SOURCE.md; a modified, missing or unlisted file fails."
+      "description": "every vendored MIP-0018 reference file (codec, vectors, runner) equals its SHA-256 in token-indexer/vendor/mip0018/SOURCE.md; a modified, missing or unlisted file fails."
     },
     {
       "id": "mip0018.vendor.vector-sums",
@@ -205,22 +205,12 @@
     {
       "id": "mip0018.vectors.pure-adapter",
       "file": "token-indexer/test/mip0018-vectors.test.ts",
-      "description": "Pure adapter: 59/59 reference normative + 43/43 informative vendored vectors and UmbraDB's 8 own versions (S1a, S3a-S3d, S4a/S4b, S9d; MIP 274a84f) pass through the vendored runner core."
-    },
-    {
-      "id": "mip0018.vectors.own-versions-needed",
-      "file": "token-indexer/test/mip0018-vectors.test.ts",
-      "description": "the vendored 78ecbb4 versions of exactly S3a, S3b, S3c, S3d, S4b, S9d fail under per-key tombstones (why UmbraDB runs its own versions)."
-    },
-    {
-      "id": "mip0018.vectors.own-integrity",
-      "file": "token-indexer/test/mip0018-vectors.test.ts",
-      "description": "UmbraDB's own vectors match their SHA256SUMS and their generator's --check."
+      "description": "Pure adapter: 67/67 normative + 43/43 informative vendored vectors pass through the vendored runner core, with groups and display compared."
     },
     {
       "id": "mip0018.vectors.runner-cli",
       "file": "token-indexer/test/mip0018-vectors.test.ts",
-      "description": "the vendored runner CLI drives the pure adapter process over both vector sets and exits 0."
+      "description": "the vendored runner CLI drives the pure adapter process over the vendored vectors and exits 0."
     },
     {
       "id": "stagenet.fixtures.manifest",
@@ -335,22 +325,22 @@
     {
       "id": "mip0018.vectors.no-not-applicable",
       "file": "token-indexer/test/mip0018-vectors.test.ts",
-      "description": "negative control — a consumer reporting no groups passes the runner only with S3a, S3b, S4a, S9d (and the vendored S9a–S9c) not applicable, which the adapter tests refuse."
+      "description": "negative control — a consumer reporting no groups passes the runner only with S9a–S9d not applicable, which the adapter tests refuse."
     },
     {
       "id": "mip0018.vectors.pg-adapter",
       "file": "token-indexer/test/mip0018-vectors-pg.test.ts",
-      "description": "59/59 reference normative + 43/43 informative + 8/8 UmbraDB vectors through the Postgres write path and read helpers, no check not applicable, every response equal to the pure adapter's."
+      "description": "67/67 normative + 43/43 informative vendored vectors through the Postgres write path and read helpers, no check not applicable, every response equal to the pure adapter's."
     },
     {
       "id": "mip0018.vectors.pg-runner-cli",
       "file": "token-indexer/test/mip0018-vectors-pg.test.ts",
-      "description": "the vendored runner CLI drives the Postgres adapter process over both vector sets and exits 0 with every check applicable."
+      "description": "the vendored runner CLI drives the Postgres adapter process over the vendored vectors and exits 0 with every check applicable."
     },
     {
       "id": "mip0018.metadata.recorded-cases",
       "file": "token-indexer/test/mip0018-metadata.test.ts",
-      "description": "every recorded case's state equals its expectation (reference files, SHA-256 checked; C06 UmbraDB's per-key state); a full recompute from the log changes nothing."
+      "description": "every recorded case's state equals its expectation (reference files, SHA-256 checked against the cases' SOURCE.md); a full recompute from the log changes nothing."
     },
     {
       "id": "mip0018.metadata.recorded-groups",
@@ -360,7 +350,7 @@
     {
       "id": "mip0018.metadata.c06-steps",
       "file": "token-indexer/test/mip0018-metadata.test.ts",
-      "description": "MIP S4 on chain: C06 step by step equals the reference (publish, rename) and UmbraDB's per-key expectations (withdraw, withdraw again, revive); removing and re-adding the tombstone block."
+      "description": "MIP S4 on chain: C06 step by step equals the reference expectations (publish, rename, withdraw, withdraw again, revive); removing and re-adding the tombstone block."
     },
     {
       "id": "mip0018.metadata.shared-rows",
@@ -425,7 +415,7 @@
     {
       "id": "mip0018.api.status",
       "file": "token-indexer/test/mip0018-api.test.ts",
-      "description": "/v1/status serves network, genesis (= the recorded fixture's), start/indexed/archive heights, the MIP pin 274a84f and the vendored commit daec1f1 (checked against SOURCE.md and the own vectors' manifest)."
+      "description": "/v1/status serves network, genesis (= the recorded fixture's), start/indexed/archive heights, the MIP pin and the vendored commit (checked against SOURCE.md)."
     },
     {
       "id": "mip0018.api.tokens-list",
