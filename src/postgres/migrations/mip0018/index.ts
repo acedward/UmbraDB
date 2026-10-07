@@ -2,6 +2,7 @@ import * as migration000 from "../000_schema.js";
 import * as mip0018Core from "./001_mip0018_core.js";
 import * as mip0018Scan from "./002_mip0018_scan.js";
 import * as mip0018Activity from "./003_mip0018_activity.js";
+import * as mip0018Images from "./004_mip0018_images.js";
 import type { Migration } from "../../migrate.js";
 
 /**
@@ -20,8 +21,11 @@ import type { Migration } from "../../migrate.js";
  *
  * `003_mip0018_activity`: the token activity rows (public token flows and metadata transactions) the same scan writes
  * per applied transaction.
+ *
+ * `004_mip0018_images`: the token-image cache of the background image fetcher of `serve`, keyed by
+ * (`url`, `image_sha256`).
  */
-export const mip0018Migrations: Migration[] = [migration000, mip0018Core, mip0018Scan, mip0018Activity];
+export const mip0018Migrations: Migration[] = [migration000, mip0018Core, mip0018Scan, mip0018Activity, mip0018Images];
 
 /** The conventional schema name this lineage lives in. */
 export const MIP0018_SCHEMA = "mip0018";

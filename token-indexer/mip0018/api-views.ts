@@ -10,11 +10,12 @@
  *   the mint table only, so a withdrawn identity is shown exactly as if it had never been described.
  * - Events: the event query selects position, contract, classification and reason of `accept`, `reject` and
  *   `unresolved` rows only — the stored name, payload and header are never read by the API.
- * - Never fetches anything; heights only.
+ * - Never fetches anything (a token's `image` object is the image fetcher's cached result, `images.ts`); heights only.
  */
 import { MIP0018_SCHEMA } from "../../src/postgres/migrations/mip0018/index.js";
 import type { ActivityItem } from "./activity.ts";
 import type { Queryable } from "./fields.ts";
+import { type ImageJson, imagesFor } from "./images.ts";
 import {
   boundedGroup,
   contractRejectionSummary,
@@ -108,6 +109,8 @@ export interface TokenSummaryJson {
   evidence: string[];
   mark: MarkJson | null;
   note: string | null;
+  /** The identity's usable `image` (URL as text, status, same-origin `imageUrl` when displayable), else `null`. */
+  image: ImageJson | null;
 }
 export interface IdentityDetailJson {
   network: string;
@@ -128,6 +131,8 @@ export interface IdentityDetailJson {
   fieldsNextCursor: string | null;
   group: GroupJson | null;
   mark: MarkJson;
+  /** The identity's usable `image` (URL as text, status, same-origin `imageUrl` when displayable), else `null`. */
+  image: ImageJson | null;
 }
 export interface BuiltinJson { symbol: string; name: string; decimals: string; color: string | null; note: string }
 export interface Page<T> { items: T[]; nextCursor: string | null }
@@ -435,6 +440,7 @@ async function identitySummaries(ctx: ViewContext, keys: readonly IdKey[]): Prom
   const mints = await mintAggregates(ctx, keys);
   const reasons = await rejectionSummaries(ctx, keys.map((k) => k.contractAddress));
   const commons = await identityCommons(ctx.sql, ctx.network, keys, ctx.schema);
+  const images = await imagesFor(ctx.sql, ctx.network, keys, ctx.schema);
   const out: TokenSummaryJson[] = [];
   for (const k of keys) {
     const identity = commons.get(identityKeyOf(k))!;
@@ -457,6 +463,7 @@ async function identitySummaries(ctx: ViewContext, keys: readonly IdKey[]): Prom
       evidence: [],
       mark: markJson(identity, reasons.get(k.contractAddress) ?? NO_REJECTIONS),
       note: null,
+      image: images.get(identityKeyOf(k)) ?? null,
     });
   }
   return out;
@@ -508,6 +515,7 @@ export async function identityDetail(
       : null,
     group: identity.described ? await groupFor(ctx, ref, identity) : null,
     mark: markJson(identity, rejections),
+    image: identity.described ? ((await imagesFor(ctx.sql, ctx.network, [ref], ctx.schema)).get(identityKeyOf(ref)) ?? null) : null,
   };
 }
 
@@ -519,6 +527,7 @@ function builtinSummary(b: BuiltinToken): TokenSummaryJson {
   return {
     id: `builtin/${b.symbol}`, source: "builtin", kind: null, kindName: null, color: b.color ?? null, contractAddress: null, domainSep: null,
     name: b.name, symbol: b.symbol, decimals: String(b.decimals), described: false, minted: null, firstSeen: null, evidence: [], mark: null, note: b.note,
+    image: null,
   };
 }
 
@@ -529,6 +538,7 @@ function seenSummary(s: Seen, mintedLater: { contractAddress: string; domainSep:
     name: null, symbol: null, decimals: null, described: false, minted: null, firstSeen: s.firstSeen, evidence: s.evidence,
     mark: markJson(undefined, NO_REJECTIONS),
     note: mintedLater === undefined ? null : "seen in public data before its first indexed mint; its minting contract's identities are listed among the identities",
+    image: null,
   };
 }
 
