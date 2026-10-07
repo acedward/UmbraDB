@@ -54,7 +54,8 @@ import {
   type TransactionOutcome,
 } from "./applied-parts.ts";
 import { tokenColor } from "./color.ts";
-import { type EventRow, removeEventsAbove, writeEvents } from "./fields.ts";
+import { type ApplyOptions, type EventRow, removeEventsAbove, writeEvents } from "./fields.ts";
+import type { StandardKeys } from "./state.ts";
 import { MISC_EVENT_TYPE } from "../vendor/mip0018/codec/src/index.ts";
 import { classifyMip0018Event } from "./classify.ts";
 
@@ -102,6 +103,8 @@ export interface Mip0018ScannerOptions {
   /** Test seam: the transaction the activity rows are read from (default: ledger-v9 deserialization; a
    *  scanner given only a `decode` seam — synthetic bytes — records no activity). */
   activityTransaction?: (raw: Uint8Array) => ActivityTransactionLike;
+  /** The keys standards define (default: `STANDARD_KEYS`, the MIPs' registry); tests pass a synthetic standard. */
+  standardKeys?: StandardKeys;
 }
 
 export interface ScanOnceResult {
@@ -168,6 +171,10 @@ export class Mip0018Scanner {
   private readonly schema: string;
   private readonly archive: PgChainArchiveStore;
   private readonly decode: (raw: Uint8Array) => DecodedTransaction;
+
+  private applyOptions(): ApplyOptions {
+    return this.opts.standardKeys === undefined ? {} : { standardKeys: this.opts.standardKeys };
+  }
 
   constructor(private readonly opts: Mip0018ScannerOptions) {
     if (opts.network.length === 0) throw new ScanRangeError("network must not be empty");
@@ -374,7 +381,7 @@ export class Mip0018Scanner {
           ON CONFLICT DO NOTHING`;
       }
       // The block's events in chain order; each accepted one is applied to the latest-value rows.
-      await writeEvents(tx, s, rows.events);
+      await writeEvents(tx, s, rows.events, this.applyOptions());
       await this.opts.onBlockWritten?.(block.height);
       const moved = await tx`
         UPDATE ${tx(s)}.mip0018_scan SET next_height = ${block.height + 1}, last_block_hash = ${buf(block.blockHash)}
@@ -400,7 +407,7 @@ export class Mip0018Scanner {
         await tx`DELETE FROM ${tx(s)}.${tx(table)} WHERE network = ${this.network} AND block_height > ${height}`;
       // Events above the height go, and the fields of every identity they touched are recomputed from the remaining
       // accepted events (MIP S4).
-      await removeEventsAbove(tx, s, this.network, height);
+      await removeEventsAbove(tx, s, this.network, height, this.applyOptions());
       const moved = await tx`
         UPDATE ${tx(s)}.mip0018_scan SET next_height = ${height + 1}, last_block_hash = ${lastHash === undefined ? null : buf(lastHash)}
         WHERE network = ${this.network} AND next_height = ${cursor.nextHeight}`;

@@ -29,7 +29,7 @@ import {
   chainEvents, contractRejections, displayAmountOf, getIdentity, groupOf, listGroups, listIdentities, listMetadataContracts, tokenMarkOf,
 } from "../mip0018/metadata.ts";
 import { Mip0018Scanner } from "../mip0018/scan.ts";
-import { COMMON_KEY_HEX, type IdentityRef, type IdentityState, parseStandards, type SymbolGroup } from "../mip0018/state.ts";
+import { COMMON_KEY_HEX, type IdentityRef, type IdentityState, isCommonKey, parseStandards, type SymbolGroup } from "../mip0018/state.ts";
 import { listColors, nativeTokens } from "../mip0018/tokens.ts";
 import { EVENT_NAME, encodePayload, type MetadataRecord, record } from "../vendor/mip0018/codec/src/index.ts";
 import { caseCopyProblems, readExpectation, readReferenceCase } from "./helpers/case-source.ts";
@@ -78,7 +78,8 @@ async function differences(sql: UmbraDBSql, schema: string, contract: string, ex
     if (canon(commonOf(g)) !== canon(e.common)) d.push(`identity ${k}: common ${canon(commonOf(g))}, expected ${canon(e.common)}`);
     if (e.fields !== undefined) {
       const gf = Object.fromEntries([...g.fields].map(([key, f]) => [key, { valType: f.valType, value_hex: Buffer.from(f.value).toString("hex"), ...(f.usable === undefined ? {} : { usable: f.usable }) }]));
-      const ef = Object.fromEntries(Object.entries(e.fields).map(([key, f]) => [key, { valType: f.valType, value_hex: f.value_hex, ...(f.usable === undefined ? {} : { usable: f.usable }) }]));
+      // Served: the defined keys only (MIP "Keys"; the scan declares no standard that defines keys, so the common fields).
+      const ef = Object.fromEntries(Object.entries(e.fields).filter(([key]) => isCommonKey(key)).map(([key, f]) => [key, { valType: f.valType, value_hex: f.value_hex, ...(f.usable === undefined ? {} : { usable: f.usable }) }]));
       if (canon(gf) !== canon(ef)) d.push(`identity ${k}: fields ${canon(gf)}, expected ${canon(ef)}`);
     }
   }
@@ -211,7 +212,9 @@ describe("MIP-0018 metadata state in Postgres", () => {
     const { sql, mip } = ranges.idx;
     const derived = (d: Record<string, unknown[]>) => ({ fields: d.fields, withdrawals: d.withdrawals, listed: d.listed });
     const before = derived(await dumpAll(sql, mip));
-    expect([before.withdrawals!.length, before.listed!.length]).toEqual([0, 35]); // per-key C06 never empties; 24 accepted + 11 rejected
+    // Per-key C06 never empties; 22 accepted + 11 rejected listed: C07's first two accepted events (714891, 714907) set
+    // only undefined keys before its identity existed, so they are not its metadata history.
+    expect([before.withdrawals!.length, before.listed!.length]).toEqual([0, 33]);
     const r = await sql.begin((tx) => recomputeFields(tx, mip, NET));
     expect(r).toEqual({ identities: 13, replayedEvents: 24 });
     expect(derived(await dumpAll(sql, mip))).toEqual(before);
@@ -336,6 +339,77 @@ describe("MIP-0018 metadata state in Postgres", () => {
     expect(await dumpAll(db.sql, db.mip)).toEqual(full);
   }, 120_000);
 
+  it("[[mip0018.metadata.defined-keys]] through the scan and Postgres, only defined keys are served and prove existence: an identity with only `foo` is not referenced; a standard's key counts only while declared; dropping the standard that defined the last served key withdraws the identity (withdrawal row, listed history deleted) although undefined keys stay stored; a revival lists only its own events; recompute and removeAbove are exact", async () => {
+    const db = await fresh("defined");
+    const X = "d7".repeat(32);
+    const DS = "7d".repeat(32);
+    const S = "test-std";
+    const standardKeys = new Map([[S, new Set([Buffer.from("k").toString("hex")])]]);
+    const tx = (logs: SynthLog[]) => [{ result: "success" as const, tx: {
+      hash: createHash("sha256").update(JSON.stringify(logs)).digest("hex"),
+      intents: [{ segment: 1, actions: [{ call: { address: X, entryPoint: "meta", guaranteed: { logs } } }] }],
+    } }];
+    await putSyntheticBlocks(db.sql, db.archive, NET, 200, [
+      tx([v1Log(DS, 3, [record.utf8("foo", "x")])]), // 200: an undefined key only
+      tx([v1Log(DS, 3, [record.utf8("name", "Acme"), record.utf8("symbol", "ACM")])]), // 201: defined keys
+      tx([v1Log(DS, 3, [record.utf8("k", "v"), record.utf8("standards", S)])]), // 202: S declared → k served
+      tx([v1Log(DS, 3, nullAll("name", "symbol"))]), // 203: k and standards keep it in existence
+      tx([v1Log(DS, 3, [record.utf8("standards", "mip-0004")])]), // 204: S dropped → k not served
+      tx([v1Log(DS, 3, nullAll("standards"))]), // 205: no defined key left → withdrawn (foo, k stay stored)
+      tx([v1Log(DS, 3, [record.utf8("standards", S)])]), // 206: revived: standards and k served again
+    ]);
+    const s = scanner(db, { decode: decodeSynthetic, standardKeys });
+    await s.bootstrap();
+    const ref: IdentityRef = { network: NET, contractAddress: X, domainSep: DS, kind: 3 };
+    const m = db.sql(db.mip);
+    const text = (k: string) => Buffer.from(k, "hex").toString();
+    const view = async () => ({
+      served: [...((await getIdentity(db.sql, ref, db.mip))?.fields.keys() ?? [])].map(text),
+      ids: (await listIdentities(db.sql, NET, {}, db.mip)).length,
+      contracts: (await listMetadataContracts(db.sql, NET, db.mip)).length,
+      mark: (await tokenMarkOf(db.sql, ref, db.mip)).mark,
+      stored: (await db.sql<{ key: Buffer; defined: boolean }[]>`SELECT key, defined FROM ${m}.mip0018_fields ORDER BY key`).map((r) => `${r.key.toString()}${r.defined ? "" : "?"}`),
+      withdrawal: (await db.sql<{ h: string }[]>`SELECT block_height::text AS h FROM ${m}.mip0018_withdrawals`).map((r) => Number(r.h)),
+      listed: (await db.sql<{ h: string }[]>`SELECT block_height::text AS h FROM ${m}.mip0018_listed_events WHERE classification = 'accept' ORDER BY block_height`).map((r) => Number(r.h)),
+      events: (await chainEvents(db.sql, NET, {}, db.mip)).map((e) => `${e.height}:${e.identity === undefined ? "-" : e.identity.kind}`),
+    });
+    const steps: Record<number, unknown> = {};
+    for (let h = 200; h <= 206; h++) {
+      await s.scanOnce({ maxBlocks: 1 });
+      steps[h] = await view();
+    }
+    expect(steps[200]).toEqual({ served: [], ids: 0, contracts: 0, mark: "none", stored: ["foo?"], withdrawal: [], listed: [], events: ["200:-"] });
+    expect(steps[201]).toMatchObject({ served: ["name", "symbol"], ids: 1, contracts: 1, mark: "partial", stored: ["foo?", "name", "symbol"], listed: [201] });
+    expect(steps[202]).toMatchObject({ served: ["name", "symbol", "k", "standards"], stored: ["foo?", "k", "name", "standards", "symbol"], listed: [201, 202] });
+    expect(steps[203]).toMatchObject({ served: ["k", "standards"], ids: 1, stored: ["foo?", "k", "standards"], withdrawal: [], listed: [201, 202, 203] });
+    expect(steps[204]).toMatchObject({ served: ["standards"], ids: 1, stored: ["foo?", "k?", "standards"], withdrawal: [], listed: [201, 202, 203, 204] });
+    expect(steps[205]).toEqual({
+      served: [], ids: 0, contracts: 0, mark: "none", stored: ["foo?", "k?"], withdrawal: [205], listed: [],
+      events: ["200:-", "201:-", "202:-", "203:-", "204:-", "205:-"],
+    });
+    expect(steps[206]).toEqual({
+      served: ["k", "standards"], ids: 1, contracts: 1, mark: "partial", stored: ["foo?", "k", "standards"], withdrawal: [205], listed: [206],
+      events: ["200:-", "201:-", "202:-", "203:-", "204:-", "205:-", "206:3"],
+    });
+    // Negative control: existence by "any stored row" (the rule before defined keys) would list the identity at 200 and 205.
+    expect([(steps[200] as { stored: string[] }).stored.length, (steps[205] as { stored: string[] }).stored.length]).toEqual([1, 2]);
+
+    // Recompute with the same registry changes nothing; without it, `k` is not defined (the registry is applied).
+    const derived = async () => { const d = await dumpAll(db.sql, db.mip); return { fields: d.fields, withdrawals: d.withdrawals, listed: d.listed }; };
+    const full = await derived();
+    await db.sql.begin((t) => recomputeFields(t, db.mip, NET, { standardKeys }));
+    expect(await derived()).toEqual(full);
+    await db.sql.begin((t) => recomputeFields(t, db.mip, NET));
+    expect((await view()).served).toEqual(["standards"]);
+    await db.sql.begin((t) => recomputeFields(t, db.mip, NET, { standardKeys }));
+    expect(await derived()).toEqual(full);
+    // removeAbove + rescan: back at 204, then forward again, exactly.
+    await s.removeAbove(204);
+    expect(await view()).toEqual(steps[204]);
+    await scanAll(s);
+    expect(await derived()).toEqual(full);
+  }, 120_000);
+
   it("[[mip0018.metadata.bytes]] C07's stored keys and values are exact bytes (a NUL inside a key, a 220-byte key, a 219-byte value, empty values, a 16-byte integer); the event with a non-UTF-8 key is rejected whole, so that key is not stored; a 31-byte integer is stored losslessly", async () => {
     const { sql, mip } = ranges.idx;
     const raw = await sql<{ key: Buffer; value: Buffer; val_type: number; uint_value: string | null; usable: boolean | null }[]>`
@@ -369,7 +443,9 @@ describe("MIP-0018 metadata state in Postgres", () => {
     const row = await db.sql<{ value: Buffer; uint_value: string }[]>`SELECT value, uint_value::text FROM ${db.sql(db.mip)}.mip0018_fields WHERE key = ${Buffer.from("big")}`;
     expect([hex(row[0]!.value), row[0]!.uint_value]).toEqual(["ff".repeat(31), max.toString()]);
     const ref: IdentityRef = { network: NET, contractAddress: "b8".repeat(32), domainSep: "99".repeat(32), kind: 3 };
-    expect((await getIdentity(db.sql, ref, db.mip))!.fields.get(Buffer.from("big").toString("hex"))!.integer).toBe(max);
+    const served = (await getIdentity(db.sql, ref, db.mip))!.fields;
+    expect(served.get(COMMON_KEY_HEX.decimals)!.integer).toBe(max);
+    expect(served.has(Buffer.from("big").toString("hex"))).toBe(false); // an undefined key: stored exactly, never served
     expect(await displayAmountOf(db.sql, ref, 5n, db.mip)).toEqual({ decimals: max, text: `5e-${max}` }); // bounded, exact
   }, 120_000);
 

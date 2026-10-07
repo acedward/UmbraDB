@@ -3,17 +3,21 @@
  * and, through `recordEffects` (with `fieldUsable`), `symbolGroups`, `displayAmount` and `tokenMark`, by the Postgres
  * apply path (`fields.ts`) and its read helpers (`metadata.ts`) — so both paths share every rule.
  *
- * Authority: MIP-0018 as in PR #372 (per-key tombstones), sections "Applying records", "Common fields" and "Symbol
- * grouping": only the latest value per key, no history; groups of two or more members; a Null record deletes its key's
- * row; an identity whose last field is deleted is not referenced anywhere; plus UmbraDB's ✓/⚠ marks. Classification
- * and decoding are the vendored reference codec's (`token-indexer/vendor/mip0018/codec`, verbatim); everything below
- * is UmbraDB's own code — the reference consumer is not used.
+ * Authority: MIP-0018 as in PR #372 (per-key tombstones), sections "Keys", "Applying records", "Common fields" and
+ * "Symbol grouping": only the latest value per key, no history; groups of two or more members; a Null record deletes
+ * its key's row; only defined keys are served and make an identity exist; an identity without a defined key is not
+ * referenced anywhere; plus UmbraDB's ✓/⚠ marks. Classification is `classify.ts` (the vendored reference codec,
+ * verbatim in `token-indexer/vendor/mip0018/codec`, plus the UTF-8 key rule); everything below is UmbraDB's own code —
+ * the reference consumer is not used.
  *
  * - Applying records: accepted events in chain order (block, transaction, event, then record). A non-Null record
  *   sets its field's current value (latest wins; the replaced value is dropped, never a fallback). A Null record
- *   deletes its field; a Null for a field without a value has no effect. An identity exists only while one of its
- *   fields has a value; with none left it is absent from every listing, lookup and group. A later record describes it
- *   again with only that field.
+ *   deletes its field; a Null for a field without a value has no effect.
+ * - Keys: every key is stored, but a key is served only when it is DEFINED — a common-field key (`name`, `symbol`,
+ *   `decimals`, `standards`, `image`, `image_sha256`) or a key of a standard the identity currently declares in a
+ *   usable `standards` (`STANDARD_KEYS`; no MIP defines keys today). An identity exists only while a defined key has a
+ *   value; without one it is absent from every listing, lookup and group, even when undefined keys remain. Dropping a
+ *   standard from `standards` stops its keys counting. A later record of a defined key describes it again.
  * - Reorganization (S4): every classified event is retained per network; `rollbackTo` drops the events above a block
  *   and recomputes that network's state from the retained events (UmbraDB itself follows finalized blocks only).
  * - Common fields: `name`/`symbol` usable when a non-empty UTF-8 string, `decimals` when an unsigned integer,
@@ -53,6 +57,48 @@ export const IMAGE_KEY_HEX = {
 const COMMON_KEYS: ReadonlySet<string> = new Set([...Object.values(COMMON_KEY_HEX), ...Object.values(IMAGE_KEY_HEX)]);
 /** `image_sha256` is usable only as exactly this many bytes (MIP "Common fields", Testing S12). */
 export const IMAGE_SHA256_BYTES = 32;
+
+// ── Defined keys (MIP "Keys") ───────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Keys defined by standards: standard identifier (as declared in `standards`) → the keys (hex) that standard defines.
+ * MIP "Keys": consumers MUST NOT serve a key that is neither a common field nor defined by a standard the token
+ * currently declares; an event carrying such a key is still valid, and what is stored is up to the consumer.
+ */
+export type StandardKeys = ReadonlyMap<string, ReadonlySet<string>>;
+/** The keys standards define. No MIP defines keys today; a MIP that does adds its identifier and keys here. */
+export const STANDARD_KEYS: StandardKeys = new Map();
+
+/** Every key some standard of `standardKeys` defines: the keys whose served status a `standards` change can flip. */
+export function standardDefinedKeys(standardKeys: StandardKeys = STANDARD_KEYS): Set<string> {
+  const out = new Set<string>();
+  for (const keys of standardKeys.values()) for (const k of keys) out.add(k);
+  return out;
+}
+
+/** The standards an identity currently declares: the identifiers of its usable `standards` field (none without one). */
+export function declaredStandards(fields: ReadonlyMap<string, Pick<Field, "value" | "usable">>): string[] {
+  const f = fields.get(COMMON_KEY_HEX.standards);
+  return f?.usable === true ? (parseStandards(f.value) ?? []) : [];
+}
+
+/** Whether a key is defined for an identity that declares `declared`: a common-field key, or a key of a declared standard. */
+export function isDefinedKey(keyHex: string, declared: readonly string[], standardKeys: StandardKeys = STANDARD_KEYS): boolean {
+  if (COMMON_KEYS.has(keyHex)) return true;
+  for (const id of declared) if (standardKeys.get(id)?.has(keyHex) === true) return true;
+  return false;
+}
+
+/**
+ * The fields an identity serves — its defined keys only, in their order. An identity exists only while this is not
+ * empty: undefined keys are stored but never served and never make an identity exist.
+ */
+export function servedFields<F extends Pick<Field, "value" | "usable">>(
+  fields: ReadonlyMap<string, F>, standardKeys: StandardKeys = STANDARD_KEYS,
+): Map<string, F> {
+  const declared = standardKeys.size === 0 ? [] : declaredStandards(fields);
+  return new Map([...fields].filter(([k]) => isDefinedKey(k, declared, standardKeys)));
+}
 
 /**
  * `standards` (MIP "Common fields"): identifiers separated by single spaces (0x20); an identifier is non-empty and has
@@ -235,9 +281,17 @@ const byString = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
  * apply path keeps the same rules by applying `recordEffects` to rows, and is tested against this class.
  */
 export class MetadataState {
+  /** Every stored field per identity — defined and undefined keys alike (an identity is kept while it stores any). */
   private readonly identitiesByKey = new Map<string, { ref: IdentityRef; fields: Map<string, Field> }>();
   private readonly retained = new Map<string, Retained[]>();
   private readonly last = new Map<string, ChainPosition>();
+
+  private readonly standardKeys: StandardKeys;
+
+  /** `standardKeys`: the keys standards define (default: the MIPs' registry, empty today; tests pass synthetic ones). */
+  constructor(standardKeys: StandardKeys = STANDARD_KEYS) {
+    this.standardKeys = standardKeys;
+  }
 
   /** Classifies an event with the vendored codec and, when accepted, applies its records. */
   apply(event: ObservedEvent): Classification {
@@ -293,19 +347,36 @@ export class MetadataState {
   }
 
   /**
-   * Every identity that currently has at least one field, sorted by (network, contract, domainSep, kind). Each
-   * `fields` is a snapshot (a copy): later events never change a map already handed out.
+   * Every identity that exists — at least one defined key has a value — sorted by (network, contract, domainSep, kind),
+   * with its served (defined) fields only. Each `fields` is a snapshot (a copy): later events never change a map
+   * already handed out.
    */
   identities(): IdentityState[] {
     return [...this.identitiesByKey.values()]
-      .map(({ ref, fields }) => ({ ...ref, fields: new Map(fields) }))
+      .map(({ ref, fields }) => ({ ...ref, fields: servedFields(fields, this.standardKeys) }))
+      .filter((id) => id.fields.size > 0)
       .sort((a, b) => byString(identityKey(a), identityKey(b)));
   }
 
-  /** One identity (its fields as a snapshot), or `undefined` when it has no field (then it is not referenced anywhere). */
+  /**
+   * One identity with its served fields (a snapshot), or `undefined` when no defined key has a value (then it is not
+   * referenced anywhere).
+   */
   identity(ref: IdentityRef): IdentityState | undefined {
-    const v = this.identitiesByKey.get(identityKey({ ...ref, contractAddress: ref.contractAddress.toLowerCase(), domainSep: ref.domainSep.toLowerCase() }));
-    return v === undefined ? undefined : { ...v.ref, fields: new Map(v.fields) };
+    const v = this.stored(ref);
+    if (v === undefined) return undefined;
+    const fields = servedFields(v.fields, this.standardKeys);
+    return fields.size === 0 ? undefined : { ...v.ref, fields };
+  }
+
+  /** Every field an identity stores, undefined keys included (a snapshot), or `undefined` when it stores none. Never served. */
+  storedFields(ref: IdentityRef): ReadonlyMap<string, Field> | undefined {
+    const v = this.stored(ref);
+    return v === undefined ? undefined : new Map(v.fields);
+  }
+
+  private stored(ref: IdentityRef): { ref: IdentityRef; fields: Map<string, Field> } | undefined {
+    return this.identitiesByKey.get(identityKey({ ...ref, contractAddress: ref.contractAddress.toLowerCase(), domainSep: ref.domainSep.toLowerCase() }));
   }
 
   /** Symbol groups of two or more members (MIP "Symbol grouping"). */

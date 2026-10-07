@@ -501,6 +501,7 @@ describe("MIP-0018 explorer page in a real browser", () => {
         v1Log(D, 3, [
           record.bytes("image_sha256", Uint8Array.from([0xc3, 0x28, ...new Array<number>(30).fill(0xff)])),
           record.utf8("desc", desc), record.utf8("\u0000nul", "x"), record.uri("home", "https://example.invalid/never-fetched"), record.json("j", "{\"a\":\"\\u202e\"}"),
+          record.utf8("hidden", "never-served-undefined-key"),
         ]),
         v1Log(D, 3, [record.utf8("html", html), record.utf8("js", "javascript:window.__pwned=2")]),
         v1Log(D, 3, [record.utf8("k", rlm)]),
@@ -511,7 +512,10 @@ describe("MIP-0018 explorer page in a real browser", () => {
         v1Log(U, 3, [record.utf8("name", "Unusable Decimals"), record.utf8("symbol", "UNU"), record.utf8("decimals", "six")]),
       ], { unshieldedOutputs: [SEEN] }),
     ]]);
-    const s = scanner(db, { decode: decodeSynthetic });
+    // D declares the standard `tag`; a synthetic registry makes that standard define the hostile keys, so they are
+    // served (MIP "Keys"); `hidden` is defined by nothing: stored, never served or drawn.
+    const hostileKeys = ["desc", "\u0000nul", "home", "j", "html", "js", "k", "ctl"].map((k) => Buffer.from(k).toString("hex"));
+    const s = scanner(db, { decode: decodeSynthetic, standardKeys: new Map([[tag, new Set(hostileKeys)]]) });
     await s.bootstrap();
     await scanAll(s);
     const base = await serveDb(db);
@@ -541,6 +545,8 @@ describe("MIP-0018 explorer page in a real browser", () => {
     expect(fields["\u27e8U+0000\u27e9nul"]).toBe("x");
     expect(fields.home).toBe("https://example.invalid/never-fetched  (URI: text only, never fetched or followed)");
     expect(fields.j).toBe("{\"a\":\"\\u202e\"}");
+    expect(Object.keys(fields)).not.toContain("hidden"); // an undefined key is never drawn
+    expect(sd.text).not.toContain("never-served-undefined-key");
     expect(fields.html).toBe(html);
     expect(fields.js).toBe("javascript:window.__pwned=2");
     expect(fields.k).toBe("\u27e8U+200F\u27e9".repeat(70));
@@ -623,14 +629,15 @@ describe("MIP-0018 explorer page in a real browser", () => {
     await putSyntheticBlocks(fdb.sql, fdb.archive, NET, 800, [[
       call(F, [
         v1Log(DF, 3, [record.utf8("name", "a\u180Fb\u0600\u0605c"), record.utf8("symbol", "ACME\u{1BCA0}"),
-          record.utf8("marks", "\u0600\u0601\u0602\u0603\u0604\u0605 x\uE000y\u0378z\u{E0080}")]),
+          record.utf8("marks", "\u0600\u0601\u0602\u0603\u0604\u0605 x\uE000y\u0378z\u{E0080}"), record.utf8("standards", "test-marks")]),
         v1Log(DG, 3, [record.utf8("name", "Plain"), record.utf8("symbol", "ACME")]),
       ]),
       // A log op fed by `dup` (the raw transaction does not show the logged value) → an unresolved row.
       { result: "success", tx: { hash: "f5".repeat(32), intents: [{ segment: 1, actions: [{ call: { address: F, entryPoint: "meta",
         guaranteed: { program: [{ push: { cell: "01" } }, { dup: 0 }, "log"] } } }] }] } },
     ]]);
-    const fsc = scanner(fdb, { decode: decodeSynthetic });
+    // `marks` is served because DF declares a (synthetic) standard that defines it.
+    const fsc = scanner(fdb, { decode: decodeSynthetic, standardKeys: new Map([["test-marks", new Set([Buffer.from("marks").toString("hex")])]]) });
     await fsc.bootstrap();
     await scanAll(fsc);
     const fbase = await serveDb(fdb);
@@ -676,8 +683,10 @@ describe("MIP-0018 explorer page in a real browser", () => {
     const keys = Array.from({ length: 150 }, (_, i) => `k${String(i).padStart(3, "0")}`);
     const chunks: string[][] = [];
     for (let i = 0; i < keys.length; i += 30) chunks.push(keys.slice(i, i + 30));
+    // The 150 keys are served only because the identity declares a (synthetic) standard that defines them.
+    const standardKeys = new Map([["test-many-keys", new Set(keys.map((k) => Buffer.from(k).toString("hex")))]]);
     const logs = [
-      v1Log(DA, 3, [record.utf8("name", "Big"), record.utf8("symbol", "GRP")]).data,
+      v1Log(DA, 3, [record.utf8("name", "Big"), record.utf8("symbol", "GRP"), record.utf8("standards", "test-many-keys")]).data,
       ...chunks.map((c) => v1Log(DA, 3, c.map((k) => record.utf8(k, ""))).data),
       ...Array.from({ length: 102 }, (_, i) => v1Log(`ee${String(i).padStart(62, "0")}`, 3, [record.utf8("symbol", "GRP")]).data),
     ];
@@ -689,7 +698,7 @@ describe("MIP-0018 explorer page in a real browser", () => {
         { address: A, entryPoint: "unused", entryPointHex: "cd".repeat(200), guaranteed: { unshieldedInputs: [["unshielded", Y, "1"]] } },
       ] }] } as unknown as SynthArchivedTx["tx"],
     }]]);
-    const s = scanner(db, syntheticSeams);
+    const s = scanner(db, { ...syntheticSeams, standardKeys });
     await s.bootstrap();
     await scanAll(s);
     const base = await serveDb(db);
@@ -699,12 +708,12 @@ describe("MIP-0018 explorer page in a real browser", () => {
     const rowsOf = "document.querySelectorAll('#fields tbody tr').length";
     const sa = await visit(page, `#/token/${A}/${DA}/3`);
     expect(await page.eval<number>(rowsOf)).toBe(100);
-    expect(sa.view).toContain("152 fields, in key byte order");
+    expect(sa.view).toContain("153 fields, in key byte order");
     expect(sa.view).toContain("the first 100 of 103 members");
     const firstKeys = await page.eval<string[]>("[...document.querySelectorAll('#fields tbody tr')].map((tr) => tr.cells[0].innerText)");
     expect(firstKeys.slice(0, 3)).toEqual(["k000", "k001", "k002"]); // key byte order
     await page.eval("[...document.querySelectorAll('#fields button')].find((b) => b.textContent === 'load more fields').click()");
-    await page.waitFor(`${rowsOf} === 152`, 30_000, "second page of fields");
+    await page.waitFor(`${rowsOf} === 153`, 30_000, "second page of fields");
     expect(await page.eval<number>("[...document.querySelectorAll('#fields button')].filter((b) => b.textContent === 'load more fields').length")).toBe(0);
     expect(page.requests.some((r) => /\/v1\/identities\/[0-9a-f]{64}\/[0-9a-f]{64}\/3\?limit=100&cursor=/.test(r.url))).toBe(true);
     // The contract view: the group merged from the token pages read, with its member count.

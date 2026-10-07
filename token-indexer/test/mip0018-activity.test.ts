@@ -287,7 +287,7 @@ describe("MIP-0018 token activity", () => {
       SELECT sum(events_accepted)::int AS a, sum(events_rejected)::int AS r FROM ${idx.sql(idx.mip)}.mip0018_activity WHERE role = 'metadata-event'`;
     expect(totals[0]).toEqual({ a: 24, r: 11 }); // 35 v1-named events of the range = 24 accepted + 11 rejected
     const c07 = await all((c) => metadataTransactionsForContract(idx.sql, NET, CASES.cases.C07!.contract!, c === undefined ? {} : { cursor: c }, idx.mip));
-    expect([c07.length, c07.filter((i) => i.events!.accepted === 1).length, c07.filter((i) => i.events!.rejected === 1).length]).toEqual([18, 8, 10]); // 4 ignored steps: no row
+    expect([c07.length, c07.filter((i) => i.events!.accepted === 1).length, c07.filter((i) => i.events!.rejected === 1).length]).toEqual([16, 6, 10]); // 4 ignored steps: no row; A2a and A2b set only undefined keys before the identity existed: no row
     const c08 = await metadataTransactionsForContract(idx.sql, NET, CASES.cases.C08!.contract!, {}, idx.mip);
     expect(c08.items.map((i) => [i.txHash, i.events])).toEqual([[stepOf("C08", "emit-two").txHash, { accepted: 1, rejected: 1, firstEventIndex: 0 }]]);
     // NIGHT: no NIGHT UTXO in the recorded ranges; DUST has no color, so no listing exists for it.

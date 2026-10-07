@@ -38,6 +38,7 @@ describe("mip0018 schema", () => {
     value,
     uint_value: uint,
     usable,
+    defined: usable !== null, // the common-field keys here carry `usable`; the others are undefined keys (stored, never served)
     updated_block: 1,
     updated_tx: 0,
     updated_event: 0,

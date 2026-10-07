@@ -23,7 +23,8 @@ Authority: MIP-0018 as in [PR #372](https://github.com/midnightntwrk/midnight-im
 | Bytes | Every byte string is lowercase hex without `0x` (`"hex"`). A text view (`"text"` / `"utf8"`) is added only where the bytes are valid UTF-8 and the type says text; an integer view (`"integer"`, a decimal string) only for type-2 values. Values are never re-interpreted as another type (MIP "Value types"). |
 | No defaults | A common field that was never set, or whose current value is unusable, is `null` in `common`; no default such as 0 or 18 decimals. |
 | Hostile text | Text is data. The JSON body is pure ASCII: every non-ASCII character (bidi controls, zero-width characters, …) and `<`, `>`, `&` are written as `\uXXXX` escapes; control characters (NUL …) are JSON escapes. Parsing the JSON gives the exact text back. |
-| Not referenced after withdrawal | A token identity exists only while one of its fields has a value (MIP "Applying records", per-key tombstones). Once its last field is deleted it is not referenced anywhere — not in listings, lookups, groups, events or the contract view — exactly as if it had never been described: a never-minted one answers 404, a minted one is shown only as a minted token (`described: false`, no fields, no group). A deleted field's earlier values are never served. |
+| Defined keys only | A key is served only when it is defined (MIP "Keys"): a common-field key (`name`, `symbol`, `decimals`, `standards`, `image`, `image_sha256`) or a key of a standard the identity currently declares in its usable `standards` (no MIP defines such keys today). Every other key is stored but appears in no answer, and never makes an identity exist. |
+| Not referenced after withdrawal | A token identity exists only while one of its defined fields has a value (MIP "Keys", "Applying records", per-key tombstones). Once its last field is deleted it is not referenced anywhere — not in listings, lookups, groups, events or the contract view — exactly as if it had never been described: a never-minted one answers 404, a minted one is shown only as a minted token (`described: false`, no fields, no group). A deleted field's earlier values are never served. |
 | Events carry no values | The event endpoint serves position, contract, classification and reason only — never an event's name, payload, header (`domainSep`, `kind`) or decoded values. Only MIP-0018-named events (`accept`, `reject`) and `unresolved` logs are served; other `Misc` events (`ignore`) are not. |
 | Marks | `mark` is decided by one function (`state.ts` `tokenMark`): `ok` (✓) usable `name`, `symbol` and `decimals`, no rejected MIP-0018 event and no unresolved log from the token's contract; `partial` (⚠) one of the three missing or unusable; `incorrect` (⚠) the contract has a rejected MIP-0018 event (reasons listed in chain order); `unresolved` (⚠) the contract has no rejected event but has an `unresolved` log — a `log` op whose value the raw transaction does not show, so it may have published, renamed or withdrawn metadata this indexer cannot read (reason `unresolved-log`); `none` no metadata, no rejected event and no unresolved log. Precedence: `incorrect`, `unresolved`, then the identity's own fields. Usable `standards` identifiers are returned as `tags` (self-declared, never proof). Current state only. |
 | Groups | Symbol groups as the MIP defines them: identities of one contract with the same usable `symbol` bytes; only groups of two or more members. |
@@ -159,12 +160,12 @@ the first 100 members by `(domainSep, kind)`; `memberCount` counts them all.
 }
 ```
 
-`fields` is ONE keyset page of the current fields in key byte order (default 100, `limit` up to 500; a key never
-moves, so pages are stable while the scan writes); `fieldCount` counts all of them; `fieldsNextCursor` reads the next
+`fields` is ONE keyset page of the current defined fields in key byte order (default 100, `limit` up to 500; a key
+never moves, so pages are stable while the scan writes); `fieldCount` counts all of them; `fieldsNextCursor` reads the next
 page through `/v1/identities/…?cursor=` (`null` on the last). `commonFields` = the current rows of the common keys
 present (`name`, `symbol`, `decimals`, `standards`), so a client can draw an unusable common field without paging.
 
-A minted identity without fields (never described, or withdrawn): `described: false`, `common` all `null`, `commonFields: []`,
+A minted identity without defined fields (never described, withdrawn, or described only by undefined keys): `described: false`, `common` all `null`, `commonFields: []`,
 `fields: []`, `fieldCount: 0`, `group: null`, `mark` from its contract's rejections and unresolved logs only
 (`incorrect`, `unresolved` or `none`).
 

@@ -14,8 +14,10 @@ export const name = "001_mip0018_core";
  *   metadata. `unresolved`: a `log` op whose logged value the raw transaction does not show (event type `Unknown`, no
  *   bytes, a reason); never applied.
  * - `mip0018_fields` — one row per field `(network, contract_address, domain_sep, kind, key)` holding only its current
- *   value (no history table). A Null record deletes its row (per-key tombstones). A token identity exists only while it
- *   has at least one row here; with no rows it MUST NOT be referenced anywhere.
+ *   value (no history table). A Null record deletes its row (per-key tombstones). Every key is stored; `defined` says
+ *   whether the key is served (a common-field key, or a key of a standard the identity currently declares — MIP
+ *   "Keys"). A token identity exists only while it has at least one `defined` row; without one it MUST NOT be
+ *   referenced anywhere.
  * - `mip0018_withdrawals` and `mip0018_listed_events` — each identity's last withdrawal, and the events activity may
  *   list as metadata history (rejected events; accepted events of an identity's current description, i.e. from its last
  *   revival on; one row per listed event of `mip0018_events`, same position). Derived state like the fields: written
@@ -95,6 +97,7 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       value            bytea    NOT NULL CHECK (octet_length(value) <= 219),
       uint_value       numeric(75, 0) CHECK (uint_value IS NULL OR uint_value >= 0),
       usable           boolean,
+      defined          boolean  NOT NULL,
       updated_block    bigint   NOT NULL CHECK (updated_block >= 0),
       updated_tx       integer  NOT NULL CHECK (updated_tx >= 0),
       updated_event    integer  NOT NULL CHECK (updated_event >= 0),
@@ -102,6 +105,13 @@ export async function up(sql: ISql, schema: string): Promise<void> {
       CHECK ((val_type = 2) = (uint_value IS NOT NULL)),
       PRIMARY KEY (network, contract_address, domain_sep, kind, key)
     )
+  `;
+  // The served rows of an identity, in key order (existence checks, field pages, listings): undefined keys never
+  // enter the index, so reads of what is served never step over them.
+  await sql`
+    CREATE INDEX mip0018_fields_defined_idx
+      ON ${sql(schema)}.mip0018_fields (network, contract_address, domain_sep, kind, key)
+      WHERE defined
   `;
   // Symbol grouping (MIP "Symbol grouping"): identities of one (network, contract) with the same usable `symbol`.
   await sql`

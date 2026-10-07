@@ -348,29 +348,28 @@ describe("MIP-0018 read-only API", () => {
     expect((await get(idx.base, `/v1/identities/${contractOf("C01")}/${c01.domainSep}/1`)).status).toBe(404); // C01 describes kind 3 only
     expect((await ok(idx.base, `/v1/identities/${contractOf("C01")}/${c01.domainSep}/3`)).group).toBeNull(); // alone with AGLD: no group
 
-    // C07's fields byte for byte (keys with a NUL inside, 220-byte key, 219-byte value; its event with a non-UTF-8 key is
-    // rejected, so every stored key is valid UTF-8).
+    // C07's served fields byte for byte: its defined keys only (MIP "Keys"). Its other keys — a NUL inside a key, a 220-byte
+    // key, a 219-byte value, `note`, `blob`, `meta` — are stored but never served; its event with a non-UTF-8 key was
+    // rejected.
     type ExpectedField = { valType: number; value_hex: string; usable?: boolean };
     const c07exp = readExpectation<{ identities: Array<{ domainSep: string; kind: number; fields: Record<string, ExpectedField> }> }>("C07/expected.json");
     const e07 = c07exp.identities[0]!;
     const g07 = await ok(idx.base, `/v1/identities/${contractOf("C07")}/${e07.domainSep.replace(/^0x/, "")}/${e07.kind}`);
     const got = Object.fromEntries(g07.fields.map((f: Json) => [f.key.hex, { valType: f.valType, value_hex: f.value.hex, ...(f.usable === null ? {} : { usable: f.usable }) }]));
-    const want = Object.fromEntries(Object.entries(e07.fields).map(([k, f]) => [k, { valType: f.valType, value_hex: f.value_hex, ...(f.usable === undefined ? {} : { usable: f.usable }) }]));
+    const defined = new Set(["name", "symbol", "decimals", "standards", "image", "image_sha256"].map(hexText));
+    const want = Object.fromEntries(Object.entries(e07.fields).filter(([k]) => defined.has(k))
+      .map(([k, f]) => [k, { valType: f.valType, value_hex: f.value_hex, ...(f.usable === undefined ? {} : { usable: f.usable }) }]));
+    expect(Object.keys(want).map((k) => Buffer.from(k, "hex").toString()).sort()).toEqual(["decimals", "name", "symbol"]);
     expect(got).toEqual(want);
+    expect(g07.fieldCount).toBe(3);
+    const storedC07 = await idx.sql<{ key: Buffer; defined: boolean }[]>`
+      SELECT key, defined FROM ${idx.sql(idx.mip)}.mip0018_fields WHERE contract_address = ${Buffer.from(contractOf("C07"), "hex")} ORDER BY key`;
+    expect(storedC07.map((r) => [r.key.toString("hex"), r.defined])).toEqual(
+      Object.keys(e07.fields).sort((x, y) => Buffer.compare(Buffer.from(x, "hex"), Buffer.from(y, "hex"))).map((k) => [k, defined.has(k)]));
     for (const f of g07.fields as Json[]) {
-      const keyBytes = Buffer.from(f.key.hex, "hex");
-      let valid = true;
-      try {
-        new TextDecoder("utf-8", { fatal: true }).decode(keyBytes);
-      } catch {
-        valid = false;
-      }
-      expect(f.key.utf8 === null, f.key.hex).toBe(!valid);
-      if (valid) expect(Buffer.from(f.key.utf8, "utf8").toString("hex")).toBe(f.key.hex); // NUL bytes kept exactly
+      expect(Buffer.from(f.key.utf8, "utf8").toString("hex")).toBe(f.key.hex); // served keys are valid UTF-8
       if (f.valType === 0) expect(keysOf(f.value)).toEqual(["hex"]); // bytes: never re-interpreted as text
     }
-    expect(g07.fields.some((f: Json) => f.key.utf8 === null)).toBe(false);
-    expect(g07.fields.some((f: Json) => typeof f.key.utf8 === "string" && f.key.utf8.includes("\u0000"))).toBe(true);
 
     // Contract tokens: identities and groups of two or more; pages bound to the contract.
     const ct = await ok(idx.base, `/v1/contracts/${C04}/tokens`);
@@ -443,18 +442,19 @@ describe("MIP-0018 read-only API", () => {
     const x = Buffer.from(X, "hex");
     const da = Buffer.from(DA, "hex");
     const utf8 = (t: string) => Buffer.from(t, "utf8");
-    // The hostile cardinalities, written straight into the tables the API reads.
+    // The hostile cardinalities, written straight into the tables the API reads. The N keys are served (`defined`):
+    // keys a standard the identity declares defines — the only way an identity serves more than the common fields.
     await db.sql`
-      INSERT INTO ${s}.mip0018_fields (network, contract_address, domain_sep, kind, key, val_type, value, uint_value, usable,
+      INSERT INTO ${s}.mip0018_fields (network, contract_address, domain_sep, kind, key, val_type, value, uint_value, usable, defined,
                                        updated_block, updated_tx, updated_event, updated_record)
-      SELECT ${NET}, ${x}, ${da}, 3, convert_to('k' || lpad(i::text, 6, '0'), 'UTF8'), 1, decode('76', 'hex'), NULL, NULL, 1000 + i / 50, 0, 0, i % 50
+      SELECT ${NET}, ${x}, ${da}, 3, convert_to('k' || lpad(i::text, 6, '0'), 'UTF8'), 1, decode('76', 'hex'), NULL, NULL, true, 1000 + i / 50, 0, 0, i % 50
       FROM generate_series(1, ${N}) AS i`;
     for (const [key, valType, value, uint] of [["name", 1, utf8("Big"), null], ["symbol", 1, utf8("SPAM"), null], ["decimals", 2, Buffer.from([6]), "6"]] as const)
-      await db.sql`INSERT INTO ${s}.mip0018_fields VALUES (${NET}, ${x}, ${da}, 3, ${utf8(key)}, ${valType}, ${value}, ${uint}, true, 999, 0, 0, 0)`;
+      await db.sql`INSERT INTO ${s}.mip0018_fields VALUES (${NET}, ${x}, ${da}, 3, ${utf8(key)}, ${valType}, ${value}, ${uint}, true, true, 999, 0, 0, 0)`;
     await db.sql`
-      INSERT INTO ${s}.mip0018_fields (network, contract_address, domain_sep, kind, key, val_type, value, uint_value, usable,
+      INSERT INTO ${s}.mip0018_fields (network, contract_address, domain_sep, kind, key, val_type, value, uint_value, usable, defined,
                                        updated_block, updated_tx, updated_event, updated_record)
-      SELECT ${NET}, ${x}, decode('ee' || lpad(to_hex(i), 62, '0'), 'hex'), 3, ${utf8("symbol")}, 1, ${utf8("SPAM")}, NULL, true, 999, 0, 1, i
+      SELECT ${NET}, ${x}, decode('ee' || lpad(to_hex(i), 62, '0'), 'hex'), 3, ${utf8("symbol")}, 1, ${utf8("SPAM")}, NULL, true, true, 999, 0, 1, i
       FROM generate_series(1, 2000) AS i`;
     await db.sql`
       INSERT INTO ${s}.mip0018_events (network, block_height, tx_index, event_index, tx_hash, segment_id, phase, contract_address,
@@ -847,11 +847,15 @@ describe("MIP-0018 read-only API", () => {
         v1Log(D, 3, [
           record.bytes("image_sha256", Uint8Array.from([0xc3, 0x28, ...new Array<number>(30).fill(0xff)])),
           record.utf8("desc", desc), record.utf8("\u0000nul", "x"), record.uri("home", "https://example.invalid/never-fetched"), record.json("j", "{\"a\":\"\\u202e\"}"),
+          record.utf8("hidden", "never-served-undefined-key"),
         ]),
         v1Log(D, 3, [record.utf8("k", long)]),
       ], { unshieldedOutputs: [SEEN] }),
     ]]);
-    const s = scanner(db, { decode: decodeSynthetic });
+    // D declares the standard `tag`; a synthetic registry makes that standard define the hostile keys, so they are
+    // served (MIP "Keys"); `hidden` is defined by nothing: stored, never served.
+    const hostileKeys = ["desc", "\u0000nul", "home", "j", "k"].map((k) => Buffer.from(k).toString("hex"));
+    const s = scanner(db, { decode: decodeSynthetic, standardKeys: new Map([[tag, new Set(hostileKeys)]]) });
     await s.bootstrap();
     await scanAll(s);
     const base = await startApi(db);
@@ -873,6 +877,10 @@ describe("MIP-0018 read-only API", () => {
     expect(byHex[hexText("j")]).toMatchObject({ valTypeName: "json", value: { text: "{\"a\":\"\\u202e\"}" } });
     expect(byHex[hexText("k")].value.text).toBe(long);
     expect(byHex[hexText("k")].value.hex).toHaveLength(420);
+    expect(byHex[hexText("hidden")]).toBeUndefined(); // an undefined key is never served …
+    for (const [p, r] of c) expect(r.text, p).not.toContain("never-served-undefined-key");
+    const stored = await db.sql`SELECT 1 FROM ${db.sql(db.mip)}.mip0018_fields WHERE key = ${Buffer.from("hidden")} AND NOT defined`;
+    expect(stored).toHaveLength(1); // … but stored
     const rawName = c.get(`/v1/identities/${H}/${D}/3`)!.text;
     expect(rawName).toContain("\\u202e");
     expect(rawName).toContain("\\u0000");
@@ -944,6 +952,39 @@ describe("MIP-0018 read-only API", () => {
     expect(rawY).not.toContain("\\u0000"); // no decoded text of a non-printable entry point travels, not even escaped
     expect(rawY).not.toContain("\\u202e");
   }, 240_000);
+
+  it("[[mip0018.api.undefined-keys]] MIP Keys: the API serves defined keys only — an identity with only an undefined key is in no list, lookup or contract view (404); a described identity's fields, fieldCount and commonFields leave its undefined keys out; a minted identity with only undefined keys reads as never described", async () => {
+    const db = await fresh("undefkeys");
+    const X = "a9".repeat(32);
+    const ONLY = "0a".repeat(32);
+    const BOTH = "0b".repeat(32);
+    const MINT = "0c".repeat(32);
+    await putSyntheticBlocks(db.sql, db.archive, NET, 400, [[
+      call(X, [
+        v1Log(ONLY, 3, [record.utf8("foo", "x")]),
+        v1Log(BOTH, 3, [record.utf8("name", "Both"), record.utf8("foo", "secret-undefined-value"), record.utf8("symbol", "BTH")]),
+        v1Log(MINT, 1, [record.utf8("foo", "x")]),
+      ], { shieldedMints: [[MINT, "5"]] }),
+    ]]);
+    const s = scanner(db, { decode: decodeSynthetic });
+    await s.bootstrap();
+    await scanAll(s);
+    const base = await startApi(db);
+    expect((await get(base, `/v1/identities/${X}/${ONLY}/3`)).status).toBe(404);
+    const both = await ok(base, `/v1/identities/${X}/${BOTH}/3`);
+    expect([both.fields.map((f: Json) => f.key.utf8), both.fieldCount, both.commonFields.map((f: Json) => f.key.utf8)])
+      .toEqual([["name", "symbol"], 2, ["name", "symbol"]]);
+    const list = (await ok(base, "/v1/tokens?limit=500")).items as Json[];
+    expect(list.filter((t) => t.contractAddress === X).map((t) => [t.domainSep, t.kind, t.described])).toEqual([[BOTH, 3, true], [MINT, 1, false]]);
+    const minted = await ok(base, `/v1/identities/${X}/${MINT}/1`);
+    expect([minted.described, minted.fields, minted.fieldCount, minted.mark.mark]).toEqual([false, [], 0, "none"]);
+    const contract = await ok(base, `/v1/contracts/${X}/tokens`);
+    expect(JSON.stringify(contract)).not.toContain(ONLY);
+    for (const path of ["/v1/tokens?limit=500", `/v1/identities/${X}/${BOTH}/3`, `/v1/contracts/${X}/tokens`, `/v1/events?contract=${X}`])
+      expect((await get(base, path)).text, path).not.toContain(Buffer.from("secret-undefined-value").toString("hex"));
+    const stored = await db.sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ${db.sql(db.mip)}.mip0018_fields WHERE NOT defined`;
+    expect(stored[0]!.n).toBe(3); // stored, never served
+  }, 120_000);
 
   it("[[mip0018.api.errors]] error envelope: 400 for malformed hex, kinds outside 1–3, malformed paths and parameters; 404 for unknown routes, colors, identities and contracts; 405 with Allow for other methods; 503 when the database cannot be read; never the input or internal details; HEAD answers headers only", async () => {
     const C01 = contractOf("C01");

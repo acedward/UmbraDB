@@ -213,6 +213,11 @@
       "description": "MIP Common fields / S12: image is usable only as a URI (type 4), image_sha256 only as exactly 32 bytes (type 0); a 31-byte hash or a text image is unusable; neither changes a mark."
     },
     {
+      "id": "mip0018.state.defined-keys",
+      "file": "token-indexer/test/mip0018-state.test.ts",
+      "description": "MIP Keys (S10): only defined keys are served and prove existence in the pure state — an undefined key is stored, never served and makes no identity exist; deleting the last defined key withdraws the identity although undefined keys remain; a standard's key is served only while declared; rollback recomputes."
+    },
+    {
       "id": "mip0018.vectors.pure-adapter",
       "file": "token-indexer/test/mip0018-vectors.test.ts",
       "description": "Pure adapter: 66/66 vendored normative + 43/43 informative vectors and UmbraDB's own A3c pass through the vendored runner core, with groups and display compared."
@@ -383,6 +388,11 @@
       "description": "C07's NUL, non-UTF-8, 220-byte keys and 219-byte values round-trip as bytes; a 31-byte integer is lossless."
     },
     {
+      "id": "mip0018.metadata.defined-keys",
+      "file": "token-indexer/test/mip0018-metadata.test.ts",
+      "description": "MIP Keys through the scan and Postgres: defined flag per stored key; an undefined-only identity is not referenced; dropping the standard that defined the last served key withdraws the identity (withdrawal row, listed history deleted); a revival lists only its own events; recompute and removeAbove exact; negative control on existence by any stored row."
+    },
+    {
       "id": "mip0018.metadata.marks",
       "file": "token-indexer/test/mip0018-metadata.test.ts",
       "description": "C01/C10 ✓, C07/C08 ⚠ incorrect with reasons, a partial token ⚠ partial, a minted token without events no mark, a withdrawn identity marked from its contract's rejections only."
@@ -445,7 +455,7 @@
     {
       "id": "mip0018.api.token-detail",
       "file": "token-indexer/test/mip0018-api.test.ts",
-      "description": "token by color, identity and contract tokens with fields (hex + text/integer views, usable), groups of two or more, marks; C07's exact bytes incl. NUL keys; 404s."
+      "description": "token by color, identity and contract tokens with fields (hex + text/integer views, usable), groups of two or more, marks; C07's served fields are its defined keys byte for byte, its other keys stored but not served; 404s."
     },
     {
       "id": "mip0018.api.lookup",
@@ -471,6 +481,11 @@
       "id": "mip0018.api.hostile-text",
       "file": "token-indexer/test/mip0018-api.test.ts",
       "description": "MIP Consuming: bidi/invisible/control characters, markup and non-UTF-8 bytes are served as data in pure-ASCII JSON that parses back exactly; non-UTF-8 only as hex; hostile contract entry points (NUL, non-UTF-8, bidi) never stop the scan and are served as exact hex, text only when printable; the API modules hold no network client."
+    },
+    {
+      "id": "mip0018.api.undefined-keys",
+      "file": "token-indexer/test/mip0018-api.test.ts",
+      "description": "MIP Keys through the API: an undefined-only identity is 404 and listed nowhere; fields, fieldCount and commonFields leave undefined keys out; a minted identity with only undefined keys reads as never described; undefined values appear in no answer."
     },
     {
       "id": "mip0018.api.errors",

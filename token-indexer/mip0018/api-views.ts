@@ -385,14 +385,15 @@ interface IdKey { contractAddress: string; domainSep: string; kind: number }
 
 /**
  * Up to `limit` distinct (contract, domainSep, kind) of one table after `after`, by an index skip scan: one index
- * probe per identity returned, however many rows (keys, mints) each identity has.
+ * probe per identity returned, however many rows (keys, mints) each identity has. Of the field rows only the defined
+ * ones count (an identity exists only while a defined key has a value; its partial index holds only those).
  */
 async function distinctIdentities(
   ctx: ViewContext, table: "mip0018_fields" | "mip0018_mints", o: { contract?: string; after?: [string, string, number]; limit: number },
 ): Promise<IdKey[]> {
   const { sql } = ctx;
   const t = sql`${sql(ctx.schema)}.${sql(table)}`;
-  const scope = o.contract === undefined ? sql`` : sql`AND contract_address = ${buf(o.contract)}`;
+  const scope = sql`${o.contract === undefined ? sql`` : sql`AND contract_address = ${buf(o.contract)}`} ${table === "mip0018_fields" ? sql`AND defined` : sql``}`;
   const start = o.after === undefined ? sql`` : sql`AND (contract_address, domain_sep, kind) > (${buf(o.after[0])}, ${buf(o.after[1])}, ${o.after[2]}::smallint)`;
   const rows = await sql<{ contract_address: Buffer; domain_sep: Buffer; kind: number }[]>`
     WITH RECURSIVE ids AS (
@@ -624,7 +625,7 @@ async function contractKnown(ctx: ViewContext, contract: string): Promise<boolea
   const [known] = await sql<{ known: boolean }[]>`
     SELECT EXISTS (SELECT 1 FROM ${s}.mip0018_contract_actions WHERE network = ${ctx.network} AND contract_address = ${address})
         OR EXISTS (SELECT 1 FROM ${s}.mip0018_mints WHERE network = ${ctx.network} AND contract_address = ${address})
-        OR EXISTS (SELECT 1 FROM ${s}.mip0018_fields WHERE network = ${ctx.network} AND contract_address = ${address}) AS known`;
+        OR EXISTS (SELECT 1 FROM ${s}.mip0018_fields WHERE network = ${ctx.network} AND contract_address = ${address} AND defined) AS known`;
   return known?.known === true;
 }
 

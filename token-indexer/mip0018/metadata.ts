@@ -7,9 +7,10 @@
  * `symbolGroups`, amounts by `displayAmount`, marks and `standards` tags by `tokenMark` — so the Postgres path and the
  * pure adapter cannot disagree on a rule.
  *
- * "Not referenced at all" (MIP "Applying records"): an identity exists only while it has a row in
- * `mip0018_fields`. Every helper below reads identities from those rows only, so an identity whose last field was
- * deleted appears in no listing, lookup, group, display or event view — as if it had never been described — while the
+ * "Not referenced at all" (MIP "Keys", "Applying records"): an identity exists only while it has a DEFINED row in
+ * `mip0018_fields` (a common-field key, or a key of a standard it declares). Every helper below reads identities and
+ * fields from the defined rows only — undefined keys are stored but never served — so an identity without a defined
+ * key appears in no listing, lookup, group, display or event view — as if it had never been described — while the
  * chain events themselves stay in the log (position, contract, classification, reason; `chainEvents` omits the identity
  * of an accepted event that is not in its identity's current metadata history — the identity does not exist now, or the
  * event came before its last withdrawal — and never returns event bytes).
@@ -65,7 +66,7 @@ export async function listIdentities(sql: Queryable, network: string, filter: Id
     SELECT contract_address, domain_sep, kind, key, val_type, value, uint_value::text AS uint_value, usable,
            updated_block, updated_tx, updated_event, updated_record
     FROM ${sql(schema)}.mip0018_fields
-    WHERE network = ${network}
+    WHERE network = ${network} AND defined
       ${filter.contractAddress === undefined ? sql`` : sql`AND contract_address = ${buf(filter.contractAddress)}`}
       ${filter.domainSep === undefined ? sql`` : sql`AND domain_sep = ${buf(filter.domainSep)}`}
       ${filter.kind === undefined ? sql`` : sql`AND kind = ${filter.kind}`}
@@ -101,7 +102,7 @@ export async function getIdentity(sql: Queryable, ref: IdentityRef, schema = MIP
 export async function listGroups(sql: Queryable, network: string, filter: { contractAddress?: string } = {}, schema = MIP0018_SCHEMA): Promise<SymbolGroup[]> {
   const rows = await sql<{ contract_address: Buffer; domain_sep: Buffer; kind: number; value: Buffer; usable: boolean | null }[]>`
     SELECT contract_address, domain_sep, kind, value, usable FROM ${sql(schema)}.mip0018_fields
-    WHERE network = ${network} AND key = ${SYMBOL_KEY} AND usable
+    WHERE network = ${network} AND key = ${SYMBOL_KEY} AND usable AND defined
       ${filter.contractAddress === undefined ? sql`` : sql`AND contract_address = ${buf(filter.contractAddress)}`}`;
   const identities: GroupableIdentity[] = rows.map((r) => ({
     network,
@@ -153,7 +154,7 @@ export async function tokenMarkOf(sql: Queryable, ref: IdentityRef, schema = MIP
 export async function listMetadataContracts(sql: Queryable, network: string, schema = MIP0018_SCHEMA): Promise<Array<{ contractAddress: string; identities: number }>> {
   const rows = await sql<{ contract_address: Buffer; identities: number }[]>`
     SELECT contract_address, count(DISTINCT (domain_sep, kind))::int AS identities FROM ${sql(schema)}.mip0018_fields
-    WHERE network = ${network} GROUP BY contract_address ORDER BY contract_address`;
+    WHERE network = ${network} AND defined GROUP BY contract_address ORDER BY contract_address`;
   return rows.map((r) => ({ contractAddress: toHex(r.contract_address), identities: r.identities }));
 }
 
@@ -260,14 +261,15 @@ export async function identityCommons(
   const described = await sql<{ c: string; d: string; k: number }[]>`
     SELECT i.c, i.d, i.k FROM unnest(${cs}::text[], ${ds}::text[], ${ks}::text[]::int[]) AS i(c, d, k)
     WHERE EXISTS (SELECT 1 FROM ${s}.mip0018_fields f
-                  WHERE f.network = ${network} AND f.contract_address = decode(i.c, 'hex') AND f.domain_sep = decode(i.d, 'hex') AND f.kind = i.k)`;
+                  WHERE f.network = ${network} AND f.contract_address = decode(i.c, 'hex') AND f.domain_sep = decode(i.d, 'hex') AND f.kind = i.k
+                    AND f.defined)`;
   for (const r of described) out.get(`${r.c}/${r.d}/${r.k}`)!.described = true;
   const rows = await sql<FieldRow[]>`
     SELECT ${FIELD_COLUMNS(sql)}
     FROM unnest(${cs}::text[], ${ds}::text[], ${ks}::text[]::int[]) AS i(c, d, k)
     JOIN ${s}.mip0018_fields f
       ON f.network = ${network} AND f.contract_address = decode(i.c, 'hex') AND f.domain_sep = decode(i.d, 'hex') AND f.kind = i.k
-     AND f.key IN (${COMMON_KEY_BYTES[0]!}, ${COMMON_KEY_BYTES[1]!}, ${COMMON_KEY_BYTES[2]!}, ${COMMON_KEY_BYTES[3]!})
+     AND f.key IN (${COMMON_KEY_BYTES[0]!}, ${COMMON_KEY_BYTES[1]!}, ${COMMON_KEY_BYTES[2]!}, ${COMMON_KEY_BYTES[3]!}) AND f.defined
     ORDER BY f.contract_address, f.domain_sep, f.kind, f.updated_block, f.updated_tx, f.updated_event, f.updated_record`;
   for (const r of rows) out.get(identityKeyOf({ contractAddress: toHex(r.contract_address), domainSep: toHex(r.domain_sep), kind: r.kind }))!.fields.set(toHex(r.key), fieldOf(r));
   return out;
@@ -314,7 +316,7 @@ export async function identityFieldsPage(
   sql: Queryable, ref: IdentityRef, o: { limit: number; afterKeyHex?: string }, schema = MIP0018_SCHEMA,
 ): Promise<{ fields: Field[]; more: boolean; count: number }> {
   const s = sql(schema);
-  const at = sql`f.network = ${ref.network} AND f.contract_address = ${buf(ref.contractAddress)} AND f.domain_sep = ${buf(ref.domainSep)} AND f.kind = ${ref.kind}`;
+  const at = sql`f.network = ${ref.network} AND f.contract_address = ${buf(ref.contractAddress)} AND f.domain_sep = ${buf(ref.domainSep)} AND f.kind = ${ref.kind} AND f.defined`;
   const rows = await sql<FieldRow[]>`
     SELECT ${FIELD_COLUMNS(sql)} FROM ${s}.mip0018_fields f
     WHERE ${at} ${o.afterKeyHex === undefined ? sql`` : sql`AND f.key > ${buf(o.afterKeyHex)}`}
@@ -332,7 +334,7 @@ export async function boundedGroup(
   sql: Queryable, ref: IdentityRef, symbol: Uint8Array, limit: number, schema = MIP0018_SCHEMA,
 ): Promise<(SymbolGroup & { memberCount: number }) | undefined> {
   const s = sql(schema);
-  const at = sql`network = ${ref.network} AND contract_address = ${buf(ref.contractAddress)} AND key = ${SYMBOL_KEY} AND usable AND value = ${Buffer.from(symbol)}`;
+  const at = sql`network = ${ref.network} AND contract_address = ${buf(ref.contractAddress)} AND key = ${SYMBOL_KEY} AND usable AND defined AND value = ${Buffer.from(symbol)}`;
   const [c] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ${s}.mip0018_fields WHERE ${at}`;
   const memberCount = c?.n ?? 0;
   if (memberCount < 2) return undefined;
@@ -352,7 +354,7 @@ export async function describedKinds(sql: Queryable, network: string, contractAd
   for (const kind of [1, 2, 3]) {
     const [r] = await sql<{ e: boolean }[]>`
       SELECT EXISTS (SELECT 1 FROM ${s}.mip0018_fields WHERE network = ${network} AND contract_address = ${buf(contractAddress)}
-                     AND domain_sep = ${buf(domainSep)} AND kind = ${kind}) AS e`;
+                     AND domain_sep = ${buf(domainSep)} AND kind = ${kind} AND defined) AS e`;
     if (r?.e === true) out.push(kind);
   }
   return out;

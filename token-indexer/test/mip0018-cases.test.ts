@@ -29,10 +29,10 @@ import { tokenColor } from "../mip0018/color.ts";
 import { eventCounts, listEvents } from "../mip0018/events.ts";
 import { getIdentity, listGroups, listIdentities, tokenMarkOf } from "../mip0018/metadata.ts";
 import { Mip0018Scanner } from "../mip0018/scan.ts";
-import { COMMON_KEY_HEX, type IdentityState, parseStandards } from "../mip0018/state.ts";
+import { COMMON_KEY_HEX, type IdentityState, isCommonKey, parseStandards } from "../mip0018/state.ts";
 import { listColors, lookupColor } from "../mip0018/tokens.ts";
 import { EVENT_NAME } from "../vendor/mip0018/codec/src/index.ts";
-import { caseCopyProblems, readExpectation, readIndexSummary, upstreamSha } from "./helpers/case-source.ts";
+import { caseCopyProblems, notListedReferenceEvents, readExpectation, readIndexSummary, upstreamSha } from "./helpers/case-source.ts";
 
 const NET = "stagenet";
 const V1 = Buffer.from(EVENT_NAME).toString("hex");
@@ -91,7 +91,8 @@ async function caseDifferences(sql: UmbraDBSql, schema: string, contract: string
     if (canon(commonOf(g)) !== canon(e.common)) d.push(`identity ${k}: common ${canon(commonOf(g))}, expected ${canon(e.common)}`);
     if (e.fields !== undefined) {
       const gf = Object.fromEntries([...g.fields].map(([key, f]) => [key, { valType: f.valType, value_hex: Buffer.from(f.value).toString("hex"), ...(e.fields![key]?.usable === undefined ? {} : { usable: f.usable }) }]));
-      const ef = Object.fromEntries(Object.entries(e.fields).map(([key, f]) => [key, { valType: f.valType, value_hex: f.value_hex, ...(f.usable === undefined ? {} : { usable: f.usable }) }]));
+      // Served: the defined keys only (MIP "Keys"; the scan declares no standard that defines keys, so the common fields).
+      const ef = Object.fromEntries(Object.entries(e.fields).filter(([key]) => isCommonKey(key)).map(([key, f]) => [key, { valType: f.valType, value_hex: f.value_hex, ...(f.usable === undefined ? {} : { usable: f.usable }) }]));
       if (canon(gf) !== canon(ef)) d.push(`identity ${k}: fields differ`);
     }
   }
@@ -385,7 +386,10 @@ describe("Stagenet case comparison — gaps", () => {
     };
     const rows: Record<string, number> = {};
     for (const c of ["C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C10", "U1"]) {
-      const ref = readIndexSummary<IndexSummary>(c === "U1" ? "U1/index-summary.json" : "IDX/index-summary.json").events[contractOf(c)] ?? [];
+      const file = c === "U1" ? "U1/index-summary.json" : "IDX/index-summary.json";
+      const notListed = notListedReferenceEvents(file);
+      const ref = (readIndexSummary<IndexSummary>(file).events[contractOf(c)] ?? [])
+        .filter((e) => !notListed.has(`${contractOf(c)}/${e.block.height}/${e.txIndex}/${e.eventIndex}`));
       const perTx = new Map<string, { height: number; accepted: number; rejected: number; firstEventIndex: number }>();
       for (const e of ref) {
         const t = perTx.get(e.txHash) ?? { height: e.block.height, accepted: 0, rejected: 0, firstEventIndex: e.eventIndex };
@@ -401,12 +405,14 @@ describe("Stagenet case comparison — gaps", () => {
       expect(items.every((i) => stepTx.has(i.txHash)), c).toBe(true);
       rows[c] = items.length;
     }
-    expect(rows).toEqual({ C01: 1, C02: 1, C03: 1, C04: 1, C05: 3, C06: 5, C07: 18, C08: 1, C10: 1, U1: 1 });
-    // C07: 22 event-emitting steps, the four I-steps (other names) are not metadata transactions.
+    expect(rows).toEqual({ C01: 1, C02: 1, C03: 1, C04: 1, C05: 3, C06: 5, C07: 16, C08: 1, C10: 1, U1: 1 });
+    // C07: 22 event-emitting steps.
     const c07Steps = caseIndex.cases.C07!.steps.filter((s) => (s.observedEventIds ?? []).length > 0).map((s) => s.id);
     expect(c07Steps).toHaveLength(22);
     const c07Tx = new Set((await all(full.idx, contractOf("C07"))).map((i) => i.txHash));
-    expect(c07Steps.filter((id) => !c07Tx.has(caseIndex.cases.C07!.steps.find((s) => s.id === id)!.txHash ?? ""))).toEqual(["I1a", "I1b", "I2a", "I2b"]);
+    // Not metadata transactions: the four I-steps (other names) and A2a/A2b (only an undefined key while the identity
+    // did not exist yet).
+    expect(c07Steps.filter((id) => !c07Tx.has(caseIndex.cases.C07!.steps.find((s) => s.id === id)!.txHash ?? ""))).toEqual(["A2a", "A2b", "I1a", "I1b", "I2a", "I2b"]);
     // C09 (C01's contract): only C01's publish.
     expect((await all(full.idx, contractOf("C09"))).map((i) => i.txHash)).toEqual([caseIndex.cases.C01!.steps.find((s) => s.id === "publish")!.txHash]);
     // C05 bronze: described, never minted → no mint row and no activity for its color.

@@ -126,6 +126,51 @@ describe("per-key tombstones (MIP Applying records)", () => {
   });
 });
 
+describe("defined keys (MIP Keys)", () => {
+  it("[[mip0018.state.defined-keys]] only defined keys are served and prove existence: `foo = \"x\"` is stored, never served, and makes no identity exist; deleting the last defined key withdraws the identity although undefined keys remain; a standard's key is served only while the identity declares that standard", () => {
+    const S = "test-std";
+    const kHex = toHex(enc("k"));
+    const s = new MetadataState(new Map([[S, new Set([kHex])]]));
+    const emit = emitter(s);
+    // S10: an undefined key alone: the event is accepted, the key stored, the identity does not exist.
+    expect(emit(3, [record.utf8("foo", "x")]).result).toBe("accept");
+    expect(s.identity(ref(3))).toBeUndefined();
+    expect(s.identities()).toEqual([]);
+    expect([...s.storedFields(ref(3))!.keys()].map((k) => Buffer.from(k, "hex").toString())).toEqual(["foo"]);
+    expect(tokenMark({ fields: s.identity(ref(3))?.fields, contractRejections: [] }).mark).toBe("none");
+    // A defined key makes it exist; only defined keys are served.
+    emit(3, [record.utf8("name", "Acme"), record.utf8("symbol", "ACME")]);
+    expect(keys(s, ref(3))).toEqual(["name", "symbol"]);
+    // A key of standard S is served only while `standards` declares S.
+    emit(3, [record.utf8("k", "v")]);
+    expect(keys(s, ref(3))).toEqual(["name", "symbol"]);
+    emit(3, [record.utf8("standards", `mip-0004 ${S}`)]);
+    expect(keys(s, ref(3))).toEqual(["name", "symbol", "k", "standards"]);
+    emit(3, [record.utf8("standards", "mip-0004")]);
+    expect(keys(s, ref(3))).toEqual(["name", "symbol", "standards"]);
+    emit(3, [record.utf8("standards", `${S}  bad`)]); // an unusable `standards` declares nothing
+    expect(keys(s, ref(3))).toEqual(["name", "symbol", "standards"]);
+    emit(3, [record.utf8("standards", S)]);
+    expect(keys(s, ref(3))).toEqual(["name", "symbol", "k", "standards"]);
+    // Deleting the defined keys: while `k` counts (S declared) it keeps the identity in existence; dropping S then
+    // withdraws it, although `foo` and `k` remain stored.
+    emit(3, [record.tombstone("name"), record.tombstone("symbol")]);
+    expect(keys(s, ref(3))).toEqual(["k", "standards"]);
+    emit(3, [record.tombstone("standards")]);
+    expect(s.identity(ref(3))).toBeUndefined();
+    expect(s.identities()).toEqual([]);
+    expect(s.groups()).toEqual([]);
+    expect([...s.storedFields(ref(3))!.keys()].map((k) => Buffer.from(k, "hex").toString()).sort()).toEqual(["foo", "k"]);
+    // Without the standard in the registry (the MIPs' registry is empty today), `k` is never served.
+    const plain = new MetadataState();
+    emitter(plain)(3, [record.utf8("standards", S), record.utf8("k", "v")]);
+    expect(keys(plain, ref(3))).toEqual(["standards"]);
+    // A rollback recomputes served fields from the stored ones (back to block 4: S declared).
+    s.rollbackTo(NET, 4);
+    expect(keys(s, ref(3))).toEqual(["name", "symbol", "k", "standards"]);
+  });
+});
+
 describe("common fields (MIP Common fields)", () => {
   it("usable forms, no fallback to an earlier usable value, no defaults", () => {
     expect(fieldUsable(COMMON_KEY_HEX.name, 1, enc("Acme"))).toBe(true);

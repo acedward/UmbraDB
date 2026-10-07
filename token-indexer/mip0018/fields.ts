@@ -10,10 +10,12 @@
  * - `delete` (a Null record, a per-key tombstone) → the field's row is deleted; a Null for a field without a row
  *   deletes nothing (no effect).
  *
- * An identity exists only while it has a row. Nothing else is stored for it: the token list entry of a kind-3
- * identity, a contract's metadata entry and the symbol groups are DERIVED from these rows by the read helpers
- * (`metadata.ts`), so they disappear with the identity's last row (the last tombstone removes the shared entries),
- * while mints, seen colors and NIGHT/DUST rows (other facts, other tables) stay.
+ * Every key is stored with a `defined` flag (MIP "Keys": a common-field key, or a key of a standard the identity
+ * currently declares; `isDefinedKey`; a `standards` change recomputes the flag of the keys standards define). An
+ * identity exists only while it has a DEFINED row; undefined keys are kept but never served and never make it exist.
+ * Nothing else is stored for it: the token list entry of a kind-3 identity, a contract's metadata entry and the symbol
+ * groups are DERIVED from the defined rows by the read helpers (`metadata.ts`), so they disappear with the identity's
+ * last defined row, while mints, seen colors and NIGHT/DUST rows (other facts, other tables) stay.
  *
  * - Chain order: events are written strictly after the network's last stored event (`ChainOrderError` otherwise),
  *   inside the caller's transaction — the scan writes a block's events, its field changes and its cursor in ONE
@@ -25,10 +27,11 @@
  *   `recomputeFields` rebuilds a whole network the same way (repair; test oracle).
  * - Only `accept` rows are ever applied; `reject` rows feed the mark, `ignore` rows nothing.
  * - Metadata history (MIP "Applying records": a withdrawn identity MUST NOT be referenced in metadata history, and "a
- *   later non-Null record describes it again, with only that field"): when a record deletes an identity's LAST field
- *   row, its withdrawal position is recorded (`mip0018_withdrawals`) and its listed accepted events are deleted from
- *   `mip0018_listed_events`; after each accepted event, the event is listed when its identity has a field. So an
- *   identity's history starts at its last revival: an event that withdrew it, a Null-only event while it had no field,
+ *   later non-Null record describes it again, with only that field"): when a record leaves an identity without a
+ *   defined row (it deleted the last one, or dropped the standard that defined the remaining ones), its withdrawal
+ *   position is recorded (`mip0018_withdrawals`) and its listed accepted events are deleted from
+ *   `mip0018_listed_events`; after each accepted event, the event is listed when its identity exists. So an
+ *   identity's history starts at its last revival: an event that withdrew it, an event while it did not exist,
  *   and everything before its last withdrawal are never listed. Every rejected event is listed (it describes no
  *   identity). Activity reads only listed events (`activity.ts`). Each listed row is deleted at most once, so a
  *   withdrawal costs at most the rows its identity's current description added.
@@ -37,7 +40,10 @@ import type { ISql } from "postgres";
 import { assertValidSchemaName } from "../../src/postgres/client.js";
 import { NAME_SIZE, PAYLOAD_SIZE, zeroExtend } from "../vendor/mip0018/codec/src/index.ts";
 import { classifyMip0018Event } from "./classify.ts";
-import { ChainOrderError, type ChainPosition, recordEffects } from "./state.ts";
+import {
+  ChainOrderError, type ChainPosition, COMMON_KEY_HEX, isDefinedKey, parseStandards, recordEffects, STANDARD_KEYS, standardDefinedKeys,
+  type StandardKeys,
+} from "./state.ts";
 
 /** Any postgres.js query function: a client, a reserved connection or a transaction. */
 export type Queryable = ISql<{ bigint: bigint }>;
@@ -69,7 +75,17 @@ export class MetadataStoreError extends Error {
   override name = "MetadataStoreError";
 }
 
+/** Options of the apply path. */
+export interface ApplyOptions {
+  /**
+   * The keys standards define (default: `STANDARD_KEYS`, the MIPs' registry). The `defined` flag of each stored row is
+   * computed with it; a different registry needs a recompute (`recomputeFields`).
+   */
+  standardKeys?: StandardKeys;
+}
+
 const hexBuf = (h: string): Buffer => Buffer.from(h.replace(/^0x/, "").toLowerCase(), "hex");
+const STANDARDS_KEY = hexBuf(COMMON_KEY_HEX.standards);
 
 /**
  * The event-log row of an observed event, classified by `classifyMip0018Event` (MIP "Event", "Consuming": a shorter
@@ -123,7 +139,9 @@ const comparePosition = (a: ChainPosition, b: ChainPosition): number => a.block 
  * transaction). Every event must come after the previous one on its network — after the network's last stored event
  * and after the previous row of `rows` (MIP "Applying records": state = accepted events applied in chain order).
  */
-export async function writeEvents(tx: Queryable, schema: string, rows: readonly EventRow[]): Promise<{ events: number; accepted: number }> {
+export async function writeEvents(
+  tx: Queryable, schema: string, rows: readonly EventRow[], opts: ApplyOptions = {},
+): Promise<{ events: number; accepted: number }> {
   assertValidSchemaName(schema);
   const last = new Map<string, ChainPosition | undefined>();
   let accepted = 0;
@@ -136,7 +154,7 @@ export async function writeEvents(tx: Queryable, schema: string, rows: readonly 
     last.set(row.network, at);
     await tx`INSERT INTO ${tx(schema)}.mip0018_events ${tx(row as unknown as Record<string, unknown>)}`;
     if (row.classification === "accept") {
-      await applyAccepted(tx, schema, row);
+      await applyAccepted(tx, schema, row, opts.standardKeys ?? STANDARD_KEYS);
       accepted++;
     } else if (row.classification === "reject") {
       await listEvent(tx, schema, row, null);
@@ -179,16 +197,42 @@ async function listEvent(
             ${identity === null ? "reject" : "accept"}, ${identity?.domainSep ?? null}, ${identity?.kind ?? null})`;
 }
 
-async function hasField(tx: Queryable, schema: string, id: IdentityKey): Promise<boolean> {
+/** Whether the identity exists: at least one DEFINED key has a value (MIP "Keys"; undefined keys prove nothing). */
+async function hasDefinedField(tx: Queryable, schema: string, id: IdentityKey): Promise<boolean> {
   const rows = await tx`
     SELECT 1 FROM ${tx(schema)}.mip0018_fields
-    WHERE network = ${id.network} AND contract_address = ${id.contract} AND domain_sep = ${id.domainSep} AND kind = ${id.kind} LIMIT 1`;
+    WHERE network = ${id.network} AND contract_address = ${id.contract} AND domain_sep = ${id.domainSep} AND kind = ${id.kind}
+      AND defined LIMIT 1`;
   return rows.length > 0;
 }
 
+/** The standards the identity currently declares: the identifiers of its stored usable `standards` row. */
+async function storedDeclaredStandards(tx: Queryable, schema: string, id: IdentityKey): Promise<string[]> {
+  const [r] = await tx<{ value: Buffer; usable: boolean | null }[]>`
+    SELECT value, usable FROM ${tx(schema)}.mip0018_fields
+    WHERE network = ${id.network} AND contract_address = ${id.contract} AND domain_sep = ${id.domainSep} AND kind = ${id.kind}
+      AND key = ${STANDARDS_KEY}`;
+  return r?.usable === true ? (parseStandards(r.value) ?? []) : [];
+}
+
 /**
- * The identity's last field row was just deleted: record the withdrawal's position and delete the
- * identity's listed accepted events — its metadata history is gone (MIP "Applying records").
+ * After the identity's `standards` changed: recomputes `defined` for its rows of keys some standard defines (bounded by
+ * the registry, never by the identity's number of keys). A common-field key stays defined.
+ */
+async function refreshStandardKeys(tx: Queryable, schema: string, id: IdentityKey, declared: readonly string[], standardKeys: StandardKeys): Promise<void> {
+  const keys = [...standardDefinedKeys(standardKeys)];
+  if (keys.length === 0) return;
+  const served = keys.filter((k) => isDefinedKey(k, declared, standardKeys));
+  await tx`
+    UPDATE ${tx(schema)}.mip0018_fields
+    SET defined = (encode(key, 'hex') = ANY(${tx.array(served)}::text[]))
+    WHERE network = ${id.network} AND contract_address = ${id.contract} AND domain_sep = ${id.domainSep} AND kind = ${id.kind}
+      AND encode(key, 'hex') = ANY(${tx.array(keys)}::text[])`;
+}
+
+/**
+ * The identity's last defined field stopped counting (deleted, or its standard was dropped): record the withdrawal's
+ * position and delete the identity's listed accepted events — its metadata history is gone (MIP "Applying records").
  */
 async function withdraw(tx: Queryable, schema: string, id: IdentityKey, at: ChainPosition, record: number): Promise<void> {
   const t = tx(schema);
@@ -204,12 +248,13 @@ async function withdraw(tx: Queryable, schema: string, id: IdentityKey, at: Chai
 }
 
 /**
- * Applies one accepted event's records to the latest-value rows: the codec decodes the stored bytes again, the pure
- * module's `recordEffects` gives the ordered set/delete effects, and each effect becomes one upsert or delete. A
- * delete that leaves the identity without a field is a withdrawal; the event is listed as metadata history when the
- * identity has a field after it.
+ * Applies one accepted event's records to the latest-value rows: `classifyMip0018Event` decodes the stored bytes
+ * again, the pure module's `recordEffects` gives the ordered set/delete effects, and each effect becomes one upsert or
+ * delete of a row with its `defined` flag (`isDefinedKey` with the identity's declared standards at that record). The
+ * identity exists while a defined row exists; a record after which it no longer exists is a withdrawal; the event is
+ * listed as metadata history when the identity exists after it.
  */
-async function applyAccepted(tx: Queryable, schema: string, row: StoredAccepted): Promise<void> {
+async function applyAccepted(tx: Queryable, schema: string, row: StoredAccepted, standardKeys: StandardKeys): Promise<void> {
   const c = classifyMip0018Event({ type: row.event_type, name: row.name, payload: row.payload });
   const at = positionOf(row);
   if (c.result !== "accept")
@@ -218,29 +263,46 @@ async function applyAccepted(tx: Queryable, schema: string, row: StoredAccepted)
     throw new MetadataStoreError(`stored event ${JSON.stringify(at)} on ${row.network}: its identity columns differ from its payload header`);
   const t = tx(schema);
   const id: IdentityKey = { network: row.network, contract: row.contract_address, domainSep: row.domain_sep, kind: row.kind };
+  const withStandards = standardKeys.size > 0; // with no standard defining keys, `standards` changes nothing else
+  let declared = withStandards ? await storedDeclaredStandards(tx, schema, id) : [];
+  let exists = await hasDefinedField(tx, schema, id);
   for (const e of recordEffects(c.records)) {
     const key = Buffer.from(e.key);
+    const isStandards = e.keyHex === COMMON_KEY_HEX.standards;
     if (e.op === "delete") {
-      const deleted = await tx`
+      const deleted = await tx<{ defined: boolean }[]>`
         DELETE FROM ${t}.mip0018_fields
-        WHERE network = ${id.network} AND contract_address = ${id.contract} AND domain_sep = ${id.domainSep} AND kind = ${id.kind} AND key = ${key}`;
-      if (deleted.count > 0 && !(await hasField(tx, schema, id))) await withdraw(tx, schema, id, at, e.record);
+        WHERE network = ${id.network} AND contract_address = ${id.contract} AND domain_sep = ${id.domainSep} AND kind = ${id.kind} AND key = ${key}
+        RETURNING defined`;
+      if (deleted.length === 0) continue; // a Null for a key without a value changes nothing
+      if (isStandards && withStandards) {
+        declared = [];
+        await refreshStandardKeys(tx, schema, id, declared, standardKeys);
+      }
+      if (exists && (deleted[0]!.defined || (isStandards && withStandards)) && !(await hasDefinedField(tx, schema, id))) {
+        exists = false;
+        await withdraw(tx, schema, id, at, e.record);
+      }
       continue;
     }
+    if (isStandards && withStandards) declared = e.usable === true ? (parseStandards(e.value) ?? []) : [];
+    const defined = isDefinedKey(e.keyHex, declared, standardKeys);
     const uint = e.integer === undefined ? null : e.integer.toString();
     const usable = e.usable ?? null;
     await tx`
       INSERT INTO ${t}.mip0018_fields
-        (network, contract_address, domain_sep, kind, key, val_type, value, uint_value, usable,
+        (network, contract_address, domain_sep, kind, key, val_type, value, uint_value, usable, defined,
          updated_block, updated_tx, updated_event, updated_record)
-      VALUES (${id.network}, ${id.contract}, ${id.domainSep}, ${id.kind}, ${key}, ${e.valType}, ${Buffer.from(e.value)}, ${uint}, ${usable},
+      VALUES (${id.network}, ${id.contract}, ${id.domainSep}, ${id.kind}, ${key}, ${e.valType}, ${Buffer.from(e.value)}, ${uint}, ${usable}, ${defined},
               ${at.block}, ${at.tx}, ${at.event}, ${e.record})
       ON CONFLICT (network, contract_address, domain_sep, kind, key) DO UPDATE SET
         val_type = EXCLUDED.val_type, value = EXCLUDED.value, uint_value = EXCLUDED.uint_value, usable = EXCLUDED.usable,
-        updated_block = EXCLUDED.updated_block, updated_tx = EXCLUDED.updated_tx,
+        defined = EXCLUDED.defined, updated_block = EXCLUDED.updated_block, updated_tx = EXCLUDED.updated_tx,
         updated_event = EXCLUDED.updated_event, updated_record = EXCLUDED.updated_record`;
+    if (isStandards && withStandards) await refreshStandardKeys(tx, schema, id, declared, standardKeys);
+    if (defined) exists = true; // `standards` itself is a common-field key: setting it keeps the identity in existence
   }
-  if (await hasField(tx, schema, id)) await listEvent(tx, schema, row, id);
+  if (exists) await listEvent(tx, schema, row, id);
 }
 
 /** Deletes everything the apply path derived for one identity: fields, withdrawal row, listed accepted events. */
@@ -253,14 +315,16 @@ async function clearIdentity(tx: Queryable, schema: string, id: IdentityKey): Pr
 }
 
 /** Re-applies, in chain order, the stored accepted events of one identity (its rows must be gone already). */
-async function replayIdentity(tx: Queryable, schema: string, network: string, contract: Buffer, domainSep: Buffer, kind: number): Promise<number> {
+async function replayIdentity(
+  tx: Queryable, schema: string, network: string, contract: Buffer, domainSep: Buffer, kind: number, standardKeys: StandardKeys,
+): Promise<number> {
   const events = await tx<StoredAccepted[]>`
     SELECT network, block_height, tx_index, event_index, contract_address, event_type, name, payload, domain_sep, kind
     FROM ${tx(schema)}.mip0018_events
     WHERE network = ${network} AND classification = 'accept'
       AND contract_address = ${contract} AND domain_sep = ${domainSep} AND kind = ${kind}
     ORDER BY block_height, tx_index, event_index`;
-  for (const e of events) await applyAccepted(tx, schema, e);
+  for (const e of events) await applyAccepted(tx, schema, e, standardKeys);
   return events.length;
 }
 
@@ -272,7 +336,7 @@ async function replayIdentity(tx: Queryable, schema: string, network: string, co
  * same replay, so a removed withdrawal lists the identity's earlier history again exactly as before it.
  */
 export async function removeEventsAbove(
-  tx: Queryable, schema: string, network: string, height: number,
+  tx: Queryable, schema: string, network: string, height: number, opts: ApplyOptions = {},
 ): Promise<{ removedEvents: number; recomputedIdentities: number; replayedEvents: number }> {
   assertValidSchemaName(schema);
   if (!Number.isSafeInteger(height) || height < -1) throw new MetadataStoreError(`height must be an integer ≥ -1, got ${height}`);
@@ -286,7 +350,7 @@ export async function removeEventsAbove(
   let replayedEvents = 0;
   for (const id of touched) {
     await clearIdentity(tx, schema, { network, contract: id.contract_address, domainSep: id.domain_sep, kind: id.kind });
-    replayedEvents += await replayIdentity(tx, schema, network, id.contract_address, id.domain_sep, id.kind);
+    replayedEvents += await replayIdentity(tx, schema, network, id.contract_address, id.domain_sep, id.kind, opts.standardKeys ?? STANDARD_KEYS);
   }
   return { removedEvents: removed.count, recomputedIdentities: touched.length, replayedEvents };
 }
@@ -296,7 +360,9 @@ export async function removeEventsAbove(
  * identity in chain order), with the withdrawal rows and the listed events (rejected events listed again from the log).
  * A repair tool and a test oracle: on a consistent store it changes nothing.
  */
-export async function recomputeFields(tx: Queryable, schema: string, network: string): Promise<{ identities: number; replayedEvents: number }> {
+export async function recomputeFields(
+  tx: Queryable, schema: string, network: string, opts: ApplyOptions = {},
+): Promise<{ identities: number; replayedEvents: number }> {
   assertValidSchemaName(schema);
   const t = tx(schema);
   await tx`DELETE FROM ${t}.mip0018_fields WHERE network = ${network}`;
@@ -310,6 +376,6 @@ export async function recomputeFields(tx: Queryable, schema: string, network: st
     SELECT DISTINCT contract_address, domain_sep, kind FROM ${t}.mip0018_events
     WHERE network = ${network} AND classification = 'accept' ORDER BY contract_address, domain_sep, kind`;
   let replayedEvents = 0;
-  for (const id of ids) replayedEvents += await replayIdentity(tx, schema, network, id.contract_address, id.domain_sep, id.kind);
+  for (const id of ids) replayedEvents += await replayIdentity(tx, schema, network, id.contract_address, id.domain_sep, id.kind, opts.standardKeys ?? STANDARD_KEYS);
   return { identities: ids.length, replayedEvents };
 }

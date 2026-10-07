@@ -10,8 +10,10 @@ metadata in Postgres, and serves it as a read-only JSON API and an explorer page
   against its head `338ea194bbe7c4e5d1829234a503b7c1b11ebf0f`): `Misc` events named exactly
   `mip-0018:token-metadata[v1]`, the payload checks, value types, keys that MUST be valid UTF-8 (an event with any
   other key is rejected whole; the vendored codec checks values only, UmbraDB's `mip0018/classify.ts` adds the key
-  check), latest value per key, **per-key tombstones** (a Null
-  record deletes its field; an identity with no field left is not referenced anywhere), common fields, symbol groups,
+  check), latest value per key, **per-key tombstones** (a Null record deletes its field), **defined keys only** (every
+  key is stored, but only the common fields and keys of a standard the token declares are served, and only they make
+  a token exist; an identity without one is not referenced anywhere), common fields incl. `image` / `image_sha256`
+  (usable as a URI / exactly 32 bytes), symbol groups,
   the color lookup (`rawTokenType(domainSep, contractAddress)`), zero extension of trimmed ledger data. An event with
   any other name (other versions of this one included) is ignored like any other `Misc` event.
 - **Beyond the MIP**: hard-coded NIGHT and DUST rows, "seen" tokens (any color in public data, also without a known
@@ -161,7 +163,7 @@ Other copies: the explorer's Outfit font and icon come from the explorer in aced
 | Authority | MIP-0018 as in PR #372 only (followed as it moves), with per-key tombstones. |
 | Vendoring | The reference codec, vectors and runner, verbatim (`vendor/mip0018/SOURCE.md`); the state rules are UmbraDB's own. |
 | Events | Decoded from archived raw transactions, applied parts only, with the ledger's `decode_event` rule; the indexer's `contractEvents` is a test cross-check; logs the raw transaction does not show are stored as `unresolved`, never applied. |
-| State | Latest value per key, no history; a tombstone deletes its key; an identity with no keys is not referenced; shared entries derived from the field rows. |
+| State | Latest value per key, no history; a tombstone deletes its key; every key stored with a `defined` flag, only defined keys served; an identity without a defined key is not referenced; shared entries derived from the defined field rows. |
 | Groups | As the MIP defines them, two or more members. |
 | Scope extras | NIGHT/DUST rows, seen tokens, activity with Bech32m, ✓/⚠ marks with `standards` tags. |
 | Schema | Its own `mip0018` migration lineage (`src/postgres/migrations/mip0018/`). |

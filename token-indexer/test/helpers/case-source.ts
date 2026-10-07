@@ -107,3 +107,14 @@ export function readIndexSummary<T extends { events: Record<string, SummaryEvent
   }
   return summary;
 }
+
+/**
+ * Accepted reference events that are not metadata history in UmbraDB (`<range>/index-summary-differences.json`
+ * `notListed`: they set only undefined keys while their identity did not exist), as `contract/height/tx/event`.
+ */
+export function notListedReferenceEvents(path: string): Set<string> {
+  const diffUrl = new URL(path.replace(/\.json$/, "-differences.json"), UMBRADB_CASES_DIR);
+  if (!existsSync(diffUrl)) return new Set();
+  const diff = JSON.parse(readFileSync(diffUrl, "utf8")) as { notListed?: Array<{ contractAddress: string; height: number; txIndex: number; eventIndex: number }> };
+  return new Set((diff.notListed ?? []).map((e) => `${e.contractAddress}/${e.height}/${e.txIndex}/${e.eventIndex}`));
+}
