@@ -1,5 +1,5 @@
 {
-  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 119) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
+  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 127) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
   "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` — those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early — that would re-open the exact self-skip hole this manifest closes.",
   "required": [
     {
@@ -540,7 +540,7 @@
     {
       "id": "mip0018.conformance.no-network-no-code",
       "file": "token-indexer/test/mip0018-conformance.test.ts",
-      "description": "the indexer's runtime code and the vendored codec contain no network client, no dynamic code and no child process (MIP C-024, C-031); positive controls for every forbidden form; every module loaded through the runtime's relative import closure is on an exact allowlist, with negative controls (axios, undici, got, node:net, child_process, dynamic package imports, a path into node_modules)."
+      "description": "the indexer's runtime code and the vendored codec contain no network client, no dynamic code and no child process (MIP C-024, C-031); positive controls for every forbidden form; every module loaded through the runtime's relative import closure is on an exact allowlist, with negative controls (axios, undici, got, node:net, child_process, dynamic package imports, a path into node_modules); the one exception is the image fetcher, held to its own exact allowlist (node:dns/promises, node:net, node:tls added) and to an HTTP client import and socket modules as its only network forms; network imports anywhere else are refused."
     },
     {
       "id": "mip0018.scan.hostile-entry-points",
@@ -596,6 +596,46 @@
       "id": "mip0018.activity.bounded-cost",
       "file": "token-indexer/test/mip0018-activity.test.ts",
       "description": "100 000 metadata transactions of a withdrawn identity behind one visible rejected event, and 100 000 visible ones of a sibling: with no statistics, with statistics taken while the listed events held two live rows on pages that later fill again, and with fresh statistics, the color's and the contract's activity pages in both orders read at most 100 + 20 buffers per row a page may read (auto_explain); in the stale state the listing's skip-scan step and a primary-key lookup planned without the listings' settings read the whole listed table (negative control); before the first vacuum after the withdrawal, its dead index entries add at most one buffer per 20 hidden rows; the API answers within a generous latency budget; the fast seeding equals the real apply path on a small count; the withdrawal that hides 100 000 listed rows is one bounded delete."
+    },
+    {
+      "id": "mip0018.images.address-policy",
+      "file": "token-indexer/test/mip0018-images.test.ts",
+      "description": "the image fetcher's address policy refuses unspecified, loopback, private (RFC 1918, RFC 4193), shared/CGNAT, link-local, multicast, documentation, benchmarking, reserved and cloud-metadata addresses in IPv4 and IPv6, checks the IPv4 address inside IPv4-mapped, NAT64 and 6to4 addresses, allows only IPv6 global unicast, refuses unparseable text and allows public unicast; raster types come from magic bytes only (SVG and HTML are not images); a hash that differs decides before the type; image keys follow the MIP's usability rules (a 31-byte image_sha256 is unusable); the rate limiter spaces starts per key."
+    },
+    {
+      "id": "mip0018.images.statuses",
+      "file": "token-indexer/test/mip0018-images.test.ts",
+      "description": "against a local HTTP server, the background fetcher yields verified (hash set and equal), unverified (no usable hash), mismatch (hash differs, even for a raster), not-image (SVG, SVG served as image/png, HTML, empty) and unreachable (404, unknown name, refused connection) with doubling back-off; bytes are stored only for verified and unverified rasters; verified is final, the others are re-checked; a failed re-check keeps the earlier result; the table refuses bytes for any other status."
+    },
+    {
+      "id": "mip0018.images.ssrf",
+      "file": "token-indexer/test/mip0018-images.test.ts",
+      "description": "nothing private is contacted: IP-literal and named loopback, private, link-local, CGNAT, cloud-metadata, IPv6 loopback/ULA/link-local and IPv4-mapped/NAT64 targets are refused before any connection (also one refused address among public ones); redirects from an allowed host to 127.0.0.1, ::1, a private name or a metadata address are refused; other schemes and credentials are refused, also as redirect targets; at most 3 redirects; the connection goes to the address checked once (DNS rebinding cannot change it); the production dialer re-checks the address and negotiates TLS."
+    },
+    {
+      "id": "mip0018.images.caps",
+      "file": "token-indexer/test/mip0018-images.test.ts",
+      "description": "oversize and slow answers are cut: a declared Content-Length above the cap is refused at the headers, a longer body is cut at the cap (exactly the cap is kept) and the server sees the connection closed; headers or body slower than the response timeout and a connection or name lookup slower than the connect timeout are abandoned; a short body and a gzip-encoded answer yield no content."
+    },
+    {
+      "id": "mip0018.images.limits",
+      "file": "token-indexer/test/mip0018-images.test.ts",
+      "description": "the per-host and per-address rate limit spaces requests to one host and to other names of its address by the interval, and a busy host's images wait their turn without counting as failures; the global concurrency limit holds the requests in progress at exactly its value."
+    },
+    {
+      "id": "mip0018.images.resume",
+      "file": "token-indexer/test/mip0018-images.test.ts",
+      "description": "a restart resumes pending fetches: stopping the fetcher mid-fetch gives its rows back unchecked and due at once; a fetcher that dies holds its claimed rows only until the lease ends, then another fetcher checks them; two fetchers never claim one row."
+    },
+    {
+      "id": "mip0018.images.endpoint",
+      "file": "token-indexer/test/mip0018-images.test.ts",
+      "description": "GET /v1/images/{id} serves only verified and unverified raster bytes by their SHA-256 with the detected Content-Type, nosniff, a sandbox CSP and an immutable Cache-Control (HEAD headers only); mismatch and not-image content and unknown ids are 404, a malformed id 400; token list, contract and identity JSON carry image { url (text), status, imageUrl (same-origin, only when displayable) }, pending until checked, null without a usable image; serve() runs the fetcher with the scan loop, never with --api-only or --no-image-fetch."
+    },
+    {
+      "id": "mip0018.conformance.fetcher-isolated",
+      "file": "token-indexer/test/mip0018-conformance.test.ts",
+      "description": "the import closures of the scan (scan.ts, scan-cli.ts) and of the API (api.ts, api-views.ts, images.ts) exclude the image fetcher, while serve-cli.ts loads it (positive control); a scan importing it statically or dynamically would be caught (negative control)."
     }
   ],
   "deferred": [

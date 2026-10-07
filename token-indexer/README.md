@@ -17,7 +17,9 @@ metadata in Postgres, and serves it as a read-only JSON API and an explorer page
   transactions) with Bech32m wallet addresses, and a ✓/⚠ mark per token (✓ = usable `name`, `symbol`, `decimals`, no
   rejected MIP-0018 event and no unresolved log from its contract; ⚠ partial, incorrect or unresolved; no mark without
   MIP-0018 events). The mark says the metadata is correctly published — it is not an endorsement of the token.
-- Network: **Stagenet** (Midnight node 2.x). Never fetches a URI. Block heights only (no wall-clock time).
+- Network: **Stagenet** (Midnight node 2.x). Block heights only (no wall-clock time). The scan and the API never fetch
+  a URI; only `serve`'s background image fetcher fetches token images (`image`), under SSRF precautions, checks them
+  against `image_sha256`, keeps raster images only and serves them from the indexer's own origin (API.md "Images").
 
 Conformance: every MUST/SHOULD of MIP-0018 at `274a84f` is mapped to a test in [CONFORMANCE.md](CONFORMANCE.md).
 
@@ -44,6 +46,11 @@ Postgres schema mip0018            mints (color table), color sightings, contrac
    │  read helpers: tokens.ts, metadata.ts, events.ts, activity.ts
    ▼
 read-only JSON API (api.ts)  ──►  explorer page GET /ui (ui/)
+   ▲  token images: GET /v1/images/{id}, the `image` object
+   │
+mip0018_images  ◄──  image-fetcher.ts (in serve, beside the scan loop; the only network client): each identity's
+                     `image` → checked address, size/time/rate caps → verified / unverified / mismatch / not-image /
+                     unreachable (images.ts)
 ```
 
 Everything a block adds commits in one Postgres transaction with the scan cursor, so a kill at any point resumes
@@ -65,7 +72,8 @@ NODE_URL=https://rpc.stagenet.shielded.tools INDEXER_URL=https://indexer.stagene
 # 2a. Scan the archived range into the mip0018 schema (exits at --to or at the archive's end; resumable).
 node --import tsx token-indexer/mip0018/scan-cli.ts --network stagenet --from 714485 --to 715183
 
-# 2b. Or serve: the API plus the scan loop following the archive (default 127.0.0.1:10026)
+# 2b. Or serve: the API plus the scan loop following the archive and the image fetcher (default 127.0.0.1:10026;
+#     --no-image-fetch: no outbound request at all)
 node --import tsx token-indexer/mip0018/serve-cli.ts --network stagenet
 #     read-only replica: no scan, no migration
 node --import tsx token-indexer/mip0018/serve-cli.ts --network stagenet --api-only
@@ -107,7 +115,8 @@ logs nothing, on the ledger and here.
 
 All tests run in the repository's required gate (`npm run test:conformance -- --maxWorkers=2`, Vitest +
 Testcontainers Postgres 17; the page's browser tests need a Chromium — see the page README). No test touches the
-network: Stagenet data comes from recorded fixtures.
+network: Stagenet data comes from recorded fixtures, and the image fetcher's tests use a local HTTP server on
+127.0.0.1 with resolver and dialer seams.
 
 | What | Where |
 |---|---|
@@ -115,7 +124,8 @@ network: Stagenet data comes from recorded fixtures.
 | Decoder, scan, events, metadata state, activity, Bech32m, schema | `test/mip0018-{applied-parts,scan,events,metadata,activity,bech32m,schema,state}.test.ts` |
 | The twelve Stagenet cases (C01–C10, IDX, U1) against the reference's expectations | `test/mip0018-metadata.test.ts`, `test/mip0018-cases.test.ts` |
 | Recorded live range = replay | `test/mip0018-live-range.test.ts` |
-| Conformance table and the no-network check | `test/mip0018-conformance.test.ts` |
+| Conformance table, the no-network check (only the image fetcher may use the network) and the fetcher's isolation | `test/mip0018-conformance.test.ts` |
+| Token images: address policy, statuses, SSRF refusals, caps, limits, resume, `/v1/images/{id}` | `test/mip0018-images.test.ts` |
 | API and page | `test/mip0018-api.test.ts`, `test/mip0018-ui-*.test.ts` |
 
 Fixtures:
