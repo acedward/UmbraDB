@@ -1,0 +1,31 @@
+{
+  "format": "mip0018-vectors/1",
+  "mip": {
+    "id": "MIP-0018",
+    "repository": "midnightntwrk/midnight-improvement-proposals",
+    "pr": "https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372",
+    "checkedHead": "338ea194bbe7c4e5d1829234a503b7c1b11ebf0f",
+    "path": "mips/mip-0018-on-chain-token-metadata.md"
+  },
+  "eventName": {
+    "text": "mip-0018:token-metadata[v1]",
+    "hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000"
+  },
+  "counts": {
+    "normative-payload": 1,
+    "normative-state": 0,
+    "informative-payload": 0,
+    "informative-state": 0,
+    "total": 1
+  },
+  "vectors": [
+    {
+      "id": "A3c",
+      "kind": "payload",
+      "file": "payload/A3c.json",
+      "bin": "payload/A3c.bin",
+      "testId": "R5",
+      "normative": true
+    }
+  ]
+}

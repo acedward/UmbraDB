@@ -10,7 +10,8 @@
  */
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { type Classification, classifyEvent } from "../vendor/mip0018/codec/src/index.ts";
+import type { Classification } from "../vendor/mip0018/codec/src/index.ts";
+import { classifyMip0018Event } from "./classify.ts";
 import { fromHex, type IdentityRef, type IdentityState, MetadataState, type ObservedEvent, type SymbolGroup, toHex } from "./state.ts";
 
 export type Json = Record<string, unknown>;
@@ -120,7 +121,7 @@ export function stateResponse(
 // ── The pure adapter ─────────────────────────────────────────────────────────────────────────────────────────────
 
 function decode(req: Json): Json {
-  return decodeResponse(classifyEvent(decodeInput(req)));
+  return decodeResponse(classifyMip0018Event(decodeInput(req)));
 }
 
 function state(req: Json): Json {

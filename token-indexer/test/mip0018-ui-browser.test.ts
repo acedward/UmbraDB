@@ -329,7 +329,7 @@ describe("MIP-0018 explorer page in a real browser", () => {
     expect(await page.eval<number>("document.querySelectorAll('#events tbody tr').length")).toBe(ev04.length);
     await shot(page, "token-c04.png");
 
-    // C07: the reasons and 18 events (9 accepted, 9 rejected).
+    // C07: the reasons and 18 events (8 accepted, 10 rejected).
     const C07 = contractOf("C07");
     await visit(page, `#/token/${C07}/${c07Api.domainSep}/${c07Api.kind}`);
     expect(await page.eval<number>("[...document.querySelectorAll('#view ol li')].length")).toBe(c07Api.mark.reasons.length);
@@ -499,7 +499,7 @@ describe("MIP-0018 explorer page in a real browser", () => {
       call(H, [
         v1Log(D, 3, [record.utf8("name", name), record.utf8("symbol", symbol), record.uint("decimals", 3), record.utf8("standards", `mip-0004 ${tag}`)]),
         v1Log(D, 3, [
-          { key: Uint8Array.from([0xff, 0xfe]), valType: 0, value: Uint8Array.from([0xc3, 0x28]) },
+          record.bytes("image_sha256", Uint8Array.from([0xc3, 0x28, ...new Array<number>(30).fill(0xff)])),
           record.utf8("desc", desc), record.utf8("\u0000nul", "x"), record.uri("home", "https://example.invalid/never-fetched"), record.json("j", "{\"a\":\"\\u202e\"}"),
         ]),
         v1Log(D, 3, [record.utf8("html", html), record.utf8("js", "javascript:window.__pwned=2")]),
@@ -536,7 +536,7 @@ describe("MIP-0018 explorer page in a real browser", () => {
     const sd = await visit(page, `#/token/${H}/${D}/3`);
     expect(await page.eval<string>("document.querySelector('#view h3').innerText")).toBe("\u27e8U+202E\u27e9gnp.exe\u27e8U+200B\u27e9\u27e8U+0000\u27e9<script>alert(1)</script>");
     const fields = await page.eval<Record<string, string>>("Object.fromEntries([...document.querySelectorAll('#fields tbody tr')].map((tr) => [tr.cells[0].innerText, tr.cells[2].innerText]))");
-    expect(fields["fffe\u00a0(not UTF-8)"] ?? fields["fffe (not UTF-8)"]).toBe("c328  (2 bytes)");
+    expect(fields.image_sha256).toBe(`c328${"ff".repeat(30)}  (32 bytes)`); // bytes that are not UTF-8: hex only
     expect(fields.desc).toBe("\u27e8U+0000\u27e9\u27e8U+0001\u27e9\u27e8U+001B\u27e9[31mred\u27e8U+001B\u27e9[0m & \"q\"");
     expect(fields["\u27e8U+0000\u27e9nul"]).toBe("x");
     expect(fields.home).toBe("https://example.invalid/never-fetched  (URI: text only, never fetched or followed)");

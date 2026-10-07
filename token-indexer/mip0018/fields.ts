@@ -35,7 +35,8 @@
  */
 import type { ISql } from "postgres";
 import { assertValidSchemaName } from "../../src/postgres/client.js";
-import { classifyEvent, NAME_SIZE, PAYLOAD_SIZE, zeroExtend } from "../vendor/mip0018/codec/src/index.ts";
+import { NAME_SIZE, PAYLOAD_SIZE, zeroExtend } from "../vendor/mip0018/codec/src/index.ts";
+import { classifyMip0018Event } from "./classify.ts";
 import { ChainOrderError, type ChainPosition, recordEffects } from "./state.ts";
 
 /** Any postgres.js query function: a client, a reserved connection or a transaction. */
@@ -71,7 +72,7 @@ export class MetadataStoreError extends Error {
 const hexBuf = (h: string): Buffer => Buffer.from(h.replace(/^0x/, "").toLowerCase(), "hex");
 
 /**
- * The event-log row of an observed event, classified with the vendored codec (MIP "Event", "Consuming": a shorter
+ * The event-log row of an observed event, classified by `classifyMip0018Event` (MIP "Event", "Consuming": a shorter
  * `name`/`payload` is zero-extended; a longer name is another name, a longer payload is rejected). The bytes stored are
  * the zero-extended 32 + 256 bytes, or empty when the observed bytes exceed them (such an event is never accepted).
  * Used for events that do not come from the archive scan (vector inputs, tests); the scan builds the same row from the
@@ -88,7 +89,7 @@ export function observedEventRow(e: {
   segment?: number;
   phase?: "guaranteed" | "fallible";
 }): EventRow {
-  const c = classifyEvent({ type: e.type, name: e.name, payload: e.payload });
+  const c = classifyMip0018Event({ type: e.type, name: e.name, payload: e.payload });
   const name = zeroExtend(e.name, NAME_SIZE);
   const payload = zeroExtend(e.payload, PAYLOAD_SIZE);
   return {
@@ -209,7 +210,7 @@ async function withdraw(tx: Queryable, schema: string, id: IdentityKey, at: Chai
  * identity has a field after it.
  */
 async function applyAccepted(tx: Queryable, schema: string, row: StoredAccepted): Promise<void> {
-  const c = classifyEvent({ type: row.event_type, name: row.name, payload: row.payload });
+  const c = classifyMip0018Event({ type: row.event_type, name: row.name, payload: row.payload });
   const at = positionOf(row);
   if (c.result !== "accept")
     throw new MetadataStoreError(`stored event ${JSON.stringify(at)} on ${row.network} is marked accepted but the codec says ${c.result} (${c.reason})`);

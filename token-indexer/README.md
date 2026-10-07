@@ -8,7 +8,9 @@ metadata in Postgres, and serves it as a read-only JSON API and an explorer page
 
 - **MIP-0018 as in [`midnightntwrk/midnight-improvement-proposals` PR #372](https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372)** (followed as it moves; checked
   against its head `338ea194bbe7c4e5d1829234a503b7c1b11ebf0f`): `Misc` events named exactly
-  `mip-0018:token-metadata[v1]`, the payload checks, value types, latest value per key, **per-key tombstones** (a Null
+  `mip-0018:token-metadata[v1]`, the payload checks, value types, keys that MUST be valid UTF-8 (an event with any
+  other key is rejected whole; the vendored codec checks values only, UmbraDB's `mip0018/classify.ts` adds the key
+  check), latest value per key, **per-key tombstones** (a Null
   record deletes its field; an identity with no field left is not referenced anywhere), common fields, symbol groups,
   the color lookup (`rawTokenType(domainSep, contractAddress)`), zero extension of trimmed ledger data. An event with
   any other name (other versions of this one included) is ignored like any other `Misc` event.
@@ -34,7 +36,7 @@ Postgres schema chain_archive      blocks, raw transactions, per-transaction res
    │                      unless FAILURE, each fallible segment only if it succeeded), in ledger order
    │                      read each logged value with the ledger's own decode_event rule; a log op whose
    │                      value the raw transaction does not show → unresolved (see "Known limitation")
-   │    vendored codec    classify each Misc event: accept / reject (reason) / ignore
+   │    classify.ts       classify each Misc event (vendored codec + UTF-8 keys): accept / reject (reason) / ignore
    │    state.ts          per-key rules (one pure module, also used by the vector adapters)
    ▼
 Postgres schema mip0018            mints (color table), color sightings, contract actions, events (classification,
@@ -144,8 +146,10 @@ PG_URL=… node --import tsx token-indexer/dev/live-range-check.ts compare --tag
 vectors and the vector runner of [`midnight-experiments/mip-0018`](https://github.com/midnight-experiments/mip-0018)
 @ `e8295792d9363be37ff2f7f716c740fcdf3f195e` (Apache-2.0; `LICENSE`, `NOTICE`). `vendor/mip0018/SOURCE.md` lists every
 file with its SHA-256; `[[mip0018.vendor.provenance]]` fails on any changed, missing or unlisted file. The vendored
-files are never edited. The state rules are UmbraDB's own (`mip0018/state.ts`); every vendored vector runs through
-both adapters.
+files are never edited. The state rules are UmbraDB's own (`mip0018/state.ts`). Every vendored vector runs through
+both adapters, except where MIP-0018 as in PR #372 changes its expectation: UmbraDB then runs its own version with
+the same id (`mip0018/vectors-umbradb/`, see its README; today A3c, a non-UTF-8 key). Likewise for the Stagenet cases
+(`test/fixtures/mip0018-cases-umbradb/`: C07's non-UTF-8-key event).
 
 Other copies: the explorer's Outfit font and icon come from the explorer in acedward/UmbraDB PR #19 (`NOTICE`, OFL
 1.1).

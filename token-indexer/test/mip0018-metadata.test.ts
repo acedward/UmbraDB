@@ -9,7 +9,9 @@
  * shared rows, a partial token, a 31-byte integer).
  *
  * Expectations: the reference's case files (copied verbatim into `fixtures/mip0018-cases/`, SHA-256 checked against
- * that folder's `SOURCE.md`). Single-member groups are excluded on both sides.
+ * that folder's `SOURCE.md`), and UmbraDB's own file where MIP-0018 as in PR #372 changes one
+ * (`fixtures/mip0018-cases-umbradb/`: C07's non-UTF-8-key event is rejected). Single-member groups are excluded on both
+ * sides.
  */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -30,7 +32,7 @@ import { Mip0018Scanner } from "../mip0018/scan.ts";
 import { COMMON_KEY_HEX, type IdentityRef, type IdentityState, parseStandards, type SymbolGroup } from "../mip0018/state.ts";
 import { listColors, nativeTokens } from "../mip0018/tokens.ts";
 import { EVENT_NAME, encodePayload, type MetadataRecord, record } from "../vendor/mip0018/codec/src/index.ts";
-import { CASES_DIR, caseCopyProblems } from "./helpers/case-source.ts";
+import { caseCopyProblems, readExpectation, readReferenceCase } from "./helpers/case-source.ts";
 import { decodeSynthetic, putSyntheticBlocks, type SynthLog } from "./helpers/synthetic-archive.ts";
 
 const NET = "stagenet";
@@ -41,7 +43,7 @@ interface ExpectedField { key_text?: string; valType: number; value_hex: string;
 interface ExpectedIdentity { domainSep: string; kind: number; colored: boolean; common: Record<string, unknown>; fields?: Record<string, ExpectedField> }
 interface ExpectedState { identities: ExpectedIdentity[]; groups: Array<{ symbol: string; members: Array<{ domainSep: string; kind: number }> }>; counts?: Record<string, number> }
 
-const readCase = (path: string): ExpectedState => JSON.parse(readFileSync(new URL(path, CASES_DIR), "utf8")) as ExpectedState;
+const readCase = (path: string): ExpectedState => readExpectation<ExpectedState>(path);
 const norm = (h: string): string => h.replace(/^0x/, "").toLowerCase();
 const dec = new TextDecoder();
 
@@ -180,7 +182,7 @@ describe("MIP-0018 metadata state in Postgres", () => {
     await container?.stop();
   }, 60_000);
 
-  it("[[mip0018.metadata.recorded-cases]] every recorded case's state equals its expectation (C01–C08, C10, U1 reference files); the copies are the reference's bytes; a full recompute from the log changes nothing", async () => {
+  it("[[mip0018.metadata.recorded-cases]] every recorded case's state equals its expectation (C01–C08, C10, U1 reference files; UmbraDB's own C07 file, which differs from the reference only by the rejected non-UTF-8-key event); the copies are the reference's bytes; a full recompute from the log changes nothing", async () => {
     // The verbatim copies: SHA-256 equal to the provenance table.
     expect(caseCopyProblems()).toEqual([]);
 
@@ -192,14 +194,26 @@ describe("MIP-0018 metadata state in Postgres", () => {
     expect(results).toEqual({ C01: [], C02: [], C03: [], C04: [], C05: [], C06: [], C07: [], C08: [], C10: [], U1: [] });
     // Negative control: an earlier step's expectation does not describe C06's final state.
     expect(await differences(ranges.idx.sql, ranges.idx.mip, contractOf("C06"), readCase("C06/expected-after-withdraw.json"))).not.toEqual([]);
+    // UmbraDB's own C07 file differs from the verbatim reference file exactly where MIP "Keys" (valid UTF-8) changes it:
+    // no field `ff6b6579`, one accepted event fewer and one rejected event more; the reference file does not match.
+    const refC07 = readReferenceCase<ExpectedState>("C07/expected.json");
+    const ownC07 = readCase("C07/expected.json");
+    const { ff6b6579: nonUtf8Key, ...refFields } = refC07.identities[0]!.fields!;
+    expect(nonUtf8Key).toBeDefined();
+    expect(ownC07).toEqual({
+      ...refC07,
+      identities: [{ ...refC07.identities[0]!, fields: refFields }],
+      counts: { ...refC07.counts!, accepted: refC07.counts!.accepted! - 1, rejected: refC07.counts!.rejected! + 1 },
+    });
+    expect(await differences(ranges.idx.sql, ranges.idx.mip, contractOf("C07"), refC07)).not.toEqual([]);
 
     // Incremental apply = replay of the stored log (fields, withdrawals and listed events).
     const { sql, mip } = ranges.idx;
     const derived = (d: Record<string, unknown[]>) => ({ fields: d.fields, withdrawals: d.withdrawals, listed: d.listed });
     const before = derived(await dumpAll(sql, mip));
-    expect([before.withdrawals!.length, before.listed!.length]).toEqual([0, 35]); // per-key C06 never empties; 25 accepted + 10 rejected
+    expect([before.withdrawals!.length, before.listed!.length]).toEqual([0, 35]); // per-key C06 never empties; 24 accepted + 11 rejected
     const r = await sql.begin((tx) => recomputeFields(tx, mip, NET));
-    expect(r).toEqual({ identities: 13, replayedEvents: 25 });
+    expect(r).toEqual({ identities: 13, replayedEvents: 24 });
     expect(derived(await dumpAll(sql, mip))).toEqual(before);
   }, 120_000);
 
@@ -322,20 +336,22 @@ describe("MIP-0018 metadata state in Postgres", () => {
     expect(await dumpAll(db.sql, db.mip)).toEqual(full);
   }, 120_000);
 
-  it("[[mip0018.metadata.bytes]] C07's keys and values round-trip as exact bytes (a NUL inside a key, a non-UTF-8 key, a 220-byte key, a 219-byte value, empty values, a 16-byte integer); a 31-byte integer is stored losslessly", async () => {
+  it("[[mip0018.metadata.bytes]] C07's stored keys and values are exact bytes (a NUL inside a key, a 220-byte key, a 219-byte value, empty values, a 16-byte integer); the event with a non-UTF-8 key is rejected whole, so that key is not stored; a 31-byte integer is stored losslessly", async () => {
     const { sql, mip } = ranges.idx;
-    const [c07] = await listIdentities(sql, NET, { contractAddress: contractOf("C07") }, mip);
-    const fields = c07!.fields;
+    const raw = await sql<{ key: Buffer; value: Buffer; val_type: number; uint_value: string | null; usable: boolean | null }[]>`
+      SELECT key, value, val_type, uint_value::text AS uint_value, usable FROM ${sql(mip)}.mip0018_fields
+      WHERE contract_address = ${Buffer.from(contractOf("C07"), "hex")} ORDER BY key`;
+    const stored = new Map(raw.map((r) => [hex(r.key), r]));
     const keyOf = (text: string) => Buffer.from(text, "latin1").toString("hex");
-    expect(fields.get(keyOf("symbol\u0000"))?.valType).toBe(1);
-    expect(fields.has(COMMON_KEY_HEX.symbol)).toBe(true); // `symbol` and `symbol\0` are different keys
-    expect(Buffer.from(fields.get("ff6b6579")!.value).toString()).toBe("ok"); // a non-UTF-8 key
-    expect([...fields.keys()].some((k) => k.length === 440)).toBe(true); // a 220-byte key
-    expect([...fields.values()].some((f) => f.value.length === 219)).toBe(true); // a 219-byte value
-    const decimals = fields.get(COMMON_KEY_HEX.decimals)!;
-    expect([Buffer.from(decimals.value).toString("hex"), decimals.integer, decimals.usable]).toEqual(["06" + "00".repeat(15), 6n, true]);
-    const raw = await sql<{ key: Buffer; value: Buffer }[]>`
-      SELECT key, value FROM ${sql(mip)}.mip0018_fields WHERE contract_address = ${Buffer.from(contractOf("C07"), "hex")} ORDER BY key`;
+    expect(stored.get(keyOf("symbol\u0000"))?.val_type).toBe(1);
+    expect(stored.has(COMMON_KEY_HEX.symbol)).toBe(true); // `symbol` and `symbol\0` are different keys
+    expect(stored.has("ff6b6579")).toBe(false); // MIP "Keys": keys MUST be valid UTF-8 — its event is rejected
+    const at714956 = (await chainEvents(sql, NET, { contractAddress: contractOf("C07") }, mip)).filter((e) => e.height === 714956);
+    expect(at714956.map((e) => [e.classification, e.reason])).toEqual([["reject", "invalid-utf8"]]);
+    expect([...stored.keys()].some((k) => k.length === 440)).toBe(true); // a 220-byte key
+    expect(raw.some((r) => r.value.length === 219)).toBe(true); // a 219-byte value
+    const decimals = stored.get(COMMON_KEY_HEX.decimals)!;
+    expect([hex(decimals.value), decimals.uint_value, decimals.usable]).toEqual(["06" + "00".repeat(15), "6", true]);
     expect(raw.map((r) => [hex(r.key), hex(r.value)])).toEqual(
       Object.entries(readCase("C07/expected.json").identities[0]!.fields!).map(([k, f]) => [k, f.value_hex]).sort(([a], [b]) => Buffer.compare(Buffer.from(a!, "hex"), Buffer.from(b!, "hex"))),
     );
@@ -357,14 +373,14 @@ describe("MIP-0018 metadata state in Postgres", () => {
     expect(await displayAmountOf(db.sql, ref, 5n, db.mip)).toEqual({ decimals: max, text: `5e-${max}` }); // bounded, exact
   }, 120_000);
 
-  it("[[mip0018.metadata.marks]] marks and tags through Postgres: C01 ✓; C10 ✓ with tag mip-0004; C07 ⚠ incorrect with its 9 reasons in chain order; C08 ⚠ incorrect; a synthetic partial token ⚠ partial; a minted token without events no mark; a withdrawn identity marked from its contract's rejections only", async () => {
+  it("[[mip0018.metadata.marks]] marks and tags through Postgres: C01 ✓; C10 ✓ with tag mip-0004; C07 ⚠ incorrect with its 10 reasons in chain order; C08 ⚠ incorrect; a synthetic partial token ⚠ partial; a minted token without events no mark; a withdrawn identity marked from its contract's rejections only", async () => {
     const { sql, mip } = ranges.idx;
     const only = async (c: string) => (await listIdentities(sql, NET, { contractAddress: contractOf(c) }, mip))[0]!;
     expect(await tokenMarkOf(sql, await only("C01"), mip)).toEqual({ mark: "ok", reasons: [], missing: [], tags: [] });
     expect(await tokenMarkOf(sql, await only("C10"), mip)).toEqual({ mark: "ok", reasons: [], missing: [], tags: ["mip-0004"] });
-    const c07Reasons = ["no-records", "vallen-out-of-bounds", "nonzero-padding", "nonzero-padding", "bad-kind", "invalid-utf8", "invalid-uri", "bad-null-length", "reserved-valtype"];
+    const c07Reasons = ["no-records", "vallen-out-of-bounds", "nonzero-padding", "nonzero-padding", "invalid-utf8", "bad-kind", "invalid-utf8", "invalid-uri", "bad-null-length", "reserved-valtype"];
     expect(await tokenMarkOf(sql, await only("C07"), mip)).toEqual({ mark: "incorrect", reasons: c07Reasons, missing: [], tags: [] });
-    expect((await contractRejections(sql, NET, contractOf("C07"), mip)).map((r) => r.position.block)).toEqual([714899, 714915, 714931, 714949, 714964, 714980, 714996, 715012, 715026]);
+    expect((await contractRejections(sql, NET, contractOf("C07"), mip)).map((r) => r.position.block)).toEqual([714899, 714915, 714931, 714949, 714956, 714964, 714980, 714996, 715012, 715026]);
     expect(await tokenMarkOf(sql, await only("C08"), mip)).toMatchObject({ mark: "incorrect", reasons: ["reserved-valtype"], missing: ["symbol", "decimals"] });
     // The minted third-party token of the IDX range (contract 7771c9e5…): no MIP-0018 event → no mark.
     const minted = (await listColors(sql, NET, mip)).find((c) => c.contractAddress.startsWith("7771c9e5"))!;

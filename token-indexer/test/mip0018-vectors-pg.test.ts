@@ -1,6 +1,7 @@
 /**
  * MIP-0018 vector conformance through UmbraDB's POSTGRES adapter: the vendored runner core, unchanged, drives every
- * vendored vector — 67 normative and 43 informative — through the production write path (`fields.ts`) into a fresh `mip0018` schema per request, and reads the state back
+ * vector — the vendored vectors (66 normative, 43 informative) minus the ids UmbraDB keeps its own versions of, and
+ * those own versions (`mip0018/vectors-umbradb/`) — through the production write path (`fields.ts`) into a fresh `mip0018` schema per request, and reads the state back
  * with the read helpers the API serves (`metadata.ts`). The responses must equal the pure adapter's, request by request
  * (S4 rollback, S7 independence and S9 groups included), and no check may pass as "not applicable".
  */
@@ -9,7 +10,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { loadVectors, requestFor, runVectors, type Json, type LoadedVector } from "../vendor/mip0018/vectors/tools/runner-core.ts";
-import { PG_ADAPTER, RUN_VECTORS, VENDORED_VECTORS_DIR } from "../mip0018/run-vectors.ts";
+import { PG_ADAPTER, RUN_VECTORS, UMBRADB_VECTORS_DIR, VENDORED_VECTORS_DIR, vectorSets } from "../mip0018/run-vectors.ts";
 import { handleRequest } from "../mip0018/vector-adapter.ts";
 import { createPgVectorConsumer } from "../mip0018/vector-adapter-pg.ts";
 
@@ -30,9 +31,10 @@ describe("MIP-0018 vectors through the Postgres adapter", () => {
     await container?.stop();
   }, 60_000);
 
-  it("[[mip0018.vectors.pg-adapter]] 67/67 normative + 43/43 informative vendored vectors through Postgres, no check not applicable, every response equal to the pure adapter's", async () => {
+  it("[[mip0018.vectors.pg-adapter]] 66/66 vendored normative + 43/43 informative + UmbraDB's own A3c through Postgres, no check not applicable, every response equal to the pure adapter's", async () => {
     const pg = createPgVectorConsumer({ sql, schemaPrefix: "vec_pg" });
-    const vectors = loadVectors({ dir: VENDORED_VECTORS_DIR });
+    const referenceVectors = loadVectors({ dir: VENDORED_VECTORS_DIR, only: vectorSets().reference.map((v) => v.id) });
+    const ownVectors = loadVectors({ dir: UMBRADB_VECTORS_DIR });
 
     const responses = new Map<string, Json>(); // every Postgres answer, compared with the pure adapter's below
     const consumer = async (req: Json): Promise<Json> => {
@@ -40,11 +42,14 @@ describe("MIP-0018 vectors through the Postgres adapter", () => {
       responses.set(String(req.id), JSON.parse(JSON.stringify(res)) as Json);
       return res;
     };
-    const report = await runVectors(vectors, consumer);
-    expect(failures(report)).toEqual([]);
-    expect(report.normative).toEqual({ passed: 67, total: 67 });
-    expect(report.informative).toEqual({ passed: 43, total: 43 });
-    expect(report.notApplicable).toEqual({});
+    const reference = await runVectors(referenceVectors, consumer);
+    expect(failures(reference)).toEqual([]);
+    expect(reference.normative).toEqual({ passed: 66, total: 66 });
+    expect(reference.informative).toEqual({ passed: 43, total: 43 });
+    expect(reference.notApplicable).toEqual({});
+    const own = await runVectors(ownVectors, consumer);
+    expect(failures(own)).toEqual([]);
+    expect(own.normative).toEqual({ passed: 1, total: 1 });
     expect(pg.schemasCreated).toBe(110); // a fresh schema per request
     const left = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM information_schema.schemata WHERE schema_name LIKE 'vec_pg_%'`;
     expect(left[0]!.n).toBe(0); // each dropped after its request
@@ -54,7 +59,7 @@ describe("MIP-0018 vectors through the Postgres adapter", () => {
     // stored empty, INF-ZEXT-7).
     const differences: string[] = [];
     const withoutOffset: string[] = [];
-    for (const v of vectors as LoadedVector[]) {
+    for (const v of [...referenceVectors, ...ownVectors] as LoadedVector[]) {
       const want = handleRequest(JSON.parse(JSON.stringify(requestFor(v))));
       const got = responses.get(v.entry.id)!;
       if (want.offset !== undefined && got.offset === undefined) {
@@ -68,14 +73,15 @@ describe("MIP-0018 vectors through the Postgres adapter", () => {
     expect(responses.size).toBe(110);
   }, 600_000);
 
-  it("[[mip0018.vectors.pg-runner-cli]] the vendored runner CLI drives the Postgres adapter process over the vendored vectors and exits 0, with every check applicable", () => {
+  it("[[mip0018.vectors.pg-runner-cli]] the vendored runner CLI drives the Postgres adapter process over both sets and exits 0, with every check applicable", () => {
     const run = spawnSync(
       process.execPath,
       [RUN_VECTORS, "--consumer", `${JSON.stringify(process.execPath)} --import tsx ${JSON.stringify(PG_ADAPTER)}`, "--timeout", "60000"],
       { encoding: "utf8", timeout: 900_000, env: { ...process.env, PG_URL: container.getConnectionUri(), MIP0018_VECTOR_SCHEMA_PREFIX: "vec_cli" } },
     );
     expect(run.status, run.stderr).toBe(0);
-    expect(run.stdout).toContain("normative: 67/67 passed; informative: 43/43 passed");
+    expect(run.stdout).toContain("normative: 66/66 passed; informative: 43/43 passed");
+    expect(run.stdout).toContain("normative: 1/1 passed");
     expect(run.stdout).not.toMatch(/^\s*n\/a:/m);
     expect(run.stdout).not.toContain("FAIL");
   }, 910_000); // a fresh migrated schema per request: generous budgets for a loaded host

@@ -55,7 +55,8 @@ import {
 } from "./applied-parts.ts";
 import { tokenColor } from "./color.ts";
 import { type EventRow, removeEventsAbove, writeEvents } from "./fields.ts";
-import { classifyEvent, MISC_EVENT_TYPE } from "../vendor/mip0018/codec/src/index.ts";
+import { MISC_EVENT_TYPE } from "../vendor/mip0018/codec/src/index.ts";
+import { classifyMip0018Event } from "./classify.ts";
 
 /** NIGHT and DUST: protocol tokens, outside MIP-0018 ("their properties are fixed by the protocol"). */
 export const BUILTIN_TOKENS = [
@@ -301,7 +302,7 @@ export class Mip0018Scanner {
         const name = Buffer.from(l.name ?? "", "hex");
         const payload = Buffer.from(l.payload ?? "", "hex");
         const c = l.undecodable === undefined
-          ? classifyEvent({ type: MISC_EVENT_TYPE, name, payload })
+          ? classifyMip0018Event({ type: MISC_EVENT_TYPE, name, payload })
           : { result: "ignore" as const, reason: `undecodable-data: ${l.undecodable}` };
         rows.events.push({
           ...at, event_index: l.eventIndex, tx_hash: txHash, segment_id: l.segment, phase: l.phase,

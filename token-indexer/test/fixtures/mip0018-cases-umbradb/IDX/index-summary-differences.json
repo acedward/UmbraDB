@@ -1,0 +1,12 @@
+{
+  "events": [
+    {
+      "contractAddress": "23aa27cbc948fb6df9072750b879e9b7f78206f77c638674a8e01b418ee3355b",
+      "height": 714956,
+      "txIndex": 0,
+      "eventIndex": 0,
+      "result": "reject",
+      "reason": "invalid-utf8"
+    }
+  ]
+}

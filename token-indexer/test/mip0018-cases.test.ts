@@ -13,7 +13,8 @@
  * - every case contract's metadata transactions = the transactions the reference index lists for it.
  *
  * Expectations are never edited: verbatim copies of the reference's case files in `fixtures/mip0018-cases/` (SHA-256
- * checked against that folder's `SOURCE.md`). Single-member groups are excluded on both sides.
+ * checked against that folder's `SOURCE.md`), read through `fixtures/mip0018-cases-umbradb/` where MIP-0018 as in
+ * PR #372 changes them (C07's non-UTF-8-key event; see its README). Single-member groups are excluded on both sides.
  */
 import { readFileSync } from "node:fs";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -31,7 +32,7 @@ import { Mip0018Scanner } from "../mip0018/scan.ts";
 import { COMMON_KEY_HEX, type IdentityState, parseStandards } from "../mip0018/state.ts";
 import { listColors, lookupColor } from "../mip0018/tokens.ts";
 import { EVENT_NAME } from "../vendor/mip0018/codec/src/index.ts";
-import { CASES_DIR, caseCopyProblems, upstreamSha } from "./helpers/case-source.ts";
+import { caseCopyProblems, readExpectation, readIndexSummary, upstreamSha } from "./helpers/case-source.ts";
 
 const NET = "stagenet";
 const V1 = Buffer.from(EVENT_NAME).toString("hex");
@@ -57,7 +58,7 @@ interface IndexSummary {
   errors: unknown[];
 }
 
-const read = <T>(path: string): T => JSON.parse(readFileSync(new URL(path, CASES_DIR), "utf8")) as T;
+const read = <T>(path: string): T => readExpectation<T>(path);
 const norm = (h: string): string => h.replace(/^0x/, "").toLowerCase();
 const canon = (v: unknown): string => JSON.stringify(v, (_k, x: unknown) =>
   x !== null && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, (x as Record<string, unknown>)[k]])) : x);
@@ -275,12 +276,12 @@ describe("Stagenet case comparison — gaps", () => {
     }
 
     for (const [range, file, from, to] of [["idx", "IDX/index-summary.json", 714485, 715183], ["u1", "U1/index-summary.json", 715402, 715433]] as const) {
-      const ref = read<IndexSummary>(file);
+      const ref = readIndexSummary<IndexSummary>(file);
       const ours = await asIndex(full[range], from, to);
       const pick = (s: IndexSummary | typeof ours) => ({ network: { genesisHash: s.network.genesisHash }, fromHeight: s.fromHeight, nextHeight: s.nextHeight, lastBlock: s.lastBlock, colors: s.colors, events: s.events, deploys: s.deploys, stats: s.stats, errors: s.errors });
       expect(pick(ours), file).toEqual(pick(ref));
     }
-    const idxRef = read<IndexSummary>("IDX/index-summary.json");
+    const idxRef = readIndexSummary<IndexSummary>("IDX/index-summary.json");
     expect([idxRef.stats.mints, Object.keys(idxRef.colors).length, idxRef.stats.events]).toEqual([7, 6, 35]);
 
     // IDX/expected.json: every matrix color (and C05 bronze, never minted) with its identity's metadata.
@@ -314,8 +315,8 @@ describe("Stagenet case comparison — gaps", () => {
   }, 120_000);
 
   it("[[mip0018.cases.marks]] the ✓/⚠ mark and standards tags of every case identity — at the range end and after each C06 step — equal the mark rule applied to the reference expectations and the reference index's rejections (an oracle independent of tokenMark); the third party's minted token has no mark", async () => {
-    const idxRef = read<IndexSummary>("IDX/index-summary.json");
-    const u1Ref = read<IndexSummary>("U1/index-summary.json");
+    const idxRef = readIndexSummary<IndexSummary>("IDX/index-summary.json");
+    const u1Ref = readIndexSummary<IndexSummary>("U1/index-summary.json");
     const rejections = (contract: string): string[] =>
       [...(idxRef.events[contract] ?? []), ...(u1Ref.events[contract] ?? [])].filter((e) => e.result === "reject").map((e) => e.reason!);
     /** The mark rule: ⚠ incorrect when the contract has a rejected MIP-0018 event; ✓ when name, symbol and
@@ -384,7 +385,7 @@ describe("Stagenet case comparison — gaps", () => {
     };
     const rows: Record<string, number> = {};
     for (const c of ["C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C10", "U1"]) {
-      const ref = read<IndexSummary>(c === "U1" ? "U1/index-summary.json" : "IDX/index-summary.json").events[contractOf(c)] ?? [];
+      const ref = readIndexSummary<IndexSummary>(c === "U1" ? "U1/index-summary.json" : "IDX/index-summary.json").events[contractOf(c)] ?? [];
       const perTx = new Map<string, { height: number; accepted: number; rejected: number; firstEventIndex: number }>();
       for (const e of ref) {
         const t = perTx.get(e.txHash) ?? { height: e.block.height, accepted: 0, rejected: 0, firstEventIndex: e.eventIndex };

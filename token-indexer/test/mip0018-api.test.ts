@@ -28,10 +28,10 @@ import { main as serveMain, serve } from "../mip0018/serve-cli.ts";
 import { EVENT_NAME, encodePayload, type MetadataRecord, record } from "../vendor/mip0018/codec/src/index.ts";
 import { decodeSynthetic, putSyntheticBlocks, type SynthArchivedTx, type SynthLog, type SynthOp, type SynthTranscript } from "./helpers/synthetic-archive.ts";
 import { type SynthTxA, syntheticSeams } from "./helpers/synthetic-activity.ts";
+import { readExpectation } from "./helpers/case-source.ts";
 
 const NET = "stagenet";
 const REPO = new URL("../../", import.meta.url);
-const CASES_DIR = new URL("./fixtures/mip0018-cases/", import.meta.url);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -348,9 +348,10 @@ describe("MIP-0018 read-only API", () => {
     expect((await get(idx.base, `/v1/identities/${contractOf("C01")}/${c01.domainSep}/1`)).status).toBe(404); // C01 describes kind 3 only
     expect((await ok(idx.base, `/v1/identities/${contractOf("C01")}/${c01.domainSep}/3`)).group).toBeNull(); // alone with AGLD: no group
 
-    // C07's fields byte for byte (keys with a NUL inside and non-UTF-8 keys, 220-byte key, 219-byte value).
+    // C07's fields byte for byte (keys with a NUL inside, 220-byte key, 219-byte value; its event with a non-UTF-8 key is
+    // rejected, so every stored key is valid UTF-8).
     type ExpectedField = { valType: number; value_hex: string; usable?: boolean };
-    const c07exp = JSON.parse(readFileSync(new URL("C07/expected.json", CASES_DIR), "utf8")) as { identities: Array<{ domainSep: string; kind: number; fields: Record<string, ExpectedField> }> };
+    const c07exp = readExpectation<{ identities: Array<{ domainSep: string; kind: number; fields: Record<string, ExpectedField> }> }>("C07/expected.json");
     const e07 = c07exp.identities[0]!;
     const g07 = await ok(idx.base, `/v1/identities/${contractOf("C07")}/${e07.domainSep.replace(/^0x/, "")}/${e07.kind}`);
     const got = Object.fromEntries(g07.fields.map((f: Json) => [f.key.hex, { valType: f.valType, value_hex: f.value.hex, ...(f.usable === null ? {} : { usable: f.usable }) }]));
@@ -368,7 +369,7 @@ describe("MIP-0018 read-only API", () => {
       if (valid) expect(Buffer.from(f.key.utf8, "utf8").toString("hex")).toBe(f.key.hex); // NUL bytes kept exactly
       if (f.valType === 0) expect(keysOf(f.value)).toEqual(["hex"]); // bytes: never re-interpreted as text
     }
-    expect(g07.fields.some((f: Json) => f.key.utf8 === null)).toBe(true);
+    expect(g07.fields.some((f: Json) => f.key.utf8 === null)).toBe(false);
     expect(g07.fields.some((f: Json) => typeof f.key.utf8 === "string" && f.key.utf8.includes("\u0000"))).toBe(true);
 
     // Contract tokens: identities and groups of two or more; pages bound to the contract.
@@ -573,7 +574,7 @@ describe("MIP-0018 read-only API", () => {
   it("[[mip0018.api.events]] /v1/events: MIP-0018-named events (accept/reject) of a contract or a transaction in chain order with position, contract, classification and reason only — never name, payload, domainSep, kind or values; ignored events not served; pages; filters required", async () => {
     const C07 = contractOf("C07");
     const all = await ok(idx.base, `/v1/events?contract=${C07}&limit=500`);
-    expect(all.items.map((e: Json) => e.classification).sort()).toEqual([...Array(9).fill("accept"), ...Array(9).fill("reject")]); // 4 ignored not served
+    expect(all.items.map((e: Json) => e.classification).sort()).toEqual([...Array(8).fill("accept"), ...Array(10).fill("reject")]); // 4 ignored not served
     for (const e of all.items) {
       expect(keysOf(e)).toEqual(EVENT_KEYS);
       expect(e.contractAddress).toBe(C07);
@@ -584,7 +585,7 @@ describe("MIP-0018 read-only API", () => {
     // The mark's reasons are exactly the contract's rejections, in chain order.
     const c07 = ((await ok(idx.base, "/v1/tokens?limit=500")).items as Json[]).find((t) => t.contractAddress === C07);
     expect(c07.mark.reasons).toEqual(all.items.filter((e: Json) => e.classification === "reject").map((e: Json) => e.reason));
-    expect(c07.mark.reasonCount).toBe(9);
+    expect(c07.mark.reasonCount).toBe(10);
     // Pages of 4 walk to the same list.
     expect((await walk(idx.base, `/v1/events?contract=${C07}`, 4)).items).toEqual(all.items);
     // C08's emitTwo transaction: the valid event accepted, then the malformed one rejected.
@@ -654,7 +655,7 @@ describe("MIP-0018 read-only API", () => {
     expect((await get(idx.base, `/v1/tokens/${c03.color}/activity/x`)).status).toBe(404);
   }, 120_000);
 
-  it("[[mip0018.api.marks]] marks through the API: C01 ✓ ok, C07 ⚠ incorrect (9 reasons), C08 ⚠ incorrect, a partial identity ⚠ partial (synthetic), a minted token without events unmarked; NIGHT/DUST carry no mark", async () => {
+  it("[[mip0018.api.marks]] marks through the API: C01 ✓ ok, C07 ⚠ incorrect (10 reasons), C08 ⚠ incorrect, a partial identity ⚠ partial (synthetic), a minted token without events unmarked; NIGHT/DUST carry no mark", async () => {
     const list = (await ok(idx.base, "/v1/tokens?limit=500")).items as Json[];
     const mark = (c: string) => list.filter((t) => t.contractAddress === contractOf(c)).map((t) => t.mark.mark);
     expect(mark("C01")).toEqual(["ok"]);
@@ -830,7 +831,7 @@ describe("MIP-0018 read-only API", () => {
     expect(after.get(`/v1/events?contract=${X}&limit=500`)!.json.items.map((e: Json) => [e.height, e.classification])).toEqual([[200, "accept"], [200, "accept"], [201, "accept"], [201, "accept"]]);
   }, 240_000);
 
-  it("[[mip0018.api.hostile-text]] hostile metadata (bidi and invisible characters, NUL and control characters, markup, non-UTF-8 keys and bytes, a long value) is returned as data: every body is pure printable ASCII with JSON escapes, parses back to the exact text, non-UTF-8 bytes only as hex; a color seen without a mint is listed last; hostile contract entry points (NUL, non-UTF-8, bidi bytes) never stop the scan and are served as their exact hex, with text only when printable", async () => {
+  it("[[mip0018.api.hostile-text]] hostile metadata (bidi and invisible characters, NUL and control characters, markup, non-UTF-8 bytes, a long value) is returned as data: every body is pure printable ASCII with JSON escapes, parses back to the exact text, non-UTF-8 bytes only as hex; a color seen without a mint is listed last; hostile contract entry points (NUL, non-UTF-8, bidi bytes) never stop the scan and are served as their exact hex, with text only when printable", async () => {
     const db = await fresh("hostile");
     const H = "a1".repeat(32);
     const D = "68".repeat(32);
@@ -844,7 +845,7 @@ describe("MIP-0018 read-only API", () => {
       call(H, [
         v1Log(D, 3, [record.utf8("name", name), record.utf8("symbol", symbol), record.uint("decimals", 3), record.utf8("standards", `mip-0004 ${tag}`)]),
         v1Log(D, 3, [
-          { key: Uint8Array.from([0xff, 0xfe]), valType: 0, value: Uint8Array.from([0xc3, 0x28]) },
+          record.bytes("image_sha256", Uint8Array.from([0xc3, 0x28, ...new Array<number>(30).fill(0xff)])),
           record.utf8("desc", desc), record.utf8("\u0000nul", "x"), record.uri("home", "https://example.invalid/never-fetched"), record.json("j", "{\"a\":\"\\u202e\"}"),
         ]),
         v1Log(D, 3, [record.utf8("k", long)]),
@@ -863,8 +864,9 @@ describe("MIP-0018 read-only API", () => {
     expect(d.common).toEqual({ name, symbol, decimals: "3", standards: ["mip-0004", tag] });
     expect(d.mark).toEqual({ mark: "ok", reasons: [], reasonCount: 0, unresolved: NO_UNRESOLVED, missing: [], tags: ["mip-0004", tag] });
     const byHex = Object.fromEntries(d.fields.map((f: Json) => [f.key.hex, f]));
-    expect(byHex.fffe).toMatchObject({ key: { hex: "fffe", utf8: null }, valType: 0, valTypeName: "bytes", value: { hex: "c328" }, usable: null });
-    expect(keysOf(byHex.fffe.value)).toEqual(["hex"]);
+    const sha = byHex[hexText("image_sha256")];
+    expect(sha).toMatchObject({ key: { hex: hexText("image_sha256"), utf8: "image_sha256" }, valType: 0, valTypeName: "bytes", value: { hex: `c328${"ff".repeat(30)}` } });
+    expect(keysOf(sha.value)).toEqual(["hex"]); // non-UTF-8 bytes: hex only
     expect(byHex[hexText("desc")].value.text).toBe(desc);
     expect(byHex[hexText("\u0000nul")].key.utf8).toBe("\u0000nul");
     expect(byHex[hexText("home")]).toMatchObject({ valTypeName: "uri", value: { text: "https://example.invalid/never-fetched" } });

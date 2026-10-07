@@ -178,6 +178,11 @@
       "description": "the vendored MIP-0018 vectors pass their own SHA256SUMS, as the runner checks before a run."
     },
     {
+      "id": "mip0018.classify.utf8-keys",
+      "file": "token-indexer/test/mip0018-classify.test.ts",
+      "description": "MIP Keys / Testing R5: an event with a key that is not valid UTF-8 is rejected whole (invalid-utf8 at that record) where the vendored codec alone accepts it; NUL and multi-byte keys stay accepted; the codec's own rejections pass through; every UmbraDB path classifies through the wrapper."
+    },
+    {
       "id": "mip0018.schema.fresh-lineage",
       "file": "token-indexer/test/mip0018-schema.test.ts",
       "description": "the mip0018 migration lineage creates exactly its tables (event log, latest-value fields, withdrawals, listed events, scan cursor, mints, color sightings, contract actions, built-in tokens, activity; no history table) and re-running is a no-op."
@@ -205,12 +210,22 @@
     {
       "id": "mip0018.vectors.pure-adapter",
       "file": "token-indexer/test/mip0018-vectors.test.ts",
-      "description": "Pure adapter: 67/67 normative + 43/43 informative vendored vectors pass through the vendored runner core, with groups and display compared."
+      "description": "Pure adapter: 66/66 vendored normative + 43/43 informative vectors and UmbraDB's own A3c pass through the vendored runner core, with groups and display compared."
+    },
+    {
+      "id": "mip0018.vectors.own-versions-needed",
+      "file": "token-indexer/test/mip0018-vectors.test.ts",
+      "description": "the vendored A3c (a non-UTF-8 key accepted) fails under the UTF-8 key rule, only on its result (why UmbraDB runs its own A3c)."
+    },
+    {
+      "id": "mip0018.vectors.own-integrity",
+      "file": "token-indexer/test/mip0018-vectors.test.ts",
+      "description": "UmbraDB's own vectors match their SHA256SUMS and keep the vendored vector's event byte for byte, differing only in expectation and description."
     },
     {
       "id": "mip0018.vectors.runner-cli",
       "file": "token-indexer/test/mip0018-vectors.test.ts",
-      "description": "the vendored runner CLI drives the pure adapter process over the vendored vectors and exits 0."
+      "description": "the vendored runner CLI drives the pure adapter process over both vector sets and exits 0."
     },
     {
       "id": "stagenet.fixtures.manifest",
@@ -300,7 +315,7 @@
     {
       "id": "mip0018.events.classification",
       "file": "token-indexer/test/mip0018-events.test.ts",
-      "description": "every Misc event of the recorded ranges is stored with its classification — C07 9/9/4 step by step, C08 1/1/0, the reference IDX scan's 35 v1 events position by position, other names ignored."
+      "description": "every Misc event of the recorded ranges is stored with its classification — C07 8/10/4 step by step (its non-UTF-8-key event rejected), C08 1/1/0, the IDX range's 35 v1 events position by position (24 accepted, 11 rejected), other names ignored."
     },
     {
       "id": "mip0018.events.order",
@@ -330,17 +345,17 @@
     {
       "id": "mip0018.vectors.pg-adapter",
       "file": "token-indexer/test/mip0018-vectors-pg.test.ts",
-      "description": "67/67 normative + 43/43 informative vendored vectors through the Postgres write path and read helpers, no check not applicable, every response equal to the pure adapter's."
+      "description": "66/66 vendored normative + 43/43 informative + UmbraDB's own A3c through the Postgres write path and read helpers, no check not applicable, every response equal to the pure adapter's."
     },
     {
       "id": "mip0018.vectors.pg-runner-cli",
       "file": "token-indexer/test/mip0018-vectors-pg.test.ts",
-      "description": "the vendored runner CLI drives the Postgres adapter process over the vendored vectors and exits 0 with every check applicable."
+      "description": "the vendored runner CLI drives the Postgres adapter process over both vector sets and exits 0 with every check applicable."
     },
     {
       "id": "mip0018.metadata.recorded-cases",
       "file": "token-indexer/test/mip0018-metadata.test.ts",
-      "description": "every recorded case's state equals its expectation (reference files, SHA-256 checked against the cases' SOURCE.md); a full recompute from the log changes nothing."
+      "description": "every recorded case's state equals its expectation (reference files, SHA-256 checked against the cases' SOURCE.md; UmbraDB's own C07 file differs from the reference only by the rejected non-UTF-8-key event); a full recompute from the log changes nothing."
     },
     {
       "id": "mip0018.metadata.recorded-groups",
@@ -425,7 +440,7 @@
     {
       "id": "mip0018.api.token-detail",
       "file": "token-indexer/test/mip0018-api.test.ts",
-      "description": "token by color, identity and contract tokens with fields (hex + text/integer views, usable), groups of two or more, marks; C07's exact bytes incl. NUL and non-UTF-8 keys; 404s."
+      "description": "token by color, identity and contract tokens with fields (hex + text/integer views, usable), groups of two or more, marks; C07's exact bytes incl. NUL keys; 404s."
     },
     {
       "id": "mip0018.api.lookup",

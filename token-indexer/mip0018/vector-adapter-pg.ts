@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { mip0018Migrations } from "../../src/postgres/migrations/mip0018/index.js";
-import { classifyEvent } from "../vendor/mip0018/codec/src/index.ts";
+import { classifyMip0018Event } from "./classify.ts";
 import { listEvents } from "./events.ts";
 import { observedEventRow, removeEventsAbove, writeEvents } from "./fields.ts";
 import { displayAmountOf, listGroups, listIdentities } from "./metadata.ts";
@@ -76,7 +76,7 @@ export function createPgVectorConsumer(opts: PgVectorConsumerOptions): PgVectorC
     const stored = await listEvents(sql, DECODE_NETWORK, {}, schema);
     if (stored.length !== 1) throw new Error(`expected one stored event, found ${stored.length}`);
     const e = stored[0]!;
-    const again = classifyEvent({ type: e.eventType, name: Buffer.from(e.name, "hex"), payload: Buffer.from(e.payload, "hex") });
+    const again = classifyMip0018Event({ type: e.eventType, name: Buffer.from(e.name, "hex"), payload: Buffer.from(e.payload, "hex") });
     if (e.classification === "accept") {
       if (again.result !== "accept") throw new Error(`stored accepted event does not decode from its stored bytes (${again.result})`);
       if (again.header.kind !== e.kind || Buffer.from(again.header.domainSep).toString("hex") !== e.domainSep)

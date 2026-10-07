@@ -23,13 +23,13 @@
  */
 import {
   type Classification,
-  classifyEvent,
   type DecodedRecord,
   fromHex,
   type Header,
   toHex,
   ValType,
 } from "../vendor/mip0018/codec/src/index.ts";
+import { classifyMip0018Event } from "./classify.ts";
 
 // ── Common fields ────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -232,7 +232,7 @@ export class MetadataState {
     if (previous !== undefined && comparePosition(event.position, previous) <= 0)
       throw new ChainOrderError(`event at ${JSON.stringify(event.position)} does not follow ${JSON.stringify(previous)} on ${event.network}`);
     this.last.set(event.network, { ...event.position });
-    const classification = classifyEvent({ type: event.type, name: event.name, payload: event.payload });
+    const classification = classifyMip0018Event({ type: event.type, name: event.name, payload: event.payload });
     if (classification.result === "ignore") return classification;
     const list = this.retained.get(event.network) ?? [];
     list.push({ event, classification });

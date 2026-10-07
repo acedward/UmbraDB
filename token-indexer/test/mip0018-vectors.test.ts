@@ -1,13 +1,17 @@
 /**
- * MIP-0018 vector conformance through UmbraDB's pure adapter: the vendored runner core, unchanged, over every vendored
- * vector — in process and through the real runner CLI and adapter process.
+ * MIP-0018 vector conformance through UmbraDB's pure adapter: the vendored runner core, unchanged, over the vendored
+ * vectors minus the ids UmbraDB keeps its own versions of, then over those own versions (`mip0018/vectors-umbradb/`:
+ * the vectors whose expectation MIP-0018 as in PR #372 changes) — in process and through the real runner CLI and
+ * adapter process.
  */
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { verifySums } from "../vendor/mip0018/vectors/tools/common.ts";
 import { loadVectors, runVectors, type Json } from "../vendor/mip0018/vectors/tools/runner-core.ts";
 import { handleRequest } from "../mip0018/vector-adapter.ts";
-import { RUN_VECTORS, VENDORED_VECTORS_DIR } from "../mip0018/run-vectors.ts";
+import { RUN_VECTORS, UMBRADB_VECTORS_DIR, VENDORED_VECTORS_DIR, vectorSets } from "../mip0018/run-vectors.ts";
 
+const OWN_IDS = ["A3c"];
 const pure = async (req: Json): Promise<Json> => handleRequest(JSON.parse(JSON.stringify(req)));
 
 function failures(report: Awaited<ReturnType<typeof runVectors>>): string[] {
@@ -15,17 +19,21 @@ function failures(report: Awaited<ReturnType<typeof runVectors>>): string[] {
 }
 
 describe("MIP-0018 vectors through the pure adapter", () => {
-  it("[[mip0018.vectors.pure-adapter]] 67/67 normative + 43/43 informative vendored vectors, with groups and display compared", async () => {
-    const vectors = loadVectors({ dir: VENDORED_VECTORS_DIR });
-    expect(vectors).toHaveLength(110);
-    const report = await runVectors(vectors, pure);
-    expect(failures(report)).toEqual([]);
-    expect(report.normative).toEqual({ passed: 67, total: 67 });
-    expect(report.informative).toEqual({ passed: 43, total: 43 });
-    expect(report.notApplicable).toEqual({}); // every group and display check ran
+  it("[[mip0018.vectors.pure-adapter]] 66/66 vendored normative + 43/43 informative + UmbraDB's own A3c, with groups and display compared", async () => {
+    const sets = vectorSets();
+    expect(sets.overridden.sort()).toEqual([...OWN_IDS].sort());
+    const reference = await runVectors(loadVectors({ dir: VENDORED_VECTORS_DIR, only: sets.reference.map((v) => v.id) }), pure);
+    expect(failures(reference)).toEqual([]);
+    expect(reference.normative).toEqual({ passed: 66, total: 66 });
+    expect(reference.informative).toEqual({ passed: 43, total: 43 });
+    expect(reference.notApplicable).toEqual({}); // every group and display check ran
+    const own = await runVectors(loadVectors({ dir: UMBRADB_VECTORS_DIR }), pure);
+    expect(failures(own)).toEqual([]);
+    expect(own.normative).toEqual({ passed: 1, total: 1 });
+    expect(own.results.map((r) => r.id)).toEqual(OWN_IDS);
     // Where kind 1 has no field left (S3c, S4b) or no symbol (S3d) there is no multi-member group: asserted on the
     // adapter's own answer, because these vectors carry no group expectation.
-    const byId = new Map(vectors.map((v) => [v.entry.id, v]));
+    const byId = new Map(loadVectors({ dir: VENDORED_VECTORS_DIR }).map((v) => [v.entry.id, v]));
     for (const id of ["S3c", "S3d", "S4b"]) {
       const res = await pure({ id, op: "state", steps: byId.get(id)!.data.steps });
       expect(res.error, id).toBeUndefined();
@@ -39,15 +47,34 @@ describe("MIP-0018 vectors through the pure adapter", () => {
       delete res.groups;
       return res;
     };
-    const report = await runVectors(loadVectors({ dir: VENDORED_VECTORS_DIR }), noGroups);
-    expect(report.normative).toEqual({ passed: 67, total: 67 }); // the runner alone cannot see it …
+    const report = await runVectors(loadVectors({ dir: VENDORED_VECTORS_DIR, only: vectorSets().reference.map((v) => v.id) }), noGroups);
+    expect(report.normative).toEqual({ passed: 66, total: 66 }); // the runner alone cannot see it …
     expect(Object.keys(report.notApplicable).sort()).toEqual(["S9a", "S9b", "S9c", "S9d"]); // … the not-applicable guard does
   }, 120_000);
 
-  it("[[mip0018.vectors.runner-cli]] the vendored runner CLI drives the adapter process over the vendored vectors and exits 0", () => {
+  it("[[mip0018.vectors.own-versions-needed]] the vendored A3c (a non-UTF-8 key accepted) fails under the UTF-8 key rule, and only on its result: its event is the own version's byte for byte", async () => {
+    const report = await runVectors(loadVectors({ dir: VENDORED_VECTORS_DIR, only: OWN_IDS }), pure);
+    expect(report.results.map((r) => [r.id, r.ok])).toEqual([["A3c", false]]);
+    expect(report.results[0]!.failures.join("; ")).toContain("result");
+  }, 120_000);
+
+  it("[[mip0018.vectors.own-integrity]] UmbraDB's own vectors match their SHA256SUMS; each keeps the vendored vector's event and differs only in its expectation and description", () => {
+    expect(verifySums(UMBRADB_VECTORS_DIR)).toEqual([]);
+    const vendored = new Map(loadVectors({ dir: VENDORED_VECTORS_DIR, only: OWN_IDS }).map((v) => [v.entry.id, v]));
+    for (const v of loadVectors({ dir: UMBRADB_VECTORS_DIR })) {
+      const ref = vendored.get(v.entry.id)!;
+      expect(v.data.event, v.entry.id).toEqual(ref.data.event);
+      expect(v.data.expect, v.entry.id).not.toEqual(ref.data.expect);
+      const strip = (d: Json): Json => Object.fromEntries(Object.entries(d).filter(([k]) => !["mip", "description", "basis", "expect"].includes(k)));
+      expect(strip(v.data), v.entry.id).toEqual(strip(ref.data));
+    }
+  });
+
+  it("[[mip0018.vectors.runner-cli]] the vendored runner CLI drives the adapter process over both sets and exits 0", () => {
     const run = spawnSync(process.execPath, [RUN_VECTORS], { encoding: "utf8", timeout: 120_000 });
     expect(run.status, run.stderr).toBe(0);
-    expect(run.stdout).toContain("normative: 67/67 passed; informative: 43/43 passed");
+    expect(run.stdout).toContain("normative: 66/66 passed; informative: 43/43 passed");
+    expect(run.stdout).toContain("normative: 1/1 passed");
     expect(run.stdout).not.toMatch(/^\s*n\/a:/m); // every group and display check ran
   }, 130_000);
 

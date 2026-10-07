@@ -3,11 +3,12 @@
  * the recorded Stagenet ranges (IDX 714485–715183, U1 715402–715433) and on synthetic multi-intent transactions, and
  * the test cross-check against the indexer's recorded `contractEvents`.
  *
- * Expected classifications: the reference repository (read-only, midnight-experiments/mip-0018 @ daec1f1):
- * `deployments/stagenet/cases/C07/expect/<step>.json` and `C08/expect/emit-two.json` (result and reason per event),
- * `cases/{C07,C08}/expected.json` (`counts`), `cases/IDX/index/index-state.json` (35 events named
- * `mip-0018:token-metadata[v1]`: position, result, reason, payload — compared position by position, all equal;
- * the accepted and rejected positions are listed below). The C10 payload is MIP Appendix A (A1).
+ * Expected classifications: the reference repository's case files (`deployments/stagenet/cases/C07/expect/<step>.json`
+ * and `C08/expect/emit-two.json`: result and reason per event; `cases/{C07,C08}/expected.json`: `counts`;
+ * `cases/IDX/index/index-state.json`: the 35 events named `mip-0018:token-metadata[v1]` with position, result, reason
+ * and payload — the accepted and rejected positions are listed below), except where MIP-0018 as in PR #372 changes
+ * them: C07's step A3c (714956), a record with the non-UTF-8 key `ff 6b 65 79`, is rejected (`invalid-utf8`; MIP "Keys":
+ * keys MUST be valid UTF-8), so C07 has 8 accepted and 10 rejected events. The C10 payload is MIP Appendix A (A1).
  */
 import { Event, Transaction } from "@midnightntwrk/ledger-v9";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -35,7 +36,7 @@ const CONTRACT = {
 const C07_STEPS: Record<number, [string, "accept" | "reject" | "ignore", string | undefined]> = {
   714891: ["A2a", "accept", undefined], 714899: ["R1", "reject", "no-records"], 714907: ["A2b", "accept", undefined],
   714915: ["R2a", "reject", "vallen-out-of-bounds"], 714923: ["A3a", "accept", undefined], 714931: ["R3a", "reject", "nonzero-padding"],
-  714942: ["A3b", "accept", undefined], 714949: ["R3b", "reject", "nonzero-padding"], 714956: ["A3c", "accept", undefined],
+  714942: ["A3b", "accept", undefined], 714949: ["R3b", "reject", "nonzero-padding"], 714956: ["A3c", "reject", "invalid-utf8"],
   714964: ["R4a", "reject", "bad-kind"], 714972: ["A4b", "accept", undefined], 714980: ["R5a", "reject", "invalid-utf8"],
   714988: ["A5a", "accept", undefined], 714996: ["R5e", "reject", "invalid-uri"], 715004: ["A5b", "accept", undefined],
   715012: ["R5h", "reject", "bad-null-length"], 715019: ["A5c", "accept", undefined], 715026: ["R6b", "reject", "reserved-valtype"],
@@ -43,15 +44,15 @@ const C07_STEPS: Record<number, [string, "accept" | "reject" | "ignore", string 
   715063: ["I2b", "ignore", "other-name"],
 };
 
-/** The reference IDX scan's 35 v1-named events: accepted positions (height/tx/event) and rejected ones with reason. */
+/** The IDX range's 35 v1-named events: accepted positions (height/tx/event) and rejected ones with reason. */
 const IDX_ACCEPTED = [
   "714501/0/0", "714564/0/0", "714624/0/0", "714663/0/0", "714663/0/1", "714663/0/2", "714696/0/0", "714703/0/0", "714712/0/0",
   "714796/0/0", "714804/0/0", "714813/0/0", "714827/0/0", "714835/0/0", "714891/0/0", "714907/0/0", "714923/0/0", "714942/0/0",
-  "714956/0/0", "714972/0/0", "714988/0/0", "715004/0/0", "715019/0/0", "715109/0/0", "715177/0/0",
+  "714972/0/0", "714988/0/0", "715004/0/0", "715019/0/0", "715109/0/0", "715177/0/0",
 ];
 const IDX_REJECTED = [
   "714899/0/0:no-records", "714915/0/0:vallen-out-of-bounds", "714931/0/0:nonzero-padding", "714949/0/0:nonzero-padding",
-  "714964/0/0:bad-kind", "714980/0/0:invalid-utf8", "714996/0/0:invalid-uri", "715012/0/0:bad-null-length",
+  "714956/0/0:invalid-utf8", "714964/0/0:bad-kind", "714980/0/0:invalid-utf8", "714996/0/0:invalid-uri", "715012/0/0:bad-null-length",
   "715026/0/0:reserved-valtype", "715109/0/1:reserved-valtype",
 ];
 
@@ -109,7 +110,7 @@ describe("MIP-0018 events from raw transactions", () => {
   const fullAddress = async (prefix: string): Promise<string> =>
     [...new Set([...(await events("idx")), ...(await events("u1"))].map((e) => e.contractAddress))].find((a) => a.startsWith(prefix))!;
 
-  it("[[mip0018.events.classification]] every Misc event of the recorded ranges is stored with its classification: C07 9/9/4 step by step, C08 1/1/0, the reference IDX scan's 35 v1 events (25 accepted, 10 rejected) position by position, other names ignored", async () => {
+  it("[[mip0018.events.classification]] every Misc event of the recorded ranges is stored with its classification: C07 8/10/4 step by step (its non-UTF-8-key event rejected), C08 1/1/0, the IDX range's 35 v1 events (24 accepted, 11 rejected) position by position, other names ignored", async () => {
     const idx = await events("idx");
     expect(idx).toHaveLength(49);
     expect(idx.every((e) => e.eventType === "Misc" && e.name.length === 64 && e.payload.length === 512)).toBe(true);
@@ -135,7 +136,7 @@ describe("MIP-0018 events from raw transactions", () => {
     const c = (events: number, accepted: number, rejected: number, ignored: number) => ({ events, accepted, rejected, ignored, unresolved: 0 });
     expect(counts).toEqual({
       C01: c(1, 1, 0, 0), C02: c(1, 1, 0, 0), C03: c(1, 1, 0, 0), C04: c(3, 3, 0, 0), C05: c(3, 3, 0, 0), C06: c(5, 5, 0, 0),
-      C07: c(22, 9, 9, 4), C08: c(2, 1, 1, 0), C10: c(1, 1, 0, 0), U1: c(1, 1, 0, 0), bridgeA: c(6, 0, 0, 6), bridgeB: c(4, 0, 0, 4),
+      C07: c(22, 8, 10, 4), C08: c(2, 1, 1, 0), C10: c(1, 1, 0, 0), U1: c(1, 1, 0, 0), bridgeA: c(6, 0, 0, 6), bridgeB: c(4, 0, 0, 4),
     });
 
     const c07 = await events("idx", { contractAddress: await fullAddress(CONTRACT.C07) });

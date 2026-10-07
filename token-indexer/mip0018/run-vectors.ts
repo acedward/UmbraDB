@@ -1,22 +1,48 @@
 #!/usr/bin/env node
 /**
- * UmbraDB's MIP-0018 conformance run: the vendored runner, unchanged, over the vendored vectors.
+ * UmbraDB's MIP-0018 conformance run: the vendored runner, unchanged, over
+ *   1. the vendored vectors except the ids UmbraDB keeps its own versions of, and
+ *   2. UmbraDB's own versions of those ids (`./vectors-umbradb`: vectors whose expectation MIP-0018 as in PR #372
+ *      changes; see its README),
+ * so each id runs exactly once, from UmbraDB's version when one exists.
  *
  *   node token-indexer/mip0018/run-vectors.ts [--consumer "<cmd>"] [--normative-only] [--notes] [--timeout <ms>]
  *
  * The default consumer is the pure adapter (`./vector-adapter.ts`); the Postgres adapter is passed with `--consumer`.
- * Exit status: the vendored runner's (0 when every normative vector passes).
+ * Exit status: 0 when both runs pass every normative vector, otherwise the larger runner exit status.
  */
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const VENDORED_VECTORS_DIR = join(HERE, "..", "vendor", "mip0018", "vectors");
+export const UMBRADB_VECTORS_DIR = join(HERE, "vectors-umbradb");
 export const RUNNER = join(VENDORED_VECTORS_DIR, "tools", "run.ts");
 export const RUN_VECTORS = fileURLToPath(import.meta.url);
 export const PURE_ADAPTER = join(HERE, "vector-adapter.ts");
 export const PG_ADAPTER = join(HERE, "vector-adapter-pg.ts");
+
+interface ManifestEntry {
+  id: string;
+  normative: boolean;
+}
+
+function manifestIds(dir: string): ManifestEntry[] {
+  const m = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as { vectors: ManifestEntry[] };
+  return m.vectors.map((v) => ({ id: v.id, normative: v.normative }));
+}
+
+/** The two selections: vendored ids minus UmbraDB's own ids, and UmbraDB's own ids. */
+export function vectorSets(): { reference: ManifestEntry[]; overridden: string[]; umbradb: ManifestEntry[] } {
+  const umbradb = manifestIds(UMBRADB_VECTORS_DIR);
+  const own = new Set(umbradb.map((v) => v.id));
+  const vendored = manifestIds(VENDORED_VECTORS_DIR);
+  const missing = [...own].filter((id) => !vendored.some((v) => v.id === id));
+  if (missing.length > 0) throw new Error(`UmbraDB vectors without a vendored counterpart: ${missing.join(", ")}`);
+  return { reference: vendored.filter((v) => !own.has(v.id)), overridden: [...own], umbradb };
+}
 
 function main(argv: string[]): number {
   let consumer = `${JSON.stringify(process.execPath)} ${JSON.stringify(PURE_ADAPTER)}`;
@@ -36,9 +62,18 @@ function main(argv: string[]): number {
       pass.push(a, v);
     } else throw new Error(`unknown argument: ${String(a)}`);
   }
-  console.log("\n== reference vectors (vendored)");
-  const r = spawnSync(process.execPath, [RUNNER, "--consumer", consumer, ...pass], { stdio: "inherit" });
-  return r.status ?? 2;
+  const sets = vectorSets();
+  const runs: Array<{ label: string; args: string[] }> = [
+    { label: `reference vectors (vendored), without ${sets.overridden.join(", ")}`, args: ["--only", sets.reference.map((v) => v.id).join(",")] },
+    { label: "UmbraDB's own versions", args: ["--dir", UMBRADB_VECTORS_DIR] },
+  ];
+  let status = 0;
+  for (const run of runs) {
+    console.log(`\n== ${run.label}`);
+    const r = spawnSync(process.execPath, [RUNNER, "--consumer", consumer, ...run.args, ...pass], { stdio: "inherit" });
+    status = Math.max(status, r.status ?? 2);
+  }
+  return status;
 }
 
 if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1]) {

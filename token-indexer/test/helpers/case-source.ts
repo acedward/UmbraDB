@@ -4,7 +4,7 @@
  * that are compared but not copied (first column `—`).
  */
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -66,4 +66,44 @@ export function caseCopyProblems(): string[] {
   }
   for (const p of jsonFilesBelow(CASES_PATH)) if (!listed.has(p)) problems.push(`not listed in SOURCE.md: ${p}`);
   return problems;
+}
+
+/** UmbraDB's own expectations where MIP-0018 as in PR #372 changes a reference case file (`fixtures/mip0018-cases-umbradb/`). */
+export const UMBRADB_CASES_DIR = new URL("../fixtures/mip0018-cases-umbradb/", import.meta.url);
+
+/** A case expectation: UmbraDB's own file when it has one, else the reference copy. */
+export function readExpectation<T>(path: string): T {
+  const own = new URL(path, UMBRADB_CASES_DIR);
+  return JSON.parse(readFileSync(existsSync(own) ? own : new URL(path, CASES_DIR), "utf8")) as T;
+}
+
+/** The reference copy of a case file, never UmbraDB's own. */
+export function readReferenceCase<T>(path: string): T {
+  return JSON.parse(readFileSync(new URL(path, CASES_DIR), "utf8")) as T;
+}
+
+/** An event entry of the reference index summaries (only the fields the differences touch are typed). */
+interface SummaryEvent { block: { height: number }; txIndex: number; eventIndex: number; result: string; reason?: string; domainSep?: string; kind?: number }
+
+/**
+ * A reference index summary (`IDX/index-summary.json`, `U1/index-summary.json`) with UmbraDB's documented differences
+ * applied (`<range>/index-summary-differences.json`): the listed events get UmbraDB's result and reason; a rejected
+ * event carries no identity.
+ */
+export function readIndexSummary<T extends { events: Record<string, SummaryEvent[]> }>(path: string): T {
+  const summary = readReferenceCase<T>(path);
+  const diffUrl = new URL(path.replace(/\.json$/, "-differences.json"), UMBRADB_CASES_DIR);
+  if (!existsSync(diffUrl)) return summary;
+  const diff = JSON.parse(readFileSync(diffUrl, "utf8")) as { events: Array<{ contractAddress: string; height: number; txIndex: number; eventIndex: number; result: string; reason: string }> };
+  for (const d of diff.events) {
+    const e = (summary.events[d.contractAddress] ?? []).find((x) => x.block.height === d.height && x.txIndex === d.txIndex && x.eventIndex === d.eventIndex);
+    if (e === undefined) throw new Error(`${path}: no event at ${d.height}/${d.txIndex}/${d.eventIndex} of ${d.contractAddress}`);
+    e.result = d.result;
+    e.reason = d.reason;
+    if (d.result !== "accept") {
+      delete e.domainSep;
+      delete e.kind;
+    }
+  }
+  return summary;
 }
