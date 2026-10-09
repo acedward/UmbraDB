@@ -27,7 +27,8 @@
  *   `mip0018_contract_actions.maintenance_operations`; the recorded ranges hold no NULL element).
  * - A PGlite error names the violated constraint `constraint`, postgres.js `constraint_name`, which
  *   `translatePostgresError` routes SQLSTATE 23514 by; the PGlite clients here copy `constraint` to `constraint_name`
- *   (their `mapError`), and one case shows the routing without it.
+ *   (their `mapError`), and one case shows the routing of PGlite's own error and of the client's default
+ *   normalization.
  */
 import { PGlite } from "@electric-sql/pglite";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -269,9 +270,12 @@ describe("PGlite client = postgres.js on PostgreSQL 17", () => {
     });
     expect(plain(out[1])).toEqual(plain(out[0]));
     expect(out[0]![5]).toBe("ChainArchiveCheckViolationError");
-    // Without `constraint_name`, the same PGlite error is routed as a clock regression.
-    const raw = new PgChainArchiveStore(createPgliteClient({ pglite, schema: "u1_mip" }), "u1_archive");
+    // PGlite's own error (no `constraint_name`) would be routed as a clock regression; the client's default
+    // normalization routes it as on PostgreSQL.
+    const raw = new PgChainArchiveStore(createPgliteClient({ pglite, schema: "u1_mip", mapError: (e) => e }), "u1_archive");
     expect(await raw.setCanonical(NET, 715409, "ab".repeat(32)).catch((e: Error) => e.name)).toBe("ClockRegressionError");
+    const normalized = new PgChainArchiveStore(createPgliteClient({ pglite, schema: "u1_mip" }), "u1_archive");
+    expect(await normalized.setCanonical(NET, 715409, "ab".repeat(32)).catch((e: Error) => e.name)).toBe("ChainArchiveCheckViolationError");
   }, 60_000);
 
   it("bytea[] NULL elements: postgres.js reads them as an empty Buffer, PGlite as null; unnest gives NULL on both", async () => {

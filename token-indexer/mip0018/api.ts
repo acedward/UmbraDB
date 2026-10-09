@@ -174,13 +174,18 @@ const BUSY = { error: { code: "BUSY", message: "too many requests in progress; r
 
 /**
  * Whether an error comes from the database driver or the connection (→ 503 `UNAVAILABLE`) rather than from this code
- * (→ 500 `INTERNAL`): a `PostgresError` (postgres.js), or a connection, resource or operator-intervention error code.
+ * (→ 500 `INTERNAL`): a `PostgresError` (postgres.js, and the PGlite client), any other error the database reported
+ * (a SQLSTATE `code` with a `severity`, as PGlite's own error class carries), a connection, resource or
+ * operator-intervention error code, or the PGlite client's wait for its single session (`PGLITE_SESSION_DEADLOCK`).
+ * Decided by shape alone, so this module needs no driver.
  */
 export function isDatabaseError(e: unknown): boolean {
   if (typeof e !== "object" || e === null) return false;
-  const err = e as { name?: unknown; code?: unknown };
+  const err = e as { name?: unknown; code?: unknown; severity?: unknown };
   if (err.name === "PostgresError") return true;
-  return typeof err.code === "string" && /^(CONNECT|CONNECTION_|ECONN|ETIMEDOUT|ENOTFOUND|EHOSTUNREACH|EPIPE|57P|08|53)/.test(err.code);
+  if (typeof err.code !== "string") return false;
+  if (typeof err.severity === "string" && /^[0-9A-Z]{5}$/.test(err.code)) return true;
+  return /^(CONNECT|CONNECTION_|ECONN|ETIMEDOUT|ENOTFOUND|EHOSTUNREACH|EPIPE|PGLITE_SESSION_|57P|08|53)/.test(err.code);
 }
 
 function toApiError(error: unknown, log: (line: string) => void): ApiError {
