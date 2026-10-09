@@ -17,7 +17,8 @@
  * Exposed as pure functions (`reconcile`, `extractIds`, `statusesFromReport`) so the behaviour is
  * unit-tested against synthetic reporter payloads (`check-required-tests.test.ts`), and as a CLI
  * (`node --import tsx check-required-tests.ts <report.json> [--manifest <path>]`) wired into
- * `test:conformance` by Task 7.
+ * `test:conformance` by Task 7. `--postgresql-only` reconciles a run on PGlite (`npm run test:pglite`): the ids of
+ * the PostgreSQL-only list (`test/helpers/postgresql-only.ts`) must be not run or skipped there, every other id passed.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -56,7 +57,20 @@ export interface JsonReport {
   testResults?: JsonReportFile[];
 }
 
-export type ViolationReason = "missing" | "skipped" | "todo" | "pending" | "failed" | "ambiguous" | "wrong-file" | "unknown-status" | "deferred-absent" | "deferred-unexpected" | "deferred-wrong-file";
+export type ViolationReason = "missing" | "skipped" | "todo" | "pending" | "failed" | "ambiguous" | "wrong-file" | "unknown-status" | "deferred-absent" | "deferred-unexpected" | "deferred-wrong-file" | "postgresql-only-ran";
+
+/**
+ * The tests that run on PostgreSQL only (`test/helpers/postgresql-only.ts`), for reconciling a run on PGlite
+ * (`UMBRADB_BACKEND=pglite`): a required or deferred id bound to one of `files` must be absent from the report (the
+ * file is not run on PGlite); an id in `tests` must be reported skipped, from its bound file. Either one reported as
+ * run is a violation, so the list cannot go stale unnoticed.
+ */
+export interface PostgresqlOnlyList {
+  /** Repository-relative test files that are not run on PGlite. */
+  files: readonly string[];
+  /** Ids of tests that are skipped on PGlite. */
+  tests: readonly string[];
+}
 
 export interface ReconcileResult {
   ok: boolean;
@@ -64,6 +78,8 @@ export interface ReconcileResult {
   violations: Array<{ id: string; reason: ViolationReason; statuses: string[] }>;
   /** deferred ids and how they reconciled (informational; never fails the gate). */
   deferredReconciled: Array<{ id: string; statuses: string[]; state: "skipped-pending-feature" | "passed" | "missing" | "other" }>;
+  /** With a {@link PostgresqlOnlyList}: the required and deferred ids reconciled as PostgreSQL-only, and how. */
+  postgresqlOnly: Array<{ id: string; state: "file-not-run" | "skipped" }>;
   summary: string;
 }
 
@@ -149,15 +165,38 @@ export function skippedFilesFromReport(report: JsonReport): Map<string, Set<stri
   return filesFromReport(report, (status) => status === "skipped" || status === "todo" || status === "pending");
 }
 
-/** Reconciles a Vitest JSON report against a required/deferred manifest. */
-export function reconcile(report: JsonReport, manifest: RequiredTestsManifest): ReconcileResult {
+/**
+ * Reconciles a Vitest JSON report against a required/deferred manifest. With `postgresqlOnly` (a run on PGlite), the
+ * ids it covers reconcile as PostgreSQL-only (see {@link PostgresqlOnlyList}); every other id is held to the same rules.
+ */
+export function reconcile(report: JsonReport, manifest: RequiredTestsManifest, postgresqlOnly?: PostgresqlOnlyList): ReconcileResult {
   const byId = statusesFromReport(report);
   const passedFilesById = passedFilesFromReport(report);
   const skippedFilesById = skippedFilesFromReport(report);
   const violations: ReconcileResult["violations"] = [];
+  const pgOnly: ReconcileResult["postgresqlOnly"] = [];
+  const pgOnlyFiles = new Set((postgresqlOnly?.files ?? []).map(normPath));
+  const pgOnlyTests = new Set(postgresqlOnly?.tests ?? []);
+  const inPgOnlyFile = (entry: ManifestEntry): boolean => entry.file !== undefined && pgOnlyFiles.has(normPath(entry.file));
 
   for (const entry of manifest.required) {
     const statuses = byId.get(entry.id);
+    if (inPgOnlyFile(entry)) {
+      if (statuses === undefined || statuses.length === 0) pgOnly.push({ id: entry.id, state: "file-not-run" });
+      else violations.push({ id: entry.id, reason: "postgresql-only-ran", statuses });
+      continue;
+    }
+    if (pgOnlyTests.has(entry.id)) {
+      const skippedFiles = skippedFilesById.get(entry.id) ?? new Set<string>();
+      if (statuses === undefined || statuses.length === 0) violations.push({ id: entry.id, reason: "missing", statuses: [] });
+      else if (statuses.length > 1) violations.push({ id: entry.id, reason: "ambiguous", statuses });
+      else if (statuses[0] !== "skipped")
+        violations.push({ id: entry.id, reason: statuses[0] === "passed" ? "postgresql-only-ran" : statuses[0] === "failed" ? "failed" : "unknown-status", statuses });
+      else if (entry.file !== undefined && ![...skippedFiles].every((rf) => fileMatches(rf, entry.file!)))
+        violations.push({ id: entry.id, reason: "wrong-file", statuses: [...skippedFiles] });
+      else pgOnly.push({ id: entry.id, state: "skipped" });
+      continue;
+    }
     if (statuses === undefined || statuses.length === 0) {
       violations.push({ id: entry.id, reason: "missing", statuses: [] });
       continue;
@@ -206,6 +245,11 @@ export function reconcile(report: JsonReport, manifest: RequiredTestsManifest): 
   // Previously an absent deferred id was silently accepted — the exact fail-OPEN hole this closes.
   for (const entry of manifest.deferred) {
     const d = deferredReconciled.find((x) => x.id === entry.id)!;
+    if (inPgOnlyFile(entry)) {
+      if (d.state === "missing") pgOnly.push({ id: d.id, state: "file-not-run" });
+      else violations.push({ id: d.id, reason: "postgresql-only-ran", statuses: d.statuses });
+      continue;
+    }
     if (d.state === "missing") { violations.push({ id: d.id, reason: "deferred-absent", statuses: [] }); continue; }
     if (d.state === "other") { violations.push({ id: d.id, reason: "deferred-unexpected", statuses: d.statuses }); continue; }
     // FILE-BINDING (BLOCK 6): the deferred scenario's skipped-pending-feature token (or its early-shipped
@@ -218,14 +262,30 @@ export function reconcile(report: JsonReport, manifest: RequiredTestsManifest): 
     }
   }
 
+  // A listed PostgreSQL-only test that is not a manifest id must still be reported skipped, never run.
+  const manifestIds = new Set([...manifest.required, ...manifest.deferred].map((e) => e.id));
+  for (const id of pgOnlyTests) {
+    if (manifestIds.has(id)) continue;
+    const statuses = byId.get(id) ?? [];
+    if (statuses.length === 0) violations.push({ id, reason: "missing", statuses });
+    else if (!statuses.every((st) => st === "skipped")) violations.push({ id, reason: "postgresql-only-ran", statuses });
+  }
+
   const ok = violations.length === 0;
+  const requiredPgOnly = pgOnly.filter((x) => manifest.required.some((e) => e.id === x.id));
   const summary = ok
-    ? `check-required-tests: OK — all ${manifest.required.length} required test(s) executed and passed; ` +
-      `${manifest.deferred.length} deferred present-and-reconciled.`
+    ? postgresqlOnly === undefined
+      ? `check-required-tests: OK — all ${manifest.required.length} required test(s) executed and passed; ` +
+        `${manifest.deferred.length} deferred present-and-reconciled.`
+      : `check-required-tests (PGlite): OK — ${manifest.required.length - requiredPgOnly.length} of ${manifest.required.length} ` +
+        `required test(s) executed and passed; ${requiredPgOnly.length} PostgreSQL-only ` +
+        `(${requiredPgOnly.filter((x) => x.state === "file-not-run").length} in files not run on PGlite, ` +
+        `${requiredPgOnly.filter((x) => x.state === "skipped").length} skipped); ${manifest.deferred.length} deferred reconciled ` +
+        `(${pgOnly.length - requiredPgOnly.length} PostgreSQL-only).`
     : `check-required-tests: FAIL — ${violations.length} gate violation(s) (required not-run/failed OR deferred absent/unexpected):\n` +
       violations.map((v) => `  - ${v.id}: ${v.reason}${v.statuses.length ? ` (status: ${v.statuses.join(", ")})` : ""}`).join("\n");
 
-  return { ok, violations, deferredReconciled, summary };
+  return { ok, violations, deferredReconciled, postgresqlOnly: pgOnly, summary };
 }
 
 /**
@@ -311,18 +371,23 @@ export function loadReport(path: string): JsonReport {
 
 const DEFAULT_MANIFEST = fileURLToPath(new URL("./required-tests.manifest.json", import.meta.url));
 
-function cli(argv: string[]): number {
+async function cli(argv: string[]): Promise<number> {
   const args = argv.slice(2);
   let manifestPath = DEFAULT_MANIFEST;
+  let postgresqlOnly: PostgresqlOnlyList | undefined;
   const positional: string[] = [];
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--manifest") { manifestPath = args[++i] ?? manifestPath; }
+    else if (args[i] === "--postgresql-only") {
+      const { POSTGRESQL_ONLY } = await import("../helpers/postgresql-only.ts");
+      postgresqlOnly = { files: Object.keys(POSTGRESQL_ONLY.files), tests: Object.keys(POSTGRESQL_ONLY.tests) };
+    }
     else positional.push(args[i]!);
   }
   const reportPath = positional[0] ?? process.env.UMBRADB_TEST_REPORT_JSON;
   if (reportPath === undefined) {
     process.stderr.write(
-      "usage: check-required-tests.ts <vitest-report.json> [--manifest <path>]\n" +
+      "usage: check-required-tests.ts <vitest-report.json> [--manifest <path>] [--postgresql-only]\n" +
       "       (or set UMBRADB_TEST_REPORT_JSON). Produce the report with `vitest run --reporter=json --outputFile=<path>`.\n",
     );
     return 2;
@@ -343,15 +408,16 @@ function cli(argv: string[]): number {
     );
     return 2;
   }
-  const result = reconcile(report, manifest);
+  const result = reconcile(report, manifest, postgresqlOnly);
   process.stdout.write(result.summary + "\n");
   for (const d of result.deferredReconciled) {
     process.stdout.write(`  deferred ${d.id}: ${d.state}${d.statuses.length ? ` (status: ${d.statuses.join(", ")})` : ""}\n`);
   }
+  for (const d of result.postgresqlOnly) process.stdout.write(`  PostgreSQL-only ${d.id}: ${d.state}\n`);
   return result.ok ? 0 : 1;
 }
 
 // Run the CLI only when executed directly (not when imported by the unit test).
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.exit(cli(process.argv));
+  void cli(process.argv).then((code) => process.exit(code));
 }

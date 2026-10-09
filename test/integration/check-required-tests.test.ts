@@ -400,3 +400,63 @@ describe("check-required-tests — manifest-ID uniqueness + deferred pin/file-bi
     expect(new Set(ids).size).toBe(ids.length); // all ids distinct
   });
 });
+
+describe("check-required-tests — a run on PGlite reconciles the PostgreSQL-only list", () => {
+  const PG_FILE = "test/integration/crash/pg-kill-save.crash.test.ts";
+  const BOTH_FILE = "token-indexer/test/mip0018-scan.test.ts";
+  const manifest: RequiredTestsManifest = {
+    required: [
+      { id: "req.both", file: BOTH_FILE },
+      { id: "req.cli", file: BOTH_FILE },
+      { id: "req.server", file: PG_FILE },
+    ],
+    deferred: [{ id: "def.server", file: PG_FILE, pendingFeature: "x" }],
+  };
+  const list = { files: [PG_FILE], tests: ["req.cli"] };
+  const run = (assertions: Array<[string, string, string]>): JsonReport => {
+    const byFile = new Map<string, Array<{ status: string; title: string; fullName: string }>>();
+    for (const [file, status, title] of assertions) {
+      const a = byFile.get(file) ?? [];
+      a.push({ status, title, fullName: `s ${title}` });
+      byFile.set(file, a);
+    }
+    return { testResults: [...byFile].map(([file, assertionResults]) => ({ name: `/abs/${file}`, assertionResults })) };
+  };
+  const pgliteRun = run([[BOTH_FILE, "passed", "[[req.both]] ok"], [BOTH_FILE, "skipped", "[[req.cli]] cli"]]);
+
+  it("passes when the other ids pass, the listed test is skipped and the listed file's ids are absent; names how each reconciled", () => {
+    const r = reconcile(pgliteRun, manifest, list);
+    expect(r.violations).toEqual([]);
+    expect(r.ok).toBe(true);
+    expect(r.postgresqlOnly).toEqual([
+      { id: "req.cli", state: "skipped" }, { id: "req.server", state: "file-not-run" }, { id: "def.server", state: "file-not-run" },
+    ]);
+    expect(r.summary).toBe("check-required-tests (PGlite): OK — 1 of 3 required test(s) executed and passed; 2 PostgreSQL-only (1 in files not run on PGlite, 1 skipped); 1 deferred reconciled (1 PostgreSQL-only).");
+  });
+
+  it("without the list the same run fails, naming the skipped and the absent ids", () => {
+    const r = reconcile(pgliteRun, manifest);
+    expect(r.ok).toBe(false);
+    expect(r.violations.map((v) => [v.id, v.reason])).toEqual([["req.cli", "skipped"], ["req.server", "missing"], ["def.server", "deferred-absent"]]);
+  });
+
+  it("fails when a listed test or a listed file's test ran, so the list cannot go stale", () => {
+    const ran = run([[BOTH_FILE, "passed", "[[req.both]] ok"], [BOTH_FILE, "passed", "[[req.cli]] cli"], [PG_FILE, "passed", "[[req.server]] s"]]);
+    expect(reconcile(ran, manifest, list).violations.map((v) => [v.id, v.reason])).toEqual([["req.cli", "postgresql-only-ran"], ["req.server", "postgresql-only-ran"]]);
+  });
+
+  it("holds every other id to the usual rules: a skipped, failed or absent id still fails, as does a listed test that failed, is absent or was skipped elsewhere", () => {
+    const failing = run([[BOTH_FILE, "skipped", "[[req.both]] ok"], [BOTH_FILE, "failed", "[[req.cli]] cli"]]);
+    expect(reconcile(failing, manifest, list).violations.map((v) => [v.id, v.reason])).toEqual([["req.both", "skipped"], ["req.cli", "failed"]]);
+    expect(reconcile(run([[BOTH_FILE, "passed", "[[req.both]] ok"]]), manifest, list).violations.map((v) => [v.id, v.reason])).toEqual([["req.cli", "missing"]]);
+    const moved = run([[BOTH_FILE, "passed", "[[req.both]] ok"], ["other.test.ts", "skipped", "[[req.cli]] cli"]]);
+    expect(reconcile(moved, manifest, list).violations.map((v) => [v.id, v.reason])).toEqual([["req.cli", "wrong-file"]]);
+  });
+
+  it("a listed test that is not a manifest id must be reported skipped too", () => {
+    const extra = { files: [PG_FILE], tests: ["req.cli", "plain.cli"] };
+    expect(reconcile(pgliteRun, manifest, extra).violations).toEqual([{ id: "plain.cli", reason: "missing", statuses: [] }]);
+    const ranExtra = run([[BOTH_FILE, "passed", "[[req.both]] ok"], [BOTH_FILE, "skipped", "[[req.cli]] cli"], [BOTH_FILE, "passed", "[[plain.cli]] x"]]);
+    expect(reconcile(ranExtra, manifest, extra).violations).toEqual([{ id: "plain.cli", reason: "postgresql-only-ran", statuses: ["passed"] }]);
+  });
+});

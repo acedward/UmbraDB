@@ -17,11 +17,11 @@ import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { join } from "node:path";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { openTestDatabase, type TestDatabase } from "../../test/helpers/test-database.ts";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { type ArchiveTape, startFakeChain } from "../../test/integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadCaseIndex, loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
 import { Mip0018Scanner } from "../mip0018/scan.ts";
@@ -144,7 +144,7 @@ const nullAll = (...keys: string[]): MetadataRecord[] => keys.map((k) => record.
 const browserExe = findBrowser();
 
 describe("MIP-0018 explorer page in a real browser", () => {
-  let container: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   let browser: Browser;
   const clients: UmbraDBSql[] = [];
   const handles: ServeHandle[] = [];
@@ -159,7 +159,7 @@ describe("MIP-0018 explorer page in a real browser", () => {
     const n = counter++;
     const archive = `${prefix}_arch_${n}`;
     const mip = `${prefix}_mip_${n}`;
-    const sql = createClient({ connectionString: container.getConnectionUri(), schema: mip });
+    const sql = database.client(mip);
     clients.push(sql);
     await bootstrapChainArchiveSchema(sql, archive);
     return { sql, archive, mip };
@@ -236,7 +236,7 @@ describe("MIP-0018 explorer page in a real browser", () => {
     if (browserExe === undefined)
       throw new Error("no Chromium/Chrome: set MIP0018_UI_BROWSER or CHROME_BIN, or run in mcr.microsoft.com/playwright (see token-indexer/mip0018/ui/README.md)");
     browser = await Browser.launch(browserExe);
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
+    database = await openTestDatabase();
     const db = await fresh("uiidx");
     await archiveTape(db, loadRangeTape("idx"), 714485, 715183);
     const s = scanner(db);
@@ -253,7 +253,7 @@ describe("MIP-0018 explorer page in a real browser", () => {
       await new Promise<void>((r) => s.close(() => r()));
     }
     for (const c of clients) await c.end({ timeout: 5 });
-    await container?.stop();
+    await database?.stop();
   }, 60_000);
 
   it("[[mip0018.ui.browser-routes]] the recorded IDX range: the list shows NIGHT and DUST first, then every API row in order with its ✓/⚠ mark (reason in the tooltip) and standards tags; token, color, built-in, contract, tx and status routes render the API's values; activity as the API answers it; the page makes only same-origin GETs of its assets and the API, with no CSP violation, exception or console error", async () => {

@@ -1,4 +1,6 @@
-import { defineConfig } from "vitest/config";
+import { fileURLToPath } from "node:url";
+import { configDefaults, defineConfig } from "vitest/config";
+import { POSTGRESQL_ONLY_FILES, TEST_BACKEND } from "./test/helpers/postgresql-only.ts";
 
 /**
  * UmbraDB test + coverage configuration.
@@ -59,8 +61,17 @@ const DURABILITY = {
   "**/postgres/transaction-lease.ts": { lines: 90, branches: 85, perFile: true },
 } as const;
 
+// The database the tests run on (`UMBRADB_BACKEND`, `test/helpers/test-database.ts`). On PGlite the PostgreSQL-only
+// files are not collected (`test/helpers/postgresql-only.ts` gives each one's reason), and a file that still starts a
+// PostgreSQL container fails at once instead of quietly running on PostgreSQL.
+const ON_PGLITE = TEST_BACKEND === "pglite";
+
 export default defineConfig({
   test: {
+    exclude: ON_PGLITE ? [...configDefaults.exclude, ...POSTGRESQL_ONLY_FILES] : configDefaults.exclude,
+    alias: ON_PGLITE
+      ? { "@testcontainers/postgresql": fileURLToPath(new URL("./test/helpers/no-postgresql-container.ts", import.meta.url)) }
+      : {},
     // Teardown budget. `registerSuiteLifecycle`'s afterAll already sets 60s explicitly because
     // `container.stop()` can exceed the 10s default under heavy host load; suites with a plain
     // inline afterAll (e.g. chain-archive-rollover) inherit this global so coverage-instrumented,
