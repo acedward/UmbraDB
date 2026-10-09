@@ -1,23 +1,27 @@
 /**
- * The MIP-0018 read-only JSON API (contract: `token-indexer/API.md`). Node's own `http`, no framework — the pattern of
- * the UmbraDB services: keyset pagination, one error envelope, a read snapshot per request.
+ * The MIP-0018 read-only JSON API (contract: `token-indexer/API.md`) as one runtime-neutral handler: routes,
+ * validation, errors and the request cap. `handle(method, target)` answers `{ status, headers, body }` from an injected
+ * `Sql` alone, so the same router runs behind Node's own `http` server (`api-node.ts`, used by `serve-cli.ts`) and in
+ * any other host that hands it a method and a request target. The pattern of the UmbraDB services: keyset pagination,
+ * one error envelope, a read snapshot per request.
  *
  * - `GET`/`HEAD` only (405 otherwise, with `Allow`); strict input: 32-byte hex path values, kinds 1–3, no unknown or
  *   repeated query parameters, `limit` 1–500, cursors only as issued (bound to their endpoint and filter).
  * - Every request runs in ONE `REPEATABLE READ READ ONLY` transaction: all statements of an answer see one database
  *   state while the scan commits blocks, and the API cannot write.
  * - Errors: `{ "error": { "code", "message" } }`; messages name the parameter, never echo the input, never carry
- *   internal details (database and unexpected errors are logged server-side and answered generically).
+ *   internal details (database and unexpected errors go to the injected log and are answered generically).
  * - JSON bodies are pure ASCII: every non-ASCII character and `<`, `>`, `&` are `\uXXXX` escapes, so hostile text
  *   (bidi controls, invisible characters) never travels raw; JSON.parse gives the exact text back.
  * - Bounded cost: no answer reads all keys of an identity, all rejected events of a contract or all members of a group
- *   (`api-views.ts`), and at most `maxConcurrentRequests` requests run at once (default 8, below the connection pool's
- *   10, so the scan loop of the same `serve` process always gets a connection); beyond that a request is answered at
- *   once with 503 `BUSY` and `Retry-After: 1`.
+ *   (`api-views.ts`), and at most `maxConcurrentRequests` requests are admitted at once (default 8); beyond that a
+ *   request is answered at once with 503 `BUSY` and `Retry-After: 1`, before any database work, never queued. On
+ *   PostgreSQL the default stays below the connection pool's 10, so the scan loop of the same `serve` process always
+ *   gets a connection; on a database with a single session the admitted requests wait for that session, and the cap
+ *   bounds that queue.
  * - Never fetches a URI or anything remote; heights only.
+ * - No Node module, `Buffer` or `process`: the host injects the `Sql` and the log.
  */
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import {
   type ActivityOptions,
@@ -44,7 +48,7 @@ import {
 
 export const MAX_LIMIT = 500;
 export const DEFAULT_LIMIT = 100;
-/** Requests answered at once by default; more are refused with 503 `BUSY`. */
+/** Requests admitted at once by default; more are refused with 503 `BUSY`. */
 export const DEFAULT_MAX_CONCURRENT_REQUESTS = 8;
 
 export class ApiError extends Error {
@@ -61,7 +65,7 @@ const orNotFound = <T>(value: T | undefined, message: string): T => {
   return value;
 };
 
-export interface Mip0018ApiOptions {
+export interface Mip0018HandlerOptions {
   sql: UmbraDBSql;
   network: string;
   /** Schema of the `mip0018` lineage (default `mip0018`). */
@@ -72,15 +76,28 @@ export interface Mip0018ApiOptions {
   genesisHash?: string | null;
   /** State of the scan loop of the same process (default `off`: API only). */
   scannerState?: () => ScannerState;
-  /** Server-side log line (errors), default stderr. */
+  /** Log line of an error answered generically (503 `UNAVAILABLE`, 500 `INTERNAL`); default `console.error`. */
   log?: (line: string) => void;
-  /**
-   * Static routes answered before the API (the explorer page, `ui/page.ts` `serveUi`); returns `true` when it answered
-   * the request. Default: none (`/ui` is then a 404 like any unknown path).
-   */
-  ui?: (req: IncomingMessage, res: ServerResponse) => boolean;
-  /** API requests run at once (default {@link DEFAULT_MAX_CONCURRENT_REQUESTS}); more are answered 503 `BUSY`. */
+  /** Requests admitted at once (default {@link DEFAULT_MAX_CONCURRENT_REQUESTS}); more are answered 503 `BUSY`. */
   maxConcurrentRequests?: number;
+}
+
+/** One answer of the API, as an HTTP response writes it. */
+export interface ApiResponse {
+  status: number;
+  /** Lower-case names in write order; `content-length` is the UTF-8 byte length of the JSON text, also for `HEAD`. */
+  headers: Record<string, string>;
+  /** The JSON text (pure ASCII); empty for `HEAD`. */
+  body: string;
+}
+
+export interface Mip0018Handler {
+  /**
+   * Answers one request: `method` as received, `target` the request target (path and query, as in an HTTP request
+   * line). Every error of the request is answered (400, 404, 405, 500, 503), not thrown. An admitted request counts
+   * against the cap until its database work has ended.
+   */
+  handle(method: string, target: string): Promise<ApiResponse>;
 }
 
 // ── Input validation ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -146,71 +163,72 @@ const JSON_HEADERS = {
   "referrer-policy": "no-referrer",
 } as const;
 
-function send(res: ServerResponse, statusCode: number, body: unknown, head: boolean, extra: Record<string, string> = {}): void {
-  const text = toAsciiJson(body);
-  res.writeHead(statusCode, { ...JSON_HEADERS, ...extra, "content-length": String(Buffer.byteLength(text, "utf8")) });
-  res.end(head ? undefined : text);
+const UTF8 = new TextEncoder();
+
+function answer(status: number, value: unknown, head: boolean, extra: Record<string, string> = {}): ApiResponse {
+  const text = toAsciiJson(value);
+  return { status, headers: { ...JSON_HEADERS, ...extra, "content-length": String(UTF8.encode(text).byteLength) }, body: head ? "" : text };
 }
 
-/** Whether an error comes from the database driver or the connection (→ 503) rather than from this code (→ 500). */
-function isDatabaseError(e: unknown): boolean {
+const BUSY = { error: { code: "BUSY", message: "too many requests in progress; retry shortly" } } as const;
+
+/**
+ * Whether an error comes from the database driver or the connection (→ 503 `UNAVAILABLE`) rather than from this code
+ * (→ 500 `INTERNAL`): a `PostgresError` (postgres.js), or a connection, resource or operator-intervention error code.
+ */
+export function isDatabaseError(e: unknown): boolean {
   if (typeof e !== "object" || e === null) return false;
   const err = e as { name?: unknown; code?: unknown };
   if (err.name === "PostgresError") return true;
   return typeof err.code === "string" && /^(CONNECT|CONNECTION_|ECONN|ETIMEDOUT|ENOTFOUND|EHOSTUNREACH|EPIPE|57P|08|53)/.test(err.code);
 }
 
-// ── Server ───────────────────────────────────────────────────────────────────────────────────────────────────────
+function toApiError(error: unknown, log: (line: string) => void): ApiError {
+  if (error instanceof ApiError) return error;
+  // The activity read helpers refuse a bad limit, order or cursor with messages that never echo the input.
+  if (error instanceof Error && error.name === "ActivityQueryError") return badRequest(error.message);
+  const message = error instanceof Error ? error.message : String(error);
+  if (isDatabaseError(error)) {
+    log(JSON.stringify({ event: "api-error", status: 503, error: message }));
+    return new ApiError(503, "UNAVAILABLE", "the index database cannot be read");
+  }
+  log(JSON.stringify({ event: "api-error", status: 500, error: message }));
+  return new ApiError(500, "INTERNAL", "internal error");
+}
 
-export function createMip0018Api(opts: Mip0018ApiOptions): Server {
+// ── Handler ──────────────────────────────────────────────────────────────────────────────────────────────────────
+
+export function createMip0018Handler(opts: Mip0018HandlerOptions): Mip0018Handler {
   const schema = opts.schema ?? DEFAULT_SCHEMAS.schema;
   const archiveSchema = opts.archiveSchema ?? DEFAULT_SCHEMAS.archiveSchema;
   const genesis = opts.genesisHash !== undefined ? opts.genesisHash : (KNOWN_GENESIS[opts.network] ?? null);
-  const log = opts.log ?? ((line: string) => process.stderr.write(`${line}\n`));
+  const log = opts.log ?? ((line: string) => console.error(line));
   const maxConcurrent = opts.maxConcurrentRequests ?? DEFAULT_MAX_CONCURRENT_REQUESTS;
   if (!Number.isSafeInteger(maxConcurrent) || maxConcurrent < 1) throw new RangeError(`maxConcurrentRequests must be a positive integer, got ${maxConcurrent}`);
   let inFlight = 0;
 
-  return createServer((req, res) => {
-    if (opts.ui?.(req, res) === true) return;
-    const head = (req.method ?? "GET").toUpperCase() === "HEAD";
-    if (inFlight >= maxConcurrent) {
-      send(res, 503, { error: { code: "BUSY", message: "too many requests in progress; retry shortly" } }, head, { "retry-after": "1" });
-      return;
-    }
-    inFlight++;
-    void handle(req).finally(() => { inFlight--; }).then(
-      (body) => send(res, 200, body, head),
-      (error: unknown) => {
-        const e = toApiError(error);
-        if (res.headersSent) {
-          res.end();
-          return;
-        }
-        send(res, e.status, { error: { code: e.code, message: e.message } }, head, e.status === 405 ? { allow: "GET, HEAD" } : {});
-      },
-    );
-  });
+  return {
+    handle(method: string, target: string): Promise<ApiResponse> {
+      const head = method.toUpperCase() === "HEAD";
+      // Checked and counted before anything else, method and path included: a refusal costs nothing.
+      if (inFlight >= maxConcurrent) return Promise.resolve(answer(503, BUSY, head, { "retry-after": "1" }));
+      inFlight++;
+      return run(method, target).finally(() => { inFlight--; }).then(
+        (body) => answer(200, body, head),
+        (error: unknown) => {
+          const e = toApiError(error, log);
+          return answer(e.status, { error: { code: e.code, message: e.message } }, head, e.status === 405 ? { allow: "GET, HEAD" } : {});
+        },
+      );
+    },
+  };
 
-  function toApiError(error: unknown): ApiError {
-    if (error instanceof ApiError) return error;
-    // The activity read helpers refuse a bad limit, order or cursor with messages that never echo the input.
-    if (error instanceof Error && error.name === "ActivityQueryError") return badRequest(error.message);
-    const message = error instanceof Error ? error.message : String(error);
-    if (isDatabaseError(error)) {
-      log(JSON.stringify({ event: "api-error", status: 503, error: message }));
-      return new ApiError(503, "UNAVAILABLE", "the index database cannot be read");
-    }
-    log(JSON.stringify({ event: "api-error", status: 500, error: message }));
-    return new ApiError(500, "INTERNAL", "internal error");
-  }
-
-  async function handle(req: IncomingMessage): Promise<unknown> {
-    const method = (req.method ?? "GET").toUpperCase();
+  async function run(requestMethod: string, target: string): Promise<unknown> {
+    const method = requestMethod.toUpperCase();
     if (method !== "GET" && method !== "HEAD") throw new ApiError(405, "METHOD_NOT_ALLOWED", "only GET and HEAD are supported");
     let url: URL;
     try {
-      url = new URL(req.url ?? "/", "http://mip0018.invalid");
+      url = new URL(target, "http://mip0018.invalid");
     } catch {
       throw badRequest("malformed request target");
     }
@@ -314,15 +332,4 @@ export function createMip0018Api(opts: Mip0018ApiOptions): Server {
       };
     throw notFound("no such route");
   }
-}
-
-/** Binds the server and resolves with the port actually bound (`0` asks the OS for a free one). */
-export function listen(server: Server, port: number, host = "127.0.0.1"): Promise<number> {
-  return new Promise((resolvePort, reject) => {
-    server.once("error", reject);
-    server.listen(port, host, () => {
-      server.off("error", reject);
-      resolvePort((server.address() as AddressInfo).port);
-    });
-  });
 }
