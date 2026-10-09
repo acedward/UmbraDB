@@ -8,7 +8,7 @@
  *   with their names kept), PGlite's assets and the tapes; the node-free plugin fails a build that would bundle
  *   postgres.js or a Node built-in.
  * - `[[browser.worker.opfs-reload-resume]]` — first open creates the OPFS store; the worker syncs and scans part of the
- *   U1 range replayed inside the worker; after a reload the store is reopened (not created) and reports the same
+ *   U1 range replayed inside the worker (its mint is decoded by the bundled ledger); after a reload the store is reopened (not created) and reports the same
  *   cursors and the same API answers; a new start, this time reading the chain over `fetch` (the page's origin answers
  *   from the same tape), continues at the cursor and fetches only the missing heights; a second reload keeps it all.
  * - `[[browser.worker.protocol]]` — the real worker answers malformed and unknown messages with their error codes,
@@ -201,6 +201,11 @@ describe("browser engine worker in Chrome", () => {
     expect(statusBefore.body).toMatchObject({ network: "stagenet", startHeight: U1.from, indexedHeight: MID, archiveHeight: MID, scanner: "following", durability: "non-durable" });
     const tokensBefore = await api("/v1/tokens");
     expect(tokensBefore.status).toBe(200);
+    // U1's mint (715409) was decoded in the worker: a ContractCall recognized by the bundle's one ledger instance.
+    const minted = (tokensBefore.body.items as Json[]).filter((t) => t.source === "identity" && t.minted !== null);
+    expect(minted.map((t) => [t.contractAddress, t.kind, t.minted.firstMint])).toEqual([
+      ["11010832a39954d9ccce48f6b5fce25fc789abb1d700ee45b26b69af3e5dd63b", 1, { height: 715409, txIndex: 0, txHash: "173ad3b6344edc42b9468a42e001cff52dc9fb1136a51a9e3c1275ed6a2b3ad7" }],
+    ]);
     expect(chain.counts.size).toBe(0); // nothing came over the network
 
     // Reload while the engine runs (as closing the tab does): the store is reopened with the same cursors and answers.
