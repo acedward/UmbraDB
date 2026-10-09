@@ -13,7 +13,7 @@ import { loadTapeByName } from "./stagenet-fixtures.js";
  * the CLI run unchanged against recorded data (CI replays fixtures, no network).
  *
  * The answers come from the runtime-neutral tape replay (`chain-archive-sync/tape-replay.ts`), the
- * same core the browser build calls through a `fetch`-shaped function: this file only carries
+ * same core that `createTapeFetch` puts behind a `fetch`-shaped function: this file only carries
  * requests and answers over `node:http`. The options are the replay's: the reported finalized
  * height (fixed, set by hand, or rising with a clock), the recorded `contractEvents` answers, and the
  * test seams (per-height indexer overrides, a per-response delay, throttling injection, request

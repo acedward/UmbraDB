@@ -2,8 +2,8 @@ import type { IndexerBlock } from "./indexer-client.js";
 import type { SubstrateBlock } from "./node-rpc-client.js";
 
 /**
- * A recorded archive tape and its file forms, for any runtime: no Node API, so the Node test suite and the browser
- * build read the same tapes with the same code.
+ * A recorded archive tape and its file forms, for any runtime: no Node API, so Node and a browser read the same tapes
+ * with the same code.
  *
  * A tape holds, per height, exactly what the two public endpoints answered the archive sync: the node's
  * `chain_getBlockHash` and `chain_getBlock`, and the indexer's `block(offset: { height })`. The compact form

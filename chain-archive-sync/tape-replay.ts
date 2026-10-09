@@ -10,8 +10,8 @@ import type { IndexerBlock } from "./indexer-client.js";
  *
  * {@link createTapeReplay} is the answering core: a request path and body text in, a status, headers and body text
  * out. {@link createTapeFetch} puts it behind a function with `fetch`'s signature, to hand to the node and indexer
- * clients as their `fetchImpl` (the browser build replays tapes this way, offline); the test suite's `node:http` fake
- * chain serves the same core over real HTTP.
+ * clients as their `fetchImpl`: a runtime without sockets, such as a browser worker, replays a tape this way, offline.
+ * The test suite's `node:http` fake chain serves the same core over real HTTP.
  *
  * The reported finalized height (node finalized head and indexer tip alike) is the tape's highest height unless set.
  * It can move: by hand ({@link TapeReplay.setFinalizedHeight}, {@link TapeReplay.advanceFinalizedHeight}) or with a
