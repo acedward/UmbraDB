@@ -225,12 +225,13 @@ describe("MIP-0018 read-only API", () => {
     await database?.stop();
   }, 60_000);
 
-  it("[[mip0018.api.status]] status: network, genesis (= the recorded fixture's), start/indexed/archive heights, MIP pin and vendored commit (= SOURCE.md and the own vectors' manifest), scanner off", async () => {
+  it("[[mip0018.api.status]] status: network, genesis (= the recorded fixture's), start/indexed/archive heights, MIP pin and vendored commit (= SOURCE.md and the own vectors' manifest), scanner off, durability durable", async () => {
     const r = await get(idx.base, "/v1/status");
     expect(r.status).toBe(200);
     expect(r.json).toEqual({
       network: NET, genesisHash: loadManifest().genesisHash, startHeight: 714485, indexedHeight: 715183, archiveHeight: 715183,
       mip: { id: "MIP-0018", commit: MIP_COMMIT }, vendored: { ...VENDORED_REFERENCE }, scanner: "off", unresolvedEvents: 0,
+      durability: "durable",
     });
     expect(KNOWN_GENESIS.stagenet).toBe(loadManifest().genesisHash);
     const source = readFileSync(new URL("token-indexer/vendor/mip0018/SOURCE.md", REPO), "utf8");

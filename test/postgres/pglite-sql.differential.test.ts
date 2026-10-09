@@ -17,8 +17,9 @@
  * durability probe's lock key carries the backend pid, which differs, and is compared without it.
  *
  * Known differences between the two drivers that the comparison allows for:
- * - PGlite runs with `fsync=off` by default, which the durability probe refuses; this file starts PGlite without
- *   PGlite's `-F` start parameter, so `fsync` reads `on` and the migrations run unchanged.
+ * - PGlite runs with `fsync=off` by default, which the PGlite client accepts in its default `non-durable` mode; this
+ *   file starts PGlite without PGlite's `-F` start parameter (`fsync` reads `on`) and uses `durable` clients, so the
+ *   durability probe and `/v1/status` behave as on PostgreSQL.
  * - PGlite returns int8 as a number when it fits and bytea as `Uint8Array`; the PGlite database here parses int8 as
  *   `bigint` and bytea as `Buffer`, as postgres.js does in this repository, so the repository's code (which calls
  *   `Buffer` methods) runs unchanged.
@@ -27,7 +28,8 @@
  *   `mip0018_contract_actions.maintenance_operations`; the recorded ranges hold no NULL element).
  * - A PGlite error names the violated constraint `constraint`, postgres.js `constraint_name`, which
  *   `translatePostgresError` routes SQLSTATE 23514 by; the PGlite clients here copy `constraint` to `constraint_name`
- *   (their `mapError`), and one case shows the routing without it.
+ *   (their `mapError`), and one case shows the routing of PGlite's own error and of the client's default
+ *   normalization.
  */
 import { PGlite } from "@electric-sql/pglite";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -156,8 +158,8 @@ describe("PGlite client = postgres.js on PostgreSQL 17", () => {
       startParams: PGlite.defaultStartParams.filter((p) => p !== "-F"),
       parsers: { 20: (x: string) => BigInt(x), 17: (x: string) => Buffer.from(x.slice(2), "hex") },
     });
-    lite.sql = createPgliteClient({ pglite, schema: "diff_mip", debug: recorder(lite.log), mapError: constraintName });
-    lite.u1 = createPgliteClient({ pglite, schema: "u1_mip", debug: recorder(lite.log), mapError: constraintName });
+    lite.sql = createPgliteClient({ pglite, schema: "diff_mip", debug: recorder(lite.log), mapError: constraintName, durability: "durable" });
+    lite.u1 = createPgliteClient({ pglite, schema: "u1_mip", debug: recorder(lite.log), mapError: constraintName, durability: "durable" });
   }, 180_000);
 
   afterAll(async () => {
@@ -269,9 +271,12 @@ describe("PGlite client = postgres.js on PostgreSQL 17", () => {
     });
     expect(plain(out[1])).toEqual(plain(out[0]));
     expect(out[0]![5]).toBe("ChainArchiveCheckViolationError");
-    // Without `constraint_name`, the same PGlite error is routed as a clock regression.
-    const raw = new PgChainArchiveStore(createPgliteClient({ pglite, schema: "u1_mip" }), "u1_archive");
+    // PGlite's own error (no `constraint_name`) would be routed as a clock regression; the client's default
+    // normalization routes it as on PostgreSQL.
+    const raw = new PgChainArchiveStore(createPgliteClient({ pglite, schema: "u1_mip", mapError: (e) => e }), "u1_archive");
     expect(await raw.setCanonical(NET, 715409, "ab".repeat(32)).catch((e: Error) => e.name)).toBe("ClockRegressionError");
+    const normalized = new PgChainArchiveStore(createPgliteClient({ pglite, schema: "u1_mip" }), "u1_archive");
+    expect(await normalized.setCanonical(NET, 715409, "ab".repeat(32)).catch((e: Error) => e.name)).toBe("ChainArchiveCheckViolationError");
   }, 60_000);
 
   it("bytea[] NULL elements: postgres.js reads them as an empty Buffer, PGlite as null; unnest gives NULL on both", async () => {

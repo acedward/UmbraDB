@@ -120,7 +120,8 @@ interface PgDriverError extends Error {
    *  postgres.js surfaces this as `constraint_name` (verified against its own wire-protocol field
    *  table, `node_modules/postgres/src/connection.js`), not the `.constraint` name Postgres's own
    *  C client (`libpq`) uses -- easy to get wrong, confirmed by testing both against a real
-   *  Postgres 17 instance while implementing this fix. */
+   *  Postgres 17 instance while implementing this fix. The PGlite client (`pglite-sql.ts`) reports PGlite's own
+   *  `constraint` field under this same name (`normalizePgliteError`). */
   constraint_name?: string;
 }
 

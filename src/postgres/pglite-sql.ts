@@ -18,9 +18,11 @@
  *
  * Parameters are serialized as postgres.js serializes them, by the type the server describes for each parameter
  * (including its quirks, for example a string bound to a `jsonb` parameter becomes a JSON string). Results are parsed
- * by PGlite's parsers; the `parsers` option is passed to every statement, and parsers that must also apply to array
- * elements belong on the PGlite instance itself. Errors raised by PGlite are passed through `mapError` (unchanged by
- * default).
+ * by PGlite's parsers with {@link PGLITE_PARSERS} over them, so values have the types the PostgreSQL client gives
+ * (`int8` always a `bigint`, `numeric` a string); `bytea` is a `Uint8Array` (postgres.js gives a `Buffer`, a subclass of
+ * it). The `parsers` option is merged over them and passed to every statement. Errors the database reports come back
+ * as postgres.js reports them ({@link normalizePgliteError}, the default `mapError`); a statement on a closed PGlite
+ * database fails with `CONNECTION_CLOSED`.
  *
  * PGlite has a single session. All clients created over one PGlite database share one lock on it: a statement holds it
  * while it runs, `begin` for the whole transaction, `reserve` until `release`. Waiting statements run in arrival order.
@@ -32,9 +34,14 @@
  * Each client has a schema and makes it the session's `search_path` before its statement, transaction or reservation
  * whenever the session last ran with another one. `RESET search_path`, `RESET ALL` and `DISCARD ALL` run on a handle
  * return the session to the client's schema, as they return a postgres.js connection to its startup `search_path`.
+ *
+ * Each client also has a durability mode (`durability`, default `non-durable`), carried as `umbradbDurability` and read
+ * by the durability probe (`durabilityModeOf`): PGlite runs with `fsync=off` by default, which a `non-durable` client
+ * accepts by configuration; a `durable` client keeps the PostgreSQL rule, so `fsync` must be on.
  */
 import type { PGliteOptions } from "@electric-sql/pglite";
 import type { UmbraDBSql } from "./client.js";
+import type { DurabilityMode } from "./durability-probe.js";
 import { DEFAULT_SCHEMA, assertValidSchemaName } from "./schema-name.js";
 
 // ── PGlite surface ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -77,9 +84,11 @@ export interface PgliteClientOptions {
   pglite: PgliteDatabase;
   /** The client's schema and `search_path`. Default {@link DEFAULT_SCHEMA}. */
   schema?: string;
-  /** Result parsers passed to every statement (they take precedence over the database's own parsers). */
+  /** Result parsers merged over {@link PGLITE_PARSERS} (an oid given here wins) and passed to every statement; they
+   *  take precedence over the database's own parsers. */
   parsers?: Record<number, PgliteParser>;
-  /** Maps an error raised by PGlite for a statement to the error the caller receives. Default: unchanged. */
+  /** Maps an error raised by PGlite for a statement to the error the caller receives. Default
+   *  {@link normalizePgliteError}. */
   mapError?: (error: unknown) => unknown;
   /** Called before each statement (see {@link PgliteStatementHook}). */
   debug?: PgliteStatementHook;
@@ -88,12 +97,16 @@ export interface PgliteClientOptions {
   deadlockTimeoutMs?: number;
   /** Close the database when this client ends. Default false: the database belongs to whoever created it. */
   closeOnEnd?: boolean;
+  /** The durability mode: `non-durable` (default) accepts PGlite's `fsync=off` by configuration; `durable` keeps the
+   *  PostgreSQL rule that refuses it. Read by the durability probe and reported by the API's `/v1/status`. */
+  durability?: DurabilityMode;
 }
 
 export interface OpenPgliteClientOptions extends Omit<PgliteClientOptions, "pglite" | "closeOnEnd"> {
   /** PGlite data directory (`memory://…`, `opfs-ahp://…`, `idb://…` or a file path); omitted means in memory. */
   dataDir?: string;
-  /** Other options for `PGlite.create`. */
+  /** Other options for `PGlite.create`. Without `startParams`, a `durable` client starts PGlite without its `-F` start
+   *  parameter, so `fsync` is on; a `non-durable` one with PGlite's defaults (`fsync` off). */
   pgliteOptions?: PGliteOptions;
 }
 
@@ -111,6 +124,118 @@ export class PgliteSqlError extends Error {
 
 const notSupported = (what: string): PgliteSqlError =>
   new PgliteSqlError("NOT_SUPPORTED", `${what} is not supported by the PGlite client`);
+
+const connectionClosed = (): PgliteSqlError => new PgliteSqlError("CONNECTION_CLOSED", "the PGlite database is closed");
+
+/** PGlite's error field → postgres.js's name for it (postgres.js 3.4 `connection.js` `errorFields`, including its
+ *  `data type_name` spelling). PGlite reports the severity once; postgres.js has the localized and the plain one. */
+const POSTGRES_ERROR_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = [
+  ["severity", ["severity_local", "severity"]],
+  ["code", ["code"]],
+  ["message", ["message"]],
+  ["detail", ["detail"]],
+  ["hint", ["hint"]],
+  ["position", ["position"]],
+  ["internalPosition", ["internal_position"]],
+  ["internalQuery", ["internal_query"]],
+  ["where", ["where"]],
+  ["schema", ["schema_name"]],
+  ["table", ["table_name"]],
+  ["column", ["column_name"]],
+  ["dataType", ["data type_name"]],
+  ["constraint", ["constraint_name"]],
+  ["file", ["file"]],
+  ["line", ["line"]],
+  ["routine", ["routine"]],
+];
+
+/**
+ * An error the database reported, shaped as postgres.js's `PostgresError`: `name` `"PostgresError"`, the SQLSTATE in
+ * `code`, and postgres.js's field names (`constraint_name`, `schema_name`, `table_name`, `column_name`, `detail`,
+ * `hint`, …) for the fields the database sent. The statement text and its parameters are the non-enumerable `query`
+ * and `parameters`, as on a postgres.js error.
+ */
+export class PglitePostgresError extends Error {
+  declare readonly code: string;
+  declare readonly severity: string;
+  declare readonly query: string | undefined;
+  declare readonly parameters: readonly unknown[] | undefined;
+  [field: string]: unknown;
+
+  constructor(fields: Readonly<Record<string, string>>, query?: string, parameters?: readonly unknown[]) {
+    super(fields.message ?? "");
+    this.name = "PostgresError";
+    Object.assign(this, fields);
+    Object.defineProperties(this, {
+      query: { value: query, enumerable: false },
+      parameters: { value: parameters, enumerable: false },
+    });
+  }
+}
+
+/** Whether `error` is an error the database reported (PGlite's own error class): a SQLSTATE and a severity. */
+function isServerError(error: unknown): error is Error & { code: string; severity: string } {
+  if (!(error instanceof Error)) return false;
+  const e = error as { code?: unknown; severity?: unknown };
+  return typeof e.severity === "string" && typeof e.code === "string" && /^[0-9A-Z]{5}$/.test(e.code);
+}
+
+/**
+ * Returns an error the database reported (PGlite's error class) as a {@link PglitePostgresError}, so code written for
+ * postgres.js reads the same fields (`translatePostgresError` routes SQLSTATE 23514 by `constraint_name`, the API
+ * recognizes a database error by its name). Any other value is returned unchanged.
+ */
+export function normalizePgliteError(error: unknown): unknown {
+  if (!isServerError(error) || error instanceof PglitePostgresError) return error;
+  const source = error as unknown as Record<string, unknown>;
+  const fields: Record<string, string> = {};
+  for (const [from, to] of POSTGRES_ERROR_FIELDS) {
+    const value = from === "message" ? error.message : source[from];
+    if (typeof value === "string") for (const name of to) fields[name] = value;
+  }
+  const query = typeof source.query === "string" ? source.query : undefined;
+  const parameters = Array.isArray(source.params) ? (source.params as unknown[]) : undefined;
+  return new PglitePostgresError(fields, query, parameters);
+}
+
+// ── Result types ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** `int8[]` text (`{1,-2,NULL}`, nested braces for more dimensions) → arrays of `bigint` (NULL → `null`). */
+function parseInt8Array(text: string): unknown[] {
+  let i = 0;
+  if (text[0] === "[") i = text.indexOf("=") + 1; // explicit bounds, `[0:1]={…}`
+  const parse = (): unknown[] => {
+    const out: unknown[] = [];
+    i++; // "{"
+    if (text[i] === "}") {
+      i++;
+      return out;
+    }
+    for (;;) {
+      if (text[i] === "{") out.push(parse());
+      else {
+        let j = i;
+        while (j < text.length && text[j] !== "," && text[j] !== "}") j++;
+        const token = text.slice(i, j);
+        out.push(token === "NULL" ? null : BigInt(token));
+        i = j;
+      }
+      if (text[i++] !== ",") return out;
+    }
+  };
+  return parse();
+}
+
+/**
+ * The result parsers every client applies by default, so values have the types the PostgreSQL client
+ * (`createClient`) gives: `int8` is always a `bigint` (PGlite gives a `number` when it fits), `int8[]` elements too,
+ * and `numeric` is the decimal text. `bytea` stays PGlite's `Uint8Array`.
+ */
+export const PGLITE_PARSERS: Readonly<Record<number, PgliteParser>> = Object.freeze({
+  20: (value: string) => BigInt(value),
+  1016: (value: string) => parseInt8Array(value),
+  1700: (value: string) => value,
+});
 
 // ── Values: identifiers, typed parameters, builders ──────────────────────────────────────────────────────────────────
 
@@ -651,11 +776,12 @@ interface ClientState {
   readonly id: number;
   readonly session: Session;
   readonly schema: string;
-  readonly parsers: Record<number, PgliteParser> | undefined;
+  readonly parsers: Record<number, PgliteParser>;
   readonly mapError: (error: unknown) => unknown;
   readonly debug: PgliteStatementHook | undefined;
   readonly deadlockTimeoutMs: number;
   readonly closeOnEnd: boolean;
+  readonly durability: DurabilityMode;
   readonly pending: Set<Promise<unknown>>;
   /** Set one tick after `end()` is called (as postgres.js does): statements handled before then still run. */
   ended: boolean;
@@ -675,19 +801,34 @@ function track<T>(state: ClientState, p: Promise<T>): Promise<T> {
   return p;
 }
 
+/** The error a caller receives for an error PGlite raised: `CONNECTION_CLOSED` once the database is closed (unless the
+ *  database itself reported the error), otherwise the client's `mapError` of it. */
+function databaseError(state: ClientState, error: unknown): unknown {
+  return state.session.db.closed && !isServerError(error) ? connectionClosed() : state.mapError(error);
+}
+
 /** Makes the client's schema the session's `search_path` (session-level, so run it outside any transaction). */
 async function applySearchPath(state: ClientState): Promise<void> {
   const { session } = state;
   if (session.searchPath === state.schema) return;
   session.searchPath = undefined;
-  await session.db.query(`select set_config('search_path', '${state.schema.replace(/'/g, "''")}', false)`);
+  try {
+    await session.db.query(`select set_config('search_path', '${state.schema.replace(/'/g, "''")}', false)`);
+  } catch (error) {
+    throw databaseError(state, error);
+  }
   session.searchPath = state.schema;
 }
 
 /** Runs one statement on the session the holder owns. */
 async function runStatement(state: ClientState, holder: Holder, q: PgliteQuery, topLevel: boolean): Promise<PgliteResult> {
   const { session } = state;
-  await loadArrayTypes(session);
+  if (session.db.closed) throw connectionClosed();
+  try {
+    await loadArrayTypes(session);
+  } catch (error) {
+    throw databaseError(state, error);
+  }
   const compiled = compileQuery(q);
   state.debug?.(state.id, compiled.text, compiled.params, compiled.types);
   if (topLevel && STARTS_TRANSACTION.test(compiled.text))
@@ -695,17 +836,17 @@ async function runStatement(state: ClientState, holder: Holder, q: PgliteQuery, 
   let res: PgliteResults | undefined;
   try {
     if (q.simple) {
-      const all = await session.db.exec(compiled.text, state.parsers === undefined ? undefined : { parsers: state.parsers });
+      const all = await session.db.exec(compiled.text, { parsers: state.parsers });
       res = all[all.length - 1];
     } else {
       res = await session.db.query(compiled.text, compiled.params, {
         paramTypes: compiled.types,
         serializers: session.serializers,
-        ...(state.parsers === undefined ? {} : { parsers: state.parsers }),
+        parsers: state.parsers,
       });
     }
   } catch (error) {
-    throw state.mapError(error);
+    throw databaseError(state, error);
   } finally {
     if (MENTIONS_SEARCH_PATH.test(compiled.text)) {
       session.searchPath = undefined;
@@ -894,6 +1035,7 @@ function makeClient(state: ClientState, db: PgliteDatabase): UmbraDBSql {
   sql.END = sql.CLOSE;
 
   Object.defineProperty(sql, "umbradbSchema", { value: state.schema, enumerable: false, writable: false });
+  Object.defineProperty(sql, "umbradbDurability", { value: state.durability, enumerable: false, writable: false });
   return sql as unknown as UmbraDBSql;
 }
 
@@ -907,15 +1049,19 @@ export function createPgliteClient(opts: PgliteClientOptions): UmbraDBSql {
   const deadlockTimeoutMs = opts.deadlockTimeoutMs ?? DEFAULT_DEADLOCK_TIMEOUT_MS;
   if (!Number.isSafeInteger(deadlockTimeoutMs) || deadlockTimeoutMs <= 0)
     throw new RangeError(`deadlockTimeoutMs must be a positive integer number of milliseconds, got ${deadlockTimeoutMs}`);
+  const durability = opts.durability ?? "non-durable";
+  if (durability !== "durable" && durability !== "non-durable")
+    throw new RangeError(`durability must be "durable" or "non-durable", got ${String(durability)}`);
   const state: ClientState = {
     id: nextClientId++,
     session: sessionOf(opts.pglite),
     schema,
-    parsers: opts.parsers,
-    mapError: opts.mapError ?? ((error) => error),
+    parsers: { ...PGLITE_PARSERS, ...opts.parsers },
+    mapError: opts.mapError ?? normalizePgliteError,
     debug: opts.debug,
     deadlockTimeoutMs,
     closeOnEnd: opts.closeOnEnd ?? false,
+    durability,
     pending: new Set(),
     ended: false,
     ending: undefined,
@@ -923,10 +1069,19 @@ export function createPgliteClient(opts: PgliteClientOptions): UmbraDBSql {
   return makeClient(state, opts.pglite);
 }
 
-/** Opens a PGlite database (in memory unless `dataDir` is given) and a client that closes it when it ends. */
+/** Opens a PGlite database (in memory unless `dataDir` is given) and a client that closes it when it ends. A `durable`
+ *  client's database starts with `fsync` on (unless `pgliteOptions.startParams` says otherwise). */
 export async function openPgliteClient(opts: OpenPgliteClientOptions = {}): Promise<UmbraDBSql> {
   const { PGlite } = await import("@electric-sql/pglite");
   const { dataDir, pgliteOptions, ...client } = opts;
-  const pglite = await PGlite.create(dataDir, pgliteOptions);
-  return createPgliteClient({ ...client, pglite, closeOnEnd: true });
+  const options: PGliteOptions = { ...pgliteOptions };
+  if (client.durability === "durable" && options.startParams === undefined)
+    options.startParams = PGlite.defaultStartParams.filter((p) => p !== "-F");
+  const pglite = await PGlite.create(dataDir, options);
+  try {
+    return createPgliteClient({ ...client, pglite, closeOnEnd: true });
+  } catch (error) {
+    await pglite.close();
+    throw error;
+  }
 }

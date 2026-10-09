@@ -32,7 +32,9 @@ crash safety. UmbraDB requires, as a **binding deployer precondition**:
 any migration runs**: `fsync = off` or `full_page_writes = off` makes `runMigrations` **reject** with
 `DurabilityContractError` (full-page-writes-off is overridable only with an external torn-page
 guarantee); a detected transaction pooler makes it **reject** with `TransactionPoolerDetectedError`;
-`synchronous_commit = off` raises a typed lost-tail **warning** rather than refusing. The full
+`synchronous_commit = off` raises a typed lost-tail **warning** rather than refusing. The one exception
+to the `fsync` rule is a PGlite client in its non-durable mode, accepted only on a PGlite server
+(`docs/durability-contract.md` §1a); PostgreSQL always refuses `fsync = off`. The full
 configuration contract, including session-mode pooler setup and the applied server-side timeouts, is
 [`docs/durability-contract.md`](durability-contract.md).
 
