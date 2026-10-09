@@ -32,8 +32,9 @@ import {
 import postgres from "postgres";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { mip0018Migrations } from "../../src/postgres/migrations/mip0018/index.js";
-import { createMip0018Api, listen } from "../mip0018/api.ts";
+import { createMip0018Handler } from "../mip0018/api.ts";
 import type { Queryable } from "../mip0018/fields.ts";
+import { requestBothWays, serveBothWays } from "./helpers/api-both-ways.ts";
 import { eventAt, seedPublishes, txHashAt, writeMetadataTx } from "./helpers/hidden-history.ts";
 
 const NET = "stagenet";
@@ -541,16 +542,17 @@ describe("MIP-0018 token activity", () => {
       await ex.end({ timeout: 5 });
     }
 
-    // 4. Through the API (read-only snapshot per request), within a generous latency budget for a loaded host.
-    const server = createMip0018Api({ sql: db.sql, network: NET, schema: db.mip, archiveSchema: db.archive });
-    const port = await listen(server, 0, "127.0.0.1");
+    // 4. Through the API (read-only snapshot per request), over HTTP and through handle() with identical answers, within a
+    //    generous latency budget for a loaded host.
+    const api = await serveBothWays(createMip0018Handler({ sql: db.sql, network: NET, schema: db.mip, archiveSchema: db.archive }));
+    const server = api.server;
     try {
       const timings: Record<string, number> = {};
       for (const path of [`/v1/contracts/${Y.contract}/activity?limit=1`, `/v1/contracts/${Y.contract}/activity?limit=100&order=desc`,
         `/v1/tokens/${T}/activity?limit=1`, `/v1/tokens/${T}/activity?limit=100&order=desc`]) {
         const started = Date.now();
-        const r = await fetch(`http://127.0.0.1:${port}${path}`);
-        const body = (await r.json()) as { items: unknown[] };
+        const r = await requestBothWays(api, path);
+        const body = r.json as { items: unknown[] };
         timings[path.replace(/[0-9a-f]{64}/, "…")] = Date.now() - started;
         expect([r.status, body.items.length > 0]).toEqual([200, true]);
         expect(timings[path.replace(/[0-9a-f]{64}/, "…")], path).toBeLessThan(2_000);

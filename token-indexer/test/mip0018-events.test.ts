@@ -17,11 +17,12 @@ import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.j
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { type ArchiveTape, startFakeChain } from "../../test/integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadContractEvents, loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
-import { createMip0018Api, listen } from "../mip0018/api.ts";
+import { createMip0018Handler } from "../mip0018/api.ts";
 import { eventCounts, listEvents, type LoggedEvent } from "../mip0018/events.ts";
 import { listIdentities } from "../mip0018/metadata.ts";
 import { Mip0018Scanner } from "../mip0018/scan.ts";
 import { decodePayload, EVENT_NAME, encodePayload, record, toHex } from "../vendor/mip0018/codec/src/index.ts";
+import { requestBothWays, serveBothWays } from "./helpers/api-both-ways.ts";
 import { decodeSynthetic, putSyntheticBlocks, type SynthArchivedTx, type SynthLog, type SynthOp } from "./helpers/synthetic-archive.ts";
 
 const NET = "stagenet";
@@ -242,17 +243,16 @@ describe("MIP-0018 events from raw transactions", () => {
     ]);
     expect(await eventCounts(db.sql, NET, A, db.mip)).toEqual({ events: 4, accepted: 2, rejected: 0, ignored: 0, unresolved: 2 });
 
-    // Served: position and reason in /v1/events, the count in /v1/status.
-    const server = createMip0018Api({ sql: db.sql, network: NET, schema: db.mip, archiveSchema: db.archive });
-    const port = await listen(server, 0, "127.0.0.1");
+    // Served: position and reason in /v1/events, the count in /v1/status (over HTTP and through handle(), identical).
+    const api = await serveBothWays(createMip0018Handler({ sql: db.sql, network: NET, schema: db.mip, archiveSchema: db.archive }));
+    const server = api.server;
     try {
-      const base = `http://127.0.0.1:${port}`;
-      const ev = (await (await fetch(`${base}/v1/events?contract=${A}`)).json()) as { items: Array<Record<string, unknown>> };
+      const ev = (await requestBothWays(api, `/v1/events?contract=${A}`)).json as { items: Array<Record<string, unknown>> };
       expect(ev.items.map((e) => [e.eventIndex, e.classification, e.reason])).toEqual([
         [0, "accept", null], [1, "accept", null], [2, "unresolved", "log-operand-not-pushed"], [3, "unresolved", "log-conditionally-executed"],
       ]);
       expect(ev.items[2]).toEqual({ height: 700, txIndex: 0, txHash: "d5".repeat(32), eventIndex: 2, segment: 1, phase: "guaranteed", contractAddress: A, classification: "unresolved", reason: "log-operand-not-pushed" });
-      const st = (await (await fetch(`${base}/v1/status`)).json()) as { unresolvedEvents: number; indexedHeight: number };
+      const st = (await requestBothWays(api, "/v1/status")).json as { unresolvedEvents: number; indexedHeight: number };
       expect(st).toMatchObject({ unresolvedEvents: 2, indexedHeight: 701 });
     } finally {
       server.closeAllConnections();
