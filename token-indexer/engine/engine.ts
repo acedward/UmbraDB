@@ -255,7 +255,8 @@ export interface IndexerEngine {
   subscribe(listener: (event: EngineEvent) => void): () => void;
 }
 
-const DEFAULTS = {
+/** What the engine uses for an option that is not given. */
+export const ENGINE_DEFAULTS = {
   syncMaxBlocks: 200,
   syncConcurrency: 4,
   syncTimeoutMs: 30_000,
@@ -266,9 +267,10 @@ const DEFAULTS = {
   scanBatch: 100,
   scanIdleMs: 2_000,
 } as const;
+const DEFAULTS = ENGINE_DEFAULTS;
 
 /** Ceiling of the scan loop's error back-off. */
-const SCAN_MAX_BACKOFF_MS = 60_000;
+export const SCAN_MAX_BACKOFF_MS = 60_000;
 
 function checkHeight(what: string, value: number | undefined): void {
   if (value !== undefined && (!Number.isSafeInteger(value) || value < 0))

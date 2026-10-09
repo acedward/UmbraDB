@@ -51,6 +51,21 @@ database client, `fetch`, a clock, a scheduler for the loops' steps and an event
 `sync-cli.ts`, `scan-cli.ts` and `serve-cli.ts` are Node wrappers over it (arguments, signals, the Postgres client,
 `node:http`, their own log formats); the engine itself uses no Node API, so a browser worker can host it too.
 
+The engine's `system` snapshot describes the whole system for a status page and a diagnostics file: configuration,
+health, sync, scan, databases, storage, API, engine, browser, snapshots and the latest log lines. Its parts:
+
+- `engine/telemetry.ts` counts from the engine's events and an instrumented `fetch`: per-endpoint requests, answers by
+  status and retries, blocks per second over the last minute, API answers, `BUSY` refusals and p50/p95 latency, and
+  the hooks a host calls (watchdog restarts, PGlite reopens, failed statements). It keeps the latest 200 log lines and
+  derives the health line (`deriveHealth`).
+- `engine/database-stats.ts` reads catalog estimates (`pg_class.reltuples`, `pg_total_relation_size`,
+  `pg_database_size`, `_migrations`), one autocommit statement at a time; exact counts are read only on demand.
+- `engine/system-collector.ts` reads counters and `/v1/status` every 2 s and catalog statistics every 30 s, only while
+  a viewer watches.
+- `engine/system-snapshot.ts` holds the versioned zod schema. Every snapshot is redacted (no URL credentials or query
+  secrets, no keys, tokens or passwords) and validated before it leaves. Log text stays text; a page renders it as text
+  nodes.
+
 Everything a block adds commits in one Postgres transaction with the scan cursor, so a kill at any point resumes
 without a gap or a duplicate; `removeAbove(height)` deletes the rows above a height and recomputes the fields from
 the stored events (the MIP's reorganization rule; the indexer itself follows finalized blocks only).
@@ -131,7 +146,12 @@ pass.
 | Conformance table and the no-network check | `test/mip0018-conformance.test.ts` |
 | API and page | `test/mip0018-api.test.ts`, `test/mip0018-ui-*.test.ts` |
 | The engine: sync, scan and API from injected parts (a `fetch` over the recorded tapes, a manual clock) | `test/engine.test.ts` |
+<<<<<<< HEAD
 | The browser engine: the worker host and its protocol on an in-memory PGlite; the built worker in Chromium on OPFS, across reloads (see `browser/README.md`) | `test/browser-host.test.ts`, `test/browser-worker.test.ts` |
+=======
+| The engine's telemetry, health rule, `system` snapshot schema and redaction | `test/engine-telemetry.test.ts` |
+| The `system` snapshot of a running engine against its sources (SQL catalog, `/v1/status`), its cost and cadence | `test/engine-system-snapshot.test.ts` |
+>>>>>>> d515148
 
 Fixtures:
 

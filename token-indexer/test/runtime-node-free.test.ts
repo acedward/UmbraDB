@@ -23,10 +23,13 @@ import { describe, expect, it } from "vitest";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
-/** Entry modules of the runtime: the engine, the archive sync, the scan, the API, the event listing, the migrations and
- *  the browser build's worker and page. */
+/**
+ * Entry modules of the runtime: the engine and its system snapshot collector, the archive sync, the scan, the API, the
+ * event listing, the migrations and the browser build's worker and page.
+ */
 const RUNTIME_ROOTS = [
   "token-indexer/engine/engine.ts",
+  "token-indexer/engine/system-collector.ts",
   "token-indexer/browser/worker.ts",
   "token-indexer/browser/engine-page.ts",
   "chain-archive-sync/sync-service.ts",

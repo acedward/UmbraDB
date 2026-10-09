@@ -194,8 +194,8 @@ export type StoreInfo = z.infer<typeof StoreInfoSchema>;
 const n = z.number();
 const opt = <T extends z.ZodType>(t: T) => t.optional();
 const SyncOnceResultSchema = z.strictObject({
-  ingestedBlocks: n, fromHeight: opt(n), toHeight: opt(n), targetTipHeight: opt(n), reachedEnd: z.boolean(),
-  retries: n, throttled: n, elapsedMs: n,
+  ingestedBlocks: n, fromHeight: opt(n), toHeight: opt(n), targetTipHeight: opt(n), nodeFinalizedHeight: opt(n),
+  indexerTipHeight: opt(n), reachedEnd: z.boolean(), retries: n, throttled: n, elapsedMs: n,
 });
 const ScanOnceResultSchema = z.strictObject({
   scannedBlocks: n, fromHeight: opt(n), toHeight: opt(n), archiveHeight: opt(n), reachedEnd: z.boolean(),
