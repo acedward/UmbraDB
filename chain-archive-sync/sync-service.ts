@@ -1,3 +1,4 @@
+import { bytesToHex, hexToBytes } from "../src/postgres/bytes.js";
 import { PgChainArchiveStore } from "../src/postgres/chain-archive-store.js";
 import type { UmbraDBSql } from "../src/postgres/client.js";
 import type {
@@ -80,6 +81,8 @@ function hexNoPrefix(hex: string): string {
 
 
 const SYSTEM_TX_TAG = "midnight:system-transaction";
+/** UTF-8 as `Buffer#toString("utf8")` reads it: a leading byte-order mark is kept, invalid sequences become U+FFFD. */
+const utf8 = new TextDecoder("utf-8", { ignoreBOM: true });
 
 /**
  * The indexer's `TransactionResultStatus` mapped onto the archive's
@@ -387,14 +390,14 @@ export class ChainArchiveSyncService {
   /** The last D-parameter value archived at or below `height` (as the exact JSON text stored), so
    *  a resumed service dedupes exactly like an uninterrupted one. `undefined` when none exists. */
   private async loadLastDParameterJson(height: number): Promise<string | undefined> {
-    const rows = await this.sql<{ raw_blob_hash: Buffer }[]>`
+    const rows = await this.sql<{ raw_blob_hash: Uint8Array }[]>`
       SELECT raw_blob_hash FROM ${this.sql(this.schema)}.bridge_observations
       WHERE net = ${this.net} AND kind = 'system_parameters_d' AND block_height <= ${height}
       ORDER BY block_height DESC, observation_index DESC
       LIMIT 1
     `;
     if (rows.length === 0) return undefined;
-    const bytes = await this.store.getBlob(rows[0]!.raw_blob_hash.toString("hex"));
+    const bytes = await this.store.getBlob(bytesToHex(rows[0]!.raw_blob_hash));
     return new TextDecoder().decode(bytes);
   }
 
@@ -576,8 +579,8 @@ export class ChainArchiveSyncService {
 
     return indexerBlock.transactions.map((tx, position) => {
       const rawHex = hexNoPrefix(tx.raw);
-      const rawBytes = Buffer.from(rawHex, "hex");
-      const decodedTag = rawBytes.subarray(0, SYSTEM_TX_TAG.length).toString("utf8");
+      const rawBytes = hexToBytes(rawHex);
+      const decodedTag = utf8.decode(rawBytes.subarray(0, SYSTEM_TX_TAG.length));
       const kind: "regular" | "system" = decodedTag === SYSTEM_TX_TAG ? "system" : "regular";
       // The CONTAINS cross-check applies only to REGULAR (user-submitted) transactions, which are
       // carried as on-wire extrinsics in the node's block body. Runtime-generated SYSTEM

@@ -17,8 +17,9 @@
  *   data the activity rows are built from (a shielded output is a commitment; DUST has no activity rows), so only the
  *   unshielded form has a helper here; the generic encoder covers the others if they are ever needed.
  *
- * Pure and dependency-free. Errors never echo the input.
+ * Pure, with no package dependency. Errors never echo the input.
  */
+import { hexToBytes, toHex } from "./bytes.ts";
 
 const CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 const CHARSET_REV: readonly number[] = (() => {
@@ -181,7 +182,7 @@ const HEX32 = /^(0x)?[0-9a-fA-F]{64}$/;
 /** The Bech32m wallet address of a 32-byte `UserAddress` (hex) on `network`. */
 export function walletAddress(network: string, userAddressHex: string): string {
   if (!HEX32.test(userAddressHex)) throw new Error("bech32m: a wallet address is 32 bytes of hex");
-  return encodeBech32m(unshieldedAddressHrp(network), Buffer.from(userAddressHex.replace(/^0x/, ""), "hex"));
+  return encodeBech32m(unshieldedAddressHrp(network), hexToBytes(userAddressHex.replace(/^0x/, "")));
 }
 
 /** The 32-byte `UserAddress` (lowercase hex) of a Bech32m wallet address of `network`. */
@@ -189,5 +190,5 @@ export function decodeWalletAddress(network: string, address: string): string {
   const { hrp, data } = decodeBech32m(address);
   if (hrp !== unshieldedAddressHrp(network)) throw new Bech32mError("wrong-hrp");
   if (data.length !== 32) throw new Bech32mError("wrong-length");
-  return Buffer.from(data).toString("hex");
+  return toHex(data);
 }

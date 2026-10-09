@@ -9,6 +9,8 @@
  *
  * Rows are normalized (bytes as lowercase hex, 64-bit integers as decimal strings), written as canonical JSON (keys
  * sorted at every depth) and sorted as strings, so the order of rows in the database and the collation never matter.
+ * A NULL element of a `bytea[]` column is normalized as empty bytes, which is how postgres.js 3.4 reads it (PGlite
+ * reads it as `null`), so both drivers give the same rows.
  * Each table gets a row count and the SHA-256 of its sorted rows; the excluded columns are listed with the digest so a
  * reader can see what was left out. Table keys are `archive.<table>` and `mip0018.<table>`: the schema names of two runs
  * may differ.
@@ -54,7 +56,16 @@ function normalize(v: unknown): unknown {
 
 const WALL_CLOCK = /^(timestamp|date|time|interval)/;
 
-interface ColumnInfo { table_name: string; column_name: string; data_type: string; is_identity: string; column_default: string | null }
+/** The row with every NULL element of its `bytea[]` columns as empty bytes (postgres.js reads them so; PGlite as `null`). */
+function nullElementsAsEmpty(row: Record<string, unknown>, byteaArrays: readonly string[]): Record<string, unknown> {
+  for (const c of byteaArrays) {
+    const v = row[c];
+    if (Array.isArray(v)) row[c] = v.map((x) => (x === null ? new Uint8Array(0) : x));
+  }
+  return row;
+}
+
+interface ColumnInfo { table_name: string; column_name: string; data_type: string; udt_name: string; is_identity: string; column_default: string | null }
 
 /** Every base table of `schema`: its rows as sorted canonical JSON strings, and the excluded columns. */
 export async function schemaRows(sql: UmbraDBSql, schema: string): Promise<Map<string, { rows: string[]; excluded: string[] }>> {
@@ -62,20 +73,24 @@ export async function schemaRows(sql: UmbraDBSql, schema: string): Promise<Map<s
     SELECT table_name FROM information_schema.tables
     WHERE table_schema = ${schema} AND table_type = 'BASE TABLE' ORDER BY table_name`;
   const columns = await sql<ColumnInfo[]>`
-    SELECT table_name, column_name, data_type, is_identity, column_default FROM information_schema.columns
+    SELECT table_name, column_name, data_type, udt_name, is_identity, column_default FROM information_schema.columns
     WHERE table_schema = ${schema} ORDER BY table_name, ordinal_position`;
   const out = new Map<string, { rows: string[]; excluded: string[] }>();
   for (const { table_name: table } of tables) {
     const kept: string[] = [];
     const excluded: string[] = [];
+    const byteaArrays: string[] = [];
     for (const c of columns.filter((x) => x.table_name === table)) {
       if (WALL_CLOCK.test(c.data_type)) excluded.push(`${c.column_name} (wall clock)`);
       else if (c.is_identity === "YES" || (c.column_default ?? "").startsWith("nextval(")) excluded.push(`${c.column_name} (surrogate key)`);
-      else kept.push(c.column_name);
+      else {
+        kept.push(c.column_name);
+        if (c.udt_name === "_bytea") byteaArrays.push(c.column_name);
+      }
     }
     const rows = kept.length === 0
       ? (await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ${sql(schema)}.${sql(table)}`).flatMap((r) => Array.from({ length: r.n }, () => "{}"))
-      : (await sql<Record<string, unknown>[]>`SELECT ${sql(kept)} FROM ${sql(schema)}.${sql(table)}`).map((r) => canonical(normalize({ ...r })));
+      : (await sql<Record<string, unknown>[]>`SELECT ${sql(kept)} FROM ${sql(schema)}.${sql(table)}`).map((r) => canonical(normalize(nullElementsAsEmpty({ ...r }, byteaArrays))));
     rows.sort();
     out.set(table, { rows, excluded });
   }

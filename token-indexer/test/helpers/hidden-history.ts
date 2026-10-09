@@ -43,7 +43,7 @@ export async function writeMetadataTx(tx: Queryable, schema: string, events: Eve
   await writeEvents(tx, schema, events);
   const none: ActivityTransactionLike = {};
   await writeActivity(tx, schema, transactionActivity({
-    network: first.network, height: first.block_height, txIndex: first.tx_index, txHash: first.tx_hash!.toString("hex"), tx: none,
+    network: first.network, height: first.block_height, txIndex: first.tx_index, txHash: Buffer.from(first.tx_hash!).toString("hex"), tx: none,
     outcome: { result: "success", segments: null }, events,
   }));
 }
