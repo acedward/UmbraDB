@@ -1,11 +1,16 @@
 import { readFileSync } from "node:fs";
 import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants, gunzipSync, gzipSync } from "node:zlib";
-import type { ArchiveTape, TapeBlock } from "./fake-chain-server.js";
+import {
+  type ArchiveTape, COMPACT_TAPE_FORMAT, type CompactTape, type CompactTapeBlock, decodeTape, type ExtrinsicRef,
+  parseTape, type TapeBlock,
+} from "../../../../chain-archive-sync/archive-tape.js";
 import { canonicalJson } from "./archive-digest.js";
 
 /**
  * Compact on-disk form of a Stagenet archive tape (recorded fixtures for CI, target < 1 MB for 731
- * blocks).
+ * blocks): the Node side -- writing (`encodeTape`, `compressFor`) and reading files (`readTapeFile`).
+ * The format itself and its decoding are runtime-neutral and live in
+ * `chain-archive-sync/archive-tape.ts` (re-exported here), so a browser decodes the same tapes.
  *
  * A tape (`record-tape.ts`) holds, per height, exactly what the two public endpoints answered:
  * `chain_getBlockHash`, `chain_getBlock` and the indexer's `block(offset:{height})`. The only large
@@ -17,26 +22,8 @@ import { canonicalJson } from "./archive-digest.js";
  * recorded responses value for value, which `encodeTape` checks before it returns.
  */
 
-export const COMPACT_TAPE_FORMAT = "umbradb-stagenet-archive-tape/2";
-
-/** A node extrinsic that contains the `raw` of the block's indexer transaction number `tx`. */
-export interface ExtrinsicRef {
-  tx: number;
-  pre: string;
-  post: string;
-}
-
-export interface CompactTapeBlock extends Omit<TapeBlock, "nodeBlock"> {
-  nodeBlock: Omit<TapeBlock["nodeBlock"], "block"> & {
-    block: Omit<TapeBlock["nodeBlock"]["block"], "extrinsics"> & { extrinsics: (string | ExtrinsicRef)[] };
-  };
-}
-
-export interface CompactTape extends Omit<ArchiveTape, "blocks"> {
-  format: typeof COMPACT_TAPE_FORMAT;
-  blocks: CompactTapeBlock[];
-  [extra: string]: unknown;
-}
+export { COMPACT_TAPE_FORMAT, decodeTape };
+export type { CompactTape, CompactTapeBlock, ExtrinsicRef };
 
 const noPrefix = (h: string): string => (h.startsWith("0x") ? h.slice(2) : h);
 
@@ -69,21 +56,6 @@ export function encodeTape(tape: ArchiveTape & Record<string, unknown>): Compact
   return compact;
 }
 
-export function decodeTape(compact: CompactTape): ArchiveTape & Record<string, unknown> {
-  if (compact.format !== COMPACT_TAPE_FORMAT) throw new Error(`unknown tape format ${String(compact.format)}`);
-  const blocks = compact.blocks.map((b): TapeBlock => {
-    const txs = b.indexerBlock.transactions;
-    const extrinsics = b.nodeBlock.block.extrinsics.map((e) => {
-      if (typeof e === "string") return e;
-      const tx = txs[e.tx];
-      if (tx === undefined) throw new Error(`block ${b.height}: extrinsic refers to missing transaction ${e.tx}`);
-      return e.pre + noPrefix(tx.raw) + e.post;
-    });
-    return { ...b, nodeBlock: { ...b.nodeBlock, block: { ...b.nodeBlock.block, extrinsics } } };
-  });
-  return { ...compact, blocks };
-}
-
 /** Compression by extension: `.gz` gzip (level 9), `.br` brotli (quality 11, 16 MiB window). */
 export function compressFor(path: string, text: string): Buffer {
   const data = Buffer.from(text, "utf8");
@@ -108,10 +80,7 @@ export function decompressFor(path: string, data: Buffer): string {
 
 /** Reads a tape file: a plain `*.tape.json` or a compact `*.tape.json.{gz,br}`. */
 export function readTapeFile(path: string): ArchiveTape & Record<string, unknown> {
-  const parsed = JSON.parse(decompressFor(path, readFileSync(path))) as (ArchiveTape | CompactTape) & Record<string, unknown>;
-  return parsed.format === COMPACT_TAPE_FORMAT
-    ? decodeTape(parsed as CompactTape)
-    : parsed as ArchiveTape & Record<string, unknown>;
+  return parseTape(decompressFor(path, readFileSync(path)));
 }
 
 /** Reads any JSON fixture file of this folder, compressed or not. */
