@@ -2,7 +2,8 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { ArchiveTape } from "../../../../chain-archive-sync/archive-tape.js";
 import {
-  createTapeReplay, TAPE_GRAPHQL_PATH, TAPE_RPC_PATH, type TapeReplayOptions, type TapeThrottle,
+  createTapeFetch, createTapeReplay, TAPE_GRAPHQL_PATH, TAPE_RPC_PATH, type TapeReplay, type TapeReplayOptions,
+  type TapeResponse, type TapeThrottle,
 } from "../../../../chain-archive-sync/tape-replay.js";
 import { loadTapeByName } from "./stagenet-fixtures.js";
 
@@ -73,5 +74,42 @@ export async function startFakeChain(tape: ArchiveTape, opts: FakeChainOptions =
     setFinalizedHeight: replay.setFinalizedHeight,
     advanceFinalizedHeight: replay.advanceFinalizedHeight,
     close: () => new Promise((resolve, reject) => server.close((e) => (e ? reject(e) : resolve()))),
+  };
+}
+
+/** One answer of the fake chain, as an HTTP response writes it. */
+export type FakeChainAnswer = TapeResponse;
+
+/** The fake chain's answers with no transport: the tape replay's core. */
+export type FakeChainAnswers = TapeReplay;
+
+/** The fake chain's answers to the node's JSON-RPC and the indexer's GraphQL requests, with no transport. */
+export function createFakeChainAnswers(tape: ArchiveTape, opts: FakeChainOptions = {}): FakeChainAnswers {
+  return createTapeReplay(tape, opts);
+}
+
+export interface FakeChainFetch {
+  /** Answers `POST <nodeUrl>` and `POST <indexerUrl>` like the HTTP fake; any other origin is a transport failure. */
+  fetch: typeof fetch;
+  nodeUrl: string;
+  indexerUrl: string;
+  counts: Map<string, number>;
+  finalizedHeight(): number;
+  setFinalizedHeight(height: number): void;
+  advanceFinalizedHeight(blocks?: number): number;
+}
+
+/** The fake chain as a `fetch` function (no socket): the same answers as {@link startFakeChain}'s server, from the
+ *  tape replay's `createTapeFetch` on the origin `http://fake-chain.invalid`. */
+export function fakeChainFetch(tape: ArchiveTape, opts: FakeChainOptions = {}): FakeChainFetch {
+  const t = createTapeFetch(tape, { ...opts, origin: "http://fake-chain.invalid" });
+  return {
+    fetch: t.fetchImpl,
+    nodeUrl: t.nodeUrl,
+    indexerUrl: t.indexerUrl,
+    counts: t.counts,
+    finalizedHeight: t.finalizedHeight,
+    setFinalizedHeight: t.setFinalizedHeight,
+    advanceFinalizedHeight: t.advanceFinalizedHeight,
   };
 }
