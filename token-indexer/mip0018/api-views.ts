@@ -12,6 +12,7 @@
  *   `unresolved` rows only — the stored name, payload and header are never read by the API.
  * - Never fetches anything; heights only.
  */
+import type { DurabilityMode } from "../../src/postgres/durability-probe.js";
 import { MIP0018_SCHEMA } from "../../src/postgres/migrations/mip0018/index.js";
 import type { ActivityItem } from "./activity.ts";
 import { fromBase64url, hexToBytes, toBase64url, toHex, utf8Bytes, utf8Text } from "./bytes.ts";
@@ -800,10 +801,14 @@ export interface StatusJson {
    * schema exists.
    */
   unresolvedEvents: number | null;
+  /** The database's durability mode: `durable` (the durability probe refuses `fsync=off`, as always on PostgreSQL), or
+   *  `non-durable` (a PGlite database in the mode that accepts `fsync=off`; a crash of the OS or browser can lose it,
+   *  and it is rebuilt from the chain or a snapshot). */
+  durability: DurabilityMode;
 }
 
 /** `GET /v1/status`. */
-export async function status(ctx: ViewContext, genesisHash: string | null, scanner: ScannerState): Promise<StatusJson> {
+export async function status(ctx: ViewContext, genesisHash: string | null, scanner: ScannerState, durability: DurabilityMode): Promise<StatusJson> {
   const { sql } = ctx;
   const range = await scanRange(ctx);
   let archiveHeight: number | null = null;
@@ -830,6 +835,7 @@ export async function status(ctx: ViewContext, genesisHash: string | null, scann
     vendored: { ...VENDORED_REFERENCE },
     scanner,
     unresolvedEvents,
+    durability,
   };
 }
 

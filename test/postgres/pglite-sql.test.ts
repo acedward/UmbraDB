@@ -136,7 +136,7 @@ describe("PGlite client", () => {
       expect([r.ok, r.n, r.s, r.js]).toEqual([false, "12.50", "plain", "str"]);
       // A string bound to a jsonb parameter is a JSON string, a number bound to an int8 parameter its decimal text.
       expect((await a`SELECT ${"{}"}::jsonb AS v, ${"x"}::bytea AS w, ${["a", null]}::text[] AS t2, ${[[1, 2], [3, 4]]}::int[] AS m`)[0]).toEqual({ v: "{}", w: new Uint8Array([0x78]), t2: ["a", null], m: [[1, 2], [3, 4]] });
-      expect((await a`SELECT ${"2026-01-01"}::date AS d, ${true}::text AS tt, ${3}::int8 AS i8`)[0]).toMatchObject({ tt: "true", i8: 3 });
+      expect((await a`SELECT ${"2026-01-01"}::date AS d, ${true}::text AS tt, ${3}::int8 AS i8`)[0]).toMatchObject({ tt: "true", i8: 3n });
       // Bytes from an ArrayBuffer, an array of numbers or text; box[] uses ';' between elements.
       expect((await a`SELECT ${new Uint8Array([1, 2]).buffer as never}::bytea AS x, ${[3, 4]}::bytea AS y, ${12}::bytea AS z, ${["(1,1),(0,0)", "(2,2),(1,1)"]}::box[] AS bx`)[0])
         .toEqual({ x: new Uint8Array([1, 2]), y: new Uint8Array([3, 4]), z: new Uint8Array([0x31, 0x32]), bx: ["(1,1),(0,0)", "(2,2),(1,1)"] });
@@ -159,15 +159,15 @@ describe("PGlite client", () => {
       expect([...(await a.unsafe("SELECT 7 AS v", { simple: false } as never))]).toEqual([{ v: 7 }]);
     });
 
-    it("passes the parsers option to every statement and the error of PGlite through mapError (unchanged by default)", async () => {
-      const mapped = createPgliteClient({ pglite: db, schema: "pa", parsers: { 20: (x) => BigInt(x) }, mapError: (e) => Object.assign(new Error("mapped"), { cause: e }) });
-      expect((await mapped`SELECT 1::int8 AS v`)[0]!.v).toBe(1n);
-      expect((await mapped.unsafe("SELECT 2::int8 AS v"))[0]!.v).toBe(2n);
-      const err = await mapped`SELECT * FROM no_such_table`.catch((e: unknown) => e) as Error & { cause: { code: string } };
-      expect([err.message, err.cause.code]).toEqual(["mapped", "42P01"]);
-      const raw = await a`SELECT * FROM no_such_table`.catch((e: unknown) => e) as { code: string; constructor: unknown };
-      expect(raw.code).toBe("42P01");
-      expect(raw).not.toBeInstanceOf(PgliteSqlError);
+    it("passes the parsers option to every statement and the error of PGlite through mapError (normalized by default)", async () => {
+      const mapped = createPgliteClient({ pglite: db, schema: "pa", parsers: { 20: (x) => `int8 ${x}` }, mapError: (e) => Object.assign(new Error("mapped"), { cause: e }) });
+      expect((await mapped`SELECT 1::int8 AS v, 1.50::numeric AS n`)[0]).toEqual({ v: "int8 1", n: "1.50" });
+      expect((await mapped.unsafe("SELECT 2::int8 AS v"))[0]!.v).toBe("int8 2");
+      const err = await mapped`SELECT * FROM no_such_table`.catch((e: unknown) => e) as Error & { cause: { code: string; name: string } };
+      expect([err.message, err.cause.code, err.cause.name]).toEqual(["mapped", "42P01", "error"]);
+      const normalized = await a`SELECT * FROM no_such_table`.catch((e: unknown) => e) as { code: string; name: string };
+      expect([normalized.code, normalized.name]).toEqual(["42P01", "PostgresError"]);
+      expect(normalized).not.toBeInstanceOf(PgliteSqlError);
     });
 
     it("cursors, forEach, values, raw, describe, streams, cancel and listen are not supported", () => {
@@ -224,7 +224,7 @@ describe("PGlite client", () => {
         await (tx.savepoint as unknown as (s: TemplateStringsArray, ...v: unknown[]) => Promise<unknown>)`INSERT INTO t (id) VALUES (${12})`;
         await expect(tx.savepoint("bad", (sp) => sp`INSERT INTO t (id) VALUES (10)`)).rejects.toMatchObject({ code: "23505" });
       });
-      expect((await a`SELECT id FROM t ORDER BY id`).map((r) => r.id)).toEqual([10, 12]);
+      expect((await a`SELECT id FROM t ORDER BY id`).map((r) => r.id)).toEqual([10n, 12n]);
     });
 
     it("rolls back when the callback throws, and when a statement failed even though the callback caught it", async () => {
@@ -246,7 +246,7 @@ describe("PGlite client", () => {
       await expect(a.begin(() => {
         throw new Error("synchronous throw");
       })).rejects.toThrow("synchronous throw");
-      expect((await a`SELECT id FROM t ORDER BY id`).map((r) => r.id)).toEqual([10, 12]);
+      expect((await a`SELECT id FROM t ORDER BY id`).map((r) => r.id)).toEqual([10n, 12n]);
       expect(await a.begin(async () => "no statements")).toBe("no statements");
     });
 
