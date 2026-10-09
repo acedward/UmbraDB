@@ -634,7 +634,7 @@ describe("MIP-0018 token activity", () => {
     const pure = (t: SynthTxA) => transactionActivity({ network: NET, height: 1, txIndex: 0, txHash: t.hash, tx: syntheticActivityTx(t), outcome: { result: "success" }, events: [] });
     const call = (g: NonNullable<NonNullable<SynthTxA["intents"]>[number]["calls"]>[number]["guaranteed"]): SynthTxA =>
       ({ hash: "d0".repeat(32), intents: [{ segment: 1, calls: [{ address: A, entryPoint: "e", guaranteed: g }] }] });
-    const recipientOf = (t: SynthTxA): Array<string | null> => pure(t).map((r) => (r.wallet_address ?? r.recipient_contract)?.toString("hex") ?? null);
+    const recipientOf = (t: SynthTxA): Array<string | null> => pure(t).map((r) => { const b = r.wallet_address ?? r.recipient_contract; return b === null ? null : Buffer.from(b).toString("hex"); });
     expect(recipientOf(call({ unshieldedMints: [[DS, "50"]], claimed: [[minted, "user", walletOf(1), "25"], [minted, "user", walletOf(2), "25"]] }))).toEqual([null]); // two recipients
     expect(recipientOf(call({ unshieldedMints: [[DS, "50"]], claimed: [[minted, "user", walletOf(1), "49"]] }))).toEqual([null]); // amount differs
     expect(recipientOf(call({ unshieldedMints: [[DS, "50"]], unshieldedOutputs: [["unshielded", minted, "50"]], claimed: [[minted, "user", walletOf(1), "50"]] }))).toEqual([null, null]); // two funders

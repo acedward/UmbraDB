@@ -19,6 +19,7 @@ import { addressFromKey, ContractCall, Transaction } from "@midnightntwrk/ledger
 import type { ISql } from "postgres";
 import { normHex, NIGHT_COLOR, type Part, partApplied, type Phase, type TransactionOutcome } from "./applied-parts.ts";
 import { walletAddress } from "./bech32m.ts";
+import { fromBase64url, hexToBytes, toBase64url, toHex, utf8Bytes, utf8Text } from "./bytes.ts";
 import { tokenColor } from "./color.ts";
 import { ENTRY_POINT_MAX_BYTES, entryPointBytes, type EntryPointJson, entryPointJson } from "./entry-point.ts";
 
@@ -33,22 +34,22 @@ export interface ActivityRow {
   block_height: number;
   tx_index: number;
   item_index: number;
-  tx_hash: Buffer;
+  tx_hash: Uint8Array;
   role: ActivityRole;
   phase: Phase | null;
   segment_id: number | null;
-  color: Buffer | null;
+  color: Uint8Array | null;
   amount: string | null;
   direction: "in" | "out" | null;
-  contract_address: Buffer | null;
+  contract_address: Uint8Array | null;
   action_index: number | null;
   /** The entry point's exact bytes (arbitrary on the ledger; `bytea`). */
-  entry_point: Buffer | null;
-  domain_sep: Buffer | null;
+  entry_point: Uint8Array | null;
+  domain_sep: Uint8Array | null;
   kind: 1 | 2 | null;
-  wallet_address: Buffer | null;
-  recipient_contract: Buffer | null;
-  intent_hash: Buffer | null;
+  wallet_address: Uint8Array | null;
+  recipient_contract: Uint8Array | null;
+  intent_hash: Uint8Array | null;
   output_index: number | null;
   events_accepted: number | null;
   events_rejected: number | null;
@@ -88,7 +89,7 @@ export interface ActivityTransactionLike {
 export interface ActivityEventRef {
   tx_index: number;
   event_index: number;
-  contract_address: Buffer;
+  contract_address: Uint8Array;
   classification: string;
 }
 
@@ -109,7 +110,7 @@ export class ActivityDecodeError extends Error {
 }
 
 const byString = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
-const buf = (h: string): Buffer => Buffer.from(normHex(h), "hex");
+const buf = (h: string): Uint8Array => hexToBytes(normHex(h));
 
 /** Deserializes archived bytes for the activity (the scan's default; synthetic tests pass their own). */
 export function activityTransaction(raw: Uint8Array): ActivityTransactionLike {
@@ -215,7 +216,7 @@ function unshieldedOffers(segment: number, intent: IntentLike, outcome: Transact
   }
 }
 
-function transcriptRows(part: Part, t: TranscriptLike, contract: string, actionIndex: number, entryPoint: Buffer, txHash: string, add: Add): void {
+function transcriptRows(part: Part, t: TranscriptLike, contract: string, actionIndex: number, entryPoint: Uint8Array, txHash: string, add: Add): void {
   const at = { contract_address: buf(contract), action_index: actionIndex, entry_point: entryPoint };
   // Recipients the transcript claims per color (unshielded only); attached to the one row that funds them.
   const claimed = new Map<string, Array<{ to: PublicAddressLike; amount: bigint }>>();
@@ -248,12 +249,12 @@ function transcriptRows(part: Part, t: TranscriptLike, contract: string, actionI
 
 /** One row per contract with accepted or rejected MIP-0018 events in the transaction (never `ignore`). */
 function metadataDrafts(input: TransactionActivityInput): Draft[] {
-  const byContract = new Map<string, { contract: Buffer; accepted: number; rejected: number; first: number }>();
+  const byContract = new Map<string, { contract: Uint8Array; accepted: number; rejected: number; first: number }>();
   const events = input.events
     .filter((e) => e.tx_index === input.txIndex && (e.classification === "accept" || e.classification === "reject"))
     .sort((a, b) => a.event_index - b.event_index);
   for (const e of events) {
-    const k = e.contract_address.toString("hex");
+    const k = toHex(e.contract_address);
     const entry = byContract.get(k) ?? { contract: e.contract_address, accepted: 0, rejected: 0, first: e.event_index };
     if (e.classification === "accept") entry.accepted++;
     else entry.rejected++;
@@ -334,23 +335,23 @@ interface DbActivityRow {
   block_height: bigint | number;
   tx_index: number;
   item_index: number;
-  tx_hash: Buffer;
+  tx_hash: Uint8Array;
   role: ActivityRole;
   phase: Phase | null;
   segment_id: number | null;
-  color: Buffer | null;
+  color: Uint8Array | null;
   amount: string | null;
   direction: "in" | "out" | null;
-  contract_address: Buffer | null;
+  contract_address: Uint8Array | null;
   action_index: number | null;
   /** At most {@link ENTRY_POINT_MAX_BYTES} bytes (the listing reads a prefix); `entry_point_length` = the full length. */
-  entry_point: Buffer | null;
+  entry_point: Uint8Array | null;
   entry_point_length?: number | null;
-  domain_sep: Buffer | null;
+  domain_sep: Uint8Array | null;
   kind: number | null;
-  wallet_address: Buffer | null;
-  recipient_contract: Buffer | null;
-  intent_hash: Buffer | null;
+  wallet_address: Uint8Array | null;
+  recipient_contract: Uint8Array | null;
+  intent_hash: Uint8Array | null;
   output_index: number | null;
   events_accepted: number | null;
   events_rejected: number | null;
@@ -361,9 +362,9 @@ const HEX32 = /^(0x)?[0-9a-fA-F]{64}$/;
 const MAX_POSITION: [string, number, number] = ["9223372036854775807", 2147483647, 2147483647];
 const MIN_POSITION: [string, number, number] = ["-1", -1, -1];
 
-function hex32(what: string, value: string): Buffer {
+function hex32(what: string, value: string): Uint8Array {
   if (!HEX32.test(value)) throw new ActivityQueryError(`${what} must be 32 bytes of hex`);
-  return Buffer.from(normHex(value), "hex");
+  return hexToBytes(normHex(value));
 }
 
 interface CursorBody {
@@ -375,14 +376,14 @@ interface CursorBody {
 }
 
 function encodeCursor(c: CursorBody): string {
-  return Buffer.from(JSON.stringify(c), "utf8").toString("base64url");
+  return toBase64url(utf8Bytes(JSON.stringify(c)));
 }
 
 function decodeCursor(cursor: string, subject: string, order: "asc" | "desc"): [string, number, number] {
   let c: unknown;
   try {
     if (!/^[A-Za-z0-9_-]{1,512}$/.test(cursor)) throw new Error("shape");
-    c = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+    c = JSON.parse(utf8Text(fromBase64url(cursor)));
   } catch {
     throw new ActivityQueryError("cursor is not a cursor of this API");
   }
@@ -408,8 +409,8 @@ function pageOptions(o: ActivityPageOptions): { limit: number; order: "asc" | "d
 
 /** One stored row as the API serves it (bytes as hex, wallet addresses as Bech32m, absent fields omitted). */
 export function activityItem(network: string, r: DbActivityRow): ActivityItem {
-  const h = (b: Buffer | null): string | undefined => (b === null ? undefined : b.toString("hex"));
-  const item: ActivityItem = { height: Number(r.block_height), txIndex: r.tx_index, itemIndex: r.item_index, txHash: r.tx_hash.toString("hex"), role: r.role };
+  const h = (b: Uint8Array | null): string | undefined => (b === null ? undefined : toHex(b));
+  const item: ActivityItem = { height: Number(r.block_height), txIndex: r.tx_index, itemIndex: r.item_index, txHash: toHex(r.tx_hash), role: r.role };
   if (r.phase !== null) item.phase = r.phase;
   if (r.segment_id !== null) item.segment = r.segment_id;
   if (r.color !== null) item.color = h(r.color);
@@ -420,9 +421,9 @@ export function activityItem(network: string, r: DbActivityRow): ActivityItem {
   if (r.entry_point !== null) item.entryPoint = entryPointJson(r.entry_point, r.entry_point_length ?? r.entry_point.length);
   if (r.domain_sep !== null) item.domainSep = h(r.domain_sep);
   if (r.kind !== null) item.kind = r.kind as 1 | 2;
-  if (r.wallet_address !== null) item.wallet = walletAddress(network, r.wallet_address.toString("hex"));
+  if (r.wallet_address !== null) item.wallet = walletAddress(network, toHex(r.wallet_address));
   if (r.recipient_contract !== null) item.recipientContract = h(r.recipient_contract);
-  if (r.intent_hash !== null && r.output_index !== null) item.utxo = { intentHash: r.intent_hash.toString("hex"), outputIndex: r.output_index };
+  if (r.intent_hash !== null && r.output_index !== null) item.utxo = { intentHash: toHex(r.intent_hash), outputIndex: r.output_index };
   if (r.events_accepted !== null && r.events_rejected !== null && r.first_event_index !== null)
     item.events = { accepted: r.events_accepted, rejected: r.events_rejected, firstEventIndex: r.first_event_index };
   return item;
@@ -482,7 +483,7 @@ function rowColumns(sql: Queryable) {
  * token list's identity skip scan in `api-views.ts`), so `LIMIT n` ends it. Run through `withIndexScans`.
  */
 function metadataRows(
-  sql: Queryable, schema: string, network: string, contract: Buffer, pos: readonly [string, number, number], order: "asc" | "desc", n: number,
+  sql: Queryable, schema: string, network: string, contract: Uint8Array, pos: readonly [string, number, number], order: "asc" | "desc", n: number,
 ) {
   const s = sql(schema);
   const [h, t, i] = pos;
@@ -547,12 +548,12 @@ export async function activityForColor(
 ): Promise<ActivityPage & { contract?: string }> {
   const c = hex32("color", color);
   const { limit, order } = pageOptions(o);
-  const subject = `c:${c.toString("hex")}`;
+  const subject = `c:${toHex(c)}`;
   const pos = o.cursor === undefined ? (order === "asc" ? MIN_POSITION : MAX_POSITION) : decodeCursor(o.cursor, subject, order);
   const [h, t, i] = pos;
   const { contract, rows } = await withIndexScans(sql, async (q) => {
     const s = q(schema);
-    const minted = await q<{ contract_address: Buffer }[]>`
+    const minted = await q<{ contract_address: Uint8Array }[]>`
       SELECT contract_address FROM ${s}.mip0018_mints WHERE network = ${network} AND color = ${c}
       ORDER BY block_height, tx_index, mint_index LIMIT 1`; // the key order of mip0018_mints_color_idx
     const contract = minted[0]?.contract_address ?? null;
@@ -574,7 +575,7 @@ export async function activityForColor(
     return { contract, rows };
   });
   const p = page(network, rows, limit, subject, order);
-  return contract === null ? p : { ...p, contract: contract.toString("hex") };
+  return contract === null ? p : { ...p, contract: toHex(contract) };
 }
 
 /**
@@ -588,7 +589,7 @@ export async function metadataTransactionsForContract(
 ): Promise<ActivityPage> {
   const a = hex32("contract", contract);
   const { limit, order } = pageOptions(o);
-  const subject = `m:${a.toString("hex")}`;
+  const subject = `m:${toHex(a)}`;
   const pos = o.cursor === undefined ? (order === "asc" ? MIN_POSITION : MAX_POSITION) : decodeCursor(o.cursor, subject, order);
   const rows = await withIndexScans(sql, (q) => q<DbActivityRow[]>`${metadataRows(q, schema, network, a, pos, order, limit + 1)}`);
   return page(network, rows, limit, subject, order);

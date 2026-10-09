@@ -88,7 +88,7 @@ const violations = (src: string): string[] => FORBIDDEN.filter(([, re]) => re.te
  * unused entry too); type-only imports are erased and not counted; relative specifiers must stay in this repository and
  * outside `node_modules`; a dynamic import must be a relative string literal.
  */
-const ALLOWED_MODULES = new Set(["node:crypto", "node:fs", "node:http", "node:util", "postgres", "zod", "@midnightntwrk/ledger-v9"]);
+const ALLOWED_MODULES = new Set(["node:crypto", "node:fs", "node:http", "node:util", "postgres", "zod", "@midnightntwrk/ledger-v9", "@noble/hashes/sha2.js"]);
 
 interface ImportUse { spec: string; typeOnly: boolean; dynamic: boolean }
 
@@ -191,7 +191,7 @@ describe("MIP-0018 conformance table", () => {
     expect(paths).toBeGreaterThan(3);
   }, 60_000);
 
-  it("[[mip0018.conformance.no-network-no-code]] the indexer's runtime code and the vendored codec contain no network client, no dynamic code and no child process (C-024, C-031: no URI is fetched, no identifier runs code); the check catches each forbidden form; every module the runtime loads, through its relative import closure, is on an exact allowlist (node:crypto, node:fs, node:http, node:util, postgres, zod, @midnightntwrk/ledger-v9) — package clients such as axios, undici or got and socket/process modules are refused", () => {
+  it("[[mip0018.conformance.no-network-no-code]] the indexer's runtime code and the vendored codec contain no network client, no dynamic code and no child process (C-024, C-031: no URI is fetched, no identifier runs code); the check catches each forbidden form; every module the runtime loads, through its relative import closure, is on an exact allowlist (node:crypto, node:fs, node:http, node:util, postgres, zod, @midnightntwrk/ledger-v9, @noble/hashes/sha2.js) — package clients such as axios, undici or got and socket/process modules are refused", () => {
     // Positive controls: every forbidden form is caught, the allowed forms are not.
     const caught = [
       "await fetch(url)", "http.request(opts)", "https.get(u)", 'import { request } from "node:http";', 'import { spawn } from "node:child_process";',
@@ -228,7 +228,8 @@ describe("MIP-0018 conformance table", () => {
     expect(violations('const f = globalThis["fe" + "tch"]; await f(u);')).toEqual(["computed global access"]);
     const fine = [
       'import { createServer } from "node:http";', 'import type { AddressInfo } from "node:net";', 'import postgres from "postgres";',
-      'import type { ISql } from "postgres";', 'import { z } from "zod";', 'const { Mip0018Scanner } = await import("./scan.ts");',
+      'import type { ISql } from "postgres";', 'import { z } from "zod";', 'import { sha256 } from "@noble/hashes/sha2.js";',
+      'const { Mip0018Scanner } = await import("./scan.ts");',
       'import { createClient } from "../../src/postgres/client.js";',
     ];
     for (const a of fine) expect(importCheck(a, "token-indexer/mip0018/x.ts").bad, a).toEqual([]);

@@ -403,7 +403,7 @@ type UpdateLike = { constructor?: { name?: string }; operation?: string | Uint8A
 /** A maintenance update's operation (an entry point: arbitrary bytes), lowercase hex; `null` when it has none. */
 export function updateOperation(u: unknown): string | null {
   const x = u as UpdateLike;
-  return x.operation === undefined ? null : entryPointBytes(x.operation).toString("hex");
+  return x.operation === undefined ? null : toHex(entryPointBytes(x.operation));
 }
 
 /**
@@ -466,7 +466,7 @@ export function decodeTransaction(input: Uint8Array | TransactionLike): DecodedT
     intent.actions.forEach((action, actionIndex) => {
       if (action instanceof ContractCall) {
         const contractAddress = normHex(String(action.address));
-        const entryPoint = entryPointBytes(action.entryPoint as Uint8Array | string).toString("hex");
+        const entryPoint = toHex(entryPointBytes(action.entryPoint as Uint8Array | string));
         const phases: Phase[] = [];
         for (const [phase, transcript, target] of [
           ["guaranteed", action.guaranteedTranscript, out],

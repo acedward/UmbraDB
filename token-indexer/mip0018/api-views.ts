@@ -14,6 +14,7 @@
  */
 import { MIP0018_SCHEMA } from "../../src/postgres/migrations/mip0018/index.js";
 import type { ActivityItem } from "./activity.ts";
+import { fromBase64url, hexToBytes, toBase64url, toHex, utf8Bytes, utf8Text } from "./bytes.ts";
 import type { Queryable } from "./fields.ts";
 import {
   boundedGroup,
@@ -135,8 +136,8 @@ export interface Page<T> { items: T[]; nextCursor: string | null }
 // ── Byte views ───────────────────────────────────────────────────────────────────────────────────────────────────
 
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-const hexOf = (b: Uint8Array): string => Buffer.from(b).toString("hex");
-const buf = (h: string): Buffer => Buffer.from(h, "hex");
+const hexOf = toHex;
+const buf = hexToBytes;
 const VAL_TYPE_NAMES = ["bytes", "utf8", "uint", "json", "uri"] as const;
 const KIND_NAMES: Record<number, KindName> = { 1: "shielded", 2: "unshielded", 3: "ledger" };
 
@@ -233,13 +234,13 @@ const builtinJson = (b: BuiltinToken): BuiltinJson => ({ symbol: b.symbol, name:
 
 // ── Cursors (opaque, bound to their endpoint and filter) ─────────────────────────────────────────────────────────
 
-export const encodeCursor = (value: unknown): string => Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+export const encodeCursor = (value: unknown): string => toBase64url(utf8Bytes(JSON.stringify(value)));
 
 /** Decodes a cursor this API issued; `undefined` for anything else (the caller answers 400). */
 export function decodeCursor(raw: string): unknown {
   if (!/^[A-Za-z0-9_-]{1,2048}$/.test(raw)) return undefined;
   try {
-    const value = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as unknown;
+    const value = JSON.parse(utf8Text(fromBase64url(raw))) as unknown;
     return encodeCursor(value) === raw ? value : undefined; // canonical form only
   } catch {
     return undefined;
@@ -307,8 +308,8 @@ async function mintAggregates(ctx: ViewContext, keys: readonly IdKey[]): Promise
   if (native.length === 0) return out;
   const { sql } = ctx;
   const rows = await sql<{
-    color: Buffer; contract_address: Buffer; domain_sep: Buffer; kind: number; mints: number; amount: string;
-    block_height: bigint; tx_index: number; tx_hash: Buffer;
+    color: Uint8Array; contract_address: Uint8Array; domain_sep: Uint8Array; kind: number; mints: number; amount: string;
+    block_height: bigint; tx_index: number; tx_hash: Uint8Array;
   }[]>`
     SELECT DISTINCT ON (m.contract_address, m.domain_sep, m.kind)
            m.color, m.contract_address, m.domain_sep, m.kind, (count(*) OVER w)::int AS mints, (sum(m.amount) OVER w)::text AS amount,
@@ -350,7 +351,7 @@ interface Seen { color: string; firstSeen: PositionJson; evidence: string[] }
 async function sightings(ctx: ViewContext, o: { color?: string; seenFirst?: boolean; after?: string; limit?: number }): Promise<Seen[]> {
   const { sql } = ctx;
   const s = sql(ctx.schema);
-  const rows = await sql<{ color: Buffer; h: bigint; i: number; x: Buffer; evidence: string[] }[]>`
+  const rows = await sql<{ color: Uint8Array; h: bigint; i: number; x: Uint8Array; evidence: string[] }[]>`
     SELECT f.color, f.h, f.i, f.x,
            (SELECT array_agg(DISTINCT e.evidence ORDER BY e.evidence) FROM ${s}.mip0018_color_sightings e
             WHERE e.network = ${ctx.network} AND e.color = f.color) AS evidence
@@ -386,7 +387,7 @@ async function distinctIdentities(
   const t = sql`${sql(ctx.schema)}.${sql(table)}`;
   const scope = o.contract === undefined ? sql`` : sql`AND contract_address = ${buf(o.contract)}`;
   const start = o.after === undefined ? sql`` : sql`AND (contract_address, domain_sep, kind) > (${buf(o.after[0])}, ${buf(o.after[1])}, ${o.after[2]}::smallint)`;
-  const rows = await sql<{ contract_address: Buffer; domain_sep: Buffer; kind: number }[]>`
+  const rows = await sql<{ contract_address: Uint8Array; domain_sep: Uint8Array; kind: number }[]>`
     WITH RECURSIVE ids AS (
       (SELECT contract_address, domain_sep, kind FROM ${t}
        WHERE network = ${ctx.network} ${scope} ${start}
@@ -758,8 +759,8 @@ export interface EventJson {
 export async function eventsPage(ctx: ViewContext, filter: EventFilter, limit: number, cursor: EventsCursor | undefined): Promise<Page<EventJson>> {
   const { sql } = ctx;
   const rows = await sql<{
-    block_height: bigint; tx_index: number; event_index: number; tx_hash: Buffer | null; segment_id: number | null; phase: string | null;
-    contract_address: Buffer; classification: EventJson["classification"]; reason: string | null;
+    block_height: bigint; tx_index: number; event_index: number; tx_hash: Uint8Array | null; segment_id: number | null; phase: string | null;
+    contract_address: Uint8Array; classification: EventJson["classification"]; reason: string | null;
   }[]>`
     SELECT block_height, tx_index, event_index, tx_hash, segment_id, phase, contract_address, classification, reason
     FROM ${sql(ctx.schema)}.mip0018_events
