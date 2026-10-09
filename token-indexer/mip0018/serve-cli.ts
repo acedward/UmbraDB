@@ -36,7 +36,7 @@
 import type { Server } from "node:http";
 import { parseArgs } from "node:util";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
-import { createMip0018Api, listen } from "./api.ts";
+import { createMip0018Api, listen } from "./api-node.ts";
 import type { ScannerState } from "./api-views.ts";
 import { serveUi } from "./ui/page.ts";
 
