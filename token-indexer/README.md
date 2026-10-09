@@ -46,6 +46,11 @@ Postgres schema mip0018            mints (color table), color sightings, contrac
 read-only JSON API (api.ts)  ──►  explorer page GET /ui (ui/)
 ```
 
+The sync loop, the scan loop and the API run in one engine (`engine/engine.ts`) built only from injected parts: the
+database client, `fetch`, a clock, a scheduler for the loops' steps and an event listener that receives every log line.
+`sync-cli.ts`, `scan-cli.ts` and `serve-cli.ts` are Node wrappers over it (arguments, signals, the Postgres client,
+`node:http`, their own log formats); the engine itself uses no Node API, so a browser worker can host it too.
+
 Everything a block adds commits in one Postgres transaction with the scan cursor, so a kill at any point resumes
 without a gap or a duplicate; `removeAbove(height)` deletes the rows above a height and recomputes the fields from
 the stored events (the MIP's reorganization rule; the indexer itself follows finalized blocks only).
@@ -117,6 +122,7 @@ network: Stagenet data comes from recorded fixtures.
 | Recorded live range = replay | `test/mip0018-live-range.test.ts` |
 | Conformance table and the no-network check | `test/mip0018-conformance.test.ts` |
 | API and page | `test/mip0018-api.test.ts`, `test/mip0018-ui-*.test.ts` |
+| The engine: sync, scan and API from injected parts (a `fetch` over the recorded tapes, a manual clock) | `test/engine.test.ts` |
 
 Fixtures:
 
