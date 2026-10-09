@@ -23,7 +23,7 @@ npm run dev:browser     # the same configuration served by Vite on 127.0.0.1
 | `tapes.ts`, `tapes/` | The recorded Stagenet ranges (gzip) the worker can replay with no network, SHA-256 checked |
 | `config.ts` | The network, its default endpoints and the store's location |
 | `engine.html`, `engine-page.ts` | A page that starts the worker and shows its status; `window.umbradbEngine` holds the client |
-| `vite.config.ts`, `build-guard.ts` | The build (Node tooling): ES module worker, `esnext`, class names kept, assets as files, and a plugin that fails the build if postgres.js or a Node built-in would be bundled |
+| `vite.config.ts`, `build-guard.ts` | The build (Node tooling): ES module worker, `esnext`, class names kept, `vite-plugin-wasm` for ledger-v9's WASM module, assets as files, and a plugin that fails the build if postgres.js or a Node built-in would be bundled |
 
 ## Boot
 
