@@ -45,6 +45,7 @@ const NODE_ONLY: Record<string, string> = {
   "chain-archive-sync/tx-replay-decoder.ts": "test-only decoder that loads a ledger build from a wallet checkout on disk",
   "token-indexer/mip0018/scan-cli.ts": "command-line entry point (arguments, signals, exit codes)",
   "token-indexer/mip0018/serve-cli.ts": "command-line entry point that starts the node:http server",
+  "token-indexer/mip0018/api-node.ts": "serves the runtime-neutral API handler (api.ts) over node:http",
   "token-indexer/mip0018/run-vectors.ts": "starts the vendored vector runner as a child process",
   "token-indexer/mip0018/vector-adapter.ts": "vector consumer over stdin/stdout",
   "token-indexer/mip0018/vector-adapter-pg.ts": "vector consumer over stdin/stdout",
@@ -53,7 +54,6 @@ const NODE_ONLY: Record<string, string> = {
 
 /** Runtime modules that use a Node API today, with the API. */
 const PENDING: Record<string, string> = {
-  "token-indexer/mip0018/api.ts": "serves the API over node:http (node:net types, Buffer.byteLength, process.stderr)",
   "token-indexer/mip0018/ui/page.ts": "reads the page assets with readFileSync and hashes them for the CSP with node:crypto",
 };
 
