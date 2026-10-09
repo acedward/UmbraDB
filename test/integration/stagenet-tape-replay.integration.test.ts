@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { openTestDatabase, type TestDatabase } from "../helpers/test-database.ts";
 import { readTape, tapeCompressionOf } from "../../chain-archive-sync/archive-tape.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
 import { createTapeFetch, type TapeFetch } from "../../chain-archive-sync/tape-replay.js";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { archiveDigest, dumpArchive } from "./fixtures/stagenet-archive/archive-digest.js";
 import { fixturePath, loadManifest, loadRangeTape } from "./fixtures/stagenet-archive/stagenet-fixtures.js";
 
@@ -13,9 +13,9 @@ import { fixturePath, loadManifest, loadRangeTape } from "./fixtures/stagenet-ar
  * The recorded Stagenet ranges replayed with no HTTP server at all: each tape is read with the runtime-neutral reader
  * (`DecompressionStream`, the code a browser runs) and answered by the `fetch`-shaped tape replay
  * (`chain-archive-sync/tape-replay.ts`), handed to the UNCHANGED `ChainArchiveSyncService` as its clients'
- * `fetchImpl`. The archive it writes into a real Postgres 17 (Testcontainers) must have exactly the digest of the
- * archive the LIVE polite sync of the same range wrote at capture time, and a sync that follows a finalized tip rising
- * with a clock must build the same archive.
+ * `fetchImpl`. The archive it writes into the file's database (Postgres 17 or PGlite, `test/helpers/test-database.ts`)
+ * must have exactly the digest of the archive the LIVE polite sync of the same range wrote at capture time, and a sync
+ * that follows a finalized tip rising with a clock must build the same archive.
  */
 
 const NET = "stagenet";
@@ -26,20 +26,20 @@ const LIVE_DIGEST = {
 } as const;
 
 describe("Stagenet tape replay through fetchImpl = live archive", () => {
-  let container: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   const sqls: UmbraDBSql[] = [];
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
+    database = await openTestDatabase();
   }, 180_000);
 
   afterAll(async () => {
     for (const s of sqls) await s.end({ timeout: 5 });
-    await container?.stop();
+    await database?.stop();
   }, 60_000);
 
   async function freshSchema(schema: string): Promise<UmbraDBSql> {
-    const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    const sql = database.client(schema);
     sqls.push(sql);
     await bootstrapChainArchiveSchema(sql, schema);
     return sql;

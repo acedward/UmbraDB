@@ -18,6 +18,7 @@ test/integration/soak/artifacts/
 # v1.0.0-recovery-testing Task 7: coverage + mutation gate runtime outputs (not source)
 coverage/
 .conformance-report.json
+.pglite-report.json
 .stryker-tmp/
 reports/
 stryker.log

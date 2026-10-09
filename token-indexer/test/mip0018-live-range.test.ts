@@ -11,11 +11,11 @@
  * and `[[mip0018.activity.kill-resume]]`.
  */
 import { readFileSync } from "node:fs";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { openTestDatabase, type TestDatabase } from "../../test/helpers/test-database.ts";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { startFakeChain } from "../../test/integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadManifest, loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
 import { compareTables, rangeTables, type RangeTables } from "../dev/range-tables.ts";
@@ -28,17 +28,17 @@ const RECORDED = JSON.parse(readFileSync(new URL("./fixtures/live-range/stagenet
 };
 
 describe("recorded live range = fixture replay", () => {
-  let container: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   let sql: UmbraDBSql;
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
-    sql = createClient({ connectionString: container.getConnectionUri(), schema: "replay_mip" });
+    database = await openTestDatabase();
+    sql = database.client("replay_mip");
   }, 180_000);
 
   afterAll(async () => {
     await sql?.end({ timeout: 5 });
-    await container?.stop();
+    await database?.stop();
   }, 60_000);
 
   it("[[mip0018.live-range.replay-equals-live]] replaying the recorded 714485–715183 tape through the sync service and the scanner gives, table by table, the digests of the recorded live Stagenet sync (every archive and mip0018 table; that live run = the replay); a changed row is caught", async () => {

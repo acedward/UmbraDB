@@ -6,14 +6,16 @@
  * transaction belongs to which reference case step), archived by the real `chain-archive-sync` against the fake chain
  * server, and synthetic transactions (`helpers/synthetic-activity.ts`) for what Stagenet's recorded ranges do not show
  * (unshielded spends, contract inputs/outputs, fallible parts, failed segments, NIGHT UTXOs, DUST-tagged effects).
- * One Postgres 17 container for the file; one archive schema + one `mip0018` schema per scenario.
+ * One database for the file (`test/helpers/test-database.ts`: Postgres 17 or PGlite); one archive schema + one `mip0018`
+ * schema per scenario.
  */
 import { type ChildProcess, spawn } from "node:child_process";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { skipOnPglite } from "../../test/helpers/postgresql-only.ts";
+import { openTestDatabase, type TestDatabase } from "../../test/helpers/test-database.ts";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { type ArchiveTape, type FakeChain, startFakeChain } from "../../test/integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadCaseIndex, loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
 import {
@@ -99,14 +101,14 @@ async function all(read: (cursor?: string) => Promise<{ items: ActivityItem[]; n
 const txOrder = (items: ActivityItem[]): string[] => [...new Map(items.map((i) => [`${i.height}:${i.txIndex}`, i.txHash])).values()];
 
 describe("MIP-0018 token activity", () => {
-  let container: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   const clients: UmbraDBSql[] = [];
   const fakes: FakeChain[] = [];
   const children: ChildProcess[] = [];
   let counter = 0;
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
+    database = await openTestDatabase();
   }, 180_000);
 
   afterEach(async () => {
@@ -116,14 +118,14 @@ describe("MIP-0018 token activity", () => {
 
   afterAll(async () => {
     for (const c of clients) await c.end({ timeout: 5 });
-    await container?.stop();
+    await database?.stop();
   }, 60_000);
 
   async function fresh(prefix: string): Promise<{ sql: UmbraDBSql; archive: string; mip: string }> {
     const n = counter++;
     const archive = `${prefix}_arch_${n}`;
     const mip = `${prefix}_mip_${n}`;
-    const sql = createClient({ connectionString: container.getConnectionUri(), schema: mip });
+    const sql = database.client(mip);
     clients.push(sql);
     await bootstrapChainArchiveSchema(sql, archive);
     return { sql, archive, mip };
@@ -397,7 +399,7 @@ describe("MIP-0018 token activity", () => {
     }
   }, 300_000);
 
-  it("[[mip0018.activity.bounded-cost]] an activity page costs what it serves, never what it hides, whatever the planner's statistics say — 100 000 metadata transactions of a withdrawn identity behind one visible rejected event, and 100 000 visible ones of a sibling: with no statistics, with statistics taken while the listed events held two live rows on pages the sibling's rows then fill again, and with fresh statistics, the color's and the contract's listings in both orders read at most 100 + 20 buffers per row a page may read (auto_explain, independent of host load), while in the stale state the listing's skip-scan step and a primary-key lookup planned without the listings' settings read the whole listed table; before the first vacuum after the withdrawal its dead index entries add at most one buffer per 20 hidden rows; the API answers within a generous latency budget; the seeding equals the real apply path; the withdrawal that hides 100 000 rows is one bounded delete", async () => {
+  it.skipIf(skipOnPglite("mip0018.activity.bounded-cost"))("[[mip0018.activity.bounded-cost]] an activity page costs what it serves, never what it hides, whatever the planner's statistics say — 100 000 metadata transactions of a withdrawn identity behind one visible rejected event, and 100 000 visible ones of a sibling: with no statistics, with statistics taken while the listed events held two live rows on pages the sibling's rows then fill again, and with fresh statistics, the color's and the contract's listings in both orders read at most 100 + 20 buffers per row a page may read (auto_explain, independent of host load), while in the stale state the listing's skip-scan step and a primary-key lookup planned without the listings' settings read the whole listed table; before the first vacuum after the withdrawal its dead index entries add at most one buffer per 20 hidden rows; the API answers within a generous latency budget; the seeding equals the real apply path; the withdrawal that hides 100 000 rows is one bounded delete", async () => {
     const N = 100_000;
     const migrated = async (prefix: string) => {
       const db = await fresh(prefix);
@@ -445,7 +447,7 @@ describe("MIP-0018 token activity", () => {
 
     // Reads through a session with auto_explain: every statement's plan, with its buffer count.
     const notices: string[] = [];
-    const ex = postgres(container.getConnectionUri(), { max: 1, onnotice: (n) => notices.push(String(n.message)), types: { bigint: postgres.BigInt } });
+    const ex = postgres(database.connectionUri(), { max: 1, onnotice: (n) => notices.push(String(n.message)), types: { bigint: postgres.BigInt } });
     const tables = ["mip0018_listed_events", "mip0018_activity", "mip0018_events"].map((t) => `"${db.mip}"."${t}"`);
     try {
       for (const set of ["LOAD 'auto_explain'", "SET auto_explain.log_min_duration = 0", "SET auto_explain.log_analyze = on",
@@ -665,7 +667,7 @@ describe("MIP-0018 token activity", () => {
     expect(await dump(db.sql, db.mip)).toEqual(full);
   }, 180_000);
 
-  it("[[mip0018.activity.kill-resume]] the scan CLI SIGKILLed inside a block's transaction leaves no row of that block; a restart gives the same rows as an uninterrupted scan", async () => {
+  it.skipIf(skipOnPglite("mip0018.activity.kill-resume"))("[[mip0018.activity.kill-resume]] the scan CLI SIGKILLed inside a block's transaction leaves no row of that block; a restart gives the same rows as an uninterrupted scan", async () => {
     const clean = await fresh("clean");
     await archiveTape(clean, IDX, 714637, 714663);
     await scanAll(scanner(clean));
@@ -680,7 +682,7 @@ describe("MIP-0018 token activity", () => {
       const child = spawn(process.execPath, [
         "--import", "tsx", "token-indexer/mip0018/scan-cli.ts", "--network", NET, "--schema", db.mip, "--archive-schema", db.archive,
         "--to", "714663", "--max-blocks", "1",
-      ], { cwd: process.cwd(), env: { ...process.env, PG_URL: container.getConnectionUri() }, stdio: ["ignore", "pipe", "pipe"] });
+      ], { cwd: process.cwd(), env: { ...process.env, PG_URL: database.connectionUri() }, stdio: ["ignore", "pipe", "pipe"] });
       children.push(child);
       return child;
     };

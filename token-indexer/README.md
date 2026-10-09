@@ -114,6 +114,14 @@ All tests run in the repository's required gate (`npm run test:conformance -- --
 Testcontainers Postgres 17; the page's browser tests need a Chromium — see the page README). No test touches the
 network: Stagenet data comes from recorded fixtures.
 
+The same suite runs on PGlite in Node, with no database server: `npm run test:pglite -- --maxWorkers=2`. Each test file
+opens its database through `test/helpers/test-database.ts`, which `UMBRADB_BACKEND` (`postgres`, the default, or
+`pglite`) points at one Postgres 17 container or one in-memory PGlite database per file. What needs a PostgreSQL server
+(a CLI child process connecting by URL, a killed server or backend, the planner's buffer counts, several sessions, the
+wallet-storage library) is listed with its reason in `test/helpers/postgresql-only.ts`; on PGlite those files are not
+run and those tests are skipped, and `check-required-tests.ts --postgresql-only` requires every other required test to
+pass.
+
 | What | Where |
 |---|---|
 | MIP vectors through two adapters (pure state module; real Postgres path): 59 reference normative, 43 informative, 8 UmbraDB versions | `test/mip0018-vectors.test.ts`, `test/mip0018-vectors-pg.test.ts` |
