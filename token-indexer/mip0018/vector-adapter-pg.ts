@@ -15,12 +15,17 @@
  * - `state`: steps applied in order, one transaction per step; identities and groups read per network.
  *
  *   PG_URL=postgres://… node token-indexer/mip0018/run-vectors.ts --consumer "node --import tsx token-indexer/mip0018/vector-adapter-pg.ts"
+ *   node token-indexer/mip0018/run-vectors.ts --consumer "node --import tsx token-indexer/mip0018/vector-adapter-pg.ts --pglite"
+ *
+ * (`--pglite`: the process answers from its own in-memory PGlite database, through the PGlite client with its
+ * defaults, `src/postgres/pglite-sql.ts`.)
  *
  * (`--import tsx`: like `chain-archive-sync/sync-cli.ts`, this file imports `src/` modules by their `.js` names.)
  */
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import { openPgliteClient } from "../../src/postgres/pglite-sql.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { mip0018Migrations } from "../../src/postgres/migrations/mip0018/index.js";
 import { classifyEvent } from "../vendor/mip0018/codec/src/index.ts";
@@ -137,14 +142,17 @@ export function createPgVectorConsumer(opts: PgVectorConsumerOptions): PgVectorC
 }
 
 /**
- * Runner-contract process: `PG_URL` (or the PG* variables) names the database; one JSON request per stdin line, one
- * JSON response per stdout line, strictly in order.
+ * Runner-contract process: `PG_URL` (or the PG* variables) names the database, or `--pglite` opens an in-memory PGlite
+ * database for the process; one JSON request per stdin line, one JSON response per stdout line, strictly in order.
  */
-export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+export async function main(env: NodeJS.ProcessEnv = process.env, args: readonly string[] = process.argv.slice(2)): Promise<void> {
+  for (const a of args) if (a !== "--pglite") throw new Error(`unknown argument ${a} (usage: vector-adapter-pg.ts [--pglite])`);
   // stdout carries ONLY the protocol's JSON lines: anything logged (e.g. a server NOTICE) goes to stderr.
   console.log = console.error;
   console.info = console.error;
-  const sql = createClient({ ...(env.PG_URL === undefined ? {} : { connectionString: env.PG_URL }), schema: "mip0018_vec" });
+  const sql = args.includes("--pglite")
+    ? await openPgliteClient({ schema: "mip0018_vec" })
+    : createClient({ ...(env.PG_URL === undefined ? {} : { connectionString: env.PG_URL }), schema: "mip0018_vec" });
   const consumer = createPgVectorConsumer({ sql, schemaPrefix: env.MIP0018_VECTOR_SCHEMA_PREFIX ?? `mip0018_vec_${process.pid}` });
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
   try {

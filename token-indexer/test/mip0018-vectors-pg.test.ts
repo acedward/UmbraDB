@@ -8,13 +8,12 @@
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { skipOnPglite } from "../../test/helpers/postgresql-only.ts";
 import { openTestDatabase, type TestDatabase } from "../../test/helpers/test-database.ts";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { loadVectors, requestFor, runVectors, type Json, type LoadedVector } from "../vendor/mip0018/vectors/tools/runner-core.ts";
 import { UMBRADB_VECTORS_DIR, VENDORED_VECTORS_DIR, vectorSets } from "../mip0018/run-vectors.ts";
 import { handleRequest } from "../mip0018/vector-adapter.ts";
-import { createPgVectorConsumer } from "../mip0018/vector-adapter-pg.ts";
+import { createPgVectorConsumer, main as adapterMain } from "../mip0018/vector-adapter-pg.ts";
 
 const failures = (report: Awaited<ReturnType<typeof runVectors>>): string[] =>
   report.results.filter((r) => !r.ok).map((r) => `${r.id}: ${r.failures.join("; ")}`);
@@ -77,11 +76,15 @@ describe("MIP-0018 vectors through the Postgres adapter", () => {
     expect(responses.size).toBe(110);
   }, 600_000);
 
-  it.skipIf(skipOnPglite("mip0018.vectors.pg-runner-cli"))("[[mip0018.vectors.pg-runner-cli]] the vendored runner CLI drives the Postgres adapter process over both sets and exits 0, with every check applicable", () => {
+  it("[[mip0018.vectors.pg-runner-cli]] the vendored runner CLI drives the Postgres adapter process over both sets and exits 0, with every check applicable (on PGlite the adapter process opens its own in-memory database, --pglite)", () => {
+    // The adapter process reaches PostgreSQL by PG_URL; a PGlite database lives in one process, so there the adapter
+    // process opens its own.
+    const pglite = database.backend === "pglite";
+    const adapter = `${JSON.stringify(process.execPath)} --import tsx ${JSON.stringify(join(UMBRADB_VECTORS_DIR, "..", "vector-adapter-pg.ts"))}${pglite ? " --pglite" : ""}`;
     const run = spawnSync(
       process.execPath,
-      [join(UMBRADB_VECTORS_DIR, "..", "run-vectors.ts"), "--consumer", `${JSON.stringify(process.execPath)} --import tsx ${JSON.stringify(join(UMBRADB_VECTORS_DIR, "..", "vector-adapter-pg.ts"))}`, "--timeout", "60000"],
-      { encoding: "utf8", timeout: 900_000, env: { ...process.env, PG_URL: database.connectionUri(), MIP0018_VECTOR_SCHEMA_PREFIX: "vec_cli" } },
+      [join(UMBRADB_VECTORS_DIR, "..", "run-vectors.ts"), "--consumer", adapter, "--timeout", "60000"],
+      { encoding: "utf8", timeout: 900_000, env: { ...process.env, ...(pglite ? {} : { PG_URL: database.connectionUri() }), MIP0018_VECTOR_SCHEMA_PREFIX: "vec_cli" } },
     );
     expect(run.status, run.stderr).toBe(0);
     expect(run.stdout).toContain("normative: 59/59 passed; informative: 43/43 passed");
@@ -99,5 +102,7 @@ describe("MIP-0018 vectors through the Postgres adapter", () => {
     const step = (block: number) => ({ op: "apply", network: "n", block, tx: 0, event: 0, contractAddress: "aa".repeat(32), type: "Misc", name_hex: "00", payload_hex: "00" });
     expect(await pg.handle({ id: "z", op: "state", steps: [step(2), step(1)] })).toMatchObject({ id: "z", error: expect.stringContaining("does not follow") });
     expect(handleRequest({ id: "z", op: "state", steps: [step(2), step(1)] })).toMatchObject({ id: "z", error: expect.stringContaining("does not follow") });
+    // The adapter process takes no argument but --pglite.
+    await expect(adapterMain({}, ["--bogus"])).rejects.toThrow(/unknown argument --bogus/);
   }, 60_000);
 });

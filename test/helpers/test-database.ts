@@ -10,9 +10,11 @@
  * `db.client(schema)`, and stops it in `afterAll`. Tests that need a PostgreSQL server (a child process connecting by
  * URL, server settings, several sessions) are listed in `postgresql-only.ts`; `connectionUri()` throws on PGlite.
  *
- * The test clients read every type as the PostgreSQL clients do (`createClient`): int8 as `bigint`, numeric as text,
- * bytea as `Buffer`; and a PGlite database error carries the name and the `constraint_name` field of a postgres.js
- * `PostgresError`.
+ * The PGlite clients are the production ones with their defaults (`src/postgres/pglite-sql.ts`: int8 as `bigint`,
+ * numeric as text, PGlite errors as postgres.js `PostgresError`s, the `non-durable` mode in which the migrations accept
+ * PGlite's `fsync=off`), with one difference: the test files read bytea as `Buffer`, as they do from postgres.js, so
+ * their byte assertions (`Buffer` methods, `toEqual(Buffer…)`) hold on both backends. The runtime itself reads bytea
+ * as plain `Uint8Array` (no `Buffer` on its paths: `token-indexer/test/runtime-node-free.test.ts`).
  */
 import type { PGlite } from "@electric-sql/pglite";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -40,28 +42,13 @@ export interface TestDatabase {
 
 // ── PGlite setup ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** A PGlite database error as postgres.js reports one: named `PostgresError`, with the violated constraint in
- *  `constraint_name` (PGlite: `constraint`). */
-function asPostgresError(e: unknown): unknown {
-  const err = e as { name?: unknown; code?: unknown; severity?: unknown; constraint?: unknown; constraint_name?: unknown } | null;
-  if (err === null || typeof err !== "object" || typeof err.code !== "string" || typeof err.severity !== "string") return e;
-  err.name = "PostgresError";
-  if (typeof err.constraint === "string" && err.constraint_name === undefined) err.constraint_name = err.constraint;
-  return e;
-}
-
 /**
- * Opens the in-memory PGlite database of a test file and returns the options of its clients. PGlite starts here
- * without its `-F` start parameter, so `fsync` reads `on` and the migrations' durability probe accepts it; int8 is
- * parsed as `bigint` and bytea as `Buffer` (also inside arrays, hence instance parsers).
+ * Opens the in-memory PGlite database of a test file, reading bytea as `Buffer` (an instance parser, so array elements
+ * too); everything else is PGlite's own start-up and the client's defaults.
  */
-async function openPglite(): Promise<{ pglite: PGlite; mapError: (e: unknown) => unknown }> {
+async function openPglite(): Promise<PGlite> {
   const { PGlite } = await import("@electric-sql/pglite");
-  const pglite = await PGlite.create({
-    startParams: PGlite.defaultStartParams.filter((p) => p !== "-F"),
-    parsers: { 20: (x: string) => BigInt(x), 17: (x: string) => Buffer.from(x.slice(2), "hex") },
-  });
-  return { pglite, mapError: asPostgresError };
+  return PGlite.create({ parsers: { 17: (x: string) => Buffer.from(x.slice(2), "hex") } });
 }
 
 // ── The database ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -78,10 +65,10 @@ export async function openTestDatabase(backend: TestBackend = TEST_BACKEND): Pro
   };
 
   if (backend === "pglite") {
-    const { pglite, mapError } = await openPglite();
+    const pglite = await openPglite();
     return {
       backend,
-      client: (schema) => track(createPgliteClient({ pglite, schema, mapError })),
+      client: (schema) => track(createPgliteClient({ pglite, schema })),
       connectionUri: () => {
         throw new Error("connectionUri(): an in-memory PGlite database has no server to connect to (UMBRADB_BACKEND=pglite)");
       },

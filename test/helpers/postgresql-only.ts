@@ -45,6 +45,9 @@ const WALLET_STORAGE =
 const CRASH =
   "kills PostgreSQL backends, the PostgreSQL server or a writer process connected to it by URL, and checks what the " +
   "server kept; an in-memory PGlite database lives in the test process";
+const BOTH =
+  "compares the PGlite client with PostgreSQL 17 in one run, so it needs a PostgreSQL server; it runs, PGlite side " +
+  "included, in the PostgreSQL gate";
 const EVM_RPC = "the EVM RPC service and its log store: not part of the token indexer; its tests start PostgreSQL";
 const WALLET_MONITOR = "the wallet monitor: not part of the token indexer; its tests start PostgreSQL";
 
@@ -85,7 +88,12 @@ export const POSTGRESQL_ONLY: {
     "test/postgres/migrate.test.ts": "the migration runner with the wallet-storage lineage (btree_gist) on concurrent PostgreSQL sessions, and connection failures by URL; the chain-archive and mip0018 lineages migrate through the same runner on PGlite in the token-indexer and chain-archive tests",
     "test/postgres/durability-probe.test.ts": "the durability probe against PostgreSQL servers started with fsync, full_page_writes and synchronous_commit settings, and its pooler check across sessions",
     "test/postgres/errors.test.ts": "SQLSTATE routing of PostgreSQL errors raised by the migrated chain-archive schema, through a PostgreSQL connection",
-    "test/postgres/pglite-sql.differential.test.ts": "compares the PGlite client with postgres.js on PostgreSQL 17, so it needs PostgreSQL",
+    // Both databases in one file: they compare PGlite with PostgreSQL 17, so they need a PostgreSQL server; their PGlite
+    // side runs in the PostgreSQL gate.
+    "test/postgres/pglite-sql.differential.test.ts": BOTH,
+    "test/postgres/pglite-sql.types-errors.test.ts": BOTH,
+    "test/postgres/pglite-durability.test.ts": BOTH,
+    "token-indexer/test/mip0018-api-errors-pglite.test.ts": BOTH,
     // Crash runs.
     "test/integration/crash/crash-harness.smoke.test.ts": CRASH,
     "test/integration/crash/cursor-durability.crash.test.ts": CRASH,
@@ -116,10 +124,6 @@ export const POSTGRESQL_ONLY: {
     "mip0018.scan.cli": {
       file: "token-indexer/test/mip0018-scan.test.ts",
       reason: "the scan CLI opens its database from PG_URL (a PostgreSQL server)",
-    },
-    "mip0018.vectors.pg-runner-cli": {
-      file: "token-indexer/test/mip0018-vectors-pg.test.ts",
-      reason: "the vector adapter runs as a child process that opens its database from PG_URL (a PostgreSQL server); the same 110 requests through the same consumer run on PGlite in [[mip0018.vectors.pg-adapter]]",
     },
     "archive.sync.resume-kill-identical": {
       file: "test/integration/chain-archive-sync-range.integration.test.ts",
