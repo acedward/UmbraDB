@@ -127,7 +127,7 @@ describe("browser engine worker in Chrome", () => {
   }
 
   beforeAll(async () => {
-    if (browserExe === undefined) throw new Error("no Chromium/Chrome found: set MIP0018_UI_BROWSER or CHROME_BIN (see ui/README.md)");
+    if (browserExe === undefined) throw new Error("no Chromium/Chrome found: set MIP0018_UI_BROWSER or CHROME_BIN (see token-indexer/mip0018/ui/README.md)");
     out = mkdtempSync(join(tmpdir(), "umbradb-browser-build-"));
     const err = await buildError({ configFile: CONFIG, build: { outDir: out, emptyOutDir: true } });
     if (err !== undefined) throw new Error(`the browser build failed: ${err}`);
