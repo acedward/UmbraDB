@@ -15,7 +15,9 @@ import { loadTapeByName } from "./stagenet-fixtures.js";
  *
  * The answers come from the runtime-neutral tape replay (`chain-archive-sync/tape-replay.ts`), the
  * same core that `createTapeFetch` puts behind a `fetch`-shaped function: this file only carries
- * requests and answers over `node:http`. The options are the replay's: the reported finalized
+ * requests and answers over `node:http` (`startFakeChain`) and hands out the replay's core and its
+ * `fetch` transport under the fake chain's names (`createFakeChainAnswers`, `fakeChainFetch`, with no
+ * socket at all). The options are the replay's: the reported finalized
  * height (fixed, set by hand, or rising with a clock), the recorded `contractEvents` answers, and the
  * test seams (per-height indexer overrides, a per-response delay, throttling injection, request
  * counters).
