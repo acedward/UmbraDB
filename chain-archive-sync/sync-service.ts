@@ -165,6 +165,9 @@ export interface SyncOnceResult {
   /** `min(node finalized head, indexer tip)`; `undefined` when the call returned before asking
    *  (the configured `endHeight` was already reached). */
   targetTipHeight: number | undefined;
+  /** The node's finalized height and the indexer's tip that `targetTipHeight` is the lower of (`undefined` likewise). */
+  nodeFinalizedHeight: number | undefined;
+  indexerTipHeight: number | undefined;
   /** The cursor after this call has reached the configured `endHeight`. */
   reachedEnd: boolean;
   /** Network calls retried after a retryable failure, and how many of those were 429/403. */
@@ -327,7 +330,10 @@ export class ChainArchiveSyncService {
     const { start: startHeight, archiveStart } = this.resolveStart(cursor);
     const synced = cursor?.height;
     if (this.endHeight !== undefined && startHeight > this.endHeight) {
-      return finish({ ingestedBlocks: 0, fromHeight: undefined, toHeight: undefined, targetTipHeight: undefined, reachedEnd: true });
+      return finish({
+        ingestedBlocks: 0, fromHeight: undefined, toHeight: undefined, targetTipHeight: undefined,
+        nodeFinalizedHeight: undefined, indexerTipHeight: undefined, reachedEnd: true,
+      });
     }
 
     const finalizedHash = await this.retry("chain_getFinalizedHead", () => this.node.getFinalizedHead());
@@ -352,7 +358,10 @@ export class ChainArchiveSyncService {
           WHERE kind = 'chain_archive' AND key = ${this.watermarkKey()}
         `;
       }
-      return finish({ ingestedBlocks: 0, fromHeight: undefined, toHeight: undefined, targetTipHeight, reachedEnd: false });
+      return finish({
+        ingestedBlocks: 0, fromHeight: undefined, toHeight: undefined, targetTipHeight, nodeFinalizedHeight, indexerTipHeight,
+        reachedEnd: false,
+      });
     }
     const endHeight = Math.min(
       targetTipHeight, startHeight + maxBlocks - 1, this.endHeight ?? Number.MAX_SAFE_INTEGER,
@@ -382,7 +391,7 @@ export class ChainArchiveSyncService {
       }
     }
     return finish({
-      ingestedBlocks: ingested, fromHeight: startHeight, toHeight: endHeight, targetTipHeight,
+      ingestedBlocks: ingested, fromHeight: startHeight, toHeight: endHeight, targetTipHeight, nodeFinalizedHeight, indexerTipHeight,
       reachedEnd: this.endHeight !== undefined && endHeight >= this.endHeight,
     });
   }
