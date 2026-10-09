@@ -17,7 +17,7 @@ material live with the API/contract-docs change (G4) and `SECURITY.md` (G15).
 
 | Setting | Required value | How UmbraDB treats a bad value | Enforcement |
 |---|---|---|---|
-| `fsync` | `on` | `runMigrations` **rejects** with `DurabilityContractError` | **Probe-enforced** (refuse on `off`) |
+| `fsync` | `on` | `runMigrations` **rejects** with `DurabilityContractError` | **Probe-enforced** (refuse on `off`; on PGlite only, a client in the non-durable mode accepts it — §1a) |
 | `full_page_writes` | `on` | `runMigrations` **rejects** with `DurabilityContractError`, unless the operator opts out | **Probe-enforced** (refuse on `off`; overridable) |
 | `synchronous_commit` | `on` / `local` / `remote_write` / `remote_apply` | `off` → **lost-tail warning**, never a refusal | **Probe-warned** (never refused) |
 | transaction pooling | session-mode only | a transaction pooler → `runMigrations` **rejects** with `TransactionPoolerDetectedError` | **Probe-enforced** (detected + refused) |
@@ -33,7 +33,23 @@ material live with the API/contract-docs change (G4) and `SECURITY.md` (G15).
 loss can leave the database **arbitrarily corrupted** — not merely missing a recent tail. UmbraDB's
 whole durability model assumes a crash leaves a consistent (if slightly stale) database, so this is a
 hard violation: `probeDurability` throws `DurabilityContractError` and `runMigrations` rejects before
-running any migration. There is no override.
+running any migration. There is no override on PostgreSQL.
+
+## 1a. The PGlite client's non-durable mode
+
+The PGlite client (`src/postgres/pglite-sql.ts`, for PGlite in Node or in a browser worker) has a
+durability mode, `durability: "durable" | "non-durable"`, default `non-durable`. PGlite runs with
+`fsync=off` by default, and there the database is a rebuildable cache of public chain data: an OS or
+browser crash can lose or corrupt it, and it is rebuilt from the chain or a snapshot. A
+`non-durable` client accepts `fsync=off` by that configuration: the probe returns it as a
+`DurabilityWarning` with `kind: "non-durable"` (surfaced through `onDurabilityWarning`) instead of
+refusing, and the token indexer's `/v1/status` reports `"durability": "non-durable"`.
+
+The mode travels on the client (`durabilityModeOf(sql)`), not in `runMigrations`'s options, and the
+probe accepts it only when the server identifies itself as PGlite (`version()`); on any other server
+`fsync=off` is refused as in §1, with a second violation (`durability=non-durable`) naming why. A
+PostgreSQL client (`createClient`) is always `durable`. A `durable` PGlite client keeps §1's rule, so
+its PGlite must run with `fsync` on (`openPgliteClient` starts it so).
 
 ## 2. `full_page_writes = on` — probe-enforced (overridable)
 

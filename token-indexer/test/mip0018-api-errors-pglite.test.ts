@@ -5,8 +5,9 @@
  * PGlite has (a closed database, the wait for its single session) are answered 503 too, and the cause goes to the log
  * only.
  *
- * The PGlite database is in memory and started without PGlite's `-F` start parameter (`fsync=on`), so the migrations
- * run under the PostgreSQL durability rule on both backends.
+ * The PGlite database is in memory and started without PGlite's `-F` start parameter (`fsync=on`); its clients are
+ * `durable`, so the migrations run under the PostgreSQL durability rule and `/v1/status` reports `durable` on both
+ * backends. The last test shows what a `non-durable` client reports.
  */
 import { PGlite } from "@electric-sql/pglite";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -53,7 +54,7 @@ describe("MIP-0018 API on the PGlite client: the same answers and error answers 
     pglite = await PGlite.create({ startParams: PGlite.defaultStartParams.filter((p) => p !== "-F") });
     backends.push(
       { name: "postgres", sql: createClient({ connectionString: container.getConnectionUri(), schema: MIP }) },
-      { name: "pglite", sql: createPgliteClient({ pglite, schema: MIP }) },
+      { name: "pglite", sql: createPgliteClient({ pglite, schema: MIP, durability: "durable" }) },
     );
     for (const b of backends) {
       await bootstrapChainArchiveSchema(b.sql, ARCHIVE);
@@ -82,7 +83,7 @@ describe("MIP-0018 API on the PGlite client: the same answers and error answers 
   it("a database that cannot be read answers 503 UNAVAILABLE identically on both backends, the cause in the log only: an ended client, a missing schema", async () => {
     const ended = [
       createClient({ connectionString: container.getConnectionUri(), schema: MIP }),
-      createPgliteClient({ pglite, schema: MIP }),
+      createPgliteClient({ pglite, schema: MIP, durability: "durable" }),
     ];
     const answers: ApiResponse[][] = [];
     const logs: string[][] = [];
@@ -141,5 +142,22 @@ describe("MIP-0018 API on the PGlite client: the same answers and error answers 
     expect([r.status, JSON.parse(r.body)]).toEqual([500, { error: { code: "INTERNAL", message: "internal error" } }]);
     // The index still answers once the session is free.
     expect((await handler(backends[1]!.sql).handle("GET", "/v1/status")).status).toBe(200);
+  });
+
+  it("/v1/status reports the durability mode: durable on PostgreSQL and for a durable PGlite client, non-durable for a PGlite client in the default mode; the handler option overrides it; anything else is refused", async () => {
+    const st = async (sql: UmbraDBSql, opts: Partial<Mip0018HandlerOptions> = {}): Promise<unknown> =>
+      (JSON.parse((await handler(sql, opts).handle("GET", "/v1/status")).body) as { durability: unknown }).durability;
+    expect(await st(backends[0]!.sql)).toBe("durable");
+    expect(await st(backends[1]!.sql)).toBe("durable");
+    const nonDurable = createPgliteClient({ pglite, schema: MIP });
+    extra.push(nonDurable);
+    expect(await st(nonDurable)).toBe("non-durable");
+    expect(await st(backends[0]!.sql, { durability: "non-durable" })).toBe("non-durable");
+    const [a, b] = await Promise.all([handler(backends[1]!.sql).handle("GET", "/v1/status"), handler(nonDurable).handle("GET", "/v1/status")]);
+    const { durability: _a, ...restA } = JSON.parse(a.body) as Record<string, unknown>;
+    const { durability: _b, ...restB } = JSON.parse(b.body) as Record<string, unknown>;
+    expect(restB).toEqual(restA);
+    expect(Object.keys(JSON.parse(b.body) as object).at(-1)).toBe("durability");
+    expect(() => handler(nonDurable, { durability: "fast" as never })).toThrow(RangeError);
   });
 });

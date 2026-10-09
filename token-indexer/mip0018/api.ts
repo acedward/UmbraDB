@@ -23,6 +23,7 @@
  * - Runtime-neutral: it imports no Node built-in and reads no Node global; the host injects the `Sql` and the log.
  */
 import type { UmbraDBSql } from "../../src/postgres/client.js";
+import { type DurabilityMode, durabilityModeOf } from "../../src/postgres/durability-probe.js";
 import {
   type ActivityOptions,
   contractActivity,
@@ -80,6 +81,8 @@ export interface Mip0018HandlerOptions {
   log?: (line: string) => void;
   /** Requests admitted at once (default {@link DEFAULT_MAX_CONCURRENT_REQUESTS}); more are answered 503 `BUSY`. */
   maxConcurrentRequests?: number;
+  /** Durability mode reported by `/v1/status` (default: the mode `sql` was created with, `durabilityModeOf`). */
+  durability?: DurabilityMode;
 }
 
 /** One answer of the API, as an HTTP response writes it. */
@@ -208,6 +211,8 @@ export function createMip0018Handler(opts: Mip0018HandlerOptions): Mip0018Handle
   const archiveSchema = opts.archiveSchema ?? DEFAULT_SCHEMAS.archiveSchema;
   const genesis = opts.genesisHash !== undefined ? opts.genesisHash : (KNOWN_GENESIS[opts.network] ?? null);
   const log = opts.log ?? ((line: string) => console.error(line));
+  const durability = opts.durability ?? durabilityModeOf(opts.sql);
+  if (durability !== "durable" && durability !== "non-durable") throw new RangeError(`durability must be "durable" or "non-durable", got ${String(durability)}`);
   const maxConcurrent = opts.maxConcurrentRequests ?? DEFAULT_MAX_CONCURRENT_REQUESTS;
   if (!Number.isSafeInteger(maxConcurrent) || maxConcurrent < 1) throw new RangeError(`maxConcurrentRequests must be a positive integer, got ${maxConcurrent}`);
   let inFlight = 0;
@@ -261,7 +266,7 @@ export function createMip0018Handler(opts: Mip0018HandlerOptions): Mip0018Handle
   function resolve(s: readonly string[]): Route {
     const [a, b, c, d] = s;
     if (a === "status" && s.length === 1)
-      return { params: [], run: (ctx) => status(ctx, genesis, opts.scannerState?.() ?? "off") };
+      return { params: [], run: (ctx) => status(ctx, genesis, opts.scannerState?.() ?? "off", durability) };
     if (a === "tokens" && s.length === 1)
       return {
         params: ["limit", "cursor"],

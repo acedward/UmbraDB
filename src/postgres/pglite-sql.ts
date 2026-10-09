@@ -34,9 +34,14 @@
  * Each client has a schema and makes it the session's `search_path` before its statement, transaction or reservation
  * whenever the session last ran with another one. `RESET search_path`, `RESET ALL` and `DISCARD ALL` run on a handle
  * return the session to the client's schema, as they return a postgres.js connection to its startup `search_path`.
+ *
+ * Each client also has a durability mode (`durability`, default `non-durable`), carried as `umbradbDurability` and read
+ * by the durability probe (`durabilityModeOf`): PGlite runs with `fsync=off` by default, which a `non-durable` client
+ * accepts by configuration; a `durable` client keeps the PostgreSQL rule, so `fsync` must be on.
  */
 import type { PGliteOptions } from "@electric-sql/pglite";
 import type { UmbraDBSql } from "./client.js";
+import type { DurabilityMode } from "./durability-probe.js";
 import { DEFAULT_SCHEMA, assertValidSchemaName } from "./schema-name.js";
 
 // ── PGlite surface ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -92,12 +97,16 @@ export interface PgliteClientOptions {
   deadlockTimeoutMs?: number;
   /** Close the database when this client ends. Default false: the database belongs to whoever created it. */
   closeOnEnd?: boolean;
+  /** The durability mode: `non-durable` (default) accepts PGlite's `fsync=off` by configuration; `durable` keeps the
+   *  PostgreSQL rule that refuses it. Read by the durability probe and reported by the API's `/v1/status`. */
+  durability?: DurabilityMode;
 }
 
 export interface OpenPgliteClientOptions extends Omit<PgliteClientOptions, "pglite" | "closeOnEnd"> {
   /** PGlite data directory (`memory://…`, `opfs-ahp://…`, `idb://…` or a file path); omitted means in memory. */
   dataDir?: string;
-  /** Other options for `PGlite.create`. */
+  /** Other options for `PGlite.create`. Without `startParams`, a `durable` client starts PGlite without its `-F` start
+   *  parameter, so `fsync` is on; a `non-durable` one with PGlite's defaults (`fsync` off). */
   pgliteOptions?: PGliteOptions;
 }
 
@@ -772,6 +781,7 @@ interface ClientState {
   readonly debug: PgliteStatementHook | undefined;
   readonly deadlockTimeoutMs: number;
   readonly closeOnEnd: boolean;
+  readonly durability: DurabilityMode;
   readonly pending: Set<Promise<unknown>>;
   /** Set one tick after `end()` is called (as postgres.js does): statements handled before then still run. */
   ended: boolean;
@@ -1025,6 +1035,7 @@ function makeClient(state: ClientState, db: PgliteDatabase): UmbraDBSql {
   sql.END = sql.CLOSE;
 
   Object.defineProperty(sql, "umbradbSchema", { value: state.schema, enumerable: false, writable: false });
+  Object.defineProperty(sql, "umbradbDurability", { value: state.durability, enumerable: false, writable: false });
   return sql as unknown as UmbraDBSql;
 }
 
@@ -1038,6 +1049,9 @@ export function createPgliteClient(opts: PgliteClientOptions): UmbraDBSql {
   const deadlockTimeoutMs = opts.deadlockTimeoutMs ?? DEFAULT_DEADLOCK_TIMEOUT_MS;
   if (!Number.isSafeInteger(deadlockTimeoutMs) || deadlockTimeoutMs <= 0)
     throw new RangeError(`deadlockTimeoutMs must be a positive integer number of milliseconds, got ${deadlockTimeoutMs}`);
+  const durability = opts.durability ?? "non-durable";
+  if (durability !== "durable" && durability !== "non-durable")
+    throw new RangeError(`durability must be "durable" or "non-durable", got ${String(durability)}`);
   const state: ClientState = {
     id: nextClientId++,
     session: sessionOf(opts.pglite),
@@ -1047,6 +1061,7 @@ export function createPgliteClient(opts: PgliteClientOptions): UmbraDBSql {
     debug: opts.debug,
     deadlockTimeoutMs,
     closeOnEnd: opts.closeOnEnd ?? false,
+    durability,
     pending: new Set(),
     ended: false,
     ending: undefined,
@@ -1054,10 +1069,19 @@ export function createPgliteClient(opts: PgliteClientOptions): UmbraDBSql {
   return makeClient(state, opts.pglite);
 }
 
-/** Opens a PGlite database (in memory unless `dataDir` is given) and a client that closes it when it ends. */
+/** Opens a PGlite database (in memory unless `dataDir` is given) and a client that closes it when it ends. A `durable`
+ *  client's database starts with `fsync` on (unless `pgliteOptions.startParams` says otherwise). */
 export async function openPgliteClient(opts: OpenPgliteClientOptions = {}): Promise<UmbraDBSql> {
   const { PGlite } = await import("@electric-sql/pglite");
   const { dataDir, pgliteOptions, ...client } = opts;
-  const pglite = await PGlite.create(dataDir, pgliteOptions);
-  return createPgliteClient({ ...client, pglite, closeOnEnd: true });
+  const options: PGliteOptions = { ...pgliteOptions };
+  if (client.durability === "durable" && options.startParams === undefined)
+    options.startParams = PGlite.defaultStartParams.filter((p) => p !== "-F");
+  const pglite = await PGlite.create(dataDir, options);
+  try {
+    return createPgliteClient({ ...client, pglite, closeOnEnd: true });
+  } catch (error) {
+    await pglite.close();
+    throw error;
+  }
 }
