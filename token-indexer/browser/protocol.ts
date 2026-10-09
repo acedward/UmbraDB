@@ -28,8 +28,8 @@
 import { z } from "zod";
 import type { ApiResponse } from "../mip0018/api.ts";
 import type { EngineStatus } from "../engine/engine.ts";
-import type { SyncCursor } from "../../chain-archive-sync/sync-service.js";
-import type { ScanCursor } from "../mip0018/scan.ts";
+import type { SyncCursor, SyncOnceResult } from "../../chain-archive-sync/sync-service.js";
+import type { ScanCursor, ScanOnceResult } from "../mip0018/scan.ts";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -333,7 +333,18 @@ export function parseResult<T extends RequestType>(type: T, result: unknown): { 
 
 /** Compiles only when every value of type `Sent` passes the schema `S` (what the worker sends is what the page accepts). */
 const accepts = <S extends z.ZodType, Sent extends z.input<S>>(): void => {};
+/** Compiles only when `Sent` has no key the strict schema `S` lacks (a new engine field must be added to the schema). */
+const noExtraKeys = <S extends z.ZodType, Sent>(..._: [Exclude<keyof Sent, keyof z.input<S>>] extends [never] ? [] : [never]): void => {};
 accepts<typeof ApiResultSchema, ApiResponse>();
 accepts<typeof EngineStatusSchema, EngineStatus>();
 accepts<typeof SyncCursorSchema, SyncCursor>();
 accepts<typeof ScanCursorSchema, ScanCursor>();
+noExtraKeys<typeof ApiResultSchema, ApiResponse>();
+noExtraKeys<typeof EngineStatusSchema, EngineStatus>();
+noExtraKeys<typeof EngineStatusSchema.shape.sync, EngineStatus["sync"]>();
+noExtraKeys<typeof EngineStatusSchema.shape.scan, EngineStatus["scan"]>();
+noExtraKeys<typeof EngineStatusSchema.shape.api, EngineStatus["api"]>();
+noExtraKeys<typeof SyncOnceResultSchema, SyncOnceResult>();
+noExtraKeys<typeof ScanOnceResultSchema, ScanOnceResult>();
+noExtraKeys<typeof SyncCursorSchema, SyncCursor>();
+noExtraKeys<typeof ScanCursorSchema, ScanCursor>();
