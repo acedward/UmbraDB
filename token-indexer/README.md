@@ -46,6 +46,11 @@ Postgres schema mip0018            mints (color table), color sightings, contrac
 read-only JSON API (api.ts)  ──►  explorer page GET /ui (ui/)
 ```
 
+The sync loop, the scan loop and the API run in one engine (`engine/engine.ts`) built only from injected parts: the
+database client, `fetch`, a clock, a scheduler for the loops' steps and an event listener that receives every log line.
+`sync-cli.ts`, `scan-cli.ts` and `serve-cli.ts` are Node wrappers over it (arguments, signals, the Postgres client,
+`node:http`, their own log formats); the engine itself uses no Node API, so a browser worker can host it too.
+
 Everything a block adds commits in one Postgres transaction with the scan cursor, so a kill at any point resumes
 without a gap or a duplicate; `removeAbove(height)` deletes the rows above a height and recomputes the fields from
 the stored events (the MIP's reorganization rule; the indexer itself follows finalized blocks only).
@@ -117,13 +122,19 @@ network: Stagenet data comes from recorded fixtures.
 | Recorded live range = replay | `test/mip0018-live-range.test.ts` |
 | Conformance table and the no-network check | `test/mip0018-conformance.test.ts` |
 | API and page | `test/mip0018-api.test.ts`, `test/mip0018-ui-*.test.ts` |
+| The engine: sync, scan and API from injected parts (a `fetch` over the recorded tapes, a manual clock) | `test/engine.test.ts` |
 
 Fixtures:
 
 - `../test/integration/fixtures/stagenet-archive/` — recorded Stagenet blocks 714485–715183 and 715402–715433
   (node + indexer answers, brotli tapes, 935 KB), the indexer's `contractEvents` for the cross-check, the case index;
-  `manifest.json` holds the source endpoints, genesis hash and SHA-256 of every file. The fake chain server replays them
-  over HTTP to the unchanged sync service.
+  `manifest.json` holds the source endpoints, genesis hash and SHA-256 of every file. The tape replay
+  (`../chain-archive-sync/tape-replay.ts`, no Node API) answers the unchanged sync service's node and indexer calls from
+  them: as a `fetch`-shaped function handed to the clients (no server; any runtime), or through the fake chain server
+  over HTTP. Its reported finalized height can rise with a clock, for a sync that follows the tip.
+- `browser/tapes/` — gzip copies of the two range tapes for browsers (Chrome's `DecompressionStream` reads gzip, not
+  brotli), each decoding to exactly the JSON text of its brotli source; `manifest.json` records their sizes and SHA-256
+  and their sources' SHA-256 (written by `dev/browser-tapes.ts`).
 - `test/fixtures/mip0018-cases/` — the reference's case expectations, copied verbatim (SHA-256 checked) plus
   UmbraDB's own per-key expectations for C06's steps after the tombstone (the reference files are written for MIP
   `78ecbb4`, where a Null record withdraws the whole identity).

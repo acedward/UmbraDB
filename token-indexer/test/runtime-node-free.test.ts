@@ -1,6 +1,7 @@
 /**
- * The runtime modules — what the archive sync, the MIP-0018 scan, the API and the migrations run — use no Node API, so
- * the same modules serve the Node build and the browser build. A static scan of the sources, three rules per file:
+ * The runtime modules — what the engine, the archive sync, the MIP-0018 scan, the API and the migrations run — use no
+ * Node API, so the same modules serve the Node build and the browser build. A static scan of the sources, three rules
+ * per file:
  *
  * 1. no `node:*` or Node built-in module specifier (`fs`, `crypto`, …) in an import, a re-export, an `import()`, a
  *    `require()` or an import type;
@@ -22,8 +23,9 @@ import { describe, expect, it } from "vitest";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
-/** Entry modules of the runtime: the archive sync, the scan, the API, the event listing and the migrations. */
+/** Entry modules of the runtime: the engine, the archive sync, the scan, the API, the event listing and the migrations. */
 const RUNTIME_ROOTS = [
+  "token-indexer/engine/engine.ts",
   "chain-archive-sync/sync-service.ts",
   "chain-archive-sync/bootstrap.ts",
   "chain-archive-sync/retry.ts",
@@ -37,7 +39,7 @@ const RUNTIME_ROOTS = [
 ];
 
 /** Directories whose every module (tests and fixtures aside) is runtime code unless listed in {@link NODE_ONLY}. */
-const RUNTIME_DIRS = ["chain-archive-sync", "token-indexer/mip0018"];
+const RUNTIME_DIRS = ["chain-archive-sync", "token-indexer/engine", "token-indexer/mip0018"];
 
 /** Node tooling inside {@link RUNTIME_DIRS}: never scanned, and never imported by a runtime module. */
 const NODE_ONLY: Record<string, string> = {
