@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UmbraDB engine</title>
+  <style>
+    body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; }
+    #phase { font-weight: 600; }
+    #status { white-space: pre-wrap; font: 12px/1.35 ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <h1>UmbraDB engine</h1>
+  <p>Boot: <span id="phase">loading</span></p>
+  <p id="message" hidden></p>
+  <pre id="status"></pre>
+  <script type="module" src="./engine-page.ts"></script>
+</body>
+</html>

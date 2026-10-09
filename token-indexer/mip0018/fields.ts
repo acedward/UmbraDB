@@ -34,7 +34,7 @@
  *   withdrawal costs at most the rows its identity's current description added.
  */
 import type { ISql } from "postgres";
-import { assertValidSchemaName } from "../../src/postgres/client.js";
+import { assertValidSchemaName } from "../../src/postgres/schema-name.js";
 import { classifyEvent, NAME_SIZE, PAYLOAD_SIZE, zeroExtend } from "../vendor/mip0018/codec/src/index.ts";
 import { bytesEqual, hexToBytes } from "./bytes.ts";
 import { ChainOrderError, type ChainPosition, recordEffects } from "./state.ts";

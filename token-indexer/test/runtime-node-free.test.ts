@@ -23,9 +23,12 @@ import { describe, expect, it } from "vitest";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
-/** Entry modules of the runtime: the engine, the archive sync, the scan, the API, the event listing and the migrations. */
+/** Entry modules of the runtime: the engine, the archive sync, the scan, the API, the event listing, the migrations and
+ *  the browser build's worker and page. */
 const RUNTIME_ROOTS = [
   "token-indexer/engine/engine.ts",
+  "token-indexer/browser/worker.ts",
+  "token-indexer/browser/engine-page.ts",
   "chain-archive-sync/sync-service.ts",
   "chain-archive-sync/bootstrap.ts",
   "chain-archive-sync/retry.ts",
@@ -39,12 +42,14 @@ const RUNTIME_ROOTS = [
 ];
 
 /** Directories whose every module (tests and fixtures aside) is runtime code unless listed in {@link NODE_ONLY}. */
-const RUNTIME_DIRS = ["chain-archive-sync", "token-indexer/engine", "token-indexer/mip0018"];
+const RUNTIME_DIRS = ["chain-archive-sync", "token-indexer/browser", "token-indexer/engine", "token-indexer/mip0018"];
 
 /** Node tooling inside {@link RUNTIME_DIRS}: never scanned, and never imported by a runtime module. */
 const NODE_ONLY: Record<string, string> = {
   "chain-archive-sync/sync-cli.ts": "command-line entry point (arguments, signals, exit codes)",
   "chain-archive-sync/tx-replay-decoder.ts": "test-only decoder that loads a ledger build from a wallet checkout on disk",
+  "token-indexer/browser/vite.config.ts": "the browser build's Vite configuration, run by Node",
+  "token-indexer/browser/build-guard.ts": "a Vite plugin of the browser build, run by Node",
   "token-indexer/mip0018/scan-cli.ts": "command-line entry point (arguments, signals, exit codes)",
   "token-indexer/mip0018/serve-cli.ts": "command-line entry point that starts the node:http server",
   "token-indexer/mip0018/api-node.ts": "serves the runtime-neutral API handler (api.ts) over node:http",
@@ -73,6 +78,11 @@ const MUST_REACH = [
   "token-indexer/mip0018/bytes.ts",
   "token-indexer/vendor/mip0018/codec/src/index.ts",
   "wallet-monitor/log.ts",
+  "src/postgres/pglite-sql.ts",
+  "src/postgres/schema-name.ts",
+  "chain-archive-sync/archive-tape.ts",
+  "chain-archive-sync/tape-replay.ts",
+  "token-indexer/browser/host.ts",
 ];
 
 const rel = (abs: string): string => path.relative(ROOT, abs).split(path.sep).join("/");
@@ -218,6 +228,15 @@ describe("runtime modules use no Node API", () => {
       expect(usesOf(path.join(ROOT, m)), `${m} no longer uses a Node API: remove it from PENDING`).not.toEqual([]);
     }
   }, 120_000);
+
+  it("the browser build's worker and page never load the PostgreSQL client (postgres.js), not even through a dynamic import", () => {
+    const browser = runtimeClosure(["token-indexer/browser/worker.ts", "token-indexer/browser/engine-page.ts"]);
+    expect(browser.unresolved).toEqual([]);
+    const reached = [...browser.files].map(rel);
+    expect(reached).toContain("src/postgres/migrate.ts");
+    expect(reached).toContain("token-indexer/mip0018/scan.ts");
+    expect(reached).not.toContain("src/postgres/client.ts");
+  });
 
   it("Node tooling exists and no runtime module imports it", () => {
     const reached = new Set([...closure.files].map(rel));

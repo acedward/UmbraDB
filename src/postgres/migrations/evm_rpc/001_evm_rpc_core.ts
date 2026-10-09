@@ -1,5 +1,5 @@
 import type { ISql } from "postgres";
-import { assertValidSchemaName } from "../../client.js";
+import { assertValidSchemaName } from "../../schema-name.js";
 
 export const name = "001_evm_rpc_core";
 

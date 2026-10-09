@@ -1,5 +1,5 @@
 import type { ISql } from "postgres";
-import { assertValidSchemaName } from "../../client.js";
+import { assertValidSchemaName } from "../../schema-name.js";
 
 /**
  * Per-segment transaction outcomes in the chain archive.
