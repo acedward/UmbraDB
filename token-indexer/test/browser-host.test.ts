@@ -284,7 +284,7 @@ describe("browser capability check", () => {
       files,
       navigator: {
         userAgentData: { brands: over.brands ?? [{ brand: "Chromium", version: "153" }, { brand: "Google Chrome", version: "153" }, { brand: "Not.A/Brand", version: "99" }] },
-        ...(over.storage === false ? {} : { storage: { getDirectory: async () => root, ...(over.persist === false ? {} : { persist: async () => true }) } }),
+        ...(over.storage === false ? {} : { storage: { getDirectory: async () => root, ...(over.persist === false ? {} : { persisted: async () => false }) } }),
         ...(over.locks === false ? {} : { locks: {} }),
       },
       ...(over.bc === false ? {} : { BroadcastChannel: class {} }),

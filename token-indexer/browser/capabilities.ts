@@ -2,8 +2,9 @@
  * The browser engine's capability check, run in the worker before anything else: the engine needs a Chromium browser
  * (Google Chrome, desktop) with the Origin Private File System and its synchronous access handles (PGlite's `opfs-ahp`
  * store; Chrome exposes them in dedicated workers only), Web Locks and BroadcastChannel (one engine across tabs) and
- * persistent storage (`navigator.storage.persist`). When any is missing the worker reports the check and starts
- * nothing: no store is opened and no engine runs.
+ * persistent storage. `navigator.storage.persist()`, which asks for it, exists only in a window, so the worker checks
+ * its counterpart `navigator.storage.persisted()`, part of the same API. When any is missing the worker reports the
+ * check and starts nothing: no store is opened and no engine runs.
  *
  * The sync access handle check opens a real one on a probe file in the OPFS root (then closes and removes it), so a
  * browser that declares the API but refuses it (for example a private window that blocks OPFS) is refused too.
@@ -14,7 +15,7 @@ import type { CapabilityReport } from "./protocol.ts";
 export interface CapabilityEnvironment {
   navigator?: {
     userAgentData?: { brands?: ReadonlyArray<{ brand: string; version: string }> };
-    storage?: { getDirectory?: () => Promise<OpfsDirectory>; persist?: unknown };
+    storage?: { getDirectory?: () => Promise<OpfsDirectory>; persisted?: unknown };
     locks?: unknown;
   };
   BroadcastChannel?: unknown;
@@ -36,7 +37,7 @@ const NEEDS: Record<Check, string> = {
   syncAccessHandle: "OPFS sync access handles in a worker",
   webLocks: "Web Locks",
   broadcastChannel: "BroadcastChannel",
-  persistentStorage: "persistent storage (navigator.storage.persist)",
+  persistentStorage: "persistent storage (navigator.storage.persisted)",
 };
 
 /** The browser's brand and major version, preferring Google Chrome, then Chromium. */
@@ -81,7 +82,7 @@ export async function checkCapabilities(env: CapabilityEnvironment = globalThis 
     syncAccessHandle: root !== undefined && declared && (await probeSyncAccessHandle(root)),
     webLocks: typeof nav?.locks === "object" && nav.locks !== null,
     broadcastChannel: typeof env.BroadcastChannel === "function",
-    persistentStorage: typeof nav?.storage?.persist === "function",
+    persistentStorage: typeof nav?.storage?.persisted === "function",
   };
   const missing = (Object.keys(checks) as Check[]).filter((k) => !checks[k]);
   const message = missing.length === 0
