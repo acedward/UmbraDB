@@ -128,8 +128,13 @@ Fixtures:
 
 - `../test/integration/fixtures/stagenet-archive/` — recorded Stagenet blocks 714485–715183 and 715402–715433
   (node + indexer answers, brotli tapes, 935 KB), the indexer's `contractEvents` for the cross-check, the case index;
-  `manifest.json` holds the source endpoints, genesis hash and SHA-256 of every file. The fake chain server replays them
-  over HTTP to the unchanged sync service.
+  `manifest.json` holds the source endpoints, genesis hash and SHA-256 of every file. The tape replay
+  (`../chain-archive-sync/tape-replay.ts`, no Node API) answers the unchanged sync service's node and indexer calls from
+  them: as a `fetch`-shaped function handed to the clients (no server; any runtime), or through the fake chain server
+  over HTTP. Its reported finalized height can rise with a clock, for a sync that follows the tip.
+- `browser/tapes/` — gzip copies of the two range tapes for browsers (Chrome's `DecompressionStream` reads gzip, not
+  brotli), each decoding to exactly the JSON text of its brotli source; `manifest.json` records their sizes and SHA-256
+  and their sources' SHA-256 (written by `dev/browser-tapes.ts`).
 - `test/fixtures/mip0018-cases/` — the reference's case expectations, copied verbatim (SHA-256 checked) plus
   UmbraDB's own per-key expectations for C06's steps after the tombstone (the reference files are written for MIP
   `78ecbb4`, where a Null record withdraws the whole identity).
