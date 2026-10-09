@@ -69,7 +69,10 @@ export type EngineStepKind = "sync" | "scan";
 /**
  * Runs one step of a background loop and returns its result. The default runs it at once. A scheduler may delay a
  * step (for example while API requests are waiting for a single database session) and may time it; it must run each
- * step exactly once and pass its result or error through. API requests never go through it.
+ * step exactly once and pass its result or error through. API requests never go through it. When the database and
+ * `fetch` answer without I/O (an in-memory or in-worker database, a fetch answered in process), the loops never give
+ * the event loop a turn by themselves: such a host's scheduler yields to it before each step, or timers and incoming
+ * messages wait until the loops are idle.
  */
 export type EngineScheduler = <T>(kind: EngineStepKind, step: () => Promise<T>) => Promise<T>;
 
