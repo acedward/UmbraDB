@@ -14,11 +14,12 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { Server } from "node:http";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { onPostgresql } from "../../test/helpers/postgresql-only.ts";
+import { openTestDatabase, type TestDatabase } from "../../test/helpers/test-database.ts";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { type ArchiveTape, startFakeChain } from "../../test/integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadCaseIndex, loadManifest, loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
 import { createMip0018Handler, DEFAULT_MAX_CONCURRENT_REQUESTS, type Mip0018Handler, type Mip0018HandlerOptions, toAsciiJson } from "../mip0018/api.ts";
@@ -153,7 +154,7 @@ function call(address: string, logs: SynthLog[], extra: { shieldedMints?: Array<
 const nullAll = (...keys: string[]): MetadataRecord[] => keys.map((k) => record.tombstone(k));
 
 describe("MIP-0018 read-only API", () => {
-  let container: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   const clients: UmbraDBSql[] = [];
   const servers: Server[] = [];
   let counter = 0;
@@ -165,7 +166,7 @@ describe("MIP-0018 read-only API", () => {
     const n = counter++;
     const archive = `${prefix}_arch_${n}`;
     const mip = `${prefix}_mip_${n}`;
-    const sql = createClient({ connectionString: container.getConnectionUri(), schema: mip });
+    const sql = database.client(mip);
     clients.push(sql);
     await bootstrapChainArchiveSchema(sql, archive);
     return { sql, archive, mip };
@@ -206,7 +207,7 @@ describe("MIP-0018 read-only API", () => {
     serveApi(createMip0018Handler({ sql: db.sql, network: NET, schema: db.mip, archiveSchema: db.archive, ...extra }));
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
+    database = await openTestDatabase();
     const db = await fresh("idx");
     await archiveTape(db, loadRangeTape("idx"), 714485, 715183);
     const s = scanner(db);
@@ -221,7 +222,7 @@ describe("MIP-0018 read-only API", () => {
       await new Promise<void>((r) => s.close(() => r()));
     }
     for (const c of clients) await c.end({ timeout: 5 });
-    await container?.stop();
+    await database?.stop();
   }, 60_000);
 
   it("[[mip0018.api.status]] status: network, genesis (= the recorded fixture's), start/indexed/archive heights, MIP pin and vendored commit (= SOURCE.md and the own vectors' manifest), scanner off", async () => {
@@ -1007,7 +1008,7 @@ describe("MIP-0018 read-only API", () => {
     expect([head.status, head.text, Number(head.headers.get("content-length")) > 0]).toEqual([200, "", true]);
     expect((await get(idx.base, "/v1/nope", { method: "HEAD" })).status).toBe(404);
     // The database cannot be read: a generic 503; the cause goes to the server log only.
-    const dead = createClient({ connectionString: container.getConnectionUri(), schema: "idx_mip_0" });
+    const dead = database.client("idx_mip_0");
     await dead.end();
     const logged: string[] = [];
     const base = await startApi({ sql: dead, archive: idx.archive, mip: idx.mip }, { log: (l) => logged.push(l) });
@@ -1065,34 +1066,38 @@ describe("MIP-0018 read-only API", () => {
       await hs.stop();
     }
 
-    // The CLI as a child process, API only, over the IDX schema; default host; SIGTERM → exit 0.
-    const child = spawn(process.execPath, ["--import", "tsx", "token-indexer/mip0018/serve-cli.ts", "--network", NET, "--port", "0", "--api-only", "--schema", idx.mip, "--archive-schema", idx.archive], {
-      cwd: new URL(".", REPO).pathname, env: { ...process.env, PG_URL: container.getConnectionUri() }, stdio: ["ignore", "pipe", "pipe"],
-    });
-    let out = "";
-    let err = "";
-    child.stdout.on("data", (b: Buffer) => (out += b.toString()));
-    child.stderr.on("data", (b: Buffer) => (err += b.toString()));
-    const exited = new Promise<number | null>((r) => child.on("exit", (code) => r(code)));
-    try {
-      for (let i = 0; i < 300 && !out.includes('"listening"'); i++) await new Promise((r) => setTimeout(r, 100));
-      const line = JSON.parse(out.split("\n").find((l) => l.includes('"listening"'))!) as { host: string; port: number; scanner: string };
-      expect([line.host, line.scanner, line.port > 0]).toEqual(["127.0.0.1", "off", true]);
-      const st = await ok(`http://127.0.0.1:${line.port}`, "/v1/status");
-      expect(st).toMatchObject({ indexedHeight: 715183, scanner: "off", genesisHash: KNOWN_GENESIS.stagenet });
-    } finally {
-      child.kill("SIGTERM");
-    }
-    expect(await exited, err).toBe(0);
-    expect(out).toContain('"stopped"');
-
-    await expect(serveMain([], {})).rejects.toThrow(/usage/);
-    await expect(serveMain(["--network", NET, "--port", "70000"], { PG_URL: container.getConnectionUri() })).rejects.toThrow(/--port/);
-    await expect(serveMain(["--network", NET, "--genesis", "abc"], { PG_URL: container.getConnectionUri() })).rejects.toThrow(/--genesis/);
-    // An idle wait of 0 (or below 100 ms) would make the scan loop and its error back-off a hot loop.
-    for (const idle of ["0", "99"])
-      await expect(serveMain(["--network", NET, "--scan-idle-ms", idle], { PG_URL: container.getConnectionUri() })).rejects.toThrow(/--scan-idle-ms must be an integer from 100 to 3600000/);
     await expect(serve({ sql: db.sql, network: NET, schema: db.mip, archiveSchema: db.archive, port: 0, scanIdleMs: 0 })).rejects.toThrow(/scanIdleMs/);
-    await expect(serveMain(["--bogus"], { PG_URL: container.getConnectionUri() })).rejects.toThrow();
+    await expect(serveMain([], {})).rejects.toThrow(/usage/);
+
+    // The CLI opens its database from PG_URL: a PostgreSQL server.
+    if (onPostgresql("serve-cli-process")) {
+      // The CLI as a child process, API only, over the IDX schema; default host; SIGTERM → exit 0.
+      const child = spawn(process.execPath, ["--import", "tsx", "token-indexer/mip0018/serve-cli.ts", "--network", NET, "--port", "0", "--api-only", "--schema", idx.mip, "--archive-schema", idx.archive], {
+        cwd: new URL(".", REPO).pathname, env: { ...process.env, PG_URL: database.connectionUri() }, stdio: ["ignore", "pipe", "pipe"],
+      });
+      let out = "";
+      let err = "";
+      child.stdout.on("data", (b: Buffer) => (out += b.toString()));
+      child.stderr.on("data", (b: Buffer) => (err += b.toString()));
+      const exited = new Promise<number | null>((r) => child.on("exit", (code) => r(code)));
+      try {
+        for (let i = 0; i < 300 && !out.includes('"listening"'); i++) await new Promise((r) => setTimeout(r, 100));
+        const line = JSON.parse(out.split("\n").find((l) => l.includes('"listening"'))!) as { host: string; port: number; scanner: string };
+        expect([line.host, line.scanner, line.port > 0]).toEqual(["127.0.0.1", "off", true]);
+        const st = await ok(`http://127.0.0.1:${line.port}`, "/v1/status");
+        expect(st).toMatchObject({ indexedHeight: 715183, scanner: "off", genesisHash: KNOWN_GENESIS.stagenet });
+      } finally {
+        child.kill("SIGTERM");
+      }
+      expect(await exited, err).toBe(0);
+      expect(out).toContain('"stopped"');
+
+      await expect(serveMain(["--network", NET, "--port", "70000"], { PG_URL: database.connectionUri() })).rejects.toThrow(/--port/);
+      await expect(serveMain(["--network", NET, "--genesis", "abc"], { PG_URL: database.connectionUri() })).rejects.toThrow(/--genesis/);
+      // An idle wait of 0 (or below 100 ms) would make the scan loop and its error back-off a hot loop.
+      for (const idle of ["0", "99"])
+        await expect(serveMain(["--network", NET, "--scan-idle-ms", idle], { PG_URL: database.connectionUri() })).rejects.toThrow(/--scan-idle-ms must be an integer from 100 to 3600000/);
+      await expect(serveMain(["--bogus"], { PG_URL: database.connectionUri() })).rejects.toThrow();
+    }
   }, 180_000);
 });

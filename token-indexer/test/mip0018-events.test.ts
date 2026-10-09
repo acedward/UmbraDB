@@ -10,11 +10,11 @@
  * the accepted and rejected positions are listed below). The C10 payload is MIP Appendix A (A1).
  */
 import { Event, Transaction } from "@midnightntwrk/ledger-v9";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { openTestDatabase, type TestDatabase } from "../../test/helpers/test-database.ts";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { type ArchiveTape, startFakeChain } from "../../test/integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadContractEvents, loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
 import { createMip0018Handler } from "../mip0018/api.ts";
@@ -60,7 +60,7 @@ const V1 = toHex(EVENT_NAME);
 const pos = (e: LoggedEvent): string => `${e.height}/${e.txIndex}/${e.eventIndex}`;
 
 describe("MIP-0018 events from raw transactions", () => {
-  let container: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   const clients: UmbraDBSql[] = [];
   let counter = 0;
   const ranges: Record<string, { sql: UmbraDBSql; mip: string }> = {};
@@ -69,7 +69,7 @@ describe("MIP-0018 events from raw transactions", () => {
     const n = counter++;
     const archive = `${prefix}_arch_${n}`;
     const mip = `${prefix}_mip_${n}`;
-    const sql = createClient({ connectionString: container.getConnectionUri(), schema: mip });
+    const sql = database.client(mip);
     clients.push(sql);
     await bootstrapChainArchiveSchema(sql, archive);
     return { sql, archive, mip };
@@ -95,14 +95,14 @@ describe("MIP-0018 events from raw transactions", () => {
   }
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
+    database = await openTestDatabase();
     await archiveAndScan("idx", loadRangeTape("idx"), 714485, 715183);
     await archiveAndScan("u1", loadRangeTape("u1"), 715402, 715433);
   }, 300_000);
 
   afterAll(async () => {
     for (const c of clients) await c.end({ timeout: 5 });
-    await container?.stop();
+    await database?.stop();
   }, 60_000);
 
   const events = (range: "idx" | "u1", filter: Parameters<typeof listEvents>[2] = {}) =>

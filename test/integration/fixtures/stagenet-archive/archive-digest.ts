@@ -4,7 +4,8 @@ import type { UmbraDBSql } from "../../../../src/postgres/client.js";
 /**
  * What "the same archive" means for the range tests: every `chain_archive` table, every column
  * except the wall-clock ones (`synced_at`, `created_at`, `updated_at`), in primary-key order, bytes
- * as lowercase hex. Used by the archive sync's kill-and-resume test (two runs compared row by row),
+ * as lowercase hex (whether the client reads bytea as a `Buffer`, as postgres.js does, or as a plain `Uint8Array`, as
+ * PGlite does). Used by the archive sync's kill-and-resume test (two runs compared row by row),
  * by `record-tape.ts --capture` (the digest of the LIVE Stagenet sync stored in the fixture
  * manifest) and by the fixture replay test (the replayed archive must have the same digest).
  */
@@ -26,7 +27,7 @@ export async function dumpArchive(sql: UmbraDBSql, schema: string): Promise<Reco
   const watermarks = await sql`SELECT kind, key, value FROM ${s}.watermarks ORDER BY kind, key`;
   const vks = await sql`SELECT count(*)::int AS n FROM ${s}.verifier_key_observations`;
   const norm = (rows: readonly Record<string, unknown>[]): unknown[] => rows.map((r) =>
-    Object.fromEntries(Object.entries(r).map(([k, v]) => [k, Buffer.isBuffer(v) ? v.toString("hex") : v])));
+    Object.fromEntries(Object.entries(r).map(([k, v]) => [k, v instanceof Uint8Array ? Buffer.from(v).toString("hex") : v])));
   return {
     blocks: norm(blocks), transactions: norm(transactions), bridge_observations: norm(bridge),
     chain_blobs: norm(blobs), chain_blob_roles: norm(roles), watermarks: norm(watermarks), verifier_key_observations: norm(vks),

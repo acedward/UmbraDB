@@ -38,6 +38,7 @@
     "docs:storage:check": "typedoc --emit none --treatWarningsAsErrors",
     "test": "vitest run",
     "test:conformance": "node scripts/conformance-gate.mjs",
+    "test:pglite": "node scripts/pglite-gate.mjs",
     "test:coverage": "vitest run --coverage",
     "test:mutation": "stryker run",
     "test:mutation:ci": "node scripts/mutation-per-adapter.mjs",

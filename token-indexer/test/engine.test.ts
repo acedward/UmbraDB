@@ -1,17 +1,18 @@
 /**
  * The indexer engine (`token-indexer/engine/engine.ts`) composed from injected parts: the recorded Stagenet tapes are
  * answered by the fake chain as a `fetch` function (no socket), time is a manual clock (`helpers/manual-clock.ts`),
- * and the database is Postgres 17 (Testcontainers). Covered: the composition over a recorded range (archive and
- * 37-table digests equal to the recorded live sync's), the first-height seam, the loops' timing and back-off, a
- * graceful stop and the scheduler, refused ranges and drain mode, the API through the engine, and the option checks.
+ * and the database is Postgres 17 or PGlite (`test/helpers/test-database.ts`). Covered: the composition over a
+ * recorded range (archive and 37-table digests equal to the recorded live sync's), the first-height seam, the loops'
+ * timing and back-off, a graceful stop and the scheduler, refused ranges and drain mode, the API through the engine,
+ * and the option checks.
  */
 import { readFileSync } from "node:fs";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { openTestDatabase, type TestDatabase } from "../../test/helpers/test-database.ts";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { NodeRpcClient } from "../../chain-archive-sync/node-rpc-client.js";
 import { ChainArchiveSyncService, SyncRangeError } from "../../chain-archive-sync/sync-service.js";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { archiveDigest, dumpArchive } from "../../test/integration/fixtures/stagenet-archive/archive-digest.js";
 import { fakeChainFetch, type FakeChainOptions } from "../../test/integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadManifest, loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
@@ -58,25 +59,25 @@ async function json(engine: IndexerEngine, target: string): Promise<Json> {
 }
 
 describe("indexer engine", () => {
-  let container: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   const clients: UmbraDBSql[] = [];
   const engines: IndexerEngine[] = [];
   let counter = 0;
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
+    database = await openTestDatabase();
   }, 180_000);
 
   afterAll(async () => {
     for (const e of engines) await e.stop();
     for (const c of clients) await c.end({ timeout: 5 });
-    await container?.stop();
+    await database?.stop();
   }, 60_000);
 
   function fresh(prefix: string): { sql: UmbraDBSql; archive: string; mip: string } {
     const n = counter++;
     const mip = `${prefix}_mip_${n}`;
-    const sql = createClient({ connectionString: container.getConnectionUri(), schema: mip });
+    const sql = database.client(mip);
     clients.push(sql);
     return { sql, archive: `${prefix}_arch_${n}`, mip };
   }

@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import { skipOnPglite } from "../helpers/postgresql-only.ts";
+import { openTestDatabase, type TestDatabase } from "../helpers/test-database.ts";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import type { IndexerBlock, IndexerTransactionResult } from "../../chain-archive-sync/indexer-client.js";
 import { ChainArchiveSyncService, mapTransactionResult, SyncRangeError } from "../../chain-archive-sync/sync-service.js";
@@ -13,7 +14,8 @@ import { loadTape, startFakeChain, type FakeChain } from "./fixtures/stagenet-ar
  * REAL Stagenet data recorded once (`loadTape("c04-714637-714663.tape.json")`: a slice of the recorded IDX range
  * `fixtures/stagenet-archive/stagenet-714485-715183.tape.json.br`; case C04 of the MIP-0018
  * reference: deploy, shielded mint, unshielded mint, ledger mint, publish) and served back over
- * HTTP by `fake-chain-server.ts`, into a real Postgres 17 (Testcontainers). No network.
+ * HTTP by `fake-chain-server.ts`, into the file's database (Postgres 17 or PGlite, `test/helpers/test-database.ts`).
+ * No network.
  */
 
 const NET = "stagenet";
@@ -22,14 +24,14 @@ const TO = 714663;
 const tape = loadTape("c04-714637-714663.tape.json");
 
 describe("chain-archive-sync ranges, resume and transaction outcomes on recorded Stagenet", () => {
-  let container: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   const sqls: UmbraDBSql[] = [];
   const fakes: FakeChain[] = [];
   const children: ChildProcess[] = [];
   let schemaCounter = 0;
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
+    database = await openTestDatabase();
   }, 180_000);
 
   afterEach(async () => {
@@ -39,12 +41,12 @@ describe("chain-archive-sync ranges, resume and transaction outcomes on recorded
 
   afterAll(async () => {
     for (const s of sqls) await s.end({ timeout: 5 });
-    await container?.stop();
+    await database?.stop();
   }, 60_000);
 
   async function freshSchema(prefix: string): Promise<{ sql: UmbraDBSql; schema: string }> {
     const schema = `${prefix}_${schemaCounter++}`;
-    const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    const sql = database.client(schema);
     sqls.push(sql);
     await bootstrapChainArchiveSchema(sql, schema);
     return { sql, schema };
@@ -178,7 +180,7 @@ describe("chain-archive-sync ranges, resume and transaction outcomes on recorded
     expect(waits.map((w) => w.status).sort()).toEqual([403, 429, 429, 503, undefined]);
   }, 120_000);
 
-  it("[[archive.sync.resume-kill-identical]] SIGKILL during a CLI --from/--to run, then a restart, leaves tables identical to an uninterrupted run", async () => {
+  it.skipIf(skipOnPglite("archive.sync.resume-kill-identical"))("[[archive.sync.resume-kill-identical]] SIGKILL during a CLI --from/--to run, then a restart, leaves tables identical to an uninterrupted run", async () => {
     const f = await fake({ delayMs: 30 });
     const killed = await freshSchema("resume_killed");
     const clean = await freshSchema("resume_clean");
@@ -190,7 +192,7 @@ describe("chain-archive-sync ranges, resume and transaction outcomes on recorded
       ], {
         cwd: process.cwd(),
         env: {
-          ...process.env, ARCHIVE_PG: container.getConnectionUri(), ARCHIVE_SCHEMA: schema, NET,
+          ...process.env, ARCHIVE_PG: database.connectionUri(), ARCHIVE_SCHEMA: schema, NET,
           NODE_URL: f.nodeUrl, INDEXER_URL: f.indexerUrl, SYNC_BACKOFF_BASE_MS: "50", SYNC_BACKOFF_MAX_MS: "200",
         },
         stdio: ["ignore", "pipe", "pipe"],
