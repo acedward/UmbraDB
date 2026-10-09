@@ -20,7 +20,7 @@
  *   gets a connection; on a database with a single session the admitted requests wait for that session, and the cap
  *   bounds that queue.
  * - Never fetches a URI or anything remote; heights only.
- * - No Node module, `Buffer` or `process`: the host injects the `Sql` and the log.
+ * - Runtime-neutral: it imports no Node built-in and reads no Node global; the host injects the `Sql` and the log.
  */
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import {
