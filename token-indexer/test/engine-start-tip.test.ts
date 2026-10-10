@@ -10,13 +10,21 @@
  *   since (no jump to the new tip, no hole).
  * - `[[engine.start-tip.stop]]` — a stop while it waits for the tip ends the sync cleanly, with nothing archived; a
  *   start height that is not a height, `"tip"` or a function is refused.
+ * - `[[engine.start-tip.follows]]` — the follow of spec SC-008 ("the archive and scan heights follow the finalized tip
+ *   for 10 minutes"), in simulated time: the recorded IDX range with a finalized tip that rises one block every 6 s of
+ *   the manual clock (Midnight's block time; the live Stagenet runs saw about one every 8.7 s, so this is the faster
+ *   case), the engine with the browser's settings (20 heights per sync batch, 10 blocks per scan step) and the
+ *   engine's own waits (10 s at the tip for the sync, 2 s for the scan), for 10 simulated minutes: the archive starts
+ *   at the tip and every time both loops wait, the archive is within the blocks one sync wait lets pass (2) and the
+ *   scan within that of the archive; at the end both are at the tip, with every height archived once.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { openTestDatabase, type TestDatabase } from "../../test/helpers/test-database.ts";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { fakeChainFetch } from "../../test/integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
-import { createIndexerEngine, type EngineEvent, type EngineOptions, type IndexerEngine } from "../engine/engine.ts";
+import { DEFAULT_SCAN_BATCH, DEFAULT_SYNC_MAX_BLOCKS } from "../browser/host.ts";
+import { createIndexerEngine, ENGINE_DEFAULTS, type EngineEvent, type EngineOptions, type IndexerEngine } from "../engine/engine.ts";
 import { ManualClock } from "./helpers/manual-clock.ts";
 
 const NET = "stagenet";
@@ -161,4 +169,54 @@ describe("indexer engine: start at the finalized tip", () => {
     expect(() => createIndexerEngine({ sql, network: NET, sync: { nodeUrl: c.nodeUrl, indexerUrl: c.indexerUrl, startHeight: "top" as "tip" } }))
       .toThrow(/sync.startHeight must be a height, "tip" or a function/);
   }, 60_000);
+
+  it("[[engine.start-tip.follows]] ten simulated minutes of a finalized tip rising one block every 6 s: the archive starts at the tip and, with the browser's batch sizes and the engine's waits, the archive and the scan follow it within one sync wait; every height is archived once", async () => {
+    const sql = database.client("follow_mip");
+    clients.push(sql);
+    const clock = new ManualClock();
+    const BLOCK_MS = 6_000;
+    const MINUTES = 10;
+    const H = 714600;
+    const c = fakeChainFetch(loadRangeTape("idx"), { finalizedHeight: H, advance: { everyMs: BLOCK_MS, by: 1 }, now: () => clock.now() });
+    const e = engine(sql, "follow_mip", "follow_arch", {
+      fetch: c.fetch,
+      clock,
+      sync: { nodeUrl: c.nodeUrl, indexerUrl: c.indexerUrl, startHeight: "tip", maxBlocks: DEFAULT_SYNC_MAX_BLOCKS },
+      scan: { batch: DEFAULT_SCAN_BATCH },
+    });
+    // Within one sync wait at the tip the finalized tip can rise this many blocks.
+    const slack = Math.ceil(ENGINE_DEFAULTS.syncIdleMs / BLOCK_MS);
+    const t0 = clock.now();
+    await e.start();
+    const samples: Array<{ at: number; tip: number; archive: number; scanned: number }> = [];
+    const sample = async (): Promise<void> => {
+      await clock.untilWaiting(2); // both loops wait: the sync at the tip, the scan at the archive's tip
+      const archive = (await e.syncCursor())?.height ?? H - 1;
+      const scanned = ((await e.scanCursor())?.nextHeight ?? H) - 1;
+      samples.push({ at: clock.now() - t0, tip: c.finalizedHeight(), archive, scanned });
+    };
+    while (clock.now() - t0 < MINUTES * 60_000) {
+      await sample();
+      clock.next();
+    }
+    await sample(); // past the tenth minute
+    await e.stop();
+
+    expect(await e.syncCursor()).toMatchObject({ startHeight: H });
+    const lags = samples.map((x) => ({ ...x, archiveLag: x.tip - x.archive, scanLag: x.archive - x.scanned }));
+    const worst = { archive: Math.max(...lags.map((x) => x.archiveLag)), scan: Math.max(...lags.map((x) => x.scanLag)) };
+    expect(samples.length).toBeGreaterThan(MINUTES * 60_000 / ENGINE_DEFAULTS.syncIdleMs);
+    expect(lags.filter((x) => x.archiveLag > slack), `the archive within ${slack} blocks of the tip`).toEqual([]);
+    expect(lags.filter((x) => x.scanLag > slack), `the scan within ${slack} blocks of the archive`).toEqual([]);
+    for (let m = 1; m <= MINUTES; m++) expect(lags.some((x) => x.at >= (m - 1) * 60_000 && x.at < m * 60_000), `samples in minute ${m}`).toBe(true);
+    const end = lags.at(-1)!;
+    expect(end.at).toBeGreaterThanOrEqual(MINUTES * 60_000);
+    expect(end.tip).toBeGreaterThanOrEqual(H + (MINUTES * 60_000) / BLOCK_MS);
+    expect(end.archive).toBeGreaterThanOrEqual(end.tip - slack);
+    expect(c.counts.get("chain_getBlock")).toBe(end.archive - H + 1); // each height once
+    const [blocks] = await sql<{ n: number; lo: string; hi: string }[]>`
+      SELECT count(*)::int AS n, min(height)::text AS lo, max(height)::text AS hi FROM ${sql("follow_arch")}.blocks`;
+    expect(blocks).toEqual({ n: end.archive - H + 1, lo: String(H), hi: String(end.archive) });
+    console.log(`SC-008 follow, simulated: ${MINUTES} min, tip ${H} → ${end.tip}, ${samples.length} samples, worst archive lag ${worst.archive} and scan lag ${worst.scan} blocks (allowed ${slack})`);
+  }, 120_000);
 });

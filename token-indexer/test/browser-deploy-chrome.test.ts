@@ -114,11 +114,17 @@ describe("the static deploy recipe in Chrome", () => {
     expect(await engine(page, "c.booted()")).toMatchObject({ phase: "ready", error: null });
     expect(await page.eval("window.umbradbEngine.tabs.role()")).toBe("leader");
     await page.waitFor("document.getElementById('engine-panel').getAttribute('data-role') === 'leader'", 30_000, "the panel's leader mark");
-    // The automatic start: a new store's saved configuration starts by itself at the tip, and waits for the chain.
-    const st = (await engine(page, "c.status()")) as HostStatus;
+    // The automatic start: a new store's saved configuration starts by itself at the tip, and waits for the chain. The
+    // leader tab sends the start once its worker has booted, so the page waits for it (bounded) rather than reading once.
+    const startedBy = Date.now() + 60_000;
+    let st = (await engine(page, "c.status()")) as HostStatus;
+    while (st.engine?.status.started !== true && Date.now() < startedBy) {
+      await new Promise((r) => setTimeout(r, 100));
+      st = (await engine(page, "c.status()")) as HostStatus;
+    }
     expect(st.store?.dataDir).toBe("opfs-ahp://umbradb-stagenet");
     expect(st.settings).toMatchObject({ autoStart: true });
-    expect(st.engine?.status.started).toBe(true);
+    expect(st.engine?.status.started, "the engine started by itself within 60 s of the boot").toBe(true);
     expect(st.cursors).toEqual({ sync: null, scan: null });
     expect(await page.eval("self.crossOriginIsolated")).toBe(true);
     expect(await page.evalWorker("self.crossOriginIsolated")).toBe(true);
