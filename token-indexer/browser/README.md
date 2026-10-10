@@ -5,7 +5,7 @@ module worker, on PGlite stored in the Origin Private File System. The page talk
 static files is served.
 
 ```sh
-npm run build:browser   # the static site in dist-browser/ (engine.html, assets/ and _headers)
+npm run build:browser   # the static site in dist-browser/ (engine.html, system.html, assets/ and _headers)
 npm run dev:browser     # the same configuration served by Vite on 127.0.0.1 (no security headers)
 ```
 
@@ -25,6 +25,8 @@ The build indexes Stagenet unless `UMBRADB_BROWSER_NETWORK`, `UMBRADB_BROWSER_NO
 | `tab-locks.ts` | The Web Locks behind that (leader, tab presence, store) and the connected-tab count |
 | `host-system.ts` | The worker's telemetry, `system` snapshot collector and viewers, and the watchdog's heartbeat |
 | `system-view.ts` | The page's side of the `system` snapshot: follow it while the page is visible, refresh it, "Download diagnostics" |
+| `system.html`, `system-page.ts`, `system-model.ts`, `system.css` | The system status page (see [System status page](#system-status-page)): the page, its drawing, its pure view of a snapshot, its style beside the explorer's `ui/page.css` |
+| `visible-text.ts` | The explorer's hidden-character rules for text a page draws from data: `⟨U+XXXX⟩` marks, bidi islands, text nodes only |
 | `session.ts` | The worker's view of its PGlite session: turns for the event loop between statements, failed statements counted, a close that waits for the statements in flight |
 | `capabilities.ts` | The Chrome-only capability check run before anything else |
 | `store.ts` | Opens PGlite and its two clients (`chain_archive`, `mip0018`); non-durable, results and errors as on PostgreSQL |
@@ -249,4 +251,34 @@ The snapshot's schema is `../engine/system-snapshot.ts` (versioned, strict). The
 PGlite and ledger versions; `vite.config.ts`). The storage section is the storage guard's reading (`quota.ts`), the
 start mode and the automatic start come from the saved configuration, the connected tabs from the tab locks; the
 role is `leader` in the worker (a follower tab marks what it relays). No snapshot export or import is recorded yet.
+
+## System status page
+
+`system.html` shows the whole system on one read-only page, from the `system` snapshot: **Overview** (the health line —
+running, following, catching up, waiting (network), stalled (scan), paused (quota), stopped or error — with its
+reason, this tab's role, the first indexed height, the archive and scan heights, the finalized tip and the lag in
+blocks and time), **Configuration** (network, genesis, endpoints, pacing, batches, retry, start mode and range,
+automatic start, durability, watchdog limit, API queue cap, build), **Sync** (heights, rates, requests per endpoint by
+answer, last success, next attempt, last error), **Scan**, **Databases** (data directory, server version, `fsync`,
+durability, size; per schema the applied migrations and per table the estimated rows and size, exact counts on
+demand), **Storage**, **API**, **Engine** (role, connected tabs, uptime, watchdog restarts, reopens, failed
+statements), **Browser**, **Snapshots** and **Logs** (the last 200 lines, newest first).
+
+- The page joins the tabs like every page of the build: opened alone it leads (it runs the engine worker under the
+  watchdog; `?watchdogLimitMs=` as on `engine.html`); beside a leader it is a follower and shows the leader's
+  snapshots, marked "follower". The controls stay in the explorer's engine panel (`index.html`), which links here;
+  this page links back.
+- It follows the snapshots while it is visible (about every 2 s, the catalog about every 30 s) and reads nothing while
+  it is hidden. "count rows exactly" reads `count(*)` of every table once.
+- "Download diagnostics" saves the snapshot shown as JSON (`umbradb-diagnostics-<time>.json`, its log lines
+  included): a download through a `blob:` URL and `<a download>`, which the policy allows. URLs lose their
+  credentials, query and fragment, and secret-looking values (tokens, passwords, keys, `Authorization` and `Cookie`
+  headers, Bearer and Basic credentials, JWTs, viewing keys) are replaced, in every string of the snapshot; a log line
+  is redacted as it is written, before an event's fields become JSON.
+- Text from the engine (error messages, log lines, URLs) is drawn as text nodes with the explorer's hidden-character
+  rules (`visible-text.ts`, the rule of `../mip0018/ui/page.js`): every control, format, private-use, unassigned or
+  surrogate code point, line or paragraph separator and default-ignorable character is drawn as a visible mark
+  `⟨U+XXXX⟩`, each value in its own bidirectional island.
+- For scripted use, `window.umbradbEngine` holds the client and the tabs, and `window.umbradbSystem.latest()` the
+  snapshot drawn last.
 

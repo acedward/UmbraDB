@@ -1,7 +1,7 @@
 /**
  * The browser build: `npm run build:browser` writes the static site to `dist-browser/` (`npm run dev:browser` serves the
- * same configuration on 127.0.0.1). Pages: every `*.html` file in this directory (today `engine.html`, the engine's
- * status page). The engine runs in a dedicated module worker (`worker.ts`).
+ * same configuration on 127.0.0.1). Pages: every `*.html` file in this directory (`engine.html`, the engine page, and
+ * `system.html`, the system status page). The engine runs in a dedicated module worker (`worker.ts`).
  *
  * - The chain (network and the node's and indexer's URLs) is fixed here, from `UMBRADB_BROWSER_NETWORK`,
  *   `UMBRADB_BROWSER_NODE_URL` and `UMBRADB_BROWSER_INDEXER_URL` (Stagenet when unset): defined in both bundles as
@@ -39,6 +39,13 @@ const chain = browserChainFromEnv(process.env);
 const pages = Object.fromEntries(readdirSync(root).filter((f) => f.endsWith(".html")).sort().map((f) => [f.slice(0, -".html".length), `${root}${f}`]));
 /** zod and `zod-jitless.ts` in one chunk, so the JIT is off before any module of another chunk creates a schema. */
 const zodChunk = { name: "zod", test: /[\\/]node_modules[\\/]zod[\\/]|[\\/]token-indexer[\\/]browser[\\/]zod-jitless\.ts$/ };
+/**
+ * The pages' own modules that two or more pages share (the engine client, the tabs, the protocol) in one chunk. Without
+ * it the bundler puts its runtime helpers (the `keepNames` helper the zod chunk needs) in that shared chunk, which itself
+ * imports the zod chunk: a cycle, and the first page to load fails before its first schema. With it the runtime has a
+ * chunk of its own, imported by both.
+ */
+const sharedPageChunk = { name: "pages", test: (id: string) => !id.includes("node_modules"), minShareCount: 2 };
 
 /** The installed version of a package, or `null`. */
 function packageVersion(name: string): string | null {
@@ -85,7 +92,7 @@ export default defineConfig({
     chunkSizeWarningLimit: 20_000,
     rolldownOptions: {
       input: pages,
-      output: { keepNames: true, codeSplitting: { groups: [zodChunk] } },
+      output: { keepNames: true, codeSplitting: { groups: [zodChunk, sharedPageChunk] } },
     },
   },
   optimizeDeps: { exclude: ["@electric-sql/pglite"] },

@@ -25,13 +25,14 @@ const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
 /**
  * Entry modules of the runtime: the engine and its system snapshot collector, the archive sync, the scan, the API, the
- * event listing, the migrations and the browser build's worker and page.
+ * event listing, the migrations and the browser build's worker and pages.
  */
 const RUNTIME_ROOTS = [
   "token-indexer/engine/engine.ts",
   "token-indexer/engine/system-collector.ts",
   "token-indexer/browser/worker.ts",
   "token-indexer/browser/engine-page.ts",
+  "token-indexer/browser/system-page.ts",
   "chain-archive-sync/sync-service.ts",
   "chain-archive-sync/bootstrap.ts",
   "chain-archive-sync/retry.ts",
@@ -93,6 +94,8 @@ const MUST_REACH = [
   "token-indexer/browser/host-system.ts",
   "token-indexer/browser/supervisor.ts",
   "token-indexer/engine/telemetry.ts",
+  "token-indexer/browser/system-model.ts",
+  "token-indexer/browser/visible-text.ts",
 ];
 
 const rel = (abs: string): string => path.relative(ROOT, abs).split(path.sep).join("/");
@@ -240,7 +243,7 @@ describe("runtime modules use no Node API", () => {
   }, 120_000);
 
   it("the browser build's worker and page never load the PostgreSQL client (postgres.js), not even through a dynamic import", () => {
-    const browser = runtimeClosure(["token-indexer/browser/worker.ts", "token-indexer/browser/engine-page.ts"]);
+    const browser = runtimeClosure(["token-indexer/browser/worker.ts", "token-indexer/browser/engine-page.ts", "token-indexer/browser/system-page.ts"]);
     expect(browser.unresolved).toEqual([]);
     const reached = [...browser.files].map(rel);
     expect(reached).toContain("src/postgres/migrate.ts");
