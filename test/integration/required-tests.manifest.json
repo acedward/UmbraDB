@@ -1780,7 +1780,7 @@
     {
       "id": "browser.host.rows",
       "file": "token-indexer/test/browser-modules.test.ts",
-      "description": "rows of every table equals the same page read with SQL (newest first by the primary key, bytes and text cut with their lengths); pages follow one another; the bounds hold"
+      "description": "rows of every table equals the same page read with SQL (by the primary key, descending: newest first for the height-keyed tables; bytes and text cut with their lengths); pages follow one another; the bounds hold"
     },
     {
       "id": "browser.host.rows-refused",
@@ -1805,7 +1805,7 @@
     {
       "id": "browser.database.model",
       "file": "token-indexer/test/browser-overview.test.ts",
-      "description": "the Database tab's view: NULL; bytes as the hex of their first bytes and their length; text cut with its length; what was sent in the tooltip; sizes, estimates, kinds, order and page"
+      "description": "the Database tab's view: NULL; bytes as the hex of their first bytes and their length; text cut with its length; what was sent in the tooltip; sizes, estimates, kinds, order (newest first only for a key that leads with a block height after the network, else by primary key) and page"
     },
     {
       "id": "browser.shell.overview",

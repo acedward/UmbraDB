@@ -121,9 +121,10 @@ PostgreSQL.
 - **Database** (`database-view.ts`, `database-model.ts`; the worker's side `store-tables.ts`). Read-only: each schema's
   tables (`chain_archive`, `mip0018`, partitions included) with their kind, estimated rows and size (`tables`: the
   catalog statistics of the system snapshot), read when the tab is first shown and on "refresh". Picking a table (its
-  row, or the picker) shows a page of its rows (`rows`), newest first — by the primary key's columns, descending, so
-  height-keyed tables list their highest heights first; a table without one in physical order, the last written row
-  first — 25 rows a page, "newer" and "older" to page, up to 10,000 rows deep. Values are cut in the worker's SQL: a
+  row, or the picker) shows a page of its rows (`rows`) by the primary key's columns, descending, and says so: "newest
+  first" for the tables whose key, after the network, leads with a block height (their highest heights first), "by
+  primary key (…)" for the others (`chain_blobs` by hash, `watermarks`, `mip0018_fields`, …); a table without one in
+  physical order, the last written row first — 25 rows a page, "newer" and "older" to page, up to 10,000 rows deep. Values are cut in the worker's SQL: a
   `bytea` value as the hex of its first 16 bytes and its length (the cell shows 8 of them), any other value as its text
   form's first 256 characters and its length (the cell shows 48); what was read is in the cell's tooltip. The table is
   named to the engine by the schema and name it listed, and the engine looks both up in the store's catalog before any

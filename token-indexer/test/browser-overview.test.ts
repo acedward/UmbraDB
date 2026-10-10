@@ -150,7 +150,14 @@ describe("the static build's main page (no browser)", () => {
     expect(tableLabel({ name: "blocks_p0", kind: "partition", partitionOf: "blocks", estimatedRows: null, totalBytes: 106_496 })).toBe("blocks_p0 · no estimate · 106.5 kB");
     expect(tablesSummary({ databaseBytes: 10_551_419, elapsedMs: 3, schemas: [{ name: "a", tables: [] }, { name: "b", tables: [{ name: "t", kind: "table", partitionOf: null, estimatedRows: 1, totalBytes: 1 }] }] })).toBe(
       "2 schemas · 1 tables · 10.6 MB in all · estimated rows and sizes from the catalog · read-only");
+    // Newest first only where the key, after the network, leads with a block height; any other key is named as it is.
     expect(orderText({ orderBy: ["net", "height", "block_hash"] })).toBe("newest first: by net, height, block_hash, descending");
+    expect(orderText({ orderBy: ["network", "block_height", "tx_index", "item_index"] })).toBe("newest first: by network, block_height, tx_index, item_index, descending");
+    expect(orderText({ orderBy: ["hash"] })).toBe("by primary key (hash), descending");
+    expect(orderText({ orderBy: ["kind", "key"] })).toBe("by primary key (kind, key), descending");
+    expect(orderText({ orderBy: ["network", "contract_address", "block_height", "tx_index", "event_index", "classification"] })).toBe(
+      "by primary key (network, contract_address, block_height, tx_index, event_index, classification), descending");
+    expect(orderText({ orderBy: ["network"] })).toBe("by primary key (network), descending");
     expect(orderText({ orderBy: [] })).toBe("newest first: the last written row first (the table has no primary key)");
     const row = [{ kind: "null" as const }];
     expect(pageText({ offset: 0, rows: [row, row], more: true })).toBe("rows 1–2, more follow");
