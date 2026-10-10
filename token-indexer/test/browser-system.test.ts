@@ -178,9 +178,11 @@ describe("worker host system snapshot", () => {
       expect(seen.length, "the stopped follower gets no more snapshots").toBe(m);
       off();
       expect(await client.system({ watch: false, viewer: "other" })).toEqual({ watching: false, viewers: 0, snapshot: null });
+      // A collection already under way when the last viewer left still finishes; a refresh waits behind it.
+      await client.system({ refresh: {} });
       const t = statements();
       await sleep(300);
-      expect(statements()).toBe(t);
+      expect(statements(), "no statement once the last viewer left").toBe(t);
 
       // pagehide unwatches too.
       const page2 = fakePage();

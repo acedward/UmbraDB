@@ -465,5 +465,5 @@ describe("the browser engine killed at exact points (Chrome, OPFS)", () => {
     }
     expect(page.exceptions).toEqual([]);
     await page.close();
-  }, 600_000);
+  }, 900_000); // three replays, then nine killed imports, most followed by the rest of the range: 80–150 s on 2 CPUs
 });

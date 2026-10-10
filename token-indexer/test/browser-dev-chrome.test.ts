@@ -24,6 +24,15 @@ import { type LocalServer, serveHandler } from "./helpers/static-site.ts";
 const CHAIN_ENV = ["UMBRADB_BROWSER_NETWORK", "UMBRADB_BROWSER_NODE_URL", "UMBRADB_BROWSER_INDEXER_URL"] as const;
 const browserExe = findBrowser();
 
+/** Polls `ok` until it holds; fails naming `what` once `timeoutMs` has passed. */
+async function until(what: string, ok: () => boolean, timeoutMs: number): Promise<void> {
+  const end = Date.now() + timeoutMs;
+  while (!ok()) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
 /** The `href` of every `<link rel="…">` of a page with that `rel`. */
 function links(html: string, rel: string): string[] {
   const out: string[] = [];
@@ -134,7 +143,8 @@ describe("the browser build's dev server", () => {
     expect(look.sheetRules as number).toBeGreaterThan(20);
     expect(look).toMatchObject({ outfitLoaded: true, kvDisplay: "grid", sideBySide: true, overviewPaddingTop: "18px", logoHeight: 22 });
     expect(look.bodyFont as string).toMatch(/^Outfit,/);
-    expect(page.requests.some((r) => r.url.endsWith("/mip0018/ui/favicon.ico") && r.status === 200)).toBe(true);
+    // The browser asks for the icon on its own schedule, after the page's load: wait for its answer to be recorded.
+    await until("the icon's answer", () => page.requests.some((r) => r.url.endsWith("/mip0018/ui/favicon.ico") && r.status === 200), 30_000);
     for (const r of page.requests) {
       const o = new URL(r.url).origin;
       expect([origin, chain.origin, "null"], r.url).toContain(r.url.startsWith("data:") || r.url.startsWith("blob:") ? "null" : o);

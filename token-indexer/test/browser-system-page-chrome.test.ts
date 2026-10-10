@@ -163,12 +163,16 @@ describe("the system status page in Chrome (static build with its headers)", () 
    */
   async function openStatus(b: Browser, query = "", opts: { workers?: boolean } = {}): Promise<Page> {
     const p = await b.newPage({ ...opts, newWindow: true });
+    await loadStatus(p, query);
+    return p;
+  }
+  /** Loads the status page in `p` and waits for its first drawn snapshot. */
+  async function loadStatus(p: Page, query = ""): Promise<void> {
     await p.goto(`${site.origin}/system.html${query}`);
     await p.waitFor("window.umbradbEngine !== undefined && window.umbradbSystem !== undefined", 30_000, "the status page");
     await p.eval("window.umbradbEngine.tabs.ready");
     await p.eval("window.umbradbEngine.client.booted()");
     await p.waitFor("window.umbradbSystem.renders >= 1", 30_000, "the first drawn snapshot");
-    return p;
   }
 
   async function waitFor<T>(what: string, read: () => Promise<T>, ok: (v: T) => boolean, timeoutMs = 120_000): Promise<T> {
@@ -317,7 +321,14 @@ describe("the system status page in Chrome (static build with its headers)", () 
     const b = await Browser.launch(browserExe!);
     const seen: string[] = [];
     try {
-      let p = await openStatus(b, "?watchdogLimitMs=2000", { workers: true });
+      // The watchdog's limit is short for a test, yet well above the time the page takes to boot its worker on this
+      // machine (measured first in the same tab, on the default limit), so a slow machine's boot of the replacement
+      // worker is not taken for a stuck worker: the held thread below is the one restart this test drives.
+      const t0 = performance.now();
+      let p = await openStatus(b, "", { workers: true });
+      const limitMs = Math.max(2_000, Math.ceil(3 * (performance.now() - t0)));
+      await loadStatus(p, `?watchdogLimitMs=${limitMs}`);
+      report.statesWatchdogLimitMs = limitMs;
       const inP = on(p);
       const network = {
         source: { kind: "network", nodeUrl: `${site.origin}/chain/rpc`, indexerUrl: `${site.origin}/chain/graphql` },
@@ -461,7 +472,7 @@ describe("the system status page in Chrome (static build with its headers)", () 
       const p = await openStatus(b);
       const inP = on(p);
       await inP(`c.start(${JSON.stringify({ source: { kind: "tape", range: "u1" }, startHeight: U1.from, ...FAST })})`);
-      await p.eval(`(() => { window.__sys = 0; window.umbradbEngine.client.onNotice((n) => { if (n.notice === "system") { window.__sys++; window.__lastSys = n.snapshot; } }); })()`);
+      await p.eval(`(() => { window.__sys = 0; window.umbradbEngine.client.onNotice((n) => { if (n.notice === "system") window.__sys++; }); })()`);
       await p.waitFor("window.__sys >= 2", 30_000, "two snapshots while visible");
       expect(await p.eval("document.body.getAttribute('data-live')")).toBe("watching");
 
@@ -472,10 +483,13 @@ describe("the system status page in Chrome (static build with its headers)", () 
       await p.waitFor("document.visibilityState === 'hidden'", 10_000, "the page hidden");
       expect(await p.eval("document.body.getAttribute('data-live')")).toBe("paused");
       expect(await p.eval("document.getElementById('live').textContent")).toBe("paused: nothing is read while this page is hidden");
-      await sleep(500);
+      // Once the page's unwatch has reached the worker, a collection already under way still finishes (its snapshot is
+      // not posted); a refresh waits behind it, so the refreshed snapshot (catalog read included) is where the hidden
+      // time starts.
+      const unwatched = await waitFor("the page's watch to end", () => inP("c.system({ refresh: { database: true } })"), (x: Json) => x.viewers === 0, 30_000);
+      const last = SystemSnapshotSchema.parse(unwatched.snapshot);
       const n0 = await p.eval<number>("window.__sys");
       const r0 = await p.eval<number>("window.umbradbSystem.renders");
-      const last = SystemSnapshotSchema.parse(await p.eval("window.__lastSys"));
       await sleep(6_000);
       expect(await p.eval("window.__sys"), "no snapshot while hidden").toBe(n0);
       expect(await p.eval("window.umbradbSystem.renders"), "nothing drawn while hidden").toBe(r0);

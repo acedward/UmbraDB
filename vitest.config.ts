@@ -77,6 +77,9 @@ export default defineConfig({
     // inline afterAll (e.g. chain-archive-rollover) inherit this global so coverage-instrumented,
     // fully-parallel runs don't flake on teardown. Inline explicit timeouts still win.
     hookTimeout: 60_000,
+    // Test budget, for the same reason: a test that opens PGlite, starts a worker or a browser takes a few seconds on a
+    // slow runner with coverage (the default 5s is a fast machine's figure). A test that sets its own timeout keeps it.
+    testTimeout: 60_000,
     coverage: {
       provider: "v8",
       all: true,
