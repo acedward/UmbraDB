@@ -26,10 +26,14 @@
  * **Requests** (`protocol.ts`): `status` answers at any time; `api` waits for the boot and answers through the running
  * engine's API handler, or, while no engine runs, a handler of the same store with no loops (`scanner: "off"`);
  * `start` saves the given configuration, or the saved one, with the automatic start on and runs a new engine (sync +
- * scan in follow mode) with it, `stop` stops it; `range` saves the new range, then replaces the store with a new, empty one and starts the range, `reset` does the
- * same with the saved configuration (replacing the store: PGlite is closed, every file of the store is removed, and
- * the boot runs again from its store phase, so nothing of the old database survives); all four run one at a time, in
- * arrival order. `digest` computes the store's archive and range-tables digests
+ * scan in follow mode) with it, `stop` stops it; `range` saves the new range with the mark that the store is to be
+ * replaced (one write, `settings.ts`), then replaces the store with a new, empty one and starts the range, `reset` does
+ * the same with the saved configuration (replacing the store: PGlite is closed, every file of the store is removed, and
+ * the boot runs again from its store phase, so nothing of the old database survives; it saves the settings again
+ * without the mark once the new store is in place); all four run one at a time, in arrival order. A boot that finds the
+ * mark (a worker ended before the new store was in place) makes the new store first, unless an import's journal is
+ * pending (that import finishes instead and its configuration replaces the settings). `digest` computes the store's
+ * archive and range-tables digests
  * in one read-only transaction (the loops wait for it); `system` watches or refreshes the system snapshot and `watchdog`
  * sets the page's watchdog and starts the heartbeat (`host-system.ts`). `module` switches the token indexer (the
  * MIP-0018 scan) off or on: off, the running engine's scan stops at a block boundary while its sync goes on; on, it
@@ -336,17 +340,22 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   let saved: EngineSettings | undefined;
   /** The modules switched off or on, saved with the configuration (a module not named is on). */
   let modules: NonNullable<EngineSettings["modules"]> = {};
-  /** The saved settings: the configuration and the automatic start (returned), and the modules (kept in `modules`). */
-  async function loadSettings(): Promise<EngineSettings | undefined> {
+  /** The settings file: the configuration and the automatic start (`settings`), whether the store is to be replaced by a
+   *  new one before they apply (`newStore`), and the modules (kept in `modules`). */
+  async function loadSettings(): Promise<{ settings: EngineSettings; newStore: boolean } | undefined> {
     const loaded = await settingsStore.load();
     if (loaded === undefined) return undefined;
-    const { modules: m, ...rest } = loaded;
+    const { modules: m, newStore, ...rest } = loaded;
     modules = m ?? {};
-    return rest;
+    return { settings: rest, newStore: newStore === true };
   }
+  /** The settings file as the store phase of the last boot read it (under the store's lock). */
+  let settingsOnFile: Awaited<ReturnType<typeof loadSettings>>;
   const withModules = (s: EngineSettings, m: typeof modules = modules): EngineSettings => (Object.keys(m).length === 0 ? s : { ...s, modules: { ...m } });
-  /** Saves `next` with the modules `m` (default: the current ones); rejects when the browser refuses the write. */
-  const writeSettings = (next: EngineSettings, m: typeof modules = modules): Promise<void> => settingsStore.save(withModules(next, m));
+  /** Saves `next` with the modules (default: the current ones) and, with `newStore`, the mark that the store is to be
+   *  replaced by a new one first; rejects when the browser refuses the write. */
+  const writeSettings = (next: EngineSettings, o: { modules?: typeof modules; newStore?: true } = {}): Promise<void> =>
+    settingsStore.save({ ...withModules(next, o.modules), ...(o.newStore === true ? { newStore: true } : {}) });
   /** Whether the token indexer (the MIP-0018 scan) is on. */
   const scanEnabled = (): boolean => modules["token-indexer"] ?? true;
   const quota = createQuotaGuard({
@@ -532,7 +541,11 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     };
     // Under the store's lock, before PGlite opens the store.
     const beforeOpen = async (_dir: string, importing: SnapshotManifest | null): Promise<void> => {
-      if (mode === "reset") {
+      settingsOnFile = await loadSettings();
+      // A new store the settings file asks for (a `range` or `reset` that ended before the new store was in place) is
+      // made now, unless an import's journal is pending: that import finishes instead, and the configuration that
+      // continues it replaces the settings, so the store and the settings agree either way.
+      if (mode === "reset" || (importing === null && settingsOnFile?.newStore === true)) {
         await snapshotFiles.removeStore();
         await markCreating();
         return;
@@ -588,6 +601,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     bootState.storeProblem = null;
     finishedImport = undefined;
     importFailure = undefined;
+    settingsOnFile = undefined;
     try {
       let s: Store | undefined;
       try {
@@ -597,9 +611,16 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         await phase("migrate", "migrateMs", () => usable(() => migrate(opened)));
         storeInfo = await usable(() => readStoreInfo(opened));
         await recordIdentity(opened);
-        saved = (await loadSettings()) ?? { config: opts.defaultStart ?? {}, autoStart: true };
+        // Read by the store phase, under the store's lock.
+        const file = settingsOnFile as Awaited<ReturnType<typeof loadSettings>>;
+        const settings = file?.settings ?? { config: opts.defaultStart ?? {}, autoStart: true };
+        saved = settings;
         // Set by the store phase (`noteFinishedImport`).
         const imported = finishedImport as SnapshotManifest | undefined;
+        if (imported === undefined && file?.newStore === true) {
+          // The new store the settings asked for is in place: they are saved again without the mark.
+          await usable(() => writeSettings(settings), "the configuration to start on the new store could not be saved");
+        }
         if (imported !== undefined) {
           // The journal stays until the configuration that continues the import is saved: a worker that ends before
           // that finishes the import again at its next boot.
@@ -660,7 +681,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     await boot();
     const failed = !closed && bootState.phase === "failed" && bootState.storeProblem !== null && store === undefined;
     // The saved configuration lives beside the store, not in it: a store that could not be used still has it.
-    if (failed && saved === undefined) saved = await loadSettings();
+    if (failed && saved === undefined) saved = (await loadSettings())?.settings;
     return failed;
   }
 
@@ -798,11 +819,12 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     return status();
   }
 
-  /** Saves `next` as the saved configuration before the store is replaced (`range`, `reset`), so that a worker that ends
-   *  meanwhile starts it on the new store; fails (and nothing is changed) when it cannot be saved. */
+  /** Saves `next` as the saved configuration, with the mark that the store is to be replaced by a new one, before the
+   *  store is touched (`range`, `reset`): a worker that ends before the new store is in place leaves both, and the next
+   *  boot makes the new store, then starts `next` on it. Fails (and nothing is changed) when it cannot be saved. */
   async function saveBeforeReplacing(next: EngineSettings, what: string): Promise<void> {
     try {
-      await writeSettings(next);
+      await writeSettings(next, { newStore: true });
     } catch (e) {
       throw new HostError("start-failed", `${what} could not be saved (${messageOf(e)}): nothing was changed`);
     }
@@ -955,7 +977,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     await ready();
     const next = { ...modules, [module]: enabled };
     try {
-      await writeSettings(saved ?? { config: opts.defaultStart ?? {}, autoStart: true }, next);
+      await writeSettings(saved ?? { config: opts.defaultStart ?? {}, autoStart: true }, { modules: next });
     } catch (e) {
       throw new HostError("settings-failed", `the token indexer's switch could not be saved (${messageOf(e)}): nothing was changed`);
     }

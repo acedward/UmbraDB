@@ -25,9 +25,13 @@
  *   removed; a store with database files but no identity that fails to open is reported, not removed; a store marked
  *   "creating" that fails to open is created again; a new store is marked "creating" before PGlite creates it; the OPFS
  *   file reads missing as absent and unreadable or invalid content as unreadable.
+ * - `[[browser.host.range-interrupted]]` — a worker that ends right after `range` or `reset` saved its settings, or while
+ *   its engine stops for it, leaves the replacement to the next boot: the old store is removed, the new one holds
+ *   nothing, the saved settings are the new ones with no replacement left to do, and a start runs them on the new store
+ *   (a range that starts above the old archive's cursor leaves no gap to refuse).
  * - `[[browser.host.range-saved-first]]` — `range` saves the new range before it replaces the store: when that save
  *   fails nothing changes, and a worker that ends while the store is replaced leaves the new range (with the automatic
- *   start) saved, so the next boot starts it on the new store.
+ *   start and the mark that the store is to be replaced) saved, so the next boot starts it on the new store.
  */
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -35,10 +39,11 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { WorkerHostOptions } from "../browser/host.ts";
 import { panelView } from "../browser/panel-model.ts";
-import type { BootState, DigestResult, EngineSettings, ExportResult, HostStatus, ImportResult } from "../browser/protocol.ts";
+import type { BootState, DigestResult, EngineSettings, ExportResult, HostStatus, ImportResult, StartConfig } from "../browser/protocol.ts";
 import { type EngineSettingsStore, memorySettingsStore } from "../browser/settings.ts";
 import { encodeSnapshotFile, decodeSnapshotFile } from "../browser/snapshot.ts";
 import { memorySnapshotFiles, opfsSnapshotFiles, type SnapshotFiles } from "../browser/snapshot-store.ts";
+import { yieldingScheduler } from "../browser/scheduler.ts";
 import { migrateStore, openStore, type Store } from "../browser/store.ts";
 import { memoryStoreIdentity, opfsStoreIdentity, type StoreIdentityFile } from "../browser/store-identity.ts";
 import { call, nodeStoreFiles, result, testHost, type TestHost, U1, untilStatus } from "./helpers/worker-host.ts";
@@ -530,7 +535,8 @@ describe("replacing the browser engine's store", () => {
       if (Date.now() > end) throw new Error("the range never replaced the store");
       await new Promise((r) => setTimeout(r, 10));
     }
-    expect(await settings.load()).toEqual({ config: range, autoStart: true });
+    // Saved with the mark that the store is to be replaced by a new one, which the next boot does first.
+    expect(await settings.load()).toEqual({ config: range, autoStart: true, newStore: true });
     const next = host({ dataDir: dir, snapshotFiles: files, storeIdentity: identity, settings });
     expect(await next.host.boot()).toMatchObject({ phase: "ready", storeProblem: null });
     // The leader tab's automatic start: a start with no configuration runs the saved one.
@@ -538,5 +544,61 @@ describe("replacing the browser engine's store", () => {
     expect(started.engine?.config).toEqual(range);
     const done = await untilStatus(next.host, "the new range", (s) => s.cursors?.sync?.height === U1.from + 12);
     expect(done.cursors?.sync).toEqual({ height: U1.from + 12, startHeight: U1.from + 10 });
+  }, 300_000);
+  it("[[browser.host.range-interrupted]] a worker that ends right after range or reset saved its settings, or while its engine stops for it, leaves the replacement to the next boot: the old store is removed, the new one holds nothing, the settings are the new ones with no replacement left to do, and a start runs them", async () => {
+    // A finalized tip that rises one block every 100 ms (from U1.from + 3 for each new host): the engine is running when
+    // the replacement is asked for, and the next host's range is reached.
+    const config: StartConfig = { source: { kind: "tape", range: "u1", finalizedHeight: U1.from + 3, advance: { everyMs: 100, by: 1 } }, startHeight: U1.from, ...FAST };
+    const cases = [
+      { what: "range, right after its settings are saved", request: "range", at: "saved" },
+      { what: "range, while its engine stops", request: "range", at: "stopping" },
+      { what: "reset, right after its settings are saved", request: "reset", at: "saved" },
+    ] as const;
+    for (const c of cases) {
+      const dir = storeDir();
+      const files = nodeStoreFiles(dir);
+      const identity = memoryStoreIdentity();
+      const saved = memorySettingsStore();
+      let armed: "saved" | "stopping" | undefined;
+      let reached = false;
+      const w = abandoned({
+        dataDir: dir,
+        snapshotFiles: files,
+        storeIdentity: identity,
+        settings: { ...saved, save: async (x) => { await saved.save(x); if (armed === "saved") { reached = true; await never; } } },
+        // While armed for "stopping", the engine's next step never runs, so its stop never ends.
+        schedule: async (kind, step) => {
+          if (armed === "stopping") { reached = true; await never; }
+          return yieldingScheduler(kind, step);
+        },
+      });
+      await result(w.host, "start", { config });
+      await untilStatus(w.host, `${c.what}: the archive's first blocks`, (s) => (s.cursors?.sync?.height ?? 0) >= U1.from + 3 && (s.cursors?.scan?.nextHeight ?? 0) > U1.from + 3);
+      const expected: StartConfig = c.request === "range" ? { ...config, startHeight: U1.from + 10, endHeight: U1.from + 12 } : config;
+      armed = c.at;
+      void call(w.host, c.request, c.request === "range" ? { startHeight: U1.from + 10, endHeight: U1.from + 12 } : {});
+      const end = Date.now() + 60_000;
+      while (!reached || (await saved.load())?.config.startHeight !== expected.startHeight || (c.request === "reset" && (await saved.load())?.autoStart !== true)) {
+        if (Date.now() > end) throw new Error(`${c.what}: the request never got there`);
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      await new Promise((r) => setTimeout(r, 50));
+
+      // The page is closed there; the next one boots on the same store, settings and identity.
+      const next = host({ dataDir: dir, snapshotFiles: files, storeIdentity: identity, settings: saved });
+      expect(await next.host.boot(), c.what).toMatchObject({ phase: "ready", storeProblem: null });
+      const booted = await result<HostStatus>(next.host, "status");
+      expect(booted.cursors, `${c.what}: the new store holds nothing`).toEqual({ sync: null, scan: null });
+      expect(booted.settings, c.what).toEqual({ config: expected, autoStart: true });
+      expect(await saved.load(), `${c.what}: no replacement left to do`).toEqual({ config: expected, autoStart: true });
+      // The leader tab's automatic start: a start with no configuration runs the saved one.
+      expect((await result<HostStatus>(next.host, "start")).engine?.config, c.what).toEqual(expected);
+      const to = c.request === "range" ? U1.from + 12 : U1.from + 5;
+      const done = await untilStatus(next.host, `${c.what}: the new store's archive`, (s) => (s.cursors?.sync?.height ?? 0) >= to);
+      expect(done.cursors?.sync?.startHeight, c.what).toBe(expected.startHeight);
+      expect(done.engine?.error, c.what).toBeNull();
+      await next.host.close();
+      hosts.splice(hosts.indexOf(next), 1);
+    }
   }, 300_000);
 });

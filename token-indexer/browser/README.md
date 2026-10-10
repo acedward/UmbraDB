@@ -253,8 +253,11 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   with a new one before starting: in the leader's worker, which holds the store's lock, the engine stops, PGlite is
   closed with the lock kept, every file of the store's directory is removed, and the boot runs again from its store
   phase (PGlite creates the database, the migrations run). Nothing of the old database survives, whatever it held.
-  `range` saves the new range (with the automatic start) before it replaces the store, so a tab closed meanwhile
-  starts the new range on the new store; a range that cannot be saved changes nothing. The page offers an export
+  `range` and `reset` save their settings (with the automatic start) together with a mark that the store is to be
+  replaced, in one write, before they touch the store; the boot that has made the new store saves the settings again
+  without the mark. A tab closed (or a worker restarted) anywhere in between leaves the mark, and the next boot makes
+  the new store before anything runs, so the new range never runs on the old archive; a range that cannot be saved
+  changes nothing. The page offers an export
   first; the host takes a `beforeWipe` hook for that. Neither is sent again after a handover (`leader-changed`);
   `digest`, which only reads, is.
 - **Persistent storage.** `navigator.storage.persist()` exists only in a window: every page asks for it when it loads
