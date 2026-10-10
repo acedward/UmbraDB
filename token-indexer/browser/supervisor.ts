@@ -220,7 +220,6 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
     const counts: CarriedCountsMessage = { watchdogRestarts: carried.watchdogRestarts + 1, lastWatchdogRestart: { at, reason }, pgliteReopens: carried.pgliteReopens };
     carried = counts;
     if (recent > maxRestarts) {
-      endpoint.current.terminate();
       client.close(new EngineError("worker-error", `the engine worker stopped answering ${recent} times within ${Math.round(restartWindowMs / 1000)} s; it is not restarted again (last: ${reason})`));
       close();
       return;

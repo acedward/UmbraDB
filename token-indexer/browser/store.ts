@@ -76,6 +76,6 @@ export async function openStore(dataDir: string, opts: OpenStoreOptions = {}): P
     session,
     archive: clientFor(session, ARCHIVE_SCHEMA),
     mip0018: clientFor(session, MIP0018_SCHEMA),
-    close: () => pglite.close(),
+    close: () => session.close(),
   };
 }

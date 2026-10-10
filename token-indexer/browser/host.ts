@@ -210,7 +210,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   /** Requests wait for a reopen in progress. */
   let reopening: Promise<void> | undefined;
   let failedSinceOpen = 0;
-  let apiInFlight = 0;
+  /** Requests reading the store now (`status`, `api`, `system`); a reopen waits for them. */
+  let reading = 0;
 
   async function phase<T>(name: BootState["phase"], key: keyof BootState["timings"], fn: () => Promise<T>): Promise<T> {
     bootState.phase = name;
@@ -314,7 +315,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       await engine.stop();
       active = undefined;
     }
-    while (apiInFlight > 0) await clock.sleep(5, new AbortController().signal);
+    while (reading > 0) await clock.sleep(5, new AbortController().signal);
     system.unbind();
     store = undefined;
     try {
@@ -508,24 +509,31 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   const ok = (r: Request, result: unknown): Response =>
     ({ v: PROTOCOL_VERSION, type: "response", id: r.id, request: r.type, ok: true, result });
 
+  /** Runs `fn` as a request reading the store: after any reopen in progress, and counted so a reopen waits for it. */
+  async function readingStore<T>(fn: () => Promise<T>): Promise<T> {
+    while (reopening !== undefined) await reopening;
+    reading++;
+    try {
+      return await fn();
+    } finally {
+      reading--;
+    }
+  }
+
   async function perform(r: Request): Promise<unknown> {
-    if (r.type !== "watchdog") await reopening;
     switch (r.type) {
       case "status":
-        return status();
-      case "api": {
-        await ready();
-        await reopening;
-        apiInFlight++;
-        try {
-          return await (active ?? idleApi!).handle(r.method, r.target);
-        } finally {
-          apiInFlight--;
-        }
-      }
+        return readingStore(status);
+      case "api":
+        return readingStore(async () => {
+          await ready();
+          return (active ?? idleApi!).handle(r.method, r.target);
+        });
       case "system":
-        await ready();
-        return system.system(r);
+        return readingStore(async () => {
+          await ready();
+          return system.system(r);
+        });
       case "watchdog":
         return system.watchdog(r);
       case "start":

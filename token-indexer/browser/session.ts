@@ -10,7 +10,10 @@
  * - **counts failed statements** (errors the database reports), for the reopen rule: PGlite 0.5.8 fails every statement
  *   with "stack depth limit exceeded" (SQLSTATE 54001) once a database has failed about 1,700–1,870 statements
  *   (`exec` and `query` respectively, measured), until it is reopened;
- * - **tracks the statement in flight** (since when), for the system snapshot and the logs.
+ * - **tracks the statement in flight** (since when), for the system snapshot and the logs;
+ * - **closes PGlite only when no statement is in flight**: once `close()` is called a new statement fails at once as on
+ *   a closed database (`closed` reads true), and PGlite is closed after the statements already in flight have ended. A
+ *   statement still queued inside PGlite when it closes would otherwise run on the shut-down backend and never return.
  */
 import type { PgliteDatabase, PgliteQueryOptions, PgliteResults } from "../../src/postgres/pglite-sql.js";
 import { yieldToEventLoop } from "./scheduler.ts";
@@ -22,7 +25,8 @@ export const DEFAULT_SLICE_MS = 10;
 export const STACK_DEPTH_EXCEEDED = "54001";
 
 export interface SessionMonitorOptions {
-  /** Time between two turns given to the event loop (default {@link DEFAULT_SLICE_MS}); 0 yields before every statement. */
+  /** Time between two turns given to the event loop (default {@link DEFAULT_SLICE_MS}); 0 yields before every statement,
+   *  `Infinity` never. */
   sliceMs?: number;
   /** Monotonic milliseconds (default `performance.now`). */
   now?: () => number;
@@ -30,6 +34,14 @@ export interface SessionMonitorOptions {
   yieldNow?: () => Promise<void>;
   /** A statement failed on the database, with its SQLSTATE. */
   onFailedStatement?: (code: string) => void;
+}
+
+/** The error a statement gets once the session is closing or closed. */
+export class SessionClosedError extends Error {
+  constructor() {
+    super("PGlite is closed");
+    this.name = "SessionClosedError";
+  }
 }
 
 export interface MonitoredSession extends PgliteDatabase {
@@ -49,21 +61,27 @@ export function databaseErrorCode(e: unknown): string | undefined {
 /** `db` with the behaviour described in the module documentation. */
 export function monitorSession(db: PgliteDatabase, opts: SessionMonitorOptions = {}): MonitoredSession {
   const sliceMs = opts.sliceMs ?? DEFAULT_SLICE_MS;
-  if (!Number.isFinite(sliceMs) || sliceMs < 0) throw new RangeError(`sliceMs must be a non-negative number, got ${sliceMs}`);
+  if (Number.isNaN(sliceMs) || sliceMs < 0) throw new RangeError(`sliceMs must be a non-negative number (Infinity: never), got ${sliceMs}`);
   const now = opts.now ?? (() => performance.now());
   const yieldNow = opts.yieldNow ?? yieldToEventLoop;
   const counts = { statements: 0, failed: 0, turns: 0 };
   let lastTurn = now();
   let since: number | null = null;
+  let closing: Promise<void> | undefined;
+  let inFlight = 0;
+  let drained: (() => void) | undefined;
 
   async function run<T>(statement: () => Promise<T>): Promise<T> {
+    if (closing !== undefined) throw new SessionClosedError();
     if (now() - lastTurn >= sliceMs) {
       counts.turns++;
       await yieldNow();
       lastTurn = now();
+      if (closing !== undefined) throw new SessionClosedError();
     }
     counts.statements++;
     since = now();
+    inFlight++;
     try {
       return await statement();
     } catch (e) {
@@ -75,6 +93,8 @@ export function monitorSession(db: PgliteDatabase, opts: SessionMonitorOptions =
       throw e;
     } finally {
       since = null;
+      inFlight--;
+      if (inFlight === 0) drained?.();
     }
   }
 
@@ -85,9 +105,15 @@ export function monitorSession(db: PgliteDatabase, opts: SessionMonitorOptions =
     },
     query: (query: string, params?: unknown[], options?: PgliteQueryOptions): Promise<PgliteResults> => run(() => db.query(query, params, options)),
     exec: (query: string, options?: PgliteQueryOptions): Promise<PgliteResults[]> => run(() => db.exec(query, options)),
-    close: () => db.close(),
+    close(): Promise<void> {
+      closing ??= (async () => {
+        if (inFlight > 0) await new Promise<void>((resolve) => { drained = resolve; });
+        if (!db.closed) await db.close();
+      })();
+      return closing;
+    },
     get closed() {
-      return db.closed;
+      return closing !== undefined || db.closed;
     },
   };
 }
