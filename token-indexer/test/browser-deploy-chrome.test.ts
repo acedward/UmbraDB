@@ -7,12 +7,12 @@
  *   `dev/browser-snapshot.ts`'s published snapshot), with only the chain moved to a local server through
  *   `UMBRADB_BROWSER_NODE_URL` / `UMBRADB_BROWSER_INDEXER_URL` (a test never reaches Stagenet; the server answers 503,
  *   as an unreachable chain does), served by `serveBrowserBuild` with the build's `_headers` (what `npm run
- *   serve:browser` runs). In headless Chromium with a new profile: the site's root is the explorer; its tab leads, the
- *   worker boots on OPFS and starts by itself at the tip; the page and the worker are cross-origin isolated; the system
- *   status page in a second tab is a follower with all eleven sections and shows "waiting (network)" while the chain
- *   answers 503; the published IDX snapshot (`snapshots/`) imports and gives the recorded digests, and the status page
- *   then shows the engine stopped; reloaded, the explorer lists the tokens with "history before block 714485 is not
- *   indexed". Every request goes to the site (GET) or to the build's chain (from the worker); no CSP violation in either
+ *   serve:browser` runs). In headless Chromium with a new profile: the site's root is the indexer's overview; its tab
+ *   leads, the worker boots on OPFS and starts by itself at the tip; the page and the worker are cross-origin isolated;
+ *   the system status page in a second tab is a follower with all eleven sections and shows "waiting (network)" while
+ *   the chain answers 503; the published IDX snapshot (`snapshots/`) imports and gives the recorded digests, and the
+ *   status page then shows the engine stopped; reloaded on its Token Indexer tab, the explorer lists the tokens with
+ *   "history before block 714485 is not indexed". Every request goes to the site (GET) or to the build's chain (from the worker); no CSP violation in either
  *   page or the worker; no exception.
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH.
@@ -96,7 +96,7 @@ describe("the static deploy recipe in Chrome", () => {
     }
   }
 
-  it("[[browser.deploy.served-build]] the site npm run build:browser writes, served by npm run serve:browser: the explorer at the root leads, boots on OPFS and starts by itself, cross-origin isolated; the status page is a follower with every section, waiting (network) while the chain is down; the published snapshot imports with the recorded digests and the explorer lists its tokens from block 714485; only the site and the build's chain are requested; no CSP violation", async () => {
+  it("[[browser.deploy.served-build]] the site npm run build:browser writes, served by npm run serve:browser: the indexer's overview at the root leads, boots on OPFS and starts by itself, cross-origin isolated; the status page is a follower with every section, waiting (network) while the chain is down; the published snapshot imports with the recorded digests and the explorer in its tab lists its tokens from block 714485; only the site and the build's chain are requested; no CSP violation", async () => {
     // What the build wrote: the pages, the assets, the headers file and the published snapshot.
     expect(readdirSync(dir).sort()).toEqual(["_headers", "assets", "engine.html", "index.html", "snapshots", "system.html"]);
     expect(readdirSync(join(dir, "snapshots")).sort()).toEqual(["index.json", `umbradb-stagenet-${IDX.from}-${IDX.to}.snapshot.tar`]);
@@ -107,8 +107,10 @@ describe("the static deploy recipe in Chrome", () => {
 
     const page = await browser.newPage({ workers: true });
     await page.goto(`${site.origin}/`);
-    await page.waitFor("window.umbradbEngine !== undefined && window.umbradbExplorerHost !== undefined", 30_000, "the explorer page");
-    expect(await page.eval("document.title")).toBe("MIP-0018 token explorer");
+    await page.waitFor("window.umbradbEngine !== undefined && window.umbradbExplorerHost !== undefined", 30_000, "the main page");
+    // The root opens on the indexer's overview.
+    expect(await page.eval("document.title")).toBe("UmbraDB indexer");
+    expect(await page.eval("document.body.getAttribute('data-tab-shown')")).toBe("overview");
     expect(await engine(page, "c.booted()")).toMatchObject({ phase: "ready", error: null });
     expect(await page.eval("window.umbradbEngine.tabs.role()")).toBe("leader");
     await page.waitFor("document.getElementById('engine-panel').getAttribute('data-role') === 'leader'", 30_000, "the panel's leader mark");
@@ -146,10 +148,11 @@ describe("the static deploy recipe in Chrome", () => {
     expect(await page.eval("window.__cspViolations")).toEqual([]);
     expect(await page.evalWorker("self.__cspViolations")).toEqual([]);
 
-    // The explorer, reloaded on the imported store (its tab leads again and starts a new worker).
+    // The explorer in its tab, reloaded on the imported store (the tab leads again and starts a new worker).
     const workersBefore = page.workerSessions.length;
-    await page.goto(`${site.origin}/`);
+    await page.goto(`${site.origin}/?tab=tokens`);
     await page.waitFor("document.body.getAttribute('data-route') === 'list' && document.body.getAttribute('data-state') === 'ready'", 60_000, "the token list");
+    expect(await page.eval("[document.body.getAttribute('data-tab-shown'), document.title]")).toEqual(["tokens", "MIP-0018 token explorer"]);
     expect(await page.eval("window.umbradbEngine.tabs.role()")).toBe("leader");
     const tokens = JSON.parse(((await engine(page, `c.api("GET", "/v1/tokens?limit=100")`)) as { body: string }).body) as { items: unknown[] };
     expect(tokens.items.length).toBeGreaterThan(0);

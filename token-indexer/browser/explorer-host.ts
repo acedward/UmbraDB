@@ -48,7 +48,8 @@ window.umbradbEngine = {
     published: (name) => fetchPublishedSnapshot(name, location.href),
   },
 };
-window.umbradbExplorerHost = engineExplorerHost(client);
+// The explorer is shown while its tab's panel is (`shell.ts`); a page without the tabs always shows it.
+window.umbradbExplorerHost = engineExplorerHost(client, () => document.getElementById("tab-panel-tokens")?.hidden !== true);
 
 // Leave at once when the page goes away (a follower takes over sooner); a page restored from the back/forward cache
 // joins again from scratch.

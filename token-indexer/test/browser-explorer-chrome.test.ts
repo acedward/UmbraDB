@@ -1,6 +1,7 @@
 /**
- * The static build's explorer page (`token-indexer/browser/index.html`) in Chrome: the build (Vite, into a temporary
- * folder) served from 127.0.0.1 with its `_headers` rules (the Content-Security-Policy as a header, COOP/COEP), headless
+ * The static build's main page (`token-indexer/browser/index.html`) in Chrome, with the explorer in its Token Indexer
+ * tab (`?tab=tokens`) and the indexer section of the overview with its controls (`#engine-panel`): the build (Vite,
+ * into a temporary folder) served from 127.0.0.1 with its `_headers` rules (the Content-Security-Policy as a header, COOP/COEP), headless
  * Chromium driven over the DevTools protocol (`helpers/cdp-browser.ts`) recording every request, log entry and
  * `securitypolicyviolation` of the page and of its worker. The engine replays the recorded Stagenet tapes inside its
  * worker: no network. The build's chain is a local server that refuses everything and must never be asked (a start that
@@ -25,15 +26,15 @@
  * - `[[browser.explorer.seam]]` — through the engine: an answer announced over 8 MiB and one streamed over 8 MiB are
  *   `TOO_LARGE`, a 503 is its error code, a failed engine request is `UNREACHABLE`, each exactly as the explorer renders a
  *   fetched answer; hostile text in an engine answer is drawn as visible marks and markup as text, no script runs.
- * - `[[browser.explorer.panel]]` — the engine panel: an empty store (nothing indexed yet, not started, leader,
- *   storage); after a replay the start height, "history before block H is not indexed" in the panel and next to the
+ * - `[[browser.explorer.panel]]` — the overview's indexer section: an empty store (nothing indexed yet, not started,
+ *   leader, storage); after a replay the start height, "history before block H is not indexed" in the panel and next to the
  *   lists, synced and scanned heights, durability, configuration; a second tab is marked follower; each control sends
  *   its one request (recorded on the tabs' channel when a follower sends it: `stop`, `start`, `range` with the typed
  *   heights, `reset`, `export`, `import` with the chosen file); a range change, a reset and an import on a store with
  *   blocks first ask, offering the export (cancel sends nothing); the engine's answers are shown (the range replays and
  *   the start height follows; an export is saved and named after its blocks, a file that is not a snapshot is refused
- *   with its reason); when the leader closes, the follower is
- *   marked leader; the system status link.
+ *   with its reason); when the leader closes, the follower is marked leader; the system status link (in the page's
+ *   header).
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH.
  * `MIP0018_UI_SCREENSHOTS=<dir>` saves PNGs (never committed).
@@ -120,7 +121,7 @@ function shot(page: Page, name: string): Promise<void> | undefined {
   });
 }
 
-/** What the engine panel shows now. */
+/** What the overview's indexer section shows now. */
 interface PanelSnap {
   role: string | null;
   state: string | null;
@@ -141,7 +142,7 @@ const PANEL = `(() => {
   return { role: p.getAttribute('data-role'), state: p.getAttribute('data-state'), fields,
     startHeight: p.querySelector('[data-field="history"]').getAttribute('data-start-height'),
     message: p.querySelector('[data-field="message"]').textContent, confirm: confirm.hidden ? null : confirm.firstChild.textContent,
-    disabled, systemHref: p.querySelector('[data-link="system"]').href };
+    disabled, systemHref: document.querySelector('header [data-link="system"]').href };
 })()`;
 const panel = (page: Page): Promise<PanelSnap> => page.eval<PanelSnap>(PANEL);
 const click = (page: Page, action: string): Promise<void> => page.eval(`document.querySelector('#engine-panel [data-action="${action}"]').click()`);
@@ -204,8 +205,9 @@ describe("the static build's explorer page in Chrome", () => {
     const page = await browser.newPage({ workers: true });
     await openExplorer(page, `${sites.idx.origin}/index.html`);
     await replay(page, "idx", IDX.from, IDX.to);
-    // A fresh load reads the finished store (a new engine worker on the same OPFS store).
-    await openExplorer(page, `${sites.idx.origin}/index.html`);
+    // A fresh load reads the finished store (a new engine worker on the same OPFS store), on the Token Indexer tab.
+    await openExplorer(page, `${sites.idx.origin}/index.html?tab=tokens`);
+    expect(await page.eval("document.body.getAttribute('data-tab-shown')")).toBe("tokens");
     expect(await page.eval("self.crossOriginIsolated")).toBe(true);
     await checkRecordedRoutes(target(page, "static"));
 
@@ -233,7 +235,7 @@ describe("the static build's explorer page in Chrome", () => {
 
   it("[[browser.explorer.activity]] the explorer's recorded activity checks of the Node page pass with the API answered by the engine; only same-origin requests; no CSP violation, exception or console error", async () => {
     const page = await browser.newPage({ workers: true });
-    await openExplorer(page, `${sites.idx.origin}/index.html`);
+    await openExplorer(page, `${sites.idx.origin}/index.html?tab=tokens`);
     await checkRecordedActivity(target(page, "static"));
     expectOnlySite(page, sites.idx);
     await expectClean(page, { worker: true });
@@ -254,7 +256,7 @@ describe("the static build's explorer page in Chrome", () => {
 
   it("[[browser.explorer.seam]] through the engine: an answer announced or streamed over 8 MiB is TOO_LARGE, a 503 is its error code, a failed engine request is UNREACHABLE (each as a fetched answer is rendered); hostile text in an engine answer is drawn as marks and markup as text, no script runs; no CSP violation", async () => {
     const page = await browser.newPage({ workers: true });
-    await openExplorer(page, `${sites.idx.origin}/index.html`);
+    await openExplorer(page, `${sites.idx.origin}/index.html?tab=tokens`);
     await page.waitFor("document.body.getAttribute('data-route') === 'list' && document.body.getAttribute('data-state') === 'ready'");
     const banner = (): Promise<string | null> => page.eval("document.getElementById('banner').hidden ? null : document.getElementById('banner').innerText");
     /** The engine client's `api` replaced for the token list (the rest answered by the engine), then a refresh. */
@@ -300,7 +302,7 @@ describe("the static build's explorer page in Chrome", () => {
     await page.close();
   }, 240_000);
 
-  it("[[browser.explorer.panel]] the engine panel: empty store, then the start height and its 'history before' sentence next to the lists, heights, durability, configuration and storage; a second tab is marked follower; each control sends its one request (range with the typed heights, import with the chosen file), a drop of data first offers the export and cancel sends nothing; the engine's answers are shown; the follower is marked leader when the leader closes; the system status link; no CSP violation", async () => {
+  it("[[browser.explorer.panel]] the overview's indexer section: empty store, then the start height and its 'history before' sentence next to the lists, heights, durability, configuration and storage; a second tab is marked follower; each control sends its one request (range with the typed heights, import with the chosen file), a drop of data first offers the export and cancel sends nothing; the engine's answers are shown; the follower is marked leader when the leader closes; the system status link; no CSP violation", async () => {
     const site = sites.panel;
     const leader = await browser.newPage({ workers: true });
     await openExplorer(leader, `${site.origin}/index.html`);
@@ -314,9 +316,9 @@ describe("the static build's explorer page in Chrome", () => {
     expect(p.systemHref).toBe(`${site.origin}/system.html`);
     const st0 = await status(leader);
     const quota = st0.storage?.quotaBytes ?? (await leader.eval<number>("navigator.storage.estimate().then((e) => e.quota)"));
-    expect(p.fields.storage).toContain(` used of ${formatBytes(quota)}`);
-    expect(p.fields.storage).toMatch(/^(store [\d,]+\.\d [MG]B \u00b7 |store size not read yet \u00b7 )?browser reports /);
-    expect(p.fields.storage).toMatch(/persistent: (yes|no|unknown)/);
+    expect(p.fields.storage).toContain(` \u00b7 quota ${formatBytes(quota)}`);
+    expect(p.fields.storage).toMatch(/^([\d,]+\.\d [MG]B|size not read yet) \u00b7 quota /);
+    expect(p.fields.storage).toMatch(/ \u00b7 (persistent|not persistent|persistence unknown)$/);
     expect(await leader.eval<string>("document.querySelector('#tokens .range-note').textContent")).toBe("nothing indexed yet");
 
     // After a replay: the start height everywhere, the heights, the configuration.

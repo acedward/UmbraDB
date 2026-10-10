@@ -8,10 +8,10 @@
  *   link, and the font the explorer's style names, are served as what they are: `text/css` with the style's rules,
  *   the icon as an image, the font as `font/woff2`; never `text/html` (the page the dev server answers for a path it
  *   does not have).
- * - `[[browser.dev.styles]]` — in Chromium, the explorer on the dev server is styled: the explorer's style sheet is
+ * - `[[browser.dev.styles]]` — in Chromium, the main page on the dev server is styled: the explorer's style sheet is
  *   loaded with its rules, the brand font is loaded and is the body's font, the logo is the 22-pixel mark (not a page
- *   wide picture), the engine panel's labels and values sit side by side in its grid, and the explorer's own style
- *   applies to the panel; the status page gets the same font; the icon loads.
+ *   wide picture), the overview's labels and values sit side by side in its grid, and the main page's own style
+ *   (`explorer.css`) applies; the status page gets the same font; the icon loads.
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH.
  */
@@ -111,7 +111,7 @@ describe("the browser build's dev server", () => {
     expect(fonts, "the explorer's style names its font on both pages").toBe(2);
   }, 120_000);
 
-  it("[[browser.dev.styles]] in Chromium the dev server's explorer is styled: its style sheet loaded with its rules, the brand font loaded and the body's, the logo the 22-pixel mark, the engine panel's labels and values side by side; the status page in the same font; the icon loaded", async () => {
+  it("[[browser.dev.styles]] in Chromium the dev server's explorer is styled: its style sheet loaded with its rules, the brand font loaded and the body's, the logo the 22-pixel mark, the overview's labels and values side by side and the main page's own style applied; the status page in the same font; the icon loaded", async () => {
     const page = await browser.newPage();
     await page.goto(`${origin}/`, 60_000);
     // The dev server may reload the page once while it prepares the dependencies; wait for the styled, booted page.
@@ -128,11 +128,11 @@ describe("the browser build's dev server", () => {
         logoHeight: document.querySelector(".brand svg").getBoundingClientRect().height,
         kvDisplay: getComputedStyle(kv).display,
         sideBySide: Math.abs(k.getBoundingClientRect().top - v.getBoundingClientRect().top) < 2 && k.getBoundingClientRect().right <= v.getBoundingClientRect().left,
-        panelMarginTop: getComputedStyle(document.getElementById("engine-panel")).marginTop,
+        overviewPaddingTop: getComputedStyle(document.getElementById("overview")).paddingTop,
       };
     })()`);
     expect(look.sheetRules as number).toBeGreaterThan(20);
-    expect(look).toMatchObject({ outfitLoaded: true, kvDisplay: "grid", sideBySide: true, panelMarginTop: "14px", logoHeight: 22 });
+    expect(look).toMatchObject({ outfitLoaded: true, kvDisplay: "grid", sideBySide: true, overviewPaddingTop: "18px", logoHeight: 22 });
     expect(look.bodyFont as string).toMatch(/^Outfit,/);
     expect(page.requests.some((r) => r.url.endsWith("/mip0018/ui/favicon.ico") && r.status === 200)).toBe(true);
     for (const r of page.requests) {

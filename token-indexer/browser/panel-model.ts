@@ -1,12 +1,15 @@
 /**
- * What the explorer's engine panel (`engine-panel.ts`) shows, computed from its sources with no DOM: the tab's role,
- * the engine's status (`status`, {@link HostStatus}: the boot, the engine's loops, the cursors, the saved configuration
- * and the storage guard's reading), the API's `/v1/status` (the first indexed height, the archive and scanned heights,
- * durability) and, until the engine has a storage reading, the page's own `navigator.storage` figures. Also the range
- * the user typed, checked before it is sent.
+ * What the indexer's overview (`engine-panel.ts`) shows, computed from its sources with no DOM: the tab's role, the
+ * engine's status (`status`, {@link HostStatus}: the boot, the engine's loops, the cursors, the saved configuration and
+ * modules, and the storage guard's reading), the API's `/v1/status` (the first indexed height, the archive and scanned
+ * heights, durability), the engine's system snapshot (the health line, the finalized tip and the lag, blocks per second,
+ * the worker's uptime) and, until the engine has a storage reading, the page's own `navigator.storage` figures. Also the
+ * range the user typed, checked before it is sent.
  */
+import { HEALTH_LABELS, type SystemSnapshot } from "../engine/system-snapshot.ts";
 import type { PersistenceResult } from "./client.ts";
 import type { HostStatus, StartConfig } from "./protocol.ts";
+import { countText, durationText, rateText } from "./system-model.ts";
 import type { TabRole } from "./tabs.ts";
 
 /** The `/v1/status` fields the panel reads (an API answer: every field is checked before use). */
@@ -38,6 +41,8 @@ export interface PanelInputs {
   pageStorage: PageStorage | null;
   /** The page's request to keep the site's storage (`requestPersistentStorage`), once answered. */
   persistence?: PersistenceResult | null;
+  /** The engine's latest system snapshot (`null` until one arrives). */
+  snapshot?: SystemSnapshot | null;
 }
 
 /** The engine's state, as one word or phrase, plus its detail. */
@@ -68,7 +73,18 @@ export interface PanelView {
   synced: string;
   scanned: string;
   durability: string;
+  /** The storage line (store size, quota, pause threshold, persistence) and its explanation. */
   storage: string;
+  storageTitle: string;
+  /** The health line of the system snapshot (its label and reason), or the engine's state until there is one. */
+  health: string;
+  /** The finalized tip, the lag behind it (blocks and time), blocks per second and the worker's uptime (snapshot). */
+  tip: string;
+  lag: string;
+  rate: string;
+  uptime: string;
+  /** The token indexer module is on (the saved settings; on unless switched off). */
+  tokenIndexer: boolean;
   /** The engine runs (a `start` would be refused). */
   running: boolean;
   /** The boot has ended with an open store: the controls can be used. */
@@ -129,34 +145,80 @@ function stateOf(i: PanelInputs): { state: EngineState; detail: string } {
   return { state: "running", detail: loops };
 }
 
-/** Whether the site's storage is persistent, and why not when the browser refused it (the engine runs either way). */
-export function persistenceText(persisted: boolean | null, request: PersistenceResult | null | undefined): string {
-  const word = persisted === null ? "unknown" : persisted ? "yes" : "no";
-  if (persisted === true || request === null || request === undefined || request.persisted) return `persistent: ${word}`;
-  if (request.error !== null) return `persistent: ${word} (asking the browser to keep this site's storage failed: ${request.error}; the engine runs anyway)`;
-  if (request.requested) return `persistent: ${word} (the browser refused to keep this site's storage, so it may clear the store when space runs low; the engine runs anyway)`;
-  return `persistent: ${word}`;
+/** Whether the site's storage is persistent, in one word or two. */
+const persistentWord = (persisted: boolean | null): string => (persisted === null ? "persistence unknown" : persisted ? "persistent" : "not persistent");
+
+/** The sentence of the storage line's explanation about persistence (and the browser's refusal, when it refused). */
+export function persistenceSentence(persisted: boolean | null, request: PersistenceResult | null | undefined): string {
+  if (persisted === true) return "Persistent: the browser keeps this site's storage when space runs low.";
+  if (persisted === null) return "Whether the browser keeps this site's storage is not known.";
+  if (request !== null && request !== undefined && !request.persisted && request.error !== null)
+    return `Not persistent: asking the browser to keep this site's storage failed (${request.error}), so it may clear the store when space runs low; the engine runs anyway.`;
+  if (request !== null && request !== undefined && !request.persisted && request.requested)
+    return "Not persistent: the browser refused to keep this site's storage, so it may clear the store when space runs low; the engine runs anyway.";
+  return "Not persistent: the browser may clear this site's storage when space runs low.";
 }
 
 /**
- * The storage line: the store's own size first, then the browser's figures, which count more than the store while it
- * is open (Chrome reserves space for the open store's files) and which the sync's pause is measured against.
+ * The storage line, one short line — the store's own size, the quota, the usage at which the sync pauses, and whether
+ * the storage is persistent (`60.7 MB · quota 10.8 GB · pauses at 9.7 GB · not persistent`, then `· paused` while the
+ * sync is paused) — and its explanation for a tooltip: what the browser counts against the quota (more than the store
+ * while it is open: Chrome reserves space for the store's open files), what the pause does, what "not persistent" means
+ * and why, and the pause's reason.
  */
-function storageText(s: HostStatus | null, page: PageStorage | null, request: PersistenceResult | null | undefined): string {
+export function storageLine(s: HostStatus | null, page: PageStorage | null, request: PersistenceResult | null | undefined): { text: string; title: string } {
   const st = s?.storage ?? null;
   if (st !== null) {
-    const parts = [st.storeBytes === null ? "store size not read yet" : `store ${formatBytes(st.storeBytes)}`];
-    parts.push(`browser reports ${formatBytes(st.usageBytes)} used of ${formatBytes(st.quotaBytes)} (includes space Chrome reserves for open files)`);
-    if (st.pauseAtBytes !== null) parts.push(`sync pauses at ${formatBytes(st.pauseAtBytes)} used`);
-    parts.push(persistenceText(st.persisted, request));
-    if (st.paused) parts.push(`paused: ${st.pausedReason ?? "near the quota"}`);
-    return parts.join(" \u00b7 ");
+    const parts = [st.storeBytes === null ? "size not read yet" : formatBytes(st.storeBytes), `quota ${formatBytes(st.quotaBytes)}`];
+    if (st.pauseAtBytes !== null) parts.push(`pauses at ${formatBytes(st.pauseAtBytes)}`);
+    parts.push(persistentWord(st.persisted));
+    if (st.paused) parts.push("paused");
+    const title = [
+      st.storeBytes === null ? "The store's own size is not read yet." : `The store's own files take ${formatBytes(st.storeBytes)}.`,
+      `The browser counts ${formatBytes(st.usageBytes)} against this site's quota of ${formatBytes(st.quotaBytes)}; while the store is open that count includes the space Chrome reserves for the store's open files, so it is larger than the store.`,
+    ];
+    if (st.pauseAtBytes !== null) title.push(`The sync pauses when that count reaches ${formatBytes(st.pauseAtBytes)}, before the quota, and resumes once space frees; the scan and the API go on.`);
+    title.push(persistenceSentence(st.persisted, request));
+    if (st.paused) title.push(`Paused: ${st.pausedReason ?? "the usage is near the quota"}.`);
+    return { text: parts.join(" \u00b7 "), title: title.join(" ") };
   }
-  if (page !== null) return `browser reports ${formatBytes(page.usageBytes)} used of ${formatBytes(page.quotaBytes)} \u00b7 ${persistenceText(page.persisted, request)}`;
-  return "unknown";
+  if (page !== null) {
+    return {
+      text: `size not read yet \u00b7 quota ${formatBytes(page.quotaBytes)} \u00b7 ${persistentWord(page.persisted)}`,
+      title: `The engine has not read the store's size yet. The browser counts ${formatBytes(page.usageBytes)} against this site's quota of ${formatBytes(page.quotaBytes)}. ${persistenceSentence(page.persisted, request)}`,
+    };
+  }
+  return { text: "unknown", title: "" };
 }
 
 const height = (v: number | null): string => (v === null ? "none" : String(v));
+
+/** The snapshot's health line: its label and reason. */
+export function healthText(snap: SystemSnapshot): string {
+  const h = snap.overview.health;
+  return h.reason === null ? HEALTH_LABELS[h.state] : `${HEALTH_LABELS[h.state]} \u00b7 ${h.reason}`;
+}
+
+/**
+ * The overview's figures from the system snapshot: the finalized tip; the lag behind it in blocks — the blocks not yet
+ * scanned, or with the token indexer off the blocks not yet archived — and in time at the chain's measured seconds per
+ * block; blocks per second over the last minute (archive and scan); and the worker's uptime. `—` before a snapshot.
+ */
+export function snapshotFigures(snap: SystemSnapshot | null, tokenIndexer: boolean): { tip: string; lag: string; rate: string; uptime: string } {
+  if (snap === null) return { tip: "\u2014", lag: "\u2014", rate: "\u2014", uptime: "\u2014" };
+  const o = snap.overview;
+  const behind = tokenIndexer ? o.lag.blocks : o.lag.archiveBlocks;
+  const seconds = behind === null || o.lag.secondsPerBlock === null ? null : behind * o.lag.secondsPerBlock;
+  const what = tokenIndexer ? "not scanned yet" : "not archived yet";
+  return {
+    tip: o.finalizedTip === null ? "not read yet" : String(o.finalizedTip),
+    lag: behind === null ? "\u2014"
+      : behind === 0 ? "none: caught up with the finalized tip"
+      : `${countText(behind)} block${behind === 1 ? "" : "s"} ${what}${seconds === null ? "" : ` \u00b7 about ${durationText(seconds * 1_000)}`}`,
+    rate: `archive ${rateText(snap.sync.blocksPerSecond)} \u00b7 scan ${tokenIndexer ? rateText(snap.scan.blocksPerSecond) : "off"} (last minute)`,
+    uptime: durationText(snap.engine.uptimeMs),
+  };
+}
 
 export function panelView(i: PanelInputs): PanelView {
   const s = i.status;
@@ -168,6 +230,9 @@ export function panelView(i: PanelInputs): PanelView {
   const role = i.role === "leader" || i.role === "follower" ? i.role : i.role === "closed" ? "closed" : "connecting";
   const tabs = i.connectedTabs === null ? "" : ` \u00b7 ${i.connectedTabs} tab${i.connectedTabs === 1 ? "" : "s"} open`;
   const config = s?.settings?.config ?? s?.engine?.config;
+  const tokenIndexer = s?.settings?.modules?.["token-indexer"] ?? true;
+  const storage = storageLine(s, i.pageStorage, i.persistence);
+  const snap = i.snapshot ?? null;
   return {
     role: `${role === "leader" ? "leader (this tab runs the engine)" : role === "follower" ? "follower (the engine runs in another tab)" : role}${tabs}`,
     network: str(api?.network) ?? s?.network ?? "unknown",
@@ -177,9 +242,13 @@ export function panelView(i: PanelInputs): PanelView {
     startHeight,
     history: historyText(startHeight),
     synced: height(syncHeight),
-    scanned: height(int(api?.indexedHeight)),
+    scanned: `${height(int(api?.indexedHeight))}${tokenIndexer ? "" : " \u00b7 token indexer off"}`,
     durability: str(api?.durability) ?? s?.store?.durability ?? "unknown",
-    storage: storageText(s, i.pageStorage, i.persistence),
+    storage: storage.text,
+    storageTitle: storage.title,
+    health: snap === null ? (detail === "" ? state : `${state} \u00b7 ${detail}`) : healthText(snap),
+    ...snapshotFigures(snap, tokenIndexer),
+    tokenIndexer,
     running: s?.engine?.running === true,
     ready: s?.boot.phase === "ready",
     recoverable: s?.boot.phase === "failed" && s.boot.storeProblem !== null,

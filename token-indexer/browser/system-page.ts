@@ -2,8 +2,8 @@
  * The system status page of the static build (`system.html`): everything the browser engine is doing and how it is
  * configured, on one read-only page — Overview (the health line, the heights and the lag), Configuration, Sync, Scan,
  * Databases, Storage, API, Engine, Browser, Snapshots and Logs — drawn from the engine's system snapshot
- * (`../engine/system-snapshot.ts`) by `system-model.ts`. The controls stay in the explorer's engine panel
- * (`index.html`), which links here; this page links back.
+ * (`../engine/system-snapshot.ts`) by `system-model.ts`. The controls stay on the indexer's overview (`index.html`),
+ * whose header links here; this page links back.
  *
  * - **Tabs.** The page joins the other tabs of the store (`tabs.ts`), as every page of the build does: the leader tab
  *   runs the engine worker under the page's watchdog (`?watchdogLimitMs=<ms>` sets its limit, as on `engine.html`), a

@@ -38,7 +38,7 @@ PostgreSQL.
 | `scheduler.ts` | Yields to the worker's event loop before each sync batch and scan step, so messages are served while it runs |
 | `tapes.ts`, `tapes/` | The recorded Stagenet ranges (gzip) the worker can replay with no network, SHA-256 checked |
 | `config.ts` | The network, its default endpoints (fixed when the site is built), the store's location and the build's settings |
-| `settings.ts` | The engine's saved configuration, a file beside the store |
+| `settings.ts` | The engine's saved configuration and the modules switched off or on, a file beside the store |
 | `store-identity.ts` | Which PGlite wrote the store, a file beside it: a store of another PGlite version is refused before it is opened |
 | `quota.ts` | The storage guard: pauses the sync before the quota, and after a write the browser refused |
 | `snapshot.ts` | The snapshot file: its manifest, its format (a tar of `manifest.json` and `data.tar.gz`) and every check an import makes |
@@ -46,48 +46,95 @@ PostgreSQL.
 | `snapshot-page.ts` | The page's side: saving an exported file as a download, fetching a snapshot the build publishes |
 | `trusted-worker.ts` | The pages' one Trusted Types policy, `umbradb-engine-worker`, which makes the engine worker's script URL |
 | `zod-jitless.ts` | Turns zod's JIT (`new Function`) off before any schema exists; the first module of the worker and of every page |
-| `index.html`, `explorer-page.ts`, `explorer-host.ts`, `explorer-transport.ts`, `explorer.css` | The token explorer (see [Explorer](#explorer)): the page `GET /ui` serves, reading the API through the engine, with the engine panel |
-| `engine-panel.ts`, `panel-model.ts` | The explorer's engine panel: what the engine indexes and how it is doing, and its controls |
+| `index.html`, `explorer-page.ts`, `shell.ts`, `explorer.css` | The main page (see [Main page](#main-page)): the header's tabs (Overview, Token Indexer, Database) and the system status link, the tab in the URL |
+| `engine-panel.ts`, `panel-model.ts` | The overview's indexer section: health, heights, the finalized tip and the lag, blocks per second, uptime, the storage line, and the engine's controls |
+| `modules.ts`, `modules-view.ts` | The overview's Modules section: the indexer's modules, and Token Indexer's switch (`module`) |
+| `explorer-host.ts`, `explorer-transport.ts` | The token explorer of `GET /ui` in the Token Indexer tab, reading the API through the engine |
+| `database-view.ts`, `database-model.ts`, `store-tables.ts` | The Database tab: the page, its pure view of the engine's answers, and the worker's reads of the store's tables (`tables`, `rows`) |
 | `engine.html`, `engine-page.ts` | A page that joins the tabs, asks for persistent storage, shows its role and the engine's status; `window.umbradbEngine` holds the client, the tabs and the snapshot helpers |
 | `vite.config.ts`, `build-guard.ts`, `build-csp.ts`, `build-explorer.ts` | The build (Node tooling): every `*.html` here is a page, ES module worker, `esnext`, class names kept, `vite-plugin-wasm` for ledger-v9's WASM module, assets as files, a plugin that fails the build if postgres.js or a Node built-in would be bundled, a plugin that writes the pages' security headers, and one that makes the explorer page from `GET /ui`'s markup |
 
-## Explorer
+## Main page
 
-`index.html` is the MIP-0018 token explorer of `GET /ui` (`../mip0018/ui/`), the same script and style, with the API
-answered by the engine instead of a server:
+`index.html` is the indexer's page: a header with three tabs — **Overview** (the default), **Token Indexer** and
+**Database** — and a link to the system status page (`system.html`).
 
-- **Transport.** The explorer script (`../mip0018/ui/page.js`) reads the API through one function, `api(path)`. On
-  `GET /ui` it is a same-origin `fetch`. Here `explorer-host.ts` runs first and installs `window.umbradbExplorerHost`,
-  whose `api(path)` sends `api` (`GET`, the path) to the engine and answers with a fetch `Response` of the handler's
-  status, headers and body (`explorer-transport.ts`); the script reads it exactly as a fetched one: the 8 MiB cap (the
-  announced `content-length`, then the bytes read), the JSON, and the error rendering (`… answered 503 BUSY`; a failed
-  engine request is `… answered nothing UNREACHABLE`). The host object is the switch: only this build installs it, so
-  `GET /ui` is unchanged.
-- **Start height.** This build's index may start mid-chain (at the tip by default), so next to every list (the token
-  list, a contract's token identities, a color's tokens, an identity's current fields and MIP-0018 mark, every
-  activity and events section) the explorer states "indexed from block H · history before block H is not indexed"
-  (`/v1/status` `startHeight`; "nothing indexed yet" before the first block): a token minted earlier shows only as
-  seen, and its metadata only holds what was written from H on.
-- **Page.** The build writes `GET /ui`'s markup (`UI_BODY` of `ui/page.ts`) into `index.html` and links `ui/page.css`,
-  whose font reference becomes the font file (`build-explorer.ts`). The page joins the tabs like the engine page
-  (`window.umbradbEngine`, persistent storage asked at load) and gets the build's policy like every page. On the dev
-  server (`npm run dev:browser`) the same plugin serves what the pages link from `../mip0018/ui/` (the style, the icon)
-  from that directory, through the same transforms, so the dev pages have the build's style and font.
-- **Engine panel** (`engine-panel.ts`, between the header and the view): this tab's role (leader, or follower with the
-  engine in another tab) and the open tabs; the network; the engine's state (`not started`, `running`, `stopped`,
-  `waiting (network)`, `stalled (scan)`, `paused (storage)`, `failed`, …) with its detail; the saved configuration
-  (`settings`); "indexed from block H · history before block H is not indexed"; the synced (archive) and scanned
-  heights; durability; storage (`status`'s `storage` reading: first the size of the store's files, then the usage and
-  quota the browser reports, which count the space Chrome reserves for the open store's files too, where the sync
-  pauses on that usage, and persistence, e.g. "store 42.3 MB · browser reports 995.3 MB used of 11.7 GB (includes space
-  Chrome reserves for open files) · sync pauses at 10.6 GB used · persistent: yes"; the page's own `navigator.storage`
-  figures until there is one). Controls, each one request (from a follower the leader performs it): **start** (the
-  saved configuration), **stop**, **change range** (a start, `tip` or a height, and an optional end, checked before it
-  is sent), **reset**, **export snapshot**, **import snapshot** (a file). A range change, a reset or an import on a
-  store that holds blocks first says which blocks will be dropped and offers to export a snapshot before going on (or
-  cancel, which sends nothing). The answer or the error is shown under the controls. A link leads to the system
-  status page (`system.html`). The panel refreshes every 2 s while the page is visible, after each request and on the
-  engine's notices; all text is set as text.
+- **Tabs** (`shell.ts`). The tab shown is in the URL: `?tab=overview`, `?tab=tokens` or `?tab=database`, written with
+  `history.pushState` when a tab is picked (no reload), so a reload or a shared link opens the same tab and back and
+  forward move between tabs. The fragment stays the token explorer's (`#/…`): with no `tab` parameter an explorer
+  route opens the Token Indexer tab, and following one from another tab opens it too. The document's title names the
+  tab. The Token Indexer tab exists only while its module is on: when it goes away (or a URL names it) the overview is
+  shown and written into the URL.
+- **Overview: the indexer** (`engine-panel.ts`, `panel-model.ts`). The health line (the `system` snapshot's: running,
+  following, catching up, waiting (network), stalled (scan), paused (quota), stopped or error, with its reason; the
+  engine's state until the first snapshot), this tab's role (leader, or follower with the engine in another tab) and
+  the open tabs, the network, the engine's state (`not started`, `running`, `stopped`, `waiting (network)`,
+  `stalled (scan)`, `paused (storage)`, `failed`, …) with its detail, the saved configuration (`settings`), the start
+  height ("indexed from block H · history before block H is not indexed"), the archive and scan heights (the scan
+  height says "token indexer off" while it is), the finalized tip and the lag behind it in blocks and time (the blocks
+  not scanned yet, or not archived yet while the token indexer is off, at the chain's measured seconds per block),
+  blocks per second over the last minute (archive and scan), the worker's uptime, durability and the storage line.
+  The overview follows the `system` snapshot (`system-view.ts`) only while it is shown and the page is visible; it
+  reads `status` and `/v1/status` every 2 s while the page is visible, after each request and on the engine's notices.
+- **The storage line** is one short line: the store's own size (an OPFS walk), the quota, the usage at which the sync
+  pauses and whether the site's storage is persistent, e.g. "42.3 MB · quota 11.8 GB · pauses at 10.6 GB · not
+  persistent" ("· paused" while the sync is paused; the page's own `navigator.storage` figures until the engine has a
+  reading). Its tooltip explains it: the usage the browser counts against the quota (larger than the store while it
+  is open, because Chrome reserves space for the open store's files), what the pause does, what "not persistent"
+  means — and that the browser refused to keep the site's storage, or that asking failed, when it did — and the
+  pause's reason.
+- **Controls**, each one request (from a follower the leader performs it): **start** (the saved configuration),
+  **stop**, **change range** (a start, `tip` or a height, and an optional end, checked before it is sent), **reset**,
+  **export snapshot**, **import snapshot** (a file). A range change, a reset or an import on a store that holds blocks
+  first says which blocks will be dropped and offers to export a snapshot before going on (or cancel, which sends
+  nothing). The answer or the error is shown under the controls.
+- **Modules** (`modules.ts`, `modules-view.ts`), at the bottom of the overview: one row per module of the indexer, with
+  its name, a one-line description and an on/off checkbox — Token Indexer MIP-0018, then the planned ones: Public API
+  Part 1 (wallets), Part 2 (dApps) and Part 3 (SPO), Fast Dust Sync, Fast Shielded Sync, Shielded Token State &
+  Discovery MIP-0006, Unshielded Token State MIP-0006, JSON RPC and Explorer POC. Only Token Indexer is available: its
+  checkbox sends `module` (see Protocol). Off, the engine's MIP-0018 scan stops at a block boundary (it ends the step
+  in flight; every block is its own transaction) while the chain archive keeps syncing; its tab is hidden; `/v1` still
+  answers from the stored data, `/v1/status` says `scanner: "off"`, and the status page shows the scan off. On, the
+  scan continues from its cursor and catches up. The choice is saved with the engine's settings, so it holds after a
+  reload, for the next leader tab and after a restart. The planned modules are unchecked, disabled and marked
+  "planned".
+- **Token Indexer** (the MIP-0018 token explorer of `GET /ui`, `../mip0018/ui/`, the same script and style, with the
+  API answered by the engine instead of a server):
+  - *Transport.* The explorer script (`../mip0018/ui/page.js`) reads the API through one function, `api(path)`. On
+    `GET /ui` it is a same-origin `fetch`. Here `explorer-host.ts` runs first and installs
+    `window.umbradbExplorerHost`, whose `api(path)` sends `api` (`GET`, the path) to the engine and answers with a
+    fetch `Response` of the handler's status, headers and body (`explorer-transport.ts`); the script reads it exactly
+    as a fetched one: the 8 MiB cap (the announced `content-length`, then the bytes read), the JSON, and the error
+    rendering (`… answered 503 BUSY`; a failed engine request is `… answered nothing UNREACHABLE`). The host object is
+    the switch: only this build installs it, so `GET /ui` is unchanged. Its `shown()` says whether the tab is shown:
+    while it is not, the script skips its periodic refresh, and it reads the engine again when the tab is shown.
+  - *Start height.* This build's index may start mid-chain (at the tip by default), so next to every list (the token
+    list, a contract's token identities, a color's tokens, an identity's current fields and MIP-0018 mark, every
+    activity and events section) the explorer states "indexed from block H · history before block H is not indexed"
+    (`/v1/status` `startHeight`; "nothing indexed yet" before the first block): a token minted earlier shows only as
+    seen, and its metadata only holds what was written from H on.
+  - *Page.* The build writes `GET /ui`'s markup (`UI_BODY` of `ui/page.ts`) into the tab and its wordmark (`LOGO`) into
+    the page's header, and links `ui/page.css`, whose font reference becomes the font file (`build-explorer.ts`). On the
+    dev server (`npm run dev:browser`) the same plugin serves what the pages link from `../mip0018/ui/` (the style, the
+    icon) from that directory, through the same transforms, so the dev pages have the build's style and font.
+- **Database** (`database-view.ts`, `database-model.ts`; the worker's side `store-tables.ts`). Read-only: each schema's
+  tables (`chain_archive`, `mip0018`, partitions included) with their kind, estimated rows and size (`tables`: the
+  catalog statistics of the system snapshot), read when the tab is first shown and on "refresh". Picking a table (its
+  row, or the picker) shows a page of its rows (`rows`), newest first — by the primary key's columns, descending, so
+  height-keyed tables list their highest heights first; a table without one in physical order, the last written row
+  first — 25 rows a page, "newer" and "older" to page, up to 10,000 rows deep. Values are cut in the worker's SQL: a
+  `bytea` value as the hex of its first 16 bytes and its length (the cell shows 8 of them), any other value as its text
+  form's first 256 characters and its length (the cell shows 48); what was read is in the cell's tooltip. The table is
+  named to the engine by the schema and name it listed, and the engine looks both up in the store's catalog before any
+  statement names them: anything else is refused (`bad-request`, shown under the table). Each read is an autocommit
+  statement of its own (the catalog, then the page), so the engine's block transactions take their turns between them.
+- **Text.** Everything is drawn with DOM nodes and text (no markup is parsed, no `style` attribute). Text that comes
+  from the engine or from a file — error messages, refusal reasons (a snapshot's manifest fields among them), names,
+  table values — is drawn with the explorer's hidden-character rules (`visible-text.ts`): every hidden character as a
+  visible mark `⟨U+XXXX⟩`, each value in its own bidirectional island.
+- The page joins the tabs like the engine page (`window.umbradbEngine`, persistent storage asked at load) and gets the
+  build's policy like every page. For scripted use, `window.umbradbOverview` holds the overview's last sources, the
+  tabs and the Database tab's last answers.
 
 ## Boot
 
@@ -111,7 +158,7 @@ The worker boots as soon as it loads, in phases posted as `boot` notices and rep
 
   With `storeProblem` set, `reset` and `range` remove the store's files (under the store's lock) and `import` loads a
   snapshot in their place (journaled, as any import); then the rest of the boot runs. Nothing is read from such a
-  store, and the engine panel keeps those three controls enabled. A store another worker holds is never removed.
+  store, and the overview keeps those three controls enabled. A store another worker holds is never removed.
 - **ledger**: ledger-v9 loads and its classes must keep their names (the scan stores them); a renamed class fails the
   boot.
 - **migrate**: the chain archive's and MIP-0018's migrations, as the Node commands run them.
@@ -136,6 +183,9 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | `{ limitMs, heartbeatMs }` |
 | `export` | — | a snapshot file of the store (`Blob`), its suggested name, its manifest, its size and timings (see Snapshots) |
 | `import` | `snapshot`: a snapshot file (`Blob`, a picked `File`) | the imported manifest, timings and status: the store is the snapshot's, the engine is stopped (see Snapshots) |
+| `module` | `module` (`token-indexer`, the one switchable module), `enabled` | status: the choice saved with the settings (`settings.modules`); a running engine's MIP-0018 scan stops at a block boundary while the sync goes on (answered once it has stopped), or continues from its cursor; every engine the worker runs later starts with it |
+| `tables` | — | each schema's tables (name, kind, the table it is a partition of, estimated rows, size) and the database's size, from the catalog |
+| `rows` | `schema`, `table`, `limit?` (1–100, default 25), `offset?` (0–10,000) | the columns (name, type), the order (the primary key's columns, descending; empty: physical order, last written first), the page's values (`null`, `bytes`: hex of the first 16 bytes and the length, `text`: the first 256 characters and the length) and whether more follow; a schema or table that is not the store's is refused (`bad-request`) |
 
 Error codes: `bad-request`, `unsupported-version`, `unknown-type`, `not-implemented`, `unsupported-browser`,
 `boot-failed`, `already-running`, `start-failed`, `internal`, `snapshot-refused` (the message starts with the reason;
@@ -144,7 +194,8 @@ adds `bad-response`, `worker-error`, `restarted` and `closed`, and a page sharin
 `leader-changed` and `leader-unavailable` (see Tabs). Notices: `boot` (each phase), `engine` (`running`, `stopped`,
 `failed`), `system` (one snapshot per collection while watched) and `heartbeat` (after a `watchdog` request).
 
-While no engine runs, `api` answers from the same store with no loops (`/v1/status` reports `scanner: "off"`). Defaults
+While no engine runs, `api` answers from the same store with no loops (`/v1/status` reports `scanner: "off"`); with the
+token indexer off, a running engine's scan waits with phase `off` and `/v1/status` reports `scanner: "off"` too. Defaults
 in the browser: 20 heights per sync batch and 10 blocks per scan step, so a stop and API requests wait for little.
 
 ## Tabs
@@ -161,8 +212,10 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   system snapshot a follower receives is marked as relayed.
 - **Handover.** When the leader closes, the oldest follower gets the lock, starts its worker on the same store and
   resumes what the previous leader last reported running (the same `start` configuration, which continues at the stored
-  cursors); the first leader of a store starts its saved configuration instead (see Sync). Requests in flight to the closed leader: `status`, `api`, `export`, `digest` and `system` are sent again to the next leader;
-  any other request fails with `leader-changed` (it may or may not have been applied); a request made while no leader
+  cursors, with the saved modules); the first leader of a store starts its saved configuration instead (see Sync).
+  Requests in flight to the closed leader: `status`, `api`, `export`, `digest`, `system`, `tables` and `rows` are sent
+  again to the next leader; any other request (`module` among them) fails with `leader-changed` (it may or may not have
+  been applied); a request made while no leader
   is known waits up to 10 s, then fails with `leader-unavailable`.
 - **Store lock.** The worker opens the store only under `umbradb-store:<store>`, held until it closes the store or ends,
   and waits until no other context still holds the store's files, so a closed tab's worker that is still shutting down
@@ -192,8 +245,9 @@ A browser profile runs one engine per store, however many tabs are open. A page 
 - **Persistent storage.** `navigator.storage.persist()` exists only in a window: every page asks for it when it loads
   (`requestPersistentStorage()` in `client.ts`; the grant is per site, so any tab's request counts; the engine page keeps
   the answer in `window.umbradbEngine.persistence`), and the worker's `storage.persisted` reports the outcome. A
-  refusal changes nothing else: the engine runs, and the explorer's engine panel says the browser refused to keep the
-  site's storage (or that asking failed), so the store may be cleared when space runs low.
+  refusal changes nothing else: the engine runs, and the overview's storage line says "not persistent", its tooltip
+  that the browser refused to keep the site's storage (or that asking failed), so the store may be cleared when space
+  runs low.
 - **Storage quota** (`quota.ts`). Before a sync batch (reading again when the last reading is 10 s old) the worker
   compares `navigator.storage.estimate()`'s usage with its quota. While the store is open that usage includes the space
   Chrome reserves for the store's open files (about 1 GB in the session that creates the store, for about 42 MB of
@@ -328,7 +382,7 @@ The dev server (`npm run dev:browser`) sends no policy.
 
 | Path | What |
 |---|---|
-| `index.html` | the token explorer with the engine panel: the site's entry page |
+| `index.html` | the indexer's main page (overview with the controls and modules, the token explorer, the database): the site's entry page |
 | `system.html` | the system status page |
 | `engine.html` | the bare engine page: this tab's role, the boot phase and the engine's status as JSON, `window.umbradbEngine` for scripted use (the browser tests drive the engine through it); no page links to it |
 | `assets/` | the pages' and the worker's modules, PGlite's `pglite.wasm`, `pglite.data` and `initdb.wasm`, ledger-v9's WebAssembly module, the two gzip tapes, the font, the icon and the styles; each name carries a hash of its content |
@@ -442,7 +496,7 @@ statements), **Browser**, **Snapshots** and **Logs** (the last 200 lines, newest
 
 - The page joins the tabs like every page of the build: opened alone it leads (it runs the engine worker under the
   watchdog; `?watchdogLimitMs=` as on `engine.html`); beside a leader it is a follower and shows the leader's
-  snapshots, marked "follower". The controls stay in the explorer's engine panel (`index.html`), which links here;
+  snapshots, marked "follower". The controls stay on the main page's overview (`index.html`), whose header links here;
   this page links back.
 - It follows the snapshots while it is visible (about every 2 s, the catalog about every 30 s) and reads nothing while
   it is hidden. "count rows exactly" reads `count(*)` of every table once.

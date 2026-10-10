@@ -117,7 +117,11 @@ npm run serve:browser    # serves it at http://127.0.0.1:10100/ with the headers
 npm run dev:browser      # or, for development: the same pages from the sources, served by Vite (no security headers)
 ```
 
-Then open `http://127.0.0.1:10100/` (with `dev:browser`, the address Vite prints) in Chrome.
+Then open `http://127.0.0.1:10100/` (with `dev:browser`, the address Vite prints) in Chrome. The page opens on the
+indexer's **Overview** (its health, heights, the finalized tip and the lag, blocks per second, uptime, a one-line
+storage figure and its controls, and the **Modules** section: Token Indexer MIP-0018, which can be switched off and on,
+and the planned modules); the **Token Indexer** tab holds the explorer, and the **Database** tab shows the store's
+tables and a page of rows of any of them.
 
 - **Chrome on the desktop only.** The engine checks for OPFS sync access handles, Web Locks, BroadcastChannel and
   persistent storage before anything else; without them it shows "Chrome only" and creates nothing. The page must come
@@ -128,10 +132,13 @@ Then open `http://127.0.0.1:10100/` (with `dev:browser`, the address Vite prints
   block H is not indexed"): a token minted earlier shows only as seen, and its metadata holds only what was written
   from H on. While the endpoints are unreachable the engine waits with back-off; it never starts at genesis. A
   reopened page continues at the stored cursor and fetches every block since, leaving no gap.
-- **Ranges and reset.** The explorer's engine panel starts and stops the engine, changes the range (a start height or
-  `tip`, and an optional end) and resets the store. One archive has no gaps, so a range change or a reset drops the
-  stored blocks; the panel offers to export a snapshot first.
-- **Snapshots.** The panel exports the whole store as one file (a manifest and PGlite's data directory) and imports
+- **Ranges and reset.** The overview starts and stops the engine, changes the range (a start height or `tip`, and an
+  optional end) and resets the store. One archive has no gaps, so a range change or a reset drops the stored blocks;
+  the overview offers to export a snapshot first.
+- **Token Indexer off.** Unchecked in the Modules section, the MIP-0018 scan stops at a block boundary while the chain
+  archive keeps syncing, and the Token Indexer tab is hidden; the API still answers from the stored data. Checked
+  again, the scan continues from its cursor and catches up. The choice is saved with the store's settings.
+- **Snapshots.** The overview exports the whole store as one file (a manifest and PGlite's data directory) and imports
   one; an import is refused, with its reason, for another network, other migrations, another PGlite version or a
   damaged file. After an import the engine is stopped; its next start continues at the snapshot's height + 1. The
   build publishes the recorded range 714485–715183 as `snapshots/umbradb-stagenet-714485-715183.snapshot.tar`, checked
@@ -141,8 +148,8 @@ Then open `http://127.0.0.1:10100/` (with `dev:browser`, the address Vite prints
   made it.
 - **Several tabs.** One engine per store, however many tabs: the first tab leads and runs the worker, the others run
   none and send their requests to it, and the oldest takes over from the stored cursors when the leader closes. The
-  panel marks each tab leader or follower.
-- **System status page.** `system.html`, linked from the panel, shows the whole system read-only: a health line
+  overview marks each tab leader or follower.
+- **System status page.** `system.html`, linked from the main page's header, shows the whole system read-only: a health line
   (running, following, catching up, waiting (network), stalled (scan), paused (quota), stopped or error), the
   configuration, sync, scan, the databases (migrations, estimated rows and size per table, exact counts on demand),
   storage, API, engine, browser capabilities, snapshots and the last 200 log lines. It reads only while it is visible.
@@ -151,11 +158,13 @@ Then open `http://127.0.0.1:10100/` (with `dev:browser`, the address Vite prints
   refuses that mode). Every block still commits in one transaction with its cursor, so a worker or tab killed at any
   point reopens at its last full block. The store holds only public chain data: a sync or a snapshot rebuilds it.
 - **Storage.** Every page asks the browser to keep the site's storage (`navigator.storage.persist()`); a refusal is
-  shown in the panel and changes nothing else. Before each sync batch the engine compares the browser's usage with its
+  shown by the overview and changes nothing else. Before each sync batch the engine compares the browser's usage with its
   quota and pauses the sync at quota − max(256 MiB, 10 % of the quota), while the scan and the API keep running; it
   resumes once space is freed. A write the browser refuses anyway pauses it the same way, with the store at its last
-  full block. The panel shows the store's own size first, then the browser's figures, which while the store is open
-  also count the space Chrome reserves for its files.
+  full block. The overview's storage line is one short line — the store's own size, the quota, where the sync pauses,
+  and whether the storage is persistent ("42.3 MB · quota 11.8 GB · pauses at 10.6 GB · not persistent") — with the
+  browser's own figures in its tooltip: while the store is open they also count the space Chrome reserves for its
+  files.
 - **Security headers.** The build writes a strict Content-Security-Policy (with a Trusted Types policy for the worker)
   into every page, and the same policy with cross-origin isolation into `dist-browser/_headers`, which Netlify and
   Cloudflare Pages read. A host must send those headers with every file, over `https:`, serve `.wasm` as
@@ -231,17 +240,19 @@ required gate runs it too, on PostgreSQL with the runner's Chrome.
 | One engine across tabs: the leader election, the proxy and the handover rule with in-memory locks and channels; two and three tabs in Chromium on one profile, with the leader closed during a sync | `test/browser-tabs.test.ts`, `test/browser-tabs-chrome.test.ts` |
 | The browser engine's sync: digests, the start at the tip, the automatic start, `range` and `reset`, the storage guard and the pacing in the host; the recorded ranges' digests in Chromium on OPFS, and the automatic start against an advancing local chain | `test/browser-sync-host.test.ts`, `test/browser-sync.test.ts` |
 | The browser engine killed (the worker terminated, the tab's renderer crashed) at exact points of the first boot, of sync and scan block transactions and their commits, between transactions, at file writes, at random times and during a snapshot import: every reopened store holds exactly its cursors' blocks in all 37 tables, and finished ranges have the recorded digests (`npm run test:crash`: 100 kills) | `test/browser-crash-chrome.test.ts` |
-| The browser engine at its limits: the pause before the quota and after a refused write (the store at a full block), a refused `persist()`, an unsupported browser (nothing created), a store of another PGlite version in the panel, a hidden tab's replay; in Node, the refused-write pause, a store of an older build migrated at boot, a token minted before the start height | `test/browser-limits.test.ts`, `test/browser-limits-chrome.test.ts` |
+| The browser engine at its limits: the pause before the quota and after a refused write (the store at a full block), a refused `persist()`, an unsupported browser (nothing created), a store of another PGlite version in the overview, a hidden tab's replay; in Node, the refused-write pause, a store of an older build migrated at boot, a token minted before the start height | `test/browser-limits.test.ts`, `test/browser-limits-chrome.test.ts` |
 | A store the browser engine cannot use: another PGlite version's store refused unopened, an interrupted creation created again, a store that does not open reported; `reset`, `range` and a snapshot import replace it | `test/browser-store-recovery.test.ts` |
 | Snapshots of the browser store: the file and every refusal reason, a round trip that continues at the snapshot's height + 1, exports while the engine writes, the import journal, and the published snapshot in Node; in Chromium on OPFS, the round trip between profiles with equal digests, the refusals, the published snapshot with no network, and an import finished at the next boot | `test/browser-snapshot.test.ts`, `test/browser-snapshot-chrome.test.ts` |
-| The static build's explorer: its transport through the engine, the engine panel's view and the built page; in Chromium, `GET /ui`'s recorded-range checks on the static page with the IDX tape replayed in the worker, the transport's cap and error rendering, and the panel's controls, start height and leader/follower marks | `test/browser-explorer.test.ts`, `test/browser-explorer-chrome.test.ts` |
+| The static build's explorer: its transport through the engine, the overview's view and the built page; in Chromium, `GET /ui`'s recorded-range checks in the Token Indexer tab with the IDX tape replayed in the worker, the transport's cap and error rendering, and the overview's controls, start height and leader/follower marks | `test/browser-explorer.test.ts`, `test/browser-explorer-chrome.test.ts` |
+| The main page: the overview's view of the `system` snapshot, the modules, the tabs' URL rule and the Database tab's view; in Chromium on the static build with its headers, the overview's figures against their sources, the storage line, the tabs in the URL, the Token Indexer switch (the scan stopped at a block boundary while the archive advances, kept through a leader change and a reload, the finished digests equal), the Database tab against the store read with SQL and a forged table refused, and hostile engine and file text drawn as text | `test/browser-overview.test.ts`, `test/browser-shell-chrome.test.ts` |
+| The engine's scan switch and the worker host's `module`, `tables` and `rows`: the scan off while the archive advances and on again to the recorded digests, the choice saved, every table listed and every first page equal to SQL, forged names refused | `test/browser-modules.test.ts` |
 | The static build's security headers: the policy and `_headers` the build writes for every page, the build-time chain, the worker's Trusted Types policy; in Chromium, the engine under the header and the meta policy with no violation and only allowed origins, and each refusal enforced (see `browser/README.md`) | `test/browser-csp-build.test.ts`, `test/browser-csp.test.ts` |
 | The browser engine's `system` snapshot and watchdog heartbeat in the worker host; in Chromium on OPFS, the snapshot against the store read by another page, a follower tab's snapshots, the watchdog's restart of a blocked worker with the recorded digests after it, and the API's round trips during a replay | `test/browser-system.test.ts`, `test/browser-engine-chrome.test.ts` |
 | The browser worker's session (time slices, failed statements, close), API requests between block transactions, the reopen before PGlite's failed-statement defect; the page's watchdog with a real slow statement on a worker thread and its rules | `test/browser-session.test.ts`, `test/browser-watchdog.test.ts` |
 | The browser build computes what the Node build computes, in Chromium: the 110 MIP vectors through the PGlite store in a worker on OPFS; the recorded cases through the engine worker's API (each case at its own last block, the reference index, marks, activity); a crawl of the whole API equal to the Node handler's over the same range | `test/browser-parity.test.ts` |
 | The system status page: its view of a snapshot and the explorer's hidden-character rules; in Chromium on the static build with its headers, every section against its sources, each driven state, a follower tab, nothing read while hidden, hostile text, and the diagnostics file's schema and redaction (see `browser/README.md`) | `test/browser-system-page.test.ts`, `test/browser-system-page-chrome.test.ts` |
-| The dev server (`npm run dev:browser`): every stylesheet, icon and font the explorer and the status page link served as what it is, never as a page; in Chromium, the dev explorer styled (its font, the logo's size, the engine panel's grid) | `test/browser-dev-chrome.test.ts` |
-| The static deploy: `npm run serve:browser`'s server (every file kind's content type, no `Content-Encoding`, every `_headers` header, nothing outside the folder, a folder without `_headers` refused) and its command; in Chromium, the site `npm run build:browser` writes served by it: the explorer starts by itself, the status page follows it, the published snapshot imports with the recorded digests, only the site and the build's chain are requested, no CSP violation | `test/browser-deploy.test.ts`, `test/browser-deploy-chrome.test.ts` |
+| The dev server (`npm run dev:browser`): every stylesheet, icon and font the main page and the status page link served as what it is, never as a page; in Chromium, the dev main page styled (its font, the logo's size, the overview's grid) | `test/browser-dev-chrome.test.ts` |
+| The static deploy: `npm run serve:browser`'s server (every file kind's content type, no `Content-Encoding`, every `_headers` header, nothing outside the folder, a folder without `_headers` refused) and its command; in Chromium, the site `npm run build:browser` writes served by it: the main page starts the engine by itself, the status page follows it, the published snapshot imports with the recorded digests, only the site and the build's chain are requested, no CSP violation | `test/browser-deploy.test.ts`, `test/browser-deploy-chrome.test.ts` |
 
 Fixtures:
 

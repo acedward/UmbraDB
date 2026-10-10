@@ -13,8 +13,9 @@
  *   extend file …)" in `status`, the panel's and the system snapshot's health; the store equals the replay at its
  *   cursors; once space is back the next batch writes and the finished range has the recorded digests.
  * - `[[browser.worker.persist-refused]]` — `navigator.storage.persist()` refused (and, in another profile, failing): the
- *   explorer's engine panel says the browser refused to keep the site's storage and that the engine runs anyway, the
- *   worker reports `persisted: false`, and the engine replays the recorded U1 range to its recorded digest.
+ *   overview's storage line says "not persistent" and its explanation that the browser refused to keep the site's
+ *   storage (or that asking failed) and that the engine runs anyway, the worker reports `persisted: false`, and the
+ *   engine replays the recorded U1 range to its recorded digest.
  * - `[[browser.worker.unsupported]]` — a browser without OPFS sync access handles, one that is not Chromium, and one
  *   without Web Locks (in the page and the worker): the boot ends `unsupported` with the "Chrome only" message, the
  *   panel shows it, every request that needs the store answers `unsupported-browser`, and nothing exists in the origin's
@@ -182,10 +183,10 @@ describe("the browser engine at its limits (Chrome, OPFS)", () => {
     });
   }, 400_000);
 
-  it("[[browser.worker.persist-refused]] a refused or failing persist() is shown by the panel and the engine runs anyway to the recorded digest", async () => {
+  it("[[browser.worker.persist-refused]] a refused or failing persist() is shown by the overview and the engine runs anyway to the recorded digest", async () => {
     for (const [variant, script, text] of [
-      ["refused", "StorageManager.prototype.persist = async function () { return false; };", "persistent: no (the browser refused to keep this site's storage, so it may clear the store when space runs low; the engine runs anyway)"],
-      ["failing", "StorageManager.prototype.persist = async function () { throw new DOMException('not now', 'InvalidStateError'); };", "persistent: no (asking the browser to keep this site's storage failed: not now; the engine runs anyway)"],
+      ["refused", "StorageManager.prototype.persist = async function () { return false; };", "Not persistent: the browser refused to keep this site's storage, so it may clear the store when space runs low; the engine runs anyway."],
+      ["failing", "StorageManager.prototype.persist = async function () { throw new DOMException('not now', 'InvalidStateError'); };", "Not persistent: asking the browser to keep this site's storage failed (not now), so it may clear the store when space runs low; the engine runs anyway."],
     ] as const) {
       await withBrowser(async (b) => {
         const p = await open(b, "index.html", { pageScript: `StorageManager.prototype.persisted = async function () { return false; }; ${script}` });
@@ -194,7 +195,8 @@ describe("the browser engine at its limits (Chrome, OPFS)", () => {
         const end = await untilEnd(p, U1.to);
         expect(end.storage?.persisted, variant).toBe(false);
         expect((await digest(p)).archive.sha256, variant).toBe(U1_ARCHIVE);
-        await p.waitFor(`document.querySelector('#engine-panel [data-field=storage]')?.textContent.endsWith(${JSON.stringify(text)})`, 30_000, `the panel's ${variant} persistence`);
+        // The storage line says "not persistent"; its explanation (the tooltip) says why.
+        await p.waitFor(`document.querySelector('#engine-panel [data-field=storage]')?.textContent.endsWith(" \u00b7 not persistent") && document.querySelector('#engine-panel [data-field=storage]').title.includes(${JSON.stringify(text)})`, 30_000, `the overview's ${variant} persistence`);
         expect(p.exceptions).toEqual([]);
       });
     }

@@ -152,8 +152,8 @@ describe("the static build's local server", () => {
     }
     await expect.poll(() => served.out()).toContain("system.html");
     expect(served.out()).toContain(`serving ${paths.dir} at ${origin}/ with the 7 headers of its _headers file`);
-    expect(served.out()).toContain(`explorer and engine panel: ${origin}/`);
-    expect(served.out()).toContain(`system status page:        ${origin}/system.html`);
+    expect(served.out()).toContain(`indexer:            ${origin}/ (overview, token explorer, database)`);
+    expect(served.out()).toContain(`system status page: ${origin}/system.html`);
     const page = await raw(origin, "/");
     expect(page.status).toBe(200);
     expect(page.headers["cross-origin-embedder-policy"]).toBe("require-corp");

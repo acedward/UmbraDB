@@ -19,7 +19,7 @@
  *   worker). The snapshot was made in Node: a data directory PGlite dumped in Node loads in Chrome.
  * - `[[browser.worker.snapshot-follower]]` — a follower tab imports the published snapshot and exports the store through the
  *   leader tab's worker: the file crosses the tabs' BroadcastChannel as a parameter and as a result.
- * - `[[browser.explorer.panel-snapshot]]` — the explorer's engine panel (`index.html`): its export saves the snapshot as a
+ * - `[[browser.explorer.panel-snapshot]]` — the main page's overview (`index.html`): its export saves the snapshot as a
  *   download, and a new profile's panel imports that file from its file input; the two stores have equal digests, with
  *   no CSP violation.
  * - `[[browser.worker.snapshot-recovery]]` — a profile's store holds an import journal and damaged files when the engine
@@ -300,7 +300,7 @@ describe("browser engine snapshots in Chrome", () => {
     await closeProfile(leader.browser);
   }, 300_000);
 
-  it("[[browser.explorer.panel-snapshot]] the explorer's engine panel exports the store as a download and a new profile's panel imports that file: equal digests", async () => {
+  it("[[browser.explorer.panel-snapshot]] the overview exports the store as a download and a new profile's overview imports that file: equal digests", async () => {
     const U1 = { from: 715402, to: 715433 } as const;
     const msg = "document.querySelector('#engine-panel [data-field=\"message\"]').textContent";
     const openExplorer = async (page: Page): Promise<void> => {

@@ -3,12 +3,15 @@
  *
  * - `[[browser.explorer.transport]]` — the explorer's host (`browser/explorer-transport.ts`): an engine answer becomes a
  *   fetch `Response` with its status, headers (`content-length` included, so the explorer's 8 MiB cap reads it) and body;
- *   the engine is asked `GET` of the path at call time; a failed engine request rejects.
- * - `[[browser.explorer.panel-model]]` — what the engine panel shows (`browser/panel-model.ts`): every engine state, the
- *   first indexed height with "history before block H is not indexed", the configuration, storage from the engine's
- *   reading or the page's, the role, and the typed range checked before it is sent.
+ *   the engine is asked `GET` of the path at call time; a failed engine request rejects; the host says whether the
+ *   explorer is shown (its tab).
+ * - `[[browser.explorer.panel-model]]` — what the overview's indexer section shows (`browser/panel-model.ts`): every
+ *   engine state, the first indexed height with "history before block H is not indexed", the configuration, the storage
+ *   line and its explanation from the engine's reading or the page's, the role, and the typed range checked before it is
+ *   sent.
  * - `[[browser.explorer.build]]` — the built `index.html` (Vite, `browser/vite.config.ts`, into a temporary folder): the
- *   markup of `GET /ui`, one module script and stylesheets (no inline block), the page policy; the explorer script in the
+ *   markup of `GET /ui` (in its tab) and the wordmark in the page's header, one module script and stylesheets (no inline
+ *   block), the page policy; the explorer script in the
  *   bundle, not the Node page module; the brand font and the icon emitted as files with the explorer's bytes; the build
  *   plugin refusing a page style without its font reference and a doubled marker.
  */
@@ -16,12 +19,12 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { EXPLORER_MARKER, explorerPage, FONT_FILE_URL, SERVED_FONT_URL } from "../browser/build-explorer.ts";
+import { EXPLORER_MARKER, explorerPage, FONT_FILE_URL, LOGO_MARKER, SERVED_FONT_URL } from "../browser/build-explorer.ts";
 import { EngineError } from "../browser/client.ts";
 import { engineExplorerHost, responseOf } from "../browser/explorer-transport.ts";
 import { configurationText, formatBytes, historyText, type PanelInputs, panelView, parseRange } from "../browser/panel-model.ts";
 import type { HostStatus } from "../browser/protocol.ts";
-import { UI_BODY } from "../mip0018/ui/page.ts";
+import { LOGO, UI_BODY } from "../mip0018/ui/page.ts";
 import { buildEngineSite, NO_AUTO_START } from "./helpers/engine-site.ts";
 
 const sha256 = (b: Buffer | string): string => createHash("sha256").update(b).digest("hex");
@@ -62,11 +65,16 @@ const inputs = (over: Partial<PanelInputs> = {}): PanelInputs => ({
 });
 
 describe("the static build's explorer page (no browser)", () => {
-  it("[[browser.explorer.transport]] the explorer's host answers a /v1 path with the engine's answer as a fetch Response: status, headers (content-length included) and body; it asks the engine GET of the path when called; a failed engine request rejects; the host asks for the start-height notes", async () => {
+  it("[[browser.explorer.transport]] the explorer's host answers a /v1 path with the engine's answer as a fetch Response: status, headers (content-length included) and body; it asks the engine GET of the path when called; a failed engine request rejects; the host asks for the start-height notes and says whether the explorer is shown", async () => {
     const answer = { status: 200, headers: { "content-type": "application/json; charset=utf-8", "content-length": "16", "cache-control": "no-store" }, body: '{"items":["\u00e9"]}' };
     const client = { api: vi.fn(async () => answer) };
     const host = engineExplorerHost(client);
     expect(host.startHeightNotes).toBe(true);
+    expect(host.shown()).toBe(true); // shown unless the page says otherwise
+    let tabShown = false;
+    expect(engineExplorerHost(client, () => tabShown).shown()).toBe(false);
+    tabShown = true;
+    expect(engineExplorerHost(client, () => tabShown).shown()).toBe(true);
     const r = await host.api("/v1/tokens?limit=100");
     expect(client.api).toHaveBeenCalledWith("GET", "/v1/tokens?limit=100");
     expect(r).toBeInstanceOf(Response);
@@ -110,18 +118,29 @@ describe("the static build's explorer page (no browser)", () => {
     expect(state({ status: hostStatus({ engine: { running: true, config: CONFIG, status: loops({ scan: { scanner: "stalled", lastError: "parent hash" } }), error: null } }) })).toEqual(["stalled (scan)", "parent hash"]);
     const paused = { usageBytes: 9.5e9, quotaBytes: 1e10, persisted: false, pauseAtBytes: 9e9, paused: true, pausedReason: "the usage is near the quota", storeBytes: 42.5e6, checkedAt: 1 };
     expect(state({ status: hostStatus({ storage: paused }) })).toEqual(["paused (storage)", "the usage is near the quota"]);
-    // The store's own size first; the browser's figures (inflated while the store is open) and the pause after it.
-    expect(panelView(inputs({ status: hostStatus({ storage: paused }) })).storage).toBe(
-      "store 42.5 MB \u00b7 browser reports 9.5 GB used of 10.0 GB (includes space Chrome reserves for open files) \u00b7 sync pauses at 9.0 GB used \u00b7 persistent: no \u00b7 paused: the usage is near the quota");
+    // One short line: the store's own size, the quota, the pause threshold, persistence (and the pause); the browser's
+    // count (larger than the store while it is open) and what each figure means in the explanation.
+    const pausedView = panelView(inputs({ status: hostStatus({ storage: paused }) }));
+    expect(pausedView.storage).toBe("42.5 MB \u00b7 quota 10.0 GB \u00b7 pauses at 9.0 GB \u00b7 not persistent \u00b7 paused");
+    expect(pausedView.storageTitle).toBe(
+      "The store's own files take 42.5 MB. The browser counts 9.5 GB against this site's quota of 10.0 GB; while the store is open that count includes the space Chrome reserves for the store's open files, so it is larger than the store. " +
+      "The sync pauses when that count reaches 9.0 GB, before the quota, and resumes once space frees; the scan and the API go on. " +
+      "Not persistent: the browser may clear this site's storage when space runs low. Paused: the usage is near the quota.");
     const open = { ...paused, usageBytes: 995_300_000, quotaBytes: 11_732_800_000, pauseAtBytes: 10_559_520_000, paused: false, pausedReason: null, storeBytes: 42_300_000, persisted: true };
-    expect(panelView(inputs({ status: hostStatus({ storage: open }) })).storage).toBe(
-      "store 42.3 MB \u00b7 browser reports 995.3 MB used of 11.7 GB (includes space Chrome reserves for open files) \u00b7 sync pauses at 10.6 GB used \u00b7 persistent: yes");
-    expect(panelView(inputs({ status: hostStatus({ storage: { ...open, storeBytes: null, pauseAtBytes: null } }) })).storage).toBe(
-      "store size not read yet \u00b7 browser reports 995.3 MB used of 11.7 GB (includes space Chrome reserves for open files) \u00b7 persistent: yes");
+    const openView = panelView(inputs({ status: hostStatus({ storage: open }) }));
+    expect(openView.storage).toBe("42.3 MB \u00b7 quota 11.7 GB \u00b7 pauses at 10.6 GB \u00b7 persistent");
+    expect(openView.storageTitle).toContain("The browser counts 995.3 MB against this site's quota of 11.7 GB; while the store is open that count includes the space Chrome reserves for the store's open files");
+    expect(openView.storageTitle).toContain("Persistent: the browser keeps this site's storage when space runs low.");
+    const unread = panelView(inputs({ status: hostStatus({ storage: { ...open, storeBytes: null, pauseAtBytes: null, persisted: null } }) }));
+    expect(unread.storage).toBe("size not read yet \u00b7 quota 11.7 GB \u00b7 persistence unknown");
+    expect(unread.storageTitle).toMatch(/^The store's own size is not read yet\. The browser counts 995\.3 MB /);
+    expect(unread.storageTitle).not.toContain("pauses");
     // Storage from the page until the engine has a reading.
-    expect(panelView(inputs({ pageStorage: { usageBytes: 1_015_257_540, quotaBytes: 11_752_675_780, persisted: null } })).storage).toBe(
-      "browser reports 1.0 GB used of 11.8 GB \u00b7 persistent: unknown");
+    const pageOnly = panelView(inputs({ pageStorage: { usageBytes: 1_015_257_540, quotaBytes: 11_752_675_780, persisted: null } }));
+    expect(pageOnly.storage).toBe("size not read yet \u00b7 quota 11.8 GB \u00b7 persistence unknown");
+    expect(pageOnly.storageTitle).toBe("The engine has not read the store's size yet. The browser counts 1.0 GB against this site's quota of 11.8 GB. Whether the browser keeps this site's storage is not known.");
     expect(panelView(inputs()).storage).toBe("unknown");
+    expect(panelView(inputs()).storageTitle).toBe("");
     expect([formatBytes(null), formatBytes(0), formatBytes(42_300_000), formatBytes(999_940_000), formatBytes(1e9), formatBytes(11_732_800_000), formatBytes(1_234_567_000_000)]).toEqual(
       ["unknown", "0.0 MB", "42.3 MB", "999.9 MB", "1.0 GB", "11.7 GB", "1,234.6 GB"]);
     // Nothing indexed yet: no start height, nothing to lose.
@@ -159,7 +178,10 @@ describe("the static build's explorer page (no browser)", () => {
       const html = readFileSync(join(dir, "index.html"), "utf8");
       expect(html).toContain(UI_BODY);
       expect(html).not.toContain(EXPLORER_MARKER);
-      expect(html).toContain("<title>MIP-0018 token explorer</title>");
+      // The page's own header carries the explorer's wordmark.
+      expect(html).toContain(LOGO);
+      expect(html).not.toContain(LOGO_MARKER);
+      expect(html).toContain("<title>UmbraDB indexer</title>");
       const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)];
       expect(scripts).toHaveLength(1);
       expect(scripts[0]![1]).toMatch(/type="module"/);
@@ -195,8 +217,10 @@ describe("the static build's explorer page (no browser)", () => {
       expect(transform("a {}", "/repo/token-indexer/browser/explorer.css")).toBe(null);
       const page = (plugin.transformIndexHtml as { handler: (html: string) => string }).handler;
       expect(page(`<body>${EXPLORER_MARKER}</body>`)).toBe(`<body>${UI_BODY}</body>`);
+      expect(page(`<h1>${LOGO_MARKER}</h1>${EXPLORER_MARKER}`)).toBe(`<h1>${LOGO}</h1>${UI_BODY}`);
       expect(page("<body></body>")).toBe("<body></body>");
       expect(() => page(`${EXPLORER_MARKER}${EXPLORER_MARKER}`)).toThrow(/more than once/);
+      expect(() => page(`${LOGO_MARKER}${LOGO_MARKER}`)).toThrow(/more than once/);
     });
   });
 });

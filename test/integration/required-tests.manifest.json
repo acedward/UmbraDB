@@ -1,5 +1,5 @@
 {
-  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 324) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
+  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 338) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
   "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` — those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early — that would re-open the exact self-skip hole this manifest closes.",
   "required": [
     {
@@ -1395,7 +1395,7 @@
     {
       "id": "browser.explorer.panel",
       "file": "token-indexer/test/browser-explorer-chrome.test.ts",
-      "description": "the engine panel: empty store, then the start height and its 'history before' sentence next to the lists, heights, durability, configuration and storage; a second tab is marked follower; each control sends its one request (range with the typed heights, import with the chosen file), a drop of data first offers the export and cancel sends nothing; the engine's answers are shown; the follower is marked leader when the leader closes; the system status link; no CSP violation"
+      "description": "the overview's indexer section: empty store, then the start height and its 'history before' sentence next to the lists, heights, durability, configuration and storage; a second tab is marked follower; each control sends its one request (range with the typed heights, import with the chosen file), a drop of data first offers the export and cancel sends nothing; the engine's answers are shown; the follower is marked leader when the leader closes; the system status link; no CSP violation"
     },
     {
       "id": "browser.explorer.transport",
@@ -1465,7 +1465,7 @@
     {
       "id": "browser.explorer.panel-snapshot",
       "file": "token-indexer/test/browser-snapshot-chrome.test.ts",
-      "description": "the explorer's engine panel exports the store as a download and a new profile's panel imports that file: equal digests"
+      "description": "the overview exports the store as a download and a new profile's overview imports that file: equal digests"
     },
     {
       "id": "browser.worker.snapshot-recovery",
@@ -1520,7 +1520,7 @@
     {
       "id": "browser.status.links",
       "file": "token-indexer/test/browser-system-page-chrome.test.ts",
-      "description": "the explorer's engine panel links to the status page and the status page back to the explorer, both followed under the headers' policy with every request answered and no violation"
+      "description": "the main page's header links to the status page and the status page back to the main page, both followed under the headers' policy with every request answered and no violation"
     },
     {
       "id": "browser.host.store-version",
@@ -1540,7 +1540,7 @@
     {
       "id": "browser.panel.store-problem",
       "file": "token-indexer/test/browser-store-recovery.test.ts",
-      "description": "the engine panel keeps reset, range and import usable after a boot that failed because of the store, and says when the browser refused to keep the site's storage"
+      "description": "the overview keeps reset, range and import usable after a boot that failed because of the store, and its storage line's explanation says when the browser refused to keep the site's storage"
     },
     {
       "id": "browser.crash.kills",
@@ -1565,7 +1565,7 @@
     {
       "id": "browser.worker.persist-refused",
       "file": "token-indexer/test/browser-limits-chrome.test.ts",
-      "description": "in Chromium, a refused or failing persist() is shown by the explorer's engine panel and the engine runs anyway to the recorded digest"
+      "description": "in Chromium, a refused or failing persist() is shown by the overview (\"not persistent\" and why) and the engine runs anyway to the recorded digest"
     },
     {
       "id": "browser.worker.unsupported",
@@ -1610,7 +1610,7 @@
     {
       "id": "browser.deploy.served-build",
       "file": "token-indexer/test/browser-deploy-chrome.test.ts",
-      "description": "the site npm run build:browser writes, served by npm run serve:browser, in Chromium: the explorer at the root leads, boots and starts by itself, cross-origin isolated; the status page follows it with every section; the published snapshot imports with the recorded digests and the explorer lists its tokens from its start height; only the site and the build's chain are requested; no CSP violation"
+      "description": "the site npm run build:browser writes, served by npm run serve:browser, in Chromium: the indexer's overview at the root leads, boots and starts by itself, cross-origin isolated; the status page follows it with every section; the published snapshot imports with the recorded digests and the explorer lists its tokens from its start height; only the site and the build's chain are requested; no CSP violation"
     },
     {
       "id": "browser.dev.assets",
@@ -1620,7 +1620,77 @@
     {
       "id": "browser.dev.styles",
       "file": "token-indexer/test/browser-dev-chrome.test.ts",
-      "description": "in Chromium the dev server's explorer is styled: its style sheet loaded, the brand font loaded and the body's, the logo the 22-pixel mark, the engine panel's labels and values side by side; the status page in the same font; the icon loaded"
+      "description": "in Chromium the dev server's explorer is styled: its style sheet loaded, the brand font loaded and the body's, the logo the 22-pixel mark, the overview's labels and values side by side and the main page's own style applied; the status page in the same font; the icon loaded"
+    },
+    {
+      "id": "engine.scan-switch",
+      "file": "token-indexer/test/browser-modules.test.ts",
+      "description": "the engine's scan switch: a scan configured off starts off while the sync archives; on, it catches up from its cursor; off while it runs, the answer comes once it waits at a block boundary; a stop while it waits ends the loops"
+    },
+    {
+      "id": "browser.host.module-toggle",
+      "file": "token-indexer/test/browser-modules.test.ts",
+      "description": "module off: the scan cursor stays at a block boundary while the archive advances past it, /v1/status says scanner off and answers, the system snapshot shows the scan off; module on: the scan catches up; the finished digests equal the uninterrupted replay's"
+    },
+    {
+      "id": "browser.host.module-saved",
+      "file": "token-indexer/test/browser-modules.test.ts",
+      "description": "the module's state is saved with the settings: a new host on the same store starts with the scan off and the archive syncing; a module that is not switchable is refused; module is never sent again to a new leader, tables and rows are"
+    },
+    {
+      "id": "browser.host.tables",
+      "file": "token-indexer/test/browser-modules.test.ts",
+      "description": "tables lists every table of both schemas as the catalog has them, with estimated rows and sizes"
+    },
+    {
+      "id": "browser.host.rows",
+      "file": "token-indexer/test/browser-modules.test.ts",
+      "description": "rows of every table equals the same page read with SQL (newest first by the primary key, bytes and text cut with their lengths); pages follow one another; the bounds hold"
+    },
+    {
+      "id": "browser.host.rows-refused",
+      "file": "token-indexer/test/browser-modules.test.ts",
+      "description": "a schema or table that is not the store's is refused as a bad request, before any statement names it, and the store is unchanged"
+    },
+    {
+      "id": "browser.overview.model",
+      "file": "token-indexer/test/browser-overview.test.ts",
+      "description": "the overview's view: the system snapshot's health line, tip, lag, blocks/s and uptime; the engine's state until a snapshot arrives; with the token indexer off the lag counts unarchived blocks and the scan says off"
+    },
+    {
+      "id": "browser.overview.modules",
+      "file": "token-indexer/test/browser-overview.test.ts",
+      "description": "the Modules section lists the indexer roadmap's ten modules by product name, Token Indexer first and the only one the engine switches, each with a one-line description"
+    },
+    {
+      "id": "browser.overview.tabs",
+      "file": "token-indexer/test/browser-overview.test.ts",
+      "description": "the tab a URL names: its tab parameter, else the Token Indexer tab for an explorer route, else the overview; setting it keeps the other parameters and the route"
+    },
+    {
+      "id": "browser.database.model",
+      "file": "token-indexer/test/browser-overview.test.ts",
+      "description": "the Database tab's view: NULL; bytes as the hex of their first bytes and their length; text cut with its length; what was sent in the tooltip; sizes, estimates, kinds, order and page"
+    },
+    {
+      "id": "browser.shell.overview",
+      "file": "token-indexer/test/browser-shell-chrome.test.ts",
+      "description": "in Chromium on the static build with its headers: the page opens on the overview with its tabs, the system status link and the Modules section; its figures are its view of its sources and the sources agree (/v1/status, the system snapshot, navigator.storage); the concise storage line; the tab in the URL; no CSP violation"
+    },
+    {
+      "id": "browser.shell.module-toggle",
+      "file": "token-indexer/test/browser-shell-chrome.test.ts",
+      "description": "in Chromium: Token Indexer off from its checkbox stops the scan at a block boundary while the archive advances, hides the tab, holds through a leader change and a reload; on again, the scan catches up to the uninterrupted replay's digests"
+    },
+    {
+      "id": "browser.shell.database",
+      "file": "token-indexer/test/browser-shell-chrome.test.ts",
+      "description": "in Chromium: the Database tab lists every table as the catalog has it; a picked table's rows newest first equal the store read with SQL; a forged table name is refused; hostile text in rows drawn as text; a second tab shows the same"
+    },
+    {
+      "id": "browser.shell.hostile-text",
+      "file": "token-indexer/test/browser-shell-chrome.test.ts",
+      "description": "in Chromium: a node's error and a snapshot's hostile network name, with control, bidi, zero-width and markup characters, are drawn by the overview as text with visible marks; nothing comes alive"
     }
   ],
   "deferred": [

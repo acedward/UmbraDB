@@ -1,9 +1,16 @@
-/* The explorer page of the static browser build: the engine panel (engine-panel.ts) and the note the explorer puts
-   next to every list (the first indexed height). The rest of the look is the explorer's own (mip0018/ui/page.css). */
-.engine-panel { margin: 14px 28px 0; }
-.engine-panel h2 { margin: 0; flex: 1 1 auto; }
+/* The main page of the static browser build (index.html): the header tabs, the overview (the indexer section with its
+   controls, engine-panel.ts, and the Modules section), the Token Indexer tab holding the explorer, the Database tab,
+   and the note the explorer puts next to every list (the first indexed height). The rest of the look is the
+   explorer's own (mip0018/ui/page.css). */
+.tab-panel > .page { padding: 18px 28px 40px; display: grid; gap: 18px; }
+.tab-panel > .page > * { min-width: 0; }
+header.product nav.tabs a.system-link { font-size: 12.5px; }
+/* The explorer inside its tab: its own header is the tab's sub-header; the page's header carries the wordmark. */
+.tab-panel.explorer > header { padding-top: 14px; background: var(--panel); }
+.tab-panel.explorer > header .brand svg, .tab-panel.explorer > header .brand .rule { display: none; }
+.tab-panel.explorer > header h1 { font-size: 17px; }
+.engine-panel h2, .modules h2, .database-view h2 { margin: 0; flex: 1 1 auto; }
 .engine-panel > .row:first-child { margin-bottom: 12px; }
-.engine-panel .system-link { font-size: 12.5px; }
 .engine-panel .controls { margin-top: 14px; }
 .engine-panel .controls .sep { width: 1px; height: 22px; background: var(--rule); }
 .engine-panel input[type="text"] { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--ctl);
@@ -12,10 +19,32 @@
 .engine-panel .confirm { margin-top: 12px; padding: 10px 14px; border: 1px solid var(--tag-observed-bd);
   background: var(--tag-observed-bg); color: var(--tag-observed-fg); font-size: 13px; }
 .engine-panel .confirm .row { margin-top: 8px; }
-.engine-panel [data-field="message"] { margin-top: 10px; min-height: 1.4em; overflow-wrap: anywhere; }
+.engine-panel [data-field="message"], .modules [data-field="modules-message"], .database-view [data-field="db-message"] {
+  margin-top: 10px; min-height: 1.4em; overflow-wrap: anywhere; }
+.engine-panel [data-field="storage"] { cursor: help; text-decoration: underline dotted; text-decoration-color: var(--ctl);
+  text-underline-offset: 3px; }
 .engine-panel[data-state="failed"] [data-field="state"],
 .engine-panel[data-state="unsupported"] [data-field="state"],
-.engine-panel[data-state="stalled (scan)"] [data-field="state"] { color: var(--bad); }
+.engine-panel[data-state="stalled (scan)"] [data-field="state"],
+.engine-panel[data-health="stalled-scan"] [data-field="health"],
+.engine-panel[data-health="error"] [data-field="health"] { color: var(--bad); }
 .engine-panel[data-state="waiting (network)"] [data-field="state"],
-.engine-panel[data-state="paused (storage)"] [data-field="state"] { color: var(--tag-observed-fg); }
+.engine-panel[data-state="paused (storage)"] [data-field="state"],
+.engine-panel[data-health="waiting-network"] [data-field="health"],
+.engine-panel[data-health="paused-quota"] [data-field="health"],
+.engine-panel[data-health="catching-up"] [data-field="health"] { color: var(--tag-observed-fg); }
+.engine-panel[data-health="following"] [data-field="health"],
+.engine-panel[data-health="running"] [data-field="health"] { color: var(--tag-described-fg); font-weight: 600; }
+.modules .head, .database-view .head { margin-bottom: 10px; }
+.modules td { vertical-align: middle; }
+.modules td.toggle { width: 2em; }
+.modules label.name { font-weight: 600; }
+.modules tr[data-state="planned"] label.name { color: var(--dim); font-weight: 500; }
+.database-view .picker { margin: 10px 0; }
+.database-view select { font: inherit; font-size: 13px; padding: 4px 6px; max-width: 100%; }
+.database-view .table-list { max-height: 26em; overflow-y: auto; }
+.database-view section.rows { margin-top: 18px; background: var(--md-white); }
+.database-view section.rows td .d { max-width: none; }
+.database-view section.rows td[title] { cursor: help; }
+.database-view td.hex { font-family: var(--mono); font-size: 12px; color: var(--dim); }
 .range-note { margin: -6px 0 10px; }

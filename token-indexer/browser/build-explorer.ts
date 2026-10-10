@@ -1,9 +1,11 @@
 /**
- * The explorer page of the static build (`index.html`), made from the explorer that `GET /ui` serves
- * (`token-indexer/mip0018/ui/`), so both show the same page (Node tooling: a Vite plugin).
+ * The main page of the static build (`index.html`) carries the explorer that `GET /ui` serves
+ * (`token-indexer/mip0018/ui/`) in its Token Indexer tab, so both show the same explorer (Node tooling: a Vite plugin).
  *
  * - The markup: `index.html` holds the marker `<!-- umbradb-explorer-markup -->` where the explorer's markup
- *   (`UI_BODY` of `ui/page.ts`: header, banner, view, footer) is written, in the build and on the dev server.
+ *   (`UI_BODY` of `ui/page.ts`: header, banner, view, footer) is written, in the build and on the dev server, and the
+ *   marker `<!-- umbradb-logo -->` where the Midnight wordmark of the explorer's header (`LOGO`) is written, for the
+ *   page's own header.
  * - The font: `ui/page.css` names the brand font by the path `GET /ui` serves it at (`/ui/outfit.woff2`); for the static
  *   build that reference becomes the font file itself, which the bundler then emits beside the pages with a relative
  *   URL (so the site also works under a sub-path). The build fails if `page.css` no longer has that reference.
@@ -18,9 +20,18 @@
  */
 import { fileURLToPath } from "node:url";
 import type { Plugin } from "vite";
-import { UI_BODY } from "../mip0018/ui/page.ts";
+import { LOGO, UI_BODY } from "../mip0018/ui/page.ts";
 
 export const EXPLORER_MARKER = "<!-- umbradb-explorer-markup -->";
+export const LOGO_MARKER = "<!-- umbradb-logo -->";
+
+/** `html` with the one `marker` it holds replaced by `markup` (unchanged when it holds none; refused when it holds two). */
+function replaceOnce(html: string, marker: string, markup: string): string {
+  const at = html.indexOf(marker);
+  if (at < 0) return html;
+  if (html.indexOf(marker, at + 1) >= 0) throw new Error(`a page holds ${marker} more than once`);
+  return html.slice(0, at) + markup + html.slice(at + marker.length);
+}
 /** The font reference of `ui/page.css` (the path `GET /ui` serves the font at). */
 export const SERVED_FONT_URL = 'url("/ui/outfit.woff2")';
 /** The same font as a file next to `ui/page.css`. */
@@ -39,10 +50,7 @@ export function explorerPage(): Plugin {
     transformIndexHtml: {
       order: "pre",
       handler(html) {
-        const at = html.indexOf(EXPLORER_MARKER);
-        if (at < 0) return html;
-        if (html.indexOf(EXPLORER_MARKER, at + 1) >= 0) throw new Error(`a page holds ${EXPLORER_MARKER} more than once`);
-        return html.slice(0, at) + UI_BODY + html.slice(at + EXPLORER_MARKER.length);
+        return replaceOnce(replaceOnce(html, EXPLORER_MARKER, UI_BODY), LOGO_MARKER, LOGO);
       },
     },
     configureServer(server) {

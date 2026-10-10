@@ -167,8 +167,8 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
   }
   const headerCount = site.rules.reduce((n, r) => n + r.headers.length, 0);
   console.log(`serving ${resolve(values.dir!)} at ${site.origin}/ with the ${headerCount} headers of its _headers file`);
-  console.log(`  explorer and engine panel: ${site.origin}/`);
-  console.log(`  system status page:        ${site.origin}/system.html`);
+  console.log(`  indexer:            ${site.origin}/ (overview, token explorer, database)`);
+  console.log(`  system status page: ${site.origin}/system.html`);
   if (!["127.0.0.1", "localhost", "::1"].includes(values.host!))
     console.log("  note: Chrome runs the engine only in a secure context: open the site through a loopback address (127.0.0.1, localhost) or serve it over https");
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => void site.close().then(() => process.exit(0)));

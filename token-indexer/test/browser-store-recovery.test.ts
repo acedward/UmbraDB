@@ -18,17 +18,17 @@
  *   it and starts the range. A store with no identity whose open fails (its creation never completed) is removed and
  *   created again by the boot itself, with a warning; a store held by another worker is never removed (`storeProblem`
  *   stays `null`).
- * - `[[browser.panel.store-problem]]` — the engine panel's view: a boot that failed because of the store keeps `reset`,
+ * - `[[browser.panel.store-problem]]` — the overview's view: a boot that failed because of the store keeps `reset`,
  *   `range` and `import` usable (`recoverable`) and shows the boot's message; any other failed or unsupported boot does
- *   not. Its storage line says when the browser refused to keep the site's storage (or asking failed), and that the
- *   engine runs anyway.
+ *   not. Its storage line says "not persistent", and its explanation says when the browser refused to keep the site's
+ *   storage (or asking failed), and that the engine runs anyway.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { WorkerHost, WorkerHostOptions } from "../browser/host.ts";
 import type { BootState, DigestResult, ExportResult, HostStatus, ImportResult } from "../browser/protocol.ts";
-import { panelView, persistenceText } from "../browser/panel-model.ts";
+import { panelView, persistenceSentence } from "../browser/panel-model.ts";
 import { memorySettingsStore } from "../browser/settings.ts";
 import { decodeSnapshotFile, encodeSnapshotFile } from "../browser/snapshot.ts";
 import { memorySnapshotFiles } from "../browser/snapshot-store.ts";
@@ -216,12 +216,14 @@ describe("a store the browser engine cannot use", () => {
     expect(view({ phase: "unsupported", error: "Chrome only" })).toMatchObject({ state: "unsupported", recoverable: false });
     expect(view({ phase: "ready", error: null })).toMatchObject({ ready: true, recoverable: false });
 
-    expect(persistenceText(false, { requested: true, persisted: false, error: null })).toBe("persistent: no (the browser refused to keep this site's storage, so it may clear the store when space runs low; the engine runs anyway)");
-    expect(persistenceText(false, { requested: true, persisted: false, error: "denied" })).toBe("persistent: no (asking the browser to keep this site's storage failed: denied; the engine runs anyway)");
-    expect(persistenceText(true, { requested: true, persisted: true, error: null })).toBe("persistent: yes");
-    expect(persistenceText(false, null)).toBe("persistent: no");
-    expect(persistenceText(null, undefined)).toBe("persistent: unknown");
+    // The storage line says "not persistent"; its explanation says why, when the browser refused or asking failed.
+    expect(persistenceSentence(false, { requested: true, persisted: false, error: null })).toBe("Not persistent: the browser refused to keep this site's storage, so it may clear the store when space runs low; the engine runs anyway.");
+    expect(persistenceSentence(false, { requested: true, persisted: false, error: "denied" })).toBe("Not persistent: asking the browser to keep this site's storage failed (denied), so it may clear the store when space runs low; the engine runs anyway.");
+    expect(persistenceSentence(true, { requested: true, persisted: true, error: null })).toBe("Persistent: the browser keeps this site's storage when space runs low.");
+    expect(persistenceSentence(false, null)).toBe("Not persistent: the browser may clear this site's storage when space runs low.");
+    expect(persistenceSentence(null, undefined)).toBe("Whether the browser keeps this site's storage is not known.");
     const page = panelView({ role: "leader", connectedTabs: 1, status: null, statusError: null, api: null, pageStorage: { usageBytes: 1_000_000, quotaBytes: 2_000_000, persisted: false }, persistence: { requested: true, persisted: false, error: null } });
-    expect(page.storage).toBe("browser reports 1.0 MB used of 2.0 MB \u00b7 persistent: no (the browser refused to keep this site's storage, so it may clear the store when space runs low; the engine runs anyway)");
+    expect(page.storage).toBe("size not read yet \u00b7 quota 2.0 MB \u00b7 not persistent");
+    expect(page.storageTitle).toBe("The engine has not read the store's size yet. The browser counts 1.0 MB against this site's quota of 2.0 MB. Not persistent: the browser refused to keep this site's storage, so it may clear the store when space runs low; the engine runs anyway.");
   });
 });

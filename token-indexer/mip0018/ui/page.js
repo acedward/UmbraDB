@@ -10,7 +10,8 @@
  * index.html) bundles this same script after installing window.umbradbExplorerHost: its api(path) answers a /v1 path
  * through the browser engine with a fetch Response, read here exactly as a fetched one (the same 8 MiB cap and the
  * same error rendering); with startHeightNotes set, every list also states the first indexed height, because that
- * index may start mid-chain.
+ * index may start mid-chain; while its shown() answers false (the explorer's tab is not shown), the periodic refresh
+ * is skipped.
  *
  * Every API path this page reads (relative, this origin only; contract: token-indexer/API.md):
  *   GET /v1/status
@@ -384,6 +385,10 @@
   function explorerHost() {
     var x = window.umbradbExplorerHost;
     return x !== null && typeof x === "object" && typeof x.api === "function" ? x : null;
+  }
+  // Whether the explorer is shown: always on GET /ui; the static build's host may say it is not (its tab is hidden).
+  function shownNow() {
+    return HOST === null || typeof HOST.shown !== "function" || HOST.shown() !== false;
   }
   // The one API call of this page: GET of a relative /v1 path, fetched on this origin or answered by the host.
   async function api(path) {
@@ -1236,8 +1241,9 @@
   function start() {
     el("now").addEventListener("click", function () { refresh(); });
     window.addEventListener("hashchange", onRoute);
-    // Periodic refresh; a tick is skipped while the previous read of the same route is still running.
-    window.setInterval(function () { if (state.inflight !== state.key) refresh(); }, REFRESH_MS);
+    // Periodic refresh; a tick is skipped while the previous read of the same route is still running, and while the
+    // host says the explorer is not shown.
+    window.setInterval(function () { if (state.inflight !== state.key && shownNow()) refresh(); }, REFRESH_MS);
     onRoute();
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
