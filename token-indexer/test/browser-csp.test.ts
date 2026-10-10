@@ -112,7 +112,8 @@ async function buildSite(env: Partial<Record<(typeof CHAIN_ENV)[number], string>
   for (const k of CHAIN_ENV) delete process.env[k];
   Object.assign(process.env, env);
   try {
-    await build({ configFile: CONFIG, logLevel: "silent", build: { outDir: out, emptyOutDir: true } });
+    // The leader tab's automatic start is off: each test starts what it needs.
+    await build({ configFile: CONFIG, logLevel: "silent", define: { __UMBRADB_BROWSER_CONFIG__: JSON.stringify({ autoStart: false }) }, build: { outDir: out, emptyOutDir: true } });
   } finally {
     for (const [k, v] of saved) if (v === undefined) delete process.env[k]; else process.env[k] = v;
   }

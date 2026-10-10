@@ -14,36 +14,55 @@
  *
  * **Requests** (`protocol.ts`): `status` answers at any time; `api` waits for the boot and answers through the running
  * engine's API handler, or, while no engine runs, a handler of the same store with no loops (`scanner: "off"`);
- * `start` runs a new engine (sync + scan in follow mode) with the given configuration, `stop` stops it, one at a time;
- * `range` and `reset` answer `not-implemented`.
+ * `start` runs a new engine (sync + scan in follow mode) with the given configuration, or the saved one, `stop` stops
+ * it; `range` drops the store's data and starts the new range, `reset` drops it and starts the saved configuration
+ * again; all four run one at a time, in arrival order. `digest` computes the store's archive and range-tables digests
+ * in one read-only transaction (the loops wait for it).
  *
  * **Snapshots** (`snapshot-store.ts`): `export` writes a snapshot file of the store while the engine runs (a consistent
  * read between two transactions). `import` checks a snapshot file without touching anything (a refusal changes
  * nothing, and a running engine keeps running), then stops the engine, waits for the API requests in flight, replaces
- * the store under its lock (journaled) and opens it again; meanwhile `status` and `api` wait. The engine stays stopped
- * after an import; a `start` continues from the snapshot's height + 1. The boot finishes an import that a previous
- * worker left unfinished before it opens the store.
+ * the store under its lock (journaled) and opens it again; meanwhile `status` and `api` wait. An import stops the
+ * engine as `stop` does (the automatic start is off) and saves a configuration that continues the imported archive:
+ * its first height as the start, no end, the saved source and tuning; a `start` then continues from the snapshot's
+ * height + 1. The boot finishes an import that a previous worker left unfinished before it opens the store.
  *
  * **Engine**: the engine (`../engine/engine.ts`) runs with a scheduler that yields to the event loop before each step
  * (`scheduler.ts`), so requests and `stop` are served while it syncs; the chain is the network (`fetch` to the node and
- * the indexer) or a recorded range replayed in the worker (`tapes.ts`). A first `start` on an empty archive needs a
- * `startHeight`; a store whose archive has a cursor continues from it.
+ * the indexer) or a recorded range replayed in the worker (`tapes.ts`). A store whose archive has a cursor continues
+ * from it, through any gap since it stopped (never jumping to the new tip). A new archive starts at `startHeight`, by
+ * default the finalized tip both sources serve, `min(node finalized height, indexer tip)`, resolved when the sync
+ * begins: while the endpoints fail the engine waits with back-off, and it never starts at genesis by default.
+ *
+ * **Saved configuration** (`settings.ts`): the last `start` configuration or `range`, kept beside the store, and
+ * whether the engine should start by itself (`autoStart`; a `stop` request turns it off until the next `start`). A
+ * `start` with no configuration runs it; the leader tab sends one when its worker has booted (`tabs.ts`), so a new
+ * store starts at the tip and a reopened one resumes, a chosen range keeping its end.
+ *
+ * **Storage** (`quota.ts`): before each sync batch the guard compares the browser's usage with the quota and pauses the
+ * sync before it is reached (`storage` in `status`); it resumes once space frees.
  */
+import { archiveDigest, dumpArchive } from "../../chain-archive-sync/archive-digest.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import type { ArchiveTape } from "../../chain-archive-sync/archive-tape.js";
 import { createTapeFetch } from "../../chain-archive-sync/tape-replay.js";
 import { durabilityModeOf } from "../../src/postgres/durability-probe.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { mip0018Migrations } from "../../src/postgres/migrations/mip0018/index.js";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { KNOWN_GENESIS } from "../mip0018/api-views.ts";
 import { createIndexerEngine, type EngineClock, type EngineEvent, type EngineScheduler, type IndexerEngine, systemClock } from "../engine/engine.ts";
+import { rangeTables } from "../engine/range-tables.ts";
 import { checkCapabilities } from "./capabilities.ts";
 import {
   type BootState,
   type CapabilityReport,
+  type DigestResult,
+  type EngineSettings,
   type ErrorCode,
   type HostStatus,
   type ImportResult,
+  issuesOf,
   type Notice,
   parseRequest,
   PROTOCOL_VERSION,
@@ -52,11 +71,14 @@ import {
   type RequestType,
   type Response,
   type StartConfig,
+  StartConfigSchema,
   type StoreInfo,
   type TapeRange,
 } from "./protocol.ts";
+import { browserStorageEnvironment, createQuotaGuard, type StorageEnvironment } from "./quota.ts";
 import { yieldingScheduler } from "./scheduler.ts";
-import { type SnapshotExpectation, type SnapshotRecord, SnapshotRefusal, snapshotRecord } from "./snapshot.ts";
+import { type EngineSettingsStore, memorySettingsStore, opfsSettingsStore } from "./settings.ts";
+import { type SnapshotExpectation, type SnapshotManifest, type SnapshotRecord, SnapshotRefusal, snapshotRecord } from "./snapshot.ts";
 import {
   exportSnapshot,
   type ExportedSnapshot,
@@ -108,6 +130,16 @@ export interface WorkerHostOptions {
   log?: (level: LogLevel, message: string) => void;
   /** A monotonic clock in milliseconds for the boot timings. Default `performance.now`. */
   monotonic?: () => number;
+  /** The configuration of a store with no saved one. Default `{}` (the network endpoints, from the finalized tip). */
+  defaultStart?: StartConfig;
+  /** Where the saved configuration is kept. Default: a file beside an `opfs-ahp://` store, else memory. */
+  settings?: EngineSettingsStore;
+  /** What the storage guard reads. Default: `navigator.storage` and the store's OPFS directory. */
+  storage?: StorageEnvironment;
+  /** The storage guard's intervals (`quota.ts`). */
+  quota?: { checkEveryMs?: number; recheckMs?: number; storeEveryMs?: number };
+  /** Called with the store before `range` or `reset` drops its data (an export can be taken there). */
+  beforeWipe?: (store: Store) => Promise<void>;
   /** Where a snapshot import keeps its journal and how it removes the store's files. Default: beside an
    *  `opfs-ahp://` store in OPFS, else memory. */
   snapshotFiles?: SnapshotFiles;
@@ -190,10 +222,23 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   /** Reads the stored cursors (never started). */
   let cursorReader: IndexerEngine | undefined;
   let active: IndexerEngine | undefined;
-  let last: { engine: IndexerEngine; config: StartConfig; error: string | null } | undefined;
+  let last: { engine: IndexerEngine; config: StartConfig; error: string | null; run: AbortController } | undefined;
   let booting: Promise<BootState> | undefined;
   let lifecycle: Promise<unknown> = Promise.resolve();
   let closed = false;
+
+  const settingsStore = opts.settings ?? (opts.dataDir.startsWith("opfs-ahp://") ? opfsSettingsStore(opts.dataDir) : memorySettingsStore());
+  /** The saved configuration, read once the store is open. */
+  let saved: EngineSettings | undefined;
+  const quota = createQuotaGuard({
+    env: opts.storage ?? browserStorageEnvironment(opts.dataDir),
+    now: () => clock.now(),
+    sleep: (ms, signal) => clock.sleep(ms, signal),
+    ...(opts.quota?.checkEveryMs === undefined ? {} : { checkEveryMs: opts.quota.checkEveryMs }),
+    ...(opts.quota?.recheckMs === undefined ? {} : { recheckMs: opts.quota.recheckMs }),
+    ...(opts.quota?.storeEveryMs === undefined ? {} : { storeEveryMs: opts.quota.storeEveryMs }),
+    log,
+  });
 
   // Snapshots: the last export and import, the journal, and the swap in progress (`status` and `api` wait for it).
   const snapshotFiles = opts.snapshotFiles ?? snapshotFilesFor(opts.dataDir);
@@ -203,6 +248,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   let lastImport: SnapshotRecord | null = null;
   let swapping: Promise<void> | undefined;
   let apiInFlight = 0;
+  /** The manifest of an import the boot finished (its configuration is saved once the settings are read). */
+  let finishedImport: SnapshotManifest | undefined;
 
   async function phase<T>(name: BootState["phase"], key: keyof BootState["timings"], fn: () => Promise<T>): Promise<T> {
     bootState.phase = name;
@@ -279,12 +326,15 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         if (s !== undefined) await s.close().catch(() => {});
         throw e;
       }
+      saved = (await settingsStore.load()) ?? { config: opts.defaultStart ?? {}, autoStart: true };
+      if (finishedImport !== undefined) await saveImported(finishedImport);
       store = s;
       idleApi = engineOf(s);
       // Never started: its sync and scan settings only let it read the stored cursors.
       cursorReader = engineOf(s, { sync: { nodeUrl: "http://cursor.invalid/", indexerUrl: "http://cursor.invalid/" }, scan: {} });
       bootState.phase = "ready";
       log("info", `store ${s.dataDir} ready (${s.created ? "created" : "reopened"}, PostgreSQL ${storeInfo.serverVersion})`);
+      void quota.check({ store: true }).catch(() => {});
     } catch (e) {
       bootState.phase = "failed";
       bootState.error = messageOf(e);
@@ -321,6 +371,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       store: storeInfo ?? null,
       engine: last === undefined ? null : { running: active === last.engine, config: last.config, status: last.engine.status(), error: last.error },
       cursors: bootState.phase === "ready" && !closed ? await readCursors() : null,
+      settings: saved ?? null,
+      storage: quota.status(),
       snapshots: { lastExport, lastImport },
     };
   }
@@ -351,25 +403,50 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     return { fetch: replay.fetchImpl, nodeUrl: replay.nodeUrl, indexerUrl: replay.indexerUrl };
   }
 
-  async function start(config: StartConfig): Promise<HostStatus> {
+  /** The scheduler of a run: before a sync batch, the storage guard admits it (it waits while the sync is paused before
+   *  the quota; a stop ends the wait and the batch is not run). */
+  const gated = (run: AbortSignal, base: EngineScheduler): EngineScheduler => async (kind, step) => {
+    if (kind === "sync") await quota.admit(run);
+    return base(kind, step);
+  };
+
+  /** Starts `config` (or the saved configuration) and saves it, with the automatic start on. */
+  async function start(config: StartConfig | undefined): Promise<HostStatus> {
     const s = await ready();
     if (active !== undefined) throw new HostError("already-running", "the engine is running; stop it first");
-    const cursor = await cursorReader!.syncCursor();
-    if (cursor === undefined && config.startHeight === undefined)
-      throw new HostError("start-failed", "the archive is empty: the first start needs a startHeight");
+    const effective = config ?? saved?.config ?? opts.defaultStart ?? {};
+    await run(s, effective);
+    saved = { config: effective, autoStart: true };
+    await saveSettings();
+    return status();
+  }
+
+  async function saveSettings(): Promise<void> {
+    try {
+      if (saved !== undefined) await settingsStore.save(saved);
+    } catch (e) {
+      log("warn", `the engine settings could not be saved: ${messageOf(e)}`);
+    }
+  }
+
+  /** Runs a new engine (sync + scan in follow mode) with `config`. A new archive starts at `config.startHeight`, by
+   *  default the finalized tip. */
+  async function run(s: Store, config: StartConfig): Promise<void> {
     const chain = await chainOf(config);
+    const runner = new AbortController();
     let engine: IndexerEngine;
     try {
       engine = engineOf(s, {
         sync: {
           nodeUrl: chain.nodeUrl,
           indexerUrl: chain.indexerUrl,
-          ...(config.startHeight === undefined ? {} : { startHeight: config.startHeight }),
+          startHeight: config.startHeight ?? "tip",
           ...(config.endHeight === undefined ? {} : { endHeight: config.endHeight }),
           maxBlocks: config.sync?.maxBlocks ?? DEFAULT_SYNC_MAX_BLOCKS,
           ...(config.sync?.concurrency === undefined ? {} : { concurrency: config.sync.concurrency }),
           ...(config.sync?.minIntervalMs === undefined ? {} : { minIntervalMs: config.sync.minIntervalMs }),
           ...(config.sync?.idleMs === undefined ? {} : { idleMs: config.sync.idleMs }),
+          ...(config.sync?.backoff === undefined ? {} : { backoff: config.sync.backoff }),
         },
         scan: {
           mode: "follow",
@@ -377,7 +454,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
           ...(config.scan?.idleMs === undefined ? {} : { idleMs: config.scan.idleMs }),
         },
         fetch: chain.fetch,
-        schedule: opts.schedule ?? yieldingScheduler,
+        schedule: gated(runner.signal, opts.schedule ?? yieldingScheduler),
+        signal: runner.signal,
         onEvent: (e) => {
           const line = logLineOf(e);
           if (line !== undefined) log(line[0], line[1]);
@@ -385,9 +463,10 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       });
       await engine.start();
     } catch (e) {
+      runner.abort();
       throw new HostError("start-failed", messageOf(e));
     }
-    const record = { engine, config, error: null as string | null };
+    const record = { engine, config, error: null as string | null, run: runner };
     active = engine;
     last = record;
     engine.finished.catch((e: unknown) => {
@@ -395,22 +474,95 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       if (active === engine) notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "failed", error: record.error } });
     });
     notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "running", error: null } });
-    return status();
   }
 
-  async function stop(): Promise<HostStatus> {
+  /** Stops the running engine; resolves once its steps in flight have ended. */
+  async function halt(): Promise<void> {
     const engine = active;
     if (engine !== undefined) {
+      last?.run.abort();
       await engine.stop();
       active = undefined;
       notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "stopped", error: last?.error ?? null } });
     }
+  }
+
+  /** A `stop` request: halts the engine and turns the automatic start off until the next `start`. */
+  async function stop(): Promise<HostStatus> {
+    await halt();
+    if (saved !== undefined && saved.autoStart && bootState.phase === "ready") {
+      saved = { ...saved, autoStart: false };
+      await saveSettings();
+    }
     return status();
+  }
+
+  /**
+   * Drops the store's data: both schemas in one transaction (the archive and everything scanned from it), then the
+   * migrations again, so the store is as new. The saved configuration stays.
+   */
+  async function wipe(s: Store): Promise<void> {
+    if (opts.beforeWipe !== undefined) await opts.beforeWipe(s);
+    await s.archive.begin(async (tx) => {
+      await tx`DROP SCHEMA IF EXISTS ${tx(MIP0018_SCHEMA)} CASCADE`;
+      await tx`DROP SCHEMA IF EXISTS ${tx(ARCHIVE_SCHEMA)} CASCADE`;
+    });
+    await migrate(s);
+    storeInfo = await readStoreInfo(s);
+    log("info", "the store's data was dropped");
+  }
+
+  /** A `range` request: a new range means a new archive (one archive has no gaps and no backfill), so the store's data
+   *  is dropped and the range starts; the source and tuning of the saved configuration stay. */
+  async function range(startHeight: number | "tip", endHeight: number | undefined): Promise<HostStatus> {
+    const s = await ready();
+    const config: StartConfig = { ...(saved?.config ?? opts.defaultStart ?? {}), startHeight };
+    delete config.endHeight;
+    if (endHeight !== undefined) config.endHeight = endHeight;
+    const valid = StartConfigSchema.safeParse(config);
+    if (!valid.success) throw new HostError("bad-request", issuesOf(valid.error));
+    await halt();
+    await wipe(s);
+    return start(config);
+  }
+
+  /** A `reset` request: drops the store's data and starts the saved configuration again (a tip start resolves the tip
+   *  anew). */
+  async function reset(): Promise<HostStatus> {
+    const s = await ready();
+    await halt();
+    await wipe(s);
+    return start(undefined);
+  }
+
+  /** The store's archive and range-tables digests, read in one read-only transaction: the loops' statements wait for it
+   *  (one session), so both digests describe one state, also while the engine runs. */
+  async function digest(s: Store): Promise<DigestResult> {
+    const t = monotonic();
+    return s.mip0018.begin("read only", async (tx) => {
+      const sql = tx as unknown as UmbraDBSql;
+      const archive = archiveDigest(await dumpArchive(sql, ARCHIVE_SCHEMA));
+      const { digest: tables } = await rangeTables(sql, ARCHIVE_SCHEMA, MIP0018_SCHEMA);
+      return { archive, tables, elapsedMs: monotonic() - t };
+    });
+  }
+
+  /**
+   * Saves the configuration that continues an imported archive: the saved source and tuning, the snapshot's first height
+   * as the start (it agrees with the archive, so a start continues at its cursor + 1), no end height, and no automatic
+   * start (an import stops the engine as `stop` does).
+   */
+  async function saveImported(manifest: SnapshotManifest): Promise<void> {
+    const config: StartConfig = { ...(saved?.config ?? opts.defaultStart ?? {}), startHeight: manifest.archive.startHeight ?? manifest.archive.height };
+    delete config.endHeight;
+    saved = { config, autoStart: false };
+    await saveSettings();
   }
 
   /** Logs (and records) an import a previous worker left unfinished that the store's open finished or dropped. */
   function noteFinishedImport(opened: OpenedStore): Store {
     if (opened.imported !== null) {
+      finishedImport = opened.imported;
       lastImport = snapshotRecord(opened.imported, clock.now(), null);
       log("warn", `finished an interrupted snapshot import: the store now holds ${opened.imported.network} up to ${opened.imported.archive.height}`);
     }
@@ -457,7 +609,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     let done!: () => void;
     swapping = new Promise<void>((resolve) => (done = resolve));
     try {
-      await stop();
+      await halt();
       while (apiInFlight > 0) await new Promise((resolve) => setTimeout(resolve, 5));
       store = undefined;
       let opened: OpenedStore;
@@ -475,6 +627,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         log("error", `the snapshot could not be loaded and the store was opened empty: ${opened.failure}`);
         throw new HostError("snapshot-failed", `${opened.failure}; the store was opened empty`);
       }
+      await saveImported(prepared.manifest);
       lastImport = snapshotRecord(prepared.manifest, clock.now(), prepared.file.length);
       log("info", `imported a snapshot of ${prepared.manifest.network} up to ${prepared.manifest.archive.height} (${prepared.file.length} bytes)`);
     } finally {
@@ -518,11 +671,15 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         return serial(() => importStore(r.snapshot));
       case "start":
         return serial(() => start(r.config));
+      case "range":
+        return serial(() => range(r.startHeight, r.endHeight));
+      case "reset":
+        return serial(() => reset());
       case "stop":
         return serial(() => stop());
-      case "range":
-      case "reset":
-        throw new HostError("not-implemented", `${r.type} is not implemented by this worker`);
+      case "digest":
+        while (swapping !== undefined) await swapping;
+        return digest(await ready());
     }
   }
 
@@ -549,7 +706,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
 
     async close(): Promise<void> {
       await serial(async () => {
-        await stop();
+        await halt();
         closed = true;
       });
       await boot();

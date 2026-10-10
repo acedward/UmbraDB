@@ -4,6 +4,8 @@
  * the DevTools protocol (`helpers/cdp-browser.ts`). Each test starts a new browser profile, so each starts from an empty
  * store. The chain is the recorded U1 range (715402–715433): replayed inside the worker, or answered from the same tape at
  * the page's origin (`/chain/rpc`, `/chain/graphql`), where every request is recorded and heights can be held back.
+ * The build turns the first leader's automatic start off (`__UMBRADB_BROWSER_CONFIG__`), so each test starts what it
+ * needs; a later leader still resumes what the previous one was running.
  *
  * - `[[browser.tabs.one-engine]]` — two tabs: exactly one worker runs (in the leader tab), it alone holds the store's
  *   lock, the follower starts none; the follower starts the engine through the leader; every API answer, the status and
@@ -155,7 +157,7 @@ async function serveSite(dir: string, tape: ArchiveTape): Promise<Site> {
 /** Builds with Vite; throws the build's error. */
 async function build(outDir: string): Promise<void> {
   const { build: viteBuild } = await import("vite");
-  await viteBuild({ logLevel: "silent", configFile: CONFIG, build: { outDir, emptyOutDir: true } });
+  await viteBuild({ logLevel: "silent", configFile: CONFIG, define: { __UMBRADB_BROWSER_CONFIG__: JSON.stringify({ autoStart: false }) }, build: { outDir, emptyOutDir: true } });
 }
 
 const browserExe = findBrowser();

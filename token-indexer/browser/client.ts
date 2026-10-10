@@ -6,11 +6,14 @@
  * resolves with its result once the worker's response arrives and its result passes the protocol's schema; it rejects
  * with an {@link EngineError} carrying the worker's error code, or `bad-response` (a response that fails validation),
  * `worker-error` (the worker failed to load or crashed) or `closed` (the client was closed). A page that shares the engine
- * with other tabs (`tabs.ts`) can also get `leader-changed` and `leader-unavailable`.
+ * with other tabs (`tabs.ts`) can also get `leader-changed` and `leader-unavailable`. `requestPersistentStorage()` asks
+ * the browser to keep the site's storage: `navigator.storage.persist()` exists only in a window, so a page asks, and the
+ * worker reports the outcome as `persisted`.
  */
 import {
   type ApiResult,
   type BootState,
+  type DigestResult,
   type ErrorCode,
   type ExportResult,
   type HostStatus,
@@ -56,14 +59,19 @@ export interface EngineClient {
   status(): Promise<HostStatus>;
   /** One API request (`token-indexer/API.md`); the answer as the API handler gives it. */
   api(method: string, target: string): Promise<ApiResult>;
+  /** Starts `config`, or the saved configuration when it is omitted. */
   start(config?: StartConfig): Promise<HostStatus>;
   stop(): Promise<HostStatus>;
-  range(startHeight: number | "tip", endHeight?: number): Promise<never>;
-  reset(): Promise<never>;
+  /** Drops the store's data and starts the new range (`"tip"`: from the finalized tip, following it). */
+  range(startHeight: number | "tip", endHeight?: number): Promise<HostStatus>;
+  /** Drops the store's data and starts the saved configuration again. */
+  reset(): Promise<HostStatus>;
   /** A snapshot file of the store (`snapshot.ts`), taken while the engine runs. */
   export(): Promise<ExportResult>;
   /** Replaces the store with a snapshot file; refused (`snapshot-refused`, nothing changed) when it does not match. */
   import(snapshot: Blob): Promise<ImportResult>;
+  /** The store's archive and range-tables digests (one read-only transaction). */
+  digest(): Promise<DigestResult>;
   /** The boot state once the boot has ended (`ready`, `unsupported` or `failed`). */
   booted(): Promise<BootState>;
   /** Adds a notice listener; returns the function that removes it. */
@@ -124,12 +132,13 @@ export function createEngineClient(endpoint: EngineEndpoint): EngineClient {
     request,
     status: () => request("status", {}),
     api: (method, target) => request("api", { method, target }),
-    start: (config = {}) => request("start", { config }),
+    start: (config) => request("start", config === undefined ? {} : { config }),
     stop: () => request("stop", {}),
     range: (startHeight, endHeight) => request("range", endHeight === undefined ? { startHeight } : { startHeight, endHeight }),
     reset: () => request("reset", {}),
     export: () => request("export", {}),
     import: (snapshot) => request("import", { snapshot }),
+    digest: () => request("digest", {}),
 
     booted(): Promise<BootState> {
       return new Promise((resolve, reject) => {
@@ -169,6 +178,30 @@ export function createEngineClient(endpoint: EngineEndpoint): EngineClient {
     },
   };
   return client;
+}
+
+/** The answer to the page's request to keep the site's storage. */
+export interface PersistenceResult {
+  /** Whether `navigator.storage.persist()` was called (not when the storage was already persistent). */
+  requested: boolean;
+  /** Whether the site's storage is persistent now. */
+  persisted: boolean;
+  error: string | null;
+}
+
+/** Asks the browser to keep this site's storage (`navigator.storage.persist()`) unless it already does, and reports the
+ *  answer. A refusal changes nothing else: the engine runs, and its status reports `persisted: false`. */
+export async function requestPersistentStorage(
+  storage: Pick<StorageManager, "persist" | "persisted"> | undefined = globalThis.navigator?.storage,
+): Promise<PersistenceResult> {
+  if (typeof storage?.persist !== "function" || typeof storage.persisted !== "function")
+    return { requested: false, persisted: false, error: "navigator.storage.persist is not available" };
+  try {
+    if (await storage.persisted()) return { requested: false, persisted: true, error: null };
+    return { requested: true, persisted: await storage.persist(), error: null };
+  } catch (e) {
+    return { requested: true, persisted: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /** Starts the engine's dedicated module worker and returns it with a client; a worker that fails to load or crashes

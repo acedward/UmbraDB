@@ -12,7 +12,9 @@
  *   cursors and the same API answers; a new start, this time reading the chain over `fetch` (the page's origin answers
  *   from the same tape), continues at the cursor and fetches only the missing heights; a second reload keeps it all.
  * - `[[browser.worker.protocol]]` — the real worker answers malformed and unknown messages with their error codes,
- *   refuses a second start, and answers `not-implemented` for range, reset, export and import.
+ *   refuses a second start, and answers `not-implemented` for export and import.
+ *
+ * The build turns the engine's automatic start off (`__UMBRADB_BROWSER_CONFIG__`), so each test starts what it needs.
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH.
  * `UMBRADB_BROWSER_REPORT=<file>` writes the measured boot timings as JSON (never committed).
@@ -129,7 +131,7 @@ describe("browser engine worker in Chrome", () => {
   beforeAll(async () => {
     if (browserExe === undefined) throw new Error("no Chromium/Chrome found: set MIP0018_UI_BROWSER or CHROME_BIN (see token-indexer/mip0018/ui/README.md)");
     out = mkdtempSync(join(tmpdir(), "umbradb-browser-build-"));
-    const err = await buildError({ configFile: CONFIG, build: { outDir: out, emptyOutDir: true } });
+    const err = await buildError({ configFile: CONFIG, define: { __UMBRADB_BROWSER_CONFIG__: JSON.stringify({ autoStart: false }) }, build: { outDir: out, emptyOutDir: true } });
     if (err !== undefined) throw new Error(`the browser build failed: ${err}`);
     const tapeBytes = readFileSync(join(ROOT, "token-indexer/browser/tapes/stagenet-715402-715433.tape.json.gz"));
     chain = createTapeReplay(await readTape(new Uint8Array(tapeBytes), "gzip"));
@@ -242,7 +244,7 @@ describe("browser engine worker in Chrome", () => {
     report.reopen2 = { pageToReadyMs: third.pageToReadyMs, boot: third.status.boot.timings };
   }, 300_000);
 
-  it("[[browser.worker.protocol]] the worker answers malformed and unknown messages with their error codes, refuses a second start, and answers not-implemented for range, reset, export and import", async () => {
+  it("[[browser.worker.protocol]] the worker answers malformed and unknown messages with their error codes, refuses a second start, and answers not-implemented for export and import", async () => {
     await open();
     const raw = (message: Json): Promise<Json> => page.eval(`new Promise((resolve) => {
       const w = window.umbradbEngine.worker;
@@ -256,8 +258,8 @@ describe("browser engine worker in Chrome", () => {
     const okRaw = await raw({ v: 1, id: 9004, type: "api", method: "GET", target: "/v1/status" });
     expect(okRaw).toMatchObject({ ok: true, id: 9004, request: "api", result: { status: 200 } });
 
-    const codes = await engine(`Promise.all([c.range("tip"), c.reset(), c.export(), c.import(new Blob(["x"]))].map((p) => p.then(() => "resolved", (e) => e.code)))`);
-    expect(codes).toEqual(["not-implemented", "not-implemented", "not-implemented", "not-implemented"]);
+    const codes = await engine(`Promise.all([c.export(), c.import(new Blob(["x"]))].map((p) => p.then(() => "resolved", (e) => e.code)))`);
+    expect(codes).toEqual(["not-implemented", "not-implemented"]);
     await engine(`c.start(${JSON.stringify({ source: { kind: "tape", range: "u1" }, ...FAST })})`);
     expect(await engine(`c.start({}).then(() => "resolved", (e) => e.code)`)).toBe("already-running");
     const stopped = (await engine("c.stop()")) as HostStatus;

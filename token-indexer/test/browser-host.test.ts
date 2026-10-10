@@ -6,8 +6,8 @@
  *
  * - `[[browser.host.boot]]` — the boot phases in order, both schema lineages migrated, the store's facts, the API
  *   answering before any start (`scanner: "off"`).
- * - `[[browser.host.protocol]]` — every malformed message gets the right error code; `range`, `reset`, `export` and
- *   `import` answer `not-implemented`; a first start needs a start height.
+ * - `[[browser.host.protocol]]` — every malformed message gets the right error code; `export` and `import` answer
+ *   `not-implemented`; a first start with no start height begins at the finalized tip.
  * - `[[browser.host.engine]]` — start, run, stop, restart: the cursors and the API follow the replayed range, a restart
  *   continues at the cursor, and every block is fetched once.
  * - `[[browser.host.refusals]]` — an unsupported browser opens nothing; a ledger build with renamed classes fails the
@@ -143,7 +143,7 @@ describe("browser engine host", () => {
     expect(await host.boot()).toEqual(boot); // the boot runs once
   }, 60_000);
 
-  it("[[browser.host.protocol]] a malformed message gets bad-request, another version unsupported-version, an unknown type unknown-type; range, reset, export and import answer not-implemented; a first start needs a start height", async () => {
+  it("[[browser.host.protocol]] a malformed message gets bad-request, another version unsupported-version, an unknown type unknown-type; export and import answer not-implemented; a first start with no start height begins at the finalized tip", async () => {
     const { host } = newHost();
     const fails = async (raw: unknown): Promise<Extract<Response, { ok: false }>> => {
       const r = await host.receive(raw);
@@ -168,13 +168,16 @@ describe("browser engine host", () => {
     expect(await fails({ v: 1, id: 17, type: "start", config: { sync: { maxBlocks: 0 } } })).toMatchObject({ error: { code: "bad-request" } });
     expect(await fails({ v: 1, id: 18, type: "import", snapshot: "x" })).toMatchObject({ error: { code: "bad-request" } });
 
-    for (const [type, params] of [["range", { startHeight: "tip" }], ["range", { startHeight: 5, endHeight: 9 }], ["reset", {}], ["export", {}], ["import", { snapshot: new Blob(["x"]) }]] as const) {
+    expect(await fails({ v: 1, id: 19, type: "range", startHeight: "top" })).toMatchObject({ error: { code: "bad-request" } });
+    expect((await result<HostStatus>(host, "stop")).engine).toBeNull(); // stop with nothing running is a no-op
+    for (const [type, params] of [["export", {}], ["import", { snapshot: new Blob(["x"]) }]] as const) {
       const e = await errorOf(host, type, params);
       expect(e.code, type).toBe("not-implemented");
     }
-    const e = await errorOf(host, "start", { config: { source: { kind: "tape", range: "u1" } } });
-    expect(e).toEqual({ code: "start-failed", message: "the archive is empty: the first start needs a startHeight" });
-    expect((await result<HostStatus>(host, "stop")).engine).toBeNull(); // stop with nothing running is a no-op
+    // No start height on an empty archive: the finalized tip (the tape's highest height), never genesis.
+    await result(host, "start", { config: { source: { kind: "tape", range: "u1" }, ...FAST } });
+    const atTip = await until(host, "the tip block", (s) => s.cursors?.scan?.nextHeight === U1.to + 1);
+    expect(atTip.cursors!.sync).toEqual({ height: U1.to, startHeight: U1.to });
   }, 60_000);
 
   it("[[browser.host.engine]] start syncs and scans the replayed range; stop leaves both cursors at a full block; a restart continues at the cursor", async () => {
@@ -345,13 +348,13 @@ describe("browser engine client", () => {
       expect(JSON.parse(a.body).scanner).toBe("off");
       expect(a.headers["content-type"]).toContain("application/json");
 
-      for (const p of [client.range("tip"), client.reset(), client.export(), client.import(new Blob(["x"]))]) {
+      for (const p of [client.export(), client.import(new Blob(["x"]))]) {
         const e = await p.then(() => undefined, (x: unknown) => x);
         expect(e).toBeInstanceOf(EngineError);
         expect((e as EngineError).code).toBe("not-implemented");
       }
-      const refused = await client.start({ source: { kind: "tape", range: "u1" } }).then(() => undefined, (x: unknown) => x as EngineError);
-      expect(refused).toMatchObject({ code: "start-failed", request: "start" });
+      const refused = await client.range(10, 9).then(() => undefined, (x: unknown) => x as EngineError);
+      expect(refused).toMatchObject({ code: "bad-request", request: "range" });
 
       tamper = (r) => ({ ...r, result: { ...r.result, status: "two hundred" } });
       expect(await client.api("GET", "/v1/status").then(() => undefined, (x: EngineError) => x.code)).toBe("bad-response");
