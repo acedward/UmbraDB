@@ -9,7 +9,11 @@
  *
  * Recorded per page: every request the page sends (Network domain), responses' statuses, failed loads (incl.
  * `blockedReason`, e.g. `csp`), console calls, browser log entries (CSP reports arrive here), uncaught exceptions, and
- * the page's own `securitypolicyviolation` events (a listener installed before any page script runs).
+ * the page's own `securitypolicyviolation` events (a listener installed before any page script runs); after
+ * `trackWorkers()`, the dedicated workers the page starts and which of them are still running.
+ *
+ * Every page opens as a new tab of the same browser profile (the default browser context), so pages share storage
+ * (OPFS), Web Locks and BroadcastChannel as tabs of one Chrome profile do.
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
@@ -73,6 +77,7 @@ class Connection {
 }
 
 export interface RequestRecord { url: string; method: string; type: string; status?: number; failed?: string; blockedReason?: string }
+export interface WorkerRecord { targetId: string; url: string; running: boolean }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -81,15 +86,18 @@ export class Page {
   readonly console: Array<{ type: string; text: string }> = [];
   readonly logs: Array<{ source: string; level: string; text: string; url?: string }> = [];
   readonly exceptions: string[] = [];
+  /** The dedicated workers this page started, once {@link trackWorkers} has been called. */
+  readonly workers: WorkerRecord[] = [];
   private readonly byId = new Map<string, RequestRecord>();
   private loads = 0;
+  private trackingWorkers = false;
 
-  private constructor(private readonly conn: Connection, readonly sessionId: string) {}
+  private constructor(private readonly conn: Connection, readonly sessionId: string, readonly targetId: string) {}
 
   static async open(conn: Connection): Promise<Page> {
     const { targetId } = await conn.send("Target.createTarget", { url: "about:blank" });
     const { sessionId } = await conn.send("Target.attachToTarget", { targetId, flatten: true });
-    const page = new Page(conn, sessionId);
+    const page = new Page(conn, sessionId, targetId);
     const mine = (l: (p: Json) => void): Listener => (p, s) => { if (s === sessionId) l(p); };
     conn.on("Network.requestWillBeSent", mine((p) => {
       const r: RequestRecord = { url: p.request.url, method: p.request.method, type: p.type ?? "" };
@@ -141,6 +149,35 @@ export class Page {
     }
   }
 
+  /** Sends a DevTools command to this page's session. */
+  send(method: string, params: Json = {}): Promise<Json> {
+    return this.conn.send(method, params, this.sessionId);
+  }
+
+  /** Records the dedicated workers the page starts from now on, in {@link workers} (attached without pausing them). */
+  async trackWorkers(): Promise<void> {
+    if (this.trackingWorkers) return;
+    this.trackingWorkers = true;
+    const bySession = new Map<string, WorkerRecord>();
+    this.conn.on("Target.attachedToTarget", (p, s) => {
+      if (s !== this.sessionId || p.targetInfo?.type !== "worker") return;
+      const w: WorkerRecord = { targetId: p.targetInfo.targetId, url: p.targetInfo.url, running: true };
+      this.workers.push(w);
+      bySession.set(p.sessionId, w);
+    });
+    this.conn.on("Target.detachedFromTarget", (p, s) => {
+      if (s !== this.sessionId) return;
+      const w = bySession.get(p.sessionId);
+      if (w !== undefined) w.running = false;
+    });
+    await this.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
+  }
+
+  /** Closes the tab, as the user closing it does. */
+  async close(): Promise<void> {
+    await this.conn.send("Target.closeTarget", { targetId: this.targetId });
+  }
+
   /** A PNG of the whole page. */
   async screenshot(): Promise<Buffer> {
     const r = await this.conn.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true }, this.sessionId);
@@ -176,6 +213,11 @@ export class Browser {
       ws.addEventListener("error", () => reject(new Error("DevTools WebSocket failed")), { once: true });
     });
     return new Browser(executable, child, new Connection(ws), dir);
+  }
+
+  /** Sends a DevTools command to the browser. */
+  send(method: string, params: Json = {}): Promise<Json> {
+    return this.conn.send(method, params);
   }
 
   async version(): Promise<string> {
