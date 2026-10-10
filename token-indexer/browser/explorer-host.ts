@@ -21,7 +21,7 @@ declare global {
 }
 
 const loadedAt = performance.now();
-const persistence = requestPersistentStorage();
+export const persistence = requestPersistentStorage();
 const limit = Number(new URLSearchParams(location.search).get("watchdogLimitMs"));
 let supervised: SupervisedEngine<Worker> | undefined;
 export const tabs = connectEngineTabs({

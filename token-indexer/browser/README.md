@@ -34,6 +34,7 @@ The build indexes Stagenet unless `UMBRADB_BROWSER_NETWORK`, `UMBRADB_BROWSER_NO
 | `tapes.ts`, `tapes/` | The recorded Stagenet ranges (gzip) the worker can replay with no network, SHA-256 checked |
 | `config.ts` | The network, its default endpoints (fixed when the site is built), the store's location and the build's settings |
 | `settings.ts` | The engine's saved configuration, a file beside the store |
+| `store-identity.ts` | Which PGlite wrote the store, a file beside it: a store of another PGlite version is refused before it is opened |
 | `quota.ts` | The storage guard: pauses the sync before the quota |
 | `snapshot.ts` | The snapshot file: its manifest, its format (a tar of `manifest.json` and `data.tar.gz`) and every check an import makes |
 | `snapshot-store.ts` | Export (a consistent read while the engine runs), import (checks, a trial load, then a journaled swap under the store's lock) and finishing an interrupted import when the store opens |
@@ -88,7 +89,19 @@ The worker boots as soon as it loads, in phases posted as `boot` notices and rep
   and nothing is opened or started. (`navigator.storage.persist()` exists only in a window; the worker checks
   `persisted()`.)
 - **store**: PGlite opens the store; the first open creates the database (about a second, with a second PGlite heap
-  while it runs).
+  while it runs). Before it, the store's identity (`<store directory>.store.json` beside the store, written once a boot
+  has migrated the store and after an import: the PGlite and PostgreSQL versions it was opened with) is read:
+  - a store another PGlite version wrote is **refused unopened**: the boot ends `failed` with `storeProblem: "version"`
+    and "reset it (its data is dropped and synced again) or load a snapshot made by this build";
+  - a store with no identity that does not open is one whose **creation was interrupted** (a worker that ends while
+    PGlite creates a store leaves files PGlite cannot open again: it then needs more pool files than a reopened store
+    gets): its files are removed and the store is created again, with a warning (nothing was stored yet);
+  - a store with an identity that does not open ends the boot `failed` with `storeProblem: "unopenable"`, the error
+    and the same two choices.
+
+  With `storeProblem` set, `reset` and `range` remove the store's files (under the store's lock) and `import` loads a
+  snapshot in their place (journaled, as any import); then the rest of the boot runs. Nothing is read from such a
+  store, and the engine panel keeps those three controls enabled. A store another worker holds is never removed.
 - **ledger**: ledger-v9 loads and its classes must keep their names (the scan stores them); a renamed class fails the
   boot.
 - **migrate**: the chain archive's and MIP-0018's migrations, as the Node commands run them.

@@ -100,6 +100,7 @@ const MUST_REACH = [
   "token-indexer/mip0018/ui/page.js",
   "token-indexer/browser/snapshot.ts",
   "token-indexer/browser/snapshot-store.ts",
+  "token-indexer/browser/store-identity.ts",
   "token-indexer/browser/snapshot-page.ts",
   "token-indexer/browser/system-model.ts",
   "token-indexer/browser/visible-text.ts",

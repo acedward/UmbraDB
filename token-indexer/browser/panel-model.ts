@@ -5,6 +5,7 @@
  * durability) and, until the engine has a storage reading, the page's own `navigator.storage` figures. Also the range
  * the user typed, checked before it is sent.
  */
+import type { PersistenceResult } from "./client.ts";
 import type { HostStatus, StartConfig } from "./protocol.ts";
 import type { TabRole } from "./tabs.ts";
 
@@ -35,6 +36,8 @@ export interface PanelInputs {
   /** `null` until the first `/v1/status` answer (or while the API does not answer). */
   api: ApiStatusFields | null;
   pageStorage: PageStorage | null;
+  /** The page's request to keep the site's storage (`requestPersistentStorage`), once answered. */
+  persistence?: PersistenceResult | null;
 }
 
 /** The engine's state, as one word or phrase, plus its detail. */
@@ -70,6 +73,8 @@ export interface PanelView {
   running: boolean;
   /** The boot has ended with an open store: the controls can be used. */
   ready: boolean;
+  /** The boot failed because of the store (`storeProblem`): `reset`, `range` and `import` replace it. */
+  recoverable: boolean;
   /** The store holds blocks: a range change, a reset or an import drops them (export first). */
   holdsData: boolean;
   /** The heights the store holds, for the question before its data is dropped. */
@@ -124,19 +129,26 @@ function stateOf(i: PanelInputs): { state: EngineState; detail: string } {
   return { state: "running", detail: loops };
 }
 
-function storageText(s: HostStatus | null, page: PageStorage | null): string {
+/** Whether the site's storage is persistent, and why not when the browser refused it (the engine runs either way). */
+export function persistenceText(persisted: boolean | null, request: PersistenceResult | null | undefined): string {
+  const word = persisted === null ? "unknown" : persisted ? "yes" : "no";
+  if (persisted === true || request === null || request === undefined || request.persisted) return `persistent: ${word}`;
+  if (request.error !== null) return `persistent: ${word} (asking the browser to keep this site's storage failed: ${request.error}; the engine runs anyway)`;
+  if (request.requested) return `persistent: ${word} (the browser refused to keep this site's storage, so it may clear the store when space runs low; the engine runs anyway)`;
+  return `persistent: ${word}`;
+}
+
+function storageText(s: HostStatus | null, page: PageStorage | null, request: PersistenceResult | null | undefined): string {
   const st = s?.storage ?? null;
   if (st !== null) {
     const parts = [`${formatBytes(st.usageBytes)} used of ${formatBytes(st.quotaBytes)}`];
     if (st.pauseAtBytes !== null) parts.push(`the sync pauses at ${formatBytes(st.pauseAtBytes)}`);
     if (st.storeBytes !== null) parts.push(`store files ${formatBytes(st.storeBytes)}`);
-    parts.push(`persistent: ${st.persisted === null ? "unknown" : st.persisted ? "yes" : "no"}`);
+    parts.push(persistenceText(st.persisted, request));
     if (st.paused) parts.push(`paused: ${st.pausedReason ?? "near the quota"}`);
     return parts.join(" \u00b7 ");
   }
-  if (page !== null) {
-    return `${formatBytes(page.usageBytes)} used of ${formatBytes(page.quotaBytes)} \u00b7 persistent: ${page.persisted === null ? "unknown" : page.persisted ? "yes" : "no"}`;
-  }
+  if (page !== null) return `${formatBytes(page.usageBytes)} used of ${formatBytes(page.quotaBytes)} \u00b7 ${persistenceText(page.persisted, request)}`;
   return "unknown";
 }
 
@@ -163,9 +175,10 @@ export function panelView(i: PanelInputs): PanelView {
     synced: height(syncHeight),
     scanned: height(int(api?.indexedHeight)),
     durability: str(api?.durability) ?? s?.store?.durability ?? "unknown",
-    storage: storageText(s, i.pageStorage),
+    storage: storageText(s, i.pageStorage, i.persistence),
     running: s?.engine?.running === true,
     ready: s?.boot.phase === "ready",
+    recoverable: s?.boot.phase === "failed" && s.boot.storeProblem !== null,
     holdsData: syncHeight !== null,
     heldRange: syncHeight === null ? "" : archiveStart === null || archiveStart === undefined ? `up to block ${syncHeight}` : `${archiveStart}\u2013${syncHeight}`,
   };

@@ -265,6 +265,12 @@ export const BootStateSchema = z.strictObject({
   /** Why the boot stopped (`unsupported`, `failed`). */
   error: z.string().nullable(),
   capabilities: CapabilityReportSchema.nullable(),
+  /**
+   * Why the store could not be used, when the boot `failed` at it: `version` — another PGlite version wrote it (it was
+   * not opened); `unopenable` — PGlite could not open it. `reset`, `range` and `import` then replace the store (`reset`
+   * and `range` drop its data, `import` loads a snapshot made by this build). `null` otherwise.
+   */
+  storeProblem: z.enum(["version", "unopenable"]).nullable(),
   /** Duration of each phase (`store` includes creating the database on a first open), and of the whole boot. */
   timings: z.strictObject({ capabilitiesMs: ms, storeMs: ms, ledgerMs: ms, migrateMs: ms, totalMs: ms }),
 });

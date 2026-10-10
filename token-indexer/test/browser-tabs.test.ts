@@ -172,7 +172,7 @@ function hostStatus(engine: FakeEngine["state"]["engine"]): HostStatus {
   return {
     protocol: PROTOCOL_VERSION,
     network: "stagenet",
-    boot: { phase: "ready", error: null, capabilities: null, timings: { capabilitiesMs: 0, storeMs: 0, ledgerMs: 0, migrateMs: 0, totalMs: 0 } },
+    boot: { phase: "ready", error: null, capabilities: null, storeProblem: null, timings: { capabilitiesMs: 0, storeMs: 0, ledgerMs: 0, migrateMs: 0, totalMs: 0 } },
     store: null,
     engine: engine === null ? null : {
       running: engine.running,

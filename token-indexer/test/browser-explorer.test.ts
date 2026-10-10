@@ -30,7 +30,7 @@ type EngineState = NonNullable<HostStatus["engine"]>;
 type LoopStatus = EngineState["status"];
 
 const BOOT_READY: HostStatus["boot"] = {
-  phase: "ready", error: null, capabilities: null,
+  phase: "ready", error: null, capabilities: null, storeProblem: null,
   timings: { capabilitiesMs: 1, storeMs: 1, ledgerMs: 1, migrateMs: 1, totalMs: 4 },
 };
 const STORE: NonNullable<HostStatus["store"]> = {
