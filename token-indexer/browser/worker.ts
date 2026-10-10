@@ -5,6 +5,7 @@
  * from the build's settings (`config.ts`). Start it with `startEngineWorker()` (`client.ts`); a page runs it through
  * `connectEngineTabs()` (`tabs.ts`), whose leader tab starts the engine.
  */
+import "./zod-jitless.ts"; // first: before any zod schema exists (the static build's CSP refuses zod's JIT)
 import { BROWSER_BUILD_CONFIG, BROWSER_DATA_DIR, BROWSER_INDEXER_URL, BROWSER_NETWORK, BROWSER_NODE_URL } from "./config.ts";
 import { createWorkerHost } from "./host.ts";
 import { StartConfigSchema } from "./protocol.ts";

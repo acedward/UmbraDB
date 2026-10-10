@@ -5,9 +5,12 @@ module worker, on PGlite stored in the Origin Private File System. The page talk
 static files is served.
 
 ```sh
-npm run build:browser   # the static site in dist-browser/ (engine.html + assets/)
-npm run dev:browser     # the same configuration served by Vite on 127.0.0.1
+npm run build:browser   # the static site in dist-browser/ (engine.html, assets/ and _headers)
+npm run dev:browser     # the same configuration served by Vite on 127.0.0.1 (no security headers)
 ```
+
+The build indexes Stagenet unless `UMBRADB_BROWSER_NETWORK`, `UMBRADB_BROWSER_NODE_URL` and
+`UMBRADB_BROWSER_INDEXER_URL` say otherwise when it runs (see [Security headers](#security-headers)).
 
 ## Modules
 
@@ -16,18 +19,20 @@ npm run dev:browser     # the same configuration served by Vite on 127.0.0.1
 | `worker.ts` | The worker's entry: the host below on `opfs-ahp://umbradb-stagenet`, bound to the worker's messages |
 | `host.ts` | Boot, request dispatch and the engine's lifecycle, from injected dependencies (tests run it in Node on `memory://`) |
 | `protocol.ts` | The message protocol: versions, requests, results, errors and notices, each with a zod schema |
-| `client.ts` | The page's side: `startEngineWorker()` and `createEngineClient(endpoint)` (requests as promises of validated results) |
+| `client.ts` | The page's side: `startEngineWorker()` (through the Trusted Types policy below) and `createEngineClient(endpoint)` (requests as promises of validated results) |
 | `tabs.ts` | One engine across tabs: `connectEngineTabs()` elects the leader tab, which alone runs the worker; the other tabs proxy their requests to it and take over when it closes |
 | `tab-locks.ts` | The Web Locks behind that (leader, tab presence, store) and the connected-tab count |
 | `capabilities.ts` | The Chrome-only capability check run before anything else |
 | `store.ts` | Opens PGlite and its two clients (`chain_archive`, `mip0018`); non-durable, results and errors as on PostgreSQL |
 | `scheduler.ts` | Yields to the worker's event loop before each sync batch and scan step, so messages are served while it runs |
 | `tapes.ts`, `tapes/` | The recorded Stagenet ranges (gzip) the worker can replay with no network, SHA-256 checked |
-| `config.ts` | The network, its default endpoints, the store's location and the build's settings |
+| `config.ts` | The network, its default endpoints (fixed when the site is built), the store's location and the build's settings |
 | `settings.ts` | The engine's saved configuration, a file beside the store |
 | `quota.ts` | The storage guard: pauses the sync before the quota |
+| `trusted-worker.ts` | The pages' one Trusted Types policy, `umbradb-engine-worker`, which makes the engine worker's script URL |
+| `zod-jitless.ts` | Turns zod's JIT (`new Function`) off before any schema exists; the first module of the worker and of every page |
 | `engine.html`, `engine-page.ts` | A page that joins the tabs, asks for persistent storage, shows its role and the engine's status; `window.umbradbEngine` holds the client and the tabs |
-| `vite.config.ts`, `build-guard.ts` | The build (Node tooling): ES module worker, `esnext`, class names kept, `vite-plugin-wasm` for ledger-v9's WASM module, assets as files, and a plugin that fails the build if postgres.js or a Node built-in would be bundled |
+| `vite.config.ts`, `build-guard.ts`, `build-csp.ts` | The build (Node tooling): every `*.html` here is a page, ES module worker, `esnext`, class names kept, `vite-plugin-wasm` for ledger-v9's WASM module, assets as files, a plugin that fails the build if postgres.js or a Node built-in would be bundled, and a plugin that writes the pages' security headers |
 
 ## Boot
 
@@ -126,7 +131,70 @@ A browser profile runs one engine per store, however many tabs are open. A page 
 
 ## Build settings
 
-`config.ts` holds the network, its endpoints and the store's location. A build can set `__UMBRADB_BROWSER_CONFIG__`
-through Vite's `define` (JSON): `autoStart` (default true: the leader tab starts the saved configuration), `start` (the
-configuration a new store starts with, default `{}`) and `quota` (the storage guard's `checkEveryMs`, `recheckMs`,
-`storeEveryMs`). The browser tests use it to turn the automatic start off, or to point it at a local chain.
+`config.ts` holds the network, its endpoints (see Security headers) and the store's location. A build can also set
+`__UMBRADB_BROWSER_CONFIG__` through Vite's `define` (JSON): `autoStart` (default true: the leader tab starts the saved
+configuration), `start` (the configuration a new store starts with, default `{}`) and `quota` (the storage guard's
+`checkEveryMs`, `recheckMs`, `storeEveryMs`). The browser tests use it to turn the automatic start off, or to point it at
+a local chain on the site's own origin (`'self'` in `connect-src`); under the policy, a `start` source can reach only
+the site's origin and the build's two chain endpoints.
+
+## Security headers
+
+Every page of the static build runs under a strict Content-Security-Policy, made by the build (`build-csp.ts`):
+
+| Directive | Value | Why |
+|---|---|---|
+| `default-src` | `'none'` | nothing loads unless a directive below names it |
+| `script-src` | `'self' 'wasm-unsafe-eval'` + the SHA-256 of each inline `<script>` | the site's own modules; WebAssembly may compile (PGlite, ledger-v9); no `'unsafe-eval'`, no `'unsafe-inline'` |
+| `style-src` | `'self'` + the SHA-256 of each inline `<style>` | |
+| `img-src`, `font-src` | `'self'` | |
+| `connect-src` | `'self'` + the origins of the build's node and indexer URLs | assets and tapes; the two chain endpoints (Stagenet: `https://rpc.stagenet.shielded.tools`, `https://indexer.stagenet.shielded.tools`) |
+| `worker-src` | `'self'` | the engine worker |
+| `object-src`, `base-uri`, `form-action` | `'none'` | |
+| `frame-ancestors` | `'none'` | header only (a `<meta>` cannot carry it) |
+| `require-trusted-types-for` | `'script'` | a string can reach no script sink: `eval`, `new Function`, `innerHTML`, `new Worker(string)`, … all throw |
+| `trusted-types` | `umbradb-engine-worker` | the one policy: it turns the engine worker's URL into a `TrustedScriptURL`, and accepts only a script of the page's origin inside the build's `assets/` |
+
+The build writes the policy twice:
+
+- **In each page**, as `<meta http-equiv="Content-Security-Policy">` (with that page's own hashes) followed by
+  `<meta name="referrer" content="no-referrer">`, right after `<meta charset>`. The hashes are of the bytes the build
+  writes, so an inline block the build did not write cannot run. This form protects the page even on a host that sends
+  no headers, but it does not reach the worker: Chrome takes a worker's policy from its script's response.
+- **In `dist-browser/_headers`**, for every path (Netlify and Cloudflare Pages read this file). A host that does not read
+  it must send these headers with every file of the build — the pages, the worker's script and the other assets (the
+  policy's exact text, with the current hashes, is in `_headers`; it changes when an inline block changes):
+
+  | Header | Value |
+  |---|---|
+  | `Content-Security-Policy` | the policy above (the union of the pages' hashes, with `frame-ancestors 'none'`) |
+  | `Cross-Origin-Opener-Policy` | `same-origin` |
+  | `Cross-Origin-Embedder-Policy` | `require-corp` |
+  | `Cross-Origin-Resource-Policy` | `same-origin` |
+  | `Referrer-Policy` | `no-referrer` |
+  | `X-Content-Type-Options` | `nosniff` |
+  | `X-Frame-Options` | `DENY` |
+
+  The host must also serve `.wasm` as `application/wasm`. Only with these headers is the engine worker confined: its
+  requests limited to the site and the two chain endpoints, `eval` refused in it. COOP and COEP make the page and the
+  worker cross-origin isolated (`crossOriginIsolated`, needed by `performance.measureUserAgentSpecificMemory()`); the
+  chain endpoints answer CORS, so the worker's requests to them work under COEP.
+
+The chain is fixed at build time: `UMBRADB_BROWSER_NETWORK` (a network id), `UMBRADB_BROWSER_NODE_URL` and
+`UMBRADB_BROWSER_INDEXER_URL` (`https:`, or `http:` on a loopback host; no credentials) set the worker's defaults
+(`config.ts`) and `connect-src` together, e.g.
+`UMBRADB_BROWSER_NETWORK=preprod UMBRADB_BROWSER_NODE_URL=https://… UMBRADB_BROWSER_INDEXER_URL=https://… npm run build:browser`.
+Under the header policy, a `start` that names other endpoints cannot reach them: the policy refuses the requests.
+
+A page needs nothing to be covered: any `*.html` in this directory is built, given the meta policy, hashed into
+`_headers`, and has `zod-jitless.ts` as its first module. The build fails if a page holds an inline event handler
+(`onclick=…`), a `style` attribute or a `javascript:` URL, which the policy would silently block. Script code must not
+compile strings (`eval`, `new Function`, string timers); the bundled dependencies never do in this build: zod's JIT is
+off, and PGlite's two `eval` calls are in its loader for dynamically linked modules that carry inline JavaScript
+(`EM_ASM`/`EM_JS`), which none of the modules PGlite ships (`plpgsql` and the encoding converters) does; the store loads
+no extension.
+
+Tabs of one store talk over BroadcastChannel and share Web Locks; both are same-origin and need no directive (a
+follower tab runs under the same policy and starts no worker).
+
+The dev server (`npm run dev:browser`) sends no policy.
