@@ -15,7 +15,7 @@
  * | `reset` | — | {@link HostStatus}: the store's data is dropped and the saved configuration starts again |
  * | `export` | — | {@link ExportResult}: a snapshot file of the store, taken while the engine runs (`snapshot-store.ts`) |
  * | `import` | `snapshot` (a `Blob`: a snapshot file) | {@link ImportResult}: the store replaced by the snapshot; the engine is stopped, and a start continues from the snapshot's height + 1 |
- * | `digest` | — | {@link DigestResult}: the archive digest and the range-tables digest of the store |
+ * | `digest` | — | {@link DigestResult}: the archive digest and the range-tables digest of the store, with its NULL `bytea[]` elements |
  * | `system` | `watch` (with `viewer?`) or `refresh` (`{ database?, exactCounts? }`) | {@link SystemResult} |
  * | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | {@link WatchdogResult} |
  *
@@ -36,7 +36,7 @@ import type { EngineStatus } from "../engine/engine.ts";
 import type { SyncCursor, SyncOnceResult } from "../../chain-archive-sync/sync-service.js";
 import type { ScanCursor, ScanOnceResult } from "../mip0018/scan.ts";
 import type { ArchiveDigest } from "../../chain-archive-sync/archive-digest.js";
-import type { RangeTables } from "../engine/range-tables.ts";
+import type { NullElements, RangeTables } from "../engine/range-tables.ts";
 import { SnapshotsSchema, SystemSnapshotSchema } from "../engine/system-snapshot.ts";
 import { SnapshotManifestSchema } from "./snapshot.ts";
 import type { ExportedSnapshot } from "./snapshot-store.ts";
@@ -369,12 +369,15 @@ export type HostStatus = z.infer<typeof HostStatusSchema>;
 const sha256 = z.string().regex(/^[0-9a-f]{64}$/);
 /**
  * The `digest` result: the store's archive digest (`chain-archive-sync/archive-digest.ts`: the 7 `chain_archive`
- * tables) and its range-tables digest (`token-indexer/engine/range-tables.ts`: every table of both schemas), read in one
- * read-only transaction, so they describe one state even while the engine runs.
+ * tables) and its range-tables digest (`token-indexer/engine/range-tables.ts`: every table of both schemas), with the
+ * NULL elements of its `bytea[]` columns beside it, read in one read-only transaction, so they describe one state even
+ * while the engine runs.
  */
 export const DigestResultSchema = z.strictObject({
   archive: z.strictObject({ sha256, tables: z.record(z.string(), z.strictObject({ rows: n, sha256 })) }),
   tables: z.strictObject({ sha256, tables: z.record(z.string(), z.strictObject({ rows: n, sha256, excluded: z.array(z.string()) })) }),
+  /** The NULL elements of `bytea[]` columns, which the range-tables digest counts as empty bytes (`NullElements`). */
+  nullElements: z.record(z.string(), z.strictObject({ count: n, sha256 })),
   /** How long the reads and the hashing took. */
   elapsedMs: n,
 });
@@ -565,6 +568,7 @@ noExtraKeys<typeof SyncCursorSchema, SyncCursor>();
 noExtraKeys<typeof ScanCursorSchema, ScanCursor>();
 accepts<typeof DigestResultSchema.shape.archive, ArchiveDigest>();
 accepts<typeof DigestResultSchema.shape.tables, RangeTables>();
+accepts<typeof DigestResultSchema.shape.nullElements, NullElements>();
 noExtraKeys<typeof DigestResultSchema.shape.archive, ArchiveDigest>();
 noExtraKeys<typeof DigestResultSchema.shape.tables, RangeTables>();
 accepts<typeof ExportResultSchema, ExportedSnapshot>();

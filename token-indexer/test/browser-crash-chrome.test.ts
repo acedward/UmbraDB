@@ -10,11 +10,12 @@
  *   migrations; a statement inside a sync block's transaction and inside a scan block's transaction; a file write
  *   while either's `COMMIT` runs; the start of a transaction (none open); any file write; and a random time. Kill modes
  *   alternate, so every point is reached by both. After each kill the new worker's boot must end `ready` and the store
- *   must hold exactly the blocks of its cursors: every one of the 37 tables equals the uninterrupted replay's table
- *   after the archive's cursor (chain archive tables) or after the scan's cursor (`mip0018` tables), computed in Node
- *   afterwards (`helpers/crash-reference.ts`); the cursors never go below what a status read saw before the kill. Before
- *   a store is replaced by a new one (each round of points starts with the boot points) and after the last kill, its
- *   range is finished and must have the recorded live digests (archive `cb0d5e21…`, all tables `af6583d0…c832c`).
+ *   must hold exactly the blocks of its cursors: every one of the 37 tables, and the NULL `bytea[]` elements beside
+ *   them, equals the uninterrupted replay's after the archive's cursor (chain archive tables) or after the scan's
+ *   cursor (`mip0018` tables), computed in Node afterwards (`helpers/crash-reference.ts`); the cursors never go below
+ *   what a status read saw before the kill. Before a store is replaced by a new one (each round of points starts with
+ *   the boot points) and after the last kill, its range is finished and must have the recorded live digests (archive
+ *   `cb0d5e21…`, all tables `af6583d0…c832c`) and no NULL `bytea[]` element.
  *   `UMBRADB_CRASH_SEED` repeats a campaign; `UMBRADB_CRASH_REPORT=<file>` writes every run as JSON (never committed).
  * - `[[browser.crash.import-swap]]` — kills during a snapshot import's swap: before the journal is complete (the store
  *   stays as it was) and while PGlite loads the snapshot into the store's place (the next boot finishes the import from
@@ -27,7 +28,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { DigestResult, HostStatus } from "../browser/protocol.ts";
 import { Browser, findBrowser, type Page } from "./helpers/cdp-browser.ts";
 import { type ParkedAt, PARKED_MARKER, crashTapScript, type Trigger } from "./helpers/crash-tap.ts";
-import { referenceStates, storedHeights, tornTables } from "./helpers/crash-reference.ts";
+import { compareNullElements, noNullElements } from "../engine/range-tables.ts";
+import { referenceStates, storedHeights, tornTables, withNullElements } from "./helpers/crash-reference.ts";
 import { buildEngineSite, engineDriver, NO_AUTO_START, serveEngineSite, type EngineSite } from "./helpers/engine-site.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -37,6 +39,8 @@ const IDX = { from: 714485, to: 715183 } as const;
 /** The recorded live digests of the IDX range: the archive (7 tables) and every table of both schemas (37). */
 const IDX_ARCHIVE = "cb0d5e213730ccffc135984c537b9e31d92c984d2b83f06854971a3a74e5b119";
 const IDX_TABLES = "af6583d03da69ffd52a31fd89e663fe7892cf45aaf7234d9fc213c335dbc832c";
+/** The range holds no NULL `bytea[]` element (which the 37-table digest counts as empty bytes). */
+const IDX_NULLS = noNullElements(["mip0018.mip0018_contract_actions"]);
 const CONFIG = { source: { kind: "tape", range: "idx" }, startHeight: IDX.from, endHeight: IDX.to, sync: { idleMs: 200 }, scan: { idleMs: 200 } } as const;
 /** The store and the files beside it in the OPFS root. */
 const STORE_ENTRIES = ["umbradb-stagenet", "umbradb-stagenet.engine.json", "umbradb-stagenet.store.json", "umbradb-stagenet.import.snapshot.tar"];
@@ -63,8 +67,8 @@ interface Run {
   seen: { archive: number | null; scan: number | null } | null;
   /** The store after the reopen that followed. */
   after: { archive: number | null; scan: number | null; created: boolean; bootMs: number; cycle: number } | null;
-  /** The per-table digests after the reopen (checked against the reference at the end). */
-  tables?: DigestResult["tables"]["tables"];
+  /** The per-table digests after the reopen, with the NULL `bytea[]` elements (checked against the reference at the end). */
+  tables?: Record<string, { rows: number; sha256: string }>;
 }
 
 /** A small seeded generator, so a campaign can be repeated (`UMBRADB_CRASH_SEED`). */
@@ -209,7 +213,7 @@ describe("the browser engine killed at exact points (Chrome, OPFS)", () => {
       const d = (await engineDriver(p, () => site).engine("c.digest()")) as DigestResult;
       if (previous !== null) {
         previous.after = { ...h, created: s.store!.created, bootMs, cycle };
-        previous.tables = d.tables.tables;
+        previous.tables = withNullElements(d.tables.tables, d.nullElements);
         expect(h.archive ?? -1, `run ${previous.run}: the archive kept every block seen committed`).toBeGreaterThanOrEqual(previous.seen?.archive ?? -1);
         expect(h.scan ?? -1, `run ${previous.run}: the scan kept every block seen committed`).toBeGreaterThanOrEqual(previous.seen?.scan ?? -1);
       }
@@ -218,6 +222,7 @@ describe("the browser engine killed at exact points (Chrome, OPFS)", () => {
         finished.push({ afterRun: previous?.run ?? 0, archive: d.archive.sha256, tables: d.tables.sha256 });
         expect(d.archive.sha256, `cycle ${cycle}: the finished archive digest`).toBe(IDX_ARCHIVE);
         expect(d.tables.sha256, `cycle ${cycle}: the finished 37-table digest`).toBe(IDX_TABLES);
+        expect(compareNullElements(d.nullElements, IDX_NULLS), `cycle ${cycle}: the finished NULL bytea[] elements`).toEqual([]);
       }
       return p;
     }
@@ -232,6 +237,7 @@ describe("the browser engine killed at exact points (Chrome, OPFS)", () => {
         finished.push({ afterRun: -1, archive: d.archive.sha256, tables: d.tables.sha256 });
         expect(d.archive.sha256, `cycle ${cycle}: the finished archive digest`).toBe(IDX_ARCHIVE);
         expect(d.tables.sha256, `cycle ${cycle}: the finished 37-table digest`).toBe(IDX_TABLES);
+        expect(compareNullElements(d.nullElements, IDX_NULLS), `cycle ${cycle}: the finished NULL bytea[] elements`).toEqual([]);
       }
       await page?.close().catch(() => {});
       page = undefined;
@@ -277,6 +283,7 @@ describe("the browser engine killed at exact points (Chrome, OPFS)", () => {
     finished.push({ afterRun: RUNS, archive: last.archive.sha256, tables: last.tables.sha256 });
     expect(last.archive.sha256).toBe(IDX_ARCHIVE);
     expect(last.tables.sha256).toBe(IDX_TABLES);
+    expect(compareNullElements(last.nullElements, IDX_NULLS)).toEqual([]);
     expect(page!.exceptions).toEqual([]);
     await page!.close();
 

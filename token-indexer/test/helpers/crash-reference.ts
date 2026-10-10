@@ -8,12 +8,15 @@
  * tables the reference after its scanned height. Every table counts, found in the catalog (`range-tables.ts`), so a
  * torn block shows in whichever table it left rows in (or lacks them).
  *
+ * The NULL elements of `bytea[]` columns, which the per-table digests count as empty bytes, are compared too: each
+ * table that has such a column gets a second entry with their count and hash ({@link withNullElements}).
+ *
  * {@link referenceStates} computes them for the heights a test saw: first one block per step over the range's first two
  * blocks, recording the state after every step (before the first block a height has two states: with and without the
  * scan's cursor row, which the scan creates before it scans anything), then one forward pass that stops the engine at
  * each further height asked for.
  */
-import { rangeTables, type TableDigest } from "../../engine/range-tables.ts";
+import { type NullElements, rangeTables, type TableDigest } from "../../engine/range-tables.ts";
 import { yieldingScheduler } from "../../browser/scheduler.ts";
 import type { HostStatus, TapeRange } from "../../browser/protocol.ts";
 import { ARCHIVE_SCHEMA, MIP0018_SCHEMA } from "../../browser/store.ts";
@@ -34,6 +37,15 @@ export interface RangeReference {
 export function tablesWithPrefix(tables: Record<string, TableDigest | { rows: number; sha256: string }>, prefix: "archive." | "mip0018."): TableState {
   const out: TableState = {};
   for (const k of Object.keys(tables).sort()) if (k.startsWith(prefix)) out[k] = { rows: tables[k]!.rows, sha256: tables[k]!.sha256 };
+  return out;
+}
+
+/** The per-table digests with, for each table that has a `bytea[]` column, an entry `<table> (NULL bytea[] elements)`
+ *  holding their count as `rows` and their hash. */
+export function withNullElements(tables: Record<string, TableDigest | { rows: number; sha256: string }>, nullElements: NullElements): Record<string, { rows: number; sha256: string }> {
+  const out: Record<string, { rows: number; sha256: string }> = {};
+  for (const [k, t] of Object.entries(tables)) out[k] = { rows: t.rows, sha256: t.sha256 };
+  for (const [k, x] of Object.entries(nullElements)) out[`${k} (NULL bytea[] elements)`] = { rows: x.count, sha256: x.sha256 };
   return out;
 }
 
@@ -110,9 +122,10 @@ export async function referenceStates(range: TapeRange, from: number, heights: I
 async function record(t: ReturnType<typeof testHost>, ref: RangeReference): Promise<void> {
   const store = t.opened.at(-1)!;
   const h = storedHeights(await result<HostStatus>(t.host, "status"));
-  const { digest } = await store.mip0018.begin("read only", async (tx) => rangeTables(tx as unknown as typeof store.mip0018, ARCHIVE_SCHEMA, MIP0018_SCHEMA));
-  add(ref.archive, h.archive, tablesWithPrefix(digest.tables, "archive."));
-  add(ref.scan, h.scan, tablesWithPrefix(digest.tables, "mip0018."));
+  const { digest, nullElements } = await store.mip0018.begin("read only", async (tx) => rangeTables(tx as unknown as typeof store.mip0018, ARCHIVE_SCHEMA, MIP0018_SCHEMA));
+  const tables = withNullElements(digest.tables, nullElements);
+  add(ref.archive, h.archive, tablesWithPrefix(tables, "archive."));
+  add(ref.scan, h.scan, tablesWithPrefix(tables, "mip0018."));
 }
 
 /** The tables of a store (its per-table digests) that differ from the reference at its heights; `[]` when none does. */

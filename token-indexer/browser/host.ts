@@ -798,8 +798,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     return s.mip0018.begin("read only", async (tx) => {
       const sql = tx as unknown as UmbraDBSql;
       const archive = archiveDigest(await dumpArchive(sql, ARCHIVE_SCHEMA));
-      const { digest: tables } = await rangeTables(sql, ARCHIVE_SCHEMA, MIP0018_SCHEMA);
-      return { archive, tables, elapsedMs: monotonic() - t };
+      const { digest: tables, nullElements } = await rangeTables(sql, ARCHIVE_SCHEMA, MIP0018_SCHEMA);
+      return { archive, tables, nullElements, elapsedMs: monotonic() - t };
     });
   }
 

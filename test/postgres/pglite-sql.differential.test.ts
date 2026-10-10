@@ -47,7 +47,7 @@ import { PgChainArchiveStore } from "../../src/postgres/chain-archive-store.js";
 import { createPgliteClient } from "../../src/postgres/pglite-sql.js";
 import { startFakeChain } from "../integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadManifest, loadRangeTape } from "../integration/fixtures/stagenet-archive/stagenet-fixtures.js";
-import { canonical, rangeTables } from "../../token-indexer/dev/range-tables.ts";
+import { canonical, noNullElements, rangeTables } from "../../token-indexer/dev/range-tables.ts";
 import { activityForColor, metadataTransactionsForContract } from "../../token-indexer/mip0018/activity.ts";
 import { createMip0018Api, listen } from "../../token-indexer/mip0018/api-node.ts";
 import { listEvents, eventCounts } from "../../token-indexer/mip0018/events.ts";
@@ -245,6 +245,10 @@ describe("PGlite client = postgres.js on PostgreSQL 17", () => {
     expect(u1Tables[1]!.digest.sha256).toBe(u1Tables[0]!.digest.sha256);
     for (const b of both)
       expect((await b.sql`SELECT count(*)::int AS n FROM diff_mip.mip0018_contract_actions WHERE array_position(maintenance_operations, NULL) IS NOT NULL`)[0]!.n).toBe(0);
+    // The NULL elements beside the digests (read by SQL, so postgres.js sees them too): none, on both.
+    expect(tables[0]!.nullElements).toEqual(noNullElements(["mip0018.mip0018_contract_actions"]));
+    expect(tables[1]!.nullElements).toEqual(tables[0]!.nullElements);
+    expect(u1Tables[1]!.nullElements).toEqual(u1Tables[0]!.nullElements);
     console.log(`[pglite-differential] digests: postgres ${tables[0]!.digest.sha256}, pglite ${tables[1]!.digest.sha256}; differing tables: ${differing.join(", ") || "none"}`);
     // Negative control: one changed parameter is reported at its statement.
     const tampered = lite.log.map((s, i) => (i === 10 ? { ...s, params: ["changed"] } : s));
