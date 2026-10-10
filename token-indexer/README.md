@@ -62,8 +62,8 @@ health, sync, scan, databases, storage, API, engine, browser, snapshots and the 
   `pg_database_size`, `_migrations`), one autocommit statement at a time; exact counts are read only on demand.
 - `engine/system-collector.ts` reads counters and `/v1/status` every 2 s and catalog statistics every 30 s, only while
   a viewer watches.
-- `engine/system-snapshot.ts` holds the versioned zod schema. Every snapshot is redacted (no URL credentials or query
-  secrets, no keys, tokens or passwords) and validated before it leaves. Log text stays text; a page renders it as text
+- `engine/system-snapshot.ts` holds the versioned zod schema. Every snapshot is redacted (no URL credentials, query
+  secrets or key-like path segments, no keys, tokens, passwords or seed phrases) and validated before it leaves. Log text stays text; a page renders it as text
   nodes.
 
 Everything a block adds commits in one Postgres transaction with the scan cursor, so a kill at any point resumes

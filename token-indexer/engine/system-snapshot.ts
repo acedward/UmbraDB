@@ -9,9 +9,12 @@
  *   outside this schema (a page URL, a request target, a header) can travel inside a snapshot. Times are epoch
  *   milliseconds; durations are milliseconds; heights are block heights; sizes are bytes.
  * - **No secrets:** {@link redactSnapshot} runs over every string of a snapshot before it is validated and handed out.
- *   URLs lose their userinfo, query and fragment; `key=value`, `key: value` and JSON `"key": value` forms whose key
- *   names a secret (API key, token, password, session id, signature, seed, viewing key, …) lose their value;
- *   `Authorization` and `Cookie` headers lose the rest of their line; Bearer and Basic credentials, JWT-shaped tokens
+ *   URLs lose their userinfo, query and fragment, and the path segments that look like keys (16 or more letters,
+ *   digits, `-`, `_`, `.`, `~`, `+` or `=`, with both a letter and a digit); `key=value`, `key: value` and JSON
+ *   `"key": value` forms whose key names a secret (API key, token, password, session id, signature, seed or mnemonic
+ *   phrase, viewing key, …) lose their whole value: a JSON member its whole string, array or object, also inside
+ *   JSON-escaped text (`\"key\": …`), a `key=` value its quoted text, JSON array or object, and an unquoted seed,
+ *   mnemonic or passphrase every word that follows it; `Authorization` and `Cookie` headers lose the rest of their line; Bearer and Basic credentials, JWT-shaped tokens
  *   and Bech32m secret keys (`mn_…esk…`, `mn_…sk…`, `mn_…seed…`) are replaced. Request targets are never recorded (the API counters see the method, status and latency only).
  * - **Text is data:** log lines and error messages keep their characters (control, bidirectional and markup
  *   characters included) apart from the redaction and a length cap; a page renders them as text nodes, never as
@@ -385,22 +388,27 @@ export type SnapshotsInfo = z.infer<typeof SnapshotsSchema>;
 
 const REDACTED = "[redacted]";
 
-/** A URL without userinfo, query or fragment; one that does not parse keeps only its scheme. */
+/** A path segment that looks like a key or token: 16 or more token characters with both a letter and a digit. */
+const KEY_LIKE_SEGMENT = /^(?=[^/]*[A-Za-z])(?=[^/]*[0-9])[A-Za-z0-9._~+=-]{16,}$/u;
+
+/** `url`'s path with the segments that look like keys replaced. */
+function publicPath(url: URL): void {
+  if (url.pathname.startsWith("/")) url.pathname = url.pathname.split("/").map((seg) => (KEY_LIKE_SEGMENT.test(seg) ? REDACTED : seg)).join("/");
+}
+
+/** A URL without userinfo, query, fragment or path segments that look like keys; one that does not parse keeps only its
+ *  scheme. */
 export function publicUrl(value: string): string {
-  if (/^(?:https?|wss?):/iu.test(value)) {
-    const p = publicEndpoint(value);
-    if (p !== "<invalid-endpoint>") return p;
-  } else {
-    try {
-      const url = new URL(value);
-      url.username = "";
-      url.password = "";
-      url.search = "";
-      url.hash = "";
-      return url.toString();
-    } catch {
-      // fall through
-    }
+  try {
+    const url = new URL(/^(?:https?|wss?):/iu.test(value) ? publicEndpoint(value) : value);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    publicPath(url);
+    return url.toString();
+  } catch {
+    // fall through
   }
   const scheme = /^([a-z][a-z0-9+.-]*):/iu.exec(value)?.[1] ?? "url";
   return `${scheme}://${REDACTED}`;
@@ -408,8 +416,106 @@ export function publicUrl(value: string): string {
 
 /** Header names whose whole value (to the end of the line) is a secret. */
 const SECRET_HEADER = String.raw`(?:proxy-authorization|authorization|set-cookie|cookie)`;
+/** Names whose value is a phrase of words (a wallet's seed or mnemonic): an unquoted value is every word after it. */
+const PHRASE_KEY = String.raw`(?:(?:seed|mnemonic|recovery|secret|backup|wallet)[-_ ]?phrase|passphrase|mnemonic|seed)`;
 /** Names whose value is a secret, as a key of `key=value`, `key: value` or JSON `"key": value`. */
-const SECRET_KEY = String.raw`(?:x-api-key|api[-_]?key|apikey|access[-_]?token|refresh[-_]?token|id[-_]?token|auth[-_]?token|bearer[-_]?token|client[-_]?secret|secret[-_]?key|private[-_]?key|viewing[-_]?key|${SECRET_HEADER}|session[-_]?id|sessionid|token|secret|password|passwd|pwd|passphrase|signature|seed|mnemonic|credentials?)`;
+const SECRET_KEY = String.raw`(?:x-api-key|api[-_]?key|apikey|access[-_]?token|refresh[-_]?token|id[-_]?token|auth[-_]?token|bearer[-_]?token|client[-_]?secret|secret[-_]?key|private[-_]?key|viewing[-_]?key|${SECRET_HEADER}|session[-_]?id|sessionid|${PHRASE_KEY}|token|secret|password|passwd|pwd|signature|credentials?)`;
+const IS_PHRASE_KEY = new RegExp(String.raw`^${PHRASE_KEY}$`, "iu");
+
+const JSON_ESCAPES: Readonly<Record<string, string>> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
+
+/** The character at `i` of `text` as seen through `level` (0 or 1) JSON string encodings, and the index after it. */
+function charAt(text: string, i: number, level: 0 | 1): [string, number] {
+  const c = text[i] ?? "";
+  if (level === 0 || c !== "\\" || i + 1 >= text.length) return [c, i + 1];
+  const e = text[i + 1]!;
+  if (e === "u") return [String.fromCharCode(Number.parseInt(text.slice(i + 2, i + 6), 16) || 0), i + 6];
+  return [JSON_ESCAPES[e] ?? e, i + 2];
+}
+
+/** The index after the JSON value (string, array, object, or a bare word) that starts at `i`, read through `level`
+ *  encodings; the end of the text when it does not end. */
+function skipJsonValue(text: string, i: number, level: 0 | 1): number {
+  let depth = 0;
+  let inString = false;
+  let j = i;
+  const [first] = charAt(text, i, level);
+  if (first !== '"' && first !== "[" && first !== "{") {
+    while (j < text.length) {
+      const [c, next] = charAt(text, j, level);
+      if (/[\s,}\]]/u.test(c) || (level === 1 && c === '"')) break;
+      j = next;
+    }
+    return j;
+  }
+  while (j < text.length) {
+    const [c, next] = charAt(text, j, level);
+    j = next;
+    if (inString) {
+      if (c === "\\") j = charAt(text, j, level)[1];
+      else if (c === '"') {
+        inString = false;
+        if (depth === 0) return j;
+      }
+    } else if (c === '"') inString = true;
+    else if (c === "[" || c === "{") depth++;
+    else if (c === "]" || c === "}") {
+      depth--;
+      if (depth <= 0) return j;
+    }
+  }
+  return text.length;
+}
+
+/** JSON members naming a secret (`"key": value`, or `\"key\": value` inside JSON-escaped text): the whole value. */
+const SECRET_MEMBER = new RegExp(String.raw`(\\?)"${SECRET_KEY}\1"\s*:\s*`, "giu");
+function redactMembers(text: string): string {
+  let out = "";
+  let last = 0;
+  SECRET_MEMBER.lastIndex = 0;
+  for (let m = SECRET_MEMBER.exec(text); m !== null; m = SECRET_MEMBER.exec(text)) {
+    const level = m[1] === "\\" ? 1 : 0;
+    const start = m.index + m[0].length;
+    const end = skipJsonValue(text, start, level);
+    const q = level === 1 ? '\\"' : '"';
+    out += `${text.slice(last, start)}${q}${REDACTED}${q}`;
+    last = end;
+    SECRET_MEMBER.lastIndex = Math.max(end, start);
+  }
+  return out + text.slice(last);
+}
+
+/** `key=value` and `key: value` naming a secret: a quoted value, a JSON array or object, or a bare word — and for a
+ *  phrase key every lower-case word after it. */
+const SECRET_ASSIGNMENT = new RegExp(String.raw`(^|[^\w-])(${SECRET_KEY})(\s*[=:]\s*)`, "giu");
+const PHRASE_WORDS = /(?:,?[ \t]+[\p{Ll}\p{Lo}]+)*/uy;
+function redactAssignments(text: string): string {
+  let out = "";
+  let last = 0;
+  SECRET_ASSIGNMENT.lastIndex = 0;
+  for (let m = SECRET_ASSIGNMENT.exec(text); m !== null; m = SECRET_ASSIGNMENT.exec(text)) {
+    const start = m.index + m[0].length;
+    const rest = text.slice(start);
+    let end: number;
+    if (/^"?\[redacted\]/u.test(rest)) end = start;
+    else if (rest.startsWith('"')) end = start + (/^"(?:[^"\\]|\\.)*"?/u.exec(rest)![0].length);
+    else if (rest.startsWith("'")) end = start + (/^'[^']*'?/u.exec(rest)![0].length);
+    else if (rest.startsWith("[") || rest.startsWith("{")) end = skipJsonValue(text, start, 0);
+    else {
+      end = start + (/^[^\s&;,"'<>}\]]*/u.exec(rest)![0].length);
+      if (end > start && IS_PHRASE_KEY.test(m[2]!)) {
+        PHRASE_WORDS.lastIndex = end;
+        end += PHRASE_WORDS.exec(text)?.[0].length ?? 0;
+      }
+    }
+    if (end === start) continue;
+    out += `${text.slice(last, start)}${REDACTED}`;
+    last = end;
+    SECRET_ASSIGNMENT.lastIndex = end;
+  }
+  return out + text.slice(last);
+}
+
 const RULES: ReadonlyArray<[RegExp, string | ((...m: string[]) => string)]> = [
   // URLs of any scheme: userinfo, query and fragment removed. A URL ends at a backslash too (in JSON-escaped text the
   // next character is an escape, not part of the URL).
@@ -421,19 +527,16 @@ const RULES: ReadonlyArray<[RegExp, string | ((...m: string[]) => string)]> = [
   // Bearer and Basic credentials.
   [/\b(Bearer)(\s+)[\w.~+/=-]{8,}/giu, (_m, scheme, sp) => `${scheme}${sp}${REDACTED}`],
   [/\b(Basic)(\s+)(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{8,}={0,2}/gu, (_m, scheme, sp) => `${scheme}${sp}${REDACTED}`],
-  // JSON members: "key": "value" or "key": value.
-  [new RegExp(String.raw`("${SECRET_KEY}"\s*:\s*)("(?:[^"\\]|\\.)*"|[^\s,}\]]+)`, "giu"), (_m, k) => `${k}"${REDACTED}"`],
   // Authorization and cookie headers: the rest of the line.
   [new RegExp(String.raw`(^|[^\w-])(${SECRET_HEADER})(\s*[=:]\s*)(?!\s|\[redacted\])[^\r\n]+`, "gimu"), (_m, pre, k, sep) => `${pre}${k}${sep}${REDACTED}`],
-  // key=value and key: value.
-  [new RegExp(String.raw`(^|[^\w-])(${SECRET_KEY})(\s*[=:]\s*)(?!"?\[redacted\])("(?:[^"\\]|\\.)*"|'[^']*'|[^\s&;,"'<>}\]]+)`, "giu"), (_m, pre, k, sep) => `${pre}${k}${sep}${REDACTED}`],
 ];
 
 /** `text` with the secrets this module knows removed (see the module documentation); idempotent. */
 export function redactText(value: string): string {
   let out = value;
   for (const [re, by] of RULES) out = out.replace(re, by as (substring: string, ...args: string[]) => string);
-  return out;
+  // JSON members, then key=value and key: value.
+  return redactAssignments(redactMembers(out));
 }
 
 /** `text` cut to {@link TEXT_MAX_CHARS}, saying how many characters were cut. */

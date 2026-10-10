@@ -436,7 +436,7 @@ describe("system snapshot schema and redaction", () => {
       ['{"client_secret": 12345}', '{"client_secret": "[redacted]"}'],
       ["jwt eyJhbGciOi.eyJzdWIiOiIx.SECRET13 end", "jwt [redacted] token end"],
       ["key mn_shield-esk_preview1qqqsyqcyq5rqwzqfsecr3t9 leaked", "key [redacted] key leaked"],
-      ["seed=abandon abandon", "seed=[redacted] abandon"],
+      ["seed=abandon abandon", "seed=[redacted]"],
       ["passphrase: 'SECRET14'", "passphrase: [redacted]"],
     ];
     for (const [input, out] of cases) {
@@ -483,5 +483,65 @@ describe("system snapshot schema and redaction", () => {
     const fields = JSON.parse(t.logs().find((l) => l.source === "sync")!.text.slice("error ".length)) as { message: string };
     expect(fields.message).toBe('RPC error: token=[redacted]\nAuthorization: [redacted]\n{"apiKey": "[redacted]"}\ncookie=[redacted]\nsee https://h.example.test/p');
     expect(t.logs().find((l) => l.source === "host")!.text).toBe(fields.message);
+  });
+
+  it("[[engine.telemetry.redaction-phrases]] redaction removes a whole secret phrase or structured value: every word of an unquoted seed, mnemonic or passphrase, a JSON member's array or object, also inside JSON-escaped text, in the diagnostics file too", () => {
+    const words = "abandon ability able about above absent absorb abstract absurd abuse access accident".split(" ");
+    const phrase = words.join(" ");
+    const forms = [
+      `restoring seed=${phrase}`,
+      `mnemonic: ${phrase}`,
+      `seed phrase: ${phrase}`,
+      `recovery phrase = ${phrase}`,
+      `passphrase=${phrase}`,
+      `seed: ${words.join(", ")}`,
+      `{"seed":${JSON.stringify(words)}}`,
+      `{"mnemonic": {"words": ${JSON.stringify(words)}, "language": "english"}, "n": 1}`,
+      `seed=${JSON.stringify(words)}`,
+      JSON.stringify({ message: `wallet ${JSON.stringify({ seed: words, password: "hunter2-SECRET" })}` }),
+      `error ${JSON.stringify(JSON.stringify({ mnemonic: phrase, accessToken: "SECRET-TOKEN" }))}`,
+    ];
+    for (const input of forms) {
+      const out = redactText(input);
+      for (const w of words) expect(out, `${input} → ${out}`).not.toMatch(new RegExp(`\\b${w}\\b`));
+      expect(out, input).not.toMatch(/hunter2|SECRET/);
+      expect(out, input).toContain("[redacted]");
+      expect(redactText(out), `idempotent: ${out}`).toBe(out);
+    }
+    // The rest of a JSON text stays readable.
+    expect(redactText(`{"seed":${JSON.stringify(words)},"n":1}`)).toBe('{"seed":"[redacted]","n":1}');
+    expect(redactText('{"mnemonic": {"words": ["a", "b"]}, "n": 1}')).toBe('{"mnemonic": "[redacted]", "n": 1}');
+    expect(redactText('x {\\"seed\\":[\\"abandon\\",\\"ability\\"],\\"n\\":1}')).toBe('x {\\"seed\\":\\"[redacted]\\",\\"n\\":1}');
+    expect(redactText("seed=abandon ability. Then 3 blocks")).toBe("seed=[redacted]. Then 3 blocks");
+
+    // The diagnostics file: every log line and message, at any depth.
+    const s = minimal();
+    s.logs = forms.map((text, seq) => ({ seq, at: 1, level: "error" as const, source: "host" as const, text }));
+    s.sync.lastError = { message: `seed=${phrase}`, at: 1 };
+    const file = diagnosticsJson(s);
+    for (const w of words) expect(file).not.toMatch(new RegExp(`\\b${w}\\b`));
+    expect(file).not.toMatch(/hunter2|SECRET/);
+  });
+
+  it("[[engine.telemetry.redaction-url-paths]] a URL keeps its origin and its path but path segments that look like keys: an endpoint key in the path does not reach the snapshot or the diagnostics file", () => {
+    const key = "9aa3d95b3bc440fa88ea12eaa4456161";
+    expect(publicUrl(`https://mainnet.example.test/v3/${key}`)).toBe("https://mainnet.example.test/v3/[redacted]");
+    expect(publicUrl(`https://rpc.example.test/v1/${key}/rpc?x=1`)).toBe("https://rpc.example.test/v1/[redacted]/rpc");
+    expect(publicUrl("https://x.example.test/ab12CD34ef56GH78ij90KL12/")).toBe("https://x.example.test/[redacted]/");
+    expect(publicUrl("wss://ws.example.test/1b4e28ba-2fa1-41d2-883f-0016d3cca427")).toBe("wss://ws.example.test/[redacted]");
+    // Public paths stay.
+    for (const kept of [INDEXER, NODE, "https://indexer.stagenet.shielded.tools/api/v4/graphql", "http://h.example:8080/a/b", "https://h.example.test/transactions_default_staging/block/12345"])
+      expect(publicUrl(kept), kept).toBe(kept);
+    expect(publicUrl("postgres://admin:pw@db.internal:5432/umbra")).toBe("postgres://db.internal:5432/umbra");
+    expect(redactText(`HTTP 403 from https://rpc.example.test/v1/${key}/rpc`)).toBe("HTTP 403 from https://rpc.example.test/v1/[redacted]/rpc");
+    expect(redactText(redactText(`see https://rpc.example.test/v1/${key}`))).toBe("see https://rpc.example.test/v1/[redacted]");
+
+    const s = minimal();
+    s.configuration.endpoints.node = `https://rpc.example.test/v1/${key}`;
+    s.configuration.endpoints.indexer = `https://indexer.example.test/${key}/api/v4/graphql`;
+    s.logs = [{ seq: 0, at: 1, level: "error", source: "sync", text: `fetch https://rpc.example.test/v1/${key} failed` }];
+    const r = redactSnapshot(s);
+    expect(r.configuration.endpoints).toEqual({ ...r.configuration.endpoints, node: "https://rpc.example.test/v1/[redacted]", indexer: "https://indexer.example.test/[redacted]/api/v4/graphql" });
+    expect(diagnosticsJson(s)).not.toContain(key);
   });
 });

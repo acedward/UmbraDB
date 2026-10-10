@@ -449,9 +449,11 @@ statements), **Browser**, **Snapshots** and **Logs** (the last 200 lines, newest
   it is hidden. "count rows exactly" reads `count(*)` of every table once.
 - "Download diagnostics" saves the snapshot shown as JSON (`umbradb-diagnostics-<time>.json`, its log lines
   included): a download through a `blob:` URL and `<a download>`, which the policy allows. URLs lose their
-  credentials, query and fragment, and secret-looking values (tokens, passwords, keys, `Authorization` and `Cookie`
-  headers, Bearer and Basic credentials, JWTs, viewing keys) are replaced, in every string of the snapshot; a log line
-  is redacted as it is written, before an event's fields become JSON.
+  credentials, query, fragment and the path segments that look like keys (16 or more characters mixing letters and
+  digits), and secret-looking values (tokens, passwords, keys, `Authorization` and `Cookie` headers, Bearer and Basic
+  credentials, JWTs, viewing keys, seed and mnemonic phrases, word by word) are replaced, whole (a JSON member's array
+  or object too, also inside JSON-escaped text), in every string of the snapshot; a log line is redacted as it is
+  written, before an event's fields become JSON.
 - Text from the engine (error messages, log lines, URLs) is drawn as text nodes with the explorer's hidden-character
   rules (`visible-text.ts`, the rule of `../mip0018/ui/page.js`): every control, format, private-use, unassigned or
   surrogate code point, line or paragraph separator and default-ignorable character is drawn as a visible mark
