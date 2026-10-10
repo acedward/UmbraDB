@@ -25,7 +25,7 @@ const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
 /**
  * Entry modules of the runtime: the engine and its system snapshot collector, the archive sync, the scan, the API, the
- * event listing, the migrations and the browser build's worker and page.
+ * event listing, the migrations and the browser build's worker and pages.
  */
 const RUNTIME_ROOTS = [
   "token-indexer/engine/engine.ts",
@@ -33,6 +33,7 @@ const RUNTIME_ROOTS = [
   "token-indexer/browser/worker.ts",
   "token-indexer/browser/engine-page.ts",
   "token-indexer/browser/explorer-page.ts",
+  "token-indexer/browser/system-page.ts",
   "chain-archive-sync/sync-service.ts",
   "chain-archive-sync/bootstrap.ts",
   "chain-archive-sync/retry.ts",
@@ -99,7 +100,10 @@ const MUST_REACH = [
   "token-indexer/mip0018/ui/page.js",
   "token-indexer/browser/snapshot.ts",
   "token-indexer/browser/snapshot-store.ts",
+  "token-indexer/browser/store-identity.ts",
   "token-indexer/browser/snapshot-page.ts",
+  "token-indexer/browser/system-model.ts",
+  "token-indexer/browser/visible-text.ts",
 ];
 
 const rel = (abs: string): string => path.relative(ROOT, abs).split(path.sep).join("/");
@@ -250,7 +254,7 @@ describe("runtime modules use no Node API", () => {
   }, 120_000);
 
   it("[[runtime.node-free.no-postgres-js]] the browser build's worker and pages never load the PostgreSQL client (postgres.js), not even through a dynamic import; the explorer page loads the explorer script, not the Node page module", () => {
-    const browser = runtimeClosure(["token-indexer/browser/worker.ts", "token-indexer/browser/engine-page.ts", "token-indexer/browser/explorer-page.ts"]);
+    const browser = runtimeClosure(["token-indexer/browser/worker.ts", "token-indexer/browser/engine-page.ts", "token-indexer/browser/explorer-page.ts", "token-indexer/browser/system-page.ts"]);
     expect(browser.unresolved).toEqual([]);
     const reached = [...browser.files].map(rel);
     expect(reached).toContain("src/postgres/migrate.ts");

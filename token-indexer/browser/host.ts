@@ -6,11 +6,16 @@
  * 1. `capabilities`: the capability check (`capabilities.ts`). A refusal ends the boot as `unsupported`; nothing is
  *    opened or started.
  * 2. `store`: PGlite opens the store (`store.ts`); on a first open it creates the database (about a second in Chrome,
- *    with a second PGlite heap while it runs).
+ *    with a second PGlite heap while it runs). Before that, the store's identity file (`store-identity.ts`) is read: a
+ *    store another PGlite version wrote is refused unopened. A store whose first boot never completed (a worker that
+ *    ended while PGlite created it leaves files PGlite cannot open) is removed and created again. A store that
+ *    completed a boot before and now fails to open is reported. Both reports end the boot `failed` with
+ *    `storeProblem` set, and the requests that replace the store's data (`reset`, `range`, `import`) then replace the
+ *    store itself under its lock and run the rest of the boot; nothing is ever read from the refused store.
  * 3. `ledger`: loads ledger-v9 (WASM) and checks that its classes kept their names: the scan stores a contract action's
  *    class name, so a build that renamed them would write wrong rows. A renamed class fails the boot.
  * 4. `migrate`: both schema lineages, the chain archive's and MIP-0018's, as the Node commands run them.
- * Then `ready`. A failure in 2–4 ends the boot as `failed` and closes the store.
+ * Then `ready`, and the store's identity is written. A failure in 2–4 ends the boot as `failed` and closes the store.
  *
  * **Requests** (`protocol.ts`): `status` answers at any time; `api` waits for the boot and answers through the running
  * engine's API handler, or, while no engine runs, a handler of the same store with no loops (`scanner: "off"`);
@@ -45,7 +50,9 @@
  *
  * **Storage** (`quota.ts`): the boot takes the first reading of the browser's usage and quota before `ready`, so every
  * `status` of a ready worker reports one (`storage`); before each sync batch the guard reads them again and pauses the
- * sync before the quota is reached; it resumes once space frees.
+ * sync before the quota is reached; it resumes once space frees. A write the browser refuses anyway (a sync or scan
+ * error saying a file could not grow) rolls its block back and pauses the sync the same way, with the refusal as the
+ * reason, until a later batch can write.
  *
  * **Reopen**: PGlite fails every statement once a database has failed about 1,700 statements (and until it is
  * reopened). The host counts the statements the database fails and, at {@link REOPEN_AFTER_FAILED_STATEMENTS} since
@@ -60,6 +67,7 @@ import type { ArchiveTape } from "../../chain-archive-sync/archive-tape.js";
 import { createTapeFetch } from "../../chain-archive-sync/tape-replay.js";
 import { durabilityModeOf } from "../../src/postgres/durability-probe.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
+import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_archive/index.js";
 import { mip0018Migrations } from "../../src/postgres/migrations/mip0018/index.js";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { KNOWN_GENESIS } from "../mip0018/api-views.ts";
@@ -88,11 +96,11 @@ import {
   type StoreInfo,
   type TapeRange,
 } from "./protocol.ts";
-import { browserStorageEnvironment, createQuotaGuard, type StorageEnvironment } from "./quota.ts";
+import { browserStorageEnvironment, createQuotaGuard, isRefusedWrite, type StorageEnvironment } from "./quota.ts";
 import { yieldingScheduler } from "./scheduler.ts";
 import { STACK_DEPTH_EXCEEDED } from "./session.ts";
 import { type EngineSettingsStore, memorySettingsStore, opfsSettingsStore } from "./settings.ts";
-import { type SnapshotExpectation, type SnapshotManifest, type SnapshotRecord, SnapshotRefusal, snapshotRecord } from "./snapshot.ts";
+import { decodeSnapshotFile, MAX_SNAPSHOT_FILE_BYTES, pgliteVersionOf, type SnapshotExpectation, type SnapshotManifest, type SnapshotRecord, SnapshotRefusal, snapshotRecord } from "./snapshot.ts";
 import {
   exportSnapshot,
   type ExportedSnapshot,
@@ -106,7 +114,8 @@ import {
   type PreparedImport,
   type TrialOpener,
 } from "./snapshot-store.ts";
-import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, openStore, type OpenStoreOptions, type Store } from "./store.ts";
+import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, openStore, type OpenStoreOptions, type Store, StoreBusyError } from "./store.ts";
+import { STORE_IDENTITY_FORMAT, storeIdentityFor, type StoreIdentityFile, unopenableStore, versionRefusal } from "./store-identity.ts";
 import { loadTape } from "./tapes.ts";
 
 /** Heights per sync batch unless `start` says otherwise: a stop waits for at most one batch. */
@@ -174,6 +183,9 @@ export interface WorkerHostOptions {
   snapshotFiles?: SnapshotFiles;
   /** Opens a snapshot's data directory for the trial an import runs. Default: an in-memory PGlite. */
   snapshotTrial?: TrialOpener;
+  /** Where the store's identity (the PGlite version that wrote it) is kept. Default: beside an `opfs-ahp://` store in
+   *  OPFS, else memory. The check before opening needs the running version: `build.pgliteVersion`. */
+  storeIdentity?: StoreIdentityFile;
 }
 
 export interface WorkerHost {
@@ -192,6 +204,17 @@ class HostError extends Error {
     super(message);
   }
 }
+
+/** The store cannot be used: refused (`version`) or not opened (`unopenable`); its message tells the user what to do. */
+class StoreProblem extends Error {
+  constructor(readonly kind: NonNullable<BootState["storeProblem"]>, message: string) {
+    super(message);
+  }
+}
+
+/** How the boot's store phase treats the store's files: as they are, removed first (`reset`, `range`), or replaced
+ *  by the pending import's journal (`import`). */
+type StoreOpening = "open" | "reset" | "import";
 
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -256,6 +279,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     phase: "starting",
     error: null,
     capabilities: null,
+    storeProblem: null,
     timings: { capabilitiesMs: null, storeMs: null, ledgerMs: null, migrateMs: null, totalMs: null },
   };
   const snapshotBoot = (): BootState => ({ ...bootState, timings: { ...bootState.timings } });
@@ -306,6 +330,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   let swapping: Promise<void> | undefined;
   /** The manifest of an import the boot finished (its configuration is saved once the settings are read). */
   let finishedImport: SnapshotManifest | undefined;
+  const identityFile = opts.storeIdentity ?? storeIdentityFor(opts.dataDir);
 
   async function phase<T>(name: BootState["phase"], key: keyof BootState["timings"], fn: () => Promise<T>): Promise<T> {
     bootState.phase = name;
@@ -434,23 +459,70 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     }
   }
 
-  async function runBoot(): Promise<BootState> {
-    const t0 = monotonic();
+  /** Writes the store's identity (`store-identity.ts`) when it is not on file yet: the versions read from the store. */
+  async function recordIdentity(s: Store): Promise<void> {
+    const [v] = await s.archive<{ version: string; server: string }[]>`select version() as version, current_setting('server_version') as server`;
+    const pglite = pgliteVersionOf(v!.version);
+    if (pglite === null) return;
+    const identity = { format: STORE_IDENTITY_FORMAT, pglite, postgres: v!.server } as const;
+    const onFile = await identityFile.load();
+    if (onFile?.pglite === identity.pglite && onFile.postgres === identity.postgres) return;
     try {
-      const report = await phase("capabilities", "capabilitiesMs", opts.checkCapabilities ?? (() => checkCapabilities()));
-      bootState.capabilities = report;
-      if (!report.supported) {
-        bootState.phase = "unsupported";
-        bootState.error = report.message;
-        log("error", report.message);
-        return snapshotBoot();
+      await identityFile.save(identity);
+    } catch (e) {
+      log("warn", `the store's identity could not be saved: ${messageOf(e)}`);
+    }
+  }
+
+  /** The `store` phase (see the module documentation). */
+  async function openForBoot(mode: StoreOpening): Promise<Store> {
+    const removeStore = async (): Promise<void> => {
+      await snapshotFiles.removeStore();
+      await identityFile.remove();
+    };
+    if (mode === "reset") {
+      return noteFinishedImport(await openFinishingImport(opener, opts.dataDir, snapshotFiles, opts.network, {
+        prepare: async () => {
+          await snapshotFiles.removeJournal();
+          await removeStore();
+        },
+      }));
+    }
+    // An import's journal replaces the store's files as it opens: the identity goes with them.
+    if (mode === "import") await identityFile.remove();
+    const identity = mode === "open" ? await identityFile.load() : undefined;
+    const running = opts.build?.pgliteVersion ?? null;
+    if (identity !== undefined && running !== null && identity.pglite !== running) throw new StoreProblem("version", versionRefusal(identity, running));
+    try {
+      return noteFinishedImport(await openFinishingImport(opener, opts.dataDir, snapshotFiles, opts.network));
+    } catch (e) {
+      if (e instanceof StoreBusyError) throw e;
+      if (identity !== undefined || mode !== "open") throw new StoreProblem("unopenable", unopenableStore(messageOf(e)));
+      // No boot ever completed on this store: PGlite's creation of it was interrupted. Nothing was stored yet.
+      log("warn", `the store's first boot did not complete and it cannot be opened (${messageOf(e)}): it is created again`);
+      try {
+        return noteFinishedImport(await openFinishingImport(opener, opts.dataDir, snapshotFiles, opts.network, { prepare: removeStore }));
+      } catch (e2) {
+        if (e2 instanceof StoreBusyError) throw e2;
+        throw new StoreProblem("unopenable", unopenableStore(messageOf(e2)));
       }
+    }
+  }
+
+  /** The boot from the `store` phase on: open, ledger, migrations, identity, saved settings, then `ready`. On a failure
+   *  the boot is `failed` (with `storeProblem` when the store is the reason) and the store is closed. Never rejects. */
+  async function bootStore(mode: StoreOpening): Promise<void> {
+    const t0 = monotonic();
+    bootState.error = null;
+    bootState.storeProblem = null;
+    try {
       let s: Store | undefined;
       try {
-        s = await phase("store", "storeMs", async () => noteFinishedImport(await openFinishingImport(opener, opts.dataDir, snapshotFiles, opts.network)));
+        s = await phase("store", "storeMs", () => openForBoot(mode));
         await phase("ledger", "ledgerMs", checkLedger);
         await phase("migrate", "migrateMs", () => migrate(s!));
         storeInfo = await readStoreInfo(s);
+        await recordIdentity(s);
       } catch (e) {
         if (s !== undefined) await s.close().catch(() => {});
         throw e;
@@ -466,12 +538,55 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     } catch (e) {
       bootState.phase = "failed";
       bootState.error = messageOf(e);
+      bootState.storeProblem = e instanceof StoreProblem ? e.kind : null;
       log("error", `boot failed: ${bootState.error}`);
     } finally {
-      bootState.timings.totalMs = monotonic() - t0;
+      bootState.timings.totalMs = (bootState.timings.capabilitiesMs ?? 0) + monotonic() - t0;
       announceBoot();
     }
+  }
+
+  async function runBoot(): Promise<BootState> {
+    const t0 = monotonic();
+    try {
+      const report = await phase("capabilities", "capabilitiesMs", opts.checkCapabilities ?? (() => checkCapabilities()));
+      bootState.capabilities = report;
+      if (!report.supported) {
+        bootState.phase = "unsupported";
+        bootState.error = report.message;
+        log("error", report.message);
+        bootState.timings.totalMs = monotonic() - t0;
+        announceBoot();
+        return snapshotBoot();
+      }
+    } catch (e) {
+      bootState.phase = "failed";
+      bootState.error = messageOf(e);
+      log("error", `boot failed: ${bootState.error}`);
+      bootState.timings.totalMs = monotonic() - t0;
+      announceBoot();
+      return snapshotBoot();
+    }
+    await bootStore("open");
     return snapshotBoot();
+  }
+
+  /** Whether the boot ended `failed` because of the store (see {@link openForBoot}): `reset`, `range` and `import`
+   *  then replace the store. */
+  async function storeFailed(): Promise<boolean> {
+    await boot();
+    const failed = !closed && bootState.phase === "failed" && bootState.storeProblem !== null;
+    // The saved configuration lives beside the store, not in it: a store that could not be used still has it.
+    if (failed && saved === undefined) saved = await settingsStore.load();
+    return failed;
+  }
+
+  /** Replaces a store the boot could not use and runs the rest of the boot; fails with `boot-failed` if it fails again. */
+  async function recoverStore(mode: "reset" | "import"): Promise<Store> {
+    log("warn", mode === "reset" ? "the store is removed and created again" : "the store is replaced by a snapshot");
+    await bootStore(mode);
+    if (store === undefined) throw new HostError("boot-failed", bootState.error ?? "the boot failed");
+    return store;
   }
 
   const boot = (): Promise<BootState> => (booting ??= runBoot());
@@ -588,6 +703,11 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         onEvent: (e) => {
           const line = logLineOf(e);
           if (line !== undefined) consoleLog(line[0], line[1]);
+          // A write the browser refused for lack of space: the storage guard pauses the sync and says why.
+          if (e.event === "error" && (e.source === "sync" || e.source === "scan")) {
+            const message = String(e.source === "sync" ? e.fields.message : e.fields.error);
+            if (isRefusedWrite(message)) quota.refusedWrite(message);
+          }
         },
       });
       detachTelemetry?.();
@@ -647,20 +767,28 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   /** A `range` request: a new range means a new archive (one archive has no gaps and no backfill), so the store's data
    *  is dropped and the range starts; the source and tuning of the saved configuration stay. */
   async function range(startHeight: number | "tip", endHeight: number | undefined): Promise<HostStatus> {
-    const s = await ready();
+    const failed = await storeFailed();
+    const s = failed ? undefined : await ready();
     const config: StartConfig = { ...(saved?.config ?? opts.defaultStart ?? {}), startHeight };
     delete config.endHeight;
     if (endHeight !== undefined) config.endHeight = endHeight;
     const valid = StartConfigSchema.safeParse(config);
     if (!valid.success) throw new HostError("bad-request", issuesOf(valid.error));
-    await halt();
-    await wipe(s);
+    if (s === undefined) await recoverStore("reset");
+    else {
+      await halt();
+      await wipe(s);
+    }
     return start(config);
   }
 
   /** A `reset` request: drops the store's data and starts the saved configuration again (a tip start resolves the tip
    *  anew). */
   async function reset(): Promise<HostStatus> {
+    if (await storeFailed()) {
+      await recoverStore("reset");
+      return start(undefined);
+    }
     const s = await ready();
     await halt();
     await wipe(s);
@@ -724,7 +852,40 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     useStore(s);
   }
 
+  /** An import into a store the boot could not use: checked against this build, journaled, then the boot runs again and
+   *  its store phase loads the journal into the store's place. */
+  async function importReplacingStore(snapshot: Blob): Promise<ImportResult> {
+    const t0 = monotonic();
+    const running = opts.build?.pgliteVersion ?? null;
+    let prepared: PreparedImport;
+    try {
+      if (snapshot.size > MAX_SNAPSHOT_FILE_BYTES) throw new SnapshotRefusal("format", `the file is ${snapshot.size} bytes, more than the ${MAX_SNAPSHOT_FILE_BYTES} a snapshot may have`);
+      const { manifest } = decodeSnapshotFile(new Uint8Array(await snapshot.arrayBuffer()));
+      const expected: SnapshotExpectation = {
+        network: opts.network,
+        genesisHash: genesisHash(),
+        schemaVersions: { chain_archive: chainArchiveMigrations.map((m) => m.name), mip0018: mip0018Migrations.map((m) => m.name) },
+        // The trial opens the data with this build's PGlite and compares the versions it reads with the manifest's.
+        pglite: { version: running ?? manifest.pglite.version, serverVersion: manifest.pglite.serverVersion },
+      };
+      prepared = await prepareImport(snapshot, expected, { monotonic, ...(opts.snapshotTrial === undefined ? {} : { trial: opts.snapshotTrial }) });
+    } catch (e) {
+      if (e instanceof SnapshotRefusal) throw new HostError("snapshot-refused", e.message);
+      throw e;
+    }
+    const tSwap = monotonic();
+    await snapshotFiles.writeJournal(prepared.file);
+    finishedImport = undefined;
+    await recoverStore("import");
+    if (finishedImport === undefined) throw new HostError("snapshot-failed", "the snapshot could not be loaded and the store was opened empty");
+    lastImport = snapshotRecord(prepared.manifest, clock.now(), prepared.file.length);
+    log("info", `imported a snapshot of ${prepared.manifest.network} up to ${prepared.manifest.archive.height} (${prepared.file.length} bytes) in place of a store that could not be used`);
+    const swapMs = Math.round((monotonic() - tSwap) * 10) / 10;
+    return { manifest: prepared.manifest, timings: { ...prepared.timings, swapMs, totalMs: Math.round((monotonic() - t0) * 10) / 10 }, status: await status() };
+  }
+
   async function importStore(snapshot: Blob): Promise<ImportResult> {
+    if (await storeFailed()) return importReplacingStore(snapshot);
     const t0 = monotonic();
     const s = await ready();
     const facts = await readStoreFacts(s.mip0018, opts.network);
@@ -751,6 +912,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       } catch (e) {
         bootState.phase = "failed";
         bootState.error = `the store could not be opened again after a snapshot import: ${messageOf(e)}`;
+        bootState.storeProblem = "unopenable";
         log("error", bootState.error);
         announceBoot();
         throw new HostError("snapshot-failed", bootState.error);

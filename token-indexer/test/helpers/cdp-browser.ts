@@ -13,7 +13,8 @@
  * workers a page starts are listed in `workers` (and whether each still runs) after `trackWorkers()`; with
  * `newPage({ workers: true })` they are also recorded into the same lists as the page (entries marked
  * `target: "worker"`): each worker is attached before its script runs, so all of its requests and log entries are seen,
- * and gets a `self.__cspViolations` list of its own `securitypolicyviolation` events.
+ * and gets a `self.__cspViolations` list of its own `securitypolicyviolation` events. `workerScript` is evaluated in
+ * each of those workers right before its first script runs. `crash()` kills the tab's renderer process.
  *
  * Every page opens as a new tab of the same browser profile (the default browser context), so pages share storage
  * (OPFS), Web Locks and BroadcastChannel as tabs of one Chrome profile do.
@@ -87,6 +88,11 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 export interface PageOptions {
   /** Also record the page's dedicated workers (requests, console, log entries, exceptions, CSP violations). */
   workers?: boolean;
+  /** With `workers`: a script evaluated in each dedicated worker the page starts, before the worker's own script runs. */
+  workerScript?: string;
+  /** Open the tab in a window of its own (still the same profile): it stays visible whatever other tabs are in front,
+   *  and minimizing its window hides it alone. */
+  newWindow?: boolean;
 }
 
 const VIOLATIONS = "__cspViolations = []; addEventListener('securitypolicyviolation', function (e) { __cspViolations.push(e.violatedDirective + ' ' + e.blockedURI); });";
@@ -105,13 +111,15 @@ export class Page {
   private readonly sessions = new Set<string>();
   private loads = 0;
   private trackingWorkers = false;
+  /** DevTools reported that the tab's renderer process crashed. */
+  crashed = false;
 
   private constructor(private readonly conn: Connection, readonly sessionId: string, readonly targetId: string) {
     this.sessions.add(sessionId);
   }
 
   static async open(conn: Connection, opts: PageOptions = {}): Promise<Page> {
-    const { targetId } = await conn.send("Target.createTarget", { url: "about:blank" });
+    const { targetId } = await conn.send("Target.createTarget", { url: "about:blank", ...(opts.newWindow === true ? { newWindow: true } : {}) });
     const { sessionId } = await conn.send("Target.attachToTarget", { targetId, flatten: true });
     const page = new Page(conn, sessionId, targetId);
     const mine = (l: (p: Json, worker: boolean) => void): Listener => (p, s) => { if (s !== undefined && page.sessions.has(s)) l(p, s !== sessionId); };
@@ -130,8 +138,9 @@ export class Page {
     conn.on("Runtime.exceptionThrown", mine((p) => page.exceptions.push(p.exceptionDetails?.exception?.description ?? p.exceptionDetails?.text ?? "exception")));
     conn.on("Log.entryAdded", mine((p, w) => page.logs.push({ source: p.entry.source, level: p.entry.level, text: p.entry.text, url: p.entry.url, ...tag(w) })));
     conn.on("Page.loadEventFired", mine(() => { page.loads++; }));
-    if (opts.workers === true) await page.attachWorkers(true);
-    for (const d of ["Page", "Runtime", "Network", "Log"]) await conn.send(`${d}.enable`, {}, sessionId);
+    conn.on("Inspector.targetCrashed", (_p, s) => { if (s === sessionId) page.crashed = true; });
+    if (opts.workers === true) await page.attachWorkers(true, opts.workerScript);
+    for (const d of ["Page", "Runtime", "Network", "Log", "Inspector"]) await conn.send(`${d}.enable`, {}, sessionId);
     await conn.send("Page.addScriptToEvaluateOnNewDocument", {
       source: "window.__cspViolations = []; document.addEventListener('securitypolicyviolation', function (e) { window.__cspViolations.push(e.violatedDirective + ' ' + e.blockedURI); });",
     }, sessionId);
@@ -191,7 +200,7 @@ export class Page {
    * target is held before its script runs until the worker's domains are enabled (its requests, console, log entries
    * and exceptions are then recorded with the page's) and it has a `self.__cspViolations` list.
    */
-  private async attachWorkers(record: boolean): Promise<void> {
+  private async attachWorkers(record: boolean, workerScript?: string): Promise<void> {
     if (this.trackingWorkers) return;
     this.trackingWorkers = true;
     const bySession = new Map<string, WorkerRecord>();
@@ -210,6 +219,7 @@ export class Page {
           this.sessions.add(child);
           this.workerSessions.push(child);
           for (const d of ["Runtime", "Network", "Log"]) await this.conn.send(`${d}.enable`, {}, child);
+          if (workerScript !== undefined) await this.beforeWorkerScript(child, workerScript);
         }
         await this.conn.send("Runtime.runIfWaitingForDebugger", {}, child);
         if (worker) await this.conn.send("Runtime.evaluate", { expression: VIOLATIONS }, child);
@@ -221,6 +231,42 @@ export class Page {
       if (w !== undefined) w.running = false;
     });
     await this.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: record, flatten: true });
+  }
+
+  /**
+   * Evaluates `script` in the worker of `session` once its global scope is complete, right before the worker's first
+   * script runs: a worker held at its start has a global scope without most Web APIs yet, so the debugger pauses at the
+   * first script's execution, evaluates `script` there, and lets the worker go on (the debugger is then turned off).
+   */
+  private async beforeWorkerScript(session: string, script: string): Promise<void> {
+    await this.conn.send("Debugger.enable", {}, session);
+    const { breakpointId } = await this.conn.send("Debugger.setInstrumentationBreakpoint", { instrumentation: "beforeScriptExecution" }, session);
+    let done = false;
+    this.conn.on("Debugger.paused", (p, s) => {
+      if (s !== session || done) return;
+      done = true;
+      void (async () => {
+        const r = await this.conn.send("Runtime.evaluate", { expression: script }, session);
+        if (r.exceptionDetails !== undefined) this.exceptions.push(`worker script: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
+        await this.conn.send("Debugger.removeBreakpoint", { breakpointId }, session);
+        await this.conn.send("Debugger.resume", {}, session);
+        await this.conn.send("Debugger.disable", {}, session);
+      })().catch(() => { /* the worker ended */ });
+      void p;
+    });
+  }
+
+  /**
+   * Kills the tab's renderer process, and with it the page and its dedicated workers, as a crash does (`Page.crash`, which
+   * never answers); resolves once DevTools reports the crash.
+   */
+  async crash(timeoutMs = 10_000): Promise<void> {
+    void this.send("Page.crash").catch(() => { /* the crashed target never answers */ });
+    const end = Date.now() + timeoutMs;
+    while (!this.crashed) {
+      if (Date.now() > end) throw new Error("the renderer did not crash");
+      await sleep(10);
+    }
   }
 
   /** Closes the tab, as the user closing it does. */

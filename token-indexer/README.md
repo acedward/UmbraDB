@@ -157,12 +157,16 @@ required gate runs it too, on PostgreSQL with the runner's Chrome.
 | The browser engine: the worker host and its protocol on an in-memory PGlite; the built worker in Chromium on OPFS, across reloads (see `browser/README.md`) | `test/browser-host.test.ts`, `test/browser-worker.test.ts` |
 | One engine across tabs: the leader election, the proxy and the handover rule with in-memory locks and channels; two and three tabs in Chromium on one profile, with the leader closed during a sync | `test/browser-tabs.test.ts`, `test/browser-tabs-chrome.test.ts` |
 | The browser engine's sync: digests, the start at the tip, the automatic start, `range` and `reset`, the storage guard and the pacing in the host; the recorded ranges' digests in Chromium on OPFS, and the automatic start against an advancing local chain | `test/browser-sync-host.test.ts`, `test/browser-sync.test.ts` |
+| The browser engine killed (the worker terminated, the tab's renderer crashed) at exact points of the first boot, of sync and scan block transactions and their commits, between transactions, at file writes, at random times and during a snapshot import: every reopened store holds exactly its cursors' blocks in all 37 tables, and finished ranges have the recorded digests (`npm run test:crash`: 100 kills) | `test/browser-crash-chrome.test.ts` |
+| The browser engine at its limits: the pause before the quota and after a refused write (the store at a full block), a refused `persist()`, an unsupported browser (nothing created), a store of another PGlite version in the panel, a hidden tab's replay; in Node, the refused-write pause, a store of an older build migrated at boot, a token minted before the start height | `test/browser-limits.test.ts`, `test/browser-limits-chrome.test.ts` |
+| A store the browser engine cannot use: another PGlite version's store refused unopened, an interrupted creation created again, a store that does not open reported; `reset`, `range` and a snapshot import replace it | `test/browser-store-recovery.test.ts` |
 | Snapshots of the browser store: the file and every refusal reason, a round trip that continues at the snapshot's height + 1, exports while the engine writes, the import journal, and the published snapshot in Node; in Chromium on OPFS, the round trip between profiles with equal digests, the refusals, the published snapshot with no network, and an import finished at the next boot | `test/browser-snapshot.test.ts`, `test/browser-snapshot-chrome.test.ts` |
 | The static build's explorer: its transport through the engine, the engine panel's view and the built page; in Chromium, `GET /ui`'s recorded-range checks on the static page with the IDX tape replayed in the worker, the transport's cap and error rendering, and the panel's controls, start height and leader/follower marks | `test/browser-explorer.test.ts`, `test/browser-explorer-chrome.test.ts` |
 | The static build's security headers: the policy and `_headers` the build writes for every page, the build-time chain, the worker's Trusted Types policy; in Chromium, the engine under the header and the meta policy with no violation and only allowed origins, and each refusal enforced (see `browser/README.md`) | `test/browser-csp-build.test.ts`, `test/browser-csp.test.ts` |
 | The browser engine's `system` snapshot and watchdog heartbeat in the worker host; in Chromium on OPFS, the snapshot against the store read by another page, a follower tab's snapshots, the watchdog's restart of a blocked worker with the recorded digests after it, and the API's round trips during a replay | `test/browser-system.test.ts`, `test/browser-engine-chrome.test.ts` |
 | The browser worker's session (time slices, failed statements, close), API requests between block transactions, the reopen before PGlite's failed-statement defect; the page's watchdog with a real slow statement on a worker thread and its rules | `test/browser-session.test.ts`, `test/browser-watchdog.test.ts` |
 | The browser build computes what the Node build computes, in Chromium: the 110 MIP vectors through the PGlite store in a worker on OPFS; the recorded cases through the engine worker's API (each case at its own last block, the reference index, marks, activity); a crawl of the whole API equal to the Node handler's over the same range | `test/browser-parity.test.ts` |
+| The system status page: its view of a snapshot and the explorer's hidden-character rules; in Chromium on the static build with its headers, every section against its sources, each driven state, a follower tab, nothing read while hidden, hostile text, and the diagnostics file's schema and redaction (see `browser/README.md`) | `test/browser-system-page.test.ts`, `test/browser-system-page-chrome.test.ts` |
 
 Fixtures:
 
@@ -189,6 +193,10 @@ PG_URL=… node --import tsx token-indexer/dev/live-range-check.ts live --tag a 
 PG_URL=… node --import tsx token-indexer/dev/live-range-check.ts replay --tag r --range idx --out /tmp/live-range
 PG_URL=… node --import tsx token-indexer/dev/live-range-check.ts compare --tags a,r --out /tmp/live-range
 ```
+
+Measurements of the browser build next to the Node build (`browser/MEASUREMENTS.md`; not CI): `dev/measure-browser.ts`
+(sizes, cold start, replay, memory, a hidden tab, the status page's cost, in headless Chromium) and `dev/measure-node.ts`
+(the same replay on PostgreSQL and on PGlite in Node; the activity listings' page cost on a large store).
 
 ## Vendored code and provenance
 

@@ -3,8 +3,10 @@
  * controls. It shows this tab's role (leader or follower, and the open tabs), the network, the engine's state, the saved
  * configuration, the first indexed height with "history before block H is not indexed" (`/v1/status` `startHeight`),
  * the synced and scanned heights, durability and storage (the engine's storage reading: usage, quota, the pause
- * threshold, persistence; the page's own `navigator.storage` figures until the engine has one), and links to the system
- * status page.
+ * threshold, persistence, and the browser's refusal to keep the site's storage when it refused; the page's own
+ * `navigator.storage` figures until the engine has one), and links to the system status page. When the boot failed
+ * because of the store (another PGlite version wrote it, or it does not open), the state says so and `reset`, `range`
+ * and `import` stay enabled: they replace the store.
  *
  * Controls, each one engine request (from a follower tab the leader performs it): `start` (the saved configuration),
  * `stop`, `range` (the typed start, `tip` or a height, and optional end), `reset`, `export` (the snapshot file is saved
@@ -16,7 +18,7 @@
  * Everything is drawn with DOM nodes and `textContent` (no markup is parsed), with no `style` attribute; the panel
  * refreshes every 2 s while the page is visible, after each request and on the engine's notices.
  */
-import { type EngineClient, EngineError } from "./client.ts";
+import { type EngineClient, EngineError, type PersistenceResult } from "./client.ts";
 import { type PageStorage, type PanelView, panelView, parseRange } from "./panel-model.ts";
 import type { ExportResult, HostStatus, ImportResult } from "./protocol.ts";
 import { saveSnapshotFile } from "./snapshot-page.ts";
@@ -33,6 +35,8 @@ export interface EnginePanelOptions {
   pageStorage?: () => Promise<PageStorage>;
   /** The system status page. Default `./system.html`. */
   systemHref?: string;
+  /** The page's request to keep the site's storage (`requestPersistentStorage`): a refusal is shown with the storage. */
+  persistence?: Promise<PersistenceResult>;
 }
 
 export interface EnginePanel {
@@ -148,6 +152,11 @@ export function mountEnginePanel(opts: EnginePanelOptions): EnginePanel {
   let api: Record<string, unknown> | null = null;
   let pageStorage: PageStorage | null = null;
   let connected: number | null = null;
+  let persistence: PersistenceResult | null = null;
+  void opts.persistence?.then((p) => {
+    persistence = p;
+    render();
+  });
   let view: PanelView | null = null;
   let busy = false;
   let refreshing: Promise<void> | null = null;
@@ -156,7 +165,7 @@ export function mountEnginePanel(opts: EnginePanelOptions): EnginePanel {
   let pending: { go: () => Promise<void> } | null = null;
 
   function render(): void {
-    view = panelView({ role: tabs.role(), connectedTabs: connected, status, statusError, api, pageStorage });
+    view = panelView({ role: tabs.role(), connectedTabs: connected, status, statusError, api, pageStorage, persistence });
     const set = (k: string, text: string): void => {
       fields.get(k)!.textContent = text;
     };
@@ -175,7 +184,9 @@ export function mountEnginePanel(opts: EnginePanelOptions): EnginePanel {
     const idle = !busy && view.ready;
     startButton.disabled = !idle || view.running;
     stopButton.disabled = !idle || !view.running;
-    for (const b of [rangeButton, resetButton, exportButton, importButton]) b.disabled = !idle;
+    exportButton.disabled = !idle;
+    // A store the boot could not use can still be replaced: reset, a new range or a snapshot.
+    for (const b of [rangeButton, resetButton, importButton]) b.disabled = !idle && !(view.recoverable && !busy);
     for (const b of [confirmExport, confirmGo]) b.disabled = busy;
   }
 

@@ -18,6 +18,9 @@
  * statements now and then, counts the statements the database fails, and closes PGlite only once no statement is in
  * flight.
  *
+ * An OPFS store's file system (`opfs-ahp`) is made here rather than by PGlite, so that an open that fails closes the
+ * files it opened (the store's files can then be removed, or opened again, from the same worker).
+ *
  * A snapshot import (`snapshot-store.ts`) replaces the store's files without letting go of the lock: `detach()` closes
  * PGlite and hands the held lock over, and `openStore(dataDir, { lock, prepare })` keeps it, runs `prepare` under it
  * before PGlite opens the store, and loads the data directory `prepare` returns.
@@ -109,9 +112,17 @@ export const LOAD_POOL_HEADROOM = 200;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** The store is held by another worker or context and was not released in time (the store itself may be fine). */
+export class StoreBusyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StoreBusyError";
+  }
+}
+
 /**
  * Takes the store's lock (`umbradb-store:<dataDir>`), waiting up to `waitMs` while another worker holds it. Resolves with
- * the held lock; fails, naming the store, when it is not released in time.
+ * the held lock; fails with {@link StoreBusyError}, naming the store, when it is not released in time.
  */
 export async function acquireStoreLock(dataDir: string, locks: LockManagerLike, waitMs: number = STORE_OPEN_WAIT_MS): Promise<HeldLock> {
   const giveUp = new AbortController();
@@ -119,7 +130,7 @@ export async function acquireStoreLock(dataDir: string, locks: LockManagerLike, 
   const lock = holdLock(locks, storeLockName(dataDir), { signal: giveUp.signal });
   try {
     if (!(await lock.acquired))
-      throw new Error(`the store ${dataDir} is open in another engine worker (another tab of this browser profile?) and was not released within ${waitMs} ms`);
+      throw new StoreBusyError(`the store ${dataDir} is open in another engine worker (another tab of this browser profile?) and was not released within ${waitMs} ms`);
   } finally {
     clearTimeout(timer);
   }
@@ -149,7 +160,7 @@ async function waitForStoreFiles(dataDir: string, storage: OpenStoreOptions["sto
     } catch (e) {
       const busy = typeof e === "object" && e !== null && (e as { name?: unknown }).name === "NoModificationAllowedError";
       if (!busy) throw e;
-      if (Date.now() > deadline) throw new Error(`the store ${dataDir} is still held by another context`);
+      if (Date.now() > deadline) throw new StoreBusyError(`the store ${dataDir} is still held by another context`);
       await sleep(20);
     }
   }
@@ -169,15 +180,15 @@ export async function openStore(dataDir: string, options: OpenStoreOptions = {})
     const load = (await options.prepare?.(dataDir)) ?? undefined;
     existed = await storeExists(dataDir, options.storage);
     const { PGlite } = await import("@electric-sql/pglite");
-    if (load === undefined) pglite = await PGlite.create({ dataDir });
-    else if (!persistent) pglite = await PGlite.create({ dataDir, loadDataDir: load.tar });
+    if (!persistent) pglite = await PGlite.create(load === undefined ? { dataDir } : { dataDir, loadDataDir: load.tar });
     else {
       const { OpfsAhpFS } = await import("@electric-sql/pglite/opfs-ahp");
-      const fs = new OpfsAhpFS(dataDir.slice("opfs-ahp://".length), { initialPoolSize: Math.max(1_000, load.entries + LOAD_POOL_HEADROOM) });
+      const path = dataDir.slice("opfs-ahp://".length);
+      const fs = load === undefined ? new OpfsAhpFS(path) : new OpfsAhpFS(path, { initialPoolSize: Math.max(1_000, load.entries + LOAD_POOL_HEADROOM) });
       try {
-        pglite = await PGlite.create({ dataDir, fs, loadDataDir: load.tar });
+        pglite = await PGlite.create(load === undefined ? { dataDir, fs } : { dataDir, fs, loadDataDir: load.tar });
       } catch (e) {
-        // Release the files the failed load opened, so the store can be opened again from this worker.
+        // Release the files the failed open opened, so the store can be removed or opened again from this worker.
         await fs.closeFs().catch(() => {});
         throw e;
       }

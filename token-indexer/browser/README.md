@@ -5,12 +5,16 @@ module worker, on PGlite stored in the Origin Private File System. The page talk
 static files is served.
 
 ```sh
-npm run build:browser   # the static site in dist-browser/ (index.html, engine.html, assets/, _headers and the published snapshot in snapshots/)
+npm run build:browser   # the static site in dist-browser/ (index.html, system.html, engine.html, assets/, _headers and the published snapshot in snapshots/)
 npm run dev:browser     # the same configuration served by Vite on 127.0.0.1 (no security headers)
 ```
 
 The build indexes Stagenet unless `UMBRADB_BROWSER_NETWORK`, `UMBRADB_BROWSER_NODE_URL` and
 `UMBRADB_BROWSER_INDEXER_URL` say otherwise when it runs (see [Security headers](#security-headers)).
+
+[MEASUREMENTS.md](MEASUREMENTS.md) records what the build costs and how fast it runs (cold start, sizes, live and replay
+blocks per second, storage per block, memory, a hidden tab, the status page's cost), next to the Node build on
+PostgreSQL.
 
 ## Modules
 
@@ -25,6 +29,8 @@ The build indexes Stagenet unless `UMBRADB_BROWSER_NETWORK`, `UMBRADB_BROWSER_NO
 | `tab-locks.ts` | The Web Locks behind that (leader, tab presence, store) and the connected-tab count |
 | `host-system.ts` | The worker's telemetry, `system` snapshot collector and viewers, and the watchdog's heartbeat |
 | `system-view.ts` | The page's side of the `system` snapshot: follow it while the page is visible, refresh it, "Download diagnostics" |
+| `system.html`, `system-page.ts`, `system-model.ts`, `system.css` | The system status page (see [System status page](#system-status-page)): the page, its drawing, its pure view of a snapshot, its style beside the explorer's `ui/page.css` |
+| `visible-text.ts` | The explorer's hidden-character rules for text a page draws from data: `⟨U+XXXX⟩` marks, bidi islands, text nodes only |
 | `session.ts` | The worker's view of its PGlite session: turns for the event loop between statements, failed statements counted, a close that waits for the statements in flight |
 | `capabilities.ts` | The Chrome-only capability check run before anything else |
 | `store.ts` | Opens PGlite and its two clients (`chain_archive`, `mip0018`); non-durable, results and errors as on PostgreSQL |
@@ -32,7 +38,8 @@ The build indexes Stagenet unless `UMBRADB_BROWSER_NETWORK`, `UMBRADB_BROWSER_NO
 | `tapes.ts`, `tapes/` | The recorded Stagenet ranges (gzip) the worker can replay with no network, SHA-256 checked |
 | `config.ts` | The network, its default endpoints (fixed when the site is built), the store's location and the build's settings |
 | `settings.ts` | The engine's saved configuration, a file beside the store |
-| `quota.ts` | The storage guard: pauses the sync before the quota |
+| `store-identity.ts` | Which PGlite wrote the store, a file beside it: a store of another PGlite version is refused before it is opened |
+| `quota.ts` | The storage guard: pauses the sync before the quota, and after a write the browser refused |
 | `snapshot.ts` | The snapshot file: its manifest, its format (a tar of `manifest.json` and `data.tar.gz`) and every check an import makes |
 | `snapshot-store.ts` | Export (a consistent read while the engine runs), import (checks, a trial load, then a journaled swap under the store's lock) and finishing an interrupted import when the store opens |
 | `snapshot-page.ts` | The page's side: saving an exported file as a download, fetching a snapshot the build publishes |
@@ -86,7 +93,19 @@ The worker boots as soon as it loads, in phases posted as `boot` notices and rep
   and nothing is opened or started. (`navigator.storage.persist()` exists only in a window; the worker checks
   `persisted()`.)
 - **store**: PGlite opens the store; the first open creates the database (about a second, with a second PGlite heap
-  while it runs).
+  while it runs). Before it, the store's identity (`<store directory>.store.json` beside the store, written once a boot
+  has migrated the store and after an import: the PGlite and PostgreSQL versions it was opened with) is read:
+  - a store another PGlite version wrote is **refused unopened**: the boot ends `failed` with `storeProblem: "version"`
+    and "reset it (its data is dropped and synced again) or load a snapshot made by this build";
+  - a store with no identity that does not open is one whose **creation was interrupted** (a worker that ends while
+    PGlite creates a store leaves files PGlite cannot open again: it then needs more pool files than a reopened store
+    gets): its files are removed and the store is created again, with a warning (nothing was stored yet);
+  - a store with an identity that does not open ends the boot `failed` with `storeProblem: "unopenable"`, the error
+    and the same two choices.
+
+  With `storeProblem` set, `reset` and `range` remove the store's files (under the store's lock) and `import` loads a
+  snapshot in their place (journaled, as any import); then the rest of the boot runs. Nothing is read from such a
+  store, and the engine panel keeps those three controls enabled. A store another worker holds is never removed.
 - **ledger**: ledger-v9 loads and its classes must keep their names (the scan stores them); a renamed class fails the
   boot.
 - **migrate**: the chain archive's and MIP-0018's migrations, as the Node commands run them.
@@ -167,7 +186,8 @@ A browser profile runs one engine per store, however many tabs are open. A page 
 - **Persistent storage.** `navigator.storage.persist()` exists only in a window: every page asks for it when it loads
   (`requestPersistentStorage()` in `client.ts`; the grant is per site, so any tab's request counts; the engine page keeps
   the answer in `window.umbradbEngine.persistence`), and the worker's `storage.persisted` reports the outcome. A
-  refusal changes nothing else.
+  refusal changes nothing else: the engine runs, and the explorer's engine panel says the browser refused to keep the
+  site's storage (or that asking failed), so the store may be cleared when space runs low.
 - **Storage quota** (`quota.ts`). Before a sync batch (reading again when the last reading is 10 s old) the worker
   compares `navigator.storage.estimate()`'s usage with its quota. While the store is open that usage includes the space
   Chrome reserves for the store's open files (about 1 GB in the session that creates the store, for about 42 MB of
@@ -180,6 +200,11 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   as unknown); the size comes from an OPFS walk of the store's files that runs beside the readings (about 1,300 files
   in a new store: a fraction of a second, seconds on a busy machine), so `storeBytes` is `null` until the first walk
   ends.
+  A write Chrome refuses anyway (the figures did not show it coming; the database reports "could not extend file …:
+  File too large") fails its statement, so its block's transaction is rolled back and the store stays at its last full
+  block; the sync's or scan's error is recognized as such and the sync pauses the same way, with "the browser refused
+  to write to the store for lack of space (…)" as the reason, until its next batch (at least 30 s later, and after the
+  sync's own back-off) tries again.
 
 ## Snapshots
 
@@ -338,3 +363,33 @@ PGlite and ledger versions; `vite.config.ts`). The storage section is the storag
 start mode and the automatic start come from the saved configuration, the connected tabs from the tab locks; the
 role is `leader` in the worker (a follower tab marks what it relays). The snapshots section is the worker's last
 snapshot export and import (see Snapshots).
+
+## System status page
+
+`system.html` shows the whole system on one read-only page, from the `system` snapshot: **Overview** (the health line —
+running, following, catching up, waiting (network), stalled (scan), paused (quota), stopped or error — with its
+reason, this tab's role, the first indexed height, the archive and scan heights, the finalized tip and the lag in
+blocks and time), **Configuration** (network, genesis, endpoints, pacing, batches, retry, start mode and range,
+automatic start, durability, watchdog limit, API queue cap, build), **Sync** (heights, rates, requests per endpoint by
+answer, last success, next attempt, last error), **Scan**, **Databases** (data directory, server version, `fsync`,
+durability, size; per schema the applied migrations and per table the estimated rows and size, exact counts on
+demand), **Storage**, **API**, **Engine** (role, connected tabs, uptime, watchdog restarts, reopens, failed
+statements), **Browser**, **Snapshots** and **Logs** (the last 200 lines, newest first).
+
+- The page joins the tabs like every page of the build: opened alone it leads (it runs the engine worker under the
+  watchdog; `?watchdogLimitMs=` as on `engine.html`); beside a leader it is a follower and shows the leader's
+  snapshots, marked "follower". The controls stay in the explorer's engine panel (`index.html`), which links here;
+  this page links back.
+- It follows the snapshots while it is visible (about every 2 s, the catalog about every 30 s) and reads nothing while
+  it is hidden. "count rows exactly" reads `count(*)` of every table once.
+- "Download diagnostics" saves the snapshot shown as JSON (`umbradb-diagnostics-<time>.json`, its log lines
+  included): a download through a `blob:` URL and `<a download>`, which the policy allows. URLs lose their
+  credentials, query and fragment, and secret-looking values (tokens, passwords, keys, `Authorization` and `Cookie`
+  headers, Bearer and Basic credentials, JWTs, viewing keys) are replaced, in every string of the snapshot; a log line
+  is redacted as it is written, before an event's fields become JSON.
+- Text from the engine (error messages, log lines, URLs) is drawn as text nodes with the explorer's hidden-character
+  rules (`visible-text.ts`, the rule of `../mip0018/ui/page.js`): every control, format, private-use, unassigned or
+  surrogate code point, line or paragraph separator and default-ignorable character is drawn as a visible mark
+  `⟨U+XXXX⟩`, each value in its own bidirectional island.
+- For scripted use, `window.umbradbEngine` holds the client and the tabs, and `window.umbradbSystem.latest()` the
+  snapshot drawn last.

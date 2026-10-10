@@ -16,12 +16,13 @@
  *   the latest {@link LATENCY_SAMPLES} admitted requests. Request targets are never seen (the engine's events carry
  *   the method, status and latency only).
  * - **Logs:** the latest {@link LOG_CAPACITY} lines: every sync and scan event except a batch of zero blocks, the API
- *   handler's error lines, the host's own lines and the hooks' notes. A line keeps its text as given (apart from the
- *   {@link TEXT_MAX_CHARS} cap); the snapshot redacts it, and a page renders it as text.
+ *   handler's error lines, the host's own lines and the hooks' notes. A line is redacted as it is written (an event's
+ *   fields before they become JSON) and capped at {@link TEXT_MAX_CHARS}; otherwise it keeps its characters (control,
+ *   bidirectional and markup characters included), the snapshot redacts it again, and a page renders it as text.
  * - **Health:** {@link deriveHealth} is the rule behind the overview's health line.
  */
 import type { EngineClock, EngineEvent, EngineStatus, LoopPhase } from "./engine.ts";
-import { capText, type HealthState, HEALTH_LABELS, LOG_CAPACITY, type LogEntry, TEXT_MAX_CHARS } from "./system-snapshot.ts";
+import { capText, type HealthState, HEALTH_LABELS, LOG_CAPACITY, type LogEntry, redactDeep, redactText, TEXT_MAX_CHARS } from "./system-snapshot.ts";
 
 export { LOG_CAPACITY, TEXT_MAX_CHARS };
 
@@ -232,9 +233,14 @@ function urlOf(input: Parameters<typeof fetch>[0]): string {
 const isAbort = (e: unknown, init: RequestInit | undefined): boolean =>
   init?.signal?.aborted === true || (e instanceof Error && e.name === "AbortError");
 
-/** One line per event; a batch of zero blocks is not logged (a loop at its tip would fill the buffer). */
+/**
+ * One line per event; a batch of zero blocks is not logged (a loop at its tip would fill the buffer). The event's
+ * fields are redacted before they are written as JSON: inside JSON a line break or a quote is an escape, so a secret
+ * on a line of its own in an error message (an `Authorization` header) or in a JSON member could no longer be
+ * recognized in the written line.
+ */
 function logLine(e: EngineEvent): { level: LogLevel; text: string } | undefined {
-  const json = (v: unknown): string => JSON.stringify(v);
+  const json = (v: unknown): string => JSON.stringify(redactDeep(v));
   switch (`${e.source}:${e.event}`) {
     case "sync:start":
     case "sync:range-complete":
@@ -251,7 +257,7 @@ function logLine(e: EngineEvent): { level: LogLevel; text: string } | undefined 
     case "scan:batch":
       return (e.fields as { scannedBlocks: number }).scannedBlocks > 0 ? { level: "info", text: `batch ${json(e.fields)}` } : undefined;
     case "api:log":
-      return { level: "error", text: (e.fields as { line: string }).line };
+      return { level: "error", text: redactText((e.fields as { line: string }).line) };
     default:
       return undefined;
   }
@@ -271,7 +277,7 @@ export function createEngineTelemetry(opts: EngineTelemetryOptions = {}): Engine
   const logRing = new Ring<LogEntry>(LOG_CAPACITY);
   let seq = 0;
   const addLog = (level: LogLevel, source: string, text: string): void => {
-    logRing.push({ seq: seq++, at: clock.now(), level, source, text: capText(text) });
+    logRing.push({ seq: seq++, at: clock.now(), level, source, text: capText(redactText(text)) });
   };
 
   // Sync.

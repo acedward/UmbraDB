@@ -411,8 +411,9 @@ const SECRET_HEADER = String.raw`(?:proxy-authorization|authorization|set-cookie
 /** Names whose value is a secret, as a key of `key=value`, `key: value` or JSON `"key": value`. */
 const SECRET_KEY = String.raw`(?:x-api-key|api[-_]?key|apikey|access[-_]?token|refresh[-_]?token|id[-_]?token|auth[-_]?token|bearer[-_]?token|client[-_]?secret|secret[-_]?key|private[-_]?key|viewing[-_]?key|${SECRET_HEADER}|session[-_]?id|sessionid|token|secret|password|passwd|pwd|passphrase|signature|seed|mnemonic|credentials?)`;
 const RULES: ReadonlyArray<[RegExp, string | ((...m: string[]) => string)]> = [
-  // URLs of any scheme: userinfo, query and fragment removed.
-  [/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>`]+/giu, (m) => publicUrl(m)],
+  // URLs of any scheme: userinfo, query and fragment removed. A URL ends at a backslash too (in JSON-escaped text the
+  // next character is an escape, not part of the URL).
+  [/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>`\\]+/giu, (m) => publicUrl(m)],
   // JWT-shaped tokens.
   [/\beyJ[\w-]{4,}\.[\w-]{4,}\.[\w-]*/gu, `${REDACTED} token`],
   // Bech32m secret keys (a viewing key is `mn_shield-esk…`).

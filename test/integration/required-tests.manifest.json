@@ -1,5 +1,5 @@
 {
-  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 296) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
+  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 321) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
   "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` — those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early — that would re-open the exact self-skip hole this manifest closes.",
   "required": [
     {
@@ -1481,6 +1481,131 @@
       "id": "browser.worker.snapshot-recovery",
       "file": "token-indexer/test/browser-snapshot-chrome.test.ts",
       "description": "an import journal beside a damaged store is finished by the next boot before PGlite opens the store"
+    },
+    {
+      "id": "browser.status.text-rules",
+      "file": "token-indexer/test/browser-system-page.test.ts",
+      "description": "the status page draws engine text with the explorer's hidden-character rules: the same expression and the same runs and marks as page.js's own functions for every code point and for hostile strings"
+    },
+    {
+      "id": "browser.status.model",
+      "file": "token-indexer/test/browser-system-page.test.ts",
+      "description": "every section of the status page in order, each value written from the snapshot (heights, counts, bytes, times, endpoint table, migrations, tables, storage, API, engine, browser, snapshot records, logs newest first); a missing value is a dash"
+    },
+    {
+      "id": "browser.status.model-states",
+      "file": "token-indexer/test/browser-system-page.test.ts",
+      "description": "the health line names every state by HEALTH_LABELS with its reason and tone; a follower's snapshot is marked follower with the time it was received; a stalled scan and a quota pause show their details"
+    },
+    {
+      "id": "browser.status.sources",
+      "file": "token-indexer/test/browser-system-page-chrome.test.ts",
+      "description": "in Chromium on the static build with its headers, every section of the status page shows values drawn from its snapshot, equal to their sources: /v1/status heights, navigator.storage, and the store's catalog (sizes, estimates, exact counts on demand, database size, server version, migrations); no CSP violation, same origin only"
+    },
+    {
+      "id": "browser.status.states",
+      "file": "token-indexer/test/browser-system-page-chrome.test.ts",
+      "description": "the status page shows each driven state: waiting (network) with the last error and the next retry, following, paused (quota) with its reason, a watchdog restart counted with its reason, stopped, and stalled (scan) with the scan's error"
+    },
+    {
+      "id": "browser.status.follower",
+      "file": "token-indexer/test/browser-system-page-chrome.test.ts",
+      "description": "the leader's status page shows its engine catching up then following; a second tab's status page shows the leader's engine marked follower with two connected tabs, and becomes leader when the leader tab closes"
+    },
+    {
+      "id": "browser.status.hidden",
+      "file": "token-indexer/test/browser-system-page-chrome.test.ts",
+      "description": "while hidden the status page watches nothing: no snapshot, no /v1/status or catalog read for it; visible again it follows again"
+    },
+    {
+      "id": "browser.status.hostile-text",
+      "file": "token-indexer/test/browser-system-page-chrome.test.ts",
+      "description": "an error message with control, bidi, zero-width and markup characters is drawn as text on the status page: hidden characters as visible marks, markup as characters, no element, script or request from it"
+    },
+    {
+      "id": "browser.status.diagnostics",
+      "file": "token-indexer/test/browser-system-page-chrome.test.ts",
+      "description": "Download diagnostics under the headers' policy saves the snapshot shown as JSON: valid against the versioned schema, equal to that snapshot with its log lines, and free of the secrets the engine was given and of the page's address"
+    },
+    {
+      "id": "browser.status.links",
+      "file": "token-indexer/test/browser-system-page-chrome.test.ts",
+      "description": "the explorer's engine panel links to the status page and the status page back to the explorer, both followed under the headers' policy with every request answered and no violation"
+    },
+    {
+      "id": "browser.host.store-version",
+      "file": "token-indexer/test/browser-store-recovery.test.ts",
+      "description": "a store written by another PGlite version is refused before PGlite opens it, with reset or a snapshot of this build as the choices; reset replaces it, starts the saved configuration and rewrites the store's identity"
+    },
+    {
+      "id": "browser.host.store-version-import",
+      "file": "token-indexer/test/browser-store-recovery.test.ts",
+      "description": "a refused store is replaced by a snapshot made by this build (its data, cursors and digests; the engine stopped with the continuing configuration; the identity rewritten); a snapshot of another PGlite version is refused and the store stays refused"
+    },
+    {
+      "id": "browser.host.store-recovery",
+      "file": "token-indexer/test/browser-store-recovery.test.ts",
+      "description": "a store that completed a boot and fails to open is reported with the same choices and replaced by range; a store whose creation never completed is created again by the boot; a store held by another worker is never removed"
+    },
+    {
+      "id": "browser.panel.store-problem",
+      "file": "token-indexer/test/browser-store-recovery.test.ts",
+      "description": "the engine panel keeps reset, range and import usable after a boot that failed because of the store, and says when the browser refused to keep the site's storage"
+    },
+    {
+      "id": "browser.crash.kills",
+      "file": "token-indexer/test/browser-crash-chrome.test.ts",
+      "description": "kills of the worker (terminate and renderer crash) at exact points of the first boot, of sync and scan block transactions and their commits, between transactions, at file writes and at random times: every reopened store is ready and holds exactly the blocks of its cursors in all 37 tables, and finished ranges have the recorded live digests"
+    },
+    {
+      "id": "browser.crash.import-swap",
+      "file": "token-indexer/test/browser-crash-chrome.test.ts",
+      "description": "kills during a snapshot import's swap leave the store as it was (before the journal is complete) or the snapshot's (finished at the next boot from the journal), whole, with their digests"
+    },
+    {
+      "id": "browser.worker.quota-pause",
+      "file": "token-indexer/test/browser-limits-chrome.test.ts",
+      "description": "in Chromium, an estimate near the quota pauses the sync before it: the archive holds, the API answers, health paused-quota; the paused store equals an uninterrupted replay at its cursors; a lower estimate resumes it to the recorded digests"
+    },
+    {
+      "id": "browser.worker.quota-refused-write",
+      "file": "token-indexer/test/browser-limits-chrome.test.ts",
+      "description": "in Chromium, a write the browser refuses for lack of space rolls its block back; the sync pauses with the refusal as the reason (status, panel, system health); the store equals the replay at its cursors; with space back it finishes to the recorded digests"
+    },
+    {
+      "id": "browser.worker.persist-refused",
+      "file": "token-indexer/test/browser-limits-chrome.test.ts",
+      "description": "in Chromium, a refused or failing persist() is shown by the explorer's engine panel and the engine runs anyway to the recorded digest"
+    },
+    {
+      "id": "browser.worker.unsupported",
+      "file": "token-indexer/test/browser-limits-chrome.test.ts",
+      "description": "in Chromium without OPFS sync access handles, without a Chromium brand or without Web Locks: unsupported with the Chrome-only message in the panel, every store request refused, nothing created in the origin's OPFS"
+    },
+    {
+      "id": "browser.worker.store-version",
+      "file": "token-indexer/test/browser-limits-chrome.test.ts",
+      "description": "in Chromium, a store of another PGlite version is refused with its choices in the panel (reset, range and import usable), its files untouched; a snapshot of this build replaces it; refused again, the panel's reset starts a new store"
+    },
+    {
+      "id": "browser.worker.hidden-tab",
+      "file": "token-indexer/test/browser-limits-chrome.test.ts",
+      "description": "in Chromium, with the engine page's window minimized the worker replays the IDX range to its end and the recorded digests; its throughput is measured against the page visible"
+    },
+    {
+      "id": "browser.quota.refused-write",
+      "file": "token-indexer/test/browser-limits.test.ts",
+      "description": "after a refused write the storage guard keeps the sync paused with the refusal as the reason until a batch, no sooner than the recheck interval, tries again; a stop ends the wait; only out-of-space errors count"
+    },
+    {
+      "id": "browser.host.new-build-old-store",
+      "file": "token-indexer/test/browser-limits.test.ts",
+      "description": "a store of an older build (the newest migration missing, blocks stored) gets the migration at boot, keeps its cursors and data, gets an identity, and continues to the recorded archive digest"
+    },
+    {
+      "id": "browser.host.minted-before-start",
+      "file": "token-indexer/test/browser-limits.test.ts",
+      "description": "a store started after a token's mint: the start height in /v1/status, no mint identity for the token, only metadata written at or after the start, an identity written only before it not listed"
     }
   ],
   "deferred": [
