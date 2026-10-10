@@ -210,13 +210,13 @@ function usesOf(file: string): string[] {
 }
 
 describe("runtime modules use no Node API", () => {
-  it("the import walk from the runtime entry modules resolves every relative import and reaches the core modules", () => {
+  it("[[runtime.node-free.walk]] the import walk from the runtime entry modules resolves every relative import and reaches the core modules", () => {
     expect(closure.unresolved).toEqual([]);
     const reached = [...closure.files].map(rel);
     for (const m of MUST_REACH) expect(reached, m).toContain(m);
   });
 
-  it("no runtime module imports a Node module or uses Buffer or another Node-only global (allow-list aside)", () => {
+  it("[[runtime.node-free.rules]] no runtime module imports a Node module or uses Buffer or another Node-only global (allow-list aside)", () => {
     expect(scanned.length).toBeGreaterThan(MUST_REACH.length);
     const found: string[] = [];
     for (const file of scanned) {
@@ -226,7 +226,7 @@ describe("runtime modules use no Node API", () => {
     expect(found).toEqual([]);
   }, 120_000);
 
-  it("every allow-listed module is scanned and still uses a Node API (an entry it no longer needs fails here)", () => {
+  it("[[runtime.node-free.allow-list]] every allow-listed module is scanned and still uses a Node API (an entry it no longer needs fails here)", () => {
     const names = scanned.map(rel);
     for (const [m, why] of Object.entries(PENDING)) {
       expect(why.length).toBeGreaterThan(0);
@@ -235,7 +235,7 @@ describe("runtime modules use no Node API", () => {
     }
   }, 120_000);
 
-  it("the browser build's worker and page never load the PostgreSQL client (postgres.js), not even through a dynamic import", () => {
+  it("[[runtime.node-free.no-postgres-js]] the browser build's worker and page never load the PostgreSQL client (postgres.js), not even through a dynamic import", () => {
     const browser = runtimeClosure(["token-indexer/browser/worker.ts", "token-indexer/browser/engine-page.ts"]);
     expect(browser.unresolved).toEqual([]);
     const reached = [...browser.files].map(rel);
@@ -244,7 +244,7 @@ describe("runtime modules use no Node API", () => {
     expect(reached).not.toContain("src/postgres/client.ts");
   });
 
-  it("Node tooling exists and no runtime module imports it", () => {
+  it("[[runtime.node-free.tooling]] Node tooling exists and no runtime module imports it", () => {
     const reached = new Set([...closure.files].map(rel));
     for (const [m, why] of Object.entries(NODE_ONLY)) {
       expect(why.length).toBeGreaterThan(0);
@@ -253,7 +253,7 @@ describe("runtime modules use no Node API", () => {
     }
   });
 
-  it("negative control: the rules flag every Node API shape and nothing in comments or strings", () => {
+  it("[[runtime.node-free.negative-control]] negative control: the rules flag every Node API shape and nothing in comments or strings", () => {
     const bad = [
       'import { readFileSync } from "node:fs";',
       'import path from "path";',
