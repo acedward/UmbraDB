@@ -6,8 +6,9 @@
  *
  * - `[[browser.host.boot]]` — the boot phases in order, both schema lineages migrated, the store's facts, the API
  *   answering before any start (`scanner: "off"`).
- * - `[[browser.host.protocol]]` — every malformed message gets the right error code; `export` and `import` answer
- *   `not-implemented`; a first start with no start height begins at the finalized tip.
+ * - `[[browser.host.protocol]]` — every malformed message gets the right error code; `export` of an empty archive and
+ *   `import` of a file that is not a snapshot are refused (`snapshot-refused`); a first start with no start height
+ *   begins at the finalized tip.
  * - `[[browser.host.engine]]` — start, run, stop, restart: the cursors and the API follow the replayed range, a restart
  *   continues at the cursor, and every block is fetched once.
  * - `[[browser.host.refusals]]` — an unsupported browser opens nothing; a ledger build with renamed classes fails the
@@ -143,7 +144,7 @@ describe("browser engine host", () => {
     expect(await host.boot()).toEqual(boot); // the boot runs once
   }, 60_000);
 
-  it("[[browser.host.protocol]] a malformed message gets bad-request, another version unsupported-version, an unknown type unknown-type; export and import answer not-implemented; a first start with no start height begins at the finalized tip", async () => {
+  it("[[browser.host.protocol]] a malformed message gets bad-request, another version unsupported-version, an unknown type unknown-type; export of an empty archive and import of a file that is not a snapshot are refused; a first start with no start height begins at the finalized tip", async () => {
     const { host } = newHost();
     const fails = async (raw: unknown): Promise<Extract<Response, { ok: false }>> => {
       const r = await host.receive(raw);
@@ -170,9 +171,10 @@ describe("browser engine host", () => {
 
     expect(await fails({ v: 1, id: 19, type: "range", startHeight: "top" })).toMatchObject({ error: { code: "bad-request" } });
     expect((await result<HostStatus>(host, "stop")).engine).toBeNull(); // stop with nothing running is a no-op
-    for (const [type, params] of [["export", {}], ["import", { snapshot: new Blob(["x"]) }]] as const) {
+    for (const [type, params, reason] of [["export", {}, "empty"], ["import", { snapshot: new Blob(["x"]) }, "format"]] as const) {
       const e = await errorOf(host, type, params);
-      expect(e.code, type).toBe("not-implemented");
+      expect(e.code, type).toBe("snapshot-refused");
+      expect(e.message, type).toMatch(new RegExp(`^${reason}: `));
     }
     // No start height on an empty archive: the finalized tip (the tape's highest height), never genesis.
     await result(host, "start", { config: { source: { kind: "tape", range: "u1" }, ...FAST } });
@@ -348,10 +350,9 @@ describe("browser engine client", () => {
       expect(JSON.parse(a.body).scanner).toBe("off");
       expect(a.headers["content-type"]).toContain("application/json");
 
-      for (const p of [client.export(), client.import(new Blob(["x"]))]) {
-        const e = await p.then(() => undefined, (x: unknown) => x);
+      for (const e of await Promise.all([client.export(), client.import(new Blob(["x"]))].map((p) => p.then(() => undefined, (x: unknown) => x)))) {
         expect(e).toBeInstanceOf(EngineError);
-        expect((e as EngineError).code).toBe("not-implemented");
+        expect((e as EngineError).code).toBe("snapshot-refused");
       }
       const refused = await client.range(10, 9).then(() => undefined, (x: unknown) => x as EngineError);
       expect(refused).toMatchObject({ code: "bad-request", request: "range" });

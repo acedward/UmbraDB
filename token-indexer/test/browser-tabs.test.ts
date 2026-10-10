@@ -189,6 +189,7 @@ function hostStatus(engine: FakeEngine["state"]["engine"]): HostStatus {
     cursors: { sync: null, scan: null },
     settings: null,
     storage: null,
+    snapshots: { lastExport: null, lastImport: null },
   };
 }
 

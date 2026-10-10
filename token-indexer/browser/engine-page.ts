@@ -4,10 +4,13 @@
  * storage (`requestPersistentStorage`, from every tab: the grant is per site), shows this tab's role, its boot phase and
  * the engine's status (refreshed every second while the page is visible), and exposes the client as
  * `window.umbradbEngine` for scripted use (the browser tests drive the engine through it; `restarts()` lists the
- * watchdog's restarts of this tab's worker). `?watchdogLimitMs=<ms>` sets the watchdog's limit (default 30 s,
- * `supervisor.ts`). All text is set through `textContent`.
+ * watchdog's restarts of this tab's worker), with the snapshot helpers (`snapshot-page.ts`): `snapshots.save(exported)`
+ * downloads an exported snapshot file, `snapshots.published(name)` fetches a snapshot the build publishes.
+ * `?watchdogLimitMs=<ms>` sets the watchdog's limit (default 30 s, `supervisor.ts`). All text is set through
+ * `textContent`.
  */
 import { type EngineClient, type PersistenceResult, requestPersistentStorage, startEngineWorker } from "./client.ts";
+import { fetchPublishedSnapshot, publishedSnapshots, saveSnapshotFile } from "./snapshot-page.ts";
 import type { RestartRecord, SupervisedEngine } from "./supervisor.ts";
 import { connectEngineTabs, type EngineTabs, localEngineOf } from "./tabs.ts";
 
@@ -20,6 +23,11 @@ declare global {
       restarts(): RestartRecord[];
       loadedAt: number;
       persistence: Promise<PersistenceResult>;
+      snapshots: {
+        save: typeof saveSnapshotFile;
+        list: () => ReturnType<typeof publishedSnapshots>;
+        published: (name: string) => Promise<File>;
+      };
     };
   }
 }
@@ -45,6 +53,11 @@ window.umbradbEngine = {
   restarts: () => supervised?.restarts() ?? [],
   loadedAt,
   persistence,
+  snapshots: {
+    save: saveSnapshotFile,
+    list: () => publishedSnapshots(location.href),
+    published: (name) => fetchPublishedSnapshot(name, location.href),
+  },
 };
 
 const roleEl = document.getElementById("role")!;

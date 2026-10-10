@@ -17,7 +17,9 @@ import {
   type BootState,
   type DigestResult,
   type ErrorCode,
+  type ExportResult,
   type HostStatus,
+  type ImportResult,
   type Notice,
   type ParamsOf,
   parseResult,
@@ -71,8 +73,10 @@ export interface EngineClient {
   range(startHeight: number | "tip", endHeight?: number): Promise<HostStatus>;
   /** Drops the store's data and starts the saved configuration again. */
   reset(): Promise<HostStatus>;
-  export(): Promise<never>;
-  import(snapshot: Blob): Promise<never>;
+  /** A snapshot file of the store (`snapshot.ts`), taken while the engine runs. */
+  export(): Promise<ExportResult>;
+  /** Replaces the store with a snapshot file; refused (`snapshot-refused`, nothing changed) when it does not match. */
+  import(snapshot: Blob): Promise<ImportResult>;
   /** The store's archive and range-tables digests (one read-only transaction). */
   digest(): Promise<DigestResult>;
   /** The boot state once the boot has ended (`ready`, `unsupported` or `failed`). */
