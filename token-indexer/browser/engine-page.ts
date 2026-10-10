@@ -1,19 +1,27 @@
 /**
  * The engine page: joins the other tabs of this store (`tabs.ts`: the leader tab runs the engine worker, the others
- * proxy to it), shows this tab's role, its boot phase and the engine's status (refreshed every second while the page is
- * visible), and exposes the client as `window.umbradbEngine` for scripted use (the browser tests drive the engine
- * through it). All text is set through `textContent`.
+ * proxy to it; the leader starts or resumes the engine), asks the browser to keep the site's storage
+ * (`requestPersistentStorage`, from every tab: the grant is per site), shows this tab's role, its boot phase and the
+ * engine's status (refreshed every second while the page is visible), and exposes the client as `window.umbradbEngine`
+ * for scripted use (the browser tests drive the engine through it). All text is set through `textContent`.
  */
-import type { EngineClient } from "./client.ts";
+import { type EngineClient, type PersistenceResult, requestPersistentStorage } from "./client.ts";
 import { connectEngineTabs, type EngineTabs } from "./tabs.ts";
 
 declare global {
   interface Window {
-    umbradbEngine?: { client: EngineClient; tabs: EngineTabs; readonly worker: Worker | undefined; loadedAt: number };
+    umbradbEngine?: {
+      client: EngineClient;
+      tabs: EngineTabs;
+      readonly worker: Worker | undefined;
+      loadedAt: number;
+      persistence: Promise<PersistenceResult>;
+    };
   }
 }
 
 const loadedAt = performance.now();
+const persistence = requestPersistentStorage();
 const tabs = connectEngineTabs();
 const client = tabs.client;
 window.umbradbEngine = {
@@ -24,6 +32,7 @@ window.umbradbEngine = {
     return tabs.worker();
   },
   loadedAt,
+  persistence,
 };
 
 const roleEl = document.getElementById("role")!;
@@ -51,7 +60,7 @@ async function refresh(): Promise<void> {
     tabsEl.textContent = String(await tabs.connectedTabs());
     const s = await client.status();
     phaseEl.textContent = s.boot.phase;
-    statusEl.textContent = JSON.stringify({ boot: s.boot, store: s.store, cursors: s.cursors, engine: s.engine?.status ?? null }, null, 2);
+    statusEl.textContent = JSON.stringify({ boot: s.boot, store: s.store, cursors: s.cursors, engine: s.engine?.status ?? null, settings: s.settings, storage: s.storage, persistence: await persistence }, null, 2);
   } catch (e) {
     messageEl.hidden = false;
     messageEl.textContent = e instanceof Error ? e.message : String(e);
