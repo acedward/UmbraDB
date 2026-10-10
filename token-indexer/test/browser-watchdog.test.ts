@@ -14,6 +14,8 @@
  *   grace; a silent worker is restarted once, with the system viewers and the engine restored; an engine the page
  *   stopped is not started again; a boot that fails right after a restart is retried; more than the allowed restarts
  *   within the window close the client with `worker-error`.
+ * - `[[browser.watchdog.long-requests]]` — while a `reset` (which drops and recreates the store's schemas) is in flight
+ *   the worker may stay silent up to the longer limit; past it, it is restarted, and the `reset` fails `restarted`.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,7 +28,7 @@ import { EngineError, unavailableAnswer } from "../browser/client.ts";
 import { createWorkerHost, type WorkerHost } from "../browser/host.ts";
 import type { StartConfig } from "../browser/protocol.ts";
 import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, openStore } from "../browser/store.ts";
-import { superviseWorker, type WorkerLike } from "../browser/supervisor.ts";
+import { DEFAULT_LONG_LIMIT_MS, LONG_REQUESTS, superviseWorker, type WorkerLike } from "../browser/supervisor.ts";
 import { loadTape } from "../browser/tapes.ts";
 import { rangeTables } from "../dev/range-tables.ts";
 import { createMip0018Handler } from "../mip0018/api.ts";
@@ -316,4 +318,59 @@ describe("page watchdog", () => {
     }
     await previousGone;
   }, 120_000);
+
+  it("[[browser.watchdog.long-requests]] while a reset is in flight the worker may stay silent up to the longer limit; past it the worker is restarted and the reset fails restarted", async () => {
+    expect([...LONG_REQUESTS].sort()).toEqual(["export", "import", "range", "reset"]);
+    expect(DEFAULT_LONG_LIMIT_MS).toBe(600_000);
+    let now = 0;
+    let check: () => void = () => {};
+    const workers: ChannelWorker[] = [];
+    const engine = superviseWorker<ChannelWorker>({
+      createWorker: () => {
+        const w = channelWorker(() => testHost().host);
+        workers.push(w);
+        return w;
+      },
+      limitMs: 1_000,
+      heartbeatMs: 20,
+      graceMs: 100,
+      longLimitMs: 30_000,
+      now: () => now,
+      setInterval: (fn) => { check = fn; return 1; },
+      clearInterval: () => {},
+    });
+    const c = engine.client;
+    try {
+      expect((await c.booted()).phase).toBe("ready");
+      workers[0]!.silent = true; // the reset below is never answered, as while its wipe runs
+      const reset = c.reset().then(() => "answered", (e: EngineError) => e.code);
+      now += 1_001;
+      check();
+      now += 101;
+      check();
+      now += 20_000;
+      check();
+      now += 101;
+      check();
+      expect(engine.restarts(), "within the longer limit").toEqual([]);
+      now += 10_000;
+      check();
+      now += 101;
+      check();
+      expect(engine.restarts()).toHaveLength(1);
+      expect(engine.restarts()[0]!.reason).toMatch(/\(limit 30000 ms\)$/);
+      expect(await reset).toBe("restarted");
+      await until(async () => (await c.status().catch(() => undefined))?.boot.phase === "ready", "the new worker");
+      // No long request in flight any more: the ordinary limit applies again.
+      workers[1]!.silent = true;
+      now += 1_001;
+      check();
+      now += 101;
+      check();
+      expect(engine.restarts()).toHaveLength(2);
+    } finally {
+      engine.close();
+    }
+    await previousGone;
+  }, 60_000);
 });
