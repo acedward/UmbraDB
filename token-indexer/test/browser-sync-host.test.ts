@@ -327,8 +327,9 @@ describe("browser engine host: sync", () => {
     expect(starts.size).toBe(2);
     // The pacer spaces the start SLOTS 250 ms apart; a request whose timer fires late (the event loop busy with a
     // statement) starts late in its slot, so the next gap can be shorter by that lateness while the slots keep their
-    // spacing. Allowed lateness: 50 ms. A pacer with a shorter interval fails the run's total.
-    const LATE_MS = 50;
+    // spacing. Allowed lateness: 100 ms (62 ms seen with the Chromium tests running beside this file on a loaded host). A
+    // pacer with a shorter interval fails the run's total.
+    const LATE_MS = 100;
     for (const [origin, times] of starts) {
       expect(times.length, origin).toBeGreaterThanOrEqual(4);
       for (let i = 1; i < times.length; i++) expect(times[i]! - times[i - 1]!, `${origin} request ${i}`).toBeGreaterThanOrEqual(250 - LATE_MS);
