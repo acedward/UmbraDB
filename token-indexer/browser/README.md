@@ -332,7 +332,7 @@ The dev server (`npm run dev:browser`) sends no policy.
 
 Every reference between these files is relative, so the folder works at a domain's root or under a path
 (`https://example.org/umbradb/`); besides the site itself, the pages and the worker reach only the build's two chain
-endpoints. The sizes are in [MEASUREMENTS.md](MEASUREMENTS.md).
+endpoints. Its size, file by file, is in `MEASUREMENTS.md` (linked above).
 
 **Serve it locally** with the headers it needs:
 
