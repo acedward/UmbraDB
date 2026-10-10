@@ -6,6 +6,11 @@
  *   added later is listed too), with its name, version, licence and the licence text it ships. A package that ships
  *   none is taken from {@link KNOWN_LICENCES} (its repository's licence); a package in neither fails the build, so
  *   nothing is published without its notice.
+ * - Every vendored work whose code the bundles contain is listed the same way, found from the bundled modules outside
+ *   `node_modules` ({@link vendoredWorkOf}): the nearest directory below the repository root that holds a licence file
+ *   is the work, listed with its `NOTICE` and its licence text (the MIP-0018 reference codec,
+ *   `token-indexer/vendor/mip0018`). A bundled module in a `vendor/` directory whose work has no licence file, or one
+ *   outside both the repository and `node_modules`, fails the build.
  * - PGlite's database (`pglite.wasm`, `pglite.data`, `initdb.wasm`) is PostgreSQL: its licence follows PGlite's
  *   (`notices/POSTGRES-LICENSE`, PGlite's own copy).
  * - The Outfit font the explorer's style uses, under the SIL Open Font License (`../mip0018/ui/fonts/OFL.txt`).
@@ -38,6 +43,41 @@ export function packageDirOf(moduleId: string): string | undefined {
   return name === undefined || name === "" ? undefined : `${id.slice(0, at)}/node_modules/${name}`;
 }
 
+/**
+ * The vendored work a bundled module outside `node_modules` belongs to: the nearest directory above it, below
+ * `repoRoot`, that holds a licence file; `undefined` for UmbraDB's own code, a package's module and a virtual module (no
+ * file). Throws for a module in a `vendor/` directory whose work has no licence file, and for a module outside both the
+ * repository and `node_modules`.
+ */
+export function vendoredWorkOf(moduleId: string, repoRoot: string): string | undefined {
+  const id = moduleId.replace(/\?.*$/, "");
+  if (id.startsWith("\0") || !path.isAbsolute(id) || !existsSync(id) || packageDirOf(id) !== undefined) return undefined;
+  const root = path.resolve(repoRoot);
+  const rel = path.relative(root, id);
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel))
+    throw new Error(`${id} is in the browser build but is neither in the repository nor in a package (build-notices.ts)`);
+  for (let dir = path.dirname(id); dir !== root && dir.startsWith(root + path.sep); dir = path.dirname(dir))
+    if (readdirSync(dir).some((f) => LICENCE_FILE.test(f))) return dir;
+  if (rel.split(path.sep).includes("vendor"))
+    throw new Error(`${rel.split(path.sep).join("/")} is vendored code in the browser build but its work has no licence file (build-notices.ts)`);
+  return undefined;
+}
+
+const NOTICE_FILE = /^notice(\.(md|txt))?$/i;
+
+/** The section of a vendored work: its directory relative to `workRoot`, the first line of its `NOTICE` (else that
+ *  directory) and the licence its licence text names, then the `NOTICE` and the licence texts. */
+function vendoredSection(dir: string, workRoot: string): { title: string; texts: string[] } {
+  const files = readdirSync(dir).sort();
+  const licences = files.filter((f) => LICENCE_FILE.test(f)).map((f) => readFileSync(path.join(dir, f), "utf8").trim());
+  const notices = files.filter((f) => NOTICE_FILE.test(f)).map((f) => readFileSync(path.join(dir, f), "utf8").trim());
+  const rel = path.relative(workRoot, dir).split(path.sep).join("/");
+  const name = notices[0]?.split("\n")[0]?.trim() || rel;
+  const all = licences.join("\n");
+  const licence = /Apache License[\s\S]*Version 2\.0/.test(all) ? "Apache-2.0" : /\bMIT License\b/.test(all) ? "MIT" : "see the licence text";
+  return { title: `Vendored in ${rel}: ${name}, ${licence}`, texts: [...notices, ...licences] };
+}
+
 interface PackageNotice {
   name: string;
   version: string;
@@ -61,8 +101,9 @@ function packageNotice(dir: string, apache: string): PackageNotice {
   };
 }
 
-/** The text of `THIRD-PARTY-NOTICES.txt` for the packages in `packageDirs`. */
-export function noticesText(repoRoot: string, packageDirs: Iterable<string>): string {
+/** The text of `THIRD-PARTY-NOTICES.txt` for the packages in `packageDirs` and the vendored works in `vendoredDirs` (their
+ *  titles name their directories relative to `workRoot`, by default the repository). */
+export function noticesText(repoRoot: string, packageDirs: Iterable<string>, vendoredDirs: Iterable<string> = [], workRoot: string = repoRoot): string {
   const read = (p: string): string => readFileSync(path.join(repoRoot, p), "utf8").trim();
   const apache = read("LICENSE");
   const packages = [...new Set(packageDirs)].map((d) => packageNotice(d, apache)).sort((a, b) => a.name.localeCompare(b.name));
@@ -76,6 +117,7 @@ export function noticesText(repoRoot: string, packageDirs: Iterable<string>): st
     "",
     section("UmbraDB: NOTICE", read("NOTICE")),
     ...packages.map((p) => section(`${p.name} ${p.version}: ${p.licence}`, p.texts.join("\n\n"))),
+    ...[...new Set(vendoredDirs)].sort().map((d) => vendoredSection(d, workRoot)).map((w) => section(w.title, w.texts.join("\n\n"))),
     section("PostgreSQL, in PGlite's database files (pglite.wasm, pglite.data, initdb.wasm): PostgreSQL Licence", read("token-indexer/browser/notices/POSTGRES-LICENSE")),
     section("Outfit, the font of the explorer's style (assets/Outfit-Variable-latin-*.woff2): SIL Open Font License 1.1", read("token-indexer/mip0018/ui/fonts/OFL.txt")),
     section("UmbraDB: Apache License, Version 2.0", apache),
@@ -86,6 +128,7 @@ export function noticesText(repoRoot: string, packageDirs: Iterable<string>): st
 /** The collector: `plugin()` for the page build and for each worker build; the page build writes the file. */
 export function thirdPartyNotices(repoRoot: string): { plugin(writes: boolean): Plugin } {
   const packageDirs = new Set<string>();
+  const vendoredDirs = new Set<string>();
   return {
     plugin(writes: boolean): Plugin {
       return {
@@ -96,9 +139,11 @@ export function thirdPartyNotices(repoRoot: string): { plugin(writes: boolean): 
             for (const id of item.moduleIds) {
               const dir = packageDirOf(id);
               if (dir !== undefined && existsSync(`${dir}/package.json`)) packageDirs.add(dir);
+              const work = vendoredWorkOf(id, repoRoot);
+              if (work !== undefined) vendoredDirs.add(work);
             }
           }
-          if (writes) this.emitFile({ type: "asset", fileName: NOTICES_FILE, source: noticesText(repoRoot, packageDirs) });
+          if (writes) this.emitFile({ type: "asset", fileName: NOTICES_FILE, source: noticesText(repoRoot, packageDirs, vendoredDirs) });
         },
       };
     },

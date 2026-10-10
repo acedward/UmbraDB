@@ -1715,12 +1715,12 @@
     {
       "id": "browser.build.notices",
       "file": "token-indexer/test/browser-notices.test.ts",
-      "description": "the build writes THIRD-PARTY-NOTICES.txt: every bundled package with its version, licence and text, PostgreSQL's licence, the Outfit font's OFL and UmbraDB's notice and licence"
+      "description": "the build writes THIRD-PARTY-NOTICES.txt: every bundled package with its version, licence and text, every bundled vendored work (the MIP-0018 reference codec) with its NOTICE and licence, PostgreSQL's licence, the Outfit font's OFL and UmbraDB's notice and licence"
     },
     {
       "id": "browser.build.notices-rules",
       "file": "token-indexer/test/browser-notices.test.ts",
-      "description": "module ids map to their package directories; a package that ships no licence text and is not known fails the build, one that ships it is listed with it"
+      "description": "module ids map to their package directories, or outside node_modules to the vendored work they belong to; a vendored module whose work has no licence file, a module outside the repository and node_modules, and a package that ships no licence text and is not known fail the build; one that ships it is listed with it"
     },
     {
       "id": "browser.frame.rules",

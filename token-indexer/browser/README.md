@@ -428,7 +428,7 @@ The dev server (`npm run dev:browser`) sends no policy.
 | `assets/` | the pages' and the worker's modules, PGlite's `pglite.wasm`, `pglite.data` and `initdb.wasm`, ledger-v9's WebAssembly module, the two gzip tapes, the font, the icon and the styles; each name carries a hash of its content |
 | `snapshots/` | `index.json` and the published snapshot (see [Snapshots](#snapshots)) |
 | `_headers` | the security headers for every path (see [Security headers](#security-headers)) |
-| `THIRD-PARTY-NOTICES.txt` | the licences of the works in the site: every package the modules contain (PGlite, ledger-v9, zod, `@noble/hashes`, …, found from the bundles), PostgreSQL's (PGlite's database), the Outfit font's and UmbraDB's own; publish it with the rest |
+| `THIRD-PARTY-NOTICES.txt` | the licences of the works in the site: every package the modules contain (PGlite, ledger-v9, zod, `@noble/hashes`, …, found from the bundles), every vendored work they contain with its `NOTICE` (the MIP-0018 reference codec, `../vendor/mip0018`; a vendored module whose work has no licence file fails the build), PostgreSQL's (PGlite's database), the Outfit font's and UmbraDB's own; publish it with the rest |
 
 Every reference between these files is relative, so the folder works at a domain's root or under a path
 (`https://example.org/umbradb/`); besides the site itself, the pages and the worker reach only the build's two chain
