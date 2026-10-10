@@ -21,7 +21,8 @@
  * and columns must be the store's, the rows entries arrive in the manifest's table order (each table's chunks
  * numbered from 0), each is loaded with `COPY … FROM` with every constraint and trigger of the store in force, the row
  * counts and the sequences are checked and set, all in one transaction; then the store's cursors, block hash,
- * migrations and PGlite version must be the manifest's. Rows can only be rows: nothing in them is run.
+ * migrations and PGlite version must be the manifest's, the archive's first height its lowest block, and the scan must
+ * not start below it. Rows can only be rows: nothing in them is run.
  *
  * **Import** has two parts:
  * 1. {@link prepareImport}, which changes nothing: the file is decoded and its manifest checked against this engine
@@ -413,7 +414,24 @@ export async function loadSnapshot(store: Store, manifest: SnapshotManifest, dat
     throw corrupt(`the loaded rows cannot be read as a store: ${messageOf(e)}`);
   }
   checkFacts(manifest, facts);
+  await checkArchiveStart(store.mip0018, manifest, network);
   return { rows: manifest.tables.reduce((n, t) => n + t.rows, 0), entries, elapsedMs: elapsed(monotonic, t0) };
+}
+
+/**
+ * Refuses (`corrupt`) an archive whose recorded first height is not its lowest canonical block, and a scan that starts
+ * below that height: an import saves the first height as the start of the configuration that continues it (and every
+ * `reset` afterwards starts there), so it must be a block the archive holds, not a height it only claims.
+ */
+async function checkArchiveStart(sql: UmbraDBSql, manifest: SnapshotManifest, network: string): Promise<void> {
+  const start = manifest.archive.startHeight;
+  if (start === null) return;
+  const [low] = await sql<{ height: string | null }[]>`
+    SELECT min(height)::text AS height FROM ${sql(ARCHIVE_SCHEMA)}.blocks WHERE net = ${network} AND is_canonical`;
+  const lowest = low?.height === null || low?.height === undefined ? null : Number(low.height);
+  if (lowest !== start) throw new SnapshotRefusal("corrupt", `the snapshot's archive starts at its lowest block, ${lowest}, but its manifest says ${start}`);
+  if (manifest.scan !== null && manifest.scan.fromHeight < start)
+    throw new SnapshotRefusal("corrupt", `the snapshot's scan starts at ${manifest.scan.fromHeight}, below its archive's first height ${start}`);
 }
 
 // ── Import ───────────────────────────────────────────────────────────────────────────────────────────────────────────

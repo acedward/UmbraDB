@@ -13,6 +13,9 @@
  *   functions and setting) does not survive `reset` or `range`: the store's files are removed (a file left in its
  *   directory too) and a new store is made by the migrations; its catalog is a fresh store's, and the blocks synced
  *   afterwards are the chain's.
+ * - `[[browser.snapshot.start-height]]` — the first height an archive records is the start an import saves: a snapshot
+ *   whose archive says it starts below its lowest block (at genesis) or above it, or whose scan starts below the
+ *   archive, is refused and nothing changes; an honest one is imported with its first block as the saved start.
  * - `[[browser.snapshot.bounds]]` — a small file whose rows declare a huge uncompressed size is refused quickly, holding
  *   little memory: rows that are all zeros (the tar ends at once, and data follows its end), an entry whose header
  *   declares more than an entry may hold, rows that unpack to more than declared, and a declared size above the
@@ -267,4 +270,33 @@ describe("snapshots made to carry more than rows", () => {
     }
     expect((await result<HostStatus>(victim.host, "status")).boot.phase).toBe("ready");
   }, 300_000);
+  it("[[browser.snapshot.start-height]] a snapshot whose archive says it starts below or above its lowest block, or whose scan starts below the archive, is refused with nothing changed; an honest one is imported and its start saved", async () => {
+    const a = host();
+    await result(a.host, "start", { config: { ...U1_TAPE, endHeight: U1.from + 3 } });
+    await untilU1(a, U1.from + 3);
+    await result(a.host, "stop");
+    const sql = current(a);
+    const exportWith = async (startHeight: number, scanFrom: number): Promise<Blob> => {
+      await sql`UPDATE chain_archive.watermarks SET value = jsonb_set(value, '{startHeight}', to_jsonb(${startHeight}::int)) WHERE kind = 'chain_archive' AND key = 'sync_cursor:stagenet'`;
+      await sql`UPDATE mip0018.mip0018_scan SET from_height = ${scanFrom} WHERE network = 'stagenet'`;
+      return (await result<ExportResult>(a.host, "export")).file;
+    };
+    const victim = host({ settings: memorySettingsStore({ config: { source: { kind: "tape", range: "u1" } }, autoStart: true }) });
+    await victim.host.boot();
+    const before = await result<HostStatus>(victim.host, "status");
+    const cases: Array<[string, number, number, string]> = [
+      ["an archive that says it starts at genesis", 0, U1.from, `corrupt: the snapshot's archive starts at its lowest block, ${U1.from}, but its manifest says ${0}`],
+      ["an archive that says it starts above its lowest block", U1.from + 2, U1.from + 2, `corrupt: the snapshot's archive starts at its lowest block, ${U1.from}, but its manifest says ${U1.from + 2}`],
+      ["a scan that starts below the archive", U1.from, 0, `corrupt: the snapshot's scan starts at 0, below its archive's first height ${U1.from}`],
+    ];
+    for (const [name, startHeight, scanFrom, message] of cases) {
+      const file = await exportWith(startHeight, scanFrom);
+      const r = await call(victim.host, "import", { snapshot: file });
+      expect(r, name).toMatchObject({ ok: false, error: { code: "snapshot-refused", message } });
+      expect((await result<HostStatus>(victim.host, "status")).settings, `${name}: nothing changed`).toEqual(before.settings);
+    }
+    const honest = await exportWith(U1.from, U1.from);
+    const imported = await result<ImportResult>(victim.host, "import", { snapshot: honest });
+    expect(imported.status.settings).toEqual({ config: { source: { kind: "tape", range: "u1" }, startHeight: U1.from }, autoStart: false });
+  }, 120_000);
 });
