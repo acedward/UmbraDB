@@ -17,6 +17,8 @@ npm run dev:browser     # the same configuration served by Vite on 127.0.0.1
 | `host.ts` | Boot, request dispatch and the engine's lifecycle, from injected dependencies (tests run it in Node on `memory://`) |
 | `protocol.ts` | The message protocol: versions, requests, results, errors and notices, each with a zod schema |
 | `client.ts` | The page's side: `startEngineWorker()` and `createEngineClient(endpoint)` (requests as promises of validated results) |
+| `tabs.ts` | One engine across tabs: `connectEngineTabs()` elects the leader tab, which alone runs the worker; the other tabs proxy their requests to it and take over when it closes |
+| `tab-locks.ts` | The Web Locks behind that (leader, tab presence, store) and the connected-tab count |
 | `capabilities.ts` | The Chrome-only capability check run before anything else |
 | `store.ts` | Opens PGlite and its two clients (`chain_archive`, `mip0018`); non-durable, results and errors as on PostgreSQL |
 | `scheduler.ts` | Yields to the worker's event loop before each sync batch and scan step, so messages are served while it runs |
@@ -24,7 +26,7 @@ npm run dev:browser     # the same configuration served by Vite on 127.0.0.1
 | `config.ts` | The network, its default endpoints, the store's location and the build's settings |
 | `settings.ts` | The engine's saved configuration, a file beside the store |
 | `quota.ts` | The storage guard: pauses the sync before the quota |
-| `engine.html`, `engine-page.ts` | A page that starts the worker and shows its status; `window.umbradbEngine` holds the client |
+| `engine.html`, `engine-page.ts` | A page that joins the tabs, asks for persistent storage, shows its role and the engine's status; `window.umbradbEngine` holds the client and the tabs |
 | `vite.config.ts`, `build-guard.ts` | The build (Node tooling): ES module worker, `esnext`, class names kept, `vite-plugin-wasm` for ledger-v9's WASM module, assets as files, and a plugin that fails the build if postgres.js or a Node built-in would be bundled |
 
 ## Boot
@@ -62,10 +64,33 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 
 Error codes: `bad-request`, `unsupported-version`, `unknown-type`, `not-implemented`, `unsupported-browser`,
 `boot-failed`, `already-running`, `start-failed`, `internal`; the client adds `bad-response`, `worker-error` and
-`closed`. Notices: `boot` (each phase) and `engine` (`running`, `stopped`, `failed`).
+`closed`, and a page sharing the engine with other tabs also `leader-changed` and `leader-unavailable` (see Tabs). Notices: `boot` (each phase) and `engine` (`running`, `stopped`, `failed`).
 
 While no engine runs, `api` answers from the same store with no loops (`/v1/status` reports `scanner: "off"`). Defaults
 in the browser: 20 heights per sync batch and 10 blocks per scan step, so a stop and API requests wait for little.
+
+## Tabs
+
+A browser profile runs one engine per store, however many tabs are open. A page connects with `connectEngineTabs()`
+(`tabs.ts`) and uses its `client` exactly like `startEngineWorker()`'s.
+
+- **Leader.** Every tab holds a presence lock (`umbradb-engine-tab:<store>:<tab>`). The tab that gets the leader lock
+  (`umbradb-engine-leader:<store>`) starts the engine worker and keeps the lock until it closes; it answers its own
+  page and the other tabs through the same engine client and relays the worker's notices to them.
+- **Followers.** The other tabs start no worker (so they never open the store) and queue for the leader lock. They send
+  each request (`type`, `params`) to the leader over BroadcastChannel (`umbradb-engine:<store>`) and get its answer on
+  their own channel (`umbradb-engine:<store>:tab:<tab>`), validated again; every request type works from any tab. A
+  system snapshot a follower receives is marked as relayed.
+- **Handover.** When the leader closes, the oldest follower gets the lock, starts its worker on the same store and
+  resumes what the previous leader last reported running (the same `start` configuration, which continues at the stored
+  cursors). Requests in flight to the closed leader: `status`, `api`, `export` and `digest` are sent again to the next leader;
+  any other request fails with `leader-changed` (it may or may not have been applied); a request made while no leader
+  is known waits up to 10 s, then fails with `leader-unavailable`.
+- **Store lock.** The worker opens the store only under `umbradb-store:<store>`, held until it closes the store or ends,
+  and waits until no other context still holds the store's files, so a closed tab's worker that is still shutting down
+  and its successor never have the store open together.
+- Leadership belongs to the tab: replacing the leader tab's worker does not move it. `connectedTabs()` counts the
+  presence locks; `connectedTabsCounter()` (`tab-locks.ts`) gives the same count synchronously, e.g. inside the worker.
 
 ## Sync
 
@@ -81,11 +106,13 @@ in the browser: 20 heights per sync batch and 10 blocks per scan step, so a stop
   `stop` request turned that off. A reopened store continues at its cursor and fetches every height since, so a closed
   or frozen tab leaves no hole; a chosen range keeps its end.
 - **Ranges.** One archive has no gaps and no backfill, so `range` (a new start or end) and `reset` drop the store's data
-  (both schemas, in one transaction) and migrate again before starting. The page offers an export first; the host takes
-  a `beforeWipe` hook for that.
-- **Persistent storage.** `navigator.storage.persist()` exists only in a window: `startEngineWorker()` asks for it when
-  the page starts the worker (`persistence` holds the answer), and the worker's `storage.persisted` reports the outcome.
-  A refusal changes nothing else.
+  (both schemas, in one transaction, in the leader's worker, which holds the store's lock) and migrate again before
+  starting. The page offers an export first; the host takes a `beforeWipe` hook for that. Neither is sent again after
+  a handover (`leader-changed`); `digest`, which only reads, is.
+- **Persistent storage.** `navigator.storage.persist()` exists only in a window: every page asks for it when it loads
+  (`requestPersistentStorage()` in `client.ts`; the grant is per site, so any tab's request counts; the engine page keeps
+  the answer in `window.umbradbEngine.persistence`), and the worker's `storage.persisted` reports the outcome. A
+  refusal changes nothing else.
 - **Storage quota** (`quota.ts`). Before a sync batch (reading again when the last reading is 10 s old) the worker
   compares `navigator.storage.estimate()`'s usage with its quota. While the store is open that usage includes the space
   Chrome reserves for the store's open files (about 1 GB in the session that creates the store, for about 42 MB of
@@ -98,6 +125,6 @@ in the browser: 20 heights per sync batch and 10 blocks per scan step, so a stop
 ## Build settings
 
 `config.ts` holds the network, its endpoints and the store's location. A build can set `__UMBRADB_BROWSER_CONFIG__`
-through Vite's `define` (JSON): `autoStart` (default true), `start` (the configuration a new store starts with, default
-`{}`) and `quota` (the storage guard's `checkEveryMs`, `recheckMs`, `storeEveryMs`). The browser tests use it to turn
-the automatic start off, or to point it at a local chain.
+through Vite's `define` (JSON): `autoStart` (default true: the worker starts the saved configuration), `start` (the
+configuration a new store starts with, default `{}`) and `quota` (the storage guard's `checkEveryMs`, `recheckMs`,
+`storeEveryMs`). The browser tests use it to turn the automatic start off, or to point it at a local chain.

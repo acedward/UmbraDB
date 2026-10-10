@@ -150,6 +150,7 @@ pass.
 | The engine's telemetry, health rule, `system` snapshot schema and redaction | `test/engine-telemetry.test.ts` |
 | The `system` snapshot of a running engine against its sources (SQL catalog, `/v1/status`), its cost and cadence | `test/engine-system-snapshot.test.ts` |
 | The browser engine: the worker host and its protocol on an in-memory PGlite; the built worker in Chromium on OPFS, across reloads (see `browser/README.md`) | `test/browser-host.test.ts`, `test/browser-worker.test.ts` |
+| One engine across tabs: the leader election, the proxy and the handover rule with in-memory locks and channels; two and three tabs in Chromium on one profile, with the leader closed during a sync | `test/browser-tabs.test.ts`, `test/browser-tabs-chrome.test.ts` |
 | The browser engine's sync: digests, the start at the tip, the automatic start, `range` and `reset`, the storage guard and the pacing in the host; the recorded ranges' digests in Chromium on OPFS, and the automatic start against an advancing local chain | `test/browser-sync-host.test.ts`, `test/browser-sync.test.ts` |
 
 Fixtures:

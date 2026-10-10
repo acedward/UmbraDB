@@ -5,9 +5,10 @@
  * `startEngineWorker()` starts the engine's dedicated module worker (`worker.ts`) and returns a client for it. A request
  * resolves with its result once the worker's response arrives and its result passes the protocol's schema; it rejects
  * with an {@link EngineError} carrying the worker's error code, or `bad-response` (a response that fails validation),
- * `worker-error` (the worker failed to load or crashed) or `closed` (the client was closed). It also asks the browser
- * to keep the site's storage (`requestPersistentStorage`: `navigator.storage.persist()` exists only in a window, so the
- * page asks; the worker reports the outcome as `persisted`).
+ * `worker-error` (the worker failed to load or crashed) or `closed` (the client was closed). A page that shares the engine
+ * with other tabs (`tabs.ts`) can also get `leader-changed` and `leader-unavailable`. `requestPersistentStorage()` asks
+ * the browser to keep the site's storage: `navigator.storage.persist()` exists only in a window, so a page asks, and the
+ * worker reports the outcome as `persisted`.
  */
 import {
   type ApiResult,
@@ -32,7 +33,15 @@ export interface EngineEndpoint {
   removeEventListener(type: "message", listener: (event: MessageEvent) => void): void;
 }
 
-export type EngineErrorCode = ErrorCode | "bad-response" | "worker-error" | "closed";
+export type EngineErrorCode =
+  | ErrorCode
+  | "bad-response"
+  | "worker-error"
+  | "closed"
+  /** The leader tab closed while a request that changes state was in flight to it (`tabs.ts`). */
+  | "leader-changed"
+  /** No leader tab answered in time (`tabs.ts`). */
+  | "leader-unavailable";
 
 export class EngineError extends Error {
   constructor(readonly code: EngineErrorCode, message: string, readonly request: RequestType | null = null) {
@@ -190,14 +199,14 @@ export async function requestPersistentStorage(
   }
 }
 
-/** Starts the engine's dedicated module worker and returns it with a client, and asks the browser to keep the site's
- *  storage (`persistence`); a worker that fails to load or crashes closes the client with `worker-error`. */
-export function startEngineWorker(): { worker: Worker; client: EngineClient; persistence: Promise<PersistenceResult> } {
+/** Starts the engine's dedicated module worker and returns it with a client; a worker that fails to load or crashes
+ *  closes the client with `worker-error`. */
+export function startEngineWorker(): { worker: Worker; client: EngineClient } {
   const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module", name: "umbradb-engine" });
   const client = createEngineClient(worker);
   worker.addEventListener("error", (event) => {
     client.close(new EngineError("worker-error", event.message === "" ? "the engine worker failed" : event.message));
     worker.terminate();
   });
-  return { worker, client, persistence: requestPersistentStorage() };
+  return { worker, client };
 }

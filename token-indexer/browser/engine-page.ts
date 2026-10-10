@@ -1,23 +1,49 @@
 /**
- * The engine page: starts the engine worker, asks the browser to keep the site's storage, shows the boot phase and the
- * status (refreshed every second while the page is visible), and exposes the client as `window.umbradbEngine` for
- * scripted use (the browser tests drive the engine through it). All text is set through `textContent`.
+ * The engine page: joins the other tabs of this store (`tabs.ts`: the leader tab runs the engine worker, the others
+ * proxy to it; the leader starts or resumes the engine), asks the browser to keep the site's storage
+ * (`requestPersistentStorage`, from every tab: the grant is per site), shows this tab's role, its boot phase and the
+ * engine's status (refreshed every second while the page is visible), and exposes the client as `window.umbradbEngine`
+ * for scripted use (the browser tests drive the engine through it). All text is set through `textContent`.
  */
-import { type EngineClient, type PersistenceResult, startEngineWorker } from "./client.ts";
+import { type EngineClient, type PersistenceResult, requestPersistentStorage } from "./client.ts";
+import { connectEngineTabs, type EngineTabs } from "./tabs.ts";
 
 declare global {
   interface Window {
-    umbradbEngine?: { client: EngineClient; worker: Worker; loadedAt: number; persistence: Promise<PersistenceResult> };
+    umbradbEngine?: {
+      client: EngineClient;
+      tabs: EngineTabs;
+      readonly worker: Worker | undefined;
+      loadedAt: number;
+      persistence: Promise<PersistenceResult>;
+    };
   }
 }
 
 const loadedAt = performance.now();
-const { worker, client, persistence } = startEngineWorker();
-window.umbradbEngine = { client, worker, loadedAt, persistence };
+const persistence = requestPersistentStorage();
+const tabs = connectEngineTabs();
+const client = tabs.client;
+window.umbradbEngine = {
+  client,
+  tabs,
+  /** This tab's engine worker while it leads. */
+  get worker() {
+    return tabs.worker();
+  },
+  loadedAt,
+  persistence,
+};
 
+const roleEl = document.getElementById("role")!;
+const tabsEl = document.getElementById("tabs")!;
 const phaseEl = document.getElementById("phase")!;
 const messageEl = document.getElementById("message")!;
 const statusEl = document.getElementById("status")!;
+
+tabs.onRoleChange((role) => {
+  roleEl.textContent = role;
+});
 
 client.onNotice((n) => {
   if (n.notice !== "boot") return;
@@ -31,6 +57,7 @@ client.onNotice((n) => {
 async function refresh(): Promise<void> {
   if (document.visibilityState !== "visible") return;
   try {
+    tabsEl.textContent = String(await tabs.connectedTabs());
     const s = await client.status();
     phaseEl.textContent = s.boot.phase;
     statusEl.textContent = JSON.stringify({ boot: s.boot, store: s.store, cursors: s.cursors, engine: s.engine?.status ?? null, settings: s.settings, storage: s.storage, persistence: await persistence }, null, 2);
@@ -39,6 +66,13 @@ async function refresh(): Promise<void> {
     messageEl.textContent = e instanceof Error ? e.message : String(e);
   }
 }
+
+// Leave at once when the page goes away (a follower takes over sooner); a page restored from the back/forward cache
+// joins again from scratch.
+addEventListener("pagehide", () => tabs.close());
+addEventListener("pageshow", (event) => {
+  if (event.persisted) location.reload();
+});
 
 void refresh();
 setInterval(() => void refresh(), 1_000);
