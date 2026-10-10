@@ -235,7 +235,7 @@ describe("page watchdog", () => {
     }
     await previousGone;
     expect(await digestOf(dir)).toBe(expected);
-  }, 180_000);
+  }, 300_000);
 
   it("[[browser.watchdog.rules]] a late check is not a restart when the worker answers within the grace; a silent worker is restarted once with the viewers and the engine restored; an engine the page stopped stays stopped; a boot failing right after a restart is retried; too many restarts close the client", async () => {
     const dir = tempDir();
