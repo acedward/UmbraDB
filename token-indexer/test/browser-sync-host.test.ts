@@ -23,7 +23,9 @@
  *   that does not answer counts as unknown after the read timeout, and a walk that never ends delays neither a reading
  *   nor the pause and its end.
  * - `[[browser.host.pacing]]` — with the default Stagenet endpoints, the browser engine spaces request starts 250 ms
- *   apart per endpoint and honours a 429's `Retry-After`, as the Node commands do.
+ *   apart per endpoint and honours a 429's `Retry-After`, as the Node commands do. The check allows for the measured
+ *   lateness of the thread's timers up to 150 ms (a run with more is repeated, then fails as inconclusive), and a run
+ *   with no interval between starts fails it.
  */
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,6 +49,8 @@ const U1 = { from: 715402, to: 715433 } as const;
 const FAST = { sync: { idleMs: 100 }, scan: { idleMs: 100 } };
 /** The interval of the timer that measures how late this thread's timers fire (the pacing test). */
 const PROBE_MS = 20;
+/** The most lateness of this thread's timers the pacing test allows for; a run with more is inconclusive. */
+const MAX_PACING_LATE_MS = 150;
 
 const SUPPORTED: CapabilityReport = {
   supported: true,
@@ -355,7 +359,11 @@ describe("browser engine host: sync", () => {
     expect(silent.storage).toMatchObject({ usageBytes: null, quotaBytes: null, pauseAtBytes: null, paused: false });
   }, 120_000);
 
-  it("[[browser.host.pacing]] with the default Stagenet endpoints, request starts are 250 ms apart per endpoint and a 429's Retry-After is honoured", async () => {
+  /** One run of four U1 blocks against the default Stagenet endpoints (`sync` merged over the run's settings), a 429
+   *  answered once: each endpoint's request start times, how late this thread's timers fired while the requests
+   *  started (a probe timer beside the host, which shares its event loop: a timer due inside a busy stretch fires when
+   *  the stretch ends), and the host's log. */
+  async function pacedRun(sync: Record<string, unknown> = {}): Promise<{ starts: Map<string, number[]>; lateMs: number; runLateMs: number; logs: string[] }> {
     const replay = createTapeReplay(await u1Tape(), { throttles: [{ operation: "chain_getBlock", times: 1, status: 429, retryAfter: "1" }] });
     const starts = new Map<string, number[]>();
     const route = (url: URL): string => {
@@ -371,8 +379,6 @@ describe("browser engine host: sync", () => {
       return new Response(a.body, { status: a.status, headers: a.headers });
     };
     const logs: string[] = [];
-    // How late this thread's timers fire during the run: a probe timer beside the host, which shares its event loop
-    // (each firing's due time and lateness).
     const late: Array<{ due: number; ms: number }> = [];
     let due = Date.now() + PROBE_MS;
     const probe = setInterval(() => {
@@ -380,31 +386,57 @@ describe("browser engine host: sync", () => {
       late.push({ due, ms: t - due });
       due = t + PROBE_MS;
     }, PROBE_MS);
+    const h = newHost({ nodeUrl: BROWSER_NODE_URL, indexerUrl: BROWSER_INDEXER_URL, fetch: fetchImpl, log: (level, m) => logs.push(`${level} ${m}`) });
     try {
-      const h = newHost({ nodeUrl: BROWSER_NODE_URL, indexerUrl: BROWSER_INDEXER_URL, fetch: fetchImpl, log: (level, m) => logs.push(`${level} ${m}`) });
-      await result(h, "start", { config: { startHeight: U1.from, endHeight: U1.from + 3, ...FAST } });
+      await result(h, "start", { config: { startHeight: U1.from, endHeight: U1.from + 3, ...FAST, sync: { ...FAST.sync, ...sync } } });
       await until(h, "four blocks", (s) => s.engine!.status.sync.phase === "done");
     } finally {
       clearInterval(probe);
+      await closeHost(h);
     }
-    expect(starts.size).toBe(2);
-    // The pacer spaces the start SLOTS 250 ms apart; a request whose timer fires late (the event loop busy with a
-    // statement) starts late in its slot, so the next gap can be shorter by that lateness while the slots keep their
-    // spacing. Allowed lateness: 100 ms, or more on a machine whose timers were later than that while the requests
-    // started (the probe's largest lateness between the first and the last start, plus its interval: a timer due inside
-    // a busy stretch fires when the stretch ends). A pacer with a shorter interval fails the run's total.
     const all = [...starts.values()].flat();
     const [first, last] = [Math.min(...all), Math.max(...all)];
     const lateMs = Math.max(0, ...late.filter((x) => x.due >= first - PROBE_MS && x.due <= last).map((x) => x.ms));
-    const LATE_MS = Math.max(100, lateMs + PROBE_MS);
+    return { starts, lateMs, runLateMs: Math.max(0, ...late.map((x) => x.ms)), logs };
+  }
+
+  /**
+   * How a run's request starts break the 250 ms spacing ([] when they keep it). The pacer spaces the start SLOTS 250 ms
+   * apart; a request whose timer fires late (the event loop busy with a statement) starts late in its slot, so the next
+   * gap can be shorter by that lateness while the slots keep their spacing. Allowed lateness: 100 ms, or the probe's
+   * largest lateness while the requests started plus its interval — at most {@link MAX_PACING_LATE_MS} plus the
+   * interval, so a gap must still be at least 80 ms and a pacer that ignores its interval fails however late timers are.
+   */
+  function pacingFailures(starts: Map<string, number[]>, lateMs: number): string[] {
+    const allowed = Math.max(100, Math.min(lateMs, MAX_PACING_LATE_MS) + PROBE_MS);
+    const out: string[] = [];
     for (const [origin, times] of starts) {
-      expect(times.length, origin).toBeGreaterThanOrEqual(4);
-      for (let i = 1; i < times.length; i++) expect(times[i]! - times[i - 1]!, `${origin} request ${i}`).toBeGreaterThanOrEqual(250 - LATE_MS);
-      expect(times.at(-1)! - times[0]!, `${origin}: ${times.length} starts`).toBeGreaterThanOrEqual(250 * (times.length - 1) - LATE_MS);
+      if (times.length < 4) out.push(`${origin}: ${times.length} starts, fewer than 4`);
+      for (let i = 1; i < times.length; i++)
+        if (times[i]! - times[i - 1]! < 250 - allowed) out.push(`${origin} request ${i}: ${times[i]! - times[i - 1]!} ms after the one before (allowed ${250 - allowed})`);
+      if (times.at(-1)! - times[0]! < 250 * (times.length - 1) - allowed) out.push(`${origin}: ${times.length} starts in ${times.at(-1)! - times[0]!} ms`);
     }
-    expect(logs, logs.join("\n")).toContain("warn sync chain_getBlock retried in 1000 ms: chain_getBlock: HTTP 429 from https://rpc.stagenet.shielded.tools//");
-    console.log("pacing: timers were late by", lateMs, "ms at most while the requests started; allowed lateness", LATE_MS, "ms; the whole run's largest lateness", Math.max(0, ...late.map((x) => x.ms)), "ms");
-  }, 120_000);
+    return out;
+  }
+
+  it("[[browser.host.pacing]] with the default Stagenet endpoints, request starts are 250 ms apart per endpoint and a 429's Retry-After is honoured; a pacer with no interval fails the same check", async () => {
+    // A run whose timers were later than the bound while the requests started cannot show the spacing: it is run
+    // again, and after three such runs the test fails as inconclusive instead of allowing more lateness.
+    let run = await pacedRun();
+    for (let attempt = 2; attempt <= 3 && run.lateMs > MAX_PACING_LATE_MS; attempt++) {
+      console.log(`pacing: timers were late by ${run.lateMs} ms while the requests started (bound ${MAX_PACING_LATE_MS} ms); run ${attempt}`);
+      run = await pacedRun();
+    }
+    expect(run.lateMs, `inconclusive: timers were late by more than ${MAX_PACING_LATE_MS} ms while the requests started, in three runs`).toBeLessThanOrEqual(MAX_PACING_LATE_MS);
+    expect(run.starts.size).toBe(2);
+    expect(pacingFailures(run.starts, run.lateMs)).toEqual([]);
+    expect(run.logs, run.logs.join("\n")).toContain("warn sync chain_getBlock retried in 1000 ms: chain_getBlock: HTTP 429 from https://rpc.stagenet.shielded.tools//");
+    console.log("pacing: timers were late by", run.lateMs, "ms at most while the requests started; the whole run's largest lateness", run.runLateMs, "ms");
+
+    // Negative control: the same run with no interval between starts fails the check, whatever the lateness.
+    const unpaced = await pacedRun({ minIntervalMs: 0 });
+    expect(pacingFailures(unpaced.starts, unpaced.lateMs), "a pacer with no interval").not.toEqual([]);
+  }, 180_000);
 });
 
 describe("leader tab: automatic start", () => {

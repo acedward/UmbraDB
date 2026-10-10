@@ -1200,7 +1200,7 @@
     {
       "id": "browser.host.pacing",
       "file": "token-indexer/test/browser-sync-host.test.ts",
-      "description": "with the default Stagenet endpoints, request starts are 250 ms apart per endpoint and a 429's Retry-After is honoured"
+      "description": "with the default Stagenet endpoints, request starts are 250 ms apart per endpoint and a 429's Retry-After is honoured, allowing for the timers' measured lateness up to 150 ms (more: run again, then inconclusive); a pacer with no interval fails the same check"
     },
     {
       "id": "browser.tabs.auto-start",
@@ -1360,7 +1360,7 @@
     {
       "id": "browser.watchdog.slow-query",
       "file": "token-indexer/test/browser-watchdog.test.ts",
-      "description": "a statement that does not return silences the worker; the page terminates it and starts a new one: the API request in flight gets the 503, a status request restarted; the new worker carries the counts, continues the engine at the cursors, and the range ends with the same tables"
+      "description": "with no restart before it, a statement that does not return silences the worker; the page terminates it and starts a new one: the API request in flight gets the 503, a status request restarted; the new worker carries the counts, continues the engine at the cursors, and the range ends with the same tables"
     },
     {
       "id": "browser.watchdog.rules",
