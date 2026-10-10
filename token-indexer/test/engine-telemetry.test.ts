@@ -470,5 +470,18 @@ describe("system snapshot schema and redaction", () => {
     expect(JSON.stringify(r)).not.toMatch(/SECRET1[567]/);
     expect(r.configuration.endpoints.node).toBe("https://rpc.example.test/");
     expect(r.logs[0]!.text).toBe('error {"message":"token=[redacted]"}');
+
+    // A URL ends at a backslash: in JSON-escaped text what follows is an escape, not the URL.
+    expect(redactText('error {"message":"see https://u:SECRET18@h.example.test/p?k=v\\n{\\"n\\": 1}"}')).toBe('error {"message":"see https://h.example.test/p\\n{\\"n\\": 1}"}');
+    // An event's log line: its fields are redacted before they become JSON, where a line break or a quote is an
+    // escape and a header on a line of its own or a JSON member could no longer be recognized.
+    const t = createEngineTelemetry({ clock: new Clock() });
+    const message = 'RPC error: token=SECRET19\nAuthorization: Basic not-base64-SECRET20\n{"apiKey": "SECRET21"}\ncookie=SECRET22\nsee https://u:SECRET23@h.example.test/p?k=SECRET24';
+    t.observe(ev(1, "sync", "error", { message, retryMs: 1_000 }));
+    t.log("error", "host", message);
+    for (const line of t.logs()) expect(line.text).not.toMatch(/SECRET/);
+    const fields = JSON.parse(t.logs().find((l) => l.source === "sync")!.text.slice("error ".length)) as { message: string };
+    expect(fields.message).toBe('RPC error: token=[redacted]\nAuthorization: [redacted]\n{"apiKey": "[redacted]"}\ncookie=[redacted]\nsee https://h.example.test/p');
+    expect(t.logs().find((l) => l.source === "host")!.text).toBe(fields.message);
   });
 });
