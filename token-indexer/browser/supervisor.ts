@@ -18,7 +18,9 @@
  *   continues at the stored cursors). That report is the engine in the host status a successful `start`, `stop`,
  *   `range`, `reset` or `import` answers with, whatever started it (a `start` with no configuration runs the saved
  *   one); an `engine` notice that it stopped or failed clears it. So an engine the page stopped, that an import stopped,
- *   or that failed by itself is not started again, and a restart after a `range` runs the range.
+ *   or that failed by itself is not started again, and a restart after a `range` runs the range. Nor is an engine
+ *   started when the new worker's boot finished an import (one the restart interrupted once its journal was saved):
+ *   the store is then the snapshot's, which an import leaves with its engine stopped.
  * - **Long requests:** while a request whose work may legitimately keep the worker busy for long is in flight (`range`
  *   and `reset` replace the store with a new one, `export` reads every table, `import` loads a snapshot twice;
  *   {@link LONG_REQUESTS}), the limit is `longLimitMs` instead.
@@ -235,6 +237,14 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
     for (const viewer of [...viewers]) await client.system({ watch: true, viewer });
     const config = engineConfig;
     if (config === undefined) return;
+    // A boot that finished an import (one the restart interrupted once its journal was saved, before the engine's stop
+    // was reported) has replaced the store with the snapshot's; an import stops the engine, so nothing is started.
+    const finishedImport = (await client.status()).snapshots.lastImport !== null;
+    if (gen !== generation || closed) return;
+    if (finishedImport) {
+      if (engineConfig === config) engineConfig = undefined;
+      return;
+    }
     try {
       await client.start(config);
     } catch (e) {

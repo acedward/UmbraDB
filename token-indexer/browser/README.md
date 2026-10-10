@@ -440,8 +440,9 @@ PGlite runs every statement synchronously on the worker's thread, so the worker 
   restart count and reason and the PGlite reopen count, boots on the same store and gets back the system snapshot's
   viewers and the engine the worker last reported running, with the configuration it reported: the one a `start` (with
   or without a configuration), a `range` or a `reset` answered with (it continues at the stored cursors; an engine the
-  page stopped, an import stopped or that failed stays stopped). While `range`, `reset`, `export` or `import` runs the limit is 10 min. More than 3 restarts within 10 min
-  close the client with `worker-error`.
+  page stopped, an import stopped or that failed stays stopped, and so does one whose import the restart interrupted
+  once the journal was saved: the new worker's boot finishes that import). While `range`, `reset`, `export` or `import`
+  runs the limit is 10 min. More than 3 restarts within 10 min close the client with `worker-error`.
 - **Reopen.** PGlite 0.5.8 fails every statement with "stack depth limit exceeded" once a database has failed about
   1,700 statements, until it is reopened. The host counts the statements the database fails and reopens the store at
   1,000 since it was opened, or at once on the first "stack depth limit exceeded": it holds new requests, stops the
