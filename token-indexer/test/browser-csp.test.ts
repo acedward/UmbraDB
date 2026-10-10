@@ -311,6 +311,7 @@ describe("the static build under its Content-Security-Policy in Chrome", () => {
 
       // An inline script that is not in the build (so has no hash) does not run.
       await page.goto(`${site.origin}/tampered.html`);
+      await page.waitFor("window.__cspViolations.length > 0", 10_000, "the inline script's report");
       expect(await page.eval("window.__inlineRan === true"), mode).toBe(false);
       const inline = (await page.eval("window.__cspViolations")) as string[];
       expect(inline.length, mode).toBeGreaterThan(0);
