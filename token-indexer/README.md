@@ -137,6 +137,11 @@ wallet-storage library) is listed with its reason in `test/helpers/postgresql-on
 run and those tests are skipped, and `check-required-tests.ts --postgresql-only` requires every other required test to
 pass.
 
+The browser suite, `npm run test:browser`, is every test of the browser engine (`test/browser-*.test.ts`: the worker
+host in Node, and the static build in Chromium on OPFS) plus the explorer page's Chromium tests, on either backend. CI
+runs it in the Playwright image on PGlite, beside `npm run test:pglite` (`.github/workflows/browser.yml`); the
+required gate runs it too, on PostgreSQL with the runner's Chrome.
+
 | What | Where |
 |---|---|
 | MIP vectors through two adapters (pure state module; real Postgres path): 59 reference normative, 43 informative, 8 UmbraDB versions | `test/mip0018-vectors.test.ts`, `test/mip0018-vectors-pg.test.ts` |
@@ -153,6 +158,7 @@ pass.
 | One engine across tabs: the leader election, the proxy and the handover rule with in-memory locks and channels; two and three tabs in Chromium on one profile, with the leader closed during a sync | `test/browser-tabs.test.ts`, `test/browser-tabs-chrome.test.ts` |
 | The browser engine's sync: digests, the start at the tip, the automatic start, `range` and `reset`, the storage guard and the pacing in the host; the recorded ranges' digests in Chromium on OPFS, and the automatic start against an advancing local chain | `test/browser-sync-host.test.ts`, `test/browser-sync.test.ts` |
 | The static build's security headers: the policy and `_headers` the build writes for every page, the build-time chain, the worker's Trusted Types policy; in Chromium, the engine under the header and the meta policy with no violation and only allowed origins, and each refusal enforced (see `browser/README.md`) | `test/browser-csp-build.test.ts`, `test/browser-csp.test.ts` |
+| The browser build computes what the Node build computes, in Chromium: the 110 MIP vectors through the PGlite store in a worker on OPFS; the recorded cases through the engine worker's API (each case at its own last block, the reference index, marks, activity); a crawl of the whole API equal to the Node handler's over the same range | `test/browser-parity.test.ts` |
 
 Fixtures:
 
