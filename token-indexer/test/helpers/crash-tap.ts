@@ -23,6 +23,9 @@
  * `boot` (the `write`-th file write since the worker started: creating the store, or the migrations) and `file-close`
  * (the `write`-th `close()` of an OPFS writable stream after arming, before it runs: the file it writes, such as a
  * snapshot import's journal, is then not replaced).
+ *
+ * The tap needs the worker's OPFS interfaces (`FileSystemSyncAccessHandle`, `FileSystemWritableFileStream`); evaluated
+ * in a global scope without them it throws and sets nothing, so `self.__crashTap` is never a tap that counts nothing.
  */
 
 export type TriggerPoint = "archive-statement" | "scan-statement" | "archive-commit" | "scan-commit" | "between" | "write" | "boot" | "file-close";
@@ -59,6 +62,10 @@ export const PARKED_MARKER = "CRASH_TAP_PARKED";
 export function crashTapScript(trigger?: Trigger): string {
   return `(() => {
   if (self.__crashTap) return;
+  // Without these the tap would count neither file writes nor closes: it is not installed at all then, so a test that
+  // reads it fails instead of reading zeros.
+  if (typeof FileSystemSyncAccessHandle !== "function" || typeof FileSystemWritableFileStream !== "function")
+    throw new Error("crash tap: this worker's global scope has no FileSystemSyncAccessHandle or FileSystemWritableFileStream");
   const SQL = /^\\s*(BEGIN|START\\s+TRANSACTION|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|INSERT|UPDATE|DELETE|SELECT|WITH|CREATE|ALTER|DROP|SET|SHOW|CHECKPOINT|LOCK|DO|COPY|TRUNCATE|VALUES|ANALYZE|VACUUM)\\b/i;
   const tap = self.__crashTap = {
     statements: 0, writes: 0, writesInStatement: 0, statement: null, tx: null, writesBeforeFirstStatement: null,
