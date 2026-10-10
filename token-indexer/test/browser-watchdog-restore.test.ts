@@ -43,7 +43,7 @@ import type { SnapshotFiles } from "../browser/snapshot-store.ts";
 import { openStore } from "../browser/store.ts";
 import { memoryStoreIdentity } from "../browser/store-identity.ts";
 import { DEFAULT_LONG_LIMIT_MS, superviseWorker, type SupervisedEngine, type WorkerLike } from "../browser/supervisor.ts";
-import { connectEngineTabs, type EngineTabs, resumeOrAutoStart } from "../browser/tabs.ts";
+import { connectEngineTabs, type EngineTabs, resumeOrAutoStart, tabsChannelName } from "../browser/tabs.ts";
 import { loadTape } from "../browser/tapes.ts";
 import { FakeChannels, FakeLocks } from "./helpers/fake-tabs.ts";
 import { fileFetch, SUPPORTED, U1, until } from "./helpers/worker-host.ts";
@@ -452,6 +452,13 @@ describe("page watchdog: what a restart starts", () => {
       };
       const leader = open("leader");
       const follower = open("follower");
+      // The follower's announcements as leader on the store's channel: one when it takes over, one once its resume has
+      // run (it reads the engine's status again and announces what it found).
+      let followerAnnounced = 0;
+      channels.for("probe")(tabsChannelName("opfs-ahp://umbradb-handover")).addEventListener("message", (e) => {
+        const m = e.data as { kind?: string; from?: string };
+        if (m.kind === "leader" && m.from === "follower") followerAnnounced++;
+      });
       try {
         expect(await leader.ready, what).toBe("leader");
         expect(await follower.ready, what).toBe("follower");
@@ -482,14 +489,13 @@ describe("page watchdog: what a restart starts", () => {
           if (what === "mid-reset") void lc.reset().catch(() => {});
           await until(() => hold.reached, `${what}: the leader's worker in the middle of it`, 30_000);
         }
+        const announcedBefore = followerAnnounced;
         kill(leader);
         await until(() => follower.role() === "leader", `${what}: the follower leads`, 30_000);
         const fc = follower.client;
-        await until(async () => (await fc.status().catch(() => undefined))?.boot.phase === "ready", `${what}: the new leader's worker`, 30_000);
+        // Its resume runs once its worker has booted, and is over once the follower has announced itself again.
+        await until(() => followerAnnounced >= announcedBefore + 2, `${what}: the new leader's resume`, 60_000);
         const worker = rigs.get("follower")!.workers[0]!;
-        // The new leader's resume runs once its worker has booted; give it time to send whatever it sends.
-        await until(() => worker.received.filter((m) => m.type === "status").length >= 2, `${what}: the new leader's resume`, 30_000);
-        await new Promise((resolve) => setTimeout(resolve, 500));
         const starts = worker.received.filter((m) => m.type === "start");
         if (what === "import finished by the watchdog" || what === "mid-import") {
           expect(starts, `${what}: a start sent by the new leader`).toEqual([]);

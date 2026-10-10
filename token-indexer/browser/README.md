@@ -24,7 +24,7 @@ PostgreSQL.
 | `worker.ts` | The worker's entry: the host below on `opfs-ahp://umbradb-stagenet`, bound to the worker's messages |
 | `host.ts` | Boot, request dispatch and the engine's lifecycle, from injected dependencies (tests run it in Node on `memory://`) |
 | `protocol.ts` | The message protocol: versions, requests, results, errors and notices, each with a zod schema |
-| `client.ts` | The page's side: `startEngineWorker()` (the worker under the page's watchdog, created through the Trusted Types policy below) and `createEngineClient(endpoint)` (requests as promises of validated results) |
+| `client.ts` | The page's side: `startEngineWorker()` (the worker under the page's watchdog, created through the Trusted Types policy below), `createEngineClient(endpoint)` (requests as promises of validated results) and `startSaved()` (a newly booted worker's saved configuration, started when its saved settings say so) |
 | `supervisor.ts` | The page's watchdog: heartbeats, terminate and restart of a worker that stopped answering, what the page set up restored on the new worker |
 | `tabs.ts` | One engine across tabs: `connectEngineTabs()` elects the leader tab, which alone runs the worker; the other tabs proxy their requests to it and take over when it closes |
 | `frame-guard.ts` | A page inside a frame shows a notice and stops before it connects to the engine (no worker, no tab election, no request to the leader) |
@@ -39,7 +39,7 @@ PostgreSQL.
 | `scheduler.ts` | Yields to the worker's event loop before each sync batch and scan step, so messages are served while it runs |
 | `tapes.ts`, `tapes/` | The recorded Stagenet ranges (gzip) the worker can replay with no network, SHA-256 checked |
 | `config.ts` | The network, its default endpoints (fixed when the site is built), the store's location and the build's settings |
-| `settings.ts` | The engine's saved configuration and the modules switched off or on, a file beside the store |
+| `settings.ts` | The engine's saved configuration and the modules switched off or on, a file beside the store, with the mark that the store is to be replaced by a new one before they apply |
 | `store-identity.ts` | Which PGlite wrote the store (or that it is being created), a file beside it: a store of another PGlite version is refused before it is opened |
 | `quota.ts` | The storage guard: pauses the sync before the quota, and after a write the browser refused |
 | `snapshot.ts` | The snapshot file: its manifest, its format (a tar of `manifest.json` and `rows.tar.gz`, the rows of every table) and every check an import makes |
