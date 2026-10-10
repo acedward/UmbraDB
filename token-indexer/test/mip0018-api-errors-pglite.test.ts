@@ -68,7 +68,7 @@ describe("MIP-0018 API on the PGlite client: the same answers and error answers 
     await container?.stop();
   }, 60_000);
 
-  it("every route and every error envelope (400, 404, 405, HEAD) answers identically on both backends", async () => {
+  it("[[pglite.api.same-answers]] every route and every error envelope (400, 404, 405, HEAD) answers identically on both backends", async () => {
     const [pg, lite] = backends.map((b) => handler(b.sql));
     const statuses = new Set<number>();
     for (const [method, target] of REQUESTS) {
@@ -80,7 +80,7 @@ describe("MIP-0018 API on the PGlite client: the same answers and error answers 
     expect([...statuses].sort()).toEqual([200, 400, 404, 405]);
   });
 
-  it("a database that cannot be read answers 503 UNAVAILABLE identically on both backends, the cause in the log only: an ended client, a missing schema", async () => {
+  it("[[pglite.api.unavailable]] a database that cannot be read answers 503 UNAVAILABLE identically on both backends, the cause in the log only: an ended client, a missing schema", async () => {
     const ended = [
       createClient({ connectionString: container.getConnectionUri(), schema: MIP }),
       createPgliteClient({ pglite, schema: MIP, durability: "durable" }),
@@ -110,7 +110,7 @@ describe("MIP-0018 API on the PGlite client: the same answers and error answers 
     }
   });
 
-  it("failures only PGlite has answer 503 UNAVAILABLE: a closed database, the single session held too long, PGlite's own error class; another error stays 500 INTERNAL", async () => {
+  it("[[pglite.api.pglite-failures]] failures only PGlite has answer 503 UNAVAILABLE: a closed database, the single session held too long, PGlite's own error class; another error stays 500 INTERNAL", async () => {
     const log: string[] = [];
     const db = await PGlite.create({ startParams: PGlite.defaultStartParams.filter((p) => p !== "-F") });
     const onClosed = handler(createPgliteClient({ pglite: db, schema: MIP }), { log: (l) => log.push(l) });
@@ -144,7 +144,7 @@ describe("MIP-0018 API on the PGlite client: the same answers and error answers 
     expect((await handler(backends[1]!.sql).handle("GET", "/v1/status")).status).toBe(200);
   });
 
-  it("/v1/status reports the durability mode: durable on PostgreSQL and for a durable PGlite client, non-durable for a PGlite client in the default mode; the handler option overrides it; anything else is refused", async () => {
+  it("[[pglite.api.status-durability]] /v1/status reports the durability mode: durable on PostgreSQL and for a durable PGlite client, non-durable for a PGlite client in the default mode; the handler option overrides it; anything else is refused", async () => {
     const st = async (sql: UmbraDBSql, opts: Partial<Mip0018HandlerOptions> = {}): Promise<unknown> =>
       (JSON.parse((await handler(sql, opts).handle("GET", "/v1/status")).body) as { durability: unknown }).durability;
     expect(await st(backends[0]!.sql)).toBe("durable");

@@ -106,7 +106,7 @@ describe("PGlite client: result types and errors as on PostgreSQL", () => {
     return out as [T, T];
   }
 
-  it("int8 is always a bigint (also in int8[]), numeric the decimal text, bytea the bytes, on both backends", async () => {
+  it("[[pglite.types.results]] int8 is always a bigint (also in int8[]), numeric the decimal text, bytea the bytes, on both backends", async () => {
     const [pg, lite] = await both(async (sql) => [...(await sql`
       SELECT 1::int8 AS small, (-9007199254740993)::int8 AS big, count(*) AS n,
              ARRAY[1, -3]::int8[] AS arr, '{{1,2},{3,4}}'::int8[] AS nested, '{}'::int8[] AS empty,
@@ -128,11 +128,14 @@ describe("PGlite client: result types and errors as on PostgreSQL", () => {
   });
 
   const cases: Array<{
+    /** The test's id in the required-test manifest. */
+    id: string;
     name: string;
     run: (sql: UmbraDBSql) => Promise<unknown>;
     expected: Record<string, unknown>;
   }> = [
     {
+      id: "pglite.errors.check-blob-role",
       name: "23514 from a chain-archive trigger (blob-role completeness)",
       run: async (sql) => {
         const unclassified = h(1);
@@ -144,6 +147,7 @@ describe("PGlite client: result types and errors as on PostgreSQL", () => {
       expected: { translated: "ChainArchiveInvariantError", constraintName: "chain_blob_roles_completeness" },
     },
     {
+      id: "pglite.errors.check-unfinalize",
       name: "23514 from un-finalizing a finalized block",
       run: async (sql) => {
         const header = h(10);
@@ -158,6 +162,7 @@ describe("PGlite client: result types and errors as on PostgreSQL", () => {
       expected: { translated: "ChainArchiveInvariantError", constraintName: "blocks_finalized_monotonic" },
     },
     {
+      id: "pglite.errors.check-role-referenced",
       name: "23514 from deleting a blob role still referenced",
       run: async (sql) => {
         const header = h(20);
@@ -171,6 +176,7 @@ describe("PGlite client: result types and errors as on PostgreSQL", () => {
       expected: { translated: "ChainArchiveInvariantError", constraintName: "chain_blob_roles_removal_guard" },
     },
     {
+      id: "pglite.errors.check-status-enum",
       name: "23514 from an ordinary chain-archive CHECK (status enum)",
       run: async (sql) => {
         const header = h(30);
@@ -185,6 +191,7 @@ describe("PGlite client: result types and errors as on PostgreSQL", () => {
       expected: { translated: "ChainArchiveCheckViolationError", constraintName: "blocks_status_check" },
     },
     {
+      id: "pglite.errors.check-canonical",
       name: "23514 from the canonical CHECK (a finalized block un-marked as canonical)",
       run: async (sql) => {
         const header = h(40);
@@ -197,6 +204,7 @@ describe("PGlite client: result types and errors as on PostgreSQL", () => {
       expected: { translated: "ChainArchiveCheckViolationError" },
     },
     {
+      id: "pglite.errors.unique",
       name: "23505 unique violation",
       run: async (sql) => {
         await sql`create table ${sql(SCHEMA)}.uniq (id int primary key, u text unique)`;
@@ -206,36 +214,43 @@ describe("PGlite client: result types and errors as on PostgreSQL", () => {
       expected: { translated: "UnrecognizedPostgresError", databaseError: true, code: "23505" },
     },
     {
+      id: "pglite.errors.not-null",
       name: "23502 not-null violation (column_name)",
       run: (sql) => failure(() => sql`insert into ${sql(SCHEMA)}.uniq (id, u) values (${null}, 'b')`),
       expected: { translated: "UnrecognizedPostgresError", code: "23502" },
     },
     {
+      id: "pglite.errors.missing-relation",
       name: "42P01 missing relation",
       run: (sql) => failure(() => sql`select * from ${sql(SCHEMA)}.no_such_table`),
       expected: { translated: "UnrecognizedPostgresError", databaseError: true, code: "42P01" },
     },
     {
+      id: "pglite.errors.serialization",
       name: "40001 serialization failure",
       run: (sql) => failure(() => sql`do $$ begin raise exception 'conflict' using errcode = '40001'; end $$`),
       expected: { translated: "TransactionFaultError", faultKind: "serialization-failure" },
     },
     {
+      id: "pglite.errors.deadlock",
       name: "40P01 deadlock",
       run: (sql) => failure(() => sql`do $$ begin raise exception 'cycle' using errcode = '40P01'; end $$`),
       expected: { translated: "TransactionFaultError", faultKind: "deadlock" },
     },
     {
+      id: "pglite.errors.cancelled",
       name: "57014 statement cancelled",
       run: (sql) => failure(() => sql`do $$ begin raise exception 'cancelled' using errcode = '57014'; end $$`),
       expected: { translated: "UnrecognizedPostgresError", statementTimeout: true, databaseError: true },
     },
     {
+      id: "pglite.errors.lock-not-available",
       name: "55P03 lock not available",
       run: (sql) => failure(() => sql`do $$ begin raise exception 'busy' using errcode = '55P03'; end $$`),
       expected: { translated: "UnrecognizedPostgresError", lockTimeout: true },
     },
     {
+      id: "pglite.errors.failed-in-transaction",
       name: "a failed statement inside a transaction (the transaction is rolled back with the error)",
       run: (sql) => failure(() => sql.begin(async (tx) => {
         await tx`insert into ${tx(SCHEMA)}.uniq values (3, 'c')`;
@@ -246,7 +261,7 @@ describe("PGlite client: result types and errors as on PostgreSQL", () => {
   ];
 
   for (const c of cases)
-    it(`${c.name}: the same error shape and the same routing on both backends`, async () => {
+    it(`[[${c.id}]] ${c.name}: the same error shape and the same routing on both backends`, async () => {
       const [pg, lite] = await both(c.run);
       expect(lite).toBeInstanceOf(PglitePostgresError);
       expect(routed(lite)).toEqual(routed(pg));
@@ -256,7 +271,7 @@ describe("PGlite client: result types and errors as on PostgreSQL", () => {
       expect(typeof (lite as { query?: unknown }).query).toBe("string");
     });
 
-  it("the fields postgres.js reads: constraint_name, table_name, schema_name, column_name and detail equal on both backends", async () => {
+  it("[[pglite.errors.fields]] the fields postgres.js reads: constraint_name, table_name, schema_name, column_name and detail equal on both backends", async () => {
     const [pg, lite] = await both((sql) => failure(() => sql`insert into ${sql(SCHEMA)}.uniq values (9, 'a')`));
     for (const k of ["constraint_name", "table_name", "schema_name", "detail", "message"])
       expect((lite as Record<string, unknown>)[k], k).toEqual((pg as Record<string, unknown>)[k]);
@@ -266,7 +281,7 @@ describe("PGlite client: result types and errors as on PostgreSQL", () => {
     expect((liteNull as Record<string, unknown>).column_name).toEqual((pgNull as Record<string, unknown>).column_name);
   });
 
-  it("a client that has ended fails with CONNECTION_ENDED on both backends: a connection error, a database error", async () => {
+  it("[[pglite.errors.connection-ended]] a client that has ended fails with CONNECTION_ENDED on both backends: a connection error, a database error", async () => {
     const ended = [
       createClient({ connectionString: container.getConnectionUri(), schema: SCHEMA }),
       createPgliteClient({ pglite, schema: SCHEMA }),
@@ -284,7 +299,7 @@ describe("PGlite client: result types and errors as on PostgreSQL", () => {
     expect(errors[1]).toBeInstanceOf(PgliteSqlError);
   });
 
-  it("a closed PGlite database fails with CONNECTION_CLOSED, a code postgres.js gives for a closed connection: a connection error, a database error", async () => {
+  it("[[pglite.errors.connection-closed]] a closed PGlite database fails with CONNECTION_CLOSED, a code postgres.js gives for a closed connection: a connection error, a database error", async () => {
     const db = await PGlite.create();
     const sql = createPgliteClient({ pglite: db, schema: "public" });
     expect([...(await sql`select 1 as one`)]).toEqual([{ one: 1 }]);
@@ -298,7 +313,7 @@ describe("PGlite client: result types and errors as on PostgreSQL", () => {
     }
   });
 
-  it("the single PGlite session: a statement that can never get it fails with PGLITE_SESSION_DEADLOCK, a database error (503), passed through unchanged by the error catalog", async () => {
+  it("[[pglite.errors.session-deadlock]] the single PGlite session: a statement that can never get it fails with PGLITE_SESSION_DEADLOCK, a database error (503), passed through unchanged by the error catalog", async () => {
     const sql = createPgliteClient({ pglite, schema: SCHEMA, deadlockTimeoutMs: 100 });
     const e = await failure(() => sql.begin(async () => sql`select 1`));
     expect([(e as PgliteSqlError).code, isDatabaseError(e)]).toEqual(["PGLITE_SESSION_DEADLOCK", true]);
@@ -308,7 +323,7 @@ describe("PGlite client: result types and errors as on PostgreSQL", () => {
     expect([(undef as PgliteSqlError).code, isDatabaseError(undef)]).toEqual(["UNDEFINED_VALUE", false]);
   });
 
-  it("normalizePgliteError: PGlite's own error is recognized by shape too; non-database values pass unchanged", async () => {
+  it("[[pglite.errors.normalize]] normalizePgliteError: PGlite's own error is recognized by shape too; non-database values pass unchanged", async () => {
     const raw = createPgliteClient({ pglite, schema: SCHEMA, mapError: (e) => e });
     const e = await failure(() => raw`select * from ${raw(SCHEMA)}.no_such_table`);
     expect([(e as Error).name, (e as { code?: unknown }).code, e instanceof PglitePostgresError]).toEqual(["error", "42P01", false]);
