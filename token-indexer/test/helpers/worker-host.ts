@@ -3,11 +3,13 @@
  * or a directory) with a supported-browser capability report, the tape catalog read from the repository's files, its
  * notices and log lines recorded, the stores it opens kept, and a page-side client over a `MessageChannel`.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createEngineClient, type EngineClient } from "../../browser/client.ts";
 import { createWorkerHost, type WorkerHost, type WorkerHostOptions } from "../../browser/host.ts";
 import { type CapabilityReport, type HostStatus, type Notice, PROTOCOL_VERSION, type Response } from "../../browser/protocol.ts";
+import type { SnapshotFiles } from "../../browser/snapshot-store.ts";
 import { openStore, type Store } from "../../browser/store.ts";
 import { loadTape } from "../../browser/tapes.ts";
 
@@ -28,6 +30,19 @@ export function fileFetch(): typeof fetch {
     const url = input instanceof Request ? input.url : String(input);
     return new Response(new Uint8Array(readFileSync(fileURLToPath(url))));
   }) as typeof fetch;
+}
+
+/** The journal and files of a store PGlite keeps in a directory of the Node file system (the stand-in for an OPFS
+ *  store): the journal is the file `journal` (default: beside the directory), and removing the store removes the
+ *  directory. */
+export function nodeStoreFiles(storeDir: string, journal: string = `${storeDir}.import.snapshot.tar`): SnapshotFiles {
+  return {
+    readJournal: async () => (existsSync(journal) ? new Uint8Array(readFileSync(journal)) : undefined),
+    writeJournal: async (file) => writeFileSync(journal, file),
+    removeJournal: async () => rmSync(journal, { force: true }),
+    storeExists: async () => existsSync(join(storeDir, "PG_VERSION")),
+    removeStore: async () => rmSync(storeDir, { recursive: true, force: true }),
+  };
 }
 
 export interface TestHost {

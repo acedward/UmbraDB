@@ -129,16 +129,17 @@ Then open `http://127.0.0.1:10100/` (with `dev:browser`, the address Vite prints
   from H on. While the endpoints are unreachable the engine waits with back-off; it never starts at genesis. A
   reopened page continues at the stored cursor and fetches every block since, leaving no gap.
 - **Ranges and reset.** The explorer's engine panel starts and stops the engine, changes the range (a start height or
-  `tip`, and an optional end) and resets the store. One archive has no gaps, so a range change or a reset drops the
-  stored blocks; the panel offers to export a snapshot first.
-- **Snapshots.** The panel exports the whole store as one file (a manifest and PGlite's data directory) and imports
-  one; an import is refused, with its reason, for another network, other migrations, another PGlite version or a
-  damaged file. After an import the engine is stopped; its next start continues at the snapshot's height + 1. The
+  `tip`, and an optional end) and resets the store. One archive has no gaps, so a range change or a reset replaces the
+  store with a new one (its files removed, the database created again); the panel offers to export a snapshot first.
+- **Snapshots.** The panel exports the rows of every table of the store as one file (a manifest and the rows) and
+  imports one into a new store made by this build's migrations (a file carries rows only, never code); an import is
+  refused, with its reason, for another network, other migrations, another PGlite version, rows that are not this
+  build's tables or do not load, or a damaged file. After an import the engine is stopped; its next start continues at the snapshot's height + 1. The
   build publishes the recorded range 714485–715183 as `snapshots/umbradb-stagenet-714485-715183.snapshot.tar`, checked
   against the recorded digests when it is built: save it from the site and pick it under "import snapshot" (or, from
   the console, `umbradbEngine.snapshots.published("idx").then((f) => umbradbEngine.client.import(f))`), and the
-  explorer answers for that range with no network. A snapshot is trusted as it is: its SHA-256 detects damage, not who
-  made it.
+  explorer answers for that range with no network. A snapshot's rows are trusted as they are: its SHA-256 detects
+  damage, not who made it.
 - **Several tabs.** One engine per store, however many tabs: the first tab leads and runs the worker, the others run
   none and send their requests to it, and the oldest takes over from the stored cursors when the leader closes. The
   panel marks each tab leader or follower.

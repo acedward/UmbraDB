@@ -6,33 +6,43 @@
  * 1. `capabilities`: the capability check (`capabilities.ts`). A refusal ends the boot as `unsupported`; nothing is
  *    opened or started.
  * 2. `store`: PGlite opens the store (`store.ts`); on a first open it creates the database (about a second in Chrome,
- *    with a second PGlite heap while it runs). Before that, the store's identity file (`store-identity.ts`) is read: a
- *    store another PGlite version wrote is refused unopened. A store whose first boot never completed (a worker that
- *    ended while PGlite created it leaves files PGlite cannot open) is removed and created again. A store that
- *    completed a boot before and now fails to open is reported. Both reports end the boot `failed` with
- *    `storeProblem` set, and the requests that replace the store's data (`reset`, `range`, `import`) then replace the
- *    store itself under its lock and run the rest of the boot; nothing is ever read from the refused store.
+ *    with a second PGlite heap while it runs). Under the store's lock, first: an import a previous worker left
+ *    unfinished (its journal) is finished, which replaces the store (see Snapshots). Otherwise the store's identity
+ *    file (`store-identity.ts`) is read: a store another PGlite version wrote is refused unopened, and so is a store
+ *    whose identity file cannot be read; a new store is marked "creating" before PGlite creates it. A store marked
+ *    "creating" (its first boot never completed: a worker that ended while PGlite created it leaves files PGlite cannot
+ *    open, and nothing was stored) is removed and created again. Any other store that fails to open is reported.
  * 3. `ledger`: loads ledger-v9 (WASM) and checks that its classes kept their names: the scan stores a contract action's
  *    class name, so a build that renamed them would write wrong rows. A renamed class fails the boot.
  * 4. `migrate`: both schema lineages, the chain archive's and MIP-0018's, as the Node commands run them.
- * Then `ready`, and the store's identity is written. A failure in 2–4 ends the boot as `failed` and closes the store.
+ * Then the store's identity is written (a boot that cannot write it fails), the saved configuration is read (after a
+ * finished import, the one that continues it is saved first, and only then is the import's journal removed), and the
+ * boot is `ready`. A failure in 2–4 or after ends the boot `failed` and closes the store (its lock is released). When
+ * the store is the reason (refused, unopenable, or opened but unusable: its migrations, its identity or finishing an
+ * import failed), `storeProblem` says so, and the requests that replace the store (`reset`, `range`, `import`) then
+ * replace it under its lock and run the boot again; nothing is ever read from a refused store. A ledger that fails to
+ * load is not the store's fault: no `storeProblem`, and nothing offers to drop the store's data for it.
  *
  * **Requests** (`protocol.ts`): `status` answers at any time; `api` waits for the boot and answers through the running
  * engine's API handler, or, while no engine runs, a handler of the same store with no loops (`scanner: "off"`);
  * `start` runs a new engine (sync + scan in follow mode) with the given configuration, or the saved one, `stop` stops
- * it; `range` drops the store's data and starts the new range, `reset` drops it and starts the saved configuration
- * again; all four run one at a time, in arrival order. `digest` computes the store's archive and range-tables digests
+ * it; `range` saves the new range, then replaces the store with a new, empty one and starts the range, `reset` does the
+ * same with the saved configuration (replacing the store: PGlite is closed, every file of the store is removed, and
+ * the boot runs again from its store phase, so nothing of the old database survives); all four run one at a time, in
+ * arrival order. `digest` computes the store's archive and range-tables digests
  * in one read-only transaction (the loops wait for it); `system` watches or refreshes the system snapshot and `watchdog`
  * sets the page's watchdog and starts the heartbeat (`host-system.ts`).
  *
- * **Snapshots** (`snapshot-store.ts`): `export` writes a snapshot file of the store while the engine runs (a consistent
- * read between two transactions). `import` checks a snapshot file without touching anything (a refusal changes
- * nothing, and a running engine keeps running), then stops the engine, waits for the requests reading the store,
- * replaces the store under its lock (journaled) and opens it again; meanwhile the requests that read the store wait. An
- * import stops the engine as `stop` does (the automatic start is off) and saves a configuration that continues the
- * imported archive: its first height as the start, no end, the saved source and tuning; a `start` then continues from
- * the snapshot's height + 1. The boot finishes an import that a previous worker left unfinished before it opens the
- * store. The last export and import are in `status` and in the system snapshot.
+ * **Snapshots** (`snapshot-store.ts`): `export` writes a snapshot file (the rows of the store's tables) while the engine
+ * runs (a consistent read between two transactions). `import` checks a snapshot file and loads its rows into a trial
+ * store in memory without touching anything (a refusal changes nothing, and a running engine keeps running); then it
+ * saves the file as the store's import journal (a failure to save it changes nothing), stops the engine, waits for the
+ * requests reading the store, closes PGlite keeping the store's lock, and runs the boot again from its store phase,
+ * which finishes the import from the journal; meanwhile the requests that read the store wait. An import stops the
+ * engine as `stop` does (the automatic start is off) and saves a configuration that continues the imported archive: its
+ * first height as the start, no end, the saved source and tuning; a `start` then continues from the snapshot's height
+ * + 1. A failed import closes every store it opened. The last export and import are in `status` and in the system
+ * snapshot.
  *
  * **Engine**: the engine (`../engine/engine.ts`) runs with a scheduler that yields to the event loop before each step
  * (`scheduler.ts`), so requests and `stop` are served while it syncs; the chain is the network (`fetch` to the node and
@@ -61,11 +71,9 @@
  * (it continues at the cursors).
  */
 import { archiveDigest, dumpArchive } from "../../chain-archive-sync/archive-digest.js";
-import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import type { ArchiveTape } from "../../chain-archive-sync/archive-tape.js";
 import { createTapeFetch } from "../../chain-archive-sync/tape-replay.js";
 import { durabilityModeOf } from "../../src/postgres/durability-probe.js";
-import { runMigrations } from "../../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_archive/index.js";
 import { mip0018Migrations } from "../../src/postgres/migrations/mip0018/index.js";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
@@ -99,22 +107,21 @@ import { browserStorageEnvironment, createQuotaGuard, isRefusedWrite, type Stora
 import { yieldingScheduler } from "./scheduler.ts";
 import { STACK_DEPTH_EXCEEDED } from "./session.ts";
 import { type EngineSettingsStore, memorySettingsStore, opfsSettingsStore } from "./settings.ts";
-import { decodeSnapshotFile, MAX_SNAPSHOT_FILE_BYTES, pgliteVersionOf, type SnapshotExpectation, type SnapshotManifest, type SnapshotRecord, SnapshotRefusal, snapshotRecord } from "./snapshot.ts";
+import { pgliteVersionOf, type SnapshotManifest, type SnapshotRecord, SnapshotRefusal, snapshotRecord } from "./snapshot.ts";
 import {
   exportSnapshot,
   type ExportedSnapshot,
   openFinishingImport,
   type OpenedStore,
   prepareImport,
-  readStoreFacts,
-  replaceStore,
   type SnapshotFiles,
   snapshotFilesFor,
   type PreparedImport,
   type TrialOpener,
 } from "./snapshot-store.ts";
-import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, openStore, type OpenStoreOptions, type Store, StoreBusyError } from "./store.ts";
-import { STORE_IDENTITY_FORMAT, storeIdentityFor, type StoreIdentityFile, unopenableStore, versionRefusal } from "./store-identity.ts";
+import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, migrateStore, openStore, type OpenStoreOptions, type Store, StoreBusyError } from "./store.ts";
+import { STORE_IDENTITY_FORMAT, storeIdentityFor, type StoreIdentityFile, unopenableStore, unreadableIdentity, unusableStore, versionRefusal } from "./store-identity.ts";
+import type { HeldLock } from "./tab-locks.ts";
 import { loadTape } from "./tapes.ts";
 
 /** Heights per sync batch unless `start` says otherwise: a stop waits for at most one batch. */
@@ -144,6 +151,8 @@ export interface WorkerHostOptions {
   /** Default: {@link openStore}. The host passes the session monitor's options and those that finish a pending
    *  snapshot import. */
   openStore?: (dataDir: string, opts?: OpenStoreOptions) => Promise<Store>;
+  /** Runs both schema lineages' migrations on the store (the boot's `migrate` phase). Default: {@link migrateStore}. */
+  migrate?: (store: Store) => Promise<void>;
   /** Loads ledger-v9. Default: `import("@midnightntwrk/ledger-v9")`. */
   loadLedger?: () => Promise<Record<string, unknown>>;
   /** Loads a recorded range. Default: {@link loadTape}. */
@@ -165,7 +174,7 @@ export interface WorkerHostOptions {
   storage?: StorageEnvironment;
   /** The storage guard's intervals (`quota.ts`). */
   quota?: { checkEveryMs?: number; recheckMs?: number; storeEveryMs?: number };
-  /** Called with the store before `range` or `reset` drops its data (an export can be taken there). */
+  /** Called with the store before `range` or `reset` replaces it (an export can be taken there). */
   beforeWipe?: (store: Store) => Promise<void>;
   /** Facts of the build for the system snapshot. */
   build?: BuildInfo | null;
@@ -177,10 +186,11 @@ export interface WorkerHostOptions {
   sliceMs?: number;
   /** Failed statements since the store was opened at which it is reopened. Default {@link REOPEN_AFTER_FAILED_STATEMENTS}. */
   reopenAfterFailedStatements?: number;
-  /** Where a snapshot import keeps its journal and how it removes the store's files. Default: beside an
+  /** Where a snapshot import keeps its journal and how the store's files are found and removed. Default: beside an
    *  `opfs-ahp://` store in OPFS, else memory. */
   snapshotFiles?: SnapshotFiles;
-  /** Opens a snapshot's data directory for the trial an import runs. Default: an in-memory PGlite. */
+  /** Opens the new, empty store an import's trial loads the snapshot into. Default: `openStore("memory://")` (through
+   *  {@link openStore} when that is given). */
   snapshotTrial?: TrialOpener;
   /** Where the store's identity (the PGlite version that wrote it) is kept. Default: beside an `opfs-ahp://` store in
    *  OPFS, else memory. The check before opening needs the running version: `build.pgliteVersion`. */
@@ -204,16 +214,17 @@ class HostError extends Error {
   }
 }
 
-/** The store cannot be used: refused (`version`) or not opened (`unopenable`); its message tells the user what to do. */
+/** The store cannot be used: refused (`version`), not opened (`unopenable`) or not usable once open (`unusable`); its
+ *  message tells the user what to do. */
 class StoreProblem extends Error {
   constructor(readonly kind: NonNullable<BootState["storeProblem"]>, message: string) {
     super(message);
   }
 }
 
-/** How the boot's store phase treats the store's files: as they are, removed first (`reset`, `range`), or replaced
- *  by the pending import's journal (`import`). */
-type StoreOpening = "open" | "reset" | "import";
+/** How the boot's store phase treats the store: as it is (a pending import finished first), or removed and created
+ *  anew (`reset`, `range`; a pending import is dropped). */
+type StoreOpening = "open" | "reset";
 
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -326,8 +337,12 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   let lastExport: SnapshotRecord | null = null;
   let lastImport: SnapshotRecord | null = null;
   let swapping: Promise<void> | undefined;
-  /** The manifest of an import the boot finished (its configuration is saved once the settings are read). */
+  /** The manifest of an import the boot's store phase finished (its configuration is saved once the settings are
+   *  read), and why one could not be finished (the store was opened empty). */
   let finishedImport: SnapshotManifest | undefined;
+  let importFailure: string | undefined;
+  /** An `import` request is running the boot (its log lines say so). */
+  let importing = false;
   const identityFile = opts.storeIdentity ?? storeIdentityFor(opts.dataDir);
 
   async function phase<T>(name: BootState["phase"], key: keyof BootState["timings"], fn: () => Promise<T>): Promise<T> {
@@ -351,10 +366,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     }
   }
 
-  async function migrate(s: Store): Promise<void> {
-    await bootstrapChainArchiveSchema(s.archive, ARCHIVE_SCHEMA);
-    await runMigrations(s.mip0018, { schema: MIP0018_SCHEMA, migrations: mip0018Migrations });
-  }
+  const migrate = (s: Store): Promise<void> => (opts.migrate ?? migrateStore)(s);
 
   async function readStoreInfo(s: Store): Promise<StoreInfo> {
     const [settings] = await s.archive<{ version: string; fsync: string }[]>`
@@ -457,49 +469,67 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     }
   }
 
-  /** Writes the store's identity (`store-identity.ts`) when it is not on file yet: the versions read from the store. */
+  /** Writes the store's identity (`store-identity.ts`) unless it is on file already: the versions read from the store.
+   *  Fails (`unusable`) when it cannot be written: a store the boot used must have one. */
   async function recordIdentity(s: Store): Promise<void> {
     const [v] = await s.archive<{ version: string; server: string }[]>`select version() as version, current_setting('server_version') as server`;
     const pglite = pgliteVersionOf(v!.version);
     if (pglite === null) return;
     const identity = { format: STORE_IDENTITY_FORMAT, pglite, postgres: v!.server } as const;
-    const onFile = await identityFile.load();
-    if (onFile?.pglite === identity.pglite && onFile.postgres === identity.postgres) return;
+    const onFile = await identityFile.read();
+    if (onFile.kind === "identity" && onFile.identity.pglite === identity.pglite && onFile.identity.postgres === identity.postgres) return;
     try {
       await identityFile.save(identity);
     } catch (e) {
-      log("warn", `the store's identity could not be saved: ${messageOf(e)}`);
+      throw new StoreProblem("unusable", unusableStore(`its identity could not be saved: ${messageOf(e)}`));
     }
   }
 
-  /** The `store` phase (see the module documentation). */
-  async function openForBoot(mode: StoreOpening): Promise<Store> {
-    const removeStore = async (): Promise<void> => {
-      await snapshotFiles.removeStore();
-      await identityFile.remove();
-    };
-    if (mode === "reset") {
-      return noteFinishedImport(await openFinishingImport(opener, opts.dataDir, snapshotFiles, opts.network, {
-        prepare: async () => {
-          await snapshotFiles.removeJournal();
-          await removeStore();
-        },
-      }));
-    }
-    // An import's journal replaces the store's files as it opens: the identity goes with them.
-    if (mode === "import") await identityFile.remove();
-    const identity = mode === "open" ? await identityFile.load() : undefined;
+  /** The `store` phase (see the module documentation); `lock`: the store's lock, already held (a store closed for a
+   *  `reset`, a `range` or an import). */
+  async function openForBoot(mode: StoreOpening, lock?: HeldLock): Promise<Store> {
     const running = opts.build?.pgliteVersion ?? null;
-    if (identity !== undefined && running !== null && identity.pglite !== running) throw new StoreProblem("version", versionRefusal(identity, running));
+    /** The store holds nothing yet: its first boot has not completed, so it may be created again. */
+    let creating = false;
+    const markCreating = async (): Promise<void> => {
+      try {
+        await identityFile.markCreating();
+      } catch (e) {
+        throw new StoreProblem("unusable", unusableStore(`its identity file could not be written: ${messageOf(e)}`));
+      }
+      creating = true;
+    };
+    // Under the store's lock, before PGlite opens the store.
+    const beforeOpen = async (_dir: string, importing: SnapshotManifest | null): Promise<void> => {
+      if (mode === "reset") {
+        await snapshotFiles.removeStore();
+        await markCreating();
+        return;
+      }
+      // A pending import replaces the store: what its identity says does not matter.
+      if (importing !== null) {
+        await markCreating();
+        return;
+      }
+      const state = await identityFile.read();
+      if (state.kind === "unreadable") throw new StoreProblem("unopenable", unreadableIdentity(state.error));
+      if (state.kind === "identity" && running !== null && state.identity.pglite !== running) throw new StoreProblem("version", versionRefusal(state.identity, running));
+      if (state.kind === "creating") creating = true;
+      else if (state.kind === "absent" && !(await snapshotFiles.storeExists())) await markCreating();
+    };
     try {
-      return noteFinishedImport(await openFinishingImport(opener, opts.dataDir, snapshotFiles, opts.network));
+      return noteFinishedImport(await openFinishingImport(opener, opts.dataDir, snapshotFiles, opts.network, {
+        beforeOpen,
+        discardJournal: mode === "reset",
+        ...(lock === undefined ? {} : { lock }),
+      }));
     } catch (e) {
-      if (e instanceof StoreBusyError) throw e;
-      if (identity !== undefined || mode !== "open") throw new StoreProblem("unopenable", unopenableStore(messageOf(e)));
-      // No boot ever completed on this store: PGlite's creation of it was interrupted. Nothing was stored yet.
+      if (e instanceof StoreProblem || e instanceof StoreBusyError) throw e;
+      if (!creating) throw new StoreProblem("unopenable", unopenableStore(messageOf(e)));
+      // The store's first boot never completed (PGlite's creation of it was interrupted): nothing was stored yet.
       log("warn", `the store's first boot did not complete and it cannot be opened (${messageOf(e)}): it is created again`);
       try {
-        return noteFinishedImport(await openFinishingImport(opener, opts.dataDir, snapshotFiles, opts.network, { prepare: removeStore }));
+        return noteFinishedImport(await openFinishingImport(opener, opts.dataDir, snapshotFiles, opts.network, { beforeOpen: async () => { await snapshotFiles.removeStore(); } }));
       } catch (e2) {
         if (e2 instanceof StoreBusyError) throw e2;
         throw new StoreProblem("unopenable", unopenableStore(messageOf(e2)));
@@ -507,26 +537,50 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     }
   }
 
-  /** The boot from the `store` phase on: open, ledger, migrations, identity, saved settings, then `ready`. On a failure
-   *  the boot is `failed` (with `storeProblem` when the store is the reason) and the store is closed. Never rejects. */
-  async function bootStore(mode: StoreOpening): Promise<void> {
+  /** Runs `fn`; a failure that is not already a {@link StoreProblem} makes the store `unusable` (`what` says what failed). */
+  async function usable<T>(fn: () => Promise<T>, what?: string): Promise<T> {
+    try {
+      return await fn();
+    } catch (e) {
+      if (e instanceof StoreProblem) throw e;
+      throw new StoreProblem("unusable", unusableStore(what === undefined ? messageOf(e) : `${what}: ${messageOf(e)}`));
+    }
+  }
+
+  /** The boot from the `store` phase on: open (finishing a pending import), ledger, migrations, identity, saved
+   *  settings (after a finished import: the continuing configuration saved, then its journal removed), then `ready`. On
+   *  a failure the boot is `failed` (with `storeProblem` when the store is the reason) and the store is closed, its lock
+   *  released. Never rejects. */
+  async function bootStore(mode: StoreOpening, lock?: HeldLock): Promise<void> {
     const t0 = monotonic();
     bootState.error = null;
     bootState.storeProblem = null;
+    finishedImport = undefined;
+    importFailure = undefined;
     try {
       let s: Store | undefined;
       try {
-        s = await phase("store", "storeMs", () => openForBoot(mode));
+        s = await phase("store", "storeMs", () => openForBoot(mode, lock));
+        const opened = s;
         await phase("ledger", "ledgerMs", checkLedger);
-        await phase("migrate", "migrateMs", () => migrate(s!));
-        storeInfo = await readStoreInfo(s);
-        await recordIdentity(s);
+        await phase("migrate", "migrateMs", () => usable(() => migrate(opened)));
+        storeInfo = await usable(() => readStoreInfo(opened));
+        await recordIdentity(opened);
+        saved = (await settingsStore.load()) ?? { config: opts.defaultStart ?? {}, autoStart: true };
+        // Set by the store phase (`noteFinishedImport`).
+        const imported = finishedImport as SnapshotManifest | undefined;
+        if (imported !== undefined) {
+          // The journal stays until the configuration that continues the import is saved: a worker that ends before
+          // that finishes the import again at its next boot.
+          await usable(() => saveImported(imported), "the configuration that continues the imported snapshot could not be saved");
+          await usable(() => snapshotFiles.removeJournal(), "the import's journal could not be removed");
+          lastImport = snapshotRecord(imported, clock.now(), null);
+          if (!importing) log("warn", `finished an interrupted snapshot import: the store now holds ${imported.network} up to ${imported.archive.height}`);
+        }
       } catch (e) {
         if (s !== undefined) await s.close().catch(() => {});
         throw e;
       }
-      saved = (await settingsStore.load()) ?? { config: opts.defaultStart ?? {}, autoStart: true };
-      if (finishedImport !== undefined) await saveImported(finishedImport);
       useStore(s);
       bootState.phase = "ready";
       log("info", `store ${s.dataDir} ready (${s.created ? "created" : "reopened"}, PostgreSQL ${storeInfo.serverVersion})`);
@@ -571,16 +625,48 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
    *  then replace the store. */
   async function storeFailed(): Promise<boolean> {
     await boot();
-    const failed = !closed && bootState.phase === "failed" && bootState.storeProblem !== null;
+    const failed = !closed && bootState.phase === "failed" && bootState.storeProblem !== null && store === undefined;
     // The saved configuration lives beside the store, not in it: a store that could not be used still has it.
     if (failed && saved === undefined) saved = await settingsStore.load();
     return failed;
   }
 
-  /** Replaces a store the boot could not use and runs the rest of the boot; fails with `boot-failed` if it fails again. */
-  async function recoverStore(mode: "reset" | "import"): Promise<Store> {
-    log("warn", mode === "reset" ? "the store is removed and created again" : "the store is replaced by a snapshot");
-    await bootStore(mode);
+  /** Requests that read the store wait while `fn` runs (it replaces the store). */
+  async function swap<T>(fn: () => Promise<T>): Promise<T> {
+    let done!: () => void;
+    swapping = new Promise<void>((resolve) => (done = resolve));
+    try {
+      return await fn();
+    } finally {
+      swapping = undefined;
+      done();
+    }
+  }
+
+  /**
+   * Runs the boot again from its store phase in `mode` (a `reset`, a `range` or an import). The open store `s`, if any,
+   * is taken out of use first: the engine stopped, the requests reading it ended, PGlite closed with the store's lock
+   * kept for the new open. Fails with `boot-failed` when the boot fails (every store it opened is closed then, its lock
+   * released, and `storeProblem` says whether `reset`, `range` and `import` can replace the store).
+   */
+  async function rebootStore(mode: StoreOpening, s: Store | undefined): Promise<Store> {
+    await swap(async () => {
+      let lock: HeldLock | undefined;
+      if (s !== undefined) {
+        await halt();
+        while (reading > 0) await clock.sleep(5, new AbortController().signal);
+        system.unbind();
+        store = undefined;
+        try {
+          lock = await s.detach();
+        } catch (e) {
+          // PGlite did not close cleanly (its lock is released then): the boot takes the lock again.
+          log("error", `closing the store failed: ${messageOf(e)}`);
+        }
+      }
+      log("warn", mode === "reset" ? "the store is removed and created again" : "the store is replaced by a snapshot");
+      await bootStore(mode, lock);
+    });
     if (store === undefined) throw new HostError("boot-failed", bootState.error ?? "the boot failed");
     return store;
   }
@@ -668,6 +754,17 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     }
   }
 
+  /** Saves `next` as the saved configuration before the store is replaced (`range`, `reset`), so that a worker that ends
+   *  meanwhile starts it on the new store; fails (and nothing is changed) when it cannot be saved. */
+  async function saveBeforeReplacing(next: EngineSettings, what: string): Promise<void> {
+    try {
+      await settingsStore.save(next);
+    } catch (e) {
+      throw new HostError("start-failed", `${what} could not be saved (${messageOf(e)}): nothing was changed`);
+    }
+    saved = next;
+  }
+
   /** Runs a new engine (sync + scan in follow mode) with `config`. A new archive starts at `config.startHeight`, by
    *  default the finalized tip. Its events go to the telemetry; `announce: false` posts no `engine` notice (a reopen). */
   async function run(s: Store, config: StartConfig, announce = true): Promise<void> {
@@ -745,23 +842,17 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     return status();
   }
 
-  /**
-   * Drops the store's data: both schemas in one transaction (the archive and everything scanned from it), then the
-   * migrations again, so the store is as new. The saved configuration stays.
-   */
-  async function wipe(s: Store): Promise<void> {
-    if (opts.beforeWipe !== undefined) await opts.beforeWipe(s);
-    await s.archive.begin(async (tx) => {
-      await tx`DROP SCHEMA IF EXISTS ${tx(MIP0018_SCHEMA)} CASCADE`;
-      await tx`DROP SCHEMA IF EXISTS ${tx(ARCHIVE_SCHEMA)} CASCADE`;
-    });
-    await migrate(s);
-    storeInfo = await readStoreInfo(s);
-    log("info", "the store's data was dropped");
+  /** Replaces the store with a new, empty one made by the migrations (see {@link rebootStore}): every file of the old
+   *  store is removed, so nothing of its database survives. */
+  async function replaceWithNewStore(s: Store | undefined): Promise<void> {
+    if (s !== undefined && opts.beforeWipe !== undefined) await opts.beforeWipe(s);
+    await rebootStore("reset", s);
+    log("info", "the store was replaced by a new, empty one");
   }
 
-  /** A `range` request: a new range means a new archive (one archive has no gaps and no backfill), so the store's data
-   *  is dropped and the range starts; the source and tuning of the saved configuration stay. */
+  /** A `range` request: a new range means a new archive (one archive has no gaps and no backfill), so the new range is
+   *  saved, the store replaced by a new one, and the range started; the source and tuning of the saved configuration
+   *  stay. */
   async function range(startHeight: number | "tip", endHeight: number | undefined): Promise<HostStatus> {
     const failed = await storeFailed();
     const s = failed ? undefined : await ready();
@@ -770,24 +861,18 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     if (endHeight !== undefined) config.endHeight = endHeight;
     const valid = StartConfigSchema.safeParse(config);
     if (!valid.success) throw new HostError("bad-request", issuesOf(valid.error));
-    if (s === undefined) await recoverStore("reset");
-    else {
-      await halt();
-      await wipe(s);
-    }
+    await saveBeforeReplacing({ config, autoStart: true }, "the new range");
+    await replaceWithNewStore(s);
     return start(config);
   }
 
-  /** A `reset` request: drops the store's data and starts the saved configuration again (a tip start resolves the tip
-   *  anew). */
+  /** A `reset` request: the store is replaced by a new one and the saved configuration starts again (a tip start
+   *  resolves the tip anew). */
   async function reset(): Promise<HostStatus> {
-    if (await storeFailed()) {
-      await recoverStore("reset");
-      return start(undefined);
-    }
-    const s = await ready();
-    await halt();
-    await wipe(s);
+    const failed = await storeFailed();
+    const s = failed ? undefined : await ready();
+    await saveBeforeReplacing({ config: saved?.config ?? opts.defaultStart ?? {}, autoStart: true }, "the configuration to start after the reset");
+    await replaceWithNewStore(s);
     return start(undefined);
   }
 
@@ -806,23 +891,24 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   /**
    * Saves the configuration that continues an imported archive: the saved source and tuning, the snapshot's first height
    * as the start (it agrees with the archive, so a start continues at its cursor + 1), no end height, and no automatic
-   * start (an import stops the engine as `stop` does).
+   * start (an import stops the engine as `stop` does). Fails when it cannot be saved.
    */
   async function saveImported(manifest: SnapshotManifest): Promise<void> {
     const config: StartConfig = { ...(saved?.config ?? opts.defaultStart ?? {}), startHeight: manifest.archive.startHeight ?? manifest.archive.height };
     delete config.endHeight;
-    saved = { config, autoStart: false };
-    await saveSettings();
+    const next = { config, autoStart: false };
+    await settingsStore.save(next);
+    saved = next;
   }
 
-  /** Logs (and records) an import a previous worker left unfinished that the store's open finished or dropped. */
+  /** Records what the store's open did with a pending import: finished it (its configuration and journal are dealt
+   *  with by the boot), or could not (the store was opened empty). */
   function noteFinishedImport(opened: OpenedStore): Store {
-    if (opened.imported !== null) {
-      finishedImport = opened.imported;
-      lastImport = snapshotRecord(opened.imported, clock.now(), null);
-      log("warn", `finished an interrupted snapshot import: the store now holds ${opened.imported.network} up to ${opened.imported.archive.height}`);
+    if (opened.imported !== null) finishedImport = opened.imported;
+    if (opened.failure !== null) {
+      importFailure = opened.failure;
+      log("error", `${importing ? "the snapshot" : "an interrupted snapshot import"} could not be loaded and the store was opened empty: ${opened.failure}`);
     }
-    if (opened.failure !== null) log("error", `an interrupted snapshot import could not be finished and the store was opened empty: ${opened.failure}`);
     return opened.store;
   }
 
@@ -840,90 +926,56 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     return out;
   }
 
-  /** The store `s` as the host's store: migrations (none to run for a snapshot of this build), facts, engines and the
-   *  system snapshot's binding. */
-  async function adoptStore(s: Store): Promise<void> {
-    await migrate(s);
-    storeInfo = await readStoreInfo(s);
-    useStore(s);
-  }
-
-  /** An import into a store the boot could not use: checked against this build, journaled, then the boot runs again and
-   *  its store phase loads the journal into the store's place. */
-  async function importReplacingStore(snapshot: Blob): Promise<ImportResult> {
+  /**
+   * An `import` request (see the module documentation): the trial, then the journal, then the boot again from its store
+   * phase, which finishes the import from the journal. Before the journal is saved nothing has changed (a refusal, or a
+   * journal that cannot be written, leaves the store and a running engine as they were). Once it is saved the import
+   * goes on: a failure after that leaves the store closed and `storeProblem` set (the journal finishes the import at the
+   * next boot, or `reset`, `range` or `import` replaces the store), or, when even the rows could not be loaded, the store
+   * opened empty.
+   */
+  async function importStore(snapshot: Blob): Promise<ImportResult> {
     const t0 = monotonic();
+    const live = (await storeFailed()) ? undefined : await ready();
     const running = opts.build?.pgliteVersion ?? null;
     let prepared: PreparedImport;
     try {
-      if (snapshot.size > MAX_SNAPSHOT_FILE_BYTES) throw new SnapshotRefusal("format", `the file is ${snapshot.size} bytes, more than the ${MAX_SNAPSHOT_FILE_BYTES} a snapshot may have`);
-      const { manifest } = decodeSnapshotFile(new Uint8Array(await snapshot.arrayBuffer()));
-      const expected: SnapshotExpectation = {
-        network: opts.network,
-        genesisHash: genesisHash(),
-        schemaVersions: { chain_archive: chainArchiveMigrations.map((m) => m.name), mip0018: mip0018Migrations.map((m) => m.name) },
-        // The trial opens the data with this build's PGlite and compares the versions it reads with the manifest's.
-        pglite: { version: running ?? manifest.pglite.version, serverVersion: manifest.pglite.serverVersion },
-      };
-      prepared = await prepareImport(snapshot, expected, { monotonic, ...(opts.snapshotTrial === undefined ? {} : { trial: opts.snapshotTrial }) });
+      prepared = await prepareImport(
+        snapshot,
+        {
+          network: opts.network,
+          genesisHash: genesisHash(),
+          schemaVersions: { chain_archive: chainArchiveMigrations.map((m) => m.name), mip0018: mip0018Migrations.map((m) => m.name) },
+          // Checked before the trial when the build knows its PGlite; the trial's store is this build's PGlite in any case.
+          ...(running === null ? {} : { pglite: { version: running, ...(live === undefined || storeInfo === undefined ? {} : { serverVersion: storeInfo.serverVersion }) } }),
+        },
+        { monotonic, trial: opts.snapshotTrial ?? (() => (opts.openStore ?? openStore)("memory://", {})) },
+      );
     } catch (e) {
       if (e instanceof SnapshotRefusal) throw new HostError("snapshot-refused", e.message);
       throw e;
     }
     const tSwap = monotonic();
-    await snapshotFiles.writeJournal(prepared.file);
-    finishedImport = undefined;
-    await recoverStore("import");
-    if (finishedImport === undefined) throw new HostError("snapshot-failed", "the snapshot could not be loaded and the store was opened empty");
-    lastImport = snapshotRecord(prepared.manifest, clock.now(), prepared.file.length);
-    log("info", `imported a snapshot of ${prepared.manifest.network} up to ${prepared.manifest.archive.height} (${prepared.file.length} bytes) in place of a store that could not be used`);
-    const swapMs = Math.round((monotonic() - tSwap) * 10) / 10;
-    return { manifest: prepared.manifest, timings: { ...prepared.timings, swapMs, totalMs: Math.round((monotonic() - t0) * 10) / 10 }, status: await status() };
-  }
-
-  async function importStore(snapshot: Blob): Promise<ImportResult> {
-    if (await storeFailed()) return importReplacingStore(snapshot);
-    const t0 = monotonic();
-    const s = await ready();
-    const facts = await readStoreFacts(s.mip0018, opts.network);
-    const expected: SnapshotExpectation = { network: opts.network, genesisHash: genesisHash(), schemaVersions: facts.schemaVersions, pglite: facts.pglite };
-    let prepared: PreparedImport;
     try {
-      prepared = await prepareImport(snapshot, expected, { monotonic, ...(opts.snapshotTrial === undefined ? {} : { trial: opts.snapshotTrial }) });
+      await snapshotFiles.writeJournal(prepared.file);
     } catch (e) {
-      if (e instanceof SnapshotRefusal) throw new HostError("snapshot-refused", e.message);
-      throw e;
+      await snapshotFiles.removeJournal().catch(() => {});
+      throw new HostError("snapshot-failed", `the import's journal could not be saved (${messageOf(e)}): nothing was changed`);
     }
-    const tSwap = monotonic();
-    let done!: () => void;
-    swapping = new Promise<void>((resolve) => (done = resolve));
+    importing = true;
     try {
-      await halt();
-      while (reading > 0) await clock.sleep(5, new AbortController().signal);
-      system.unbind();
-      store = undefined;
-      let opened: OpenedStore;
-      try {
-        opened = await replaceStore(s, prepared, opener, snapshotFiles);
-        await adoptStore(opened.store);
-      } catch (e) {
-        bootState.phase = "failed";
-        bootState.error = `the store could not be opened again after a snapshot import: ${messageOf(e)}`;
-        bootState.storeProblem = "unopenable";
-        log("error", bootState.error);
-        announceBoot();
-        throw new HostError("snapshot-failed", bootState.error);
-      }
-      if (opened.failure !== null) {
-        log("error", `the snapshot could not be loaded and the store was opened empty: ${opened.failure}`);
-        throw new HostError("snapshot-failed", `${opened.failure}; the store was opened empty`);
-      }
-      await saveImported(prepared.manifest);
-      lastImport = snapshotRecord(prepared.manifest, clock.now(), prepared.file.length);
-      log("info", `imported a snapshot of ${prepared.manifest.network} up to ${prepared.manifest.archive.height} (${prepared.file.length} bytes)`);
+      await rebootStore("open", live).catch((e: unknown) => {
+        if (!(e instanceof HostError)) throw e;
+      });
     } finally {
-      swapping = undefined;
-      done();
+      importing = false;
     }
+    if (store === undefined)
+      throw new HostError("snapshot-failed", `the snapshot was checked, but the store could not be used after it (it is finished at the next boot, or reset or import again): ${bootState.error ?? "the boot failed"}`);
+    if (importFailure !== undefined) throw new HostError("snapshot-failed", `the snapshot could not be loaded and the store was opened empty: ${importFailure}`);
+    if (finishedImport === undefined) throw new HostError("snapshot-failed", "the import's journal could not be read back: the store was opened as it was");
+    lastImport = snapshotRecord(prepared.manifest, clock.now(), prepared.file.length);
+    log("info", `imported a snapshot of ${prepared.manifest.network} up to ${prepared.manifest.archive.height} (${prepared.file.length} bytes)`);
     const swapMs = Math.round((monotonic() - tSwap) * 10) / 10;
     return { manifest: prepared.manifest, timings: { ...prepared.timings, swapMs, totalMs: Math.round((monotonic() - t0) * 10) / 10 }, status: await status() };
   }

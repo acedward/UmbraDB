@@ -17,7 +17,7 @@
  *   system snapshot viewers, and the engine with the configuration of the last `start` that succeeded (it continues at
  *   the stored cursors). An engine the page stopped, or that failed by itself, is not started again.
  * - **Long requests:** while a request whose work may legitimately keep the worker busy for long is in flight (`range`
- *   and `reset` drop and recreate the store's schemas, `export` and `import` copy the whole data directory;
+ *   and `reset` replace the store with a new one, `export` reads every table, `import` loads a snapshot twice;
  *   {@link LONG_REQUESTS}), the limit is `longLimitMs` instead.
  * - **Limits:** more than `maxRestarts` restarts within `restartWindowMs` close the client with `worker-error` instead
  *   of restarting again. A new worker whose boot fails right after a restart (for example while the old worker's OPFS

@@ -21,14 +21,18 @@
  * An OPFS store's file system (`opfs-ahp`) is made here rather than by PGlite, so that an open that fails closes the
  * files it opened (the store's files can then be removed, or opened again, from the same worker).
  *
- * A snapshot import (`snapshot-store.ts`) replaces the store's files without letting go of the lock: `detach()` closes
- * PGlite and hands the held lock over, and `openStore(dataDir, { lock, prepare })` keeps it, runs `prepare` under it
- * before PGlite opens the store, and loads the data directory `prepare` returns.
+ * A snapshot import and `reset` (`snapshot-store.ts`, `host.ts`) replace the store's files without letting go of the
+ * lock: `detach()` closes PGlite and hands the held lock over, and `openStore(dataDir, { lock, prepare })` keeps it and
+ * runs `prepare` under it before PGlite opens (or creates) the store. A store is only ever created by PGlite and the
+ * migrations ({@link migrateStore}); nothing is loaded into it as a data directory.
  */
 import type { PGlite } from "@electric-sql/pglite";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import type { DurabilityMode } from "../../src/postgres/durability-probe.js";
+import { runMigrations } from "../../src/postgres/migrate.js";
+import { mip0018Migrations } from "../../src/postgres/migrations/mip0018/index.js";
 import { createPgliteClient, type PgliteDatabase } from "../../src/postgres/pglite-sql.js";
+import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { type MonitoredSession, monitorSession, type SessionMonitorOptions } from "./session.ts";
 import { defaultLocks, type HeldLock, holdLock, type LockManagerLike, storeLockName } from "./tab-locks.ts";
 
@@ -89,26 +93,10 @@ export interface OpenStoreOptions {
   session?: SessionMonitorOptions;
   /** The store's lock, already held (from {@link Store.detach}): it is kept instead of taking the lock again. */
   lock?: HeldLock;
-  /**
-   * Runs under the store's lock before PGlite opens the store. It may return a data directory for PGlite to load into
-   * the store, whose files it has removed (a snapshot import, `snapshot-store.ts`): `tar`, a tar of `PGDATA` as
-   * PGlite's `dumpDataDir` writes it, and `entries`, its number of entries.
-   */
-  prepare?: (dataDir: string) => Promise<StoreLoad | undefined | void>;
+  /** Runs under the store's lock before PGlite opens the store (it may remove the store's files: PGlite then creates
+   *  the store anew). */
+  prepare?: (dataDir: string) => Promise<void>;
 }
-
-/** A data directory for PGlite to load into a store (see {@link OpenStoreOptions.prepare}). */
-export interface StoreLoad {
-  tar: Blob;
-  entries: number;
-}
-
-/**
- * PGlite's OPFS file system (`opfs-ahp`) keeps a pool of open files and creates 1,000 for a new store; it adds more only
- * after a statement, so loading a data directory with more files than its pool fails ("No more file handles available
- * in the pool"). A load therefore starts with a pool of the data directory's entries plus this many.
- */
-export const LOAD_POOL_HEADROOM = 200;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -177,16 +165,15 @@ export async function openStore(dataDir: string, options: OpenStoreOptions = {})
   let existed: boolean;
   try {
     if (persistent) await waitForStoreFiles(dataDir, options.storage ?? globalThis.navigator?.storage, deadline);
-    const load = (await options.prepare?.(dataDir)) ?? undefined;
+    await options.prepare?.(dataDir);
     existed = await storeExists(dataDir, options.storage);
     const { PGlite } = await import("@electric-sql/pglite");
-    if (!persistent) pglite = await PGlite.create(load === undefined ? { dataDir } : { dataDir, loadDataDir: load.tar });
+    if (!persistent) pglite = await PGlite.create({ dataDir });
     else {
       const { OpfsAhpFS } = await import("@electric-sql/pglite/opfs-ahp");
-      const path = dataDir.slice("opfs-ahp://".length);
-      const fs = load === undefined ? new OpfsAhpFS(path) : new OpfsAhpFS(path, { initialPoolSize: Math.max(1_000, load.entries + LOAD_POOL_HEADROOM) });
+      const fs = new OpfsAhpFS(dataDir.slice("opfs-ahp://".length));
       try {
-        pglite = await PGlite.create(load === undefined ? { dataDir, fs } : { dataDir, fs, loadDataDir: load.tar });
+        pglite = await PGlite.create({ dataDir, fs });
       } catch (e) {
         // Release the files the failed open opened, so the store can be removed or opened again from this worker.
         await fs.closeFs().catch(() => {});
@@ -222,4 +209,11 @@ export async function openStore(dataDir: string, options: OpenStoreOptions = {})
       return lock;
     },
   };
+}
+
+/** Creates or completes both schema lineages of a store, the chain archive's and MIP-0018's, as the Node commands run
+ *  them (each migration once, in order). */
+export async function migrateStore(s: Pick<Store, "archive" | "mip0018">): Promise<void> {
+  await bootstrapChainArchiveSchema(s.archive, ARCHIVE_SCHEMA);
+  await runMigrations(s.mip0018, { schema: MIP0018_SCHEMA, migrations: mip0018Migrations });
 }
