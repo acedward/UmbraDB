@@ -32,6 +32,10 @@
  *   recorded live sync (archive digest `cb0d5e21…`, range-tables digest `af6583d0…c832c`) and no NULL `bytea[]`
  *   element, its index validates and lists the three, and an import of it answers the explorer's API with no chain
  *   request; the generator refuses a range whose digests or NULL elements are not the recorded ones.
+ * - `[[browser.snapshot.reproducible]]` — a snapshot remade at a time (`snapshotAt`, as the build remakes the published
+ *   one at the commit's time) has the same bytes whenever its rows were written: two replays' exports remade at one
+ *   time are one file, with that time as its `createdAt`, its tar times and its rows' write times, and the digests of
+ *   the export.
  * - `[[browser.snapshot.null-elements]]` — the snapshot integrity check the build runs (`snapshotDifferences`) compares
  *   the NULL `bytea[]` elements beside the two digests, which count a NULL element as empty bytes: a snapshot whose
  *   NULL element became empty bytes, or the reverse, has the same digests and is rejected.
@@ -39,6 +43,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { gunzipSync } from "node:zlib";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -68,7 +73,7 @@ import {
 import { exportSnapshot, loadSnapshot, openFinishingImport, prepareImport, readStoreFacts } from "../browser/snapshot-store.ts";
 import { migrateStore, openStore } from "../browser/store.ts";
 import { loadTape } from "../browser/tapes.ts";
-import { makePublishedSnapshot, recordedRange, snapshotDifferences, snapshotDigests, writePublishedSnapshots } from "../dev/browser-snapshot.ts";
+import { makePublishedSnapshot, publishedTime, recordedRange, snapshotAt, snapshotDifferences, snapshotDigests, writePublishedSnapshots } from "../dev/browser-snapshot.ts";
 import { compareNullElements, noNullElements } from "../engine/range-tables.ts";
 import { nodeStoreFiles } from "./helpers/worker-host.ts";
 
@@ -183,6 +188,18 @@ const refusalOf = async (p: Promise<unknown>): Promise<string> => {
   throw new Error("not refused");
 };
 
+
+/** The modification times (seconds) of a tar's entries. */
+function tarTimes(tar: Uint8Array): number[] {
+  const out: number[] = [];
+  const field = (h: Uint8Array, at: number, n: number) => Number.parseInt(new TextDecoder().decode(h.subarray(at, at + n)).replace(/\0.*$/s, "").trim() || "0", 8);
+  for (let at = 0; at + 512 <= tar.length && tar[at] !== 0; ) {
+    const h = tar.subarray(at, at + 512);
+    out.push(field(h, 136, 12));
+    at += 512 + Math.ceil(field(h, 124, 12) / 512) * 512;
+  }
+  return out;
+}
 
 /** The rows entries of a snapshot's rows, in order. */
 async function rowsOf(manifest: SnapshotManifest, data: Uint8Array): Promise<RowsEntry[]> {
@@ -567,6 +584,7 @@ describe("browser engine snapshots", () => {
     expect(range.nullElements).toEqual(noNullElements(["mip0018.mip0018_contract_actions"]));
     expect(entry).toMatchObject({ name: "idx", file: "umbradb-stagenet-714485-715183.snapshot.tar", digests: { archive: range.archiveDigest, tables: range.tablesDigest, nullElements: range.nullElements } });
     expect(entry.manifest.archive).toMatchObject({ startHeight: 714485, height: 715183 });
+    expect(entry.manifest.createdAt).toBe(new Date(publishedTime()).toISOString());
     expect(entry.manifest.scan).toMatchObject({ fromHeight: 714485, nextHeight: 715184 });
     const file = new Uint8Array(readFileSync(join(out, "snapshots", entry.file)));
     expect(file.length).toBe(entry.bytes);
@@ -591,6 +609,51 @@ describe("browser engine snapshots", () => {
     const oneNull = { "mip0018.mip0018_contract_actions": { count: 1, sha256: "0".repeat(64) } };
     await expect(makePublishedSnapshot({ ...range, nullElements: oneNull }, null)).rejects.toThrow(/does not hold the recorded range: .*mip0018\.mip0018_contract_actions/);
   }, 300_000);
+
+  it("[[browser.snapshot.reproducible]] a snapshot remade at a time has the same bytes whenever its rows were written: two replays' exports remade at one time are one file, with that time as its createdAt, tar times and rows' write times, and the export's digests", async () => {
+    const at = Date.UTC(2026, 0, 2, 3, 4, 5);
+    const exportOf = async (): Promise<Uint8Array> => {
+      const host = await hostWithU1(MID);
+      const file = await bytesOf((await result<ExportResult>(host, "export")).file);
+      await closeHost(host);
+      return file;
+    };
+    const first = await exportOf();
+    const second = await exportOf();
+    expect(Buffer.from(first).equals(Buffer.from(second)), "two exports differ by their times").toBe(false);
+    const [a, b] = [await snapshotAt(first, at), await snapshotAt(second, at)];
+    expect(Buffer.from(a).equals(Buffer.from(b)), "remade at one time, they are one file").toBe(true);
+    expect(await snapshotAt(a, at)).toEqual(a);
+    await expect(snapshotAt(first, at + 1)).rejects.toThrow(RangeError);
+
+    const { manifest, data } = decodeSnapshotFile(a);
+    expect(manifest.createdAt).toBe("2026-01-02T03:04:05.000Z");
+    expect(new Set([...tarTimes(a), ...tarTimes(new Uint8Array(gunzipSync(data)))])).toEqual(new Set([at / 1000]));
+    const { manifest: _m, ...digests } = await snapshotDigests(a);
+    const { manifest: _n, ...exported } = await snapshotDigests(first);
+    expect(digests).toEqual(exported);
+
+    // Every write time in the rows (each timestamp column of the snapshot's tables) is `at`.
+    const store = await openStore("memory://");
+    try {
+      await migrateStore(store);
+      await loadSnapshot(store, manifest, data, manifest.network);
+      const sql = store.mip0018;
+      const columns = await sql<{ s: string; t: string; c: string }[]>`
+        SELECT table_schema AS s, table_name AS t, column_name AS c FROM information_schema.columns
+        WHERE table_schema IN ('chain_archive', 'mip0018') AND data_type LIKE 'timestamp%'`;
+      const times = new Set<number>();
+      let tables = 0;
+      for (const { s: schema, t: table, c } of columns.filter((x) => manifest.tables.some((t) => t.name === `${x.s}.${x.t}` && t.rows > 0))) {
+        tables++;
+        for (const r of await sql<{ v: Date }[]>`SELECT DISTINCT ${sql(c)} AS v FROM ${sql(schema)}.${sql(table)} WHERE ${sql(c)} IS NOT NULL`) times.add(r.v.getTime());
+      }
+      expect(tables).toBeGreaterThan(2);
+      expect([...times]).toEqual([at]);
+    } finally {
+      await store.close();
+    }
+  }, 180_000);
 
   it("[[browser.snapshot.null-elements]] the snapshot integrity check tells a NULL bytea[] element from an empty one, which the archive and range-tables digests cannot: a snapshot whose NULL element became empty bytes, or whose empty element became NULL, is rejected against the other's digests", async () => {
     const host = await hostWithU1(MID);
