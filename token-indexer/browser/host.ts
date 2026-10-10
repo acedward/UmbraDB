@@ -23,7 +23,11 @@
  * it; `range` drops the store's data and starts the new range, `reset` drops it and starts the saved configuration
  * again; all four run one at a time, in arrival order. `digest` computes the store's archive and range-tables digests
  * in one read-only transaction (the loops wait for it); `system` watches or refreshes the system snapshot and `watchdog`
- * sets the page's watchdog and starts the heartbeat (`host-system.ts`).
+ * sets the page's watchdog and starts the heartbeat (`host-system.ts`). `module` switches the token indexer (the
+ * MIP-0018 scan) off or on: off, the running engine's scan stops at a block boundary while its sync goes on; on, it
+ * continues from its cursor; the choice is saved with the settings, and every engine the host runs afterwards (a
+ * `start`, a reopen, the next worker or tab) starts with it. `tables` and `rows` read the store's catalog and a page of
+ * one of its tables for the Database tab (`store-tables.ts`), between the engine's transactions.
  *
  * **Snapshots** (`snapshot-store.ts`): `export` writes a snapshot file of the store while the engine runs (a consistent
  * read between two transactions). `import` checks a snapshot file without touching anything (a refusal changes
@@ -83,6 +87,7 @@ import {
   type HostStatus,
   type ImportResult,
   issuesOf,
+  type ModuleId,
   type Notice,
   parseRequest,
   PROTOCOL_VERSION,
@@ -115,6 +120,7 @@ import {
 } from "./snapshot-store.ts";
 import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, openStore, type OpenStoreOptions, type Store, StoreBusyError } from "./store.ts";
 import { STORE_IDENTITY_FORMAT, storeIdentityFor, type StoreIdentityFile, unopenableStore, versionRefusal } from "./store-identity.ts";
+import { listTables, readRows, TableRefusal } from "./store-tables.ts";
 import { loadTape } from "./tapes.ts";
 
 /** Heights per sync batch unless `start` says otherwise: a stop waits for at most one batch. */
@@ -308,6 +314,19 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   const settingsStore = opts.settings ?? (opts.dataDir.startsWith("opfs-ahp://") ? opfsSettingsStore(opts.dataDir) : memorySettingsStore());
   /** The saved configuration, read once the store is open. */
   let saved: EngineSettings | undefined;
+  /** The modules switched off or on, saved with the configuration (a module not named is on). */
+  let modules: NonNullable<EngineSettings["modules"]> = {};
+  /** The saved settings: the configuration and the automatic start (returned), and the modules (kept in `modules`). */
+  async function loadSettings(): Promise<EngineSettings | undefined> {
+    const loaded = await settingsStore.load();
+    if (loaded === undefined) return undefined;
+    const { modules: m, ...rest } = loaded;
+    modules = m ?? {};
+    return rest;
+  }
+  const withModules = (s: EngineSettings): EngineSettings => (Object.keys(modules).length === 0 ? s : { ...s, modules: { ...modules } });
+  /** Whether the token indexer (the MIP-0018 scan) is on. */
+  const scanEnabled = (): boolean => modules["token-indexer"] ?? true;
   const quota = createQuotaGuard({
     env: opts.storage ?? browserStorageEnvironment(opts.dataDir),
     now: () => clock.now(),
@@ -525,7 +544,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         if (s !== undefined) await s.close().catch(() => {});
         throw e;
       }
-      saved = (await settingsStore.load()) ?? { config: opts.defaultStart ?? {}, autoStart: true };
+      saved = (await loadSettings()) ?? { config: opts.defaultStart ?? {}, autoStart: true };
       if (finishedImport !== undefined) await saveImported(finishedImport);
       useStore(s);
       bootState.phase = "ready";
@@ -573,7 +592,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     await boot();
     const failed = !closed && bootState.phase === "failed" && bootState.storeProblem !== null;
     // The saved configuration lives beside the store, not in it: a store that could not be used still has it.
-    if (failed && saved === undefined) saved = await settingsStore.load();
+    if (failed && saved === undefined) saved = await loadSettings();
     return failed;
   }
 
@@ -610,7 +629,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       store: storeInfo ?? null,
       engine: last === undefined ? null : { running: active === last.engine, config: last.config, status: last.engine.status(), error: last.error },
       cursors: bootState.phase === "ready" && !closed ? await readCursors() : null,
-      settings: saved ?? null,
+      settings: saved === undefined ? null : withModules(saved),
       storage: quota.status(),
       snapshots: { lastExport, lastImport },
     };
@@ -662,7 +681,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
 
   async function saveSettings(): Promise<void> {
     try {
-      if (saved !== undefined) await settingsStore.save(saved);
+      if (saved !== undefined) await settingsStore.save(withModules(saved));
     } catch (e) {
       log("warn", `the engine settings could not be saved: ${messageOf(e)}`);
     }
@@ -692,6 +711,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
           mode: "follow",
           batch: config.scan?.batch ?? DEFAULT_SCAN_BATCH,
           ...(config.scan?.idleMs === undefined ? {} : { idleMs: config.scan.idleMs }),
+          enabled: scanEnabled(),
         },
         fetch: system.telemetry.instrumentFetch(chain.fetch),
         schedule: gated(runner.signal, opts.schedule ?? yieldingScheduler),
@@ -790,6 +810,22 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     await wipe(s);
     return start(undefined);
   }
+
+  /** A `module` request: switches the module and saves the choice with the settings; a running engine follows at once
+   *  (switched off, the answer comes once its scan has stopped at a block boundary). */
+  async function setModule(module: ModuleId, enabled: boolean): Promise<HostStatus> {
+    await ready();
+    modules = { ...modules, [module]: enabled };
+    await saveSettings();
+    await active?.setScanEnabled(enabled);
+    log("info", enabled
+      ? "the token indexer is on: the MIP-0018 scan continues from its cursor"
+      : "the token indexer is off: the MIP-0018 scan stopped at a block boundary; the chain archive keeps syncing");
+    return status();
+  }
+
+  /** The store's schemas, the only ones the Database tab reads. */
+  const STORE_SCHEMAS = [ARCHIVE_SCHEMA, MIP0018_SCHEMA] as const;
 
   /** The store's archive and range-tables digests, read in one read-only transaction: the loops' statements wait for it
    *  (one session), so both digests describe one state, also while the engine runs. */
@@ -982,6 +1018,20 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         return serial(() => stop());
       case "digest":
         return readingStore(async () => digest(await ready()));
+      case "module":
+        return serial(() => setModule(r.module, r.enabled));
+      case "tables":
+        return readingStore(async () => listTables((await ready()).mip0018, STORE_SCHEMAS));
+      case "rows":
+        return readingStore(async () => {
+          const s = await ready();
+          try {
+            return await readRows(s.mip0018, STORE_SCHEMAS, r);
+          } catch (e) {
+            if (e instanceof TableRefusal) throw new HostError("bad-request", e.message);
+            throw e;
+          }
+        });
     }
   }
 

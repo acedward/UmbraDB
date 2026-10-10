@@ -20,11 +20,12 @@
  * stored cursors), or, with nothing to resume, starts the store's saved configuration when it says to start by itself
  * (a new store: the build's default, at the finalized tip) — {@link EngineTabsOptions.resume} changes that. Requests in flight to a leader that closed follow one
  * rule:
- * - `status`, `api`, `export`, `digest` and `system` change nothing (a `system` watch or unwatch per viewer gives the same
- *   state when applied twice), so they are sent again to the next leader (which may be this tab) and answered by it; a
- *   follower that watches the system snapshot and closes without unwatching stops watching (its tab lock is released);
- * - every other type (`start`, `stop`, `range`, `reset`, `import`, `watchdog`, and any type added later until it is listed as
- *   repeatable) is not sent again: it fails with `leader-changed`, because it may or may not have been applied — read
+ * - `status`, `api`, `export`, `digest`, `system`, `tables` and `rows` change nothing (a `system` watch or unwatch per
+ *   viewer gives the same state when applied twice), so they are sent again to the next leader (which may be this tab)
+ *   and answered by it; a follower that watches the system snapshot and closes without unwatching stops watching (its
+ *   tab lock is released);
+ * - every other type (`start`, `stop`, `range`, `reset`, `import`, `module`, `watchdog`, and any type added later until it
+ *   is listed as repeatable) is not sent again: it fails with `leader-changed`, because it may or may not have been applied — read
  *   the status, then decide;
  * - a request made while no leader is known waits for one up to {@link EngineTabsOptions.leaderWaitMs}, then fails with
  *   `leader-unavailable`.
@@ -68,7 +69,7 @@ export const LEADER_WAIT_MS = 10_000;
 
 /** The request types a follower sends again to the next leader when the leader it was sent to closed: they change
  *  nothing, or (`system` watching per viewer) give the same state when applied twice. */
-export const REPEATABLE_REQUEST_TYPES: ReadonlySet<RequestType> = new Set<RequestType>(["status", "api", "export", "digest", "system"]);
+export const REPEATABLE_REQUEST_TYPES: ReadonlySet<RequestType> = new Set<RequestType>(["status", "api", "export", "digest", "system", "tables", "rows"]);
 
 export const tabsChannelName = (scope: string): string => `umbradb-engine:${scope}`;
 export const tabChannelName = (scope: string, tab: string): string => `umbradb-engine:${scope}:tab:${tab}`;

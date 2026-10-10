@@ -18,6 +18,9 @@
  * | `digest` | — | {@link DigestResult}: the archive digest and the range-tables digest of the store |
  * | `system` | `watch` (with `viewer?`) or `refresh` (`{ database?, exactCounts? }`) | {@link SystemResult} |
  * | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | {@link WatchdogResult} |
+ * | `module` | `module` (one of {@link MODULE_IDS}), `enabled` | {@link HostStatus}: the module switched on or off and saved with the settings (`token-indexer`: off stops the MIP-0018 scan at a block boundary while the sync goes on; on continues it from its cursor) |
+ * | `tables` | — | {@link TablesResult}: each schema's tables with their estimated rows and size (catalog statistics) |
+ * | `rows` | `schema`, `table`, `limit?`, `offset?` | {@link RowsResult}: one page of a table of the store's catalog, newest first by its primary key (read-only) |
  *
  * Responses (worker → page): `{ v, type: "response", id, request, ok: true, result }` or
  * `{ v, type: "response", id, request, ok: false, error: { code, message } }`; `id` and `request` are `null` when the
@@ -27,8 +30,7 @@
  * tell a worker that stopped answering, for example inside a statement that does not return).
  *
  * A message of another protocol version is answered `unsupported-version`, and a request type this version does not
- * know `unknown-type`, so a page and a worker from different builds fail with a clear error. New request and notice
- * types are added to the unions below under a new version.
+ * know `unknown-type`, so a page and a worker from different builds fail with a clear error.
  */
 import { z } from "zod";
 import type { ApiResponse } from "../mip0018/api.ts";
@@ -44,8 +46,26 @@ import type { ExportedSnapshot } from "./snapshot-store.ts";
 export const PROTOCOL_VERSION = 1;
 
 /** The request types of this protocol version. */
-export const REQUEST_TYPES = ["status", "api", "start", "stop", "range", "reset", "export", "import", "digest", "system", "watchdog"] as const;
+export const REQUEST_TYPES = ["status", "api", "start", "stop", "range", "reset", "export", "import", "digest", "system", "watchdog", "module", "tables", "rows"] as const;
 export type RequestType = (typeof REQUEST_TYPES)[number];
+
+/**
+ * The indexer's modules the engine can switch on and off (`module`): `token-indexer`, the MIP-0018 scan and the token
+ * explorer reading it. The sync of the chain archive is the indexer itself and is not a module.
+ */
+export const MODULE_IDS = ["token-indexer"] as const;
+export type ModuleId = (typeof MODULE_IDS)[number];
+
+/** Bounds of a `rows` request: rows per page (and the default), the deepest offset, and how much of a value is read. */
+export const ROWS_LIMITS = {
+  defaultLimit: 25,
+  maxLimit: 100,
+  maxOffset: 10_000,
+  /** Characters of a value's text form read and sent (the length is sent too). */
+  textChars: 256,
+  /** Leading bytes of a `bytea` value read and sent as hex (the length is sent too). */
+  hexBytes: 16,
+} as const;
 
 /** The recorded Stagenet ranges a worker can replay offline (the gzip tapes in `token-indexer/browser/tapes/`). */
 export const TAPE_RANGES = ["idx", "u1"] as const;
@@ -225,6 +245,17 @@ export const REQUEST_SCHEMAS = {
   digest: z.strictObject({ ...envelope, type: z.literal("digest") }),
   system: SystemRequestSchema(),
   watchdog: WatchdogRequestSchema(),
+  module: z.strictObject({ ...envelope, type: z.literal("module"), module: z.enum(MODULE_IDS), enabled: z.boolean() }),
+  tables: z.strictObject({ ...envelope, type: z.literal("tables") }),
+  rows: z.strictObject({
+    ...envelope,
+    type: z.literal("rows"),
+    /** A schema and a table of the store, as the catalog names them (anything else is refused). */
+    schema: z.string().min(1).max(63),
+    table: z.string().min(1).max(63),
+    limit: intIn(1, ROWS_LIMITS.maxLimit).optional(),
+    offset: intIn(0, ROWS_LIMITS.maxOffset).optional(),
+  }),
 } as const satisfies Record<RequestType, z.ZodType>;
 
 export type RequestOf<T extends RequestType> = z.infer<(typeof REQUEST_SCHEMAS)[T]>;
@@ -319,7 +350,12 @@ export const ScanCursorSchema = z.strictObject({ fromHeight: n, nextHeight: n, l
  * engine starts by itself when the worker boots (cleared by `stop`, set by `start`, `range` and `reset`). A reopened
  * store resumes with it, so a chosen range keeps its end and the default keeps following the tip.
  */
-export const EngineSettingsSchema = z.strictObject({ config: StartConfigSchema, autoStart: z.boolean() });
+export const EngineSettingsSchema = z.strictObject({
+  config: StartConfigSchema,
+  autoStart: z.boolean(),
+  /** The modules switched off or on (`module`); a module not named is on. */
+  modules: z.strictObject({ "token-indexer": z.boolean().optional() }).optional(),
+});
 export type EngineSettings = z.infer<typeof EngineSettingsSchema>;
 
 const bytes = z.number().min(0).nullable();
@@ -380,6 +416,51 @@ export const DigestResultSchema = z.strictObject({
 });
 export type DigestResult = z.infer<typeof DigestResultSchema>;
 
+// ── The store's tables (the Database tab) ────────────────────────────────────────────────────────────────────────────
+
+/** A table of the `tables` answer: catalog statistics (`pg_class.reltuples`, `null` with no estimate yet, and
+ *  `pg_total_relation_size`). A partitioned table carries its partitions' total. */
+export const TableEntrySchema = z.strictObject({
+  name: z.string(),
+  kind: z.enum(["table", "partitioned", "partition"]),
+  partitionOf: z.string().nullable(),
+  estimatedRows: z.number().min(0).nullable(),
+  totalBytes: z.int().min(0),
+});
+export type TableEntry = z.infer<typeof TableEntrySchema>;
+
+/** The `tables` answer: the store's schemas with their tables, the database's size, and how long the reads took. */
+export const TablesResultSchema = z.strictObject({
+  databaseBytes: z.int().min(0),
+  schemas: z.array(z.strictObject({ name: z.string(), tables: z.array(TableEntrySchema) })),
+  elapsedMs: n,
+});
+export type TablesResult = z.infer<typeof TablesResultSchema>;
+
+/** One value of a `rows` answer: SQL `NULL`; a `bytea` value's leading bytes as hex with its length; anything else as
+ *  its text form (`::text`), its leading characters with its length in characters. */
+export const CellSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("null") }),
+  z.strictObject({ kind: z.literal("bytes"), hex: z.string().regex(/^(?:[0-9a-f]{2})*$/).max(ROWS_LIMITS.hexBytes * 2), bytes: z.int().min(0) }),
+  z.strictObject({ kind: z.literal("text"), text: z.string().max(ROWS_LIMITS.textChars * 2), chars: z.int().min(0) }),
+]);
+export type Cell = z.infer<typeof CellSchema>;
+
+/** The `rows` answer: the table, its columns, the order (the primary key's columns, each descending; empty: the
+ *  physical order, the last written row first), the page (`more`: rows follow it) and how long the reads took. */
+export const RowsResultSchema = z.strictObject({
+  schema: z.string(),
+  table: z.string(),
+  columns: z.array(z.strictObject({ name: z.string(), type: z.string() })),
+  orderBy: z.array(z.string()),
+  offset: z.int().min(0),
+  limit: z.int().min(1),
+  rows: z.array(z.array(CellSchema)).max(ROWS_LIMITS.maxLimit),
+  more: z.boolean(),
+  elapsedMs: n,
+});
+export type RowsResult = z.infer<typeof RowsResultSchema>;
+
 // ── Snapshots ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 const duration = z.number().min(0);
@@ -414,6 +495,9 @@ export const RESULT_SCHEMAS = {
   digest: DigestResultSchema,
   system: SystemResultSchema,
   watchdog: WatchdogResultSchema,
+  module: HostStatusSchema,
+  tables: TablesResultSchema,
+  rows: RowsResultSchema,
 } as const satisfies Record<RequestType, z.ZodType>;
 export type ResultOf<T extends RequestType> = z.infer<(typeof RESULT_SCHEMAS)[T]>;
 

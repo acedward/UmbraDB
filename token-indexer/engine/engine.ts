@@ -18,7 +18,9 @@
  *   block. `"follow"` (default) never ends by itself: at the archive's tip it waits `scan.idleMs`, and a failed step
  *   marks the scanner `stalled` and is retried after `idleMs × 5^min(failures − 1, 4)`, never more than 60 s, while the
  *   API keeps serving. `"drain"` ends once a step reaches `scan.toHeight` or scans nothing,
- *   and a failed step ends it.
+ *   and a failed step ends it. The scan can be switched off and on while the engine runs (`setScanEnabled`, or
+ *   `scan.enabled: false` from the start): off, the loop ends its step in flight and waits (phase `off`, scanner `off`)
+ *   while the sync goes on; on, it continues from its stored cursor and catches up.
  * - **API:** `handle(method, target)` answers through `api.ts`'s handler (routes, errors, the request cap with 503
  *   `BUSY`); it is always available, also before `start()`, and is never queued by the engine.
  * - **Lifecycle:** `start()` creates the schemas the configured loops write (the archive's, then the scan's), then
@@ -120,6 +122,8 @@ export interface EngineScanOptions {
   batch?: number;
   /** Wait at the archive's tip, and the base of the error back-off. Default 2 000 ms. */
   idleMs?: number;
+  /** `false`: the scan loop starts switched off (see {@link IndexerEngine.setScanEnabled}). Default `true`. */
+  enabled?: boolean;
 }
 
 export interface EngineOptions {
@@ -208,7 +212,7 @@ type EventOf<S extends EngineEvent["source"], N extends EngineEvent["event"]> = 
 // ── Status ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /**
- * Where a loop is: not configured (`off`), configured but not started (`ready`), creating its schema or resolving its
+ * Where a loop is: not configured or switched off (`off`), configured but not started (`ready`), creating its schema or resolving its
  * first height (`starting`), in a step (`running`), waiting at the tip (`idle`), waiting after a failed step
  * (`backoff`), or ended: its range complete or caught up (`done`), stopped, or ended by an error (`failed`).
  */
@@ -244,6 +248,14 @@ export interface IndexerEngine {
   start(): Promise<void>;
   /** Ends the loops; resolves once their steps in flight have ended. */
   stop(): Promise<void>;
+  /**
+   * Switches the scan loop off or on; the sync loop is not touched. Off: the loop ends its step in flight (every block
+   * commits in its own transaction, so the scan cursor stays at a block boundary) and waits, with phase `off` and
+   * scanner `off`; the promise resolves once it waits (at once when the loop is not running). On: the loop continues
+   * from its stored cursor; the promise resolves once it goes on. Before `start()` it sets how the loop starts.
+   * Without a scan configured it does nothing.
+   */
+  setScanEnabled(enabled: boolean): Promise<void>;
   /** Settles once every loop has ended; rejects with the error that ended one (the sync's first). */
   readonly finished: Promise<void>;
   /** One API request (see `api.ts`). */
@@ -336,11 +348,35 @@ export function createIndexerEngine(opts: EngineOptions): IndexerEngine {
   let started = false;
   let starting: Promise<void> | undefined;
   let loops: Promise<unknown> | undefined;
-  let scanner: ScannerState = scanCfg === undefined ? "off" : "following";
+  /** The scan switch (`setScanEnabled`). */
+  let scanEnabled = scanCfg?.enabled ?? true;
+  let scanner: ScannerState = scanCfg === undefined || !scanEnabled ? "off" : "following";
   const loopStatus = <B>(configured: boolean): LoopStatus<B> =>
     ({ phase: configured ? "ready" : "off", lastBatch: undefined, lastError: undefined, failures: 0, waitUntil: undefined });
   const syncStatus = loopStatus<SyncOnceResult>(syncCfg !== undefined);
   const scanStatus = loopStatus<ScanOnceResult>(scanCfg !== undefined);
+  if (!scanEnabled) scanStatus.phase = "off";
+  /** Ends a wait of the scan loop when the switch changes. */
+  let scanWake = new AbortController();
+  /** The scan loop runs (between its start and its end), and it waits switched off. */
+  let scanLooping = false;
+  let scanParked = false;
+  /** `setScanEnabled` callers waiting for the loop to wait switched off, or to go on (or to end). */
+  let parkWaiters: Array<() => void> = [];
+  let resumeWaiters: Array<() => void> = [];
+  const release = (waiters: Array<() => void>): void => {
+    for (const r of waiters) r();
+  };
+  const releaseParkWaiters = (): void => {
+    const w = parkWaiters;
+    parkWaiters = [];
+    release(w);
+  };
+  const releaseResumeWaiters = (): void => {
+    const w = resumeWaiters;
+    resumeWaiters = [];
+    release(w);
+  };
   let syncStart = typeof syncCfg?.startHeight === "number" ? syncCfg.startHeight : undefined;
   let apiInFlight = 0;
   let syncService: ChainArchiveSyncService | undefined;
@@ -362,13 +398,41 @@ export function createIndexerEngine(opts: EngineOptions): IndexerEngine {
   const finished = new Promise<void>((resolve, reject) => { settle = { resolve, reject }; });
   finished.catch(() => {}); // a host that never awaits it gets no unhandled rejection; awaiting it still rejects
 
-  async function wait(status: LoopStatus<unknown>, phase: "idle" | "backoff", ms: number): Promise<void> {
+  async function wait(status: LoopStatus<unknown>, phase: "idle" | "backoff", ms: number, signal: AbortSignal = stopper.signal): Promise<void> {
     status.phase = phase;
     status.waitUntil = clock.now() + ms;
     try {
-      await clock.sleep(ms, stopper.signal);
+      await clock.sleep(ms, signal);
     } finally {
       status.waitUntil = undefined;
+    }
+  }
+
+  /** Waits, switched off, until the scan is switched on or the engine stops. */
+  async function parkScan(signal: AbortSignal): Promise<void> {
+    scanner = "off";
+    scanStatus.phase = "off";
+    scanStatus.waitUntil = undefined;
+    scanParked = true;
+    releaseParkWaiters();
+    try {
+      while (!scanEnabled && !signal.aborted) {
+        const wake = AbortSignal.any([signal, scanWake.signal]);
+        await new Promise<void>((resolve) => {
+          if (wake.aborted) return resolve();
+          wake.addEventListener("abort", () => resolve(), { once: true });
+        });
+      }
+    } finally {
+      scanParked = false;
+      if (scanEnabled) {
+        // Switched on: the scan continues from its stored cursor, with a new count of failures.
+        scanner = "following";
+        scanStatus.phase = "running";
+        scanStatus.failures = 0;
+        scanStatus.lastError = undefined;
+      }
+      releaseResumeWaiters();
     }
   }
 
@@ -541,42 +605,57 @@ export function createIndexerEngine(opts: EngineOptions): IndexerEngine {
     const drain = c.mode === "drain";
     const batch = c.batch ?? DEFAULTS.scanBatch;
     const idle = c.idleMs ?? DEFAULTS.scanIdleMs;
+    /** A wait the scan switch also ends (switched off, the loop goes on to wait switched off at once). */
+    const switchable = (): AbortSignal => AbortSignal.any([signal, scanWake.signal]);
     let failures = 0;
-    while (!signal.aborted) {
-      scanStatus.phase = "running";
-      try {
-        const r = await schedule("scan", () => s.scanOnce({ maxBlocks: batch }));
-        scanner = "following";
-        failures = 0;
-        scanStatus.lastBatch = r;
-        scanStatus.lastError = undefined;
-        scanStatus.failures = 0;
-        emit("scan", "batch", r);
-        if (drain) {
-          if (r.reachedEnd || r.scannedBlocks === 0) {
-            scanStatus.phase = "done";
-            return;
-          }
+    scanLooping = true;
+    try {
+      while (!signal.aborted) {
+        if (!scanEnabled) {
+          await parkScan(signal);
+          if (signal.aborted) break;
+          failures = 0;
           continue;
         }
-        if (r.scannedBlocks > 0) continue;
-        await wait(scanStatus, "idle", idle);
-      } catch (e) {
-        scanner = "stalled";
-        failures++;
-        scanStatus.lastError = messageOf(e);
-        scanStatus.failures = failures;
-        if (drain) {
-          scanStatus.phase = "failed";
-          emit("scan", "error", { error: messageOf(e), failures, retryMs: null });
-          throw e;
+        scanStatus.phase = "running";
+        try {
+          const r = await schedule("scan", () => s.scanOnce({ maxBlocks: batch }));
+          scanner = "following";
+          failures = 0;
+          scanStatus.lastBatch = r;
+          scanStatus.lastError = undefined;
+          scanStatus.failures = 0;
+          emit("scan", "batch", r);
+          if (drain) {
+            if (r.reachedEnd || r.scannedBlocks === 0) {
+              scanStatus.phase = "done";
+              return;
+            }
+            continue;
+          }
+          if (r.scannedBlocks > 0 || !scanEnabled) continue;
+          await wait(scanStatus, "idle", idle, switchable());
+        } catch (e) {
+          scanner = "stalled";
+          failures++;
+          scanStatus.lastError = messageOf(e);
+          scanStatus.failures = failures;
+          if (drain) {
+            scanStatus.phase = "failed";
+            emit("scan", "error", { error: messageOf(e), failures, retryMs: null });
+            throw e;
+          }
+          const retryMs = Math.min(SCAN_MAX_BACKOFF_MS, idle * 5 ** Math.min(failures - 1, 4));
+          emit("scan", "error", { error: messageOf(e), failures, retryMs });
+          if (scanEnabled) await wait(scanStatus, "backoff", retryMs, switchable());
         }
-        const retryMs = Math.min(SCAN_MAX_BACKOFF_MS, idle * 5 ** Math.min(failures - 1, 4));
-        emit("scan", "error", { error: messageOf(e), failures, retryMs });
-        await wait(scanStatus, "backoff", retryMs);
       }
+      scanStatus.phase = "stopped";
+    } finally {
+      scanLooping = false;
+      releaseParkWaiters();
+      releaseResumeWaiters();
     }
-    scanStatus.phase = "stopped";
   }
 
   async function newScanner(): Promise<Mip0018Scanner> {
@@ -650,6 +729,24 @@ export function createIndexerEngine(opts: EngineOptions): IndexerEngine {
       stopper.abort();
       if (starting !== undefined) await starting.catch(() => {});
       if (loops !== undefined) await loops;
+    },
+
+    setScanEnabled(enabled: boolean): Promise<void> {
+      if (scanCfg === undefined) return Promise.resolve();
+      if (enabled !== scanEnabled) {
+        scanEnabled = enabled;
+        // End the loop's wait (an idle or back-off wait while switched on, the wait while switched off).
+        const wake = scanWake;
+        scanWake = new AbortController();
+        wake.abort();
+        // Not started yet: the switch sets how the loop starts (a loop that has ended keeps its last phase).
+        if (!started) {
+          scanner = enabled ? "following" : "off";
+          scanStatus.phase = enabled ? "ready" : "off";
+        }
+      }
+      if (!scanLooping || (enabled ? !scanParked : scanParked)) return Promise.resolve();
+      return new Promise((resolve) => (enabled ? resumeWaiters : parkWaiters).push(resolve));
     },
 
     finished,
