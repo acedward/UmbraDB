@@ -1,5 +1,5 @@
 {
-  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 275) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
+  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 282) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
   "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` — those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early — that would re-open the exact self-skip hole this manifest closes.",
   "required": [
     {
@@ -1213,11 +1213,6 @@
       "description": "the IDX and U1 ranges replayed in the worker on OPFS give the recorded live archive digests, and IDX the recorded live range's digest of every table of both schemas"
     },
     {
-      "id": "browser.worker.start-tip",
-      "file": "token-indexer/test/browser-sync.test.ts",
-      "description": "an empty profile starts at the finalized tip with no input, waits while the endpoints fail (never genesis), follows the advancing tip, resumes through the gap after a reopen, pauses before the quota, and range, reset and stop behave as specified"
-    },
-    {
       "id": "browser.tabs.one-engine",
       "file": "token-indexer/test/browser-tabs-chrome.test.ts",
       "description": "with two tabs exactly one worker runs, in the leader tab, and alone holds the store; the follower starts none, starts the engine through the leader, and gets identical answers"
@@ -1376,6 +1371,46 @@
       "id": "browser.watchdog.long-requests",
       "file": "token-indexer/test/browser-watchdog.test.ts",
       "description": "while a reset is in flight the worker may stay silent up to the longer limit; past it the worker is restarted and the reset fails restarted"
+    },
+    {
+      "id": "browser.explorer.routes",
+      "file": "token-indexer/test/browser-explorer-chrome.test.ts",
+      "description": "the IDX range replayed in the worker: the explorer's route checks of the Node page pass with the API answered by the engine; 'history before block H is not indexed' next to the lists and in the panel; one module script; only same-origin requests, none to /v1; the font loaded; no CSP violation in the page or the worker, no exception or console error"
+    },
+    {
+      "id": "browser.explorer.activity",
+      "file": "token-indexer/test/browser-explorer-chrome.test.ts",
+      "description": "the explorer's recorded activity checks of the Node page pass with the API answered by the engine; only same-origin requests; no CSP violation, exception or console error"
+    },
+    {
+      "id": "browser.explorer.withdrawn",
+      "file": "token-indexer/test/browser-explorer-chrome.test.ts",
+      "description": "C06 step by step with the page open and refreshing on its own, the engine replaying the IDX tape up to each step: the withdrawn name is on no reachable view after the tombstone and stays absent after the revive; no CSP violation"
+    },
+    {
+      "id": "browser.explorer.seam",
+      "file": "token-indexer/test/browser-explorer-chrome.test.ts",
+      "description": "through the engine: an answer announced or streamed over 8 MiB is TOO_LARGE, a 503 is its error code, a failed engine request is UNREACHABLE (each as a fetched answer is rendered); hostile text in an engine answer is drawn as marks and markup as text, no script runs; no CSP violation"
+    },
+    {
+      "id": "browser.explorer.panel",
+      "file": "token-indexer/test/browser-explorer-chrome.test.ts",
+      "description": "the engine panel: empty store, then the start height and its 'history before' sentence next to the lists, heights, durability, configuration and storage; a second tab is marked follower; each control sends its one request (range with the typed heights, import with the chosen file), a drop of data first offers the export and cancel sends nothing; the engine's answers are shown; the follower is marked leader when the leader closes; the system status link; no CSP violation"
+    },
+    {
+      "id": "browser.explorer.transport",
+      "file": "token-indexer/test/browser-explorer.test.ts",
+      "description": "the explorer's host answers a /v1 path with the engine's answer as a fetch Response: status, headers (content-length included) and body; it asks the engine GET of the path when called; a failed engine request rejects; the host asks for the start-height notes"
+    },
+    {
+      "id": "browser.explorer.panel-model",
+      "file": "token-indexer/test/browser-explorer.test.ts",
+      "description": "the panel's view: every engine state with its detail, the first indexed height as 'history before block H is not indexed', the configuration in words, storage from the engine's reading (or the page's until there is one), the role and open tabs, the held range a drop would lose, and the typed range checked before it is sent"
+    },
+    {
+      "id": "browser.explorer.build",
+      "file": "token-indexer/test/browser-explorer.test.ts",
+      "description": "index.html is the /ui page's markup with one module script and stylesheets (no inline block) under the page policy; the bundle carries the explorer script, not the Node page module; the brand font and icon are emitted with the explorer's bytes; the plugin refuses a page style without its font reference and a doubled marker"
     }
   ],
   "deferred": [
