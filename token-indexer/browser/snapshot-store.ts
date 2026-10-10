@@ -21,8 +21,8 @@
  * and columns must be the store's, the rows entries arrive in the manifest's table order (each table's chunks
  * numbered from 0), each is loaded with `COPY … FROM` with every constraint and trigger of the store in force, the row
  * counts and the sequences are checked and set, all in one transaction; then the store's cursors, block hash,
- * migrations and PGlite version must be the manifest's, the archive's first height its lowest block, and the scan must
- * not start below it. Rows can only be rows: nothing in them is run.
+ * migrations and PGlite version must be the manifest's, the archive must record its first height and it must be its
+ * lowest block, and the scan's range must lie within the archive's. Rows can only be rows: nothing in them is run.
  *
  * **Import** has two parts:
  * 1. {@link prepareImport}, which changes nothing: the file is decoded and its manifest checked against this engine
@@ -419,19 +419,22 @@ export async function loadSnapshot(store: Store, manifest: SnapshotManifest, dat
 }
 
 /**
- * Refuses (`corrupt`) an archive whose recorded first height is not its lowest canonical block, and a scan that starts
- * below that height: an import saves the first height as the start of the configuration that continues it (and every
- * `reset` afterwards starts there), so it must be a block the archive holds, not a height it only claims.
+ * Refuses (`corrupt`) an archive that does not record its first height or records another than its lowest canonical
+ * block (this build's sync records it with its first block), and a scan whose range leaves the archive's (from below its
+ * first block, or a next height past the one after its last): an import saves the first height as the start of the
+ * configuration that continues it (and every `reset` afterwards starts there), and the API reports the scan's range, so
+ * both must be the blocks the archive holds, not heights it only claims.
  */
 async function checkArchiveStart(sql: UmbraDBSql, manifest: SnapshotManifest, network: string): Promise<void> {
-  const start = manifest.archive.startHeight;
-  if (start === null) return;
   const [low] = await sql<{ height: string | null }[]>`
     SELECT min(height)::text AS height FROM ${sql(ARCHIVE_SCHEMA)}.blocks WHERE net = ${network} AND is_canonical`;
   const lowest = low?.height === null || low?.height === undefined ? null : Number(low.height);
+  const start = manifest.archive.startHeight;
+  if (start === null) throw new SnapshotRefusal("corrupt", `the snapshot's archive does not record its first height (its lowest block is ${lowest})`);
   if (lowest !== start) throw new SnapshotRefusal("corrupt", `the snapshot's archive starts at its lowest block, ${lowest}, but its manifest says ${start}`);
-  if (manifest.scan !== null && manifest.scan.fromHeight < start)
-    throw new SnapshotRefusal("corrupt", `the snapshot's scan starts at ${manifest.scan.fromHeight}, below its archive's first height ${start}`);
+  const scan = manifest.scan;
+  if (scan !== null && (scan.fromHeight < start || scan.nextHeight < scan.fromHeight || scan.nextHeight > manifest.archive.height + 1))
+    throw new SnapshotRefusal("corrupt", `the snapshot's scan covers ${scan.fromHeight} to ${scan.nextHeight - 1}, outside its archive's ${start} to ${manifest.archive.height}`);
 }
 
 // ── Import ───────────────────────────────────────────────────────────────────────────────────────────────────────────

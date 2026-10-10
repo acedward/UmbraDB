@@ -318,9 +318,9 @@ reason: `format` (not a snapshot file of this version), `truncated`, `network` (
 or SHA-256 is not the manifest's), `corrupt` (the rows do not unpack, are not this build's tables and columns in order,
 do not load into a store of this build, or hold another state than the manifest says). The check is a trial: a new
 store in memory, made by the migrations, into which the rows are loaded in one transaction; the row counts, the
-sequences, the cursors, the block hash and the migrations must then be the manifest's, and the archive's first height
-(which the import saves as the start of the configuration that continues it) its lowest block, with the scan starting
-no lower. The rows are read as a stream:
+sequences, the cursors, the block hash and the migrations must then be the manifest's, the archive must record its
+first height (which the import saves as the start of the configuration that continues it) and it must be its lowest
+block, and the scan's range must lie within the archive's. The rows are read as a stream:
 an import holds one entry (at most 64 MiB) besides the file, and refuses rows as soon as they unpack to more than the
 manifest says (itself at most 4 GiB), or, past the first 64 MiB, to more than 16 times the compressed bytes read so far
 (a snapshot's rows unpack to about twice their size; this keeps what the trial loads in proportion to the file), an

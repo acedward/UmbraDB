@@ -1870,7 +1870,7 @@
     {
       "id": "browser.snapshot.start-height",
       "file": "token-indexer/test/browser-snapshot-attacks.test.ts",
-      "description": "a snapshot whose archive says it starts below or above its lowest block, or whose scan starts below the archive, is refused with nothing changed; an honest one is imported and its start saved"
+      "description": "a snapshot whose archive records no first height, or one below or above its lowest block, or whose scan starts below that block or reaches past the archive, is refused with nothing changed; an honest one is imported and its start saved"
     },
     {
       "id": "browser.snapshot.expansion",
