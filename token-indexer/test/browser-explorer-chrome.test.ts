@@ -359,7 +359,9 @@ describe("the static build's explorer page in Chrome", () => {
       window.__recorder = new BroadcastChannel(${JSON.stringify(STORE_CHANNEL)});
       window.__recorder.onmessage = (e) => {
         const m = e.data;
-        if (!m || m.kind !== "request" || m.type === "status" || m.type === "api") return; // the reads every tab makes
+        // The reads every tab makes, and the overview's watch of the system snapshot (sent again after each boot of the
+        // store, which a range or a reset runs).
+        if (!m || m.kind !== "request" || m.type === "status" || m.type === "api" || m.type === "system") return;
         const params = {};
         for (const [k, v] of Object.entries(m.params)) params[k] = v instanceof Blob ? { blob: v.size, name: v.name ?? null, text: null } : v;
         window.__seen.push({ type: m.type, params });
