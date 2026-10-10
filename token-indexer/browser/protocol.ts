@@ -20,7 +20,7 @@
  * | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | {@link WatchdogResult} |
  * | `module` | `module` (one of {@link MODULE_IDS}), `enabled` | {@link HostStatus}: the module switched on or off and saved with the settings (`token-indexer`: off stops the MIP-0018 scan at a block boundary while the sync goes on; on continues it from its cursor) |
  * | `tables` | — | {@link TablesResult}: each schema's tables with their estimated rows and size (catalog statistics) |
- * | `rows` | `schema`, `table`, `limit?`, `offset?` | {@link RowsResult}: one page of a table of the store's catalog, newest first by its primary key (read-only) |
+ * | `rows` | `schema`, `table`, `limit?`, `offset?` | {@link RowsResult}: one page of a table of the store's catalog by its primary key, descending (newest first for a height-keyed table; read-only) |
  *
  * Responses (worker → page): `{ v, type: "response", id, request, ok: true, result }` or
  * `{ v, type: "response", id, request, ok: false, error: { code, message } }`; `id` and `request` are `null` when the
@@ -89,6 +89,9 @@ export const ERROR_CODES = [
   "already-running",
   /** The engine refused the configuration or failed while starting. */
   "start-failed",
+  /** `start`, `stop`, `module`: the browser refused to save the settings. The message says what became of the change:
+   *  `start` and `module` changed nothing; `stop` stopped the engine, which starts again at the next boot. */
+  "settings-failed",
   /** An unexpected failure inside the worker. */
   "internal",
   /** `import`: the snapshot does not match this engine or is damaged; `export`: the archive is empty. The message starts

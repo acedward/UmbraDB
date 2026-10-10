@@ -27,7 +27,9 @@
  *
  * **Bounds:** the rows are decompressed and parsed as a stream, never as a whole: an import holds at most one rows entry
  * ({@link MAX_ROWS_ENTRY_BYTES}) besides the file, refuses the rows as soon as they unpack to more than the manifest's
- * uncompressed size (itself at most {@link MAX_ROWS_TAR_BYTES}), and refuses anything after the tar's end marker.
+ * uncompressed size (itself at most {@link MAX_ROWS_TAR_BYTES}) or, past {@link ROWS_EXPANSION_FLOOR_BYTES}, to more
+ * than {@link MAX_ROWS_EXPANSION} times what was read of them (so the rows an import's trial loads stay in proportion
+ * to the file), and refuses anything after the tar's end marker.
  *
  * Runtime-neutral (a worker and Node): compression through `CompressionStream`/`DecompressionStream`, hashing through
  * Web Crypto when present, else `@noble/hashes`.
@@ -46,6 +48,14 @@ export const ROWS_ENTRY = "rows.tar.gz";
 export const MAX_SNAPSHOT_FILE_BYTES = 2 * 1024 ** 3;
 /** The largest uncompressed rows tar a manifest may declare. */
 export const MAX_ROWS_TAR_BYTES = 4 * 1024 ** 3;
+/** How many times the size of the compressed rows read so far they may unpack to, past the first
+ *  {@link ROWS_EXPANSION_FLOOR_BYTES}: a snapshot's rows (hashes, transactions, blocks) unpack to about twice their size,
+ *  the published one 1.8 times. */
+export const MAX_ROWS_EXPANSION = 16;
+/** What the rows may unpack to before {@link MAX_ROWS_EXPANSION} applies (a small store's rows are mostly tar padding). */
+export const ROWS_EXPANSION_FLOOR_BYTES = 64 * 1024 ** 2;
+/** The compressed rows are handed to the decompressor in pieces of this size. */
+const EXPANSION_PIECE_BYTES = 64 * 1024;
 /** The largest rows entry (one `COPY` stream) an import holds. */
 export const MAX_ROWS_ENTRY_BYTES = 64 * 1024 ** 2;
 /** The most rows entries an import reads. */
@@ -424,10 +434,16 @@ class StreamTaker {
   private ended = false;
   total = 0;
 
-  constructor(private readonly reader: ReadableStreamDefaultReader<Uint8Array>, private readonly limit: number, private readonly tooLarge: () => Error) {}
+  constructor(
+    private readonly reader: ReadableStreamDefaultReader<Uint8Array>,
+    private readonly limit: number,
+    private readonly tooLarge: () => Error,
+    private readonly budget: () => number = () => Infinity,
+    private readonly overBudget: () => Error = tooLarge,
+  ) {}
 
   /** Pulls until `n` bytes are buffered; false when the stream ends first. Throws as soon as the stream has given more
-   *  than `limit` bytes. */
+   *  than `limit` bytes, or more than `budget()` (asked after each read). */
   private async fill(n: number): Promise<boolean> {
     while (this.buffered < n) {
       if (this.ended) return false;
@@ -438,6 +454,7 @@ class StreamTaker {
       }
       this.total += value.length;
       if (this.total > this.limit) throw this.tooLarge();
+      if (this.total > this.budget()) throw this.overBudget();
       this.chunks.push(value);
       this.buffered += value.length;
     }
@@ -477,7 +494,8 @@ class StreamTaker {
 /**
  * Reads the rows entry (`rows.tar.gz`) as a stream and hands each rows entry to `onEntry`, in order, before reading the
  * next. Refused as `corrupt` (nothing more is read) when the data is not gzip, unpacks to more than the manifest's
- * `tarBytes` (checked as the bytes arrive) or to fewer, is not a ustar of regular files named
+ * `tarBytes` (checked as the bytes arrive) or to fewer, unpacks to more than {@link MAX_ROWS_EXPANSION} times the
+ * compressed bytes read so far once past {@link ROWS_EXPANSION_FLOOR_BYTES}, is not a ustar of regular files named
  * `<schema>.<table>.<n>.copy`, holds an entry larger than {@link MAX_ROWS_ENTRY_BYTES} (checked from its header, before
  * it is read) or more than {@link MAX_ROWS_ENTRIES} entries, or has anything after its end marker. `onEntry` may refuse
  * an entry by throwing.
@@ -486,7 +504,27 @@ export async function readRows(manifest: SnapshotManifest, data: Uint8Array, onE
   const corrupt = (d: string) => new SnapshotRefusal("corrupt", `the rows are damaged: ${d}`);
   const limit = manifest.data.tarBytes;
   const tooLarge = () => corrupt(`they unpack to more than the manifest's ${limit} bytes`);
-  const taker = new StreamTaker(new Blob([data as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new DecompressionStream("gzip")).getReader(), limit, tooLarge);
+  // The compressed rows go to the decompressor a piece at a time, so what they unpack to is weighed against what was
+  // read of them.
+  let read = 0;
+  const compressed = new ReadableStream<Uint8Array<ArrayBuffer>>(
+    {
+      pull(c) {
+        if (read >= data.length) return c.close();
+        const piece = data.subarray(read, Math.min(data.length, read + EXPANSION_PIECE_BYTES)) as Uint8Array<ArrayBuffer>;
+        read += piece.length;
+        c.enqueue(piece);
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const taker = new StreamTaker(
+    compressed.pipeThrough(new DecompressionStream("gzip")).getReader(),
+    limit,
+    tooLarge,
+    () => Math.max(ROWS_EXPANSION_FLOOR_BYTES, MAX_ROWS_EXPANSION * read),
+    () => corrupt(`they unpack to more than ${MAX_ROWS_EXPANSION} times the ${read} compressed bytes read so far (past the first ${ROWS_EXPANSION_FLOOR_BYTES} bytes)`),
+  );
   try {
     let at = 0;
     let count = 0;
@@ -598,8 +636,14 @@ export const PublishedSnapshotIndexSchema = z.strictObject({
       sha256: hex64,
       manifest: SnapshotManifestSchema,
       /** The digests the build checked the snapshot's store against before publishing it: the archive digest
-       *  (`chain_archive`'s 7 tables) and the range-tables digest (every table of both schemas). */
-      digests: z.strictObject({ archive: hex64, tables: hex64 }),
+       *  (`chain_archive`'s 7 tables), the range-tables digest (every table of both schemas) and, beside it, the NULL
+       *  `bytea[]` elements of each table with such a column, which that digest counts as empty bytes (count and hash
+       *  of where they are, `range-tables.ts`). */
+      digests: z.strictObject({
+        archive: hex64,
+        tables: hex64,
+        nullElements: z.record(z.string().max(200), z.strictObject({ count: z.int().min(0), sha256: hex64 })),
+      }),
     }),
   ),
 });

@@ -26,7 +26,8 @@
  *   memory) and before the journal is complete (the store stays as it was); then while the store is marked as being
  *   created, while PGlite creates it and the rows load into it, while its identity and while the configuration that
  *   continues the import are saved (the next boot finishes the import from the journal): each reopened store is one of
- *   the two, whole, with its digests, and after a finished import the continuing configuration is saved.
+ *   the two, whole, with its digests and its NULL `bytea[]` elements, and after a finished import the continuing
+ *   configuration is saved.
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH.
  */
@@ -402,6 +403,13 @@ describe("the browser engine killed at exact points (Chrome, OPFS)", () => {
     const atEnd = await toEnd(page);
     expect(atEnd.archive.sha256).toBe(IDX_ARCHIVE);
     expect(atEnd.tables.sha256).toBe(IDX_TABLES);
+    expect(compareNullElements(atEnd.nullElements, IDX_NULLS)).toEqual([]);
+    expect(compareNullElements(atH1.nullElements, IDX_NULLS)).toEqual([]);
+    /** Whether a store's digest is `want`'s: the archive and range-tables digests and the NULL `bytea[]` elements. */
+    const same = (d: DigestResult, want: { archive: string; tables: string; nullElements: DigestResult["nullElements"] }): boolean =>
+      d.archive.sha256 === want.archive && d.tables.sha256 === want.tables && compareNullElements(d.nullElements, want.nullElements).length === 0;
+    const snapshotState = { archive: atH1.archive.sha256, tables: atH1.tables.sha256, nullElements: atH1.nullElements };
+    const endState = { archive: IDX_ARCHIVE, tables: IDX_TABLES, nullElements: IDX_NULLS };
     const importIn = (p: Page): Promise<unknown> =>
       p.eval(`(() => { window.__imported = fetch("./crash-snapshot.tar").then((r) => r.blob()).then((b) => window.umbradbEngine.client.import(b)).then(() => "ok", (e) => String(e)); return true; })()`);
 
@@ -418,9 +426,9 @@ describe("the browser engine killed at exact points (Chrome, OPFS)", () => {
     // The import's writable streams, in order: the journal, the store marked as being created, its identity, the
     // configuration that continues the import.
     expect(c1.closes - c0.closes).toBe(4);
-    expect(((await on(page).engine("c.digest()")) as DigestResult).tables.sha256).toBe(atH1.tables.sha256);
+    expect(same((await on(page).engine("c.digest()")) as DigestResult, snapshotState), "the imported store is the snapshot's").toBe(true);
     report.importSwap = { writes, transactions: c1.tx - c0.tx, kills: [] as Json[] };
-    expect((await toEnd(page)).tables.sha256).toBe(IDX_TABLES);
+    expect(same(await toEnd(page), endState), "the imported store continued to the end of the range").toBe(true);
 
     const points: Array<{ trigger: Trigger; outcome: "as it was" | "snapshot" }> = [
       // The trial: the first transaction after the request (the migrations of the store in memory).
@@ -451,7 +459,7 @@ describe("the browser engine killed at exact points (Chrome, OPFS)", () => {
       expect(s.boot, `${JSON.stringify(trigger)}: the boot after the kill`).toMatchObject({ phase: "ready", storeProblem: null });
       const d = (await on(page).engine("c.digest()")) as DigestResult;
       const h = storedHeights(s);
-      const outcome = d.tables.sha256 === atH1.tables.sha256 && d.archive.sha256 === atH1.archive.sha256 ? "snapshot" : d.tables.sha256 === IDX_TABLES && d.archive.sha256 === IDX_ARCHIVE ? "as it was" : "neither";
+      const outcome = same(d, snapshotState) ? "snapshot" : same(d, endState) ? "as it was" : "neither";
       (report.importSwap.kills as Json[]).push({ trigger, mode, parked: { statement: parked!.statement?.slice(0, 60) ?? null, writes: parked!.writes }, outcome, heights: h, lastImport: s.snapshots.lastImport !== null });
       console.log(`import-swap kill ${JSON.stringify(trigger)} ${mode}: ${outcome} (archive ${h.archive}, scan ${h.scan})`);
       expect(outcome, `${JSON.stringify(trigger)}: the store after the kill`).not.toBe("neither");
@@ -461,7 +469,7 @@ describe("the browser engine killed at exact points (Chrome, OPFS)", () => {
         expect(s.snapshots.lastImport, "the finished import is reported").not.toBeNull();
         expect(s.settings).toMatchObject({ autoStart: false, config: { startHeight: IDX.from } });
       }
-      if (outcome === "snapshot") expect((await toEnd(page)).tables.sha256).toBe(IDX_TABLES);
+      if (outcome === "snapshot") expect(same(await toEnd(page), endState), `${JSON.stringify(trigger)}: the imported store continued to the end of the range`).toBe(true);
     }
     expect(page.exceptions).toEqual([]);
     await page.close();

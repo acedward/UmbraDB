@@ -5,8 +5,9 @@
  *
  * - The list: each schema's tables with their kind, estimated rows and size (catalog statistics), read when the tab is
  *   first shown and on "refresh". Picking a table (its row in the list, or the picker) reads its first page.
- * - A page: the table's columns (type in the tooltip), {@link ROWS_LIMITS}`.defaultLimit` rows newest first (by the
- *   primary key), "newer" and "older" to page, up to the engine's deepest offset. A `bytea` value is the hex of its first
+ * - A page: the table's columns (type in the tooltip), {@link ROWS_LIMITS}`.defaultLimit` rows by the primary key,
+ *   descending (newest first for a table whose key leads with a block height), with the order in words beside them
+ *   (`orderText`), "newer" and "older" to page, up to the engine's deepest offset. A `bytea` value is the hex of its first
  *   bytes with its length; a long value is cut, with its length, and what the engine sent of it is in the cell's tooltip
  *   (`database-model.ts`).
  * - The table is named to the engine by the schema and name the engine listed; the engine checks them against the

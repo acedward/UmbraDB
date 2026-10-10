@@ -5,8 +5,9 @@
  *
  * - `[[browser.watchdog.unavailable]]` — the answer an API request in flight gets on a restart equals the API handler's
  *   own 503 `UNAVAILABLE` answer (GET and HEAD).
- * - `[[browser.watchdog.slow-query]]` — a statement that does not return (`pg_sleep` on the worker thread's session)
- *   silences the worker; after the limit and the grace the page terminates it and starts a new one: the API request in
+ * - `[[browser.watchdog.slow-query]]` — no restart before it (the limit is three times the measured boot); a statement
+ *   that does not return (`pg_sleep` on the worker thread's session) silences the worker; after the limit and the
+ *   grace the page terminates it and starts a new one (one restart): the API request in
  *   flight gets the 503, a status request in flight `restarted`; the new worker gets the carried counts, boots on the
  *   same store and continues the engine with the same configuration at the stored cursors, and the range ends with the
  *   same tables as an uninterrupted replay.
@@ -27,6 +28,7 @@ import { createPgliteClient } from "../../src/postgres/pglite-sql.js";
 import { createEngineClient, EngineError, unavailableAnswer } from "../browser/client.ts";
 import { createWorkerHost, type WorkerHost } from "../browser/host.ts";
 import type { StartConfig } from "../browser/protocol.ts";
+import { memorySettingsStore } from "../browser/settings.ts";
 import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, openStore } from "../browser/store.ts";
 import { DEFAULT_LONG_LIMIT_MS, LONG_REQUESTS, superviseWorker, type WorkerLike } from "../browser/supervisor.ts";
 import { loadTape } from "../browser/tapes.ts";
@@ -42,7 +44,7 @@ afterAll(() => {
 });
 function tempDir(): string {
   const d = mkdtempSync(join(tmpdir(), "umbradb-watchdog-"));
-  dirs.push(d);
+  dirs.push(d, `${d}.engine.json`);
   return d;
 }
 
@@ -191,7 +193,9 @@ describe("page watchdog", () => {
       await c.start(config);
       await until(async () => ((await c.status()).cursors?.scan?.nextHeight ?? 0) > U1.from + 4, "a first part");
       const before = (await c.status()).cursors!;
-      // The slow statement goes to the worker running now (a restart before this point would have replaced the first).
+      // No restart before the slow statement: the limit is three times this machine's measured boot, so a worker that
+      // was replaced here was taken for stuck while it was not (and a watchdog that restarts in a loop fails here).
+      expect(restarts, "no restart before the slow statement").toEqual([]);
       const earlier = restarts.length;
       const running = threads.length;
       (await threads[running - 1]!.thread).postMessage({ test: "slow-statement", seconds: Math.ceil(LIMIT_MS / 1_000) + 60 });
@@ -239,6 +243,8 @@ describe("page watchdog", () => {
 
   it("[[browser.watchdog.rules]] a late check is not a restart when the worker answers within the grace; a silent worker is restarted once with the viewers and the engine restored; an engine the page stopped stays stopped; a boot failing right after a restart is retried; too many restarts close the client", async () => {
     const dir = tempDir();
+    // The saved settings outlive each worker, as the file beside an OPFS store does.
+    const settings = memorySettingsStore();
     let now = 0;
     let check: () => void = () => {};
     const workers: ChannelWorker[] = [];
@@ -258,6 +264,7 @@ describe("page watchdog", () => {
             if (fail) throw new Error("NoModificationAllowedError: the store's files are still open in another worker");
             return openStore(d, o);
           },
+          settings,
           loadTape: (range) => loadTape(range, fileFetch()),
           log: () => {},
         }));

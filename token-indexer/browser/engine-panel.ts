@@ -2,7 +2,8 @@
  * The indexer section of the overview (static build only, `index.html`): what the browser engine indexes and how it is
  * doing, with its controls. It shows the health line (the engine's system snapshot, `HEALTH_LABELS`), this tab's role
  * (leader or follower, and the open tabs), the network, the engine's state, the saved configuration, the first indexed
- * height with "history before block H is not indexed" (`/v1/status` `startHeight`), the archive and scanned heights,
+ * height with "history before block H is not indexed" (`/v1/status` `startHeight`; with the token indexer off and no
+ * scan range, the archive's first height), the archive and scanned heights,
  * the finalized tip and the lag behind it (blocks and time), blocks per second, the worker's uptime, durability and the
  * storage line (store size, quota, pause threshold, persistence; the explanation in its tooltip). When the boot failed
  * because of the store (another PGlite version wrote it, or it does not open), the state says so and `reset`, `range`

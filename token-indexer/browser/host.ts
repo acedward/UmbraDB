@@ -24,20 +24,24 @@
  * load is not the store's fault: no `storeProblem`, and nothing offers to drop the store's data for it.
  *
  * **Requests** (`protocol.ts`): `status` answers at any time; `api` waits for the boot and answers through the running
- * engine's API handler, or, while no engine runs, a handler of the same store with no loops (`scanner: "off"`);
- * `start` runs a new engine (sync + scan in follow mode) with the given configuration, or the saved one, `stop` stops
- * it; `range` saves the new range, then replaces the store with a new, empty one and starts the range, `reset` does the
- * same with the saved configuration (replacing the store: PGlite is closed, every file of the store is removed, and
- * the boot runs again from its store phase, so nothing of the old database survives); all four run one at a time, in
- * arrival order. `digest` computes the store's archive and range-tables digests
- * in one read-only transaction (the loops wait for it); `system` watches or refreshes the system snapshot and `watchdog`
- * sets the page's watchdog and starts the heartbeat (`host-system.ts`). `module` switches the token indexer (the
- * MIP-0018 scan) off or on: off, the running engine's scan stops at a block boundary while its sync goes on; on, it
- * continues from its cursor; the choice is saved with the settings (every save of the settings keeps it, also before
- * and after the store is replaced), and every engine the host runs afterwards (a `start`, a reopen, a replaced store,
- * the next worker or tab) starts with it. `tables` and `rows` read the store's catalog and a page of one of its tables
- * for the Database tab (`store-tables.ts`), between the engine's transactions; while the store is replaced they wait
- * for the new one (or answer `boot-failed` when the replacement fails).
+ * engine's API handler, or, while no engine runs, a handler of the same store with no loops (`scanner: "off"`); `start`
+ * saves the given configuration, or the saved one, with the automatic start on and runs a new engine (sync + scan in
+ * follow mode) with it, `stop` stops it; `range` saves the new range with the mark that the store is to be replaced
+ * (one write, `settings.ts`), then replaces the store with a new, empty one and starts the range, `reset` does the same
+ * with the saved configuration (replacing the store: PGlite is closed, every file of the store is removed, and the boot
+ * runs again from its store phase, so nothing of the old database survives; it saves the settings again without the
+ * mark once the new store is in place); all four run one at a time, in arrival order. A boot that finds the mark (a
+ * worker ended before the new store was in place) makes the new store first, unless an import's journal is pending
+ * (that import finishes instead and its configuration replaces the settings). `digest` computes the store's archive and
+ * range-tables digests in one read-only transaction (the loops wait for it); `system` watches or refreshes the system
+ * snapshot and `watchdog` sets the page's watchdog and starts the heartbeat (`host-system.ts`). `module` switches the
+ * token indexer (the MIP-0018 scan) off or on: off, the running engine's scan stops at a block boundary while its sync
+ * goes on; on, it continues from its cursor; the choice is saved with the settings before anything is switched (every
+ * save of the settings keeps it, also before and after the store is replaced), and every engine the host runs
+ * afterwards (a `start`, a reopen, a replaced store, the next worker or tab) starts with it. `tables` and `rows` read
+ * the store's catalog and a page of one of its tables for the Database tab (`store-tables.ts`), between the engine's
+ * transactions; while the store is replaced they wait for the new one (or answer `boot-failed` when the replacement
+ * fails).
  *
  * **Snapshots** (`snapshot-store.ts`): `export` writes a snapshot file (the rows of the store's tables) while the engine
  * runs (a consistent read between two transactions). `import` checks a snapshot file and loads its rows into a trial
@@ -65,7 +69,10 @@
  * **Saved configuration** (`settings.ts`): the last `start` configuration or `range`, kept beside the store, and
  * whether the engine should start by itself (`autoStart`; a `stop` request turns it off until the next `start`). A
  * `start` with no configuration runs it; the leader tab sends one when its worker has booted (`tabs.ts`), so a new
- * store starts at the tip and a reopened one resumes, a chosen range keeping its end.
+ * store starts at the tip and a reopened one resumes, a chosen range keeping its end. What the next worker runs comes
+ * from these settings alone, so a change is answered only once it is saved: a `start` or `module` the browser refuses
+ * to save changes nothing (`settings-failed`); a `stop` always stops the engine and answers `settings-failed` when
+ * staying stopped could not be saved.
  *
  * **Storage** (`quota.ts`): the boot takes the first reading of the browser's usage and quota before `ready`, so every
  * `status` of a ready worker reports one (`storage`); before each sync batch the guard reads them again and pauses the
@@ -333,15 +340,22 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   let saved: EngineSettings | undefined;
   /** The modules switched off or on, saved with the configuration (a module not named is on). */
   let modules: NonNullable<EngineSettings["modules"]> = {};
-  /** The saved settings: the configuration and the automatic start (returned), and the modules (kept in `modules`). */
-  async function loadSettings(): Promise<EngineSettings | undefined> {
+  /** The settings file: the configuration and the automatic start (`settings`), whether the store is to be replaced by a
+   *  new one before they apply (`newStore`), and the modules (kept in `modules`). */
+  async function loadSettings(): Promise<{ settings: EngineSettings; newStore: boolean } | undefined> {
     const loaded = await settingsStore.load();
     if (loaded === undefined) return undefined;
-    const { modules: m, ...rest } = loaded;
+    const { modules: m, newStore, ...rest } = loaded;
     modules = m ?? {};
-    return rest;
+    return { settings: rest, newStore: newStore === true };
   }
-  const withModules = (s: EngineSettings): EngineSettings => (Object.keys(modules).length === 0 ? s : { ...s, modules: { ...modules } });
+  /** The settings file as the store phase of the last boot read it (under the store's lock). */
+  let settingsOnFile: Awaited<ReturnType<typeof loadSettings>>;
+  const withModules = (s: EngineSettings, m: typeof modules = modules): EngineSettings => (Object.keys(m).length === 0 ? s : { ...s, modules: { ...m } });
+  /** Saves `next` with the modules (default: the current ones) and, with `newStore`, the mark that the store is to be
+   *  replaced by a new one first; rejects when the browser refuses the write. */
+  const writeSettings = (next: EngineSettings, o: { modules?: typeof modules; newStore?: true } = {}): Promise<void> =>
+    settingsStore.save({ ...withModules(next, o.modules), ...(o.newStore === true ? { newStore: true } : {}) });
   /** Whether the token indexer (the MIP-0018 scan) is on. */
   const scanEnabled = (): boolean => modules["token-indexer"] ?? true;
   const quota = createQuotaGuard({
@@ -527,7 +541,11 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     };
     // Under the store's lock, before PGlite opens the store.
     const beforeOpen = async (_dir: string, importing: SnapshotManifest | null): Promise<void> => {
-      if (mode === "reset") {
+      settingsOnFile = await loadSettings();
+      // A new store the settings file asks for (a `range` or `reset` that ended before the new store was in place) is
+      // made now, unless an import's journal is pending: that import finishes instead, and the configuration that
+      // continues it replaces the settings, so the store and the settings agree either way.
+      if (mode === "reset" || (importing === null && settingsOnFile?.newStore === true)) {
         await snapshotFiles.removeStore();
         await markCreating();
         return;
@@ -583,6 +601,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     bootState.storeProblem = null;
     finishedImport = undefined;
     importFailure = undefined;
+    settingsOnFile = undefined;
     try {
       let s: Store | undefined;
       try {
@@ -592,9 +611,16 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         await phase("migrate", "migrateMs", () => usable(() => migrate(opened)));
         storeInfo = await usable(() => readStoreInfo(opened));
         await recordIdentity(opened);
-        saved = (await loadSettings()) ?? { config: opts.defaultStart ?? {}, autoStart: true };
+        // Read by the store phase, under the store's lock.
+        const file = settingsOnFile as Awaited<ReturnType<typeof loadSettings>>;
+        const settings = file?.settings ?? { config: opts.defaultStart ?? {}, autoStart: true };
+        saved = settings;
         // Set by the store phase (`noteFinishedImport`).
         const imported = finishedImport as SnapshotManifest | undefined;
+        if (imported === undefined && file?.newStore === true) {
+          // The new store the settings asked for is in place: they are saved again without the mark.
+          await usable(() => writeSettings(settings), "the configuration to start on the new store could not be saved");
+        }
         if (imported !== undefined) {
           // The journal stays until the configuration that continues the import is saved: a worker that ends before
           // that finishes the import again at its next boot.
@@ -655,7 +681,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     await boot();
     const failed = !closed && bootState.phase === "failed" && bootState.storeProblem !== null && store === undefined;
     // The saved configuration lives beside the store, not in it: a store that could not be used still has it.
-    if (failed && saved === undefined) saved = await loadSettings();
+    if (failed && saved === undefined) saved = (await loadSettings())?.settings;
     return failed;
   }
 
@@ -763,30 +789,42 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     return base(kind, step);
   };
 
-  /** Starts `config` (or the saved configuration) and saves it, with the automatic start on. */
+  /** Saves `config` (or the saved configuration) with the automatic start on, then runs it: a start the browser refuses
+   *  to save starts nothing, and an engine that fails to start puts the settings before it back. */
   async function start(config: StartConfig | undefined): Promise<HostStatus> {
     const s = await ready();
     if (active !== undefined) throw new HostError("already-running", "the engine is running; stop it first");
     const effective = config ?? saved?.config ?? opts.defaultStart ?? {};
-    await run(s, effective);
-    saved = { config: effective, autoStart: true };
-    await saveSettings();
+    const before = saved;
+    const next = { config: effective, autoStart: true };
+    try {
+      await writeSettings(next);
+    } catch (e) {
+      throw new HostError("settings-failed", `the configuration to start could not be saved (${messageOf(e)}): the engine was not started`);
+    }
+    saved = next;
+    try {
+      await run(s, effective);
+    } catch (e) {
+      if (before !== undefined) {
+        try {
+          await writeSettings(before);
+          saved = before;
+        } catch (e2) {
+          log("warn", `the settings before the failed start could not be saved again: ${messageOf(e2)}`);
+        }
+      }
+      throw e;
+    }
     return status();
   }
 
-  async function saveSettings(): Promise<void> {
-    try {
-      if (saved !== undefined) await settingsStore.save(withModules(saved));
-    } catch (e) {
-      log("warn", `the engine settings could not be saved: ${messageOf(e)}`);
-    }
-  }
-
-  /** Saves `next` as the saved configuration before the store is replaced (`range`, `reset`), so that a worker that ends
-   *  meanwhile starts it on the new store; fails (and nothing is changed) when it cannot be saved. */
+  /** Saves `next` as the saved configuration, with the mark that the store is to be replaced by a new one, before the
+   *  store is touched (`range`, `reset`): a worker that ends before the new store is in place leaves both, and the next
+   *  boot makes the new store, then starts `next` on it. Fails (and nothing is changed) when it cannot be saved. */
   async function saveBeforeReplacing(next: EngineSettings, what: string): Promise<void> {
     try {
-      await settingsStore.save(withModules(next));
+      await writeSettings(next, { newStore: true });
     } catch (e) {
       throw new HostError("start-failed", `${what} could not be saved (${messageOf(e)}): nothing was changed`);
     }
@@ -882,12 +920,18 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     }
   }
 
-  /** A `stop` request: halts the engine and turns the automatic start off until the next `start`. */
+  /** A `stop` request: halts the engine and turns the automatic start off until the next `start`. The engine stops
+   *  even when the browser refuses to save that; the answer then says so (the saved settings still start it). */
   async function stop(): Promise<HostStatus> {
     await halt();
     if (saved !== undefined && saved.autoStart && bootState.phase === "ready") {
-      saved = { ...saved, autoStart: false };
-      await saveSettings();
+      const next = { ...saved, autoStart: false };
+      try {
+        await writeSettings(next);
+      } catch (e) {
+        throw new HostError("settings-failed", `the engine is stopped, but turning its automatic start off could not be saved (${messageOf(e)}): the next page to open the engine starts it again`);
+      }
+      saved = next;
     }
     return status();
   }
@@ -926,12 +970,18 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     return start(undefined);
   }
 
-  /** A `module` request: switches the module and saves the choice with the settings; a running engine follows at once
-   *  (switched off, the answer comes once its scan has stopped at a block boundary). */
+  /** A `module` request: saves the choice with the settings, then switches the module; a running engine follows at once
+   *  (switched off, the answer comes once its scan has stopped at a block boundary). A choice the browser refuses to
+   *  save changes nothing. */
   async function setModule(module: ModuleId, enabled: boolean): Promise<HostStatus> {
     await ready();
-    modules = { ...modules, [module]: enabled };
-    await saveSettings();
+    const next = { ...modules, [module]: enabled };
+    try {
+      await writeSettings(saved ?? { config: opts.defaultStart ?? {}, autoStart: true }, { modules: next });
+    } catch (e) {
+      throw new HostError("settings-failed", `the token indexer's switch could not be saved (${messageOf(e)}): nothing was changed`);
+    }
+    modules = next;
     await active?.setScanEnabled(enabled);
     log("info", enabled
       ? "the token indexer is on: the MIP-0018 scan continues from its cursor"
@@ -963,7 +1013,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     const config: StartConfig = { ...(saved?.config ?? opts.defaultStart ?? {}), startHeight: manifest.archive.startHeight ?? manifest.archive.height };
     delete config.endHeight;
     const next = { config, autoStart: false };
-    await settingsStore.save(withModules(next));
+    await writeSettings(next);
     saved = next;
   }
 
@@ -1004,7 +1054,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     const t0 = monotonic();
     const live = (await storeFailed()) ? undefined : await ready();
     const running = opts.build?.pgliteVersion ?? null;
-    let prepared: PreparedImport;
+    let prepared: PreparedImport | undefined;
     try {
       prepared = await prepareImport(
         snapshot,
@@ -1021,13 +1071,18 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       if (e instanceof SnapshotRefusal) throw new HostError("snapshot-refused", e.message);
       throw e;
     }
+    const { manifest, timings } = prepared;
+    const fileBytes = prepared.file.length;
     const tSwap = monotonic();
     try {
       await snapshotFiles.writeJournal(prepared.file);
     } catch (e) {
-      await snapshotFiles.removeJournal().catch(() => {});
+      // A journal that cannot be written leaves the journal on file as it was: an earlier import's journal, kept for the
+      // boot that finishes it, stays.
       throw new HostError("snapshot-failed", `the import's journal could not be saved (${messageOf(e)}): nothing was changed`);
     }
+    // The file is the journal now, which the boot reads back: this copy is let go first.
+    prepared = undefined;
     importing = true;
     try {
       await rebootStore("open", live).catch((e: unknown) => {
@@ -1040,10 +1095,10 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       throw new HostError("snapshot-failed", `the snapshot was checked, but the store could not be used after it (it is finished at the next boot, or reset or import again): ${bootState.error ?? "the boot failed"}`);
     if (importFailure !== undefined) throw new HostError("snapshot-failed", `the snapshot could not be loaded and the store was opened empty: ${importFailure}`);
     if (finishedImport === undefined) throw new HostError("snapshot-failed", "the import's journal could not be read back: the store was opened as it was");
-    lastImport = snapshotRecord(prepared.manifest, clock.now(), prepared.file.length);
-    log("info", `imported a snapshot of ${prepared.manifest.network} up to ${prepared.manifest.archive.height} (${prepared.file.length} bytes)`);
+    lastImport = snapshotRecord(manifest, clock.now(), fileBytes);
+    log("info", `imported a snapshot of ${manifest.network} up to ${manifest.archive.height} (${fileBytes} bytes)`);
     const swapMs = Math.round((monotonic() - tSwap) * 10) / 10;
-    return { manifest: prepared.manifest, timings: { ...prepared.timings, swapMs, totalMs: Math.round((monotonic() - t0) * 10) / 10 }, status: await status() };
+    return { manifest, timings: { ...timings, swapMs, totalMs: Math.round((monotonic() - t0) * 10) / 10 }, status: await status() };
   }
 
   /** Runs start/stop one at a time, in arrival order. */

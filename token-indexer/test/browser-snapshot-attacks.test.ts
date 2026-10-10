@@ -13,11 +13,18 @@
  *   functions and setting) does not survive `reset` or `range`: the store's files are removed (a file left in its
  *   directory too) and a new store is made by the migrations; its catalog is a fresh store's, and the blocks synced
  *   afterwards are the chain's.
+ * - `[[browser.snapshot.start-height]]` — the first height an archive records is the start an import saves: a snapshot
+ *   whose archive says it starts below its lowest block (at genesis) or above it, or whose scan starts below the
+ *   archive, is refused and nothing changes; an honest one is imported with its first block as the saved start.
+ * - `[[browser.snapshot.expansion]]` — rows that unpack to many times the size of the file (blobs of a random kilobyte
+ *   followed by a megabyte of zeros, which pass every other check: a few of them are imported) are refused as soon as
+ *   they unpack past the bound, before the import's trial holds much of them, and the store stays as it was.
  * - `[[browser.snapshot.bounds]]` — a small file whose rows declare a huge uncompressed size is refused quickly, holding
  *   little memory: rows that are all zeros (the tar ends at once, and data follows its end), an entry whose header
  *   declares more than an entry may hold, rows that unpack to more than declared, and a declared size above the
  *   ceiling.
  */
+import { createHash, randomBytes } from "node:crypto";
 import { createGzip } from "node:zlib";
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -33,7 +40,11 @@ import {
   encodeSnapshotFile,
   gzip,
   MAX_ROWS_ENTRY_BYTES,
+  MAX_ROWS_EXPANSION,
   MAX_ROWS_TAR_BYTES,
+  readRows,
+  ROWS_EXPANSION_FLOOR_BYTES,
+  type RowsEntry,
   rowsEntryName,
   type SnapshotManifest,
   sha256Hex,
@@ -266,5 +277,116 @@ describe("snapshots made to carry more than rows", () => {
       console.log(`bounds ${name}: file ${bytes.length} B, refused in ${ms.toFixed(0)} ms, peak +${(peak / 1024 ** 2).toFixed(1)} MiB`);
     }
     expect((await result<HostStatus>(victim.host, "status")).boot.phase).toBe("ready");
+  }, 300_000);
+  it("[[browser.snapshot.start-height]] a snapshot whose archive says it starts below or above its lowest block, or whose scan starts below the archive, is refused with nothing changed; an honest one is imported and its start saved", async () => {
+    const a = host();
+    await result(a.host, "start", { config: { ...U1_TAPE, endHeight: U1.from + 3 } });
+    await untilU1(a, U1.from + 3);
+    await result(a.host, "stop");
+    const sql = current(a);
+    const exportWith = async (startHeight: number, scanFrom: number): Promise<Blob> => {
+      await sql`UPDATE chain_archive.watermarks SET value = jsonb_set(value, '{startHeight}', to_jsonb(${startHeight}::int)) WHERE kind = 'chain_archive' AND key = 'sync_cursor:stagenet'`;
+      await sql`UPDATE mip0018.mip0018_scan SET from_height = ${scanFrom} WHERE network = 'stagenet'`;
+      return (await result<ExportResult>(a.host, "export")).file;
+    };
+    const victim = host({ settings: memorySettingsStore({ config: { source: { kind: "tape", range: "u1" } }, autoStart: true }) });
+    await victim.host.boot();
+    const before = await result<HostStatus>(victim.host, "status");
+    const cases: Array<[string, number, number, string]> = [
+      ["an archive that says it starts at genesis", 0, U1.from, `corrupt: the snapshot's archive starts at its lowest block, ${U1.from}, but its manifest says ${0}`],
+      ["an archive that says it starts above its lowest block", U1.from + 2, U1.from + 2, `corrupt: the snapshot's archive starts at its lowest block, ${U1.from}, but its manifest says ${U1.from + 2}`],
+      ["a scan that starts below the archive", U1.from, 0, `corrupt: the snapshot's scan starts at 0, below its archive's first height ${U1.from}`],
+    ];
+    for (const [name, startHeight, scanFrom, message] of cases) {
+      const file = await exportWith(startHeight, scanFrom);
+      const r = await call(victim.host, "import", { snapshot: file });
+      expect(r, name).toMatchObject({ ok: false, error: { code: "snapshot-refused", message } });
+      expect((await result<HostStatus>(victim.host, "status")).settings, `${name}: nothing changed`).toEqual(before.settings);
+    }
+    const honest = await exportWith(U1.from, U1.from);
+    const imported = await result<ImportResult>(victim.host, "import", { snapshot: honest });
+    expect(imported.status.settings).toEqual({ config: { source: { kind: "tape", range: "u1" }, startHeight: U1.from }, autoStart: false });
+  }, 120_000);
+  it("[[browser.snapshot.expansion]] rows that unpack to many times the size of the file are refused as soon as they pass the bound, before the trial holds much of them: blobs of a random kilobyte and a megabyte of zeros, which pass every other check (a few of them are imported)", async () => {
+    const { file } = await exportedU1(U1.from + 3);
+    const { manifest, data } = decodeSnapshotFile(file);
+    const entries: RowsEntry[] = [];
+    await readRows(manifest, data, async (e) => { entries.push(e); });
+    const BLOBS = "chain_archive.chain_blobs";
+    expect(manifest.tables.find((t) => t.name === BLOBS)?.columns).toEqual(["hash", "data", "created_at"]);
+    const lastBlobs = entries.map((e) => e.table).lastIndexOf(BLOBS);
+    expect(lastBlobs).toBeGreaterThanOrEqual(0);
+    /** One rows entry of `chain_blobs`: a binary COPY stream of one blob of 1 MiB, its first kilobyte random. */
+    const blobEntry = (chunk: number): RowsEntry => {
+      const blob = new Uint8Array(1024 ** 2);
+      blob.set(randomBytes(1024));
+      const row = new Uint8Array(2 + 4 + 32 + 4 + blob.length + 4 + 8);
+      const v = new DataView(row.buffer);
+      v.setInt16(0, 3);
+      v.setInt32(2, 32);
+      row.set(createHash("sha256").update(blob).digest(), 6);
+      v.setInt32(38, blob.length);
+      row.set(blob, 42);
+      v.setInt32(42 + blob.length, 8);
+      v.setBigInt64(46 + blob.length, 800_000_000_000_000n); // microseconds since 2000-01-01
+      const copy = new Uint8Array(19 + row.length + 2);
+      copy.set([0x50, 0x47, 0x43, 0x4f, 0x50, 0x59, 0x0a, 0xff, 0x0d, 0x0a, 0x00]);
+      copy.set(row, 19);
+      copy.set([0xff, 0xff], 19 + row.length);
+      return { table: BLOBS, chunk, copy };
+    };
+    /** The U1 snapshot with `n` such blobs more: the rows streamed through gzip, entry by entry. */
+    const crafted = async (n: number): Promise<Uint8Array> => {
+      const firstNew = entries.filter((e) => e.table === BLOBS).length;
+      let tarBytes = 0;
+      const parts = function* (): Generator<Uint8Array> {
+        const each = function* (): Generator<RowsEntry> {
+          yield* entries.slice(0, lastBlobs + 1);
+          for (let i = 0; i < n; i++) yield blobEntry(firstNew + i);
+          yield* entries.slice(lastBlobs + 1);
+        };
+        for (const e of each()) {
+          const t = writeTar([{ name: rowsEntryName(e.table, e.chunk), data: e.copy }], Date.parse(manifest.createdAt) / 1000);
+          const part = t.subarray(0, t.length - 1024);
+          tarBytes += part.length;
+          yield part;
+        }
+        tarBytes += 1024;
+        yield new Uint8Array(1024);
+      };
+      const rows = new Uint8Array(await buffer(Readable.from(parts()).pipe(createGzip({ level: 9 }))));
+      const tables = manifest.tables.map((t) => (t.name === BLOBS ? { ...t, rows: t.rows + n } : t));
+      return encodeSnapshotFile({ ...manifest, tables, data: { ...manifest.data, bytes: rows.length, sha256: await sha256Hex(rows), tarBytes } }, rows);
+    };
+
+    // A few: every check passes, and the rows are imported.
+    const victim = host();
+    await victim.host.boot();
+    const few = await crafted(8);
+    const accepted = await result<ImportResult>(victim.host, "import", { snapshot: new Blob([few as Uint8Array<ArrayBuffer>]) });
+    expect(accepted.status.cursors?.sync).toEqual({ height: U1.from + 3, startHeight: U1.from });
+
+    // Many: refused once the rows unpack to more than the bound, with little of them held.
+    const many = await crafted(400);
+    expect(many.length, "a small file").toBeLessThan(2 * 1024 ** 2);
+    let peak = 0;
+    const base = process.memoryUsage().arrayBuffers;
+    const sample = setInterval(() => { peak = Math.max(peak, process.memoryUsage().arrayBuffers - base); }, 2);
+    const t0 = performance.now();
+    const r = await call(victim.host, "import", { snapshot: new Blob([many as Uint8Array<ArrayBuffer>]) });
+    const ms = performance.now() - t0;
+    clearInterval(sample);
+    peak = Math.max(peak, process.memoryUsage().arrayBuffers - base);
+    console.log(`expansion: a ${many.length}-byte file whose rows unpack to ${decodeSnapshotFile(many).manifest.data.tarBytes} bytes: ${r.ok ? "imported" : "refused"} in ${ms.toFixed(0)} ms, peak +${(peak / 1024 ** 2).toFixed(1)} MiB`);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe("snapshot-refused");
+      expect(r.error.message).toMatch(new RegExp(`^corrupt: the rows are damaged: they unpack to more than ${MAX_ROWS_EXPANSION} times the \\d+ compressed bytes read so far \\(past the first ${ROWS_EXPANSION_FLOOR_BYTES} bytes\\)$`));
+    }
+    // Loading all of the rows into the trial's store takes about 1.4 GiB here; the bound stops it at a fraction of that.
+    expect(peak, `held ${(peak / 1024 ** 2).toFixed(1)} MiB above the start`).toBeLessThan(640 * 1024 ** 2);
+    const s = await result<HostStatus>(victim.host, "status");
+    expect(s.boot.phase).toBe("ready");
+    expect(s.cursors?.sync, "the store as the first import left it").toEqual({ height: U1.from + 3, startHeight: U1.from });
   }, 300_000);
 });

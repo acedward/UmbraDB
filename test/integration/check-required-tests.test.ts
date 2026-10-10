@@ -18,7 +18,7 @@ import {
 } from "./check-required-tests.js";
 
 /**
- * Unit coverage for the skip-enforcement reconciliation (Task 0.4, `design.md` §1.1). Exercises the
+ * Unit coverage for the skip-enforcement reconciliation (`design.md` §1.1). Exercises the
  * three acceptance cases deterministically against synthetic Vitest JSON reporter payloads — no
  * real vitest run needed — so the mechanism's teeth are proven in the required gate itself:
  *   (1) all required tests green  -> check passes;
@@ -51,7 +51,7 @@ function report(assertions: Array<{ status: string; title: string }>): JsonRepor
   };
 }
 
-describe("check-required-tests — skip-enforcement reconciliation (Task 0.4)", () => {
+describe("check-required-tests — skip-enforcement reconciliation", () => {
   it("extractIds pulls every [[id]] token and ignores plain text", () => {
     expect(extractIds("foo [[a.b.c]] bar [[d.e]] baz")).toEqual(["a.b.c", "d.e"]);
     expect(extractIds("no tokens here")).toEqual([]);
@@ -125,7 +125,7 @@ describe("check-required-tests — skip-enforcement reconciliation (Task 0.4)", 
     expect(result.violations).toEqual([]);
   });
 
-  it("(3b) a deferred id entirely ABSENT from the report FAILS the check (fail-closed existence — the scenario MUST EXIST as skipped-pending-feature; acceptance C6 / round-3 BLOCK 6)", () => {
+  it("(3b) a deferred id entirely ABSENT from the report FAILS the check (fail-closed existence — the scenario MUST EXIST as skipped-pending-feature)", () => {
     const result = reconcile(
       report([
         { status: "passed", title: "[[req.one]] a" },
@@ -200,12 +200,12 @@ describe("check-required-tests — skip-enforcement reconciliation (Task 0.4)", 
 
 
 /**
- * Change-level audit BLOCK 9 — the gate must FAIL CLOSED, be COUNT-PINNED, and be FILE-BOUND. These
+ * The gate must FAIL CLOSED, be COUNT-PINNED, and be FILE-BOUND. These
  * cases prove the reconciliation cannot fail open (an empty/absent/drifted manifest, or an id whose
  * token was moved to a trivial passing test in another file, all turn the gate RED), and that the
  * REAL manifest is structurally valid.
  */
-describe("check-required-tests — fail-closed + count-pin + file-binding (BLOCK 9)", () => {
+describe("check-required-tests — fail-closed + count-pin + file-binding", () => {
   const MANIFEST_PATH = fileURLToPath(new URL("./required-tests.manifest.json", import.meta.url));
   const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -249,7 +249,7 @@ describe("check-required-tests — fail-closed + count-pin + file-binding (BLOCK
       expect(typeof entry.file, `required ${entry.id} must bind a file`).toBe("string");
       expect(existsSync(join(REPO_ROOT, entry.file!)), `bound file for ${entry.id} must exist: ${entry.file}`).toBe(true);
     }
-    // The co-transactional saveAndAdvance crash test (BLOCK 1) is a required entry.
+    // The co-transactional saveAndAdvance crash test is a required entry.
     expect(manifest.required.some((e) => e.id === "crash.saveAndAdvance.co-tx-atomic")).toBe(true);
   });
 
@@ -304,12 +304,12 @@ describe("check-required-tests — fail-closed + count-pin + file-binding (BLOCK
 
 
 /**
- * Change-level round-4 (final hardening) — BLOCK 5 (manifest-ID uniqueness + a one-to-one id<->file
- * binding) and BLOCK 6 (deferred exemption structurally pinned + file-bound). These prove a deleted
+ * Manifest-ID uniqueness (a one-to-one id<->file binding), and the deferred exemption structurally
+ * pinned and file-bound. These prove a deleted
  * required test cannot be masked by a duplicate id, the sole deferred exemption cannot be silently
  * deleted, and a deferred skipped token moved to a different file fails the gate.
  */
-describe("check-required-tests — manifest-ID uniqueness + deferred pin/file-binding (BLOCK 5/6)", () => {
+describe("check-required-tests — manifest-ID uniqueness + deferred pin/file-binding", () => {
   function tmpManifest(obj: unknown): string {
     const dir = mkdtempSync(join(tmpdir(), "reqman-"));
     const p = join(dir, "required-tests.manifest.json");
@@ -328,32 +328,32 @@ describe("check-required-tests — manifest-ID uniqueness + deferred pin/file-bi
     return { required, deferred };
   }
 
-  it("(BLOCK 5) loadManifest THROWS on a DUPLICATE required id (length stays pinned but an id repeats)", () => {
+  it("loadManifest THROWS on a DUPLICATE required id (length stays pinned but an id repeats)", () => {
     const m = validManifest();
     // Delete a distinct id and replace it with a DUPLICATE of another passing entry — length stays 25.
     m.required[EXPECTED_REQUIRED_COUNT - 1] = { id: m.required[0]!.id, file: m.required[0]!.file };
     expect(() => loadManifest(tmpManifest(m))).toThrow(/duplicate manifest id/);
   });
 
-  it("(BLOCK 5) loadManifest THROWS on an id shared between required and deferred", () => {
+  it("loadManifest THROWS on an id shared between required and deferred", () => {
     const m = validManifest();
     m.deferred[0] = { id: m.required[0]!.id, file: "test/def-0.test.ts", pendingFeature: "x" };
     expect(() => loadManifest(tmpManifest(m))).toThrow(/duplicate manifest id/);
   });
 
-  it("(BLOCK 6) loadManifest THROWS when the deferred count drifts (deleting the sole deferred entry)", () => {
+  it("loadManifest THROWS when the deferred count drifts (deleting the sole deferred entry)", () => {
     const m = validManifest();
     m.deferred = [];
     expect(() => loadManifest(tmpManifest(m))).toThrow(new RegExp(`"deferred" length 0 != pinned ${EXPECTED_DEFERRED_COUNT}`));
   });
 
-  it("(BLOCK 6) loadManifest THROWS when a deferred entry is missing its bound file", () => {
+  it("loadManifest THROWS when a deferred entry is missing its bound file", () => {
     const m = validManifest();
     m.deferred[0] = { id: "def.nofile", pendingFeature: "x" } as ManifestEntry;
     expect(() => loadManifest(tmpManifest(m))).toThrow(/deferred entry "def.nofile" is missing its bound "file"/);
   });
 
-  it("(BLOCK 6) reconcile FAILS (deferred-wrong-file) when a deferred skipped token is in a DIFFERENT file", () => {
+  it("reconcile FAILS (deferred-wrong-file) when a deferred skipped token is in a DIFFERENT file", () => {
     const manifest: RequiredTestsManifest = {
       required: [{ id: "req.bound", file: "test/integration/crash/pg-kill-save.crash.test.ts" }],
       deferred: [{ id: "def.bound", file: "test/integration/crash/pg-kill-save.crash.test.ts", pendingFeature: "x" }],
@@ -374,7 +374,7 @@ describe("check-required-tests — manifest-ID uniqueness + deferred pin/file-bi
     expect(r.violations).toContainEqual({ id: "def.bound", reason: "deferred-wrong-file", statuses: ["/abs/test/integration/crash/trivial-dummy.test.ts"] });
   });
 
-  it("(BLOCK 6) reconcile PASSES when the deferred skipped token is in ITS BOUND file", () => {
+  it("reconcile PASSES when the deferred skipped token is in ITS BOUND file", () => {
     const manifest: RequiredTestsManifest = {
       required: [{ id: "req.bound", file: "test/integration/crash/pg-kill-save.crash.test.ts" }],
       deferred: [{ id: "def.bound", file: "test/integration/crash/pg-kill-save.crash.test.ts", pendingFeature: "x" }],

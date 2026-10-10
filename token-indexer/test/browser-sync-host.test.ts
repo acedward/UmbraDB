@@ -9,8 +9,14 @@
  *   one (a new store: the default configuration), as the leader tab does once the worker has booted; a reopened store
  *   resumes at its cursor through the gap (every height fetched once, the first height kept); a `stop` turns the
  *   automatic start off until the next `start`.
- * - `[[browser.tabs.auto-start]]` — the leader tab's default resume: the previous leader's running configuration, else
- *   the saved configuration when it says to start by itself, else nothing; never with the build's automatic start off.
+ * - `[[browser.host.start-stop-unsaved]]` — a `start` whose settings the browser refuses to save is refused (nothing
+ *   runs, nothing is saved); a `start` that fails once its settings were saved puts them back; a `stop` always stops
+ *   the engine and, when the setting that keeps it stopped cannot be saved, answers so, the status keeping the
+ *   automatic start on.
+ * - `[[browser.tabs.auto-start]]` — the leader tab's default resume: the store's saved configuration when its saved
+ *   settings say to start by itself, whatever the previous leader last reported (a configuration they no longer hold,
+ *   or an engine they no longer start, is not run), else nothing; with the build's automatic start off, only after a
+ *   previous leader whose engine ran.
  * - `[[browser.host.range-reset]]` — `range` replaces the store with a new one and starts the new range (a range whose
  *   end is below its start is refused and changes nothing); `reset` replaces it and runs the same range again, to the
  *   same digests; `range("tip")` follows the tip again; the hook before a wipe is called each time; a reopened store keeps
@@ -23,7 +29,9 @@
  *   that does not answer counts as unknown after the read timeout, and a walk that never ends delays neither a reading
  *   nor the pause and its end.
  * - `[[browser.host.pacing]]` — with the default Stagenet endpoints, the browser engine spaces request starts 250 ms
- *   apart per endpoint and honours a 429's `Retry-After`, as the Node commands do.
+ *   apart per endpoint and honours a 429's `Retry-After`, as the Node commands do. The check allows for the measured
+ *   lateness of the thread's timers up to 150 ms (a run with more is repeated, then fails as inconclusive), and a run
+ *   with no interval between starts fails it.
  */
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,6 +55,8 @@ const U1 = { from: 715402, to: 715433 } as const;
 const FAST = { sync: { idleMs: 100 }, scan: { idleMs: 100 } };
 /** The interval of the timer that measures how late this thread's timers fire (the pacing test). */
 const PROBE_MS = 20;
+/** The most lateness of this thread's timers the pacing test allows for; a run with more is inconclusive. */
+const MAX_PACING_LATE_MS = 150;
 
 const SUPPORTED: CapabilityReport = {
   supported: true,
@@ -203,6 +213,62 @@ describe("browser engine host: sync", () => {
     expect(again.settings).toEqual({ config: net, autoStart: true });
   }, 120_000);
 
+  it("[[browser.host.start-stop-unsaved]] a start whose settings cannot be saved starts nothing and changes nothing; a start that fails once its settings were saved puts them back; a stop always stops the engine and says when the setting that keeps it stopped could not be saved, the status keeping the automatic start on", async () => {
+    const saved = memorySettingsStore();
+    let failing = false;
+    let tapeFails = false;
+    const h = newHost({
+      settings: {
+        ...saved,
+        save: async (x) => {
+          if (failing) throw Object.assign(new Error("the quota is exceeded"), { name: "QuotaExceededError" });
+          await saved.save(x);
+        },
+      },
+      loadTape: (range) => (tapeFails ? Promise.reject(new Error("the file is not reachable")) : loadTape(range, fileFetch)),
+    });
+    const config: StartConfig = { source: { kind: "tape", range: "u1" }, startHeight: U1.from, endHeight: U1.from + 5, ...FAST };
+    const other: StartConfig = { ...config, endHeight: U1.from + 9 };
+    await result(h, "start", { config });
+    await until(h, "the range", (s) => s.cursors?.scan?.nextHeight === U1.from + 6);
+    await result(h, "stop");
+    const stopped = { config, autoStart: false };
+    expect(await saved.load()).toEqual(stopped);
+
+    // The settings cannot be saved: the start is refused, nothing runs, nothing is saved.
+    failing = true;
+    expect(await errorOf(h, "start", { config: other })).toEqual({
+      code: "settings-failed",
+      message: "the configuration to start could not be saved (the quota is exceeded): the engine was not started",
+    });
+    failing = false;
+    let s = await result<HostStatus>(h, "status");
+    expect(s.engine).toMatchObject({ running: false, config });
+    expect(s.settings).toEqual(stopped);
+    expect(await saved.load()).toEqual(stopped);
+
+    // The engine fails to start once its settings were saved: they are put back.
+    tapeFails = true;
+    expect((await errorOf(h, "start", { config: other })).code).toBe("start-failed");
+    tapeFails = false;
+    expect((await result<HostStatus>(h, "status")).settings).toEqual(stopped);
+    expect(await saved.load()).toEqual(stopped);
+
+    // A stop whose setting cannot be saved: the engine stops; the answer says it starts again at the next boot.
+    expect((await result<HostStatus>(h, "start", { config })).engine).toMatchObject({ running: true, config });
+    expect(await saved.load()).toEqual({ config, autoStart: true });
+    failing = true;
+    expect(await errorOf(h, "stop")).toEqual({
+      code: "settings-failed",
+      message: "the engine is stopped, but turning its automatic start off could not be saved (the quota is exceeded): the next page to open the engine starts it again",
+    });
+    failing = false;
+    s = await result<HostStatus>(h, "status");
+    expect(s.engine).toMatchObject({ running: false, config });
+    expect(s.settings).toEqual({ config, autoStart: true });
+    expect(await saved.load()).toEqual({ config, autoStart: true });
+  }, 120_000);
+
   it("[[browser.host.range-reset]] range replaces the store and starts the new range; reset runs it again to the same digests; range tip follows again; a reopened store keeps the range's end", async () => {
     const dir = storeDir();
     const settings = memorySettingsStore();
@@ -355,7 +421,11 @@ describe("browser engine host: sync", () => {
     expect(silent.storage).toMatchObject({ usageBytes: null, quotaBytes: null, pauseAtBytes: null, paused: false });
   }, 120_000);
 
-  it("[[browser.host.pacing]] with the default Stagenet endpoints, request starts are 250 ms apart per endpoint and a 429's Retry-After is honoured", async () => {
+  /** One run of four U1 blocks against the default Stagenet endpoints (`sync` merged over the run's settings), a 429
+   *  answered once: each endpoint's request start times, how late this thread's timers fired while the requests
+   *  started (a probe timer beside the host, which shares its event loop: a timer due inside a busy stretch fires when
+   *  the stretch ends), and the host's log. */
+  async function pacedRun(sync: Record<string, unknown> = {}): Promise<{ starts: Map<string, number[]>; lateMs: number; runLateMs: number; logs: string[] }> {
     const replay = createTapeReplay(await u1Tape(), { throttles: [{ operation: "chain_getBlock", times: 1, status: 429, retryAfter: "1" }] });
     const starts = new Map<string, number[]>();
     const route = (url: URL): string => {
@@ -371,8 +441,6 @@ describe("browser engine host: sync", () => {
       return new Response(a.body, { status: a.status, headers: a.headers });
     };
     const logs: string[] = [];
-    // How late this thread's timers fire during the run: a probe timer beside the host, which shares its event loop
-    // (each firing's due time and lateness).
     const late: Array<{ due: number; ms: number }> = [];
     let due = Date.now() + PROBE_MS;
     const probe = setInterval(() => {
@@ -380,31 +448,57 @@ describe("browser engine host: sync", () => {
       late.push({ due, ms: t - due });
       due = t + PROBE_MS;
     }, PROBE_MS);
+    const h = newHost({ nodeUrl: BROWSER_NODE_URL, indexerUrl: BROWSER_INDEXER_URL, fetch: fetchImpl, log: (level, m) => logs.push(`${level} ${m}`) });
     try {
-      const h = newHost({ nodeUrl: BROWSER_NODE_URL, indexerUrl: BROWSER_INDEXER_URL, fetch: fetchImpl, log: (level, m) => logs.push(`${level} ${m}`) });
-      await result(h, "start", { config: { startHeight: U1.from, endHeight: U1.from + 3, ...FAST } });
+      await result(h, "start", { config: { startHeight: U1.from, endHeight: U1.from + 3, ...FAST, sync: { ...FAST.sync, ...sync } } });
       await until(h, "four blocks", (s) => s.engine!.status.sync.phase === "done");
     } finally {
       clearInterval(probe);
+      await closeHost(h);
     }
-    expect(starts.size).toBe(2);
-    // The pacer spaces the start SLOTS 250 ms apart; a request whose timer fires late (the event loop busy with a
-    // statement) starts late in its slot, so the next gap can be shorter by that lateness while the slots keep their
-    // spacing. Allowed lateness: 100 ms, or more on a machine whose timers were later than that while the requests
-    // started (the probe's largest lateness between the first and the last start, plus its interval: a timer due inside
-    // a busy stretch fires when the stretch ends). A pacer with a shorter interval fails the run's total.
     const all = [...starts.values()].flat();
     const [first, last] = [Math.min(...all), Math.max(...all)];
     const lateMs = Math.max(0, ...late.filter((x) => x.due >= first - PROBE_MS && x.due <= last).map((x) => x.ms));
-    const LATE_MS = Math.max(100, lateMs + PROBE_MS);
+    return { starts, lateMs, runLateMs: Math.max(0, ...late.map((x) => x.ms)), logs };
+  }
+
+  /**
+   * How a run's request starts break the 250 ms spacing ([] when they keep it). The pacer spaces the start SLOTS 250 ms
+   * apart; a request whose timer fires late (the event loop busy with a statement) starts late in its slot, so the next
+   * gap can be shorter by that lateness while the slots keep their spacing. Allowed lateness: 100 ms, or the probe's
+   * largest lateness while the requests started plus its interval — at most {@link MAX_PACING_LATE_MS} plus the
+   * interval, so a gap must still be at least 80 ms and a pacer that ignores its interval fails however late timers are.
+   */
+  function pacingFailures(starts: Map<string, number[]>, lateMs: number): string[] {
+    const allowed = Math.max(100, Math.min(lateMs, MAX_PACING_LATE_MS) + PROBE_MS);
+    const out: string[] = [];
     for (const [origin, times] of starts) {
-      expect(times.length, origin).toBeGreaterThanOrEqual(4);
-      for (let i = 1; i < times.length; i++) expect(times[i]! - times[i - 1]!, `${origin} request ${i}`).toBeGreaterThanOrEqual(250 - LATE_MS);
-      expect(times.at(-1)! - times[0]!, `${origin}: ${times.length} starts`).toBeGreaterThanOrEqual(250 * (times.length - 1) - LATE_MS);
+      if (times.length < 4) out.push(`${origin}: ${times.length} starts, fewer than 4`);
+      for (let i = 1; i < times.length; i++)
+        if (times[i]! - times[i - 1]! < 250 - allowed) out.push(`${origin} request ${i}: ${times[i]! - times[i - 1]!} ms after the one before (allowed ${250 - allowed})`);
+      if (times.at(-1)! - times[0]! < 250 * (times.length - 1) - allowed) out.push(`${origin}: ${times.length} starts in ${times.at(-1)! - times[0]!} ms`);
     }
-    expect(logs, logs.join("\n")).toContain("warn sync chain_getBlock retried in 1000 ms: chain_getBlock: HTTP 429 from https://rpc.stagenet.shielded.tools//");
-    console.log("pacing: timers were late by", lateMs, "ms at most while the requests started; allowed lateness", LATE_MS, "ms; the whole run's largest lateness", Math.max(0, ...late.map((x) => x.ms)), "ms");
-  }, 120_000);
+    return out;
+  }
+
+  it("[[browser.host.pacing]] with the default Stagenet endpoints, request starts are 250 ms apart per endpoint and a 429's Retry-After is honoured; a pacer with no interval fails the same check", async () => {
+    // A run whose timers were later than the bound while the requests started cannot show the spacing: it is run
+    // again, and after three such runs the test fails as inconclusive instead of allowing more lateness.
+    let run = await pacedRun();
+    for (let attempt = 2; attempt <= 3 && run.lateMs > MAX_PACING_LATE_MS; attempt++) {
+      console.log(`pacing: timers were late by ${run.lateMs} ms while the requests started (bound ${MAX_PACING_LATE_MS} ms); run ${attempt}`);
+      run = await pacedRun();
+    }
+    expect(run.lateMs, `inconclusive: timers were late by more than ${MAX_PACING_LATE_MS} ms while the requests started, in three runs`).toBeLessThanOrEqual(MAX_PACING_LATE_MS);
+    expect(run.starts.size).toBe(2);
+    expect(pacingFailures(run.starts, run.lateMs)).toEqual([]);
+    expect(run.logs, run.logs.join("\n")).toContain("warn sync chain_getBlock retried in 1000 ms: chain_getBlock: HTTP 429 from https://rpc.stagenet.shielded.tools//");
+    console.log("pacing: timers were late by", run.lateMs, "ms at most while the requests started; the whole run's largest lateness", run.runLateMs, "ms");
+
+    // Negative control: the same run with no interval between starts fails the check, whatever the lateness.
+    const unpaced = await pacedRun({ minIntervalMs: 0 });
+    expect(pacingFailures(unpaced.starts, unpaced.lateMs), "a pacer with no interval").not.toEqual([]);
+  }, 180_000);
 });
 
 describe("leader tab: automatic start", () => {
@@ -421,9 +515,10 @@ describe("leader tab: automatic start", () => {
     return { client, starts };
   }
 
-  it("[[browser.tabs.auto-start]] the leader resumes the previous leader's running configuration, else starts the saved configuration when it says to start by itself, else nothing; with the build's automatic start off it starts only a previous leader's", async () => {
+  it("[[browser.tabs.auto-start]] the leader starts the store's saved configuration when its saved settings say to start by itself, whatever the previous leader last reported, else nothing; with the build's automatic start off only after a previous leader whose engine ran", async () => {
     const config: StartConfig = { source: { kind: "tape", range: "u1" }, startHeight: 715402 };
-    const saved = (autoStart: boolean) => ({ engine: null, settings: { config: {}, autoStart } });
+    // The saved settings of a store whose last start ran `config` (the previous leader's running configuration).
+    const saved = (autoStart: boolean) => ({ engine: null, settings: { config, autoStart } });
 
     const resumed = fakeClient(saved(true));
     await resumeOrAutoStart(true)({ running: true, config }, resumed.client);
@@ -431,7 +526,7 @@ describe("leader tab: automatic start", () => {
 
     const fresh = fakeClient(saved(true));
     await resumeOrAutoStart(true)(null, fresh.client);
-    expect(fresh.starts).toEqual([undefined]); // the saved configuration
+    expect(fresh.starts).toEqual([config]); // the saved configuration
 
     const stopped = fakeClient(saved(false));
     await resumeOrAutoStart(true)(null, stopped.client);
@@ -447,5 +542,17 @@ describe("leader tab: automatic start", () => {
     const busy = fakeClient({ engine: { running: true } as HostStatus["engine"], settings: { config: {}, autoStart: true } });
     await resumeOrAutoStart(true)(null, busy.client);
     expect(busy.starts).toEqual([]);
+
+    // A previous leader that reported its engine running, on a store whose saved settings no longer start it (it
+    // finished an import, or a stop, the report does not show yet): nothing, also with the build's automatic start off.
+    const imported = fakeClient(saved(false));
+    await resumeOrAutoStart(true)({ running: true, config }, imported.client);
+    await resumeOrAutoStart(false)({ running: true, config }, imported.client);
+    expect(imported.starts).toEqual([]);
+    // Saved settings that changed since the previous leader's report (a range it was replacing the store for): they run.
+    const ranged: StartConfig = { ...config, startHeight: 715412, endHeight: 715420 };
+    const replaced = fakeClient({ engine: null, settings: { config: ranged, autoStart: true } });
+    await resumeOrAutoStart(true)({ running: true, config }, replaced.client);
+    expect(replaced.starts).toEqual([ranged]);
   });
 });

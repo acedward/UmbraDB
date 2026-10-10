@@ -72,10 +72,28 @@ export interface PgliteQueryOptions {
   parsers?: Record<number, PgliteParser>;
 }
 
+/** A message of the backend as PGlite's protocol parser gives it: the fields this client reads. */
+export interface PgliteBackendMessage {
+  readonly name: string;
+  /** `rowDescription`: the columns (`name`, `dataTypeID`); `dataRow`: the values as text, `null` for NULL. */
+  readonly fields?: readonly unknown[];
+  /** `commandComplete`: the command tag. */
+  readonly text?: string;
+}
+
 /** The methods of a PGlite database this client uses (`PGlite` from `@electric-sql/pglite` has them). */
 export interface PgliteDatabase {
   query(query: string, params?: any[], options?: PgliteQueryOptions): Promise<PgliteResults>;
   exec(query: string, options?: PgliteQueryOptions): Promise<PgliteResults[]>;
+  /** Runs `fn` with no other statement of the database running beside it (PGlite's `runExclusive`). */
+  runExclusive<T>(fn: () => Promise<T>): Promise<T>;
+  /** Sends one frontend protocol message and gives the backend's messages; an error the backend sends is thrown
+   *  (PGlite's `execProtocolStream`). Called inside {@link runExclusive} only. */
+  execProtocolStream(message: Uint8Array, options?: { syncToFs?: boolean }): Promise<readonly PgliteBackendMessage[]>;
+  /** Writes the database's changes to its file system (PGlite's `syncToFs`). */
+  syncToFs(): Promise<void>;
+  /** The database's own result parsers by type oid, array types included (PGlite's `parsers`). */
+  readonly parsers: Readonly<Record<number, PgliteParser>>;
   close(): Promise<void>;
   readonly closed: boolean;
   /** Whether the session is inside a transaction block (PGlite's `isInTransaction`). Without it, a transaction left
@@ -399,21 +417,80 @@ function toResult(res: PgliteResults | undefined): PgliteResult {
   return out;
 }
 
+/** One statement of a text run with the simple protocol: its result, and whether it describes rows (the backend sent a
+ *  row description for it, also one of no column). */
+interface SimpleStatement {
+  readonly res: PgliteResults;
+  readonly describesRows: boolean;
+}
+
+/** PGlite's frontend message serializer (its `protocol.serialize`), loaded with PGlite's module when first needed. */
+let serializer: Promise<{ query(text: string): Uint8Array; sync(): Uint8Array }> | undefined;
+const frontend = (): Promise<{ query(text: string): Uint8Array; sync(): Uint8Array }> =>
+  (serializer ??= import("@electric-sql/pglite").then((m) => m.protocol.serialize));
+
+/**
+ * Runs `text` with the simple protocol as PGlite's `exec` runs it — the same `Query` message (PGlite's serializer), on
+ * the database alone, then a `Sync`, then (when it succeeded) the file system written — and reads the backend's
+ * messages itself, so that each statement keeps whether it describes rows. Values are parsed by `parsers`, then the
+ * database's own parsers, as `exec` parses them. A database error carries the statement text (`query`), as `exec`
+ * gives it.
+ */
+async function execSimple(db: PgliteDatabase, text: string, parsers: Readonly<Record<number, PgliteParser>>): Promise<SimpleStatement[]> {
+  const serialize = await frontend();
+  return db.runExclusive(async () => {
+    if (db.closed) throw connectionClosed();
+    let messages: readonly PgliteBackendMessage[];
+    try {
+      messages = await db.execProtocolStream(serialize.query(text), { syncToFs: false });
+    } catch (error) {
+      if (isServerError(error)) Object.assign(error, { query: text, params: undefined });
+      throw error;
+    } finally {
+      await db.execProtocolStream(serialize.sync(), { syncToFs: false });
+    }
+    await db.syncToFs();
+    const out: SimpleStatement[] = [];
+    let fields: Array<{ name: string; dataTypeID: number }> = [];
+    let rows: Array<Record<string, unknown>> = [];
+    let describesRows = false;
+    const parse = (value: unknown, type: number): unknown => {
+      if (value === null) return null;
+      const parser = parsers[type] ?? db.parsers[type];
+      return parser === undefined ? value : parser(value as string, type);
+    };
+    for (const m of messages) {
+      if (m.name === "rowDescription") {
+        fields = (m.fields as ReadonlyArray<{ name: string; dataTypeID: number }>).map((f) => ({ name: f.name, dataTypeID: f.dataTypeID }));
+        describesRows = true;
+      } else if (m.name === "dataRow") {
+        rows.push(Object.fromEntries((m.fields ?? []).map((v, i) => [fields[i]!.name, parse(v, fields[i]!.dataTypeID)])));
+      } else if (m.name === "commandComplete") {
+        const words = (m.text ?? "").split(" ");
+        const rowCount = Number.parseInt(words[words.length - 1]!, 10);
+        out.push({ res: { rows, fields, command: words[0], ...(Number.isNaN(rowCount) ? {} : { rowCount }) }, describesRows });
+        fields = [];
+        rows = [];
+        describesRows = false;
+      }
+    }
+    return out;
+  });
+}
+
 /**
  * The result of a text run with the simple protocol, shaped as postgres.js 3.4 shapes it. The statements' results are
- * grouped: a statement that describes rows starts a new group unless it is the first; any other statement joins the
- * group before it. A group holds the rows and columns of its first statement, the first row count reported in it and
- * the command of its last statement. One group gives that result; several give an array of them.
- *
- * A statement describes rows when it returns columns or rows; a statement that returns no column and no row (`SELECT`
- * of an empty select list over no rows) cannot be told apart from one that describes none, so it joins the group
- * before it instead of starting one.
+ * grouped: a statement that describes rows (the backend sent a row description for it, even one of no column) starts a
+ * new group unless it is the first; any other statement joins the group before it, whatever its command (`SELECT … INTO`
+ * reports `SELECT` and describes no rows). A group holds the rows and columns of its first statement, the first row
+ * count reported in it and the command of its last statement. One group gives that result; several give an array of
+ * them; a text of no statement gives one empty result.
  */
-function simpleResult(all: readonly PgliteResults[]): PgliteResult | PgliteResult[] {
+function simpleResult(all: readonly SimpleStatement[]): PgliteResult | PgliteResult[] {
   const groups: PgliteResult[] = [];
-  for (const res of all) {
+  for (const { res, describesRows } of all) {
     const current = groups[groups.length - 1];
-    if (current === undefined || res.fields.length > 0 || res.rows.length > 0) {
+    if (current === undefined || describesRows) {
       groups.push(toResult(res));
       continue;
     }
@@ -950,10 +1027,10 @@ async function runStatement(state: ClientState, holder: Holder, q: PgliteQuery, 
   state.debug?.(state.id, compiled.text, compiled.params, compiled.types);
   if (topLevel && startsTransactionBlock(compiled.text)) throw unsafeTransaction();
   let res: PgliteResults | undefined;
-  let all: PgliteResults[] | undefined;
+  let all: SimpleStatement[] | undefined;
   try {
     if (q.simple) {
-      all = await session.db.exec(compiled.text, { parsers: state.parsers });
+      all = await execSimple(session.db, compiled.text, state.parsers);
     } else {
       res = await session.db.query(compiled.text, compiled.params, {
         paramTypes: compiled.types,

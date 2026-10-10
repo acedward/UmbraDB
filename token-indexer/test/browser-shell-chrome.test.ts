@@ -467,7 +467,7 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       expect(drawn.cells).toEqual([[visibleText(longCell.text), "00ff \u00b7 2 bytes"]]);
       expect(drawn.cells[0]![0]!.endsWith("<img src=x onerror=\"window.__pwned=1\">\u2026 (9,999 characters)")).toBe(true);
       expect(await p.eval("document.querySelector('[data-field=\"db-rows.table\"] tbody td').title")).toBe(visibleText(longCell.title!));
-      expect(drawn.page).toContain(`newest first: by ${marked}, descending`);
+      expect(drawn.page).toContain(`by primary key (${marked}), descending`);
       expect(await p.eval<number>("document.querySelectorAll('[data-field=\"db-rows.table\"] .mark-vis').length")).toBeGreaterThan(5);
       expect(await p.eval("({ scripts: document.scripts.length, media: document.querySelectorAll('img, iframe, object, embed, video, audio').length, pwned: window.__pwned === undefined ? null : window.__pwned })")).toEqual({ scripts: 1, media: 0, pwned: null });
       expect(await p.eval<string>("document.body.innerText")).not.toMatch(HIDDEN_RAW);

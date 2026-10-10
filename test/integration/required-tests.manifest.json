@@ -1,6 +1,6 @@
 {
-  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 370), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
-  "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` — those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early — that would re-open the exact self-skip hole this manifest closes.",
+  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 383), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
+  "$check-mechanism-note": "The check mechanism itself is proven independently by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so they stay green whatever this manifest holds; check-required-tests.test.ts also validates this manifest's structure (every required entry bound to an existing file, the pinned count). Do NOT delete a required id to make the check pass — that would re-open the self-skip hole this manifest closes; a required id whose test is missing fails the gate, naming it.",
   "required": [
     {
       "id": "crash-harness.smoke.spawn-sigkill-container-survives",
@@ -1188,6 +1188,11 @@
       "description": "a start with no start height begins at the finalized tip; a start with no configuration runs the saved one; a reopened store resumes at its cursor through the gap; a stop turns the automatic start off"
     },
     {
+      "id": "browser.host.start-stop-unsaved",
+      "file": "token-indexer/test/browser-sync-host.test.ts",
+      "description": "a start whose settings cannot be saved starts nothing and changes nothing; a start that fails once its settings were saved puts them back; a stop always stops the engine and says when the setting that keeps it stopped could not be saved, the status keeping the automatic start on"
+    },
+    {
       "id": "browser.host.range-reset",
       "file": "token-indexer/test/browser-sync-host.test.ts",
       "description": "range drops the data and starts the new range; reset runs it again to the same digests; range tip follows again; a reopened store keeps the range's end"
@@ -1200,12 +1205,12 @@
     {
       "id": "browser.host.pacing",
       "file": "token-indexer/test/browser-sync-host.test.ts",
-      "description": "with the default Stagenet endpoints, request starts are 250 ms apart per endpoint and a 429's Retry-After is honoured"
+      "description": "with the default Stagenet endpoints, request starts are 250 ms apart per endpoint and a 429's Retry-After is honoured, allowing for the timers' measured lateness up to 150 ms (more: run again, then inconclusive); a pacer with no interval fails the same check"
     },
     {
       "id": "browser.tabs.auto-start",
       "file": "token-indexer/test/browser-sync-host.test.ts",
-      "description": "the leader resumes the previous leader's running configuration, else starts the saved configuration when it says to start by itself, else nothing; with the build's automatic start off it starts only a previous leader's"
+      "description": "the leader starts the store's saved configuration when its saved settings say to start by itself, whatever the previous leader last reported, else nothing; with the build's automatic start off only after a previous leader whose engine ran"
     },
     {
       "id": "browser.worker.tape-digests",
@@ -1360,7 +1365,7 @@
     {
       "id": "browser.watchdog.slow-query",
       "file": "token-indexer/test/browser-watchdog.test.ts",
-      "description": "a statement that does not return silences the worker; the page terminates it and starts a new one: the API request in flight gets the 503, a status request restarted; the new worker carries the counts, continues the engine at the cursors, and the range ends with the same tables"
+      "description": "with no restart before it, a statement that does not return silences the worker; the page terminates it and starts a new one: the API request in flight gets the 503, a status request restarted; the new worker carries the counts, continues the engine at the cursors, and the range ends with the same tables"
     },
     {
       "id": "browser.watchdog.rules",
@@ -1405,7 +1410,7 @@
     {
       "id": "browser.explorer.panel-model",
       "file": "token-indexer/test/browser-explorer.test.ts",
-      "description": "the panel's view: every engine state with its detail, the first indexed height as 'history before block H is not indexed', the configuration in words, storage from the engine's reading (or the page's until there is one), the role and open tabs, the held range a drop would lose, and the typed range checked before it is sent"
+      "description": "the panel's view: every engine state with its detail, the first indexed height as 'history before block H is not indexed' (with the token indexer off and no scan range, the archive's first height), the configuration in words, storage from the engine's reading (or the page's until there is one), the role and open tabs, the held range a drop would lose, and the typed range checked before it is sent"
     },
     {
       "id": "browser.explorer.build",
@@ -1440,7 +1445,17 @@
     {
       "id": "browser.snapshot.published",
       "file": "token-indexer/test/browser-snapshot.test.ts",
-      "description": "the published snapshot of 714485–715183 holds the recorded live sync, its index validates, and an import of it answers the API with no chain request"
+      "description": "the published snapshot of 714485–715183 holds the recorded live sync (archive and range-tables digests, no NULL bytea[] element), its index validates and lists them, and an import of it answers the API with no chain request; the generator refuses a range whose digests or NULL elements differ"
+    },
+    {
+      "id": "browser.snapshot.reproducible",
+      "file": "token-indexer/test/browser-snapshot.test.ts",
+      "description": "a snapshot remade at a time (as the build remakes the published one) has the same bytes whenever its rows were written: two replays' exports remade at one time are one file, with that time as its createdAt, its tar times and its rows' write times, and the export's digests"
+    },
+    {
+      "id": "browser.snapshot.null-elements",
+      "file": "token-indexer/test/browser-snapshot.test.ts",
+      "description": "the snapshot integrity check compares the NULL bytea[] elements beside the archive and range-tables digests, which count a NULL element as empty bytes: a snapshot whose NULL element became empty bytes, or whose empty element became NULL, has the same digests and is rejected"
     },
     {
       "id": "browser.worker.snapshot-round-trip",
@@ -1550,7 +1565,7 @@
     {
       "id": "browser.crash.import-swap",
       "file": "token-indexer/test/browser-crash-chrome.test.ts",
-      "description": "kills during a snapshot import's swap leave the store as it was (before the journal is complete) or the snapshot's (finished at the next boot from the journal), whole, with their digests"
+      "description": "kills during a snapshot import's swap leave the store as it was (before the journal is complete) or the snapshot's (finished at the next boot from the journal), whole, with their digests and NULL bytea[] elements"
     },
     {
       "id": "browser.worker.quota-pause",
@@ -1628,6 +1643,11 @@
       "description": "unsafe text with several statements gives every statement's rows, grouped as postgres.js groups them: a new result at each statement that describes rows after the first"
     },
     {
+      "id": "pglite.client.unsafe-zero-column",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "a statement that describes rows of no column (SELECT of an empty select list, a table of no column, EXECUTE of such a statement) starts its own result, with or without rows; a statement that describes none (SELECT ... INTO included) joins the result before it, whatever its command"
+    },
+    {
       "id": "pglite.client.transaction-guard",
       "file": "test/postgres/pglite-sql.test.ts",
       "description": "refuses a top-level statement that starts a transaction block before it runs, also behind comments or after other statements; BEGIN in quoted text, identifiers, comments or a DO body is not refused"
@@ -1668,6 +1688,16 @@
       "description": "a worker that stops answering once an import's journal is saved, its engine still running: the new worker's boot finishes the import and starts nothing on the snapshot's store; the continuing configuration stays saved with no automatic start"
     },
     {
+      "id": "browser.watchdog.restore-during-replacement",
+      "file": "token-indexer/test/browser-watchdog-restore.test.ts",
+      "description": "a worker that stops answering while a range replaces its store (its engine's stop already reported), or while the range's own start runs (from a stopped engine): the new worker's boot finishes what the saved settings ask for and the restore starts the new range from them"
+    },
+    {
+      "id": "browser.tabs.handover-mid-replacement",
+      "file": "token-indexer/test/browser-watchdog-restore.test.ts",
+      "description": "the next leader tab starts what the store's saved settings say, never what the closed leader last reported: after an import the leader's watchdog finished, nothing; mid-import, nothing on the snapshot's store; mid-range, the new range on a new store; mid-reset, the saved configuration on a new store"
+    },
+    {
       "id": "browser.host.hostile-message",
       "file": "token-indexer/test/browser-host.test.ts",
       "description": "a version or type that cannot be turned into text gets an error response, never a rejection; the page's parser reports such a worker message as invalid"
@@ -1676,6 +1706,11 @@
       "id": "engine.telemetry.redaction-phrases",
       "file": "token-indexer/test/engine-telemetry.test.ts",
       "description": "redaction removes a whole secret phrase or structured value: every word of an unquoted seed, mnemonic or passphrase, a JSON member's array or object, also inside JSON-escaped text, in the diagnostics file too"
+    },
+    {
+      "id": "engine.telemetry.redaction-phrase-forms",
+      "file": "token-indexer/test/engine-telemetry.test.ts",
+      "description": "an unquoted seed, mnemonic, passphrase or seed words lose every word whatever the case, line breaks or separators (commas, tabs, several spaces, CR LF, an ideographic space, a numbered list, JSON-escaped line breaks inside a log field, a value quoted inside JSON-escaped text), in the diagnostics file too; text after the value of any other key, or after the next key, stays"
     },
     {
       "id": "engine.telemetry.redaction-url-paths",
@@ -1695,12 +1730,12 @@
     {
       "id": "browser.build.notices",
       "file": "token-indexer/test/browser-notices.test.ts",
-      "description": "the build writes THIRD-PARTY-NOTICES.txt: every bundled package with its version, licence and text, PostgreSQL's licence, the Outfit font's OFL and UmbraDB's notice and licence"
+      "description": "the build writes THIRD-PARTY-NOTICES.txt: every bundled package with its version, licence and text, every bundled vendored work (the MIP-0018 reference codec) with its NOTICE and licence, PostgreSQL's licence, the Outfit font's OFL and UmbraDB's notice and licence"
     },
     {
       "id": "browser.build.notices-rules",
       "file": "token-indexer/test/browser-notices.test.ts",
-      "description": "module ids map to their package directories; a package that ships no licence text and is not known fails the build, one that ships it is listed with it"
+      "description": "module ids map to their package directories, or outside node_modules to the vendored work they belong to; a vendored module whose work has no licence file, a module outside the repository and node_modules, and a package that ships no licence text and is not known fail the build; one that ships it is listed with it"
     },
     {
       "id": "browser.frame.rules",
@@ -1738,6 +1773,11 @@
       "description": "the engine's scan switch: a scan configured off starts off while the sync archives; on, it catches up from its cursor; off while it runs, the answer comes once it waits at a block boundary; a stop while it waits ends the loops"
     },
     {
+      "id": "engine.scan-wait-signal",
+      "file": "token-indexer/test/browser-modules.test.ts",
+      "description": "the scan loop's waits share one signal combining the engine's stop and the switch, made once for each switch change: fifty idle waits make no new one; after the switch is turned off and on the waits share a new one"
+    },
+    {
       "id": "browser.host.module-toggle",
       "file": "token-indexer/test/browser-modules.test.ts",
       "description": "module off: the scan cursor stays at a block boundary while the archive advances past it, /v1/status says scanner off and answers, the system snapshot shows the scan off; module on: the scan catches up; the finished digests equal the uninterrupted replay's"
@@ -1746,6 +1786,11 @@
       "id": "browser.host.module-saved",
       "file": "token-indexer/test/browser-modules.test.ts",
       "description": "the module's state is saved with the settings: a new host on the same store starts with the scan off and the archive syncing; a module that is not switchable is refused; module is never sent again to a new leader, tables and rows are"
+    },
+    {
+      "id": "browser.host.module-unsaved",
+      "file": "token-indexer/test/browser-modules.test.ts",
+      "description": "a module switch whose settings cannot be saved is refused and changes nothing: the running scan goes on, the status and the saved settings keep the module on, and the next host (a reload, a restarted worker, the next leader tab) runs it on, as acknowledged"
     },
     {
       "id": "browser.host.store-replaced",
@@ -1760,7 +1805,7 @@
     {
       "id": "browser.host.rows",
       "file": "token-indexer/test/browser-modules.test.ts",
-      "description": "rows of every table equals the same page read with SQL (newest first by the primary key, bytes and text cut with their lengths); pages follow one another; the bounds hold"
+      "description": "rows of every table equals the same page read with SQL (by the primary key, descending: newest first for the height-keyed tables; bytes and text cut with their lengths); pages follow one another; the bounds hold"
     },
     {
       "id": "browser.host.rows-refused",
@@ -1785,7 +1830,7 @@
     {
       "id": "browser.database.model",
       "file": "token-indexer/test/browser-overview.test.ts",
-      "description": "the Database tab's view: NULL; bytes as the hex of their first bytes and their length; text cut with its length; what was sent in the tooltip; sizes, estimates, kinds, order and page"
+      "description": "the Database tab's view: NULL; bytes as the hex of their first bytes and their length; text cut with its length; what was sent in the tooltip; sizes, estimates, kinds, order (newest first only for a key that leads with a block height after the network, else by primary key) and page"
     },
     {
       "id": "browser.shell.overview",
@@ -1823,6 +1868,16 @@
       "description": "a small file whose rows declare a huge size is refused quickly with little memory: all zeros, an oversized entry, more than declared, a size above the ceiling"
     },
     {
+      "id": "browser.snapshot.start-height",
+      "file": "token-indexer/test/browser-snapshot-attacks.test.ts",
+      "description": "a snapshot whose archive says it starts below or above its lowest block, or whose scan starts below the archive, is refused with nothing changed; an honest one is imported and its start saved"
+    },
+    {
+      "id": "browser.snapshot.expansion",
+      "file": "token-indexer/test/browser-snapshot-attacks.test.ts",
+      "description": "rows that unpack to many times the size of the file are refused as soon as they pass the bound, before the trial holds much of them: blobs of a random kilobyte and a megabyte of zeros, which pass every other check (a few of them are imported)"
+    },
+    {
       "id": "browser.host.import-failures",
       "file": "token-indexer/test/browser-store-replace.test.ts",
       "description": "a failure at each step of an import closes every store it opened; before the journal nothing changes; after it the store is reported, reset/range/import work, and a reload finishes the import"
@@ -1846,6 +1901,16 @@
       "id": "browser.host.range-saved-first",
       "file": "token-indexer/test/browser-store-replace.test.ts",
       "description": "range saves the new range before it replaces the store: a failed save changes nothing, and a worker that ends during the replacement leaves the new range saved for the next boot"
+    },
+    {
+      "id": "browser.host.range-interrupted",
+      "file": "token-indexer/test/browser-store-replace.test.ts",
+      "description": "a worker that ends right after range or reset saved its settings, or while its engine stops for it, leaves the replacement to the next boot: the old store is removed, the new one holds nothing, the settings are the new ones with no replacement left to do, and a start runs them"
+    },
+    {
+      "id": "browser.host.import-retry-keeps-journal",
+      "file": "token-indexer/test/browser-store-replace.test.ts",
+      "description": "an import whose continuing configuration could not be saved keeps its journal; an import tried again whose journal cannot be saved changes nothing and keeps that journal, so the next boot finishes the first import; an OPFS journal write that fails leaves the file as it was"
     },
     {
       "id": "browser.worker.reset-new-store",

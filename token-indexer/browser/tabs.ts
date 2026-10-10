@@ -16,10 +16,12 @@
  * every follower. A system snapshot a follower receives is marked as relayed (`relayedSnapshot`).
  *
  * **Handover.** A tab that becomes leader announces itself; then, after its worker has booted on the same store, it
- * resumes what the previous leader last reported running (the same `start` configuration, which continues at the
- * stored cursors), or, with nothing to resume, starts the store's saved configuration when it says to start by itself
- * (a new store: the build's default, at the finalized tip) — {@link EngineTabsOptions.resume} changes that. Requests in flight to a leader that closed follow one
- * rule:
+ * starts the store's saved configuration when the saved settings say to start by itself (a new store: the build's
+ * default, at the finalized tip; it continues at the stored cursors) — {@link EngineTabsOptions.resume} changes that.
+ * The saved settings, not what the previous leader last reported, say what runs: that leader may have closed in the
+ * middle of an import, a `range` or a `reset`, which its report does not show yet, and the new worker's boot finishes
+ * it (the snapshot's store with its engine stopped, or a new store for the new settings). Requests in flight to a
+ * leader that closed follow one rule:
  * - `status`, `api`, `export`, `digest`, `system`, `tables` and `rows` change nothing (a `system` watch or unwatch per
  *   viewer gives the same state when applied twice), so they are sent again to the next leader (which may be this tab)
  *   and answered by it; a follower that watches the system snapshot and closes without unwatching stops watching (its
@@ -39,7 +41,7 @@
  */
 import { z } from "zod";
 import { relayedSnapshot, type SystemSnapshot } from "../engine/system-snapshot.ts";
-import { type EngineClient, EngineError, type EngineErrorCode, startEngineWorker, unavailableAnswer } from "./client.ts";
+import { type EngineClient, EngineError, type EngineErrorCode, startEngineWorker, startSaved, unavailableAnswer } from "./client.ts";
 import type { SupervisedEngine } from "./supervisor.ts";
 import { BROWSER_BUILD_CONFIG, BROWSER_DATA_DIR } from "./config.ts";
 import { refuseFramed } from "./frame-guard.ts";
@@ -93,7 +95,8 @@ export interface LocalEngine {
   terminate?: () => void;
 }
 
-/** What the leader last reported about its engine: the configuration of the last `start`, and whether it runs. */
+/** What the leader last reported about its engine: the configuration of the last `start`, and whether it runs (with the
+ *  build's automatic start off, the next leader starts the saved configuration only after a leader whose engine ran). */
 export interface EngineRecord {
   running: boolean;
   config: StartConfig;
@@ -215,23 +218,17 @@ const defaultLog = (level: TabLogLevel, message: string): void => {
   else console.info(line);
 };
 
-/** Starts again what the previous leader was running. */
-export async function resumePrevious(previous: EngineRecord | null, client: EngineClient): Promise<void> {
-  if (previous?.running === true) await client.start(previous.config);
-}
-
 /**
- * The default {@link EngineTabsOptions.resume}: start again what the previous leader was running; otherwise, with
- * `autoStart` (the build's setting, default true), start the store's saved configuration when it says to start by
- * itself (`start` with no configuration: a new store's is the build's default, from the finalized tip; a `stop` request
- * turned it off).
+ * The default {@link EngineTabsOptions.resume}: start the store's saved configuration when its saved settings say to
+ * start by itself ({@link startSaved}: a new store's is the build's default, from the finalized tip; `stop` and an
+ * import turn it off; `range` and `reset` save theirs before they touch the store), whatever the previous leader last
+ * reported. With the build's `autoStart` off (default true) it does so only when the previous leader reported its engine
+ * running.
  */
 export function resumeOrAutoStart(autoStart: boolean = BROWSER_BUILD_CONFIG.autoStart ?? true): (previous: EngineRecord | null, client: EngineClient) => Promise<void> {
   return async (previous, client) => {
-    if (previous?.running === true) return resumePrevious(previous, client);
-    if (!autoStart) return;
-    const s = await client.status();
-    if (s.engine === null && s.settings?.autoStart === true) await client.start();
+    if (!autoStart && previous?.running !== true) return;
+    await startSaved(client);
   };
 }
 

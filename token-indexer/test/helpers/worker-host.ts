@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { createEngineClient, type EngineClient } from "../../browser/client.ts";
 import { createWorkerHost, type WorkerHost, type WorkerHostOptions } from "../../browser/host.ts";
 import { type CapabilityReport, type HostStatus, type Notice, PROTOCOL_VERSION, type Response } from "../../browser/protocol.ts";
+import { type EngineSettingsStore, memorySettingsStore } from "../../browser/settings.ts";
 import type { SnapshotFiles } from "../../browser/snapshot-store.ts";
 import { openStore, type Store } from "../../browser/store.ts";
 import { loadTape } from "../../browser/tapes.ts";
@@ -42,6 +43,14 @@ export function nodeStoreFiles(storeDir: string, journal: string = `${storeDir}.
     removeJournal: async () => rmSync(journal, { force: true }),
     storeExists: async () => existsSync(join(storeDir, "PG_VERSION")),
     removeStore: async () => rmSync(storeDir, { recursive: true, force: true }),
+  };
+}
+
+/** Saved settings in a file of the Node file system (the stand-in for the settings file beside an OPFS store). */
+export function nodeSettingsStore(path: string): EngineSettingsStore {
+  return {
+    load: async () => (existsSync(path) ? memorySettingsStore(JSON.parse(readFileSync(path, "utf8"))).load() : undefined),
+    save: async (settings) => writeFileSync(path, JSON.stringify(settings)),
   };
 }
 

@@ -24,7 +24,7 @@ PostgreSQL.
 | `worker.ts` | The worker's entry: the host below on `opfs-ahp://umbradb-stagenet`, bound to the worker's messages |
 | `host.ts` | Boot, request dispatch and the engine's lifecycle, from injected dependencies (tests run it in Node on `memory://`) |
 | `protocol.ts` | The message protocol: versions, requests, results, errors and notices, each with a zod schema |
-| `client.ts` | The page's side: `startEngineWorker()` (the worker under the page's watchdog, created through the Trusted Types policy below) and `createEngineClient(endpoint)` (requests as promises of validated results) |
+| `client.ts` | The page's side: `startEngineWorker()` (the worker under the page's watchdog, created through the Trusted Types policy below), `createEngineClient(endpoint)` (requests as promises of validated results) and `startSaved()` (a newly booted worker's saved configuration, started when its saved settings say so) |
 | `supervisor.ts` | The page's watchdog: heartbeats, terminate and restart of a worker that stopped answering, what the page set up restored on the new worker |
 | `tabs.ts` | One engine across tabs: `connectEngineTabs()` elects the leader tab, which alone runs the worker; the other tabs proxy their requests to it and take over when it closes |
 | `frame-guard.ts` | A page inside a frame shows a notice and stops before it connects to the engine (no worker, no tab election, no request to the leader) |
@@ -39,7 +39,7 @@ PostgreSQL.
 | `scheduler.ts` | Yields to the worker's event loop before each sync batch and scan step, so messages are served while it runs |
 | `tapes.ts`, `tapes/` | The recorded Stagenet ranges (gzip) the worker can replay with no network, SHA-256 checked |
 | `config.ts` | The network, its default endpoints (fixed when the site is built), the store's location and the build's settings |
-| `settings.ts` | The engine's saved configuration and the modules switched off or on, a file beside the store |
+| `settings.ts` | The engine's saved configuration and the modules switched off or on, a file beside the store, with the mark that the store is to be replaced by a new one before they apply |
 | `store-identity.ts` | Which PGlite wrote the store (or that it is being created), a file beside it: a store of another PGlite version is refused before it is opened |
 | `quota.ts` | The storage guard: pauses the sync before the quota, and after a write the browser refused |
 | `snapshot.ts` | The snapshot file: its manifest, its format (a tar of `manifest.json` and `rows.tar.gz`, the rows of every table) and every check an import makes |
@@ -71,7 +71,9 @@ PostgreSQL.
   engine's state until the first snapshot), this tab's role (leader, or follower with the engine in another tab) and
   the open tabs, the network, the engine's state (`not started`, `running`, `stopped`, `waiting (network)`,
   `stalled (scan)`, `paused (storage)`, `failed`, …) with its detail, the saved configuration (`settings`), the start
-  height ("indexed from block H · history before block H is not indexed"), the archive and scan heights (the scan
+  height ("indexed from block H · history before block H is not indexed"; with the token indexer off since the store's
+  first start, so no scan range, "archived from block H (token indexer off)" from the archive's first height —
+  `/v1/status` is unchanged), the archive and scan heights (the scan
   height says "token indexer off" while it is), the finalized tip and the lag behind it in blocks and time (the blocks
   not scanned yet, or not archived yet while the token indexer is off, at the chain's measured seconds per block),
   blocks per second over the last minute (archive and scan), the worker's uptime, durability and the storage line.
@@ -121,9 +123,10 @@ PostgreSQL.
 - **Database** (`database-view.ts`, `database-model.ts`; the worker's side `store-tables.ts`). Read-only: each schema's
   tables (`chain_archive`, `mip0018`, partitions included) with their kind, estimated rows and size (`tables`: the
   catalog statistics of the system snapshot), read when the tab is first shown and on "refresh". Picking a table (its
-  row, or the picker) shows a page of its rows (`rows`), newest first — by the primary key's columns, descending, so
-  height-keyed tables list their highest heights first; a table without one in physical order, the last written row
-  first — 25 rows a page, "newer" and "older" to page, up to 10,000 rows deep. Values are cut in the worker's SQL: a
+  row, or the picker) shows a page of its rows (`rows`) by the primary key's columns, descending, and says so: "newest
+  first" for the tables whose key, after the network, leads with a block height (their highest heights first), "by
+  primary key (…)" for the others (`chain_blobs` by hash, `watermarks`, `mip0018_fields`, …); a table without one in
+  physical order, the last written row first — 25 rows a page, "newer" and "older" to page, up to 10,000 rows deep. Values are cut in the worker's SQL: a
   `bytea` value as the hex of its first 16 bytes and its length (the cell shows 8 of them), any other value as its text
   form's first 256 characters and its length (the cell shows 48); what was read is in the cell's tooltip. The table is
   named to the engine by the schema and name it listed, and the engine looks both up in the store's catalog before any
@@ -184,8 +187,8 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 |---|---|---|
 | `status` | — | boot state, store facts (data directory, created, PostgreSQL version, `fsync`, durability, applied migrations), the last engine's configuration and loop status, the stored cursors, the saved configuration (`settings`) and the storage reading (`storage`) |
 | `api` | `method`, `target` | the API's answer `{ status, headers, body }` (`../API.md`) |
-| `start` | `config?`: `source` (`{ kind: "network", nodeUrl?, indexerUrl? }` or `{ kind: "tape", range: "idx" \| "u1", finalizedHeight?, advance? }`), `startHeight?` (a height or `"tip"`, the default), `endHeight?`, `sync?` (`maxBlocks`, `concurrency`, `minIntervalMs`, `idleMs`, `backoff`), `scan?`; omitted: the saved configuration | status |
-| `stop` | — | status; the engine no longer starts by itself until the next `start` |
+| `start` | `config?`: `source` (`{ kind: "network", nodeUrl?, indexerUrl? }` or `{ kind: "tape", range: "idx" \| "u1", finalizedHeight?, advance? }`), `startHeight?` (a height or `"tip"`, the default), `endHeight?`, `sync?` (`maxBlocks`, `concurrency`, `minIntervalMs`, `idleMs`, `backoff`), `scan?`; omitted: the saved configuration | status: the configuration is saved (with the automatic start on), then it runs; a configuration the browser refuses to save starts nothing (`settings-failed`), and an engine that fails to start puts the settings before it back |
+| `stop` | — | status; the engine no longer starts by itself until the next `start`. The engine always stops; when the browser refuses to save that it should stay stopped, the answer is `settings-failed` (the next page to open the engine starts it again) |
 | `range` | `startHeight` (a height or `"tip"`), `endHeight?` | status: the new range is saved, the store is replaced by a new one, and the range starts (source and tuning from the saved configuration) |
 | `reset` | — | status: the store is replaced by a new one and the saved configuration starts again |
 | `digest` | — | the store's archive digest (the 7 `chain_archive` tables, `chain-archive-sync/archive-digest.ts`) and the digest of every table of both schemas (`../engine/range-tables.ts`), read in one read-only transaction |
@@ -193,12 +196,13 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | `{ limitMs, heartbeatMs }` |
 | `export` | — | a snapshot file of the store (`Blob`), its suggested name, its manifest, its size and timings (see Snapshots) |
 | `import` | `snapshot`: a snapshot file (`Blob`, a picked `File`) | the imported manifest, timings and status: the store is the snapshot's, the engine is stopped (see Snapshots) |
-| `module` | `module` (`token-indexer`, the one switchable module), `enabled` | status: the choice saved with the settings (`settings.modules`); a running engine's MIP-0018 scan stops at a block boundary while the sync goes on (answered once it has stopped), or continues from its cursor; every engine the worker runs later starts with it, also on a store that `range`, `reset` or `import` replaced |
+| `module` | `module` (`token-indexer`, the one switchable module), `enabled` | status: the choice saved with the settings (`settings.modules`), before anything is switched (a choice the browser refuses to save changes nothing: `settings-failed`); a running engine's MIP-0018 scan stops at a block boundary while the sync goes on (answered once it has stopped), or continues from its cursor; every engine the worker runs later starts with it, also on a store that `range`, `reset` or `import` replaced |
 | `tables` | — | each schema's tables (name, kind, the table it is a partition of, estimated rows, size) and the database's size, from the catalog |
 | `rows` | `schema`, `table`, `limit?` (1–100, default 25), `offset?` (0–10,000) | the columns (name, type), the order (the primary key's columns, descending; empty: physical order, last written first), the page's values (`null`, `bytes`: hex of the first 16 bytes and the length, `text`: the first 256 characters and the length) and whether more follow; a schema or table that is not the store's is refused (`bad-request`) |
 
 Error codes: `bad-request`, `unsupported-version`, `unknown-type`, `not-implemented`, `unsupported-browser`,
-`boot-failed`, `already-running`, `start-failed`, `internal`, `snapshot-refused` (the message starts with the reason;
+`boot-failed`, `already-running`, `start-failed`, `settings-failed` (the browser refused to save the settings: `start`
+and `module` changed nothing, `stop` stopped the engine), `internal`, `snapshot-refused` (the message starts with the reason;
 nothing changed) and `snapshot-failed` (a checked snapshot could not be loaded; the store was opened empty); the client
 adds `bad-response`, `worker-error`, `restarted` and `closed`, and a page sharing the engine with other tabs also
 `leader-changed` and `leader-unavailable` (see Tabs). Notices: `boot` (each phase), `engine` (`running`, `stopped`,
@@ -220,9 +224,12 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   each request (`type`, `params`) to the leader over BroadcastChannel (`umbradb-engine:<store>`) and get its answer on
   their own channel (`umbradb-engine:<store>:tab:<tab>`), validated again; every request type works from any tab. A
   system snapshot a follower receives is marked as relayed.
-- **Handover.** When the leader closes, the oldest follower gets the lock, starts its worker on the same store and
-  resumes what the previous leader last reported running (the same `start` configuration, which continues at the stored
-  cursors, with the saved modules); the first leader of a store starts its saved configuration instead (see Sync).
+- **Handover.** When the leader closes, the oldest follower gets the lock, starts its worker on the same store and,
+  once it has booted, starts the store's saved configuration when the saved settings say to start by itself (it
+  continues at the stored cursors, with the saved modules), as the first leader of a store does (see Sync). What the
+  previous leader last reported does not decide what runs: it may have closed in the middle of an import, a `range` or
+  a `reset`, and the new worker's boot finishes that first (the snapshot's store with its engine stopped, or a new
+  store for the new settings).
   Requests in flight to the closed leader: `status`, `api`, `export`, `digest`, `system`, `tables` and `rows` are sent
   again to the next leader; any other request (`module` among them) fails with `leader-changed` (it may or may not have
   been applied); a request made while no leader
@@ -243,17 +250,21 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   a throttling answer is retried after its `Retry-After`, as in the Node commands.
 - **Automatic start and resume.** The configuration of the last `start` or `range` is saved beside the store
   (`settings.ts`: `umbradb-stagenet.engine.json` in the OPFS root), with whether the engine starts by itself (`stop`
-  turns that off, the next `start` on). The leader tab starts it (`tabs.ts` `resumeOrAutoStart`, the default `resume`):
-  after its worker has booted it resumes what a previous leader was running, or else, when the saved configuration
-  says so, sends `start` with no configuration, which runs the saved one (for a new store, the build's default: the
-  tip, following it). Followers never start anything. A reopened store continues at its cursor and fetches every
+  and an import turn that off, the next `start` on). Every worker that boots on the store starts from this file alone:
+  the leader tab (`tabs.ts` `resumeOrAutoStart`, the default `resume`), the next leader after a handover and the worker
+  the watchdog puts in place of a stuck one start the saved configuration when it says to start by itself
+  (`client.ts` `startSaved`; for a new store, the build's default: the tip, following it). With the build's automatic
+  start off, a leader starts it only after a previous leader whose engine ran. Followers never start anything. A reopened store continues at its cursor and fetches every
   height since, so a closed or frozen tab leaves no hole; a chosen range keeps its end.
 - **Ranges.** One archive has no gaps and no backfill, so `range` (a new start or end) and `reset` replace the store
   with a new one before starting: in the leader's worker, which holds the store's lock, the engine stops, PGlite is
   closed with the lock kept, every file of the store's directory is removed, and the boot runs again from its store
   phase (PGlite creates the database, the migrations run). Nothing of the old database survives, whatever it held.
-  `range` saves the new range (with the automatic start) before it replaces the store, so a tab closed meanwhile
-  starts the new range on the new store; a range that cannot be saved changes nothing. The page offers an export
+  `range` and `reset` save their settings (with the automatic start) together with a mark that the store is to be
+  replaced, in one write, before they touch the store; the boot that has made the new store saves the settings again
+  without the mark. A tab closed (or a worker restarted) anywhere in between leaves the mark, and the next boot makes
+  the new store before anything runs, so the new range never runs on the old archive; a range that cannot be saved
+  changes nothing. The page offers an export
   first; the host takes a `beforeWipe` hook for that. Neither is sent again after a handover (`leader-changed`);
   `digest`, which only reads, is.
 - **Persistent storage.** `navigator.storage.persist()` exists only in a window: every page asks for it when it loads
@@ -307,9 +318,13 @@ reason: `format` (not a snapshot file of this version), `truncated`, `network` (
 or SHA-256 is not the manifest's), `corrupt` (the rows do not unpack, are not this build's tables and columns in order,
 do not load into a store of this build, or hold another state than the manifest says). The check is a trial: a new
 store in memory, made by the migrations, into which the rows are loaded in one transaction; the row counts, the
-sequences, the cursors, the block hash and the migrations must then be the manifest's. The rows are read as a stream:
+sequences, the cursors, the block hash and the migrations must then be the manifest's, and the archive's first height
+(which the import saves as the start of the configuration that continues it) its lowest block, with the scan starting
+no lower. The rows are read as a stream:
 an import holds one entry (at most 64 MiB) besides the file, and refuses rows as soon as they unpack to more than the
-manifest says (itself at most 4 GiB), an entry whose header declares more than 64 MiB, or anything after the tar's end.
+manifest says (itself at most 4 GiB), or, past the first 64 MiB, to more than 16 times the compressed bytes read so far
+(a snapshot's rows unpack to about twice their size; this keeps what the trial loads in proportion to the file), an
+entry whose header declares more than 64 MiB, or anything after the tar's end.
 
 Then it saves the file beside the store as a journal (`<store>.import.snapshot.tar` in the Origin Private File System;
 if the browser refuses that write, nothing has changed and the engine keeps running), stops the engine, waits for the
@@ -331,11 +346,14 @@ holds. A file crafted on purpose can only carry rows (never code), but its rows 
 snapshots you exported or the build published.
 
 **Published snapshot.** `npm run build:browser` writes `snapshots/umbradb-stagenet-714485-715183.snapshot.tar` and
-`snapshots/index.json` (each file's size, SHA-256, manifest and digests) after Vite (`../dev/browser-snapshot.ts`): the
-worker host runs in Node on an in-memory PGlite (the browser's PGlite build), replays the recorded IDX range's tape and
-exports; the build then loads the file's rows into a new store, as an import does, and fails unless that store's archive
-digest and range-tables digest equal the recorded live sync of that range. The file's bytes differ from build to build
-(the times in it); what it holds does not. A page loads it with
+`snapshots/index.json` (each file's size, SHA-256, manifest, digests and NULL `bytea[]` elements) after Vite
+(`../dev/browser-snapshot.ts`): the worker host runs in Node on an in-memory PGlite (the browser's PGlite build), replays
+the recorded IDX range's tape and exports; the build then loads the file's rows into a new store, as an import does, and
+fails unless that store's archive digest, range-tables digest and NULL `bytea[]` elements (which the range-tables digest
+counts as empty bytes; the range has none) equal the recorded live sync of that range. Two builds of one commit write
+the same bytes (the whole `dist-browser/` is reproducible): the file is remade with one time as its `createdAt`, its tar
+entries' times and every write time in its rows (the `timestamp` columns, which the digests do not read) —
+`SOURCE_DATE_EPOCH` when set, else the commit's time, else the time the range was recorded. A page loads it with
 `window.umbradbEngine.snapshots.published("idx")` (checked against the index) and imports it; with it the explorer
 answers for 714485–715183 with no network. `npm run dev:browser` publishes none.
 
@@ -425,7 +443,7 @@ The dev server (`npm run dev:browser`) sends no policy.
 | `assets/` | the pages' and the worker's modules, PGlite's `pglite.wasm`, `pglite.data` and `initdb.wasm`, ledger-v9's WebAssembly module, the two gzip tapes, the font, the icon and the styles; each name carries a hash of its content |
 | `snapshots/` | `index.json` and the published snapshot (see [Snapshots](#snapshots)) |
 | `_headers` | the security headers for every path (see [Security headers](#security-headers)) |
-| `THIRD-PARTY-NOTICES.txt` | the licences of the works in the site: every package the modules contain (PGlite, ledger-v9, zod, `@noble/hashes`, …, found from the bundles), PostgreSQL's (PGlite's database), the Outfit font's and UmbraDB's own; publish it with the rest |
+| `THIRD-PARTY-NOTICES.txt` | the licences of the works in the site: every package the modules contain (PGlite, ledger-v9, zod, `@noble/hashes`, …, found from the bundles), every vendored work they contain with its `NOTICE` (the MIP-0018 reference codec, `../vendor/mip0018`; a vendored module whose work has no licence file fails the build), PostgreSQL's (PGlite's database), the Outfit font's and UmbraDB's own; publish it with the rest |
 
 Every reference between these files is relative, so the folder works at a domain's root or under a path
 (`https://example.org/umbradb/`); besides the site itself, the pages and the worker reach only the build's two chain
@@ -491,12 +509,13 @@ PGlite runs every statement synchronously on the worker's thread, so the worker 
   page's `watchdog` request. When nothing has come for the limit (30 s; `?watchdogLimitMs=` on the engine page) and
   nothing during a grace of two heartbeats either, the page terminates the worker and starts a new one: the API request
   in flight gets the API's 503 `UNAVAILABLE` answer, other requests in flight `restarted`; the new worker carries the
-  restart count and reason and the PGlite reopen count, boots on the same store and gets back the system snapshot's
-  viewers and the engine the worker last reported running, with the configuration it reported: the one a `start` (with
-  or without a configuration), a `range` or a `reset` answered with (it continues at the stored cursors; an engine the
-  page stopped, an import stopped or that failed stays stopped, and so does one whose import the restart interrupted
-  once the journal was saved: the new worker's boot finishes that import), with the modules as the saved settings have
-  them (the token indexer switched off stays off). While `range`, `reset`, `export` or `import` runs the limit is 10
+  restart count and reason and the PGlite reopen count, boots on the same store (finishing first an import or a store
+  replacement the old worker was in the middle of) and gets back the system snapshot's viewers and the engine: when the
+  engine was meant to run (the worker last reported it running, or a `start`, `range` or `reset` was in flight), the
+  new worker's saved configuration starts if the saved settings say to start by itself (it continues at the stored
+  cursors, with the saved modules: the token indexer switched off stays off). So a restart in the middle of a `range`
+  runs the new range, and one in the middle of an import starts nothing; an engine the page stopped, an import stopped
+  or that failed stays stopped. While `range`, `reset`, `export` or `import` runs the limit is 10
   min. More than 3 restarts within 10 min close the client with `worker-error`.
 - **Reopen.** PGlite 0.5.8 fails every statement with "stack depth limit exceeded" once a database has failed about
   1,700 statements, until it is reopened. The host counts the statements the database fails and reopens the store at

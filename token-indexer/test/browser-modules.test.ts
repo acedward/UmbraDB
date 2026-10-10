@@ -6,6 +6,9 @@
  * - `[[engine.scan-switch]]` — the engine's scan switch: a scan configured off starts off (phase `off`, `scanner:
  *   "off"`) while the sync archives; switched on it catches up from its cursor; switched off while it runs, the answer
  *   comes once it waits at a block boundary; switching twice changes nothing; a stop while it waits ends the loops.
+ * - `[[engine.scan-wait-signal]]` — the scan loop's waits share one signal combining the engine's stop and the switch,
+ *   made once for each switch change: fifty idle waits in a row make no new one (one per wait is retained on some Node
+ *   releases), and after the switch is turned off and on again the waits share a new one.
  * - `[[browser.host.module-toggle]]` — the `module` request on a running engine whose finalized tip advances: off, the
  *   scan's cursor stays where it stopped while the archive advances by more than a hundred blocks, `/v1/status` says
  *   `scanner: "off"` and still answers, the system snapshot shows the scan off and the health line follows the archive;
@@ -13,6 +16,9 @@
  * - `[[browser.host.module-saved]]` — the choice is saved with the settings: a new host on the same store (a reload, the
  *   next leader tab) starts its engine with the scan off and the archive syncing; `module` refuses a module that is not
  *   switchable; `module` is never sent again to a new leader (it changes state), `tables` and `rows` are.
+ * - `[[browser.host.module-unsaved]]` — a switch whose settings the browser refuses to save is refused and changes
+ *   nothing: the running scan goes on, the status and the saved settings keep the module on, and the next host on the
+ *   store (a reload, a restarted worker, the next leader tab) runs it on.
  * - `[[browser.host.store-replaced]]` — a store replaced by `range`, `reset` or `import` keeps the saved switch: the new
  *   store's engine runs with the scan off; `tables` and `rows` sent while the store is replaced are answered (they wait
  *   for the new store) and, once it is in place, from it; when a replacement fails they get an error answer, never a
@@ -31,7 +37,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTapeFetch } from "../../chain-archive-sync/tape-replay.js";
 import { createWorkerHost, type WorkerHost, type WorkerHostOptions } from "../browser/host.ts";
 import {
@@ -203,6 +209,48 @@ describe("the indexer's modules and the store's tables in the browser engine", (
     }
   }, 120_000);
 
+  it("[[engine.scan-wait-signal]] the scan loop's waits share one signal combining the stop and the switch for each switch change: fifty idle waits make no new one; after the switch is turned off and on the waits share a new one", async () => {
+    const s = await openStore("memory://");
+    const any = vi.spyOn(AbortSignal, "any");
+    try {
+      const { bootstrapChainArchiveSchema } = await import("../../chain-archive-sync/bootstrap.js");
+      await bootstrapChainArchiveSchema(s.archive, ARCHIVE_SCHEMA);
+      const replay = createTapeFetch(await loadTape("u1", fileFetch));
+      let idleWaits = 0;
+      const engine = createIndexerEngine({
+        sql: s.mip0018,
+        archiveSql: s.archive,
+        network: "stagenet",
+        schema: MIP0018_SCHEMA,
+        archiveSchema: ARCHIVE_SCHEMA,
+        // At the archive's tip the sync waits ten minutes: no network call (nor its signals) while the scan idles.
+        sync: { nodeUrl: replay.nodeUrl, indexerUrl: replay.indexerUrl, startHeight: U1.from, idleMs: 600_000, maxBlocks: 50 },
+        scan: { idleMs: 2, batch: 50 },
+        fetch: replay.fetchImpl,
+        onEvent: (e) => { if (e.source === "scan" && e.event === "batch" && (e.fields as { scannedBlocks?: number }).scannedBlocks === 0) idleWaits++; },
+      });
+      await engine.start();
+      for (let i = 0; i < 500 && (await engine.scanCursor())?.nextHeight !== U1.to + 1; i++) await sleep(20);
+      expect((await engine.scanCursor())?.nextHeight).toBe(U1.to + 1);
+      /** Signals made while the scan waits idle `n` more times. */
+      const madeDuring = async (n: number): Promise<number> => {
+        const [waits, made] = [idleWaits, any.mock.calls.length];
+        for (let i = 0; i < 1_000 && idleWaits < waits + n; i++) await sleep(5);
+        expect(idleWaits - waits, "idle waits").toBeGreaterThanOrEqual(n);
+        return any.mock.calls.length - made;
+      };
+      expect(await madeDuring(50), "combined signals made during fifty idle waits").toBeLessThanOrEqual(1);
+      await engine.setScanEnabled(false);
+      await engine.setScanEnabled(true);
+      expect(await madeDuring(50), "after the switch changed twice: one new signal at most").toBeLessThanOrEqual(1);
+      await engine.stop();
+      await engine.finished;
+    } finally {
+      any.mockRestore();
+      await s.close();
+    }
+  }, 120_000);
+
   it("[[browser.host.module-toggle]] module off: the scan cursor stays while the archive advances, /v1/status says scanner off and answers, the system snapshot shows the scan off; module on: the scan catches up; the finished digests equal the uninterrupted replay's", async () => {
     const { host, logs } = newHost({ settings: memorySettingsStore() });
     await result(host, "start", { config: RISING_IDX });
@@ -281,6 +329,44 @@ describe("the indexer's modules and the store's tables in the browser engine", (
     expect(REPEATABLE_REQUEST_TYPES.has("rows")).toBe(true);
   }, 120_000);
 
+  it("[[browser.host.module-unsaved]] a module switch whose settings cannot be saved is refused and changes nothing: the running scan goes on, the status and the saved settings keep the module on, and the next host (a reload, a restarted worker, the next leader tab) runs it on, as acknowledged", async () => {
+    const dir = storeDir();
+    const saved = memorySettingsStore();
+    let failing = false;
+    const settings = {
+      ...saved,
+      save: async (x: Parameters<typeof saved.save>[0]) => {
+        if (failing) throw Object.assign(new Error("the quota is exceeded"), { name: "QuotaExceededError" });
+        await saved.save(x);
+      },
+    };
+    // A finalized tip that rises one block every 100 ms: the archive and the scan go on while the switch is refused.
+    const config: StartConfig = { source: { kind: "tape", range: "u1", finalizedHeight: U1.from + 4, advance: { everyMs: 100, by: 1 } }, startHeight: U1.from, ...FAST };
+    const a = newHost({ dataDir: dir, settings });
+    await result(a.host, "start", { config });
+    const before = await until(a.host, "the scan's first blocks", (s) => (s.cursors?.scan?.nextHeight ?? 0) > U1.from + 2);
+    failing = true;
+    expect(await errorOf(a.host, "module", { module: "token-indexer", enabled: false })).toEqual({
+      code: "settings-failed",
+      message: "the token indexer's switch could not be saved (the quota is exceeded): nothing was changed",
+    });
+    failing = false;
+    const after = await result<HostStatus>(a.host, "status");
+    expect(after.settings).toEqual({ config, autoStart: true });
+    expect(after.engine!.status.scan.scanner).toBe("following");
+    expect(await saved.load()).toEqual({ config, autoStart: true });
+    await until(a.host, "the scan going on", (s) => s.cursors!.scan!.nextHeight > before.cursors!.scan!.nextHeight);
+    await closeHost(a.host);
+
+    // The next host on the same store and settings runs the token indexer, as the refused switch left it.
+    const b = newHost({ dataDir: dir, settings: saved });
+    await b.host.boot();
+    expect((await result<HostStatus>(b.host, "status")).settings).toEqual({ config, autoStart: true });
+    await result(b.host, "start");
+    await until(b.host, "the scan on the next host", (s) => s.cursors?.scan?.nextHeight === U1.to + 1);
+    expect((await result<HostStatus>(b.host, "status")).engine!.status.scan.scanner).toBe("following");
+  }, 120_000);
+
   it("[[browser.host.store-replaced]] a store replaced by range, reset or import keeps the saved switch (the new store's engine runs with the scan off); tables and rows sent while the store is replaced are answered, from the new store once it is in place; when a replacement fails they get an error answer, never a rejection", async () => {
     const config: StartConfig = { source: { kind: "tape", range: "u1" }, startHeight: U1.from, ...FAST };
     const { host, stores } = newHost();
@@ -289,16 +375,18 @@ describe("the indexer's modules and the store's tables in the browser engine", (
     const exported = await result<ExportResult>(host, "export");
     await result(host, "module", { module: "token-indexer", enabled: false });
     const raw = (type: string, params: Record<string, unknown> = {}): Promise<Response> => host.receive({ v: PROTOCOL_VERSION, id: nextId++, type, ...params });
-    /** Sends tables and rows every few milliseconds until `replacing` settles; every answer must come, as an answer. */
+    /** Sends a tables and a rows request, then the next pair once both are answered (as the Database tab sends its
+     *  requests one at a time), until `replacing` settles: the first pair goes out before it has; every answer must
+     *  come, as an answer. */
     async function readWhile(replacing: Promise<Response>): Promise<Response[]> {
-      const sent: Array<Promise<Response>> = [];
+      const answers: Response[] = [];
       let settled = false;
       void replacing.finally(() => (settled = true));
-      while (!settled) {
-        sent.push(raw("tables"), raw("rows", { schema: ARCHIVE_SCHEMA, table: "blocks", limit: 100 }));
+      do {
+        answers.push(...(await Promise.all([raw("tables"), raw("rows", { schema: ARCHIVE_SCHEMA, table: "blocks", limit: 100 })])));
         await sleep(5);
-      }
-      return Promise.all(sent);
+      } while (!settled);
+      return answers;
     }
     const blocksIn = async (s: Store): Promise<number> => Number((await s.pglite.query<{ n: string }>("SELECT count(*)::text AS n FROM chain_archive.blocks")).rows[0]!.n);
 
@@ -352,16 +440,17 @@ describe("the indexer's modules and the store's tables in the browser engine", (
     const f = newHost({ settings, migrate: async (s) => { if (++migrations > 1) throw new Error("the migrations failed"); await migrateStore(s); } });
     await result(f.host, "module", { module: "token-indexer", enabled: false });
     const failing = f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "reset" });
-    const failedReads: Array<Promise<Response>> = [];
+    const failedReads: Response[] = [];
     let done = false;
     void failing.finally(() => (done = true));
-    while (!done) {
-      failedReads.push(f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "tables" }), f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "rows", schema: ARCHIVE_SCHEMA, table: "blocks" }));
+    // One pair in flight at a time, as in readWhile.
+    do {
+      failedReads.push(...(await Promise.all([f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "tables" }), f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "rows", schema: ARCHIVE_SCHEMA, table: "blocks" })])));
       await sleep(5);
-    }
+    } while (!done);
     const failed = await failing;
     expect(failed).toMatchObject({ ok: false, error: { code: "boot-failed" } });
-    for (const r of [...(await Promise.all(failedReads)), await f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "tables" }), await f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "rows", schema: ARCHIVE_SCHEMA, table: "blocks" })])
+    for (const r of [...failedReads, await f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "tables" }), await f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "rows", schema: ARCHIVE_SCHEMA, table: "blocks" })])
       if (!r.ok) expect(r.error.code).toBe("boot-failed");
     const last = await f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "rows", schema: ARCHIVE_SCHEMA, table: "blocks" });
     expect(last).toMatchObject({ ok: false, error: { code: "boot-failed" } });

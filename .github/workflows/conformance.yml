@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   test:
-    # F5 (audit finding): the Pg-only conformance suite (`test/postgres/**`, `test/integration/
+    # The Pg-only conformance suite (`test/postgres/**`, `test/integration/
     # pg-tx-history-adapter.test.ts`) uses testcontainers (`@testcontainers/postgresql`), which
     # starts its OWN disposable Postgres container via the Docker daemon already present on
     # ubuntu-latest runners -- no `services: postgres` block is needed or used. This is the
@@ -27,14 +27,15 @@ jobs:
     # Timeout posture: the crash, soak and differential suites RUN in this gate (Testcontainers,
     # `UMBRADB_LIVE_PREPROD` unset), with v8 coverage, and so do the browser build and every
     # Chromium test (the browser engine's worker on OPFS, the parity suite, the crash campaign, the
-    # explorer and status pages), which make most of the job's time: about 17 minutes on a 4-core
-    # runner, within `timeout-minutes: 30`. The Chromium tests use the runner image's Chrome (the
-    # Browser and PGlite gate, `browser.yml`, runs them in the Playwright image pinned by digest);
-    # the step before the tests prints which Chrome and its version, so a failure that follows a
-    # Chrome update on the runner can be told apart. StrykerJS mutation is a SEPARATE
-    # still-required job (below) so its cost never competes with this one's clock.
+    # explorer and status pages), which make most of the job's time: 18-22 minutes on a 4-core
+    # runner, within `timeout-minutes: 45`, which leaves room for tests still to be added. The
+    # Chromium tests use the runner image's Chrome (the Browser and PGlite gate, `browser.yml`, runs
+    # them in the Playwright image pinned by digest); the step before the tests prints which Chrome
+    # and its version, so a failure that follows a Chrome update on the runner can be told apart.
+    # StrykerJS mutation is a SEPARATE still-required job (below) so its cost never competes with
+    # this one's clock.
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -59,7 +60,7 @@ jobs:
             });'
 
       - name: Run conformance gate (tests + coverage + required-test skip-enforcement)
-        # `npm run test:conformance` is now `scripts/conformance-gate.mjs` (Task 7.1): it runs
+        # `npm run test:conformance` is `scripts/conformance-gate.mjs`: it runs
         # `vitest run --coverage` with `UMBRADB_LIVE_PREPROD` UNSET (so the crash/soak/differential
         # suites execute and do NOT self-skip), emits a Jest-compatible JSON report, then runs the
         # `check-required-tests.ts` reconciliation over that report. The gate fails if EITHER a test
@@ -80,7 +81,7 @@ jobs:
         run: npm run test:conformance
 
   mutation:
-    # StrykerJS durability mutation gate (v1.0.0-recovery-testing Task 7.3; guideline §2.3/§3.6).
+    # StrykerJS durability mutation gate (guideline §2.3/§3.6).
     # A SEPARATE still-required job (never optional, never live-gated) so mutation cost is off the
     # `test` job's clock. SCOPE: the FIVE durability adapters `stryker.conf.json` mutates —
     # save-and-advance.ts (the co-transactional save+cursor keystone), checkpoint-store.ts,

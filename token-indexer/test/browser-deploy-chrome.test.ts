@@ -24,6 +24,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { DigestResult, HostStatus } from "../browser/protocol.ts";
 import { writePublishedSnapshots } from "../dev/browser-snapshot.ts";
 import { type ServedSite, serveBrowserBuild } from "../dev/serve-browser.ts";
+import { noNullElements } from "../engine/range-tables.ts";
 import { Browser, findBrowser, type Page } from "./helpers/cdp-browser.ts";
 import { BROWSER_CONFIG } from "./helpers/engine-site.ts";
 import { type LocalServer, serveHandler } from "./helpers/static-site.ts";
@@ -144,6 +145,7 @@ describe("the static deploy recipe in Chrome", () => {
     expect(r, JSON.stringify(r)).toEqual({ ok: true, height: IDX.to });
     const digest = (await engine(page, "c.digest()")) as DigestResult;
     expect([digest.archive.sha256, digest.tables.sha256]).toEqual([ARCHIVE, TABLES]);
+    expect(digest.nullElements).toEqual(noNullElements(["mip0018.mip0018_contract_actions"]));
     expect(page.requests.some((q) => q.url === `${site.origin}/snapshots/umbradb-stagenet-${IDX.from}-${IDX.to}.snapshot.tar` && q.status === 200)).toBe(true);
     await system.waitFor("window.umbradbSystem.latest().overview.health.state === 'stopped'", 60_000, "the status page's stopped engine after the import");
     expectAllowedRequests(system);
