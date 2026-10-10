@@ -18,7 +18,9 @@
  *   continues at the stored cursors). That report is the engine in the host status a successful `start`, `stop`,
  *   `range`, `reset` or `import` answers with, whatever started it (a `start` with no configuration runs the saved
  *   one); an `engine` notice that it stopped or failed clears it. So an engine the page stopped, that an import stopped,
- *   or that failed by itself is not started again, and a restart after a `range` runs the range.
+ *   or that failed by itself is not started again, and a restart after a `range` runs the range. The modules are not
+ *   sent again: the new worker's engine takes them from the saved settings, as every engine the host runs does, so the
+ *   token indexer switched off stays off.
  * - **Long requests:** while a request whose work may legitimately keep the worker busy for long is in flight (`range`
  *   and `reset` drop and recreate the store's schemas, `export` and `import` copy the whole data directory;
  *   {@link LONG_REQUESTS}), the limit is `longLimitMs` instead.

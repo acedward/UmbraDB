@@ -20,7 +20,8 @@
  *   characters and length); the pages follow one another; the bounds hold.
  * - `[[browser.host.rows-refused]]` — a schema or table that is not the store's (another schema, a catalog table, an
  *   index, a name with quotes and SQL in it, a table of the other schema) is refused as a bad request and the store is
- *   unchanged.
+ *   unchanged; a `rows`, `tables` or `module` request whose values cannot be read or turned into text (a throwing getter
+ *   or `Symbol.toPrimitive`, no usable `toString`) gets a bad-request answer, never a rejection, and changes nothing.
  */
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -33,6 +34,7 @@ import {
   type CapabilityReport,
   type DigestResult,
   type HostStatus,
+  parseRequest,
   PROTOCOL_VERSION,
   type Response,
   ROWS_LIMITS,
@@ -369,7 +371,7 @@ describe("the indexer's modules and the store's tables in the browser engine", (
     expect((await result<RowsResult>(host, "rows", { schema: ARCHIVE_SCHEMA, table: "blocks", limit: ROWS_LIMITS.maxLimit, offset: ROWS_LIMITS.maxOffset })).rows).toEqual([]);
   }, 120_000);
 
-  it("[[browser.host.rows-refused]] a schema or table that is not the store's is refused as a bad request, before any statement names it, and the store is unchanged", async () => {
+  it("[[browser.host.rows-refused]] a schema or table that is not the store's is refused as a bad request, before any statement names it, and the store is unchanged; rows, tables and module requests whose values cannot be read or turned into text get a bad-request answer, never a rejection, and change nothing", async () => {
     const { host } = newHost();
     await result(host, "start", { config: { source: { kind: "tape", range: "u1" }, startHeight: U1.from, ...FAST } });
     await until(host, "the U1 range", (s) => s.cursors?.scan?.nextHeight === U1.to + 1);
@@ -394,6 +396,31 @@ describe("the indexer's modules and the store's tables in the browser engine", (
     }
     for (const params of [{ schema: "", table: "blocks" }, { schema: "chain_archive", table: "x".repeat(64) }, { schema: "chain_archive" }, { schema: "chain_archive", table: "blocks", sql: "select 1" }])
       expect((await errorOf(host, "rows", params)).code, JSON.stringify(params)).toBe("bad-request");
+    // Values that cannot be read or turned into text: a bad-request answer (the host never rejects), nothing switched.
+    const noText = { toString: 0 };
+    const throwing = { [Symbol.toPrimitive]: () => { throw new Error("no primitive"); } };
+    const withGetter = (name: string, rest: Record<string, unknown>): Record<string, unknown> =>
+      Object.defineProperty({ v: PROTOCOL_VERSION, id: nextId++, ...rest }, name, { get: () => { throw new Error(`no ${name}`); }, enumerable: true });
+    const hostile: Array<Record<string, unknown>> = [
+      { v: PROTOCOL_VERSION, id: nextId++, type: "rows", schema: noText, table: "blocks" },
+      { v: PROTOCOL_VERSION, id: nextId++, type: "rows", schema: "chain_archive", table: throwing },
+      { v: PROTOCOL_VERSION, id: nextId++, type: "rows", schema: "chain_archive", table: "blocks", limit: throwing, offset: noText },
+      { v: PROTOCOL_VERSION, id: nextId++, type: "tables", extra: throwing },
+      { v: PROTOCOL_VERSION, id: nextId++, type: "module", module: noText, enabled: false },
+      { v: PROTOCOL_VERSION, id: nextId++, type: "module", module: "token-indexer", enabled: throwing },
+      withGetter("schema", { type: "rows", table: "blocks" }),
+      withGetter("table", { type: "rows", schema: "chain_archive" }),
+      withGetter("limit", { type: "rows", schema: "chain_archive", table: "blocks" }),
+      withGetter("enabled", { type: "module", module: "token-indexer" }),
+      withGetter("type", { schema: "chain_archive", table: "blocks" }),
+    ];
+    for (const raw of hostile) {
+      const r: Response = await host.receive(raw);
+      expect(r.ok, Object.keys(raw).join(",")).toBe(false);
+      if (!r.ok) expect(r.error.code, Object.keys(raw).join(",")).toBe("bad-request");
+      expect(parseRequest(raw).ok).toBe(false);
+    }
+    expect((await result<HostStatus>(host, "status")).settings?.modules).toBeUndefined();
     const after = await result<DigestResult>(host, "digest");
     expect({ archive: after.archive, tables: after.tables }).toEqual({ archive: before.archive, tables: before.tables });
   }, 120_000);

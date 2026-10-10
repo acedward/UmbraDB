@@ -1,5 +1,5 @@
 {
-  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 358), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
+  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 359), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
   "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` — those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early — that would re-open the exact self-skip hole this manifest closes.",
   "required": [
     {
@@ -1658,6 +1658,11 @@
       "description": "after an import, which stops the engine, the new worker starts nothing and the automatic start stays off"
     },
     {
+      "id": "browser.watchdog.restore-module-off",
+      "file": "token-indexer/test/browser-watchdog-restore.test.ts",
+      "description": "the token indexer switched off stays off on the new worker: the restart sends the configuration, with no module in it, and the saved switch keeps the scan stopped while the archive goes on; on again, the scan catches up"
+    },
+    {
       "id": "browser.host.hostile-message",
       "file": "token-indexer/test/browser-host.test.ts",
       "description": "a version or type that cannot be turned into text gets an error response, never a rejection; the page's parser reports such a worker message as invalid"
@@ -1700,7 +1705,7 @@
     {
       "id": "browser.frame.refused",
       "file": "token-indexer/test/browser-frame-chrome.test.ts",
-      "description": "served with no headers, each page inside a frame shows the notice and starts no engine (no engine object, no worker, no Web Lock); at the top level it starts as before"
+      "description": "served with no headers, each page inside a frame (the main page on each of its tabs, the status page, the engine page) shows the notice and starts no engine (no engine object, no worker, no Web Lock); at the top level it starts as before"
     },
     {
       "id": "engine.start-tip.follows",
@@ -1750,7 +1755,7 @@
     {
       "id": "browser.host.rows-refused",
       "file": "token-indexer/test/browser-modules.test.ts",
-      "description": "a schema or table that is not the store's is refused as a bad request, before any statement names it, and the store is unchanged"
+      "description": "a schema or table that is not the store's is refused as a bad request, before any statement names it, and the store is unchanged; rows, tables and module requests whose values cannot be read or turned into text get a bad-request answer, never a rejection, and change nothing"
     },
     {
       "id": "browser.overview.model",

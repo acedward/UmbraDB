@@ -11,6 +11,10 @@
  *   before it, and the saved configuration stays the range.
  * - `[[browser.watchdog.restore-after-import]]` — after an `import`, which stops the engine, the new worker starts
  *   nothing and the automatic start stays off.
+ * - `[[browser.watchdog.restore-module-off]]` — the token indexer switched off stays off on the new worker: the restart
+ *   sends the engine's configuration, which carries no module, and the new worker's engine takes the switch from the
+ *   saved settings, so its archive goes on while the scan stays where it stopped; switched on again, the scan catches
+ *   up.
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -213,6 +217,44 @@ describe("page watchdog: what a restart starts", () => {
       expect(s.engine).toBeNull();
       expect(s.settings?.autoStart).toBe(false);
       expect(s.cursors?.sync).toEqual({ height: U1.from + 6, startHeight: U1.from });
+    } finally {
+      await r.close();
+    }
+  }, 120_000);
+
+  it("[[browser.watchdog.restore-module-off]] the token indexer switched off stays off on the new worker: the restart sends the configuration, with no module in it, and the saved switch keeps the scan stopped while the archive goes on; on again, the scan catches up", async () => {
+    // A finalized tip that rises one block every 300 ms: the archive is still growing when the worker is replaced.
+    const ran: StartConfig = { source: { kind: "tape", range: "u1", finalizedHeight: U1.from + 4, advance: { everyMs: 300, by: 1 } }, startHeight: U1.from, endHeight: U1.to, ...FAST };
+    const r = rig(ran);
+    try {
+      const c = r.engine.client;
+      expect((await c.booted()).phase).toBe("ready");
+      const off = await c.request("module", { module: "token-indexer", enabled: false });
+      expect(off.settings?.modules).toEqual({ "token-indexer": false });
+      await c.start(ran);
+      await until(async () => ((await c.status()).cursors?.sync?.height ?? 0) >= U1.from, "the archive's first block");
+      const before = await c.status();
+      expect(before.engine).toMatchObject({ running: true, config: ran });
+      expect(before.engine?.status.scan).toMatchObject({ phase: "off", scanner: "off" });
+      const archivedBefore = before.cursors!.sync!.height;
+      expect(archivedBefore).toBeLessThan(U1.to);
+
+      const next = await r.restart();
+      await until(() => next.received.some((m) => m.type === "start"), "the engine started on the new worker", 30_000);
+      expect(next.received.find((m) => m.type === "start")).toMatchObject({ config: ran });
+      expect(next.received.some((m) => m.type === "module")).toBe(false);
+      await until(async () => (await c.status()).cursors?.sync?.height === U1.to, "the archive on the new worker");
+      const after = await c.status();
+      expect(after.cursors?.sync?.height).toBeGreaterThan(archivedBefore);
+      expect(after.engine).toMatchObject({ running: true, config: ran, error: null });
+      expect(after.engine?.status.scan).toMatchObject({ phase: "off", scanner: "off" });
+      expect(after.cursors?.scan).toBeNull();
+      expect(after.settings).toEqual({ config: ran, autoStart: true, modules: { "token-indexer": false } });
+
+      const on = await c.request("module", { module: "token-indexer", enabled: true });
+      expect(on.settings?.modules).toEqual({ "token-indexer": true });
+      await until(async () => (await c.status()).cursors?.scan?.nextHeight === U1.to + 1, "the scan catching up on the new worker");
+      expect((await c.status()).engine?.status.scan).toMatchObject({ scanner: "following" });
     } finally {
       await r.close();
     }
