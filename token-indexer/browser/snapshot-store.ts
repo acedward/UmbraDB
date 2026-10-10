@@ -47,9 +47,10 @@ import {
   SnapshotRefusal,
   sha256Hex,
   snapshotFileName,
+  readTar,
   unpackDataDir,
 } from "./snapshot.ts";
-import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, type OpenStoreOptions, type Store } from "./store.ts";
+import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, type OpenStoreOptions, type Store, type StoreLoad } from "./store.ts";
 
 /** The MIME type of a snapshot file. */
 export const SNAPSHOT_MIME_TYPE = "application/x-tar";
@@ -195,6 +196,10 @@ const defaultTrial: TrialOpener = async (tar) => {
   const { PGlite } = await import("@electric-sql/pglite");
   return PGlite.create({ dataDir: "memory://", loadDataDir: tar });
 };
+
+/** The number of entries of a tar that {@link unpackDataDir} has checked. */
+const tarEntryCount = (tar: Uint8Array): number =>
+  readTar(tar, (d) => new SnapshotRefusal("corrupt", d), (d) => new SnapshotRefusal("corrupt", d)).length;
 
 const tarBlob = (tar: Uint8Array): Blob => new Blob([tar as Uint8Array<ArrayBuffer>], { type: "application/x-tar" });
 
@@ -348,16 +353,18 @@ export async function openFinishingImport(
   options: OpenStoreOptions = {},
 ): Promise<OpenedStore> {
   let pending: SnapshotManifest | undefined;
-  const prepare = async (dir: string): Promise<Blob | undefined> => {
+  const prepare = async (dir: string): Promise<StoreLoad | undefined> => {
     await options.prepare?.(dir);
     const journal = await files.readJournal();
     if (journal === undefined) return undefined;
     let manifest: SnapshotManifest;
     let tar: Uint8Array;
+    let entries: number;
     try {
       const decoded = decodeSnapshotFile(journal);
       await checkData(decoded.manifest, decoded.data);
       tar = await unpackDataDir(decoded.manifest, decoded.data);
+      entries = tarEntryCount(tar);
       manifest = decoded.manifest;
     } catch {
       await files.removeJournal();
@@ -365,7 +372,7 @@ export async function openFinishingImport(
     }
     await files.removeStore();
     pending = manifest;
-    return tarBlob(tar);
+    return { tar: tarBlob(tar), entries };
   };
 
   let store: Store;
@@ -401,7 +408,12 @@ async function reopenEmpty(
     await files.removeStore();
     return undefined;
   };
-  const store = await open(dataDir, { ...rest, ...(lock === undefined ? {} : { lock }), prepare });
+  let store: Store;
+  try {
+    store = await open(dataDir, { ...rest, ...(lock === undefined ? {} : { lock }), prepare });
+  } catch (e) {
+    throw new Error(`${failure}; opening the store empty failed too: ${e instanceof Error ? e.message : String(e)}`);
+  }
   return { store, imported: null, failure };
 }
 

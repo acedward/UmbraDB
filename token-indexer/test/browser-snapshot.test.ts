@@ -462,7 +462,7 @@ describe("browser engine snapshots", () => {
     writeFileSync(journal, file);
     const failing = await openFinishingImport(async (d, o) => {
       const load = await o.prepare?.(d);
-      if (load instanceof Blob) throw new Error("no space left");
+      if (load !== undefined) throw new Error("no space left");
       return openStore(d, { ...o, prepare: async () => {} });
     }, storeDir, files, "stagenet");
     try {

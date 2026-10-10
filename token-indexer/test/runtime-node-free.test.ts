@@ -91,6 +91,7 @@ const MUST_REACH = [
   "token-indexer/browser/zod-jitless.ts",
   "token-indexer/browser/snapshot.ts",
   "token-indexer/browser/snapshot-store.ts",
+  "token-indexer/browser/snapshot-page.ts",
 ];
 
 const rel = (abs: string): string => path.relative(ROOT, abs).split(path.sep).join("/");
