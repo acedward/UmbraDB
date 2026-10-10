@@ -495,6 +495,9 @@ describe("system snapshot schema and redaction", () => {
       `recovery phrase = ${phrase}`,
       `passphrase=${phrase}`,
       `seed: ${words.join(", ")}`,
+      `mnemonic:\n${words.join("\n")}`,
+      `seed = ${words.map((w) => w[0]!.toUpperCase() + w.slice(1)).join(" ")}`,
+      `seed phrase: ${words.map((w, i) => `${i + 1}. ${w}`).join(" ")}`,
       `{"seed":${JSON.stringify(words)}}`,
       `{"mnemonic": {"words": ${JSON.stringify(words)}, "language": "english"}, "n": 1}`,
       `seed=${JSON.stringify(words)}`,
@@ -503,7 +506,7 @@ describe("system snapshot schema and redaction", () => {
     ];
     for (const input of forms) {
       const out = redactText(input);
-      for (const w of words) expect(out, `${input} → ${out}`).not.toMatch(new RegExp(`\\b${w}\\b`));
+      for (const w of words) expect(out, `${input} → ${out}`).not.toMatch(new RegExp(`\\b${w}\\b`, "i"));
       expect(out, input).not.toMatch(/hunter2|SECRET/);
       expect(out, input).toContain("[redacted]");
       expect(redactText(out), `idempotent: ${out}`).toBe(out);
@@ -519,8 +522,63 @@ describe("system snapshot schema and redaction", () => {
     s.logs = forms.map((text, seq) => ({ seq, at: 1, level: "error" as const, source: "host" as const, text }));
     s.sync.lastError = { message: `seed=${phrase}`, at: 1 };
     const file = diagnosticsJson(s);
-    for (const w of words) expect(file).not.toMatch(new RegExp(`\\b${w}\\b`));
+    for (const w of words) expect(file).not.toMatch(new RegExp(`\\b${w}\\b`, "i"));
     expect(file).not.toMatch(/hunter2|SECRET/);
+  });
+
+  it("[[engine.telemetry.redaction-phrase-forms]] an unquoted seed, mnemonic or passphrase loses every word whatever its case, line breaks or separators (commas, tabs, several spaces, CR LF, an ideographic space, a numbered list, JSON-escaped line breaks inside a log field), in the diagnostics file too; text after the value of any other key stays", () => {
+    const words = "abandon ability able about above absent absorb abstract absurd abuse access accident".split(" ");
+    const upper = words.map((w) => w.toUpperCase());
+    const mixed = words.map((w, i) => (i % 2 === 0 ? w[0]!.toUpperCase() + w.slice(1) : w.toUpperCase()));
+    const forms = [
+      `seed=${words[0]}\n${words.slice(1).join(" ")}`,
+      `mnemonic: ${words.slice(0, 6).join(" ")}\n${words.slice(6).join(" ")}`,
+      `seed phrase:\r\n${words.slice(0, 4).join(" ")}\r\n${words.slice(4, 8).join(" ")}\r\n${words.slice(8).join(" ")}`,
+      `seed=${upper.join(" ")}`,
+      `passphrase: ${mixed.join(" ")}`,
+      `recovery phrase = ${words.join("\t")}`,
+      `seed: ${words.join("   ")}`,
+      `seed=${words.join(",")}`,
+      `SEED PHRASE: ${upper.join(", ")}`,
+      `mnemonic:\n  ${words.join("\n  ")}`,
+      `seed words: ${mixed.join(" ")}`,
+      `mnemonic: ${words.map((w, i) => `${i + 1}. ${w}`).join(" ")}`,
+      `mnemonic:\n${upper.map((w, i) => `${i + 1}) ${w}`).join("\n")}`,
+      `seed=${words.join("\u3000")}`,
+      `error ${JSON.stringify({ message: `seed=${words.slice(0, 6).join(" ")}\n${upper.slice(6).join(" ")}` })}`,
+      `error ${JSON.stringify({ message: `mnemonic: ${mixed.join("\r\n")}` })}`,
+      `error ${JSON.stringify(JSON.stringify({ message: `seed=${words.join("\n")}` }))}`,
+      `error ${JSON.stringify({ message: `restoring with passphrase="${upper.join(" ")}" failed` })}`,
+    ];
+    const leaked = (text: string): string[] => words.filter((w) => new RegExp(`\\b${w}\\b`, "iu").test(text));
+    for (const input of forms) {
+      const out = redactText(input);
+      expect(leaked(out), `${input} → ${out}`).toEqual([]);
+      expect(out, input).toContain("[redacted]");
+      expect(redactText(out), `idempotent: ${out}`).toBe(out);
+    }
+
+    // Text after the value of a key that names no phrase, or after a phrase that ends, stays.
+    for (const [input, out] of [
+      ["token=x1 Then Sync Resumed\nAt Block 5", "token=[redacted] Then Sync Resumed\nAt Block 5"],
+      ["height: 5\nSeed Phrase Restored From Backup", "height: 5\nSeed Phrase Restored From Backup"],
+      [`seed=${words.join(" ")}\nstatus: Synced To Block 5`, "seed=[redacted]\nstatus: Synced To Block 5"],
+      [`mnemonic: ${upper.join(" ")} height=5`, "mnemonic: [redacted] height=5"],
+      [`seed=${mixed.join(" ")}. Then 3 Blocks`, "seed=[redacted]. Then 3 Blocks"],
+    ]) expect(redactText(input!), input).toBe(out);
+
+    // The diagnostics file: the forms as log lines, as an event's error and as a host log line, and as the sync error.
+    const t = createEngineTelemetry({ clock: new Clock() });
+    forms.forEach((message, i) => {
+      t.observe(ev(i, "sync", "error", { message, retryMs: 1_000 }));
+      t.log("error", "host", message);
+    });
+    const s = minimal();
+    s.logs = [...forms.map((text, seq) => ({ seq, at: 1, level: "error" as const, source: "host" as const, text })), ...t.logs().slice(-100)]
+      .slice(0, 200).map((l, seq) => ({ ...l, seq }));
+    s.sync.lastError = { message: forms[0]!, at: 1 };
+    const file = diagnosticsJson(s);
+    expect(leaked(file)).toEqual([]);
   });
 
   it("[[engine.telemetry.redaction-url-paths]] a URL keeps its origin and its path but path segments that look like keys: an endpoint key in the path does not reach the snapshot or the diagnostics file", () => {
