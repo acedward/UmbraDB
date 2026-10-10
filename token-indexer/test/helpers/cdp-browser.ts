@@ -87,6 +87,9 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 export interface PageOptions {
   /** Also record the page's dedicated workers (requests, console, log entries, exceptions, CSP violations). */
   workers?: boolean;
+  /** Open the tab in a window of its own (still the same profile): it stays visible whatever other tabs are in front,
+   *  and minimizing its window hides it alone. */
+  newWindow?: boolean;
 }
 
 const VIOLATIONS = "__cspViolations = []; addEventListener('securitypolicyviolation', function (e) { __cspViolations.push(e.violatedDirective + ' ' + e.blockedURI); });";
@@ -111,7 +114,7 @@ export class Page {
   }
 
   static async open(conn: Connection, opts: PageOptions = {}): Promise<Page> {
-    const { targetId } = await conn.send("Target.createTarget", { url: "about:blank" });
+    const { targetId } = await conn.send("Target.createTarget", { url: "about:blank", ...(opts.newWindow === true ? { newWindow: true } : {}) });
     const { sessionId } = await conn.send("Target.attachToTarget", { targetId, flatten: true });
     const page = new Page(conn, sessionId, targetId);
     const mine = (l: (p: Json, worker: boolean) => void): Listener => (p, s) => { if (s !== undefined && page.sessions.has(s)) l(p, s !== sessionId); };

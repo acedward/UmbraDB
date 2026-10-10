@@ -157,9 +157,12 @@ describe("the system status page in Chrome (static build with its headers)", () 
     return v[0]!;
   };
 
-  /** Opens the status page in a new tab of `b` and waits for its first drawn snapshot. */
+  /**
+   * Opens the status page in a new tab of `b`, in a window of its own (visible whatever tab another window shows in
+   * front), and waits for its first drawn snapshot.
+   */
   async function openStatus(b: Browser, query = "", opts: { workers?: boolean } = {}): Promise<Page> {
-    const p = await b.newPage(opts);
+    const p = await b.newPage({ ...opts, newWindow: true });
     await p.goto(`${site.origin}/system.html${query}`);
     await p.waitFor("window.umbradbEngine !== undefined && window.umbradbSystem !== undefined", 30_000, "the status page");
     await p.eval("window.umbradbEngine.tabs.ready");
@@ -462,17 +465,11 @@ describe("the system status page in Chrome (static build with its headers)", () 
       await p.waitFor("window.__sys >= 2", 30_000, "two snapshots while visible");
       expect(await p.eval("document.body.getAttribute('data-live')")).toBe("watching");
 
-      // Another tab in front: this page is hidden (on a loaded host the new tab is sometimes not activated at once).
-      const other = await b.newPage();
-      for (let attempt = 1; ; attempt++) {
-        await other.send("Page.bringToFront");
-        try {
-          await p.waitFor("document.visibilityState === 'hidden'", 5_000, "the page hidden");
-          break;
-        } catch (e) {
-          if (attempt === 4) throw e;
-        }
-      }
+      // The page's window minimized: the page is hidden (a tab brought in front of it is not always activated at once
+      // on a loaded host; a minimized window's page is hidden as soon as the browser has minimized it).
+      const { windowId } = (await b.send("Browser.getWindowForTarget", { targetId: p.targetId })) as { windowId: number };
+      await b.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "minimized" } });
+      await p.waitFor("document.visibilityState === 'hidden'", 10_000, "the page hidden");
       expect(await p.eval("document.body.getAttribute('data-live')")).toBe("paused");
       expect(await p.eval("document.getElementById('live').textContent")).toBe("paused: nothing is read while this page is hidden");
       await sleep(500);
@@ -488,15 +485,14 @@ describe("the system status page in Chrome (static build with its headers)", () 
       expect(after.api.served, "only this refresh read /v1/status").toBe(last.api.served + 1);
       expect(after.databases.collectedAt, "no catalog read while hidden").toBe(last.databases.collectedAt);
 
-      // In front again: it follows again.
-      await p.send("Page.bringToFront");
+      // Shown again: it follows again.
+      await b.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "normal" } });
       await p.waitFor("document.visibilityState === 'visible'", 10_000, "the page visible");
       await p.waitFor(`window.umbradbSystem.renders > ${r0}`, 30_000, "a snapshot drawn again");
       expect(await p.eval("document.body.getAttribute('data-live')")).toBe("watching");
       expect(((await inP("c.system({ refresh: {} })")) as { viewers: number }).viewers).toBe(1);
       report.hidden = { snapshotsBefore: n0, servedBefore: last.api.served, servedAfter: after.api.served };
       expect(p.exceptions).toEqual([]);
-      await other.close();
       await p.close();
     } finally {
       await b.close();
@@ -506,7 +502,7 @@ describe("the system status page in Chrome (static build with its headers)", () 
   it("[[browser.status.links]] the explorer's engine panel links to the status page and the status page back to the explorer; both followed in one tab under the headers' policy, every request answered and no violation", async () => {
     const b = await Browser.launch(browserExe!);
     try {
-      const p = await b.newPage();
+      const p = await b.newPage({ newWindow: true });
       await p.goto(`${site.origin}/index.html`);
       await p.waitFor("document.querySelector('.engine-panel .system-link') !== null", 30_000, "the engine panel");
       expect(await p.eval("document.querySelector('.engine-panel .system-link').getAttribute('href')")).toBe("./system.html");
