@@ -326,7 +326,7 @@ const bytes = z.number().min(0).nullable();
 /** The storage guard's latest reading (`quota.ts`). */
 export const StorageStatusSchema = z.strictObject({
   /** `navigator.storage.estimate()`: what the browser counts against this site's quota (including the space it reserves
-   *  for the store's open files), and the quota. */
+   *  for the store's open files), and the quota; `null` when the estimate failed or did not answer in time. */
   usageBytes: bytes,
   quotaBytes: bytes,
   /** `navigator.storage.persisted()`. */
@@ -335,7 +335,8 @@ export const StorageStatusSchema = z.strictObject({
   pauseAtBytes: bytes,
   paused: z.boolean(),
   pausedReason: z.string().nullable(),
-  /** The size of the store's own files (an OPFS walk), when known. */
+  /** The size of the store's own files, from the latest finished OPFS walk (`null` until the first walk ends, or when
+   *  it cannot be read). */
   storeBytes: bytes,
   /** Clock time of the reading. */
   checkedAt: z.number().nullable(),
@@ -357,7 +358,8 @@ export const HostStatusSchema = z.strictObject({
   cursors: z.strictObject({ sync: SyncCursorSchema.nullable(), scan: ScanCursorSchema.nullable() }).nullable(),
   /** What `start` without a configuration, a `reset` and the automatic start run (`null` until the store is open). */
   settings: EngineSettingsSchema.nullable(),
-  /** The storage figures and the quota pause (`null` before the first reading). */
+  /** The storage figures and the quota pause: `null` until the boot is `ready` (the boot takes the first reading before
+   *  it ends `ready`), then always the latest reading. */
   storage: StorageStatusSchema.nullable(),
   /** The last snapshot exported and imported by this worker (manifest summary, file SHA-256 and size). */
   snapshots: SnapshotsSchema,

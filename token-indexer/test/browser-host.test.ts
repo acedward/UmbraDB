@@ -449,4 +449,3 @@ describe("browser tape catalog", () => {
     await expect(loadTape("u1", (async () => new Response("", { status: 404 })) as typeof fetch)).rejects.toThrow("HTTP 404");
   });
 });
-

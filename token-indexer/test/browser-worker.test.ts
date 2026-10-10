@@ -269,4 +269,3 @@ describe("browser engine worker in Chrome", () => {
     expect(stopped.cursors).toMatchObject({ sync: { height: U1.to }, scan: { nextHeight: U1.to + 1 } });
   }, 120_000);
 });
-

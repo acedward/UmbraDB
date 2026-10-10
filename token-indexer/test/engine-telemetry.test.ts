@@ -195,7 +195,7 @@ describe("engine telemetry", () => {
     t.observe(ev(clock.t, "sync", "range-refused", { message: "gap" }));
     t.observe(ev(clock.t, "sync", "range-complete", { to: 9, height: 9 }));
     t.observe(ev(clock.t, "sync", "stop", {}));
-    const hostile = "a\u0000b‮c<script>alert(1)</script>​\nline";
+    const hostile = "a\u0000b\u202ec<script>alert(1)</script>\u200b\nline";
     t.log("warn", "host", hostile);
     const lines = t.logs();
     expect(lines.map((l) => [l.source, l.level, l.text.split(" ")[0]])).toEqual([
@@ -455,7 +455,7 @@ describe("system snapshot schema and redaction", () => {
       "the session is held by a transaction",
       "Basic validation failed",
       "mn_shield-addr_preview1qqqsyqcyq5rqwzqf",
-      "a\u0000b‮c<script>alert(1)</script>",
+      "a\u0000b\u202ec<script>alert(1)</script>",
     ];
     for (const k of kept) expect(redactText(k), k).toBe(k);
     expect(publicUrl("http://u:p@h.example:8080/a/b?x=1#y")).toBe("http://h.example:8080/a/b");

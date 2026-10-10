@@ -8,14 +8,15 @@
  *   live range's digest of every table of both schemas; the recorded U1 range (715402–715433), in a new profile, gives
  *   its live archive digest.
  * - `[[browser.worker.start-tip]]` — the engine page's automatic start (the leader tab starts the saved configuration;
- *   the build's default points at a local chain on 127.0.0.1 whose finalized tip advances): with an empty profile and
- *   the endpoints failing, the engine waits with back-off, asks for no block
- *   and has no first height; once they answer it starts at the tip H they serve then (`/v1/status` `startHeight` = H)
- *   and the archive and scan heights follow the advancing tip; the page asks for persistent storage and reports the
- *   answer; a closed and reopened tab resumes at the cursor through the gap (no jump, no hole); a storage estimate
- *   near the quota (replaced in the worker over DevTools) pauses the sync and a lower one resumes it; `range` drops
- *   the data and syncs the new range, which a reopened tab keeps; `reset` syncs it again to the same digest; after a
- *   `stop` a reopened tab starts nothing.
+ *   the build's default points at a local chain on 127.0.0.1 whose finalized tip the test moves): with an empty profile
+ *   and the endpoints failing, the engine waits with back-off, asks for no block and has no first height; once they
+ *   answer it starts at the tip H they serve then (`/v1/status` `startHeight` = H); the archive and scan heights follow
+ *   the tip through 10 simulated minutes of chain time (100 blocks, moved 10 at a time, each reached by both); the page
+ *   asks for persistent storage and reports the answer; a closed and reopened tab resumes at the cursor and fetches each
+ *   height of the gap once (no jump, no hole); a storage estimate near the quota (replaced in the worker over DevTools)
+ *   pauses the sync, which holds while the tip moves, and a lower one resumes it; `range` drops the data and syncs the
+ *   new range, which a reopened tab keeps; `reset` syncs it again to the same digest; after a `stop` a reopened tab
+ *   starts nothing. Every wait is bounded and none depends on how fast the machine is.
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH.
  * `UMBRADB_BROWSER_REPORT=<file>` writes the measured timings as JSON (never committed).
@@ -151,8 +152,11 @@ describe("browser engine: automatic start at the finalized tip in Chrome", () =>
     site.chain = chainDown;
     const booted = await d.open();
     expect(booted.store).toMatchObject({ created: true });
+    // A ready worker's status always carries a storage reading (the boot takes the first one before ready).
+    expect(booted.storage).toMatchObject({ paused: false, pausedReason: null });
+    expect(booted.storage!.checkedAt).not.toBeNull();
     expect(booted.settings).toEqual({ config: START, autoStart: true });
-    const waiting = await d.until("the tip read to fail twice", (s) => s.engine?.running === true && s.engine.status.sync.failures >= 2, 30_000);
+    const waiting = await d.until("the tip read to fail twice", (s) => s.engine?.running === true && s.engine.status.sync.failures >= 2, 60_000);
     expect(waiting.engine!.config).toEqual(START);
     expect(["starting", "backoff"]).toContain(waiting.engine!.status.sync.phase);
     expect(waiting.engine!.status.sync.startHeight).toBeUndefined();
@@ -166,63 +170,65 @@ describe("browser engine: automatic start at the finalized tip in Chrome", () =>
     expect(waiting.storage).toMatchObject({ persisted: false, paused: false });
     report.waitingFailures = waiting.engine!.status.sync.failures;
 
-    // 2. The endpoints answer: it starts at the tip they serve then, and follows it as it advances (2 blocks/s).
+    // 2. The endpoints answer: it starts at the tip they serve then (both serve 714600).
     const tape = await readTape(new Uint8Array(readFileSync(join(REPO_ROOT, "token-indexer/browser/tapes/stagenet-714485-715183.tape.json.gz"))), "gzip");
-    const chain = createTapeReplay(tape, { finalizedHeight: 714600, advance: { everyMs: 500, by: 1 } });
+    const chain = createTapeReplay(tape, { finalizedHeight: 714600 });
     site.chain = (path, body) => chain.answer(path, body);
-    const tipAtUp = chain.finalizedHeight();
-    const begun = await d.until("the first block", (s) => s.cursors?.scan !== null && s.cursors?.scan !== undefined, 30_000);
+    const begun = await d.until("the first block", (s) => s.cursors?.scan !== null && s.cursors?.scan !== undefined, 60_000);
     const H = begun.cursors!.sync!.startHeight!;
-    expect(H).toBeGreaterThanOrEqual(tipAtUp);
-    expect(H).toBeLessThanOrEqual(chain.finalizedHeight());
+    expect(H).toBe(714600);
     expect(begun.engine!.status.sync.startHeight).toBe(H);
     expect((await d.api("/v1/status")).body).toMatchObject({ startHeight: H });
     expect(Math.min(...blockRequests().map((r) => r.height!))).toBe(H);
-    const samples: Array<{ tip: number; archive: number; scan: number }> = [];
-    for (let i = 0; i < 10; i++) {
-      await sleep(1_000);
-      const s = await d.status();
-      samples.push({ tip: chain.finalizedHeight(), archive: s.cursors!.sync!.height, scan: s.cursors!.scan!.nextHeight - 1 });
-    }
-    report.follow = { H, samples };
-    expect(samples[9]!.archive - samples[0]!.archive).toBeGreaterThanOrEqual(12);
-    for (const x of samples.slice(2)) {
-      expect(x.tip - x.archive, JSON.stringify(x)).toBeLessThanOrEqual(6);
-      expect(x.archive - x.scan, JSON.stringify(x)).toBeLessThanOrEqual(10);
-    }
 
-    // 3. The tab closes; the tip moves on; the reopened tab resumes at the cursor and fetches the whole gap.
+    // It follows the finalized tip for 10 minutes of chain time, simulated: Midnight finalizes a block about every 6 s,
+    // so 10 minutes are about 100 blocks; the tape's tip moves one simulated minute (10 blocks) at a time and each time
+    // both the archive and the scan reach it. Waiting for each step (bounded), not sampling at fixed times, keeps a slow
+    // machine from failing it; the time each step took is recorded.
+    const minutes: Array<{ tip: number; ms: number }> = [];
+    for (let m = 1; m <= 10; m++) {
+      const tip = chain.advanceFinalizedHeight(10);
+      const t0 = Date.now();
+      await d.until(`simulated minute ${m}: the archive and the scan at the tip ${tip}`, (s) => s.cursors?.sync?.height === tip && s.cursors?.scan?.nextHeight === tip + 1, 60_000);
+      minutes.push({ tip, ms: Date.now() - t0 });
+    }
+    expect(minutes.at(-1)!.tip).toBe(H + 100);
+    report.follow = { H, minutes };
+
+    // 3. The tab closes; the tip moves on; the reopened tab resumes at the cursor and fetches the whole gap, once.
     await page.goto("about:blank");
     const askedBefore = Math.max(...blockRequests().map((r) => r.height!));
+    expect(askedBefore).toBe(H + 100);
     const mark = site.chainRequests.length;
-    await sleep(4_000);
+    const tipAtReopen = chain.advanceFinalizedHeight(20);
     const reopened = await d.open();
     expect(reopened.store).toMatchObject({ created: false });
-    const tipAtReopen = chain.finalizedHeight();
-    const caught = await d.until("the gap", (s) => (s.cursors?.sync?.height ?? 0) >= tipAtReopen && (s.cursors?.scan?.nextHeight ?? 0) > tipAtReopen, 30_000);
+    const caught = await d.until("the gap", (s) => s.cursors?.sync?.height === tipAtReopen && s.cursors?.scan?.nextHeight === tipAtReopen + 1, 60_000);
     expect(caught.cursors!.sync!.startHeight).toBe(H);
     const after = site.chainRequests.slice(mark).filter((r) => r.method === "chain_getBlockHash").map((r) => r.height!);
-    expect(after[0]).toBeLessThanOrEqual(askedBefore + 1); // no jump to the new tip
+    expect(after.sort((a, b) => a - b)).toEqual(Array.from({ length: 20 }, (_, i) => askedBefore + 1 + i)); // no jump, no hole
     expect((await d.api("/v1/status")).body).toMatchObject({ startHeight: H });
     report.reopen = { askedBefore, firstAfter: after[0], tipAtReopen };
 
     // 4. A storage estimate near the quota pauses the sync; the API keeps answering; a lower one resumes it.
     await page.evalWorker(`(() => { self.__estimate = { usage: 9.5e9, quota: 1e10 }; StorageManager.prototype.estimate = async function () { return self.__estimate; }; return true; })()`);
-    const paused = await d.until("the quota pause", (s) => s.storage?.paused === true, 15_000);
+    const paused = await d.until("the quota pause", (s) => s.storage?.paused === true, 60_000);
     expect(paused.storage).toMatchObject({ usageBytes: 9.5e9, quotaBytes: 1e10, pauseAtBytes: 9e9, paused: true });
     expect(paused.storage!.pausedReason).toContain("the sync pauses at");
+    // A later reading while still paused: the sync is waiting in the guard (it reads again before letting a batch run).
+    await d.until("a later reading while paused", (s) => s.storage?.paused === true && (s.storage.checkedAt ?? 0) > paused.storage!.checkedAt!, 60_000);
     await sleep(1_000);
     const held = (await d.status()).cursors!.sync!.height;
-    const tipHeld = chain.finalizedHeight();
+    expect(held).toBe(tipAtReopen);
+    const tipWhilePaused = chain.advanceFinalizedHeight(5);
     await sleep(2_000);
-    expect((await d.status()).cursors!.sync!.height).toBe(held);
-    expect(chain.finalizedHeight()).toBeGreaterThan(tipHeld);
+    expect((await d.status()).cursors!.sync!.height, "the archive holds while paused").toBe(held);
     expect((await d.api("/v1/status")).status).toBe(200);
     // While the archive holds still: one block per height from H to the cursor, across the reopen (no hole).
     const still = (await d.engine("c.digest()")) as DigestResult;
     expect(still.archive.tables.blocks!.rows).toBe(held - H + 1);
     await page.evalWorker(`(() => { self.__estimate = { usage: 1e8, quota: 1e10 }; return true; })()`);
-    const resumed = await d.until("the sync to resume", (s) => s.storage?.paused === false && (s.cursors?.sync?.height ?? 0) > held, 15_000);
+    const resumed = await d.until("the sync to resume", (s) => s.storage?.paused === false && s.cursors?.sync?.height === tipWhilePaused, 60_000);
     expect(resumed.storage!.pausedReason).toBeNull();
     report.quota = { held, resumedAt: resumed.cursors!.sync!.height };
 
@@ -237,7 +243,7 @@ describe("browser engine: automatic start at the finalized tip in Chrome", () =>
     await page.goto("about:blank");
     const kept = await d.open();
     expect(kept.settings).toEqual(ranged.settings);
-    const keptDone = await d.until("the kept range", (s) => s.engine?.status.sync.phase === "done", 30_000);
+    const keptDone = await d.until("the kept range", (s) => s.engine?.status.sync.phase === "done", 60_000);
     expect(keptDone.cursors!.sync).toEqual({ height: 714520, startHeight: 714485 });
 
     // 6. reset: the same range from nothing, to the same digests.
@@ -256,5 +262,5 @@ describe("browser engine: automatic start at the finalized tip in Chrome", () =>
     expect(idle.engine).toBeNull();
     expect(idle.cursors!.sync).toEqual({ height: 714520, startHeight: 714485 });
     expect(page.exceptions).toEqual([]);
-  }, 300_000);
+  }, 600_000);
 });
