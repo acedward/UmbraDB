@@ -259,7 +259,9 @@ export function mountEnginePanel(opts: EnginePanelOptions): EnginePanel {
     } catch (e) {
       say(`${label} failed \u00b7 ${messageOf(e)}`);
     } finally {
+      // The controls are free again as soon as the answer is shown, not only once the panel has read the engine again.
       busy = false;
+      render();
       await refresh();
     }
   }
