@@ -21,6 +21,7 @@ import {
   type ResultOf,
   type StartConfig,
 } from "./protocol.ts";
+import { trustedWorkerConstructor } from "./trusted-worker.ts";
 
 /** Something that carries messages both ways. */
 export interface EngineEndpoint {
@@ -160,6 +161,9 @@ export function createEngineClient(endpoint: EngineEndpoint): EngineClient {
 /** Starts the engine's dedicated module worker and returns it with a client; a worker that fails to load or crashes
  *  closes the client with `worker-error`. */
 export function startEngineWorker(): { worker: Worker; client: EngineClient } {
+  // The page's Trusted Types policy makes the worker's URL; the call keeps the `new Worker(new URL(…, import.meta.url))`
+  // form that the bundler rewrites to the built worker's URL.
+  const Worker = trustedWorkerConstructor();
   const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module", name: "umbradb-engine" });
   const client = createEngineClient(worker);
   worker.addEventListener("error", (event) => {

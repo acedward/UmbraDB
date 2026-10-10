@@ -9,7 +9,10 @@
  *
  * Recorded per page: every request the page sends (Network domain), responses' statuses, failed loads (incl.
  * `blockedReason`, e.g. `csp`), console calls, browser log entries (CSP reports arrive here), uncaught exceptions, and
- * the page's own `securitypolicyviolation` events (a listener installed before any page script runs).
+ * the page's own `securitypolicyviolation` events (a listener installed before any page script runs). With
+ * `{ workers: true }` the page's dedicated workers are recorded too, into the same lists (entries marked
+ * `target: "worker"`): each worker is attached before its script runs, so all of its requests and log entries are seen,
+ * and gets a `self.__cspViolations` list of its own `securitypolicyviolation` events.
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
@@ -72,27 +75,38 @@ class Connection {
   }
 }
 
-export interface RequestRecord { url: string; method: string; type: string; status?: number; failed?: string; blockedReason?: string }
+export interface RequestRecord { url: string; method: string; type: string; status?: number; failed?: string; blockedReason?: string; target?: "worker" }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+export interface PageOptions {
+  /** Also record the page's dedicated workers (requests, console, log entries, exceptions, CSP violations). */
+  workers?: boolean;
+}
+
+const VIOLATIONS = "__cspViolations = []; addEventListener('securitypolicyviolation', function (e) { __cspViolations.push(e.violatedDirective + ' ' + e.blockedURI); });";
+
 export class Page {
   readonly requests: RequestRecord[] = [];
-  readonly console: Array<{ type: string; text: string }> = [];
-  readonly logs: Array<{ source: string; level: string; text: string; url?: string }> = [];
+  readonly console: Array<{ type: string; text: string; target?: "worker" }> = [];
+  readonly logs: Array<{ source: string; level: string; text: string; url?: string; target?: "worker" }> = [];
   readonly exceptions: string[] = [];
+  /** The DevTools sessions of the page's dedicated workers, oldest first (with `{ workers: true }`). */
+  readonly workerSessions: string[] = [];
   private readonly byId = new Map<string, RequestRecord>();
   private loads = 0;
 
   private constructor(private readonly conn: Connection, readonly sessionId: string) {}
 
-  static async open(conn: Connection): Promise<Page> {
+  static async open(conn: Connection, opts: PageOptions = {}): Promise<Page> {
     const { targetId } = await conn.send("Target.createTarget", { url: "about:blank" });
     const { sessionId } = await conn.send("Target.attachToTarget", { targetId, flatten: true });
     const page = new Page(conn, sessionId);
-    const mine = (l: (p: Json) => void): Listener => (p, s) => { if (s === sessionId) l(p); };
-    conn.on("Network.requestWillBeSent", mine((p) => {
-      const r: RequestRecord = { url: p.request.url, method: p.request.method, type: p.type ?? "" };
+    const sessions = new Set([sessionId]);
+    const mine = (l: (p: Json, worker: boolean) => void): Listener => (p, s) => { if (s !== undefined && sessions.has(s)) l(p, s !== sessionId); };
+    const tag = (worker: boolean): { target?: "worker" } => (worker ? { target: "worker" } : {});
+    conn.on("Network.requestWillBeSent", mine((p, w) => {
+      const r: RequestRecord = { url: p.request.url, method: p.request.method, type: p.type ?? "", ...tag(w) };
       page.requests.push(r);
       page.byId.set(p.requestId, r);
     }));
@@ -101,10 +115,28 @@ export class Page {
       const r = page.byId.get(p.requestId);
       if (r !== undefined) { r.failed = p.errorText; if (p.blockedReason !== undefined) r.blockedReason = p.blockedReason; }
     }));
-    conn.on("Runtime.consoleAPICalled", mine((p) => page.console.push({ type: p.type, text: (p.args ?? []).map((a: Json) => a.value ?? a.description ?? "").join(" ") })));
+    conn.on("Runtime.consoleAPICalled", mine((p, w) => page.console.push({ type: p.type, text: (p.args ?? []).map((a: Json) => a.value ?? a.description ?? "").join(" "), ...tag(w) })));
     conn.on("Runtime.exceptionThrown", mine((p) => page.exceptions.push(p.exceptionDetails?.exception?.description ?? p.exceptionDetails?.text ?? "exception")));
-    conn.on("Log.entryAdded", mine((p) => page.logs.push({ source: p.entry.source, level: p.entry.level, text: p.entry.text, url: p.entry.url })));
+    conn.on("Log.entryAdded", mine((p, w) => page.logs.push({ source: p.entry.source, level: p.entry.level, text: p.entry.text, url: p.entry.url, ...tag(w) })));
     conn.on("Page.loadEventFired", mine(() => { page.loads++; }));
+    if (opts.workers === true) {
+      // Every target the page starts is held before its script runs until it is resumed here; workers are recorded first.
+      conn.on("Target.attachedToTarget", (p, parent) => {
+        if (parent !== sessionId) return;
+        const child = p.sessionId as string;
+        const worker = p.targetInfo?.type === "worker";
+        void (async () => {
+          if (worker) {
+            sessions.add(child);
+            page.workerSessions.push(child);
+            for (const d of ["Runtime", "Network", "Log"]) await conn.send(`${d}.enable`, {}, child);
+          }
+          await conn.send("Runtime.runIfWaitingForDebugger", {}, child);
+          if (worker) await conn.send("Runtime.evaluate", { expression: VIOLATIONS }, child);
+        })().catch(() => { /* the target closed */ });
+      });
+      await conn.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sessionId);
+    }
     for (const d of ["Page", "Runtime", "Network", "Log"]) await conn.send(`${d}.enable`, {}, sessionId);
     await conn.send("Page.addScriptToEvaluateOnNewDocument", {
       source: "window.__cspViolations = []; document.addEventListener('securitypolicyviolation', function (e) { window.__cspViolations.push(e.violatedDirective + ' ' + e.blockedURI); });",
@@ -128,6 +160,15 @@ export class Page {
   async eval<T = Json>(expression: string): Promise<T> {
     const r = await this.conn.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, this.sessionId);
     if (r.exceptionDetails !== undefined) throw new Error(`evaluate failed: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
+    return r.result.value as T;
+  }
+
+  /** Evaluates an expression in the page's newest dedicated worker (promises awaited) and returns its JSON value. */
+  async evalWorker<T = Json>(expression: string): Promise<T> {
+    const session = this.workerSessions.at(-1);
+    if (session === undefined) throw new Error("no worker recorded: open the page with { workers: true }");
+    const r = await this.conn.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, session);
+    if (r.exceptionDetails !== undefined) throw new Error(`worker evaluate failed: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
     return r.result.value as T;
   }
 
@@ -182,8 +223,8 @@ export class Browser {
     return (await this.conn.send("Browser.getVersion")).product as string;
   }
 
-  newPage(): Promise<Page> {
-    return Page.open(this.conn);
+  newPage(opts?: PageOptions): Promise<Page> {
+    return Page.open(this.conn, opts);
   }
 
   async close(): Promise<void> {
