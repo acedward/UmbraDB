@@ -19,6 +19,9 @@
  *   worker). The snapshot was made in Node: a data directory PGlite dumped in Node loads in Chrome.
  * - `[[browser.worker.snapshot-follower]]` — a follower tab imports the published snapshot and exports the store through the
  *   leader tab's worker: the file crosses the tabs' BroadcastChannel as a parameter and as a result.
+ * - `[[browser.explorer.panel-snapshot]]` — the explorer's engine panel (`index.html`): its export saves the snapshot as a
+ *   download, and a new profile's panel imports that file from its file input; the two stores have equal digests, with
+ *   no CSP violation.
  * - `[[browser.worker.snapshot-recovery]]` — a profile's store holds an import journal and damaged files when the engine
  *   page opens (as when a worker ended mid-import): the boot finishes the import from the journal before PGlite opens
  *   the store, removes the journal, reports the import, and saves the configuration that continues it.
@@ -61,6 +64,16 @@ const EXPORT_EXPR = `c.export().then(async (r) => {
 /** A Blob of `bytes` in the page (`window.__file`). */
 const blobExpr = (bytes: Uint8Array): string =>
   `(window.__file = new Blob([Uint8Array.from(atob(${JSON.stringify(Buffer.from(bytes).toString("base64"))}), (ch) => ch.charCodeAt(0))], { type: "application/x-tar" }), true)`;
+
+/** Whether a downloaded file is complete (it reads as a snapshot file). */
+function decodeOk(bytes: Uint8Array): boolean {
+  try {
+    decodeSnapshotFile(new Uint8Array(bytes));
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 interface Exported { name: string; type: string; bytes: number; manifest: SnapshotManifest; timings: Json; base64: string }
 
@@ -285,6 +298,66 @@ describe("browser engine snapshots in Chrome", () => {
     expect(exported.size).toBe(exported.bytes);
     expect(await follower.eval("window.umbradbEngine.worker === undefined")).toBe(true);
     await closeProfile(leader.browser);
+  }, 300_000);
+
+  it("[[browser.explorer.panel-snapshot]] the explorer's engine panel exports the store as a download and a new profile's panel imports that file: equal digests", async () => {
+    const U1 = { from: 715402, to: 715433 } as const;
+    const msg = "document.querySelector('#engine-panel [data-field=\"message\"]').textContent";
+    const openExplorer = async (page: Page): Promise<void> => {
+      await page.goto(`${site.origin}/index.html`);
+      await page.waitFor("window.umbradbEngine !== undefined && document.querySelector('#engine-panel [data-action=\"export\"]') !== null", 60_000, "the explorer and its panel");
+      await page.eval("window.umbradbEngine.client.booted()");
+      // The panel has drawn the engine's state and its controls are enabled.
+      await page.waitFor("document.querySelector('#engine-panel').getAttribute('data-state') !== null && !document.querySelector('#engine-panel [data-action=\"import\"]').disabled && !document.querySelector('#engine-panel [data-action=\"export\"]').disabled", 60_000, "the panel's controls");
+    };
+    const waitMessage = async (page: Page, re: RegExp, what: string): Promise<void> => {
+      try {
+        await page.waitFor(`${re.toString()}.test(${msg})`, 120_000, what);
+      } catch (e) {
+        throw new Error(`${e instanceof Error ? e.message : String(e)}; the panel says ${JSON.stringify(await page.eval(msg))}`);
+      }
+    };
+
+    const a = await profile();
+    await openExplorer(a.page);
+    await a.d.engine(`c.start(${JSON.stringify({ source: { kind: "tape", range: "u1" }, startHeight: U1.from, endHeight: U1.to, ...FAST })})`);
+    await a.d.until("U1", (s) => s.cursors?.sync?.height === U1.to && s.cursors.scan?.nextHeight === U1.to + 1);
+    const before = await digestOf(a.d);
+    const name = `umbradb-stagenet-${U1.from}-${U1.to}.snapshot.tar`;
+    const downloads = mkdtempSync(join(tmpdir(), "umbradb-downloads-"));
+    let bytes: Uint8Array;
+    try {
+      await a.browser.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloads });
+      await a.page.eval("document.querySelector('#engine-panel [data-action=\"export\"]').click()");
+      await waitMessage(a.page, new RegExp(`^snapshot saved as ${name.replaceAll(".", "\\.")} `), "the panel's export");
+      const target = join(downloads, name);
+      const end = Date.now() + 30_000;
+      while (!(existsSync(target) && readFileSync(target).length > 0 && decodeOk(readFileSync(target)))) {
+        if (Date.now() > end) throw new Error(`no download: ${readdirSync(downloads).join(", ")}`);
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      bytes = new Uint8Array(readFileSync(target));
+    } finally {
+      rmSync(downloads, { recursive: true, force: true });
+    }
+    expect(decodeSnapshotFile(bytes).manifest.archive).toMatchObject({ startHeight: U1.from, height: U1.to });
+    expect(await a.page.eval("window.__cspViolations")).toEqual([]);
+    await closeProfile(a.browser);
+
+    const b = await profile();
+    await openExplorer(b.page);
+    await b.page.eval(`(() => {
+      const dt = new DataTransfer();
+      dt.items.add(new File([Uint8Array.from(atob(${JSON.stringify(Buffer.from(bytes).toString("base64"))}), (ch) => ch.charCodeAt(0))], ${JSON.stringify(name)}, { type: "application/x-tar" }));
+      document.querySelector('#engine-panel [data-input="snapshot"]').files = dt.files;
+      document.querySelector('#engine-panel [data-action="import"]').click();
+    })()`);
+    await waitMessage(b.page, new RegExp(`^snapshot ${name.replaceAll(".", "\\.")} imported: blocks ${U1.from}\u2013${U1.to}; the engine is stopped, and a start continues from block ${U1.to + 1}$`), "the panel's import");
+    const after = await digestOf(b.d);
+    expect(after.archive).toEqual(before.archive);
+    expect(after.tables).toEqual(before.tables);
+    expect(await b.page.eval("window.__cspViolations")).toEqual([]);
+    await closeProfile(b.browser);
   }, 300_000);
 
   it("[[browser.worker.snapshot-recovery]] an import journal beside a damaged store is finished by the next boot before PGlite opens the store", async () => {
