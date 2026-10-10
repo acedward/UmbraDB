@@ -24,7 +24,7 @@ import { Worker } from "node:worker_threads";
 import { PGlite } from "@electric-sql/pglite";
 import { afterAll, describe, expect, it } from "vitest";
 import { createPgliteClient } from "../../src/postgres/pglite-sql.js";
-import { EngineError, unavailableAnswer } from "../browser/client.ts";
+import { createEngineClient, EngineError, unavailableAnswer } from "../browser/client.ts";
 import { createWorkerHost, type WorkerHost } from "../browser/host.ts";
 import type { StartConfig } from "../browser/protocol.ts";
 import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, openStore } from "../browser/store.ts";
@@ -92,6 +92,25 @@ function threadWorker(dataDir: string, onError: (message: string) => void): Work
   };
 }
 
+/**
+ * How long a worker thread takes on this machine from its start to a finished boot (loading the engine's modules
+ * through the TypeScript loader and opening PGlite on `dir`): a watchdog limit below it would take a slow machine's boot
+ * for a stuck worker.
+ */
+async function threadBootMs(dir: string): Promise<number> {
+  const t0 = performance.now();
+  const w = threadWorker(dir, () => {});
+  const client = createEngineClient(w);
+  try {
+    expect((await client.booted()).phase).toBe("ready");
+    return performance.now() - t0;
+  } finally {
+    client.close();
+    w.terminate();
+    await previousGone;
+  }
+}
+
 /** A host in this thread behind a channel the test can silence (both ways), standing in for a worker. */
 interface ChannelWorker extends WorkerLike {
   silent: boolean;
@@ -151,10 +170,10 @@ describe("page watchdog", () => {
     const dir = tempDir();
     const threads: Array<ReturnType<typeof threadWorker>> = [];
     const restarts: number[] = [];
-    // The limit is short for a test, yet long enough that a thread starved by a busy machine (loading the engine's
-    // modules through the TypeScript loader, booting PGlite) is not taken for a stuck one: only the slow statement
-    // below may be the restart this test counts.
-    const LIMIT_MS = 5_000;
+    // The limit is short for a test, yet well above the time a worker thread takes to boot on this machine, so a slow
+    // machine's boot is not taken for a stuck worker: the slow statement below is the restart this test is about.
+    const bootMs = await threadBootMs(dir);
+    const LIMIT_MS = Math.max(5_000, Math.ceil(3 * bootMs));
     const engine = superviseWorker({
       createWorker: (onError) => {
         const w = threadWorker(dir, onError);
@@ -175,7 +194,7 @@ describe("page watchdog", () => {
       // The slow statement goes to the worker running now (a restart before this point would have replaced the first).
       const earlier = restarts.length;
       const running = threads.length;
-      (await threads[running - 1]!.thread).postMessage({ test: "slow-statement", seconds: 60 });
+      (await threads[running - 1]!.thread).postMessage({ test: "slow-statement", seconds: Math.ceil(LIMIT_MS / 1_000) + 60 });
       await sleep(50);
       const t0 = performance.now();
       const inflight = c.api("GET", "/v1/tokens");
@@ -186,11 +205,11 @@ describe("page watchdog", () => {
       expect(restarts).toEqual(Array.from({ length: earlier + 1 }, (_, i) => i + 1));
       expect(engine.restarts()).toHaveLength(earlier + 1);
       const reason = engine.restarts()[earlier]!.reason;
-      const silence = /^the engine worker sent nothing for (\d+) ms \(limit 5000 ms\)$/.exec(reason);
+      const silence = new RegExp(`^the engine worker sent nothing for (\\d+) ms \\(limit ${LIMIT_MS} ms\\)$`).exec(reason);
       expect(silence, reason).not.toBeNull();
       expect(Number(silence![1])).toBeGreaterThanOrEqual(LIMIT_MS);
       expect(threads).toHaveLength(running + 1);
-      console.log("watchdog: the slow statement was detected and the worker replaced after", Math.round(detectedMs), `ms (limit ${LIMIT_MS}, heartbeat 100, grace 200; ${earlier} earlier restarts)`);
+      console.log("watchdog: the slow statement was detected and the worker replaced after", Math.round(detectedMs), `ms (limit ${LIMIT_MS}, heartbeat 100, grace 200; a thread booted in ${Math.round(bootMs)} ms; ${earlier} earlier restarts)`);
       expect(detectedMs).toBeLessThan(LIMIT_MS + 5_000);
 
       // The new worker: same store, the engine continues at the cursors with the same configuration.
