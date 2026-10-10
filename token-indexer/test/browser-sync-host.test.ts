@@ -44,6 +44,8 @@ import { loadTape } from "../browser/tapes.ts";
 
 const U1 = { from: 715402, to: 715433 } as const;
 const FAST = { sync: { idleMs: 100 }, scan: { idleMs: 100 } };
+/** The interval of the timer that measures how late this thread's timers fire (the pacing test). */
+const PROBE_MS = 20;
 
 const SUPPORTED: CapabilityReport = {
   supported: true,
@@ -368,21 +370,39 @@ describe("browser engine host: sync", () => {
       return new Response(a.body, { status: a.status, headers: a.headers });
     };
     const logs: string[] = [];
-    const h = newHost({ nodeUrl: BROWSER_NODE_URL, indexerUrl: BROWSER_INDEXER_URL, fetch: fetchImpl, log: (level, m) => logs.push(`${level} ${m}`) });
-    await result(h, "start", { config: { startHeight: U1.from, endHeight: U1.from + 3, ...FAST } });
-    await until(h, "four blocks", (s) => s.engine!.status.sync.phase === "done");
+    // How late this thread's timers fire during the run: a probe timer beside the host, which shares its event loop
+    // (each firing's due time and lateness).
+    const late: Array<{ due: number; ms: number }> = [];
+    let due = Date.now() + PROBE_MS;
+    const probe = setInterval(() => {
+      const t = Date.now();
+      late.push({ due, ms: t - due });
+      due = t + PROBE_MS;
+    }, PROBE_MS);
+    try {
+      const h = newHost({ nodeUrl: BROWSER_NODE_URL, indexerUrl: BROWSER_INDEXER_URL, fetch: fetchImpl, log: (level, m) => logs.push(`${level} ${m}`) });
+      await result(h, "start", { config: { startHeight: U1.from, endHeight: U1.from + 3, ...FAST } });
+      await until(h, "four blocks", (s) => s.engine!.status.sync.phase === "done");
+    } finally {
+      clearInterval(probe);
+    }
     expect(starts.size).toBe(2);
     // The pacer spaces the start SLOTS 250 ms apart; a request whose timer fires late (the event loop busy with a
     // statement) starts late in its slot, so the next gap can be shorter by that lateness while the slots keep their
-    // spacing. Allowed lateness: 100 ms (62 ms seen with the Chromium tests running beside this file on a loaded host). A
-    // pacer with a shorter interval fails the run's total.
-    const LATE_MS = 100;
+    // spacing. Allowed lateness: 100 ms, or more on a machine whose timers were later than that while the requests
+    // started (the probe's largest lateness between the first and the last start, plus its interval: a timer due inside
+    // a busy stretch fires when the stretch ends). A pacer with a shorter interval fails the run's total.
+    const all = [...starts.values()].flat();
+    const [first, last] = [Math.min(...all), Math.max(...all)];
+    const lateMs = Math.max(0, ...late.filter((x) => x.due >= first - PROBE_MS && x.due <= last).map((x) => x.ms));
+    const LATE_MS = Math.max(100, lateMs + PROBE_MS);
     for (const [origin, times] of starts) {
       expect(times.length, origin).toBeGreaterThanOrEqual(4);
       for (let i = 1; i < times.length; i++) expect(times[i]! - times[i - 1]!, `${origin} request ${i}`).toBeGreaterThanOrEqual(250 - LATE_MS);
       expect(times.at(-1)! - times[0]!, `${origin}: ${times.length} starts`).toBeGreaterThanOrEqual(250 * (times.length - 1) - LATE_MS);
     }
     expect(logs, logs.join("\n")).toContain("warn sync chain_getBlock retried in 1000 ms: chain_getBlock: HTTP 429 from https://rpc.stagenet.shielded.tools//");
+    console.log("pacing: timers were late by", lateMs, "ms at most while the requests started; allowed lateness", LATE_MS, "ms; the whole run's largest lateness", Math.max(0, ...late.map((x) => x.ms)), "ms");
   }, 120_000);
 });
 
