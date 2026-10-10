@@ -27,6 +27,7 @@ PostgreSQL.
 | `client.ts` | The page's side: `startEngineWorker()` (the worker under the page's watchdog, created through the Trusted Types policy below) and `createEngineClient(endpoint)` (requests as promises of validated results) |
 | `supervisor.ts` | The page's watchdog: heartbeats, terminate and restart of a worker that stopped answering, what the page set up restored on the new worker |
 | `tabs.ts` | One engine across tabs: `connectEngineTabs()` elects the leader tab, which alone runs the worker; the other tabs proxy their requests to it and take over when it closes |
+| `frame-guard.ts` | A page inside a frame shows a notice and stops before it connects to the engine (no worker, no tab election, no request to the leader) |
 | `tab-locks.ts` | The Web Locks behind that (leader, tab presence, store) and the connected-tab count |
 | `host-system.ts` | The worker's telemetry, `system` snapshot collector and viewers, and the watchdog's heartbeat |
 | `system-view.ts` | The page's side of the `system` snapshot: follow it while the page is visible, refresh it, "Download diagnostics" |
@@ -281,8 +282,11 @@ The build writes the policy twice:
 
 - **In each page**, as `<meta http-equiv="Content-Security-Policy">` (with that page's own hashes) followed by
   `<meta name="referrer" content="no-referrer">`, right after `<meta charset>`. The hashes are of the bytes the build
-  writes, so an inline block the build did not write cannot run. This form protects the page even on a host that sends
-  no headers, but it does not reach the worker: Chrome takes a worker's policy from its script's response.
+  writes, so an inline block the build did not write cannot run. This form protects the page's scripts even on a host
+  that sends no headers, but it cannot forbid framing (`frame-ancestors` is header only) and it does not reach the
+  worker: Chrome takes a worker's policy from its script's response. Framing is refused by the pages themselves too: a
+  page inside a frame shows a notice and stops before it connects to the engine (`frame-guard.ts`), so on a host
+  without the headers another site still cannot steer clicks onto its controls.
 - **In `dist-browser/_headers`**, for every path (Netlify and Cloudflare Pages read this file). A host that does not read
   it must send these headers with every file of the build — the pages, the worker's script and the other assets (the
   policy's exact text, with the current hashes, is in `_headers`; it changes when an inline block changes):
