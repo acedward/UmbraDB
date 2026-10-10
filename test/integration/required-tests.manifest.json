@@ -1545,7 +1545,7 @@
     {
       "id": "browser.crash.kills",
       "file": "token-indexer/test/browser-crash-chrome.test.ts",
-      "description": "kills of the worker (terminate and renderer crash) at exact points of the first boot, of sync and scan block transactions and their commits, between transactions, at file writes and at random times: every reopened store is ready and holds exactly the blocks of its cursors in all 37 tables, and finished ranges have the recorded live digests"
+      "description": "kills of the worker (terminate and renderer crash) at exact points of the first boot, of sync and scan block transactions and their commits, between transactions, at file writes and at random times, each planned point actually reached (tried again on a fresh range, else the campaign fails) and both kill modes run at their points: every reopened store is ready and holds exactly the blocks of its cursors in all 37 tables and their NULL bytea[] elements, and finished ranges have the recorded live digests"
     },
     {
       "id": "browser.crash.import-swap",
