@@ -189,7 +189,8 @@ A minted identity without fields (never described, or withdrawn): `described: fa
 `startHeight` = the scan's first height, `indexedHeight` = the last scanned height (the scan cursor), `archiveHeight`
 = the chain archive's last height (all `null` before anything is scanned/archived). `genesisHash` is the configured
 network's (`null` when unknown). `scanner`: `following` (this process runs the scan loop), `stalled` (the loop's last
-attempt failed; it retries), `off` (API only). `unresolvedEvents` = the stored `log` ops whose logged value the raw
+attempt failed; it retries), `off` (no scan loop runs: an API-only process, or the browser engine with its token
+indexer switched off while the archive syncs). `unresolvedEvents` = the stored `log` ops whose logged value the raw
 transaction does not show (`unresolved` in `/v1/events`; never applied — while a contract has one, its tokens'
 metadata may differ from the ledger's events and their mark is ⚠ `unresolved` or `incorrect`; README "Known
 limitation"); `null` before the scan's schema exists. `durability`: `durable` (the durability probe refuses
