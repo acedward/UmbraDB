@@ -114,9 +114,10 @@ time, blocks per second, bytes per block, memory): [browser/MEASUREMENTS.md](bro
 ```sh
 npm run build:browser    # the static site in dist-browser/: pages, assets, _headers, the published snapshot
 npm run serve:browser    # serves it at http://127.0.0.1:10100/ with the headers of its _headers file
+npm run dev:browser      # or, for development: the same pages from the sources, served by Vite (no security headers)
 ```
 
-Then open `http://127.0.0.1:10100/` in Chrome.
+Then open `http://127.0.0.1:10100/` (with `dev:browser`, the address Vite prints) in Chrome.
 
 - **Chrome on the desktop only.** The engine checks for OPFS sync access handles, Web Locks, BroadcastChannel and
   persistent storage before anything else; without them it shows "Chrome only" and creates nothing. The page must come
@@ -153,7 +154,8 @@ Then open `http://127.0.0.1:10100/` in Chrome.
   shown in the panel and changes nothing else. Before each sync batch the engine compares the browser's usage with its
   quota and pauses the sync at quota − max(256 MiB, 10 % of the quota), while the scan and the API keep running; it
   resumes once space is freed. A write the browser refuses anyway pauses it the same way, with the store at its last
-  full block.
+  full block. The panel shows the store's own size first, then the browser's figures, which while the store is open
+  also count the space Chrome reserves for its files.
 - **Security headers.** The build writes a strict Content-Security-Policy (with a Trusted Types policy for the worker)
   into every page, and the same policy with cross-origin isolation into `dist-browser/_headers`, which Netlify and
   Cloudflare Pages read. A host must send those headers with every file, over `https:`, serve `.wasm` as
@@ -238,6 +240,7 @@ required gate runs it too, on PostgreSQL with the runner's Chrome.
 | The browser worker's session (time slices, failed statements, close), API requests between block transactions, the reopen before PGlite's failed-statement defect; the page's watchdog with a real slow statement on a worker thread and its rules | `test/browser-session.test.ts`, `test/browser-watchdog.test.ts` |
 | The browser build computes what the Node build computes, in Chromium: the 110 MIP vectors through the PGlite store in a worker on OPFS; the recorded cases through the engine worker's API (each case at its own last block, the reference index, marks, activity); a crawl of the whole API equal to the Node handler's over the same range | `test/browser-parity.test.ts` |
 | The system status page: its view of a snapshot and the explorer's hidden-character rules; in Chromium on the static build with its headers, every section against its sources, each driven state, a follower tab, nothing read while hidden, hostile text, and the diagnostics file's schema and redaction (see `browser/README.md`) | `test/browser-system-page.test.ts`, `test/browser-system-page-chrome.test.ts` |
+| The dev server (`npm run dev:browser`): every stylesheet, icon and font the explorer and the status page link served as what it is, never as a page; in Chromium, the dev explorer styled (its font, the logo's size, the engine panel's grid) | `test/browser-dev-chrome.test.ts` |
 | The static deploy: `npm run serve:browser`'s server (every file kind's content type, no `Content-Encoding`, every `_headers` header, nothing outside the folder, a folder without `_headers` refused) and its command; in Chromium, the site `npm run build:browser` writes served by it: the explorer starts by itself, the status page follows it, the published snapshot imports with the recorded digests, only the site and the build's chain are requested, no CSP violation | `test/browser-deploy.test.ts`, `test/browser-deploy-chrome.test.ts` |
 
 Fixtures:

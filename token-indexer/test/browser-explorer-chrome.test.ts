@@ -42,6 +42,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { formatBytes } from "../browser/panel-model.ts";
 import type { HostStatus } from "../browser/protocol.ts";
 import { Browser, findBrowser, type Page } from "./helpers/cdp-browser.ts";
 import { BROWSER_CONFIG, NO_AUTO_START } from "./helpers/engine-site.ts";
@@ -313,7 +314,8 @@ describe("the static build's explorer page in Chrome", () => {
     expect(p.systemHref).toBe(`${site.origin}/system.html`);
     const st0 = await status(leader);
     const quota = st0.storage?.quotaBytes ?? (await leader.eval<number>("navigator.storage.estimate().then((e) => e.quota)"));
-    expect(p.fields.storage).toContain(` used of ${(quota / 1_000_000).toFixed(1).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} MB`);
+    expect(p.fields.storage).toContain(` used of ${formatBytes(quota)}`);
+    expect(p.fields.storage).toMatch(/^(store [\d,]+\.\d [MG]B \u00b7 |store size not read yet \u00b7 )?browser reports /);
     expect(p.fields.storage).toMatch(/persistent: (yes|no|unknown)/);
     expect(await leader.eval<string>("document.querySelector('#tokens .range-note').textContent")).toBe("nothing indexed yet");
 

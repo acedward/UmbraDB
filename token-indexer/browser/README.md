@@ -70,19 +70,24 @@ answered by the engine instead of a server:
   seen, and its metadata only holds what was written from H on.
 - **Page.** The build writes `GET /ui`'s markup (`UI_BODY` of `ui/page.ts`) into `index.html` and links `ui/page.css`,
   whose font reference becomes the font file (`build-explorer.ts`). The page joins the tabs like the engine page
-  (`window.umbradbEngine`, persistent storage asked at load) and gets the build's policy like every page.
+  (`window.umbradbEngine`, persistent storage asked at load) and gets the build's policy like every page. On the dev
+  server (`npm run dev:browser`) the same plugin serves what the pages link from `../mip0018/ui/` (the style, the icon)
+  from that directory, through the same transforms, so the dev pages have the build's style and font.
 - **Engine panel** (`engine-panel.ts`, between the header and the view): this tab's role (leader, or follower with the
   engine in another tab) and the open tabs; the network; the engine's state (`not started`, `running`, `stopped`,
   `waiting (network)`, `stalled (scan)`, `paused (storage)`, `failed`, …) with its detail; the saved configuration
   (`settings`); "indexed from block H · history before block H is not indexed"; the synced (archive) and scanned
-  heights; durability; storage (`status`'s `storage` reading: usage, quota, where the sync pauses, the store's files,
-  persistence; the page's own `navigator.storage` figures until there is one). Controls, each one request (from a
-  follower the leader performs it): **start** (the saved configuration), **stop**, **change range** (a start, `tip` or
-  a height, and an optional end, checked before it is sent), **reset**, **export snapshot**, **import snapshot** (a
-  file). A range change, a reset or an import on a store that holds blocks first says which blocks will be dropped
-  and offers to export a snapshot before going on (or cancel, which sends nothing). The answer or the error is shown
-  under the controls. A link leads to the system status page (`system.html`). The panel refreshes every 2 s while the
-  page is visible, after each request and on the engine's notices; all text is set as text.
+  heights; durability; storage (`status`'s `storage` reading: first the size of the store's files, then the usage and
+  quota the browser reports, which count the space Chrome reserves for the open store's files too, where the sync
+  pauses on that usage, and persistence, e.g. "store 42.3 MB · browser reports 995.3 MB used of 11.7 GB (includes space
+  Chrome reserves for open files) · sync pauses at 10.6 GB used · persistent: yes"; the page's own `navigator.storage`
+  figures until there is one). Controls, each one request (from a follower the leader performs it): **start** (the
+  saved configuration), **stop**, **change range** (a start, `tip` or a height, and an optional end, checked before it
+  is sent), **reset**, **export snapshot**, **import snapshot** (a file). A range change, a reset or an import on a
+  store that holds blocks first says which blocks will be dropped and offers to export a snapshot before going on (or
+  cancel, which sends nothing). The answer or the error is shown under the controls. A link leads to the system
+  status page (`system.html`). The panel refreshes every 2 s while the page is visible, after each request and on the
+  engine's notices; all text is set as text.
 
 ## Boot
 
