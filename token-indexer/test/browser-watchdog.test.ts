@@ -280,6 +280,9 @@ describe("page watchdog", () => {
       now += ms;
       check();
     };
+    // Heartbeats as the page receives them (the supervisor has seen each one before the client's listeners).
+    let beats = 0;
+    c.onNotice((n) => { if (n.notice === "heartbeat") beats++; });
     try {
       expect((await c.booted()).phase).toBe("ready");
       expect(workers[0]!.received[0]).toMatchObject({ type: "watchdog", limitMs: 1_000, heartbeatMs: 20 });
@@ -289,7 +292,8 @@ describe("page watchdog", () => {
 
       // A late check (the tab was frozen with its worker): the worker's next heartbeat arrives within the grace.
       await silentFor(5_000);
-      await sleep(100); // a heartbeat arrives (the worker is alive)
+      const beatsAtCheck = beats;
+      await until(() => beats > beatsAtCheck, "a heartbeat after the late check (the worker is alive)", 30_000);
       await silentFor(150);
       expect(engine.restarts()).toEqual([]);
 
