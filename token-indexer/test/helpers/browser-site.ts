@@ -1,5 +1,6 @@
 /**
- * The browser build for Chrome tests: `token-indexer/browser/vite.config.ts` built with Vite into a temporary folder,
+ * The browser build for Chrome tests: `token-indexer/browser/vite.config.ts` built with Vite into a temporary folder
+ * (with no automatic start: a test starts what it replays, and never reaches the network),
  * the OPFS reader test page (`fixtures/opfs-reader/`) built beside it (`/reader/index.html`), and a static server for
  * both on 127.0.0.1 (random port at or above 10000) that also answers the chain's two endpoints (`/chain/rpc`,
  * `/chain/graphql`) from a recorded range.
@@ -14,6 +15,8 @@ import type { TapeReplay } from "../../../chain-archive-sync/tape-replay.js";
 export const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const CONFIG = join(ROOT, "token-indexer/browser/vite.config.ts");
 const READER = join(ROOT, "token-indexer/test/fixtures/opfs-reader");
+/** The build's settings for tests: the engine does not start by itself. */
+const NO_AUTO_START = { __UMBRADB_BROWSER_CONFIG__: JSON.stringify({ autoStart: false }) };
 
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".wasm": "application/wasm", ".data": "application/octet-stream",
@@ -27,7 +30,7 @@ export async function buildSite(env: Record<string, string> = {}): Promise<{ dir
   const saved = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
   Object.assign(process.env, env);
   try {
-    await build({ logLevel: "silent", configFile: CONFIG, build: { outDir: dir, emptyOutDir: true } });
+    await build({ logLevel: "silent", configFile: CONFIG, define: NO_AUTO_START, build: { outDir: dir, emptyOutDir: true } });
   } finally {
     for (const [k, v] of Object.entries(saved)) {
       if (v === undefined) delete process.env[k];

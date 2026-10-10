@@ -1,7 +1,14 @@
 /**
  * The browser build: `npm run build:browser` writes the static site to `dist-browser/` (`npm run dev:browser` serves the
- * same configuration on 127.0.0.1). Pages: `engine.html` (the engine's status page). The engine runs in a dedicated
- * module worker (`worker.ts`).
+ * same configuration on 127.0.0.1). Pages: every `*.html` file in this directory (today `engine.html`, the engine's
+ * status page). The engine runs in a dedicated module worker (`worker.ts`).
+ *
+ * - The chain (network and the node's and indexer's URLs) is fixed here, from `UMBRADB_BROWSER_NETWORK`,
+ *   `UMBRADB_BROWSER_NODE_URL` and `UMBRADB_BROWSER_INDEXER_URL` (Stagenet when unset): defined in both bundles as
+ *   `__UMBRADB_BROWSER_CHAIN__` (`config.ts`) and admitted in the pages' Content-Security-Policy.
+ * - `build-csp.ts` gives every page a meta Content-Security-Policy with the SHA-256 of its inline blocks, writes
+ *   `_headers` (the same policy and the cross-origin isolation headers for a static host) and makes `zod-jitless.ts` the
+ *   first module of every page.
  *
  * - `build.target: "esnext"` and `worker.format: "es"`: Chrome runs ES modules and top-level await in a module worker,
  *   so no top-level-await plugin is used.
@@ -16,10 +23,11 @@
  *   the installed PGlite and ledger-v9 versions, which the worker's system snapshot shows.
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type PluginOption } from "vite";
 import * as wasmPlugin from "vite-plugin-wasm";
+import { browserChainFromEnv, chainOrigins, staticSecurity } from "./build-csp.ts";
 import { nodeFreeBundle } from "./build-guard.ts";
 
 /** The plugin is the ES module's default export (its type declarations describe it as CommonJS). */
@@ -27,6 +35,10 @@ const wasm = (wasmPlugin as unknown as { default: () => PluginOption }).default;
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
+const chain = browserChainFromEnv(process.env);
+const pages = Object.fromEntries(readdirSync(root).filter((f) => f.endsWith(".html")).sort().map((f) => [f.slice(0, -".html".length), `${root}${f}`]));
+/** zod and `zod-jitless.ts` in one chunk, so the JIT is off before any module of another chunk creates a schema. */
+const zodChunk = { name: "zod", test: /[\\/]node_modules[\\/]zod[\\/]|[\\/]token-indexer[\\/]browser[\\/]zod-jitless\.ts$/ };
 
 /** The installed version of a package, or `null`. */
 function packageVersion(name: string): string | null {
@@ -56,12 +68,12 @@ export default defineConfig({
   root,
   base: "./",
   publicDir: false,
-  plugins: [nodeFreeBundle(repoRoot), wasm()],
-  define: { __UMBRADB_BUILD__: JSON.stringify(BUILD) },
+  define: { __UMBRADB_BROWSER_CHAIN__: JSON.stringify(chain), __UMBRADB_BUILD__: JSON.stringify(BUILD) },
+  plugins: [nodeFreeBundle(repoRoot), wasm(), staticSecurity({ connectSrc: chainOrigins(chain), prelude: `${root}zod-jitless.ts`, root })],
   worker: {
     format: "es",
     plugins: () => [nodeFreeBundle(repoRoot), wasm()],
-    rolldownOptions: { output: { keepNames: true } },
+    rolldownOptions: { output: { keepNames: true, codeSplitting: { groups: [zodChunk] } } },
   },
   build: {
     outDir: `${repoRoot}dist-browser`,
@@ -72,8 +84,8 @@ export default defineConfig({
     reportCompressedSize: false,
     chunkSizeWarningLimit: 20_000,
     rolldownOptions: {
-      input: { engine: `${root}engine.html` },
-      output: { keepNames: true },
+      input: pages,
+      output: { keepNames: true, codeSplitting: { groups: [zodChunk] } },
     },
   },
   optimizeDeps: { exclude: ["@electric-sql/pglite"] },

@@ -14,38 +14,56 @@
  *
  * **Requests** (`protocol.ts`): `status` answers at any time; `api` waits for the boot and answers through the running
  * engine's API handler, or, while no engine runs, a handler of the same store with no loops (`scanner: "off"`);
- * `start` runs a new engine (sync + scan in follow mode) with the given configuration, `stop` stops it, one at a time;
- * `system` watches or refreshes the system snapshot and `watchdog` sets the page's watchdog and starts the heartbeat
- * (`host-system.ts`); `range`, `reset`, `export` and `import` answer `not-implemented`.
+ * `start` runs a new engine (sync + scan in follow mode) with the given configuration, or the saved one, `stop` stops
+ * it; `range` drops the store's data and starts the new range, `reset` drops it and starts the saved configuration
+ * again; all four run one at a time, in arrival order. `digest` computes the store's archive and range-tables digests
+ * in one read-only transaction (the loops wait for it); `system` watches or refreshes the system snapshot and `watchdog`
+ * sets the page's watchdog and starts the heartbeat (`host-system.ts`); `export` and `import` answer `not-implemented`.
  *
  * **Engine**: the engine (`../engine/engine.ts`) runs with a scheduler that yields to the event loop before each step
  * (`scheduler.ts`), so requests and `stop` are served while it syncs; the chain is the network (`fetch` to the node and
- * the indexer) or a recorded range replayed in the worker (`tapes.ts`). A first `start` on an empty archive needs a
- * `startHeight`; a store whose archive has a cursor continues from it. The clients reach PGlite through the session
- * monitor (`session.ts`), which also gives the event loop a turn between statements, so API requests are served
- * between block transactions while a step runs.
+ * the indexer) or a recorded range replayed in the worker (`tapes.ts`). A store whose archive has a cursor continues
+ * from it, through any gap since it stopped (never jumping to the new tip). A new archive starts at `startHeight`, by
+ * default the finalized tip both sources serve, `min(node finalized height, indexer tip)`, resolved when the sync
+ * begins: while the endpoints fail the engine waits with back-off, and it never starts at genesis by default. The
+ * clients reach PGlite through the session monitor (`session.ts`), which also gives the event loop a turn between
+ * statements, so API requests are served between block transactions while a step runs.
+ *
+ * **Saved configuration** (`settings.ts`): the last `start` configuration or `range`, kept beside the store, and
+ * whether the engine should start by itself (`autoStart`; a `stop` request turns it off until the next `start`). A
+ * `start` with no configuration runs it; the leader tab sends one when its worker has booted (`tabs.ts`), so a new
+ * store starts at the tip and a reopened one resumes, a chosen range keeping its end.
+ *
+ * **Storage** (`quota.ts`): before each sync batch the guard compares the browser's usage with the quota and pauses the
+ * sync before it is reached (`storage` in `status`); it resumes once space frees.
  *
  * **Reopen**: PGlite fails every statement once a database has failed about 1,700 statements (and until it is
  * reopened). The host counts the statements the database fails and, at {@link REOPEN_AFTER_FAILED_STATEMENTS} since
  * the store was opened, or at once when a statement fails with "stack depth limit exceeded", reopens the store: it
- * holds new requests, stops the engine (its steps in flight end, so both cursors are at a full block), lets the API
- * requests in flight end, closes PGlite, opens it again and starts the engine again with the same configuration (it
- * continues at the cursors).
+ * holds new requests, stops the engine (its steps in flight end, so both cursors are at a full block), lets the
+ * requests reading the store end, closes PGlite, opens it again and runs the engine again with the same configuration
+ * (it continues at the cursors).
  */
+import { archiveDigest, dumpArchive } from "../../chain-archive-sync/archive-digest.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import type { ArchiveTape } from "../../chain-archive-sync/archive-tape.js";
 import { createTapeFetch } from "../../chain-archive-sync/tape-replay.js";
 import { durabilityModeOf } from "../../src/postgres/durability-probe.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { mip0018Migrations } from "../../src/postgres/migrations/mip0018/index.js";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { createIndexerEngine, type EngineClock, type EngineEvent, type EngineOptions, type EngineScheduler, type IndexerEngine, systemClock } from "../engine/engine.ts";
+import { rangeTables } from "../engine/range-tables.ts";
 import { checkCapabilities } from "./capabilities.ts";
 import { type BuildInfo, createHostSystem, type SystemProviders } from "./host-system.ts";
 import {
   type BootState,
   type CapabilityReport,
+  type DigestResult,
+  type EngineSettings,
   type ErrorCode,
   type HostStatus,
+  issuesOf,
   type Notice,
   parseRequest,
   PROTOCOL_VERSION,
@@ -54,11 +72,14 @@ import {
   type RequestType,
   type Response,
   type StartConfig,
+  StartConfigSchema,
   type StoreInfo,
   type TapeRange,
 } from "./protocol.ts";
+import { browserStorageEnvironment, createQuotaGuard, type StorageEnvironment } from "./quota.ts";
 import { yieldingScheduler } from "./scheduler.ts";
 import { STACK_DEPTH_EXCEEDED } from "./session.ts";
+import { type EngineSettingsStore, memorySettingsStore, opfsSettingsStore } from "./settings.ts";
 import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, openStore, type OpenStoreOptions, type Store } from "./store.ts";
 import { loadTape } from "./tapes.ts";
 
@@ -101,6 +122,16 @@ export interface WorkerHostOptions {
   log?: (level: LogLevel, message: string) => void;
   /** A monotonic clock in milliseconds for the boot timings. Default `performance.now`. */
   monotonic?: () => number;
+  /** The configuration of a store with no saved one. Default `{}` (the network endpoints, from the finalized tip). */
+  defaultStart?: StartConfig;
+  /** Where the saved configuration is kept. Default: a file beside an `opfs-ahp://` store, else memory. */
+  settings?: EngineSettingsStore;
+  /** What the storage guard reads. Default: `navigator.storage` and the store's OPFS directory. */
+  storage?: StorageEnvironment;
+  /** The storage guard's intervals (`quota.ts`). */
+  quota?: { checkEveryMs?: number; recheckMs?: number; storeEveryMs?: number };
+  /** Called with the store before `range` or `reset` drops its data (an export can be taken there). */
+  beforeWipe?: (store: Store) => Promise<void>;
   /** Facts of the build for the system snapshot. */
   build?: BuildInfo | null;
   /** What the system snapshot reads from other parts of the host (each has a placeholder default, `host-system.ts`). */
@@ -174,7 +205,12 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     clock,
     notify,
     build: opts.build ?? null,
-    ...(opts.system === undefined ? {} : { providers: opts.system }),
+    providers: {
+      storage: () => quota.reading(),
+      startMode: () => (typeof saved?.config.startHeight === "number" ? "range" : "tip"),
+      autoStart: () => saved?.autoStart ?? false,
+      ...opts.system,
+    },
     ...opts.systemIntervals,
   });
   /** A host line: to the console and to the telemetry's log ring. */
@@ -199,7 +235,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   /** Reads the stored cursors (never started). */
   let cursorReader: IndexerEngine | undefined;
   let active: IndexerEngine | undefined;
-  let last: { engine: IndexerEngine; config: StartConfig; error: string | null } | undefined;
+  let last: { engine: IndexerEngine; config: StartConfig; error: string | null; run: AbortController } | undefined;
   let booting: Promise<BootState> | undefined;
   let lifecycle: Promise<unknown> = Promise.resolve();
   let closed = false;
@@ -212,6 +248,19 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   let failedSinceOpen = 0;
   /** Requests reading the store now (`status`, `api`, `system`); a reopen waits for them. */
   let reading = 0;
+
+  const settingsStore = opts.settings ?? (opts.dataDir.startsWith("opfs-ahp://") ? opfsSettingsStore(opts.dataDir) : memorySettingsStore());
+  /** The saved configuration, read once the store is open. */
+  let saved: EngineSettings | undefined;
+  const quota = createQuotaGuard({
+    env: opts.storage ?? browserStorageEnvironment(opts.dataDir),
+    now: () => clock.now(),
+    sleep: (ms, signal) => clock.sleep(ms, signal),
+    ...(opts.quota?.checkEveryMs === undefined ? {} : { checkEveryMs: opts.quota.checkEveryMs }),
+    ...(opts.quota?.recheckMs === undefined ? {} : { recheckMs: opts.quota.recheckMs }),
+    ...(opts.quota?.storeEveryMs === undefined ? {} : { storeEveryMs: opts.quota.storeEveryMs }),
+    log,
+  });
 
   async function phase<T>(name: BootState["phase"], key: keyof BootState["timings"], fn: () => Promise<T>): Promise<T> {
     bootState.phase = name;
@@ -311,10 +360,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     const t0 = monotonic();
     const resume = active !== undefined ? last?.config : undefined;
     const engine = active;
-    if (engine !== undefined) {
-      await engine.stop();
-      active = undefined;
-    }
+    await halt(false);
     while (reading > 0) await clock.sleep(5, new AbortController().signal);
     system.unbind();
     store = undefined;
@@ -334,7 +380,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     log("warn", `PGlite reopened in ${Math.round(monotonic() - t0)} ms: ${reason}`);
     if (resume !== undefined) {
       try {
-        await launch(store!, resume);
+        await run(store!, resume, false);
       } catch (e) {
         if (last !== undefined) last.error = messageOf(e);
         log("error", `the engine did not start again after the reopen: ${messageOf(e)}`);
@@ -364,9 +410,11 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         if (s !== undefined) await s.close().catch(() => {});
         throw e;
       }
+      saved = (await settingsStore.load()) ?? { config: opts.defaultStart ?? {}, autoStart: true };
       useStore(s);
       bootState.phase = "ready";
       log("info", `store ${s.dataDir} ready (${s.created ? "created" : "reopened"}, PostgreSQL ${storeInfo.serverVersion})`);
+      void quota.check({ store: true }).catch(() => {});
     } catch (e) {
       bootState.phase = "failed";
       bootState.error = messageOf(e);
@@ -403,6 +451,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       store: storeInfo ?? null,
       engine: last === undefined ? null : { running: active === last.engine, config: last.config, status: last.engine.status(), error: last.error },
       cursors: bootState.phase === "ready" && !closed ? await readCursors() : null,
+      settings: saved ?? null,
+      storage: quota.status(),
     };
   }
 
@@ -432,33 +482,51 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     return { fetch: replay.fetchImpl, nodeUrl: replay.nodeUrl, indexerUrl: replay.indexerUrl };
   }
 
-  async function start(config: StartConfig): Promise<HostStatus> {
+  /** The scheduler of a run: before a sync batch, the storage guard admits it (it waits while the sync is paused before
+   *  the quota; a stop ends the wait and the batch is not run). */
+  const gated = (run: AbortSignal, base: EngineScheduler): EngineScheduler => async (kind, step) => {
+    if (kind === "sync") await quota.admit(run);
+    return base(kind, step);
+  };
+
+  /** Starts `config` (or the saved configuration) and saves it, with the automatic start on. */
+  async function start(config: StartConfig | undefined): Promise<HostStatus> {
     const s = await ready();
     if (active !== undefined) throw new HostError("already-running", "the engine is running; stop it first");
-    const cursor = await cursorReader!.syncCursor();
-    if (cursor === undefined && config.startHeight === undefined)
-      throw new HostError("start-failed", "the archive is empty: the first start needs a startHeight");
-    await launch(s, config);
-    notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "running", error: null } });
+    const effective = config ?? saved?.config ?? opts.defaultStart ?? {};
+    await run(s, effective);
+    saved = { config: effective, autoStart: true };
+    await saveSettings();
     return status();
   }
 
-  /** Creates and starts the engine of `config` over `s`; it becomes the active engine. */
-  async function launch(s: Store, config: StartConfig): Promise<void> {
+  async function saveSettings(): Promise<void> {
+    try {
+      if (saved !== undefined) await settingsStore.save(saved);
+    } catch (e) {
+      log("warn", `the engine settings could not be saved: ${messageOf(e)}`);
+    }
+  }
+
+  /** Runs a new engine (sync + scan in follow mode) with `config`. A new archive starts at `config.startHeight`, by
+   *  default the finalized tip. Its events go to the telemetry; `announce: false` posts no `engine` notice (a reopen). */
+  async function run(s: Store, config: StartConfig, announce = true): Promise<void> {
     const chain = await chainOf(config);
     system.telemetry.setEndpoints({ node: chain.nodeUrl, indexer: chain.indexerUrl });
+    const runner = new AbortController();
     let engine: IndexerEngine;
     try {
       engine = engineOf(s, {
         sync: {
           nodeUrl: chain.nodeUrl,
           indexerUrl: chain.indexerUrl,
-          ...(config.startHeight === undefined ? {} : { startHeight: config.startHeight }),
+          startHeight: config.startHeight ?? "tip",
           ...(config.endHeight === undefined ? {} : { endHeight: config.endHeight }),
           maxBlocks: config.sync?.maxBlocks ?? DEFAULT_SYNC_MAX_BLOCKS,
           ...(config.sync?.concurrency === undefined ? {} : { concurrency: config.sync.concurrency }),
           ...(config.sync?.minIntervalMs === undefined ? {} : { minIntervalMs: config.sync.minIntervalMs }),
           ...(config.sync?.idleMs === undefined ? {} : { idleMs: config.sync.idleMs }),
+          ...(config.sync?.backoff === undefined ? {} : { backoff: config.sync.backoff }),
         },
         scan: {
           mode: "follow",
@@ -466,7 +534,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
           ...(config.scan?.idleMs === undefined ? {} : { idleMs: config.scan.idleMs }),
         },
         fetch: system.telemetry.instrumentFetch(chain.fetch),
-        schedule: opts.schedule ?? yieldingScheduler,
+        schedule: gated(runner.signal, opts.schedule ?? yieldingScheduler),
+        signal: runner.signal,
         onEvent: (e) => {
           const line = logLineOf(e);
           if (line !== undefined) consoleLog(line[0], line[1]);
@@ -476,25 +545,89 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       detachTelemetry = system.telemetry.attach(engine);
       await engine.start();
     } catch (e) {
+      runner.abort();
       throw new HostError("start-failed", messageOf(e));
     }
-    const record = { engine, config, error: null as string | null };
+    const record = { engine, config, error: null as string | null, run: runner };
     active = engine;
     last = record;
     engine.finished.catch((e: unknown) => {
       record.error = messageOf(e);
       if (active === engine) notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "failed", error: record.error } });
     });
+    if (announce) notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "running", error: null } });
   }
 
-  async function stop(): Promise<HostStatus> {
+  /** Stops the running engine; resolves once its steps in flight have ended. `announce: false` posts no `engine`
+   *  notice (a reopen). */
+  async function halt(announce = true): Promise<void> {
     const engine = active;
     if (engine !== undefined) {
+      last?.run.abort();
       await engine.stop();
       active = undefined;
-      notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "stopped", error: last?.error ?? null } });
+      if (announce) notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "stopped", error: last?.error ?? null } });
+    }
+  }
+
+  /** A `stop` request: halts the engine and turns the automatic start off until the next `start`. */
+  async function stop(): Promise<HostStatus> {
+    await halt();
+    if (saved !== undefined && saved.autoStart && bootState.phase === "ready") {
+      saved = { ...saved, autoStart: false };
+      await saveSettings();
     }
     return status();
+  }
+
+  /**
+   * Drops the store's data: both schemas in one transaction (the archive and everything scanned from it), then the
+   * migrations again, so the store is as new. The saved configuration stays.
+   */
+  async function wipe(s: Store): Promise<void> {
+    if (opts.beforeWipe !== undefined) await opts.beforeWipe(s);
+    await s.archive.begin(async (tx) => {
+      await tx`DROP SCHEMA IF EXISTS ${tx(MIP0018_SCHEMA)} CASCADE`;
+      await tx`DROP SCHEMA IF EXISTS ${tx(ARCHIVE_SCHEMA)} CASCADE`;
+    });
+    await migrate(s);
+    storeInfo = await readStoreInfo(s);
+    log("info", "the store's data was dropped");
+  }
+
+  /** A `range` request: a new range means a new archive (one archive has no gaps and no backfill), so the store's data
+   *  is dropped and the range starts; the source and tuning of the saved configuration stay. */
+  async function range(startHeight: number | "tip", endHeight: number | undefined): Promise<HostStatus> {
+    const s = await ready();
+    const config: StartConfig = { ...(saved?.config ?? opts.defaultStart ?? {}), startHeight };
+    delete config.endHeight;
+    if (endHeight !== undefined) config.endHeight = endHeight;
+    const valid = StartConfigSchema.safeParse(config);
+    if (!valid.success) throw new HostError("bad-request", issuesOf(valid.error));
+    await halt();
+    await wipe(s);
+    return start(config);
+  }
+
+  /** A `reset` request: drops the store's data and starts the saved configuration again (a tip start resolves the tip
+   *  anew). */
+  async function reset(): Promise<HostStatus> {
+    const s = await ready();
+    await halt();
+    await wipe(s);
+    return start(undefined);
+  }
+
+  /** The store's archive and range-tables digests, read in one read-only transaction: the loops' statements wait for it
+   *  (one session), so both digests describe one state, also while the engine runs. */
+  async function digest(s: Store): Promise<DigestResult> {
+    const t = monotonic();
+    return s.mip0018.begin("read only", async (tx) => {
+      const sql = tx as unknown as UmbraDBSql;
+      const archive = archiveDigest(await dumpArchive(sql, ARCHIVE_SCHEMA));
+      const { digest: tables } = await rangeTables(sql, ARCHIVE_SCHEMA, MIP0018_SCHEMA);
+      return { archive, tables, elapsedMs: monotonic() - t };
+    });
   }
 
   /** Runs start/stop one at a time, in arrival order. */
@@ -538,10 +671,14 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         return system.watchdog(r);
       case "start":
         return serial(() => start(r.config));
+      case "range":
+        return serial(() => range(r.startHeight, r.endHeight));
+      case "reset":
+        return serial(() => reset());
       case "stop":
         return serial(() => stop());
-      case "range":
-      case "reset":
+      case "digest":
+        return readingStore(async () => digest(await ready()));
       case "export":
       case "import":
         throw new HostError("not-implemented", `${r.type} is not implemented by this worker`);
@@ -572,7 +709,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     async close(): Promise<void> {
       system.close();
       await serial(async () => {
-        await stop();
+        await halt();
         closed = true;
       });
       await boot();

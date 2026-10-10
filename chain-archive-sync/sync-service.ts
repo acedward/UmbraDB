@@ -304,6 +304,25 @@ export class ChainArchiveSyncService {
   }
 
   /**
+   * The finalized tip both sources can serve now: the node's finalized height (`chain_getFinalizedHead`, then its
+   * header) and the indexer's tip, and the lower of the two. Each network call is retried on throttling and outages
+   * as a batch's calls are. `syncOnce` bounds every batch by it; a host that starts a new archive at the current tip
+   * reads it here.
+   */
+  async finalizedTip(): Promise<{ targetTipHeight: number; nodeFinalizedHeight: number; indexerTipHeight: number }> {
+    const finalizedHash = await this.retry("chain_getFinalizedHead", () => this.node.getFinalizedHead());
+    const [nodeFinalizedHeight, indexerTipHeight] = await Promise.all([
+      this.retry("chain_getHeader", () => this.node.getHeightOf(finalizedHash)),
+      this.retry("indexer.tip", () => this.indexer.getTipHeight()),
+    ]);
+    // The indexer supplies transaction metadata/raw payloads for every block. Bounding the batch
+    // here prevents the normal "node is ahead of indexer" state from entering ingestOneBlock,
+    // throwing, and forcing the CLI through a 15-second error retry cycle. The lower tip is the
+    // highest height both independent sources can currently serve.
+    return { targetTipHeight: Math.min(nodeFinalizedHeight, indexerTipHeight), nodeFinalizedHeight, indexerTipHeight };
+  }
+
+  /**
    * Ingests one contiguous batch of blocks, starting right after the last watermark (or from
    * genesis on first run), up to `min(finalized head, indexer tip, watermark + maxBlocks)`. Only
    * ever ingests up to the FINALIZED head (`chain_getFinalizedHead`) and the indexer's current
@@ -336,16 +355,7 @@ export class ChainArchiveSyncService {
       });
     }
 
-    const finalizedHash = await this.retry("chain_getFinalizedHead", () => this.node.getFinalizedHead());
-    const [nodeFinalizedHeight, indexerTipHeight] = await Promise.all([
-      this.retry("chain_getHeader", () => this.node.getHeightOf(finalizedHash)),
-      this.retry("indexer.tip", () => this.indexer.getTipHeight()),
-    ]);
-    // The indexer supplies transaction metadata/raw payloads for every block. Bounding the batch
-    // here prevents the normal "node is ahead of indexer" state from entering ingestOneBlock,
-    // throwing, and forcing the CLI through a 15-second error retry cycle. The lower tip is the
-    // highest height both independent sources can currently serve.
-    const targetTipHeight = Math.min(nodeFinalizedHeight, indexerTipHeight);
+    const { targetTipHeight, nodeFinalizedHeight, indexerTipHeight } = await this.finalizedTip();
 
     if (startHeight > targetTipHeight) {
       // `updated_at` doubles as the dashboard liveness heartbeat. A same-height call to the

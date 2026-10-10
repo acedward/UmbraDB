@@ -5,13 +5,24 @@
  *
  * - `[[browser.worker.system]]` — a snapshot from the worker validates against the schema and its values equal their
  *   sources: heights equal `/v1/status`; storage equals `navigator.storage.estimate()` and `persisted()` read by the
- *   page; table sizes, row estimates, exact row counts and the database size equal `pg_total_relation_size`,
+ *   page and the storage guard's reading (its pause threshold); table sizes, row estimates, exact row counts and the database size equal `pg_total_relation_size`,
  *   `reltuples`, `count(*)` and `pg_database_size` read by the reader page from the store; the configuration shows the
  *   build's facts (`define`), the watchdog limit, the data directory and the browser's capability report. While watched
  *   a snapshot arrives every 2 s; unwatched, nothing is collected (no notice, no `/v1/status` read, no catalog read).
  *   The reader first opens the store the terminated engine worker left: replaying its WAL can add a table's free-space
  *   map (the only difference allowed then); after the reader closed the store cleanly and the engine reopened it, the
  *   two reads agree exactly.
+ * - `[[browser.worker.system-tabs]]` — a follower tab watches the leader's snapshots through the leader: it receives
+ *   them marked `follower` with the time it received them; when it closes without unwatching, its viewer is released and
+ *   the leader's worker stops collecting.
+ * - `[[browser.worker.watchdog]]` — the worker's thread is held busy (as by a statement that does not return) while it
+ *   replays the IDX range: the page terminates it after the watchdog's limit and grace, the API request in flight gets
+ *   the API's 503 `UNAVAILABLE` answer, a new worker boots on the same store and continues the engine at the stored
+ *   cursors; the finished store has the recorded archive digest and 37-table digest, and the snapshot counts the
+ *   restart with its reason.
+ * - `[[browser.worker.api-latency]]` — the round trip of `/v1/status`, `/v1/tokens` and a contract's activity page from
+ *   the page while the worker replays the IDX range (sync and scan running) and with the engine stopped: p95 bounded,
+ *   and the heartbeat's largest gap during the replay (measured and reported).
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH.
  * `UMBRADB_BROWSER_REPORT=<file>` writes the measurements as JSON (never committed).
@@ -22,14 +33,21 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readTape } from "../../chain-archive-sync/archive-tape.js";
 import { createTapeReplay, type TapeReplay } from "../../chain-archive-sync/tape-replay.js";
 import type { HostStatus } from "../browser/protocol.ts";
+import { pauseThresholdBytes } from "../browser/quota.ts";
 import { type SystemSnapshot, SystemSnapshotSchema } from "../engine/system-snapshot.ts";
 import { Browser, findBrowser, type Page } from "./helpers/cdp-browser.ts";
 import { buildSite, ROOT, serveSite } from "./helpers/browser-site.ts";
+import { unavailableAnswer } from "../browser/client.ts";
+import { percentile } from "../engine/telemetry.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
 
 const U1 = { from: 715402, to: 715433 } as const;
+const IDX = { from: 714485, to: 715183 } as const;
+/** The recorded live digests of the IDX range: the archive (7 tables) and every table of both schemas (37). */
+const IDX_ARCHIVE = "cb0d5e213730ccffc135984c537b9e31d92c984d2b83f06854971a3a74e5b119";
+const IDX_TABLES = "af6583d03da69ffd52a31fd89e663fe7892cf45aaf7234d9fc213c335dbc832c";
 const FAST = { sync: { idleMs: 200 }, scan: { idleMs: 200 } };
 const STORE = "opfs-ahp://umbradb-stagenet";
 const APP_COMMIT = "0123456789abcdef0123456789abcdef01234567";
@@ -126,7 +144,9 @@ describe("browser engine in Chrome: system snapshot, watchdog, scheduling", () =
     expect([est0.usage, est1.usage]).toContain(snap.storage.usageBytes);
     expect([est0.quota, est1.quota]).toContain(snap.storage.quotaBytes);
     expect(snap.storage.persisted).toBe(persisted);
-    expect(snap.storage).toMatchObject({ pauseAtBytes: null, paused: false });
+    const guard = (await status()).storage!;
+    expect(snap.storage).toMatchObject({ usageBytes: guard.usageBytes, quotaBytes: guard.quotaBytes, persisted: guard.persisted, pauseAtBytes: guard.pauseAtBytes, paused: false, pausedReason: null });
+    expect(guard.pauseAtBytes).toBe(pauseThresholdBytes(guard.quotaBytes!));
 
     const st = (await api("/v1/status")).body;
     expect(snap.overview).toMatchObject({ startHeight: st.startHeight, archiveHeight: st.archiveHeight, scanHeight: st.indexedHeight });
@@ -184,4 +204,149 @@ describe("browser engine in Chrome: system snapshot, watchdog, scheduling", () =
     expect(snap2.databases.databaseBytes).toBe(round2.size);
     expect(page.exceptions).toEqual([]);
   }, 300_000);
+
+  /** Opens the engine page in a tab of `b` and waits for its boot (and, for a leader, its worker's boot). */
+  async function engineTab(b: Browser, query = "", opts: { workers?: boolean } = {}): Promise<Page> {
+    const p = await b.newPage(opts);
+    await p.goto(`${server.origin}/engine.html${query}`);
+    await p.waitFor("window.umbradbEngine !== undefined", 30_000, "the engine page");
+    await p.eval("window.umbradbEngine.tabs.ready");
+    await p.eval("window.umbradbEngine.client.booted()");
+    return p;
+  }
+  const on = (p: Page) => (expr: string): Promise<Json> => p.eval(`(async () => { const c = window.umbradbEngine.client; return ${expr}; })()`);
+  async function waitFor<T>(what: string, read: () => Promise<T>, ok: (v: T) => boolean, timeoutMs = 120_000): Promise<T> {
+    const end = Date.now() + timeoutMs;
+    for (;;) {
+      const v = await read();
+      if (ok(v)) return v;
+      if (Date.now() > end) throw new Error(`timed out waiting for ${what}: ${JSON.stringify(v)?.slice(0, 500)}`);
+      await sleep(100);
+    }
+  }
+
+  it("[[browser.worker.system-tabs]] a follower tab watches the leader's snapshots through the leader and gets them marked follower; closing it without unwatching releases its viewer, and the leader's worker stops collecting", async () => {
+    const a = await engineTab(browser);
+    const b = await engineTab(browser);
+    expect(await a.eval("window.umbradbEngine.tabs.role()")).toBe("leader");
+    expect(await b.eval("window.umbradbEngine.tabs.role()")).toBe("follower");
+    const inA = on(a);
+    const inB = on(b);
+    await b.eval(`(() => { window.__snaps = []; window.umbradbEngine.client.onNotice((n) => { if (n.notice === "system") window.__snaps.push(n.snapshot); }); })()`);
+    expect(await inB(`c.system({ watch: true, viewer: "tab-b" })`)).toEqual({ watching: true, viewers: 1, snapshot: null });
+    await b.waitFor("window.__snaps.length >= 2", 30_000, "two relayed snapshots");
+    const relayed = ((await b.eval("window.__snaps")) as Json[]).map((x) => SystemSnapshotSchema.parse(x));
+    for (const x of relayed) {
+      expect(x.role).toBe("follower");
+      expect(x.relayedAt).toBeGreaterThanOrEqual(x.generatedAt);
+    }
+    const refreshed = SystemSnapshotSchema.parse((await inB("c.system({ refresh: {} })")).snapshot);
+    expect(refreshed.role).toBe("follower");
+    expect(refreshed.engine.connectedTabs).toBe(2);
+    expect((await inA("c.system({ refresh: {} })")).viewers).toBe(1);
+
+    await b.close();
+    await waitFor("the closed tab's viewer to be released", () => inA("c.system({ refresh: {} })"), (r: Json) => r.viewers === 0 && r.watching === false, 30_000);
+    await a.close();
+  }, 120_000);
+
+  it("[[browser.worker.watchdog]] the worker's thread held busy during the IDX replay is terminated after the limit and grace; the API request in flight gets the 503; a new worker continues at the stored cursors to the recorded digests; the snapshot counts the restart", async () => {
+    const b = await Browser.launch(browserExe!);
+    try {
+      const p = await engineTab(b, "?watchdogLimitMs=2000", { workers: true });
+      const inP = on(p);
+      await inP(`c.start(${JSON.stringify({ source: { kind: "tape", range: "idx" }, startHeight: IDX.from, ...FAST })})`);
+      const before = await waitFor("a first part of the range", () => inP("c.status()"), (s: HostStatus) => (s.cursors?.scan?.nextHeight ?? 0) > IDX.from + 150);
+      // Hold the worker's thread, as a statement that does not return holds it.
+      await p.evalWorker("setTimeout(() => { const end = Date.now() + 600000; while (Date.now() < end) {} }, 0); true");
+      await sleep(50);
+      const t0 = Date.now();
+      const answer = (await inP(`c.api("GET", "/v1/tokens")`)) as Json;
+      const detectedMs = Date.now() - t0;
+      expect(answer).toEqual(unavailableAnswer("GET"));
+      const restarts = (await p.eval("window.umbradbEngine.restarts()")) as Array<{ at: number; reason: string }>;
+      expect(restarts).toHaveLength(1);
+      expect(restarts[0]!.reason).toMatch(/^the engine worker sent nothing for \d+ ms \(limit 2000 ms\)$/);
+      report.watchdog = { detectedMs, reason: restarts[0]!.reason, cursorsBefore: before.cursors };
+
+      const end = await waitFor("the rest of the range on the new worker", () => inP("c.status()"), (s: HostStatus) => s.cursors?.sync?.height === IDX.to && s.cursors?.scan?.nextHeight === IDX.to + 1, 180_000);
+      expect(end.engine).toMatchObject({ running: true });
+      expect(end.cursors!.sync!.startHeight).toBe(IDX.from);
+      const d = (await inP("c.digest()")) as Json;
+      expect(d.archive.sha256).toBe(IDX_ARCHIVE);
+      expect(d.tables.sha256).toBe(IDX_TABLES);
+      const snap = SystemSnapshotSchema.parse((await inP("c.system({ refresh: {} })")).snapshot);
+      expect(snap.engine.watchdogRestarts).toBe(1);
+      expect(snap.engine.lastWatchdogRestart?.reason).toBe(restarts[0]!.reason);
+      expect(snap.configuration.watchdogLimitMs).toBe(2_000);
+      expect(snap.logs.some((l) => l.text === `watchdog restart: ${restarts[0]!.reason}`)).toBe(true);
+      expect(p.exceptions).toEqual([]);
+      await p.close();
+    } finally {
+      await b.close();
+    }
+  }, 300_000);
+
+  it("[[browser.worker.api-latency]] the page's API round trips are bounded while the worker replays the IDX range (sync and scan running), and measured with the engine stopped", async () => {
+    const b = await Browser.launch(browserExe!);
+    try {
+      const p = await engineTab(b);
+      const inP = on(p);
+      await p.eval(`(() => { window.__beats = []; window.umbradbEngine.client.onNotice((n) => { if (n.notice === "heartbeat") window.__beats.push(performance.now()); }); })()`);
+      // Requests in a loop inside the page: status, tokens and (once a contract is known) its activity page.
+      const loop = `(async () => {
+        const c = window.umbradbEngine.client;
+        const lat = { status: [], tokens: [], activity: [] };
+        let contract = null;
+        const done = () => c.status().then((s) => s.cursors?.sync?.height === ${IDX.to} && s.cursors?.scan?.nextHeight === ${IDX.to + 1});
+        const t0 = performance.now();
+        const timed = async (k, target) => { const a = performance.now(); const r = await c.api("GET", target); lat[k].push(performance.now() - a); return r; };
+        for (let i = 0; ; i++) {
+          if (i % 10 === 0 && (await done())) break;
+          await timed("status", "/v1/status");
+          const t = await timed("tokens", "/v1/tokens?limit=50");
+          if (contract === null) { const item = JSON.parse(t.body).items?.find((x) => x.contractAddress); if (item) contract = item.contractAddress; }
+          if (contract !== null) await timed("activity", "/v1/contracts/" + contract + "/activity?limit=50");
+          if (performance.now() - t0 > 240000) break;
+        }
+        return { lat, contract, replayMs: performance.now() - t0 };
+      })()`;
+      const beatsFrom = (await p.eval("performance.now()")) as number;
+      await inP(`c.start(${JSON.stringify({ source: { kind: "tape", range: "idx" }, startHeight: IDX.from, ...FAST })})`);
+      const during = (await p.eval(loop)) as { lat: Record<string, number[]>; contract: string | null; replayMs: number };
+      const beats = ((await p.eval("window.__beats")) as number[]).filter((t) => t >= beatsFrom);
+      const gaps = beats.slice(1).map((t, i) => t - beats[i]!);
+      await inP("c.stop()");
+      expect(during.contract).not.toBeNull();
+      const activity = JSON.stringify(`/v1/contracts/${during.contract}/activity?limit=50`);
+      const idle = (await p.eval(`(async () => {
+        const c = window.umbradbEngine.client;
+        const lat = { status: [], tokens: [], activity: [] };
+        const timed = async (k, target) => { const a = performance.now(); await c.api("GET", target); lat[k].push(performance.now() - a); };
+        for (let i = 0; i < 100; i++) {
+          await timed("status", "/v1/status");
+          await timed("tokens", "/v1/tokens?limit=50");
+          await timed("activity", ${activity});
+        }
+        return lat;
+      })()`)) as Record<string, number[]>;
+      const stats = (xs: number[]) => ({ n: xs.length, p50: Math.round(percentile(xs, 0.5)! * 10) / 10, p95: Math.round(percentile(xs, 0.95)! * 10) / 10, max: Math.round(Math.max(...xs) * 10) / 10 });
+      const result = {
+        replayMs: Math.round(during.replayMs),
+        during: Object.fromEntries(Object.entries(during.lat).map(([k, v]) => [k, stats(v)])),
+        stopped: Object.fromEntries(Object.entries(idle).map(([k, v]) => [k, stats(v)])),
+        heartbeat: { beats: beats.length, maxGapMs: Math.round(Math.max(...gaps)), p95GapMs: Math.round(percentile(gaps, 0.95)!) },
+      };
+      report.apiLatency = result;
+      console.log("API latency in Chrome (IDX replay in the worker, OPFS)", JSON.stringify(result));
+      for (const k of ["status", "tokens", "activity"]) {
+        expect(during.lat[k]!.length, k).toBeGreaterThan(10);
+        expect(percentile(during.lat[k]!, 0.95)!, `${k} p95 during the replay`).toBeLessThan(250);
+      }
+      expect(Math.max(...gaps), "the heartbeat keeps coming during the replay").toBeLessThan(1_500);
+      await p.close();
+    } finally {
+      await b.close();
+    }
+  }, 400_000);
 });

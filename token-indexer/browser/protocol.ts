@@ -9,12 +9,13 @@
  * |---|---|---|
  * | `status` | — | {@link HostStatus} |
  * | `api` | `method`, `target` | {@link ApiResult}: the API handler's answer (`token-indexer/mip0018/api.ts`), unchanged |
- * | `start` | `config` ({@link StartConfig}) | {@link HostStatus} |
+ * | `start` | `config?` ({@link StartConfig}; omitted: the saved configuration) | {@link HostStatus} |
  * | `stop` | — | {@link HostStatus} |
- * | `range` | `startHeight` (a height or `"tip"`), `endHeight?` | error `not-implemented` |
- * | `reset` | — | error `not-implemented` |
+ * | `range` | `startHeight` (a height or `"tip"`), `endHeight?` | {@link HostStatus}: the store's data is dropped and the sync starts at the new range |
+ * | `reset` | — | {@link HostStatus}: the store's data is dropped and the saved configuration starts again |
  * | `export` | — | error `not-implemented` |
  * | `import` | `snapshot` (a `Blob`) | error `not-implemented` |
+ * | `digest` | — | {@link DigestResult}: the archive digest and the range-tables digest of the store |
  * | `system` | `watch` (with `viewer?`) or `refresh` (`{ database?, exactCounts? }`) | {@link SystemResult} |
  * | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | {@link WatchdogResult} |
  *
@@ -34,12 +35,14 @@ import type { ApiResponse } from "../mip0018/api.ts";
 import type { EngineStatus } from "../engine/engine.ts";
 import type { SyncCursor, SyncOnceResult } from "../../chain-archive-sync/sync-service.js";
 import type { ScanCursor, ScanOnceResult } from "../mip0018/scan.ts";
+import type { ArchiveDigest } from "../../chain-archive-sync/archive-digest.js";
+import type { RangeTables } from "../engine/range-tables.ts";
 import { SystemSnapshotSchema } from "../engine/system-snapshot.ts";
 
 export const PROTOCOL_VERSION = 1;
 
 /** The request types of this protocol version. */
-export const REQUEST_TYPES = ["status", "api", "start", "stop", "range", "reset", "export", "import", "system", "watchdog"] as const;
+export const REQUEST_TYPES = ["status", "api", "start", "stop", "range", "reset", "export", "import", "digest", "system", "watchdog"] as const;
 export type RequestType = (typeof REQUEST_TYPES)[number];
 
 /** The recorded Stagenet ranges a worker can replay offline (the gzip tapes in `token-indexer/browser/tapes/`). */
@@ -104,9 +107,11 @@ export const StartConfigSchema = z
   .strictObject({
     /** Default `{ kind: "network" }`. */
     source: ChainSourceSchema.optional(),
-    /** First height of a new archive. A store whose archive already has a cursor continues there and ignores it unless
-     *  it contradicts the archive (then the sync refuses the range). Required while the archive is empty. */
-    startHeight: height.optional(),
+    /** First height of a new archive: a height, or `"tip"` (the default), the finalized tip both sources serve when the
+     *  sync begins (`min(node finalized height, indexer tip)`; the engine waits with back-off while the endpoints fail
+     *  and never starts at genesis by default). A store whose archive already has a cursor continues there and ignores
+     *  it unless a height contradicts the archive (then the sync refuses the range). */
+    startHeight: z.union([height, z.literal("tip")]).optional(),
     /** Last height to sync, inclusive. Default: follow the finalized tip. */
     endHeight: height.optional(),
     sync: z
@@ -115,11 +120,16 @@ export const StartConfigSchema = z
         concurrency: intIn(1, 16).optional(),
         minIntervalMs: intIn(0, 60_000).optional(),
         idleMs: intIn(1, 3_600_000).optional(),
+        /** The back-off of a failed network call and of a failed batch or tip read (default 1 s doubling to 60 s,
+         *  8 attempts per call). */
+        backoff: z
+          .strictObject({ baseDelayMs: intIn(1, 600_000).optional(), maxDelayMs: intIn(1, 3_600_000).optional(), maxAttempts: intIn(1, 100).optional() })
+          .optional(),
       })
       .optional(),
     scan: z.strictObject({ batch: intIn(1, 1_000).optional(), idleMs: intIn(100, 3_600_000).optional() }).optional(),
   })
-  .refine((c) => c.startHeight === undefined || c.endHeight === undefined || c.endHeight >= c.startHeight, {
+  .refine((c) => typeof c.startHeight !== "number" || c.endHeight === undefined || c.endHeight >= c.startHeight, {
     message: "endHeight is below startHeight",
     path: ["endHeight"],
   });
@@ -199,12 +209,13 @@ const envelope = { v: z.literal(PROTOCOL_VERSION), id: intIn(1, Number.MAX_SAFE_
 export const REQUEST_SCHEMAS = {
   status: z.strictObject({ ...envelope, type: z.literal("status") }),
   api: z.strictObject({ ...envelope, type: z.literal("api"), method: z.string().min(1).max(32), target: z.string().min(1).max(65_536) }),
-  start: z.strictObject({ ...envelope, type: z.literal("start"), config: StartConfigSchema }),
+  start: z.strictObject({ ...envelope, type: z.literal("start"), config: StartConfigSchema.optional() }),
   stop: z.strictObject({ ...envelope, type: z.literal("stop") }),
   range: z.strictObject({ ...envelope, type: z.literal("range"), startHeight: z.union([height, z.literal("tip")]), endHeight: height.optional() }),
   reset: z.strictObject({ ...envelope, type: z.literal("reset") }),
   export: z.strictObject({ ...envelope, type: z.literal("export") }),
   import: z.strictObject({ ...envelope, type: z.literal("import"), snapshot: z.instanceof(Blob) }),
+  digest: z.strictObject({ ...envelope, type: z.literal("digest") }),
   system: SystemRequestSchema(),
   watchdog: WatchdogRequestSchema(),
 } as const satisfies Record<RequestType, z.ZodType>;
@@ -288,6 +299,36 @@ export const EngineStatusSchema = z.strictObject({
 export const SyncCursorSchema = z.strictObject({ height: n, startHeight: opt(n) });
 export const ScanCursorSchema = z.strictObject({ fromHeight: n, nextHeight: n, lastBlockHash: opt(z.string()) });
 
+// ── Settings and storage ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The engine's saved configuration, kept beside the store: the last `start` configuration or `range`, and whether the
+ * engine starts by itself when the worker boots (cleared by `stop`, set by `start`, `range` and `reset`). A reopened
+ * store resumes with it, so a chosen range keeps its end and the default keeps following the tip.
+ */
+export const EngineSettingsSchema = z.strictObject({ config: StartConfigSchema, autoStart: z.boolean() });
+export type EngineSettings = z.infer<typeof EngineSettingsSchema>;
+
+const bytes = z.number().min(0).nullable();
+/** The storage guard's latest reading (`quota.ts`). */
+export const StorageStatusSchema = z.strictObject({
+  /** `navigator.storage.estimate()`: what the browser counts against this site's quota (including the space it reserves
+   *  for the store's open files), and the quota. */
+  usageBytes: bytes,
+  quotaBytes: bytes,
+  /** `navigator.storage.persisted()`. */
+  persisted: z.boolean().nullable(),
+  /** The usage at which the sync pauses, whether it is paused, and why. */
+  pauseAtBytes: bytes,
+  paused: z.boolean(),
+  pausedReason: z.string().nullable(),
+  /** The size of the store's own files (an OPFS walk), when known. */
+  storeBytes: bytes,
+  /** Clock time of the reading. */
+  checkedAt: z.number().nullable(),
+});
+export type StorageStatus = z.infer<typeof StorageStatusSchema>;
+
 export const HostStatusSchema = z.strictObject({
   protocol: z.literal(PROTOCOL_VERSION),
   network: z.string(),
@@ -301,18 +342,39 @@ export const HostStatusSchema = z.strictObject({
     .nullable(),
   /** The stored cursors (`null` until the store is migrated; a cursor is `null` before its loop's first block). */
   cursors: z.strictObject({ sync: SyncCursorSchema.nullable(), scan: ScanCursorSchema.nullable() }).nullable(),
+  /** What `start` without a configuration, a `reset` and the automatic start run (`null` until the store is open). */
+  settings: EngineSettingsSchema.nullable(),
+  /** The storage figures and the quota pause (`null` before the first reading). */
+  storage: StorageStatusSchema.nullable(),
 });
 export type HostStatus = z.infer<typeof HostStatusSchema>;
+
+// ── Digests ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+const sha256 = z.string().regex(/^[0-9a-f]{64}$/);
+/**
+ * The `digest` result: the store's archive digest (`chain-archive-sync/archive-digest.ts`: the 7 `chain_archive`
+ * tables) and its range-tables digest (`token-indexer/engine/range-tables.ts`: every table of both schemas), read in one
+ * read-only transaction, so they describe one state even while the engine runs.
+ */
+export const DigestResultSchema = z.strictObject({
+  archive: z.strictObject({ sha256, tables: z.record(z.string(), z.strictObject({ rows: n, sha256 })) }),
+  tables: z.strictObject({ sha256, tables: z.record(z.string(), z.strictObject({ rows: n, sha256, excluded: z.array(z.string()) })) }),
+  /** How long the reads and the hashing took. */
+  elapsedMs: n,
+});
+export type DigestResult = z.infer<typeof DigestResultSchema>;
 
 export const RESULT_SCHEMAS = {
   status: HostStatusSchema,
   api: ApiResultSchema,
   start: HostStatusSchema,
   stop: HostStatusSchema,
-  range: z.never(),
-  reset: z.never(),
+  range: HostStatusSchema,
+  reset: HostStatusSchema,
   export: z.never(),
   import: z.never(),
+  digest: DigestResultSchema,
   system: SystemResultSchema,
   watchdog: WatchdogResultSchema,
 } as const satisfies Record<RequestType, z.ZodType>;
@@ -426,3 +488,7 @@ noExtraKeys<typeof SyncOnceResultSchema, SyncOnceResult>();
 noExtraKeys<typeof ScanOnceResultSchema, ScanOnceResult>();
 noExtraKeys<typeof SyncCursorSchema, SyncCursor>();
 noExtraKeys<typeof ScanCursorSchema, ScanCursor>();
+accepts<typeof DigestResultSchema.shape.archive, ArchiveDigest>();
+accepts<typeof DigestResultSchema.shape.tables, RangeTables>();
+noExtraKeys<typeof DigestResultSchema.shape.archive, ArchiveDigest>();
+noExtraKeys<typeof DigestResultSchema.shape.tables, RangeTables>();

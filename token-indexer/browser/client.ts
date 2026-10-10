@@ -7,11 +7,15 @@
  * and its result passes the protocol's schema; it rejects with an {@link EngineError} carrying the worker's error
  * code, or `bad-response` (a response that fails validation), `worker-error` (the worker failed to load or crashed),
  * `restarted` (the watchdog replaced the worker before it answered; an `api` request gets the API's 503 answer
- * instead) or `closed` (the client was closed).
+ * instead) or `closed` (the client was closed). A page that shares the engine with other tabs (`tabs.ts`) can also get
+ * `leader-changed` and `leader-unavailable`. `requestPersistentStorage()` asks the browser to keep the site's storage:
+ * `navigator.storage.persist()` exists only in a window, so a page asks, and the worker reports the outcome as
+ * `persisted`.
  */
 import {
   type ApiResult,
   type BootState,
+  type DigestResult,
   type ErrorCode,
   type HostStatus,
   type Notice,
@@ -26,6 +30,7 @@ import {
   type WatchdogResult,
 } from "./protocol.ts";
 import { type SupervisedEngine, type SupervisorOptions, superviseWorker } from "./supervisor.ts";
+import { trustedWorkerConstructor } from "./trusted-worker.ts";
 
 /** Something that carries messages both ways. */
 export interface EngineEndpoint {
@@ -34,7 +39,17 @@ export interface EngineEndpoint {
   removeEventListener(type: "message", listener: (event: MessageEvent) => void): void;
 }
 
-export type EngineErrorCode = ErrorCode | "bad-response" | "worker-error" | "restarted" | "closed";
+export type EngineErrorCode =
+  | ErrorCode
+  | "bad-response"
+  | "worker-error"
+  /** The watchdog replaced the worker before it answered (`supervisor.ts`). */
+  | "restarted"
+  | "closed"
+  /** The leader tab closed while a request that changes state was in flight to it (`tabs.ts`). */
+  | "leader-changed"
+  /** No leader tab answered in time (`tabs.ts`). */
+  | "leader-unavailable";
 
 export class EngineError extends Error {
   constructor(readonly code: EngineErrorCode, message: string, readonly request: RequestType | null = null) {
@@ -49,12 +64,17 @@ export interface EngineClient {
   status(): Promise<HostStatus>;
   /** One API request (`token-indexer/API.md`); the answer as the API handler gives it. */
   api(method: string, target: string): Promise<ApiResult>;
+  /** Starts `config`, or the saved configuration when it is omitted. */
   start(config?: StartConfig): Promise<HostStatus>;
   stop(): Promise<HostStatus>;
-  range(startHeight: number | "tip", endHeight?: number): Promise<never>;
-  reset(): Promise<never>;
+  /** Drops the store's data and starts the new range (`"tip"`: from the finalized tip, following it). */
+  range(startHeight: number | "tip", endHeight?: number): Promise<HostStatus>;
+  /** Drops the store's data and starts the saved configuration again. */
+  reset(): Promise<HostStatus>;
   export(): Promise<never>;
   import(snapshot: Blob): Promise<never>;
+  /** The store's archive and range-tables digests (one read-only transaction). */
+  digest(): Promise<DigestResult>;
   /** The boot state once the boot has ended (`ready`, `unsupported` or `failed`). */
   booted(): Promise<BootState>;
   /** Adds a notice listener; returns the function that removes it. */
@@ -146,12 +166,13 @@ export function createEngineClient(endpoint: EngineEndpoint): EngineClient {
     request,
     status: () => request("status", {}),
     api: (method, target) => request("api", { method, target }),
-    start: (config = {}) => request("start", { config }),
+    start: (config) => request("start", config === undefined ? {} : { config }),
     stop: () => request("stop", {}),
     range: (startHeight, endHeight) => request("range", endHeight === undefined ? { startHeight } : { startHeight, endHeight }),
     reset: () => request("reset", {}),
     export: () => request("export", {}),
     import: (snapshot) => request("import", { snapshot }),
+    digest: () => request("digest", {}),
 
     booted(): Promise<BootState> {
       return new Promise((resolve, reject) => {
@@ -205,6 +226,30 @@ export function createEngineClient(endpoint: EngineEndpoint): EngineClient {
   return client;
 }
 
+/** The answer to the page's request to keep the site's storage. */
+export interface PersistenceResult {
+  /** Whether `navigator.storage.persist()` was called (not when the storage was already persistent). */
+  requested: boolean;
+  /** Whether the site's storage is persistent now. */
+  persisted: boolean;
+  error: string | null;
+}
+
+/** Asks the browser to keep this site's storage (`navigator.storage.persist()`) unless it already does, and reports the
+ *  answer. A refusal changes nothing else: the engine runs, and its status reports `persisted: false`. */
+export async function requestPersistentStorage(
+  storage: Pick<StorageManager, "persist" | "persisted"> | undefined = globalThis.navigator?.storage,
+): Promise<PersistenceResult> {
+  if (typeof storage?.persist !== "function" || typeof storage.persisted !== "function")
+    return { requested: false, persisted: false, error: "navigator.storage.persist is not available" };
+  try {
+    if (await storage.persisted()) return { requested: false, persisted: true, error: null };
+    return { requested: true, persisted: await storage.persist(), error: null };
+  } catch (e) {
+    return { requested: true, persisted: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 /** Options of {@link startEngineWorker}: the watchdog's (`supervisor.ts`); `limitMs: null` turns it off. */
 export type EngineWorkerOptions = Omit<SupervisorOptions, "createWorker">;
 
@@ -217,6 +262,9 @@ export function startEngineWorker(options: EngineWorkerOptions = {}): Supervised
   return superviseWorker<Worker>({
     ...options,
     createWorker: (onError) => {
+      // The page's Trusted Types policy makes the worker's URL; the call keeps the `new Worker(new URL(…, import.meta.url))`
+      // form that the bundler rewrites to the built worker's URL.
+      const Worker = trustedWorkerConstructor();
       const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module", name: "umbradb-engine" });
       worker.addEventListener("error", (event) => onError(event.message === "" ? "the engine worker failed" : event.message));
       return worker;

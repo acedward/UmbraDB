@@ -16,6 +16,9 @@
  *   and PGlite reopens, which the old worker's heartbeats reported), boots, and gets back what the page had set up: the
  *   system snapshot viewers, and the engine with the configuration of the last `start` that succeeded (it continues at
  *   the stored cursors). An engine the page stopped, or that failed by itself, is not started again.
+ * - **Long requests:** while a request whose work may legitimately keep the worker busy for long is in flight (`range`
+ *   and `reset` drop and recreate the store's schemas, `export` and `import` copy the whole data directory;
+ *   {@link LONG_REQUESTS}), the limit is `longLimitMs` instead.
  * - **Limits:** more than `maxRestarts` restarts within `restartWindowMs` close the client with `worker-error` instead
  *   of restarting again. A new worker whose boot fails right after a restart (for example while the old worker's OPFS
  *   handles are still being released) is replaced again after a short wait, up to `bootRetries` times.
@@ -34,6 +37,10 @@ export const DEFAULT_WATCHDOG_LIMIT_MS = 30_000;
 export const DEFAULT_MAX_RESTARTS = 3;
 export const DEFAULT_RESTART_WINDOW_MS = 10 * 60_000;
 export const DEFAULT_BOOT_RETRIES = 5;
+/** Default limit while a long request is in flight. */
+export const DEFAULT_LONG_LIMIT_MS = 10 * 60_000;
+/** The requests during which the worker may stay silent up to `longLimitMs`. */
+export const LONG_REQUESTS: ReadonlySet<string> = new Set(["range", "reset", "export", "import"]);
 
 /** A worker as the supervisor drives it. */
 export interface WorkerLike extends EngineEndpoint {
@@ -55,6 +62,8 @@ export interface SupervisorOptions<W extends WorkerLike = WorkerLike> {
   heartbeatMs?: number;
   /** Silence after the worker became suspect before it is restarted. Default twice the heartbeat interval. */
   graceMs?: number;
+  /** The limit while a {@link LONG_REQUESTS} request is in flight. Default {@link DEFAULT_LONG_LIMIT_MS}. */
+  longLimitMs?: number;
   maxRestarts?: number;
   restartWindowMs?: number;
   bootRetries?: number;
@@ -118,6 +127,7 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
   const limitMs = opts.limitMs === undefined ? DEFAULT_WATCHDOG_LIMIT_MS : opts.limitMs;
   const heartbeatMs = opts.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
   const graceMs = opts.graceMs ?? 2 * heartbeatMs;
+  const longLimitMs = opts.longLimitMs ?? DEFAULT_LONG_LIMIT_MS;
   const maxRestarts = opts.maxRestarts ?? DEFAULT_MAX_RESTARTS;
   const restartWindowMs = opts.restartWindowMs ?? DEFAULT_RESTART_WINDOW_MS;
   const bootRetries = opts.bootRetries ?? DEFAULT_BOOT_RETRIES;
@@ -130,6 +140,8 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
 
   // What the page set up, replayed on a new worker.
   const sent = new Map<number, { type: string; config?: StartConfig; watch?: boolean; viewer?: string }>();
+  /** Ids of the long requests in flight. */
+  const long = new Set<number>();
   let engineConfig: StartConfig | undefined;
   const viewers = new Set<string>();
   let carried: CarriedCountsMessage = { watchdogRestarts: 0, lastWatchdogRestart: null, pgliteReopens: 0 };
@@ -143,6 +155,7 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
 
   function outgoing(message: unknown): void {
     if (!isRecord(message) || typeof message.id !== "number") return;
+    if (typeof message.type === "string" && LONG_REQUESTS.has(message.type)) long.add(message.id);
     if (message.type === "start" && isRecord(message.config)) sent.set(message.id, { type: "start", config: message.config as StartConfig });
     else if (message.type === "stop") sent.set(message.id, { type: "stop" });
     else if (message.type === "system" && typeof message.watch === "boolean")
@@ -159,6 +172,7 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
       return;
     }
     if (m.kind !== "response" || m.response.id === null) return;
+    long.delete(m.response.id);
     const s = sent.get(m.response.id);
     if (s === undefined) return;
     sent.delete(m.response.id);
@@ -208,6 +222,7 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
   function replace(): void {
     endpoint.current.terminate();
     sent.clear();
+    long.clear();
     endpoint.swap(opts.createWorker(onError));
     lastSeen = now();
     suspectAt = undefined;
@@ -236,7 +251,8 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
   function check(): void {
     if (closed || limitMs === null) return;
     const t = now();
-    if (t - lastSeen < limitMs) {
+    const limit = long.size > 0 ? Math.max(limitMs, longLimitMs) : limitMs;
+    if (t - lastSeen < limit) {
       suspectAt = undefined;
       return;
     }
@@ -244,7 +260,7 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
       suspectAt = t;
       return;
     }
-    if (t - suspectAt >= graceMs) restart(`the engine worker sent nothing for ${Math.round(t - lastSeen)} ms (limit ${limitMs} ms)`);
+    if (t - suspectAt >= graceMs) restart(`the engine worker sent nothing for ${Math.round(t - lastSeen)} ms (limit ${limit} ms)`);
   }
 
   function close(): void {

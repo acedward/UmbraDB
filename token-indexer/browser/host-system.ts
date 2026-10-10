@@ -13,14 +13,15 @@
  *   replaced worker carried over. From then on a `heartbeat` notice is posted every interval, carrying the counts the
  *   next worker would need.
  *
- * Providers the snapshot reads from the host. Each default is a placeholder until the part that owns the value exists:
- * - `storage`: placeholder — `navigator.storage.estimate()` and `persisted()` as the worker reads them, with no quota
- *   pause (`pauseAtBytes` `null`, never paused); the sync's quota pause supplies the real reading.
- * - `snapshots`: placeholder — no export and no import recorded; snapshot export and import supply them.
- * - `role`: placeholder — `"leader"`; the multi-tab leader election supplies it.
- * - `connectedTabs`: placeholder — `null` (unknown); the multi-tab leader election supplies it.
- * - start mode and auto-start: placeholder — `"range"` (the first start names its start height) and `false`; starting
- *   at the finalized tip supplies them.
+ * Providers the snapshot reads from the host (`host.ts` supplies the storage guard's reading (`quota.ts`), the start
+ * mode and the automatic start from the saved configuration; `worker.ts` the connected tabs (`tab-locks.ts`)). The
+ * defaults, for a host that supplies none:
+ * - `storage`: `navigator.storage.estimate()` and `persisted()` as the worker reads them, with no quota pause
+ *   (`pauseAtBytes` `null`, never paused);
+ * - `snapshots`: placeholder — no export and no import recorded, until snapshot export and import exist;
+ * - `role`: `"leader"` (only the leader tab runs a worker; a follower relabels what it relays, `tabs.ts`);
+ * - `connectedTabs`: `null` (unknown);
+ * - start mode `"range"` and auto-start `false`.
  */
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import type { EngineClock, EngineOptions, IndexerEngine } from "../engine/engine.ts";

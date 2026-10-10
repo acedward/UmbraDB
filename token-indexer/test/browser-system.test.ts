@@ -125,7 +125,7 @@ describe("worker host system snapshot", () => {
       endpoints: { node: replay.nodeUrl, indexer: replay.indexerUrl },
       sync: { maxBlocks: 20, idleMs: 100 },
       scan: { mode: "follow", batch: 10, idleMs: 100 },
-      start: { mode: "range", startHeight: U1.from, endHeight: mid, autoStart: false },
+      start: { mode: "range", startHeight: U1.from, endHeight: mid, autoStart: true }, // the saved configuration, after a start
       durability: "non-durable",
       watchdogLimitMs: 30_000,
       build: { ...BUILD, postgresVersion: version, mip: status.mip, vendored: status.vendored },
