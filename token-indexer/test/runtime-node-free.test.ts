@@ -91,6 +91,10 @@ const MUST_REACH = [
   "token-indexer/browser/host.ts",
   "token-indexer/browser/trusted-worker.ts",
   "token-indexer/browser/zod-jitless.ts",
+  "token-indexer/browser/session.ts",
+  "token-indexer/browser/host-system.ts",
+  "token-indexer/browser/supervisor.ts",
+  "token-indexer/engine/telemetry.ts",
   "token-indexer/browser/explorer-transport.ts",
   "token-indexer/mip0018/ui/page.js",
 ];

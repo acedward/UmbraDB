@@ -4,11 +4,14 @@
  * worker and starts or resumes it, the others proxy to it), asks the browser to keep the site's storage
  * (`requestPersistentStorage`, from every tab), installs `window.umbradbExplorerHost` (`explorer-transport.ts`: the
  * explorer's API reads go to the engine) and exposes the client as `window.umbradbEngine`, as the engine page does, for
- * scripted use (the browser tests drive the engine through it).
+ * scripted use (the browser tests drive the engine through it). The leader tab's worker runs under the page's watchdog
+ * (`supervisor.ts`; `?watchdogLimitMs=<ms>` sets its limit, as on the engine page): an API read caught in a restart
+ * gets the API's 503 `UNAVAILABLE`, which the explorer shows like any failed read.
  */
-import { requestPersistentStorage } from "./client.ts";
+import { requestPersistentStorage, startEngineWorker } from "./client.ts";
 import { engineExplorerHost, type ExplorerHost } from "./explorer-transport.ts";
-import { connectEngineTabs } from "./tabs.ts";
+import type { SupervisedEngine } from "./supervisor.ts";
+import { connectEngineTabs, localEngineOf } from "./tabs.ts";
 
 declare global {
   interface Window {
@@ -18,7 +21,14 @@ declare global {
 
 const loadedAt = performance.now();
 const persistence = requestPersistentStorage();
-export const tabs = connectEngineTabs();
+const limit = Number(new URLSearchParams(location.search).get("watchdogLimitMs"));
+let supervised: SupervisedEngine<Worker> | undefined;
+export const tabs = connectEngineTabs({
+  startWorker: () => {
+    supervised = startEngineWorker(Number.isSafeInteger(limit) && limit >= 100 ? { limitMs: limit } : {});
+    return localEngineOf(supervised);
+  },
+});
 export const client = tabs.client;
 
 window.umbradbEngine = {
@@ -28,6 +38,7 @@ window.umbradbEngine = {
   get worker() {
     return tabs.worker();
   },
+  restarts: () => supervised?.restarts() ?? [],
   loadedAt,
   persistence,
 };

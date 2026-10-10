@@ -20,9 +20,10 @@
  * stored cursors), or, with nothing to resume, starts the store's saved configuration when it says to start by itself
  * (a new store: the build's default, at the finalized tip) — {@link EngineTabsOptions.resume} changes that. Requests in flight to a leader that closed follow one
  * rule:
- * - `status`, `api`, `export` and `digest` change nothing, so they are sent again to the next leader (which may be this
- *   tab) and answered by it;
- * - every other type (`start`, `stop`, `range`, `reset`, `import`, and any type added later until it is listed as
+ * - `status`, `api`, `export`, `digest` and `system` change nothing (a `system` watch or unwatch per viewer gives the same
+ *   state when applied twice), so they are sent again to the next leader (which may be this tab) and answered by it; a
+ *   follower that watches the system snapshot and closes without unwatching stops watching (its tab lock is released);
+ * - every other type (`start`, `stop`, `range`, `reset`, `import`, `watchdog`, and any type added later until it is listed as
  *   repeatable) is not sent again: it fails with `leader-changed`, because it may or may not have been applied — read
  *   the status, then decide;
  * - a request made while no leader is known waits for one up to {@link EngineTabsOptions.leaderWaitMs}, then fails with
@@ -34,10 +35,12 @@
  */
 import { z } from "zod";
 import { relayedSnapshot, type SystemSnapshot } from "../engine/system-snapshot.ts";
-import { type EngineClient, EngineError, type EngineErrorCode, startEngineWorker } from "./client.ts";
+import { type EngineClient, EngineError, type EngineErrorCode, startEngineWorker, unavailableAnswer } from "./client.ts";
+import type { SupervisedEngine } from "./supervisor.ts";
 import { BROWSER_BUILD_CONFIG, BROWSER_DATA_DIR } from "./config.ts";
 import {
   type BootState,
+  DEFAULT_SYSTEM_VIEWER,
   type Notice,
   type ParamsOf,
   parseResult,
@@ -63,8 +66,9 @@ import {
 /** How long a request waits for a leader by default. */
 export const LEADER_WAIT_MS = 10_000;
 
-/** The request types a follower sends again to the next leader when the leader it was sent to closed. */
-export const REPEATABLE_REQUEST_TYPES: ReadonlySet<RequestType> = new Set<RequestType>(["status", "api", "export", "digest"]);
+/** The request types a follower sends again to the next leader when the leader it was sent to closed: they change
+ *  nothing, or (`system` watching per viewer) give the same state when applied twice. */
+export const REPEATABLE_REQUEST_TYPES: ReadonlySet<RequestType> = new Set<RequestType>(["status", "api", "export", "digest", "system"]);
 
 export const tabsChannelName = (scope: string): string => `umbradb-engine:${scope}`;
 export const tabChannelName = (scope: string, tab: string): string => `umbradb-engine:${scope}:tab:${tab}`;
@@ -233,9 +237,20 @@ function defaultOpenChannel(): ((name: string) => ChannelLike) | undefined {
   return typeof BC === "function" ? (name) => new BC(name) : undefined;
 }
 
+/** A leader's engine from a worker under the page's watchdog: `worker` is the current one (the watchdog may replace
+ *  it), and stopping it ends the watchdog too. */
+export function localEngineOf(engine: SupervisedEngine<Worker>): LocalEngine {
+  return {
+    client: engine.client,
+    get worker() {
+      return engine.worker;
+    },
+    terminate: () => engine.close(),
+  };
+}
+
 function defaultStartWorker(): LocalEngine {
-  const { worker, client } = startEngineWorker();
-  return { worker, client, terminate: () => worker.terminate() };
+  return localEngineOf(startEngineWorker());
 }
 
 export function connectEngineTabs(opts: EngineTabsOptions = {}): EngineTabs {
@@ -401,6 +416,29 @@ export function connectEngineTabs(opts: EngineTabsOptions = {}): EngineTabs {
     return c;
   }
 
+  /** System snapshot viewers per follower tab: a tab that closes without saying so stops watching. */
+  const viewersOf = new Map<string, Set<string>>();
+  function followViewer(tab: string, params: Record<string, unknown>): void {
+    if (typeof params.watch !== "boolean") return;
+    const viewer = typeof params.viewer === "string" ? params.viewer : DEFAULT_SYSTEM_VIEWER;
+    let set = viewersOf.get(tab);
+    if (!params.watch) {
+      set?.delete(viewer);
+      return;
+    }
+    if (set === undefined) {
+      set = new Set();
+      viewersOf.set(tab, set);
+      if (locks !== undefined)
+        void whenTabGone(locks, scope, tab, abort.signal).then(() => {
+          const gone = viewersOf.get(tab);
+          viewersOf.delete(tab);
+          for (const v of gone ?? []) void local?.client.system({ watch: false, viewer: v }).catch(() => {});
+        });
+    }
+    set.add(viewer);
+  }
+
   function serve(m: Extract<TabMessage, { kind: "request" }>): void {
     const reply = (body: { ok: true; result: unknown } | { ok: false; error: { code: string; message: string } }): void =>
       post(outbox(m.from), { v: PROTOCOL_VERSION, kind: "response", from: self, id: m.id, ...body } as TabMessage);
@@ -413,6 +451,7 @@ export function connectEngineTabs(opts: EngineTabsOptions = {}): EngineTabs {
       return;
     }
     const type = m.type as RequestType;
+    if (type === "system") followViewer(m.from, m.params);
     local.client.request(type, m.params as ParamsOf<typeof type>).then(
       (result) => reply({ ok: true, result }),
       (err: unknown) => reply({ ok: false, error: err instanceof EngineError ? { code: err.code, message: err.message } : { code: "internal", message: messageOf(err) } }),
@@ -566,6 +605,22 @@ export function connectEngineTabs(opts: EngineTabsOptions = {}): EngineTabs {
     export: () => request("export", {}),
     import: (snapshot) => request("import", { snapshot }),
     digest: () => request("digest", {}),
+    system: (params) => request("system", params),
+    watchdog: (params) => request("watchdog", params),
+
+    /** Settles this tab's pending requests as `EngineClient.interrupt` does (the leader's own worker restarts are
+     *  settled by its engine client, and reach here through it). */
+    interrupt(reason) {
+      for (const e of [...pending.values()]) {
+        if (e.type !== "api") {
+          fail(e, "restarted", reason);
+          continue;
+        }
+        pending.delete(e.id);
+        if (e.timer !== undefined) clearTimeout(e.timer);
+        e.resolve(unavailableAnswer(String(e.params.method)));
+      }
+    },
 
     booted(): Promise<BootState> {
       return new Promise((resolve, reject) => {
