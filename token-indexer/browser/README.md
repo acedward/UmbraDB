@@ -331,10 +331,11 @@ holds. A file crafted on purpose can only carry rows (never code), but its rows 
 snapshots you exported or the build published.
 
 **Published snapshot.** `npm run build:browser` writes `snapshots/umbradb-stagenet-714485-715183.snapshot.tar` and
-`snapshots/index.json` (each file's size, SHA-256, manifest and digests) after Vite (`../dev/browser-snapshot.ts`): the
-worker host runs in Node on an in-memory PGlite (the browser's PGlite build), replays the recorded IDX range's tape and
-exports; the build then loads the file's rows into a new store, as an import does, and fails unless that store's archive
-digest and range-tables digest equal the recorded live sync of that range. The file's bytes differ from build to build
+`snapshots/index.json` (each file's size, SHA-256, manifest, digests and NULL `bytea[]` elements) after Vite
+(`../dev/browser-snapshot.ts`): the worker host runs in Node on an in-memory PGlite (the browser's PGlite build), replays
+the recorded IDX range's tape and exports; the build then loads the file's rows into a new store, as an import does, and
+fails unless that store's archive digest, range-tables digest and NULL `bytea[]` elements (which the range-tables digest
+counts as empty bytes; the range has none) equal the recorded live sync of that range. The file's bytes differ from build to build
 (the times in it); what it holds does not. A page loads it with
 `window.umbradbEngine.snapshots.published("idx")` (checked against the index) and imports it; with it the explorer
 answers for 714485–715183 with no network. `npm run dev:browser` publishes none.

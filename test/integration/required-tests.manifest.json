@@ -1,5 +1,5 @@
 {
-  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 372), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
+  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 373), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
   "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` — those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early — that would re-open the exact self-skip hole this manifest closes.",
   "required": [
     {
@@ -1440,7 +1440,12 @@
     {
       "id": "browser.snapshot.published",
       "file": "token-indexer/test/browser-snapshot.test.ts",
-      "description": "the published snapshot of 714485–715183 holds the recorded live sync, its index validates, and an import of it answers the API with no chain request"
+      "description": "the published snapshot of 714485–715183 holds the recorded live sync (archive and range-tables digests, no NULL bytea[] element), its index validates and lists them, and an import of it answers the API with no chain request; the generator refuses a range whose digests or NULL elements differ"
+    },
+    {
+      "id": "browser.snapshot.null-elements",
+      "file": "token-indexer/test/browser-snapshot.test.ts",
+      "description": "the snapshot integrity check compares the NULL bytea[] elements beside the archive and range-tables digests, which count a NULL element as empty bytes: a snapshot whose NULL element became empty bytes, or whose empty element became NULL, has the same digests and is rejected"
     },
     {
       "id": "browser.worker.snapshot-round-trip",
@@ -1550,7 +1555,7 @@
     {
       "id": "browser.crash.import-swap",
       "file": "token-indexer/test/browser-crash-chrome.test.ts",
-      "description": "kills during a snapshot import's swap leave the store as it was (before the journal is complete) or the snapshot's (finished at the next boot from the journal), whole, with their digests"
+      "description": "kills during a snapshot import's swap leave the store as it was (before the journal is complete) or the snapshot's (finished at the next boot from the journal), whole, with their digests and NULL bytea[] elements"
     },
     {
       "id": "browser.worker.quota-pause",

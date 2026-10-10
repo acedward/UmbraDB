@@ -598,8 +598,14 @@ export const PublishedSnapshotIndexSchema = z.strictObject({
       sha256: hex64,
       manifest: SnapshotManifestSchema,
       /** The digests the build checked the snapshot's store against before publishing it: the archive digest
-       *  (`chain_archive`'s 7 tables) and the range-tables digest (every table of both schemas). */
-      digests: z.strictObject({ archive: hex64, tables: hex64 }),
+       *  (`chain_archive`'s 7 tables), the range-tables digest (every table of both schemas) and, beside it, the NULL
+       *  `bytea[]` elements of each table with such a column, which that digest counts as empty bytes (count and hash
+       *  of where they are, `range-tables.ts`). */
+      digests: z.strictObject({
+        archive: hex64,
+        tables: hex64,
+        nullElements: z.record(z.string().max(200), z.strictObject({ count: z.int().min(0), sha256: hex64 })),
+      }),
     }),
   ),
 });

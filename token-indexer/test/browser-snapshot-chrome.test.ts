@@ -42,6 +42,7 @@ import { createTapeReplay } from "../../chain-archive-sync/tape-replay.js";
 import type { DigestResult, HostStatus } from "../browser/protocol.ts";
 import { decodeSnapshotFile, encodeSnapshotFile, type PublishedSnapshotIndex, type SnapshotManifest, sha256Hex } from "../browser/snapshot.ts";
 import { writePublishedSnapshots } from "../dev/browser-snapshot.ts";
+import { noNullElements } from "../engine/range-tables.ts";
 import { Browser, findBrowser, type Page } from "./helpers/cdp-browser.ts";
 import { buildEngineSite, chainDown, type EngineSite, engineDriver, NO_AUTO_START, REPO_ROOT, serveEngineSite } from "./helpers/engine-site.ts";
 
@@ -52,6 +53,8 @@ const IDX = { from: 714485, to: 715183 } as const;
 const PART = 714800;
 const ARCHIVE = "cb0d5e213730ccffc135984c537b9e31d92c984d2b83f06854971a3a74e5b119";
 const TABLES = "af6583d03da69ffd52a31fd89e663fe7892cf45aaf7234d9fc213c335dbc832c";
+/** IDX holds no NULL `bytea[]` element (which the range-tables digest counts as empty bytes). */
+const NULLS = noNullElements(["mip0018.mip0018_contract_actions"]);
 const FAST = { sync: { idleMs: 200 }, scan: { idleMs: 200 } };
 const JOURNAL = "umbradb-stagenet.import.snapshot.tar";
 
@@ -171,6 +174,7 @@ describe("browser engine snapshots in Chrome", () => {
     const aDigest = await digestOf(a.d);
     expect(aDigest.archive.sha256).toBe(ARCHIVE);
     expect(aDigest.tables.sha256).toBe(TABLES);
+    expect(aDigest.nullElements).toEqual(NULLS);
     const fullExport = await exportFrom(a.d);
     full = fullExport.bytes;
     fullAnswers = await answers(a.d);
@@ -190,6 +194,7 @@ describe("browser engine snapshots in Chrome", () => {
     const bDigest = await digestOf(b.d);
     expect(bDigest.archive).toEqual(aDigest.archive);
     expect(bDigest.tables).toEqual(aDigest.tables);
+    expect(bDigest.nullElements).toEqual(aDigest.nullElements);
     expect(await answers(b.d)).toEqual(fullAnswers);
     expect(site.chainRequests).toEqual([]);
     expect(await b.page.eval("window.umbradbEngine.restarts()")).toEqual([]); // the page's watchdog never fired
@@ -206,6 +211,7 @@ describe("browser engine snapshots in Chrome", () => {
     const cPart = await digestOf(c.d);
     expect(cPart.archive).toEqual(partDigest.archive);
     expect(cPart.tables).toEqual(partDigest.tables);
+    expect(cPart.nullElements).toEqual(partDigest.nullElements);
     expect(site.chainRequests).toEqual([]);
     await c.d.engine(`c.start(${JSON.stringify({ source: { kind: "network", nodeUrl: site.nodeUrl, indexerUrl: site.indexerUrl }, ...FAST })})`);
     await c.d.until("IDX to the end", (s) => s.cursors?.sync?.height === IDX.to && s.cursors.scan?.nextHeight === IDX.to + 1, 180_000);
@@ -215,6 +221,7 @@ describe("browser engine snapshots in Chrome", () => {
     const cDigest = await digestOf(c.d);
     expect(cDigest.archive.sha256).toBe(ARCHIVE);
     expect(cDigest.tables.sha256).toBe(TABLES);
+    expect(cDigest.nullElements).toEqual(NULLS);
     expect(await answers(c.d)).toEqual(fullAnswers);
     expect(await c.page.eval("window.umbradbEngine.restarts()")).toEqual([]);
     await closeProfile(c.browser);
@@ -278,6 +285,7 @@ describe("browser engine snapshots in Chrome", () => {
     const digest = await digestOf(p.d);
     expect(digest.archive.sha256).toBe(ARCHIVE);
     expect(digest.tables.sha256).toBe(TABLES);
+    expect(digest.nullElements).toEqual(NULLS);
     expect(site.chainRequests).toEqual([]);
     const outside = p.page.requests.filter((q) => !q.url.startsWith(`${site.origin}/`) && !q.url.startsWith("blob:") && !q.url.startsWith("data:"));
     expect(outside).toEqual([]);
@@ -360,6 +368,7 @@ describe("browser engine snapshots in Chrome", () => {
     const after = await digestOf(b.d);
     expect(after.archive).toEqual(before.archive);
     expect(after.tables).toEqual(before.tables);
+    expect(after.nullElements).toEqual(before.nullElements);
     expect(await b.page.eval("window.__cspViolations")).toEqual([]);
     await closeProfile(b.browser);
   }, 300_000);
@@ -403,6 +412,7 @@ describe("browser engine snapshots in Chrome", () => {
     const digest = await digestOf(p.d);
     expect(digest.archive.sha256).toBe(ARCHIVE);
     expect(digest.tables.sha256).toBe(TABLES);
+    expect(digest.nullElements).toEqual(NULLS);
     const names = await p.page.eval<string[]>(`(async () => { const n = []; for await (const [name] of (await navigator.storage.getDirectory()).entries()) n.push(name); return n.sort(); })()`);
     expect(names).not.toContain(JOURNAL);
     expect(names).toContain("umbradb-stagenet");

@@ -29,8 +29,12 @@
  *   was; a journal whose rows fail to load leaves an empty store and the failure; a host booting over a journal reports
  *   the import, saves the continuing configuration and only then removes the journal.
  * - `[[browser.snapshot.published]]` — the build's published snapshot of the recorded range 714485–715183 holds the
- *   recorded live sync (archive digest `cb0d5e21…`, range-tables digest `af6583d0…c832c`), its index validates, and an
- *   import of it answers the explorer's API with no chain request.
+ *   recorded live sync (archive digest `cb0d5e21…`, range-tables digest `af6583d0…c832c`) and no NULL `bytea[]`
+ *   element, its index validates and lists the three, and an import of it answers the explorer's API with no chain
+ *   request; the generator refuses a range whose digests or NULL elements are not the recorded ones.
+ * - `[[browser.snapshot.null-elements]]` — the snapshot integrity check the build runs (`snapshotDifferences`) compares
+ *   the NULL `bytea[]` elements beside the two digests, which count a NULL element as empty bytes: a snapshot whose
+ *   NULL element became empty bytes, or the reverse, has the same digests and is rejected.
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -61,10 +65,11 @@ import {
   sha256Hex,
   writeTar,
 } from "../browser/snapshot.ts";
-import { openFinishingImport, prepareImport, readStoreFacts } from "../browser/snapshot-store.ts";
-import { openStore } from "../browser/store.ts";
+import { exportSnapshot, loadSnapshot, openFinishingImport, prepareImport, readStoreFacts } from "../browser/snapshot-store.ts";
+import { migrateStore, openStore } from "../browser/store.ts";
 import { loadTape } from "../browser/tapes.ts";
-import { makePublishedSnapshot, recordedRange, writePublishedSnapshots } from "../dev/browser-snapshot.ts";
+import { makePublishedSnapshot, recordedRange, snapshotDifferences, snapshotDigests, writePublishedSnapshots } from "../dev/browser-snapshot.ts";
+import { compareNullElements, noNullElements } from "../engine/range-tables.ts";
 import { nodeStoreFiles } from "./helpers/worker-host.ts";
 
 const U1 = { from: 715402, to: 715433 } as const;
@@ -559,7 +564,8 @@ describe("browser engine snapshots", () => {
     expect(PublishedSnapshotIndexSchema.parse(JSON.parse(readFileSync(join(out, "snapshots/index.json"), "utf8")))).toEqual(index);
     expect(index.snapshots).toHaveLength(1);
     const entry = index.snapshots[0]!;
-    expect(entry).toMatchObject({ name: "idx", file: "umbradb-stagenet-714485-715183.snapshot.tar", digests: { archive: range.archiveDigest, tables: range.tablesDigest } });
+    expect(range.nullElements).toEqual(noNullElements(["mip0018.mip0018_contract_actions"]));
+    expect(entry).toMatchObject({ name: "idx", file: "umbradb-stagenet-714485-715183.snapshot.tar", digests: { archive: range.archiveDigest, tables: range.tablesDigest, nullElements: range.nullElements } });
     expect(entry.manifest.archive).toMatchObject({ startHeight: 714485, height: 715183 });
     expect(entry.manifest.scan).toMatchObject({ fromHeight: 714485, nextHeight: 715184 });
     const file = new Uint8Array(readFileSync(join(out, "snapshots", entry.file)));
@@ -577,9 +583,47 @@ describe("browser engine snapshots", () => {
     const digest = await result<DigestResult>(host, "digest");
     expect(digest.archive.sha256).toBe(range.archiveDigest);
     expect(digest.tables.sha256).toBe(range.tablesDigest);
+    expect(compareNullElements(digest.nullElements, range.nullElements)).toEqual([]);
     expect(fetched).toBe(0);
 
-    // The generator refuses a range whose digests are not the recorded ones.
+    // The generator refuses a range whose digests are not the recorded ones, the NULL bytea[] elements included.
     await expect(makePublishedSnapshot({ ...range, tablesDigest: "0".repeat(64) }, null)).rejects.toThrow(/does not hold the recorded range/);
+    const oneNull = { "mip0018.mip0018_contract_actions": { count: 1, sha256: "0".repeat(64) } };
+    await expect(makePublishedSnapshot({ ...range, nullElements: oneNull }, null)).rejects.toThrow(/does not hold the recorded range: .*mip0018\.mip0018_contract_actions/);
   }, 300_000);
+
+  it("[[browser.snapshot.null-elements]] the snapshot integrity check tells a NULL bytea[] element from an empty one, which the archive and range-tables digests cannot: a snapshot whose NULL element became empty bytes, or whose empty element became NULL, is rejected against the other's digests", async () => {
+    const host = await hostWithU1(MID);
+    const base = await bytesOf((await result<ExportResult>(host, "export")).file);
+    const key = "mip0018.mip0018_contract_actions";
+    // The base snapshot with one more maintenance action whose operations are `operations`, exported again.
+    const variant = async (operations: string): Promise<Uint8Array> => {
+      const { manifest, data } = decodeSnapshotFile(base);
+      const store = await openStore("memory://");
+      try {
+        await migrateStore(store);
+        await loadSnapshot(store, manifest, data, manifest.network);
+        await store.mip0018.unsafe(`INSERT INTO mip0018.mip0018_contract_actions (network, block_height, tx_index, segment_id, action_index, tx_hash, action, contract_address, maintenance_counter, maintenance_updates, maintenance_operations)
+          VALUES ('stagenet', ${MID}, 0, 0, 99, decode('${"11".repeat(32)}', 'hex'), 'maintenance', decode('${"22".repeat(32)}', 'hex'), 1, ARRAY['VerifierKeyInsert'], ${operations})`);
+        const out = await exportSnapshot(store, { network: manifest.network, genesisHash: manifest.genesisHash, appCommit: null, now: () => Date.parse(manifest.createdAt) });
+        return bytesOf(out.file);
+      } finally {
+        await store.close();
+      }
+    };
+    const withNull = await variant("ARRAY[NULL]::bytea[]");
+    const withEmpty = await variant("ARRAY['\\x'::bytea]");
+    const nullDigests = await snapshotDigests(withNull);
+    const emptyDigests = await snapshotDigests(withEmpty);
+    // The archive and range-tables digests count a NULL element as empty bytes: they cannot tell the two apart.
+    expect([emptyDigests.archive, emptyDigests.tables]).toEqual([nullDigests.archive, nullDigests.tables]);
+    expect([nullDigests.nullElements[key]!.count, emptyDigests.nullElements[key]!.count]).toEqual([1, 0]);
+    // The integrity check: each file holds its own digests and is rejected against the other's, in both directions.
+    expect((await snapshotDifferences(withNull, nullDigests)).differences).toEqual([]);
+    expect((await snapshotDifferences(withEmpty, emptyDigests)).differences).toEqual([]);
+    const nullToEmpty = (await snapshotDifferences(withEmpty, nullDigests)).differences;
+    const emptyToNull = (await snapshotDifferences(withNull, emptyDigests)).differences;
+    expect(nullToEmpty).toEqual([expect.stringContaining(`${key}: 0 NULL bytea[] elements`)]);
+    expect(emptyToNull).toEqual([expect.stringContaining(`${key}: 1 NULL bytea[] elements`)]);
+  }, 180_000);
 });
