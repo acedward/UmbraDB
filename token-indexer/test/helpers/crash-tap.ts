@@ -19,11 +19,13 @@
  * Points (`Trigger.point`): `archive-statement` / `scan-statement` (the `statement`-th statement after `BEGIN` of the
  * `tx`-th block transaction of that kind, or its `COMMIT` when it has fewer), `archive-commit` / `scan-commit` (the
  * `write`-th file write while that transaction's `COMMIT` runs), `between` (the `BEGIN` of the `tx`-th transaction of any
- * kind, before it runs: no transaction open), `write` (the `write`-th file write after arming, wherever it falls) and
- * `boot` (the `write`-th file write since the worker started: creating the store, or the migrations).
+ * kind, before it runs: no transaction open), `write` (the `write`-th file write after arming, wherever it falls),
+ * `boot` (the `write`-th file write since the worker started: creating the store, or the migrations) and `file-close`
+ * (the `write`-th `close()` of an OPFS writable stream after arming, before it runs: the file it writes, such as a
+ * snapshot import's journal, is then not replaced).
  */
 
-export type TriggerPoint = "archive-statement" | "scan-statement" | "archive-commit" | "scan-commit" | "between" | "write" | "boot";
+export type TriggerPoint = "archive-statement" | "scan-statement" | "archive-commit" | "scan-commit" | "between" | "write" | "boot" | "file-close";
 
 export interface Trigger {
   point: TriggerPoint;
@@ -31,7 +33,7 @@ export interface Trigger {
   tx?: number;
   /** The ordinal (from 1) of the statement after `BEGIN`. */
   statement?: number;
-  /** The ordinal (from 1) of the file write. */
+  /** The ordinal (from 1) of the file write (of the writable stream's close for `file-close`). */
   write?: number;
 }
 
@@ -62,8 +64,10 @@ export function crashTapScript(trigger?: Trigger): string {
     statements: 0, writes: 0, writesInStatement: 0, statement: null, tx: null, writesBeforeFirstStatement: null,
     txCount: { archive: 0, scan: 0, read: 0, other: 0 },
     armed: null, base: null, parked: null,
-    arm(t) { tap.armed = t; tap.base = { writes: tap.writes, txCount: { ...tap.txCount }, anyTx: tap.anyTx }; return true; },
-    anyTx: 0,
+    arm(t) { tap.armed = t; tap.base = { writes: tap.writes, closes: tap.closes, txCount: { ...tap.txCount }, anyTx: tap.anyTx }; return true; },
+    anyTx: 0, closes: 0,
+    /** File writes of each finished COMMIT, by transaction kind: { archive: { "1": n, … }, … }. */
+    commitWrites: {},
   };
   const kindOf = (sql) => {
     if (/"chain_archive"|\\bchain_archive\\./.test(sql)) return /^\\s*(INSERT|UPDATE|DELETE)/i.test(sql) ? "archive" : "read";
@@ -87,7 +91,13 @@ export function crashTapScript(trigger?: Trigger): string {
   const since = (kind) => tap.txCount[kind] - tap.base.txCount[kind];
   const onStatement = (sql) => {
     // A transaction whose COMMIT/ROLLBACK ran ends when the next statement starts.
-    if (tap.tx !== null && tap.tx.ending !== null) tap.tx = null;
+    if (tap.tx !== null && tap.tx.ending !== null) {
+      if (tap.tx.ending === "commit") {
+        const k = (tap.commitWrites[tap.tx.kind] ??= {});
+        k[tap.writesInStatement] = (k[tap.writesInStatement] ?? 0) + 1;
+      }
+      tap.tx = null;
+    }
     tap.statements++;
     if (tap.statements === 1) tap.writesBeforeFirstStatement = tap.writes;
     tap.writesInStatement = 0;
@@ -136,6 +146,13 @@ export function crashTapScript(trigger?: Trigger): string {
         && tap.tx.kind === a.point.split("-")[0] && since(tap.tx.kind) >= (a.tx ?? 1) && tap.writesInStatement >= (a.write ?? 1)) park(a.point);
     }
     return write.call(this, buffer, options);
+  };
+  const close = FileSystemWritableFileStream.prototype.close;
+  FileSystemWritableFileStream.prototype.close = function () {
+    tap.closes++;
+    const a = tap.armed;
+    if (a !== null && a.point === "file-close" && tap.closes - tap.base.closes >= (a.write ?? 1)) park("file-close");
+    return close.call(this);
   };
   ${trigger === undefined ? "" : `tap.arm(${JSON.stringify(trigger)});`}
 })();`;

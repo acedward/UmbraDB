@@ -42,6 +42,7 @@
     "test:conformance": "node scripts/conformance-gate.mjs",
     "test:pglite": "node scripts/pglite-gate.mjs",
     "test:browser": "vitest run token-indexer/test/browser- token-indexer/test/mip0018-ui-browser",
+    "test:crash": "UMBRADB_CRASH_RUNS=${UMBRADB_CRASH_RUNS:-100} vitest run token-indexer/test/browser-crash-chrome.test.ts -t crash.kills",
     "test:coverage": "vitest run --coverage",
     "test:mutation": "stryker run",
     "test:mutation:ci": "node scripts/mutation-per-adapter.mjs",
