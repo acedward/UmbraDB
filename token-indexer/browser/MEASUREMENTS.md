@@ -28,7 +28,7 @@ same recorded Stagenet range. Every figure says how it was measured; `../dev/mea
 | Live sync, paced, 714485–715183 ([Live sync](#live-sync-paced)) | **1.37 blocks/s** (510.6 s, sync and scan) | **1.47 blocks/s** (474.4 s, sync then scan), PostgreSQL 17 |
 | Replay, unpaced, the same range ([Replay](#replay-unpaced)) | **267 blocks/s** | PostgreSQL 17 **506 blocks/s**; the same worker host on PGlite 270–276; the Node commands 250 |
 | Storage per block ([Storage](#storage-per-block)) | **7,491 B** (OPFS files), 7,489 B (`pg_database_size`); empty store 42.3 MB | PostgreSQL 17: 7,536 B (relations) |
-| Memory ([Memory](#memory)) | WebAssembly **208 MB** after the replay, **467 MB** peak while a store is created; worker 235 MB (`measureUserAgentSpecificMemory`); renderer process ≤ 1.12 GB resident | — |
+| Memory ([Memory](#memory)) | WebAssembly **208 MB** after the replay, **467 MB** peak while a store is created; worker 235 MB (`measureUserAgentSpecificMemory`); renderer process ≤ 1.12 GB resident | Node process with PostgreSQL ≤ 257 MB resident (server not counted) |
 | Hidden tab ([Hidden tab](#hidden-tab)) | paced: as fast as visible (1.905 blocks/s); unpaced: 7–10 % slower | — |
 | Status page open, budget < 5 % ([Status page](#the-status-pages-cost)) | **−1.4 %** (95 %: −4.8 to +2.2 %); with 2 CPUs −0.1 % (−2.9 to +2.7 %): **within budget** | — |
 | Activity listings, 100,000 hidden + 100,000 visible rows ([Planner](#activity-listings-on-pglites-planner-and-planner-statistics)) | PostgreSQL 17's plans and buffers; bounded once vacuumed, whatever the statistics; never vacuumed (PGlite's lasting state) about 1,160 extra buffers per page for 100,000 withdrawn rows; `ANALYZE` changes nothing; API 0.5–4.7 ms | the same plans and buffers |
@@ -174,6 +174,11 @@ renderer process that runs the page and its worker (`/proc/<pid>/status`, sample
 | Renderer process, largest resident size over the run | | **1,006–1,121 MB** (high-water mark 1,034–1,147 MB) |
 
 The second PGlite instance and `initdb` exist only while a store is created; a reopened store boots without them.
+
+For comparison, the Node process's largest resident size over the boot and the IDX replay (`../dev/measure-node.ts
+replay`, sampled every 50 ms, 3 runs each, load 3.5–4.6): the engine on PostgreSQL **241–257 MB** (the PostgreSQL
+server's own processes not counted); the browser's worker host in Node on PGlite on a directory 787–970 MB, in memory
+907–1,046 MB (both include creating the store, with its second PGlite instance).
 
 ## Hidden tab
 

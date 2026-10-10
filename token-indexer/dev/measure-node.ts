@@ -13,7 +13,9 @@
  *   blocks per scan step) or, with `--node-batches`, the Node commands' (200 / 100); `pglite-dir` and `pglite-memory` run
  *   the browser's worker host (`../browser/host.ts`, its scheduler and session included) in Node, PGlite on a new
  *   directory or in memory. Then the digests are checked and the store's growth is read (`pg_total_relation_size` of
- *   both schemas; on PGlite also `pg_database_size` and, on a directory, its files). Run it once per process.
+ *   both schemas; on PGlite also `pg_database_size` and, on a directory, its files), with the Node process's largest
+ *   resident memory over the boot and the replay (PostgreSQL's own server processes are not in it). Run it once per
+ *   process.
  * - `planner`: the cost of the activity listings and the API's latency on a large store: contract Y mints token T,
  *   publishes its metadata N times (default 100 000), withdraws it and emits one rejected event; a second identity of
  *   the same contract then publishes N times (seeded as `token-indexer/test/helpers/hidden-history.ts` does). Each
@@ -65,6 +67,19 @@ const round2 = (x: number) => Math.round(x * 100) / 100;
 
 // ── Replay ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
+/** The process's resident memory, sampled every 50 ms until stopped: the largest seen, in MB. */
+function rssSampler(): { stop(): { peakRssMB: number; endRssMB: number } } {
+  let peak = process.memoryUsage().rss;
+  const timer = setInterval(() => { peak = Math.max(peak, process.memoryUsage().rss); }, 50);
+  return {
+    stop() {
+      clearInterval(timer);
+      const end = process.memoryUsage().rss;
+      return { peakRssMB: round2(Math.max(peak, end) / 1e6), endRssMB: round2(end / 1e6) };
+    },
+  };
+}
+
 async function relationBytes(sql: UmbraDBSql, schemas: string[]): Promise<number> {
   const [r] = await sql<{ b: string }[]>`
     SELECT coalesce(sum(pg_total_relation_size(c.oid)), 0)::text AS b FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -81,6 +96,7 @@ async function replayPostgresql(nodeBatches: boolean): Promise<void> {
     await bootstrapChainArchiveSchema(sql, archive);
     await runMigrations(sql, { schema: mip, migrations: mip0018Migrations });
     const empty = await relationBytes(sql, [archive, mip]);
+    const memory = rssSampler();
     const tape = createTapeFetch(loadRangeTape("idx"));
     const events: EngineEvent[] = [];
     let done!: () => void;
@@ -95,6 +111,7 @@ async function replayPostgresql(nodeBatches: boolean): Promise<void> {
     await engine.start();
     await finished;
     await engine.stop();
+    const rss = memory.stop();
     const start = events.find((e) => e.source === "sync" && e.event === "start")!;
     const syncDone = events.find((e) => e.source === "sync" && e.event === "batch" && (e.fields as { to?: number }).to === TO);
     const engineMs = events.find(isLastScan)!.at - start.at;
@@ -105,7 +122,7 @@ async function replayPostgresql(nodeBatches: boolean): Promise<void> {
     await sql.unsafe(`DROP SCHEMA "${archive}" CASCADE`);
     print({
       server: `PostgreSQL ${v!.v}`, batches: nodeBatches ? "200/100" : "20/10", engineMs, syncMs: (syncDone?.at ?? NaN) - start.at, blocksPerSecond: BLOCKS / (engineMs / 1000),
-      relationBytes: { empty, full, perBlock: (full - empty) / BLOCKS }, digests,
+      relationBytes: { empty, full, perBlock: (full - empty) / BLOCKS }, digests, nodeProcess: rss,
     });
   } finally {
     await sql.end({ timeout: 5 });
@@ -121,6 +138,7 @@ function du(dir: string): { bytes: number; files: number } {
 
 async function replayPglite(onDisk: boolean): Promise<void> {
   const dir = onDisk ? mkdtempSync(join(tmpdir(), "umbradb-measure-pglite-")) : undefined;
+  const memory = rssSampler();
   const { host } = testHost({ dataDir: dir ?? "memory://" });
   try {
     const boot = await host.boot();
@@ -137,6 +155,7 @@ async function replayPglite(onDisk: boolean): Promise<void> {
       if (s.engine?.error) throw new Error(s.engine.error);
       await sleep(250);
     }
+    const rss = memory.stop();
     const full = await snapshot();
     const lines = [...full.logs].reverse();
     const start = lines.find((l) => l.source === "sync" && l.text.startsWith("start "))!;
@@ -152,6 +171,7 @@ async function replayPglite(onDisk: boolean): Promise<void> {
       largestTables: full.databases.schemas.flatMap((sc) => sc.tables.map((t) => ({ table: `${sc.name}.${t.name}`, bytes: t.totalBytes })))
         .sort((a, b) => b.bytes - a.bytes).slice(0, 8),
       files: dir === undefined ? null : { empty: diskEmpty, full: du(dir) },
+      nodeProcess: rss,
       digests: { archive: digest.archive.sha256 === ARCHIVE_SHA, tables: digest.tables.sha256 === TABLES_SHA },
     });
   } finally {
