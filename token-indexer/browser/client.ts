@@ -2,13 +2,15 @@
  * The page's side of the engine protocol (`protocol.ts`): each request becomes a promise of its validated result.
  *
  * `createEngineClient(endpoint)` works over anything that carries messages both ways (a `Worker`, a `MessagePort`);
- * `startEngineWorker()` starts the engine's dedicated module worker (`worker.ts`) and returns a client for it. A request
- * resolves with its result once the worker's response arrives and its result passes the protocol's schema; it rejects
- * with an {@link EngineError} carrying the worker's error code, or `bad-response` (a response that fails validation),
- * `worker-error` (the worker failed to load or crashed) or `closed` (the client was closed). A page that shares the engine
- * with other tabs (`tabs.ts`) can also get `leader-changed` and `leader-unavailable`. `requestPersistentStorage()` asks
- * the browser to keep the site's storage: `navigator.storage.persist()` exists only in a window, so a page asks, and the
- * worker reports the outcome as `persisted`.
+ * `startEngineWorker()` starts the engine's dedicated module worker (`worker.ts`) under the page's watchdog
+ * (`supervisor.ts`) and returns a client for it. A request resolves with its result once the worker's response arrives
+ * and its result passes the protocol's schema; it rejects with an {@link EngineError} carrying the worker's error
+ * code, or `bad-response` (a response that fails validation), `worker-error` (the worker failed to load or crashed),
+ * `restarted` (the watchdog replaced the worker before it answered; an `api` request gets the API's 503 answer
+ * instead) or `closed` (the client was closed). A page that shares the engine with other tabs (`tabs.ts`) can also get
+ * `leader-changed` and `leader-unavailable`. `requestPersistentStorage()` asks the browser to keep the site's storage:
+ * `navigator.storage.persist()` exists only in a window, so a page asks, and the worker reports the outcome as
+ * `persisted`.
  */
 import {
   type ApiResult,
@@ -26,7 +28,10 @@ import {
   type RequestType,
   type ResultOf,
   type StartConfig,
+  type SystemResult,
+  type WatchdogResult,
 } from "./protocol.ts";
+import { type SupervisedEngine, type SupervisorOptions, superviseWorker } from "./supervisor.ts";
 import { trustedWorkerConstructor } from "./trusted-worker.ts";
 
 /** Something that carries messages both ways. */
@@ -40,6 +45,8 @@ export type EngineErrorCode =
   | ErrorCode
   | "bad-response"
   | "worker-error"
+  /** The watchdog replaced the worker before it answered (`supervisor.ts`). */
+  | "restarted"
   | "closed"
   /** The leader tab closed while a request that changes state was in flight to it (`tabs.ts`). */
   | "leader-changed"
@@ -80,6 +87,37 @@ export interface EngineClient {
   onInvalid(listener: (message: string) => void): () => void;
   /** Rejects every pending request with `reason` (default `closed`) and stops listening. */
   close(reason?: EngineError): void;
+  /** The system snapshot: `watch` (as `viewer`) or one `refresh`. */
+  system(params: ParamsOf<"system">): Promise<SystemResult>;
+  /** Sets the worker's watchdog limit and heartbeat (the supervisor sends it to each worker it starts). */
+  watchdog(params: ParamsOf<"watchdog">): Promise<WatchdogResult>;
+  /**
+   * Settles every pending request because the worker that would answer it was replaced (`reason` says why): an `api`
+   * request resolves with the API's 503 `UNAVAILABLE` answer ({@link unavailableAnswer}), any other request rejects
+   * with `restarted`. The client stays open for the next worker.
+   */
+  interrupt(reason: string): void;
+}
+
+/**
+ * The API's answer when the index database cannot be read (503 `UNAVAILABLE`, `token-indexer/API.md`), exactly as the
+ * API handler writes it (`token-indexer/mip0018/api.ts`): what an API request in flight gets when the watchdog
+ * replaces the worker answering it.
+ */
+export function unavailableAnswer(method: string): ApiResult {
+  const text = JSON.stringify({ error: { code: "UNAVAILABLE", message: "the index database cannot be read" } });
+  return {
+    status: 503,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
+      "referrer-policy": "no-referrer",
+      "content-length": String(new TextEncoder().encode(text).byteLength),
+    },
+    body: method.toUpperCase() === "HEAD" ? "" : text,
+  };
 }
 
 const ENDED: ReadonlySet<BootState["phase"]> = new Set(["ready", "unsupported", "failed"]);
@@ -87,7 +125,7 @@ const ENDED: ReadonlySet<BootState["phase"]> = new Set(["ready", "unsupported", 
 export function createEngineClient(endpoint: EngineEndpoint): EngineClient {
   let nextId = 1;
   let closedWith: EngineError | undefined;
-  const pending = new Map<number, { type: RequestType; resolve: (v: unknown) => void; reject: (e: EngineError) => void }>();
+  const pending = new Map<number, { type: RequestType; params: unknown; resolve: (v: unknown) => void; reject: (e: EngineError) => void }>();
   const noticeListeners = new Set<(notice: Notice) => void>();
   const invalidListeners = new Set<(message: string) => void>();
 
@@ -118,7 +156,7 @@ export function createEngineClient(endpoint: EngineEndpoint): EngineClient {
     if (closedWith !== undefined) return Promise.reject(closedWith);
     const id = nextId++;
     return new Promise<ResultOf<T>>((resolve, reject) => {
-      pending.set(id, { type, resolve: resolve as (v: unknown) => void, reject });
+      pending.set(id, { type, params, resolve: resolve as (v: unknown) => void, reject });
       try {
         endpoint.postMessage({ ...params, v: PROTOCOL_VERSION, id, type });
       } catch (e) {
@@ -176,6 +214,18 @@ export function createEngineClient(endpoint: EngineEndpoint): EngineClient {
       for (const p of pending.values()) p.reject(new EngineError(reason.code, reason.message, p.type));
       pending.clear();
     },
+
+    system: (params) => request("system", params),
+    watchdog: (params) => request("watchdog", params),
+
+    interrupt(reason) {
+      const settled = [...pending.values()];
+      pending.clear();
+      for (const p of settled) {
+        if (p.type === "api") p.resolve(unavailableAnswer((p.params as { method: string }).method));
+        else p.reject(new EngineError("restarted", reason, p.type));
+      }
+    },
   };
   return client;
 }
@@ -204,17 +254,24 @@ export async function requestPersistentStorage(
   }
 }
 
-/** Starts the engine's dedicated module worker and returns it with a client; a worker that fails to load or crashes
- *  closes the client with `worker-error`. */
-export function startEngineWorker(): { worker: Worker; client: EngineClient } {
-  // The page's Trusted Types policy makes the worker's URL; the call keeps the `new Worker(new URL(…, import.meta.url))`
-  // form that the bundler rewrites to the built worker's URL.
-  const Worker = trustedWorkerConstructor();
-  const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module", name: "umbradb-engine" });
-  const client = createEngineClient(worker);
-  worker.addEventListener("error", (event) => {
-    client.close(new EngineError("worker-error", event.message === "" ? "the engine worker failed" : event.message));
-    worker.terminate();
+/** Options of {@link startEngineWorker}: the watchdog's (`supervisor.ts`); `limitMs: null` turns it off. */
+export type EngineWorkerOptions = Omit<SupervisorOptions, "createWorker">;
+
+/**
+ * Starts the engine's dedicated module worker under the page's watchdog (`supervisor.ts`) and returns a client for it.
+ * The client stays the same when the watchdog replaces the worker; `worker` is the current one. A worker that fails to
+ * load or crashes closes the client with `worker-error`.
+ */
+export function startEngineWorker(options: EngineWorkerOptions = {}): SupervisedEngine<Worker> {
+  return superviseWorker<Worker>({
+    ...options,
+    createWorker: (onError) => {
+      // The page's Trusted Types policy makes the worker's URL; the call keeps the `new Worker(new URL(…, import.meta.url))`
+      // form that the bundler rewrites to the built worker's URL.
+      const Worker = trustedWorkerConstructor();
+      const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module", name: "umbradb-engine" });
+      worker.addEventListener("error", (event) => onError(event.message === "" ? "the engine worker failed" : event.message));
+      return worker;
+    },
   });
-  return { worker, client };
 }

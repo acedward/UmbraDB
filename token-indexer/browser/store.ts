@@ -14,6 +14,10 @@
  * the store's state file (a closed tab's worker, or a replaced one, can take a moment to let go of its files). Only
  * the leader tab runs a worker (`tabs.ts`); the lock also covers a worker the leader tab replaces.
  *
+ * The clients reach PGlite through the worker's session monitor (`session.ts`): it gives the event loop a turn between
+ * statements now and then, counts the statements the database fails, and closes PGlite only once no statement is in
+ * flight.
+ *
  * A snapshot import (`snapshot-store.ts`) replaces the store's files without letting go of the lock: `detach()` closes
  * PGlite and hands the held lock over, and `openStore(dataDir, { lock, prepare })` keeps it, runs `prepare` under it
  * before PGlite opens the store, and loads the data directory `prepare` returns.
@@ -21,7 +25,8 @@
 import type { PGlite } from "@electric-sql/pglite";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import type { DurabilityMode } from "../../src/postgres/durability-probe.js";
-import { createPgliteClient } from "../../src/postgres/pglite-sql.js";
+import { createPgliteClient, type PgliteDatabase } from "../../src/postgres/pglite-sql.js";
+import { type MonitoredSession, monitorSession, type SessionMonitorOptions } from "./session.ts";
 import { defaultLocks, type HeldLock, holdLock, type LockManagerLike, storeLockName } from "./tab-locks.ts";
 
 /** The durability mode of the browser store's clients. */
@@ -38,6 +43,8 @@ export interface Store {
   /** The store did not exist before this open (PGlite created the database). */
   readonly created: boolean;
   readonly pglite: PGlite;
+  /** The session the clients use: `pglite` through the session monitor. */
+  readonly session: MonitoredSession;
   /** Client of the `chain_archive` schema. */
   readonly archive: UmbraDBSql;
   /** Client of the `mip0018` schema. */
@@ -48,7 +55,7 @@ export interface Store {
   detach(): Promise<HeldLock | undefined>;
 }
 
-function clientFor(pglite: PGlite, schema: string): UmbraDBSql {
+function clientFor(pglite: PgliteDatabase, schema: string): UmbraDBSql {
   return createPgliteClient({ pglite, schema, durability: STORE_DURABILITY });
 }
 
@@ -75,6 +82,8 @@ export interface OpenStoreOptions {
   storage?: { getDirectory?: () => Promise<FileSystemDirectoryHandle> };
   /** Default {@link STORE_OPEN_WAIT_MS}. */
   waitMs?: number;
+  /** The session monitor's options (`session.ts`). */
+  session?: SessionMonitorOptions;
   /** The store's lock, already held (from {@link Store.detach}): it is kept instead of taking the lock again. */
   lock?: HeldLock;
   /**
@@ -177,22 +186,24 @@ export async function openStore(dataDir: string, options: OpenStoreOptions = {})
     lock?.release();
     throw e;
   }
+  const session = monitorSession(pglite, options.session);
   return {
     dataDir,
     created: !existed,
     pglite,
-    archive: clientFor(pglite, ARCHIVE_SCHEMA),
-    mip0018: clientFor(pglite, MIP0018_SCHEMA),
+    session,
+    archive: clientFor(session, ARCHIVE_SCHEMA),
+    mip0018: clientFor(session, MIP0018_SCHEMA),
     close: async () => {
       try {
-        await pglite.close();
+        await session.close();
       } finally {
         lock?.release();
       }
     },
     detach: async () => {
       try {
-        await pglite.close();
+        await session.close();
       } catch (e) {
         lock?.release();
         throw e;

@@ -128,6 +128,10 @@ export interface EngineTelemetry {
   attach(engine: { subscribe(listener: (event: EngineEvent) => void): () => void }): () => void;
   /** `inner` (default the global `fetch`) counting each request to the node and the indexer; a plain function. */
   instrumentFetch(inner?: typeof fetch): typeof fetch;
+  /** The sync's endpoints from now on (a host whose next engine reads other URLs); each endpoint's counters go on. */
+  setEndpoints(endpoints: { node: string; indexer: string }): void;
+  /** Counts carried over from a previous worker, for a host that learns them after it started (they replace these). */
+  carry(carried: CarriedCounts): void;
   /** A line from the host. */
   log(level: LogLevel, source: string, text: string): void;
   /** The query watchdog restarted the worker (a host calls this in the new worker, or carries the count). */
@@ -258,8 +262,8 @@ function logLine(e: EngineEvent): { level: LogLevel; text: string } | undefined 
 export function createEngineTelemetry(opts: EngineTelemetryOptions = {}): EngineTelemetry {
   const clock = opts.clock ?? { now: () => Date.now() };
   const startedAt = clock.now();
-  const nodeKey = opts.endpoints === undefined ? undefined : endpointKey(opts.endpoints.node);
-  const indexerKey = opts.endpoints === undefined ? undefined : endpointKey(opts.endpoints.indexer);
+  let nodeKey = opts.endpoints === undefined ? undefined : endpointKey(opts.endpoints.node);
+  let indexerKey = opts.endpoints === undefined ? undefined : endpointKey(opts.endpoints.indexer);
 
   const endpoints: Record<EndpointName, EndpointCounters> = { node: newEndpoint(), indexer: newEndpoint() };
   let lastRequestFailed = false;
@@ -440,6 +444,20 @@ export function createEngineTelemetry(opts: EngineTelemetryOptions = {}): Engine
           if (ep !== undefined) ep.inFlight--;
         }
       };
+    },
+
+    setEndpoints(e) {
+      nodeKey = endpointKey(e.node);
+      indexerKey = endpointKey(e.indexer);
+    },
+
+    carry(carried) {
+      if (carried.watchdogRestarts !== undefined) watchdogRestarts = carried.watchdogRestarts;
+      if (carried.pgliteReopens !== undefined) pgliteReopens = carried.pgliteReopens;
+      if (carried.lastWatchdogRestart !== undefined) {
+        lastWatchdogRestart = carried.lastWatchdogRestart === null ? null : { ...carried.lastWatchdogRestart, reason: capText(carried.lastWatchdogRestart.reason) };
+        if (lastWatchdogRestart !== null) addLog("warn", "engine", `watchdog restart: ${lastWatchdogRestart.reason}`);
+      }
     },
 
     log(level, source, text) {

@@ -1,15 +1,18 @@
 /**
- * The engine page: joins the other tabs of this store (`tabs.ts`: the leader tab runs the engine worker, the others
- * proxy to it; the leader starts or resumes the engine), asks the browser to keep the site's storage
- * (`requestPersistentStorage`, from every tab: the grant is per site), shows this tab's role, its boot phase and the
- * engine's status (refreshed every second while the page is visible), and exposes the client as `window.umbradbEngine`
- * for scripted use (the browser tests drive the engine through it), with the snapshot helpers (`snapshot-page.ts`):
- * `snapshots.save(exported)` downloads an exported snapshot file, `snapshots.published(name)` fetches a snapshot the
- * build publishes. All text is set through `textContent`.
+ * The engine page: joins the other tabs of this store (`tabs.ts`: the leader tab runs the engine worker under the page's
+ * watchdog, the others proxy to it; the leader starts or resumes the engine), asks the browser to keep the site's
+ * storage (`requestPersistentStorage`, from every tab: the grant is per site), shows this tab's role, its boot phase and
+ * the engine's status (refreshed every second while the page is visible), and exposes the client as
+ * `window.umbradbEngine` for scripted use (the browser tests drive the engine through it; `restarts()` lists the
+ * watchdog's restarts of this tab's worker), with the snapshot helpers (`snapshot-page.ts`): `snapshots.save(exported)`
+ * downloads an exported snapshot file, `snapshots.published(name)` fetches a snapshot the build publishes.
+ * `?watchdogLimitMs=<ms>` sets the watchdog's limit (default 30 s, `supervisor.ts`). All text is set through
+ * `textContent`.
  */
-import { type EngineClient, type PersistenceResult, requestPersistentStorage } from "./client.ts";
+import { type EngineClient, type PersistenceResult, requestPersistentStorage, startEngineWorker } from "./client.ts";
 import { fetchPublishedSnapshot, publishedSnapshots, saveSnapshotFile } from "./snapshot-page.ts";
-import { connectEngineTabs, type EngineTabs } from "./tabs.ts";
+import type { RestartRecord, SupervisedEngine } from "./supervisor.ts";
+import { connectEngineTabs, type EngineTabs, localEngineOf } from "./tabs.ts";
 
 declare global {
   interface Window {
@@ -17,6 +20,7 @@ declare global {
       client: EngineClient;
       tabs: EngineTabs;
       readonly worker: Worker | undefined;
+      restarts(): RestartRecord[];
       loadedAt: number;
       persistence: Promise<PersistenceResult>;
       snapshots: {
@@ -30,7 +34,14 @@ declare global {
 
 const loadedAt = performance.now();
 const persistence = requestPersistentStorage();
-const tabs = connectEngineTabs();
+const limit = Number(new URLSearchParams(location.search).get("watchdogLimitMs"));
+let supervised: SupervisedEngine<Worker> | undefined;
+const tabs = connectEngineTabs({
+  startWorker: () => {
+    supervised = startEngineWorker(Number.isSafeInteger(limit) && limit >= 100 ? { limitMs: limit } : {});
+    return localEngineOf(supervised);
+  },
+});
 const client = tabs.client;
 window.umbradbEngine = {
   client,
@@ -39,6 +50,7 @@ window.umbradbEngine = {
   get worker() {
     return tabs.worker();
   },
+  restarts: () => supervised?.restarts() ?? [],
   loadedAt,
   persistence,
   snapshots: {

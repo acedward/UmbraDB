@@ -19,9 +19,13 @@ The build indexes Stagenet unless `UMBRADB_BROWSER_NETWORK`, `UMBRADB_BROWSER_NO
 | `worker.ts` | The worker's entry: the host below on `opfs-ahp://umbradb-stagenet`, bound to the worker's messages |
 | `host.ts` | Boot, request dispatch and the engine's lifecycle, from injected dependencies (tests run it in Node on `memory://`) |
 | `protocol.ts` | The message protocol: versions, requests, results, errors and notices, each with a zod schema |
-| `client.ts` | The page's side: `startEngineWorker()` (through the Trusted Types policy below) and `createEngineClient(endpoint)` (requests as promises of validated results) |
+| `client.ts` | The page's side: `startEngineWorker()` (the worker under the page's watchdog, created through the Trusted Types policy below) and `createEngineClient(endpoint)` (requests as promises of validated results) |
+| `supervisor.ts` | The page's watchdog: heartbeats, terminate and restart of a worker that stopped answering, what the page set up restored on the new worker |
 | `tabs.ts` | One engine across tabs: `connectEngineTabs()` elects the leader tab, which alone runs the worker; the other tabs proxy their requests to it and take over when it closes |
 | `tab-locks.ts` | The Web Locks behind that (leader, tab presence, store) and the connected-tab count |
+| `host-system.ts` | The worker's telemetry, `system` snapshot collector and viewers, and the watchdog's heartbeat |
+| `system-view.ts` | The page's side of the `system` snapshot: follow it while the page is visible, refresh it, "Download diagnostics" |
+| `session.ts` | The worker's view of its PGlite session: turns for the event loop between statements, failed statements counted, a close that waits for the statements in flight |
 | `capabilities.ts` | The Chrome-only capability check run before anything else |
 | `store.ts` | Opens PGlite and its two clients (`chain_archive`, `mip0018`); non-durable, results and errors as on PostgreSQL |
 | `scheduler.ts` | Yields to the worker's event loop before each sync batch and scan step, so messages are served while it runs |
@@ -68,14 +72,17 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 | `range` | `startHeight` (a height or `"tip"`), `endHeight?` | status: the store's data is dropped and the new range starts (source and tuning from the saved configuration) |
 | `reset` | — | status: the store's data is dropped and the saved configuration starts again |
 | `digest` | — | the store's archive digest (the 7 `chain_archive` tables, `chain-archive-sync/archive-digest.ts`) and the digest of every table of both schemas (`../engine/range-tables.ts`), read in one read-only transaction |
+| `system` | `watch` (with `viewer?`) or `refresh: { database?, exactCounts? }` | `{ watching, viewers, snapshot }`: the snapshot of a refresh (`null` for a watch) |
+| `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | `{ limitMs, heartbeatMs }` |
 | `export` | — | a snapshot file of the store (`Blob`), its suggested name, its manifest, its size and timings (see Snapshots) |
 | `import` | `snapshot`: a snapshot file (`Blob`, a picked `File`) | the imported manifest, timings and status: the store is the snapshot's, the engine is stopped (see Snapshots) |
 
 Error codes: `bad-request`, `unsupported-version`, `unknown-type`, `not-implemented`, `unsupported-browser`,
 `boot-failed`, `already-running`, `start-failed`, `internal`, `snapshot-refused` (the message starts with the reason;
 nothing changed) and `snapshot-failed` (a checked snapshot could not be loaded; the store was opened empty); the client
-adds `bad-response`, `worker-error` and
-`closed`, and a page sharing the engine with other tabs also `leader-changed` and `leader-unavailable` (see Tabs). Notices: `boot` (each phase) and `engine` (`running`, `stopped`, `failed`).
+adds `bad-response`, `worker-error`, `restarted` and `closed`, and a page sharing the engine with other tabs also
+`leader-changed` and `leader-unavailable` (see Tabs). Notices: `boot` (each phase), `engine` (`running`, `stopped`,
+`failed`), `system` (one snapshot per collection while watched) and `heartbeat` (after a `watchdog` request).
 
 While no engine runs, `api` answers from the same store with no loops (`/v1/status` reports `scanner: "off"`). Defaults
 in the browser: 20 heights per sync batch and 10 blocks per scan step, so a stop and API requests wait for little.
@@ -94,7 +101,7 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   system snapshot a follower receives is marked as relayed.
 - **Handover.** When the leader closes, the oldest follower gets the lock, starts its worker on the same store and
   resumes what the previous leader last reported running (the same `start` configuration, which continues at the stored
-  cursors); the first leader of a store starts its saved configuration instead (see Sync). Requests in flight to the closed leader: `status`, `api`, `export` and `digest` are sent again to the next leader;
+  cursors); the first leader of a store starts its saved configuration instead (see Sync). Requests in flight to the closed leader: `status`, `api`, `export`, `digest` and `system` are sent again to the next leader;
   any other request fails with `leader-changed` (it may or may not have been applied); a request made while no leader
   is known waits up to 10 s, then fails with `leader-unavailable`.
 - **Store lock.** The worker opens the store only under `umbradb-store:<store>`, held until it closes the store or ends,
@@ -248,3 +255,47 @@ Tabs of one store talk over BroadcastChannel and share Web Locks; both are same-
 follower tab runs under the same policy and starts no worker).
 
 The dev server (`npm run dev:browser`) sends no policy.
+
+## Scheduling, watchdog and reopen
+
+PGlite runs every statement synchronously on the worker's thread, so the worker shares its time explicitly:
+
+- **Turns.** The engine's scheduler yields one task before each sync batch and scan step (`scheduler.ts`), and the
+  session monitor (`session.ts`) gives the event loop a turn before a statement once 10 ms have passed since the last
+  one. Requests that arrived meanwhile enter the clients' session lock in arrival order, between whole transactions:
+  an API read waits for at most the block transaction holding the session. Measured in Chrome on OPFS while the IDX
+  range replays in the worker: page round trips p95 10 ms (`/v1/status`), 16 ms (`/v1/tokens`), 20 ms (an activity
+  page), and the 1 s heartbeat never late by more than a few milliseconds.
+- **Watchdog** (`supervisor.ts`, in the page). `statement_timeout` has no effect in PGlite and a statement that does not
+  return holds the worker's thread, so only the page can end it. The worker posts a heartbeat every second after the
+  page's `watchdog` request. When nothing has come for the limit (30 s; `?watchdogLimitMs=` on the engine page) and
+  nothing during a grace of two heartbeats either, the page terminates the worker and starts a new one: the API request
+  in flight gets the API's 503 `UNAVAILABLE` answer, other requests in flight `restarted`; the new worker carries the
+  restart count and reason and the PGlite reopen count, boots on the same store and gets back the system snapshot's
+  viewers and the engine of the last `start` (it continues at the stored cursors; an engine the page stopped stays
+  stopped). While `range`, `reset`, `export` or `import` runs the limit is 10 min. More than 3 restarts within 10 min
+  close the client with `worker-error`.
+- **Reopen.** PGlite 0.5.8 fails every statement with "stack depth limit exceeded" once a database has failed about
+  1,700 statements, until it is reopened. The host counts the statements the database fails and reopens the store at
+  1,000 since it was opened, or at once on the first "stack depth limit exceeded": it holds new requests, stops the
+  engine at a full block, lets the requests reading the store end, closes PGlite, opens it again and runs the same
+  engine configuration (it continues at the cursors). Closing PGlite waits for the statements in flight: a statement
+  queued inside PGlite 0.5.8 when it closes never returns.
+
+## System snapshot
+
+The worker keeps the engine's telemetry (`../engine/telemetry.ts`: per-endpoint requests, blocks per second, API
+latency, the last 200 log lines, watchdog restarts, PGlite reopens, failed statements) and answers `system`:
+
+- `watch: true` / `watch: false` (per `viewer`, default `page`): while at least one viewer watches, the worker reads the
+  counters and `/v1/status` every 2 s and the catalog statistics every 30 s, and posts each snapshot as a `system`
+  notice. With no viewer it collects nothing. A status page uses `followSystem(client, { onSnapshot })`
+  (`system-view.ts`), which watches while the page is visible and stops when it is hidden or goes away.
+- `refresh: { database?, exactCounts? }`: one snapshot now; exact row counts only when asked.
+- "Download diagnostics": `diagnosticsFile(snapshot)` (the snapshot as JSON, redacted and validated).
+
+The snapshot's schema is `../engine/system-snapshot.ts` (versioned, strict). The build defines its facts (app commit,
+PGlite and ledger versions; `vite.config.ts`). The storage section is the storage guard's reading (`quota.ts`), the
+start mode and the automatic start come from the saved configuration, the connected tabs from the tab locks; the
+role is `leader` in the worker (a follower tab marks what it relays). No snapshot export or import is recorded yet.
+

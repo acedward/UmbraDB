@@ -19,8 +19,11 @@
  *   the scan stores (the worker also refuses to boot when they are renamed).
  * - `assetsInlineLimit: 0`: every asset (WASM, PGlite's data file, the tapes) is a file of its own, never a data URL.
  * - The node-free guard (`build-guard.ts`) fails the build if postgres.js or a Node built-in would be bundled.
+ * - `__UMBRADB_BUILD__` (`define`): the app commit (`UMBRADB_APP_COMMIT`, else `git rev-parse HEAD`, else `null`) and
+ *   the installed PGlite and ledger-v9 versions, which the worker's system snapshot shows.
  */
-import { readdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type PluginOption } from "vite";
 import * as wasmPlugin from "vite-plugin-wasm";
@@ -37,11 +40,35 @@ const pages = Object.fromEntries(readdirSync(root).filter((f) => f.endsWith(".ht
 /** zod and `zod-jitless.ts` in one chunk, so the JIT is off before any module of another chunk creates a schema. */
 const zodChunk = { name: "zod", test: /[\\/]node_modules[\\/]zod[\\/]|[\\/]token-indexer[\\/]browser[\\/]zod-jitless\.ts$/ };
 
+/** The installed version of a package, or `null`. */
+function packageVersion(name: string): string | null {
+  try {
+    const v = (JSON.parse(readFileSync(`${repoRoot}node_modules/${name}/package.json`, "utf8")) as { version?: unknown }).version;
+    return typeof v === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The commit the build is made from, or `null` (a source tree without git history). */
+function appCommit(): string | null {
+  const given = process.env.UMBRADB_APP_COMMIT;
+  if (given !== undefined && given !== "") return given;
+  try {
+    const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+    return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+  } catch {
+    return null;
+  }
+}
+
+const BUILD = { appCommit: appCommit(), pgliteVersion: packageVersion("@electric-sql/pglite"), ledgerVersion: packageVersion("@midnightntwrk/ledger-v9") };
+
 export default defineConfig({
   root,
   base: "./",
   publicDir: false,
-  define: { __UMBRADB_BROWSER_CHAIN__: JSON.stringify(chain) },
+  define: { __UMBRADB_BROWSER_CHAIN__: JSON.stringify(chain), __UMBRADB_BUILD__: JSON.stringify(BUILD) },
   plugins: [nodeFreeBundle(repoRoot), wasm(), staticSecurity({ connectSrc: chainOrigins(chain), prelude: `${root}zod-jitless.ts`, root })],
   worker: {
     format: "es",

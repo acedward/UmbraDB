@@ -16,11 +16,15 @@
  * | `export` | — | {@link ExportResult}: a snapshot file of the store, taken while the engine runs (`snapshot-store.ts`) |
  * | `import` | `snapshot` (a `Blob`: a snapshot file) | {@link ImportResult}: the store replaced by the snapshot; the engine is stopped, and a start continues from the snapshot's height + 1 |
  * | `digest` | — | {@link DigestResult}: the archive digest and the range-tables digest of the store |
+ * | `system` | `watch` (with `viewer?`) or `refresh` (`{ database?, exactCounts? }`) | {@link SystemResult} |
+ * | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | {@link WatchdogResult} |
  *
  * Responses (worker → page): `{ v, type: "response", id, request, ok: true, result }` or
  * `{ v, type: "response", id, request, ok: false, error: { code, message } }`; `id` and `request` are `null` when the
  * request was too malformed to carry them. Notices (worker → page, unsolicited): `boot` (each boot phase, see
- * {@link BootState}) and `engine` (the engine started, stopped or failed).
+ * {@link BootState}), `engine` (the engine started, stopped or failed), `system` (one system snapshot per collection
+ * while a viewer watches) and `heartbeat` (every `heartbeatMs` once a `watchdog` request has set it, so the page can
+ * tell a worker that stopped answering, for example inside a statement that does not return).
  *
  * A message of another protocol version is answered `unsupported-version`, and a request type this version does not
  * know `unknown-type`, so a page and a worker from different builds fail with a clear error. New request and notice
@@ -33,14 +37,14 @@ import type { SyncCursor, SyncOnceResult } from "../../chain-archive-sync/sync-s
 import type { ScanCursor, ScanOnceResult } from "../mip0018/scan.ts";
 import type { ArchiveDigest } from "../../chain-archive-sync/archive-digest.js";
 import type { RangeTables } from "../engine/range-tables.ts";
-import { SnapshotsSchema } from "../engine/system-snapshot.ts";
+import { SnapshotsSchema, SystemSnapshotSchema } from "../engine/system-snapshot.ts";
 import { SnapshotManifestSchema } from "./snapshot.ts";
 import type { ExportedSnapshot } from "./snapshot-store.ts";
 
 export const PROTOCOL_VERSION = 1;
 
 /** The request types of this protocol version. */
-export const REQUEST_TYPES = ["status", "api", "start", "stop", "range", "reset", "export", "import", "digest"] as const;
+export const REQUEST_TYPES = ["status", "api", "start", "stop", "range", "reset", "export", "import", "digest", "system", "watchdog"] as const;
 export type RequestType = (typeof REQUEST_TYPES)[number];
 
 /** The recorded Stagenet ranges a worker can replay offline (the gzip tapes in `token-indexer/browser/tapes/`). */
@@ -138,6 +142,73 @@ export const StartConfigSchema = z
   });
 export type StartConfig = z.infer<typeof StartConfigSchema>;
 
+// ── System snapshot and watchdog ─────────────────────────────────────────────────────────────────────────────────────
+
+/** The viewer a `system` watch counts when the request names none. */
+export const DEFAULT_SYSTEM_VIEWER = "page";
+
+/**
+ * `system`: either `watch` (true: `viewer` starts watching, and while any viewer watches the worker collects a system
+ * snapshot every 2 s and posts each as a `system` notice; false: `viewer` stops, and with no viewer left nothing is
+ * collected) or `refresh` (collect one snapshot now and answer it: the database statistics with `database`, exact row
+ * counts with `exactCounts`). Exactly one of the two.
+ */
+function SystemRequestSchema() {
+  return z
+    .strictObject({
+      ...envelope,
+      type: z.literal("system"),
+      watch: z.boolean().optional(),
+      viewer: z.string().min(1).max(64).optional(),
+      refresh: z.strictObject({ database: z.boolean().optional(), exactCounts: z.boolean().optional() }).optional(),
+    })
+    .refine((r) => (r.watch === undefined) !== (r.refresh === undefined), { message: "give exactly one of watch and refresh" })
+    .refine((r) => r.viewer === undefined || r.watch !== undefined, { message: "viewer goes with watch", path: ["viewer"] });
+}
+
+/** A `system` answer: whether any viewer watches now and how many, and the snapshot of a `refresh` (`null` for a watch;
+ *  the first snapshot of a watch arrives as a notice). */
+export const SystemResultSchema = z.strictObject({
+  watching: z.boolean(),
+  viewers: z.int().min(0),
+  snapshot: SystemSnapshotSchema.nullable(),
+});
+export type SystemResult = z.infer<typeof SystemResultSchema>;
+
+/** What a worker hands to the worker that replaces it after a watchdog restart. */
+export const CarriedCountsSchema = z.strictObject({
+  watchdogRestarts: z.int().min(0),
+  lastWatchdogRestart: z.strictObject({ at: z.int().min(0), reason: z.string().max(4_096) }).nullable(),
+  pgliteReopens: z.int().min(0),
+});
+export type CarriedCountsMessage = z.infer<typeof CarriedCountsSchema>;
+
+/**
+ * `watchdog`: the page supervises the worker. `limitMs` is how long the worker may stay silent (a statement or other
+ * work that does not return) before the page terminates and restarts it; the worker shows it in its system snapshot.
+ * From this request on the worker posts a `heartbeat` notice every `heartbeatMs` (default {@link DEFAULT_HEARTBEAT_MS}).
+ * `carried`: the counts of the worker this one replaces (its restarts, including this one, and its PGlite reopens).
+ */
+function WatchdogRequestSchema() {
+  return z.strictObject({
+    ...envelope,
+    type: z.literal("watchdog"),
+    limitMs: intIn(100, 3_600_000),
+    heartbeatMs: intIn(20, 60_000).optional(),
+    carried: CarriedCountsSchema.optional(),
+  });
+}
+
+/** Default interval of the worker's heartbeat notices. */
+export const DEFAULT_HEARTBEAT_MS = 1_000;
+
+export const WatchdogResultSchema = z.strictObject({ limitMs: z.int().min(0), heartbeatMs: z.int().min(0) });
+export type WatchdogResult = z.infer<typeof WatchdogResultSchema>;
+
+/** A heartbeat: the worker's clock, a sequence number, and the counts a replacing worker carries over. */
+export const HeartbeatSchema = z.strictObject({ at: z.number().min(0), seq: z.int().min(0), carried: CarriedCountsSchema });
+export type Heartbeat = z.infer<typeof HeartbeatSchema>;
+
 // ── Requests ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 const envelope = { v: z.literal(PROTOCOL_VERSION), id: intIn(1, Number.MAX_SAFE_INTEGER) };
@@ -152,6 +223,8 @@ export const REQUEST_SCHEMAS = {
   export: z.strictObject({ ...envelope, type: z.literal("export") }),
   import: z.strictObject({ ...envelope, type: z.literal("import"), snapshot: z.instanceof(Blob) }),
   digest: z.strictObject({ ...envelope, type: z.literal("digest") }),
+  system: SystemRequestSchema(),
+  watchdog: WatchdogRequestSchema(),
 } as const satisfies Record<RequestType, z.ZodType>;
 
 export type RequestOf<T extends RequestType> = z.infer<(typeof REQUEST_SCHEMAS)[T]>;
@@ -333,6 +406,8 @@ export const RESULT_SCHEMAS = {
   export: ExportResultSchema,
   import: ImportResultSchema,
   digest: DigestResultSchema,
+  system: SystemResultSchema,
+  watchdog: WatchdogResultSchema,
 } as const satisfies Record<RequestType, z.ZodType>;
 export type ResultOf<T extends RequestType> = z.infer<(typeof RESULT_SCHEMAS)[T]>;
 
@@ -362,6 +437,8 @@ export const NoticeSchema = z.discriminatedUnion("notice", [
     notice: z.literal("engine"),
     engine: z.strictObject({ state: z.enum(ENGINE_STATES), error: z.string().nullable() }),
   }),
+  z.strictObject({ v: z.literal(PROTOCOL_VERSION), type: z.literal("notice"), notice: z.literal("system"), snapshot: SystemSnapshotSchema }),
+  z.strictObject({ v: z.literal(PROTOCOL_VERSION), type: z.literal("notice"), notice: z.literal("heartbeat"), heartbeat: HeartbeatSchema }),
 ]);
 export type Notice = z.infer<typeof NoticeSchema>;
 

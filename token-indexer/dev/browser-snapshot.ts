@@ -116,7 +116,7 @@ export async function makePublishedSnapshot(range: PublishedRange = recordedRang
       browser: null,
     }),
     loadTape: (r) => loadTape(r, fileFetch),
-    appCommit: commit,
+    build: { appCommit: commit, pgliteVersion: null, ledgerVersion: null },
     log: (level, message) => { if (level === "error") console.error(message); },
   });
   const call = async <T>(type: string, params: Record<string, unknown> = {}): Promise<T> => {
