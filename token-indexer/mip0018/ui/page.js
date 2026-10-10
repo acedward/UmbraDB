@@ -6,6 +6,12 @@
  * a backslash or a dollar-brace here is ordinary JavaScript \u2014 a stray character cannot break the build;
  * the guard test still loads the generated document and compiles this script.
  *
+ * Transport: on GET /ui every API read is a same-origin fetch. The static browser build (token-indexer/browser/,
+ * index.html) bundles this same script after installing window.umbradbExplorerHost: its api(path) answers a /v1 path
+ * through the browser engine with a fetch Response, read here exactly as a fetched one (the same 8 MiB cap and the
+ * same error rendering); with startHeightNotes set, every list also states the first indexed height, because that
+ * index may start mid-chain.
+ *
  * Every API path this page reads (relative, this origin only; contract: token-indexer/API.md):
  *   GET /v1/status
  *   GET /v1/tokens?limit=&cursor=
@@ -39,6 +45,7 @@
   var REASONS_MAX = 20;                   // rejection reasons named in a tooltip
   var ZERO = "0000000000000000000000000000000000000000000000000000000000000000";
   var REFRESH_MS = refreshInterval();
+  var HOST = explorerHost();
 
   var state = {
     route: { view: "list" },
@@ -372,12 +379,20 @@
     out.push(dec.decode());
     return out.join("");
   }
-  // The one network call of this page: GET of a relative /v1 path on this origin.
+  // The static browser build's host (see the header), or null on GET /ui. An object with an api function only: an
+  // element that happens to carry the same id is not one.
+  function explorerHost() {
+    var x = window.umbradbExplorerHost;
+    return x !== null && typeof x === "object" && typeof x.api === "function" ? x : null;
+  }
+  // The one API call of this page: GET of a relative /v1 path, fetched on this origin or answered by the host.
   async function api(path) {
     if (path.slice(0, API.length + 1) !== API + "/") throw apiError(path, 0, "NOT_AN_API_PATH");
     var res;
     try {
-      res = await fetch(path, { method: "GET", headers: { accept: "application/json" }, cache: "no-store", credentials: "same-origin", redirect: "error" });
+      res = HOST !== null ? await HOST.api(path)
+        : await fetch(path, { method: "GET", headers: { accept: "application/json" }, cache: "no-store", credentials: "same-origin", redirect: "error" });
+      if (!(res instanceof Response)) throw new TypeError("the host answered something other than a Response");
     } catch (e) {
       throw apiError(path, 0, "UNREACHABLE");
     }
@@ -585,6 +600,18 @@
     }
     parent.appendChild(bar);
   }
+  // Next to every list when the host asks for it (the static browser build, whose index may start mid-chain): the first
+  // indexed height (/v1/status startHeight), so a partial mark, a missing mint or a short history is not read as the
+  // token's whole state.
+  function rangeNote() {
+    if (HOST === null || HOST.startHeightNotes !== true) return null;
+    var st = state.status;
+    var from = st && typeof st.startHeight === "number" ? st.startHeight : null;
+    var n = h("div", "note range-note", from === null ? "nothing indexed yet"
+      : "indexed from block " + from + " \u00b7 history before block " + from + " is not indexed");
+    n.setAttribute("data-start-height", from === null ? "" : String(from));
+    return n;
+  }
   function crumb(main, extra) {
     var c = h("div", "crumb", link("#/", "\u2190 all tokens"));
     for (var i = 0; i < extra.length; i++) { c.appendChild(document.createTextNode("  \u00b7  ")); c.appendChild(extra[i]); }
@@ -719,6 +746,7 @@
 
   function renderList(main, d) {
     var sec = section("tokens", "tokens");
+    add(sec, rangeNote());
     if (!d) { sec.appendChild(h("div", "empty", "loading\u2026")); main.appendChild(sec); return; }
     if (!d.list || d.list.failed) { sec.appendChild(h("div", "err", "the token list could not be read (see the banner)")); main.appendChild(sec); return; }
     var items = d.list.items;
@@ -767,6 +795,7 @@
 
   function eventsSection(main, ev, withContract, title) {
     var sec = section(title, "events");
+    add(sec, rangeNote());
     if (!ev || ev.failed) { sec.appendChild(h("div", "err", "the events could not be read")); main.appendChild(sec); return; }
     if (ev.items.length === 0) {
       sec.appendChild(h("div", "empty", "no MIP-0018 event"));
@@ -812,6 +841,7 @@
   };
   function activitySection(main, act, showColor) {
     var sec = section("activity: transactions that touched it", "activity");
+    add(sec, rangeNote());
     if (!act) { sec.appendChild(h("div", "empty", "loading\u2026")); main.appendChild(sec); return; }
     if (act.unavailable) {
       var na = h("div", "empty", "activity is not served by this API (" + act.path + " answered 404)");
@@ -915,6 +945,7 @@
     main.appendChild(cs);
 
     var fs = section("current fields", "fields");
+    add(fs, rangeNote());
     var fields = arr(t.fields);
     var fieldCount = typeof t.fieldCount === "number" ? t.fieldCount : fields.length;
     if (fieldCount > 0) fs.appendChild(h("div", "note", fieldCount + " field" + (fieldCount === 1 ? "" : "s") + ", in key byte order"));
@@ -965,6 +996,7 @@
     main.appendChild(gs);
 
     var ms = section("MIP-0018 mark");
+    add(ms, rangeNote());
     ms.appendChild(h("div", "row", [markBadge(t.mark), h("span", null, markText(t.mark))]));
     var reasons = t.mark ? arr(t.mark.reasons).filter(function (r) { return r !== "unresolved-log"; }) : [];
     if (reasons.length > 0) {
@@ -1024,6 +1056,7 @@
     var ids = arr(c.identities);
     if (ids.length > 0) {
       var s = section("tokens of this color");
+      add(s, rangeNote());
       var rows = [];
       for (var i = 0; i < ids.length; i++) {
         var x = ids[i] || {};
@@ -1079,6 +1112,7 @@
     kvRow(g, "address", hexFull(r.address));
     main.appendChild(head);
     var ts = section("token identities", "tokens");
+    add(ts, rangeNote());
     if (d.tokens.items.length === 0) ts.appendChild(h("div", "empty", "no token identity (called, but nothing minted or described)"));
     else tokenRows(ts, d.tokens.items, false);
     moreButton(ts, "tokens", d.tokens.more, "tokens");
