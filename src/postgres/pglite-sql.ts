@@ -424,36 +424,30 @@ interface SimpleStatement {
   readonly describesRows: boolean;
 }
 
-/** The frontend `Query` message (simple protocol) carrying `text`. */
-function queryMessage(text: string): Uint8Array {
-  const body = new TextEncoder().encode(text);
-  const message = new Uint8Array(body.length + 6); // type, length, text, terminating zero
-  message[0] = 0x51;
-  new DataView(message.buffer).setInt32(1, body.length + 5);
-  message.set(body, 5);
-  return message;
-}
-
-/** The frontend `Sync` message. */
-const SYNC_MESSAGE = Uint8Array.of(0x53, 0, 0, 0, 4);
+/** PGlite's frontend message serializer (its `protocol.serialize`), loaded with PGlite's module when first needed. */
+let serializer: Promise<{ query(text: string): Uint8Array; sync(): Uint8Array }> | undefined;
+const frontend = (): Promise<{ query(text: string): Uint8Array; sync(): Uint8Array }> =>
+  (serializer ??= import("@electric-sql/pglite").then((m) => m.protocol.serialize));
 
 /**
- * Runs `text` with the simple protocol as PGlite's `exec` runs it — on the database alone, then a `Sync`, then (when it
- * succeeded) the file system written — and reads the backend's messages itself, so that each statement keeps whether
- * it describes rows. Values are parsed by `parsers`, then the database's own parsers, as `exec` parses them. A database
- * error carries the statement text (`query`), as `exec` gives it.
+ * Runs `text` with the simple protocol as PGlite's `exec` runs it — the same `Query` message (PGlite's serializer), on
+ * the database alone, then a `Sync`, then (when it succeeded) the file system written — and reads the backend's
+ * messages itself, so that each statement keeps whether it describes rows. Values are parsed by `parsers`, then the
+ * database's own parsers, as `exec` parses them. A database error carries the statement text (`query`), as `exec`
+ * gives it.
  */
 async function execSimple(db: PgliteDatabase, text: string, parsers: Readonly<Record<number, PgliteParser>>): Promise<SimpleStatement[]> {
+  const serialize = await frontend();
   return db.runExclusive(async () => {
     if (db.closed) throw connectionClosed();
     let messages: readonly PgliteBackendMessage[];
     try {
-      messages = await db.execProtocolStream(queryMessage(text), { syncToFs: false });
+      messages = await db.execProtocolStream(serialize.query(text), { syncToFs: false });
     } catch (error) {
       if (isServerError(error)) Object.assign(error, { query: text, params: undefined });
       throw error;
     } finally {
-      await db.execProtocolStream(SYNC_MESSAGE, { syncToFs: false });
+      await db.execProtocolStream(serialize.sync(), { syncToFs: false });
     }
     await db.syncToFs();
     const out: SimpleStatement[] = [];
