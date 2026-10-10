@@ -148,6 +148,7 @@ pass.
 | The engine: sync, scan and API from injected parts (a `fetch` over the recorded tapes, a manual clock) | `test/engine.test.ts` |
 <<<<<<< HEAD
 | The browser engine: the worker host and its protocol on an in-memory PGlite; the built worker in Chromium on OPFS, across reloads (see `browser/README.md`) | `test/browser-host.test.ts`, `test/browser-worker.test.ts` |
+| One engine across tabs: the leader election, the proxy and the handover rule with in-memory locks and channels; two and three tabs in Chromium on one profile, with the leader closed during a sync | `test/browser-tabs.test.ts`, `test/browser-tabs-chrome.test.ts` |
 =======
 | The engine's telemetry, health rule, `system` snapshot schema and redaction | `test/engine-telemetry.test.ts` |
 | The `system` snapshot of a running engine against its sources (SQL catalog, `/v1/status`), its cost and cadence | `test/engine-system-snapshot.test.ts` |
