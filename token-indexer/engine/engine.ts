@@ -10,8 +10,10 @@
  * - **Sync loop** (`sync`): `ChainArchiveSyncService.syncOnce` batches of finalized blocks, one atomic checkpoint per
  *   block; at the tip it waits `sync.idleMs`; a failed batch is retried after an exponential back-off with jitter
  *   (`sync.backoff`); a range it cannot honour (`SyncRangeError`) ends it; with `sync.endHeight` it ends once the cursor
- *   is there. `sync.startHeight` is the first height of a first run: a number, or a function the engine calls only
- *   when the archive has no cursor yet (a resumed archive continues at its cursor and never asks).
+ *   is there. `sync.startHeight` is the first height of a first run: a number; `"tip"`, the finalized tip both sources
+ *   serve when the run begins (`min(node finalized height, indexer tip)`), read until it is known, with back-off while
+ *   the endpoints fail, never genesis; or a function. The engine resolves `"tip"` or calls the function only when the
+ *   archive has no cursor yet (a resumed archive continues at its cursor and never asks).
  * - **Scan loop** (`scan`): `Mip0018Scanner.scanOnce` steps of `scan.batch` blocks, one database transaction per
  *   block. `"follow"` (default) never ends by itself: at the archive's tip it waits `scan.idleMs`, and a failed step
  *   marks the scanner `stalled` and is retried after `idleMs × 5^min(failures − 1, 4)`, never more than 60 s, while the
@@ -84,11 +86,13 @@ export interface EngineSyncOptions {
   /** GraphQL endpoint of the indexer. */
   indexerUrl: string;
   /**
-   * First height of a first run (no cursor yet): a height, or a function the engine calls with its abort signal only
-   * when the archive has no cursor, before the first batch. Default genesis (0). A resumed archive continues at its
-   * cursor; a height above cursor + 1 or below the archive's first height is refused (`range-refused`).
+   * First height of a first run (no cursor yet): a height; `"tip"`, the finalized tip both sources serve when the
+   * archive is first synced (`min(node finalized height, indexer tip)`, see {@link resolveTip}); or a function the
+   * engine calls with its abort signal. `"tip"` and the function are used only when the archive has no cursor, before
+   * the first batch. Default genesis (0). A resumed archive continues at its cursor; a height above cursor + 1 or below
+   * the archive's first height is refused (`range-refused`).
    */
-  startHeight?: number | ((signal: AbortSignal) => Promise<number>);
+  startHeight?: number | "tip" | ((signal: AbortSignal) => Promise<number>);
   /** Last height, inclusive: the loop ends (`range-complete`) once the cursor is there. Default: follow the tip. */
   endHeight?: number;
   /** Heights per batch. Default 200. */
@@ -290,7 +294,9 @@ export function createIndexerEngine(opts: EngineOptions): IndexerEngine {
   const syncCfg = opts.sync;
   const scanCfg = opts.scan;
   if (syncCfg !== undefined) {
-    if (typeof syncCfg.startHeight !== "function") checkHeight("sync.startHeight", syncCfg.startHeight);
+    if (typeof syncCfg.startHeight === "number" || syncCfg.startHeight === undefined) checkHeight("sync.startHeight", syncCfg.startHeight);
+    else if (syncCfg.startHeight !== "tip" && typeof syncCfg.startHeight !== "function")
+      throw new RangeError(`sync.startHeight must be a height, "tip" or a function, got ${String(syncCfg.startHeight)}`);
     checkHeight("sync.endHeight", syncCfg.endHeight);
     if (typeof syncCfg.startHeight === "number" && syncCfg.endHeight !== undefined && syncCfg.endHeight < syncCfg.startHeight)
       throw new RangeError(`sync.endHeight ${syncCfg.endHeight} is below sync.startHeight ${syncCfg.startHeight}`);
@@ -399,6 +405,40 @@ export function createIndexerEngine(opts: EngineOptions): IndexerEngine {
     });
   }
 
+  /**
+   * `"tip"`: the finalized tip both sources serve (`ChainArchiveSyncService.finalizedTip`, each call retried as a
+   * batch's are). While that fails, the loop waits (phase `backoff`) and asks again, the wait doubling from
+   * `sync.backoff.baseDelayMs` up to `maxDelayMs` with jitter, and reports an `error` event per failed attempt; only the
+   * tip or a stop ends it, so it never falls back to genesis. A stop rejects with the abort reason. It reads the
+   * network only, so it does not go through the scheduler.
+   */
+  async function resolveTip(mod: SyncModule, signal: AbortSignal): Promise<number> {
+    const c = syncCfg!;
+    const endpoints = [c.nodeUrl, c.indexerUrl];
+    const backoffBaseMs = c.backoff?.baseDelayMs ?? DEFAULTS.backoffBaseMs;
+    const backoffMaxMs = c.backoff?.maxDelayMs ?? DEFAULTS.backoffMaxMs;
+    const probe = newSyncService(mod, undefined, false);
+    let waitMs = backoffBaseMs;
+    for (;;) {
+      if (signal.aborted) throw signal.reason;
+      try {
+        const tip = await probe.finalizedTip();
+        syncStatus.lastError = undefined;
+        syncStatus.failures = 0;
+        return tip.targetTipHeight;
+      } catch (error) {
+        if (signal.aborted) throw signal.reason;
+        const message = publicErrorMessage(error, endpoints);
+        syncStatus.lastError = message;
+        syncStatus.failures++;
+        emit("sync", "error", { message, retryMs: waitMs });
+        await wait(syncStatus, "backoff", Math.round(waitMs / 2 + random() * (waitMs / 2)));
+        syncStatus.phase = "starting";
+        waitMs = Math.min(waitMs * 2, backoffMaxMs);
+      }
+    }
+  }
+
   /** The sync loop: resolves the first height when asked to, then batches until stopped, refused or complete. */
   async function runSync(mod: SyncModule): Promise<void> {
     const c = syncCfg!;
@@ -409,7 +449,9 @@ export function createIndexerEngine(opts: EngineOptions): IndexerEngine {
     const backoffMaxMs = c.backoff?.maxDelayMs ?? DEFAULTS.backoffMaxMs;
     try {
       syncStatus.phase = "starting";
-      const resolveStart = typeof c.startHeight === "function" ? c.startHeight : undefined;
+      const resolveStart = typeof c.startHeight === "function"
+        ? c.startHeight
+        : c.startHeight === "tip" ? (s: AbortSignal) => resolveTip(mod, s) : undefined;
       const cursor = resolveStart !== undefined && !signal.aborted ? await newSyncService(mod, undefined, false).getSyncCursor() : undefined;
       // A resumed archive reports its own first height; only a new one asks for it.
       if (cursor !== undefined) syncStart = cursor.startHeight;

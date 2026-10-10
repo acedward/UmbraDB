@@ -146,12 +146,11 @@ pass.
 | Conformance table and the no-network check | `test/mip0018-conformance.test.ts` |
 | API and page | `test/mip0018-api.test.ts`, `test/mip0018-ui-*.test.ts` |
 | The engine: sync, scan and API from injected parts (a `fetch` over the recorded tapes, a manual clock) | `test/engine.test.ts` |
-<<<<<<< HEAD
-| The browser engine: the worker host and its protocol on an in-memory PGlite; the built worker in Chromium on OPFS, across reloads (see `browser/README.md`) | `test/browser-host.test.ts`, `test/browser-worker.test.ts` |
-=======
+| The engine's start at the finalized tip: back-off while the endpoints fail (never genesis), following the tip, resuming through the gap | `test/engine-start-tip.test.ts` |
 | The engine's telemetry, health rule, `system` snapshot schema and redaction | `test/engine-telemetry.test.ts` |
 | The `system` snapshot of a running engine against its sources (SQL catalog, `/v1/status`), its cost and cadence | `test/engine-system-snapshot.test.ts` |
->>>>>>> d515148
+| The browser engine: the worker host and its protocol on an in-memory PGlite; the built worker in Chromium on OPFS, across reloads (see `browser/README.md`) | `test/browser-host.test.ts`, `test/browser-worker.test.ts` |
+| The browser engine's sync: digests, the start at the tip, the automatic start, `range` and `reset`, the storage guard and the pacing in the host; the recorded ranges' digests in Chromium on OPFS, and the automatic start against an advancing local chain | `test/browser-sync-host.test.ts`, `test/browser-sync.test.ts` |
 
 Fixtures:
 

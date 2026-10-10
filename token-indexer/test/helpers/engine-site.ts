@@ -29,6 +29,8 @@ export type ChainAnswer = (path: string, body: string) => Promise<{ status: numb
 
 export interface EngineSite {
   origin: string;
+  /** The folder of the built site it serves (it can be set after the server starts, when the build needs `origin`). */
+  dir: string;
   /** The chain's endpoints as the engine's `network` source names them. */
   nodeUrl: string;
   indexerUrl: string;
@@ -54,8 +56,8 @@ function describe(path: string, body: string): { method: string; height: number 
 }
 
 /** Serves the built site and the chain on 127.0.0.1. */
-export async function serveEngineSite(dir: string, chain: ChainAnswer = chainDown): Promise<EngineSite> {
-  const site = { chain, chainRequests: [] as EngineSite["chainRequests"] } as EngineSite;
+export async function serveEngineSite(dir = "", chain: ChainAnswer = chainDown): Promise<EngineSite> {
+  const site = { dir, chain, chainRequests: [] as EngineSite["chainRequests"] } as EngineSite;
   const server: Server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://x");
     if (url.pathname.startsWith("/chain/")) {
@@ -72,8 +74,8 @@ export async function serveEngineSite(dir: string, chain: ChainAnswer = chainDow
       });
       return;
     }
-    const file = normalize(join(dir, decodeURIComponent(url.pathname)));
-    if (!file.startsWith(dir + sep)) {
+    const file = normalize(join(site.dir, decodeURIComponent(url.pathname)));
+    if (site.dir === "" || !file.startsWith(site.dir + sep)) {
       res.writeHead(403).end();
       return;
     }
@@ -106,8 +108,11 @@ export async function serveEngineSite(dir: string, chain: ChainAnswer = chainDow
   return site;
 }
 
+/** The `define` of a build whose engine does not start by itself. */
+export const NO_AUTO_START = { __UMBRADB_BROWSER_CONFIG__: JSON.stringify({ autoStart: false }) };
+
 /** Builds the static site into a new temporary folder (removed with `rmSync` by the caller); `define` as Vite's. */
-export async function buildEngineSite(define: Record<string, string> = {}): Promise<string> {
+export async function buildEngineSite(define: Record<string, string>): Promise<string> {
   const { build } = await import("vite");
   const out = mkdtempSync(join(tmpdir(), "umbradb-browser-build-"));
   try {
@@ -145,6 +150,42 @@ export function engineDriver(page: Page, site: () => EngineSite) {
       await page.waitFor("window.umbradbEngine !== undefined", 30_000, "the engine page");
       await page.eval("window.umbradbEngine.client.booted()");
       return status();
+    },
+  };
+}
+
+interface CdpConnection {
+  send(method: string, params?: Json, sessionId?: string): Promise<Json>;
+  on(method: string, listener: (params: Json, sessionId: string | undefined) => void): void;
+}
+
+/**
+ * Evaluates expressions in the dedicated workers of `page` (the engine's worker): the page's DevTools session
+ * auto-attaches to its workers, without pausing them, and `eval` runs in the newest one still attached (a reload
+ * replaces it). For tests that replace a browser API inside the worker, such as `navigator.storage.estimate`.
+ */
+export async function workerSessions(page: Page): Promise<{ eval(expression: string, timeoutMs?: number): Promise<Json> }> {
+  const conn = (page as unknown as { conn: CdpConnection }).conn;
+  const attached: string[] = [];
+  conn.on("Target.attachedToTarget", (p, s) => {
+    if (s === page.sessionId && p.targetInfo?.type === "worker") attached.push(p.sessionId as string);
+  });
+  conn.on("Target.detachedFromTarget", (p, s) => {
+    if (s !== page.sessionId) return;
+    const i = attached.indexOf(p.sessionId as string);
+    if (i >= 0) attached.splice(i, 1);
+  });
+  await conn.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, page.sessionId);
+  return {
+    async eval(expression: string, timeoutMs = 10_000): Promise<Json> {
+      const end = Date.now() + timeoutMs;
+      while (attached.length === 0) {
+        if (Date.now() > end) throw new Error("no worker attached to the page");
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const r = await conn.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, attached[attached.length - 1]);
+      if (r.exceptionDetails !== undefined) throw new Error(`worker evaluate failed: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
+      return r.result.value;
     },
   };
 }
