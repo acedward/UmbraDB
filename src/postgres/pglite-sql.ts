@@ -32,7 +32,9 @@
  * with `UNSAFE_TRANSACTION` before it runs, also when the `BEGIN` or `START TRANSACTION` follows comments or other
  * statements of the same text; and the session is never handed on inside a transaction: when a top-level statement
  * leaves one open (whatever its text), it is rolled back and the statement refused, and a transaction still open when a
- * reservation is released (or a `begin` ends) is rolled back.
+ * reservation is released (or a `begin` ends) is rolled back. Every statement also takes PGlite's own locks, as
+ * PGlite's `query` and `exec` do: none runs while a transaction of PGlite's `transaction()` (used on the same database
+ * outside these clients) is open, and none is taken for the holder's own while one is.
  * Inside a `begin` callback every statement must go through the transaction handle: a statement on the outer client
  * waits for the session the transaction holds. Such a waiting statement fails with `PGLITE_SESSION_DEADLOCK` once the
  * transaction (or reservation) holding the session has run no statement for `deadlockTimeoutMs`, instead of waiting
@@ -85,7 +87,12 @@ export interface PgliteBackendMessage {
 export interface PgliteDatabase {
   query(query: string, params?: any[], options?: PgliteQueryOptions): Promise<PgliteResults>;
   exec(query: string, options?: PgliteQueryOptions): Promise<PgliteResults[]>;
-  /** Runs `fn` with no other statement of the database running beside it (PGlite's `runExclusive`). */
+  /** Runs `fn` holding the lock PGlite's `transaction()` holds for its whole callback and `query` and `exec` hold while
+   *  they run (PGlite's `_runExclusiveTransaction`, declared on its database classes): no transaction of PGlite's
+   *  `transaction()` is open while `fn` runs. */
+  _runExclusiveTransaction<T>(fn: () => Promise<T>): Promise<T>;
+  /** Runs `fn` with no other statement of the database running beside it (PGlite's `runExclusive`: the lock each
+   *  statement holds; it does not wait for a transaction of PGlite's `transaction()`, see {@link _runExclusiveTransaction}). */
   runExclusive<T>(fn: () => Promise<T>): Promise<T>;
   /** Sends one frontend protocol message and gives the backend's messages; an error the backend sends is thrown
    *  (PGlite's `execProtocolStream`). Called inside {@link runExclusive} only. */
@@ -429,27 +436,52 @@ let serializer: Promise<{ query(text: string): Uint8Array; sync(): Uint8Array }>
 const frontend = (): Promise<{ query(text: string): Uint8Array; sync(): Uint8Array }> =>
   (serializer ??= import("@electric-sql/pglite").then((m) => m.protocol.serialize));
 
+/** What a text run with the simple protocol gave: its statements, and whether it left a transaction block open, which
+ *  was rolled back (when the run was asked to close one). */
+interface SimpleRun {
+  statements: SimpleStatement[];
+  rolledBack: boolean;
+}
+
+/** Database errors of texts that also left a transaction block open, which their run rolled back. */
+const ROLLED_BACK = new WeakSet<object>();
+
 /**
- * Runs `text` with the simple protocol as PGlite's `exec` runs it — the same `Query` message (PGlite's serializer), on
- * the database alone, then a `Sync`, then (when it succeeded) the file system written — and reads the backend's
- * messages itself, so that each statement keeps whether it describes rows. Values are parsed by `parsers`, then the
- * database's own parsers, as `exec` parses them. A database error carries the statement text (`query`), as `exec`
- * gives it.
+ * Runs `text` with the simple protocol as PGlite's `exec` runs it — the same `Query` message (PGlite's serializer), with
+ * the same two locks (no transaction of PGlite's `transaction()` open, no other statement beside it), then a `Sync`,
+ * then (when it succeeded) the file system written — and reads the backend's messages itself, so that each statement
+ * keeps whether it describes rows. Values are parsed by `parsers`, then the database's own parsers, as `exec` parses
+ * them. A database error carries the statement text (`query`), as `exec` gives it, and is thrown from inside the run
+ * (a session monitor counts it). With `closeTransaction`, a transaction block the text left open is rolled back before
+ * the locks are released, so no other statement runs in it (a database error of such a text is in {@link ROLLED_BACK}).
  */
-async function execSimple(db: PgliteDatabase, text: string, parsers: Readonly<Record<number, PgliteParser>>): Promise<SimpleStatement[]> {
+async function execSimple(db: PgliteDatabase, text: string, parsers: Readonly<Record<number, PgliteParser>>, closeTransaction: boolean): Promise<SimpleRun> {
   const serialize = await frontend();
-  return db.runExclusive(async () => {
-    if (db.closed) throw connectionClosed();
-    let messages: readonly PgliteBackendMessage[];
+  const send = async (body: string): Promise<readonly PgliteBackendMessage[]> => {
     try {
-      messages = await db.execProtocolStream(serialize.query(text), { syncToFs: false });
-    } catch (error) {
-      if (isServerError(error)) Object.assign(error, { query: text, params: undefined });
-      throw error;
+      return await db.execProtocolStream(serialize.query(body), { syncToFs: false });
     } finally {
       await db.execProtocolStream(serialize.sync(), { syncToFs: false });
     }
-    await db.syncToFs();
+  };
+  return db._runExclusiveTransaction(() => db.runExclusive(async (): Promise<SimpleRun> => {
+    if (db.closed) throw connectionClosed();
+    let messages: readonly PgliteBackendMessage[] = [];
+    let failure: { error: unknown } | undefined;
+    try {
+      messages = await send(text);
+    } catch (error) {
+      if (!isServerError(error)) throw error;
+      Object.assign(error, { query: text, params: undefined });
+      failure = { error };
+    }
+    const rolledBack = closeTransaction && db.isInTransaction?.() === true;
+    if (rolledBack) await send("rollback");
+    if (failure === undefined || rolledBack) await db.syncToFs();
+    if (failure !== undefined) {
+      if (rolledBack) ROLLED_BACK.add(failure.error as object);
+      throw failure.error;
+    }
     const out: SimpleStatement[] = [];
     let fields: Array<{ name: string; dataTypeID: number }> = [];
     let rows: Array<Record<string, unknown>> = [];
@@ -474,8 +506,8 @@ async function execSimple(db: PgliteDatabase, text: string, parsers: Readonly<Re
         describesRows = false;
       }
     }
-    return out;
-  });
+    return { statements: out, rolledBack };
+  }));
 }
 
 /**
@@ -1027,10 +1059,12 @@ async function runStatement(state: ClientState, holder: Holder, q: PgliteQuery, 
   state.debug?.(state.id, compiled.text, compiled.params, compiled.types);
   if (topLevel && startsTransactionBlock(compiled.text)) throw unsafeTransaction();
   let res: PgliteResults | undefined;
-  let all: SimpleStatement[] | undefined;
+  let run: SimpleRun | undefined;
+  let rolledBack = false;
   try {
     if (q.simple) {
-      all = await execSimple(session.db, compiled.text, state.parsers);
+      // A top-level text that leaves a transaction block open has it rolled back inside the run (see execSimple).
+      run = await execSimple(session.db, compiled.text, state.parsers, topLevel);
     } else {
       res = await session.db.query(compiled.text, compiled.params, {
         paramTypes: compiled.types,
@@ -1039,32 +1073,50 @@ async function runStatement(state: ClientState, holder: Holder, q: PgliteQuery, 
       });
     }
   } catch (error) {
-    throw databaseError(state, error);
+    if (typeof error !== "object" || error === null || !ROLLED_BACK.has(error)) throw databaseError(state, error);
+    rolledBack = true;
   } finally {
     if (MENTIONS_SEARCH_PATH.test(compiled.text)) {
       session.searchPath = undefined;
       holder.searchPathTouched = true;
     }
   }
+  if (rolledBack || run?.rolledBack === true) {
+    holder.searchPathTouched = true;
+    throw unsafeTransaction();
+  }
   if (RESETS_SEARCH_PATH.test(compiled.text)) await applySearchPath(state);
-  return all !== undefined ? simpleResult(all) : toResult(res);
+  return run !== undefined ? simpleResult(run.statements) : toResult(res);
 }
 
 function unsafeTransaction(): PgliteSqlError {
   return new PgliteSqlError("UNSAFE_TRANSACTION", "Only use sql.begin, sql.reserve or a transaction handle to start a transaction");
 }
 
-/** Rolls back a transaction left open on the session, if any; whether there was one. Runs inside the holder's turn. */
+/**
+ * Rolls back a transaction left open on the session, if any; whether there was one. Runs inside the holder's turn. The
+ * session is read again under PGlite's locks before anything is rolled back: a transaction of PGlite's `transaction()`
+ * that began after the holder's statement is waited for, never taken for one the holder left open.
+ */
 async function rollBackOpenTransaction(state: ClientState, holder: Holder): Promise<boolean> {
   const { db } = state.session;
   if (db.closed || db.isInTransaction?.() !== true) return false;
-  holder.searchPathTouched = true;
+  const serialize = await frontend();
   try {
-    await db.exec("rollback");
+    return await db._runExclusiveTransaction(() => db.runExclusive(async () => {
+      if (db.closed || db.isInTransaction?.() !== true) return false;
+      holder.searchPathTouched = true;
+      try {
+        await db.execProtocolStream(serialize.query("rollback"), { syncToFs: false });
+      } finally {
+        await db.execProtocolStream(serialize.sync(), { syncToFs: false });
+      }
+      await db.syncToFs();
+      return true;
+    }));
   } catch (error) {
     throw databaseError(state, error);
   }
-  return true;
 }
 
 /** Hands the session on: first rolls back any transaction its holder left open, so no other statement runs inside it. */
@@ -1176,7 +1228,9 @@ function makeClient(state: ClientState, db: PgliteDatabase): UmbraDBSql {
           } catch (error) {
             failure = { error };
           }
-          if (await rollBackOpenTransaction(state, holder)) throw unsafeTransaction();
+          // A text (simple protocol) was checked inside its run, under PGlite's locks; a statement with parameters,
+          // which cannot start a transaction block unless its text says so, is checked here.
+          if (!q.simple && (await rollBackOpenTransaction(state, holder))) throw unsafeTransaction();
           if (failure !== undefined) throw failure.error;
           return result;
         });
