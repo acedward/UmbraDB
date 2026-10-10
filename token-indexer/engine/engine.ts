@@ -358,6 +358,11 @@ export function createIndexerEngine(opts: EngineOptions): IndexerEngine {
   if (!scanEnabled) scanStatus.phase = "off";
   /** Ends a wait of the scan loop when the switch changes. */
   let scanWake = new AbortController();
+  /** The engine's stop and the switch's current `scanWake` combined, for the scan loop's waits: made at the first wait
+   *  after a switch change and shared by every wait until the next (some Node releases keep every `AbortSignal.any`
+   *  alive, so one per idle wait would grow without end). */
+  let scanWaitSignal: AbortSignal | undefined;
+  const scanWait = (): AbortSignal => (scanWaitSignal ??= AbortSignal.any([stopper.signal, scanWake.signal]));
   /** The scan loop runs (between its start and its end), and it waits switched off. */
   let scanLooping = false;
   let scanParked = false;
@@ -417,7 +422,7 @@ export function createIndexerEngine(opts: EngineOptions): IndexerEngine {
     releaseParkWaiters();
     try {
       while (!scanEnabled && !signal.aborted) {
-        const wake = AbortSignal.any([signal, scanWake.signal]);
+        const wake = scanWait();
         await new Promise<void>((resolve) => {
           if (wake.aborted) return resolve();
           wake.addEventListener("abort", () => resolve(), { once: true });
@@ -606,7 +611,7 @@ export function createIndexerEngine(opts: EngineOptions): IndexerEngine {
     const batch = c.batch ?? DEFAULTS.scanBatch;
     const idle = c.idleMs ?? DEFAULTS.scanIdleMs;
     /** A wait the scan switch also ends (switched off, the loop goes on to wait switched off at once). */
-    const switchable = (): AbortSignal => AbortSignal.any([signal, scanWake.signal]);
+    const switchable = scanWait;
     let failures = 0;
     scanLooping = true;
     try {
@@ -738,6 +743,7 @@ export function createIndexerEngine(opts: EngineOptions): IndexerEngine {
         // End the loop's wait (an idle or back-off wait while switched on, the wait while switched off).
         const wake = scanWake;
         scanWake = new AbortController();
+        scanWaitSignal = undefined;
         wake.abort();
         // Not started yet: the switch sets how the loop starts (a loop that has ended keeps its last phase).
         if (!started) {

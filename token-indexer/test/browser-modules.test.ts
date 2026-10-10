@@ -6,6 +6,9 @@
  * - `[[engine.scan-switch]]` — the engine's scan switch: a scan configured off starts off (phase `off`, `scanner:
  *   "off"`) while the sync archives; switched on it catches up from its cursor; switched off while it runs, the answer
  *   comes once it waits at a block boundary; switching twice changes nothing; a stop while it waits ends the loops.
+ * - `[[engine.scan-wait-signal]]` — the scan loop's waits share one signal combining the engine's stop and the switch,
+ *   made once for each switch change: fifty idle waits in a row make no new one (one per wait is retained on some Node
+ *   releases), and after the switch is turned off and on again the waits share a new one.
  * - `[[browser.host.module-toggle]]` — the `module` request on a running engine whose finalized tip advances: off, the
  *   scan's cursor stays where it stopped while the archive advances by more than a hundred blocks, `/v1/status` says
  *   `scanner: "off"` and still answers, the system snapshot shows the scan off and the health line follows the archive;
@@ -31,7 +34,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTapeFetch } from "../../chain-archive-sync/tape-replay.js";
 import { createWorkerHost, type WorkerHost, type WorkerHostOptions } from "../browser/host.ts";
 import {
@@ -199,6 +202,48 @@ describe("the indexer's modules and the store's tables in the browser engine", (
       await apiOnly.setScanEnabled(true);
       expect(apiOnly.status().scan.phase).toBe("off");
     } finally {
+      await s.close();
+    }
+  }, 120_000);
+
+  it("[[engine.scan-wait-signal]] the scan loop's waits share one signal combining the stop and the switch for each switch change: fifty idle waits make no new one; after the switch is turned off and on the waits share a new one", async () => {
+    const s = await openStore("memory://");
+    const any = vi.spyOn(AbortSignal, "any");
+    try {
+      const { bootstrapChainArchiveSchema } = await import("../../chain-archive-sync/bootstrap.js");
+      await bootstrapChainArchiveSchema(s.archive, ARCHIVE_SCHEMA);
+      const replay = createTapeFetch(await loadTape("u1", fileFetch));
+      let idleWaits = 0;
+      const engine = createIndexerEngine({
+        sql: s.mip0018,
+        archiveSql: s.archive,
+        network: "stagenet",
+        schema: MIP0018_SCHEMA,
+        archiveSchema: ARCHIVE_SCHEMA,
+        // At the archive's tip the sync waits ten minutes: no network call (nor its signals) while the scan idles.
+        sync: { nodeUrl: replay.nodeUrl, indexerUrl: replay.indexerUrl, startHeight: U1.from, idleMs: 600_000, maxBlocks: 50 },
+        scan: { idleMs: 2, batch: 50 },
+        fetch: replay.fetchImpl,
+        onEvent: (e) => { if (e.source === "scan" && e.event === "batch" && (e.fields as { scannedBlocks?: number }).scannedBlocks === 0) idleWaits++; },
+      });
+      await engine.start();
+      for (let i = 0; i < 500 && (await engine.scanCursor())?.nextHeight !== U1.to + 1; i++) await sleep(20);
+      expect((await engine.scanCursor())?.nextHeight).toBe(U1.to + 1);
+      /** Signals made while the scan waits idle `n` more times. */
+      const madeDuring = async (n: number): Promise<number> => {
+        const [waits, made] = [idleWaits, any.mock.calls.length];
+        for (let i = 0; i < 1_000 && idleWaits < waits + n; i++) await sleep(5);
+        expect(idleWaits - waits, "idle waits").toBeGreaterThanOrEqual(n);
+        return any.mock.calls.length - made;
+      };
+      expect(await madeDuring(50), "combined signals made during fifty idle waits").toBeLessThanOrEqual(1);
+      await engine.setScanEnabled(false);
+      await engine.setScanEnabled(true);
+      expect(await madeDuring(50), "after the switch changed twice: one new signal at most").toBeLessThanOrEqual(1);
+      await engine.stop();
+      await engine.finished;
+    } finally {
+      any.mockRestore();
       await s.close();
     }
   }, 120_000);
