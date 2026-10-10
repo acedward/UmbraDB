@@ -2,8 +2,8 @@
  * What the page's watchdog (`token-indexer/browser/supervisor.ts`) starts on the worker it puts in place of a stuck one:
  * the engine the worker last reported running, with the configuration it reported, whatever request started it. The
  * worker hosts run in this thread behind channels the test can silence, on PGlite in one directory, with the saved
- * settings and the snapshot journal outliving each worker (as the files beside an OPFS store do); the supervisor's clock
- * is driven by the test.
+ * settings, the store's identity and the snapshot journal outliving each worker (as the files beside an OPFS store do);
+ * the supervisor's clock is driven by the test.
  *
  * - `[[browser.watchdog.restore-default-start]]` — an engine started with no configuration (the leader tab's automatic
  *   start, the engine panel's start) runs again on the new worker, with the configuration it ran.
@@ -11,6 +11,10 @@
  *   before it, and the saved configuration stays the range.
  * - `[[browser.watchdog.restore-after-import]]` — after an `import`, which stops the engine, the new worker starts
  *   nothing and the automatic start stays off.
+ * - `[[browser.watchdog.restore-interrupted-import]]` — a worker that stops answering once an import's journal is saved,
+ *   with its engine still running (its stop never reported): the new worker's boot finishes the import, and the new
+ *   worker starts nothing on the snapshot's store; the configuration that continues the snapshot stays saved, with no
+ *   automatic start.
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,6 +25,7 @@ import type { StartConfig } from "../browser/protocol.ts";
 import { memorySettingsStore } from "../browser/settings.ts";
 import type { SnapshotFiles } from "../browser/snapshot-store.ts";
 import { openStore } from "../browser/store.ts";
+import { memoryStoreIdentity } from "../browser/store-identity.ts";
 import { superviseWorker, type SupervisedEngine, type WorkerLike } from "../browser/supervisor.ts";
 import { loadTape } from "../browser/tapes.ts";
 import { fileFetch, SUPPORTED, U1, until } from "./helpers/worker-host.ts";
@@ -78,22 +83,26 @@ interface Rig {
   engine: SupervisedEngine<ChannelWorker>;
   workers: ChannelWorker[];
   settings: ReturnType<typeof memorySettingsStore>;
+  /** The import journal's file (beside the store). */
+  journal: string;
   /** Silences the current worker until the supervisor has replaced it. */
   restart(): Promise<ChannelWorker>;
   close(): Promise<void>;
 }
 
-/** Workers on one store directory whose settings and snapshot journal outlive each worker. */
+/** Workers on one store directory whose settings, store identity and snapshot journal outlive each worker. */
 function rig(defaultStart: StartConfig): Rig {
   const dir = mkdtempSync(join(tmpdir(), "umbradb-watchdog-restore-"));
   dirs.push(dir);
   const storeDir = join(dir, "store");
   const journal = join(dir, "journal.tar");
   const settings = memorySettingsStore();
+  const storeIdentity = memoryStoreIdentity();
   const snapshotFiles: SnapshotFiles = {
     readJournal: async () => (existsSync(journal) ? new Uint8Array(readFileSync(journal)) : undefined),
     writeJournal: async (file) => writeFileSync(journal, file),
     removeJournal: async () => rmSync(journal, { force: true }),
+    storeExists: async () => existsSync(join(storeDir, "PG_VERSION")),
     removeStore: async () => rmSync(storeDir, { recursive: true, force: true }),
   };
   let now = 0;
@@ -110,6 +119,7 @@ function rig(defaultStart: StartConfig): Rig {
         openStore,
         settings,
         snapshotFiles,
+        storeIdentity,
         defaultStart,
         loadTape: (range) => loadTape(range, fileFetch()),
         log: () => {},
@@ -129,6 +139,7 @@ function rig(defaultStart: StartConfig): Rig {
     engine,
     workers,
     settings,
+    journal,
     async restart() {
       const count = workers.length;
       workers[count - 1]!.silent = true;
@@ -213,6 +224,43 @@ describe("page watchdog: what a restart starts", () => {
       expect(s.engine).toBeNull();
       expect(s.settings?.autoStart).toBe(false);
       expect(s.cursors?.sync).toEqual({ height: U1.from + 6, startHeight: U1.from });
+    } finally {
+      await r.close();
+    }
+  }, 120_000);
+
+  it("[[browser.watchdog.restore-interrupted-import]] a worker that stops answering once an import's journal is saved, its engine still running: the new worker's boot finishes the import and starts nothing on the snapshot's store; the continuing configuration stays saved with no automatic start", async () => {
+    const first: StartConfig = { ...U1_TAPE, startHeight: U1.from, endHeight: U1.from + 6, ...FAST };
+    const later: StartConfig = { ...first, endHeight: U1.from + 12 };
+    const r = rig(first);
+    try {
+      const c = r.engine.client;
+      expect((await c.booted()).phase).toBe("ready");
+      await c.start(first);
+      await until(async () => (await c.status()).engine?.status.sync.phase === "done", "the snapshot's range");
+      const exported = await c.export();
+      await c.stop();
+      const running = await c.start(later);
+      expect(running.engine).toMatchObject({ running: true, config: later });
+      await until(async () => (await c.status()).cursors?.sync?.height === U1.from + 12, "the store past the snapshot");
+      // The import's journal is saved and the worker stops answering before its engine's stop is reported.
+      r.workers.at(-1)!.silent = true;
+      writeFileSync(r.journal, new Uint8Array(await exported.file.arrayBuffer()));
+      const next = await r.restart();
+      // The restore runs right after the new worker's boot; give it time to send whatever it sends.
+      const end = Date.now() + 1_000;
+      while (Date.now() < end) {
+        expect(next.received.some((m) => m.type === "start"), "a start sent to the new worker").toBe(false);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const s = await c.status();
+      expect(s.snapshots.lastImport?.manifest.height).toBe(U1.from + 6);
+      expect(s.cursors?.sync).toEqual({ height: U1.from + 6, startHeight: U1.from });
+      expect(s.engine).toBeNull();
+      const { endHeight: _end, ...continuing } = later;
+      expect(s.settings).toEqual({ config: continuing, autoStart: false });
+      expect(existsSync(r.journal)).toBe(false);
+      expect(next.received.some((m) => m.type === "start")).toBe(false);
     } finally {
       await r.close();
     }

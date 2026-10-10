@@ -35,15 +35,15 @@ PostgreSQL.
 | `visible-text.ts` | The explorer's hidden-character rules for text a page draws from data: `⟨U+XXXX⟩` marks, bidi islands, text nodes only |
 | `session.ts` | The worker's view of its PGlite session: turns for the event loop between statements, failed statements counted, a close that waits for the statements in flight |
 | `capabilities.ts` | The Chrome-only capability check run before anything else |
-| `store.ts` | Opens PGlite and its two clients (`chain_archive`, `mip0018`); non-durable, results and errors as on PostgreSQL |
+| `store.ts` | Opens PGlite and its two clients (`chain_archive`, `mip0018`) and runs the migrations; non-durable, results and errors as on PostgreSQL |
 | `scheduler.ts` | Yields to the worker's event loop before each sync batch and scan step, so messages are served while it runs |
 | `tapes.ts`, `tapes/` | The recorded Stagenet ranges (gzip) the worker can replay with no network, SHA-256 checked |
 | `config.ts` | The network, its default endpoints (fixed when the site is built), the store's location and the build's settings |
 | `settings.ts` | The engine's saved configuration, a file beside the store |
-| `store-identity.ts` | Which PGlite wrote the store, a file beside it: a store of another PGlite version is refused before it is opened |
+| `store-identity.ts` | Which PGlite wrote the store (or that it is being created), a file beside it: a store of another PGlite version is refused before it is opened |
 | `quota.ts` | The storage guard: pauses the sync before the quota, and after a write the browser refused |
-| `snapshot.ts` | The snapshot file: its manifest, its format (a tar of `manifest.json` and `data.tar.gz`) and every check an import makes |
-| `snapshot-store.ts` | Export (a consistent read while the engine runs), import (checks, a trial load, then a journaled swap under the store's lock) and finishing an interrupted import when the store opens |
+| `snapshot.ts` | The snapshot file: its manifest, its format (a tar of `manifest.json` and `rows.tar.gz`, the rows of every table) and every check an import makes |
+| `snapshot-store.ts` | Export (the rows of every table, a consistent read while the engine runs), import (checks, a trial load of the rows into a new store in memory, then a journaled swap under the store's lock) and finishing an interrupted import when the store opens |
 | `snapshot-page.ts` | The page's side: saving an exported file as a download, fetching a snapshot the build publishes |
 | `trusted-worker.ts` | The pages' one Trusted Types policy, `umbradb-engine-worker`, which makes the engine worker's script URL |
 | `zod-jitless.ts` | Turns zod's JIT (`new Function`) off before any schema exists; the first module of the worker and of every page |
@@ -100,24 +100,33 @@ The worker boots as soon as it loads, in phases posted as `boot` notices and rep
   and nothing is opened or started. (`navigator.storage.persist()` exists only in a window; the worker checks
   `persisted()`.)
 - **store**: PGlite opens the store; the first open creates the database (about a second, with a second PGlite heap
-  while it runs). Before it, the store's identity (`<store directory>.store.json` beside the store, written once a boot
-  has migrated the store and after an import: the PGlite and PostgreSQL versions it was opened with) is read:
+  while it runs). Under the store's lock, an import a previous worker left unfinished (its journal, see Snapshots) is
+  finished first: that replaces the store. Otherwise the store's identity (`<store directory>.store.json` beside the
+  store) is read first. It says "creating" from before PGlite creates the store until its first boot completes, and
+  then the PGlite and PostgreSQL versions the store was last opened with:
   - a store another PGlite version wrote is **refused unopened**: the boot ends `failed` with `storeProblem: "version"`
     and "reset it (its data is dropped and synced again) or load a snapshot made by this build";
-  - a store with no identity that does not open is one whose **creation was interrupted** (a worker that ends while
+  - an identity file that cannot be read (or is not an identity) is reported the same way (`storeProblem:
+    "unopenable"`): which PGlite wrote the store is unknown, so it is not opened;
+  - a store marked "creating" that does not open is one whose **creation was interrupted** (a worker that ends while
     PGlite creates a store leaves files PGlite cannot open again: it then needs more pool files than a reopened store
     gets): its files are removed and the store is created again, with a warning (nothing was stored yet);
-  - a store with an identity that does not open ends the boot `failed` with `storeProblem: "unopenable"`, the error
-    and the same two choices.
-
-  With `storeProblem` set, `reset` and `range` remove the store's files (under the store's lock) and `import` loads a
-  snapshot in their place (journaled, as any import); then the rest of the boot runs. Nothing is read from such a
-  store, and the engine panel keeps those three controls enabled. A store another worker holds is never removed.
+  - any other store that does not open ends the boot `failed` with `storeProblem: "unopenable"`, the error and the
+    same two choices.
 - **ledger**: ledger-v9 loads and its classes must keep their names (the scan stores them); a renamed class fails the
   boot.
 - **migrate**: the chain archive's and MIP-0018's migrations, as the Node commands run them.
 
-A failure in the last three ends the boot `failed`, with the error, and closes the store.
+Then the identity is written (a boot that cannot write it fails) and the saved configuration read; after an import it
+finished, the boot first saves the configuration that continues the import and only then removes the journal.
+
+A failure from the store phase on ends the boot `failed`, with the error, and closes the store (releasing its lock).
+When the store is the reason, `storeProblem` says so: `version` and `unopenable` as above, `unusable` when it opened but
+the boot could not complete on it (its migrations, its identity, or finishing an import). Then `reset` and `range`
+replace the store with a new one and `import` loads a snapshot in its place (journaled, as any import), and the boot
+runs again from the store phase. Nothing is read from such a store, and the engine panel keeps those three controls
+enabled. A store another worker holds is never removed, and a ledger that does not load is not the store's problem
+(nothing offers to drop the store's data for it).
 
 ## Protocol
 
@@ -130,8 +139,8 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 | `api` | `method`, `target` | the API's answer `{ status, headers, body }` (`../API.md`) |
 | `start` | `config?`: `source` (`{ kind: "network", nodeUrl?, indexerUrl? }` or `{ kind: "tape", range: "idx" \| "u1", finalizedHeight?, advance? }`), `startHeight?` (a height or `"tip"`, the default), `endHeight?`, `sync?` (`maxBlocks`, `concurrency`, `minIntervalMs`, `idleMs`, `backoff`), `scan?`; omitted: the saved configuration | status |
 | `stop` | — | status; the engine no longer starts by itself until the next `start` |
-| `range` | `startHeight` (a height or `"tip"`), `endHeight?` | status: the store's data is dropped and the new range starts (source and tuning from the saved configuration) |
-| `reset` | — | status: the store's data is dropped and the saved configuration starts again |
+| `range` | `startHeight` (a height or `"tip"`), `endHeight?` | status: the new range is saved, the store is replaced by a new one, and the range starts (source and tuning from the saved configuration) |
+| `reset` | — | status: the store is replaced by a new one and the saved configuration starts again |
 | `digest` | — | the store's archive digest (the 7 `chain_archive` tables, `chain-archive-sync/archive-digest.ts`) and the digest of every table of both schemas (`../engine/range-tables.ts`), read in one read-only transaction |
 | `system` | `watch` (with `viewer?`) or `refresh: { database?, exactCounts? }` | `{ watching, viewers, snapshot }`: the snapshot of a refresh (`null` for a watch) |
 | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | `{ limitMs, heartbeatMs }` |
@@ -186,10 +195,14 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   says so, sends `start` with no configuration, which runs the saved one (for a new store, the build's default: the
   tip, following it). Followers never start anything. A reopened store continues at its cursor and fetches every
   height since, so a closed or frozen tab leaves no hole; a chosen range keeps its end.
-- **Ranges.** One archive has no gaps and no backfill, so `range` (a new start or end) and `reset` drop the store's data
-  (both schemas, in one transaction, in the leader's worker, which holds the store's lock) and migrate again before
-  starting. The page offers an export first; the host takes a `beforeWipe` hook for that. Neither is sent again after
-  a handover (`leader-changed`); `digest`, which only reads, is.
+- **Ranges.** One archive has no gaps and no backfill, so `range` (a new start or end) and `reset` replace the store
+  with a new one before starting: in the leader's worker, which holds the store's lock, the engine stops, PGlite is
+  closed with the lock kept, every file of the store's directory is removed, and the boot runs again from its store
+  phase (PGlite creates the database, the migrations run). Nothing of the old database survives, whatever it held.
+  `range` saves the new range (with the automatic start) before it replaces the store, so a tab closed meanwhile
+  starts the new range on the new store; a range that cannot be saved changes nothing. The page offers an export
+  first; the host takes a `beforeWipe` hook for that. Neither is sent again after a handover (`leader-changed`);
+  `digest`, which only reads, is.
 - **Persistent storage.** `navigator.storage.persist()` exists only in a window: every page asks for it when it loads
   (`requestPersistentStorage()` in `client.ts`; the grant is per site, so any tab's request counts; the engine page keeps
   the answer in `window.umbradbEngine.persistence`), and the worker's `storage.persisted` reports the outcome. A
@@ -215,45 +228,60 @@ A browser profile runs one engine per store, however many tabs are open. A page 
 
 ## Snapshots
 
-A snapshot is the whole store (both schemas, as PGlite's data directory) in one file,
+A snapshot is the rows of every table of the store (both schemas) in one file,
 `umbradb-<network>-<first height>-<height>.snapshot.tar`, a plain tar of two entries (`tar -tf` lists them):
 
 | Entry | Content |
 |---|---|
-| `manifest.json` | `format`, `version`, `createdAt`; `network` and `genesisHash`; `archive`: the first height, and the height and hash of the last fully committed block; `scan`: the scan cursor at the same instant (it may be behind the archive; the scan catches up); `schemaVersions`: the applied migrations of `chain_archive` and `mip0018`; `pglite`: the PGlite and PostgreSQL versions; `build.appCommit`; `data`: the size, uncompressed size and SHA-256 of `data.tar.gz` |
-| `data.tar.gz` | PGlite's `dumpDataDir()`: a tar of the data directory, gzip |
+| `manifest.json` | `format`, `version` (2), `createdAt`; `network` and `genesisHash`; `archive`: the first height, and the height and hash of the last fully committed block; `scan`: the scan cursor at the same instant (it may be behind the archive; the scan catches up); `schemaVersions`: the applied migrations of `chain_archive` and `mip0018`; `pglite`: the PGlite and PostgreSQL versions; `build.appCommit`; `tables`: every table the migrations make in the two schemas (leaf partitions included, the migration runners' `_migrations` left out), each with its columns (generated columns left out) and its number of rows, in the order the rows load (a table after the tables it references); `sequences`: the identity sequences' values; `data`: the size, uncompressed size and SHA-256 of `rows.tar.gz` |
+| `rows.tar.gz` | a tar, gzip, of `<schema>.<table>.<n>.copy` entries: each table's rows in PostgreSQL's binary `COPY` format, in chunks of about 4 MiB (`tar -tzf` lists them) |
+
+A snapshot holds data only. Nothing of a database (its catalog, functions, triggers, rules, settings or files) is ever
+taken from a file: an import creates a new store with this build's migrations and loads the rows into it, with every
+constraint and trigger of the store in force. A snapshot of the earlier format (version 1, a copy of PGlite's whole
+data directory, which could carry code) is refused with a message that says so; export a new one with this build.
 
 **Export** does not stop the engine. It takes the store's one PGlite session between two transactions (so each block
-is in the snapshot whole or not at all, and both cursors are at a full block), reads what the manifest records, runs
-`CHECKPOINT` and writes the data directory as a tar; the sync, the scan and API requests wait only for that read (tens of
-milliseconds for the recorded ranges), and the compression runs after it. It changes nothing, so a tab that asked for it
-can ask the next leader again.
+is in the snapshot whole or not at all, and both cursors are at a full block), reads what the manifest records, then
+each table's rows (`COPY … TO` in binary) and the sequences; the sync, the scan and API requests wait only for that
+read (tens of milliseconds for the recorded ranges), and the splitting and compression run after it. It changes
+nothing, so a tab that asked for it can ask the next leader again.
 
 **Import** first checks the file without touching anything (a running engine keeps running), and refuses it with a
 reason: `format` (not a snapshot file of this version), `truncated`, `network` (another network or genesis block),
-`schema` (other migrations than this build's), `pglite` (another PGlite or PostgreSQL version), `hash` (the data's size
-or SHA-256 is not the manifest's), `corrupt` (the data does not unpack into a data directory, or holds another state
-than its manifest says: it is loaded into a trial in-memory PGlite and its cursors, block hash and migrations compared).
-Then it stops the engine, waits for the API requests in flight, saves the file beside the store as a journal
-(`<store>.import.snapshot.tar` in the Origin Private File System), closes PGlite while keeping the store's lock, removes
-the store's files, opens the store again from the snapshot's data directory and checks it against the manifest once
-more, and removes the journal. A worker that ends anywhere in that swap leaves the journal, and the next open finishes
-the import before PGlite opens the store, so a half-written store is never opened; a journal that cannot be read back
-whole means the swap never began, and is dropped. `status` and `api` wait during the swap.
+`schema` (other migrations than this build's), `pglite` (another PGlite or PostgreSQL version), `hash` (the rows' size
+or SHA-256 is not the manifest's), `corrupt` (the rows do not unpack, are not this build's tables and columns in order,
+do not load into a store of this build, or hold another state than the manifest says). The check is a trial: a new
+store in memory, made by the migrations, into which the rows are loaded in one transaction; the row counts, the
+sequences, the cursors, the block hash and the migrations must then be the manifest's. The rows are read as a stream:
+an import holds one entry (at most 64 MiB) besides the file, and refuses rows as soon as they unpack to more than the
+manifest says (itself at most 4 GiB), an entry whose header declares more than 64 MiB, or anything after the tar's end.
+
+Then it saves the file beside the store as a journal (`<store>.import.snapshot.tar` in the Origin Private File System;
+if the browser refuses that write, nothing has changed and the engine keeps running), stops the engine, waits for the
+API requests in flight, closes PGlite while keeping the store's lock, and runs the boot again from its store phase,
+which finishes the import from the journal: the store's files are removed, PGlite creates the store anew, the
+migrations run, and the rows are loaded and checked as in the trial. The journal is removed only after the store's
+identity and the configuration that continues the import are saved. A worker that ends anywhere in that swap leaves
+the journal, and the next open finishes the import before the store is used, so a half-built store is never used; a
+journal that cannot be read back whole means the swap never began, and is dropped. `status` and `api` wait during the
+swap. A failure after the journal is saved leaves the store closed, its lock released and `storeProblem` set, so
+`reset`, `range` and `import` are offered (and the next boot finishes the import from the journal).
 
 After an import the engine is stopped and the saved configuration continues the imported archive: its first height as
 the start, no end height, and no automatic start (as after `stop`). A `start` then continues at the height after the
 snapshot's (and the scan from its cursor).
 
-A snapshot is trusted data: its SHA-256 detects damage, not who made it, and the explorer shows what it holds. Import
+A snapshot's rows are trusted data: its SHA-256 detects damage, not who made it, and the explorer shows the rows it
+holds. A file crafted on purpose can only carry rows (never code), but its rows are shown as if indexed. Import
 snapshots you exported or the build published.
 
 **Published snapshot.** `npm run build:browser` writes `snapshots/umbradb-stagenet-714485-715183.snapshot.tar` and
 `snapshots/index.json` (each file's size, SHA-256, manifest and digests) after Vite (`../dev/browser-snapshot.ts`): the
 worker host runs in Node on an in-memory PGlite (the browser's PGlite build), replays the recorded IDX range's tape and
-exports; the build then loads the file back and fails unless its store's archive digest and range-tables digest equal
-the recorded live sync of that range. The file's bytes differ from build to build (times, and the database identifier
-PGlite's `initdb` makes); what it holds does not. A page loads it with
+exports; the build then loads the file's rows into a new store, as an import does, and fails unless that store's archive
+digest and range-tables digest equal the recorded live sync of that range. The file's bytes differ from build to build
+(the times in it); what it holds does not. A page loads it with
 `window.umbradbEngine.snapshots.published("idx")` (checked against the index) and imports it; with it the explorer
 answers for 714485–715183 with no network. `npm run dev:browser` publishes none.
 
@@ -412,8 +440,9 @@ PGlite runs every statement synchronously on the worker's thread, so the worker 
   restart count and reason and the PGlite reopen count, boots on the same store and gets back the system snapshot's
   viewers and the engine the worker last reported running, with the configuration it reported: the one a `start` (with
   or without a configuration), a `range` or a `reset` answered with (it continues at the stored cursors; an engine the
-  page stopped, an import stopped or that failed stays stopped). While `range`, `reset`, `export` or `import` runs the limit is 10 min. More than 3 restarts within 10 min
-  close the client with `worker-error`.
+  page stopped, an import stopped or that failed stays stopped, and so does one whose import the restart interrupted
+  once the journal was saved: the new worker's boot finishes that import). While `range`, `reset`, `export` or `import`
+  runs the limit is 10 min. More than 3 restarts within 10 min close the client with `worker-error`.
 - **Reopen.** PGlite 0.5.8 fails every statement with "stack depth limit exceeded" once a database has failed about
   1,700 statements, until it is reopened. The host counts the statements the database fails and reopens the store at
   1,000 since it was opened, or at once on the first "stack depth limit exceeded": it holds new requests, stops the

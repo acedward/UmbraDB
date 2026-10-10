@@ -11,9 +11,9 @@
  *   automatic start off until the next `start`.
  * - `[[browser.tabs.auto-start]]` — the leader tab's default resume: the previous leader's running configuration, else
  *   the saved configuration when it says to start by itself, else nothing; never with the build's automatic start off.
- * - `[[browser.host.range-reset]]` — `range` drops the store's data and starts the new range (a range whose end is
- *   below its start is refused and changes nothing); `reset` drops it and runs the same range again, to the same
- *   digests; `range("tip")` follows the tip again; the hook before a wipe is called each time; a reopened store keeps
+ * - `[[browser.host.range-reset]]` — `range` replaces the store with a new one and starts the new range (a range whose
+ *   end is below its start is refused and changes nothing); `reset` replaces it and runs the same range again, to the
+ *   same digests; `range("tip")` follows the tip again; the hook before a wipe is called each time; a reopened store keeps
  *   the range's end.
  * - `[[browser.host.quota]]` — the storage guard pauses the sync once the browser's usage reaches the quota minus the
  *   headroom (`paused (quota)` on the health line, the API still answering), a stop while paused returns at once, and
@@ -41,6 +41,7 @@ import { memorySettingsStore } from "../browser/settings.ts";
 import { resumeOrAutoStart } from "../browser/tabs.ts";
 import type { EngineClient } from "../browser/client.ts";
 import { loadTape } from "../browser/tapes.ts";
+import { nodeStoreFiles } from "./helpers/worker-host.ts";
 
 const U1 = { from: 715402, to: 715433 } as const;
 const FAST = { sync: { idleMs: 100 }, scan: { idleMs: 100 } };
@@ -202,13 +203,13 @@ describe("browser engine host: sync", () => {
     expect(again.settings).toEqual({ config: net, autoStart: true });
   }, 120_000);
 
-  it("[[browser.host.range-reset]] range drops the data and starts the new range; reset runs it again to the same digests; range tip follows again; a reopened store keeps the range's end", async () => {
+  it("[[browser.host.range-reset]] range replaces the store and starts the new range; reset runs it again to the same digests; range tip follows again; a reopened store keeps the range's end", async () => {
     const dir = storeDir();
     const settings = memorySettingsStore();
     const replay = createTapeFetch(await u1Tape());
     const net: StartConfig = { source: { kind: "network", nodeUrl: replay.nodeUrl, indexerUrl: replay.indexerUrl }, ...FAST };
     const wiped: string[] = [];
-    const opts = { dataDir: dir, settings, defaultStart: net, fetch: replay.fetchImpl, beforeWipe: async (s: { dataDir: string }) => { wiped.push(s.dataDir); } };
+    const opts = { dataDir: dir, snapshotFiles: nodeStoreFiles(dir), settings, defaultStart: net, fetch: replay.fetchImpl, beforeWipe: async (s: { dataDir: string }) => { wiped.push(s.dataDir); } };
     const h = newHost(opts);
     await result(h, "start");
     await until(h, "the tip", (s) => s.cursors?.scan?.nextHeight === U1.to + 1);

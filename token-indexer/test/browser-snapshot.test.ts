@@ -4,12 +4,14 @@
  * outlives a tab), replaying the recorded U1 range (715402–715433) with no network. The same in Chrome, on OPFS, is
  * `browser-snapshot-chrome.test.ts`.
  *
- * - `[[browser.snapshot.file]]` — the file is a tar of `manifest.json` and `data.tar.gz` (`tar` lists it); everything
- *   that is not such a file is refused with its reason: not a snapshot or another manifest version (`format`), cut short
- *   anywhere (`truncated`), a data directory entry outside the data directory, a link, a directory with content, no
- *   `PG_VERSION`, damaged gzip or a size other than the manifest's (`corrupt`); another network or genesis block
- *   (`network`), other migrations (`schema`), another PGlite or Postgres version (`pglite`), data whose size or SHA-256
- *   differs (`hash`).
+ * - `[[browser.snapshot.file]]` — the file is a tar of `manifest.json` and `rows.tar.gz` (`tar` lists it), the rows one
+ *   binary `COPY` entry per table chunk (`tar` lists them too) and the manifest every table with its columns and row
+ *   count; everything that is not such a file is refused with its reason: not a snapshot, the earlier format (a whole
+ *   database) or another manifest version (`format`), cut short anywhere (`truncated`); rows that are not gzip, not a
+ *   tar of `<schema>.<table>.<n>.copy` files, entries out of order or misnumbered, a table this build does not have, rows
+ *   that do not load into this build's store or do not match the manifest's counts, a size other than the manifest's
+ *   (`corrupt`); another network or genesis block (`network`), other migrations (`schema`), another PGlite or Postgres
+ *   version (`pglite`), rows whose size or SHA-256 differs (`hash`).
  * - `[[browser.snapshot.round-trip]]` — a store exported at height H (the engine still running) and imported into a new
  *   store holds the same data (equal archive and range-tables digests, the manifest's cursors, the same API answers);
  *   the saved configuration continues the archive with the automatic start off; a start then requests height H + 1
@@ -21,10 +23,11 @@
  * - `[[browser.snapshot.refusals]]` — an import of a snapshot of another network, genesis block, schema version or
  *   PGlite version, with a changed byte, cut short, not a snapshot, or whose data contradicts its manifest is refused
  *   with its reason, and the store, the cursors, the saved configuration and a running engine are untouched.
- * - `[[browser.snapshot.journal]]` — a store with an import journal is finished from it before PGlite opens it (also
- *   over a half-written store); an invalid journal (the swap never started) is dropped and the store opens as it was;
- *   a snapshot that fails to load leaves an empty store and the failure; a host booting over a journal reports the
- *   import and saves the continuing configuration.
+ * - `[[browser.snapshot.journal]]` — a store with an import journal is replaced by the journal's snapshot when it is next
+ *   opened (also over a half-written store: its files are removed and PGlite creates the store anew), and the journal
+ *   stays until the opener removes it; an invalid journal (the swap never started) is dropped and the store opens as it
+ *   was; a journal whose rows fail to load leaves an empty store and the failure; a host booting over a journal reports
+ *   the import, saves the continuing configuration and only then removes the journal.
  * - `[[browser.snapshot.published]]` — the build's published snapshot of the recorded range 714485–715183 holds the
  *   recorded live sync (archive digest `cb0d5e21…`, range-tables digest `af6583d0…c832c`), its index validates, and an
  *   import of it answers the explorer's API with no chain request.
@@ -43,23 +46,26 @@ import { memorySettingsStore } from "../browser/settings.ts";
 import {
   checkCompatible,
   checkData,
-  DATA_ENTRY,
   decodeSnapshotFile,
   encodeSnapshotFile,
   gzip,
   MANIFEST_ENTRY,
   PublishedSnapshotIndexSchema,
+  readRows,
   readTar,
+  ROWS_ENTRY,
+  type RowsEntry,
+  rowsEntryName,
   type SnapshotManifest,
   SnapshotRefusal,
   sha256Hex,
-  unpackDataDir,
   writeTar,
 } from "../browser/snapshot.ts";
-import { openFinishingImport, prepareImport, readStoreFacts, type SnapshotFiles } from "../browser/snapshot-store.ts";
+import { openFinishingImport, prepareImport, readStoreFacts } from "../browser/snapshot-store.ts";
 import { openStore } from "../browser/store.ts";
 import { loadTape } from "../browser/tapes.ts";
 import { makePublishedSnapshot, recordedRange, writePublishedSnapshots } from "../dev/browser-snapshot.ts";
+import { nodeStoreFiles } from "./helpers/worker-host.ts";
 
 const U1 = { from: 715402, to: 715433 } as const;
 const MID = U1.from + 15;
@@ -172,18 +178,34 @@ const refusalOf = async (p: Promise<unknown>): Promise<string> => {
   throw new Error("not refused");
 };
 
-/** Snapshot files of a store, kept in a directory of the Node file system (the OPFS journal's stand-in). */
-function nodeSnapshotFiles(storeDir: string, journal: string): SnapshotFiles {
-  return {
-    readJournal: async () => (existsSync(journal) ? new Uint8Array(readFileSync(journal)) : undefined),
-    writeJournal: async (file) => writeFileSync(journal, file),
-    removeJournal: async () => rmSync(journal, { force: true }),
-    removeStore: async () => rmSync(storeDir, { recursive: true, force: true }),
-  };
+
+/** The rows entries of a snapshot's rows, in order. */
+async function rowsOf(manifest: SnapshotManifest, data: Uint8Array): Promise<RowsEntry[]> {
+  const out: RowsEntry[] = [];
+  await readRows(manifest, data, async (e) => { out.push({ ...e, copy: e.copy.slice() }); });
+  return out;
+}
+
+/** A snapshot file with these rows entries (and the manifest changed by `change`), its rows' size and hash made to
+ *  match: a file crafted to pass the hash check. */
+async function craft(file: Uint8Array, entries: (rows: RowsEntry[]) => RowsEntry[] | Promise<RowsEntry[]>, change: (m: SnapshotManifest) => void = () => {}): Promise<Uint8Array> {
+  const { manifest, data } = decodeSnapshotFile(file);
+  const tar = writeTar((await entries(await rowsOf(manifest, data))).map((e) => ({ name: rowsEntryName(e.table, e.chunk), data: e.copy })), 0);
+  return craftRaw(file, tar, change);
+}
+
+/** A snapshot file whose rows are the gzip of `tar` (any bytes), its manifest's sizes and hash made to match. */
+async function craftRaw(file: Uint8Array, tar: Uint8Array, change: (m: SnapshotManifest) => void = () => {}): Promise<Uint8Array> {
+  const { manifest } = decodeSnapshotFile(file);
+  const gz = await gzip(tar);
+  const m = structuredClone(manifest);
+  m.data = { ...m.data, bytes: gz.length, sha256: await sha256Hex(gz), tarBytes: tar.length };
+  change(m);
+  return encodeSnapshotFile(m, gz);
 }
 
 describe("browser engine snapshots", () => {
-  it("[[browser.snapshot.file]] a snapshot file is a tar of manifest.json and data.tar.gz; anything else, or a manifest this engine cannot take, is refused with its reason", async () => {
+  it("[[browser.snapshot.file]] a snapshot file is a tar of manifest.json and rows.tar.gz, the rows of this build's tables only; anything else, or a manifest this engine cannot take, is refused with its reason", async () => {
     const host = await hostWithU1(MID);
     const exported = await result<ExportResult>(host, "export");
     const file = await bytesOf(exported.file);
@@ -195,27 +217,48 @@ describe("browser engine snapshots", () => {
     // Readable with tar.
     const dir = tempDir("umbradb-snapshot-file-");
     writeFileSync(join(dir, exported.name), file);
-    expect(execFileSync("tar", ["-tf", join(dir, exported.name)], { encoding: "utf8" }).trim().split("\n")).toEqual([MANIFEST_ENTRY, DATA_ENTRY]);
+    expect(execFileSync("tar", ["-tf", join(dir, exported.name)], { encoding: "utf8" }).trim().split("\n")).toEqual([MANIFEST_ENTRY, ROWS_ENTRY]);
     execFileSync("tar", ["-xf", join(dir, exported.name), "-C", dir]);
     const manifest = JSON.parse(readFileSync(join(dir, MANIFEST_ENTRY), "utf8")) as SnapshotManifest;
     expect(manifest).toEqual(exported.manifest);
-    const data = new Uint8Array(readFileSync(join(dir, DATA_ENTRY)));
+    expect(manifest.version).toBe(2);
+    const data = new Uint8Array(readFileSync(join(dir, ROWS_ENTRY)));
     expect(await sha256Hex(data)).toBe(manifest.data.sha256);
     expect(data.length).toBe(manifest.data.bytes);
     await checkData(manifest, data);
+    // The rows: one binary COPY entry per chunk of each table that holds rows, in the manifest's order.
+    const listed = execFileSync("tar", ["-tzf", join(dir, ROWS_ENTRY)], { encoding: "utf8" }).trim().split("\n");
+    const entries = await rowsOf(manifest, data);
+    expect(listed).toEqual(entries.map((e) => rowsEntryName(e.table, e.chunk)));
+    expect(entries.every((e) => new TextDecoder().decode(e.copy.subarray(0, 6)) === "PGCOPY")).toBe(true);
+    const order = manifest.tables.map((t) => t.name);
+    expect(entries.map((e) => order.indexOf(e.table))).toEqual([...entries.map((e) => order.indexOf(e.table))].sort((a, b) => a - b));
+    expect(manifest.tables.map((t) => t.name)).toEqual(expect.arrayContaining(["chain_archive.chain_blobs", "chain_archive.blocks_p0", "chain_archive.blocks_default", "chain_archive.watermarks", "mip0018.mip0018_scan", "mip0018.mip0018_activity"]));
+    expect(manifest.tables.some((t) => t.name.endsWith("._migrations"))).toBe(false);
+    expect(manifest.tables.find((t) => t.name === "chain_archive.chain_blobs")!.columns).not.toContain("size_bytes"); // generated
+    expect(manifest.tables.find((t) => t.name === "chain_archive.blocks_p0")!.rows).toBe(MID - U1.from + 1);
+    expect(manifest.sequences).toEqual([{ name: "chain_archive.verifier_key_observations_id_seq", lastValue: expect.stringMatching(/^\d+$/), isCalled: expect.any(Boolean) }]);
+    const expected = { network: "stagenet", genesisHash: manifest.genesisHash, schemaVersions: manifest.schemaVersions, pglite: manifest.pglite };
+    await expect(prepareImport(new Blob([file as Uint8Array<ArrayBuffer>]), expected)).resolves.toMatchObject({ manifest });
 
-    // The container: not a snapshot, another version, cut short.
+    // The container: not a snapshot, the earlier format, another version, cut short.
     const decode = async (bytes: Uint8Array) => decodeSnapshotFile(bytes);
     expect(await refusalOf(decode(new TextEncoder().encode("hello")))).toBe("format");
     expect(await refusalOf(decode(new Uint8Array(0)))).toBe("format");
     expect(await refusalOf(decode(writeTar([{ name: "other.json", data: new Uint8Array(3) }], 0)))).toBe("format");
-    expect(await refusalOf(decode(writeTar([{ name: MANIFEST_ENTRY, data: new TextEncoder().encode("{") }, { name: DATA_ENTRY, data }], 0)))).toBe("format");
-    expect(await refusalOf(decode(writeTar([{ name: MANIFEST_ENTRY, data: new TextEncoder().encode(JSON.stringify({ ...manifest, version: 2 })) }, { name: DATA_ENTRY, data }], 0)))).toBe("format");
-    expect(await refusalOf(decode(writeTar([{ name: MANIFEST_ENTRY, data: new TextEncoder().encode(JSON.stringify(manifest)) }, { name: DATA_ENTRY, data }, { name: "x", data }], 0)))).toBe("format");
+    expect(await refusalOf(decode(writeTar([{ name: MANIFEST_ENTRY, data: new TextEncoder().encode("{") }, { name: ROWS_ENTRY, data }], 0)))).toBe("format");
+    expect(await refusalOf(decode(writeTar([{ name: MANIFEST_ENTRY, data: new TextEncoder().encode(JSON.stringify({ ...manifest, version: 3 })) }, { name: ROWS_ENTRY, data }], 0)))).toBe("format");
+    expect(await refusalOf(decode(writeTar([{ name: MANIFEST_ENTRY, data: new TextEncoder().encode(JSON.stringify(manifest)) }, { name: ROWS_ENTRY, data }, { name: "x", data }], 0)))).toBe("format");
+    expect(await refusalOf(decode(writeTar([{ name: MANIFEST_ENTRY, data: new TextEncoder().encode(JSON.stringify(manifest)) }, { name: "data.tar.gz", data }], 0)))).toBe("format");
+    const earlier = { ...manifest, version: 1, data: { ...manifest.data, file: "data.tar.gz" } };
+    expect(() => decodeSnapshotFile(writeTar([{ name: MANIFEST_ENTRY, data: new TextEncoder().encode(JSON.stringify(earlier)) }, { name: "data.tar.gz", data }], 0)))
+      .toThrow(/^format: this snapshot has the earlier format \(version 1, a copy of the whole database, which can carry code as well as data\), which this build does not import: export a new snapshot with this build$/);
+    const twice = { ...manifest, tables: [...manifest.tables, manifest.tables[0]!] };
+    expect(await refusalOf(decode(writeTar([{ name: MANIFEST_ENTRY, data: new TextEncoder().encode(JSON.stringify(twice)) }, { name: ROWS_ENTRY, data }], 0)))).toBe("format");
     const dataHeader = 512 + Math.ceil(new TextEncoder().encode(`${JSON.stringify(manifest, null, 2)}\n`).length / 512) * 512;
-    expect(new TextDecoder().decode(file.subarray(dataHeader, dataHeader + DATA_ENTRY.length))).toBe(DATA_ENTRY);
+    expect(new TextDecoder().decode(file.subarray(dataHeader, dataHeader + ROWS_ENTRY.length))).toBe(ROWS_ENTRY);
     const badSum = file.slice();
-    badSum[dataHeader + 20]! ^= 1; // a byte of the data entry's header
+    badSum[dataHeader + 20]! ^= 1; // a byte of the rows entry's header
     expect(await refusalOf(decode(badSum))).toBe("format");
     const badManifest = file.slice();
     badManifest[512] = 0x5b; // the manifest's first character: "[" instead of "{"
@@ -223,42 +266,40 @@ describe("browser engine snapshots", () => {
     for (const cut of [20, 511, 512, 700, 1024 + 512 + 10, file.length >> 1, file.length - 1024, file.length - 513, file.length - 1])
       expect(await refusalOf(decode(file.subarray(0, cut))), `cut at ${cut}`).toBe("truncated");
 
-    // The data: size, hash.
+    // The rows: size, hash.
     expect(await refusalOf(checkData(manifest, data.subarray(1)))).toBe("hash");
     const flipped = data.slice();
     flipped[flipped.length >> 1]! ^= 0x40;
     expect(await refusalOf(checkData(manifest, flipped))).toBe("hash");
 
-    // The data directory: only files and directories inside it, as the manifest describes.
-    const tar = await unpackDataDir(manifest, data);
-    const entries = readTar(tar, (d) => new SnapshotRefusal("corrupt", d), (d) => new SnapshotRefusal("corrupt", d));
-    expect(entries.some((e) => e.name === "/PG_VERSION" && e.type === "file")).toBe(true);
-    expect(entries.every((e) => e.name.startsWith("/") && !e.name.includes(".."))).toBe(true);
-    const repack = async (files: { name: string; data: Uint8Array }[]) => {
-      const t = writeTar(files, 0);
-      const gz = await gzip(t);
-      return unpackDataDir({ ...manifest, data: { ...manifest.data, bytes: gz.length, tarBytes: t.length, sha256: await sha256Hex(gz) } }, gz);
-    };
-    const pgVersion = { name: "/PG_VERSION", data: new TextEncoder().encode("18\n") };
-    await expect(repack([pgVersion])).resolves.toBeInstanceOf(Uint8Array);
-    for (const bad of ["/../lib/postgresql/plpgsql.so", "/base/../../x", "relative", "/a//b", "/./x", "/x\\y"])
-      expect(await refusalOf(repack([pgVersion, { name: bad, data: new Uint8Array(1) }])), bad).toBe("corrupt");
-    expect(await refusalOf(repack([{ name: "/global/pg_control", data: new Uint8Array(1) }]))).toBe("corrupt");
-    const link = writeTar([pgVersion, { name: "/l", data: new Uint8Array(0) }], 0);
-    const at = 1024; // the second header: PG_VERSION takes a header and one data block
-    expect(new TextDecoder().decode(link.subarray(at, at + 2))).toBe("/l");
-    link[at + 156] = 0x32; // type "2", a symbolic link
-    let sum = 0;
-    for (let i = at; i < at + 512; i++) sum += i >= at + 148 && i < at + 156 ? 32 : link[i]!;
-    link.set(new TextEncoder().encode(`${sum.toString(8).padStart(6, "0")}\0 `), at + 148);
-    const linkGz = await gzip(link);
-    expect(await refusalOf(unpackDataDir({ ...manifest, data: { ...manifest.data, bytes: linkGz.length, tarBytes: link.length, sha256: await sha256Hex(linkGz) } }, linkGz))).toBe("corrupt");
-    expect(await refusalOf(unpackDataDir(manifest, new TextEncoder().encode("not gzip at all")))).toBe("corrupt");
-    expect(await refusalOf(unpackDataDir({ ...manifest, data: { ...manifest.data, tarBytes: manifest.data.tarBytes - 1 } }, data))).toBe("corrupt");
-    expect(await refusalOf(unpackDataDir({ ...manifest, data: { ...manifest.data, tarBytes: manifest.data.tarBytes + 512 } }, data))).toBe("corrupt");
+    // The rows, crafted to pass the hash: only this build's tables, in order, numbered, loading, as counted.
+    const imports = async (bytes: Uint8Array) => prepareImport(new Blob([bytes as Uint8Array<ArrayBuffer>]), expected);
+    const blob = entries.find((e) => e.table === "chain_archive.chain_blobs")!;
+    const cases: Array<[string, Uint8Array, RegExp]> = [
+      ["not gzip", encodeSnapshotFile({ ...manifest, data: { ...manifest.data, bytes: 15, sha256: await sha256Hex(new TextEncoder().encode("not gzip at all")) } }, new TextEncoder().encode("not gzip at all")), /do not decompress/],
+      ["unpacks to fewer bytes than declared", await craftRaw(file, writeTar([], 0), (m) => { m.data.tarBytes += 512; }), /unpack to 1024 bytes; the manifest says 1536/],
+      ["unpacks to more bytes than declared", await craftRaw(file, writeTar(entries.map((e) => ({ name: rowsEntryName(e.table, e.chunk), data: e.copy })), 0), (m) => { m.data.tarBytes = 1024; }), /more than the manifest's 1024 bytes/],
+      ["a directory entry", await craftRaw(file, ((t) => { t[156] = 0x35; let n = 0; for (let i = 0; i < 512; i++) n += i >= 148 && i < 156 ? 32 : t[i]!; t.set(new TextEncoder().encode(`${n.toString(8).padStart(6, "0")}\0 `), 148); return t; })(writeTar([{ name: rowsEntryName(blob.table, 0), data: new Uint8Array(0) }], 0))), /is not a plain file/],
+      ["an entry named otherwise", await craftRaw(file, writeTar([{ name: "../x.copy", data: blob.copy }], 0)), /is not named <schema>\.<table>\.<n>\.copy/],
+      ["a table this build does not have", await craft(file, (r) => [{ ...r[0]!, table: "public.pwned" }, ...r.slice(1)]), /public\.pwned, which is not a table of this build/],
+      ["out of order", await craft(file, (r) => [...r].reverse()), /come after those of a table that is loaded after it/],
+      ["misnumbered", await craft(file, (r) => r.map((e) => (e === r[0] ? { ...e, chunk: 1 } : e))), /numbered 1 where 0 was due/],
+      ["a row too few", await craft(file, (r) => r.filter((e) => e.table !== "mip0018.mip0018_scan")), /the rows of mip0018\.mip0018_scan are 0; the manifest says 1/],
+      ["a manifest table this build does not have", await craft(file, (r) => r, (m) => { m.tables.push({ name: "public.pwned", columns: ["what"], rows: 0 }); }), /public\.pwned\(what\) is not a table of this build/],
+      ["another column list", await craft(file, (r) => r, (m) => { m.tables[0]!.columns = [...m.tables[0]!.columns].reverse(); }), /is missing/],
+      ["rows that break a constraint", await craft(file, (r) => r.filter((e) => e.table !== "chain_archive.chain_blobs")), /do not load into this build's store: .*(foreign key|chain_blob)/],
+      ["not a COPY stream", await craft(file, (r) => r.map((e) => (e.table === "chain_archive.watermarks" ? { ...e, copy: new TextEncoder().encode("watermark rows, as text") } : e))), /chain_archive\.watermarks \(entry 0\) do not load/],
+      ["another sequence", await craft(file, (r) => r, (m) => { m.sequences = [{ ...m.sequences[0]!, name: "chain_archive.other_seq" }]; }), /sequences \[chain_archive\.other_seq\] are not this build's/],
+      ["facts other than the manifest's", await craft(file, (r) => r, (m) => { m.archive.height = MID - 1; }), /does not match its manifest: its archive is/],
+    ];
+    for (const [name, bytes, message] of cases) {
+      const e = await imports(bytes).then(() => undefined, (x: unknown) => x);
+      expect(e, name).toBeInstanceOf(SnapshotRefusal);
+      expect((e as SnapshotRefusal).reason, name).toBe("corrupt");
+      expect((e as SnapshotRefusal).message, name).toMatch(message);
+    }
 
     // The manifest against this engine.
-    const expected = { network: "stagenet", genesisHash: manifest.genesisHash, schemaVersions: manifest.schemaVersions, pglite: manifest.pglite };
     const check = async (m: SnapshotManifest) => checkCompatible(m, expected);
     await expect(check(manifest)).resolves.toBeUndefined();
     expect(await refusalOf(check({ ...manifest, network: "preprod" }))).toBe("network");
@@ -267,7 +308,11 @@ describe("browser engine snapshots", () => {
     expect(await refusalOf(check({ ...manifest, schemaVersions: { ...manifest.schemaVersions, chain_archive: [...manifest.schemaVersions.chain_archive, "003_next"] } }))).toBe("schema");
     expect(await refusalOf(check({ ...manifest, pglite: { ...manifest.pglite, version: "0.5.9" } }))).toBe("pglite");
     expect(await refusalOf(check({ ...manifest, pglite: { ...manifest.pglite, serverVersion: "18.4" } }))).toBe("pglite");
-  }, 120_000);
+    // The trial's store is this build's PGlite: a manifest of another PGlite is refused by it as well.
+    const { pglite: _pglite, ...withoutPglite } = expected;
+    const otherPglite = await craft(file, (r) => r, (m) => { m.pglite.version = "0.5.9"; });
+    expect(await refusalOf(prepareImport(new Blob([otherPglite as Uint8Array<ArrayBuffer>]), withoutPglite))).toBe("pglite");
+  }, 180_000);
 
   it("[[browser.snapshot.round-trip]] a store exported at height H and imported into a new store holds the same data; the saved configuration continues the archive; a start requests H + 1 first and finishes as an uninterrupted run", async () => {
     const tape = await u1Tape();
@@ -318,7 +363,7 @@ describe("browser engine snapshots", () => {
     expect(imported.status.snapshots.lastImport).toMatchObject({ sha256: exported.manifest.data.sha256, bytes: exported.bytes, manifest: { height: MID } });
     expect(imported.status.settings).toEqual({ config: { startHeight: U1.from }, autoStart: false });
     expect(await settings.load()).toEqual({ config: { startHeight: U1.from }, autoStart: false });
-    for (const k of ["readMs", "checkMs", "unpackMs", "trialMs", "swapMs", "totalMs"] as const) expect(imported.timings[k]).toBeGreaterThanOrEqual(0);
+    for (const k of ["readMs", "checkMs", "stageMs", "swapMs", "totalMs"] as const) expect(imported.timings[k]).toBeGreaterThanOrEqual(0);
     expect(await result<DigestResult>(b, "digest")).toEqual({ ...before, elapsedMs: expect.any(Number) });
     expect(await answers(b)).toEqual(aAnswers);
     expect(JSON.parse(await apiBody(b, "/v1/status"))).toMatchObject({ startHeight: U1.from, indexedHeight: MID });
@@ -360,7 +405,8 @@ describe("browser engine snapshots", () => {
     const heights: number[] = [];
     for (let i = 0; i < 4; i++) {
       const exported = await result<ExportResult>(host, "export");
-      // The trial an import runs: the data directory opened, its cursors, block hash and migrations equal the manifest.
+      // The trial an import runs: the rows loaded into a new store, its cursors, block hash and migrations equal the
+      // manifest.
       const prepared = await prepareImport(exported.file, expected);
       expect(prepared.manifest).toEqual(exported.manifest);
       expect(exported.timings.holdMs).toBeLessThan(2_000);
@@ -417,14 +463,14 @@ describe("browser engine snapshots", () => {
     expect(await settings.load()).toEqual(status.settings);
   }, 180_000);
 
-  it("[[browser.snapshot.journal]] an import journal is finished before PGlite opens the store; an invalid one is dropped; a snapshot that fails to load leaves an empty store; a host booting over a journal reports the import", async () => {
+  it("[[browser.snapshot.journal]] an import journal replaces the store when it is next opened and stays until removed; an invalid one is dropped; rows that fail to load leave an empty store; a host booting over a journal saves the continuing configuration, then removes the journal", async () => {
     const source = await hostWithU1(MID);
     const file = await bytesOf((await result<ExportResult>(source, "export")).file);
     const { manifest } = decodeSnapshotFile(file);
     const root = tempDir("umbradb-journal-");
     const storeDir = join(root, "store");
     const journal = join(root, "store.import.snapshot.tar");
-    const files = nodeSnapshotFiles(storeDir, journal);
+    const files = nodeStoreFiles(storeDir, journal);
     const facts = async (dir: string) => {
       const s = await openStore(dir);
       try {
@@ -434,22 +480,26 @@ describe("browser engine snapshots", () => {
       }
     };
 
-    // A store with data of its own, half overwritten, and a journal: the open finishes the import.
+    // A store with data of its own, half overwritten, and a journal: the open replaces the store with the snapshot.
     const other = await hostWithU1(U1.from + 2, { dataDir: storeDir });
     await closeHost(other);
     const own = await facts(storeDir);
     expect(own.archive?.height).toBe(U1.from + 2);
     writeFileSync(journal, file);
     writeFileSync(join(storeDir, "PG_VERSION"), "garbage");
-    const finished = await openFinishingImport((d, o) => openStore(d, o), storeDir, files, "stagenet");
+    const importing: Array<SnapshotManifest | null> = [];
+    const finished = await openFinishingImport((d, o) => openStore(d, o), storeDir, files, "stagenet", { beforeOpen: async (_d, m) => { importing.push(m); } });
     try {
+      expect(importing).toEqual([manifest]);
       expect(finished.imported).toEqual(manifest);
       expect(finished.failure).toBeNull();
+      expect(finished.store.created).toBe(true);
       expect((await readStoreFacts(finished.store.mip0018, "stagenet")).archive).toEqual(manifest.archive);
     } finally {
       await finished.store.close();
     }
-    expect(existsSync(journal)).toBe(false);
+    expect(existsSync(journal), "the journal stays until the opener removes it").toBe(true);
+    await files.removeJournal();
 
     // An invalid journal (cut short: the swap never started): dropped, the store opens as it was.
     writeFileSync(journal, file.subarray(0, file.length >> 1));
@@ -462,37 +512,42 @@ describe("browser engine snapshots", () => {
     }
     expect(existsSync(journal)).toBe(false);
 
-    // A valid journal whose load fails: an empty store, and the failure.
+    // `discardJournal` (a reset): the journal is dropped, not finished.
     writeFileSync(journal, file);
-    const failing = await openFinishingImport(async (d, o) => {
-      const load = await o.prepare?.(d);
-      if (load !== undefined) throw new Error("no space left");
-      return openStore(d, { ...o, prepare: async () => {} });
-    }, storeDir, files, "stagenet");
+    const discarded = await openFinishingImport((d, o) => openStore(d, o), storeDir, files, "stagenet", { discardJournal: true });
+    try {
+      expect(discarded.imported).toBeNull();
+    } finally {
+      await discarded.store.close();
+    }
+    expect(existsSync(journal)).toBe(false);
+
+    // A valid journal whose rows fail to load (here: the blobs left out, so a block references none): an empty store,
+    // and the failure.
+    writeFileSync(journal, await craft(file, (r) => r.filter((e) => e.table !== "chain_archive.chain_blobs")));
+    const failing = await openFinishingImport((d, o) => openStore(d, o), storeDir, files, "stagenet");
     try {
       expect(failing.imported).toBeNull();
-      expect(failing.failure).toContain("no space left");
+      expect(failing.failure).toMatch(/^the snapshot could not be loaded: corrupt: the rows of chain_archive\./);
+      expect(await failing.store.mip0018`select 1 from pg_namespace where nspname = 'chain_archive'`).toHaveLength(0);
     } finally {
       await failing.store.close();
     }
     expect(existsSync(journal)).toBe(false);
-    expect(existsSync(join(storeDir, "PG_VERSION"))).toBe(true); // a new database (PGlite's initdb)
-    const fresh = await openStore(storeDir);
-    try {
-      expect(await fresh.mip0018`select 1 from pg_namespace where nspname = 'chain_archive'`).toHaveLength(0);
-    } finally {
-      await fresh.close();
-    }
 
-    // A host booting over a journal reports the import and saves the configuration that continues it.
+    // A host booting over a journal reports the import and saves the configuration that continues it; the journal is
+    // removed only after that.
     writeFileSync(journal, file);
     const settings = memorySettingsStore({ config: { source: { kind: "tape", range: "u1" }, startHeight: "tip", endHeight: U1.to }, autoStart: true });
-    const host = newHost({ dataDir: storeDir, snapshotFiles: files, settings });
+    let journalAtSave: boolean | undefined;
+    const watched = { ...settings, save: async (x: Parameters<typeof settings.save>[0]) => { journalAtSave = existsSync(journal); await settings.save(x); } };
+    const host = newHost({ dataDir: storeDir, snapshotFiles: files, settings: watched });
     const s = await result<HostStatus>(host, "status").then(async () => { await host.boot(); return result<HostStatus>(host, "status"); });
     expect(s.boot.phase).toBe("ready");
     expect(s.cursors?.sync).toEqual({ height: MID, startHeight: U1.from });
     expect(s.snapshots.lastImport).toMatchObject({ sha256: manifest.data.sha256, bytes: null, manifest: { height: MID } });
     expect(s.settings).toEqual({ config: { source: { kind: "tape", range: "u1" }, startHeight: U1.from }, autoStart: false });
+    expect(journalAtSave, "the journal is still on file while the continuing configuration is saved").toBe(true);
     expect(existsSync(journal)).toBe(false);
   }, 180_000);
 

@@ -235,8 +235,12 @@ export class Page {
 
   /**
    * Evaluates `script` in the worker of `session` once its global scope is complete, right before the worker's first
-   * script runs: a worker held at its start has a global scope without most Web APIs yet, so the debugger pauses at the
-   * first script's execution, evaluates `script` there, and lets the worker go on (the debugger is then turned off).
+   * script runs. A worker's global scope gets its secure-context interfaces (OPFS sync access handles, writable file
+   * streams, …) only once its own script has arrived, and an evaluation sent to the worker before that (the
+   * `securitypolicyviolation` listener above, sent as the worker is let go) runs without them. So the debugger pauses
+   * before each script runs; a pause in a script without a URL (such an evaluation) is let go, and at the first pause in
+   * a script of the worker's own (it has a URL) `script` is evaluated, then the worker goes on (the debugger is then
+   * turned off).
    */
   private async beforeWorkerScript(session: string, script: string): Promise<void> {
     await this.conn.send("Debugger.enable", {}, session);
@@ -244,6 +248,11 @@ export class Page {
     let done = false;
     this.conn.on("Debugger.paused", (p, s) => {
       if (s !== session || done) return;
+      const url = (p as { data?: { url?: unknown } }).data?.url;
+      if (typeof url !== "string" || url === "") {
+        void this.conn.send("Debugger.resume", {}, session).catch(() => { /* the worker ended */ });
+        return;
+      }
       done = true;
       void (async () => {
         const r = await this.conn.send("Runtime.evaluate", { expression: script }, session);
@@ -252,7 +261,6 @@ export class Page {
         await this.conn.send("Debugger.resume", {}, session);
         await this.conn.send("Debugger.disable", {}, session);
       })().catch(() => { /* the worker ended */ });
-      void p;
     });
   }
 
