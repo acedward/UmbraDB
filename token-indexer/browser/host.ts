@@ -17,14 +17,17 @@
  * `start` runs a new engine (sync + scan in follow mode) with the given configuration, or the saved one, `stop` stops
  * it; `range` drops the store's data and starts the new range, `reset` drops it and starts the saved configuration
  * again; all four run one at a time, in arrival order. `digest` computes the store's archive and range-tables digests
- * in one read-only transaction (the loops wait for it); `export` and `import` answer `not-implemented`.
+ * in one read-only transaction (the loops wait for it); `system` watches or refreshes the system snapshot and `watchdog`
+ * sets the page's watchdog and starts the heartbeat (`host-system.ts`); `export` and `import` answer `not-implemented`.
  *
  * **Engine**: the engine (`../engine/engine.ts`) runs with a scheduler that yields to the event loop before each step
  * (`scheduler.ts`), so requests and `stop` are served while it syncs; the chain is the network (`fetch` to the node and
  * the indexer) or a recorded range replayed in the worker (`tapes.ts`). A store whose archive has a cursor continues
  * from it, through any gap since it stopped (never jumping to the new tip). A new archive starts at `startHeight`, by
  * default the finalized tip both sources serve, `min(node finalized height, indexer tip)`, resolved when the sync
- * begins: while the endpoints fail the engine waits with back-off, and it never starts at genesis by default.
+ * begins: while the endpoints fail the engine waits with back-off, and it never starts at genesis by default. The
+ * clients reach PGlite through the session monitor (`session.ts`), which also gives the event loop a turn between
+ * statements, so API requests are served between block transactions while a step runs.
  *
  * **Saved configuration** (`settings.ts`): the last `start` configuration or `range`, kept beside the store, and
  * whether the engine should start by itself (`autoStart`; a `stop` request turns it off until the next `start`). A
@@ -33,6 +36,13 @@
  *
  * **Storage** (`quota.ts`): before each sync batch the guard compares the browser's usage with the quota and pauses the
  * sync before it is reached (`storage` in `status`); it resumes once space frees.
+ *
+ * **Reopen**: PGlite fails every statement once a database has failed about 1,700 statements (and until it is
+ * reopened). The host counts the statements the database fails and, at {@link REOPEN_AFTER_FAILED_STATEMENTS} since
+ * the store was opened, or at once when a statement fails with "stack depth limit exceeded", reopens the store: it
+ * holds new requests, stops the engine (its steps in flight end, so both cursors are at a full block), lets the
+ * requests reading the store end, closes PGlite, opens it again and runs the engine again with the same configuration
+ * (it continues at the cursors).
  */
 import { archiveDigest, dumpArchive } from "../../chain-archive-sync/archive-digest.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
@@ -42,9 +52,10 @@ import { durabilityModeOf } from "../../src/postgres/durability-probe.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { mip0018Migrations } from "../../src/postgres/migrations/mip0018/index.js";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
-import { createIndexerEngine, type EngineClock, type EngineEvent, type EngineScheduler, type IndexerEngine, systemClock } from "../engine/engine.ts";
+import { createIndexerEngine, type EngineClock, type EngineEvent, type EngineOptions, type EngineScheduler, type IndexerEngine, systemClock } from "../engine/engine.ts";
 import { rangeTables } from "../engine/range-tables.ts";
 import { checkCapabilities } from "./capabilities.ts";
+import { type BuildInfo, createHostSystem, type SystemProviders } from "./host-system.ts";
 import {
   type BootState,
   type CapabilityReport,
@@ -67,14 +78,19 @@ import {
 } from "./protocol.ts";
 import { browserStorageEnvironment, createQuotaGuard, type StorageEnvironment } from "./quota.ts";
 import { yieldingScheduler } from "./scheduler.ts";
+import { STACK_DEPTH_EXCEEDED } from "./session.ts";
 import { type EngineSettingsStore, memorySettingsStore, opfsSettingsStore } from "./settings.ts";
-import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, openStore, type Store } from "./store.ts";
+import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, openStore, type OpenStoreOptions, type Store } from "./store.ts";
 import { loadTape } from "./tapes.ts";
 
 /** Heights per sync batch unless `start` says otherwise: a stop waits for at most one batch. */
 export const DEFAULT_SYNC_MAX_BLOCKS = 20;
 /** Blocks per scan step unless `start` says otherwise: API requests are served between steps. */
 export const DEFAULT_SCAN_BATCH = 10;
+
+/** Failed statements since the store was opened at which the host reopens it: well below the about 1,700 (`exec`) to
+ *  1,870 (`query`) after which PGlite 0.5.8 fails every statement. */
+export const REOPEN_AFTER_FAILED_STATEMENTS = 1_000;
 
 /** The ledger-v9 classes whose names the scan stores. */
 export const LEDGER_CLASS_NAMES = ["Transaction", "ContractCall", "ContractDeploy", "MaintenanceUpdate"] as const;
@@ -91,8 +107,8 @@ export interface WorkerHostOptions {
   indexerUrl: string;
   /** Default: {@link checkCapabilities} on the worker's global scope. */
   checkCapabilities?: () => Promise<CapabilityReport>;
-  /** Default: {@link openStore}. */
-  openStore?: (dataDir: string) => Promise<Store>;
+  /** Default: {@link openStore}. The host passes the session monitor's options. */
+  openStore?: (dataDir: string, opts?: OpenStoreOptions) => Promise<Store>;
   /** Loads ledger-v9. Default: `import("@midnightntwrk/ledger-v9")`. */
   loadLedger?: () => Promise<Record<string, unknown>>;
   /** Loads a recorded range. Default: {@link loadTape}. */
@@ -116,6 +132,16 @@ export interface WorkerHostOptions {
   quota?: { checkEveryMs?: number; recheckMs?: number; storeEveryMs?: number };
   /** Called with the store before `range` or `reset` drops its data (an export can be taken there). */
   beforeWipe?: (store: Store) => Promise<void>;
+  /** Facts of the build for the system snapshot. */
+  build?: BuildInfo | null;
+  /** What the system snapshot reads from other parts of the host (each has a placeholder default, `host-system.ts`). */
+  system?: SystemProviders;
+  /** Collection intervals of the system snapshot. Default 2 s and 30 s. */
+  systemIntervals?: { countersEveryMs?: number; databaseEveryMs?: number };
+  /** Time between two turns the session gives the event loop while statements run back to back (`session.ts`). */
+  sliceMs?: number;
+  /** Failed statements since the store was opened at which it is reopened. Default {@link REOPEN_AFTER_FAILED_STATEMENTS}. */
+  reopenAfterFailedStatements?: number;
 }
 
 export interface WorkerHost {
@@ -161,9 +187,10 @@ function logLineOf(e: EngineEvent): [LogLevel, string] | undefined {
 }
 
 export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
-  const log = opts.log ?? defaultLog;
+  const consoleLog = opts.log ?? defaultLog;
   const monotonic = opts.monotonic ?? (() => performance.now());
   const clock = opts.clock ?? systemClock;
+  const reopenAfter = opts.reopenAfterFailedStatements ?? REOPEN_AFTER_FAILED_STATEMENTS;
   const listeners = new Set<(notice: Notice) => void>();
   const notify = (notice: Notice): void => {
     for (const l of [...listeners]) {
@@ -173,6 +200,23 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         log("error", `notice listener failed: ${messageOf(e)}`);
       }
     }
+  };
+  const system = createHostSystem({
+    clock,
+    notify,
+    build: opts.build ?? null,
+    providers: {
+      storage: () => quota.reading(),
+      startMode: () => (typeof saved?.config.startHeight === "number" ? "range" : "tip"),
+      autoStart: () => saved?.autoStart ?? false,
+      ...opts.system,
+    },
+    ...opts.systemIntervals,
+  });
+  /** A host line: to the console and to the telemetry's log ring. */
+  const log = (level: LogLevel, message: string): void => {
+    consoleLog(level, message);
+    system.telemetry.log(level, "host", message);
   };
 
   const bootState: BootState = {
@@ -195,6 +239,15 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   let booting: Promise<BootState> | undefined;
   let lifecycle: Promise<unknown> = Promise.resolve();
   let closed = false;
+  /** The options of each engine the host created (the system snapshot describes the one answering). */
+  const optionsOf = new WeakMap<IndexerEngine, EngineOptions>();
+  let detachTelemetry: (() => void) | undefined;
+  let detachIdle: (() => void) | undefined;
+  /** Requests wait for a reopen in progress. */
+  let reopening: Promise<void> | undefined;
+  let failedSinceOpen = 0;
+  /** Requests reading the store now (`status`, `api`, `system`); a reopen waits for them. */
+  let reading = 0;
 
   const settingsStore = opts.settings ?? (opts.dataDir.startsWith("opfs-ahp://") ? opfsSettingsStore(opts.dataDir) : memorySettingsStore());
   /** The saved configuration, read once the store is open. */
@@ -251,8 +304,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   }
 
   /** An engine over the store; with `loops`, also the sync and scan configuration (used to read cursors or to run). */
-  function engineOf(s: Store, extra: Partial<Parameters<typeof createIndexerEngine>[0]> = {}): IndexerEngine {
-    return createIndexerEngine({
+  function engineOf(s: Store, extra: Partial<EngineOptions> = {}): IndexerEngine {
+    const options: EngineOptions = {
       sql: s.mip0018,
       archiveSql: s.archive,
       network: opts.network,
@@ -260,7 +313,80 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       archiveSchema: ARCHIVE_SCHEMA,
       clock,
       ...extra,
+    };
+    const engine = createIndexerEngine(options);
+    optionsOf.set(engine, options);
+    return engine;
+  }
+
+  /** The session monitor's options for the store the host opens. */
+  const storeOptions = (): OpenStoreOptions => ({
+    session: { ...(opts.sliceMs === undefined ? {} : { sliceMs: opts.sliceMs }), onFailedStatement },
+  });
+
+  /** The engines and the system snapshot of a newly opened store. */
+  function useStore(s: Store): void {
+    store = s;
+    failedSinceOpen = 0;
+    idleApi = engineOf(s);
+    detachIdle?.();
+    detachIdle = system.telemetry.attach(idleApi);
+    // Never started: its sync and scan settings only let it read the stored cursors.
+    cursorReader = engineOf(s, { sync: { nodeUrl: "http://cursor.invalid/", indexerUrl: "http://cursor.invalid/" }, scan: {} });
+    system.bind({
+      sql: s.mip0018,
+      dataDir: s.dataDir,
+      engine: () => active ?? idleApi!,
+      engineOptions: () => optionsOf.get(active ?? idleApi!)!,
+      browser: () => (bootState.capabilities === null ? null : { browser: bootState.capabilities.browser, checks: { ...bootState.capabilities.checks } }),
     });
+  }
+
+  function onFailedStatement(code: string): void {
+    system.telemetry.noteFailedStatement();
+    failedSinceOpen++;
+    if (store === undefined || closed || reopening !== undefined) return;
+    if (code !== STACK_DEPTH_EXCEEDED && failedSinceOpen < reopenAfter) return;
+    const why = code === STACK_DEPTH_EXCEEDED
+      ? `a statement failed with "stack depth limit exceeded" (${code})`
+      : `${failedSinceOpen} statements failed since the store was opened`;
+    const p = serial(() => reopen(why));
+    reopening = p.then(() => undefined, () => undefined).finally(() => { reopening = undefined; });
+  }
+
+  async function reopen(reason: string): Promise<void> {
+    const s = store;
+    if (s === undefined || closed) return;
+    const t0 = monotonic();
+    const resume = active !== undefined ? last?.config : undefined;
+    const engine = active;
+    await halt(false);
+    while (reading > 0) await clock.sleep(5, new AbortController().signal);
+    system.unbind();
+    store = undefined;
+    try {
+      await s.close();
+      useStore(await (opts.openStore ?? openStore)(opts.dataDir, storeOptions()));
+    } catch (e) {
+      bootState.phase = "failed";
+      bootState.error = `reopening the store failed: ${messageOf(e)}`;
+      system.telemetry.noteFatal(bootState.error);
+      log("error", bootState.error);
+      announceBoot();
+      if (engine !== undefined) notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "failed", error: bootState.error } });
+      return;
+    }
+    system.telemetry.notePgliteReopen();
+    log("warn", `PGlite reopened in ${Math.round(monotonic() - t0)} ms: ${reason}`);
+    if (resume !== undefined) {
+      try {
+        await run(store!, resume, false);
+      } catch (e) {
+        if (last !== undefined) last.error = messageOf(e);
+        log("error", `the engine did not start again after the reopen: ${messageOf(e)}`);
+        notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "failed", error: messageOf(e) } });
+      }
+    }
   }
 
   async function runBoot(): Promise<BootState> {
@@ -276,7 +402,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       }
       let s: Store | undefined;
       try {
-        s = await phase("store", "storeMs", () => (opts.openStore ?? openStore)(opts.dataDir));
+        s = await phase("store", "storeMs", () => (opts.openStore ?? openStore)(opts.dataDir, storeOptions()));
         await phase("ledger", "ledgerMs", checkLedger);
         await phase("migrate", "migrateMs", () => migrate(s!));
         storeInfo = await readStoreInfo(s);
@@ -285,10 +411,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         throw e;
       }
       saved = (await settingsStore.load()) ?? { config: opts.defaultStart ?? {}, autoStart: true };
-      store = s;
-      idleApi = engineOf(s);
-      // Never started: its sync and scan settings only let it read the stored cursors.
-      cursorReader = engineOf(s, { sync: { nodeUrl: "http://cursor.invalid/", indexerUrl: "http://cursor.invalid/" }, scan: {} });
+      useStore(s);
       bootState.phase = "ready";
       log("info", `store ${s.dataDir} ready (${s.created ? "created" : "reopened"}, PostgreSQL ${storeInfo.serverVersion})`);
       void quota.check({ store: true }).catch(() => {});
@@ -386,9 +509,10 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   }
 
   /** Runs a new engine (sync + scan in follow mode) with `config`. A new archive starts at `config.startHeight`, by
-   *  default the finalized tip. */
-  async function run(s: Store, config: StartConfig): Promise<void> {
+   *  default the finalized tip. Its events go to the telemetry; `announce: false` posts no `engine` notice (a reopen). */
+  async function run(s: Store, config: StartConfig, announce = true): Promise<void> {
     const chain = await chainOf(config);
+    system.telemetry.setEndpoints({ node: chain.nodeUrl, indexer: chain.indexerUrl });
     const runner = new AbortController();
     let engine: IndexerEngine;
     try {
@@ -409,14 +533,16 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
           batch: config.scan?.batch ?? DEFAULT_SCAN_BATCH,
           ...(config.scan?.idleMs === undefined ? {} : { idleMs: config.scan.idleMs }),
         },
-        fetch: chain.fetch,
+        fetch: system.telemetry.instrumentFetch(chain.fetch),
         schedule: gated(runner.signal, opts.schedule ?? yieldingScheduler),
         signal: runner.signal,
         onEvent: (e) => {
           const line = logLineOf(e);
-          if (line !== undefined) log(line[0], line[1]);
+          if (line !== undefined) consoleLog(line[0], line[1]);
         },
       });
+      detachTelemetry?.();
+      detachTelemetry = system.telemetry.attach(engine);
       await engine.start();
     } catch (e) {
       runner.abort();
@@ -429,17 +555,18 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       record.error = messageOf(e);
       if (active === engine) notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "failed", error: record.error } });
     });
-    notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "running", error: null } });
+    if (announce) notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "running", error: null } });
   }
 
-  /** Stops the running engine; resolves once its steps in flight have ended. */
-  async function halt(): Promise<void> {
+  /** Stops the running engine; resolves once its steps in flight have ended. `announce: false` posts no `engine`
+   *  notice (a reopen). */
+  async function halt(announce = true): Promise<void> {
     const engine = active;
     if (engine !== undefined) {
       last?.run.abort();
       await engine.stop();
       active = undefined;
-      notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "stopped", error: last?.error ?? null } });
+      if (announce) notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "stopped", error: last?.error ?? null } });
     }
   }
 
@@ -515,13 +642,33 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   const ok = (r: Request, result: unknown): Response =>
     ({ v: PROTOCOL_VERSION, type: "response", id: r.id, request: r.type, ok: true, result });
 
+  /** Runs `fn` as a request reading the store: after any reopen in progress, and counted so a reopen waits for it. */
+  async function readingStore<T>(fn: () => Promise<T>): Promise<T> {
+    while (reopening !== undefined) await reopening;
+    reading++;
+    try {
+      return await fn();
+    } finally {
+      reading--;
+    }
+  }
+
   async function perform(r: Request): Promise<unknown> {
     switch (r.type) {
       case "status":
-        return status();
+        return readingStore(status);
       case "api":
-        await ready();
-        return (active ?? idleApi!).handle(r.method, r.target);
+        return readingStore(async () => {
+          await ready();
+          return (active ?? idleApi!).handle(r.method, r.target);
+        });
+      case "system":
+        return readingStore(async () => {
+          await ready();
+          return system.system(r);
+        });
+      case "watchdog":
+        return system.watchdog(r);
       case "start":
         return serial(() => start(r.config));
       case "range":
@@ -531,7 +678,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       case "stop":
         return serial(() => stop());
       case "digest":
-        return digest(await ready());
+        return readingStore(async () => digest(await ready()));
       case "export":
       case "import":
         throw new HostError("not-implemented", `${r.type} is not implemented by this worker`);
@@ -560,6 +707,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     },
 
     async close(): Promise<void> {
+      system.close();
       await serial(async () => {
         await halt();
         closed = true;
