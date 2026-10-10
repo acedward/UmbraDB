@@ -95,4 +95,3 @@ export function snapshotFixture(over: Partial<SystemSnapshot> = {}): SystemSnaps
   };
   return SystemSnapshotSchema.parse({ ...base, ...over });
 }
-
