@@ -47,25 +47,26 @@ PostgreSQL.
 | `snapshot-page.ts` | The page's side: saving an exported file as a download, fetching a snapshot the build publishes |
 | `trusted-worker.ts` | The pages' one Trusted Types policy, `umbradb-engine-worker`, which makes the engine worker's script URL |
 | `zod-jitless.ts` | Turns zod's JIT (`new Function`) off before any schema exists; the first module of the worker and of every page |
-| `index.html`, `explorer-page.ts`, `shell.ts`, `explorer.css` | The main page (see [Main page](#main-page)): the header's tabs (Overview, Token Indexer, Database) and the system status link, the tab in the URL |
+| `index.html`, `explorer-page.ts`, `shell.ts`, `explorer.css` | The main page (see [Main page](#main-page)): the header's tabs (Overview, Token Indexer, JSON RPC, Database) and the system status link, the tab in the URL |
 | `engine-panel.ts`, `panel-model.ts` | The overview's indexer section: health, heights, the finalized tip and the lag, blocks per second, uptime, the storage line, and the engine's controls |
-| `modules.ts`, `modules-view.ts` | The overview's Modules section: the indexer's modules, and Token Indexer's switch (`module`) |
+| `modules.ts`, `modules-view.ts` | The overview's Modules section: the indexer's modules, and the Token Indexer and JSON RPC switches (`module`) |
 | `explorer-host.ts`, `explorer-transport.ts` | The token explorer of `GET /ui` in the Token Indexer tab, reading the API through the engine |
 | `database-view.ts`, `database-model.ts`, `store-tables.ts` | The Database tab: the page, its pure view of the engine's answers, and the worker's reads of the store's tables (`tables`, `rows`) |
+| `jsonrpc-view.ts`, `jsonrpc-model.ts`, `jsonrpc-module.ts` | The JSON RPC tab: the page, its pure view (the methods from the module's registry, a call's request and answer as text), and the worker's JSON RPC module (`jsonrpc`): the EVM JSON-RPC module's read-only methods through the handler Node's `evm-rpc` server uses (`../../evm-rpc/handler.ts`) |
 | `engine.html`, `engine-page.ts` | A page that joins the tabs, asks for persistent storage, shows its role and the engine's status; `window.umbradbEngine` holds the client, the tabs and the snapshot helpers |
 | `vite.config.ts`, `build-guard.ts`, `build-csp.ts`, `build-explorer.ts`, `build-notices.ts`, `notices/` | The build (Node tooling): every `*.html` here is a page, ES module worker, `esnext`, class names kept, `vite-plugin-wasm` for ledger-v9's WASM module, assets as files, a plugin that fails the build if postgres.js or a Node built-in would be bundled, a plugin that writes the pages' security headers, one that makes the explorer page from `GET /ui`'s markup, and one that writes the licence notices of everything the site contains |
 
 ## Main page
 
-`index.html` is the indexer's page: a header with three tabs — **Overview** (the default), **Token Indexer** and
-**Database** — and a link to the system status page (`system.html`).
+`index.html` is the indexer's page: a header with four tabs — **Overview** (the default), **Token Indexer**, **JSON
+RPC** and **Database** — and a link to the system status page (`system.html`).
 
-- **Tabs** (`shell.ts`). The tab shown is in the URL: `?tab=overview`, `?tab=tokens` or `?tab=database`, written with
+- **Tabs** (`shell.ts`). The tab shown is in the URL: `?tab=overview`, `?tab=tokens`, `?tab=jsonrpc` or `?tab=database`, written with
   `history.pushState` when a tab is picked (no reload), so a reload or a shared link opens the same tab and back and
   forward move between tabs. The fragment stays the token explorer's (`#/…`): with no `tab` parameter an explorer
   route opens the Token Indexer tab, and following one from another tab opens it too. The document's title names the
-  tab. The Token Indexer tab exists only while its module is on: when it goes away (or a URL names it) the overview is
-  shown and written into the URL.
+  tab. The Token Indexer and JSON RPC tabs exist only while their module is on: when one goes away (or a URL names it)
+  the overview is shown and written into the URL.
 - **Overview: the indexer** (`engine-panel.ts`, `panel-model.ts`). The health line (the `system` snapshot's: running,
   following, catching up, waiting (network), stalled (scan), paused (quota), stopped or error, with its reason; the
   engine's state until the first snapshot), this tab's role (leader, or follower with the engine in another tab) and
@@ -92,15 +93,19 @@ PostgreSQL.
   first says which blocks will be dropped and offers to export a snapshot before going on (or cancel, which sends
   nothing). The answer or the error is shown under the controls.
 - **Modules** (`modules.ts`, `modules-view.ts`), at the bottom of the overview: one row per module of the indexer, with
-  its name, a one-line description and an on/off checkbox — Token Indexer MIP-0018, then the planned ones: Public API
-  Part 1 (wallets), Part 2 (dApps) and Part 3 (SPO), Fast Dust Sync, Fast Shielded Sync, Shielded Token State &
-  Discovery MIP-0006, Unshielded Token State MIP-0006, JSON RPC and Explorer POC. Only Token Indexer is available: its
-  checkbox sends `module` (see Protocol). Off, the engine's MIP-0018 scan stops at a block boundary (it ends the step
-  in flight; every block is its own transaction) while the chain archive keeps syncing; its tab is hidden; `/v1` still
-  answers from the stored data, `/v1/status` says `scanner: "off"`, and the status page shows the scan off. On, the
-  scan continues from its cursor and catches up. The choice is saved with the engine's settings, so it holds after a
-  reload, for the next leader tab and after a restart. The planned modules are unchecked, disabled and marked
-  "planned".
+  its name, a one-line description and an on/off checkbox — Token Indexer MIP-0018, Public API Part 1 (wallets), Part 2
+  (dApps) and Part 3 (SPO), Fast Dust Sync, Fast Shielded Sync, Shielded Token State & Discovery MIP-0006, Unshielded
+  Token State MIP-0006, JSON RPC and Explorer POC. Two are available, each checkbox sending `module` (see Protocol):
+  - **Token Indexer.** Off, the engine's MIP-0018 scan stops at a block boundary (it ends the step in flight; every
+    block is its own transaction) while the chain archive keeps syncing; its tab is hidden; `/v1` still answers from
+    the stored data, `/v1/status` says `scanner: "off"`, and the status page shows the scan off. On, the scan continues
+    from its cursor and catches up.
+  - **JSON RPC.** Its row keeps the roadmap's description (a JSON-RPC for external wallets such as Passport) and adds
+    what this build has of it: the read-only `eth_*` methods of `npm run evm-rpc`, called from the JSON RPC tab. Off,
+    its tab is hidden and the engine refuses `jsonrpc` (`module-off`); on, the tab calls its methods.
+
+  Each choice is saved with the engine's settings before anything is switched, so it holds after a reload, for the next
+  leader tab and after a restart. The planned modules are unchecked, disabled and marked "planned".
 - **Token Indexer** (the MIP-0018 token explorer of `GET /ui`, `../mip0018/ui/`, the same script and style, with the
   API answered by the engine instead of a server):
   - *Transport.* The explorer script (`../mip0018/ui/page.js`) reads the API through one function, `api(path)`. On
@@ -132,13 +137,35 @@ PostgreSQL.
   named to the engine by the schema and name it listed, and the engine looks both up in the store's catalog before any
   statement names them: anything else is refused (`bad-request`, shown under the table). Each read is an autocommit
   statement of its own (the catalog, then the page), so the engine's block transactions take their turns between them.
+- **JSON RPC** (`jsonrpc-view.ts`, `jsonrpc-model.ts`; the worker's side `jsonrpc-module.ts`). Every method of the EVM
+  JSON-RPC module (`../../evm-rpc/`, `METHODS.md`), from the module's own registry (`../../evm-rpc/read-only.ts`, the
+  same build's) and the methods only `npm run evm-rpc:all` serves (`../../evm-rpc/method-info.ts`), one row each: the
+  name, the source of its answer (`config`, `const`, `indexer`, `pg:<table>`, `relay`, explained under the note), its
+  state and, for a method the engine answers, an editable example of its parameters (JSON on one line) and a Call
+  button:
+  - *Served here* (25): the chain constants and configuration (chain ID 2400, Node's default; the client version
+    `umbradb-evm-rpc/<package version>`), blocks and transactions from the network's Midnight indexer (its GraphQL, the
+    build's indexer endpoint, which the policy's `connect-src` already admits; requests to a public endpoint are spaced
+    250 ms apart like the sync's), and accounts and transactions from the module's `evm_rpc` database — a PGlite
+    database in memory made by the module's migrations at its first request, empty here (the wallet monitor and the
+    relayer that fill it run in Node), so those methods answer as an empty Node deployment does. `eth_call` answers
+    `0x`, as `npm run evm-rpc` does.
+  - *Not implemented (-32004)* (21): callable; each answers `-32004` with its classification and reason.
+  - *Served by Node only* (4): `eth_getLogs` (the log ingest), `eth_sendRawTransaction` (the relayer), `eth_subscribe`
+    and `eth_unsubscribe` (the WebSocket server), and the ERC20 views of `eth_call`: marked, not callable.
+
+  Call sends one JSON-RPC 2.0 request (`{"jsonrpc":"2.0","id":n,"method":…,"params":…}`; empty parameters send no
+  `params`, parameters that are not JSON send nothing and say why) as `jsonrpc`; the row under the method then shows the
+  request and the answer: its HTTP status and its body, JSON indented. The answer is what Node's `npm run evm-rpc` server
+  answers a `POST` with the same body over the same indexer answers, byte for byte. A note on the tab says that external
+  wallets cannot connect to a page: the module has no address for them, only this tab calls it.
 - **Text.** Everything is drawn with DOM nodes and text (no markup is parsed, no `style` attribute). Text that comes
   from the engine or from a file — error messages, refusal reasons (a snapshot's manifest fields among them), names,
-  table values — is drawn with the explorer's hidden-character rules (`visible-text.ts`): every hidden character as a
+  table values, JSON-RPC requests and answers — is drawn with the explorer's hidden-character rules (`visible-text.ts`): every hidden character as a
   visible mark `⟨U+XXXX⟩`, each value in its own bidirectional island.
 - The page joins the tabs like the engine page (`window.umbradbEngine`, persistent storage asked at load) and gets the
   build's policy like every page. For scripted use, `window.umbradbOverview` holds the overview's last sources, the
-  tabs and the Database tab's last answers.
+  tabs, the Database tab's last answers and the JSON RPC tab's last call.
 
 ## Boot
 
@@ -196,13 +223,15 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | `{ limitMs, heartbeatMs }` |
 | `export` | — | a snapshot file of the store (`Blob`), its suggested name, its manifest, its size and timings (see Snapshots) |
 | `import` | `snapshot`: a snapshot file (`Blob`, a picked `File`) | the imported manifest, timings and status: the store is the snapshot's, the engine is stopped (see Snapshots) |
-| `module` | `module` (`token-indexer`, the one switchable module), `enabled` | status: the choice saved with the settings (`settings.modules`), before anything is switched (a choice the browser refuses to save changes nothing: `settings-failed`); a running engine's MIP-0018 scan stops at a block boundary while the sync goes on (answered once it has stopped), or continues from its cursor; every engine the worker runs later starts with it, also on a store that `range`, `reset` or `import` replaced |
+| `module` | `module` (`token-indexer` or `jsonrpc`), `enabled` | status: the choice saved with the settings (`settings.modules`; a module not named is on), before anything is switched (a choice the browser refuses to save changes nothing: `settings-failed`). `token-indexer`: a running engine's MIP-0018 scan stops at a block boundary while the sync goes on (answered once it has stopped), or continues from its cursor; every engine the worker runs later starts with it, also on a store that `range`, `reset` or `import` replaced. `jsonrpc`: off, `jsonrpc` is refused from the answer on and the module's database is closed once its requests in flight have ended; every worker reads the switch from the settings |
 | `tables` | — | each schema's tables (name, kind, the table it is a partition of, estimated rows, size) and the database's size, from the catalog |
 | `rows` | `schema`, `table`, `limit?` (1–100, default 25), `offset?` (0–10,000) | the columns (name, type), the order (the primary key's columns, descending; empty: physical order, last written first), the page's values (`null`, `bytes`: hex of the first 16 bytes and the length, `text`: the first 256 characters and the length) and whether more follow; a schema or table that is not the store's is refused (`bad-request`) |
+| `jsonrpc` | `body`: the text of one JSON-RPC 2.0 request (or batch), at most 2,097,152 characters | `{ status, headers, body }`: what Node's `npm run evm-rpc` server answers a `POST` with that body (`../../evm-rpc/handler.ts`: 200 with the answer, 204 for notifications only, 413 over its 1 MiB cap, `-32700` for a body that is not JSON), from the JSON RPC module; refused `module-off` while the module is off |
 
 Error codes: `bad-request`, `unsupported-version`, `unknown-type`, `not-implemented`, `unsupported-browser`,
 `boot-failed`, `already-running`, `start-failed`, `settings-failed` (the browser refused to save the settings: `start`
-and `module` changed nothing, `stop` stopped the engine), `internal`, `snapshot-refused` (the message starts with the reason;
+and `module` changed nothing, `stop` stopped the engine), `module-off` (`jsonrpc` while the JSON RPC module is off),
+`internal`, `snapshot-refused` (the message starts with the reason;
 nothing changed) and `snapshot-failed` (a checked snapshot could not be loaded; the store was opened empty); the client
 adds `bad-response`, `worker-error`, `restarted` and `closed`, and a page sharing the engine with other tabs also
 `leader-changed` and `leader-unavailable` (see Tabs). Notices: `boot` (each phase), `engine` (`running`, `stopped`,
@@ -230,8 +259,8 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   previous leader last reported does not decide what runs: it may have closed in the middle of an import, a `range` or
   a `reset`, and the new worker's boot finishes that first (the snapshot's store with its engine stopped, or a new
   store for the new settings).
-  Requests in flight to the closed leader: `status`, `api`, `export`, `digest`, `system`, `tables` and `rows` are sent
-  again to the next leader; any other request (`module` among them) fails with `leader-changed` (it may or may not have
+  Requests in flight to the closed leader: `status`, `api`, `export`, `digest`, `system`, `tables`, `rows` and `jsonrpc`
+  are sent again to the next leader; any other request (`module` among them) fails with `leader-changed` (it may or may not have
   been applied); a request made while no leader
   is known waits up to 10 s, then fails with `leader-unavailable`.
 - **Store lock.** The worker opens the store only under `umbradb-store:<store>`, held until it closes the store or ends,
@@ -376,7 +405,7 @@ Every page of the static build runs under a strict Content-Security-Policy, made
 | `script-src` | `'self' 'wasm-unsafe-eval'` + the SHA-256 of each inline `<script>` | the site's own modules; WebAssembly may compile (PGlite, ledger-v9); no `'unsafe-eval'`, no `'unsafe-inline'` |
 | `style-src` | `'self'` + the SHA-256 of each inline `<style>` | |
 | `img-src`, `font-src` | `'self'` | |
-| `connect-src` | `'self'` + the origins of the build's node and indexer URLs | assets and tapes; the two chain endpoints (Stagenet: `https://rpc.stagenet.shielded.tools`, `https://indexer.stagenet.shielded.tools`) |
+| `connect-src` | `'self'` + the origins of the build's node and indexer URLs | assets and tapes; the two chain endpoints (Stagenet: `https://rpc.stagenet.shielded.tools`, `https://indexer.stagenet.shielded.tools`), read by the sync and, the indexer's, by the JSON RPC module |
 | `worker-src` | `'self'` | the engine worker |
 | `object-src`, `base-uri`, `form-action` | `'none'` | |
 | `frame-ancestors` | `'none'` | header only (a `<meta>` cannot carry it) |
@@ -513,7 +542,7 @@ PGlite runs every statement synchronously on the worker's thread, so the worker 
   replacement the old worker was in the middle of) and gets back the system snapshot's viewers and the engine: when the
   engine was meant to run (the worker last reported it running, or a `start`, `range` or `reset` was in flight), the
   new worker's saved configuration starts if the saved settings say to start by itself (it continues at the stored
-  cursors, with the saved modules: the token indexer switched off stays off). So a restart in the middle of a `range`
+  cursors, with the saved modules: the token indexer or the JSON RPC module switched off stays off). So a restart in the middle of a `range`
   runs the new range, and one in the middle of an import starts nothing; an engine the page stopped, an import stopped
   or that failed stays stopped. While `range`, `reset`, `export` or `import` runs the limit is 10
   min. More than 3 restarts within 10 min close the client with `worker-error`.

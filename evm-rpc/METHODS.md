@@ -711,8 +711,8 @@ RELAY_URL") is parked until the relay interface is specified — see the review 
 
 ## Transport and envelope
 
-`server.ts` is JSON-RPC 2.0 compliant on the HTTP surface; every rule below was verified on the
-wire, not only by reading the code.
+`server.ts` is JSON-RPC 2.0 compliant on the HTTP surface (the rules are in `handler.ts`, which `server.ts` wraps and
+the browser build's JSON RPC module shares); every rule below was verified on the wire, not only by reading the code.
 
 | Aspect | Behaviour |
 |---|---|

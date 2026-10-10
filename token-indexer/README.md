@@ -119,9 +119,10 @@ npm run dev:browser      # or, for development: the same pages from the sources,
 
 Then open `http://127.0.0.1:10100/` (with `dev:browser`, the address Vite prints) in Chrome. The page opens on the
 indexer's **Overview** (its health, heights, the finalized tip and the lag, blocks per second, uptime, a one-line
-storage figure and its controls, and the **Modules** section: Token Indexer MIP-0018, which can be switched off and on,
-and the planned modules); the **Token Indexer** tab holds the explorer, and the **Database** tab shows the store's
-tables and a page of rows of any of them.
+storage figure and its controls, and the **Modules** section: Token Indexer MIP-0018 and JSON RPC, which can be
+switched off and on, and the planned modules); the **Token Indexer** tab holds the explorer, the **JSON RPC** tab lists
+the EVM JSON-RPC module's methods with a Call button each, and the **Database** tab shows the store's tables and a page
+of rows of any of them.
 
 - **Chrome on the desktop only.** The engine checks for OPFS sync access handles, Web Locks, BroadcastChannel and
   persistent storage before anything else; without them it shows "Chrome only" and creates nothing. The page must come
@@ -139,6 +140,14 @@ tables and a page of rows of any of them.
   archive keeps syncing, and the Token Indexer tab is hidden; the API still answers from the stored data. Checked
   again, the scan continues from its cursor and catches up. The choice is saved with the store's settings and kept
   when the store is replaced (a range, a reset, an import).
+- **JSON RPC.** The tab lists every method of the EVM JSON-RPC module (`../evm-rpc/`, `METHODS.md`): the read-only
+  methods of `npm run evm-rpc` are answered inside the engine through the same handler as Node's server
+  (`../evm-rpc/handler.ts`), with blocks and transactions from the network's Midnight indexer and an empty `evm_rpc`
+  database in memory, so each answer is Node's for the same request; the not-implemented ones answer `-32004`; the
+  methods only `npm run evm-rpc:all` serves (`eth_getLogs`, `eth_sendRawTransaction`, `eth_subscribe`,
+  `eth_unsubscribe`, the ERC20 views of `eth_call`) are marked as served by Node only. External wallets cannot connect
+  to a page; only the tab calls the module. Off in the Modules section, the tab is hidden and the engine refuses its
+  requests; the choice is saved like Token Indexer's.
 - **Snapshots.** The overview exports the rows of every table of the store as one file (a manifest and the rows) and
   imports one into a new store made by this build's migrations (a file carries rows only, never code); an import is
   refused, with its reason, for another network, other migrations, another PGlite version, rows that are not this
@@ -262,6 +271,7 @@ required gate runs it too, on PostgreSQL with the runner's Chrome.
 | The dev server (`npm run dev:browser`): every stylesheet, icon and font the main page and the status page link served as what it is, never as a page; in Chromium, the dev main page styled (its font, the logo's size, the overview's grid) | `test/browser-dev-chrome.test.ts` |
 | The static deploy: `npm run serve:browser`'s server (every file kind's content type, no `Content-Encoding`, every `_headers` header, nothing outside the folder, a folder without `_headers` refused) and its command; in Chromium, the site `npm run build:browser` writes served by it: the main page starts the engine by itself, the status page follows it, the published snapshot imports with the recorded digests, only the site and the build's chain are requested, no CSP violation | `test/browser-deploy.test.ts`, `test/browser-deploy-chrome.test.ts` |
 | Pages inside a frame (a host without the headers): each, the main page on every tab, shows a notice and starts no engine | `test/browser-frame-chrome.test.ts` |
+| The JSON RPC module in the browser: the module (an in-memory `evm_rpc` database from the module's migrations, Node's answer to every differential case, rows read back, requests to a public indexer spaced), the tab's rows and texts, the worker host's `jsonrpc` and `module` `jsonrpc` (answered while on, saved first, refused `module-off` while off, a refused save and a failed start, the switch kept by a new worker, a restarted one, the next leader tab and a replaced store); in Chromium on the static build with its headers, every method listed and called with Node's answers, every differential case through the engine equal to Node's, hostile text, the switch across tabs and reloads | `test/browser-jsonrpc.test.ts`, `test/browser-watchdog-restore.test.ts`, `test/browser-jsonrpc-chrome.test.ts` |
 | The build's licence notices: `THIRD-PARTY-NOTICES.txt` lists every bundled package with its licence text, PostgreSQL's, the font's and UmbraDB's; an unknown package without a licence text fails the build | `test/browser-notices.test.ts` |
 
 Fixtures:
