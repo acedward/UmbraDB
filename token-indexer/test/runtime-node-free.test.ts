@@ -32,6 +32,7 @@ const RUNTIME_ROOTS = [
   "token-indexer/engine/system-collector.ts",
   "token-indexer/browser/worker.ts",
   "token-indexer/browser/engine-page.ts",
+  "token-indexer/browser/explorer-page.ts",
   "chain-archive-sync/sync-service.ts",
   "chain-archive-sync/bootstrap.ts",
   "chain-archive-sync/retry.ts",
@@ -54,6 +55,7 @@ const NODE_ONLY: Record<string, string> = {
   "token-indexer/browser/vite.config.ts": "the browser build's Vite configuration, run by Node",
   "token-indexer/browser/build-guard.ts": "a Vite plugin of the browser build, run by Node",
   "token-indexer/browser/build-csp.ts": "a Vite plugin of the browser build (the pages' security headers), run by Node",
+  "token-indexer/browser/build-explorer.ts": "a Vite plugin of the browser build (the explorer page from the /ui page's markup), run by Node",
   "token-indexer/mip0018/scan-cli.ts": "command-line entry point (arguments, signals, exit codes)",
   "token-indexer/mip0018/serve-cli.ts": "command-line entry point that starts the node:http server",
   "token-indexer/mip0018/api-node.ts": "serves the runtime-neutral API handler (api.ts) over node:http",
@@ -93,6 +95,8 @@ const MUST_REACH = [
   "token-indexer/browser/host-system.ts",
   "token-indexer/browser/supervisor.ts",
   "token-indexer/engine/telemetry.ts",
+  "token-indexer/browser/explorer-transport.ts",
+  "token-indexer/mip0018/ui/page.js",
   "token-indexer/browser/snapshot.ts",
   "token-indexer/browser/snapshot-store.ts",
   "token-indexer/browser/snapshot-page.ts",
@@ -163,10 +167,13 @@ export function nodeApiUses(sf: ts.SourceFile, checker?: ts.TypeChecker): string
 
 const parse = (file: string): ts.SourceFile => ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
 
-/** The absolute path a relative specifier names (`.js` → `.ts` as `NodeNext` resolves the sources), or `undefined`. */
+/** The absolute path a relative specifier names, as the bundler resolves it: a JavaScript file that exists is that file
+ *  (the explorer script `ui/page.js`, beside the Node module `ui/page.ts`); otherwise `.js` → `.ts` as `NodeNext`
+ *  resolves the sources. `undefined` when nothing matches. */
 function resolveRelative(from: string, spec: string): string | undefined {
   const p = path.resolve(path.dirname(from), spec);
-  for (const c of [p.replace(/\.js$/, ".ts"), p, `${p}.ts`, path.join(p, "index.ts")]) if (existsSync(c) && !c.endsWith(path.sep)) return c;
+  const candidates = /\.(js|mjs)$/.test(p) && existsSync(p) ? [p] : [p.replace(/\.js$/, ".ts"), p, `${p}.ts`, path.join(p, "index.ts")];
+  for (const c of candidates) if (existsSync(c) && !c.endsWith(path.sep)) return c;
   return undefined;
 }
 
@@ -242,13 +249,15 @@ describe("runtime modules use no Node API", () => {
     }
   }, 120_000);
 
-  it("the browser build's worker and page never load the PostgreSQL client (postgres.js), not even through a dynamic import", () => {
-    const browser = runtimeClosure(["token-indexer/browser/worker.ts", "token-indexer/browser/engine-page.ts"]);
+  it("the browser build's worker and pages never load the PostgreSQL client (postgres.js), not even through a dynamic import; the explorer page loads the explorer script, not the Node page module", () => {
+    const browser = runtimeClosure(["token-indexer/browser/worker.ts", "token-indexer/browser/engine-page.ts", "token-indexer/browser/explorer-page.ts"]);
     expect(browser.unresolved).toEqual([]);
     const reached = [...browser.files].map(rel);
     expect(reached).toContain("src/postgres/migrate.ts");
     expect(reached).toContain("token-indexer/mip0018/scan.ts");
     expect(reached).not.toContain("src/postgres/client.ts");
+    expect(reached).toContain("token-indexer/mip0018/ui/page.js");
+    expect(reached).not.toContain("token-indexer/mip0018/ui/page.ts");
   });
 
   it("Node tooling exists and no runtime module imports it", () => {
