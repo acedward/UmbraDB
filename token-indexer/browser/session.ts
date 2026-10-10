@@ -10,12 +10,13 @@
  * - **counts failed statements** (errors the database reports), for the reopen rule: PGlite 0.5.8 fails every statement
  *   with "stack depth limit exceeded" (SQLSTATE 54001) once a database has failed about 1,700–1,870 statements
  *   (`exec` and `query` respectively, measured), until it is reopened;
- * - **tracks the statement in flight** (`statementSince`) and counts statements, failures and turns (`counts`);
+ * - **tracks the statement in flight** (`statementSince`) and counts statements, failures and turns (`counts`); an
+ *   exclusive run (`runExclusive`, how the client runs a simple-protocol text) is one statement;
  * - **closes PGlite only when no statement is in flight**: once `close()` is called a new statement fails at once as on
  *   a closed database (`closed` reads true), and PGlite is closed after the statements already in flight have ended. A
  *   statement still queued inside PGlite when it closes would otherwise run on the shut-down backend and never return.
  */
-import type { PgliteDatabase, PgliteQueryOptions, PgliteResults } from "../../src/postgres/pglite-sql.js";
+import type { PgliteBackendMessage, PgliteDatabase, PgliteQueryOptions, PgliteResults } from "../../src/postgres/pglite-sql.js";
 import { yieldToEventLoop } from "./scheduler.ts";
 
 /** Default time between two turns given to the event loop while statements run back to back. */
@@ -105,6 +106,14 @@ export function monitorSession(db: PgliteDatabase, opts: SessionMonitorOptions =
     },
     query: (query: string, params?: unknown[], options?: PgliteQueryOptions): Promise<PgliteResults> => run(() => db.query(query, params, options)),
     exec: (query: string, options?: PgliteQueryOptions): Promise<PgliteResults[]> => run(() => db.exec(query, options)),
+    // The client runs a simple-protocol text as one exclusive run of protocol messages: that run is the statement.
+    runExclusive: <T>(fn: () => Promise<T>): Promise<T> => run(() => db.runExclusive(fn)),
+    execProtocolStream: (message: Uint8Array, options?: { syncToFs?: boolean }): Promise<readonly PgliteBackendMessage[]> =>
+      db.execProtocolStream(message, options),
+    syncToFs: (): Promise<void> => db.syncToFs(),
+    get parsers() {
+      return db.parsers;
+    },
     close(): Promise<void> {
       closing ??= (async () => {
         if (inFlight > 0) await new Promise<void>((resolve) => { drained = resolve; });

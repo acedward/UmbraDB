@@ -182,6 +182,39 @@ describe("PGlite client", () => {
       expect([[...single], single.count]).toEqual([[{ v: 5 }], 1]);
     });
 
+    it("[[pglite.client.unsafe-zero-column]] a statement that describes rows of no column starts its own result, with or without rows; a statement that describes none joins the result before it, whatever its command", async () => {
+      const shape = (r: PgliteResult | PgliteResult[]) =>
+        (Array.isArray(r[0]) ? (r as PgliteResult[]) : [r as PgliteResult]).map((x) => [[...x], x.count, x.command, x.columns.map((c) => c.name)]);
+      expect(shape(await a.unsafe("SELECT 1 AS a; SELECT WHERE false"))).toEqual([
+        [[{ a: 1 }], 1, "SELECT", ["a"]],
+        [[], 0, "SELECT", []],
+      ]);
+      expect(shape(await a.unsafe("SELECT WHERE false; SELECT 2 AS b"))).toEqual([
+        [[], 0, "SELECT", []],
+        [[{ b: 2 }], 1, "SELECT", ["b"]],
+      ]);
+      expect(shape(await a.unsafe("SELECT 1 AS a; SELECT FROM generate_series(1, 2); SELECT WHERE false; SELECT WHERE false"))).toEqual([
+        [[{ a: 1 }], 1, "SELECT", ["a"]],
+        [[{}, {}], 2, "SELECT", []],
+        [[], 0, "SELECT", []],
+        [[], 0, "SELECT", []],
+      ]);
+      // SELECT INTO reports a SELECT command but describes no rows; a table of no column and EXECUTE describe them.
+      await a.unsafe("CREATE TEMP TABLE tmp_z ()");
+      expect(shape(await a.unsafe("SELECT 1 AS a; SELECT 3 AS c INTO TEMP tmp_into; INSERT INTO tmp_z DEFAULT VALUES"))).toEqual([
+        [[{ a: 1 }], 1, "INSERT", ["a"]],
+      ]);
+      expect(shape(await a.unsafe("SELECT 1 AS a; SELECT * FROM tmp_z WHERE false; DELETE FROM tmp_z"))).toEqual([
+        [[{ a: 1 }], 1, "SELECT", ["a"]],
+        [[], 0, "DELETE", []],
+      ]);
+      expect(shape(await a.unsafe("PREPARE z0 AS SELECT WHERE false; EXECUTE z0; DEALLOCATE z0"))).toEqual([
+        [[], null, "PREPARE", []],
+        [[], 0, "DEALLOCATE", []],
+      ]);
+      expect(shape(await a.unsafe("SELECT WHERE false"))).toEqual([[[], 0, "SELECT", []]]);
+    });
+
     it("[[pglite.client.parsers-map-error]] passes the parsers option to every statement and the error of PGlite through mapError (normalized by default)", async () => {
       const mapped = createPgliteClient({ pglite: db, schema: "pa", parsers: { 20: (x) => `int8 ${x}` }, mapError: (e) => Object.assign(new Error("mapped"), { cause: e }) });
       expect((await mapped`SELECT 1::int8 AS v, 1.50::numeric AS n`)[0]).toEqual({ v: "int8 1", n: "1.50" });
@@ -319,9 +352,18 @@ describe("PGlite client", () => {
       // Whatever its text: here a database that runs BEGIN for a statement the text check cannot recognize.
       const own = await PGlite.create();
       try {
+        const disguisedQuery = new TextEncoder().encode("Q\0\0\0\x17SELECT 'disguised'\0");
+        const begin = new TextEncoder().encode("Q\0\0\0\x0aBEGIN\0");
         const disguised: PgliteDatabase = {
           query: (text, params, options) => own.query(text, params, options as never),
           exec: (text, options) => own.exec(text === "SELECT 'disguised'" ? "BEGIN" : text, options as never),
+          runExclusive: (fn) => own.runExclusive(fn),
+          execProtocolStream: (message, options) =>
+            own.execProtocolStream(message.length === disguisedQuery.length && message.every((x, i) => x === disguisedQuery[i]) ? begin : message, options),
+          syncToFs: () => own.syncToFs(),
+          get parsers() {
+            return own.parsers;
+          },
           close: () => own.close(),
           get closed() {
             return own.closed;
