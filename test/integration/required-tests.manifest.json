@@ -1450,7 +1450,7 @@
     {
       "id": "browser.snapshot.reproducible",
       "file": "token-indexer/test/browser-snapshot.test.ts",
-      "description": "a snapshot remade at a time (as the build remakes the published one) has the same bytes whenever its rows were written: two replays' exports remade at one time are one file, with that time as its createdAt, its tar times and its rows' write times, and the export's digests"
+      "description": "a snapshot remade at a time (as the build remakes the published one) has the same bytes whenever its rows were written and on whatever platform: two replays' exports remade at one time are one file, with that time as its createdAt, its tar times and its rows' write times, its rows' gzip header fixed (no time or extra flags, OS unknown), and the export's digests"
     },
     {
       "id": "browser.snapshot.null-elements",

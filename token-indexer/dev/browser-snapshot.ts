@@ -13,10 +13,10 @@
  * a snapshot that differs in any of the three is not written ({@link snapshotDifferences}).
  * `snapshots/index.json` lists the file with its size, SHA-256, manifest and the three (`PublishedSnapshotIndexSchema`).
  *
- * The file's bytes depend on the range, the build and one time only, so two builds of one commit write the same bytes:
- * the exported file is remade ({@link snapshotAt}) with that time as the manifest's `createdAt`, as its tar entries'
- * times, and as every wall-clock value of its rows (when a row was written: the `timestamp` columns, which the digests
- * do not read). The time is `SOURCE_DATE_EPOCH` (seconds) when set, else the time of the build's commit, else the time
+ * The file's bytes depend on the range, the build and one time only, so two builds of one commit write the same bytes,
+ * on any platform: the exported file is remade ({@link snapshotAt}) with that time as the manifest's `createdAt`, as
+ * its tar entries' times, and as every wall-clock value of its rows (when a row was written: the `timestamp` columns,
+ * which the digests do not read), and its rows' gzip header without the fields the platform sets. The time is `SOURCE_DATE_EPOCH` (seconds) when set, else the time of the build's commit, else the time
  * the range was recorded ({@link publishedTime}); never the clock.
  *
  *   node --import tsx token-indexer/dev/browser-snapshot.ts [--out dist-browser]
@@ -175,7 +175,8 @@ function setTimestamps(copy: Uint8Array, positions: ReadonlySet<number>, micros:
 /**
  * The snapshot `file` remade so that its bytes depend on its rows and `at` (epoch milliseconds, whole seconds) only:
  * `at` is its manifest's `createdAt`, its tar entries' times and every wall-clock value of its rows (when a row was
- * written). What the digests read is unchanged.
+ * written), and the rows' gzip header is the same on every platform ({@link fixedGzipHeader}). What the digests read
+ * is unchanged.
  */
 export async function snapshotAt(file: Uint8Array, at: number): Promise<Uint8Array> {
   if (!Number.isInteger(at / 1000)) throw new RangeError(`a snapshot's time is whole seconds, got ${at} ms`);
@@ -189,12 +190,27 @@ export async function snapshotAt(file: Uint8Array, at: number): Promise<Uint8Arr
     entries.push({ ...e, copy: positions === undefined ? e.copy.slice() : setTimestamps(e.copy, positions, micros) });
   });
   const rows = await encodeRows(entries, at / 1000);
+  const gz = fixedGzipHeader(rows.data);
   const remade = SnapshotManifestSchema.parse({
     ...manifest,
     createdAt: new Date(at).toISOString(),
-    data: { ...manifest.data, bytes: rows.data.length, sha256: await sha256Hex(rows.data), tarBytes: rows.tarBytes },
+    data: { ...manifest.data, bytes: gz.length, sha256: await sha256Hex(gz), tarBytes: rows.tarBytes },
   });
-  return encodeSnapshotFile(remade, rows.data);
+  return encodeSnapshotFile(remade, gz);
+}
+
+/**
+ * `gzip` with the fields of its header that depend on where it was written fixed: no modification time, no extra flags
+ * and the operating system "unknown" (255; the compressor writes its own, 3 on Linux, 19 on macOS). The header has no
+ * checksum of its own (no flags), so the data stays valid; anything else is refused.
+ */
+function fixedGzipHeader(gzip: Uint8Array): Uint8Array {
+  if (gzip.length < 18 || gzip[0] !== 0x1f || gzip[1] !== 0x8b || gzip[2] !== 8 || gzip[3] !== 0)
+    throw new Error("the rows are not gzip with a plain header (no flags)");
+  const out = gzip.slice();
+  out.fill(0, 4, 9); // MTIME, XFL
+  out[9] = 255; // OS: unknown
+  return out;
 }
 
 function appCommit(): string | null {

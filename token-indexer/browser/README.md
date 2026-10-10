@@ -351,9 +351,10 @@ snapshots you exported or the build published.
 the recorded IDX range's tape and exports; the build then loads the file's rows into a new store, as an import does, and
 fails unless that store's archive digest, range-tables digest and NULL `bytea[]` elements (which the range-tables digest
 counts as empty bytes; the range has none) equal the recorded live sync of that range. Two builds of one commit write
-the same bytes (the whole `dist-browser/` is reproducible): the file is remade with one time as its `createdAt`, its tar
-entries' times and every write time in its rows (the `timestamp` columns, which the digests do not read) —
-`SOURCE_DATE_EPOCH` when set, else the commit's time, else the time the range was recorded. A page loads it with
+the same bytes, on any platform (the whole `dist-browser/` is reproducible): the file is remade with one time as its
+`createdAt`, its tar entries' times and every write time in its rows (the `timestamp` columns, which the digests do not
+read) — `SOURCE_DATE_EPOCH` when set, else the commit's time, else the time the range was recorded — and its rows' gzip
+header without the fields the platform writes (time, extra flags, operating system). A page loads it with
 `window.umbradbEngine.snapshots.published("idx")` (checked against the index) and imports it; with it the explorer
 answers for 714485–715183 with no network. `npm run dev:browser` publishes none.
 
