@@ -17,13 +17,14 @@ The font, its licence and the icon are byte-identical copies of the explorer in 
 `92684e4acde79ef07758cd09380b7e01e9824d8b061eddeda046f78c166d7b12`, icon
 `b41509ad57381debefaba6fb3e2e478c1e38ea8afc5e6f11ecd1aeaba4e14c45`.
 
-The static browser build (`../../browser/`, `index.html`) serves the same page from static files: the same script,
-style and markup, with the API answered by the engine in a worker. The script's one API function, `api(path)`, sends a
-same-origin `fetch` here; there the build installs `window.umbradbExplorerHost` before the script runs, and `api` asks
-it instead: its answer is a fetch `Response`, read the same way (the 8 MiB cap, the same errors). With that host the
-script also states the first indexed height next to every list ("history before block H is not indexed"), since that
-index may start mid-chain. Here there is no host: nothing changes on `GET /ui`. See `../../browser/README.md`
-(Explorer).
+The static browser build (`../../browser/`, `index.html`) serves the same explorer from static files, in the Token
+Indexer tab of its main page: the same script, style and markup, with the API answered by the engine in a worker. The
+script's one API function, `api(path)`, sends a same-origin `fetch` here; there the build installs
+`window.umbradbExplorerHost` before the script runs, and `api` asks it instead: its answer is a fetch `Response`, read
+the same way (the 8 MiB cap, the same errors). With that host the script also states the first indexed height next to
+every list ("history before block H is not indexed"), since that index may start mid-chain, and skips its periodic
+refresh while the host says the explorer is not shown (its tab is hidden). Here there is no host: nothing changes on
+`GET /ui`. See `../../browser/README.md` (Main page).
 
 ## Look
 
