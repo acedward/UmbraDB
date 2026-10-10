@@ -325,9 +325,14 @@ describe("browser engine host: sync", () => {
     await result(h, "start", { config: { startHeight: U1.from, endHeight: U1.from + 3, ...FAST } });
     await until(h, "four blocks", (s) => s.engine!.status.sync.phase === "done");
     expect(starts.size).toBe(2);
+    // The pacer spaces the start SLOTS 250 ms apart; a request whose timer fires late (the event loop busy with a
+    // statement) starts late in its slot, so the next gap can be shorter by that lateness while the slots keep their
+    // spacing. Allowed lateness: 50 ms. A pacer with a shorter interval fails the run's total.
+    const LATE_MS = 50;
     for (const [origin, times] of starts) {
       expect(times.length, origin).toBeGreaterThanOrEqual(4);
-      for (let i = 1; i < times.length; i++) expect(times[i]! - times[i - 1]!, `${origin} request ${i}`).toBeGreaterThanOrEqual(245);
+      for (let i = 1; i < times.length; i++) expect(times[i]! - times[i - 1]!, `${origin} request ${i}`).toBeGreaterThanOrEqual(250 - LATE_MS);
+      expect(times.at(-1)! - times[0]!, `${origin}: ${times.length} starts`).toBeGreaterThanOrEqual(250 * (times.length - 1) - LATE_MS);
     }
     expect(logs, logs.join("\n")).toContain("warn sync chain_getBlock retried in 1000 ms: chain_getBlock: HTTP 429 from https://rpc.stagenet.shielded.tools//");
   }, 120_000);
