@@ -235,6 +235,8 @@ export function mountEnginePanel(opts: EnginePanelOptions): EnginePanel {
       say(`${label} failed \u00b7 ${messageOf(e)}`);
     } finally {
       busy = false;
+      // Enable the controls with the answer, not only after the refresh: a click right after the answer must count.
+      render();
       await refresh();
     }
   }
