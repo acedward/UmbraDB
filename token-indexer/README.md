@@ -103,6 +103,79 @@ node --import tsx token-indexer/mip0018/serve-cli.ts --network stagenet --api-on
 - API: [API.md](API.md) (endpoints, JSON shapes, errors, pagination). Explorer page: `GET /ui`,
   [ui/README.md](mip0018/ui/README.md).
 
+## Run in the browser
+
+The whole indexer — the chain-archive sync, the MIP-0018 scan, the API and the explorer — also runs in one Chrome tab,
+with no server: the engine runs in a dedicated worker on PGlite (PostgreSQL compiled to WebAssembly) stored in the
+browser's Origin Private File System, reads the Stagenet node and indexer directly, and the explorer page reads the API
+from it. Only static files are served. Details: [browser/README.md](browser/README.md); figures (bundle size, start
+time, blocks per second, bytes per block, memory): [browser/MEASUREMENTS.md](browser/MEASUREMENTS.md).
+
+```sh
+npm run build:browser    # the static site in dist-browser/: pages, assets, _headers, the published snapshot
+npm run serve:browser    # serves it at http://127.0.0.1:10100/ with the headers of its _headers file
+npm run dev:browser      # or, for development: the same pages from the sources, served by Vite (no security headers)
+```
+
+Then open `http://127.0.0.1:10100/` (with `dev:browser`, the address Vite prints) in Chrome.
+
+- **Chrome on the desktop only.** The engine checks for OPFS sync access handles, Web Locks, BroadcastChannel and
+  persistent storage before anything else; without them it shows "Chrome only" and creates nothing. The page must come
+  from a secure context: `https:`, or a loopback host such as `127.0.0.1`.
+- **From the finalized tip, then following.** On a first visit the engine starts by itself at the finalized tip both
+  endpoints serve, `min(node finalized height, indexer tip)`, and follows new finalized blocks. History before that
+  start height H is not indexed, and the explorer says so next to every list ("indexed from block H · history before
+  block H is not indexed"): a token minted earlier shows only as seen, and its metadata holds only what was written
+  from H on. While the endpoints are unreachable the engine waits with back-off; it never starts at genesis. A
+  reopened page continues at the stored cursor and fetches every block since, leaving no gap.
+- **Ranges and reset.** The explorer's engine panel starts and stops the engine, changes the range (a start height or
+  `tip`, and an optional end) and resets the store. One archive has no gaps, so a range change or a reset drops the
+  stored blocks; the panel offers to export a snapshot first.
+- **Snapshots.** The panel exports the whole store as one file (a manifest and PGlite's data directory) and imports
+  one; an import is refused, with its reason, for another network, other migrations, another PGlite version or a
+  damaged file. After an import the engine is stopped; its next start continues at the snapshot's height + 1. The
+  build publishes the recorded range 714485–715183 as `snapshots/umbradb-stagenet-714485-715183.snapshot.tar`, checked
+  against the recorded digests when it is built: save it from the site and pick it under "import snapshot" (or, from
+  the console, `umbradbEngine.snapshots.published("idx").then((f) => umbradbEngine.client.import(f))`), and the
+  explorer answers for that range with no network. A snapshot is trusted as it is: its SHA-256 detects damage, not who
+  made it.
+- **Several tabs.** One engine per store, however many tabs: the first tab leads and runs the worker, the others run
+  none and send their requests to it, and the oldest takes over from the stored cursors when the leader closes. The
+  panel marks each tab leader or follower.
+- **System status page.** `system.html`, linked from the panel, shows the whole system read-only: a health line
+  (running, following, catching up, waiting (network), stalled (scan), paused (quota), stopped or error), the
+  configuration, sync, scan, the databases (migrations, estimated rows and size per table, exact counts on demand),
+  storage, API, engine, browser capabilities, snapshots and the last 200 log lines. It reads only while it is visible.
+  "Download diagnostics" saves it all as JSON, with URL credentials and secret-looking values removed.
+- **Durability.** PGlite runs with `fsync` off (`/v1/status` reports `durability: "non-durable"`; PostgreSQL still
+  refuses that mode). Every block still commits in one transaction with its cursor, so a worker or tab killed at any
+  point reopens at its last full block. The store holds only public chain data: a sync or a snapshot rebuilds it.
+- **Storage.** Every page asks the browser to keep the site's storage (`navigator.storage.persist()`); a refusal is
+  shown in the panel and changes nothing else. Before each sync batch the engine compares the browser's usage with its
+  quota and pauses the sync at quota − max(256 MiB, 10 % of the quota), while the scan and the API keep running; it
+  resumes once space is freed. A write the browser refuses anyway pauses it the same way, with the store at its last
+  full block. The panel shows the store's own size first, then the browser's figures, which while the store is open
+  also count the space Chrome reserves for its files.
+- **Security headers.** The build writes a strict Content-Security-Policy (with a Trusted Types policy for the worker)
+  into every page, and the same policy with cross-origin isolation into `dist-browser/_headers`, which Netlify and
+  Cloudflare Pages read. A host must send those headers with every file, over `https:`, serve `.wasm` as
+  `application/wasm` and the `.gz` tapes without a `Content-Encoding`: the worker gets its policy only from its
+  script's response, so a host that cannot set headers leaves the engine unconfined. The headers, their reasons and
+  every host requirement: [browser/README.md](browser/README.md), "Security headers" and "Static hosting".
+- **Another network.** The chain is fixed at build time:
+  `UMBRADB_BROWSER_NETWORK=<id> UMBRADB_BROWSER_NODE_URL=https://… UMBRADB_BROWSER_INDEXER_URL=https://… npm run build:browser`
+  sets the worker's endpoints and the policy's `connect-src` together (`https:`, or `http:` on a loopback host; both
+  endpoints must answer CORS). The published snapshot stays Stagenet's, which such a build refuses to import.
+- **Limits.** Chrome on the desktop only. Ranges, not full history: the sync is paced like the Node commands (250 ms
+  between requests to each endpoint), so it covers a few thousand blocks an hour; a snapshot is the way to start from a
+  known range. Without a server, the status page and its diagnostics file are the only view of the engine.
+
+Tests: `npm run test:browser` runs every browser-engine test (the worker host in Node; the static build in Chromium on
+OPFS, the static deploy as `serve:browser` serves it, the explorer's Chromium tests), `npm run test:pglite` the whole
+suite on PGlite in Node, and `npm run test:crash` kills the worker and the tab's renderer 100 times during a replay
+(about 6 minutes; the required gate runs 10). The Chromium tests find the browser through `MIP0018_UI_BROWSER` /
+`CHROME_BIN`, the Playwright image's Chromium or Chrome on `PATH` (see [ui/README.md](mip0018/ui/README.md)).
+
 ## Known limitation: events the raw transaction does not show
 
 The ledger's `log` op logs whatever value is on top of the contract's VM stack; the ledger turns a well-formed
@@ -167,6 +240,8 @@ required gate runs it too, on PostgreSQL with the runner's Chrome.
 | The browser worker's session (time slices, failed statements, close), API requests between block transactions, the reopen before PGlite's failed-statement defect; the page's watchdog with a real slow statement on a worker thread and its rules | `test/browser-session.test.ts`, `test/browser-watchdog.test.ts` |
 | The browser build computes what the Node build computes, in Chromium: the 110 MIP vectors through the PGlite store in a worker on OPFS; the recorded cases through the engine worker's API (each case at its own last block, the reference index, marks, activity); a crawl of the whole API equal to the Node handler's over the same range | `test/browser-parity.test.ts` |
 | The system status page: its view of a snapshot and the explorer's hidden-character rules; in Chromium on the static build with its headers, every section against its sources, each driven state, a follower tab, nothing read while hidden, hostile text, and the diagnostics file's schema and redaction (see `browser/README.md`) | `test/browser-system-page.test.ts`, `test/browser-system-page-chrome.test.ts` |
+| The dev server (`npm run dev:browser`): every stylesheet, icon and font the explorer and the status page link served as what it is, never as a page; in Chromium, the dev explorer styled (its font, the logo's size, the engine panel's grid) | `test/browser-dev-chrome.test.ts` |
+| The static deploy: `npm run serve:browser`'s server (every file kind's content type, no `Content-Encoding`, every `_headers` header, nothing outside the folder, a folder without `_headers` refused) and its command; in Chromium, the site `npm run build:browser` writes served by it: the explorer starts by itself, the status page follows it, the published snapshot imports with the recorded digests, only the site and the build's chain are requested, no CSP violation | `test/browser-deploy.test.ts`, `test/browser-deploy-chrome.test.ts` |
 
 Fixtures:
 

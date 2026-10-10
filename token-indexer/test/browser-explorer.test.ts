@@ -110,13 +110,20 @@ describe("the static build's explorer page (no browser)", () => {
     expect(state({ status: hostStatus({ engine: { running: true, config: CONFIG, status: loops({ scan: { scanner: "stalled", lastError: "parent hash" } }), error: null } }) })).toEqual(["stalled (scan)", "parent hash"]);
     const paused = { usageBytes: 9.5e9, quotaBytes: 1e10, persisted: false, pauseAtBytes: 9e9, paused: true, pausedReason: "the usage is near the quota", storeBytes: 42.5e6, checkedAt: 1 };
     expect(state({ status: hostStatus({ storage: paused }) })).toEqual(["paused (storage)", "the usage is near the quota"]);
+    // The store's own size first; the browser's figures (inflated while the store is open) and the pause after it.
     expect(panelView(inputs({ status: hostStatus({ storage: paused }) })).storage).toBe(
-      "9,500.0 MB used of 10,000.0 MB \u00b7 the sync pauses at 9,000.0 MB \u00b7 store files 42.5 MB \u00b7 persistent: no \u00b7 paused: the usage is near the quota");
+      "store 42.5 MB \u00b7 browser reports 9.5 GB used of 10.0 GB (includes space Chrome reserves for open files) \u00b7 sync pauses at 9.0 GB used \u00b7 persistent: no \u00b7 paused: the usage is near the quota");
+    const open = { ...paused, usageBytes: 995_300_000, quotaBytes: 11_732_800_000, pauseAtBytes: 10_559_520_000, paused: false, pausedReason: null, storeBytes: 42_300_000, persisted: true };
+    expect(panelView(inputs({ status: hostStatus({ storage: open }) })).storage).toBe(
+      "store 42.3 MB \u00b7 browser reports 995.3 MB used of 11.7 GB (includes space Chrome reserves for open files) \u00b7 sync pauses at 10.6 GB used \u00b7 persistent: yes");
+    expect(panelView(inputs({ status: hostStatus({ storage: { ...open, storeBytes: null, pauseAtBytes: null } }) })).storage).toBe(
+      "store size not read yet \u00b7 browser reports 995.3 MB used of 11.7 GB (includes space Chrome reserves for open files) \u00b7 persistent: yes");
     // Storage from the page until the engine has a reading.
     expect(panelView(inputs({ pageStorage: { usageBytes: 1_015_257_540, quotaBytes: 11_752_675_780, persisted: null } })).storage).toBe(
-      "1,015.3 MB used of 11,752.7 MB \u00b7 persistent: unknown");
+      "browser reports 1.0 GB used of 11.8 GB \u00b7 persistent: unknown");
     expect(panelView(inputs()).storage).toBe("unknown");
-    expect([formatBytes(null), formatBytes(0), formatBytes(999_999_999_999)]).toEqual(["unknown", "0.0 MB", "1,000,000.0 MB"]);
+    expect([formatBytes(null), formatBytes(0), formatBytes(42_300_000), formatBytes(999_940_000), formatBytes(1e9), formatBytes(11_732_800_000), formatBytes(1_234_567_000_000)]).toEqual(
+      ["unknown", "0.0 MB", "42.3 MB", "999.9 MB", "1.0 GB", "11.7 GB", "1,234.6 GB"]);
     // Nothing indexed yet: no start height, nothing to lose.
     const empty = panelView(inputs({ api: { network: "stagenet", startHeight: null, indexedHeight: null, archiveHeight: null, durability: "non-durable" }, status: hostStatus({ engine: null, cursors: { sync: null, scan: null } }) }));
     expect(empty).toMatchObject({ startHeight: null, history: "nothing indexed yet", synced: "none", scanned: "none", holdsData: false, heldRange: "" });

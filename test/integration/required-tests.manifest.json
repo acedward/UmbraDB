@@ -1,5 +1,5 @@
 {
-  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 322) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
+  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 327) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
   "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` — those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early — that would re-open the exact self-skip hole this manifest closes.",
   "required": [
     {
@@ -1606,6 +1606,31 @@
       "id": "browser.host.minted-before-start",
       "file": "token-indexer/test/browser-limits.test.ts",
       "description": "a store started after a token's mint: the start height in /v1/status, no mint identity for the token, only metadata written at or after the start, an identity written only before it not listed"
+    },
+    {
+      "id": "browser.deploy.serve",
+      "file": "token-indexer/test/browser-deploy.test.ts",
+      "description": "npm run serve:browser's server: every file kind of the build with its bytes, its content type (application/wasm; gzip tapes without Content-Encoding), no-store and every _headers header; HEAD; / is index.html; paths outside the folder, missing files, bad escapes and POST are 404; a folder without _headers is refused"
+    },
+    {
+      "id": "browser.deploy.serve-cli",
+      "file": "token-indexer/test/browser-deploy.test.ts",
+      "description": "npm run serve:browser runs the server's file: it prints the address and the pages, serves the folder with its headers, exits 0 on SIGTERM; a bad --port exits 2, a folder without _headers exits 1"
+    },
+    {
+      "id": "browser.deploy.served-build",
+      "file": "token-indexer/test/browser-deploy-chrome.test.ts",
+      "description": "the site npm run build:browser writes, served by npm run serve:browser, in Chromium: the explorer at the root leads, boots and starts by itself, cross-origin isolated; the status page follows it with every section; the published snapshot imports with the recorded digests and the explorer lists its tokens from its start height; only the site and the build's chain are requested; no CSP violation"
+    },
+    {
+      "id": "browser.dev.assets",
+      "file": "token-indexer/test/browser-dev-chrome.test.ts",
+      "description": "the dev server (npm run dev:browser) serves every stylesheet and icon the explorer and the status page link, and the explorer's font, as text/css, an image and font/woff2, never as text/html"
+    },
+    {
+      "id": "browser.dev.styles",
+      "file": "token-indexer/test/browser-dev-chrome.test.ts",
+      "description": "in Chromium the dev server's explorer is styled: its style sheet loaded, the brand font loaded and the body's, the logo the 22-pixel mark, the engine panel's labels and values side by side; the status page in the same font; the icon loaded"
     },
     {
       "id": "repo.text.no-invisible-characters",

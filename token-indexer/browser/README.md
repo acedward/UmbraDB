@@ -6,6 +6,7 @@ static files is served.
 
 ```sh
 npm run build:browser   # the static site in dist-browser/ (index.html, system.html, engine.html, assets/, _headers and the published snapshot in snapshots/)
+npm run serve:browser   # dist-browser/ served on http://127.0.0.1:10100/ with the headers of its _headers file (see Static hosting)
 npm run dev:browser     # the same configuration served by Vite on 127.0.0.1 (no security headers)
 ```
 
@@ -69,19 +70,24 @@ answered by the engine instead of a server:
   seen, and its metadata only holds what was written from H on.
 - **Page.** The build writes `GET /ui`'s markup (`UI_BODY` of `ui/page.ts`) into `index.html` and links `ui/page.css`,
   whose font reference becomes the font file (`build-explorer.ts`). The page joins the tabs like the engine page
-  (`window.umbradbEngine`, persistent storage asked at load) and gets the build's policy like every page.
+  (`window.umbradbEngine`, persistent storage asked at load) and gets the build's policy like every page. On the dev
+  server (`npm run dev:browser`) the same plugin serves what the pages link from `../mip0018/ui/` (the style, the icon)
+  from that directory, through the same transforms, so the dev pages have the build's style and font.
 - **Engine panel** (`engine-panel.ts`, between the header and the view): this tab's role (leader, or follower with the
   engine in another tab) and the open tabs; the network; the engine's state (`not started`, `running`, `stopped`,
   `waiting (network)`, `stalled (scan)`, `paused (storage)`, `failed`, …) with its detail; the saved configuration
   (`settings`); "indexed from block H · history before block H is not indexed"; the synced (archive) and scanned
-  heights; durability; storage (`status`'s `storage` reading: usage, quota, where the sync pauses, the store's files,
-  persistence; the page's own `navigator.storage` figures until there is one). Controls, each one request (from a
-  follower the leader performs it): **start** (the saved configuration), **stop**, **change range** (a start, `tip` or
-  a height, and an optional end, checked before it is sent), **reset**, **export snapshot**, **import snapshot** (a
-  file). A range change, a reset or an import on a store that holds blocks first says which blocks will be dropped
-  and offers to export a snapshot before going on (or cancel, which sends nothing). The answer or the error is shown
-  under the controls. A link leads to the system status page (`system.html`). The panel refreshes every 2 s while the
-  page is visible, after each request and on the engine's notices; all text is set as text.
+  heights; durability; storage (`status`'s `storage` reading: first the size of the store's files, then the usage and
+  quota the browser reports, which count the space Chrome reserves for the open store's files too, where the sync
+  pauses on that usage, and persistence, e.g. "store 42.3 MB · browser reports 995.3 MB used of 11.7 GB (includes space
+  Chrome reserves for open files) · sync pauses at 10.6 GB used · persistent: yes"; the page's own `navigator.storage`
+  figures until there is one). Controls, each one request (from a follower the leader performs it): **start** (the
+  saved configuration), **stop**, **change range** (a start, `tip` or a height, and an optional end, checked before it
+  is sent), **reset**, **export snapshot**, **import snapshot** (a file). A range change, a reset or an import on a
+  store that holds blocks first says which blocks will be dropped and offers to export a snapshot before going on (or
+  cancel, which sends nothing). The answer or the error is shown under the controls. A link leads to the system
+  status page (`system.html`). The panel refreshes every 2 s while the page is visible, after each request and on the
+  engine's notices; all text is set as text.
 
 ## Boot
 
@@ -296,10 +302,11 @@ The build writes the policy twice:
   | `X-Content-Type-Options` | `nosniff` |
   | `X-Frame-Options` | `DENY` |
 
-  The host must also serve `.wasm` as `application/wasm`. Only with these headers is the engine worker confined: its
-  requests limited to the site and the two chain endpoints, `eval` refused in it. COOP and COEP make the page and the
-  worker cross-origin isolated (`crossOriginIsolated`, needed by `performance.measureUserAgentSpecificMemory()`); the
-  chain endpoints answer CORS, so the worker's requests to them work under COEP.
+  The host must also serve `.wasm` as `application/wasm` and the gzip tapes without a `Content-Encoding` (see
+  [Static hosting](#static-hosting)). Only with these headers is the engine worker confined: its requests limited to
+  the site and the two chain endpoints, `eval` refused in it. COOP and COEP make the page and the worker cross-origin
+  isolated (`crossOriginIsolated`, needed by `performance.measureUserAgentSpecificMemory()`); the chain endpoints
+  answer CORS, so the worker's requests to them work under COEP.
 
 The chain is fixed at build time: `UMBRADB_BROWSER_NETWORK` (a network id), `UMBRADB_BROWSER_NODE_URL` and
 `UMBRADB_BROWSER_INDEXER_URL` (`https:`, or `http:` on a loopback host; no credentials) set the worker's defaults
@@ -319,6 +326,68 @@ Tabs of one store talk over BroadcastChannel and share Web Locks; both are same-
 follower tab runs under the same policy and starts no worker).
 
 The dev server (`npm run dev:browser`) sends no policy.
+
+## Static hosting
+
+`npm run build:browser` writes the whole site into `dist-browser/`, and the site is that folder alone:
+
+| Path | What |
+|---|---|
+| `index.html` | the token explorer with the engine panel: the site's entry page |
+| `system.html` | the system status page |
+| `engine.html` | the bare engine page: this tab's role, the boot phase and the engine's status as JSON, `window.umbradbEngine` for scripted use (the browser tests drive the engine through it); no page links to it |
+| `assets/` | the pages' and the worker's modules, PGlite's `pglite.wasm`, `pglite.data` and `initdb.wasm`, ledger-v9's WebAssembly module, the two gzip tapes, the font, the icon and the styles; each name carries a hash of its content |
+| `snapshots/` | `index.json` and the published snapshot (see [Snapshots](#snapshots)) |
+| `_headers` | the security headers for every path (see [Security headers](#security-headers)) |
+
+Every reference between these files is relative, so the folder works at a domain's root or under a path
+(`https://example.org/umbradb/`); besides the site itself, the pages and the worker reach only the build's two chain
+endpoints. Its size, file by file, is in `MEASUREMENTS.md` (linked above).
+
+**Serve it locally** with the headers it needs:
+
+```sh
+npm run build:browser
+npm run serve:browser                    # http://127.0.0.1:10100/ (the explorer) and /system.html (the status page)
+npm run serve:browser -- --port 10200    # another port (0: any free port); also --dir <folder> and --host <host>
+```
+
+`serve:browser` (`../dev/serve-browser.ts`) answers every file of the folder with the headers of its `_headers` file,
+the content types listed below and no `Content-Encoding`; `/` is `index.html`, and nothing outside the folder is
+served. It refuses a folder without `_headers`. The browser tests serve their builds through the same code.
+
+The store, its saved configuration, the tabs' election and the persistent-storage grant belong to the page's origin
+(scheme, host and port): serving on the same address finds the store again, and another port is another, empty store.
+One origin holds one store per network.
+
+**A static host must:**
+
+1. **Serve the site over `https:`**, or from a loopback host (`127.0.0.1`, `localhost`). Chrome gives OPFS,
+   `crypto.randomUUID()` and cross-origin isolation only to a secure context: from any other `http:` origin the
+   explorer stops while it loads (`crypto.randomUUID is not a function`), before it can say why.
+2. **Send the headers of `_headers` with every file**: the pages, the worker's script and every other asset. The exact
+   values, with the current hashes, are in that file; [Security headers](#security-headers) gives each one's reason.
+   Netlify and Cloudflare Pages read `_headers` at the root of the published folder; other hosts need the same headers
+   configured. Without them the pages keep their meta policy, but the engine worker runs with no policy at all and
+   nothing is cross-origin isolated.
+3. **Serve each file with its type.** `.wasm` must be `application/wasm`: PGlite compiles its module with
+   `WebAssembly.instantiateStreaming` and has no fallback, so with any other type the worker logs "Incorrect response
+   MIME type. Expected 'application/wasm'" and the boot never gets past `store`. `.js` needs a JavaScript type (the
+   worker is a module worker), `.css` `text/css` and `.html` `text/html` (`X-Content-Type-Options: nosniff`). The other
+   files (`.data`, `.gz`, `.tar`, `.json`, `.woff2`, `.ico`) are read as bytes.
+4. **Serve the `.gz` tapes as they are stored**, without `Content-Encoding`. The worker checks the compressed file's
+   SHA-256 and decompresses it itself; labelled `Content-Encoding: gzip`, the browser decompresses it first and a tape
+   replay fails with "tape …: SHA-256 … is not the recorded …". Compressing any other answer on the fly is harmless.
+
+A static server's default types usually meet 3 and 4 (Python 3.12's `http.server` does), but it sends none of the
+headers of 2.
+
+**Another network.** The chain is fixed when the site is built: `UMBRADB_BROWSER_NETWORK`, `UMBRADB_BROWSER_NODE_URL`
+and `UMBRADB_BROWSER_INDEXER_URL` (see [Security headers](#security-headers)) set the worker's endpoints and
+`connect-src` together, and the store becomes `opfs-ahp://umbradb-<network>`. Both endpoints must answer CORS requests
+(with their preflights) from the site's origin. The published snapshot stays the recorded Stagenet range, so a build
+for another network writes it too and its engine refuses to import it (`network`). `UMBRADB_APP_COMMIT` sets the commit
+the status page and every snapshot manifest show, for a build made outside a git checkout.
 
 ## Scheduling, watchdog and reopen
 

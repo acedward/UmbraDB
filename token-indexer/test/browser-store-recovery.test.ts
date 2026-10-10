@@ -222,6 +222,6 @@ describe("a store the browser engine cannot use", () => {
     expect(persistenceText(false, null)).toBe("persistent: no");
     expect(persistenceText(null, undefined)).toBe("persistent: unknown");
     const page = panelView({ role: "leader", connectedTabs: 1, status: null, statusError: null, api: null, pageStorage: { usageBytes: 1_000_000, quotaBytes: 2_000_000, persisted: false }, persistence: { requested: true, persisted: false, error: null } });
-    expect(page.storage).toBe("1.0 MB used of 2.0 MB \u00b7 persistent: no (the browser refused to keep this site's storage, so it may clear the store when space runs low; the engine runs anyway)");
+    expect(page.storage).toBe("browser reports 1.0 MB used of 2.0 MB \u00b7 persistent: no (the browser refused to keep this site's storage, so it may clear the store when space runs low; the engine runs anyway)");
   });
 });

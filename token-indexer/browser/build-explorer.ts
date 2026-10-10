@@ -8,9 +8,15 @@
  *   build that reference becomes the font file itself, which the bundler then emits beside the pages with a relative
  *   URL (so the site also works under a sub-path). The build fails if `page.css` no longer has that reference.
  *
+ * - The dev server: the pages link the explorer's shared files as `../mip0018/ui/…` (the style, the icon). The dev
+ *   server's root is this directory, so those links arrive as `/mip0018/ui/…`, a path under the root that does not
+ *   exist (the server would answer it with a page); the plugin maps that prefix to the files themselves through Vite's
+ *   `/@fs/`, so the dev server serves the same style, through the same transforms (the font above), as the build.
+ *
  * The script (`ui/page.js`) and the style need nothing else: `explorer-page.ts` imports the script and `index.html`
  * links the style, and the build's security plugin (`build-csp.ts`) gives the page its policy like every other page.
  */
+import { fileURLToPath } from "node:url";
 import type { Plugin } from "vite";
 import { UI_BODY } from "../mip0018/ui/page.ts";
 
@@ -19,6 +25,10 @@ export const EXPLORER_MARKER = "<!-- umbradb-explorer-markup -->";
 export const SERVED_FONT_URL = 'url("/ui/outfit.woff2")';
 /** The same font as a file next to `ui/page.css`. */
 export const FONT_FILE_URL = 'url("./fonts/Outfit-Variable-latin.woff2")';
+
+/** Where the pages' `../mip0018/ui/` links arrive on the dev server, and the directory they name. */
+export const DEV_UI_PREFIX = "/mip0018/ui/";
+const UI_DIR = fileURLToPath(new URL("../mip0018/ui/", import.meta.url)).split("\\").join("/");
 
 const isPageCss = (id: string): boolean => id.split("?")[0]!.split("\\").join("/").endsWith("/token-indexer/mip0018/ui/page.css");
 
@@ -34,6 +44,12 @@ export function explorerPage(): Plugin {
         if (html.indexOf(EXPLORER_MARKER, at + 1) >= 0) throw new Error(`a page holds ${EXPLORER_MARKER} more than once`);
         return html.slice(0, at) + UI_BODY + html.slice(at + EXPLORER_MARKER.length);
       },
+    },
+    configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        if (req.url?.startsWith(DEV_UI_PREFIX) === true) req.url = `/@fs/${UI_DIR.replace(/^\//, "")}${req.url.slice(DEV_UI_PREFIX.length)}`;
+        next();
+      });
     },
     transform(code, id) {
       if (!isPageCss(id)) return null;

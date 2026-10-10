@@ -89,12 +89,12 @@ export function historyText(startHeight: number | null): string {
   return startHeight === null ? "nothing indexed yet" : `indexed from block ${startHeight} \u00b7 history before block ${startHeight} is not indexed`;
 }
 
-/** Bytes as megabytes with one decimal (`1,234.5 MB`). */
+/** Bytes with one decimal, in megabytes below a gigabyte and in gigabytes from one (`995.3 MB`, `11.7 GB`). */
 export function formatBytes(bytes: number | null): string {
   if (bytes === null || !Number.isFinite(bytes)) return "unknown";
-  const mb = (bytes / 1_000_000).toFixed(1);
-  const [whole, frac] = mb.split(".");
-  return `${whole!.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}.${frac} MB`;
+  const [value, unit] = bytes >= 1e9 ? [bytes / 1e9, "GB"] : [bytes / 1e6, "MB"];
+  const [whole, frac] = value.toFixed(1).split(".");
+  return `${whole!.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}.${frac} ${unit}`;
 }
 
 /** A start configuration in words. */
@@ -138,17 +138,21 @@ export function persistenceText(persisted: boolean | null, request: PersistenceR
   return `persistent: ${word}`;
 }
 
+/**
+ * The storage line: the store's own size first, then the browser's figures, which count more than the store while it
+ * is open (Chrome reserves space for the open store's files) and which the sync's pause is measured against.
+ */
 function storageText(s: HostStatus | null, page: PageStorage | null, request: PersistenceResult | null | undefined): string {
   const st = s?.storage ?? null;
   if (st !== null) {
-    const parts = [`${formatBytes(st.usageBytes)} used of ${formatBytes(st.quotaBytes)}`];
-    if (st.pauseAtBytes !== null) parts.push(`the sync pauses at ${formatBytes(st.pauseAtBytes)}`);
-    if (st.storeBytes !== null) parts.push(`store files ${formatBytes(st.storeBytes)}`);
+    const parts = [st.storeBytes === null ? "store size not read yet" : `store ${formatBytes(st.storeBytes)}`];
+    parts.push(`browser reports ${formatBytes(st.usageBytes)} used of ${formatBytes(st.quotaBytes)} (includes space Chrome reserves for open files)`);
+    if (st.pauseAtBytes !== null) parts.push(`sync pauses at ${formatBytes(st.pauseAtBytes)} used`);
     parts.push(persistenceText(st.persisted, request));
     if (st.paused) parts.push(`paused: ${st.pausedReason ?? "near the quota"}`);
     return parts.join(" \u00b7 ");
   }
-  if (page !== null) return `${formatBytes(page.usageBytes)} used of ${formatBytes(page.quotaBytes)} \u00b7 ${persistenceText(page.persisted, request)}`;
+  if (page !== null) return `browser reports ${formatBytes(page.usageBytes)} used of ${formatBytes(page.quotaBytes)} \u00b7 ${persistenceText(page.persisted, request)}`;
   return "unknown";
 }
 
