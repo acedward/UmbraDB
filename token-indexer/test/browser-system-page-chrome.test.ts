@@ -25,6 +25,8 @@
  * - `[[browser.status.hostile-text]]` — an error message with control, bidi, zero-width and markup characters (here a
  *   node's JSON-RPC error) is drawn as text: every hidden character as its visible mark, markup as characters; no
  *   element, script or request comes from it, and no raw hidden character reaches the drawn text or an attribute.
+ * - `[[browser.status.links]]` — the explorer's engine panel links to the status page and the status page links back to
+ *   the explorer, both followed in one tab under the headers' policy: every request answered, no violation.
  * - `[[browser.status.diagnostics]]` — "Download diagnostics" under the headers' policy saves the snapshot the page
  *   shows as JSON: it validates against the versioned schema, equals that snapshot, holds its log lines, and holds
  *   none of the secrets the engine was given (credentials and a key in a URL, a token, a password, a bearer
@@ -488,6 +490,31 @@ describe("the system status page in Chrome (static build with its headers)", () 
       report.hidden = { snapshotsBefore: n0, servedBefore: last.api.served, servedAfter: after.api.served };
       expect(p.exceptions).toEqual([]);
       await other.close();
+      await p.close();
+    } finally {
+      await b.close();
+    }
+  }, 120_000);
+
+  it("[[browser.status.links]] the explorer's engine panel links to the status page and the status page back to the explorer; both followed in one tab under the headers' policy, every request answered and no violation", async () => {
+    const b = await Browser.launch(browserExe!);
+    try {
+      const p = await b.newPage();
+      await p.goto(`${site.origin}/index.html`);
+      await p.waitFor("document.querySelector('.engine-panel .system-link') !== null", 30_000, "the engine panel");
+      expect(await p.eval("document.querySelector('.engine-panel .system-link').getAttribute('href')")).toBe("./system.html");
+      await p.eval("document.querySelector('.engine-panel .system-link').click()");
+      await p.waitFor("location.pathname === '/system.html' && window.umbradbSystem !== undefined && window.umbradbSystem.renders >= 1", 30_000, "the status page");
+      expect(await p.eval("window.umbradbEngine.tabs.role()")).toBe("leader");
+      expect(await p.eval("document.getElementById('explorer-link').getAttribute('href')")).toBe("./index.html");
+      expect(await p.eval("window.__cspViolations")).toEqual([]);
+      await p.eval("document.getElementById('explorer-link').click()");
+      await p.waitFor("location.pathname === '/index.html' && document.querySelector('.engine-panel .system-link') !== null", 30_000, "the explorer again");
+      expect(await p.eval("window.__cspViolations")).toEqual([]);
+      expect(p.requests.filter((r) => r.failed !== undefined || (r.status ?? 200) >= 400).map((r) => `${r.url} ${r.status ?? r.failed}`)).toEqual([]);
+      expect(p.requests.some((r) => r.url.endsWith(".woff2") && r.status === 200), "the explorer's font, also on the status page").toBe(true);
+      expect(p.exceptions).toEqual([]);
+      expect(offSite(p)).toEqual([]);
       await p.close();
     } finally {
       await b.close();
