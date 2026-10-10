@@ -41,7 +41,10 @@
  * default the finalized tip both sources serve, `min(node finalized height, indexer tip)`, resolved when the sync
  * begins: while the endpoints fail the engine waits with back-off, and it never starts at genesis by default. The
  * clients reach PGlite through the session monitor (`session.ts`), which also gives the event loop a turn between
- * statements, so API requests are served between block transactions while a step runs.
+ * statements, so API requests are served between block transactions while a step runs. A sync loop that ends with an
+ * error (a range the archive cannot honour, a failed cursor read) ends the engine, so the scan never follows an
+ * archive that no longer grows: the engine is reported failed with the sync's error (`status`, an `engine` notice),
+ * and the API keeps answering.
  *
  * **Saved configuration** (`settings.ts`): the last `start` configuration or `range`, kept beside the store, and
  * whether the engine should start by itself (`autoStart`; a `stop` request turns it off until the next `start`). A
@@ -699,6 +702,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         onEvent: (e) => {
           const line = logLineOf(e);
           if (line !== undefined) consoleLog(line[0], line[1]);
+          // A sync loop that ended with an error (a refused range, a failed cursor read) ends the engine.
+          if (e.source === "sync" && e.event === "stop") queueMicrotask(() => void endIfSyncFailed(engine));
           // A write the browser refused for lack of space: the storage guard pauses the sync and says why.
           if (e.event === "error" && (e.source === "sync" || e.source === "scan")) {
             const message = String(e.source === "sync" ? e.fields.message : e.fields.error);
@@ -717,10 +722,29 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     active = engine;
     last = record;
     engine.finished.catch((e: unknown) => {
-      record.error = messageOf(e);
+      record.error ??= messageOf(e);
       if (active === engine) notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "failed", error: record.error } });
     });
     if (announce) notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "running", error: null } });
+    void endIfSyncFailed(engine); // a sync that failed before the engine was recorded
+  }
+
+  /** Ends `engine` when its sync loop has failed: the scan does not follow an archive that no longer grows. The engine is
+   *  then failed with the sync's error (`status` and an `engine` notice), as an engine whose loops all ended is. */
+  async function endIfSyncFailed(engine: IndexerEngine): Promise<void> {
+    const sync = engine.status().sync;
+    if (sync.phase !== "failed" || active !== engine) return;
+    const record = last;
+    const error = `the sync stopped: ${sync.lastError ?? "unknown error"}`;
+    if (record?.engine === engine) record.error = error;
+    log("error", error);
+    await serial(async () => {
+      if (active !== engine) return;
+      record?.run.abort();
+      await engine.stop();
+      active = undefined;
+      notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "failed", error } });
+    });
   }
 
   /** Stops the running engine; resolves once its steps in flight have ended. `announce: false` posts no `engine`
