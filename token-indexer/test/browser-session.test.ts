@@ -101,18 +101,21 @@ describe("worker session monitor", () => {
     expect(seen).toBe(42);
     expect(slow.statementSince).toBeNull();
 
-    // A real turn: a timer set before a run of statements fires during it.
+    // A real turn: a timer set before a run of statements fires during it, at one of the session's first turns (the
+    // statements alone never let it run). Counted in turns and statements, not milliseconds: on a slow or throttled
+    // machine one statement can take longer than any fixed time bound, but the turn still comes once a slice has
+    // passed. The run goes on for at least two statements after the timer fired, so it fired during the run.
     const real = monitorSession(pglite, { sliceMs: 5 });
-    let fired = false;
-    setTimeout(() => { fired = true; }, 0);
+    let fired: { turns: number; statements: number } | undefined;
+    setTimeout(() => { fired = { turns: real.counts.turns, statements: real.counts.statements }; }, 0);
     const start = performance.now();
-    let firedAfter = -1;
-    while (performance.now() - start < 200) {
+    while ((performance.now() - start < 200 || fired === undefined || real.counts.statements < fired.statements + 2) && real.counts.statements < 500) {
       await real.query("select count(*) from generate_series(1, 20000)");
-      if (fired && firedAfter < 0) firedAfter = performance.now() - start;
     }
-    expect(fired).toBe(true);
-    expect(firedAfter).toBeLessThan(50);
+    expect(fired, "the timer fired while the statements ran").toBeDefined();
+    expect(fired!.turns, "not before the session gave a turn").toBeGreaterThanOrEqual(1);
+    expect(fired!.turns, "at one of the session's first turns").toBeLessThanOrEqual(2);
+    expect(real.counts.statements).toBeGreaterThanOrEqual(fired!.statements + 2);
 
     await pglite.close();
     await expect(s.query("select 1")).rejects.toThrow();

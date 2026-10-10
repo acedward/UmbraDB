@@ -269,8 +269,7 @@ describe("browser engine host: sync", () => {
     usage.now = pauseAt;
     const paused = await until(h, "the pause", (s) => s.storage?.paused === true);
     expect(paused.storage).toMatchObject({ usageBytes: pauseAt, quotaBytes: quota, pauseAtBytes: pauseAt, paused: true, storeBytes: 42_000_000, persisted: false });
-    expect(paused.storage!.pausedReason).toContain("the sync pauses at");
-    expect(paused.storage!.pausedReason).toContain("the store's files hold 40.1 MiB");
+    expect(paused.storage!.pausedReason).toBe("the browser counts 697.7 MiB of this site's 953.7 MiB quota; the sync pauses at 697.7 MiB");
     await sleep(300);
     const held = (await result<HostStatus>(h, "status")).cursors!.sync!.height;
     await sleep(500);

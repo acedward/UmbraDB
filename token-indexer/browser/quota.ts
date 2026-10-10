@@ -8,13 +8,14 @@
  * reopening the page releases it), and it refuses a write once usage, reservations included, would pass the quota (the
  * database then fails with "could not extend file … File too large"). So the reported usage is the figure that
  * decides, not the store's own size; the guard still reads that size (an OPFS walk of the store's directory, at most
- * every `storeEveryMs`) to report it and to say, when it pauses, how much of the usage is reserved space.
+ * every `storeEveryMs`) and reports it beside the usage, which shows how much of the usage is reserved space.
  *
  * **Readings.** A reading is the estimate and `persisted()`, each bounded by `readTimeoutMs` (a call that has not
  * answered by then counts as failed: the figures are unknown and the pause state stays). The walk runs beside the
  * readings and never delays one: it can take seconds on a slow disk or a busy machine (about 1,300 files in a new
  * store), so a reading carries the size the last finished walk found (`null` before the first) and starts a new walk
- * when that one is older than `storeEveryMs`.
+ * when that one is older than `storeEveryMs`. A pause's reason names only the figures it was decided on, so it does not
+ * change when a walk ends; the size beside it (`storeBytes`) shows how much of the usage is the store's own files.
  *
  * **Rule.** The sync pauses once `usage ≥ quota − headroom`, with `headroom = max(256 MiB, 10 % of the quota)`, and
  * resumes once `usage < quota − headroom − 32 MiB` (the margin keeps it from flapping at the line). The figures are read
@@ -113,13 +114,14 @@ export function createQuotaGuard(opts: QuotaGuardOptions): QuotaGuard {
   /** The last write the browser refused, while its pause lasts. */
   let refused: { message: string; at: number } | null = null;
 
-  /** `call()`'s answer, or `undefined` when it fails or has not answered within `readTimeoutMs`. */
+  /** `call()`'s answer, or `undefined` when it fails or has not answered within `readTimeoutMs` (a real timer: it guards
+   *  against a browser call that never answers, whatever clock the guard is given). */
   async function bounded<T>(call: () => Promise<T>): Promise<T | undefined> {
-    const timer = new AbortController();
+    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
     try {
-      return await Promise.race([call().catch(() => undefined), opts.sleep(readTimeoutMs, timer.signal).then(() => undefined)]);
+      return await Promise.race([call().catch(() => undefined), new Promise<undefined>((resolve) => { timer = globalThis.setTimeout(() => resolve(undefined), readTimeoutMs); })]);
     } finally {
-      timer.abort();
+      globalThis.clearTimeout(timer);
     }
   }
 
@@ -132,20 +134,16 @@ export function createQuotaGuard(opts: QuotaGuardOptions): QuotaGuard {
     if (refused !== null) return refusedText(refused.message);
     if (figures === null) return null;
     const { usage, quota, pauseAt } = figures;
-    const own = store?.bytes ?? null;
-    let text = `the browser counts ${mb(usage)} of this site's ${mb(quota)} quota; the sync pauses at ${mb(pauseAt)}`;
-    if (own !== null && usage - own > 64 * MiB)
-      text += ` (the store's files hold ${mb(own)}; the rest is space the browser reserves for the open store, released when the page is reopened, or other site data)`;
-    return text;
+    return `the browser counts ${mb(usage)} of this site's ${mb(quota)} quota; the sync pauses at ${mb(pauseAt)}`;
   }
 
-  /** Walks the store once at a time; the latest reading takes the size (and the pause reason its share) when it ends. */
+  /** Walks the store once at a time; the latest reading takes the size when it ends. */
   function walk(): Promise<number | null> {
     walking ??= (async () => {
       const at = opts.now();
       const bytes = await opts.env.storeBytes().catch(() => null);
       store = { bytes, at };
-      if (last !== null) last = { ...last, storeBytes: bytes, pausedReason: reasonText() };
+      if (last !== null) last = { ...last, storeBytes: bytes };
       return bytes;
     })().finally(() => { walking = undefined; });
     return walking;
@@ -164,7 +162,6 @@ export function createQuotaGuard(opts: QuotaGuardOptions): QuotaGuard {
       if (!paused && usage >= pauseAt) {
         paused = true;
         log("warn", `sync paused before the storage quota: ${reasonText()}`);
-        void walk(); // the reason names the store's share once the walk ends
       } else if (paused && usage < pauseAt - QUOTA_RULE.resumeMarginBytes) {
         paused = false;
         log("info", `sync resumed: the browser counts ${mb(usage)} of ${mb(quota)}`);

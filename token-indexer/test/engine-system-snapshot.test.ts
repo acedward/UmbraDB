@@ -512,7 +512,7 @@ describe("system snapshot", () => {
     const nodeUrl = "https://alice:SECRET-PW@rpc.example.test/rpc?apikey=SECRET-KEY#SECRET-FRAG";
     const indexerUrl = "https://indexer.example.test/api/v4/graphql?token=SECRET-TOKEN";
     const r = rig(db, { fetch: () => Promise.reject(new TypeError("never called")), endpoints: { node: nodeUrl, indexer: indexerUrl }, sync: { nodeUrl, indexerUrl }, scan: {} });
-    const hostile = "\u0000\u001b[31m‮evil‬ <img src=x onerror=alert(1)> ​";
+    const hostile = "\u0000\u001b[31m\u202eevil\u202c <img src=x onerror=alert(1)> \u200b";
     r.telemetry.log("error", "host", `fetch ${nodeUrl} failed: Authorization: Bearer SECRET-BEARER`);
     r.telemetry.log("warn", "host", `retry with api_key=SECRET-API and {"password":"SECRET-JSON"} cookie: session=SECRET-COOKIE`);
     r.telemetry.log("info", "host", hostile);
