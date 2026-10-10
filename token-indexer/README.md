@@ -149,6 +149,7 @@ pass.
 | The engine's telemetry, health rule, `system` snapshot schema and redaction | `test/engine-telemetry.test.ts` |
 | The `system` snapshot of a running engine against its sources (SQL catalog, `/v1/status`), its cost and cadence | `test/engine-system-snapshot.test.ts` |
 | The browser engine: the worker host and its protocol on an in-memory PGlite; the built worker in Chromium on OPFS, across reloads (see `browser/README.md`) | `test/browser-host.test.ts`, `test/browser-worker.test.ts` |
+| One engine across tabs: the leader election, the proxy and the handover rule with in-memory locks and channels; two and three tabs in Chromium on one profile, with the leader closed during a sync | `test/browser-tabs.test.ts`, `test/browser-tabs-chrome.test.ts` |
 | The static build's security headers: the policy and `_headers` the build writes for every page, the build-time chain, the worker's Trusted Types policy; in Chromium, the engine under the header and the meta policy with no violation and only allowed origins, and each refusal enforced (see `browser/README.md`) | `test/browser-csp-build.test.ts`, `test/browser-csp.test.ts` |
 
 Fixtures:
