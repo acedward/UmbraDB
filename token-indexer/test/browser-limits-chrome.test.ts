@@ -157,7 +157,9 @@ describe("the browser engine at its limits (Chrome, OPFS)", () => {
       await p.send("Storage.overrideQuotaForOrigin", { origin: site.origin, quotaSize: est.usage + 512 * 1024 });
       const refused = await drive(p).until("a refused write", (s) => s.storage?.paused === true && /refused to write/.test(s.storage.pausedReason ?? ""), 120_000);
       expect(refused.storage!.pausedReason).toMatch(/^the browser refused to write to the store for lack of space \(could not extend file "[^"]+": File too large\); the store is at its last full block, and the sync tries a later batch again$/);
-      expect(refused.engine!.status.sync.lastError).toMatch(/could not extend file "[^"]+": File too large/);
+      // The refused write is the error of the loop that hit it: the sync's block, or the scan's when the scan wrote first.
+      const loops = refused.engine!.status;
+      expect(loops.sync.lastError ?? loops.scan.lastError).toMatch(/could not extend file "[^"]+": File too large/);
       const held = await scanCaughtUp(p);
       await sleep(2_000);
       const still = await drive(p).status();
