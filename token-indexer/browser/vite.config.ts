@@ -1,8 +1,8 @@
 /**
  * The browser build: `npm run build:browser` writes the static site to `dist-browser/` (`npm run dev:browser` serves the
  * same configuration on 127.0.0.1). Pages: every `*.html` file in this directory (`index.html`, the token explorer with
- * the engine panel, and `engine.html`, the engine's status page). The engine runs in a dedicated module worker
- * (`worker.ts`).
+ * the engine panel, `system.html`, the system status page, and `engine.html`, the engine page). The engine runs in a
+ * dedicated module worker (`worker.ts`).
  *
  * - The chain (network and the node's and indexer's URLs) is fixed here, from `UMBRADB_BROWSER_NETWORK`,
  *   `UMBRADB_BROWSER_NODE_URL` and `UMBRADB_BROWSER_INDEXER_URL` (Stagenet when unset): defined in both bundles as
