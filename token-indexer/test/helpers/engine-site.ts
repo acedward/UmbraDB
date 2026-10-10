@@ -153,39 +153,3 @@ export function engineDriver(page: Page, site: () => EngineSite) {
     },
   };
 }
-
-interface CdpConnection {
-  send(method: string, params?: Json, sessionId?: string): Promise<Json>;
-  on(method: string, listener: (params: Json, sessionId: string | undefined) => void): void;
-}
-
-/**
- * Evaluates expressions in the dedicated workers of `page` (the engine's worker): the page's DevTools session
- * auto-attaches to its workers, without pausing them, and `eval` runs in the newest one still attached (a reload
- * replaces it). For tests that replace a browser API inside the worker, such as `navigator.storage.estimate`.
- */
-export async function workerSessions(page: Page): Promise<{ eval(expression: string, timeoutMs?: number): Promise<Json> }> {
-  const conn = (page as unknown as { conn: CdpConnection }).conn;
-  const attached: string[] = [];
-  conn.on("Target.attachedToTarget", (p, s) => {
-    if (s === page.sessionId && p.targetInfo?.type === "worker") attached.push(p.sessionId as string);
-  });
-  conn.on("Target.detachedFromTarget", (p, s) => {
-    if (s !== page.sessionId) return;
-    const i = attached.indexOf(p.sessionId as string);
-    if (i >= 0) attached.splice(i, 1);
-  });
-  await conn.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, page.sessionId);
-  return {
-    async eval(expression: string, timeoutMs = 10_000): Promise<Json> {
-      const end = Date.now() + timeoutMs;
-      while (attached.length === 0) {
-        if (Date.now() > end) throw new Error("no worker attached to the page");
-        await new Promise((r) => setTimeout(r, 50));
-      }
-      const r = await conn.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, attached[attached.length - 1]);
-      if (r.exceptionDetails !== undefined) throw new Error(`worker evaluate failed: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
-      return r.result.value;
-    },
-  };
-}

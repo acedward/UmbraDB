@@ -27,7 +27,7 @@ import { readTape } from "../../chain-archive-sync/archive-tape.js";
 import { createTapeReplay } from "../../chain-archive-sync/tape-replay.js";
 import type { DigestResult, HostStatus, StartConfig } from "../browser/protocol.ts";
 import { Browser, findBrowser } from "./helpers/cdp-browser.ts";
-import { buildEngineSite, chainDown, type EngineSite, engineDriver, NO_AUTO_START, REPO_ROOT, serveEngineSite, workerSessions } from "./helpers/engine-site.ts";
+import { buildEngineSite, chainDown, type EngineSite, engineDriver, NO_AUTO_START, REPO_ROOT, serveEngineSite } from "./helpers/engine-site.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -142,7 +142,7 @@ describe("browser engine: automatic start at the finalized tip in Chrome", () =>
   });
 
   it("[[browser.worker.start-tip]] an empty profile starts at the finalized tip with no input, waits while the endpoints fail (never genesis), follows the advancing tip, resumes through the gap after a reopen, pauses before the quota, and range, reset and stop behave as specified", async () => {
-    const page = await browser.newPage();
+    const page = await browser.newPage({ workers: true });
     const d = engineDriver(page, () => site);
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const blockRequests = () => site.chainRequests.filter((r) => r.height !== null);
@@ -207,8 +207,7 @@ describe("browser engine: automatic start at the finalized tip in Chrome", () =>
     report.reopen = { askedBefore, firstAfter: after[0], tipAtReopen };
 
     // 4. A storage estimate near the quota pauses the sync; the API keeps answering; a lower one resumes it.
-    const worker = await workerSessions(page);
-    await worker.eval(`(() => { self.__estimate = { usage: 9.5e9, quota: 1e10 }; StorageManager.prototype.estimate = async function () { return self.__estimate; }; return true; })()`);
+    await page.evalWorker(`(() => { self.__estimate = { usage: 9.5e9, quota: 1e10 }; StorageManager.prototype.estimate = async function () { return self.__estimate; }; return true; })()`);
     const paused = await d.until("the quota pause", (s) => s.storage?.paused === true, 15_000);
     expect(paused.storage).toMatchObject({ usageBytes: 9.5e9, quotaBytes: 1e10, pauseAtBytes: 9e9, paused: true });
     expect(paused.storage!.pausedReason).toContain("the sync pauses at");
@@ -222,7 +221,7 @@ describe("browser engine: automatic start at the finalized tip in Chrome", () =>
     // While the archive holds still: one block per height from H to the cursor, across the reopen (no hole).
     const still = (await d.engine("c.digest()")) as DigestResult;
     expect(still.archive.tables.blocks!.rows).toBe(held - H + 1);
-    await worker.eval(`(() => { self.__estimate = { usage: 1e8, quota: 1e10 }; return true; })()`);
+    await page.evalWorker(`(() => { self.__estimate = { usage: 1e8, quota: 1e10 }; return true; })()`);
     const resumed = await d.until("the sync to resume", (s) => s.storage?.paused === false && (s.cursors?.sync?.height ?? 0) > held, 15_000);
     expect(resumed.storage!.pausedReason).toBeNull();
     report.quota = { held, resumedAt: resumed.cursors!.sync!.height };
