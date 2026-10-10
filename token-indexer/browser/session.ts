@@ -115,5 +115,6 @@ export function monitorSession(db: PgliteDatabase, opts: SessionMonitorOptions =
     get closed() {
       return closing !== undefined || db.closed;
     },
+    ...(db.isInTransaction !== undefined ? { isInTransaction: () => db.isInTransaction!() } : {}),
   };
 }

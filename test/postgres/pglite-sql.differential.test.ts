@@ -294,6 +294,29 @@ describe("PGlite client = postgres.js on PostgreSQL 17", () => {
     ]);
   }, 60_000);
 
+  it("[[pglite.differential.unsafe-results]] unsafe text with several statements gives the same results in the same shape: one result, or one per statement that describes rows, with the same rows, counts, commands and columns", async () => {
+    const shape = (r: unknown): unknown => {
+      const one = (x: { count: number | null; command: string | null; columns: Array<{ name: string }> | null } & unknown[]) =>
+        ({ rows: plain([...x]), count: x.count, command: x.command, columns: (x.columns ?? []).map((c) => c.name) });
+      const all = r as Array<unknown>;
+      return all.length > 0 && Array.isArray(all[0]) ? { results: all.map((x) => one(x as never)) } : one(r as never);
+    };
+    const out: Record<string, unknown[]> = { postgres: [], pglite: [] };
+    await phase("unsafe-multi-statement", async (b) => {
+      await b.sql.unsafe("CREATE TABLE diff_mip.multi (x int)");
+      for (const text of [
+        "SELECT 1 AS a; SELECT 2 AS b",
+        "INSERT INTO diff_mip.multi VALUES (1), (2); SELECT count(*)::int AS n FROM diff_mip.multi",
+        "SELECT 1 AS a UNION ALL SELECT 2; INSERT INTO diff_mip.multi VALUES (3), (4), (5); UPDATE diff_mip.multi SET x = 0",
+        "INSERT INTO diff_mip.multi VALUES (6) RETURNING x; DELETE FROM diff_mip.multi WHERE x = 0; SELECT x FROM diff_mip.multi WHERE false",
+        "SELECT 7 AS v",
+      ]) out[b.name]!.push(shape(await b.sql.unsafe(text)));
+      await b.sql.unsafe("DROP TABLE diff_mip.multi");
+    });
+    expect(out.pglite).toEqual(out.postgres);
+    expect(out.postgres![0]).toMatchObject({ results: [{ rows: [{ a: 1 }] }, { rows: [{ b: 2 }] }] });
+  }, 60_000);
+
   it("[[pglite.differential.api]] answers every API route with the same responses and statements, one request at a time and concurrently", async () => {
     const servers = await Promise.all(both.map(async (b) => {
       const server = createMip0018Api({ sql: b.sql, network: NET, schema: "diff_mip", archiveSchema: "diff_archive", log: () => undefined, maxConcurrentRequests: 64 });
