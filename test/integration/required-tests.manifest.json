@@ -1,5 +1,5 @@
 {
-  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 328) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
+  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 337) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
   "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` — those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early — that would re-open the exact self-skip hole this manifest closes.",
   "required": [
     {
@@ -1641,6 +1641,51 @@
       "id": "repo.text.no-invisible-characters",
       "file": "test/integration/repo-text.test.ts",
       "description": "no text file holds a bidi control, a zero-width character or a control character other than tab, line feed and carriage return"
+    },
+    {
+      "id": "browser.snapshot.data-only",
+      "file": "token-indexer/test/browser-snapshot-attacks.test.ts",
+      "description": "a store holding code exports only its rows: imported, the catalog is this build's and later blocks are the chain's; a table the build lacks is refused; a changed row is a row; the earlier format (a whole database) is refused"
+    },
+    {
+      "id": "browser.snapshot.reset-removes-code",
+      "file": "token-indexer/test/browser-snapshot-attacks.test.ts",
+      "description": "code put into a store's database does not survive reset or range: the store's files are removed and a new store made by the migrations; later blocks are the chain's"
+    },
+    {
+      "id": "browser.snapshot.bounds",
+      "file": "token-indexer/test/browser-snapshot-attacks.test.ts",
+      "description": "a small file whose rows declare a huge size is refused quickly with little memory: all zeros, an oversized entry, more than declared, a size above the ceiling"
+    },
+    {
+      "id": "browser.host.import-failures",
+      "file": "token-indexer/test/browser-store-replace.test.ts",
+      "description": "a failure at each step of an import closes every store it opened; before the journal nothing changes; after it the store is reported, reset/range/import work, and a reload finishes the import"
+    },
+    {
+      "id": "browser.host.import-interrupted",
+      "file": "token-indexer/test/browser-store-replace.test.ts",
+      "description": "a worker that ends at each boundary of an import leaves a store the next boot opens whole: the snapshot's, its configuration saved, the journal gone"
+    },
+    {
+      "id": "browser.host.boot-failure-recovery",
+      "file": "token-indexer/test/browser-store-replace.test.ts",
+      "description": "a boot that fails after the store opened reports the store and closes it; reset, range and import replace it; a ledger that fails to load offers nothing"
+    },
+    {
+      "id": "browser.host.store-identity-states",
+      "file": "token-indexer/test/browser-store-replace.test.ts",
+      "description": "a boot that cannot save the identity fails; an unreadable identity is reported and its store neither opened nor removed; a store with files but no identity is reported; one marked creating is created again; a new store is marked creating first; the OPFS file's states"
+    },
+    {
+      "id": "browser.host.range-saved-first",
+      "file": "token-indexer/test/browser-store-replace.test.ts",
+      "description": "range saves the new range before it replaces the store: a failed save changes nothing, and a worker that ends during the replacement leaves the new range saved for the next boot"
+    },
+    {
+      "id": "browser.worker.reset-new-store",
+      "file": "token-indexer/test/browser-snapshot-chrome.test.ts",
+      "description": "reset and range remove every file of the OPFS store and create it anew"
     }
   ],
   "deferred": [
