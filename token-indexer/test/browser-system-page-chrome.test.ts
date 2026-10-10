@@ -462,10 +462,17 @@ describe("the system status page in Chrome (static build with its headers)", () 
       await p.waitFor("window.__sys >= 2", 30_000, "two snapshots while visible");
       expect(await p.eval("document.body.getAttribute('data-live')")).toBe("watching");
 
-      // Another tab in front: this page is hidden.
+      // Another tab in front: this page is hidden (on a loaded host the new tab is sometimes not activated at once).
       const other = await b.newPage();
-      await other.send("Page.bringToFront");
-      await p.waitFor("document.visibilityState === 'hidden'", 10_000, "the page hidden");
+      for (let attempt = 1; ; attempt++) {
+        await other.send("Page.bringToFront");
+        try {
+          await p.waitFor("document.visibilityState === 'hidden'", 5_000, "the page hidden");
+          break;
+        } catch (e) {
+          if (attempt === 4) throw e;
+        }
+      }
       expect(await p.eval("document.body.getAttribute('data-live')")).toBe("paused");
       expect(await p.eval("document.getElementById('live').textContent")).toBe("paused: nothing is read while this page is hidden");
       await sleep(500);
