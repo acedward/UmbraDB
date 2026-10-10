@@ -13,8 +13,10 @@
  *   digits, `-`, `_`, `.`, `~`, `+` or `=`, with both a letter and a digit); `key=value`, `key: value` and JSON
  *   `"key": value` forms whose key names a secret (API key, token, password, session id, signature, seed or mnemonic
  *   phrase, viewing key, …) lose their whole value: a JSON member its whole string, array or object, also inside
- *   JSON-escaped text (`\"key\": …`), a `key=` value its quoted text, JSON array or object, and an unquoted seed,
- *   mnemonic or passphrase every word that follows it; `Authorization` and `Cookie` headers lose the rest of their line; Bearer and Basic credentials, JWT-shaped tokens
+ *   JSON-escaped text (`\"key\": …`), a `key=` value its quoted text (also `\"…\"` inside JSON-escaped text), JSON
+ *   array or object, and an unquoted seed, mnemonic, passphrase or seed words every word that follows it, of any case
+ *   and across line breaks, commas, list numbers and JSON-escaped line breaks, up to the next `key:` or `key=` or other
+ *   punctuation; `Authorization` and `Cookie` headers lose the rest of their line; Bearer and Basic credentials, JWT-shaped tokens
  *   and Bech32m secret keys (`mn_…esk…`, `mn_…sk…`, `mn_…seed…`) are replaced. Request targets are never recorded (the API counters see the method, status and latency only).
  * - **Text is data:** log lines and error messages keep their characters (control, bidirectional and markup
  *   characters included) apart from the redaction and a length cap; a page renders them as text nodes, never as
@@ -417,7 +419,7 @@ export function publicUrl(value: string): string {
 /** Header names whose whole value (to the end of the line) is a secret. */
 const SECRET_HEADER = String.raw`(?:proxy-authorization|authorization|set-cookie|cookie)`;
 /** Names whose value is a phrase of words (a wallet's seed or mnemonic): an unquoted value is every word after it. */
-const PHRASE_KEY = String.raw`(?:(?:seed|mnemonic|recovery|secret|backup|wallet)[-_ ]?phrase|passphrase|mnemonic|seed)`;
+const PHRASE_KEY = String.raw`(?:(?:seed|mnemonic|recovery|secret|backup|wallet)[-_ ]?(?:phrase|words?)|passphrase|mnemonic|seed)`;
 /** Names whose value is a secret, as a key of `key=value`, `key: value` or JSON `"key": value`. */
 const SECRET_KEY = String.raw`(?:x-api-key|api[-_]?key|apikey|access[-_]?token|refresh[-_]?token|id[-_]?token|auth[-_]?token|bearer[-_]?token|client[-_]?secret|secret[-_]?key|private[-_]?key|viewing[-_]?key|${SECRET_HEADER}|session[-_]?id|sessionid|${PHRASE_KEY}|token|secret|password|passwd|pwd|signature|credentials?)`;
 const IS_PHRASE_KEY = new RegExp(String.raw`^${PHRASE_KEY}$`, "iu");
@@ -485,10 +487,21 @@ function redactMembers(text: string): string {
   return out + text.slice(last);
 }
 
-/** `key=value` and `key: value` naming a secret: a quoted value, a JSON array or object, or a bare word — and for a
- *  phrase key every lower-case word after it. */
+/** `key=value` and `key: value` naming a secret: a quoted value (also one quoted inside JSON-escaped text, `\"…\"`), a
+ *  JSON array or object, or a bare word — and for a phrase key the rest of the phrase ({@link PHRASE_REST}). */
 const SECRET_ASSIGNMENT = new RegExp(String.raw`(^|[^\w-])(${SECRET_KEY})(\s*[=:]\s*)`, "giu");
-const PHRASE_WORDS = /(?:,?[ \t]+[\p{Ll}\p{Lo}]+)*/uy;
+/** A bare value: up to white space or a delimiter, or a backslash that escapes a quote (the end of a JSON-escaped
+ *  string). */
+const BARE_VALUE = /^(?:[^\s&;,"'<>}\]\\]|\\(?!\\*"))*/u;
+/**
+ * The rest of a phrase after a phrase key's first word: words (letters of any case and script) and list numbers
+ * (`1.`, `2)`, `3:`, `12`), each after a run of separators — white space of any kind (line breaks included), commas, or
+ * line breaks and tabs written as JSON escapes (`\n`, `\r`, `\t`, at any escape depth). It ends at anything else: a
+ * word joined to a digit, `_` or `-`, a word followed by `=` or `:` (the next key), or other punctuation.
+ */
+const PHRASE_REST = /(?:(?:[\s,]|\\+[nrt])+(?:\d{1,3}(?!\d)[.):]?|[\p{L}\p{M}]+(?![\p{L}\p{M}\p{N}_-]|[ \t]*[=:])))*/uy;
+/** A quote escaped inside JSON-escaped text (`\"`, `\\\"`, …). */
+const ESCAPED_QUOTE = /^\\+"/u;
 function redactAssignments(text: string): string {
   let out = "";
   let last = 0;
@@ -496,16 +509,21 @@ function redactAssignments(text: string): string {
   for (let m = SECRET_ASSIGNMENT.exec(text); m !== null; m = SECRET_ASSIGNMENT.exec(text)) {
     const start = m.index + m[0].length;
     const rest = text.slice(start);
+    const escapedQuote = ESCAPED_QUOTE.exec(rest)?.[0];
     let end: number;
     if (/^"?\[redacted\]/u.test(rest)) end = start;
     else if (rest.startsWith('"')) end = start + (/^"(?:[^"\\]|\\.)*"?/u.exec(rest)![0].length);
     else if (rest.startsWith("'")) end = start + (/^'[^']*'?/u.exec(rest)![0].length);
     else if (rest.startsWith("[") || rest.startsWith("{")) end = skipJsonValue(text, start, 0);
-    else {
-      end = start + (/^[^\s&;,"'<>}\]]*/u.exec(rest)![0].length);
+    else if (escapedQuote !== undefined) {
+      // To the same escaped quote, not preceded by another backslash; the end of the text when there is none.
+      const close = new RegExp(String.raw`(?<!\\)${escapedQuote.replace(/\\/g, "\\\\")}`, "u").exec(rest.slice(escapedQuote.length));
+      end = close === null ? text.length : start + escapedQuote.length + close.index + escapedQuote.length;
+    } else {
+      end = start + BARE_VALUE.exec(rest)![0].length;
       if (end > start && IS_PHRASE_KEY.test(m[2]!)) {
-        PHRASE_WORDS.lastIndex = end;
-        end += PHRASE_WORDS.exec(text)?.[0].length ?? 0;
+        PHRASE_REST.lastIndex = end;
+        end += PHRASE_REST.exec(text)?.[0].length ?? 0;
       }
     }
     if (end === start) continue;

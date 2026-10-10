@@ -8,9 +8,9 @@
  * - {@link readRows}: one page of one table. The table is named by its schema and name, and both are looked up first:
  *   a schema that is not one of the store's, or a name that is not one of that schema's tables in the catalog, is
  *   refused ({@link TableRefusal}) before any statement names it; the names that reach SQL are the catalog's own,
- *   written by the client's identifier helper. Rows come newest first: by the primary key's columns, each descending
- *   (the height-keyed tables then list their highest heights first); a table without a primary key in physical order,
- *   the last written row first. Values are cut in SQL, so a page never carries a whole large value: a `bytea` value's
+ *   written by the client's identifier helper. Rows come by the primary key's columns, each descending (newest first
+ *   for the tables whose key, after the network, leads with a block height: their highest heights first; any other key
+ *   in its own descending order); a table without a primary key in physical order, the last written row first. Values are cut in SQL, so a page never carries a whole large value: a `bytea` value's
  *   first {@link ROWS_LIMITS}`.hexBytes` bytes and its length; any other value's text form (`::text`), its first
  *   `textChars` characters and its length. At most `maxLimit` rows from at most `maxOffset` rows deep.
  *

@@ -66,7 +66,8 @@ export interface PanelView {
   stateDetail: string;
   /** The saved configuration (or the running one): mode, range, source and whether it starts by itself. */
   configuration: string;
-  /** `/v1/status` `startHeight`: the first indexed height, `null` before anything is indexed. */
+  /** `/v1/status` `startHeight`: the first indexed height, `null` before anything is indexed; with the token indexer off
+   *  and no scan range, the archive's first height. */
   startHeight: number | null;
   /** The same sentence the explorer puts next to every list. */
   history: string;
@@ -101,8 +102,12 @@ const int = (v: unknown): number | null => (typeof v === "number" && Number.isSa
 const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
 
 /** The sentence next to every list of the explorer and in the panel. */
-export function historyText(startHeight: number | null): string {
-  return startHeight === null ? "nothing indexed yet" : `indexed from block ${startHeight} \u00b7 history before block ${startHeight} is not indexed`;
+/** The start-height line: from the scan's first height (`/v1/status` `startHeight`), or with the token indexer off and no
+ *  scan range from the archive's (`archive`). */
+export function historyText(startHeight: number | null, from: "scan" | "archive" = "scan"): string {
+  if (startHeight === null) return "nothing indexed yet";
+  const what = from === "archive" ? `archived from block ${startHeight} (token indexer off)` : `indexed from block ${startHeight}`;
+  return `${what} \u00b7 history before block ${startHeight} is not indexed`;
 }
 
 /** Bytes with one decimal, in megabytes below a gigabyte and in gigabytes from one (`995.3 MB`, `11.7 GB`). */
@@ -224,13 +229,16 @@ export function panelView(i: PanelInputs): PanelView {
   const s = i.status;
   const api = i.api;
   const { state, detail } = stateOf(i);
-  const startHeight = int(api?.startHeight);
+  const scanStart = int(api?.startHeight);
   const syncHeight = int(api?.archiveHeight) ?? s?.cursors?.sync?.height ?? null;
-  const archiveStart = s?.cursors?.sync?.startHeight ?? startHeight;
+  const archiveStart = s?.cursors?.sync?.startHeight ?? scanStart;
   const role = i.role === "leader" || i.role === "follower" ? i.role : i.role === "closed" ? "closed" : "connecting";
   const tabs = i.connectedTabs === null ? "" : ` \u00b7 ${i.connectedTabs} tab${i.connectedTabs === 1 ? "" : "s"} open`;
   const config = s?.settings?.config ?? s?.engine?.config;
   const tokenIndexer = s?.settings?.modules?.["token-indexer"] ?? true;
+  // With the token indexer off since the store's first start there is no scan range: the archive's first height.
+  const fromArchive = scanStart === null && !tokenIndexer && archiveStart !== null && archiveStart !== undefined;
+  const startHeight = fromArchive ? archiveStart : scanStart;
   const storage = storageLine(s, i.pageStorage, i.persistence);
   const snap = i.snapshot ?? null;
   return {
@@ -240,7 +248,7 @@ export function panelView(i: PanelInputs): PanelView {
     stateDetail: detail,
     configuration: configurationText(config, s?.settings?.autoStart),
     startHeight,
-    history: historyText(startHeight),
+    history: historyText(startHeight, fromArchive ? "archive" : "scan"),
     synced: height(syncHeight),
     scanned: `${height(int(api?.indexedHeight))}${tokenIndexer ? "" : " \u00b7 token indexer off"}`,
     durability: str(api?.durability) ?? s?.store?.durability ?? "unknown",

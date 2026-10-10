@@ -308,17 +308,28 @@ describe("PGlite client = postgres.js on PostgreSQL 17", () => {
     const out: Record<string, unknown[]> = { postgres: [], pglite: [] };
     await phase("unsafe-multi-statement", async (b) => {
       await b.sql.unsafe("CREATE TABLE diff_mip.multi (x int)");
+      await b.sql.unsafe("CREATE TABLE diff_mip.nocol ()");
       for (const text of [
         "SELECT 1 AS a; SELECT 2 AS b",
         "INSERT INTO diff_mip.multi VALUES (1), (2); SELECT count(*)::int AS n FROM diff_mip.multi",
         "SELECT 1 AS a UNION ALL SELECT 2; INSERT INTO diff_mip.multi VALUES (3), (4), (5); UPDATE diff_mip.multi SET x = 0",
         "INSERT INTO diff_mip.multi VALUES (6) RETURNING x; DELETE FROM diff_mip.multi WHERE x = 0; SELECT x FROM diff_mip.multi WHERE false",
         "SELECT 7 AS v",
+        // Statements that describe rows of no column, and statements that report a row count but describe no rows.
+        "SELECT 1 AS a; SELECT WHERE false",
+        "SELECT WHERE false; SELECT 2 AS b",
+        "SELECT WHERE false",
+        "SELECT 1 AS a; SELECT FROM generate_series(1, 2); SELECT WHERE false; SELECT WHERE false",
+        "SELECT 1 AS a; SELECT 3 AS c INTO diff_mip.into_t; INSERT INTO diff_mip.nocol DEFAULT VALUES",
+        "SELECT 1 AS a; SELECT * FROM diff_mip.nocol WHERE false; DELETE FROM diff_mip.nocol",
+        "PREPARE z0 AS SELECT WHERE false; EXECUTE z0; DEALLOCATE z0",
+        "SELECT * FROM diff_mip.nocol; UPDATE diff_mip.multi SET x = 1",
       ]) out[b.name]!.push(shape(await b.sql.unsafe(text)));
-      await b.sql.unsafe("DROP TABLE diff_mip.multi");
+      await b.sql.unsafe("DROP TABLE diff_mip.multi; DROP TABLE diff_mip.nocol; DROP TABLE diff_mip.into_t");
     });
     expect(out.pglite).toEqual(out.postgres);
     expect(out.postgres![0]).toMatchObject({ results: [{ rows: [{ a: 1 }] }, { rows: [{ b: 2 }] }] });
+    expect(out.postgres![5]).toEqual({ results: [{ rows: [{ a: 1 }], count: 1, command: "SELECT", columns: ["a"] }, { rows: [], count: 0, command: "SELECT", columns: [] }] });
   }, 60_000);
 
   it("[[pglite.differential.api]] answers every API route with the same responses and statements, one request at a time and concurrently", async () => {

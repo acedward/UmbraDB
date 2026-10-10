@@ -93,6 +93,15 @@ describe("worker session monitor", () => {
     await expect(s.exec("select * from no_such_table")).rejects.toThrow("does not exist");
     expect(failed).toEqual(["22012", "42P01"]);
     expect(s.counts.failed).toBe(2);
+    // A client's text of several statements (simple protocol) is one exclusive run: one statement, one failure.
+    const client = createPgliteClient({ pglite: s, schema: "public" });
+    await client.unsafe("select 1"); // the client's first statement also loads the array types
+    const before = s.counts.statements;
+    expect((await client.unsafe("select 1 as a; select where false") as unknown as unknown[]).length).toBe(2);
+    expect(s.counts.statements).toBe(before + 1);
+    await expect(client.unsafe("select 1; select 1/0")).rejects.toMatchObject({ code: "22012" });
+    expect(failed).toEqual(["22012", "42P01", "22012"]);
+    expect(s.counts).toMatchObject({ statements: before + 2, failed: 3 });
 
     let seen: number | null = null;
     const slow = monitorSession(pglite, { now: () => 42, yieldNow: async () => {} });
@@ -120,7 +129,7 @@ describe("worker session monitor", () => {
 
     await pglite.close();
     await expect(s.query("select 1")).rejects.toThrow();
-    expect(s.counts.failed).toBe(2);
+    expect(s.counts.failed).toBe(3);
   }, 60_000);
 });
 

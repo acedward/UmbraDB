@@ -62,11 +62,19 @@ export function tablesSummary(t: TablesResult): string {
   return `${t.schemas.length} schemas · ${tables} tables · ${formatBytes(t.databaseBytes)} in all · estimated rows and sizes from the catalog · read-only`;
 }
 
-/** The order of a page in words. */
+/** Key columns that name the network: a store holds one, so an order that starts with them goes by what follows. */
+const NETWORK_KEY = new Set(["net", "network"]);
+/** Key columns that hold a block height. */
+const HEIGHT_KEY = new Set(["height", "block_height"]);
+
+/** The order of a page in words: the primary key's columns, descending — newest first when, after the network, the key
+ *  leads with a block height; a table without a primary key in physical order. */
 export function orderText(r: Pick<RowsResult, "orderBy">): string {
-  return r.orderBy.length === 0
-    ? "newest first: the last written row first (the table has no primary key)"
-    : `newest first: by ${r.orderBy.join(", ")}, descending`;
+  if (r.orderBy.length === 0) return "newest first: the last written row first (the table has no primary key)";
+  const lead = r.orderBy.find((c) => !NETWORK_KEY.has(c));
+  return lead !== undefined && HEIGHT_KEY.has(lead)
+    ? `newest first: by ${r.orderBy.join(", ")}, descending`
+    : `by primary key (${r.orderBy.join(", ")}), descending`;
 }
 
 /** Which rows a page holds: `rows 1–25` (or "no rows"), and whether more follow. */

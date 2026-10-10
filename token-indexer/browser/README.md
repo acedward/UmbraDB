@@ -71,7 +71,9 @@ PostgreSQL.
   engine's state until the first snapshot), this tab's role (leader, or follower with the engine in another tab) and
   the open tabs, the network, the engine's state (`not started`, `running`, `stopped`, `waiting (network)`,
   `stalled (scan)`, `paused (storage)`, `failed`, …) with its detail, the saved configuration (`settings`), the start
-  height ("indexed from block H · history before block H is not indexed"), the archive and scan heights (the scan
+  height ("indexed from block H · history before block H is not indexed"; with the token indexer off since the store's
+  first start, so no scan range, "archived from block H (token indexer off)" from the archive's first height —
+  `/v1/status` is unchanged), the archive and scan heights (the scan
   height says "token indexer off" while it is), the finalized tip and the lag behind it in blocks and time (the blocks
   not scanned yet, or not archived yet while the token indexer is off, at the chain's measured seconds per block),
   blocks per second over the last minute (archive and scan), the worker's uptime, durability and the storage line.
@@ -121,9 +123,10 @@ PostgreSQL.
 - **Database** (`database-view.ts`, `database-model.ts`; the worker's side `store-tables.ts`). Read-only: each schema's
   tables (`chain_archive`, `mip0018`, partitions included) with their kind, estimated rows and size (`tables`: the
   catalog statistics of the system snapshot), read when the tab is first shown and on "refresh". Picking a table (its
-  row, or the picker) shows a page of its rows (`rows`), newest first — by the primary key's columns, descending, so
-  height-keyed tables list their highest heights first; a table without one in physical order, the last written row
-  first — 25 rows a page, "newer" and "older" to page, up to 10,000 rows deep. Values are cut in the worker's SQL: a
+  row, or the picker) shows a page of its rows (`rows`) by the primary key's columns, descending, and says so: "newest
+  first" for the tables whose key, after the network, leads with a block height (their highest heights first), "by
+  primary key (…)" for the others (`chain_blobs` by hash, `watermarks`, `mip0018_fields`, …); a table without one in
+  physical order, the last written row first — 25 rows a page, "newer" and "older" to page, up to 10,000 rows deep. Values are cut in the worker's SQL: a
   `bytea` value as the hex of its first 16 bytes and its length (the cell shows 8 of them), any other value as its text
   form's first 256 characters and its length (the cell shows 48); what was read is in the cell's tooltip. The table is
   named to the engine by the schema and name it listed, and the engine looks both up in the store's catalog before any
@@ -343,11 +346,14 @@ holds. A file crafted on purpose can only carry rows (never code), but its rows 
 snapshots you exported or the build published.
 
 **Published snapshot.** `npm run build:browser` writes `snapshots/umbradb-stagenet-714485-715183.snapshot.tar` and
-`snapshots/index.json` (each file's size, SHA-256, manifest and digests) after Vite (`../dev/browser-snapshot.ts`): the
-worker host runs in Node on an in-memory PGlite (the browser's PGlite build), replays the recorded IDX range's tape and
-exports; the build then loads the file's rows into a new store, as an import does, and fails unless that store's archive
-digest and range-tables digest equal the recorded live sync of that range. The file's bytes differ from build to build
-(the times in it); what it holds does not. A page loads it with
+`snapshots/index.json` (each file's size, SHA-256, manifest, digests and NULL `bytea[]` elements) after Vite
+(`../dev/browser-snapshot.ts`): the worker host runs in Node on an in-memory PGlite (the browser's PGlite build), replays
+the recorded IDX range's tape and exports; the build then loads the file's rows into a new store, as an import does, and
+fails unless that store's archive digest, range-tables digest and NULL `bytea[]` elements (which the range-tables digest
+counts as empty bytes; the range has none) equal the recorded live sync of that range. Two builds of one commit write
+the same bytes (the whole `dist-browser/` is reproducible): the file is remade with one time as its `createdAt`, its tar
+entries' times and every write time in its rows (the `timestamp` columns, which the digests do not read) —
+`SOURCE_DATE_EPOCH` when set, else the commit's time, else the time the range was recorded. A page loads it with
 `window.umbradbEngine.snapshots.published("idx")` (checked against the index) and imports it; with it the explorer
 answers for 714485–715183 with no network. `npm run dev:browser` publishes none.
 
@@ -437,7 +443,7 @@ The dev server (`npm run dev:browser`) sends no policy.
 | `assets/` | the pages' and the worker's modules, PGlite's `pglite.wasm`, `pglite.data` and `initdb.wasm`, ledger-v9's WebAssembly module, the two gzip tapes, the font, the icon and the styles; each name carries a hash of its content |
 | `snapshots/` | `index.json` and the published snapshot (see [Snapshots](#snapshots)) |
 | `_headers` | the security headers for every path (see [Security headers](#security-headers)) |
-| `THIRD-PARTY-NOTICES.txt` | the licences of the works in the site: every package the modules contain (PGlite, ledger-v9, zod, `@noble/hashes`, …, found from the bundles), PostgreSQL's (PGlite's database), the Outfit font's and UmbraDB's own; publish it with the rest |
+| `THIRD-PARTY-NOTICES.txt` | the licences of the works in the site: every package the modules contain (PGlite, ledger-v9, zod, `@noble/hashes`, …, found from the bundles), every vendored work they contain with its `NOTICE` (the MIP-0018 reference codec, `../vendor/mip0018`; a vendored module whose work has no licence file fails the build), PostgreSQL's (PGlite's database), the Outfit font's and UmbraDB's own; publish it with the rest |
 
 Every reference between these files is relative, so the folder works at a domain's root or under a path
 (`https://example.org/umbradb/`); besides the site itself, the pages and the worker reach only the build's two chain

@@ -1,9 +1,9 @@
 /**
- * Skip-enforcement reconciliation (v1.0.0-recovery-testing, Task 0.4 — `design.md` §1.1).
+ * Skip-enforcement reconciliation (`design.md` §1.1).
  *
  * `vitest run` does NOT fail on a skipped / `skipIf` / `todo` test by default, so "the required
  * crash/soak suite does not self-skip" cannot be left to convention — this is the NAMED enforcement
- * mechanism (auditors' BLOCKING-3 / finding 2). It reads Vitest's JSON reporter output and asserts
+ * mechanism. It reads Vitest's JSON reporter output and asserts
  * every id in the manifest's `"required"` list was executed AND passed; if any is missing or
  * reported skipped/todo/failed it exits NON-ZERO and NAMES the id. Ids in `"deferred"` are the
  * `WHERE`-gated optional-feature scenarios (e.g. the no-duplicate-on-retry idempotency-key path):
@@ -26,7 +26,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 export interface ManifestEntry {
   /** Stable id, matched against the `[[id]]` token embedded in a test's title. */
   id: string;
-  /** REQUIRED for a `required` entry (change-level audit BLOCK 9(c)): the test FILE that MUST carry
+  /** REQUIRED for a `required` entry (the file binding): the test FILE that MUST carry
    *  this id. The reconciliation FAILS if the id executed-and-passed from a DIFFERENT file — so
    *  moving an id's token to a trivial passing test elsewhere is caught, not silently counted.
    *  {@link loadManifest} rejects any `required` entry lacking it. Optional only for the synthetic
@@ -109,13 +109,13 @@ export function statusesFromReport(report: JsonReport): Map<string, string[]> {
   return byId;
 }
 
-/** The pinned count of `required` tests (change-level audit BLOCK 9(b)). Structurally PINS the
+/** The pinned count of `required` tests (the count pin). Structurally PINS the
  *  manifest so silently deleting (or adding) a required entry fails the gate: {@link loadManifest}
  *  rejects a manifest whose `required` length drifts from this constant. Bump it deliberately when
  *  a required test is genuinely added/removed. */
-export const EXPECTED_REQUIRED_COUNT = 378;
+export const EXPECTED_REQUIRED_COUNT = 383;
 
-/** The pinned count of `deferred` (WHERE-gated optional-feature) tests (BLOCK 6). Structurally PINS
+/** The pinned count of `deferred` (WHERE-gated optional-feature) tests. Structurally PINS
  *  the deferred exemption set so deleting the sole deferred entry (a green "0 deferred" gate) fails the
  *  gate: {@link loadManifest} rejects a manifest whose `deferred` length drifts from this constant.
  *  Bump it deliberately when a deferred scenario is genuinely added/removed. */
@@ -134,8 +134,8 @@ export function fileMatches(reportFileName: string, manifestFile: string): boole
 }
 
 /** Per stable-id, the set of report FILE names in which a test carrying that id was reported with a
- *  status the `accept` predicate admits. Underlies both the passed-file binding (BLOCK 9(c)) and the
- *  deferred skipped-file binding (BLOCK 6). */
+ *  status the `accept` predicate admits. Underlies both the passed-file binding and the deferred
+ *  skipped-file binding. */
 export function filesFromReport(report: JsonReport, accept: (status: string) => boolean): Map<string, Set<string>> {
   const byId = new Map<string, Set<string>>();
   for (const file of report.testResults ?? []) {
@@ -154,13 +154,13 @@ export function filesFromReport(report: JsonReport, accept: (status: string) => 
 }
 
 /** Per stable-id, the set of report FILE names in which a test carrying that id was reported
- *  PASSED. Drives {@link reconcile}'s id -> file binding enforcement (BLOCK 9(c)). */
+ *  PASSED. Drives {@link reconcile}'s id -> file binding enforcement. */
 export function passedFilesFromReport(report: JsonReport): Map<string, Set<string>> {
   return filesFromReport(report, (status) => status === "passed");
 }
 
 /** Per stable-id, the set of report FILE names in which a test carrying that id was reported
- *  SKIPPED/TODO/PENDING. Drives the deferred skipped-token file binding (BLOCK 6). */
+ *  SKIPPED/TODO/PENDING. Drives the deferred skipped-token file binding. */
 export function skippedFilesFromReport(report: JsonReport): Map<string, Set<string>> {
   return filesFromReport(report, (status) => status === "skipped" || status === "todo" || status === "pending");
 }
@@ -208,7 +208,7 @@ export function reconcile(report: JsonReport, manifest: RequiredTestsManifest, p
     }
     const status = statuses[0]!;
     if (status === "passed") {
-      // FILE-BINDING (BLOCK 9(c)): a "passed" id must have executed-and-passed from the file the
+      // FILE-BINDING: a "passed" id must have executed-and-passed from the file the
       // manifest pins it to. If it passed from a DIFFERENT file (e.g. its token was moved to a
       // trivial passing test), that is a violation despite the "passed" status.
       if (entry.file !== undefined) {
@@ -238,11 +238,11 @@ export function reconcile(report: JsonReport, manifest: RequiredTestsManifest, p
     return { id: entry.id, statuses, state };
   });
 
-  // FAIL-CLOSED deferred EXISTENCE (change-level round-3 BLOCK 6 / acceptance C6): a deferred scenario
+  // FAIL-CLOSED deferred EXISTENCE: a deferred scenario
   // MUST EXIST as a present-but-skipped test (`skipped-pending-feature`), or `passed` if its feature
   // shipped early. A deferred id ENTIRELY ABSENT from the report means the scenario was deleted/retitled
   // (losing the feature-activation wiring), so it FAILS the gate, NAMED; an `other` state fails too.
-  // Previously an absent deferred id was silently accepted — the exact fail-OPEN hole this closes.
+  // Accepting an absent deferred id would let the gate fail open.
   for (const entry of manifest.deferred) {
     const d = deferredReconciled.find((x) => x.id === entry.id)!;
     if (inPgOnlyFile(entry)) {
@@ -252,7 +252,7 @@ export function reconcile(report: JsonReport, manifest: RequiredTestsManifest, p
     }
     if (d.state === "missing") { violations.push({ id: d.id, reason: "deferred-absent", statuses: [] }); continue; }
     if (d.state === "other") { violations.push({ id: d.id, reason: "deferred-unexpected", statuses: d.statuses }); continue; }
-    // FILE-BINDING (BLOCK 6): the deferred scenario's skipped-pending-feature token (or its early-shipped
+    // FILE-BINDING: the deferred scenario's skipped-pending-feature token (or its early-shipped
     // passing token) MUST come from ITS BOUND file. If that token was moved to an unrelated dummy test
     // while the real activation-wired scenario disappeared, that is a violation despite the state.
     if (entry.file !== undefined) {
@@ -289,10 +289,10 @@ export function reconcile(report: JsonReport, manifest: RequiredTestsManifest, p
 }
 
 /**
- * Loads and STRUCTURALLY VALIDATES the manifest, FAIL-CLOSED (change-level audit BLOCK 9(a)/(b)/(c)):
+ * Loads and STRUCTURALLY VALIDATES the manifest, FAIL-CLOSED:
  * a missing, unparseable, empty, or drifted manifest THROWS — it must NEVER be silently coerced to
- * an empty required set that reconciles as "all 0 required passed" (the exact fail-OPEN hole this
- * closes). Enforced, in order: the file parses; `required` is a NON-EMPTY array; every required
+ * an empty required set that reconciles as "all 0 required passed" (the gate would fail open).
+ * Enforced, in order: the file parses; `required` is a NON-EMPTY array; every required
  * entry has a string `id` and a bound `file`; and `required.length` equals the pinned
  * {@link EXPECTED_REQUIRED_COUNT}. `deferred` may be empty/absent.
  */
@@ -317,24 +317,24 @@ export function loadManifest(path: string): RequiredTestsManifest {
     }
     if (typeof entry?.file !== "string" || entry.file.length === 0) {
       throw new Error(
-        `check-required-tests: required entry "${String(entry?.id)}" is missing its bound "file" — every required id MUST name the test file that carries it (BLOCK 9(c) file-binding).`,
+        `check-required-tests: required entry "${String(entry?.id)}" is missing its bound "file" — every required id MUST name the test file that carries it (file binding).`,
       );
     }
   }
   if (required.length !== EXPECTED_REQUIRED_COUNT) {
     throw new Error(
-      `check-required-tests: manifest "required" length ${required.length} != pinned ${EXPECTED_REQUIRED_COUNT} — a required entry was added or deleted without updating the pinned count (BLOCK 9(b) structural pin). If this change is intentional, update EXPECTED_REQUIRED_COUNT.`,
+      `check-required-tests: manifest "required" length ${required.length} != pinned ${EXPECTED_REQUIRED_COUNT} — a required entry was added or deleted without updating the pinned count (structural pin). If this change is intentional, update EXPECTED_REQUIRED_COUNT.`,
     );
   }
   const deferredRaw = (raw as { deferred?: unknown }).deferred;
   const deferred = Array.isArray(deferredRaw) ? (deferredRaw as ManifestEntry[]) : [];
-  // BLOCK 6: structurally PIN the deferred exemption set + require each deferred entry's bound `file`,
+  // Structurally PIN the deferred exemption set + require each deferred entry's bound `file`,
   // so deleting the sole deferred entry (a green "0 deferred" gate) or moving its skipped token to an
   // unrelated file cannot pass. `deferred` must have exactly EXPECTED_DEFERRED_COUNT entries, each with
   // a string `id` and a string `file`.
   if (deferred.length !== EXPECTED_DEFERRED_COUNT) {
     throw new Error(
-      `check-required-tests: manifest "deferred" length ${deferred.length} != pinned ${EXPECTED_DEFERRED_COUNT} — a deferred entry was added or deleted without updating the pinned count (BLOCK 6 structural pin). If this change is intentional, update EXPECTED_DEFERRED_COUNT.`,
+      `check-required-tests: manifest "deferred" length ${deferred.length} != pinned ${EXPECTED_DEFERRED_COUNT} — a deferred entry was added or deleted without updating the pinned count (structural pin). If this change is intentional, update EXPECTED_DEFERRED_COUNT.`,
     );
   }
   for (const entry of deferred) {
@@ -343,11 +343,11 @@ export function loadManifest(path: string): RequiredTestsManifest {
     }
     if (typeof entry?.file !== "string" || entry.file.length === 0) {
       throw new Error(
-        `check-required-tests: deferred entry "${String(entry?.id)}" is missing its bound "file" — every deferred id MUST name the test file that carries its skipped-pending-feature token (BLOCK 6 file-binding).`,
+        `check-required-tests: deferred entry "${String(entry?.id)}" is missing its bound "file" — every deferred id MUST name the test file that carries its skipped-pending-feature token (file binding).`,
       );
     }
   }
-  // BLOCK 5: manifest-ID UNIQUENESS — each id must appear EXACTLY ONCE across required ∪ deferred, so a
+  // Manifest-ID UNIQUENESS — each id must appear EXACTLY ONCE across required ∪ deferred, so a
   // canonical one-to-one id<->file binding holds. A duplicated id would let a deleted required test be
   // masked by a duplicate of another passing entry while `required.length` stays pinned (a fail-open).
   const seenIds = new Map<string, string>();
@@ -356,7 +356,7 @@ export function loadManifest(path: string): RequiredTestsManifest {
       const prior = seenIds.get(entry.id);
       if (prior !== undefined) {
         throw new Error(
-          `check-required-tests: duplicate manifest id "${entry.id}" (appears in ${prior} and ${origin}) — ids must be unique (a one-to-one id<->file binding). FAIL-CLOSED (BLOCK 5).`,
+          `check-required-tests: duplicate manifest id "${entry.id}" (appears in ${prior} and ${origin}) — ids must be unique (a one-to-one id<->file binding). FAIL-CLOSED.`,
         );
       }
       seenIds.set(entry.id, origin);

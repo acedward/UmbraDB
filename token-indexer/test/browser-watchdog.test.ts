@@ -5,8 +5,9 @@
  *
  * - `[[browser.watchdog.unavailable]]` — the answer an API request in flight gets on a restart equals the API handler's
  *   own 503 `UNAVAILABLE` answer (GET and HEAD).
- * - `[[browser.watchdog.slow-query]]` — a statement that does not return (`pg_sleep` on the worker thread's session)
- *   silences the worker; after the limit and the grace the page terminates it and starts a new one: the API request in
+ * - `[[browser.watchdog.slow-query]]` — no restart before it (the limit is three times the measured boot); a statement
+ *   that does not return (`pg_sleep` on the worker thread's session) silences the worker; after the limit and the
+ *   grace the page terminates it and starts a new one (one restart): the API request in
  *   flight gets the 503, a status request in flight `restarted`; the new worker gets the carried counts, boots on the
  *   same store and continues the engine with the same configuration at the stored cursors, and the range ends with the
  *   same tables as an uninterrupted replay.
@@ -192,7 +193,9 @@ describe("page watchdog", () => {
       await c.start(config);
       await until(async () => ((await c.status()).cursors?.scan?.nextHeight ?? 0) > U1.from + 4, "a first part");
       const before = (await c.status()).cursors!;
-      // The slow statement goes to the worker running now (a restart before this point would have replaced the first).
+      // No restart before the slow statement: the limit is three times this machine's measured boot, so a worker that
+      // was replaced here was taken for stuck while it was not (and a watchdog that restarts in a loop fails here).
+      expect(restarts, "no restart before the slow statement").toEqual([]);
       const earlier = restarts.length;
       const running = threads.length;
       (await threads[running - 1]!.thread).postMessage({ test: "slow-statement", seconds: Math.ceil(LIMIT_MS / 1_000) + 60 });
