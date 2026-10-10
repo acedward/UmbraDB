@@ -469,7 +469,8 @@ export async function prepareImport(
 export interface SnapshotFiles {
   /** The journal (a snapshot file), or `undefined` when there is none. */
   readJournal(): Promise<Uint8Array | undefined>;
-  /** Saves the journal; it exists in full once this resolves (or not at all). */
+  /** Saves the journal; it exists in full once this resolves. When it rejects, the journal on file is as it was (an
+   *  earlier journal stays, none appears). */
   writeJournal(file: Uint8Array): Promise<void>;
   removeJournal(): Promise<void>;
   /** Whether the store has database files (PGlite would open it rather than create it). */
@@ -495,7 +496,8 @@ const isNotFound = (e: unknown): boolean => typeof e === "object" && e !== null 
 /**
  * The journal of an `opfs-ahp://<path>` store: the file `<last path segment>.import.snapshot.tar` beside the store's
  * directory in the Origin Private File System, written through a writable stream (the file's content is replaced
- * when the stream closes, so it is complete or absent). Removing the store removes its directory and every file in it.
+ * when the stream closes, so it is complete or as it was; a write that fails removes the file only when it created
+ * it). Removing the store removes its directory and every file in it.
  */
 export function opfsSnapshotFiles(dataDir: string, storage: { getDirectory?: () => Promise<FileSystemDirectoryHandle> } | undefined = globalThis.navigator?.storage): SnapshotFiles {
   const segments = dataDir.slice("opfs-ahp://".length).split("/").filter((s) => s !== "");
@@ -519,16 +521,26 @@ export function opfsSnapshotFiles(dataDir: string, storage: { getDirectory?: () 
       }
     },
     async writeJournal(file) {
-      const handle = await (await parent()).getFileHandle(journalName, { create: true });
-      const w = await handle.createWritable();
+      const dir = await parent();
+      const existed = await dir.getFileHandle(journalName).then(() => true, (e: unknown) => {
+        if (isNotFound(e)) return false;
+        throw e;
+      });
       try {
-        await w.write(file as Uint8Array<ArrayBuffer>);
+        const w = await (await dir.getFileHandle(journalName, { create: true })).createWritable();
+        try {
+          await w.write(file as Uint8Array<ArrayBuffer>);
+        } catch (e) {
+          // A stream that is aborted leaves the file's content as it was.
+          await w.abort().catch(() => {});
+          throw e;
+        }
+        await w.close();
       } catch (e) {
-        // A stream that is aborted leaves the file as it was (absent).
-        await w.abort().catch(() => {});
+        // The file this write created (empty) goes; a journal that was there stays as it was.
+        if (!existed) await dir.removeEntry(journalName).catch(() => {});
         throw e;
       }
-      await w.close();
     },
     async removeJournal() {
       try {

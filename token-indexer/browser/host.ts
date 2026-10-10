@@ -1025,7 +1025,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     try {
       await snapshotFiles.writeJournal(prepared.file);
     } catch (e) {
-      await snapshotFiles.removeJournal().catch(() => {});
+      // A journal that cannot be written leaves the journal on file as it was: an earlier import's journal, kept for the
+      // boot that finishes it, stays.
       throw new HostError("snapshot-failed", `the import's journal could not be saved (${messageOf(e)}): nothing was changed`);
     }
     importing = true;

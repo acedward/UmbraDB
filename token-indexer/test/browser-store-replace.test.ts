@@ -13,6 +13,10 @@
  * - `[[browser.host.import-interrupted]]` — a worker that ends at each boundary of an import (the journal saved, the
  *   store's files removed, the rows loaded, the identity saved, the continuing configuration saved) leaves a store that
  *   the next boot opens whole: the snapshot's, with the configuration that continues it saved and the journal gone.
+ * - `[[browser.host.import-retry-keeps-journal]]` — an import whose continuing configuration could not be saved keeps its
+ *   journal; an import tried again whose journal the browser refuses to write changes nothing and keeps that journal,
+ *   so the next boot finishes the first import (its store and the configuration that continues it); an OPFS journal
+ *   write that fails leaves a journal on file as it was and leaves no file where there was none.
  * - `[[browser.host.boot-failure-recovery]]` — a boot that fails after the store opened (its migrations) says the store
  *   is the problem and closes it; `reset`, `range` and `import` replace it and the boot completes. A ledger that fails
  *   to load is not the store's problem: nothing offers to drop the store's data for it.
@@ -34,7 +38,7 @@ import { panelView } from "../browser/panel-model.ts";
 import type { BootState, DigestResult, EngineSettings, ExportResult, HostStatus, ImportResult } from "../browser/protocol.ts";
 import { type EngineSettingsStore, memorySettingsStore } from "../browser/settings.ts";
 import { encodeSnapshotFile, decodeSnapshotFile } from "../browser/snapshot.ts";
-import { memorySnapshotFiles, type SnapshotFiles } from "../browser/snapshot-store.ts";
+import { memorySnapshotFiles, opfsSnapshotFiles, type SnapshotFiles } from "../browser/snapshot-store.ts";
 import { migrateStore, openStore, type Store } from "../browser/store.ts";
 import { memoryStoreIdentity, opfsStoreIdentity, type StoreIdentityFile } from "../browser/store-identity.ts";
 import { call, nodeStoreFiles, result, testHost, type TestHost, U1, untilStatus } from "./helpers/worker-host.ts";
@@ -65,6 +69,43 @@ function storeDir(): string {
   return d;
 }
 const openStores = (t: TestHost): Store[] => t.opened.filter((s) => !s.session.closed);
+
+/** An OPFS root holding files only (`getDirectory`), whose writable streams replace a file's content when they close, as
+ *  the browser's do; `failWrites` makes every stream's write fail as when the quota is exceeded. */
+function fakeOpfsRoot(): { getDirectory: () => Promise<FileSystemDirectoryHandle>; files: Map<string, Uint8Array>; failWrites: boolean } {
+  const notFound = (): Error => Object.assign(new Error("not found"), { name: "NotFoundError" });
+  const root = {
+    files: new Map<string, Uint8Array>(),
+    failWrites: false,
+    getDirectory: async () => dir as unknown as FileSystemDirectoryHandle,
+  };
+  const dir = {
+    getFileHandle: async (name: string, o?: { create?: boolean }) => {
+      if (!root.files.has(name)) {
+        if (o?.create !== true) throw notFound();
+        root.files.set(name, new Uint8Array());
+      }
+      return {
+        getFile: async () => new Blob([root.files.get(name)! as Uint8Array<ArrayBuffer>]),
+        createWritable: async () => {
+          let content: Uint8Array | undefined;
+          return {
+            write: async (data: Uint8Array) => {
+              if (root.failWrites) throw Object.assign(new Error("the quota is exceeded"), { name: "QuotaExceededError" });
+              content = data.slice();
+            },
+            abort: async () => {},
+            close: async () => { root.files.set(name, content ?? new Uint8Array()); },
+          };
+        },
+      };
+    },
+    removeEntry: async (name: string) => {
+      if (!root.files.delete(name)) throw notFound();
+    },
+  };
+  return root;
+}
 const untilU1 = (t: TestHost, to: number = U1.to) => untilStatus(t.host, `U1 up to ${to}`, (s) => s.cursors?.sync?.height === to && s.cursors.scan?.nextHeight === to + 1);
 const never = new Promise<never>(() => {});
 
@@ -274,6 +315,69 @@ describe("replacing the browser engine's store", () => {
       await next.host.close();
       hosts.splice(hosts.indexOf(next), 1);
     }
+  }, 300_000);
+
+  it("[[browser.host.import-retry-keeps-journal]] an import whose continuing configuration could not be saved keeps its journal; an import tried again whose journal cannot be saved changes nothing and keeps that journal, so the next boot finishes the first import; an OPFS journal write that fails leaves the file as it was", async () => {
+    const snap = await snapshotAtMid();
+    const dir = storeDir();
+    const files = nodeStoreFiles(dir);
+    const identity = memoryStoreIdentity();
+    const saved = memorySettingsStore({ config: { source: { kind: "tape", range: "u1" } }, autoStart: true });
+    const quota = (): Error => Object.assign(new Error("the quota is exceeded"), { name: "QuotaExceededError" });
+    let settingsFail = false;
+    let journalFail = false;
+    const t = host({
+      dataDir: dir,
+      storeIdentity: identity,
+      settings: { ...saved, save: async (x) => { if (settingsFail) throw quota(); await saved.save(x); } },
+      snapshotFiles: { ...files, writeJournal: async (f) => { if (journalFail) throw quota(); await files.writeJournal(f); } },
+    });
+    await result(t.host, "start", { config: { ...U1_TAPE, endHeight: U1.from + 3 } });
+    await untilU1(t, U1.from + 3);
+
+    // The first import loads the rows, but the configuration that continues it cannot be saved: its journal stays.
+    settingsFail = true;
+    const first = await call(t.host, "import", { snapshot: snap.file });
+    expect(first.ok).toBe(false);
+    settingsFail = false;
+    const journal = await files.readJournal();
+    expect(journal, "the first import's journal").toBeDefined();
+    expect((await result<HostStatus>(t.host, "status")).boot).toMatchObject({ phase: "failed", storeProblem: "unusable" });
+
+    // Tried again while the journal cannot be written: refused, nothing changed, the first import's journal kept.
+    journalFail = true;
+    const retry = await call(t.host, "import", { snapshot: snap.file });
+    expect(retry).toMatchObject({ ok: false, error: { code: "snapshot-failed", message: "the import's journal could not be saved (the quota is exceeded): nothing was changed" } });
+    expect(await files.readJournal(), "the first import's journal, kept").toEqual(journal);
+    journalFail = false;
+    await t.host.close();
+    hosts.splice(hosts.indexOf(t), 1);
+
+    // The next boot finishes the first import: the snapshot's store with the configuration that continues it.
+    const next = host({ dataDir: dir, snapshotFiles: files, storeIdentity: identity, settings: saved });
+    expect(await next.host.boot()).toMatchObject({ phase: "ready", storeProblem: null });
+    const s = await result<HostStatus>(next.host, "status");
+    expect(s.cursors?.sync).toEqual({ height: MID, startHeight: U1.from });
+    expect(s.settings).toEqual(CONTINUING);
+    expect(await saved.load()).toEqual(CONTINUING);
+    expect(await files.readJournal()).toBeUndefined();
+    expect(await result<DigestResult>(next.host, "digest")).toEqual({ ...snap.digest, elapsedMs: expect.any(Number) });
+
+    // The OPFS journal: a write that fails leaves a journal on file as it was, and leaves no file where there was none.
+    const opfs = fakeOpfsRoot();
+    const journalFile = "umbradb-stagenet.import.snapshot.tar";
+    const opfsFiles = opfsSnapshotFiles("opfs-ahp://umbradb-stagenet", opfs);
+    await opfsFiles.writeJournal(new Uint8Array([1, 2, 3]));
+    opfs.failWrites = true;
+    await expect(opfsFiles.writeJournal(new Uint8Array([4, 5, 6, 7]))).rejects.toThrow("the quota is exceeded");
+    expect(await opfsFiles.readJournal()).toEqual(new Uint8Array([1, 2, 3]));
+    opfs.failWrites = false;
+    await opfsFiles.removeJournal();
+    expect(opfs.files.has(journalFile)).toBe(false);
+    opfs.failWrites = true;
+    await expect(opfsFiles.writeJournal(new Uint8Array([4, 5, 6, 7]))).rejects.toThrow("the quota is exceeded");
+    expect(opfs.files.has(journalFile), "no journal file left by the failed write").toBe(false);
+    expect(await opfsFiles.readJournal()).toBeUndefined();
   }, 300_000);
 
   it("[[browser.host.boot-failure-recovery]] a boot that fails after the store opened reports the store and closes it; reset, range and import replace it; a ledger that fails to load offers nothing", async () => {
