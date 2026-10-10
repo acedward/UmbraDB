@@ -290,9 +290,9 @@ The build writes the policy twice:
 
   The host must also serve `.wasm` as `application/wasm` and the gzip tapes without a `Content-Encoding` (see
   [Static hosting](#static-hosting)). Only with these headers is the engine worker confined: its requests limited to
-  the site and the two chain endpoints, `eval` refused in it. COOP and COEP make the page and the
-  worker cross-origin isolated (`crossOriginIsolated`, needed by `performance.measureUserAgentSpecificMemory()`); the
-  chain endpoints answer CORS, so the worker's requests to them work under COEP.
+  the site and the two chain endpoints, `eval` refused in it. COOP and COEP make the page and the worker cross-origin
+  isolated (`crossOriginIsolated`, needed by `performance.measureUserAgentSpecificMemory()`); the chain endpoints
+  answer CORS, so the worker's requests to them work under COEP.
 
 The chain is fixed at build time: `UMBRADB_BROWSER_NETWORK` (a network id), `UMBRADB_BROWSER_NODE_URL` and
 `UMBRADB_BROWSER_INDEXER_URL` (`https:`, or `http:` on a loopback host; no credentials) set the worker's defaults
@@ -315,7 +315,7 @@ The dev server (`npm run dev:browser`) sends no policy.
 
 ## Static hosting
 
-`npm run build:browser` writes the whole site into `dist-browser/`; nothing else runs anywhere:
+`npm run build:browser` writes the whole site into `dist-browser/`, and the site is that folder alone:
 
 | Path | What |
 |---|---|
@@ -339,8 +339,8 @@ npm run serve:browser -- --port 10200    # another port (0: any free port); also
 ```
 
 `serve:browser` (`../dev/serve-browser.ts`) answers every file of the folder with the headers of its `_headers` file,
-the content types below and no `Content-Encoding`; `/` is `index.html`, and nothing outside the folder is served. It
-refuses a folder without `_headers`. The browser tests serve their builds through the same code.
+the content types listed below and no `Content-Encoding`; `/` is `index.html`, and nothing outside the folder is
+served. It refuses a folder without `_headers`. The browser tests serve their builds through the same code.
 
 The store, its saved configuration, the tabs' election and the persistent-storage grant belong to the page's origin
 (scheme, host and port): serving on the same address finds the store again, and another port is another, empty store.
@@ -365,8 +365,8 @@ One origin holds one store per network.
    SHA-256 and decompresses it itself; labelled `Content-Encoding: gzip`, the browser decompresses it first and a tape
    replay fails with "tape …: SHA-256 … is not the recorded …". Compressing any other answer on the fly is harmless.
 
-Common static servers' default types meet 3 and 4 (Python 3.12's `http.server` does), but they send none of the headers
-of 2.
+A static server's default types usually meet 3 and 4 (Python 3.12's `http.server` does), but it sends none of the
+headers of 2.
 
 **Another network.** The chain is fixed when the site is built: `UMBRADB_BROWSER_NETWORK`, `UMBRADB_BROWSER_NODE_URL`
 and `UMBRADB_BROWSER_INDEXER_URL` (see [Security headers](#security-headers)) set the worker's endpoints and
