@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   test:
-    # F5 (audit finding): the Pg-only conformance suite (`test/postgres/**`, `test/integration/
+    # The Pg-only conformance suite (`test/postgres/**`, `test/integration/
     # pg-tx-history-adapter.test.ts`) uses testcontainers (`@testcontainers/postgresql`), which
     # starts its OWN disposable Postgres container via the Docker daemon already present on
     # ubuntu-latest runners -- no `services: postgres` block is needed or used. This is the
@@ -59,7 +59,7 @@ jobs:
             });'
 
       - name: Run conformance gate (tests + coverage + required-test skip-enforcement)
-        # `npm run test:conformance` is now `scripts/conformance-gate.mjs` (Task 7.1): it runs
+        # `npm run test:conformance` is `scripts/conformance-gate.mjs`: it runs
         # `vitest run --coverage` with `UMBRADB_LIVE_PREPROD` UNSET (so the crash/soak/differential
         # suites execute and do NOT self-skip), emits a Jest-compatible JSON report, then runs the
         # `check-required-tests.ts` reconciliation over that report. The gate fails if EITHER a test
@@ -80,7 +80,7 @@ jobs:
         run: npm run test:conformance
 
   mutation:
-    # StrykerJS durability mutation gate (v1.0.0-recovery-testing Task 7.3; guideline §2.3/§3.6).
+    # StrykerJS durability mutation gate (guideline §2.3/§3.6).
     # A SEPARATE still-required job (never optional, never live-gated) so mutation cost is off the
     # `test` job's clock. SCOPE: the FIVE durability adapters `stryker.conf.json` mutates —
     # save-and-advance.ts (the co-transactional save+cursor keystone), checkpoint-store.ts,
