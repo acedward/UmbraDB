@@ -1,19 +1,24 @@
 /**
- * The engine page: starts the engine worker, shows its boot phase and its status (refreshed every second while the page
- * is visible), and exposes the client as `window.umbradbEngine` for scripted use (the browser tests drive the engine
- * through it). All text is set through `textContent`.
+ * The engine page: starts the engine worker (under the page's watchdog), shows its boot phase and its status (refreshed
+ * every second while the page is visible), and exposes the client as `window.umbradbEngine` for scripted use (the
+ * browser tests drive the engine through it; `worker` is the current worker, `restarts()` the watchdog's restarts).
+ * `?watchdogLimitMs=<ms>` sets the watchdog's limit (default 30 s, `supervisor.ts`). All text is set through
+ * `textContent`.
  */
 import { type EngineClient, startEngineWorker } from "./client.ts";
+import type { RestartRecord } from "./supervisor.ts";
 
 declare global {
   interface Window {
-    umbradbEngine?: { client: EngineClient; worker: Worker; loadedAt: number };
+    umbradbEngine?: { client: EngineClient; readonly worker: Worker; restarts(): RestartRecord[]; loadedAt: number };
   }
 }
 
 const loadedAt = performance.now();
-const { worker, client } = startEngineWorker();
-window.umbradbEngine = { client, worker, loadedAt };
+const limit = Number(new URLSearchParams(location.search).get("watchdogLimitMs"));
+const engine = startEngineWorker(Number.isSafeInteger(limit) && limit >= 100 ? { limitMs: limit } : {});
+const client = engine.client;
+window.umbradbEngine = { client, get worker() { return engine.worker; }, restarts: () => engine.restarts(), loadedAt };
 
 const phaseEl = document.getElementById("phase")!;
 const messageEl = document.getElementById("message")!;

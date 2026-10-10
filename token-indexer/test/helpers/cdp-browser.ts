@@ -9,7 +9,8 @@
  *
  * Recorded per page: every request the page sends (Network domain), responses' statuses, failed loads (incl.
  * `blockedReason`, e.g. `csp`), console calls, browser log entries (CSP reports arrive here), uncaught exceptions, and
- * the page's own `securitypolicyviolation` events (a listener installed before any page script runs).
+ * the page's own `securitypolicyviolation` events (a listener installed before any page script runs). After
+ * `attachWorkers()`, the page's dedicated workers are DevTools sessions too (`workers`, `evalInWorker`).
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
@@ -81,6 +82,8 @@ export class Page {
   readonly console: Array<{ type: string; text: string }> = [];
   readonly logs: Array<{ source: string; level: string; text: string; url?: string }> = [];
   readonly exceptions: string[] = [];
+  /** The page's dedicated workers attached so far and not yet gone (after {@link attachWorkers}), oldest first. */
+  readonly workers: Array<{ sessionId: string; url: string }> = [];
   private readonly byId = new Map<string, RequestRecord>();
   private loads = 0;
 
@@ -105,6 +108,11 @@ export class Page {
     conn.on("Runtime.exceptionThrown", mine((p) => page.exceptions.push(p.exceptionDetails?.exception?.description ?? p.exceptionDetails?.text ?? "exception")));
     conn.on("Log.entryAdded", mine((p) => page.logs.push({ source: p.entry.source, level: p.entry.level, text: p.entry.text, url: p.entry.url })));
     conn.on("Page.loadEventFired", mine(() => { page.loads++; }));
+    conn.on("Target.attachedToTarget", mine((p) => { if (p.targetInfo?.type === "worker") page.workers.push({ sessionId: p.sessionId, url: p.targetInfo.url }); }));
+    conn.on("Target.detachedFromTarget", mine((p) => {
+      const i = page.workers.findIndex((w) => w.sessionId === p.sessionId);
+      if (i >= 0) page.workers.splice(i, 1);
+    }));
     for (const d of ["Page", "Runtime", "Network", "Log"]) await conn.send(`${d}.enable`, {}, sessionId);
     await conn.send("Page.addScriptToEvaluateOnNewDocument", {
       source: "window.__cspViolations = []; document.addEventListener('securitypolicyviolation', function (e) { window.__cspViolations.push(e.violatedDirective + ' ' + e.blockedURI); });",
@@ -128,6 +136,18 @@ export class Page {
   async eval<T = Json>(expression: string): Promise<T> {
     const r = await this.conn.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, this.sessionId);
     if (r.exceptionDetails !== undefined) throw new Error(`evaluate failed: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
+    return r.result.value as T;
+  }
+
+  /** Attaches to the page's dedicated workers, present and future (they appear in {@link workers}). */
+  async attachWorkers(): Promise<void> {
+    await this.conn.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, this.sessionId);
+  }
+
+  /** Evaluates an expression in an attached worker and returns its JSON value. */
+  async evalInWorker<T = Json>(sessionId: string, expression: string): Promise<T> {
+    const r = await this.conn.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, sessionId);
+    if (r.exceptionDetails !== undefined) throw new Error(`evaluate in the worker failed: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
     return r.result.value as T;
   }
 

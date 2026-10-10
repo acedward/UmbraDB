@@ -60,9 +60,11 @@ export interface StorageReading {
 export interface SystemCollectorOptions {
   engine: Pick<IndexerEngine, "status" | "handle">;
   telemetry: EngineTelemetry;
-  /** The options the engine was created with (the configuration section describes them). */
-  engineOptions: EngineOptions;
-  extras: ConfigurationExtras;
+  /** The options the engine was created with (the configuration section describes them), or a function giving the
+   *  current engine's, for a host that replaces its engine (the schemas and the default client are read once). */
+  engineOptions: EngineOptions | (() => EngineOptions);
+  /** The host's extras, or a function giving the current ones. */
+  extras: ConfigurationExtras | (() => ConfigurationExtras);
   /** Client the catalog statistics are read with (default the engine's `sql`). */
   sql?: UmbraDBSql;
   clock?: EngineClock;
@@ -174,8 +176,11 @@ const sub = (a: number | null | undefined, b: number | null | undefined): number
 
 export function createSystemCollector(opts: SystemCollectorOptions): SystemCollector {
   const clock = opts.clock ?? systemClock;
-  const sql = opts.sql ?? opts.engineOptions.sql;
-  const schemas = [opts.engineOptions.archiveSchema ?? DEFAULT_SCHEMAS.archiveSchema, opts.engineOptions.schema ?? DEFAULT_SCHEMAS.schema];
+  const engineOptions = (): EngineOptions => (typeof opts.engineOptions === "function" ? opts.engineOptions() : opts.engineOptions);
+  const extras = (): ConfigurationExtras => (typeof opts.extras === "function" ? opts.extras() : opts.extras);
+  const initial = engineOptions();
+  const sql = opts.sql ?? initial.sql;
+  const schemas = [initial.archiveSchema ?? DEFAULT_SCHEMAS.archiveSchema, initial.schema ?? DEFAULT_SCHEMAS.schema];
   const countersEveryMs = opts.countersEveryMs ?? DEFAULT_COUNTERS_EVERY_MS;
   const databaseEveryMs = opts.databaseEveryMs ?? DEFAULT_DATABASE_EVERY_MS;
   const statsOpts = {
@@ -299,7 +304,7 @@ export function createSystemCollector(opts: SystemCollectorOptions): SystemColle
           catchUpSeconds: lagBlocks === null ? null : lagBlocks === 0 ? 0 : c.scan.blocksPerSecond > 0 ? lagBlocks / c.scan.blocksPerSecond : null,
         },
       },
-      configuration: describeConfiguration(opts.engineOptions, opts.extras, {
+      configuration: describeConfiguration(engineOptions(), extras(), {
         status: st, counters: c, db, startHeight: es.sync.startHeight, maxConcurrentRequests: es.api.maxConcurrentRequests,
       }),
       sync: {
@@ -336,7 +341,7 @@ export function createSystemCollector(opts: SystemCollectorOptions): SystemColle
         dataDir: opts.dataDir ?? null,
         serverVersion: db?.serverVersion ?? null,
         fsync: db?.fsync ?? null,
-        durability: st?.durability ?? opts.extras.durability ?? durabilityModeOf(sql),
+        durability: st?.durability ?? extras().durability ?? durabilityModeOf(sql),
         databaseBytes,
         schemas: (db?.schemas ?? []).map((s) => ({
           name: s.name,

@@ -62,8 +62,8 @@ function newHost(over: Partial<WorkerHostOptions> = {}): { host: WorkerHost; not
     nodeUrl: "https://node.invalid/",
     indexerUrl: "https://indexer.invalid/",
     checkCapabilities: async () => SUPPORTED,
-    openStore: async (dir) => {
-      const s = await openStore(dir);
+    openStore: async (dir, o) => {
+      const s = await openStore(dir, o);
       opened.push(s);
       return s;
     },
@@ -154,7 +154,7 @@ describe("browser engine host", () => {
     expect(await fails(null)).toMatchObject({ id: null, error: { code: "bad-request" } });
     expect(await fails({ v: 2, id: 5, type: "status" })).toMatchObject({ id: 5, request: "status", error: { code: "unsupported-version" } });
     expect(await fails({ id: 6, type: "status" })).toMatchObject({ id: 6, error: { code: "unsupported-version" } });
-    expect(await fails({ v: 1, id: 7, type: "system" })).toMatchObject({ id: 7, request: null, error: { code: "unknown-type" } });
+    expect(await fails({ v: 1, id: 7, type: "gossip" })).toMatchObject({ id: 7, request: null, error: { code: "unknown-type" } });
     expect(await fails({ v: 1, id: 8 })).toMatchObject({ id: 8, error: { code: "unknown-type" } });
     expect(await fails({ v: 1, id: 0, type: "status" })).toMatchObject({ id: null, error: { code: "bad-request" } });
     expect(await fails({ v: 1, id: 9, type: "status", extra: 1 })).toMatchObject({ id: 9, error: { code: "bad-request" } });

@@ -250,7 +250,7 @@ describe("browser engine worker in Chrome", () => {
       w.addEventListener("message", on);
       w.postMessage(${JSON.stringify(message)});
     })`);
-    expect(await raw({ v: 1, id: 9001, type: "system" })).toMatchObject({ ok: false, id: 9001, error: { code: "unknown-type" } });
+    expect(await raw({ v: 1, id: 9001, type: "gossip" })).toMatchObject({ ok: false, id: 9001, error: { code: "unknown-type" } });
     expect(await raw({ v: 2, id: 9002, type: "status" })).toMatchObject({ ok: false, id: 9002, error: { code: "unsupported-version" } });
     expect(await raw({ v: 1, id: 9003, type: "api", method: "GET" })).toMatchObject({ ok: false, id: 9003, error: { code: "bad-request" } });
     const okRaw = await raw({ v: 1, id: 9004, type: "api", method: "GET", target: "/v1/status" });
