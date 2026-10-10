@@ -53,6 +53,7 @@ const NODE_ONLY: Record<string, string> = {
   "chain-archive-sync/tx-replay-decoder.ts": "test-only decoder that loads a ledger build from a wallet checkout on disk",
   "token-indexer/browser/vite.config.ts": "the browser build's Vite configuration, run by Node",
   "token-indexer/browser/build-guard.ts": "a Vite plugin of the browser build, run by Node",
+  "token-indexer/browser/build-csp.ts": "a Vite plugin of the browser build (the pages' security headers), run by Node",
   "token-indexer/mip0018/scan-cli.ts": "command-line entry point (arguments, signals, exit codes)",
   "token-indexer/mip0018/serve-cli.ts": "command-line entry point that starts the node:http server",
   "token-indexer/mip0018/api-node.ts": "serves the runtime-neutral API handler (api.ts) over node:http",
@@ -86,6 +87,8 @@ const MUST_REACH = [
   "chain-archive-sync/archive-tape.ts",
   "chain-archive-sync/tape-replay.ts",
   "token-indexer/browser/host.ts",
+  "token-indexer/browser/trusted-worker.ts",
+  "token-indexer/browser/zod-jitless.ts",
 ];
 
 const rel = (abs: string): string => path.relative(ROOT, abs).split(path.sep).join("/");
