@@ -12,7 +12,9 @@ import {
   type ApiResult,
   type BootState,
   type ErrorCode,
+  type ExportResult,
   type HostStatus,
+  type ImportResult,
   type Notice,
   type ParamsOf,
   parseResult,
@@ -58,8 +60,10 @@ export interface EngineClient {
   stop(): Promise<HostStatus>;
   range(startHeight: number | "tip", endHeight?: number): Promise<never>;
   reset(): Promise<never>;
-  export(): Promise<never>;
-  import(snapshot: Blob): Promise<never>;
+  /** A snapshot file of the store (`snapshot.ts`), taken while the engine runs. */
+  export(): Promise<ExportResult>;
+  /** Replaces the store with a snapshot file; refused (`snapshot-refused`, nothing changed) when it does not match. */
+  import(snapshot: Blob): Promise<ImportResult>;
   /** The boot state once the boot has ended (`ready`, `unsupported` or `failed`). */
   booted(): Promise<BootState>;
   /** Adds a notice listener; returns the function that removes it. */

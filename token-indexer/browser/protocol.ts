@@ -13,8 +13,8 @@
  * | `stop` | — | {@link HostStatus} |
  * | `range` | `startHeight` (a height or `"tip"`), `endHeight?` | error `not-implemented` |
  * | `reset` | — | error `not-implemented` |
- * | `export` | — | error `not-implemented` |
- * | `import` | `snapshot` (a `Blob`) | error `not-implemented` |
+ * | `export` | — | {@link ExportResult}: a snapshot file of the store, taken while the engine runs (`snapshot-store.ts`) |
+ * | `import` | `snapshot` (a `Blob`: a snapshot file) | {@link ImportResult}: the store replaced by the snapshot; the engine is stopped, and a start continues from the snapshot's height + 1 |
  *
  * Responses (worker → page): `{ v, type: "response", id, request, ok: true, result }` or
  * `{ v, type: "response", id, request, ok: false, error: { code, message } }`; `id` and `request` are `null` when the
@@ -30,6 +30,9 @@ import type { ApiResponse } from "../mip0018/api.ts";
 import type { EngineStatus } from "../engine/engine.ts";
 import type { SyncCursor, SyncOnceResult } from "../../chain-archive-sync/sync-service.js";
 import type { ScanCursor, ScanOnceResult } from "../mip0018/scan.ts";
+import { SnapshotsSchema } from "../engine/system-snapshot.ts";
+import { SnapshotManifestSchema } from "./snapshot.ts";
+import type { ExportedSnapshot } from "./snapshot-store.ts";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -61,6 +64,11 @@ export const ERROR_CODES = [
   "start-failed",
   /** An unexpected failure inside the worker. */
   "internal",
+  /** `import`: the snapshot does not match this engine or is damaged; `export`: the archive is empty. The message starts
+   *  with the reason (`snapshot.ts` `REFUSAL_REASONS`). Nothing was changed. */
+  "snapshot-refused",
+  /** `import`: the checked snapshot could not be loaded into the store, which was opened empty instead. */
+  "snapshot-failed",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -227,8 +235,32 @@ export const HostStatusSchema = z.strictObject({
     .nullable(),
   /** The stored cursors (`null` until the store is migrated; a cursor is `null` before its loop's first block). */
   cursors: z.strictObject({ sync: SyncCursorSchema.nullable(), scan: ScanCursorSchema.nullable() }).nullable(),
+  /** The last snapshot exported and imported by this worker (manifest summary, file SHA-256 and size). */
+  snapshots: SnapshotsSchema,
 });
 export type HostStatus = z.infer<typeof HostStatusSchema>;
+
+// ── Snapshots ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+const duration = z.number().min(0);
+/** The `export` result: the snapshot file (`snapshot.ts`), its suggested name, its manifest, its size, and timings
+ *  (`holdMs`: how long the engine's session waited for the read). */
+export const ExportResultSchema = z.strictObject({
+  file: z.instanceof(Blob),
+  name: z.string().min(1).max(255),
+  manifest: SnapshotManifestSchema,
+  bytes: z.int().min(0),
+  timings: z.strictObject({ holdMs: duration, compressMs: duration, totalMs: duration }),
+});
+export type ExportResult = z.infer<typeof ExportResultSchema>;
+
+/** The `import` result: the imported manifest, timings, and the host's status after the swap. */
+export const ImportResultSchema = z.strictObject({
+  manifest: SnapshotManifestSchema,
+  timings: z.strictObject({ readMs: duration, checkMs: duration, unpackMs: duration, trialMs: duration, swapMs: duration, totalMs: duration }),
+  status: HostStatusSchema,
+});
+export type ImportResult = z.infer<typeof ImportResultSchema>;
 
 export const RESULT_SCHEMAS = {
   status: HostStatusSchema,
@@ -237,8 +269,8 @@ export const RESULT_SCHEMAS = {
   stop: HostStatusSchema,
   range: z.never(),
   reset: z.never(),
-  export: z.never(),
-  import: z.never(),
+  export: ExportResultSchema,
+  import: ImportResultSchema,
 } as const satisfies Record<RequestType, z.ZodType>;
 export type ResultOf<T extends RequestType> = z.infer<(typeof RESULT_SCHEMAS)[T]>;
 
@@ -348,3 +380,5 @@ noExtraKeys<typeof SyncOnceResultSchema, SyncOnceResult>();
 noExtraKeys<typeof ScanOnceResultSchema, ScanOnceResult>();
 noExtraKeys<typeof SyncCursorSchema, SyncCursor>();
 noExtraKeys<typeof ScanCursorSchema, ScanCursor>();
+accepts<typeof ExportResultSchema, ExportedSnapshot>();
+noExtraKeys<typeof ExportResultSchema, ExportedSnapshot>();

@@ -15,7 +15,14 @@
  * **Requests** (`protocol.ts`): `status` answers at any time; `api` waits for the boot and answers through the running
  * engine's API handler, or, while no engine runs, a handler of the same store with no loops (`scanner: "off"`);
  * `start` runs a new engine (sync + scan in follow mode) with the given configuration, `stop` stops it, one at a time;
- * `range`, `reset`, `export` and `import` answer `not-implemented`.
+ * `range` and `reset` answer `not-implemented`.
+ *
+ * **Snapshots** (`snapshot-store.ts`): `export` writes a snapshot file of the store while the engine runs (a consistent
+ * read between two transactions). `import` checks a snapshot file without touching anything (a refusal changes
+ * nothing, and a running engine keeps running), then stops the engine, waits for the API requests in flight, replaces
+ * the store under its lock (journaled) and opens it again; meanwhile `status` and `api` wait. The engine stays stopped
+ * after an import; a `start` continues from the snapshot's height + 1. The boot finishes an import that a previous
+ * worker left unfinished before it opens the store.
  *
  * **Engine**: the engine (`../engine/engine.ts`) runs with a scheduler that yields to the event loop before each step
  * (`scheduler.ts`), so requests and `stop` are served while it syncs; the chain is the network (`fetch` to the node and
@@ -28,6 +35,7 @@ import { createTapeFetch } from "../../chain-archive-sync/tape-replay.js";
 import { durabilityModeOf } from "../../src/postgres/durability-probe.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { mip0018Migrations } from "../../src/postgres/migrations/mip0018/index.js";
+import { KNOWN_GENESIS } from "../mip0018/api-views.ts";
 import { createIndexerEngine, type EngineClock, type EngineEvent, type EngineScheduler, type IndexerEngine, systemClock } from "../engine/engine.ts";
 import { checkCapabilities } from "./capabilities.ts";
 import {
@@ -35,6 +43,7 @@ import {
   type CapabilityReport,
   type ErrorCode,
   type HostStatus,
+  type ImportResult,
   type Notice,
   parseRequest,
   PROTOCOL_VERSION,
@@ -47,7 +56,21 @@ import {
   type TapeRange,
 } from "./protocol.ts";
 import { yieldingScheduler } from "./scheduler.ts";
-import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, openStore, type Store } from "./store.ts";
+import { type SnapshotExpectation, type SnapshotRecord, SnapshotRefusal, snapshotRecord } from "./snapshot.ts";
+import {
+  exportSnapshot,
+  type ExportedSnapshot,
+  openFinishingImport,
+  type OpenedStore,
+  prepareImport,
+  readStoreFacts,
+  replaceStore,
+  type SnapshotFiles,
+  snapshotFilesFor,
+  type PreparedImport,
+  type TrialOpener,
+} from "./snapshot-store.ts";
+import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, openStore, type OpenStoreOptions, type Store } from "./store.ts";
 import { loadTape } from "./tapes.ts";
 
 /** Heights per sync batch unless `start` says otherwise: a stop waits for at most one batch. */
@@ -70,8 +93,8 @@ export interface WorkerHostOptions {
   indexerUrl: string;
   /** Default: {@link checkCapabilities} on the worker's global scope. */
   checkCapabilities?: () => Promise<CapabilityReport>;
-  /** Default: {@link openStore}. */
-  openStore?: (dataDir: string) => Promise<Store>;
+  /** Default: {@link openStore}. The host passes the options that finish a pending snapshot import. */
+  openStore?: (dataDir: string, options?: OpenStoreOptions) => Promise<Store>;
   /** Loads ledger-v9. Default: `import("@midnightntwrk/ledger-v9")`. */
   loadLedger?: () => Promise<Record<string, unknown>>;
   /** Loads a recorded range. Default: {@link loadTape}. */
@@ -85,6 +108,13 @@ export interface WorkerHostOptions {
   log?: (level: LogLevel, message: string) => void;
   /** A monotonic clock in milliseconds for the boot timings. Default `performance.now`. */
   monotonic?: () => number;
+  /** Where a snapshot import keeps its journal and how it removes the store's files. Default: beside an
+   *  `opfs-ahp://` store in OPFS, else memory. */
+  snapshotFiles?: SnapshotFiles;
+  /** Opens a snapshot's data directory for the trial an import runs. Default: an in-memory PGlite. */
+  snapshotTrial?: TrialOpener;
+  /** The build's commit, recorded in exported snapshots. Default `null`. */
+  appCommit?: string | null;
 }
 
 export interface WorkerHost {
@@ -165,6 +195,15 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   let lifecycle: Promise<unknown> = Promise.resolve();
   let closed = false;
 
+  // Snapshots: the last export and import, the journal, and the swap in progress (`status` and `api` wait for it).
+  const snapshotFiles = opts.snapshotFiles ?? snapshotFilesFor(opts.dataDir);
+  const opener = (dataDir: string, options: OpenStoreOptions): Promise<Store> => (opts.openStore ?? openStore)(dataDir, options);
+  const genesisHash = (): string | null => KNOWN_GENESIS[opts.network] ?? null;
+  let lastExport: SnapshotRecord | null = null;
+  let lastImport: SnapshotRecord | null = null;
+  let swapping: Promise<void> | undefined;
+  let apiInFlight = 0;
+
   async function phase<T>(name: BootState["phase"], key: keyof BootState["timings"], fn: () => Promise<T>): Promise<T> {
     bootState.phase = name;
     announceBoot();
@@ -232,7 +271,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       }
       let s: Store | undefined;
       try {
-        s = await phase("store", "storeMs", () => (opts.openStore ?? openStore)(opts.dataDir));
+        s = await phase("store", "storeMs", async () => noteFinishedImport(await openFinishingImport(opener, opts.dataDir, snapshotFiles, opts.network)));
         await phase("ledger", "ledgerMs", checkLedger);
         await phase("migrate", "migrateMs", () => migrate(s!));
         storeInfo = await readStoreInfo(s);
@@ -282,6 +321,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       store: storeInfo ?? null,
       engine: last === undefined ? null : { running: active === last.engine, config: last.config, status: last.engine.status(), error: last.error },
       cursors: bootState.phase === "ready" && !closed ? await readCursors() : null,
+      snapshots: { lastExport, lastImport },
     };
   }
 
@@ -368,6 +408,83 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     return status();
   }
 
+  /** Logs (and records) an import a previous worker left unfinished that the store's open finished or dropped. */
+  function noteFinishedImport(opened: OpenedStore): Store {
+    if (opened.imported !== null) {
+      lastImport = snapshotRecord(opened.imported, clock.now(), null);
+      log("warn", `finished an interrupted snapshot import: the store now holds ${opened.imported.network} up to ${opened.imported.archive.height}`);
+    }
+    if (opened.failure !== null) log("error", `an interrupted snapshot import could not be finished and the store was opened empty: ${opened.failure}`);
+    return opened.store;
+  }
+
+  async function exportStore(): Promise<ExportedSnapshot> {
+    const s = await ready();
+    let out: ExportedSnapshot;
+    try {
+      out = await exportSnapshot(s, { network: opts.network, genesisHash: genesisHash(), appCommit: opts.appCommit ?? null, now: () => clock.now(), monotonic });
+    } catch (e) {
+      if (e instanceof SnapshotRefusal) throw new HostError("snapshot-refused", e.message);
+      throw e;
+    }
+    lastExport = snapshotRecord(out.manifest, clock.now(), out.bytes);
+    log("info", `exported a snapshot of ${out.manifest.network} up to ${out.manifest.archive.height} (${out.bytes} bytes; the session was held ${out.timings.holdMs} ms)`);
+    return out;
+  }
+
+  /** The store `s` as the host's store: migrations (none to run for a snapshot of this build), facts and engines. */
+  async function adoptStore(s: Store): Promise<void> {
+    await migrate(s);
+    storeInfo = await readStoreInfo(s);
+    store = s;
+    idleApi = engineOf(s);
+    cursorReader = engineOf(s, { sync: { nodeUrl: "http://cursor.invalid/", indexerUrl: "http://cursor.invalid/" }, scan: {} });
+  }
+
+  async function importStore(snapshot: Blob): Promise<ImportResult> {
+    const t0 = monotonic();
+    const s = await ready();
+    const facts = await readStoreFacts(s.mip0018, opts.network);
+    const expected: SnapshotExpectation = { network: opts.network, genesisHash: genesisHash(), schemaVersions: facts.schemaVersions, pglite: facts.pglite };
+    let prepared: PreparedImport;
+    try {
+      prepared = await prepareImport(snapshot, expected, { monotonic, ...(opts.snapshotTrial === undefined ? {} : { trial: opts.snapshotTrial }) });
+    } catch (e) {
+      if (e instanceof SnapshotRefusal) throw new HostError("snapshot-refused", e.message);
+      throw e;
+    }
+    const tSwap = monotonic();
+    let done!: () => void;
+    swapping = new Promise<void>((resolve) => (done = resolve));
+    try {
+      await stop();
+      while (apiInFlight > 0) await new Promise((resolve) => setTimeout(resolve, 5));
+      store = undefined;
+      let opened: OpenedStore;
+      try {
+        opened = await replaceStore(s, prepared, opener, snapshotFiles);
+        await adoptStore(opened.store);
+      } catch (e) {
+        bootState.phase = "failed";
+        bootState.error = `the store could not be opened again after a snapshot import: ${messageOf(e)}`;
+        log("error", bootState.error);
+        announceBoot();
+        throw new HostError("snapshot-failed", bootState.error);
+      }
+      if (opened.failure !== null) {
+        log("error", `the snapshot could not be loaded and the store was opened empty: ${opened.failure}`);
+        throw new HostError("snapshot-failed", `${opened.failure}; the store was opened empty`);
+      }
+      lastImport = snapshotRecord(prepared.manifest, clock.now(), prepared.file.length);
+      log("info", `imported a snapshot of ${prepared.manifest.network} up to ${prepared.manifest.archive.height} (${prepared.file.length} bytes)`);
+    } finally {
+      swapping = undefined;
+      done();
+    }
+    const swapMs = Math.round((monotonic() - tSwap) * 10) / 10;
+    return { manifest: prepared.manifest, timings: { ...prepared.timings, swapMs, totalMs: Math.round((monotonic() - t0) * 10) / 10 }, status: await status() };
+  }
+
   /** Runs start/stop one at a time, in arrival order. */
   function serial<T>(fn: () => Promise<T>): Promise<T> {
     const p = lifecycle.then(fn);
@@ -383,18 +500,28 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   async function perform(r: Request): Promise<unknown> {
     switch (r.type) {
       case "status":
+        while (swapping !== undefined) await swapping;
         return status();
-      case "api":
-        await ready();
-        return (active ?? idleApi!).handle(r.method, r.target);
+      case "api": {
+        while (swapping !== undefined) await swapping;
+        apiInFlight++;
+        try {
+          await ready();
+          return await (active ?? idleApi!).handle(r.method, r.target);
+        } finally {
+          apiInFlight--;
+        }
+      }
+      case "export":
+        return serial(() => exportStore());
+      case "import":
+        return serial(() => importStore(r.snapshot));
       case "start":
         return serial(() => start(r.config));
       case "stop":
         return serial(() => stop());
       case "range":
       case "reset":
-      case "export":
-      case "import":
         throw new HostError("not-implemented", `${r.type} is not implemented by this worker`);
     }
   }

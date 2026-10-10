@@ -39,6 +39,9 @@ export interface Store {
   /** Client of the `mip0018` schema. */
   readonly mip0018: UmbraDBSql;
   close(): Promise<void>;
+  /** Closes PGlite and hands over the store's lock still held (`undefined` for a store opened without one), for a
+   *  caller that replaces the store's files and opens it again with {@link OpenStoreOptions.lock}. */
+  detach(): Promise<HeldLock | undefined>;
 }
 
 function clientFor(pglite: PGlite, schema: string): UmbraDBSql {
@@ -68,6 +71,14 @@ export interface OpenStoreOptions {
   storage?: { getDirectory?: () => Promise<FileSystemDirectoryHandle> };
   /** Default {@link STORE_OPEN_WAIT_MS}. */
   waitMs?: number;
+  /** The store's lock, already held (from {@link Store.detach}): it is kept instead of taking the lock again. */
+  lock?: HeldLock;
+  /**
+   * Runs under the store's lock before PGlite opens the store. It may return a data directory (a tar of `PGDATA`, as
+   * PGlite's `dumpDataDir` writes it) for PGlite to load into the store, whose files it has removed: a snapshot import
+   * (`snapshot-store.ts`).
+   */
+  prepare?: (dataDir: string) => Promise<Blob | undefined | void>;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -124,14 +135,15 @@ export async function openStore(dataDir: string, options: OpenStoreOptions = {})
   const locks = options.locks ?? defaultLocks();
   const waitMs = options.waitMs ?? STORE_OPEN_WAIT_MS;
   const deadline = Date.now() + waitMs;
-  const lock = persistent && locks !== undefined ? await acquireStoreLock(dataDir, locks, waitMs) : undefined;
+  const lock = options.lock ?? (persistent && locks !== undefined ? await acquireStoreLock(dataDir, locks, waitMs) : undefined);
   let pglite: PGlite;
   let existed: boolean;
   try {
     if (persistent) await waitForStoreFiles(dataDir, options.storage ?? globalThis.navigator?.storage, deadline);
+    const load = await options.prepare?.(dataDir);
     existed = await storeExists(dataDir, options.storage);
     const { PGlite } = await import("@electric-sql/pglite");
-    pglite = await PGlite.create({ dataDir });
+    pglite = await PGlite.create(load instanceof Blob ? { dataDir, loadDataDir: load } : { dataDir });
   } catch (e) {
     lock?.release();
     throw e;
@@ -148,6 +160,15 @@ export async function openStore(dataDir: string, options: OpenStoreOptions = {})
       } finally {
         lock?.release();
       }
+    },
+    detach: async () => {
+      try {
+        await pglite.close();
+      } catch (e) {
+        lock?.release();
+        throw e;
+      }
+      return lock;
     },
   };
 }
