@@ -134,8 +134,12 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   files; reopening the page releases it), and Chrome refuses a write once usage, reservations included, would pass the
   quota, so the reported usage is what decides. The sync pauses once usage ≥ quota − max(256 MiB, 10 % of the quota)
   and resumes once usage is 32 MiB under that, read every 30 s while paused; the scan and the API keep running. The
-  reading (usage, quota, the threshold, the size of the store's files from an OPFS walk, `persisted`, the pause and its
-  reason) is `status`'s `storage`, and the system snapshot's storage provider.
+  reading (usage, quota, the threshold, `persisted`, the pause and its reason, and the size of the store's files) is
+  `status`'s `storage`, and the system snapshot's storage provider. The boot takes the first reading before `ready`, so
+  `storage` is `null` only before then. A reading is the estimate and `persisted()`, each given 5 s (a late one counts
+  as unknown); the size comes from an OPFS walk of the store's files that runs beside the readings (about 1,300 files
+  in a new store: a fraction of a second, seconds on a busy machine), so `storeBytes` is `null` until the first walk
+  ends.
 
 ## Build settings
 

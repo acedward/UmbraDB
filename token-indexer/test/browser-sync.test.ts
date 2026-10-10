@@ -151,6 +151,9 @@ describe("browser engine: automatic start at the finalized tip in Chrome", () =>
     site.chain = chainDown;
     const booted = await d.open();
     expect(booted.store).toMatchObject({ created: true });
+    // A ready worker's status always carries a storage reading (the boot takes the first one before ready).
+    expect(booted.storage).toMatchObject({ paused: false, pausedReason: null });
+    expect(booted.storage!.checkedAt).not.toBeNull();
     expect(booted.settings).toEqual({ config: START, autoStart: true });
     const waiting = await d.until("the tip read to fail twice", (s) => s.engine?.running === true && s.engine.status.sync.failures >= 2, 30_000);
     expect(waiting.engine!.config).toEqual(START);
