@@ -89,6 +89,9 @@ export const ERROR_CODES = [
   "already-running",
   /** The engine refused the configuration or failed while starting. */
   "start-failed",
+  /** `start`, `stop`, `module`: the browser refused to save the settings. The message says what became of the change:
+   *  `start` and `module` changed nothing; `stop` stopped the engine, which starts again at the next boot. */
+  "settings-failed",
   /** An unexpected failure inside the worker. */
   "internal",
   /** `import`: the snapshot does not match this engine or is damaged; `export`: the archive is empty. The message starts

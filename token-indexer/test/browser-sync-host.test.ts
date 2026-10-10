@@ -9,6 +9,10 @@
  *   one (a new store: the default configuration), as the leader tab does once the worker has booted; a reopened store
  *   resumes at its cursor through the gap (every height fetched once, the first height kept); a `stop` turns the
  *   automatic start off until the next `start`.
+ * - `[[browser.host.start-stop-unsaved]]` — a `start` whose settings the browser refuses to save is refused (nothing
+ *   runs, nothing is saved); a `start` that fails once its settings were saved puts them back; a `stop` always stops
+ *   the engine and, when the setting that keeps it stopped cannot be saved, answers so, the status keeping the
+ *   automatic start on.
  * - `[[browser.tabs.auto-start]]` — the leader tab's default resume: the previous leader's running configuration, else
  *   the saved configuration when it says to start by itself, else nothing; never with the build's automatic start off.
  * - `[[browser.host.range-reset]]` — `range` replaces the store with a new one and starts the new range (a range whose
@@ -201,6 +205,62 @@ describe("browser engine host: sync", () => {
     const again = await result<HostStatus>(c, "start");
     expect(again.engine).toMatchObject({ running: true, config: net });
     expect(again.settings).toEqual({ config: net, autoStart: true });
+  }, 120_000);
+
+  it("[[browser.host.start-stop-unsaved]] a start whose settings cannot be saved starts nothing and changes nothing; a start that fails once its settings were saved puts them back; a stop always stops the engine and says when the setting that keeps it stopped could not be saved, the status keeping the automatic start on", async () => {
+    const saved = memorySettingsStore();
+    let failing = false;
+    let tapeFails = false;
+    const h = newHost({
+      settings: {
+        ...saved,
+        save: async (x) => {
+          if (failing) throw Object.assign(new Error("the quota is exceeded"), { name: "QuotaExceededError" });
+          await saved.save(x);
+        },
+      },
+      loadTape: (range) => (tapeFails ? Promise.reject(new Error("the file is not reachable")) : loadTape(range, fileFetch)),
+    });
+    const config: StartConfig = { source: { kind: "tape", range: "u1" }, startHeight: U1.from, endHeight: U1.from + 5, ...FAST };
+    const other: StartConfig = { ...config, endHeight: U1.from + 9 };
+    await result(h, "start", { config });
+    await until(h, "the range", (s) => s.cursors?.scan?.nextHeight === U1.from + 6);
+    await result(h, "stop");
+    const stopped = { config, autoStart: false };
+    expect(await saved.load()).toEqual(stopped);
+
+    // The settings cannot be saved: the start is refused, nothing runs, nothing is saved.
+    failing = true;
+    expect(await errorOf(h, "start", { config: other })).toEqual({
+      code: "settings-failed",
+      message: "the configuration to start could not be saved (the quota is exceeded): the engine was not started",
+    });
+    failing = false;
+    let s = await result<HostStatus>(h, "status");
+    expect(s.engine).toMatchObject({ running: false, config });
+    expect(s.settings).toEqual(stopped);
+    expect(await saved.load()).toEqual(stopped);
+
+    // The engine fails to start once its settings were saved: they are put back.
+    tapeFails = true;
+    expect((await errorOf(h, "start", { config: other })).code).toBe("start-failed");
+    tapeFails = false;
+    expect((await result<HostStatus>(h, "status")).settings).toEqual(stopped);
+    expect(await saved.load()).toEqual(stopped);
+
+    // A stop whose setting cannot be saved: the engine stops; the answer says it starts again at the next boot.
+    expect((await result<HostStatus>(h, "start", { config })).engine).toMatchObject({ running: true, config });
+    expect(await saved.load()).toEqual({ config, autoStart: true });
+    failing = true;
+    expect(await errorOf(h, "stop")).toEqual({
+      code: "settings-failed",
+      message: "the engine is stopped, but turning its automatic start off could not be saved (the quota is exceeded): the next page to open the engine starts it again",
+    });
+    failing = false;
+    s = await result<HostStatus>(h, "status");
+    expect(s.engine).toMatchObject({ running: false, config });
+    expect(s.settings).toEqual({ config, autoStart: true });
+    expect(await saved.load()).toEqual({ config, autoStart: true });
   }, 120_000);
 
   it("[[browser.host.range-reset]] range replaces the store and starts the new range; reset runs it again to the same digests; range tip follows again; a reopened store keeps the range's end", async () => {

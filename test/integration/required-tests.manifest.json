@@ -1,5 +1,5 @@
 {
-  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 371), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
+  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 373), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
   "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` — those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early — that would re-open the exact self-skip hole this manifest closes.",
   "required": [
     {
@@ -1188,6 +1188,11 @@
       "description": "a start with no start height begins at the finalized tip; a start with no configuration runs the saved one; a reopened store resumes at its cursor through the gap; a stop turns the automatic start off"
     },
     {
+      "id": "browser.host.start-stop-unsaved",
+      "file": "token-indexer/test/browser-sync-host.test.ts",
+      "description": "a start whose settings cannot be saved starts nothing and changes nothing; a start that fails once its settings were saved puts them back; a stop always stops the engine and says when the setting that keeps it stopped could not be saved, the status keeping the automatic start on"
+    },
+    {
       "id": "browser.host.range-reset",
       "file": "token-indexer/test/browser-sync-host.test.ts",
       "description": "range drops the data and starts the new range; reset runs it again to the same digests; range tip follows again; a reopened store keeps the range's end"
@@ -1746,6 +1751,11 @@
       "id": "browser.host.module-saved",
       "file": "token-indexer/test/browser-modules.test.ts",
       "description": "the module's state is saved with the settings: a new host on the same store starts with the scan off and the archive syncing; a module that is not switchable is refused; module is never sent again to a new leader, tables and rows are"
+    },
+    {
+      "id": "browser.host.module-unsaved",
+      "file": "token-indexer/test/browser-modules.test.ts",
+      "description": "a module switch whose settings cannot be saved is refused and changes nothing: the running scan goes on, the status and the saved settings keep the module on, and the next host (a reload, a restarted worker, the next leader tab) runs it on, as acknowledged"
     },
     {
       "id": "browser.host.store-replaced",

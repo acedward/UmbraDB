@@ -25,16 +25,16 @@
  *
  * **Requests** (`protocol.ts`): `status` answers at any time; `api` waits for the boot and answers through the running
  * engine's API handler, or, while no engine runs, a handler of the same store with no loops (`scanner: "off"`);
- * `start` runs a new engine (sync + scan in follow mode) with the given configuration, or the saved one, `stop` stops
- * it; `range` saves the new range, then replaces the store with a new, empty one and starts the range, `reset` does the
+ * `start` saves the given configuration, or the saved one, with the automatic start on and runs a new engine (sync +
+ * scan in follow mode) with it, `stop` stops it; `range` saves the new range, then replaces the store with a new, empty one and starts the range, `reset` does the
  * same with the saved configuration (replacing the store: PGlite is closed, every file of the store is removed, and
  * the boot runs again from its store phase, so nothing of the old database survives); all four run one at a time, in
  * arrival order. `digest` computes the store's archive and range-tables digests
  * in one read-only transaction (the loops wait for it); `system` watches or refreshes the system snapshot and `watchdog`
  * sets the page's watchdog and starts the heartbeat (`host-system.ts`). `module` switches the token indexer (the
  * MIP-0018 scan) off or on: off, the running engine's scan stops at a block boundary while its sync goes on; on, it
- * continues from its cursor; the choice is saved with the settings (every save of the settings keeps it, also before
- * and after the store is replaced), and every engine the host runs afterwards (a `start`, a reopen, a replaced store,
+ * continues from its cursor; the choice is saved with the settings before anything is switched (every save of the
+ * settings keeps it, also before and after the store is replaced), and every engine the host runs afterwards (a `start`, a reopen, a replaced store,
  * the next worker or tab) starts with it. `tables` and `rows` read the store's catalog and a page of one of its tables
  * for the Database tab (`store-tables.ts`), between the engine's transactions; while the store is replaced they wait
  * for the new one (or answer `boot-failed` when the replacement fails).
@@ -65,7 +65,10 @@
  * **Saved configuration** (`settings.ts`): the last `start` configuration or `range`, kept beside the store, and
  * whether the engine should start by itself (`autoStart`; a `stop` request turns it off until the next `start`). A
  * `start` with no configuration runs it; the leader tab sends one when its worker has booted (`tabs.ts`), so a new
- * store starts at the tip and a reopened one resumes, a chosen range keeping its end.
+ * store starts at the tip and a reopened one resumes, a chosen range keeping its end. What the next worker runs comes
+ * from these settings alone, so a change is answered only once it is saved: a `start` or `module` the browser refuses
+ * to save changes nothing (`settings-failed`); a `stop` always stops the engine and answers `settings-failed` when
+ * staying stopped could not be saved.
  *
  * **Storage** (`quota.ts`): the boot takes the first reading of the browser's usage and quota before `ready`, so every
  * `status` of a ready worker reports one (`storage`); before each sync batch the guard reads them again and pauses the
@@ -341,7 +344,9 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     modules = m ?? {};
     return rest;
   }
-  const withModules = (s: EngineSettings): EngineSettings => (Object.keys(modules).length === 0 ? s : { ...s, modules: { ...modules } });
+  const withModules = (s: EngineSettings, m: typeof modules = modules): EngineSettings => (Object.keys(m).length === 0 ? s : { ...s, modules: { ...m } });
+  /** Saves `next` with the modules `m` (default: the current ones); rejects when the browser refuses the write. */
+  const writeSettings = (next: EngineSettings, m: typeof modules = modules): Promise<void> => settingsStore.save(withModules(next, m));
   /** Whether the token indexer (the MIP-0018 scan) is on. */
   const scanEnabled = (): boolean => modules["token-indexer"] ?? true;
   const quota = createQuotaGuard({
@@ -763,30 +768,41 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     return base(kind, step);
   };
 
-  /** Starts `config` (or the saved configuration) and saves it, with the automatic start on. */
+  /** Saves `config` (or the saved configuration) with the automatic start on, then runs it: a start the browser refuses
+   *  to save starts nothing, and an engine that fails to start puts the settings before it back. */
   async function start(config: StartConfig | undefined): Promise<HostStatus> {
     const s = await ready();
     if (active !== undefined) throw new HostError("already-running", "the engine is running; stop it first");
     const effective = config ?? saved?.config ?? opts.defaultStart ?? {};
-    await run(s, effective);
-    saved = { config: effective, autoStart: true };
-    await saveSettings();
-    return status();
-  }
-
-  async function saveSettings(): Promise<void> {
+    const before = saved;
+    const next = { config: effective, autoStart: true };
     try {
-      if (saved !== undefined) await settingsStore.save(withModules(saved));
+      await writeSettings(next);
     } catch (e) {
-      log("warn", `the engine settings could not be saved: ${messageOf(e)}`);
+      throw new HostError("settings-failed", `the configuration to start could not be saved (${messageOf(e)}): the engine was not started`);
     }
+    saved = next;
+    try {
+      await run(s, effective);
+    } catch (e) {
+      if (before !== undefined) {
+        try {
+          await writeSettings(before);
+          saved = before;
+        } catch (e2) {
+          log("warn", `the settings before the failed start could not be saved again: ${messageOf(e2)}`);
+        }
+      }
+      throw e;
+    }
+    return status();
   }
 
   /** Saves `next` as the saved configuration before the store is replaced (`range`, `reset`), so that a worker that ends
    *  meanwhile starts it on the new store; fails (and nothing is changed) when it cannot be saved. */
   async function saveBeforeReplacing(next: EngineSettings, what: string): Promise<void> {
     try {
-      await settingsStore.save(withModules(next));
+      await writeSettings(next);
     } catch (e) {
       throw new HostError("start-failed", `${what} could not be saved (${messageOf(e)}): nothing was changed`);
     }
@@ -882,12 +898,18 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     }
   }
 
-  /** A `stop` request: halts the engine and turns the automatic start off until the next `start`. */
+  /** A `stop` request: halts the engine and turns the automatic start off until the next `start`. The engine stops
+   *  even when the browser refuses to save that; the answer then says so (the saved settings still start it). */
   async function stop(): Promise<HostStatus> {
     await halt();
     if (saved !== undefined && saved.autoStart && bootState.phase === "ready") {
-      saved = { ...saved, autoStart: false };
-      await saveSettings();
+      const next = { ...saved, autoStart: false };
+      try {
+        await writeSettings(next);
+      } catch (e) {
+        throw new HostError("settings-failed", `the engine is stopped, but turning its automatic start off could not be saved (${messageOf(e)}): the next page to open the engine starts it again`);
+      }
+      saved = next;
     }
     return status();
   }
@@ -926,12 +948,18 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     return start(undefined);
   }
 
-  /** A `module` request: switches the module and saves the choice with the settings; a running engine follows at once
-   *  (switched off, the answer comes once its scan has stopped at a block boundary). */
+  /** A `module` request: saves the choice with the settings, then switches the module; a running engine follows at once
+   *  (switched off, the answer comes once its scan has stopped at a block boundary). A choice the browser refuses to
+   *  save changes nothing. */
   async function setModule(module: ModuleId, enabled: boolean): Promise<HostStatus> {
     await ready();
-    modules = { ...modules, [module]: enabled };
-    await saveSettings();
+    const next = { ...modules, [module]: enabled };
+    try {
+      await writeSettings(saved ?? { config: opts.defaultStart ?? {}, autoStart: true }, next);
+    } catch (e) {
+      throw new HostError("settings-failed", `the token indexer's switch could not be saved (${messageOf(e)}): nothing was changed`);
+    }
+    modules = next;
     await active?.setScanEnabled(enabled);
     log("info", enabled
       ? "the token indexer is on: the MIP-0018 scan continues from its cursor"
@@ -963,7 +991,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     const config: StartConfig = { ...(saved?.config ?? opts.defaultStart ?? {}), startHeight: manifest.archive.startHeight ?? manifest.archive.height };
     delete config.endHeight;
     const next = { config, autoStart: false };
-    await settingsStore.save(withModules(next));
+    await writeSettings(next);
     saved = next;
   }
 

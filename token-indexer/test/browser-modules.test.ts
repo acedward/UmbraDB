@@ -13,6 +13,9 @@
  * - `[[browser.host.module-saved]]` — the choice is saved with the settings: a new host on the same store (a reload, the
  *   next leader tab) starts its engine with the scan off and the archive syncing; `module` refuses a module that is not
  *   switchable; `module` is never sent again to a new leader (it changes state), `tables` and `rows` are.
+ * - `[[browser.host.module-unsaved]]` — a switch whose settings the browser refuses to save is refused and changes
+ *   nothing: the running scan goes on, the status and the saved settings keep the module on, and the next host on the
+ *   store (a reload, a restarted worker, the next leader tab) runs it on.
  * - `[[browser.host.store-replaced]]` — a store replaced by `range`, `reset` or `import` keeps the saved switch: the new
  *   store's engine runs with the scan off; `tables` and `rows` sent while the store is replaced are answered (they wait
  *   for the new store) and, once it is in place, from it; when a replacement fails they get an error answer, never a
@@ -279,6 +282,44 @@ describe("the indexer's modules and the store's tables in the browser engine", (
     expect(REPEATABLE_REQUEST_TYPES.has("module")).toBe(false);
     expect(REPEATABLE_REQUEST_TYPES.has("tables")).toBe(true);
     expect(REPEATABLE_REQUEST_TYPES.has("rows")).toBe(true);
+  }, 120_000);
+
+  it("[[browser.host.module-unsaved]] a module switch whose settings cannot be saved is refused and changes nothing: the running scan goes on, the status and the saved settings keep the module on, and the next host (a reload, a restarted worker, the next leader tab) runs it on, as acknowledged", async () => {
+    const dir = storeDir();
+    const saved = memorySettingsStore();
+    let failing = false;
+    const settings = {
+      ...saved,
+      save: async (x: Parameters<typeof saved.save>[0]) => {
+        if (failing) throw Object.assign(new Error("the quota is exceeded"), { name: "QuotaExceededError" });
+        await saved.save(x);
+      },
+    };
+    // A finalized tip that rises one block every 100 ms: the archive and the scan go on while the switch is refused.
+    const config: StartConfig = { source: { kind: "tape", range: "u1", finalizedHeight: U1.from + 4, advance: { everyMs: 100, by: 1 } }, startHeight: U1.from, ...FAST };
+    const a = newHost({ dataDir: dir, settings });
+    await result(a.host, "start", { config });
+    const before = await until(a.host, "the scan's first blocks", (s) => (s.cursors?.scan?.nextHeight ?? 0) > U1.from + 2);
+    failing = true;
+    expect(await errorOf(a.host, "module", { module: "token-indexer", enabled: false })).toEqual({
+      code: "settings-failed",
+      message: "the token indexer's switch could not be saved (the quota is exceeded): nothing was changed",
+    });
+    failing = false;
+    const after = await result<HostStatus>(a.host, "status");
+    expect(after.settings).toEqual({ config, autoStart: true });
+    expect(after.engine!.status.scan.scanner).toBe("following");
+    expect(await saved.load()).toEqual({ config, autoStart: true });
+    await until(a.host, "the scan going on", (s) => s.cursors!.scan!.nextHeight > before.cursors!.scan!.nextHeight);
+    await closeHost(a.host);
+
+    // The next host on the same store and settings runs the token indexer, as the refused switch left it.
+    const b = newHost({ dataDir: dir, settings: saved });
+    await b.host.boot();
+    expect((await result<HostStatus>(b.host, "status")).settings).toEqual({ config, autoStart: true });
+    await result(b.host, "start");
+    await until(b.host, "the scan on the next host", (s) => s.cursors?.scan?.nextHeight === U1.to + 1);
+    expect((await result<HostStatus>(b.host, "status")).engine!.status.scan.scanner).toBe("following");
   }, 120_000);
 
   it("[[browser.host.store-replaced]] a store replaced by range, reset or import keeps the saved switch (the new store's engine runs with the scan off); tables and rows sent while the store is replaced are answered, from the new store once it is in place; when a replacement fails they get an error answer, never a rejection", async () => {

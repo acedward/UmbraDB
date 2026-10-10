@@ -184,8 +184,8 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 |---|---|---|
 | `status` | — | boot state, store facts (data directory, created, PostgreSQL version, `fsync`, durability, applied migrations), the last engine's configuration and loop status, the stored cursors, the saved configuration (`settings`) and the storage reading (`storage`) |
 | `api` | `method`, `target` | the API's answer `{ status, headers, body }` (`../API.md`) |
-| `start` | `config?`: `source` (`{ kind: "network", nodeUrl?, indexerUrl? }` or `{ kind: "tape", range: "idx" \| "u1", finalizedHeight?, advance? }`), `startHeight?` (a height or `"tip"`, the default), `endHeight?`, `sync?` (`maxBlocks`, `concurrency`, `minIntervalMs`, `idleMs`, `backoff`), `scan?`; omitted: the saved configuration | status |
-| `stop` | — | status; the engine no longer starts by itself until the next `start` |
+| `start` | `config?`: `source` (`{ kind: "network", nodeUrl?, indexerUrl? }` or `{ kind: "tape", range: "idx" \| "u1", finalizedHeight?, advance? }`), `startHeight?` (a height or `"tip"`, the default), `endHeight?`, `sync?` (`maxBlocks`, `concurrency`, `minIntervalMs`, `idleMs`, `backoff`), `scan?`; omitted: the saved configuration | status: the configuration is saved (with the automatic start on), then it runs; a configuration the browser refuses to save starts nothing (`settings-failed`), and an engine that fails to start puts the settings before it back |
+| `stop` | — | status; the engine no longer starts by itself until the next `start`. The engine always stops; when the browser refuses to save that it should stay stopped, the answer is `settings-failed` (the next page to open the engine starts it again) |
 | `range` | `startHeight` (a height or `"tip"`), `endHeight?` | status: the new range is saved, the store is replaced by a new one, and the range starts (source and tuning from the saved configuration) |
 | `reset` | — | status: the store is replaced by a new one and the saved configuration starts again |
 | `digest` | — | the store's archive digest (the 7 `chain_archive` tables, `chain-archive-sync/archive-digest.ts`) and the digest of every table of both schemas (`../engine/range-tables.ts`), read in one read-only transaction |
@@ -193,12 +193,13 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | `{ limitMs, heartbeatMs }` |
 | `export` | — | a snapshot file of the store (`Blob`), its suggested name, its manifest, its size and timings (see Snapshots) |
 | `import` | `snapshot`: a snapshot file (`Blob`, a picked `File`) | the imported manifest, timings and status: the store is the snapshot's, the engine is stopped (see Snapshots) |
-| `module` | `module` (`token-indexer`, the one switchable module), `enabled` | status: the choice saved with the settings (`settings.modules`); a running engine's MIP-0018 scan stops at a block boundary while the sync goes on (answered once it has stopped), or continues from its cursor; every engine the worker runs later starts with it, also on a store that `range`, `reset` or `import` replaced |
+| `module` | `module` (`token-indexer`, the one switchable module), `enabled` | status: the choice saved with the settings (`settings.modules`), before anything is switched (a choice the browser refuses to save changes nothing: `settings-failed`); a running engine's MIP-0018 scan stops at a block boundary while the sync goes on (answered once it has stopped), or continues from its cursor; every engine the worker runs later starts with it, also on a store that `range`, `reset` or `import` replaced |
 | `tables` | — | each schema's tables (name, kind, the table it is a partition of, estimated rows, size) and the database's size, from the catalog |
 | `rows` | `schema`, `table`, `limit?` (1–100, default 25), `offset?` (0–10,000) | the columns (name, type), the order (the primary key's columns, descending; empty: physical order, last written first), the page's values (`null`, `bytes`: hex of the first 16 bytes and the length, `text`: the first 256 characters and the length) and whether more follow; a schema or table that is not the store's is refused (`bad-request`) |
 
 Error codes: `bad-request`, `unsupported-version`, `unknown-type`, `not-implemented`, `unsupported-browser`,
-`boot-failed`, `already-running`, `start-failed`, `internal`, `snapshot-refused` (the message starts with the reason;
+`boot-failed`, `already-running`, `start-failed`, `settings-failed` (the browser refused to save the settings: `start`
+and `module` changed nothing, `stop` stopped the engine), `internal`, `snapshot-refused` (the message starts with the reason;
 nothing changed) and `snapshot-failed` (a checked snapshot could not be loaded; the store was opened empty); the client
 adds `bad-response`, `worker-error`, `restarted` and `closed`, and a page sharing the engine with other tabs also
 `leader-changed` and `leader-unavailable` (see Tabs). Notices: `boot` (each phase), `engine` (`running`, `stopped`,
