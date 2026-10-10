@@ -10,13 +10,15 @@
  *   snapshot: archive digest `cb0d5e21…` and range-tables digest `af6583d0…c832c` (the worker's `digest`), the API
  *   answers as in the first profile. A third profile imports the 714800 snapshot and starts the sync over the network
  *   source: the first height it requests is 714801 and none at or below 714800, and the finished store has the same two
- *   digests.
+ *   digests. The page's watchdog restarts no worker meanwhile.
  * - `[[browser.worker.snapshot-refusals]]` — snapshots of another network, schema version or PGlite version, with a
  *   changed byte or cut short, are refused by the worker with their reasons, and the store is unchanged.
  * - `[[browser.worker.published-snapshot]]` — a new profile with no chain loads the build's published snapshot (fetched
  *   from the site, checked against `snapshots/index.json`): the API answers 714485–715183 with the recorded digests, no
  *   chain request was made, every request went to the site's origin, and no CSP violation was reported (page or
  *   worker). The snapshot was made in Node: a data directory PGlite dumped in Node loads in Chrome.
+ * - `[[browser.worker.snapshot-follower]]` — a follower tab imports the published snapshot and exports the store through the
+ *   leader tab's worker: the file crosses the tabs' BroadcastChannel as a parameter and as a result.
  * - `[[browser.worker.snapshot-recovery]]` — a profile's store holds an import journal and damaged files when the engine
  *   page opens (as when a worker ended mid-import): the boot finishes the import from the journal before PGlite opens
  *   the store, removes the journal, reports the import, and saves the configuration that continues it.
@@ -155,6 +157,7 @@ describe("browser engine snapshots in Chrome", () => {
     const fullExport = await exportFrom(a.d);
     full = fullExport.bytes;
     fullAnswers = await answers(a.d);
+    expect(await a.page.eval("window.umbradbEngine.restarts()")).toEqual([]);
     expect((await a.d.status()).snapshots.lastExport).toMatchObject({ sha256: fullExport.meta.manifest.data.sha256, bytes: full.length, manifest: { height: IDX.to } });
     report.exportFull = { bytes: full.length, tarBytes: fullExport.meta.manifest.data.tarBytes, timings: fullExport.meta.timings };
     await closeProfile(a.browser);
@@ -172,6 +175,7 @@ describe("browser engine snapshots in Chrome", () => {
     expect(bDigest.tables).toEqual(aDigest.tables);
     expect(await answers(b.d)).toEqual(fullAnswers);
     expect(site.chainRequests).toEqual([]);
+    expect(await b.page.eval("window.umbradbEngine.restarts()")).toEqual([]); // the page's watchdog never fired
     await closeProfile(b.browser);
 
     // Profile C: the partial snapshot, then the sync over the network source (the site answers from the IDX tape).
@@ -195,6 +199,7 @@ describe("browser engine snapshots in Chrome", () => {
     expect(cDigest.archive.sha256).toBe(ARCHIVE);
     expect(cDigest.tables.sha256).toBe(TABLES);
     expect(await answers(c.d)).toEqual(fullAnswers);
+    expect(await c.page.eval("window.umbradbEngine.restarts()")).toEqual([]);
     await closeProfile(c.browser);
     site.chain = chainDown;
   }, 600_000);
@@ -263,6 +268,23 @@ describe("browser engine snapshots in Chrome", () => {
     expect(await p.page.eval("window.__cspViolations")).toEqual([]);
     expect(await p.page.evalWorker("self.__cspViolations")).toEqual([]);
     await closeProfile(p.browser);
+  }, 300_000);
+
+  it("[[browser.worker.snapshot-follower]] a follower tab exports and imports through the leader: the snapshot file crosses BroadcastChannel both ways", async () => {
+    const leader = await profile();
+    await leader.d.open();
+    const follower = await leader.browser.newPage();
+    const f = engineDriver(follower, () => site);
+    await f.open();
+    await follower.waitFor("window.umbradbEngine.tabs.role() === 'follower'", 30_000, "the follower role");
+    const r = await f.engine(`window.umbradbEngine.snapshots.published("idx").then((file) => c.import(file)).then((r) => ({ ok: true, height: r.manifest.archive.height, cursors: r.status.cursors }), (e) => ({ ok: false, message: e.code + " " + e.message }))`);
+    expect(r, JSON.stringify(r)).toMatchObject({ ok: true, height: IDX.to, cursors: { sync: { height: IDX.to } } });
+    expect((await leader.d.status()).cursors?.sync?.height).toBe(IDX.to);
+    const exported = await f.engine("c.export().then(async (x) => ({ isBlob: x.file instanceof Blob, size: x.file.size, bytes: x.bytes, height: x.manifest.archive.height }))");
+    expect(exported).toMatchObject({ isBlob: true, height: IDX.to });
+    expect(exported.size).toBe(exported.bytes);
+    expect(await follower.eval("window.umbradbEngine.worker === undefined")).toBe(true);
+    await closeProfile(leader.browser);
   }, 300_000);
 
   it("[[browser.worker.snapshot-recovery]] an import journal beside a damaged store is finished by the next boot before PGlite opens the store", async () => {

@@ -297,5 +297,5 @@ latency, the last 200 log lines, watchdog restarts, PGlite reopens, failed state
 The snapshot's schema is `../engine/system-snapshot.ts` (versioned, strict). The build defines its facts (app commit,
 PGlite and ledger versions; `vite.config.ts`). The storage section is the storage guard's reading (`quota.ts`), the
 start mode and the automatic start come from the saved configuration, the connected tabs from the tab locks; the
-role is `leader` in the worker (a follower tab marks what it relays). No snapshot export or import is recorded yet.
-
+role is `leader` in the worker (a follower tab marks what it relays). The snapshots section is the worker's last
+snapshot export and import (see Snapshots).

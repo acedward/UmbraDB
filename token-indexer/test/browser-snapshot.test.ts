@@ -14,7 +14,7 @@
  *   store holds the same data (equal archive and range-tables digests, the manifest's cursors, the same API answers);
  *   the saved configuration continues the archive with the automatic start off; a start then requests height H + 1
  *   first and nothing at or below H, and the finished store equals an uninterrupted run (U1's recorded live archive
- *   digest).
+ *   digest). The system snapshot's Snapshots section holds the same export and import records as `status`.
  * - `[[browser.snapshot.consistent]]` — exports taken while the sync and the scan write are each one state: every
  *   export's manifest equals its own data (cursors, block hash, migrations), its heights never go back, and the session
  *   was held only for the read.
@@ -322,6 +322,10 @@ describe("browser engine snapshots", () => {
     expect(await result<DigestResult>(b, "digest")).toEqual({ ...before, elapsedMs: expect.any(Number) });
     expect(await answers(b)).toEqual(aAnswers);
     expect(JSON.parse(await apiBody(b, "/v1/status"))).toMatchObject({ startHeight: U1.from, indexedHeight: MID });
+    // The system snapshot's Snapshots section shows the same records (the source's export, this store's import).
+    const sys = async (h: WorkerHost) => (await result<{ snapshot: { snapshots: unknown } }>(h, "system", { refresh: {} })).snapshot.snapshots;
+    expect(await sys(a)).toEqual((await result<HostStatus>(a, "status")).snapshots);
+    expect(await sys(b)).toEqual({ lastExport: null, lastImport: imported.status.snapshots.lastImport });
     expect(requests).toEqual([]); // the import read nothing from the chain
 
     // A start with the saved configuration continues at H + 1.
