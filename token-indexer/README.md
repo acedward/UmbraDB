@@ -133,19 +133,21 @@ tables and a page of rows of any of them.
   from H on. While the endpoints are unreachable the engine waits with back-off; it never starts at genesis. A
   reopened page continues at the stored cursor and fetches every block since, leaving no gap.
 - **Ranges and reset.** The overview starts and stops the engine, changes the range (a start height or `tip`, and an
-  optional end) and resets the store. One archive has no gaps, so a range change or a reset drops the stored blocks;
-  the overview offers to export a snapshot first.
+  optional end) and resets the store. One archive has no gaps, so a range change or a reset replaces the store with a
+  new one (its files removed, the database created again); the overview offers to export a snapshot first.
 - **Token Indexer off.** Unchecked in the Modules section, the MIP-0018 scan stops at a block boundary while the chain
   archive keeps syncing, and the Token Indexer tab is hidden; the API still answers from the stored data. Checked
-  again, the scan continues from its cursor and catches up. The choice is saved with the store's settings.
-- **Snapshots.** The overview exports the whole store as one file (a manifest and PGlite's data directory) and imports
-  one; an import is refused, with its reason, for another network, other migrations, another PGlite version or a
-  damaged file. After an import the engine is stopped; its next start continues at the snapshot's height + 1. The
+  again, the scan continues from its cursor and catches up. The choice is saved with the store's settings and kept
+  when the store is replaced (a range, a reset, an import).
+- **Snapshots.** The overview exports the rows of every table of the store as one file (a manifest and the rows) and
+  imports one into a new store made by this build's migrations (a file carries rows only, never code); an import is
+  refused, with its reason, for another network, other migrations, another PGlite version, rows that are not this
+  build's tables or do not load, or a damaged file. After an import the engine is stopped; its next start continues at the snapshot's height + 1. The
   build publishes the recorded range 714485–715183 as `snapshots/umbradb-stagenet-714485-715183.snapshot.tar`, checked
   against the recorded digests when it is built: save it from the site and pick it under "import snapshot" (or, from
   the console, `umbradbEngine.snapshots.published("idx").then((f) => umbradbEngine.client.import(f))`), and the
-  explorer answers for that range with no network. A snapshot is trusted as it is: its SHA-256 detects damage, not who
-  made it.
+  explorer answers for that range with no network. A snapshot's rows are trusted as they are: its SHA-256 detects
+  damage, not who made it.
 - **Several tabs.** One engine per store, however many tabs: the first tab leads and runs the worker, the others run
   none and send their requests to it, and the oldest takes over from the stored cursors when the leader closes. The
   overview marks each tab leader or follower.
@@ -248,7 +250,7 @@ required gate runs it too, on PostgreSQL with the runner's Chrome.
 | The engine's scan switch and the worker host's `module`, `tables` and `rows`: the scan off while the archive advances and on again to the recorded digests, the choice saved, every table listed and every first page equal to SQL, forged names and values that cannot be read refused | `test/browser-modules.test.ts` |
 | The static build's security headers: the policy and `_headers` the build writes for every page, the build-time chain, the worker's Trusted Types policy; in Chromium, the engine under the header and the meta policy with no violation and only allowed origins, and each refusal enforced (see `browser/README.md`) | `test/browser-csp-build.test.ts`, `test/browser-csp.test.ts` |
 | The browser engine's `system` snapshot and watchdog heartbeat in the worker host; in Chromium on OPFS, the snapshot against the store read by another page, a follower tab's snapshots, the watchdog's restart of a blocked worker with the recorded digests after it, and the API's round trips during a replay | `test/browser-system.test.ts`, `test/browser-engine-chrome.test.ts` |
-| The browser worker's session (time slices, failed statements, close), API requests between block transactions, the reopen before PGlite's failed-statement defect; the page's watchdog with a real slow statement on a worker thread and its rules, and what a restart starts (the engine last reported running: after a start with no configuration, a range, an import; the token indexer switched off stays off) | `test/browser-session.test.ts`, `test/browser-watchdog.test.ts`, `test/browser-watchdog-restore.test.ts` |
+| The browser worker's session (time slices, failed statements, close), API requests between block transactions, the reopen before PGlite's failed-statement defect; the page's watchdog with a real slow statement on a worker thread and its rules, and what a restart starts (the engine last reported running: after a start with no configuration, a range, an import, nothing after an import the restart interrupted; the token indexer switched off stays off) | `test/browser-session.test.ts`, `test/browser-watchdog.test.ts`, `test/browser-watchdog-restore.test.ts` |
 | The browser build computes what the Node build computes, in Chromium: the 110 MIP vectors through the PGlite store in a worker on OPFS; the recorded cases through the engine worker's API (each case at its own last block, the reference index, marks, activity); a crawl of the whole API equal to the Node handler's over the same range | `test/browser-parity.test.ts` |
 | The system status page: its view of a snapshot and the explorer's hidden-character rules; in Chromium on the static build with its headers, every section against its sources, each driven state, a follower tab, nothing read while hidden, hostile text, and the diagnostics file's schema and redaction (see `browser/README.md`) | `test/browser-system-page.test.ts`, `test/browser-system-page-chrome.test.ts` |
 | The dev server (`npm run dev:browser`): every stylesheet, icon and font the main page and the status page link served as what it is, never as a page; in Chromium, the dev main page styled (its font, the logo's size, the overview's grid) | `test/browser-dev-chrome.test.ts` |

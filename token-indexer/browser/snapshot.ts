@@ -1,6 +1,8 @@
 /**
- * The browser engine's snapshot file: a whole store (both schemas' data, as PGlite's data directory) plus a manifest
- * that says what it holds, in one file a user downloads and imports again (`snapshot-store.ts` makes and loads it).
+ * The browser engine's snapshot file: the rows of every table of the store (both schemas) plus a manifest that says
+ * what they are, in one file a user downloads and imports again (`snapshot-store.ts` makes and loads it). The file holds
+ * data only: nothing of a database (catalog, functions, triggers, settings or files) is ever taken from it. An import
+ * creates a new store with this build's migrations and loads the rows into it.
  *
  * **File:** an uncompressed POSIX tar (ustar) holding exactly two regular files, in this order (so `tar -tf` lists and
  * `tar -xf` extracts them):
@@ -8,17 +10,24 @@
  * | Entry | Content |
  * |---|---|
  * | `manifest.json` | the {@link SnapshotManifest}, UTF-8 JSON |
- * | `data.tar.gz` | PGlite's data directory (`dumpDataDir`): a ustar of `PGDATA`, gzip-compressed |
+ * | `rows.tar.gz` | the rows: a ustar, gzip-compressed, of entries named `<schema>.<table>.<n>.copy` (`n` = 000000, 000001, …), each a PostgreSQL binary `COPY` stream of whole rows of that table, in the manifest's columns |
  *
  * **Manifest:** the network (and its genesis hash), the last fully committed archive block (height and hash) and the
  * scan cursor at the same instant, the applied migrations of both schema lineages, the PGlite and Postgres versions,
- * the build's commit, and the data entry's size, uncompressed size and SHA-256.
+ * the build's commit, every table (`<schema>.<table>`, leaf partitions included) with its columns and its number of
+ * rows in the order the rows are loaded, the identity sequences' values, and the rows entry's size, uncompressed size
+ * and SHA-256.
  *
- * **Refusals** ({@link SnapshotRefusal}, each with a reason): the file is not a snapshot of this format (`format`), it is
- * cut short (`truncated`), it is of another network (`network`), its schema versions differ from this build's
- * (`schema`), it was written by another PGlite version (`pglite`), its data does not match the manifest's SHA-256
- * (`hash`), or its data does not unpack into a data directory that matches the manifest (`corrupt`). An export of an
+ * **Refusals** ({@link SnapshotRefusal}, each with a reason): the file is not a snapshot of this format and version
+ * (`format`; a snapshot of the earlier format, a whole database, is refused with a message that says so), it is cut
+ * short (`truncated`), it is of another network (`network`), its schema versions differ from this build's (`schema`),
+ * it was written by another PGlite version (`pglite`), its rows do not match the manifest's SHA-256 (`hash`), or its
+ * rows do not unpack, do not load into a store of this build, or do not match the manifest (`corrupt`). An export of an
  * archive with no block is refused as `empty`.
+ *
+ * **Bounds:** the rows are decompressed and parsed as a stream, never as a whole: an import holds at most one rows entry
+ * ({@link MAX_ROWS_ENTRY_BYTES}) besides the file, refuses the rows as soon as they unpack to more than the manifest's
+ * uncompressed size (itself at most {@link MAX_ROWS_TAR_BYTES}), and refuses anything after the tar's end marker.
  *
  * Runtime-neutral (a worker and Node): compression through `CompressionStream`/`DecompressionStream`, hashing through
  * Web Crypto when present, else `@noble/hashes`.
@@ -27,18 +36,24 @@ import { z } from "zod";
 import { sha256Hex as nobleSha256Hex } from "../../src/postgres/bytes.js";
 
 export const SNAPSHOT_FORMAT = "umbradb-browser-snapshot";
-export const SNAPSHOT_VERSION = 1;
+export const SNAPSHOT_VERSION = 2;
 
 /** The container's entries, in order. */
 export const MANIFEST_ENTRY = "manifest.json";
-export const DATA_ENTRY = "data.tar.gz";
+export const ROWS_ENTRY = "rows.tar.gz";
 
 /** The largest snapshot file an import reads. */
 export const MAX_SNAPSHOT_FILE_BYTES = 2 * 1024 ** 3;
-/** The largest data directory (uncompressed tar) an import unpacks. */
-export const MAX_DATA_DIR_BYTES = 4 * 1024 ** 3;
+/** The largest uncompressed rows tar a manifest may declare. */
+export const MAX_ROWS_TAR_BYTES = 4 * 1024 ** 3;
+/** The largest rows entry (one `COPY` stream) an import holds. */
+export const MAX_ROWS_ENTRY_BYTES = 64 * 1024 ** 2;
+/** The most rows entries an import reads. */
+export const MAX_ROWS_ENTRIES = 100_000;
+/** An export splits a table's rows into entries of about this size (a row is never split). */
+export const ROWS_CHUNK_BYTES = 4 * 1024 ** 2;
 /** The largest manifest an import parses. */
-const MAX_MANIFEST_BYTES = 64 * 1024;
+const MAX_MANIFEST_BYTES = 256 * 1024;
 
 export const REFUSAL_REASONS = ["format", "truncated", "network", "schema", "pglite", "hash", "corrupt", "empty"] as const;
 export type RefusalReason = (typeof REFUSAL_REASONS)[number];
@@ -56,6 +71,27 @@ export class SnapshotRefusal extends Error {
 const height = z.int().min(0);
 const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
 const migrationName = z.string().min(1).max(200);
+const identifier = /^[a-z_][a-z0-9_]{0,62}$/;
+/** `<schema>.<table>` (or `<schema>.<sequence>`), lower-case SQL identifiers. */
+const qualifiedName = z.string().regex(/^[a-z_][a-z0-9_]{0,62}\.[a-z_][a-z0-9_]{0,62}$/);
+
+export const SnapshotTableSchema = z.strictObject({
+  /** `<schema>.<table>`. */
+  name: qualifiedName,
+  /** The columns of each row, in order (generated columns are left out: the store computes them). */
+  columns: z.array(z.string().regex(identifier)).min(1).max(1_600),
+  rows: z.int().min(0),
+});
+export type SnapshotTable = z.infer<typeof SnapshotTableSchema>;
+
+export const SnapshotSequenceSchema = z.strictObject({
+  /** `<schema>.<sequence>`. */
+  name: qualifiedName,
+  /** `last_value`, as a decimal 64-bit integer. */
+  lastValue: z.string().regex(/^-?[0-9]{1,19}$/),
+  isCalled: z.boolean(),
+});
+export type SnapshotSequence = z.infer<typeof SnapshotSequenceSchema>;
 
 export const SnapshotManifestSchema = z.strictObject({
   format: z.literal(SNAPSHOT_FORMAT),
@@ -75,14 +111,18 @@ export const SnapshotManifestSchema = z.strictObject({
   schemaVersions: z.strictObject({ chain_archive: z.array(migrationName), mip0018: z.array(migrationName) }),
   pglite: z.strictObject({ version: z.string().min(1).max(64), serverVersion: z.string().min(1).max(64) }),
   build: z.strictObject({ appCommit: z.string().max(64).nullable() }),
+  /** Every table of the store, in the order its rows are loaded (a table after the tables it references). */
+  tables: z.array(SnapshotTableSchema).min(1).max(1_000),
+  /** The values of the store's identity sequences. */
+  sequences: z.array(SnapshotSequenceSchema).max(1_000),
   data: z.strictObject({
-    file: z.literal(DATA_ENTRY),
+    file: z.literal(ROWS_ENTRY),
     encoding: z.literal("tar+gzip"),
-    /** Size and SHA-256 (lower-case hex) of the `data.tar.gz` entry. */
+    /** Size and SHA-256 (lower-case hex) of the `rows.tar.gz` entry. */
     bytes: z.int().min(1).max(MAX_SNAPSHOT_FILE_BYTES),
     sha256: hex64,
     /** Size of the uncompressed tar. */
-    tarBytes: z.int().min(1).max(MAX_DATA_DIR_BYTES),
+    tarBytes: z.int().min(1024).max(MAX_ROWS_TAR_BYTES),
   }),
 });
 export type SnapshotManifest = z.infer<typeof SnapshotManifestSchema>;
@@ -117,12 +157,13 @@ export function snapshotFileName(manifest: Pick<SnapshotManifest, "network" | "a
   return `umbradb-${network}-${manifest.archive.startHeight ?? manifest.archive.height}-${manifest.archive.height}.snapshot.tar`;
 }
 
-/** What this engine accepts: its network, its schema versions and its PGlite. */
+/** What this engine accepts: its network, its schema versions and (as far as it knows before an import runs) its
+ *  PGlite and PostgreSQL versions. */
 export interface SnapshotExpectation {
   network: string;
   genesisHash: string | null;
   schemaVersions: SnapshotManifest["schemaVersions"];
-  pglite: SnapshotManifest["pglite"];
+  pglite?: { version: string; serverVersion?: string };
 }
 
 const sameList = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
@@ -139,10 +180,11 @@ export function checkCompatible(manifest: SnapshotManifest, expected: SnapshotEx
     if (!sameList(theirs, ours))
       throw new SnapshotRefusal("schema", `the snapshot's ${schema} migrations [${theirs.join(", ")}] are not this build's [${ours.join(", ")}]`);
   }
-  if (manifest.pglite.version !== expected.pglite.version || manifest.pglite.serverVersion !== expected.pglite.serverVersion)
+  const pglite = expected.pglite;
+  if (pglite !== undefined && (manifest.pglite.version !== pglite.version || (pglite.serverVersion !== undefined && manifest.pglite.serverVersion !== pglite.serverVersion)))
     throw new SnapshotRefusal(
       "pglite",
-      `the snapshot was written by PGlite ${manifest.pglite.version} (PostgreSQL ${manifest.pglite.serverVersion}); this build runs PGlite ${expected.pglite.version} (PostgreSQL ${expected.pglite.serverVersion})`,
+      `the snapshot was written by PGlite ${manifest.pglite.version} (PostgreSQL ${manifest.pglite.serverVersion}); this build runs PGlite ${pglite.version}${pglite.serverVersion === undefined ? "" : ` (PostgreSQL ${pglite.serverVersion})`}`,
     );
 }
 
@@ -163,23 +205,16 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   return out;
 }
 
-async function readAll(stream: ReadableStream<Uint8Array>, maxBytes: number, tooLarge: () => Error): Promise<Uint8Array> {
-  const reader = stream.getReader();
+/** gzip of `bytes`. */
+export async function gzip(bytes: Uint8Array): Promise<Uint8Array> {
+  const reader = new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new CompressionStream("gzip")).getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.length;
-      if (total > maxBytes) {
-        await reader.cancel().catch(() => {});
-        throw tooLarge();
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    total += value.length;
   }
   const out = new Uint8Array(total);
   let at = 0;
@@ -188,25 +223,6 @@ async function readAll(stream: ReadableStream<Uint8Array>, maxBytes: number, too
     at += c.length;
   }
   return out;
-}
-
-/** gzip of `bytes`. */
-export async function gzip(bytes: Uint8Array): Promise<Uint8Array> {
-  return readAll(new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new CompressionStream("gzip")), Number.MAX_SAFE_INTEGER, () => new Error("unreachable"));
-}
-
-/** The gzip stream `bytes` decompressed; refused as `corrupt` when it is not gzip, is damaged, or exceeds `maxBytes`. */
-export async function gunzip(bytes: Uint8Array, maxBytes: number): Promise<Uint8Array> {
-  try {
-    return await readAll(
-      new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new DecompressionStream("gzip")),
-      maxBytes,
-      () => new SnapshotRefusal("corrupt", `the data directory unpacks to more than the manifest's ${maxBytes} bytes`),
-    );
-  } catch (e) {
-    if (e instanceof SnapshotRefusal) throw e;
-    throw new SnapshotRefusal("corrupt", `the data does not decompress: ${e instanceof Error ? e.message || e.name : String(e)}`);
-  }
 }
 
 // ── ustar ────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -218,7 +234,7 @@ const decoder = new TextDecoder();
 export interface TarEntry {
   /** The header's name field. */
   name: string;
-  /** The header's ustar prefix field (empty in every tar written here and by PGlite). */
+  /** The header's ustar prefix field (empty in every tar written here). */
   prefix: string;
   /** `file` (`0` or NUL) or `directory` (`5`); anything else is `other` with its type flag. */
   type: "file" | "directory" | "other";
@@ -275,6 +291,25 @@ export function writeTar(files: readonly { name: string; data: Uint8Array }[], m
   return out;
 }
 
+/** A ustar header's fields, checked: checksum, magic and size (`undefined` for an all-zero block, the end marker's). */
+function parseHeader(h: Uint8Array, at: number, damaged: (detail: string) => SnapshotRefusal): Omit<TarEntry, "offset"> | undefined {
+  if (h.every((b) => b === 0)) return undefined;
+  const sum = readOctal(h, 148, 8);
+  if (sum === undefined || sum !== checksumOf(h)) throw damaged(`the tar header at byte ${at} has a bad checksum`);
+  const magic = String.fromCharCode(...h.subarray(257, 265));
+  if (magic !== "ustar\u000000" && magic !== "ustar  \u0000") throw damaged(`the tar header at byte ${at} is not a ustar header`);
+  const size = readOctal(h, 124, 12);
+  if (size === undefined) throw damaged(`the tar header at byte ${at} has a bad size`);
+  const flag = String.fromCharCode(h[156]!);
+  return {
+    name: readString(h, 0, 100),
+    prefix: readString(h, 345, 155),
+    type: flag === "0" || flag === "\0" ? "file" : flag === "5" ? "directory" : "other",
+    typeFlag: flag,
+    size,
+  };
+}
+
 /**
  * The entries of a ustar, checked block by block: every header's checksum and size, every entry complete, and the end
  * marker (two zero blocks) present. `cut` names what a missing part means (`truncated` for a file that was cut short).
@@ -284,41 +319,31 @@ export function readTar(tar: Uint8Array, damaged: (detail: string) => SnapshotRe
   let at = 0;
   for (;;) {
     if (at + BLOCK > tar.length) throw cut(`the tar ends inside a header at byte ${at} of ${tar.length}`);
-    const h = tar.subarray(at, at + BLOCK);
-    if (h.every((b) => b === 0)) {
+    const header = parseHeader(tar.subarray(at, at + BLOCK), at, damaged);
+    if (header === undefined) {
       if (at + 2 * BLOCK > tar.length) throw cut("the tar's end marker is incomplete");
       if (!tar.subarray(at + BLOCK, at + 2 * BLOCK).every((b) => b === 0)) throw damaged(`a zero block at byte ${at} is followed by data`);
       return entries;
     }
-    const sum = readOctal(h, 148, 8);
-    if (sum === undefined || sum !== checksumOf(h)) throw damaged(`the tar header at byte ${at} has a bad checksum`);
-    const magic = String.fromCharCode(...h.subarray(257, 265));
-    if (magic !== "ustar\u000000" && magic !== "ustar  \u0000") throw damaged(`the tar header at byte ${at} is not a ustar header`);
-    const size = readOctal(h, 124, 12);
-    if (size === undefined) throw damaged(`the tar header at byte ${at} has a bad size`);
-    const name = readString(h, 0, 100);
-    const prefix = readString(h, 345, 155);
-    const flag = String.fromCharCode(h[156]!);
-    const type = flag === "0" || flag === "\0" ? "file" : flag === "5" ? "directory" : "other";
     const offset = at + BLOCK;
-    if (offset + size > tar.length) throw cut(`the entry ${JSON.stringify(name)} needs ${size} bytes; the tar ends after ${tar.length - offset}`);
-    entries.push({ name, prefix, type, typeFlag: flag, size, offset });
-    at = offset + Math.ceil(size / BLOCK) * BLOCK;
+    if (offset + header.size > tar.length) throw cut(`the entry ${JSON.stringify(header.name)} needs ${header.size} bytes; the tar ends after ${tar.length - offset}`);
+    entries.push({ ...header, offset });
+    at = offset + Math.ceil(header.size / BLOCK) * BLOCK;
   }
 }
 
 // ── The snapshot file ────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** The snapshot file of `manifest` and its data (`data.tar.gz`). */
-export function encodeSnapshotFile(manifest: SnapshotManifest, data: Uint8Array): Uint8Array {
+/** The snapshot file of `manifest` and its rows (`rows.tar.gz`). */
+export function encodeSnapshotFile(manifest: SnapshotManifest, rows: Uint8Array): Uint8Array {
   const json = encoder.encode(`${JSON.stringify(manifest, null, 2)}\n`);
-  return writeTar([{ name: MANIFEST_ENTRY, data: json }, { name: DATA_ENTRY, data }], Date.parse(manifest.createdAt) / 1000);
+  return writeTar([{ name: MANIFEST_ENTRY, data: json }, { name: ROWS_ENTRY, data: rows }], Date.parse(manifest.createdAt) / 1000);
 }
 
 /**
  * Reads a snapshot file: its two entries and the manifest, validated against {@link SnapshotManifestSchema}. Refused as
- * `format` (not a snapshot file of this format and version) or `truncated` (cut short). The data is checked against the
- * manifest by {@link checkData}.
+ * `format` (not a snapshot file of this format and version) or `truncated` (cut short). The rows are checked against
+ * the manifest by {@link checkData} and {@link readRows}.
  */
 export function decodeSnapshotFile(file: Uint8Array): { manifest: SnapshotManifest; data: Uint8Array } {
   if (file.length > MAX_SNAPSHOT_FILE_BYTES) throw new SnapshotRefusal("format", `the file is ${file.length} bytes, more than the ${MAX_SNAPSHOT_FILE_BYTES} a snapshot may have`);
@@ -327,9 +352,8 @@ export function decodeSnapshotFile(file: Uint8Array): { manifest: SnapshotManife
   const cut = (d: string) => new SnapshotRefusal("truncated", `the file is cut short: ${d}`);
   if (!startsWithManifestEntry(file)) throw format(`it does not start with the ${MANIFEST_ENTRY} entry`);
   const entries = readTar(file, format, cut);
-  if (entries.length !== 2 || entries[0]!.name !== MANIFEST_ENTRY || entries[1]!.name !== DATA_ENTRY || entries.some((e) => e.type !== "file" || e.prefix !== ""))
-    throw format(`it holds ${entries.map((e) => JSON.stringify(e.name)).join(", ")}, not ${MANIFEST_ENTRY} and ${DATA_ENTRY}`);
   const m = entries[0]!;
+  if (m.type !== "file" || m.prefix !== "") throw format(`its first entry is not the ${MANIFEST_ENTRY} file`);
   if (m.size > MAX_MANIFEST_BYTES) throw format(`its manifest is ${m.size} bytes`);
   let raw: unknown;
   try {
@@ -337,12 +361,24 @@ export function decodeSnapshotFile(file: Uint8Array): { manifest: SnapshotManife
   } catch {
     throw format("its manifest is not JSON");
   }
+  const head = raw as { format?: unknown; version?: unknown } | null;
+  if (head !== null && typeof head === "object" && head.format === SNAPSHOT_FORMAT && head.version !== SNAPSHOT_VERSION) {
+    if (head.version === 1)
+      throw new SnapshotRefusal(
+        "format",
+        "this snapshot has the earlier format (version 1, a copy of the whole database, which can carry code as well as data), which this build does not import: export a new snapshot with this build",
+      );
+    throw format(`its manifest version ${JSON.stringify(head.version)} is not ${SNAPSHOT_VERSION}`);
+  }
+  if (entries.length !== 2 || entries[1]!.name !== ROWS_ENTRY || entries.some((e) => e.type !== "file" || e.prefix !== ""))
+    throw format(`it holds ${entries.map((e) => JSON.stringify(e.name)).join(", ")}, not ${MANIFEST_ENTRY} and ${ROWS_ENTRY}`);
   const parsed = SnapshotManifestSchema.safeParse(raw);
-  if (!parsed.success) {
-    const head = raw as { format?: unknown; version?: unknown } | null;
-    if (head?.format === SNAPSHOT_FORMAT && head.version !== SNAPSHOT_VERSION)
-      throw format(`its manifest version ${JSON.stringify(head.version)} is not ${SNAPSHOT_VERSION}`);
+  if (!parsed.success)
     throw format(`its manifest is invalid (${parsed.error.issues.slice(0, 3).map((i) => `${i.path.join(".") || "manifest"}: ${i.message}`).join("; ")})`);
+  const names = new Set<string>();
+  for (const t of [...parsed.data.tables, ...parsed.data.sequences]) {
+    if (names.has(t.name)) throw format(`its manifest names ${t.name} twice`);
+    names.add(t.name);
   }
   const d = entries[1]!;
   return { manifest: parsed.data, data: file.subarray(d.offset, d.offset + d.size) };
@@ -354,39 +390,191 @@ function startsWithManifestEntry(file: Uint8Array): boolean {
   return file.length >= name.length && name.every((b, i) => file[i] === b);
 }
 
-/** Refuses data whose size or SHA-256 differs from the manifest's. */
+/** Refuses rows whose size or SHA-256 differs from the manifest's. */
 export async function checkData(manifest: SnapshotManifest, data: Uint8Array): Promise<void> {
-  if (data.length !== manifest.data.bytes) throw new SnapshotRefusal("hash", `the data has ${data.length} bytes; the manifest says ${manifest.data.bytes}`);
+  if (data.length !== manifest.data.bytes) throw new SnapshotRefusal("hash", `the rows have ${data.length} bytes; the manifest says ${manifest.data.bytes}`);
   const digest = await sha256Hex(data);
-  if (digest !== manifest.data.sha256) throw new SnapshotRefusal("hash", `the data's SHA-256 is ${digest}; the manifest says ${manifest.data.sha256}`);
+  if (digest !== manifest.data.sha256) throw new SnapshotRefusal("hash", `the rows' SHA-256 is ${digest}; the manifest says ${manifest.data.sha256}`);
 }
 
-// ── The data directory ───────────────────────────────────────────────────────────────────────────────────────────────
+// ── The rows ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** A data directory entry name as PGlite writes it: `/` then path segments of letters, digits, `_`, `-` and `.`. */
-const DATA_DIR_NAME = /^(?:\/[A-Za-z0-9_.-]{1,255})+$/;
+/** One rows entry: chunk `chunk` (from 0) of the table `table` (`<schema>.<table>`), a binary `COPY` stream. */
+export interface RowsEntry {
+  table: string;
+  chunk: number;
+  copy: Uint8Array;
+}
+
+/** The name of a rows entry. */
+export const rowsEntryName = (table: string, chunk: number): string => `${table}.${String(chunk).padStart(6, "0")}.copy`;
+const ROWS_ENTRY_NAME = /^([a-z_][a-z0-9_]{0,62}\.[a-z_][a-z0-9_]{0,62})\.([0-9]{6})\.copy$/;
+
+/** The rows entry (`rows.tar.gz`) of these rows entries, in order, and its uncompressed size. */
+export async function encodeRows(entries: readonly RowsEntry[], mtimeSeconds: number): Promise<{ data: Uint8Array; tarBytes: number }> {
+  const tar = writeTar(entries.map((e) => ({ name: rowsEntryName(e.table, e.chunk), data: e.copy })), mtimeSeconds);
+  return { data: await gzip(tar), tarBytes: tar.length };
+}
+
+/** Bytes pulled from a stream in exact amounts; `total` counts what the stream gave so far. */
+class StreamTaker {
+  private readonly chunks: Uint8Array[] = [];
+  private head = 0;
+  private buffered = 0;
+  private ended = false;
+  total = 0;
+
+  constructor(private readonly reader: ReadableStreamDefaultReader<Uint8Array>, private readonly limit: number, private readonly tooLarge: () => Error) {}
+
+  /** Pulls until `n` bytes are buffered; false when the stream ends first. Throws as soon as the stream has given more
+   *  than `limit` bytes. */
+  private async fill(n: number): Promise<boolean> {
+    while (this.buffered < n) {
+      if (this.ended) return false;
+      const { done, value } = await this.reader.read();
+      if (done) {
+        this.ended = true;
+        continue;
+      }
+      this.total += value.length;
+      if (this.total > this.limit) throw this.tooLarge();
+      this.chunks.push(value);
+      this.buffered += value.length;
+    }
+    return true;
+  }
+
+  /** Exactly `n` bytes, or `undefined` when the stream ends before. */
+  async take(n: number): Promise<Uint8Array | undefined> {
+    if (!(await this.fill(n))) return undefined;
+    const out = new Uint8Array(n);
+    let at = 0;
+    while (at < n) {
+      const c = this.chunks[0]!;
+      const k = Math.min(n - at, c.length - this.head);
+      out.set(c.subarray(this.head, this.head + k), at);
+      at += k;
+      this.head += k;
+      if (this.head === c.length) {
+        this.chunks.shift();
+        this.head = 0;
+      }
+    }
+    this.buffered -= n;
+    return out;
+  }
+
+  /** Whether any byte follows (reads on to find out). */
+  async more(): Promise<boolean> {
+    return this.fill(1);
+  }
+
+  async cancel(): Promise<void> {
+    await this.reader.cancel().catch(() => {});
+  }
+}
 
 /**
- * Unpacks a snapshot's data (gzip of PGlite's data directory tar), refusing anything but a data directory: every entry a
- * regular file or a directory whose name stays inside the data directory (no `.` or `..` segment, no link), the size the
- * manifest gives, and a `PG_VERSION` file. Returns the plain tar.
+ * Reads the rows entry (`rows.tar.gz`) as a stream and hands each rows entry to `onEntry`, in order, before reading the
+ * next. Refused as `corrupt` (nothing more is read) when the data is not gzip, unpacks to more than the manifest's
+ * `tarBytes` (checked as the bytes arrive) or to fewer, is not a ustar of regular files named
+ * `<schema>.<table>.<n>.copy`, holds an entry larger than {@link MAX_ROWS_ENTRY_BYTES} (checked from its header, before
+ * it is read) or more than {@link MAX_ROWS_ENTRIES} entries, or has anything after its end marker. `onEntry` may refuse
+ * an entry by throwing.
  */
-export async function unpackDataDir(manifest: SnapshotManifest, data: Uint8Array): Promise<Uint8Array> {
-  const tar = await gunzip(data, manifest.data.tarBytes);
-  if (tar.length !== manifest.data.tarBytes) throw new SnapshotRefusal("corrupt", `the data directory has ${tar.length} bytes; the manifest says ${manifest.data.tarBytes}`);
-  const corrupt = (d: string) => new SnapshotRefusal("corrupt", `the data directory is damaged: ${d}`);
-  const entries = readTar(tar, corrupt, corrupt);
-  if (entries.length === 0) throw corrupt("it is empty");
-  for (const e of entries) {
-    if (e.type === "other") throw corrupt(`the entry ${JSON.stringify(e.name)} is of tar type ${JSON.stringify(e.typeFlag)}, not a file or a directory`);
-    if (e.type === "directory" && e.size !== 0) throw corrupt(`the directory entry ${JSON.stringify(e.name)} has content`);
-    if (e.prefix !== "") throw corrupt(`the entry ${JSON.stringify(e.name)} has a name prefix`);
-    const name = e.name.replace(/\/$/, "");
-    if (!DATA_DIR_NAME.test(name) || name.split("/").some((s) => s === "." || s === ".."))
-      throw corrupt(`the entry ${JSON.stringify(e.name)} is not a path inside the data directory`);
+export async function readRows(manifest: SnapshotManifest, data: Uint8Array, onEntry: (entry: RowsEntry) => Promise<void>): Promise<void> {
+  const corrupt = (d: string) => new SnapshotRefusal("corrupt", `the rows are damaged: ${d}`);
+  const limit = manifest.data.tarBytes;
+  const tooLarge = () => corrupt(`they unpack to more than the manifest's ${limit} bytes`);
+  const taker = new StreamTaker(new Blob([data as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new DecompressionStream("gzip")).getReader(), limit, tooLarge);
+  try {
+    let at = 0;
+    let count = 0;
+    for (;;) {
+      const h = await taker.take(BLOCK);
+      if (h === undefined) throw corrupt(`the tar ends inside a header at byte ${at}`);
+      const header = parseHeader(h, at, corrupt);
+      if (header === undefined) {
+        const second = await taker.take(BLOCK);
+        if (second === undefined || !second.every((b) => b === 0)) throw corrupt(`the tar's end marker at byte ${at} is incomplete`);
+        if (await taker.more()) throw corrupt(`data follows the tar's end marker at byte ${at + 2 * BLOCK}`);
+        if (taker.total !== limit) throw corrupt(`they unpack to ${taker.total} bytes; the manifest says ${limit}`);
+        return;
+      }
+      if (++count > MAX_ROWS_ENTRIES) throw corrupt(`they hold more than ${MAX_ROWS_ENTRIES} entries`);
+      if (header.type !== "file" || header.prefix !== "") throw corrupt(`the entry ${JSON.stringify(header.name)} is not a plain file`);
+      const name = ROWS_ENTRY_NAME.exec(header.name);
+      if (name === null) throw corrupt(`the entry ${JSON.stringify(header.name)} is not named <schema>.<table>.<n>.copy`);
+      if (header.size > MAX_ROWS_ENTRY_BYTES) throw corrupt(`the entry ${JSON.stringify(header.name)} declares ${header.size} bytes, more than the ${MAX_ROWS_ENTRY_BYTES} an entry may have`);
+      const padded = Math.ceil(header.size / BLOCK) * BLOCK;
+      if (at + BLOCK + padded + 2 * BLOCK > limit) throw tooLarge();
+      const content = await taker.take(padded);
+      if (content === undefined) throw corrupt(`the entry ${JSON.stringify(header.name)} is cut short`);
+      await onEntry({ table: name[1]!, chunk: Number(name[2]), copy: content.subarray(0, header.size) });
+      at += BLOCK + padded;
+    }
+  } catch (e) {
+    await taker.cancel();
+    if (e instanceof SnapshotRefusal) throw e;
+    if (e instanceof TypeError) throw corrupt(`they do not decompress: ${e.message || e.name}`);
+    throw e;
   }
-  if (!entries.some((e) => e.type === "file" && e.name === "/PG_VERSION")) throw corrupt("it has no PG_VERSION file");
-  return tar;
+}
+
+// ── PostgreSQL binary COPY streams ───────────────────────────────────────────────────────────────────────────────────
+
+const COPY_SIGNATURE = [0x50, 0x47, 0x43, 0x4f, 0x50, 0x59, 0x0a, 0xff, 0x0d, 0x0a, 0x00];
+
+/** The length of a binary `COPY` stream's header (signature, flags, header extension); throws when it is not one. */
+function copyHeaderLength(copy: Uint8Array): number {
+  if (copy.length < 19 || COPY_SIGNATURE.some((b, i) => copy[i] !== b)) throw new Error("not a binary COPY stream");
+  const extension = new DataView(copy.buffer, copy.byteOffset, copy.byteLength).getUint32(15);
+  if (19 + extension > copy.length) throw new Error("the binary COPY stream's header is cut short");
+  return 19 + extension;
+}
+
+/**
+ * Splits a binary `COPY` stream into streams of whole rows of about `chunkBytes` each (a row larger than that is one
+ * stream on its own), each with the original header and the end-of-data trailer, and counts the rows: no streams for
+ * no rows. Throws when `copy` is not a complete binary `COPY` stream.
+ */
+export function splitCopy(copy: Uint8Array, chunkBytes: number = ROWS_CHUNK_BYTES): { chunks: Uint8Array[]; rows: number } {
+  const headerLength = copyHeaderLength(copy);
+  const header = copy.subarray(0, headerLength);
+  const view = new DataView(copy.buffer, copy.byteOffset, copy.byteLength);
+  const chunks: Uint8Array[] = [];
+  let rows = 0;
+  let at = headerLength;
+  let start = at;
+  const emit = (end: number): void => {
+    if (end === start) return;
+    const chunk = new Uint8Array(headerLength + (end - start) + 2);
+    chunk.set(header, 0);
+    chunk.set(copy.subarray(start, end), headerLength);
+    chunk[chunk.length - 2] = 0xff;
+    chunk[chunk.length - 1] = 0xff;
+    chunks.push(chunk);
+    start = end;
+  };
+  for (;;) {
+    if (at + 2 > copy.length) throw new Error("the binary COPY stream ends without its trailer");
+    const fields = view.getInt16(at);
+    if (fields === -1) {
+      emit(at);
+      return { chunks, rows };
+    }
+    if (fields < 0) throw new Error(`a binary COPY row has ${fields} fields`);
+    let p = at + 2;
+    for (let f = 0; f < fields; f++) {
+      if (p + 4 > copy.length) throw new Error("a binary COPY row is cut short");
+      const len = view.getInt32(p);
+      p += 4 + Math.max(0, len);
+      if (p > copy.length) throw new Error("a binary COPY field is cut short");
+    }
+    at = p;
+    rows++;
+    if (at - start >= chunkBytes) emit(at);
+  }
 }
 
 // ── Published snapshots ──────────────────────────────────────────────────────────────────────────────────────────────

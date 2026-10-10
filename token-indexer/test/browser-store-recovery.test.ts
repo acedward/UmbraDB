@@ -15,10 +15,11 @@
  *   store stays refused.
  * - `[[browser.host.store-recovery]]` — a store that completed a boot before (its identity is on file) and now fails to
  *   open ends the boot `failed` with `storeProblem: "unopenable"`, the error and the same two choices; `range` replaces
- *   it and starts the range. A store with no identity whose open fails (its creation never completed) is removed and
- *   created again by the boot itself, with a warning; a store held by another worker is never removed (`storeProblem`
- *   stays `null`).
- * - `[[browser.panel.store-problem]]` — the overview's view: a boot that failed because of the store keeps `reset`,
+ *   it and starts the range. A new store (no identity, no database files) is marked "creating" before PGlite creates
+ *   it; if its open fails (its creation never completed) it is removed and created again by the boot itself, with a
+ *   warning; a store held by another worker is never removed (`storeProblem` stays `null`).
+ * - `[[browser.panel.store-problem]]` — the overview's view: a boot that failed because of the store (refused,
+ *   unopenable or unusable) keeps `reset`,
  *   `range` and `import` usable (`recoverable`) and shows the boot's message; any other failed or unsupported boot does
  *   not. Its storage line says "not persistent", and its explanation says when the browser refused to keep the site's
  *   storage (or asking failed), and that the engine runs anyway.
@@ -48,11 +49,13 @@ afterEach(async () => {
   for (const h of hosts.splice(0)) await h.close();
 });
 
-/** A host whose store opens and removals of the store's files are counted (an open can be made to fail), with the
- *  given identity on file. */
+/** A host whose opens of the store by PGlite (after the files were prepared under the lock: a refusal there is no
+ *  open) and removals of the store's files are counted (an open can be made to fail), with the given identity on file.
+ *  The trial store of an import (`memory://` opened apart) is not counted. */
 function host(over: Partial<WorkerHostOptions> & { failOpens?: number | ((n: number) => Error | undefined) } = {}) {
   const opens: Array<{ removed: number }> = [];
   let removals = 0;
+  let attempts = 0;
   const files = memorySnapshotFiles();
   const { failOpens, ...rest } = over;
   const logs: string[] = [];
@@ -61,20 +64,19 @@ function host(over: Partial<WorkerHostOptions> & { failOpens?: number | ((n: num
     settings: memorySettingsStore({ config: U1_CONFIG, autoStart: true }),
     snapshotFiles: { ...files, removeStore: async () => { removals++; await files.removeStore(); } },
     log: (level, message) => logs.push(`${level} ${message}`),
+    snapshotTrial: () => openStore("memory://"),
     openStore: async (dir, o) => {
-      const before = removals;
-      const opened = { removed: 0 };
-      opens.push(opened);
-      const n = opens.length;
+      const n = ++attempts;
       const fail = typeof failOpens === "function" ? failOpens(n) : failOpens !== undefined && n <= failOpens ? new Error(`open ${n} failed`) : undefined;
-      try {
-        if (fail === undefined) return await openStore(dir, o);
-        // As `openStore` does: the files are prepared under the lock, then PGlite fails.
-        await o?.prepare?.(dir);
-        throw fail;
-      } finally {
-        opened.removed = removals - before;
-      }
+      const before = removals;
+      // As `openStore` does: the files are prepared under the lock, then PGlite opens the store (or fails).
+      const prepare = async (d: string): Promise<void> => {
+        await o?.prepare?.(d);
+        opens.push({ removed: removals - before });
+      };
+      if (fail === undefined) return openStore(dir, { ...o, prepare });
+      await prepare(dir);
+      throw fail;
     },
     ...rest,
   });
@@ -207,7 +209,7 @@ describe("a store the browser engine cannot use", () => {
       boot: { phase: "failed", error: "the store could not be opened (x): reset it (its data is dropped and synced again) or load a snapshot made by this build", capabilities: null, storeProblem: null, timings, ...boot },
     });
     const view = (boot: Partial<BootState>) => panelView({ role: "leader", connectedTabs: 1, status: status(boot), statusError: null, api: null, pageStorage: null });
-    for (const problem of ["version", "unopenable"] as const) {
+    for (const problem of ["version", "unopenable", "unusable"] as const) {
       const v = view({ storeProblem: problem });
       expect(v).toMatchObject({ state: "failed", recoverable: true, ready: false });
       expect(v.stateDetail).toMatch(RECOVERY);

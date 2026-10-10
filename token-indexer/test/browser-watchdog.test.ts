@@ -14,7 +14,7 @@
  *   grace; a silent worker is restarted once, with the system viewers and the engine restored; an engine the page
  *   stopped is not started again; a boot that fails right after a restart is retried; more than the allowed restarts
  *   within the window close the client with `worker-error`.
- * - `[[browser.watchdog.long-requests]]` — while a `reset` (which drops and recreates the store's schemas) is in flight
+ * - `[[browser.watchdog.long-requests]]` — while a `reset` (which replaces the store with a new one) is in flight
  *   the worker may stay silent up to the longer limit; past it, it is restarted, and the `reset` fails `restarted`.
  */
 import { mkdtempSync, rmSync } from "node:fs";

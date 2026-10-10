@@ -234,12 +234,13 @@ export class Page {
   }
 
   /**
-   * Evaluates `script` in the worker of `session` once its global scope is complete, right before the worker's own
-   * first script runs: the debugger pauses before each script's execution, and `script` is evaluated at the first pause
-   * before a script of the worker (one with a URL), then the worker goes on (the debugger is then turned off). A pause
-   * before a script DevTools itself evaluates (no URL: the violations listener above, a test's evaluate) is let go on
-   * at once: such a script can run before the worker has its secure-context interfaces (`FileSystemSyncAccessHandle`),
-   * which a script evaluated there would not find.
+   * Evaluates `script` in the worker of `session` once its global scope is complete, right before the worker's first
+   * script runs. A worker's global scope gets its secure-context interfaces (OPFS sync access handles, writable file
+   * streams, …) only once its own script has arrived, and an evaluation sent to the worker before that (the
+   * `securitypolicyviolation` listener above, sent as the worker is let go) runs without them. So the debugger pauses
+   * before each script runs; a pause in a script without a URL (such an evaluation) is let go, and at the first pause in
+   * a script of the worker's own (it has a URL) `script` is evaluated, then the worker goes on (the debugger is then
+   * turned off).
    */
   private async beforeWorkerScript(session: string, script: string): Promise<void> {
     await this.conn.send("Debugger.enable", {}, session);
@@ -247,7 +248,7 @@ export class Page {
     let done = false;
     this.conn.on("Debugger.paused", (p, s) => {
       if (s !== session || done) return;
-      const url: unknown = p.reason === "instrumentation" ? p.data?.url : undefined;
+      const url = (p as { data?: { url?: unknown } }).data?.url;
       if (typeof url !== "string" || url === "") {
         void this.conn.send("Debugger.resume", {}, session).catch(() => { /* the worker ended */ });
         return;

@@ -94,7 +94,8 @@ export const ERROR_CODES = [
   /** `import`: the snapshot does not match this engine or is damaged; `export`: the archive is empty. The message starts
    *  with the reason (`snapshot.ts` `REFUSAL_REASONS`). Nothing was changed. */
   "snapshot-refused",
-  /** `import`: the checked snapshot could not be loaded into the store, which was opened empty instead. */
+  /** `import`: the checked snapshot could not be imported; the message says what became of the store (unchanged, opened
+   *  empty, or not usable until a reset, an import or the next boot). */
   "snapshot-failed",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -298,10 +299,12 @@ export const BootStateSchema = z.strictObject({
   capabilities: CapabilityReportSchema.nullable(),
   /**
    * Why the store could not be used, when the boot `failed` at it: `version` — another PGlite version wrote it (it was
-   * not opened); `unopenable` — PGlite could not open it. `reset`, `range` and `import` then replace the store (`reset`
-   * and `range` drop its data, `import` loads a snapshot made by this build). `null` otherwise.
+   * not opened); `unopenable` — PGlite could not open it, or its identity file cannot be read; `unusable` — it opened,
+   * but the boot could not complete on it (its migrations, its identity, or finishing an import failed). `reset`,
+   * `range` and `import` then replace the store (`reset` and `range` drop its data, `import` loads a snapshot made by
+   * this build). `null` otherwise.
    */
-  storeProblem: z.enum(["version", "unopenable"]).nullable(),
+  storeProblem: z.enum(["version", "unopenable", "unusable"]).nullable(),
   /** Duration of each phase (`store` includes creating the database on a first open), and of the whole boot. */
   timings: z.strictObject({ capabilitiesMs: ms, storeMs: ms, ledgerMs: ms, migrateMs: ms, totalMs: ms }),
 });
@@ -480,10 +483,11 @@ export const ExportResultSchema = z.strictObject({
 });
 export type ExportResult = z.infer<typeof ExportResultSchema>;
 
-/** The `import` result: the imported manifest, timings, and the host's status after the swap. */
+/** The `import` result: the imported manifest, timings (reading the file, checking it, the trial that loads its rows
+ *  into a new store in memory, the swap), and the host's status after the swap. */
 export const ImportResultSchema = z.strictObject({
   manifest: SnapshotManifestSchema,
-  timings: z.strictObject({ readMs: duration, checkMs: duration, unpackMs: duration, trialMs: duration, swapMs: duration, totalMs: duration }),
+  timings: z.strictObject({ readMs: duration, checkMs: duration, stageMs: duration, swapMs: duration, totalMs: duration }),
   status: HostStatusSchema,
 });
 export type ImportResult = z.infer<typeof ImportResultSchema>;

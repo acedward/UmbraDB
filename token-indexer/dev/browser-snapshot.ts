@@ -5,14 +5,14 @@
  * The snapshot is made the way a browser makes one: the browser engine's worker host (`token-indexer/browser/host.ts`)
  * runs in Node on an in-memory PGlite (the same PGlite build as the browser's), replays the range's gzip tape
  * (`token-indexer/browser/tapes/`) through the sync and the scan, and answers an `export` request. The file is then
- * read back as an import reads it (`snapshot.ts`: container, manifest, SHA-256, data directory), its data directory is
- * loaded into a new PGlite, and the store's archive digest and range-tables digest are computed there and compared with
- * the recorded live sync of the same range (`test/integration/fixtures/stagenet-archive/manifest.json` and
+ * read back as an import reads it (`snapshot.ts`: container, manifest, SHA-256), its rows are loaded into a new store made
+ * by the migrations (`snapshot-store.ts`, as an import's trial does), and that store's archive digest and range-tables
+ * digest are computed there and compared with the recorded live sync of the same range (`test/integration/fixtures/stagenet-archive/manifest.json` and
  * `token-indexer/test/fixtures/live-range/stagenet-714485-715183.json`): a snapshot whose digests differ is not written.
  * `snapshots/index.json` lists the file with its size, SHA-256, manifest and digests (`PublishedSnapshotIndexSchema`).
  *
- * The file's bytes differ from build to build (the manifest's time, the data directory's file times and the identifier
- * PGlite's `initdb` gives each new database); what it holds, as the two digests describe it, does not.
+ * The file's bytes differ from build to build (the manifest's time and the times the rows were written); what it holds,
+ * as the two digests describe it, does not.
  *
  *   node --import tsx token-indexer/dev/browser-snapshot.ts [--out dist-browser]
  *
@@ -23,11 +23,11 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { createPgliteClient } from "../../src/postgres/pglite-sql.js";
 import { archiveDigest, dumpArchive } from "../../test/integration/fixtures/stagenet-archive/archive-digest.js";
 import { createWorkerHost } from "../browser/host.ts";
 import { type ExportResult, type HostStatus, PROTOCOL_VERSION, type Response } from "../browser/protocol.ts";
 import {
+  checkData,
   decodeSnapshotFile,
   PUBLISHED_INDEX_FORMAT,
   PUBLISHED_INDEX_PATH,
@@ -35,9 +35,9 @@ import {
   PublishedSnapshotIndexSchema,
   sha256Hex,
   type SnapshotManifest,
-  unpackDataDir,
 } from "../browser/snapshot.ts";
-import { ARCHIVE_SCHEMA, MIP0018_SCHEMA } from "../browser/store.ts";
+import { loadSnapshot } from "../browser/snapshot-store.ts";
+import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, migrateStore, openStore } from "../browser/store.ts";
 import { loadTape } from "../browser/tapes.ts";
 import { rangeTables } from "./range-tables.ts";
 
@@ -84,19 +84,19 @@ function appCommit(): string | null {
   }
 }
 
-/** The archive digest and the range-tables digest of a snapshot file's store (its data directory loaded into PGlite). */
+/** The archive digest and the range-tables digest of a snapshot file's store (its rows loaded into a new store). */
 export async function snapshotDigests(file: Uint8Array): Promise<{ manifest: SnapshotManifest; archive: string; tables: string }> {
   const { manifest, data } = decodeSnapshotFile(file);
-  const tar = await unpackDataDir(manifest, data);
-  const { PGlite } = await import("@electric-sql/pglite");
-  const pg = await PGlite.create({ dataDir: "memory://", loadDataDir: new Blob([tar as Uint8Array<ArrayBuffer>], { type: "application/x-tar" }) });
+  await checkData(manifest, data);
+  const store = await openStore("memory://");
   try {
-    const sql = createPgliteClient({ pglite: pg, schema: MIP0018_SCHEMA });
-    const archive = archiveDigest(await dumpArchive(sql, ARCHIVE_SCHEMA)).sha256;
-    const { digest } = await rangeTables(sql, ARCHIVE_SCHEMA, MIP0018_SCHEMA);
+    await migrateStore(store);
+    await loadSnapshot(store, manifest, data, manifest.network);
+    const archive = archiveDigest(await dumpArchive(store.mip0018, ARCHIVE_SCHEMA)).sha256;
+    const { digest } = await rangeTables(store.mip0018, ARCHIVE_SCHEMA, MIP0018_SCHEMA);
     return { manifest, archive, tables: digest.sha256 };
   } finally {
-    await pg.close();
+    await store.close();
   }
 }
 
