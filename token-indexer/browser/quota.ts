@@ -15,6 +15,12 @@
  * before a sync batch when the last reading is older than `checkEveryMs`; while paused, every `recheckMs`. Only the
  * sync pauses: the scan finishes the archived blocks and the API keeps answering. Space frees when the user resets the
  * store, changes its range, deletes other site data or reopens the page (which releases reserved space).
+ *
+ * **A refused write.** If a write is refused anyway (the figures did not show it coming: the database reports "could not
+ * extend file …: File too large"), the statement fails and its block's transaction is rolled back, so the store stays at
+ * the last full block. The host reports it here ({@link QuotaGuard.refusedWrite}): the sync pauses as before the quota,
+ * with the refusal as the reason, until its next batch, at least `recheckMs` later, tries again (the write is what tells
+ * whether space has come back; the sync's own back-off after a failed batch also applies).
  */
 import type { StorageReading } from "../engine/system-collector.ts";
 import type { StorageStatus } from "./protocol.ts";
@@ -70,6 +76,14 @@ export interface QuotaGuard {
   /** Resolves when a sync batch may run: at once unless the sync is paused; while paused it reads the figures every
    *  `recheckMs` until the usage is back under the threshold. Rejects with the signal's reason when it aborts. */
   admit(signal: AbortSignal): Promise<void>;
+  /** The browser refused a write for lack of space (`message`: the database's error): the sync pauses, with the refusal
+   *  as the reason, until its next batch, at least `recheckMs` later. */
+  refusedWrite(message: string): void;
+}
+
+/** Whether a database error is the browser refusing a write for lack of space (the file could not grow). */
+export function isRefusedWrite(message: string): boolean {
+  return /could not (extend|write to) file|File too large|No space left on device|QuotaExceededError|disk full/i.test(message);
 }
 
 const finite = (x: unknown): number | null => (typeof x === "number" && Number.isFinite(x) && x >= 0 ? x : null);
@@ -85,6 +99,8 @@ export function createQuotaGuard(opts: QuotaGuardOptions): QuotaGuard {
   let reason: string | null = null;
   let store: { bytes: number | null; at: number } | null = null;
   let running: Promise<StorageStatus> | undefined;
+  /** The last write the browser refused, while its pause lasts. */
+  let refused: { message: string; at: number } | null = null;
 
   async function storeBytes(force: boolean): Promise<number | null> {
     const t = opts.now();
@@ -112,7 +128,10 @@ export function createQuotaGuard(opts: QuotaGuardOptions): QuotaGuard {
     const persisted = await opts.env.persisted().catch(() => null);
     const pauseAt = quota === null ? null : pauseThresholdBytes(quota);
     let own = store?.bytes ?? null;
-    if (usage !== null && quota !== null && pauseAt !== null) {
+    if (refused !== null) {
+      paused = true;
+      reason = refusedText(refused.message);
+    } else if (usage !== null && quota !== null && pauseAt !== null) {
       if (!paused && usage >= pauseAt) {
         own = await storeBytes(true);
         paused = true;
@@ -131,6 +150,10 @@ export function createQuotaGuard(opts: QuotaGuardOptions): QuotaGuard {
     return last;
   }
 
+  function refusedText(message: string): string {
+    return `the browser refused to write to the store for lack of space (${message}); the store is at its last full block, and the sync tries a later batch again`;
+  }
+
   function check(o: { store?: boolean } = {}): Promise<StorageStatus> {
     // One reading at a time; a caller during a reading gets that reading.
     running ??= read(o.store === true).finally(() => { running = undefined; });
@@ -146,7 +169,28 @@ export function createQuotaGuard(opts: QuotaGuardOptions): QuotaGuard {
       return { usageBytes: s.usageBytes, quotaBytes: s.quotaBytes, persisted: s.persisted, pauseAtBytes: s.pauseAtBytes, paused: s.paused, pausedReason: s.pausedReason };
     },
 
+    refusedWrite(message: string): void {
+      const first = refused === null;
+      refused = { message, at: opts.now() };
+      paused = true;
+      reason = refusedText(message);
+      if (last !== null) last = { ...last, paused: true, pausedReason: reason };
+      if (first) log("warn", `sync paused: ${reason}`);
+    },
+
     async admit(signal: AbortSignal): Promise<void> {
+      if (refused !== null) {
+        // The pause of a refused write lasts at least `recheckMs`; then this batch tries (its write tells whether space
+        // came back) unless the figures say to stay paused.
+        const wait = refused.at + recheckMs - opts.now();
+        if (wait > 0) await opts.sleep(wait, signal);
+        if (signal.aborted) throw signal.reason;
+        refused = null;
+        paused = false;
+        reason = null;
+        log("info", "sync tries a batch again after a refused write");
+        await check();
+      }
       if (paused || last === null || last.checkedAt === null || opts.now() - last.checkedAt >= checkEveryMs) await check();
       while (paused) {
         if (signal.aborted) throw signal.reason;

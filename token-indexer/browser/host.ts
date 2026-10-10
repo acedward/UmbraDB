@@ -49,7 +49,9 @@
  * store starts at the tip and a reopened one resumes, a chosen range keeping its end.
  *
  * **Storage** (`quota.ts`): before each sync batch the guard compares the browser's usage with the quota and pauses the
- * sync before it is reached (`storage` in `status`); it resumes once space frees.
+ * sync before it is reached (`storage` in `status`); it resumes once space frees. A write the browser refuses anyway (a
+ * sync or scan error saying a file could not grow) rolls its block back and pauses the sync the same way, with the
+ * refusal as the reason, until a later batch can write.
  *
  * **Reopen**: PGlite fails every statement once a database has failed about 1,700 statements (and until it is
  * reopened). The host counts the statements the database fails and, at {@link REOPEN_AFTER_FAILED_STATEMENTS} since
@@ -93,7 +95,7 @@ import {
   type StoreInfo,
   type TapeRange,
 } from "./protocol.ts";
-import { browserStorageEnvironment, createQuotaGuard, type StorageEnvironment } from "./quota.ts";
+import { browserStorageEnvironment, createQuotaGuard, isRefusedWrite, type StorageEnvironment } from "./quota.ts";
 import { yieldingScheduler } from "./scheduler.ts";
 import { STACK_DEPTH_EXCEEDED } from "./session.ts";
 import { type EngineSettingsStore, memorySettingsStore, opfsSettingsStore } from "./settings.ts";
@@ -697,6 +699,11 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         onEvent: (e) => {
           const line = logLineOf(e);
           if (line !== undefined) consoleLog(line[0], line[1]);
+          // A write the browser refused for lack of space: the storage guard pauses the sync and says why.
+          if (e.event === "error" && (e.source === "sync" || e.source === "scan")) {
+            const message = String(e.source === "sync" ? e.fields.message : e.fields.error);
+            if (isRefusedWrite(message)) quota.refusedWrite(message);
+          }
         },
       });
       detachTelemetry?.();

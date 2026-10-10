@@ -35,7 +35,7 @@ The build indexes Stagenet unless `UMBRADB_BROWSER_NETWORK`, `UMBRADB_BROWSER_NO
 | `config.ts` | The network, its default endpoints (fixed when the site is built), the store's location and the build's settings |
 | `settings.ts` | The engine's saved configuration, a file beside the store |
 | `store-identity.ts` | Which PGlite wrote the store, a file beside it: a store of another PGlite version is refused before it is opened |
-| `quota.ts` | The storage guard: pauses the sync before the quota |
+| `quota.ts` | The storage guard: pauses the sync before the quota, and after a write the browser refused |
 | `snapshot.ts` | The snapshot file: its manifest, its format (a tar of `manifest.json` and `data.tar.gz`) and every check an import makes |
 | `snapshot-store.ts` | Export (a consistent read while the engine runs), import (checks, a trial load, then a journaled swap under the store's lock) and finishing an interrupted import when the store opens |
 | `snapshot-page.ts` | The page's side: saving an exported file as a download, fetching a snapshot the build publishes |
@@ -182,7 +182,8 @@ A browser profile runs one engine per store, however many tabs are open. A page 
 - **Persistent storage.** `navigator.storage.persist()` exists only in a window: every page asks for it when it loads
   (`requestPersistentStorage()` in `client.ts`; the grant is per site, so any tab's request counts; the engine page keeps
   the answer in `window.umbradbEngine.persistence`), and the worker's `storage.persisted` reports the outcome. A
-  refusal changes nothing else.
+  refusal changes nothing else: the engine runs, and the explorer's engine panel says the browser refused to keep the
+  site's storage (or that asking failed), so the store may be cleared when space runs low.
 - **Storage quota** (`quota.ts`). Before a sync batch (reading again when the last reading is 10 s old) the worker
   compares `navigator.storage.estimate()`'s usage with its quota. While the store is open that usage includes the space
   Chrome reserves for the store's open files (about 1 GB in the session that creates the store, for about 42 MB of
@@ -190,7 +191,11 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   quota, so the reported usage is what decides. The sync pauses once usage ≥ quota − max(256 MiB, 10 % of the quota)
   and resumes once usage is 32 MiB under that, read every 30 s while paused; the scan and the API keep running. The
   reading (usage, quota, the threshold, the size of the store's files from an OPFS walk, `persisted`, the pause and its
-  reason) is `status`'s `storage`, and the system snapshot's storage provider.
+  reason) is `status`'s `storage`, and the system snapshot's storage provider. A write Chrome refuses anyway (the
+  figures did not show it coming; the database reports "could not extend file …: File too large") fails its statement,
+  so its block's transaction is rolled back and the store stays at its last full block; the sync's or scan's error is
+  recognized as such and the sync pauses the same way, with "the browser refused to write to the store for lack of
+  space (…)" as the reason, until its next batch (at least 30 s later, and after the sync's own back-off) tries again.
 
 ## Snapshots
 
