@@ -581,6 +581,60 @@ describe("system snapshot schema and redaction", () => {
     expect(leaked(file)).toEqual([]);
   });
 
+  it("[[engine.telemetry.redaction-nested-json]] a secret member of JSON text written as a JSON string once or more (one to four encodings, also inside a log line and an error message) loses its whole value — every word, string, array or object — in the diagnostics file too; the rest of the JSON at every depth stays as it was, and a long run of backslashes is read in linear time", () => {
+    const words = "abandon ability able about above absent absorb abstract absurd abuse access accident".split(" ");
+    const phrase = words.join(" ");
+    /** `value` as JSON, then written as a JSON string `times` more times. */
+    const encoded = (value: unknown, times: number): string => {
+      let t = JSON.stringify(value);
+      for (let i = 0; i < times; i++) t = JSON.stringify(t);
+      return t;
+    };
+    /** The value back from `times` more encodings than the JSON. */
+    const decoded = (text: string, times: number): unknown => {
+      let v: unknown = text;
+      for (let i = 0; i <= times; i++) v = JSON.parse(v as string);
+      return v;
+    };
+    const leaked = (text: string): string[] => words.filter((w) => new RegExp(`\\b${w}\\b`, "iu").test(text));
+    // The finding's own shape (three encodings) first, then one to four for every kind of value.
+    expect(leaked(redactText(encoded({ seed: phrase }, 2)))).toEqual([]);
+    for (let times = 1; times <= 4; times++) {
+      for (const [value, want] of [
+        [{ seed: phrase, note: "seed phrase restored from backup", n: 1 }, { seed: "[redacted]", note: "seed phrase restored from backup", n: 1 }],
+        [{ message: "wallet", mnemonic: words, height: 715183 }, { message: "wallet", mnemonic: "[redacted]", height: 715183 }],
+        [{ wallet: { "recovery phrase": { words, language: "english" }, label: "main" }, ok: true }, { wallet: { "recovery phrase": "[redacted]", label: "main" }, ok: true }],
+        [{ passphrase: 12345, list: ["a\"b", "c\\d", "line\nbreak"] }, { passphrase: "[redacted]", list: ["a\"b", "c\\d", "line\nbreak"] }],
+      ] as const) {
+        const input = encoded(value, times);
+        const out = redactText(input);
+        expect(leaked(out), `${times}: ${out}`).toEqual([]);
+        expect(out, input).not.toContain("12345");
+        expect(decoded(out, times), `${times}: ${out}`).toEqual(want);
+        expect(redactText(out), `idempotent: ${out}`).toBe(out);
+        // Inside a log line and an error message.
+        expect(leaked(redactText(`sync error ${input} retrying`))).toEqual([]);
+      }
+    }
+    // Ordinary escaped text stays as it was, at every depth.
+    for (let times = 1; times <= 4; times++) {
+      const plain = encoded({ message: "token count 5", path: "C:\\data\\seed", note: "the \"seed\" was restored", n: [1, 2] }, times);
+      expect(redactText(plain), plain).toBe(plain);
+    }
+
+    // The diagnostics file: the shapes above in log lines and the sync error.
+    const s = minimal();
+    s.logs = [1, 2, 3, 4].map((times, seq) => ({ seq, at: 1, level: "error" as const, source: "sync" as const, text: `error ${encoded({ seed: phrase, mnemonic: words }, times)}` }));
+    s.sync.lastError = { message: encoded({ error: encoded({ seed: phrase }, 1) }, 1), at: 1 };
+    expect(leaked(diagnosticsJson(s))).toEqual([]);
+
+    // A long run of backslashes before a quote is read once.
+    const run = `${"\\".repeat(200_000)}"seed" x`;
+    const t0 = performance.now();
+    expect(redactText(run)).toBe(run);
+    expect(performance.now() - t0).toBeLessThan(2_000);
+  });
+
   it("[[engine.telemetry.redaction-url-paths]] a URL keeps its origin and its path but path segments that look like keys: an endpoint key in the path does not reach the snapshot or the diagnostics file", () => {
     const key = "9aa3d95b3bc440fa88ea12eaa4456161";
     expect(publicUrl(`https://mainnet.example.test/v3/${key}`)).toBe("https://mainnet.example.test/v3/[redacted]");

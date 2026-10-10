@@ -13,7 +13,7 @@
  *   digits, `-`, `_`, `.`, `~`, `+` or `=`, with both a letter and a digit); `key=value`, `key: value` and JSON
  *   `"key": value` forms whose key names a secret (API key, token, password, session id, signature, seed or mnemonic
  *   phrase, viewing key, …) lose their whole value: a JSON member its whole string, array or object, also inside
- *   JSON-escaped text (`\"key\": …`), a `key=` value its quoted text (also `\"…\"` inside JSON-escaped text), JSON
+ *   JSON text written as a JSON string once or more (`\"key\": …`, `\\\"key\\\": …`, up to six encodings), a `key=` value its quoted text (also `\"…\"` inside JSON-escaped text), JSON
  *   array or object, and an unquoted seed, mnemonic, passphrase or seed words every word that follows it, of any case
  *   and across line breaks, commas, list numbers and JSON-escaped line breaks, up to the next `key:` or `key=` or other
  *   punctuation; `Authorization` and `Cookie` headers lose the rest of their line; Bearer and Basic credentials, JWT-shaped tokens
@@ -426,18 +426,30 @@ const IS_PHRASE_KEY = new RegExp(String.raw`^${PHRASE_KEY}$`, "iu");
 
 const JSON_ESCAPES: Readonly<Record<string, string>> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
 
-/** The character at `i` of `text` as seen through `level` (0 or 1) JSON string encodings, and the index after it. */
-function charAt(text: string, i: number, level: 0 | 1): [string, number] {
-  const c = text[i] ?? "";
-  if (level === 0 || c !== "\\" || i + 1 >= text.length) return [c, i + 1];
-  const e = text[i + 1]!;
-  if (e === "u") return [String.fromCharCode(Number.parseInt(text.slice(i + 2, i + 6), 16) || 0), i + 6];
-  return [JSON_ESCAPES[e] ?? e, i + 2];
+/** The deepest JSON string encoding read ({@link SECRET_MEMBER}): text inside a JSON string inside … six times. */
+const MAX_ENCODINGS = 6;
+
+/** The character at `i` of `text` as seen through `level` JSON string encodings (0: the text as it is; each level
+ *  decodes one: `\"` → `"`, `\\` → `\`, `\n` → a line break, …), and the index after it in `text`. */
+function charAt(text: string, i: number, level: number): [string, number] {
+  if (level === 0) return [text[i] ?? "", i + 1];
+  const [c, next] = charAt(text, i, level - 1);
+  if (c !== "\\" || next >= text.length) return [c, next];
+  const [e, after] = charAt(text, next, level - 1);
+  if (e !== "u") return [JSON_ESCAPES[e] ?? e, after];
+  let hex = "";
+  let j = after;
+  for (let k = 0; k < 4 && j < text.length; k++) {
+    const [h, n] = charAt(text, j, level - 1);
+    hex += h;
+    j = n;
+  }
+  return [String.fromCharCode(Number.parseInt(hex, 16) || 0), j];
 }
 
 /** The index after the JSON value (string, array, object, or a bare word) that starts at `i`, read through `level`
  *  encodings; the end of the text when it does not end. */
-function skipJsonValue(text: string, i: number, level: 0 | 1): number {
+function skipJsonValue(text: string, i: number, level: number): number {
   let depth = 0;
   let inString = false;
   let j = i;
@@ -445,7 +457,7 @@ function skipJsonValue(text: string, i: number, level: 0 | 1): number {
   if (first !== '"' && first !== "[" && first !== "{") {
     while (j < text.length) {
       const [c, next] = charAt(text, j, level);
-      if (/[\s,}\]]/u.test(c) || (level === 1 && c === '"')) break;
+      if (/[\s,}\]]/u.test(c) || (level > 0 && c === '"')) break;
       j = next;
     }
     return j;
@@ -469,17 +481,23 @@ function skipJsonValue(text: string, i: number, level: 0 | 1): number {
   return text.length;
 }
 
-/** JSON members naming a secret (`"key": value`, or `\"key\": value` inside JSON-escaped text): the whole value. */
-const SECRET_MEMBER = new RegExp(String.raw`(\\?)"${SECRET_KEY}\1"\s*:\s*`, "giu");
+/**
+ * JSON members naming a secret: `"key": value`, or the same inside JSON text that was itself written as a JSON string,
+ * once or more (`\"key\": value`, `\\\"key\\\": value`, …, up to {@link MAX_ENCODINGS} encodings: a quote under `n`
+ * encodings is `2^n - 1` backslashes and `"`) — the whole value, read through as many encodings. A match starts only at
+ * the first backslash of a run, so a long run of backslashes is read once (linear time).
+ */
+const SECRET_MEMBER = new RegExp(String.raw`(?<!\\)(\\{0,${2 ** MAX_ENCODINGS - 1}})"${SECRET_KEY}\1"\s*:\s*`, "giu");
 function redactMembers(text: string): string {
   let out = "";
   let last = 0;
   SECRET_MEMBER.lastIndex = 0;
   for (let m = SECRET_MEMBER.exec(text); m !== null; m = SECRET_MEMBER.exec(text)) {
-    const level = m[1] === "\\" ? 1 : 0;
+    const level = Math.log2(m[1]!.length + 1);
+    if (!Number.isInteger(level)) continue; // not a quote under whole encodings
     const start = m.index + m[0].length;
     const end = skipJsonValue(text, start, level);
-    const q = level === 1 ? '\\"' : '"';
+    const q = `${m[1]}"`;
     out += `${text.slice(last, start)}${q}${REDACTED}${q}`;
     last = end;
     SECRET_MEMBER.lastIndex = Math.max(end, start);
