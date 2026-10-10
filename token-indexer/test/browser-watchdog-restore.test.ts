@@ -29,7 +29,10 @@
  * - `[[browser.watchdog.restore-interrupted-import]]` — a worker that stops answering once an import's journal is saved,
  *   with its engine still running (its stop never reported): the new worker's boot finishes the import, and the new
  *   worker starts nothing on the snapshot's store; the configuration that continues the snapshot stays saved, with no
- *   automatic start.
+ *   automatic start. * - `[[browser.watchdog.restore-jsonrpc-off]]` — the JSON RPC module switched off stays off on the worker the watchdog
+ *   puts in place and on the next leader tab's worker after a handover (their `jsonrpc` requests refused
+ *   `module-off`; nothing sends a `module` request again): both read the switch from the saved settings; switched on
+ *   again, they answer.
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -384,6 +387,78 @@ describe("page watchdog: what a restart starts", () => {
       await r.close();
     }
   }, 120_000);
+  it("[[browser.watchdog.restore-jsonrpc-off]] the JSON RPC module switched off stays off on the watchdog's new worker and on the next leader tab's worker; on again, they answer", async () => {
+    const chainId = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId" });
+    const answer = async (c: { request: SupervisedEngine<ChannelWorker>["client"]["request"] }): Promise<unknown> => {
+      const r = await c.request("jsonrpc", { body: chainId });
+      return (JSON.parse(r.body) as { result?: unknown }).result;
+    };
+    const refusal = (c: { request: SupervisedEngine<ChannelWorker>["client"]["request"] }): Promise<string> =>
+      c.request("jsonrpc", { body: chainId }).then(() => "answered", (e: EngineError) => e.code);
+
+    // The watchdog's restart.
+    const r = rig({ ...U1_TAPE, startHeight: U1.from, ...FAST });
+    try {
+      const c = r.engine.client;
+      expect((await c.booted()).phase).toBe("ready");
+      expect(await answer(c)).toBe("0x960");
+      expect((await c.request("module", { module: "jsonrpc", enabled: false })).settings?.modules).toEqual({ jsonrpc: false });
+      expect(await refusal(c)).toBe("module-off");
+      const next = await r.restart();
+      expect(await refusal(c)).toBe("module-off");
+      expect(next.received.some((m) => m.type === "module")).toBe(false);
+      expect((await c.status()).settings?.modules).toEqual({ jsonrpc: false });
+      expect((await c.request("module", { module: "jsonrpc", enabled: true })).settings?.modules).toEqual({ jsonrpc: true });
+      expect(await answer(c)).toBe("0x960");
+    } finally {
+      await r.close();
+    }
+
+    // The handover to the next leader tab.
+    const store = sharedStore({ ...U1_TAPE, startHeight: U1.from, ...FAST });
+    const locks = new FakeLocks();
+    const channels = new FakeChannels();
+    const rigs = new Map<string, Rig>();
+    const open = (id: string): EngineTabs => connectEngineTabs({
+      scope: "opfs-ahp://umbradb-handover-jsonrpc",
+      tabId: id,
+      locks: locks.view(id),
+      openChannel: channels.for(id),
+      startWorker: () => {
+        const t = supervised(store);
+        rigs.set(id, t);
+        return { client: t.engine.client, terminate: () => t.engine.close() };
+      },
+      leaderWaitMs: 30_000,
+      log: () => {},
+      resume: resumeOrAutoStart(false),
+    });
+    const leader = open("leader");
+    const follower = open("follower");
+    try {
+      expect(await leader.ready).toBe("leader");
+      expect(await follower.ready).toBe("follower");
+      expect((await leader.client.request("module", { module: "jsonrpc", enabled: false })).settings?.modules).toEqual({ jsonrpc: false });
+      // The follower's requests go to the leader: refused there.
+      expect(await refusal(follower.client)).toBe("module-off");
+      // The leader tab closes abruptly: its worker ends, its locks and channels go.
+      rigs.get("leader")!.engine.close();
+      locks.kill("leader");
+      channels.kill("leader");
+      await until(() => follower.role() === "leader", "the follower leads", 30_000);
+      await until(async () => (await follower.client.status().catch(() => undefined))?.boot.phase === "ready", "the new leader's worker", 30_000);
+      expect(await refusal(follower.client)).toBe("module-off");
+      expect(rigs.get("follower")!.workers[0]!.received.some((m) => m.type === "module")).toBe(false);
+      expect((await follower.client.request("module", { module: "jsonrpc", enabled: true })).settings?.modules).toEqual({ jsonrpc: true });
+      expect(await answer(follower.client)).toBe("0x960");
+    } finally {
+      follower.close();
+      leader.close();
+      for (const t of rigs.values()) t.engine.close();
+      await previousGone;
+    }
+  }, 180_000);
+
   it("[[browser.watchdog.restore-during-replacement]] a worker that stops answering while a range replaces its store (its engine's stop already reported), or while the range's own start runs (from a stopped engine): the new worker's boot finishes what the saved settings ask for and the restore starts the new range from them", async () => {
     const first: StartConfig = { ...U1_TAPE, startHeight: U1.from, endHeight: U1.from + 3, ...FAST };
     const range: StartConfig = { ...first, startHeight: U1.from + 12, endHeight: U1.from + 20 };

@@ -18,9 +18,10 @@
  * | `digest` | — | {@link DigestResult}: the archive digest and the range-tables digest of the store, with its NULL `bytea[]` elements |
  * | `system` | `watch` (with `viewer?`) or `refresh` (`{ database?, exactCounts? }`) | {@link SystemResult} |
  * | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | {@link WatchdogResult} |
- * | `module` | `module` (one of {@link MODULE_IDS}), `enabled` | {@link HostStatus}: the module switched on or off and saved with the settings (`token-indexer`: off stops the MIP-0018 scan at a block boundary while the sync goes on; on continues it from its cursor) |
+ * | `module` | `module` (one of {@link MODULE_IDS}), `enabled` | {@link HostStatus}: the module switched on or off and saved with the settings (`token-indexer`: off stops the MIP-0018 scan at a block boundary while the sync goes on; on continues it from its cursor; `jsonrpc`: off refuses `jsonrpc` requests and closes the module's database) |
  * | `tables` | — | {@link TablesResult}: each schema's tables with their estimated rows and size (catalog statistics) |
  * | `rows` | `schema`, `table`, `limit?`, `offset?` | {@link RowsResult}: one page of a table of the store's catalog by its primary key, descending (newest first for a height-keyed table; read-only) |
+ * | `jsonrpc` | `body` (the text of one JSON-RPC 2.0 request or batch, at most {@link JSONRPC_MAX_BODY_CHARS} characters) | {@link ApiResult}: what Node's `npm run evm-rpc` server answers a `POST` with that body (status, headers, body), from the JSON RPC module (`jsonrpc-module.ts`); refused `module-off` while the module is off |
  *
  * Responses (worker → page): `{ v, type: "response", id, request, ok: true, result }` or
  * `{ v, type: "response", id, request, ok: false, error: { code, message } }`; `id` and `request` are `null` when the
@@ -33,6 +34,7 @@
  * know `unknown-type`, so a page and a worker from different builds fail with a clear error.
  */
 import { z } from "zod";
+import type { HttpAnswer } from "../../evm-rpc/handler.js";
 import type { ApiResponse } from "../mip0018/api.ts";
 import type { EngineStatus } from "../engine/engine.ts";
 import type { SyncCursor, SyncOnceResult } from "../../chain-archive-sync/sync-service.js";
@@ -46,14 +48,15 @@ import type { ExportedSnapshot } from "./snapshot-store.ts";
 export const PROTOCOL_VERSION = 1;
 
 /** The request types of this protocol version. */
-export const REQUEST_TYPES = ["status", "api", "start", "stop", "range", "reset", "export", "import", "digest", "system", "watchdog", "module", "tables", "rows"] as const;
+export const REQUEST_TYPES = ["status", "api", "start", "stop", "range", "reset", "export", "import", "digest", "system", "watchdog", "module", "tables", "rows", "jsonrpc"] as const;
 export type RequestType = (typeof REQUEST_TYPES)[number];
 
 /**
  * The indexer's modules the engine can switch on and off (`module`): `token-indexer`, the MIP-0018 scan and the token
- * explorer reading it. The sync of the chain archive is the indexer itself and is not a module.
+ * explorer reading it; `jsonrpc`, the EVM JSON-RPC module's read-only methods (`jsonrpc`). Both are on unless the saved
+ * settings say otherwise. The sync of the chain archive is the indexer itself and is not a module.
  */
-export const MODULE_IDS = ["token-indexer"] as const;
+export const MODULE_IDS = ["token-indexer", "jsonrpc"] as const;
 export type ModuleId = (typeof MODULE_IDS)[number];
 
 /** Bounds of a `rows` request: rows per page (and the default), the deepest offset, and how much of a value is read. */
@@ -66,6 +69,10 @@ export const ROWS_LIMITS = {
   /** Leading bytes of a `bytea` value read and sent as hex (the length is sent too). */
   hexBytes: 16,
 } as const;
+
+/** The longest `jsonrpc` body, in characters: twice the module's request cap (1 MiB of UTF-8), so a body over the cap
+ *  still reaches the module and gets Node's answer to it (HTTP 413). */
+export const JSONRPC_MAX_BODY_CHARS = 2_097_152;
 
 /** The recorded Stagenet ranges a worker can replay offline (the gzip tapes in `token-indexer/browser/tapes/`). */
 export const TAPE_RANGES = ["idx", "u1"] as const;
@@ -92,6 +99,8 @@ export const ERROR_CODES = [
   /** `start`, `stop`, `module`: the browser refused to save the settings. The message says what became of the change:
    *  `start` and `module` changed nothing; `stop` stopped the engine, which starts again at the next boot. */
   "settings-failed",
+  /** `jsonrpc` while the JSON RPC module is switched off. */
+  "module-off",
   /** An unexpected failure inside the worker. */
   "internal",
   /** `import`: the snapshot does not match this engine or is damaged; `export`: the archive is empty. The message starts
@@ -260,6 +269,7 @@ export const REQUEST_SCHEMAS = {
     limit: intIn(1, ROWS_LIMITS.maxLimit).optional(),
     offset: intIn(0, ROWS_LIMITS.maxOffset).optional(),
   }),
+  jsonrpc: z.strictObject({ ...envelope, type: z.literal("jsonrpc"), body: z.string().max(JSONRPC_MAX_BODY_CHARS) }),
 } as const satisfies Record<RequestType, z.ZodType>;
 
 export type RequestOf<T extends RequestType> = z.infer<(typeof REQUEST_SCHEMAS)[T]>;
@@ -360,7 +370,7 @@ export const EngineSettingsSchema = z.strictObject({
   config: StartConfigSchema,
   autoStart: z.boolean(),
   /** The modules switched off or on (`module`); a module not named is on. */
-  modules: z.strictObject({ "token-indexer": z.boolean().optional() }).optional(),
+  modules: z.strictObject({ "token-indexer": z.boolean().optional(), jsonrpc: z.boolean().optional() }).optional(),
 });
 export type EngineSettings = z.infer<typeof EngineSettingsSchema>;
 
@@ -510,6 +520,7 @@ export const RESULT_SCHEMAS = {
   module: HostStatusSchema,
   tables: TablesResultSchema,
   rows: RowsResultSchema,
+  jsonrpc: ApiResultSchema,
 } as const satisfies Record<RequestType, z.ZodType>;
 export type ResultOf<T extends RequestType> = z.infer<(typeof RESULT_SCHEMAS)[T]>;
 
@@ -647,6 +658,8 @@ const accepts = <S extends z.ZodType, Sent extends z.input<S>>(): void => {};
 /** Compiles only when `Sent` has no key the strict schema `S` lacks (a new engine field must be added to the schema). */
 const noExtraKeys = <S extends z.ZodType, Sent>(..._: [Exclude<keyof Sent, keyof z.input<S>>] extends [never] ? [] : [never]): void => {};
 accepts<typeof ApiResultSchema, ApiResponse>();
+accepts<typeof ApiResultSchema, { status: HttpAnswer["status"]; headers: Record<string, string>; body: HttpAnswer["body"] }>();
+noExtraKeys<typeof ApiResultSchema, HttpAnswer>();
 accepts<typeof EngineStatusSchema, EngineStatus>();
 accepts<typeof SyncCursorSchema, SyncCursor>();
 accepts<typeof ScanCursorSchema, ScanCursor>();

@@ -1,5 +1,5 @@
 {
-  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 383), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
+  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 400), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
   "$check-mechanism-note": "The check mechanism itself is proven independently by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so they stay green whatever this manifest holds; check-required-tests.test.ts also validates this manifest's structure (every required entry bound to an existing file, the pinned count). Do NOT delete a required id to make the check pass — that would re-open the self-skip hole this manifest closes; a required id whose test is missing fails the gate, naming it.",
   "required": [
     {
@@ -1916,6 +1916,91 @@
       "id": "browser.worker.reset-new-store",
       "file": "token-indexer/test/browser-snapshot-chrome.test.ts",
       "description": "reset and range remove every file of the OPFS store and create it anew"
+    },
+    {
+      "id": "evm-rpc.handler.differential",
+      "file": "evm-rpc/test/handler.test.ts",
+      "description": "every differential case (each read-only method valid and refused, the not-implemented and unknown methods, the envelope, notifications, batches, bodies that are not JSON, the 1 MiB cap, methods other than POST): Node's HTTP server answers with exactly the handler's status, headers and body, read from bytes and from text"
+    },
+    {
+      "id": "evm-rpc.handler.utf8-length",
+      "file": "evm-rpc/test/handler.test.ts",
+      "description": "the handler's UTF-8 length equals Buffer.byteLength, lone surrogates included"
+    },
+    {
+      "id": "evm-rpc.method-info.registry",
+      "file": "evm-rpc/test/method-info.test.ts",
+      "description": "the method notes name exactly the read-only registry's served methods; the Node-only methods are not registered there and are what evm-rpc:all's modules add"
+    },
+    {
+      "id": "evm-rpc.method-info.examples",
+      "file": "evm-rpc/test/method-info.test.ts",
+      "description": "each served method's example parameters are accepted (a result, no error), through the handler and identically through Node's server"
+    },
+    {
+      "id": "evm-rpc.handler.empty-database",
+      "file": "evm-rpc/test/handler-database.test.ts",
+      "description": "an empty evm_rpc database made by the migrations answers every differential case exactly as no database"
+    },
+    {
+      "id": "evm-rpc.reader.rows",
+      "file": "evm-rpc/test/handler-database.test.ts",
+      "description": "the reader, given byte values as Uint8Array, answers the account and transaction methods from the database's rows"
+    },
+    {
+      "id": "browser.jsonrpc.module",
+      "file": "token-indexer/test/browser-jsonrpc.test.ts",
+      "description": "the browser's JSON RPC module: an in-memory evm_rpc PGlite from the migrations, the read-only registry, every POST case answered exactly as Node's server; closed, it refuses"
+    },
+    {
+      "id": "browser.jsonrpc.module-rows",
+      "file": "token-indexer/test/browser-jsonrpc.test.ts",
+      "description": "rows in the module's database (plain Uint8Array bytes) are what the account and transaction methods answer"
+    },
+    {
+      "id": "browser.jsonrpc.paced",
+      "file": "token-indexer/test/browser-jsonrpc.test.ts",
+      "description": "the module's requests to a public indexer start at least 250 ms apart; to any other, at once"
+    },
+    {
+      "id": "browser.jsonrpc.model",
+      "file": "token-indexer/test/browser-jsonrpc.test.ts",
+      "description": "the JSON RPC tab's rows are the registry's methods and the Node-only ones, marked; requests and answers as text"
+    },
+    {
+      "id": "browser.host.jsonrpc",
+      "file": "token-indexer/test/browser-jsonrpc.test.ts",
+      "description": "the worker host answers jsonrpc as Node while the module is on; off is saved first, then refused module-off and the database closed; a failed save changes nothing; a failed start is tried again; bad requests refused"
+    },
+    {
+      "id": "browser.host.jsonrpc-restored",
+      "file": "token-indexer/test/browser-jsonrpc.test.ts",
+      "description": "the JSON RPC switch lives in the settings: a new host refuses while off and answers once on; range, reset and import keep it off"
+    },
+    {
+      "id": "browser.watchdog.restore-jsonrpc-off",
+      "file": "token-indexer/test/browser-watchdog-restore.test.ts",
+      "description": "the JSON RPC module switched off stays off on the watchdog's new worker and on the next leader tab's worker; on again, they answer"
+    },
+    {
+      "id": "browser.jsonrpc.tab",
+      "file": "token-indexer/test/browser-jsonrpc-chrome.test.ts",
+      "description": "in Chromium: JSON RPC on by default; its tab lists every registry method and the Node-only ones with source, state, example parameters and Call; Call on each shows the request and Node's answer; no CSP violation"
+    },
+    {
+      "id": "browser.jsonrpc.answers",
+      "file": "token-indexer/test/browser-jsonrpc-chrome.test.ts",
+      "description": "in Chromium: every POST case of the differential through the engine gets Node's answer; requests the protocol refuses are bad-request"
+    },
+    {
+      "id": "browser.jsonrpc.hostile",
+      "file": "token-indexer/test/browser-jsonrpc-chrome.test.ts",
+      "description": "in Chromium: hostile text in parameters, in the parser's message and in indexer answers is drawn as text with visible marks or never passed on; nothing comes alive"
+    },
+    {
+      "id": "browser.jsonrpc.module-switch",
+      "file": "token-indexer/test/browser-jsonrpc-chrome.test.ts",
+      "description": "in Chromium: JSON RPC off from its checkbox is saved, hides its tab and refuses requests; a second tab, a leader change and a reload keep it; on again, Node's answers"
     }
   ],
   "deferred": [

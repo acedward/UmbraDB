@@ -43,6 +43,15 @@
  * transactions; while the store is replaced they wait for the new one (or answer `boot-failed` when the replacement
  * fails).
  *
+ * **JSON RPC** (`jsonrpc-module.ts`): `jsonrpc` answers one JSON-RPC 2.0 request body with the EVM JSON-RPC module's
+ * read-only methods, as Node's `npm run evm-rpc` answers it, while the `jsonrpc` module is on (the saved settings; on
+ * unless they say otherwise), and is refused `module-off` while it is off. The module starts with the first request it
+ * answers: its `evm_rpc` database, a PGlite database in memory made by the module's migrations, is then created
+ * (about a second), and its blocks and transactions come from the build's indexer (`indexerUrl`). `module` saves the
+ * switch first, like the token indexer's; switched off, new requests are refused at once and the module's database is
+ * closed once the requests in flight have ended. Every worker reads the switch from the settings (a reload, a worker the
+ * watchdog restarted, the next leader tab, a replaced store); the module does not touch the store.
+ *
  * **Snapshots** (`snapshot-store.ts`): `export` writes a snapshot file (the rows of the store's tables) while the engine
  * runs (a consistent read between two transactions). `import` checks a snapshot file and loads its rows into a trial
  * store in memory without touching anything (a refusal changes nothing, and a running engine keeps running); then it
@@ -98,8 +107,10 @@ import { KNOWN_GENESIS } from "../mip0018/api-views.ts";
 import { createIndexerEngine, type EngineClock, type EngineEvent, type EngineOptions, type EngineScheduler, type IndexerEngine, systemClock } from "../engine/engine.ts";
 import { rangeTables } from "../engine/range-tables.ts";
 import { checkCapabilities } from "./capabilities.ts";
+import { jsonRpcClientVersion, type JsonRpcModule, type JsonRpcModuleOptions, startJsonRpcModule } from "./jsonrpc-module.ts";
 import { type BuildInfo, createHostSystem, type SystemProviders } from "./host-system.ts";
 import {
+  type ApiResult,
   type BootState,
   type CapabilityReport,
   type DigestResult,
@@ -176,8 +187,11 @@ export interface WorkerHostOptions {
   loadLedger?: () => Promise<Record<string, unknown>>;
   /** Loads a recorded range. Default: {@link loadTape}. */
   loadTape?: (range: TapeRange) => Promise<ArchiveTape>;
-  /** `fetch` of a `network` source. Default: the global `fetch`. */
+  /** `fetch` of a `network` source and of the JSON RPC module. Default: the global `fetch`. */
   fetch?: typeof fetch;
+  /** The JSON RPC module: the client version it reports (the worker gives the build's; default
+   *  `jsonRpcClientVersion("unknown")`) and how it starts (default {@link startJsonRpcModule}). */
+  jsonRpc?: { clientVersion?: string; start?: (o: JsonRpcModuleOptions) => Promise<JsonRpcModule> };
   clock?: EngineClock;
   /** Default: {@link yieldingScheduler}. */
   schedule?: EngineScheduler;
@@ -970,18 +984,108 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     return start(undefined);
   }
 
-  /** A `module` request: saves the choice with the settings, then switches the module; a running engine follows at once
-   *  (switched off, the answer comes once its scan has stopped at a block boundary). A choice the browser refuses to
-   *  save changes nothing. */
+  // ── The JSON RPC module ───────────────────────────────────────────────────────────────────────────────────────────
+
+  /** The JSON RPC module once started: its start (in progress or done) and its requests in flight. */
+  interface JsonRpcRun {
+    started: Promise<JsonRpcModule>;
+    inFlight: number;
+    drained: (() => void) | undefined;
+  }
+  let jsonRpc: JsonRpcRun | undefined;
+  /** Modules being stopped (their databases close once their requests have ended); `close` waits for them. */
+  const jsonRpcStopping = new Set<Promise<void>>();
+  const jsonRpcEnabled = (): boolean => modules.jsonrpc ?? true;
+
+  /** The module's run, started now unless it runs; a start that fails is logged and the next request starts it again. */
+  function jsonRpcRun(): JsonRpcRun {
+    if (jsonRpc !== undefined) return jsonRpc;
+    const t = monotonic();
+    const started = (opts.jsonRpc?.start ?? startJsonRpcModule)({
+      indexerUrl: opts.indexerUrl,
+      clientVersion: opts.jsonRpc?.clientVersion ?? jsonRpcClientVersion("unknown"),
+      ...(opts.fetch === undefined ? {} : { fetch: opts.fetch }),
+    });
+    const run: JsonRpcRun = { started, inFlight: 0, drained: undefined };
+    jsonRpc = run;
+    started.then(
+      (m) => log("info", `the JSON RPC module started: ${m.methods.length} methods, its evm_rpc database in memory (${Math.round(monotonic() - t)} ms)`),
+      (e: unknown) => {
+        if (jsonRpc === run) jsonRpc = undefined;
+        log("error", `the JSON RPC module could not start: ${messageOf(e)}`);
+      },
+    );
+    return run;
+  }
+
+  /** Stops the module: new requests are refused at once (`jsonRpc` is gone); its database closes once the requests in
+   *  flight have ended. */
+  function stopJsonRpc(): void {
+    const run = jsonRpc;
+    if (run === undefined) return;
+    jsonRpc = undefined;
+    const stopping = (async () => {
+      let m: JsonRpcModule;
+      try {
+        m = await run.started;
+      } catch {
+        return;
+      }
+      if (run.inFlight > 0) await new Promise<void>((resolve) => (run.drained = resolve));
+      try {
+        await m.close();
+        log("info", "the JSON RPC module stopped: its evm_rpc database is closed");
+      } catch (e) {
+        log("warn", `closing the JSON RPC module's database failed: ${messageOf(e)}`);
+      }
+    })();
+    jsonRpcStopping.add(stopping);
+    void stopping.finally(() => jsonRpcStopping.delete(stopping));
+  }
+
+  /** A `jsonrpc` request: the module's answer to `body`, once the boot is ready; refused while the module is off. */
+  async function jsonRpcRequest(body: string): Promise<ApiResult> {
+    while (reopening !== undefined || swapping !== undefined) await (reopening ?? swapping);
+    await ready();
+    if (!jsonRpcEnabled()) throw new HostError("module-off", "the JSON RPC module is off: switch it on in the Modules section to call its methods");
+    const run = jsonRpcRun();
+    run.inFlight++;
+    try {
+      let m: JsonRpcModule;
+      try {
+        m = await run.started;
+      } catch (e) {
+        throw new HostError("internal", `the JSON RPC module could not start: ${messageOf(e)}`);
+      }
+      const answer = await m.handle(body);
+      return { status: answer.status, headers: { ...answer.headers }, body: answer.body };
+    } finally {
+      run.inFlight--;
+      if (run.inFlight === 0) run.drained?.();
+    }
+  }
+
+  /** A `module` request: saves the choice with the settings, then switches the module. The token indexer: a running
+   *  engine follows at once (switched off, the answer comes once its scan has stopped at a block boundary). The JSON RPC
+   *  module: switched off, its requests are refused from the answer on. A choice the browser refuses to save changes
+   *  nothing. */
   async function setModule(module: ModuleId, enabled: boolean): Promise<HostStatus> {
     await ready();
     const next = { ...modules, [module]: enabled };
+    const name = module === "jsonrpc" ? "the JSON RPC module" : "the token indexer";
     try {
       await writeSettings(saved ?? { config: opts.defaultStart ?? {}, autoStart: true }, { modules: next });
     } catch (e) {
-      throw new HostError("settings-failed", `the token indexer's switch could not be saved (${messageOf(e)}): nothing was changed`);
+      throw new HostError("settings-failed", `${name}'s switch could not be saved (${messageOf(e)}): nothing was changed`);
     }
     modules = next;
+    if (module === "jsonrpc") {
+      if (!enabled) stopJsonRpc();
+      log("info", enabled
+        ? "the JSON RPC module is on: its requests are answered (its evm_rpc database is made at the first one)"
+        : "the JSON RPC module is off: its requests are refused");
+      return status();
+    }
     await active?.setScanEnabled(enabled);
     log("info", enabled
       ? "the token indexer is on: the MIP-0018 scan continues from its cursor"
@@ -1159,6 +1263,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         return serial(() => setModule(r.module, r.enabled));
       case "tables":
         return readingStore(async () => listTables((await ready()).mip0018, STORE_SCHEMAS));
+      case "jsonrpc":
+        return jsonRpcRequest(r.body);
       case "rows":
         return readingStore(async () => {
           const s = await ready();
@@ -1200,6 +1306,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         await halt();
         closed = true;
       });
+      stopJsonRpc();
+      await Promise.all([...jsonRpcStopping]);
       await boot();
       if (store !== undefined) await store.close();
     },

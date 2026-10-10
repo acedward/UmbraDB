@@ -123,6 +123,9 @@ const MUST_REACH = [
   "evm-rpc/methods/bloom.ts",
   "evm-rpc/methods/not-implemented.ts",
   "evm-rpc/logs/keccak256.ts",
+  "token-indexer/browser/jsonrpc-module.ts",
+  "token-indexer/browser/jsonrpc-view.ts",
+  "src/postgres/migrations/evm_rpc/index.ts",
 ];
 
 const rel = (abs: string): string => path.relative(ROOT, abs).split(path.sep).join("/");
@@ -272,13 +275,17 @@ describe("runtime modules use no Node API", () => {
     }
   }, 120_000);
 
-  it("[[runtime.node-free.no-postgres-js]] the browser build's worker and pages never load the PostgreSQL client (postgres.js), not even through a dynamic import; the explorer page loads the explorer script, not the Node page module", () => {
+  it("[[runtime.node-free.no-postgres-js]] the browser build's worker and pages never load the PostgreSQL client (postgres.js), not even through a dynamic import (the JSON RPC module reads its database through the PGlite client, never the Node reader's pool); the explorer page loads the explorer script, not the Node page module", () => {
     const browser = runtimeClosure(["token-indexer/browser/worker.ts", "token-indexer/browser/engine-page.ts", "token-indexer/browser/explorer-page.ts", "token-indexer/browser/system-page.ts"]);
     expect(browser.unresolved).toEqual([]);
     const reached = [...browser.files].map(rel);
     expect(reached).toContain("src/postgres/migrate.ts");
     expect(reached).toContain("token-indexer/mip0018/scan.ts");
     expect(reached).not.toContain("src/postgres/client.ts");
+    expect(reached).toContain("evm-rpc/handler.ts");
+    expect(reached).toContain("evm-rpc/reader.ts");
+    expect(reached).not.toContain("evm-rpc/db.ts");
+    expect(reached).not.toContain("evm-rpc/server.ts");
     expect(reached).toContain("token-indexer/mip0018/ui/page.js");
     expect(reached).not.toContain("token-indexer/mip0018/ui/page.ts");
   });

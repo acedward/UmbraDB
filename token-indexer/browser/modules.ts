@@ -1,8 +1,9 @@
 /**
  * The indexer's modules as the overview's Modules section lists them: the modules of the UmbraDB indexer roadmap, each
- * with its name and a one-line description. Token Indexer (MIP-0018) is the one this build has, and the only one with
- * a working switch (`module` in `protocol.ts`): off, the engine's MIP-0018 scan stops while the chain archive keeps
- * syncing. The others are planned: listed, never switchable.
+ * with its name and a one-line description. Two have a working switch (`module` in `protocol.ts`): Token Indexer
+ * (MIP-0018; off, the engine's MIP-0018 scan stops while the chain archive keeps syncing) and JSON RPC (the EVM JSON-RPC
+ * module's read-only methods, called from its tab; off, its requests are refused), with a second line saying what the
+ * build has of it now. The others are planned: listed, never switchable.
  */
 import type { ModuleId } from "./protocol.ts";
 
@@ -13,6 +14,8 @@ export interface IndexerModule {
   description: string;
   /** The engine's id of an available module (its `module` request); `null` for a planned one. */
   engineModule: ModuleId | null;
+  /** What this build has of the module now, when that is less than its description (one line). */
+  now?: string;
 }
 
 /** Token Indexer first (the available one), then the planned modules in the roadmap's order. */
@@ -69,7 +72,8 @@ export const INDEXER_MODULES: readonly IndexerModule[] = [
     id: "jsonrpc",
     name: "JSON RPC",
     description: "A JSON-RPC for external wallets such as Passport: token balances from a viewing key, in a TEE.",
-    engineModule: null,
+    engineModule: "jsonrpc",
+    now: "Now: the read-only eth_* methods of npm run evm-rpc, called from the JSON RPC tab; no external wallet can connect.",
   },
   {
     id: "explorer",

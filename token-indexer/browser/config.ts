@@ -5,7 +5,8 @@
  * The network and the two endpoints are fixed when the static site is built: `vite.config.ts` reads them from the
  * environment (`UMBRADB_BROWSER_NETWORK`, `UMBRADB_BROWSER_NODE_URL`, `UMBRADB_BROWSER_INDEXER_URL`; Stagenet when
  * unset), defines them as `__UMBRADB_BROWSER_CHAIN__` in the bundles, and admits exactly the endpoints' origins in the
- * pages' Content-Security-Policy (`connect-src`). Outside a build (Node tests) the Stagenet defaults apply.
+ * pages' Content-Security-Policy (`connect-src`). Outside a build (Node tests) the Stagenet defaults apply. The
+ * archive sync and the JSON RPC module both read the chain through these endpoints.
  *
  * A build can also change the engine's start through Vite's `define` of `__UMBRADB_BROWSER_CONFIG__`, a JSON object:
  * `autoStart` (default true: the leader tab starts the store's saved configuration once its worker has booted, a new
@@ -37,6 +38,12 @@ export const BROWSER_NETWORK = chain.network;
 export const BROWSER_NODE_URL = chain.nodeUrl;
 export const BROWSER_INDEXER_URL = chain.indexerUrl;
 export const BROWSER_DATA_DIR = `opfs-ahp://umbradb-${BROWSER_NETWORK}`;
+
+/** Replaced by the build with the package's version (`package.json`); undeclared outside a build. */
+declare const __UMBRADB_PACKAGE_VERSION__: string | undefined;
+
+/** The package's version, which the JSON RPC module reports (`web3_clientVersion`); "unknown" outside a build. */
+export const BROWSER_PACKAGE_VERSION: string = typeof __UMBRADB_PACKAGE_VERSION__ === "undefined" ? "unknown" : __UMBRADB_PACKAGE_VERSION__;
 
 export interface BrowserBuildConfig {
   autoStart?: boolean;

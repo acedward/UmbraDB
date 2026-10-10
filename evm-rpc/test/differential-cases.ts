@@ -126,7 +126,7 @@ export function differentialCases(): DifferentialCase[] {
   cases.push(post("string id", call("wallet-7", "eth_chainId", [])));
   cases.push(post("null id", call(null, "net_version", [])));
   cases.push(post("fractional id", call(1.5, "net_version", [])));
-  cases.push(post("id with hidden characters", call("id ‮​<b>x</b> ü\u{1f600}", "eth_chainId", [])));
+  cases.push(post("id with hidden characters", call("id \u202E\u200B<b>x</b> ü\u{1f600}", "eth_chainId", [])));
   cases.push(post("boolean id", { jsonrpc: "2.0", id: true, method: "eth_chainId" }));
   cases.push(post("object id", { jsonrpc: "2.0", id: { a: 1 }, method: "eth_chainId" }));
   cases.push(post("no jsonrpc member", { id: 1, method: "eth_chainId" }));

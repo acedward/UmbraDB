@@ -74,8 +74,9 @@ import {
 export const LEADER_WAIT_MS = 10_000;
 
 /** The request types a follower sends again to the next leader when the leader it was sent to closed: they change
- *  nothing, or (`system` watching per viewer) give the same state when applied twice. */
-export const REPEATABLE_REQUEST_TYPES: ReadonlySet<RequestType> = new Set<RequestType>(["status", "api", "export", "digest", "system", "tables", "rows"]);
+ *  nothing (`jsonrpc`: the JSON RPC module's methods only read), or (`system` watching per viewer) give the same state
+ *  when applied twice. */
+export const REPEATABLE_REQUEST_TYPES: ReadonlySet<RequestType> = new Set<RequestType>(["status", "api", "export", "digest", "system", "tables", "rows", "jsonrpc"]);
 
 export const tabsChannelName = (scope: string): string => `umbradb-engine:${scope}`;
 export const tabChannelName = (scope: string, tab: string): string => `umbradb-engine:${scope}:tab:${tab}`;

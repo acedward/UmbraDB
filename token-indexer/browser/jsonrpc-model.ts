@@ -8,7 +8,8 @@
  *   (`-32004`) with its classification; a Node-only method marked "served by Node only", with no call.
  * - **A call** is one JSON-RPC 2.0 request: `{"jsonrpc":"2.0","id":n,"method":…,"params":…}` with the parameters the
  *   user edited (JSON; empty: no `params` member). The request and the answer are shown as text: JSON indented by two
- *   spaces, a body that is not JSON as it is.
+ *   spaces (its line breaks are the indentation's: JSON writes a line break inside a value as `\n`), a body that is not
+ *   JSON as it is.
  */
 import { METHOD_NOTES, NODE_ONLY_METHODS } from "../../evm-rpc/method-info.js";
 import { NOT_IMPLEMENTED_METHODS } from "../../evm-rpc/methods/not-implemented.js";
@@ -25,7 +26,7 @@ export interface MethodRow {
   source: string;
   /** The row's state in words. */
   state: string;
-  /** The parameters to start from, as JSON text (`""` for a Node-only method). */
+  /** The parameters to start from, as JSON text on one line (`""` for a Node-only method). */
   params: string;
   /** What else to know, or `null`. */
   note: string | null;
@@ -81,7 +82,7 @@ export function methodRows(registered: readonly string[] = registryMethods()): M
       kind: "served",
       source: note?.source ?? "see METHODS.md",
       state: "served here",
-      params: json(note?.params ?? []),
+      params: JSON.stringify(note?.params ?? []),
       note: note?.note ?? null,
       callable: true,
     });
@@ -122,13 +123,14 @@ export function buildRequest(id: number, method: string, paramsText: string): Bu
   return { ok: true, body: JSON.stringify(request), text: json(request) };
 }
 
-/** An answer as the tab shows it: the status line and the body as text (JSON indented, anything else as it is). */
-export function answerText(answer: { status: number; body: string }): { status: string; text: string } {
+/** An answer as the tab shows it: the status line and the body as text (JSON indented, anything else as it is), and
+ *  whether the text is indented JSON (whose line breaks are layout, not data). */
+export function answerText(answer: { status: number; body: string }): { status: string; text: string; json: boolean } {
   const status = answer.status === 204 ? "HTTP 204: no answer (a notification)" : `HTTP ${answer.status}`;
-  if (answer.body === "") return { status, text: "" };
+  if (answer.body === "") return { status, text: "", json: false };
   try {
-    return { status, text: json(JSON.parse(answer.body)) };
+    return { status, text: json(JSON.parse(answer.body)), json: true };
   } catch {
-    return { status, text: answer.body };
+    return { status, text: answer.body, json: false };
   }
 }

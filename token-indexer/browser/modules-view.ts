@@ -1,9 +1,10 @@
 /**
  * The Modules section at the bottom of the overview (static build, `index.html`): one row per module of the indexer
- * (`modules.ts`), with its name, its one-line description and an on/off checkbox. Token Indexer (MIP-0018) is the one
- * this build has: its checkbox is the engine's `module` switch (off, the MIP-0018 scan stops at a block boundary while
- * the chain archive keeps syncing, and its tab is hidden; on, the scan continues from its cursor), and it shows the
- * engine's saved choice. Every other module is planned: unchecked, disabled and marked "planned".
+ * (`modules.ts`), with its name, its one-line description (and what the build has of it now) and an on/off checkbox.
+ * Two modules are available, each checkbox the engine's `module` switch showing the engine's saved choice: Token
+ * Indexer (MIP-0018; off, the MIP-0018 scan stops at a block boundary while the chain archive keeps syncing, and its tab
+ * is hidden; on, the scan continues from its cursor) and JSON RPC (off, its tab is hidden and its requests are refused;
+ * on, its tab calls its methods). Every other module is planned: unchecked, disabled and marked "planned".
  *
  * Text is drawn as text nodes; a refusal from the engine is drawn with the explorer's hidden-character rules
  * (`visible-text.ts`).
@@ -12,28 +13,59 @@ import type { EngineClient } from "./client.ts";
 import { messageOf } from "./engine-panel.ts";
 import { INDEXER_MODULES } from "./modules.ts";
 import type { PanelView } from "./panel-model.ts";
-import type { HostStatus } from "./protocol.ts";
+import type { HostStatus, ModuleId } from "./protocol.ts";
 import { dataNode } from "./visible-text.ts";
 
 export interface ModulesViewOptions {
   client: EngineClient;
   /** The section is appended to this element. */
   parent: Element;
-  /** Called with the engine's status after the token indexer was switched. */
-  onSwitched?: (status: HostStatus) => void;
+  /** Called with the module and the engine's status after a module was switched. */
+  onSwitched?: (module: ModuleId, status: HostStatus) => void;
 }
 
 export interface ModulesView {
   readonly element: HTMLElement;
-  /** Draws the token indexer's state from the overview's view. */
+  /** Draws the available modules' states from the overview's view. */
   update(view: PanelView): void;
 }
+
+/** What the section says while a module is switched, once it is, and when it was not. */
+const SAYS: Record<ModuleId, { switching: Record<"on" | "off", string>; done: Record<"on" | "off", string>; failed: string }> = {
+  "token-indexer": {
+    switching: { on: "switching the token indexer on…", off: "switching the token indexer off: the scan stops after its block in flight…" },
+    done: {
+      on: "the token indexer is on: the scan continues from its cursor",
+      off: "the token indexer is off: the scan stopped at a block boundary; the chain archive keeps syncing",
+    },
+    failed: "the token indexer was not switched",
+  },
+  jsonrpc: {
+    switching: { on: "switching the JSON RPC module on…", off: "switching the JSON RPC module off…" },
+    done: {
+      on: "the JSON RPC module is on: its tab calls its methods",
+      off: "the JSON RPC module is off: its tab is hidden and its requests are refused",
+    },
+    failed: "the JSON RPC module was not switched",
+  },
+};
+
+/** A module's state in the overview's view. */
+const isOn = (view: PanelView, module: ModuleId): boolean => (module === "jsonrpc" ? view.jsonRpc : view.tokenIndexer);
 
 function node<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const n = document.createElement(tag);
   if (cls !== undefined) n.className = cls;
   if (text !== undefined) n.textContent = text;
   return n;
+}
+
+interface Toggle {
+  module: ModuleId;
+  box: HTMLInputElement;
+  state: HTMLElement;
+  row: HTMLTableRowElement;
+  busy: boolean;
 }
 
 export function mountModulesView(opts: ModulesViewOptions): ModulesView {
@@ -48,9 +80,7 @@ export function mountModulesView(opts: ModulesViewOptions): ModulesView {
   const table = node("table");
   table.setAttribute("data-field", "modules");
   const body = table.appendChild(node("tbody"));
-  let toggle: HTMLInputElement | null = null;
-  let tokenState: HTMLElement | null = null;
-  let tokenRow: HTMLTableRowElement | null = null;
+  const toggles: Toggle[] = [];
   for (const m of INDEXER_MODULES) {
     const tr = node("tr");
     tr.setAttribute("data-module", m.id);
@@ -68,7 +98,16 @@ export function mountModulesView(opts: ModulesViewOptions): ModulesView {
     state.setAttribute("data-field", "module-state");
     const stateCell = node("td");
     stateCell.append(state);
-    tr.append(cell, nameCell, node("td", "wide note", m.description), stateCell);
+    const descriptionCell = node("td", "wide note");
+    const description = node("span", undefined, m.description);
+    description.setAttribute("data-field", "module-description");
+    descriptionCell.append(description);
+    if (m.now !== undefined) {
+      const now = node("div", "now", m.now);
+      now.setAttribute("data-field", "module-now");
+      descriptionCell.append(now);
+    }
+    tr.append(cell, nameCell, descriptionCell, stateCell);
     if (m.engineModule === null) {
       box.checked = false;
       box.disabled = true;
@@ -81,9 +120,7 @@ export function mountModulesView(opts: ModulesViewOptions): ModulesView {
       tr.setAttribute("data-state", "on");
       state.textContent = "on";
       state.classList.add("ok");
-      toggle = box;
-      tokenState = state;
-      tokenRow = tr;
+      toggles.push({ module: m.engineModule, box, state, row: tr, busy: false });
     }
     body.append(tr);
   }
@@ -94,51 +131,51 @@ export function mountModulesView(opts: ModulesViewOptions): ModulesView {
   root.append(message);
   opts.parent.append(root);
 
-  let busy = false;
   let ready = false;
   const say = (text: string): void => {
     message.replaceChildren(dataNode(document, text));
   };
-  const drawOn = (on: boolean): void => {
-    if (toggle === null || tokenState === null || tokenRow === null) return;
-    toggle.checked = on;
-    tokenRow.setAttribute("data-state", on ? "on" : "off");
-    tokenState.textContent = on ? "on" : "off";
-    tokenState.classList.toggle("ok", on);
-    tokenState.classList.toggle("warn", !on);
+  const drawOn = (t: Toggle, on: boolean): void => {
+    t.box.checked = on;
+    t.row.setAttribute("data-state", on ? "on" : "off");
+    t.state.textContent = on ? "on" : "off";
+    t.state.classList.toggle("ok", on);
+    t.state.classList.toggle("warn", !on);
   };
 
-  toggle?.addEventListener("change", () => {
-    const box = toggle!;
-    const enabled = box.checked;
-    busy = true;
-    box.disabled = true;
-    say(enabled ? "switching the token indexer on…" : "switching the token indexer off: the scan stops after its block in flight…");
-    opts.client.request("module", { module: "token-indexer", enabled }).then(
-      (status) => {
-        drawOn(status.settings?.modules?.["token-indexer"] ?? true);
-        say(enabled
-          ? "the token indexer is on: the scan continues from its cursor"
-          : "the token indexer is off: the scan stopped at a block boundary; the chain archive keeps syncing");
-        opts.onSwitched?.(status);
-      },
-      (e: unknown) => {
-        drawOn(!enabled);
-        say(`the token indexer was not switched · ${messageOf(e)}`);
-      },
-    ).finally(() => {
-      busy = false;
-      box.disabled = !ready;
+  for (const t of toggles) {
+    const says = SAYS[t.module];
+    t.box.addEventListener("change", () => {
+      const enabled = t.box.checked;
+      t.busy = true;
+      t.box.disabled = true;
+      say(says.switching[enabled ? "on" : "off"]);
+      opts.client.request("module", { module: t.module, enabled }).then(
+        (status) => {
+          drawOn(t, status.settings?.modules?.[t.module] ?? true);
+          say(says.done[enabled ? "on" : "off"]);
+          opts.onSwitched?.(t.module, status);
+        },
+        (e: unknown) => {
+          drawOn(t, !enabled);
+          say(`${says.failed} · ${messageOf(e)}`);
+        },
+      ).finally(() => {
+        t.busy = false;
+        t.box.disabled = !ready;
+      });
     });
-  });
+  }
 
   return {
     element: root,
     update(view: PanelView): void {
       ready = view.ready;
-      if (toggle === null || busy) return;
-      toggle.disabled = !ready;
-      drawOn(view.tokenIndexer);
+      for (const t of toggles) {
+        if (t.busy) continue;
+        t.box.disabled = !ready;
+        drawOn(t, isOn(view, t.module));
+      }
     },
   };
 }

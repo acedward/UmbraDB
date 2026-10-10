@@ -15,7 +15,15 @@
  * - `[[browser.jsonrpc.model]]` — the tab's rows are the registry's methods, each once (served ones with their source
  *   and example parameters, not-implemented ones with their classification), then the Node-only methods, marked and
  *   not callable; a call's request is a JSON-RPC 2.0 request with the edited parameters (none when empty, refused when
- *   not JSON or too long); an answer is shown with its status and its body indented (as it is when not JSON).
+ *   not JSON or too long); an answer is shown with its status and its body indented (as it is when not JSON). * - `[[browser.host.jsonrpc]]` — the worker host answers `jsonrpc` with Node's answers while the module is on (by
+ *   default), making the module's database at the first request; `module` `jsonrpc` off is saved first, then requests
+ *   are refused `module-off` and the module's database is closed; on again, a new one answers; the token indexer's
+ *   switch is its own; a switch the browser refuses to save changes nothing (`settings-failed`, still answered); a
+ *   module that fails to start answers `internal` and the next request starts it again; requests without a string body
+ *   or over the bound are `bad-request`, and reading a request never throws.
+ * - `[[browser.host.jsonrpc-restored]]` — the switch lives in the settings: a new host on them (a reload, the next
+ *   worker or leader tab) refuses while it is off and answers once on; a store replaced by `range`, `reset` or
+ *   `import` keeps it off.
  */
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -31,7 +39,11 @@ import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { METHOD_NOTES, NODE_ONLY_METHODS } from "../../evm-rpc/method-info.js";
 import { NOT_IMPLEMENTED_METHODS } from "../../evm-rpc/methods/not-implemented.js";
 import { answerText, buildRequest, MAX_PARAMS_CHARS, methodRows, registryMethods } from "../browser/jsonrpc-model.ts";
-import { JSONRPC_CHAIN_ID, jsonRpcClientVersion, openEvmRpcDatabase, startJsonRpcModule } from "../browser/jsonrpc-module.ts";
+import { JSONRPC_CHAIN_ID, jsonRpcClientVersion, type JsonRpcModule, type JsonRpcModuleOptions, openEvmRpcDatabase, startJsonRpcModule } from "../browser/jsonrpc-module.ts";
+import type { WorkerHost } from "../browser/host.ts";
+import { type ApiResult, type ExportResult, type HostStatus, JSONRPC_MAX_BODY_CHARS, parseRequest, PROTOCOL_VERSION, type Response as HostResponse, type StartConfig } from "../browser/protocol.ts";
+import { type EngineSettingsStore, memorySettingsStore } from "../browser/settings.ts";
+import { testHost, U1, untilStatus } from "./helpers/worker-host.ts";
 
 const INDEXER = "http://127.0.0.1:9/api/v4/graphql";
 const CLIENT_VERSION = jsonRpcClientVersion("0.9.5");
@@ -176,7 +188,7 @@ describe("the browser engine's JSON RPC module", () => {
         expect(r).toMatchObject({ kind: "not-implemented", callable: true, params: "[]", state: `not implemented (-32004): ${stubs.get(r.method)!.classification}`, note: stubs.get(r.method)!.reason });
       } else if (registry.getMethod(r.method) !== undefined) {
         const note = METHOD_NOTES[r.method]!;
-        expect(r).toMatchObject({ kind: "served", callable: true, state: "served here", source: note.source, params: JSON.stringify(note.params, null, 2) });
+        expect(r).toMatchObject({ kind: "served", callable: true, state: "served here", source: note.source, params: JSON.stringify(note.params) });
       } else {
         expect(NODE_ONLY_METHODS.map((m) => m.method)).toContain(r.method);
         expect(r).toMatchObject({ kind: "node-only", callable: false, state: "served by Node only", params: "" });
@@ -191,8 +203,181 @@ describe("the browser engine's JSON RPC module", () => {
     expect(buildRequest(10, "eth_chainId", "[1,")).toMatchObject({ ok: false, error: expect.stringContaining("not JSON") });
     expect(buildRequest(11, "eth_chainId", `[${" ".repeat(MAX_PARAMS_CHARS)}]`)).toMatchObject({ ok: false, error: expect.stringContaining("longer") });
 
-    expect(answerText({ status: 200, body: '{"jsonrpc":"2.0","id":1,"result":"0x960"}' })).toEqual({ status: "HTTP 200", text: '{\n  "jsonrpc": "2.0",\n  "id": 1,\n  "result": "0x960"\n}' });
-    expect(answerText({ status: 204, body: "" })).toEqual({ status: "HTTP 204: no answer (a notification)", text: "" });
-    expect(answerText({ status: 502, body: "not <b>json</b>" })).toEqual({ status: "HTTP 502", text: "not <b>json</b>" });
+    expect(answerText({ status: 200, body: '{"jsonrpc":"2.0","id":1,"result":"0x960"}' })).toEqual({ status: "HTTP 200", text: '{\n  "jsonrpc": "2.0",\n  "id": 1,\n  "result": "0x960"\n}', json: true });
+    expect(answerText({ status: 200, body: '{"id":"a\\nb"}' }).text).toBe('{\n  "id": "a\\nb"\n}');
+    expect(answerText({ status: 204, body: "" })).toEqual({ status: "HTTP 204: no answer (a notification)", text: "", json: false });
+    expect(answerText({ status: 502, body: "not <b>json</b>\nline" })).toEqual({ status: "HTTP 502", text: "not <b>json</b>\nline", json: false });
   });
+
+  // ── The worker host ───────────────────────────────────────────────────────────────────────────────────────────────
+
+  let nextId = 1;
+  const send = (host: WorkerHost, type: string, params: Record<string, unknown> = {}): Promise<HostResponse> =>
+    host.receive({ v: PROTOCOL_VERSION, id: nextId++, type, ...params });
+  const jsonrpc = async (host: WorkerHost, body: string): Promise<ApiResult | { refused: string; message: string }> => {
+    const r = await send(host, "jsonrpc", { body });
+    return r.ok ? (r.result as ApiResult) : { refused: r.error.code, message: r.error.message };
+  };
+  const asWire = (r: ApiResult | { refused: string }): unknown => ("refused" in r ? r : { status: r.status, headers: Object.entries(r.headers), body: r.body });
+  const ok = async <T = unknown>(host: WorkerHost, type: string, params: Record<string, unknown> = {}): Promise<T> => {
+    const r = await send(host, type, params);
+    if (!r.ok) throw new Error(`${type}: ${r.error.code} ${r.error.message}`);
+    return r.result as T;
+  };
+  const CHAIN_ID = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId" });
+  const BLOCK = JSON.stringify({ jsonrpc: "2.0", id: 2, method: "eth_getBlockByNumber", params: ["latest", true] });
+
+  /** Starts modules as the host does, counting them and their closes. */
+  function counted(): { start: (o: JsonRpcModuleOptions) => Promise<JsonRpcModule>; started: number; closed: number; fail: number } {
+    const c = {
+      started: 0,
+      closed: 0,
+      fail: 0,
+      start: async (o: JsonRpcModuleOptions): Promise<JsonRpcModule> => {
+        if (c.fail > 0) {
+          c.fail--;
+          throw new Error("no memory for another database");
+        }
+        const m = await startJsonRpcModule(o);
+        c.started++;
+        return { methods: m.methods, handle: (b) => m.handle(b), close: async () => { c.closed++; await m.close(); } };
+      },
+    };
+    return c;
+  }
+
+  function jsonRpcHost(settings: EngineSettingsStore, modules = counted(), over: Parameters<typeof testHost>[0] = {}) {
+    const t = testHost({
+      indexerUrl: INDEXER,
+      fetch: recordedIndexerFetch().fetch,
+      settings,
+      jsonRpc: { clientVersion: CLIENT_VERSION, start: modules.start },
+      ...over,
+    });
+    return { ...t, modules };
+  }
+
+  it("[[browser.host.jsonrpc]] answered while on (the database made at the first request); off saved first, then refused and closed; on again a new module; its own switch; a failed save changes nothing; a failed start is tried again; bad requests refused", async () => {
+    const settings = memorySettingsStore();
+    const { host, modules, logs } = jsonRpcHost(settings);
+    try {
+      expect((await host.boot()).phase).toBe("ready");
+      expect(modules.started).toBe(0); // nothing made before the first request
+      for (const body of [CHAIN_ID, BLOCK, ...differentialCases().filter((c) => c.method === "POST").slice(0, 60).map((c) => c.body)]) {
+        expect(asWire(await jsonrpc(host, body))).toEqual(await viaHttp(port, body));
+      }
+      expect(modules.started).toBe(1);
+      expect(logs.some((l) => /^info the JSON RPC module started: \d+ methods/.test(l))).toBe(true);
+
+      // Off: saved first, refused at once, the database closed.
+      const off = await ok<HostStatus>(host, "module", { module: "jsonrpc", enabled: false });
+      expect(off.settings?.modules).toEqual({ jsonrpc: false });
+      expect((await settings.load())?.modules).toEqual({ jsonrpc: false });
+      expect(await jsonrpc(host, CHAIN_ID)).toEqual({ refused: "module-off", message: expect.stringContaining("the JSON RPC module is off") });
+      await until(() => modules.closed === 1, "the module's database to close");
+      // The token indexer's switch is its own.
+      expect(off.engine).toBeNull();
+      expect((await ok<HostStatus>(host, "status")).settings?.modules?.["token-indexer"]).toBeUndefined();
+
+      // On again: a new module answers.
+      const on = await ok<HostStatus>(host, "module", { module: "jsonrpc", enabled: true });
+      expect(on.settings?.modules).toEqual({ jsonrpc: true });
+      expect(asWire(await jsonrpc(host, BLOCK))).toEqual(await viaHttp(port, BLOCK));
+      expect(modules.started).toBe(2);
+
+      // A switch the browser refuses to save changes nothing.
+      const failing: EngineSettingsStore = { load: () => settings.load(), save: async () => { throw new Error("QuotaExceededError"); } };
+      const refused = jsonRpcHost(failing);
+      try {
+        await refused.host.boot();
+        const r = await send(refused.host, "module", { module: "jsonrpc", enabled: false });
+        expect(r.ok ? null : r.error).toEqual({ code: "settings-failed", message: expect.stringMatching(/^the JSON RPC module's switch could not be saved \(QuotaExceededError\): nothing was changed$/) });
+        expect((await ok<HostStatus>(refused.host, "status")).settings?.modules).toEqual({ jsonrpc: true });
+        expect(asWire(await jsonrpc(refused.host, CHAIN_ID))).toEqual(await viaHttp(port, CHAIN_ID));
+      } finally {
+        await refused.host.close();
+      }
+
+      // A module that fails to start: `internal`, and the next request starts it again.
+      const flaky = counted();
+      flaky.fail = 1;
+      const retried = jsonRpcHost(memorySettingsStore(), flaky);
+      try {
+        expect(await jsonrpc(retried.host, CHAIN_ID)).toEqual({ refused: "internal", message: "the JSON RPC module could not start: no memory for another database" });
+        await until(() => retried.logs.some((l) => l === "error the JSON RPC module could not start: no memory for another database"), "the failed start's log line");
+        expect(asWire(await jsonrpc(retried.host, CHAIN_ID))).toEqual(await viaHttp(port, CHAIN_ID));
+        expect(flaky.started).toBe(1);
+      } finally {
+        await retried.host.close();
+      }
+
+      // Requests the protocol refuses; reading a request never throws.
+      for (const params of [{}, { body: 7 }, { body: null }, { body: " ".repeat(JSONRPC_MAX_BODY_CHARS + 1) }, { body: "{}", extra: 1 }]) {
+        const r = await send(host, "jsonrpc", params);
+        expect(r.ok ? null : r.error.code, JSON.stringify(params).slice(0, 40)).toBe("bad-request");
+      }
+      const hostile = { v: PROTOCOL_VERSION, id: 9, type: "jsonrpc", get body(): string { throw new Error("a getter that throws"); } };
+      expect(parseRequest(hostile)).toMatchObject({ ok: false, error: { code: "bad-request" } });
+      expect(parseRequest({ v: PROTOCOL_VERSION, id: 9, type: "jsonrpc", body: " ".repeat(JSONRPC_MAX_BODY_CHARS) })).toMatchObject({ ok: true });
+      expect(parseRequest({ v: PROTOCOL_VERSION, id: 9, type: "module", module: "jsonrpc", enabled: false })).toMatchObject({ ok: true });
+    } finally {
+      await host.close();
+    }
+    // Closing the host closes the module's database.
+    expect(modules.closed).toBe(2);
+  }, 120_000);
+
+  it("[[browser.host.jsonrpc-restored]] the switch lives in the settings: a new host on them refuses while off and answers once on; range, reset and import keep it off", async () => {
+    const settings = memorySettingsStore();
+    const config: StartConfig = { source: { kind: "tape", range: "u1" }, startHeight: U1.from, sync: { idleMs: 100 }, scan: { idleMs: 100 } };
+    const first = jsonRpcHost(settings);
+    let exported: ExportResult;
+    try {
+      await ok(first.host, "start", { config });
+      await untilStatus(first.host, "the U1 range", (s) => s.cursors?.scan?.nextHeight === U1.to + 1);
+      exported = await ok<ExportResult>(first.host, "export");
+      await ok(first.host, "module", { module: "jsonrpc", enabled: false });
+      expect(await jsonrpc(first.host, CHAIN_ID)).toMatchObject({ refused: "module-off" });
+    } finally {
+      await first.host.close();
+    }
+
+    // A new host on the same settings (a reload, the next worker, the next leader tab): still off.
+    const second = jsonRpcHost(settings);
+    try {
+      expect((await second.host.boot()).phase).toBe("ready");
+      expect((await ok<HostStatus>(second.host, "status")).settings?.modules).toEqual({ jsonrpc: false });
+      expect(await jsonrpc(second.host, CHAIN_ID)).toMatchObject({ refused: "module-off" });
+      await ok(second.host, "start", { config });
+      await untilStatus(second.host, "the U1 range", (s) => s.cursors?.scan?.nextHeight === U1.to + 1);
+
+      // The store replaced by range, reset and import: the switch stays off, and the module stays unmade.
+      for (const [type, params] of [["range", { startHeight: U1.from + 10, endHeight: U1.to }], ["reset", {}], ["import", { snapshot: exported!.file }]] as const) {
+        await ok(second.host, type, params);
+        const s = await ok<HostStatus>(second.host, "status");
+        expect(s.settings?.modules, type).toEqual({ jsonrpc: false });
+        expect(await jsonrpc(second.host, CHAIN_ID), type).toMatchObject({ refused: "module-off" });
+      }
+      expect(second.modules.started).toBe(0);
+      await ok(second.host, "module", { module: "jsonrpc", enabled: true });
+    } finally {
+      await second.host.close();
+    }
+
+    // On, saved: the next host answers.
+    const third = jsonRpcHost(settings);
+    try {
+      expect(asWire(await jsonrpc(third.host, BLOCK))).toEqual(await viaHttp(port, BLOCK));
+    } finally {
+      await third.host.close();
+    }
+  }, 180_000);
 });
+
+async function until(cond: () => boolean, what: string, timeoutMs = 10_000): Promise<void> {
+  const end = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}

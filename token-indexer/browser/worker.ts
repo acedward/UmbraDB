@@ -3,12 +3,13 @@
  * messages. It boots as soon as it loads (each phase is posted as a `boot` notice), answers every request with one
  * response, and posts the host's notices. A new store's default configuration and the storage guard's intervals come
  * from the build's settings (`config.ts`), and so do the build's facts (app commit, PGlite and ledger versions;
- * `vite.config.ts`), which the system snapshot shows. Start it with `startEngineWorker()` (`client.ts`); a page runs it
+ * `vite.config.ts`), which the system snapshot shows, and the package version the JSON RPC module reports. Start it with `startEngineWorker()` (`client.ts`); a page runs it
  * through `connectEngineTabs()` (`tabs.ts`), whose leader tab starts the engine.
  */
 import "./zod-jitless.ts"; // first: before any zod schema exists (the static build's CSP refuses zod's JIT)
-import { BROWSER_BUILD_CONFIG, BROWSER_DATA_DIR, BROWSER_INDEXER_URL, BROWSER_NETWORK, BROWSER_NODE_URL } from "./config.ts";
+import { BROWSER_BUILD_CONFIG, BROWSER_DATA_DIR, BROWSER_INDEXER_URL, BROWSER_NETWORK, BROWSER_NODE_URL, BROWSER_PACKAGE_VERSION } from "./config.ts";
 import { createWorkerHost } from "./host.ts";
+import { jsonRpcClientVersion } from "./jsonrpc-module.ts";
 import type { BuildInfo } from "./host-system.ts";
 import { StartConfigSchema } from "./protocol.ts";
 import { connectedTabsCounter, defaultLocks } from "./tab-locks.ts";
@@ -34,6 +35,7 @@ const host = createWorkerHost({
   build: typeof __UMBRADB_BUILD__ === "undefined" ? null : __UMBRADB_BUILD__,
   system: { connectedTabs },
   defaultStart: StartConfigSchema.parse(BROWSER_BUILD_CONFIG.start ?? {}),
+  jsonRpc: { clientVersion: jsonRpcClientVersion(BROWSER_PACKAGE_VERSION) },
   ...(BROWSER_BUILD_CONFIG.quota === undefined ? {} : { quota: BROWSER_BUILD_CONFIG.quota }),
 });
 
