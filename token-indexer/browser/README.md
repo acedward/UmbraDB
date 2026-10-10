@@ -319,7 +319,9 @@ sequences, the cursors, the block hash and the migrations must then be the manif
 (which the import saves as the start of the configuration that continues it) its lowest block, with the scan starting
 no lower. The rows are read as a stream:
 an import holds one entry (at most 64 MiB) besides the file, and refuses rows as soon as they unpack to more than the
-manifest says (itself at most 4 GiB), an entry whose header declares more than 64 MiB, or anything after the tar's end.
+manifest says (itself at most 4 GiB), or, past the first 64 MiB, to more than 16 times the compressed bytes read so far
+(a snapshot's rows unpack to about twice their size; this keeps what the trial loads in proportion to the file), an
+entry whose header declares more than 64 MiB, or anything after the tar's end.
 
 Then it saves the file beside the store as a journal (`<store>.import.snapshot.tar` in the Origin Private File System;
 if the browser refuses that write, nothing has changed and the engine keeps running), stops the engine, waits for the

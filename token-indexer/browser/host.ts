@@ -1054,7 +1054,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     const t0 = monotonic();
     const live = (await storeFailed()) ? undefined : await ready();
     const running = opts.build?.pgliteVersion ?? null;
-    let prepared: PreparedImport;
+    let prepared: PreparedImport | undefined;
     try {
       prepared = await prepareImport(
         snapshot,
@@ -1071,6 +1071,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       if (e instanceof SnapshotRefusal) throw new HostError("snapshot-refused", e.message);
       throw e;
     }
+    const { manifest, timings } = prepared;
+    const fileBytes = prepared.file.length;
     const tSwap = monotonic();
     try {
       await snapshotFiles.writeJournal(prepared.file);
@@ -1079,6 +1081,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       // boot that finishes it, stays.
       throw new HostError("snapshot-failed", `the import's journal could not be saved (${messageOf(e)}): nothing was changed`);
     }
+    // The file is the journal now, which the boot reads back: this copy is let go first.
+    prepared = undefined;
     importing = true;
     try {
       await rebootStore("open", live).catch((e: unknown) => {
@@ -1091,10 +1095,10 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       throw new HostError("snapshot-failed", `the snapshot was checked, but the store could not be used after it (it is finished at the next boot, or reset or import again): ${bootState.error ?? "the boot failed"}`);
     if (importFailure !== undefined) throw new HostError("snapshot-failed", `the snapshot could not be loaded and the store was opened empty: ${importFailure}`);
     if (finishedImport === undefined) throw new HostError("snapshot-failed", "the import's journal could not be read back: the store was opened as it was");
-    lastImport = snapshotRecord(prepared.manifest, clock.now(), prepared.file.length);
-    log("info", `imported a snapshot of ${prepared.manifest.network} up to ${prepared.manifest.archive.height} (${prepared.file.length} bytes)`);
+    lastImport = snapshotRecord(manifest, clock.now(), fileBytes);
+    log("info", `imported a snapshot of ${manifest.network} up to ${manifest.archive.height} (${fileBytes} bytes)`);
     const swapMs = Math.round((monotonic() - tSwap) * 10) / 10;
-    return { manifest: prepared.manifest, timings: { ...prepared.timings, swapMs, totalMs: Math.round((monotonic() - t0) * 10) / 10 }, status: await status() };
+    return { manifest, timings: { ...timings, swapMs, totalMs: Math.round((monotonic() - t0) * 10) / 10 }, status: await status() };
   }
 
   /** Runs start/stop one at a time, in arrival order. */
