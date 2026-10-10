@@ -5,7 +5,7 @@ module worker, on PGlite stored in the Origin Private File System. The page talk
 static files is served.
 
 ```sh
-npm run build:browser   # the static site in dist-browser/ (index.html, system.html, engine.html, assets/ and _headers)
+npm run build:browser   # the static site in dist-browser/ (index.html, system.html, engine.html, assets/, _headers and the published snapshot in snapshots/)
 npm run dev:browser     # the same configuration served by Vite on 127.0.0.1 (no security headers)
 ```
 
@@ -35,11 +35,14 @@ The build indexes Stagenet unless `UMBRADB_BROWSER_NETWORK`, `UMBRADB_BROWSER_NO
 | `config.ts` | The network, its default endpoints (fixed when the site is built), the store's location and the build's settings |
 | `settings.ts` | The engine's saved configuration, a file beside the store |
 | `quota.ts` | The storage guard: pauses the sync before the quota |
+| `snapshot.ts` | The snapshot file: its manifest, its format (a tar of `manifest.json` and `data.tar.gz`) and every check an import makes |
+| `snapshot-store.ts` | Export (a consistent read while the engine runs), import (checks, a trial load, then a journaled swap under the store's lock) and finishing an interrupted import when the store opens |
+| `snapshot-page.ts` | The page's side: saving an exported file as a download, fetching a snapshot the build publishes |
 | `trusted-worker.ts` | The pages' one Trusted Types policy, `umbradb-engine-worker`, which makes the engine worker's script URL |
 | `zod-jitless.ts` | Turns zod's JIT (`new Function`) off before any schema exists; the first module of the worker and of every page |
 | `index.html`, `explorer-page.ts`, `explorer-host.ts`, `explorer-transport.ts`, `explorer.css` | The token explorer (see [Explorer](#explorer)): the page `GET /ui` serves, reading the API through the engine, with the engine panel |
 | `engine-panel.ts`, `panel-model.ts` | The explorer's engine panel: what the engine indexes and how it is doing, and its controls |
-| `engine.html`, `engine-page.ts` | A page that joins the tabs, asks for persistent storage, shows its role and the engine's status; `window.umbradbEngine` holds the client and the tabs |
+| `engine.html`, `engine-page.ts` | A page that joins the tabs, asks for persistent storage, shows its role and the engine's status; `window.umbradbEngine` holds the client, the tabs and the snapshot helpers |
 | `vite.config.ts`, `build-guard.ts`, `build-csp.ts`, `build-explorer.ts` | The build (Node tooling): every `*.html` here is a page, ES module worker, `esnext`, class names kept, `vite-plugin-wasm` for ledger-v9's WASM module, assets as files, a plugin that fails the build if postgres.js or a Node built-in would be bundled, a plugin that writes the pages' security headers, and one that makes the explorer page from `GET /ui`'s markup |
 
 ## Explorer
@@ -108,13 +111,15 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 | `digest` | — | the store's archive digest (the 7 `chain_archive` tables, `chain-archive-sync/archive-digest.ts`) and the digest of every table of both schemas (`../engine/range-tables.ts`), read in one read-only transaction |
 | `system` | `watch` (with `viewer?`) or `refresh: { database?, exactCounts? }` | `{ watching, viewers, snapshot }`: the snapshot of a refresh (`null` for a watch) |
 | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | `{ limitMs, heartbeatMs }` |
-| `export`, `import` | as in `protocol.ts` | error `not-implemented` (the explorer's panel shows it) |
+| `export` | — | a snapshot file of the store (`Blob`), its suggested name, its manifest, its size and timings (see Snapshots) |
+| `import` | `snapshot`: a snapshot file (`Blob`, a picked `File`) | the imported manifest, timings and status: the store is the snapshot's, the engine is stopped (see Snapshots) |
 
 Error codes: `bad-request`, `unsupported-version`, `unknown-type`, `not-implemented`, `unsupported-browser`,
-`boot-failed`, `already-running`, `start-failed`, `internal`; the client adds `bad-response`, `worker-error`,
-`restarted` and `closed`, and a page sharing the engine with other tabs also `leader-changed` and `leader-unavailable`
-(see Tabs). Notices: `boot` (each phase), `engine` (`running`, `stopped`, `failed`), `system` (one snapshot per
-collection while watched) and `heartbeat` (after a `watchdog` request).
+`boot-failed`, `already-running`, `start-failed`, `internal`, `snapshot-refused` (the message starts with the reason;
+nothing changed) and `snapshot-failed` (a checked snapshot could not be loaded; the store was opened empty); the client
+adds `bad-response`, `worker-error`, `restarted` and `closed`, and a page sharing the engine with other tabs also
+`leader-changed` and `leader-unavailable` (see Tabs). Notices: `boot` (each phase), `engine` (`running`, `stopped`,
+`failed`), `system` (one snapshot per collection while watched) and `heartbeat` (after a `watchdog` request).
 
 While no engine runs, `api` answers from the same store with no loops (`/v1/status` reports `scanner: "off"`). Defaults
 in the browser: 20 heights per sync batch and 10 blocks per scan step, so a stop and API requests wait for little.
@@ -173,6 +178,50 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   and resumes once usage is 32 MiB under that, read every 30 s while paused; the scan and the API keep running. The
   reading (usage, quota, the threshold, the size of the store's files from an OPFS walk, `persisted`, the pause and its
   reason) is `status`'s `storage`, and the system snapshot's storage provider.
+
+## Snapshots
+
+A snapshot is the whole store (both schemas, as PGlite's data directory) in one file,
+`umbradb-<network>-<first height>-<height>.snapshot.tar`, a plain tar of two entries (`tar -tf` lists them):
+
+| Entry | Content |
+|---|---|
+| `manifest.json` | `format`, `version`, `createdAt`; `network` and `genesisHash`; `archive`: the first height, and the height and hash of the last fully committed block; `scan`: the scan cursor at the same instant (it may be behind the archive; the scan catches up); `schemaVersions`: the applied migrations of `chain_archive` and `mip0018`; `pglite`: the PGlite and PostgreSQL versions; `build.appCommit`; `data`: the size, uncompressed size and SHA-256 of `data.tar.gz` |
+| `data.tar.gz` | PGlite's `dumpDataDir()`: a tar of the data directory, gzip |
+
+**Export** does not stop the engine. It takes the store's one PGlite session between two transactions (so each block
+is in the snapshot whole or not at all, and both cursors are at a full block), reads what the manifest records, runs
+`CHECKPOINT` and writes the data directory as a tar; the sync, the scan and API requests wait only for that read (tens of
+milliseconds for the recorded ranges), and the compression runs after it. It changes nothing, so a tab that asked for it
+can ask the next leader again.
+
+**Import** first checks the file without touching anything (a running engine keeps running), and refuses it with a
+reason: `format` (not a snapshot file of this version), `truncated`, `network` (another network or genesis block),
+`schema` (other migrations than this build's), `pglite` (another PGlite or PostgreSQL version), `hash` (the data's size
+or SHA-256 is not the manifest's), `corrupt` (the data does not unpack into a data directory, or holds another state
+than its manifest says: it is loaded into a trial in-memory PGlite and its cursors, block hash and migrations compared).
+Then it stops the engine, waits for the API requests in flight, saves the file beside the store as a journal
+(`<store>.import.snapshot.tar` in the Origin Private File System), closes PGlite while keeping the store's lock, removes
+the store's files, opens the store again from the snapshot's data directory and checks it against the manifest once
+more, and removes the journal. A worker that ends anywhere in that swap leaves the journal, and the next open finishes
+the import before PGlite opens the store, so a half-written store is never opened; a journal that cannot be read back
+whole means the swap never began, and is dropped. `status` and `api` wait during the swap.
+
+After an import the engine is stopped and the saved configuration continues the imported archive: its first height as
+the start, no end height, and no automatic start (as after `stop`). A `start` then continues at the height after the
+snapshot's (and the scan from its cursor).
+
+A snapshot is trusted data: its SHA-256 detects damage, not who made it, and the explorer shows what it holds. Import
+snapshots you exported or the build published.
+
+**Published snapshot.** `npm run build:browser` writes `snapshots/umbradb-stagenet-714485-715183.snapshot.tar` and
+`snapshots/index.json` (each file's size, SHA-256, manifest and digests) after Vite (`../dev/browser-snapshot.ts`): the
+worker host runs in Node on an in-memory PGlite (the browser's PGlite build), replays the recorded IDX range's tape and
+exports; the build then loads the file back and fails unless its store's archive digest and range-tables digest equal
+the recorded live sync of that range. The file's bytes differ from build to build (times, and the database identifier
+PGlite's `initdb` makes); what it holds does not. A page loads it with
+`window.umbradbEngine.snapshots.published("idx")` (checked against the index) and imports it; with it the explorer
+answers for 714485–715183 with no network. `npm run dev:browser` publishes none.
 
 ## Build settings
 
@@ -285,7 +334,8 @@ latency, the last 200 log lines, watchdog restarts, PGlite reopens, failed state
 The snapshot's schema is `../engine/system-snapshot.ts` (versioned, strict). The build defines its facts (app commit,
 PGlite and ledger versions; `vite.config.ts`). The storage section is the storage guard's reading (`quota.ts`), the
 start mode and the automatic start come from the saved configuration, the connected tabs from the tab locks; the
-role is `leader` in the worker (a follower tab marks what it relays). No snapshot export or import is recorded yet.
+role is `leader` in the worker (a follower tab marks what it relays). The snapshots section is the worker's last
+snapshot export and import (see Snapshots).
 
 ## System status page
 

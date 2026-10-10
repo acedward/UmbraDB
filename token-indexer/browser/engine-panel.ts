@@ -7,17 +7,19 @@
  * status page.
  *
  * Controls, each one engine request (from a follower tab the leader performs it): `start` (the saved configuration),
- * `stop`, `range` (the typed start, `tip` or a height, and optional end), `reset`, `export` and `import` (a snapshot
- * file). A range change, a reset and an import drop the store's data, so when the store holds blocks the panel first
- * asks, offering to export a snapshot before going on. The answer to each request, or its error, is shown below the
- * controls.
+ * `stop`, `range` (the typed start, `tip` or a height, and optional end), `reset`, `export` (the snapshot file is saved
+ * as a download, `snapshot-page.ts`) and `import` (the chosen snapshot file; afterwards the engine is stopped and a start
+ * continues after the snapshot's last block). A range change, a reset and an import drop the store's data, so when the
+ * store holds blocks the panel first asks, offering to export a snapshot before going on. The answer to each request,
+ * or its error (a refused snapshot says why), is shown below the controls.
  *
  * Everything is drawn with DOM nodes and `textContent` (no markup is parsed), with no `style` attribute; the panel
  * refreshes every 2 s while the page is visible, after each request and on the engine's notices.
  */
 import { type EngineClient, EngineError } from "./client.ts";
 import { type PageStorage, type PanelView, panelView, parseRange } from "./panel-model.ts";
-import type { HostStatus } from "./protocol.ts";
+import type { ExportResult, HostStatus, ImportResult } from "./protocol.ts";
+import { saveSnapshotFile } from "./snapshot-page.ts";
 import type { EngineTabs } from "./tabs.ts";
 
 export interface EnginePanelOptions {
@@ -53,33 +55,6 @@ function node<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?
   if (cls !== undefined) n.className = cls;
   if (text !== undefined) n.textContent = text;
   return n;
-}
-
-/** A file the engine answered (an exported snapshot), whatever object carries it. */
-function fileOf(result: unknown): { blob: Blob; name: string } | null {
-  const named = (b: Blob, name: unknown): { blob: Blob; name: string } => ({
-    blob: b,
-    name: typeof name === "string" && /^[\w.-]{1,200}$/.test(name) ? name : b instanceof File && /^[\w.-]{1,200}$/.test(b.name) ? b.name : "umbradb-snapshot.tar",
-  });
-  if (result instanceof Blob) return named(result, undefined);
-  if (typeof result === "object" && result !== null) {
-    const r = result as Record<string, unknown>;
-    for (const k of ["file", "snapshot", "blob"]) if (r[k] instanceof Blob) return named(r[k] as Blob, r.name ?? r.fileName);
-  }
-  return null;
-}
-
-/** Saves a file through a download link (a download, not a navigation the page's policy would refuse). */
-function save(file: { blob: Blob; name: string }): void {
-  const url = URL.createObjectURL(file.blob);
-  const a = node("a");
-  a.href = url;
-  a.download = file.name;
-  a.hidden = true;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 export function mountEnginePanel(opts: EnginePanelOptions): EnginePanel {
@@ -259,8 +234,8 @@ export function mountEnginePanel(opts: EnginePanelOptions): EnginePanel {
     } catch (e) {
       say(`${label} failed \u00b7 ${messageOf(e)}`);
     } finally {
-      // The controls are free again as soon as the answer is shown, not only once the panel has read the engine again.
       busy = false;
+      // Enable the controls with the answer, not only after the refresh: a click right after the answer must count.
       render();
       await refresh();
     }
@@ -285,10 +260,9 @@ export function mountEnginePanel(opts: EnginePanelOptions): EnginePanel {
 
   const exportSnapshot = (): Promise<void> =>
     run("export", () => client.export(), (result) => {
-      const file = fileOf(result);
-      if (file === null) return "export answered no file";
-      save(file);
-      return `snapshot saved as ${file.name}`;
+      const r = result as ExportResult;
+      saveSnapshotFile(r);
+      return `snapshot saved as ${r.name} (blocks ${r.manifest.archive.startHeight ?? r.manifest.archive.height}\u2013${r.manifest.archive.height})`;
     });
 
   startButton.addEventListener("click", () => void run("start", () => client.start(), () => "started"));
@@ -314,7 +288,12 @@ export function mountEnginePanel(opts: EnginePanelOptions): EnginePanel {
       say("import not sent \u00b7 choose a snapshot file first");
       return;
     }
-    dropping("Importing a snapshot", () => run("import", () => client.import(file), () => `snapshot ${file.name} imported`));
+    dropping("Importing a snapshot", () =>
+      run("import", () => client.import(file), (result) => {
+        const a = (result as ImportResult).manifest.archive;
+        return `snapshot ${file.name} imported: blocks ${a.startHeight ?? a.height}\u2013${a.height}; the engine is stopped, and a start continues from block ${a.height + 1}`;
+      }),
+    );
   });
   confirmExport.addEventListener("click", () => void exportSnapshot());
   confirmGo.addEventListener("click", () => {

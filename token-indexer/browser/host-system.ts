@@ -14,11 +14,12 @@
  *   next worker would need.
  *
  * Providers the snapshot reads from the host (`host.ts` supplies the storage guard's reading (`quota.ts`), the start
- * mode and the automatic start from the saved configuration; `worker.ts` the connected tabs (`tab-locks.ts`)). The
- * defaults, for a host that supplies none:
+ * mode and the automatic start from the saved configuration, and the last snapshot export and import; `worker.ts` the
+ * connected tabs (`tab-locks.ts`)). The defaults, for a host that supplies none:
  * - `storage`: `navigator.storage.estimate()` and `persisted()` as the worker reads them, with no quota pause
  *   (`pauseAtBytes` `null`, never paused);
- * - `snapshots`: placeholder — no export and no import recorded, until snapshot export and import exist;
+ * - `snapshots`: no export and no import recorded (the host supplies its last export and import, `snapshot.ts`
+ *   `snapshotRecord`);
  * - `role`: `"leader"` (only the leader tab runs a worker; a follower relabels what it relays, `tabs.ts`);
  * - `connectedTabs`: `null` (unknown);
  * - start mode `"range"` and auto-start `false`.

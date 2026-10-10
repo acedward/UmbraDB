@@ -34,7 +34,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
-    "build:browser": "vite build --config token-indexer/browser/vite.config.ts",
+    "build:browser": "vite build --config token-indexer/browser/vite.config.ts && tsx token-indexer/dev/browser-snapshot.ts --out dist-browser",
     "dev:browser": "vite --config token-indexer/browser/vite.config.ts",
     "docs:storage": "typedoc",
     "docs:storage:check": "typedoc --emit none --treatWarningsAsErrors",

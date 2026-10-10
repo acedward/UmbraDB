@@ -52,6 +52,7 @@ function hostStatus(over: Partial<HostStatus> = {}): HostStatus {
     cursors: { sync: { height: 715433, startHeight: 715402 }, scan: { fromHeight: 715402, nextHeight: 715434 } },
     settings: { config: CONFIG, autoStart: true },
     storage: null,
+    snapshots: { lastExport: null, lastImport: null },
     ...over,
   };
 }

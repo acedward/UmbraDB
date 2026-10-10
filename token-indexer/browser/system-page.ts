@@ -20,14 +20,15 @@
  *   Trusted Types, and this page has no policy for any markup sink). Text from the engine is drawn with the explorer's
  *   hidden-character rules (`visible-text.ts`).
  *
- * For scripted use (the browser tests read it), `window.umbradbEngine` holds the client and the tabs, as on the other
- * pages, and `window.umbradbSystem` the snapshot drawn last and how many were drawn.
+ * For scripted use (the browser tests read it), `window.umbradbEngine` holds the client, the tabs and the snapshot
+ * helpers, as on the other pages, and `window.umbradbSystem` the snapshot drawn last and how many were drawn.
  */
 import type { SystemSnapshot } from "../engine/system-snapshot.ts";
 import { EngineError, requestPersistentStorage, startEngineWorker } from "./client.ts";
 import type { SupervisedEngine } from "./supervisor.ts";
 import { collectionText, healthLine, statusSections, type StatusCell, type StatusSection, type StatusTable, type StatusValue } from "./system-model.ts";
 import { diagnosticsFile, followSystem, refreshSystem } from "./system-view.ts";
+import { fetchPublishedSnapshot, publishedSnapshots, saveSnapshotFile } from "./snapshot-page.ts";
 import { connectEngineTabs, localEngineOf } from "./tabs.ts";
 import { dataNode, visibleText } from "./visible-text.ts";
 
@@ -63,6 +64,11 @@ window.umbradbEngine = {
   restarts: () => supervised?.restarts() ?? [],
   loadedAt,
   persistence,
+  snapshots: {
+    save: saveSnapshotFile,
+    list: () => publishedSnapshots(location.href),
+    published: (name) => fetchPublishedSnapshot(name, location.href),
+  },
 };
 
 let latest: SystemSnapshot | null = null;
