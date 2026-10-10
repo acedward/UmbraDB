@@ -12,7 +12,7 @@
  *   cursors and the same API answers; a new start, this time reading the chain over `fetch` (the page's origin answers
  *   from the same tape), continues at the cursor and fetches only the missing heights; a second reload keeps it all.
  * - `[[browser.worker.protocol]]` — the real worker answers malformed and unknown messages with their error codes,
- *   refuses a second start, and refuses the export of an empty archive and the import of a file that is not a snapshot.
+ *   refuses a second start, exports the stored range and refuses the import of a file that is not a snapshot.
  *
  * The build turns the engine's automatic start off (`__UMBRADB_BROWSER_CONFIG__`), so each test starts what it needs.
  *
@@ -244,7 +244,7 @@ describe("browser engine worker in Chrome", () => {
     report.reopen2 = { pageToReadyMs: third.pageToReadyMs, boot: third.status.boot.timings };
   }, 300_000);
 
-  it("[[browser.worker.protocol]] the worker answers malformed and unknown messages with their error codes, refuses a second start, and refuses the export of an empty archive and the import of a file that is not a snapshot", async () => {
+  it("[[browser.worker.protocol]] the worker answers malformed and unknown messages with their error codes, refuses a second start, exports the stored range and refuses the import of a file that is not a snapshot", async () => {
     await open();
     const raw = (message: Json): Promise<Json> => page.eval(`new Promise((resolve) => {
       const w = window.umbradbEngine.worker;
@@ -258,8 +258,10 @@ describe("browser engine worker in Chrome", () => {
     const okRaw = await raw({ v: 1, id: 9004, type: "api", method: "GET", target: "/v1/status" });
     expect(okRaw).toMatchObject({ ok: true, id: 9004, request: "api", result: { status: 200 } });
 
-    const codes = await engine(`Promise.all([c.export(), c.import(new Blob(["x"]))].map((p) => p.then(() => "resolved", (e) => e.code)))`);
-    expect(codes).toEqual(["snapshot-refused", "snapshot-refused"]);
+    // The store holds U1 from the test above: export gives its snapshot; a file that is not a snapshot is refused.
+    const outcomes = await engine(`Promise.all([c.export().then((r) => ({ name: r.name, height: r.manifest.archive.height, type: r.file.type })), c.import(new Blob(["x"])).then(() => "resolved", (e) => e.code + " " + e.message)])`);
+    expect(outcomes[0]).toEqual({ name: `umbradb-stagenet-${U1.from}-${U1.to}.snapshot.tar`, height: U1.to, type: "application/x-tar" });
+    expect(outcomes[1]).toMatch(/^snapshot-refused format: /);
     await engine(`c.start(${JSON.stringify({ source: { kind: "tape", range: "u1" }, ...FAST })})`);
     expect(await engine(`c.start({}).then(() => "resolved", (e) => e.code)`)).toBe("already-running");
     const stopped = (await engine("c.stop()")) as HostStatus;

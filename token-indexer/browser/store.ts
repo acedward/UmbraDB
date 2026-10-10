@@ -13,6 +13,10 @@
  * (`tab-locks.ts`), held until the store is closed or the worker ends, and then waits until no other context still holds
  * the store's state file (a closed tab's worker, or a replaced one, can take a moment to let go of its files). Only
  * the leader tab runs a worker (`tabs.ts`); the lock also covers a worker the leader tab replaces.
+ *
+ * A snapshot import (`snapshot-store.ts`) replaces the store's files without letting go of the lock: `detach()` closes
+ * PGlite and hands the held lock over, and `openStore(dataDir, { lock, prepare })` keeps it, runs `prepare` under it
+ * before PGlite opens the store, and loads the data directory `prepare` returns.
  */
 import type { PGlite } from "@electric-sql/pglite";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
