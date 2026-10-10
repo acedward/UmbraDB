@@ -71,7 +71,9 @@ PostgreSQL.
   engine's state until the first snapshot), this tab's role (leader, or follower with the engine in another tab) and
   the open tabs, the network, the engine's state (`not started`, `running`, `stopped`, `waiting (network)`,
   `stalled (scan)`, `paused (storage)`, `failed`, …) with its detail, the saved configuration (`settings`), the start
-  height ("indexed from block H · history before block H is not indexed"), the archive and scan heights (the scan
+  height ("indexed from block H · history before block H is not indexed"; with the token indexer off since the store's
+  first start, so no scan range, "archived from block H (token indexer off)" from the archive's first height —
+  `/v1/status` is unchanged), the archive and scan heights (the scan
   height says "token indexer off" while it is), the finalized tip and the lag behind it in blocks and time (the blocks
   not scanned yet, or not archived yet while the token indexer is off, at the chain's measured seconds per block),
   blocks per second over the last minute (archive and scan), the worker's uptime, durability and the storage line.

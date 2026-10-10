@@ -1405,7 +1405,7 @@
     {
       "id": "browser.explorer.panel-model",
       "file": "token-indexer/test/browser-explorer.test.ts",
-      "description": "the panel's view: every engine state with its detail, the first indexed height as 'history before block H is not indexed', the configuration in words, storage from the engine's reading (or the page's until there is one), the role and open tabs, the held range a drop would lose, and the typed range checked before it is sent"
+      "description": "the panel's view: every engine state with its detail, the first indexed height as 'history before block H is not indexed' (with the token indexer off and no scan range, the archive's first height), the configuration in words, storage from the engine's reading (or the page's until there is one), the role and open tabs, the held range a drop would lose, and the typed range checked before it is sent"
     },
     {
       "id": "browser.explorer.build",

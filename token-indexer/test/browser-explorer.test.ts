@@ -6,7 +6,8 @@
  *   the engine is asked `GET` of the path at call time; a failed engine request rejects; the host says whether the
  *   explorer is shown (its tab).
  * - `[[browser.explorer.panel-model]]` — what the overview's indexer section shows (`browser/panel-model.ts`): every
- *   engine state, the first indexed height with "history before block H is not indexed", the configuration, the storage
+ *   engine state, the first indexed height with "history before block H is not indexed" (with the token indexer off
+ *   and no scan range, the archive's first height), the configuration, the storage
  *   line and its explanation from the engine's reading or the page's, the role, and the typed range checked before it is
  *   sent.
  * - `[[browser.explorer.build]]` — the built `index.html` (Vite, `browser/vite.config.ts`, into a temporary folder): the
@@ -97,6 +98,16 @@ describe("the static build's explorer page (no browser)", () => {
   it("[[browser.explorer.panel-model]] the panel's view: every engine state with its detail, the first indexed height as 'history before block H is not indexed', the configuration in words, storage from the engine's reading (or the page's until there is one), the role and open tabs, the held range a drop would lose, and the typed range checked before it is sent", () => {
     expect(historyText(714485)).toBe("indexed from block 714485 \u00b7 history before block 714485 is not indexed");
     expect(historyText(null)).toBe("nothing indexed yet");
+    expect(historyText(714485, "archive")).toBe("archived from block 714485 (token indexer off) \u00b7 history before block 714485 is not indexed");
+    // The token indexer off since the store's first start: no scan range (`/v1/status` startHeight null), so the
+    // overview gives the archive's first height; with the token indexer on, or a scan range, it gives the scan's.
+    const off = { status: hostStatus({ settings: { config: CONFIG, autoStart: true, modules: { "token-indexer": false } }, cursors: { sync: { height: 715433, startHeight: 715402 }, scan: null } }) };
+    const neverScanned = { ...API, startHeight: null, indexedHeight: null, scanner: "off" };
+    expect(panelView(inputs({ ...off, api: neverScanned }))).toMatchObject({
+      startHeight: 715402, history: "archived from block 715402 (token indexer off) \u00b7 history before block 715402 is not indexed", scanned: "none \u00b7 token indexer off",
+    });
+    expect(panelView(inputs({ ...off, api: { ...API, scanner: "off" } }))).toMatchObject({ startHeight: 715402, history: historyText(715402) });
+    expect(panelView(inputs({ status: hostStatus({ cursors: { sync: { height: 715433, startHeight: 715402 }, scan: null } }), api: neverScanned }))).toMatchObject({ startHeight: null, history: "nothing indexed yet" });
     const v = panelView(inputs());
     expect(v).toMatchObject({
       role: "leader (this tab runs the engine) \u00b7 1 tab open", network: "stagenet", state: "running", stateDetail: "sync idle \u00b7 scan following",
