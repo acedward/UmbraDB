@@ -1,6 +1,6 @@
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import { openTestDatabase, type TestDatabase } from "../helpers/test-database.ts";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
 import { NodeRpcClient } from "../../chain-archive-sync/node-rpc-client.js";
@@ -39,13 +39,13 @@ describe.skipIf(!LIVE)(
   "AC-8: full-chain archive live cross-validation vs public Preprod (hosted node + indexer)",
   () => {
     vi.setConfig({ testTimeout: 8 * 60_000, hookTimeout: 8 * 60_000 });
-    let container: StartedPostgreSqlContainer;
+    let database: TestDatabase;
     let sql: UmbraDBSql;
     let service: ChainArchiveSyncService;
 
     beforeAll(async () => {
-      container = await new PostgreSqlContainer("postgres:17-alpine").start();
-      sql = createClient({ connectionString: container.getConnectionUri(), schema: "chain_archive" });
+      database = await openTestDatabase();
+      sql = database.client("chain_archive");
       await bootstrapChainArchiveSchema(sql, "chain_archive");
       service = new ChainArchiveSyncService({
         sql,
@@ -58,7 +58,7 @@ describe.skipIf(!LIVE)(
 
     afterAll(async () => {
       await sql?.end({ timeout: 5 });
-      await container?.stop();
+      await database?.stop();
     });
 
     it(`ingests a contiguous ${MAX}-block range from live Preprod; every block AND transaction matches the live network (AC-8, hard-fail on mismatch)`, async () => {

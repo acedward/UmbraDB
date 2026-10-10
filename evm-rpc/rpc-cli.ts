@@ -3,11 +3,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { createPostgresEvmRpcReader, emptyEvmRpcReader } from "./db.js";
 import { IndexerGqlClient } from "./indexer-gql.js";
-import { registerAccountMethods } from "./methods/accounts.js";
-import { registerBlockMethods } from "./methods/blocks.js";
-import { registerNotImplementedMethods } from "./methods/not-implemented.js";
-import { registerStaticMethods } from "./methods/static.js";
-import { registerTransactionMethods } from "./methods/transactions.js";
+import { registerReadOnlyMethods } from "./read-only.js";
 import { defaultRegistry } from "./registry.js";
 import { createRpcServer } from "./server.js";
 
@@ -30,12 +26,7 @@ const chainId = nonNegativeInteger(process.env.CHAIN_ID ?? "2400", "CHAIN_ID");
 const indexerUrl = process.env.INDEXER_URL ?? "http://127.0.0.1:10001/api/v4/graphql";
 const postgresReader = process.env.PG_URL === undefined ? undefined : createPostgresEvmRpcReader(process.env.PG_URL);
 
-registerStaticMethods(defaultRegistry);
-registerBlockMethods(defaultRegistry);
-registerAccountMethods(defaultRegistry);
-registerTransactionMethods(defaultRegistry);
-// Last: spec-defined methods this surface deliberately does not serve answer -32004, not -32601.
-registerNotImplementedMethods(defaultRegistry);
+registerReadOnlyMethods(defaultRegistry);
 
 const server = createRpcServer({
   registry: defaultRegistry,

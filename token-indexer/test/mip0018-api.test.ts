@@ -5,20 +5,25 @@
  * Data: the recorded Stagenet IDX range (`loadRangeTape("idx")`) archived by the real sync against the fake chain and
  * scanned by the real scanner; C06's lifecycle replayed step by step (case-index heights); synthetic archive blocks for
  * what Stagenet does not show (a whole identity withdrawn, a minted identity withdrawn, a partial token, a color seen
- * without a mint, hostile text). Every assertion goes through HTTP against a server bound to 127.0.0.1 on a free port.
+ * without a mint, hostile text). Every request goes two ways — over HTTP to the `node:http` server bound to 127.0.0.1 on
+ * a free port, and directly through the same handler's `handle()` — and the two answers must be identical
+ * (`helpers/api-both-ways.ts`); assertions read the HTTP answer. `serve()` answers over HTTP only: its scan loop
+ * commits blocks between any two requests.
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { Server } from "node:http";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { onPostgresql } from "../../test/helpers/postgresql-only.ts";
+import { openTestDatabase, type TestDatabase } from "../../test/helpers/test-database.ts";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { type ArchiveTape, startFakeChain } from "../../test/integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadCaseIndex, loadManifest, loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
-import { createMip0018Api, listen, toAsciiJson } from "../mip0018/api.ts";
+import { createMip0018Handler, DEFAULT_MAX_CONCURRENT_REQUESTS, type Mip0018Handler, type Mip0018HandlerOptions, toAsciiJson } from "../mip0018/api.ts";
+import { createMip0018Api } from "../mip0018/api-node.ts";
 import { KNOWN_GENESIS, MIP_COMMIT, VENDORED_REFERENCE } from "../mip0018/api-views.ts";
 import { contractUnresolvedSummary } from "../mip0018/metadata.ts";
 import { decodeWalletAddress } from "../mip0018/bech32m.ts";
@@ -26,6 +31,7 @@ import { tokenColor } from "../mip0018/color.ts";
 import { Mip0018Scanner } from "../mip0018/scan.ts";
 import { main as serveMain, serve } from "../mip0018/serve-cli.ts";
 import { EVENT_NAME, encodePayload, type MetadataRecord, record } from "../vendor/mip0018/codec/src/index.ts";
+import { type BothWays, httpRequest, requestBothWays, type Resp, serveBothWays } from "./helpers/api-both-ways.ts";
 import { decodeSynthetic, putSyntheticBlocks, type SynthArchivedTx, type SynthLog, type SynthOp, type SynthTranscript } from "./helpers/synthetic-archive.ts";
 import { type SynthTxA, syntheticSeams } from "./helpers/synthetic-activity.ts";
 
@@ -35,18 +41,14 @@ const CASES_DIR = new URL("./fixtures/mip0018-cases/", import.meta.url);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
-interface Resp { status: number; headers: Headers; text: string; json: Json }
 
+/** The APIs this file starts, by base URL: each is also reached directly through its handler. */
+const bothWays = new Map<string, BothWays>();
+
+/** One request: both ways (identical answers required) for an API this file started, over HTTP only for `serve()`. */
 async function get(base: string, path: string, init?: RequestInit): Promise<Resp> {
-  const r = await fetch(base + path, init);
-  const text = await r.text();
-  let json: Json;
-  try {
-    json = text === "" ? undefined : JSON.parse(text);
-  } catch {
-    json = undefined;
-  }
-  return { status: r.status, headers: r.headers, text, json };
+  const w = bothWays.get(base);
+  return w === undefined ? httpRequest(base, path, init) : requestBothWays(w, path, init);
 }
 
 async function ok(base: string, path: string): Promise<Json> {
@@ -152,7 +154,7 @@ function call(address: string, logs: SynthLog[], extra: { shieldedMints?: Array<
 const nullAll = (...keys: string[]): MetadataRecord[] => keys.map((k) => record.tombstone(k));
 
 describe("MIP-0018 read-only API", () => {
-  let container: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   const clients: UmbraDBSql[] = [];
   const servers: Server[] = [];
   let counter = 0;
@@ -164,7 +166,7 @@ describe("MIP-0018 read-only API", () => {
     const n = counter++;
     const archive = `${prefix}_arch_${n}`;
     const mip = `${prefix}_mip_${n}`;
-    const sql = createClient({ connectionString: container.getConnectionUri(), schema: mip });
+    const sql = database.client(mip);
     clients.push(sql);
     await bootstrapChainArchiveSchema(sql, archive);
     return { sql, archive, mip };
@@ -193,15 +195,19 @@ describe("MIP-0018 read-only API", () => {
     }
   }
 
-  async function startApi(db: { sql: UmbraDBSql; archive: string; mip: string }, extra: Partial<Parameters<typeof createMip0018Api>[0]> = {}): Promise<string> {
-    const server = createMip0018Api({ sql: db.sql, network: NET, schema: db.mip, archiveSchema: db.archive, ...extra });
-    servers.push(server);
-    const port = await listen(server, 0, "127.0.0.1");
-    return `http://127.0.0.1:${port}`;
+  /** Serves `api` over HTTP and keeps it reachable directly; returns the base URL that `get` sends both ways. */
+  async function serveApi(api: Mip0018Handler): Promise<string> {
+    const w = await serveBothWays(api);
+    servers.push(w.server);
+    bothWays.set(w.base, w);
+    return w.base;
   }
 
+  const startApi = (db: { sql: UmbraDBSql; archive: string; mip: string }, extra: Partial<Mip0018HandlerOptions> = {}): Promise<string> =>
+    serveApi(createMip0018Handler({ sql: db.sql, network: NET, schema: db.mip, archiveSchema: db.archive, ...extra }));
+
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
+    database = await openTestDatabase();
     const db = await fresh("idx");
     await archiveTape(db, loadRangeTape("idx"), 714485, 715183);
     const s = scanner(db);
@@ -216,15 +222,16 @@ describe("MIP-0018 read-only API", () => {
       await new Promise<void>((r) => s.close(() => r()));
     }
     for (const c of clients) await c.end({ timeout: 5 });
-    await container?.stop();
+    await database?.stop();
   }, 60_000);
 
-  it("[[mip0018.api.status]] status: network, genesis (= the recorded fixture's), start/indexed/archive heights, MIP pin and vendored commit (= SOURCE.md and the own vectors' manifest), scanner off", async () => {
+  it("[[mip0018.api.status]] status: network, genesis (= the recorded fixture's), start/indexed/archive heights, MIP pin and vendored commit (= SOURCE.md and the own vectors' manifest), scanner off, durability (durable on PostgreSQL; non-durable, the PGlite client's default, on PGlite)", async () => {
     const r = await get(idx.base, "/v1/status");
     expect(r.status).toBe(200);
     expect(r.json).toEqual({
       network: NET, genesisHash: loadManifest().genesisHash, startHeight: 714485, indexedHeight: 715183, archiveHeight: 715183,
       mip: { id: "MIP-0018", commit: MIP_COMMIT }, vendored: { ...VENDORED_REFERENCE }, scanner: "off", unresolvedEvents: 0,
+      durability: database.backend === "postgres" ? "durable" : "non-durable",
     });
     expect(KNOWN_GENESIS.stagenet).toBe(loadManifest().genesisHash);
     const source = readFileSync(new URL("token-indexer/vendor/mip0018/SOURCE.md", REPO), "utf8");
@@ -508,24 +515,60 @@ describe("MIP-0018 read-only API", () => {
     await timed("/v1/status", 4_000);
   }, 300_000);
 
-  it("[[mip0018.api.concurrency-cap]] at most maxConcurrentRequests API requests run at once; the next is answered at once with 503 BUSY and Retry-After, never queued; capacity returns when a request finishes; a cap below 1 is refused", async () => {
+  it("[[mip0018.api.concurrency-cap]] at most maxConcurrentRequests API requests run at once (default 8), one count for the HTTP server and the direct handler together; the next is answered at once with 503 BUSY and Retry-After (HEAD: headers only), never queued; capacity returns when a request finishes; a cap below 1 is refused", async () => {
     let release!: () => void;
-    const gate = new Promise<void>((r) => { release = r; });
+    let gate!: Promise<void>;
+    const close = (): void => {
+      gate = new Promise<void>((r) => { release = r; });
+    };
+    close();
     let started = 0;
     const stub = { begin: async () => { started++; await gate; return { held: true }; } } as unknown as UmbraDBSql;
-    const server = createMip0018Api({ sql: stub, network: NET, maxConcurrentRequests: 2 });
-    servers.push(server);
-    const base = `http://127.0.0.1:${await listen(server, 0, "127.0.0.1")}`;
+    const startedReaches = async (n: number): Promise<void> => {
+      for (let i = 0; i < 200 && started < n; i++) await new Promise((r) => setTimeout(r, 10));
+      expect(started).toBe(n);
+    };
+    const BUSY = { error: { code: "BUSY", message: "too many requests in progress; retry shortly" } };
+    const api = createMip0018Handler({ sql: stub, network: NET, maxConcurrentRequests: 2 });
+    const base = await serveApi(api);
     const held = [get(base, "/v1/status"), get(base, "/v1/status")];
-    for (let i = 0; i < 200 && started < 2; i++) await new Promise((r) => setTimeout(r, 10));
-    expect(started).toBe(2);
+    await startedReaches(2);
     const busy = await get(base, "/v1/tokens");
-    expect([busy.status, busy.json.error.code, busy.headers.get("retry-after")]).toEqual([503, "BUSY", "1"]);
+    expect([busy.status, busy.json, busy.headers.get("retry-after")]).toEqual([503, BUSY, "1"]);
     expect(started).toBe(2); // refused before any database work
     release();
     expect((await Promise.all(held)).map((r) => [r.status, r.json])).toEqual([[200, { held: true }], [200, { held: true }]]);
     expect((await get(base, "/v1/status")).status).toBe(200);
+
+    // One count for both ways: a request held over HTTP and one held through handle() fill the cap; the next is
+    // refused at once either way, a HEAD with the same headers and no body.
+    close();
+    const before = started;
+    const overHttp = httpRequest(base, "/v1/status");
+    const direct = api.handle("GET", "/v1/status");
+    await startedReaches(before + 2);
+    const refused = await api.handle("GET", "/v1/tokens");
+    expect([refused.status, JSON.parse(refused.body), refused.headers["retry-after"]]).toEqual([503, BUSY, "1"]);
+    const refusedHead = await api.handle("HEAD", "/v1/tokens");
+    expect([refusedHead.status, refusedHead.headers, refusedHead.body]).toEqual([503, refused.headers, ""]);
+    expect((await get(base, "/v1/status")).json).toEqual(BUSY);
+    expect(started).toBe(before + 2);
+    release();
+    expect([(await overHttp).status, (await direct).status]).toEqual([200, 200]);
+
+    // The default cap: 8 admitted, the 9th refused.
+    expect(DEFAULT_MAX_CONCURRENT_REQUESTS).toBe(8);
+    close();
+    const byDefault = createMip0018Handler({ sql: stub, network: NET });
+    const from = started;
+    const eight = Array.from({ length: 8 }, () => byDefault.handle("GET", "/v1/status"));
+    await startedReaches(from + 8);
+    expect((await byDefault.handle("GET", "/v1/status")).status).toBe(503);
+    release();
+    expect((await Promise.all(eight)).map((r) => r.status)).toEqual(Array(8).fill(200));
+
     expect(() => createMip0018Api({ sql: stub, network: NET, maxConcurrentRequests: 0 })).toThrow(/maxConcurrentRequests/);
+    expect(() => createMip0018Handler({ sql: stub, network: NET, maxConcurrentRequests: 0 })).toThrow(/maxConcurrentRequests/);
   }, 60_000);
 
   it("[[mip0018.api.lookup]] /v1/lookup/{color}?held=: C04's color → kind 1 held shielded, kind 2 held unshielded (one color); C05 bronze → not minted in the indexed range; NIGHT's zero color → built-in; the kind comes from the holding, not the color", async () => {
@@ -885,7 +928,7 @@ describe("MIP-0018 read-only API", () => {
     expect(/^[\x20-\x7e]*$/.test(ascii)).toBe(true);
     expect(JSON.parse(ascii)).toEqual(sample);
     // The API never fetches: no network client in its modules.
-    for (const f of ["api.ts", "api-views.ts"]) {
+    for (const f of ["api.ts", "api-node.ts", "api-views.ts"]) {
       const src = readFileSync(new URL(`token-indexer/mip0018/${f}`, REPO), "utf8");
       expect(src, f).not.toMatch(/\bfetch\(|node:https|\.request\(|net\.connect|from "undici"/);
     }
@@ -966,7 +1009,7 @@ describe("MIP-0018 read-only API", () => {
     expect([head.status, head.text, Number(head.headers.get("content-length")) > 0]).toEqual([200, "", true]);
     expect((await get(idx.base, "/v1/nope", { method: "HEAD" })).status).toBe(404);
     // The database cannot be read: a generic 503; the cause goes to the server log only.
-    const dead = createClient({ connectionString: container.getConnectionUri(), schema: "idx_mip_0" });
+    const dead = database.client("idx_mip_0");
     await dead.end();
     const logged: string[] = [];
     const base = await startApi({ sql: dead, archive: idx.archive, mip: idx.mip }, { log: (l) => logged.push(l) });
@@ -1024,34 +1067,38 @@ describe("MIP-0018 read-only API", () => {
       await hs.stop();
     }
 
-    // The CLI as a child process, API only, over the IDX schema; default host; SIGTERM → exit 0.
-    const child = spawn(process.execPath, ["--import", "tsx", "token-indexer/mip0018/serve-cli.ts", "--network", NET, "--port", "0", "--api-only", "--schema", idx.mip, "--archive-schema", idx.archive], {
-      cwd: new URL(".", REPO).pathname, env: { ...process.env, PG_URL: container.getConnectionUri() }, stdio: ["ignore", "pipe", "pipe"],
-    });
-    let out = "";
-    let err = "";
-    child.stdout.on("data", (b: Buffer) => (out += b.toString()));
-    child.stderr.on("data", (b: Buffer) => (err += b.toString()));
-    const exited = new Promise<number | null>((r) => child.on("exit", (code) => r(code)));
-    try {
-      for (let i = 0; i < 300 && !out.includes('"listening"'); i++) await new Promise((r) => setTimeout(r, 100));
-      const line = JSON.parse(out.split("\n").find((l) => l.includes('"listening"'))!) as { host: string; port: number; scanner: string };
-      expect([line.host, line.scanner, line.port > 0]).toEqual(["127.0.0.1", "off", true]);
-      const st = await ok(`http://127.0.0.1:${line.port}`, "/v1/status");
-      expect(st).toMatchObject({ indexedHeight: 715183, scanner: "off", genesisHash: KNOWN_GENESIS.stagenet });
-    } finally {
-      child.kill("SIGTERM");
-    }
-    expect(await exited, err).toBe(0);
-    expect(out).toContain('"stopped"');
-
-    await expect(serveMain([], {})).rejects.toThrow(/usage/);
-    await expect(serveMain(["--network", NET, "--port", "70000"], { PG_URL: container.getConnectionUri() })).rejects.toThrow(/--port/);
-    await expect(serveMain(["--network", NET, "--genesis", "abc"], { PG_URL: container.getConnectionUri() })).rejects.toThrow(/--genesis/);
-    // An idle wait of 0 (or below 100 ms) would make the scan loop and its error back-off a hot loop.
-    for (const idle of ["0", "99"])
-      await expect(serveMain(["--network", NET, "--scan-idle-ms", idle], { PG_URL: container.getConnectionUri() })).rejects.toThrow(/--scan-idle-ms must be an integer from 100 to 3600000/);
     await expect(serve({ sql: db.sql, network: NET, schema: db.mip, archiveSchema: db.archive, port: 0, scanIdleMs: 0 })).rejects.toThrow(/scanIdleMs/);
-    await expect(serveMain(["--bogus"], { PG_URL: container.getConnectionUri() })).rejects.toThrow();
+    await expect(serveMain([], {})).rejects.toThrow(/usage/);
+
+    // The CLI opens its database from PG_URL: a PostgreSQL server.
+    if (onPostgresql("serve-cli-process")) {
+      // The CLI as a child process, API only, over the IDX schema; default host; SIGTERM → exit 0.
+      const child = spawn(process.execPath, ["--import", "tsx", "token-indexer/mip0018/serve-cli.ts", "--network", NET, "--port", "0", "--api-only", "--schema", idx.mip, "--archive-schema", idx.archive], {
+        cwd: new URL(".", REPO).pathname, env: { ...process.env, PG_URL: database.connectionUri() }, stdio: ["ignore", "pipe", "pipe"],
+      });
+      let out = "";
+      let err = "";
+      child.stdout.on("data", (b: Buffer) => (out += b.toString()));
+      child.stderr.on("data", (b: Buffer) => (err += b.toString()));
+      const exited = new Promise<number | null>((r) => child.on("exit", (code) => r(code)));
+      try {
+        for (let i = 0; i < 300 && !out.includes('"listening"'); i++) await new Promise((r) => setTimeout(r, 100));
+        const line = JSON.parse(out.split("\n").find((l) => l.includes('"listening"'))!) as { host: string; port: number; scanner: string };
+        expect([line.host, line.scanner, line.port > 0]).toEqual(["127.0.0.1", "off", true]);
+        const st = await ok(`http://127.0.0.1:${line.port}`, "/v1/status");
+        expect(st).toMatchObject({ indexedHeight: 715183, scanner: "off", genesisHash: KNOWN_GENESIS.stagenet });
+      } finally {
+        child.kill("SIGTERM");
+      }
+      expect(await exited, err).toBe(0);
+      expect(out).toContain('"stopped"');
+
+      await expect(serveMain(["--network", NET, "--port", "70000"], { PG_URL: database.connectionUri() })).rejects.toThrow(/--port/);
+      await expect(serveMain(["--network", NET, "--genesis", "abc"], { PG_URL: database.connectionUri() })).rejects.toThrow(/--genesis/);
+      // An idle wait of 0 (or below 100 ms) would make the scan loop and its error back-off a hot loop.
+      for (const idle of ["0", "99"])
+        await expect(serveMain(["--network", NET, "--scan-idle-ms", idle], { PG_URL: database.connectionUri() })).rejects.toThrow(/--scan-idle-ms must be an integer from 100 to 3600000/);
+      await expect(serveMain(["--bogus"], { PG_URL: database.connectionUri() })).rejects.toThrow();
+    }
   }, 180_000);
 });

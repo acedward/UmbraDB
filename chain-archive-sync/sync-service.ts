@@ -1,3 +1,4 @@
+import { bytesToHex, hexToBytes } from "../src/postgres/bytes.js";
 import { PgChainArchiveStore } from "../src/postgres/chain-archive-store.js";
 import type { UmbraDBSql } from "../src/postgres/client.js";
 import type {
@@ -80,6 +81,8 @@ function hexNoPrefix(hex: string): string {
 
 
 const SYSTEM_TX_TAG = "midnight:system-transaction";
+/** UTF-8 as `Buffer#toString("utf8")` reads it: a leading byte-order mark is kept, invalid sequences become U+FFFD. */
+const utf8 = new TextDecoder("utf-8", { ignoreBOM: true });
 
 /**
  * The indexer's `TransactionResultStatus` mapped onto the archive's
@@ -162,6 +165,9 @@ export interface SyncOnceResult {
   /** `min(node finalized head, indexer tip)`; `undefined` when the call returned before asking
    *  (the configured `endHeight` was already reached). */
   targetTipHeight: number | undefined;
+  /** The node's finalized height and the indexer's tip that `targetTipHeight` is the lower of (`undefined` likewise). */
+  nodeFinalizedHeight: number | undefined;
+  indexerTipHeight: number | undefined;
   /** The cursor after this call has reached the configured `endHeight`. */
   reachedEnd: boolean;
   /** Network calls retried after a retryable failure, and how many of those were 429/403. */
@@ -298,6 +304,25 @@ export class ChainArchiveSyncService {
   }
 
   /**
+   * The finalized tip both sources can serve now: the node's finalized height (`chain_getFinalizedHead`, then its
+   * header) and the indexer's tip, and the lower of the two. Each network call is retried on throttling and outages
+   * as a batch's calls are. `syncOnce` bounds every batch by it; a host that starts a new archive at the current tip
+   * reads it here.
+   */
+  async finalizedTip(): Promise<{ targetTipHeight: number; nodeFinalizedHeight: number; indexerTipHeight: number }> {
+    const finalizedHash = await this.retry("chain_getFinalizedHead", () => this.node.getFinalizedHead());
+    const [nodeFinalizedHeight, indexerTipHeight] = await Promise.all([
+      this.retry("chain_getHeader", () => this.node.getHeightOf(finalizedHash)),
+      this.retry("indexer.tip", () => this.indexer.getTipHeight()),
+    ]);
+    // The indexer supplies transaction metadata/raw payloads for every block. Bounding the batch
+    // here prevents the normal "node is ahead of indexer" state from entering ingestOneBlock,
+    // throwing, and forcing the CLI through a 15-second error retry cycle. The lower tip is the
+    // highest height both independent sources can currently serve.
+    return { targetTipHeight: Math.min(nodeFinalizedHeight, indexerTipHeight), nodeFinalizedHeight, indexerTipHeight };
+  }
+
+  /**
    * Ingests one contiguous batch of blocks, starting right after the last watermark (or from
    * genesis on first run), up to `min(finalized head, indexer tip, watermark + maxBlocks)`. Only
    * ever ingests up to the FINALIZED head (`chain_getFinalizedHead`) and the indexer's current
@@ -324,19 +349,13 @@ export class ChainArchiveSyncService {
     const { start: startHeight, archiveStart } = this.resolveStart(cursor);
     const synced = cursor?.height;
     if (this.endHeight !== undefined && startHeight > this.endHeight) {
-      return finish({ ingestedBlocks: 0, fromHeight: undefined, toHeight: undefined, targetTipHeight: undefined, reachedEnd: true });
+      return finish({
+        ingestedBlocks: 0, fromHeight: undefined, toHeight: undefined, targetTipHeight: undefined,
+        nodeFinalizedHeight: undefined, indexerTipHeight: undefined, reachedEnd: true,
+      });
     }
 
-    const finalizedHash = await this.retry("chain_getFinalizedHead", () => this.node.getFinalizedHead());
-    const [nodeFinalizedHeight, indexerTipHeight] = await Promise.all([
-      this.retry("chain_getHeader", () => this.node.getHeightOf(finalizedHash)),
-      this.retry("indexer.tip", () => this.indexer.getTipHeight()),
-    ]);
-    // The indexer supplies transaction metadata/raw payloads for every block. Bounding the batch
-    // here prevents the normal "node is ahead of indexer" state from entering ingestOneBlock,
-    // throwing, and forcing the CLI through a 15-second error retry cycle. The lower tip is the
-    // highest height both independent sources can currently serve.
-    const targetTipHeight = Math.min(nodeFinalizedHeight, indexerTipHeight);
+    const { targetTipHeight, nodeFinalizedHeight, indexerTipHeight } = await this.finalizedTip();
 
     if (startHeight > targetTipHeight) {
       // `updated_at` doubles as the dashboard liveness heartbeat. A same-height call to the
@@ -349,7 +368,10 @@ export class ChainArchiveSyncService {
           WHERE kind = 'chain_archive' AND key = ${this.watermarkKey()}
         `;
       }
-      return finish({ ingestedBlocks: 0, fromHeight: undefined, toHeight: undefined, targetTipHeight, reachedEnd: false });
+      return finish({
+        ingestedBlocks: 0, fromHeight: undefined, toHeight: undefined, targetTipHeight, nodeFinalizedHeight, indexerTipHeight,
+        reachedEnd: false,
+      });
     }
     const endHeight = Math.min(
       targetTipHeight, startHeight + maxBlocks - 1, this.endHeight ?? Number.MAX_SAFE_INTEGER,
@@ -379,7 +401,7 @@ export class ChainArchiveSyncService {
       }
     }
     return finish({
-      ingestedBlocks: ingested, fromHeight: startHeight, toHeight: endHeight, targetTipHeight,
+      ingestedBlocks: ingested, fromHeight: startHeight, toHeight: endHeight, targetTipHeight, nodeFinalizedHeight, indexerTipHeight,
       reachedEnd: this.endHeight !== undefined && endHeight >= this.endHeight,
     });
   }
@@ -387,14 +409,14 @@ export class ChainArchiveSyncService {
   /** The last D-parameter value archived at or below `height` (as the exact JSON text stored), so
    *  a resumed service dedupes exactly like an uninterrupted one. `undefined` when none exists. */
   private async loadLastDParameterJson(height: number): Promise<string | undefined> {
-    const rows = await this.sql<{ raw_blob_hash: Buffer }[]>`
+    const rows = await this.sql<{ raw_blob_hash: Uint8Array }[]>`
       SELECT raw_blob_hash FROM ${this.sql(this.schema)}.bridge_observations
       WHERE net = ${this.net} AND kind = 'system_parameters_d' AND block_height <= ${height}
       ORDER BY block_height DESC, observation_index DESC
       LIMIT 1
     `;
     if (rows.length === 0) return undefined;
-    const bytes = await this.store.getBlob(rows[0]!.raw_blob_hash.toString("hex"));
+    const bytes = await this.store.getBlob(bytesToHex(rows[0]!.raw_blob_hash));
     return new TextDecoder().decode(bytes);
   }
 
@@ -576,8 +598,8 @@ export class ChainArchiveSyncService {
 
     return indexerBlock.transactions.map((tx, position) => {
       const rawHex = hexNoPrefix(tx.raw);
-      const rawBytes = Buffer.from(rawHex, "hex");
-      const decodedTag = rawBytes.subarray(0, SYSTEM_TX_TAG.length).toString("utf8");
+      const rawBytes = hexToBytes(rawHex);
+      const decodedTag = utf8.decode(rawBytes.subarray(0, SYSTEM_TX_TAG.length));
       const kind: "regular" | "system" = decodedTag === SYSTEM_TX_TAG ? "system" : "regular";
       // The CONTAINS cross-check applies only to REGULAR (user-submitted) transactions, which are
       // carried as on-wire extrinsics in the node's block body. Runtime-generated SYSTEM

@@ -21,8 +21,9 @@ import {
   readLogItem,
   type TransactionLike,
 } from "../mip0018/applied-parts.ts";
-import { tokenColor, tokenColorSha256 } from "../mip0018/color.ts";
+import { tokenColor } from "../mip0018/color.ts";
 import { EVENT_NAME, encodePayload, record, toHex } from "../vendor/mip0018/codec/src/index.ts";
+import { tokenColorSha256 } from "./helpers/color-sha256.ts";
 
 const ADDRESS = "cc".repeat(32);
 const DS = new Uint8Array(32).fill(0x11);

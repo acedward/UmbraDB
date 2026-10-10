@@ -89,7 +89,7 @@ describe("receipt logs and logsBloom (plan 00006 K2)", () => {
         async getTransactionCount() { return 0n; },
         async getAddressKind() { return undefined; },
         async getTransactionByHash() { return undefined; },
-        async getLogsByTransactionHash(hash) { asked.push(hash.toString("hex")); return stored; },
+        async getLogsByTransactionHash(hash) { asked.push(Buffer.from(hash).toString("hex")); return stored; },
       },
       indexer: fakeIndexer({
         async getTransactionByHash() { return { transaction: tx, matchCount: 1 }; },
@@ -123,7 +123,7 @@ describe("receipt logs and logsBloom (plan 00006 K2)", () => {
             rawRef: `relayer:midnight:${midnightHash}`, canonicalHash: Buffer.from(midnightHash, "hex"),
           };
         },
-        async getLogsByTransactionHash(hash) { asked.push(hash.toString("hex")); return []; },
+        async getLogsByTransactionHash(hash) { asked.push(Buffer.from(hash).toString("hex")); return []; },
       },
       indexer: fakeIndexer({ async getBlockByHeight() { return block; } }),
     });

@@ -15,6 +15,7 @@
  * event came before its last withdrawal — and never returns event bytes).
  */
 import { MIP0018_SCHEMA } from "../../src/postgres/migrations/mip0018/index.js";
+import { hexToBytes } from "./bytes.ts";
 import type { Queryable } from "./fields.ts";
 import {
   COMMON_KEY_HEX,
@@ -31,16 +32,16 @@ import {
   toHex,
 } from "./state.ts";
 
-const buf = (h: string): Buffer => Buffer.from(h.replace(/^0x/, "").toLowerCase(), "hex");
+const buf = (h: string): Uint8Array => hexToBytes(h.replace(/^0x/, "").toLowerCase());
 const SYMBOL_KEY = buf(COMMON_KEY_HEX.symbol);
 
 interface FieldRow {
-  contract_address: Buffer;
-  domain_sep: Buffer;
+  contract_address: Uint8Array;
+  domain_sep: Uint8Array;
   kind: number;
-  key: Buffer;
+  key: Uint8Array;
   val_type: number;
-  value: Buffer;
+  value: Uint8Array;
   uint_value: string | null;
   usable: boolean | null;
   updated_block: bigint;
@@ -99,7 +100,7 @@ export async function getIdentity(sql: Queryable, ref: IdentityRef, schema = MIP
 
 /** Symbol groups of two or more members of a network (or of one contract), by the pure module's `symbolGroups`. */
 export async function listGroups(sql: Queryable, network: string, filter: { contractAddress?: string } = {}, schema = MIP0018_SCHEMA): Promise<SymbolGroup[]> {
-  const rows = await sql<{ contract_address: Buffer; domain_sep: Buffer; kind: number; value: Buffer; usable: boolean | null }[]>`
+  const rows = await sql<{ contract_address: Uint8Array; domain_sep: Uint8Array; kind: number; value: Uint8Array; usable: boolean | null }[]>`
     SELECT contract_address, domain_sep, kind, value, usable FROM ${sql(schema)}.mip0018_fields
     WHERE network = ${network} AND key = ${SYMBOL_KEY} AND usable
       ${filter.contractAddress === undefined ? sql`` : sql`AND contract_address = ${buf(filter.contractAddress)}`}`;
@@ -151,7 +152,7 @@ export async function tokenMarkOf(sql: Queryable, ref: IdentityRef, schema = MIP
 
 /** Contracts of a network with at least one described identity (derived from the field rows), by address. */
 export async function listMetadataContracts(sql: Queryable, network: string, schema = MIP0018_SCHEMA): Promise<Array<{ contractAddress: string; identities: number }>> {
-  const rows = await sql<{ contract_address: Buffer; identities: number }[]>`
+  const rows = await sql<{ contract_address: Uint8Array; identities: number }[]>`
     SELECT contract_address, count(DISTINCT (domain_sep, kind))::int AS identities FROM ${sql(schema)}.mip0018_fields
     WHERE network = ${network} GROUP BY contract_address ORDER BY contract_address`;
   return rows.map((r) => ({ contractAddress: toHex(r.contract_address), identities: r.identities }));
@@ -187,9 +188,9 @@ export async function chainEvents(
 ): Promise<ChainEvent[]> {
   const s = sql(schema);
   const rows = await sql<{
-    block_height: bigint; tx_index: number; event_index: number; tx_hash: Buffer | null; segment_id: number | null; phase: string | null;
-    contract_address: Buffer; event_type: string; classification: ChainEvent["classification"]; reason: string | null;
-    domain_sep: Buffer | null; kind: number | null; described: boolean;
+    block_height: bigint; tx_index: number; event_index: number; tx_hash: Uint8Array | null; segment_id: number | null; phase: string | null;
+    contract_address: Uint8Array; event_type: string; classification: ChainEvent["classification"]; reason: string | null;
+    domain_sep: Uint8Array | null; kind: number | null; described: boolean;
   }[]>`
     SELECT e.block_height, e.tx_index, e.event_index, e.tx_hash, e.segment_id, e.phase, e.contract_address, e.event_type,
            e.classification, e.reason, e.domain_sep, e.kind,
@@ -223,7 +224,7 @@ export async function chainEvents(
 // a group as a member count plus the first members. Every query below is an index range scan bounded by its LIMIT
 // (or an index-only count).
 
-const COMMON_KEY_BYTES: readonly Buffer[] = [COMMON_KEY_HEX.name, COMMON_KEY_HEX.symbol, COMMON_KEY_HEX.decimals, COMMON_KEY_HEX.standards].map(buf);
+const COMMON_KEY_BYTES: readonly Uint8Array[] = [COMMON_KEY_HEX.name, COMMON_KEY_HEX.symbol, COMMON_KEY_HEX.decimals, COMMON_KEY_HEX.standards].map(buf);
 const FIELD_COLUMNS = (sql: Queryable) => sql`
   f.contract_address, f.domain_sep, f.kind, f.key, f.val_type, f.value, f.uint_value::text AS uint_value, f.usable,
   f.updated_block, f.updated_tx, f.updated_event, f.updated_record`;
@@ -332,11 +333,11 @@ export async function boundedGroup(
   sql: Queryable, ref: IdentityRef, symbol: Uint8Array, limit: number, schema = MIP0018_SCHEMA,
 ): Promise<(SymbolGroup & { memberCount: number }) | undefined> {
   const s = sql(schema);
-  const at = sql`network = ${ref.network} AND contract_address = ${buf(ref.contractAddress)} AND key = ${SYMBOL_KEY} AND usable AND value = ${Buffer.from(symbol)}`;
+  const at = sql`network = ${ref.network} AND contract_address = ${buf(ref.contractAddress)} AND key = ${SYMBOL_KEY} AND usable AND value = ${new Uint8Array(symbol)}`;
   const [c] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ${s}.mip0018_fields WHERE ${at}`;
   const memberCount = c?.n ?? 0;
   if (memberCount < 2) return undefined;
-  const rows = await sql<{ domain_sep: Buffer; kind: number; value: Buffer; usable: boolean | null }[]>`
+  const rows = await sql<{ domain_sep: Uint8Array; kind: number; value: Uint8Array; usable: boolean | null }[]>`
     SELECT domain_sep, kind, value, usable FROM ${s}.mip0018_fields WHERE ${at} ORDER BY domain_sep, kind LIMIT ${Math.max(limit, 2)}`;
   const [group] = symbolGroups(rows.map((r) => ({
     network: ref.network, contractAddress: ref.contractAddress.replace(/^0x/, "").toLowerCase(), domainSep: toHex(r.domain_sep), kind: r.kind,

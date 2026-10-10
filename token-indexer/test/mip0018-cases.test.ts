@@ -18,11 +18,11 @@
  */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { openTestDatabase, type TestDatabase } from "../../test/helpers/test-database.ts";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { type ArchiveTape, startFakeChain } from "../../test/integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadCaseIndex, loadManifest, loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
 import { activityForColor, type ActivityItem, metadataTransactionsForContract } from "../mip0018/activity.ts";
@@ -113,7 +113,7 @@ async function caseDifferences(sql: UmbraDBSql, schema: string, contract: string
 }
 
 describe("Stagenet case comparison — gaps", () => {
-  let container: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   const clients: UmbraDBSql[] = [];
   let counter = 0;
   const caseIndex = loadCaseIndex();
@@ -124,7 +124,7 @@ describe("Stagenet case comparison — gaps", () => {
   const full = {} as Record<"idx" | "u1", { sql: UmbraDBSql; archive: string; mip: string }>;
 
   async function client(schema: string): Promise<UmbraDBSql> {
-    const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    const sql = database.client(schema);
     clients.push(sql);
     return sql;
   }
@@ -162,7 +162,7 @@ describe("Stagenet case comparison — gaps", () => {
   }
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
+    database = await openTestDatabase();
     for (const [range, from, to] of [["idx", 714485, 715183], ["u1", 715402, 715433]] as const) {
       const archive = `cases_arch_${range}`;
       const sql = await client(archive);
@@ -175,7 +175,7 @@ describe("Stagenet case comparison — gaps", () => {
 
   afterAll(async () => {
     for (const c of clients) await c.end({ timeout: 5 });
-    await container?.stop();
+    await database?.stop();
   }, 60_000);
 
   it("[[mip0018.cases.stop-heights]] each case replayed only up to its own last block equals its expectation while every later case is still absent; earlier cases stay equal; C09 (refused call, no transaction) leaves C01's state unchanged; U1 at its last block", async () => {

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UmbraDB indexer</title>
+  <link rel="icon" href="../mip0018/ui/favicon.ico" sizes="16x16 32x32 48x48">
+  <link rel="stylesheet" href="../mip0018/ui/page.css">
+  <link rel="stylesheet" href="./explorer.css">
+</head>
+<body data-state="loading">
+<header class="product">
+  <div class="brand">
+    <!-- umbradb-logo -->
+    <span class="rule"></span>
+    <h1>Indexer</h1>
+    <span class="sub">UmbraDB in this browser: the chain archive and its modules</span>
+  </div>
+  <nav class="tabs" aria-label="pages">
+    <a id="tab-overview" href="?tab=overview">Overview</a>
+    <a id="tab-tokens" href="?tab=tokens">Token Indexer</a>
+    <a id="tab-jsonrpc" href="?tab=jsonrpc">JSON RPC</a>
+    <a id="tab-database" href="?tab=database">Database</a>
+    <span class="sep"></span>
+    <a id="system-link" class="system-link" href="./system.html" data-link="system">system status</a>
+  </nav>
+</header>
+<div id="tab-panel-overview" class="tab-panel" hidden>
+  <div class="page" id="overview"></div>
+</div>
+<div id="tab-panel-tokens" class="tab-panel explorer" hidden>
+<!-- umbradb-explorer-markup -->
+</div>
+<div id="tab-panel-jsonrpc" class="tab-panel" hidden>
+  <div class="page" id="jsonrpc"></div>
+</div>
+<div id="tab-panel-database" class="tab-panel" hidden>
+  <div class="page" id="database"></div>
+</div>
+<script type="module" src="./explorer-page.ts"></script>
+</body>
+</html>

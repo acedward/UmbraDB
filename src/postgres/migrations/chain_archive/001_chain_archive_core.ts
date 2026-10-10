@@ -1,5 +1,5 @@
 import type { ISql } from "postgres";
-import { assertValidSchemaName } from "../../client.js";
+import { assertValidSchemaName } from "../../schema-name.js";
 import { CHAIN_ARCHIVE_HEIGHT_PARTITION_SIZE, CHAIN_ARCHIVE_PRECREATED_PARTITIONS } from "./partition-config.js";
 
 /**

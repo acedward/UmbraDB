@@ -1,0 +1,79 @@
+name: Browser and PGlite gate
+
+# The browser build's tests in Chromium and the suite on PGlite, in the official Playwright image (pinned by digest):
+#   - `browser`: the static build (`npm run build:browser`) and the browser suite (`npm run test:browser`): every test
+#     of the browser engine (`token-indexer/test/browser-*.test.ts`: the worker host in Node; the static build's worker
+#     on OPFS in Chromium, including the parity suite: tape digests, the MIP vectors, the recorded cases through the
+#     in-browser API, the API crawl against the Node handler) and the explorer page's Chromium tests.
+#   - `pglite`: the whole suite on PGlite in Node (`npm run test:pglite`), Chromium tests included, then the
+#     required-test reconciliation with the PostgreSQL-only list (`test/helpers/postgresql-only.ts`).
+# Both run on PGlite (`UMBRADB_BACKEND=pglite`): no database server and no Docker inside the job container. The same
+# browser tests also run on PostgreSQL in the required conformance gate (`conformance.yml`, with the runner image's
+# Chrome, whose path and version that job prints before its tests).
+# Chromium is the image's (`/ms-playwright/chromium-*/chrome-linux64/chrome` on x64), found by `findBrowser`
+# (`token-indexer/test/helpers/cdp-browser.ts`); the "Locate Chromium" step fails early when it is not there.
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: browser-${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      # mcr.microsoft.com/playwright:v1.63.0-noble (image index digest; linux/amd64 and linux/arm64)
+      image: mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27
+    env:
+      UMBRADB_BACKEND: pglite
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Locate Chromium
+        run: |
+          node --import tsx -e '
+            import("./token-indexer/test/helpers/cdp-browser.ts").then(({ findBrowser }) => {
+              const browser = findBrowser();
+              if (browser === undefined) { console.error("no Chromium found"); process.exit(1); }
+              console.log(browser);
+            });'
+
+      - name: Build the static site
+        run: npm run build:browser
+
+      - name: Browser suite (Chromium)
+        run: npm run test:browser -- --maxWorkers=2
+
+  pglite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      # mcr.microsoft.com/playwright:v1.63.0-noble (image index digest; linux/amd64 and linux/arm64)
+      image: mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Suite on PGlite (tests + required-test reconciliation, PostgreSQL-only list)
+        run: npm run test:pglite -- --maxWorkers=2

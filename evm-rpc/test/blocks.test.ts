@@ -38,7 +38,7 @@ describe("chain-view methods", () => {
         async getAddressKind() { return undefined; },
         async getLogsByTransactionHash() { return []; },
         async getTransactionByHash(hash) {
-          if (hash.toString("hex") !== "cc".repeat(32)) return undefined;
+          if (Buffer.from(hash).toString("hex") !== "cc".repeat(32)) return undefined;
           return {
             hash,
             blockHeight: 42n,

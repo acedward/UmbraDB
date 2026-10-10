@@ -7,14 +7,16 @@
  * Stagenet cannot show (a mint in a failed fallible segment, a color seen before its mint, broken archive rows).
  * Expected colors: the reference index states (midnight-experiments/mip-0018 @ daec1f1,
  * `deployments/stagenet/cases/{IDX,U1}/index/index-state.json`) and the wallet's balances (`cases/<case>/wallet-status.json`).
- * One Postgres 17 container for the file; one archive schema + one `mip0018` schema per scenario.
+ * One database for the file (`test/helpers/test-database.ts`: Postgres 17 or PGlite); one archive schema + one `mip0018`
+ * schema per scenario.
  */
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { skipOnPglite } from "../../test/helpers/postgresql-only.ts";
+import { openTestDatabase, type TestDatabase } from "../../test/helpers/test-database.ts";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import type { IndexerBlock } from "../../chain-archive-sync/indexer-client.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { type ArchiveTape, type FakeChain, loadTape, startFakeChain } from "../../test/integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
 import { tokenColor } from "../mip0018/color.ts";
@@ -62,14 +64,29 @@ async function dumpScan(sql: UmbraDBSql, schema: string): Promise<Record<string,
   };
 }
 
+/** `sql` whose next `begin` first runs `before` (outside any transaction); every other call is `sql`'s own. */
+function beginAfter(sql: UmbraDBSql, before: () => Promise<void>): UmbraDBSql {
+  let pending = true;
+  return new Proxy(sql, {
+    get(target, key, receiver) {
+      if (key !== "begin" || !pending) return Reflect.get(target, key, receiver) as unknown;
+      return async (...args: unknown[]) => {
+        pending = false;
+        await before();
+        return (target.begin as (...a: unknown[]) => Promise<unknown>)(...args);
+      };
+    },
+  });
+}
+
 describe("MIP-0018 scan over the chain archive", () => {
-  let container: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   const clients: UmbraDBSql[] = [];
   const fakes: FakeChain[] = [];
   let counter = 0;
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
+    database = await openTestDatabase();
   }, 180_000);
 
   afterEach(async () => {
@@ -78,7 +95,7 @@ describe("MIP-0018 scan over the chain archive", () => {
 
   afterAll(async () => {
     for (const c of clients) await c.end({ timeout: 5 });
-    await container?.stop();
+    await database?.stop();
   }, 60_000);
 
   /** A fresh archive schema and `mip0018` schema in the shared database. */
@@ -86,7 +103,7 @@ describe("MIP-0018 scan over the chain archive", () => {
     const n = counter++;
     const archive = `${prefix}_arch_${n}`;
     const mip = `${prefix}_mip_${n}`;
-    const sql = createClient({ connectionString: container.getConnectionUri(), schema: mip });
+    const sql = database.client(mip);
     clients.push(sql);
     await bootstrapChainArchiveSchema(sql, archive);
     return { sql, archive, mip };
@@ -303,7 +320,15 @@ describe("MIP-0018 scan over the chain archive", () => {
     const at = await two.sql`SELECT 1 FROM ${two.sql(two.mip)}.mip0018_mints WHERE block_height = 714649`;
     expect(at).toHaveLength(0); // the block's rows rolled back with its cursor
     // Another writer moves the cursor while a block is being written: the compare-and-set refuses to interleave.
-    const raced = scanner(two, { onBlockWritten: async () => { await two.sql`UPDATE ${two.sql(two.mip)}.mip0018_scan SET next_height = next_height + 1, last_block_hash = ${Buffer.alloc(32, 7)}`; } });
+    // On PostgreSQL the writer runs on another connection while the block's transaction is open. PGlite has one
+    // session, so no statement can run inside another's transaction: there the writer moves the cursor after the
+    // scanner read it and before the block's transaction begins, the one gap a single session leaves.
+    const moveCursor = async (): Promise<void> => {
+      await two.sql`UPDATE ${two.sql(two.mip)}.mip0018_scan SET next_height = next_height + 1, last_block_hash = ${Buffer.alloc(32, 7)}`;
+    };
+    const raced = database.backend === "postgres"
+      ? scanner(two, { onBlockWritten: moveCursor })
+      : scanner(two, { sql: beginAfter(two.sql, moveCursor) });
     await expect(raced.scanOnce({ maxBlocks: 1 })).rejects.toThrow(ScanError);
     await two.sql`UPDATE ${two.sql(two.mip)}.mip0018_scan SET next_height = 714649, last_block_hash = ${Buffer.from(C04.blocks.find((b) => b.height === 714648)!.blockHash.replace(/^0x/, ""), "hex")}`;
     await scanAll(scanner(two));
@@ -389,11 +414,11 @@ describe("MIP-0018 scan over the chain archive", () => {
     await expect(g.scanOnce()).rejects.toThrow(/no canonical block 401/);
   }, 240_000);
 
-  it("[[mip0018.scan.cli]] the scan CLI scans an archived range to --to and resumes at its cursor", async () => {
+  it.skipIf(skipOnPglite("mip0018.scan.cli"))("[[mip0018.scan.cli]] the scan CLI scans an archived range to --to and resumes at its cursor", async () => {
     const db = await fresh("cli");
     await archiveTape(db.sql, db.archive, C04, 714637, 714663);
     const lines: string[] = [];
-    const env = { PG_URL: container.getConnectionUri() };
+    const env = { PG_URL: database.connectionUri() };
     const args = ["--network", NET, "--schema", db.mip, "--archive-schema", db.archive, "--from", "714637", "--to", "714650", "--max-blocks", "5"];
     expect(await scanCli(args, env, (l) => lines.push(l))).toBe(0);
     const done = JSON.parse(lines.at(-1)!) as { cursor: { nextHeight: number } };

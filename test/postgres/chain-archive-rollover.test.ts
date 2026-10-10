@@ -1,6 +1,6 @@
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import { openTestDatabase, type TestDatabase } from "../helpers/test-database.ts";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { PgChainArchiveStore } from "../../src/postgres/chain-archive-store.js";
 import { rolloverDefaultPartition } from "../../src/postgres/chain-archive-rollover.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
@@ -27,20 +27,20 @@ import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_arch
  *      correctly routed (not into `DEFAULT`).
  */
 describe("AC-6: partition/rollover correctness with a real rollover event", () => {
-  let container: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   let sql: UmbraDBSql;
   const schema = "chain_archive_rollover_test";
   const net = "rollover_net";
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
-    sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    database = await openTestDatabase();
+    sql = database.client(schema);
     await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
   }, 120_000);
 
   afterAll(async () => {
     await sql?.end({ timeout: 5 });
-    await container?.stop();
+    await database?.stop();
   });
 
   const h = (n: number, tag: number): string => (tag.toString(16).padStart(2, "0") + n.toString(16)).padStart(64, "0");
@@ -175,9 +175,7 @@ describe("AC-6: partition/rollover correctness with a real rollover event", () =
    */
   it("Finding 3(a): a real rollover completes on a maxConnections: 1 pool -- no self-deadlock from mid-operation general-pool queries", async () => {
     const schema1 = "chain_archive_rollover_m1";
-    const sql1 = createClient({
-      connectionString: container.getConnectionUri(), schema: schema1, maxConnections: 1,
-    });
+    const sql1 = database.client(schema1, { maxConnections: 1 });
     try {
       await runMigrations(sql1, { schema: schema1, migrations: chainArchiveMigrations });
       const store1 = new PgChainArchiveStore(sql1, schema1);

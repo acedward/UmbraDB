@@ -8,7 +8,21 @@ entries below are stated in [`docs/STABILITY.md`](docs/STABILITY.md).
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Changed
+
+- **`DurabilityWarning.kind`** (the warnings `runMigrations` passes to
+  `RunMigrationsOptions.onDurabilityWarning`) is `"lost-tail" | "non-durable"`. `"non-durable"` is
+  returned, never thrown, when a PGlite client in its non-durable mode runs the migrations on a
+  database with `fsync=off`, which that mode accepts by configuration
+  ([`docs/durability-contract.md`](docs/durability-contract.md) §1a); a PostgreSQL client still
+  refuses `fsync=off`. Code that switches exhaustively over `kind` must handle the new value.
+
+### Added
+
+- **`/v1/status` of the MIP-0018 token indexer** ends with `"durability"`: `"durable"` (the
+  durability probe refuses `fsync=off`, as always on PostgreSQL) or `"non-durable"` (a PGlite
+  database in the mode that accepts `fsync=off`). The field is additive; every other field is
+  unchanged ([`token-indexer/API.md`](token-indexer/API.md)).
 
 ## [1.0.0] - unreleased — "Totality"
 

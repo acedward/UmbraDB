@@ -80,3 +80,10 @@ bd2fa466b4a30a590f77734179ad97d7db6c078c:token-indexer/test/fixtures/activity/de
 dfe1917f17b145fe21ff97752631552fe26c28c7:token-indexer/test/fixtures/activity/ucom-transfer.raw.json:generic-api-key:22
 dfe1917f17b145fe21ff97752631552fe26c28c7:token-indexer/test/fixtures/activity/ucom-transfer.raw.json:generic-api-key:29
 dfe1917f17b145fe21ff97752631552fe26c28c7:token-indexer/test/fixtures/activity/ucom-transfer.raw.json:generic-api-key:38
+
+# The diagnostics-redaction tests feed the redactor synthetic secrets and assert that none of them
+# reaches the system snapshot or the diagnostics file: a made-up password ("hunter2-SECRET") inside
+# a JSON log field, and a made-up 32-hex endpoint key in a URL path on an `example.test` host. The
+# stock `generic-api-key` rule flags both where they were added; neither is a credential.
+a5d9492719c88045cde5b749f7c431e468019451:token-indexer/test/engine-telemetry.test.ts:generic-api-key:501
+a5d9492719c88045cde5b749f7c431e468019451:token-indexer/test/engine-telemetry.test.ts:generic-api-key:527

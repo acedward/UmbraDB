@@ -1,3 +1,4 @@
+import { bytesToHex } from "../../src/postgres/bytes.js";
 import type { IndexerBlock } from "../indexer-gql.js";
 import { JSON_RPC_ERRORS, RpcError, type RpcContext } from "../registry.js";
 
@@ -55,9 +56,9 @@ export function fixedDataHex(value: unknown, bytes: number, label: string): stri
   return value.toLowerCase();
 }
 
-export function evmAddressFromBytes(value: Buffer | null | undefined): string {
+export function evmAddressFromBytes(value: Uint8Array | null | undefined): string {
   if (value === null || value === undefined || value.length !== 20) return ZERO_ADDRESS;
-  return `0x${value.toString("hex")}`;
+  return `0x${bytesToHex(value)}`;
 }
 
 export type ResolvedBlockTag = { readonly kind: "latest" } | { readonly kind: "height"; readonly height: number };
