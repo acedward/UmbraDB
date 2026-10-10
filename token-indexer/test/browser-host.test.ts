@@ -225,7 +225,7 @@ describe("browser engine host", () => {
     expect(tapes).toHaveLength(2); // each start loads the recorded range
   }, 120_000);
 
-  it("[[browser.host.engine]] a network source: every height is fetched once across a stop and a restart", async () => {
+  it("[[browser.host.engine-network]] a network source: every height is fetched once across a stop and a restart", async () => {
     // The node and the indexer answer from the recorded range through the host's `fetch`, as the network would.
     const replay = createTapeFetch(await loadTape("u1", fileFetch()));
     const { host } = newHost({ fetch: replay.fetchImpl });

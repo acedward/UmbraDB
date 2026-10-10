@@ -137,6 +137,11 @@ wallet-storage library) is listed with its reason in `test/helpers/postgresql-on
 run and those tests are skipped, and `check-required-tests.ts --postgresql-only` requires every other required test to
 pass.
 
+The browser suite, `npm run test:browser`, is every test of the browser engine (`test/browser-*.test.ts`: the worker
+host in Node, and the static build in Chromium on OPFS) plus the explorer page's Chromium tests, on either backend. CI
+runs it in the Playwright image on PGlite, beside `npm run test:pglite` (`.github/workflows/browser.yml`); the
+required gate runs it too, on PostgreSQL with the runner's Chrome.
+
 | What | Where |
 |---|---|
 | MIP vectors through two adapters (pure state module; real Postgres path): 59 reference normative, 43 informative, 8 UmbraDB versions | `test/mip0018-vectors.test.ts`, `test/mip0018-vectors-pg.test.ts` |
@@ -157,6 +162,7 @@ pass.
 | The static build's security headers: the policy and `_headers` the build writes for every page, the build-time chain, the worker's Trusted Types policy; in Chromium, the engine under the header and the meta policy with no violation and only allowed origins, and each refusal enforced (see `browser/README.md`) | `test/browser-csp-build.test.ts`, `test/browser-csp.test.ts` |
 | The browser engine's `system` snapshot and watchdog heartbeat in the worker host; in Chromium on OPFS, the snapshot against the store read by another page, a follower tab's snapshots, the watchdog's restart of a blocked worker with the recorded digests after it, and the API's round trips during a replay | `test/browser-system.test.ts`, `test/browser-engine-chrome.test.ts` |
 | The browser worker's session (time slices, failed statements, close), API requests between block transactions, the reopen before PGlite's failed-statement defect; the page's watchdog with a real slow statement on a worker thread and its rules | `test/browser-session.test.ts`, `test/browser-watchdog.test.ts` |
+| The browser build computes what the Node build computes, in Chromium: the 110 MIP vectors through the PGlite store in a worker on OPFS; the recorded cases through the engine worker's API (each case at its own last block, the reference index, marks, activity); a crawl of the whole API equal to the Node handler's over the same range | `test/browser-parity.test.ts` |
 
 Fixtures:
 
