@@ -27,14 +27,15 @@ jobs:
     # Timeout posture: the crash, soak and differential suites RUN in this gate (Testcontainers,
     # `UMBRADB_LIVE_PREPROD` unset), with v8 coverage, and so do the browser build and every
     # Chromium test (the browser engine's worker on OPFS, the parity suite, the crash campaign, the
-    # explorer and status pages), which make most of the job's time: about 17 minutes on a 4-core
-    # runner, within `timeout-minutes: 30`. The Chromium tests use the runner image's Chrome (the
-    # Browser and PGlite gate, `browser.yml`, runs them in the Playwright image pinned by digest);
-    # the step before the tests prints which Chrome and its version, so a failure that follows a
-    # Chrome update on the runner can be told apart. StrykerJS mutation is a SEPARATE
-    # still-required job (below) so its cost never competes with this one's clock.
+    # explorer and status pages), which make most of the job's time: 18-22 minutes on a 4-core
+    # runner, within `timeout-minutes: 45`, which leaves room for tests still to be added. The
+    # Chromium tests use the runner image's Chrome (the Browser and PGlite gate, `browser.yml`, runs
+    # them in the Playwright image pinned by digest); the step before the tests prints which Chrome
+    # and its version, so a failure that follows a Chrome update on the runner can be told apart.
+    # StrykerJS mutation is a SEPARATE still-required job (below) so its cost never competes with
+    # this one's clock.
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
