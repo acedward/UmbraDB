@@ -17,6 +17,10 @@
  * The clients reach PGlite through the worker's session monitor (`session.ts`): it gives the event loop a turn between
  * statements now and then, counts the statements the database fails, and closes PGlite only once no statement is in
  * flight.
+ *
+ * A snapshot import (`snapshot-store.ts`) replaces the store's files without letting go of the lock: `detach()` closes
+ * PGlite and hands the held lock over, and `openStore(dataDir, { lock, prepare })` keeps it, runs `prepare` under it
+ * before PGlite opens the store, and loads the data directory `prepare` returns.
  */
 import type { PGlite } from "@electric-sql/pglite";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
@@ -46,6 +50,9 @@ export interface Store {
   /** Client of the `mip0018` schema. */
   readonly mip0018: UmbraDBSql;
   close(): Promise<void>;
+  /** Closes PGlite and hands over the store's lock still held (`undefined` for a store opened without one), for a
+   *  caller that replaces the store's files and opens it again with {@link OpenStoreOptions.lock}. */
+  detach(): Promise<HeldLock | undefined>;
 }
 
 function clientFor(pglite: PgliteDatabase, schema: string): UmbraDBSql {
@@ -77,7 +84,28 @@ export interface OpenStoreOptions {
   waitMs?: number;
   /** The session monitor's options (`session.ts`). */
   session?: SessionMonitorOptions;
+  /** The store's lock, already held (from {@link Store.detach}): it is kept instead of taking the lock again. */
+  lock?: HeldLock;
+  /**
+   * Runs under the store's lock before PGlite opens the store. It may return a data directory for PGlite to load into
+   * the store, whose files it has removed (a snapshot import, `snapshot-store.ts`): `tar`, a tar of `PGDATA` as
+   * PGlite's `dumpDataDir` writes it, and `entries`, its number of entries.
+   */
+  prepare?: (dataDir: string) => Promise<StoreLoad | undefined | void>;
 }
+
+/** A data directory for PGlite to load into a store (see {@link OpenStoreOptions.prepare}). */
+export interface StoreLoad {
+  tar: Blob;
+  entries: number;
+}
+
+/**
+ * PGlite's OPFS file system (`opfs-ahp`) keeps a pool of open files and creates 1,000 for a new store; it adds more only
+ * after a statement, so loading a data directory with more files than its pool fails ("No more file handles available
+ * in the pool"). A load therefore starts with a pool of the data directory's entries plus this many.
+ */
+export const LOAD_POOL_HEADROOM = 200;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -133,14 +161,27 @@ export async function openStore(dataDir: string, options: OpenStoreOptions = {})
   const locks = options.locks ?? defaultLocks();
   const waitMs = options.waitMs ?? STORE_OPEN_WAIT_MS;
   const deadline = Date.now() + waitMs;
-  const lock = persistent && locks !== undefined ? await acquireStoreLock(dataDir, locks, waitMs) : undefined;
+  const lock = options.lock ?? (persistent && locks !== undefined ? await acquireStoreLock(dataDir, locks, waitMs) : undefined);
   let pglite: PGlite;
   let existed: boolean;
   try {
     if (persistent) await waitForStoreFiles(dataDir, options.storage ?? globalThis.navigator?.storage, deadline);
+    const load = (await options.prepare?.(dataDir)) ?? undefined;
     existed = await storeExists(dataDir, options.storage);
     const { PGlite } = await import("@electric-sql/pglite");
-    pglite = await PGlite.create({ dataDir });
+    if (load === undefined) pglite = await PGlite.create({ dataDir });
+    else if (!persistent) pglite = await PGlite.create({ dataDir, loadDataDir: load.tar });
+    else {
+      const { OpfsAhpFS } = await import("@electric-sql/pglite/opfs-ahp");
+      const fs = new OpfsAhpFS(dataDir.slice("opfs-ahp://".length), { initialPoolSize: Math.max(1_000, load.entries + LOAD_POOL_HEADROOM) });
+      try {
+        pglite = await PGlite.create({ dataDir, fs, loadDataDir: load.tar });
+      } catch (e) {
+        // Release the files the failed load opened, so the store can be opened again from this worker.
+        await fs.closeFs().catch(() => {});
+        throw e;
+      }
+    }
   } catch (e) {
     lock?.release();
     throw e;
@@ -159,6 +200,15 @@ export async function openStore(dataDir: string, options: OpenStoreOptions = {})
       } finally {
         lock?.release();
       }
+    },
+    detach: async () => {
+      try {
+        await session.close();
+      } catch (e) {
+        lock?.release();
+        throw e;
+      }
+      return lock;
     },
   };
 }

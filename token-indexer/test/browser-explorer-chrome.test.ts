@@ -31,7 +31,8 @@
  *   its one request (recorded on the tabs' channel when a follower sends it: `stop`, `start`, `range` with the typed
  *   heights, `reset`, `export`, `import` with the chosen file); a range change, a reset and an import on a store with
  *   blocks first ask, offering the export (cancel sends nothing); the engine's answers are shown (the range replays and
- *   the start height follows; export and import answer as the worker does); when the leader closes, the follower is
+ *   the start height follows; an export is saved and named after its blocks, a file that is not a snapshot is refused
+ *   with its reason); when the leader closes, the follower is
  *   marked leader; the system status link.
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH.
@@ -394,7 +395,7 @@ describe("the static build's explorer page in Chrome", () => {
     expect(p.confirm).toBe(`This store holds blocks ${U1.from}\u2013${U1.to}. Changing the range drops them; export a snapshot first to keep them.`);
     expect((await seen()).length).toBe(2); // nothing sent yet
     await click(follower, "confirm-export");
-    await waitMessage(follower, /^export failed \u00b7 not-implemented: /, "export answered");
+    await waitMessage(follower, new RegExp(`^snapshot saved as umbradb-stagenet-${U1.from}-${U1.to}\\.snapshot\\.tar \\(blocks ${U1.from}\u2013${U1.to}\\)$`), "export answered");
     expect((await panel(follower)).confirm).not.toBe(null); // still asking
     await click(follower, "confirm-go");
     await waitMessage(follower, /^the store now indexes from block 715410 to block 715420$/, "range answered");
@@ -430,12 +431,12 @@ describe("the static build's explorer page in Chrome", () => {
     await click(follower, "import");
     expect((await panel(follower)).confirm).toBe("This store holds blocks 715410\u2013715420. Importing a snapshot drops them; export a snapshot first to keep them.");
     await click(follower, "confirm-go");
-    await waitMessage(follower, /^import failed \u00b7 not-implemented: /, "import answered");
+    await waitMessage(follower, /^import failed \u00b7 snapshot-refused: format: not an UmbraDB snapshot file: /, "import answered");
     expect((await seen()).slice(5)).toEqual([{ type: "import", params: { snapshot: { blob: 5, name: "umbradb-stagenet-715410-715420.snapshot.tar", text: null } } }]);
 
     // The export control alone: one request, the worker's answer shown.
     await click(follower, "export");
-    await waitMessage(follower, /^export failed \u00b7 not-implemented: /, "export answered");
+    await waitMessage(follower, /^snapshot saved as umbradb-stagenet-715410-715420\.snapshot\.tar \(blocks 715410\u2013715420\)$/, "export answered");
     expect((await seen()).slice(6)).toEqual([{ type: "export", params: {} }]);
 
     // The leader's own stop goes to its worker directly.

@@ -13,8 +13,8 @@
  * | `stop` | — | {@link HostStatus} |
  * | `range` | `startHeight` (a height or `"tip"`), `endHeight?` | {@link HostStatus}: the store's data is dropped and the sync starts at the new range |
  * | `reset` | — | {@link HostStatus}: the store's data is dropped and the saved configuration starts again |
- * | `export` | — | error `not-implemented` |
- * | `import` | `snapshot` (a `Blob`) | error `not-implemented` |
+ * | `export` | — | {@link ExportResult}: a snapshot file of the store, taken while the engine runs (`snapshot-store.ts`) |
+ * | `import` | `snapshot` (a `Blob`: a snapshot file) | {@link ImportResult}: the store replaced by the snapshot; the engine is stopped, and a start continues from the snapshot's height + 1 |
  * | `digest` | — | {@link DigestResult}: the archive digest and the range-tables digest of the store |
  * | `system` | `watch` (with `viewer?`) or `refresh` (`{ database?, exactCounts? }`) | {@link SystemResult} |
  * | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | {@link WatchdogResult} |
@@ -37,7 +37,9 @@ import type { SyncCursor, SyncOnceResult } from "../../chain-archive-sync/sync-s
 import type { ScanCursor, ScanOnceResult } from "../mip0018/scan.ts";
 import type { ArchiveDigest } from "../../chain-archive-sync/archive-digest.js";
 import type { RangeTables } from "../engine/range-tables.ts";
-import { SystemSnapshotSchema } from "../engine/system-snapshot.ts";
+import { SnapshotsSchema, SystemSnapshotSchema } from "../engine/system-snapshot.ts";
+import { SnapshotManifestSchema } from "./snapshot.ts";
+import type { ExportedSnapshot } from "./snapshot-store.ts";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -69,6 +71,11 @@ export const ERROR_CODES = [
   "start-failed",
   /** An unexpected failure inside the worker. */
   "internal",
+  /** `import`: the snapshot does not match this engine or is damaged; `export`: the archive is empty. The message starts
+   *  with the reason (`snapshot.ts` `REFUSAL_REASONS`). Nothing was changed. */
+  "snapshot-refused",
+  /** `import`: the checked snapshot could not be loaded into the store, which was opened empty instead. */
+  "snapshot-failed",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -346,6 +353,8 @@ export const HostStatusSchema = z.strictObject({
   settings: EngineSettingsSchema.nullable(),
   /** The storage figures and the quota pause (`null` before the first reading). */
   storage: StorageStatusSchema.nullable(),
+  /** The last snapshot exported and imported by this worker (manifest summary, file SHA-256 and size). */
+  snapshots: SnapshotsSchema,
 });
 export type HostStatus = z.infer<typeof HostStatusSchema>;
 
@@ -365,6 +374,28 @@ export const DigestResultSchema = z.strictObject({
 });
 export type DigestResult = z.infer<typeof DigestResultSchema>;
 
+// ── Snapshots ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+const duration = z.number().min(0);
+/** The `export` result: the snapshot file (`snapshot.ts`), its suggested name, its manifest, its size, and timings
+ *  (`holdMs`: how long the engine's session waited for the read). */
+export const ExportResultSchema = z.strictObject({
+  file: z.instanceof(Blob),
+  name: z.string().min(1).max(255),
+  manifest: SnapshotManifestSchema,
+  bytes: z.int().min(0),
+  timings: z.strictObject({ holdMs: duration, compressMs: duration, totalMs: duration }),
+});
+export type ExportResult = z.infer<typeof ExportResultSchema>;
+
+/** The `import` result: the imported manifest, timings, and the host's status after the swap. */
+export const ImportResultSchema = z.strictObject({
+  manifest: SnapshotManifestSchema,
+  timings: z.strictObject({ readMs: duration, checkMs: duration, unpackMs: duration, trialMs: duration, swapMs: duration, totalMs: duration }),
+  status: HostStatusSchema,
+});
+export type ImportResult = z.infer<typeof ImportResultSchema>;
+
 export const RESULT_SCHEMAS = {
   status: HostStatusSchema,
   api: ApiResultSchema,
@@ -372,8 +403,8 @@ export const RESULT_SCHEMAS = {
   stop: HostStatusSchema,
   range: HostStatusSchema,
   reset: HostStatusSchema,
-  export: z.never(),
-  import: z.never(),
+  export: ExportResultSchema,
+  import: ImportResultSchema,
   digest: DigestResultSchema,
   system: SystemResultSchema,
   watchdog: WatchdogResultSchema,
@@ -492,3 +523,5 @@ accepts<typeof DigestResultSchema.shape.archive, ArchiveDigest>();
 accepts<typeof DigestResultSchema.shape.tables, RangeTables>();
 noExtraKeys<typeof DigestResultSchema.shape.archive, ArchiveDigest>();
 noExtraKeys<typeof DigestResultSchema.shape.tables, RangeTables>();
+accepts<typeof ExportResultSchema, ExportedSnapshot>();
+noExtraKeys<typeof ExportResultSchema, ExportedSnapshot>();

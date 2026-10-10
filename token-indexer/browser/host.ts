@@ -18,7 +18,16 @@
  * it; `range` drops the store's data and starts the new range, `reset` drops it and starts the saved configuration
  * again; all four run one at a time, in arrival order. `digest` computes the store's archive and range-tables digests
  * in one read-only transaction (the loops wait for it); `system` watches or refreshes the system snapshot and `watchdog`
- * sets the page's watchdog and starts the heartbeat (`host-system.ts`); `export` and `import` answer `not-implemented`.
+ * sets the page's watchdog and starts the heartbeat (`host-system.ts`).
+ *
+ * **Snapshots** (`snapshot-store.ts`): `export` writes a snapshot file of the store while the engine runs (a consistent
+ * read between two transactions). `import` checks a snapshot file without touching anything (a refusal changes
+ * nothing, and a running engine keeps running), then stops the engine, waits for the requests reading the store,
+ * replaces the store under its lock (journaled) and opens it again; meanwhile the requests that read the store wait. An
+ * import stops the engine as `stop` does (the automatic start is off) and saves a configuration that continues the
+ * imported archive: its first height as the start, no end, the saved source and tuning; a `start` then continues from
+ * the snapshot's height + 1. The boot finishes an import that a previous worker left unfinished before it opens the
+ * store. The last export and import are in `status` and in the system snapshot.
  *
  * **Engine**: the engine (`../engine/engine.ts`) runs with a scheduler that yields to the event loop before each step
  * (`scheduler.ts`), so requests and `stop` are served while it syncs; the chain is the network (`fetch` to the node and
@@ -52,6 +61,7 @@ import { durabilityModeOf } from "../../src/postgres/durability-probe.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { mip0018Migrations } from "../../src/postgres/migrations/mip0018/index.js";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
+import { KNOWN_GENESIS } from "../mip0018/api-views.ts";
 import { createIndexerEngine, type EngineClock, type EngineEvent, type EngineOptions, type EngineScheduler, type IndexerEngine, systemClock } from "../engine/engine.ts";
 import { rangeTables } from "../engine/range-tables.ts";
 import { checkCapabilities } from "./capabilities.ts";
@@ -63,6 +73,7 @@ import {
   type EngineSettings,
   type ErrorCode,
   type HostStatus,
+  type ImportResult,
   issuesOf,
   type Notice,
   parseRequest,
@@ -80,6 +91,20 @@ import { browserStorageEnvironment, createQuotaGuard, type StorageEnvironment } 
 import { yieldingScheduler } from "./scheduler.ts";
 import { STACK_DEPTH_EXCEEDED } from "./session.ts";
 import { type EngineSettingsStore, memorySettingsStore, opfsSettingsStore } from "./settings.ts";
+import { type SnapshotExpectation, type SnapshotManifest, type SnapshotRecord, SnapshotRefusal, snapshotRecord } from "./snapshot.ts";
+import {
+  exportSnapshot,
+  type ExportedSnapshot,
+  openFinishingImport,
+  type OpenedStore,
+  prepareImport,
+  readStoreFacts,
+  replaceStore,
+  type SnapshotFiles,
+  snapshotFilesFor,
+  type PreparedImport,
+  type TrialOpener,
+} from "./snapshot-store.ts";
 import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, openStore, type OpenStoreOptions, type Store } from "./store.ts";
 import { loadTape } from "./tapes.ts";
 
@@ -107,7 +132,8 @@ export interface WorkerHostOptions {
   indexerUrl: string;
   /** Default: {@link checkCapabilities} on the worker's global scope. */
   checkCapabilities?: () => Promise<CapabilityReport>;
-  /** Default: {@link openStore}. The host passes the session monitor's options. */
+  /** Default: {@link openStore}. The host passes the session monitor's options and those that finish a pending
+   *  snapshot import. */
   openStore?: (dataDir: string, opts?: OpenStoreOptions) => Promise<Store>;
   /** Loads ledger-v9. Default: `import("@midnightntwrk/ledger-v9")`. */
   loadLedger?: () => Promise<Record<string, unknown>>;
@@ -142,6 +168,11 @@ export interface WorkerHostOptions {
   sliceMs?: number;
   /** Failed statements since the store was opened at which it is reopened. Default {@link REOPEN_AFTER_FAILED_STATEMENTS}. */
   reopenAfterFailedStatements?: number;
+  /** Where a snapshot import keeps its journal and how it removes the store's files. Default: beside an
+   *  `opfs-ahp://` store in OPFS, else memory. */
+  snapshotFiles?: SnapshotFiles;
+  /** Opens a snapshot's data directory for the trial an import runs. Default: an in-memory PGlite. */
+  snapshotTrial?: TrialOpener;
 }
 
 export interface WorkerHost {
@@ -209,6 +240,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       storage: () => quota.reading(),
       startMode: () => (typeof saved?.config.startHeight === "number" ? "range" : "tip"),
       autoStart: () => saved?.autoStart ?? false,
+      snapshots: () => ({ lastExport, lastImport }),
       ...opts.system,
     },
     ...opts.systemIntervals,
@@ -261,6 +293,17 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     ...(opts.quota?.storeEveryMs === undefined ? {} : { storeEveryMs: opts.quota.storeEveryMs }),
     log,
   });
+
+  // Snapshots: the last export and import, the journal, and the swap in progress (`status` and `api` wait for it).
+  const snapshotFiles = opts.snapshotFiles ?? snapshotFilesFor(opts.dataDir);
+  /** Opens the store with the session monitor's options (`storeOptions`) and those a snapshot import adds. */
+  const opener = (dataDir: string, options: OpenStoreOptions): Promise<Store> => (opts.openStore ?? openStore)(dataDir, { ...storeOptions(), ...options });
+  const genesisHash = (): string | null => KNOWN_GENESIS[opts.network] ?? null;
+  let lastExport: SnapshotRecord | null = null;
+  let lastImport: SnapshotRecord | null = null;
+  let swapping: Promise<void> | undefined;
+  /** The manifest of an import the boot finished (its configuration is saved once the settings are read). */
+  let finishedImport: SnapshotManifest | undefined;
 
   async function phase<T>(name: BootState["phase"], key: keyof BootState["timings"], fn: () => Promise<T>): Promise<T> {
     bootState.phase = name;
@@ -402,7 +445,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       }
       let s: Store | undefined;
       try {
-        s = await phase("store", "storeMs", () => (opts.openStore ?? openStore)(opts.dataDir, storeOptions()));
+        s = await phase("store", "storeMs", async () => noteFinishedImport(await openFinishingImport(opener, opts.dataDir, snapshotFiles, opts.network)));
         await phase("ledger", "ledgerMs", checkLedger);
         await phase("migrate", "migrateMs", () => migrate(s!));
         storeInfo = await readStoreInfo(s);
@@ -411,6 +454,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         throw e;
       }
       saved = (await settingsStore.load()) ?? { config: opts.defaultStart ?? {}, autoStart: true };
+      if (finishedImport !== undefined) await saveImported(finishedImport);
       useStore(s);
       bootState.phase = "ready";
       log("info", `store ${s.dataDir} ready (${s.created ? "created" : "reopened"}, PostgreSQL ${storeInfo.serverVersion})`);
@@ -453,6 +497,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       cursors: bootState.phase === "ready" && !closed ? await readCursors() : null,
       settings: saved ?? null,
       storage: quota.status(),
+      snapshots: { lastExport, lastImport },
     };
   }
 
@@ -630,6 +675,97 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     });
   }
 
+  /**
+   * Saves the configuration that continues an imported archive: the saved source and tuning, the snapshot's first height
+   * as the start (it agrees with the archive, so a start continues at its cursor + 1), no end height, and no automatic
+   * start (an import stops the engine as `stop` does).
+   */
+  async function saveImported(manifest: SnapshotManifest): Promise<void> {
+    const config: StartConfig = { ...(saved?.config ?? opts.defaultStart ?? {}), startHeight: manifest.archive.startHeight ?? manifest.archive.height };
+    delete config.endHeight;
+    saved = { config, autoStart: false };
+    await saveSettings();
+  }
+
+  /** Logs (and records) an import a previous worker left unfinished that the store's open finished or dropped. */
+  function noteFinishedImport(opened: OpenedStore): Store {
+    if (opened.imported !== null) {
+      finishedImport = opened.imported;
+      lastImport = snapshotRecord(opened.imported, clock.now(), null);
+      log("warn", `finished an interrupted snapshot import: the store now holds ${opened.imported.network} up to ${opened.imported.archive.height}`);
+    }
+    if (opened.failure !== null) log("error", `an interrupted snapshot import could not be finished and the store was opened empty: ${opened.failure}`);
+    return opened.store;
+  }
+
+  async function exportStore(): Promise<ExportedSnapshot> {
+    const s = await ready();
+    let out: ExportedSnapshot;
+    try {
+      out = await exportSnapshot(s, { network: opts.network, genesisHash: genesisHash(), appCommit: opts.build?.appCommit ?? null, now: () => clock.now(), monotonic });
+    } catch (e) {
+      if (e instanceof SnapshotRefusal) throw new HostError("snapshot-refused", e.message);
+      throw e;
+    }
+    lastExport = snapshotRecord(out.manifest, clock.now(), out.bytes);
+    log("info", `exported a snapshot of ${out.manifest.network} up to ${out.manifest.archive.height} (${out.bytes} bytes; the session was held ${out.timings.holdMs} ms)`);
+    return out;
+  }
+
+  /** The store `s` as the host's store: migrations (none to run for a snapshot of this build), facts, engines and the
+   *  system snapshot's binding. */
+  async function adoptStore(s: Store): Promise<void> {
+    await migrate(s);
+    storeInfo = await readStoreInfo(s);
+    useStore(s);
+  }
+
+  async function importStore(snapshot: Blob): Promise<ImportResult> {
+    const t0 = monotonic();
+    const s = await ready();
+    const facts = await readStoreFacts(s.mip0018, opts.network);
+    const expected: SnapshotExpectation = { network: opts.network, genesisHash: genesisHash(), schemaVersions: facts.schemaVersions, pglite: facts.pglite };
+    let prepared: PreparedImport;
+    try {
+      prepared = await prepareImport(snapshot, expected, { monotonic, ...(opts.snapshotTrial === undefined ? {} : { trial: opts.snapshotTrial }) });
+    } catch (e) {
+      if (e instanceof SnapshotRefusal) throw new HostError("snapshot-refused", e.message);
+      throw e;
+    }
+    const tSwap = monotonic();
+    let done!: () => void;
+    swapping = new Promise<void>((resolve) => (done = resolve));
+    try {
+      await halt();
+      while (reading > 0) await clock.sleep(5, new AbortController().signal);
+      system.unbind();
+      store = undefined;
+      let opened: OpenedStore;
+      try {
+        opened = await replaceStore(s, prepared, opener, snapshotFiles);
+        await adoptStore(opened.store);
+      } catch (e) {
+        bootState.phase = "failed";
+        bootState.error = `the store could not be opened again after a snapshot import: ${messageOf(e)}`;
+        log("error", bootState.error);
+        announceBoot();
+        throw new HostError("snapshot-failed", bootState.error);
+      }
+      if (opened.failure !== null) {
+        log("error", `the snapshot could not be loaded and the store was opened empty: ${opened.failure}`);
+        throw new HostError("snapshot-failed", `${opened.failure}; the store was opened empty`);
+      }
+      await saveImported(prepared.manifest);
+      lastImport = snapshotRecord(prepared.manifest, clock.now(), prepared.file.length);
+      log("info", `imported a snapshot of ${prepared.manifest.network} up to ${prepared.manifest.archive.height} (${prepared.file.length} bytes)`);
+    } finally {
+      swapping = undefined;
+      done();
+    }
+    const swapMs = Math.round((monotonic() - tSwap) * 10) / 10;
+    return { manifest: prepared.manifest, timings: { ...prepared.timings, swapMs, totalMs: Math.round((monotonic() - t0) * 10) / 10 }, status: await status() };
+  }
+
   /** Runs start/stop one at a time, in arrival order. */
   function serial<T>(fn: () => Promise<T>): Promise<T> {
     const p = lifecycle.then(fn);
@@ -642,9 +778,10 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   const ok = (r: Request, result: unknown): Response =>
     ({ v: PROTOCOL_VERSION, type: "response", id: r.id, request: r.type, ok: true, result });
 
-  /** Runs `fn` as a request reading the store: after any reopen in progress, and counted so a reopen waits for it. */
+  /** Runs `fn` as a request reading the store: after any reopen or snapshot swap in progress, and counted so that they
+   *  wait for it. */
   async function readingStore<T>(fn: () => Promise<T>): Promise<T> {
-    while (reopening !== undefined) await reopening;
+    while (reopening !== undefined || swapping !== undefined) await (reopening ?? swapping);
     reading++;
     try {
       return await fn();
@@ -669,6 +806,10 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         });
       case "watchdog":
         return system.watchdog(r);
+      case "export":
+        return serial(() => exportStore());
+      case "import":
+        return serial(() => importStore(r.snapshot));
       case "start":
         return serial(() => start(r.config));
       case "range":
@@ -679,9 +820,6 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         return serial(() => stop());
       case "digest":
         return readingStore(async () => digest(await ready()));
-      case "export":
-      case "import":
-        throw new HostError("not-implemented", `${r.type} is not implemented by this worker`);
     }
   }
 

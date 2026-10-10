@@ -4,12 +4,13 @@
  * worker and starts or resumes it, the others proxy to it), asks the browser to keep the site's storage
  * (`requestPersistentStorage`, from every tab), installs `window.umbradbExplorerHost` (`explorer-transport.ts`: the
  * explorer's API reads go to the engine) and exposes the client as `window.umbradbEngine`, as the engine page does, for
- * scripted use (the browser tests drive the engine through it). The leader tab's worker runs under the page's watchdog
+ * scripted use (the browser tests drive the engine through it), with the same snapshot helpers (`snapshot-page.ts`). The leader tab's worker runs under the page's watchdog
  * (`supervisor.ts`; `?watchdogLimitMs=<ms>` sets its limit, as on the engine page): an API read caught in a restart
  * gets the API's 503 `UNAVAILABLE`, which the explorer shows like any failed read.
  */
 import { requestPersistentStorage, startEngineWorker } from "./client.ts";
 import { engineExplorerHost, type ExplorerHost } from "./explorer-transport.ts";
+import { fetchPublishedSnapshot, publishedSnapshots, saveSnapshotFile } from "./snapshot-page.ts";
 import type { SupervisedEngine } from "./supervisor.ts";
 import { connectEngineTabs, localEngineOf } from "./tabs.ts";
 
@@ -41,6 +42,11 @@ window.umbradbEngine = {
   restarts: () => supervised?.restarts() ?? [],
   loadedAt,
   persistence,
+  snapshots: {
+    save: saveSnapshotFile,
+    list: () => publishedSnapshots(location.href),
+    published: (name) => fetchPublishedSnapshot(name, location.href),
+  },
 };
 window.umbradbExplorerHost = engineExplorerHost(client);
 
