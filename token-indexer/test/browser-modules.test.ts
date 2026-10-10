@@ -289,16 +289,18 @@ describe("the indexer's modules and the store's tables in the browser engine", (
     const exported = await result<ExportResult>(host, "export");
     await result(host, "module", { module: "token-indexer", enabled: false });
     const raw = (type: string, params: Record<string, unknown> = {}): Promise<Response> => host.receive({ v: PROTOCOL_VERSION, id: nextId++, type, ...params });
-    /** Sends tables and rows every few milliseconds until `replacing` settles; every answer must come, as an answer. */
+    /** Sends a tables and a rows request, then the next pair once both are answered (as the Database tab sends its
+     *  requests one at a time), until `replacing` settles: the first pair goes out before it has; every answer must
+     *  come, as an answer. */
     async function readWhile(replacing: Promise<Response>): Promise<Response[]> {
-      const sent: Array<Promise<Response>> = [];
+      const answers: Response[] = [];
       let settled = false;
       void replacing.finally(() => (settled = true));
-      while (!settled) {
-        sent.push(raw("tables"), raw("rows", { schema: ARCHIVE_SCHEMA, table: "blocks", limit: 100 }));
+      do {
+        answers.push(...(await Promise.all([raw("tables"), raw("rows", { schema: ARCHIVE_SCHEMA, table: "blocks", limit: 100 })])));
         await sleep(5);
-      }
-      return Promise.all(sent);
+      } while (!settled);
+      return answers;
     }
     const blocksIn = async (s: Store): Promise<number> => Number((await s.pglite.query<{ n: string }>("SELECT count(*)::text AS n FROM chain_archive.blocks")).rows[0]!.n);
 
@@ -352,16 +354,17 @@ describe("the indexer's modules and the store's tables in the browser engine", (
     const f = newHost({ settings, migrate: async (s) => { if (++migrations > 1) throw new Error("the migrations failed"); await migrateStore(s); } });
     await result(f.host, "module", { module: "token-indexer", enabled: false });
     const failing = f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "reset" });
-    const failedReads: Array<Promise<Response>> = [];
+    const failedReads: Response[] = [];
     let done = false;
     void failing.finally(() => (done = true));
-    while (!done) {
-      failedReads.push(f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "tables" }), f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "rows", schema: ARCHIVE_SCHEMA, table: "blocks" }));
+    // One pair in flight at a time, as in readWhile.
+    do {
+      failedReads.push(...(await Promise.all([f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "tables" }), f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "rows", schema: ARCHIVE_SCHEMA, table: "blocks" })])));
       await sleep(5);
-    }
+    } while (!done);
     const failed = await failing;
     expect(failed).toMatchObject({ ok: false, error: { code: "boot-failed" } });
-    for (const r of [...(await Promise.all(failedReads)), await f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "tables" }), await f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "rows", schema: ARCHIVE_SCHEMA, table: "blocks" })])
+    for (const r of [...failedReads, await f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "tables" }), await f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "rows", schema: ARCHIVE_SCHEMA, table: "blocks" })])
       if (!r.ok) expect(r.error.code).toBe("boot-failed");
     const last = await f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "rows", schema: ARCHIVE_SCHEMA, table: "blocks" });
     expect(last).toMatchObject({ ok: false, error: { code: "boot-failed" } });
