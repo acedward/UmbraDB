@@ -18,6 +18,10 @@
  * - `[[browser.host.quota]]` — the storage guard pauses the sync once the browser's usage reaches the quota minus the
  *   headroom (`paused (quota)` on the health line, the API still answering), a stop while paused returns at once, and
  *   the sync resumes once the usage is back under the threshold minus the margin.
+ * - `[[browser.host.storage-reading]]` — every status of a ready worker carries a storage reading: the boot takes the first
+ *   one before `ready` without waiting for the walk of the store's files (its size comes when the walk ends), an estimate
+ *   that does not answer counts as unknown after the read timeout, and a walk that never ends delays neither a reading
+ *   nor the pause and its end.
  * - `[[browser.host.pacing]]` — with the default Stagenet endpoints, the browser engine spaces request starts 250 ms
  *   apart per endpoint and honours a 429's `Retry-After`, as the Node commands do.
  */
@@ -266,8 +270,7 @@ describe("browser engine host: sync", () => {
     usage.now = pauseAt;
     const paused = await until(h, "the pause", (s) => s.storage?.paused === true);
     expect(paused.storage).toMatchObject({ usageBytes: pauseAt, quotaBytes: quota, pauseAtBytes: pauseAt, paused: true, storeBytes: 42_000_000, persisted: false });
-    expect(paused.storage!.pausedReason).toContain("the sync pauses at");
-    expect(paused.storage!.pausedReason).toContain("the store's files hold 40.1 MiB");
+    expect(paused.storage!.pausedReason).toBe("the browser counts 697.7 MiB of this site's 953.7 MiB quota; the sync pauses at 697.7 MiB");
     await sleep(300);
     const held = (await result<HostStatus>(h, "status")).cursors!.sync!.height;
     await sleep(500);
@@ -304,6 +307,50 @@ describe("browser engine host: sync", () => {
     usage.now = pauseAt - QUOTA_RULE.resumeMarginBytes - 1;
     const resumed = await until(h, "the rest of the range", (st) => st.cursors?.sync?.height === U1.to);
     expect(resumed.storage).toMatchObject({ paused: false, pausedReason: null });
+  }, 120_000);
+
+  it("[[browser.host.storage-reading]] a ready worker's status always carries a storage reading: the first is taken before ready without waiting for the store's walk; a silent estimate counts as unknown; a walk that never ends delays neither readings nor the pause", async () => {
+    // A walk that ends only when the test says so, and an estimate the test can silence.
+    let endWalk!: (bytes: number) => void;
+    const walk = new Promise<number>((resolve) => { endWalk = resolve; });
+    let walks = 0;
+    const usage = { now: 100_000_000 as number | "silent", delayMs: 500 };
+    const quota = 1_000_000_000;
+    const env: StorageEnvironment = {
+      // An estimate answers after a moment (a slow one at boot), as the browser's does; a silent one never does.
+      estimate: () => new Promise((resolve) => { const u = usage.now; if (u !== "silent") setTimeout(() => resolve({ usage: u, quota }), usage.delayMs); }),
+      persisted: async () => false,
+      storeBytes: () => { walks++; return walk; },
+    };
+    const h = newHost({ storage: env, quota: { checkEveryMs: 0, recheckMs: 50, storeEveryMs: 0, readTimeoutMs: 1_000 } });
+    expect((await h.boot()).phase).toBe("ready");
+    usage.delayMs = 1;
+    const booted = await result<HostStatus>(h, "status");
+    expect(booted.storage).toMatchObject({ usageBytes: 100_000_000, quotaBytes: quota, pauseAtBytes: pauseThresholdBytes(quota), paused: false, persisted: false, storeBytes: null });
+    expect(booted.storage!.checkedAt).not.toBeNull();
+    expect(walks).toBe(1); // started, not finished
+
+    // The sync runs and pauses and resumes while the walk still has not ended.
+    await result(h, "start", { config: { source: { kind: "tape", range: "u1" }, startHeight: U1.from, sync: { maxBlocks: 2, idleMs: 100 }, scan: { idleMs: 100 } } });
+    await until(h, "a few blocks", (st) => (st.cursors?.sync?.height ?? 0) >= U1.from + 3);
+    usage.now = pauseThresholdBytes(quota);
+    const paused = await until(h, "the pause", (st) => st.storage?.paused === true);
+    expect(paused.storage).toMatchObject({ storeBytes: null });
+    expect(paused.storage!.pausedReason).toContain("the sync pauses at");
+    usage.now = 100_000_000;
+    await until(h, "the resume", (st) => st.storage?.paused === false && st.cursors?.sync?.height === U1.to);
+
+    // The walk ends: the latest reading takes its size.
+    endWalk(42_000_000);
+    await until(h, "the store's size", (st) => st.storage?.storeBytes === 42_000_000);
+
+    // An estimate that does not answer: the reading comes after the timeout with the figures unknown.
+    usage.now = "silent";
+    await sleep(100);
+    const t0 = Date.now();
+    const silent = await until(h, "a reading without figures", (st) => st.storage?.usageBytes === null);
+    expect(Date.now() - t0).toBeLessThan(5_000);
+    expect(silent.storage).toMatchObject({ usageBytes: null, quotaBytes: null, pauseAtBytes: null, paused: false });
   }, 120_000);
 
   it("[[browser.host.pacing]] with the default Stagenet endpoints, request starts are 250 ms apart per endpoint and a 429's Retry-After is honoured", async () => {

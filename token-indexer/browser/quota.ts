@@ -8,7 +8,14 @@
  * reopening the page releases it), and it refuses a write once usage, reservations included, would pass the quota (the
  * database then fails with "could not extend file … File too large"). So the reported usage is the figure that
  * decides, not the store's own size; the guard still reads that size (an OPFS walk of the store's directory, at most
- * every `storeEveryMs`) to report it and to say, when it pauses, how much of the usage is reserved space.
+ * every `storeEveryMs`) and reports it beside the usage, which shows how much of the usage is reserved space.
+ *
+ * **Readings.** A reading is the estimate and `persisted()`, each bounded by `readTimeoutMs` (a call that has not
+ * answered by then counts as failed: the figures are unknown and the pause state stays). The walk runs beside the
+ * readings and never delays one: it can take seconds on a slow disk or a busy machine (about 1,300 files in a new
+ * store), so a reading carries the size the last finished walk found (`null` before the first) and starts a new walk
+ * when that one is older than `storeEveryMs`. A pause's reason names only the figures it was decided on, so it does not
+ * change when a walk ends; the size beside it (`storeBytes`) shows how much of the usage is the store's own files.
  *
  * **Rule.** The sync pauses once `usage ≥ quota − headroom`, with `headroom = max(256 MiB, 10 % of the quota)`, and
  * resumes once `usage < quota − headroom − 32 MiB` (the margin keeps it from flapping at the line). The figures are read
@@ -60,18 +67,21 @@ export interface QuotaGuardOptions {
   checkEveryMs?: number;
   /** The wait between readings while paused. Default 30 s. */
   recheckMs?: number;
-  /** The longest the store's size is reused. Default 30 s. */
+  /** The longest the store's size is reused before a reading starts a new walk. Default 30 s. */
   storeEveryMs?: number;
+  /** The longest a reading waits for `estimate()` or `persisted()`. Default 5 s. */
+  readTimeoutMs?: number;
   /** Told when the sync pauses or resumes. */
   log?: (level: "info" | "warn", message: string) => void;
 }
 
 export interface QuotaGuard {
-  /** Reads the figures now and updates the pause. A failed estimate keeps the previous pause state. */
-  check(opts?: { store?: boolean }): Promise<StorageStatus>;
+  /** Reads the figures now and updates the pause; never waits for a walk of the store. A failed or late estimate keeps
+   *  the previous pause state. */
+  check(): Promise<StorageStatus>;
   /** The latest reading (`null` before the first). */
   status(): StorageStatus | null;
-  /** The latest reading with a fresh estimate and the store's size: the system snapshot's storage provider. */
+  /** A fresh reading: the system snapshot's storage provider. */
   reading(): Promise<StorageReading>;
   /** Resolves when a sync batch may run: at once unless the sync is paused; while paused it reads the figures every
    *  `recheckMs` until the usage is back under the threshold. Rejects with the signal's reason when it aborts. */
@@ -93,70 +103,78 @@ export function createQuotaGuard(opts: QuotaGuardOptions): QuotaGuard {
   const checkEveryMs = opts.checkEveryMs ?? 10_000;
   const recheckMs = opts.recheckMs ?? 30_000;
   const storeEveryMs = opts.storeEveryMs ?? 30_000;
+  const readTimeoutMs = opts.readTimeoutMs ?? 5_000;
   const log = opts.log ?? (() => {});
   let last: StorageStatus | null = null;
   let paused = false;
-  let reason: string | null = null;
+  let figures: { usage: number; quota: number; pauseAt: number } | null = null;
   let store: { bytes: number | null; at: number } | null = null;
+  let walking: Promise<number | null> | undefined;
   let running: Promise<StorageStatus> | undefined;
   /** The last write the browser refused, while its pause lasts. */
   let refused: { message: string; at: number } | null = null;
 
-  async function storeBytes(force: boolean): Promise<number | null> {
-    const t = opts.now();
-    if (force || store === null || t - store.at >= storeEveryMs) store = { bytes: await opts.env.storeBytes().catch(() => null), at: t };
-    return store.bytes;
-  }
-
-  function reasonText(usage: number, quota: number, pauseAt: number, own: number | null): string {
-    let text = `the browser counts ${mb(usage)} of this site's ${mb(quota)} quota; the sync pauses at ${mb(pauseAt)}`;
-    if (own !== null && usage - own > 64 * MiB)
-      text += ` (the store's files hold ${mb(own)}; the rest is space the browser reserves for the open store, released when the page is reopened, or other site data)`;
-    return text;
-  }
-
-  async function read(withStore: boolean): Promise<StorageStatus> {
-    let usage: number | null = null;
-    let quota: number | null = null;
+  /** `call()`'s answer, or `undefined` when it fails or has not answered within `readTimeoutMs` (a real timer: it guards
+   *  against a browser call that never answers, whatever clock the guard is given). */
+  async function bounded<T>(call: () => Promise<T>): Promise<T | undefined> {
+    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
     try {
-      const e = await opts.env.estimate();
-      usage = finite(e.usage);
-      quota = finite(e.quota);
-    } catch {
-      // the previous pause state stays
+      return await Promise.race([call().catch(() => undefined), new Promise<undefined>((resolve) => { timer = globalThis.setTimeout(() => resolve(undefined), readTimeoutMs); })]);
+    } finally {
+      globalThis.clearTimeout(timer);
     }
-    const persisted = await opts.env.persisted().catch(() => null);
-    const pauseAt = quota === null ? null : pauseThresholdBytes(quota);
-    let own = store?.bytes ?? null;
-    if (refused !== null) {
-      paused = true;
-      reason = refusedText(refused.message);
-    } else if (usage !== null && quota !== null && pauseAt !== null) {
-      if (!paused && usage >= pauseAt) {
-        own = await storeBytes(true);
-        paused = true;
-        reason = reasonText(usage, quota, pauseAt, own);
-        log("warn", `sync paused before the storage quota: ${reason}`);
-      } else if (paused && usage < pauseAt - QUOTA_RULE.resumeMarginBytes) {
-        paused = false;
-        reason = null;
-        log("info", `sync resumed: the browser counts ${mb(usage)} of ${mb(quota)}`);
-      } else if (paused) {
-        reason = reasonText(usage, quota, pauseAt, own);
-      }
-    }
-    if (withStore) own = await storeBytes(false);
-    last = { usageBytes: usage, quotaBytes: quota, persisted, pauseAtBytes: pauseAt, paused, pausedReason: paused ? reason : null, storeBytes: own, checkedAt: opts.now() };
-    return last;
   }
 
   function refusedText(message: string): string {
     return `the browser refused to write to the store for lack of space (${message}); the store is at its last full block, and the sync tries a later batch again`;
   }
 
-  function check(o: { store?: boolean } = {}): Promise<StorageStatus> {
+  function reasonText(): string | null {
+    if (!paused) return null;
+    if (refused !== null) return refusedText(refused.message);
+    if (figures === null) return null;
+    const { usage, quota, pauseAt } = figures;
+    return `the browser counts ${mb(usage)} of this site's ${mb(quota)} quota; the sync pauses at ${mb(pauseAt)}`;
+  }
+
+  /** Walks the store once at a time; the latest reading takes the size when it ends. */
+  function walk(): Promise<number | null> {
+    walking ??= (async () => {
+      const at = opts.now();
+      const bytes = await opts.env.storeBytes().catch(() => null);
+      store = { bytes, at };
+      if (last !== null) last = { ...last, storeBytes: bytes };
+      return bytes;
+    })().finally(() => { walking = undefined; });
+    return walking;
+  }
+
+  async function read(): Promise<StorageStatus> {
+    const e = await bounded(() => opts.env.estimate());
+    const usage = finite(e?.usage);
+    const quota = finite(e?.quota);
+    const persisted = (await bounded(() => opts.env.persisted())) ?? null;
+    const pauseAt = quota === null ? null : pauseThresholdBytes(quota);
+    if (usage !== null && quota !== null && pauseAt !== null) figures = { usage, quota, pauseAt };
+    if (refused !== null) {
+      paused = true;
+    } else if (usage !== null && quota !== null && pauseAt !== null) {
+      if (!paused && usage >= pauseAt) {
+        paused = true;
+        log("warn", `sync paused before the storage quota: ${reasonText()}`);
+      } else if (paused && usage < pauseAt - QUOTA_RULE.resumeMarginBytes) {
+        paused = false;
+        log("info", `sync resumed: the browser counts ${mb(usage)} of ${mb(quota)}`);
+      }
+    }
+    if (store === null || opts.now() - store.at >= storeEveryMs) void walk();
+    last = { usageBytes: usage, quotaBytes: quota, persisted, pauseAtBytes: pauseAt, paused, pausedReason: reasonText(), storeBytes: store?.bytes ?? null, checkedAt: opts.now() };
+    return last;
+  }
+
+  function check(): Promise<StorageStatus> {
     // One reading at a time; a caller during a reading gets that reading.
-    running ??= read(o.store === true).finally(() => { running = undefined; });
+    running ??= read().finally(() => { running = undefined; });
     return running;
   }
 
@@ -165,7 +183,7 @@ export function createQuotaGuard(opts: QuotaGuardOptions): QuotaGuard {
     status: () => last,
 
     async reading(): Promise<StorageReading> {
-      const s = await check({ store: true });
+      const s = await check();
       return { usageBytes: s.usageBytes, quotaBytes: s.quotaBytes, persisted: s.persisted, pauseAtBytes: s.pauseAtBytes, paused: s.paused, pausedReason: s.pausedReason };
     },
 
@@ -173,9 +191,8 @@ export function createQuotaGuard(opts: QuotaGuardOptions): QuotaGuard {
       const first = refused === null;
       refused = { message, at: opts.now() };
       paused = true;
-      reason = refusedText(message);
-      if (last !== null) last = { ...last, paused: true, pausedReason: reason };
-      if (first) log("warn", `sync paused: ${reason}`);
+      if (last !== null) last = { ...last, paused: true, pausedReason: reasonText() };
+      if (first) log("warn", `sync paused: ${reasonText()}`);
     },
 
     async admit(signal: AbortSignal): Promise<void> {
@@ -187,7 +204,6 @@ export function createQuotaGuard(opts: QuotaGuardOptions): QuotaGuard {
         if (signal.aborted) throw signal.reason;
         refused = null;
         paused = false;
-        reason = null;
         log("info", "sync tries a batch again after a refused write");
         await check();
       }

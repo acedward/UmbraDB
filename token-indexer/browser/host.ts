@@ -58,10 +58,11 @@
  * `start` with no configuration runs it; the leader tab sends one when its worker has booted (`tabs.ts`), so a new
  * store starts at the tip and a reopened one resumes, a chosen range keeping its end.
  *
- * **Storage** (`quota.ts`): before each sync batch the guard compares the browser's usage with the quota and pauses the
- * sync before it is reached (`storage` in `status`); it resumes once space frees. A write the browser refuses anyway (a
- * sync or scan error saying a file could not grow) rolls its block back and pauses the sync the same way, with the
- * refusal as the reason, until a later batch can write.
+ * **Storage** (`quota.ts`): the boot takes the first reading of the browser's usage and quota before `ready`, so every
+ * `status` of a ready worker reports one (`storage`); before each sync batch the guard reads them again and pauses the
+ * sync before the quota is reached; it resumes once space frees. A write the browser refuses anyway (a sync or scan
+ * error saying a file could not grow) rolls its block back and pauses the sync the same way, with the refusal as the
+ * reason, until a later batch can write.
  *
  * **Reopen**: PGlite fails every statement once a database has failed about 1,700 statements (and until it is
  * reopened). The host counts the statements the database fails and, at {@link REOPEN_AFTER_FAILED_STATEMENTS} since
@@ -173,7 +174,7 @@ export interface WorkerHostOptions {
   /** What the storage guard reads. Default: `navigator.storage` and the store's OPFS directory. */
   storage?: StorageEnvironment;
   /** The storage guard's intervals (`quota.ts`). */
-  quota?: { checkEveryMs?: number; recheckMs?: number; storeEveryMs?: number };
+  quota?: { checkEveryMs?: number; recheckMs?: number; storeEveryMs?: number; readTimeoutMs?: number };
   /** Called with the store before `range` or `reset` replaces it (an export can be taken there). */
   beforeWipe?: (store: Store) => Promise<void>;
   /** Facts of the build for the system snapshot. */
@@ -326,6 +327,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     ...(opts.quota?.checkEveryMs === undefined ? {} : { checkEveryMs: opts.quota.checkEveryMs }),
     ...(opts.quota?.recheckMs === undefined ? {} : { recheckMs: opts.quota.recheckMs }),
     ...(opts.quota?.storeEveryMs === undefined ? {} : { storeEveryMs: opts.quota.storeEveryMs }),
+    ...(opts.quota?.readTimeoutMs === undefined ? {} : { readTimeoutMs: opts.quota.readTimeoutMs }),
     log,
   });
 
@@ -582,9 +584,11 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         throw e;
       }
       useStore(s);
+      // The first storage reading, before `ready`: every status of a ready worker carries one (the walk of the store's
+      // files, which can be slow, fills in its size later).
+      await quota.check();
       bootState.phase = "ready";
       log("info", `store ${s.dataDir} ready (${s.created ? "created" : "reopened"}, PostgreSQL ${storeInfo.serverVersion})`);
-      void quota.check({ store: true }).catch(() => {});
     } catch (e) {
       bootState.phase = "failed";
       bootState.error = messageOf(e);
