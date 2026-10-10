@@ -23,8 +23,12 @@
  *   download, and a new profile's panel imports that file from its file input; the two stores have equal digests, with
  *   no CSP violation.
  * - `[[browser.worker.snapshot-recovery]]` — a profile's store holds an import journal and damaged files when the engine
- *   page opens (as when a worker ended mid-import): the boot finishes the import from the journal before PGlite opens
- *   the store, removes the journal, reports the import, and saves the configuration that continues it.
+ *   page opens (as when a worker ended mid-import): the boot finishes the import from the journal before the store is
+ *   used (the store made anew, its rows loaded), removes the journal, reports the import, and saves the configuration
+ *   that continues it.
+ * - `[[browser.worker.reset-new-store]]` — `reset` and `range` remove every file of the OPFS store's directory (a file
+ *   left in it too) and create the store anew: `created`, the identity rewritten, the range synced to the recorded
+ *   digest.
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH.
  * `UMBRADB_BROWSER_REPORT=<file>` writes the measured sizes and timings as JSON (never committed).
@@ -360,7 +364,7 @@ describe("browser engine snapshots in Chrome", () => {
     await closeProfile(b.browser);
   }, 300_000);
 
-  it("[[browser.worker.snapshot-recovery]] an import journal beside a damaged store is finished by the next boot before PGlite opens the store", async () => {
+  it("[[browser.worker.snapshot-recovery]] an import journal beside a damaged store is finished by the next boot before the store is used", async () => {
     const p = await profile();
     expect((await p.d.open()).store?.created).toBe(true);
     // Leave the engine page (its worker ends), then, from another page of the site, put a journal beside the store and
@@ -403,6 +407,46 @@ describe("browser engine snapshots in Chrome", () => {
     expect(names).not.toContain(JOURNAL);
     expect(names).toContain("umbradb-stagenet");
     report.recovery = { bootMs: s.boot.timings, journalBytes: prepared.bytes };
+    await closeProfile(p.browser);
+  }, 300_000);
+
+  it("[[browser.worker.reset-new-store]] reset and range remove every file of the OPFS store and create it anew", async () => {
+    const U1 = { from: 715402, to: 715433 } as const;
+    const U1_ARCHIVE = "fa89d909911b0408fd7651ad58be68430b96e8d1cada804683d5206eaface959";
+    const p = await profile();
+    expect((await p.d.open()).store?.created).toBe(true);
+    await p.d.engine(`c.start(${JSON.stringify({ source: { kind: "tape", range: "u1" }, startHeight: U1.from, endHeight: U1.from + 5, ...FAST })})`);
+    await p.d.until("U1 + 5", (s) => s.cursors?.sync?.height === U1.from + 5 && s.cursors?.scan?.nextHeight === U1.from + 6);
+    /** A file put into the store's directory from the page (the worker holds only PGlite's own files). */
+    const plant = (): Promise<string[]> => p.page.eval<string[]>(`(async () => {
+      const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("umbradb-stagenet");
+      const w = await (await dir.getFileHandle("left-behind", { create: true })).createWritable();
+      await w.write("a file of the old store");
+      await w.close();
+      const names = [];
+      for await (const [name] of dir.entries()) names.push(name);
+      return names.sort();
+    })()`);
+    const listing = (): Promise<{ store: string[]; identity: Json }> => p.page.eval(`(async () => {
+      const root = await navigator.storage.getDirectory();
+      const names = [];
+      for await (const [name] of (await root.getDirectoryHandle("umbradb-stagenet")).entries()) names.push(name);
+      const identity = JSON.parse(await (await (await root.getFileHandle("umbradb-stagenet.store.json")).getFile()).text());
+      return { store: names.sort(), identity };
+    })()`);
+    for (const request of ["reset", "range"] as const) {
+      expect(await plant(), request).toContain("left-behind");
+      await p.d.engine("c.stop()");
+      const s = (await p.d.engine(request === "reset" ? "c.reset()" : `c.range(${U1.from})`)) as HostStatus;
+      expect(s.boot, request).toMatchObject({ phase: "ready", storeProblem: null });
+      expect(s.store?.created, request).toBe(true);
+      const after = await listing();
+      expect(after.store, `${request}: every file of the old store is gone`).not.toContain("left-behind");
+      expect(after.store, request).toEqual(expect.arrayContaining(["state.txt"]));
+      expect(after.identity, request).toMatchObject({ format: 1, pglite: expect.any(String), postgres: expect.any(String) });
+    }
+    await p.d.until("the range", (s) => s.cursors?.sync?.height === U1.to && s.cursors?.scan?.nextHeight === U1.to + 1);
+    expect((await digestOf(p.d)).archive.sha256).toBe(U1_ARCHIVE);
     await closeProfile(p.browser);
   }, 300_000);
 });

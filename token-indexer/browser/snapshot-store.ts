@@ -253,7 +253,7 @@ export async function exportSnapshot(store: Store, opts: ExportOptions): Promise
   const reserved = await store.mip0018.reserve();
   const held = monotonic();
   let facts: StoreFacts;
-  const copies: Array<{ table: LayoutTable; copy: Uint8Array }> = [];
+  const copies: Array<{ table: LayoutTable; blob: Blob }> = [];
   const sequences: SnapshotSequence[] = [];
   let holdMs: number;
   try {
@@ -263,11 +263,12 @@ export async function exportSnapshot(store: Store, opts: ExportOptions): Promise
     const layout = await storeLayout(sql);
     for (const table of layout.tables) {
       // A statement on the reserved handle before each read: the requests waiting for the session see the reservation
-      // in use (`pglite-sql.ts` fails a statement that waits on an idle reservation for too long).
+      // in use (`pglite-sql.ts` fails a statement that waits on an idle reservation for too long). Nothing else is
+      // awaited while the session is held (the rows are read from their blobs after the release).
       await sql`SELECT 1`;
       const r = await copySession(store).query(copyStatement(table, "TO"));
       if (r.blob === undefined) throw new Error(`reading the rows of ${table.name} gave no data`);
-      copies.push({ table, copy: new Uint8Array(await r.blob.arrayBuffer()) });
+      copies.push({ table, blob: r.blob });
     }
     for (const s of layout.sequences) {
       const dot = s.name.indexOf(".");
@@ -283,8 +284,8 @@ export async function exportSnapshot(store: Store, opts: ExportOptions): Promise
   const createdAt = new Date(opts.now()).toISOString();
   const entries: RowsEntry[] = [];
   const tables: SnapshotTable[] = [];
-  for (const { table, copy } of copies) {
-    const { chunks, rows } = splitCopy(copy);
+  for (const { table, blob } of copies) {
+    const { chunks, rows } = splitCopy(new Uint8Array(await blob.arrayBuffer()));
     chunks.forEach((c, chunk) => entries.push({ table: table.name, chunk, copy: c }));
     tables.push({ name: table.name, columns: table.columns, rows });
   }

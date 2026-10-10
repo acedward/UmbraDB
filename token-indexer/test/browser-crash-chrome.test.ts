@@ -16,9 +16,11 @@
  *   a store is replaced by a new one (each round of points starts with the boot points) and after the last kill, its
  *   range is finished and must have the recorded live digests (archive `cb0d5e21…`, all tables `af6583d0…c832c`).
  *   `UMBRADB_CRASH_SEED` repeats a campaign; `UMBRADB_CRASH_REPORT=<file>` writes every run as JSON (never committed).
- * - `[[browser.crash.import-swap]]` — kills during a snapshot import's swap: before the journal is complete (the store
- *   stays as it was) and while PGlite loads the snapshot into the store's place (the next boot finishes the import from
- *   the journal): each reopened store is one of the two, whole, with its digests.
+ * - `[[browser.crash.import-swap]]` — kills during a snapshot import: in its trial (the rows loaded into a store in
+ *   memory) and before the journal is complete (the store stays as it was); then while the store is marked as being
+ *   created, while PGlite creates it and the rows load into it, while its identity and while the configuration that
+ *   continues the import are saved (the next boot finishes the import from the journal): each reopened store is one of
+ *   the two, whole, with its digests, and after a finished import the continuing configuration is saved.
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH.
  */
@@ -303,7 +305,7 @@ describe("the browser engine killed at exact points (Chrome, OPFS)", () => {
     expect(runs.filter((r) => r.point.startsWith("boot")).every((r) => r.parked !== null)).toBe(true);
   }, 120_000 + RUNS * 60_000);
 
-  it("[[browser.crash.import-swap]] kills during a snapshot import's swap leave the store as it was (before the journal is complete) or the snapshot's (the next boot finishes the import from the journal), whole, with their digests", async () => {
+  it("[[browser.crash.import-swap]] kills during a snapshot import leave the store as it was (in the trial, before the journal is complete) or the snapshot's with its continuing configuration (the next boot finishes the import from the journal), whole, with their digests", async () => {
     await removeStore();
     const H1 = IDX.from + 300;
     let page = await engineTab();
@@ -332,23 +334,33 @@ describe("the browser engine killed at exact points (Chrome, OPFS)", () => {
     await page.close();
     page = await engineTab();
     await page.eval("window.umbradbEngine.client.booted()");
-    const w0 = (await page.evalWorker("self.__crashTap.writes")) as number;
+    const counts = async () => (await page.evalWorker("({ writes: self.__crashTap.writes, closes: self.__crashTap.closes, tx: self.__crashTap.anyTx })")) as { writes: number; closes: number; tx: number };
+    const c0 = await counts();
     await importIn(page);
     expect(await page.eval("window.__imported")).toBe("ok");
-    const writes = ((await page.evalWorker("self.__crashTap.writes")) as number) - w0;
+    const c1 = await counts();
+    const writes = c1.writes - c0.writes;
+    // The import's writable streams, in order: the journal, the store marked as being created, its identity, the
+    // configuration that continues the import.
+    expect(c1.closes - c0.closes).toBe(4);
     expect(((await on(page).engine("c.digest()")) as DigestResult).tables.sha256).toBe(atH1.tables.sha256);
-    report.importSwap = { writes, kills: [] as Json[] };
+    report.importSwap = { writes, transactions: c1.tx - c0.tx, kills: [] as Json[] };
     expect((await toEnd(page)).tables.sha256).toBe(IDX_TABLES);
 
-    const points: Trigger[] = [
-      { point: "file-close", write: 1 },
-      { point: "write", write: 1 },
-      { point: "write", write: Math.max(1, Math.floor(writes / 3)) },
-      { point: "write", write: Math.max(1, Math.floor((2 * writes) / 3)) },
+    const points: Array<{ trigger: Trigger; outcome: "as it was" | "snapshot" }> = [
+      // The trial: the first transaction after the request (the migrations of the store in memory).
+      { trigger: { point: "between", tx: 1 }, outcome: "as it was" },
+      { trigger: { point: "file-close", write: 1 }, outcome: "as it was" },
+      { trigger: { point: "file-close", write: 2 }, outcome: "snapshot" },
+      { trigger: { point: "write", write: 1 }, outcome: "snapshot" },
+      { trigger: { point: "write", write: Math.max(1, Math.floor(writes / 3)) }, outcome: "snapshot" },
+      { trigger: { point: "write", write: Math.max(1, Math.floor((2 * writes) / 3)) }, outcome: "snapshot" },
       // Near the end of the load (an import's count varies by a few writes).
-      { point: "write", write: Math.max(1, writes - 100) },
+      { trigger: { point: "write", write: Math.max(1, writes - 100) }, outcome: "snapshot" },
+      { trigger: { point: "file-close", write: 3 }, outcome: "snapshot" },
+      { trigger: { point: "file-close", write: 4 }, outcome: "snapshot" },
     ];
-    for (const [i, trigger] of points.entries()) {
+    for (const [i, { trigger, outcome: expected }] of points.entries()) {
       const mode: KillMode = i % 2 === 0 ? "renderer" : "terminate";
       await page.close();
       page = await engineTab();
@@ -368,9 +380,9 @@ describe("the browser engine killed at exact points (Chrome, OPFS)", () => {
       (report.importSwap.kills as Json[]).push({ trigger, mode, parked: { statement: parked!.statement?.slice(0, 60) ?? null, writes: parked!.writes }, outcome, heights: h, lastImport: s.snapshots.lastImport !== null });
       console.log(`import-swap kill ${JSON.stringify(trigger)} ${mode}: ${outcome} (archive ${h.archive}, scan ${h.scan})`);
       expect(outcome, `${JSON.stringify(trigger)}: the store after the kill`).not.toBe("neither");
-      if (trigger.point === "file-close") expect(outcome, "a journal not yet complete leaves the store as it was").toBe("as it was");
+      if (expected === "as it was") expect(outcome, `${JSON.stringify(trigger)}: an import whose journal is not complete leaves the store as it was`).toBe("as it was");
       else {
-        expect(outcome, "a complete journal is finished at the next boot").toBe("snapshot");
+        expect(outcome, `${JSON.stringify(trigger)}: a complete journal is finished at the next boot`).toBe("snapshot");
         expect(s.snapshots.lastImport, "the finished import is reported").not.toBeNull();
         expect(s.settings).toMatchObject({ autoStart: false, config: { startHeight: IDX.from } });
       }
