@@ -53,6 +53,7 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 | `api` | `method`, `target` | the API's answer `{ status, headers, body }` (`../API.md`) |
 | `start` | `config`: `source` (`{ kind: "network", nodeUrl?, indexerUrl? }` or `{ kind: "tape", range: "idx" \| "u1", finalizedHeight?, advance? }`), `startHeight?`, `endHeight?`, `sync?`, `scan?` | status |
 | `stop` | — | status |
+| `digest` | — | the store's archive digest (the 7 `chain_archive` tables, `chain-archive-sync/archive-digest.ts`) and the digest of every table of both schemas (`../engine/range-tables.ts`), read in one read-only transaction |
 | `range`, `reset`, `export`, `import` | as in `protocol.ts` | error `not-implemented` |
 
 Error codes: `bad-request`, `unsupported-version`, `unknown-type`, `not-implemented`, `unsupported-browser`,

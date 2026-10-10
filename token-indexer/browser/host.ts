@@ -15,6 +15,7 @@
  * **Requests** (`protocol.ts`): `status` answers at any time; `api` waits for the boot and answers through the running
  * engine's API handler, or, while no engine runs, a handler of the same store with no loops (`scanner: "off"`);
  * `start` runs a new engine (sync + scan in follow mode) with the given configuration, `stop` stops it, one at a time;
+ * `digest` computes the store's archive and range-tables digests in one read-only transaction (the loops wait for it);
  * `range`, `reset`, `export` and `import` answer `not-implemented`.
  *
  * **Engine**: the engine (`../engine/engine.ts`) runs with a scheduler that yields to the event loop before each step
@@ -22,17 +23,21 @@
  * the indexer) or a recorded range replayed in the worker (`tapes.ts`). A first `start` on an empty archive needs a
  * `startHeight`; a store whose archive has a cursor continues from it.
  */
+import { archiveDigest, dumpArchive } from "../../chain-archive-sync/archive-digest.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import type { ArchiveTape } from "../../chain-archive-sync/archive-tape.js";
 import { createTapeFetch } from "../../chain-archive-sync/tape-replay.js";
 import { durabilityModeOf } from "../../src/postgres/durability-probe.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { mip0018Migrations } from "../../src/postgres/migrations/mip0018/index.js";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { createIndexerEngine, type EngineClock, type EngineEvent, type EngineScheduler, type IndexerEngine, systemClock } from "../engine/engine.ts";
+import { rangeTables } from "../engine/range-tables.ts";
 import { checkCapabilities } from "./capabilities.ts";
 import {
   type BootState,
   type CapabilityReport,
+  type DigestResult,
   type ErrorCode,
   type HostStatus,
   type Notice,
@@ -368,6 +373,18 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     return status();
   }
 
+  /** The store's archive and range-tables digests, read in one read-only transaction: the loops' statements wait for it
+   *  (one session), so both digests describe one state, also while the engine runs. */
+  async function digest(s: Store): Promise<DigestResult> {
+    const t = monotonic();
+    return s.mip0018.begin("read only", async (tx) => {
+      const sql = tx as unknown as UmbraDBSql;
+      const archive = archiveDigest(await dumpArchive(sql, ARCHIVE_SCHEMA));
+      const { digest: tables } = await rangeTables(sql, ARCHIVE_SCHEMA, MIP0018_SCHEMA);
+      return { archive, tables, elapsedMs: monotonic() - t };
+    });
+  }
+
   /** Runs start/stop one at a time, in arrival order. */
   function serial<T>(fn: () => Promise<T>): Promise<T> {
     const p = lifecycle.then(fn);
@@ -391,6 +408,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         return serial(() => start(r.config));
       case "stop":
         return serial(() => stop());
+      case "digest":
+        return digest(await ready());
       case "range":
       case "reset":
       case "export":

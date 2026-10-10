@@ -10,6 +10,7 @@
 import {
   type ApiResult,
   type BootState,
+  type DigestResult,
   type ErrorCode,
   type HostStatus,
   type Notice,
@@ -50,6 +51,8 @@ export interface EngineClient {
   reset(): Promise<never>;
   export(): Promise<never>;
   import(snapshot: Blob): Promise<never>;
+  /** The store's archive and range-tables digests (one read-only transaction). */
+  digest(): Promise<DigestResult>;
   /** The boot state once the boot has ended (`ready`, `unsupported` or `failed`). */
   booted(): Promise<BootState>;
   /** Adds a notice listener; returns the function that removes it. */
@@ -116,6 +119,7 @@ export function createEngineClient(endpoint: EngineEndpoint): EngineClient {
     reset: () => request("reset", {}),
     export: () => request("export", {}),
     import: (snapshot) => request("import", { snapshot }),
+    digest: () => request("digest", {}),
 
     booted(): Promise<BootState> {
       return new Promise((resolve, reject) => {

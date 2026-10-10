@@ -15,6 +15,7 @@
  * | `reset` | — | error `not-implemented` |
  * | `export` | — | error `not-implemented` |
  * | `import` | `snapshot` (a `Blob`) | error `not-implemented` |
+ * | `digest` | — | {@link DigestResult}: the archive digest and the range-tables digest of the store |
  *
  * Responses (worker → page): `{ v, type: "response", id, request, ok: true, result }` or
  * `{ v, type: "response", id, request, ok: false, error: { code, message } }`; `id` and `request` are `null` when the
@@ -30,11 +31,13 @@ import type { ApiResponse } from "../mip0018/api.ts";
 import type { EngineStatus } from "../engine/engine.ts";
 import type { SyncCursor, SyncOnceResult } from "../../chain-archive-sync/sync-service.js";
 import type { ScanCursor, ScanOnceResult } from "../mip0018/scan.ts";
+import type { ArchiveDigest } from "../../chain-archive-sync/archive-digest.js";
+import type { RangeTables } from "../engine/range-tables.ts";
 
 export const PROTOCOL_VERSION = 1;
 
 /** The request types of this protocol version. */
-export const REQUEST_TYPES = ["status", "api", "start", "stop", "range", "reset", "export", "import"] as const;
+export const REQUEST_TYPES = ["status", "api", "start", "stop", "range", "reset", "export", "import", "digest"] as const;
 export type RequestType = (typeof REQUEST_TYPES)[number];
 
 /** The recorded Stagenet ranges a worker can replay offline (the gzip tapes in `token-indexer/browser/tapes/`). */
@@ -133,6 +136,7 @@ export const REQUEST_SCHEMAS = {
   reset: z.strictObject({ ...envelope, type: z.literal("reset") }),
   export: z.strictObject({ ...envelope, type: z.literal("export") }),
   import: z.strictObject({ ...envelope, type: z.literal("import"), snapshot: z.instanceof(Blob) }),
+  digest: z.strictObject({ ...envelope, type: z.literal("digest") }),
 } as const satisfies Record<RequestType, z.ZodType>;
 
 export type RequestOf<T extends RequestType> = z.infer<(typeof REQUEST_SCHEMAS)[T]>;
@@ -230,6 +234,22 @@ export const HostStatusSchema = z.strictObject({
 });
 export type HostStatus = z.infer<typeof HostStatusSchema>;
 
+// ── Digests ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+const sha256 = z.string().regex(/^[0-9a-f]{64}$/);
+/**
+ * The `digest` result: the store's archive digest (`chain-archive-sync/archive-digest.ts`: the 7 `chain_archive`
+ * tables) and its range-tables digest (`token-indexer/engine/range-tables.ts`: every table of both schemas), read in one
+ * read-only transaction, so they describe one state even while the engine runs.
+ */
+export const DigestResultSchema = z.strictObject({
+  archive: z.strictObject({ sha256, tables: z.record(z.string(), z.strictObject({ rows: n, sha256 })) }),
+  tables: z.strictObject({ sha256, tables: z.record(z.string(), z.strictObject({ rows: n, sha256, excluded: z.array(z.string()) })) }),
+  /** How long the reads and the hashing took. */
+  elapsedMs: n,
+});
+export type DigestResult = z.infer<typeof DigestResultSchema>;
+
 export const RESULT_SCHEMAS = {
   status: HostStatusSchema,
   api: ApiResultSchema,
@@ -239,6 +259,7 @@ export const RESULT_SCHEMAS = {
   reset: z.never(),
   export: z.never(),
   import: z.never(),
+  digest: DigestResultSchema,
 } as const satisfies Record<RequestType, z.ZodType>;
 export type ResultOf<T extends RequestType> = z.infer<(typeof RESULT_SCHEMAS)[T]>;
 
@@ -348,3 +369,7 @@ noExtraKeys<typeof SyncOnceResultSchema, SyncOnceResult>();
 noExtraKeys<typeof ScanOnceResultSchema, ScanOnceResult>();
 noExtraKeys<typeof SyncCursorSchema, SyncCursor>();
 noExtraKeys<typeof ScanCursorSchema, ScanCursor>();
+accepts<typeof DigestResultSchema.shape.archive, ArchiveDigest>();
+accepts<typeof DigestResultSchema.shape.tables, RangeTables>();
+noExtraKeys<typeof DigestResultSchema.shape.archive, ArchiveDigest>();
+noExtraKeys<typeof DigestResultSchema.shape.tables, RangeTables>();
