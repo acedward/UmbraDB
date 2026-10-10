@@ -1,5 +1,5 @@
 {
-  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 385), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
+  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 388), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
   "$check-mechanism-note": "The check mechanism itself is proven independently by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so they stay green whatever this manifest holds; check-required-tests.test.ts also validates this manifest's structure (every required entry bound to an existing file, the pinned count). Do NOT delete a required id to make the check pass — that would re-open the self-skip hole this manifest closes; a required id whose test is missing fails the gate, naming it.",
   "required": [
     {
@@ -1721,6 +1721,21 @@
       "id": "engine.telemetry.redaction-nested-json",
       "file": "token-indexer/test/engine-telemetry.test.ts",
       "description": "a secret member of JSON text written as a JSON string once or more (one to four encodings, in a log line and an error message too) loses its whole value (every word, string, array or object), in the diagnostics file too; the rest of the JSON at every depth stays as it was; a long run of backslashes is read in linear time"
+    },
+    {
+      "id": "engine.telemetry.redaction-linear",
+      "file": "token-indexer/test/engine-telemetry.test.ts",
+      "description": "redaction costs time in proportion to the text: on 1 MB hostile texts the whole redaction stays far from quadratic and a text the snapshot keeps is cut first (well under 100 ms); a 1 MB endpoint error reaches the log and the snapshot cut, and the snapshot validates"
+    },
+    {
+      "id": "engine.telemetry.redaction-key-forms",
+      "file": "token-indexer/test/engine-telemetry.test.ts",
+      "description": "a seed or mnemonic phrase loses every word under any key spelling (prefixed, suffixed, camelCase, kebab or snake case, plural, a JSON member at any depth, a full-width colon) and with any separator or list numbering; a password under a prefixed name too; a key named only words is not a secret, and text after other keys stays"
+    },
+    {
+      "id": "engine.telemetry.redaction-bounds",
+      "file": "token-indexer/test/engine-telemetry.test.ts",
+      "description": "a phrase ends where the text stops looking like one (a next line that is not phrase words, a blank line, a Latin word of fewer than three letters, the end of the string around it, 36 words), and a quoted value never closed ends at its line or the end of the string around it, so the error lines around it stay"
     },
     {
       "id": "engine.telemetry.redaction-url-paths",

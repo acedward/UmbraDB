@@ -9,15 +9,24 @@
  *   outside this schema (a page URL, a request target, a header) can travel inside a snapshot. Times are epoch
  *   milliseconds; durations are milliseconds; heights are block heights; sizes are bytes.
  * - **No secrets:** {@link redactSnapshot} runs over every string of a snapshot before it is validated and handed out.
+ *   A text longer than the snapshot keeps (`TEXT_MAX_CHARS`) is cut first, saying how much was cut, so redaction reads
+ *   at most a few kilobytes and every expression and scan of it is linear in the text's length. Then:
  *   URLs lose their userinfo, query and fragment, and the path segments that look like keys (16 or more letters,
  *   digits, `-`, `_`, `.`, `~`, `+` or `=`, with both a letter and a digit); `key=value`, `key: value` and JSON
- *   `"key": value` forms whose key names a secret (API key, token, password, session id, signature, seed or mnemonic
- *   phrase, viewing key, …) lose their whole value: a JSON member its whole string, array or object, also inside
- *   JSON text written as a JSON string once or more (`\"key\": …`, `\\\"key\\\": …`, up to six encodings), a `key=` value its quoted text (also `\"…\"` inside JSON-escaped text), JSON
- *   array or object, and an unquoted seed, mnemonic, passphrase or seed words every word that follows it, of any case
- *   and across line breaks, commas, list numbers and JSON-escaped line breaks, up to the next `key:` or `key=` or other
- *   punctuation; `Authorization` and `Cookie` headers lose the rest of their line; Bearer and Basic credentials, JWT-shaped tokens
- *   and Bech32m secret keys (`mn_…esk…`, `mn_…sk…`, `mn_…seed…`) are replaced. Request targets are never recorded (the API counters see the method, status and latency only).
+ *   `"key": value` forms whose key names a secret ({@link keyKind}: a name ending in password, token, secret,
+ *   signature, credentials, cookie, an API, secret, private or viewing key or a session id, or naming a seed, mnemonic
+ *   or phrase, whatever its case, prefix or suffix — `DB_PASSWORD`, `walletSeed`, `WALLET_MNEMONIC`, `x-seed`) lose
+ *   their whole value: a JSON member its whole string, array or object, also inside JSON text written as a JSON string
+ *   once or more (`\"key\": …`, `\\\"key\\\": …`, up to six encodings); a `key=` value its quoted text (also `\"…\"`
+ *   inside JSON-escaped text, to the end of the string around it when it is never closed), JSON array or object, or
+ *   bare word; and after a seed or mnemonic key every word of the phrase, of any case, across white space, commas,
+ *   `;`, `|`, `-`, `<br>`, words quoted one by one, list numbers (`1.`, `1)`, `1-`, `#1`, `(1)`, `[1]`) and line
+ *   breaks (also JSON-escaped), onto a next line only when it holds nothing but such words, and at most 36 words; a
+ *   phrase ends before a blank line, a Latin word of fewer than 3 letters, the next `key:` or `key=`, or other
+ *   punctuation. A key named only `words` is not a secret (too common a name). `Authorization` and `Cookie` headers lose
+ *   the rest of their line; Bearer and Basic credentials, JWT-shaped tokens and Bech32m secret keys (`mn_…esk…`,
+ *   `mn_…sk…`, `mn_…seed…`) are replaced. Request targets are never recorded (the API counters see the method, status
+ *   and latency only).
  * - **Text is data:** log lines and error messages keep their characters (control, bidirectional and markup
  *   characters included) apart from the redaction and a length cap; a page renders them as text nodes, never as
  *   markup, with the explorer's hidden-character rules.
@@ -418,11 +427,48 @@ export function publicUrl(value: string): string {
 
 /** Header names whose whole value (to the end of the line) is a secret. */
 const SECRET_HEADER = String.raw`(?:proxy-authorization|authorization|set-cookie|cookie)`;
-/** Names whose value is a phrase of words (a wallet's seed or mnemonic): an unquoted value is every word after it. */
-const PHRASE_KEY = String.raw`(?:(?:seed|mnemonic|recovery|secret|backup|wallet)[-_ ]?(?:phrase|words?)|passphrase|mnemonic|seed)`;
-/** Names whose value is a secret, as a key of `key=value`, `key: value` or JSON `"key": value`. */
-const SECRET_KEY = String.raw`(?:x-api-key|api[-_]?key|apikey|access[-_]?token|refresh[-_]?token|id[-_]?token|auth[-_]?token|bearer[-_]?token|client[-_]?secret|secret[-_]?key|private[-_]?key|viewing[-_]?key|${SECRET_HEADER}|session[-_]?id|sessionid|${PHRASE_KEY}|token|secret|password|passwd|pwd|signature|credentials?)`;
-const IS_PHRASE_KEY = new RegExp(String.raw`^${PHRASE_KEY}$`, "iu");
+
+/** The words of a key's name, lower-case: split at anything but a letter or a digit and at camelCase boundaries
+ *  (`walletSeed` → wallet, seed; `WALLET_MNEMONIC` → wallet, mnemonic; `APIKey` → api, key). */
+function keyWords(name: string): string[] {
+  return name
+    .replace(/([a-z0-9])([A-Z])/gu, "$1 $2")
+    .replace(/([A-Z])([A-Z][a-z])/gu, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/u)
+    .filter((w) => w !== "");
+}
+
+/** Last words of a name whose value is a secret. */
+const SECRET_LAST_WORDS: ReadonlySet<string> = new Set([
+  "password", "passwd", "pwd", "passcode", "token", "secret", "signature", "credential", "credentials", "cookie",
+  "authorization", "sessionid", "apikey",
+]);
+/** Last two words of a name whose value is a secret. */
+const SECRET_LAST_PAIRS: ReadonlySet<string> = new Set(["api key", "secret key", "private key", "viewing key", "session id"]);
+/** Words before `words` in a name whose value is a phrase (`recovery words`, `backup_words`); `words` alone is not one. */
+const PHRASE_WORDS_BEFORE: ReadonlySet<string> = new Set(["seed", "mnemonic", "recovery", "secret", "backup", "wallet"]);
+
+/**
+ * What a key's name (up to four space-separated parts: `secret recovery phrase`) says of its value: `phrase` — a
+ * wallet's seed or mnemonic phrase: its last part has a word containing `seed`, `mnemonic` or `phrase` (`passphrase`
+ * included), whatever its case, prefix or suffix (`WALLET_MNEMONIC`, `walletSeed`, `x-seed`, `mnemonics`, `phrase`), or
+ * it ends with `words` after seed, mnemonic, recovery, secret, backup or wallet (`words` alone is not a secret: too
+ * common a name); `secret` — a name that ends with password, token, secret, signature, credentials, cookie,
+ * authorization, an API key, a secret, private or viewing key or a session id (`DB_PASSWORD`, `x-api-key`,
+ * `clientSecret`); else `undefined`.
+ */
+export function keyKind(name: string): "phrase" | "secret" | undefined {
+  const words = keyWords(name);
+  if (words.length === 0) return undefined;
+  const lastPart = keyWords(name.slice(name.lastIndexOf(" ") + 1));
+  if (lastPart.some((w) => w.includes("seed") || w.includes("mnemonic") || w.includes("phrase"))) return "phrase";
+  const last = words[words.length - 1]!;
+  if ((last === "words" || last === "word") && words.length >= 2 && PHRASE_WORDS_BEFORE.has(words[words.length - 2]!)) return "phrase";
+  if (SECRET_LAST_WORDS.has(last)) return "secret";
+  if (words.length >= 2 && SECRET_LAST_PAIRS.has(`${words[words.length - 2]} ${last}`)) return "secret";
+  return undefined;
+}
 
 const JSON_ESCAPES: Readonly<Record<string, string>> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
 
@@ -447,6 +493,8 @@ function charAt(text: string, i: number, level: number): [string, number] {
   return [String.fromCharCode(Number.parseInt(hex, 16) || 0), j];
 }
 
+const JSON_BARE_END: ReadonlySet<string> = new Set([" ", "\t", "\n", "\r", "\f", "\v", ",", "}", "]"]);
+
 /** The index after the JSON value (string, array, object, or a bare word) that starts at `i`, read through `level`
  *  encodings; the end of the text when it does not end. */
 function skipJsonValue(text: string, i: number, level: number): number {
@@ -457,7 +505,7 @@ function skipJsonValue(text: string, i: number, level: number): number {
   if (first !== '"' && first !== "[" && first !== "{") {
     while (j < text.length) {
       const [c, next] = charAt(text, j, level);
-      if (/[\s,}\]]/u.test(c) || (level > 0 && c === '"')) break;
+      if (JSON_BARE_END.has(c) || /\s/u.test(c) || (level > 0 && c === '"')) break;
       j = next;
     }
     return j;
@@ -482,19 +530,19 @@ function skipJsonValue(text: string, i: number, level: number): number {
 }
 
 /**
- * JSON members naming a secret: `"key": value`, or the same inside JSON text that was itself written as a JSON string,
- * once or more (`\"key\": value`, `\\\"key\\\": value`, …, up to {@link MAX_ENCODINGS} encodings: a quote under `n`
- * encodings is `2^n - 1` backslashes and `"`) — the whole value, read through as many encodings. A match starts only at
- * the first backslash of a run, so a long run of backslashes is read once (linear time).
+ * JSON members: `"key": value`, or the same inside JSON text that was itself written as a JSON string, once or more
+ * (`\"key\": value`, `\\\"key\\\": value`, …, up to {@link MAX_ENCODINGS} encodings: a quote under `n` encodings is
+ * `2^n - 1` backslashes and `"`). A member whose key names a secret or a phrase ({@link keyKind}) loses its whole
+ * value, read through as many encodings. A match starts only at the first backslash of a run (linear time).
  */
-const SECRET_MEMBER = new RegExp(String.raw`(?<!\\)(\\{0,${2 ** MAX_ENCODINGS - 1}})"${SECRET_KEY}\1"\s*:\s*`, "giu");
+const SECRET_MEMBER = new RegExp(String.raw`(?<!\\)(\\{0,${2 ** MAX_ENCODINGS - 1}})"([^"\\]{1,64})\1"\s*:\s*`, "gu");
 function redactMembers(text: string): string {
   let out = "";
   let last = 0;
   SECRET_MEMBER.lastIndex = 0;
   for (let m = SECRET_MEMBER.exec(text); m !== null; m = SECRET_MEMBER.exec(text)) {
     const level = Math.log2(m[1]!.length + 1);
-    if (!Number.isInteger(level)) continue; // not a quote under whole encodings
+    if (!Number.isInteger(level) || keyKind(m[2]!) === undefined) continue; // not a quote under whole encodings; not a secret
     const start = m.index + m[0].length;
     const end = skipJsonValue(text, start, level);
     const q = `${m[1]}"`;
@@ -505,61 +553,212 @@ function redactMembers(text: string): string {
   return out + text.slice(last);
 }
 
-/** `key=value` and `key: value` naming a secret: a quoted value (also one quoted inside JSON-escaped text, `\"…\"`), a
- *  JSON array or object, or a bare word — and for a phrase key the rest of the phrase ({@link PHRASE_REST}). */
-const SECRET_ASSIGNMENT = new RegExp(String.raw`(^|[^\w-])(${SECRET_KEY})(\s*[=:]\s*)`, "giu");
-/** A bare value: up to white space or a delimiter, or a backslash that escapes a quote (the end of a JSON-escaped
- *  string). */
-const BARE_VALUE = /^(?:[^\s&;,"'<>}\]\\]|\\(?!\\*"))*/u;
 /**
- * The rest of a phrase after a phrase key's first word: words (letters of any case and script) and list numbers
- * (`1.`, `2)`, `3:`, `12`), each after a run of separators — white space of any kind (line breaks included), commas, or
- * line breaks and tabs written as JSON escapes (`\n`, `\r`, `\t`, at any escape depth). It ends at anything else: a
- * word joined to a digit, `_` or `-`, a word followed by `=` or `:` (the next key), or other punctuation.
+ * `key=value` and `key: value` (also `key：value`, a full-width colon): the key a name of up to four words, the value
+ * after it. Each match is checked with {@link keyKind}; a key that names nothing secret is passed over. A match starts
+ * only where a name starts, and every part is bounded (linear time).
  */
-const PHRASE_REST = /(?:(?:[\s,]|\\+[nrt])+(?:\d{1,3}(?!\d)[.):]?|[\p{L}\p{M}]+(?![\p{L}\p{M}\p{N}_-]|[ \t]*[=:])))*/uy;
-/** A quote escaped inside JSON-escaped text (`\"`, `\\\"`, …). */
-const ESCAPED_QUOTE = /^\\+"/u;
+const ASSIGNMENT = /(?<![\w-])([\w-]{1,64}(?: [\w-]{1,64}){0,3})(\s*[=:：]\s*)/gu;
+/** Characters that end a bare value. */
+const BARE_END: ReadonlySet<string> = new Set([..."&;,\"'<>}]"]);
+
+/** The end of a bare value at `i`: up to white space or a delimiter, or a run of backslashes before a quote (the end of
+ *  a JSON-escaped string). */
+function bareValueEnd(text: string, i: number): number {
+  while (i < text.length) {
+    const c = text[i]!;
+    if (c === "\\") {
+      let j = i;
+      while (j < text.length && text[j] === "\\") j++;
+      if (text[j] === '"') return i;
+      i = j;
+      continue;
+    }
+    if (BARE_END.has(c) || /\s/u.test(c)) return i;
+    i++;
+  }
+  return i;
+}
+
+/** The end of a quoted value at `i` (its opening quote): after the closing quote, else at a line break or the end. */
+function quotedValueEnd(text: string, i: number, quote: string): number {
+  let j = i + 1;
+  while (j < text.length) {
+    const c = text[j]!;
+    if (c === "\r" || c === "\n") return j;
+    if (c === quote) return j + 1;
+    j += quote === '"' && c === "\\" ? 2 : 1;
+  }
+  return text.length;
+}
+
+/** The end of a value quoted inside JSON-escaped text at `i` (`\"…\"`, its opening quote `run` backslashes and `"`):
+ *  after the same escaped quote; else where the string around it ends (a quote under fewer backslashes) or at a line
+ *  break; else at the end. */
+function escapedValueEnd(text: string, i: number, run: number): number {
+  let j = i + run + 1;
+  while (j < text.length) {
+    const c = text[j]!;
+    if (c === "\r" || c === "\n") return j;
+    if (c === "\\") {
+      let k = j;
+      while (k < text.length && text[k] === "\\") k++;
+      if (text[k] === '"') {
+        if (k - j === run) return k + 1;
+        if (k - j < run) return j;
+      }
+      j = k;
+      continue;
+    }
+    if (c === '"') return j;
+    j++;
+  }
+  return text.length;
+}
+
+/** The most words a phrase is followed for after its key (a SLIP-39 share has 33, a BIP-39 phrase at most 24). */
+const PHRASE_MAX_WORDS = 36;
+/** A phrase word: letters only, at most 9 of them; Latin letters at least 3 (every BIP-39 list's words). */
+const PHRASE_WORD = /[\p{L}\p{M}]{1,9}(?![\p{L}\p{M}\p{N}_])/uy;
+/** A list number before a word: `1.`, `2)`, `3:`, `4-`, `#5`, `(6)`, `[7]`, or the number alone. */
+const LIST_NUMBER = /(?:#|\(|\[)?\d{1,3}(?!\d)(?:[.):\]-])?/uy;
+/** The next key after a phrase: a word followed by `=` or `:` (or by its closing quote and then `:`). */
+const NEXT_KEY = /(?:\\*["'])?[ \t]*[=:：]/uy;
+
+/** Whether `word` can be a phrase word: Latin letters only when 3 or more. */
+function phraseWord(word: string): boolean {
+  return /[^A-Za-z]/u.test(word) || word.length >= 3;
+}
+
+/**
+ * Separators between a phrase's words from `i`: white space, `,`, `;`, `|`, `-`, `<br>`, line breaks and tabs written
+ * as JSON escapes (at any escape depth), and — for a phrase whose words are quoted one by one (`quoted`) — quotes and
+ * escaped quotes. Returns where the next word starts and how many line breaks were crossed (a blank line is two).
+ */
+function phraseSeparators(text: string, i: number, quoted: boolean): { at: number; lines: number } {
+  let lines = 0;
+  for (;;) {
+    const c = text[i];
+    if (c === undefined) return { at: i, lines };
+    if (c === "\n") lines++;
+    else if (c === "\r") {
+      if (text[i + 1] !== "\n") lines++;
+    } else if (c === "," || c === ";" || c === "|" || c === "-" || /\s/u.test(c) || (quoted && (c === "'" || c === '"'))) {
+      // a separator
+    } else if (c === "<" && /^<br\s*\/?>/iu.test(text.slice(i, i + 6))) {
+      i = text.indexOf(">", i);
+    } else if (c === "\\") {
+      let k = i;
+      while (k < text.length && text[k] === "\\") k++;
+      const e = text[k];
+      if (e === "n") lines++;
+      else if (e !== "r" && e !== "t" && !(quoted && e === '"')) return { at: i, lines };
+      i = k;
+    } else return { at: i, lines };
+    i++;
+  }
+}
+
+/** One phrase token at `i` — a word, a list number, or a list number then a word: its end and whether it holds a
+ *  word; `null` when there is none. */
+function phraseToken(text: string, i: number): { end: number; word: boolean } | null {
+  LIST_NUMBER.lastIndex = i;
+  const n = LIST_NUMBER.exec(text);
+  let at = i;
+  let word = true;
+  if (n !== null && n[0].length > 0) {
+    at = i + n[0].length;
+    PHRASE_WORD.lastIndex = at;
+    const w = PHRASE_WORD.exec(text);
+    if (w === null || !phraseWord(w[0])) {
+      if (/[\p{L}\p{N}_]/u.test(text[at] ?? "")) return null;
+      word = false;
+    } else at += w[0].length;
+  } else {
+    PHRASE_WORD.lastIndex = at;
+    const w = PHRASE_WORD.exec(text);
+    if (w === null || !phraseWord(w[0])) return null;
+    at += w[0].length;
+  }
+  NEXT_KEY.lastIndex = at;
+  return NEXT_KEY.test(text) ? null : { end: at, word };
+}
+
+/** Whether the line from `i` holds only phrase tokens (a line a phrase goes on to), to its end: a line break, the end
+ *  of the text, or the end of the string or structure around it (a quote, an escaped quote, `}` or `]`). */
+function phraseLine(text: string, i: number, quoted: boolean): boolean {
+  for (let tokens = 0; ; tokens++) {
+    const token = phraseToken(text, i);
+    if (token === null) return tokens > 0 && /^(?:\\*["']|[}\]])/u.test(text.slice(i, i + 2 ** MAX_ENCODINGS + 1));
+    const sep = phraseSeparators(text, token.end, quoted);
+    if (sep.at >= text.length || sep.lines > 0) return true;
+    i = sep.at;
+  }
+}
+
+/**
+ * The end of a phrase whose first value ends at `i`: the words and list numbers after it, across the separators of
+ * {@link phraseSeparators}, onto a next line only when that line holds only phrase tokens, never across a blank line,
+ * for at most {@link PHRASE_MAX_WORDS} words. It ends before anything else: a word joined to a digit or `_`, a word
+ * followed by `=` or `:` (the next key), a Latin word of fewer than 3 letters, other punctuation.
+ */
+function phraseEnd(text: string, i: number, quoted: boolean): number {
+  let end = i;
+  for (let words = 1; words < PHRASE_MAX_WORDS; ) {
+    const sep = phraseSeparators(text, end, quoted);
+    if (sep.lines > 1 || sep.at >= text.length) break;
+    if (sep.lines === 1 && !phraseLine(text, sep.at, quoted)) break;
+    const token = phraseToken(text, sep.at);
+    if (token === null) break;
+    end = token.end;
+    if (token.word) words++;
+  }
+  return end;
+}
+
 function redactAssignments(text: string): string {
   let out = "";
   let last = 0;
-  SECRET_ASSIGNMENT.lastIndex = 0;
-  for (let m = SECRET_ASSIGNMENT.exec(text); m !== null; m = SECRET_ASSIGNMENT.exec(text)) {
+  ASSIGNMENT.lastIndex = 0;
+  for (let m = ASSIGNMENT.exec(text); m !== null; m = ASSIGNMENT.exec(text)) {
+    const kind = keyKind(m[1]!);
+    if (kind === undefined) continue;
     const start = m.index + m[0].length;
-    const rest = text.slice(start);
-    const escapedQuote = ESCAPED_QUOTE.exec(rest)?.[0];
     let end: number;
-    if (/^"?\[redacted\]/u.test(rest)) end = start;
-    else if (rest.startsWith('"')) end = start + (/^"(?:[^"\\]|\\.)*"?/u.exec(rest)![0].length);
-    else if (rest.startsWith("'")) end = start + (/^'[^']*'?/u.exec(rest)![0].length);
-    else if (rest.startsWith("[") || rest.startsWith("{")) end = skipJsonValue(text, start, 0);
-    else if (escapedQuote !== undefined) {
-      // To the same escaped quote, not preceded by another backslash; the end of the text when there is none.
-      const close = new RegExp(String.raw`(?<!\\)${escapedQuote.replace(/\\/g, "\\\\")}`, "u").exec(rest.slice(escapedQuote.length));
-      end = close === null ? text.length : start + escapedQuote.length + close.index + escapedQuote.length;
+    let single = false; // one word: a phrase goes on after it
+    let quoted = false; // the word quoted: so are the phrase's next words
+    const c = text[start];
+    if (text.startsWith(REDACTED, start) || text.startsWith(`"${REDACTED}`, start)) end = start;
+    else if (c === '"' || c === "'") {
+      end = quotedValueEnd(text, start, c);
+      single = quoted = !/\s/u.test(text.slice(start + 1, end - 1));
+    } else if (kind === "phrase" && c === "[" && /^\[\d{1,3}\]/u.test(text.slice(start, start + 5))) end = phraseEnd(text, start + text.slice(start, start + 5).indexOf("]") + 1, false);
+    else if (c === "[" || c === "{") end = skipJsonValue(text, start, 0);
+    else if (c === "\\" && /^\\+"/u.test(text.slice(start, start + MAX_ENCODINGS * 12))) {
+      const run = /^\\+/u.exec(text.slice(start, start + MAX_ENCODINGS * 12))![0].length;
+      end = escapedValueEnd(text, start, run);
+      single = quoted = !/\s/u.test(text.slice(start + run + 1, Math.max(start + run + 1, end - run - 1)));
     } else {
-      end = start + BARE_VALUE.exec(rest)![0].length;
-      if (end > start && IS_PHRASE_KEY.test(m[2]!)) {
-        PHRASE_REST.lastIndex = end;
-        end += PHRASE_REST.exec(text)?.[0].length ?? 0;
-      }
+      end = bareValueEnd(text, start);
+      single = end > start;
     }
+    if (kind === "phrase" && single && end > start) end = phraseEnd(text, end, quoted);
     if (end === start) continue;
     out += `${text.slice(last, start)}${REDACTED}`;
     last = end;
-    SECRET_ASSIGNMENT.lastIndex = end;
+    ASSIGNMENT.lastIndex = end;
   }
   return out + text.slice(last);
 }
 
 const RULES: ReadonlyArray<[RegExp, string | ((...m: string[]) => string)]> = [
   // URLs of any scheme: userinfo, query and fragment removed. A URL ends at a backslash too (in JSON-escaped text the
-  // next character is an escape, not part of the URL).
-  [/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>`\\]+/giu, (m) => publicUrl(m)],
+  // next character is an escape, not part of the URL). It starts only where a run of scheme characters starts.
+  [/(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/[^\s"'<>`\\]+/giu, (m) => publicUrl(m)],
   // JWT-shaped tokens.
-  [/\beyJ[\w-]{4,}\.[\w-]{4,}\.[\w-]*/gu, `${REDACTED} token`],
+  [/(?<![\w-])eyJ[\w-]{4,}\.[\w-]{4,}\.[\w-]*/gu, `${REDACTED} token`],
   // Bech32m secret keys (a viewing key is `mn_shield-esk…`).
-  [/\bmn_[a-z0-9-]*(?:esk|sk|seed)(?:_[a-z0-9-]+)?1[02-9ac-hj-np-z]{6,}/giu, `${REDACTED} key`],
+  [/(?<![\w-])mn_[a-z0-9-]{0,40}(?:esk|sk|seed)(?:_[a-z0-9-]{1,40})?1[02-9ac-hj-np-z]{6,}/giu, `${REDACTED} key`],
   // Bearer and Basic credentials.
   [/\b(Bearer)(\s+)[\w.~+/=-]{8,}/giu, (_m, scheme, sp) => `${scheme}${sp}${REDACTED}`],
   [/\b(Basic)(\s+)(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{8,}={0,2}/gu, (_m, scheme, sp) => `${scheme}${sp}${REDACTED}`],
@@ -567,12 +766,28 @@ const RULES: ReadonlyArray<[RegExp, string | ((...m: string[]) => string)]> = [
   [new RegExp(String.raw`(^|[^\w-])(${SECRET_HEADER})(\s*[=:]\s*)(?!\s|\[redacted\])[^\r\n]+`, "gimu"), (_m, pre, k, sep) => `${pre}${k}${sep}${REDACTED}`],
 ];
 
-/** `text` with the secrets this module knows removed (see the module documentation); idempotent. */
-export function redactText(value: string): string {
+/** The longest text the snapshot keeps (its schema's bound): a longer one is cut ({@link capText}) before it is read. */
+const TEXT_LIMIT = TEXT_MAX_CHARS + 64;
+
+/**
+ * The redaction of {@link redactText} without its length cap: every expression and scan is linear in the text's
+ * length (tests measure it on long texts).
+ */
+export function redactWhole(value: string): string {
   let out = value;
   for (const [re, by] of RULES) out = out.replace(re, by as (substring: string, ...args: string[]) => string);
   // JSON members, then key=value and key: value.
   return redactAssignments(redactMembers(out));
+}
+
+/**
+ * `text` with the secrets this module knows removed (see the module documentation); idempotent. A text longer than the
+ * snapshot keeps is cut first ({@link capText}, saying how much was cut), and so is a result that redaction made longer
+ * than that (then redacted again, so a value cut in two is removed whole), so what it gives always fits the snapshot.
+ */
+export function redactText(value: string): string {
+  const out = redactWhole(value.length > TEXT_LIMIT ? capText(value) : value);
+  return out.length > TEXT_LIMIT ? redactWhole(capText(out)) : out;
 }
 
 /** `text` cut to {@link TEXT_MAX_CHARS}, saying how many characters were cut. */
