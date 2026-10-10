@@ -7,7 +7,8 @@
  * - `[[browser.csp.headers]]` — served with its `_headers` rules (the policy as a header, COOP/COEP): the page and the
  *   worker are cross-origin isolated; the worker boots on OPFS (PGlite, its migrations, the ledger's WASM), replays and
  *   scans a recorded range and answers API requests with no CSP violation in the page or the worker, and every request
- *   stays on the site's origin.
+ *   stays on the site's origin; a second tab joins as a follower (Web Locks, BroadcastChannel) and gets the same answers
+ *   through the leader, with no violation and no worker of its own.
  * - `[[browser.csp.chain-origins]]` — a build configured with a chain on another origin (a local server answering CORS
  *   like the Stagenet endpoints): the sync reads it cross-origin under COEP with no violation, and the requests are the
  *   site's and that origin's only.
@@ -211,7 +212,7 @@ describe("the static build under its Content-Security-Policy in Chrome", () => {
     if (process.env.UMBRADB_CSP_REPORT) writeFileSync(process.env.UMBRADB_CSP_REPORT, JSON.stringify(report, null, 2));
   });
 
-  it("[[browser.csp.headers]] with the _headers rules: page and worker are cross-origin isolated; the worker boots on OPFS, replays and scans a recorded range and answers API requests with no CSP violation in the page or the worker, and every request stays on the site's origin", async () => {
+  it("[[browser.csp.headers]] with the _headers rules: page and worker are cross-origin isolated; the worker boots on OPFS, replays and scans a recorded range and answers API requests with no CSP violation in the page or the worker, and every request stays on the site's origin; a second tab follows through the leader with the same answers and no violation", async () => {
     const page = await pageOf(sites.headers);
     const from = mark(page);
     await openEngine(sites.headers);
@@ -226,6 +227,20 @@ describe("the static build under its Content-Security-Policy in Chrome", () => {
     expect(tokens.status).toBe(200);
     expect((tokens.body.items as Json[]).map((t) => t.minted?.firstMint?.txHash).filter(Boolean)).toContain(MINT_TX);
     await engine(page, "c.stop()");
+
+    // A second tab of the same profile follows: its requests reach the leader's engine over BroadcastChannel.
+    const follower = await browser.newPage({ workers: true });
+    await follower.goto(`${sites.headers.origin}/engine.html`);
+    await follower.waitFor("window.umbradbEngine !== undefined", 30_000, "the second tab");
+    expect(await follower.eval("window.umbradbEngine.tabs.ready")).toBe("follower");
+    expect(await follower.eval("self.crossOriginIsolated")).toBe(true);
+    expect(await engine(follower, `c.api("GET", "/v1/tokens").then((r) => JSON.parse(r.body))`)).toEqual(tokens.body);
+    expect(follower.workers).toEqual([]);
+    expect(await follower.eval("window.__cspViolations")).toEqual([]);
+    expect(follower.exceptions).toEqual([]);
+    expect(seen(follower, { requests: 0, logs: 0 }).security).toEqual([]);
+    expect(origins(follower.requests)).toEqual([sites.headers.origin]);
+    await follower.close();
 
     expect(await page.eval("window.__cspViolations")).toEqual([]);
     expect(await page.evalWorker("self.__cspViolations")).toEqual([]);

@@ -149,4 +149,7 @@ off, and PGlite's two `eval` calls are in its loader for dynamically linked modu
 (`EM_ASM`/`EM_JS`), which none of the modules PGlite ships (`plpgsql` and the encoding converters) does; the store loads
 no extension.
 
+Tabs of one store talk over BroadcastChannel and share Web Locks; both are same-origin and need no directive (a
+follower tab runs under the same policy and starts no worker).
+
 The dev server (`npm run dev:browser`) sends no policy.
