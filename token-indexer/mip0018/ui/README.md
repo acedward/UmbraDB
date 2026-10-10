@@ -6,7 +6,7 @@ database access, no other origin, no URI ever fetched.
 
 | File | Role |
 |---|---|
-| `page.ts` | Builds the document, its Content-Security-Policy and the static routes (`serveUi`) |
+| `page.ts` | Builds the document, its Content-Security-Policy and the static routes (`serveUi`); exports the page's markup (`UI_BODY`), from which the static browser build makes its explorer page |
 | `page.js` | The page script — a plain JavaScript file, inlined at start-up (never a TypeScript template literal) |
 | `page.css` | The look |
 | `fonts/Outfit-Variable-latin.woff2`, `fonts/OFL.txt` | The Midnight brand face Outfit (SIL OFL 1.1; see `NOTICE`), served at `/ui/outfit.woff2` |
@@ -16,6 +16,14 @@ The font, its licence and the icon are byte-identical copies of the explorer in 
 (`feat/00020-token-indexer @ 11af38e`, `token-indexer/ui/`); font SHA-256
 `92684e4acde79ef07758cd09380b7e01e9824d8b061eddeda046f78c166d7b12`, icon
 `b41509ad57381debefaba6fb3e2e478c1e38ea8afc5e6f11ecd1aeaba4e14c45`.
+
+The static browser build (`../../browser/`, `index.html`) serves the same page from static files: the same script,
+style and markup, with the API answered by the engine in a worker. The script's one API function, `api(path)`, sends a
+same-origin `fetch` here; there the build installs `window.umbradbExplorerHost` before the script runs, and `api` asks
+it instead: its answer is a fetch `Response`, read the same way (the 8 MiB cap, the same errors). With that host the
+script also states the first indexed height next to every list ("history before block H is not indexed"), since that
+index may start mid-chain. Here there is no host: nothing changes on `GET /ui`. See `../../browser/README.md`
+(Explorer).
 
 ## Look
 

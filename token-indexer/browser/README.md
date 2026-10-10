@@ -5,7 +5,7 @@ module worker, on PGlite stored in the Origin Private File System. The page talk
 static files is served.
 
 ```sh
-npm run build:browser   # the static site in dist-browser/ (engine.html, assets/ and _headers)
+npm run build:browser   # the static site in dist-browser/ (index.html, engine.html, assets/ and _headers)
 npm run dev:browser     # the same configuration served by Vite on 127.0.0.1 (no security headers)
 ```
 
@@ -35,8 +35,43 @@ The build indexes Stagenet unless `UMBRADB_BROWSER_NETWORK`, `UMBRADB_BROWSER_NO
 | `quota.ts` | The storage guard: pauses the sync before the quota |
 | `trusted-worker.ts` | The pages' one Trusted Types policy, `umbradb-engine-worker`, which makes the engine worker's script URL |
 | `zod-jitless.ts` | Turns zod's JIT (`new Function`) off before any schema exists; the first module of the worker and of every page |
+| `index.html`, `explorer-page.ts`, `explorer-host.ts`, `explorer-transport.ts`, `explorer.css` | The token explorer (see [Explorer](#explorer)): the page `GET /ui` serves, reading the API through the engine, with the engine panel |
+| `engine-panel.ts`, `panel-model.ts` | The explorer's engine panel: what the engine indexes and how it is doing, and its controls |
 | `engine.html`, `engine-page.ts` | A page that joins the tabs, asks for persistent storage, shows its role and the engine's status; `window.umbradbEngine` holds the client and the tabs |
-| `vite.config.ts`, `build-guard.ts`, `build-csp.ts` | The build (Node tooling): every `*.html` here is a page, ES module worker, `esnext`, class names kept, `vite-plugin-wasm` for ledger-v9's WASM module, assets as files, a plugin that fails the build if postgres.js or a Node built-in would be bundled, and a plugin that writes the pages' security headers |
+| `vite.config.ts`, `build-guard.ts`, `build-csp.ts`, `build-explorer.ts` | The build (Node tooling): every `*.html` here is a page, ES module worker, `esnext`, class names kept, `vite-plugin-wasm` for ledger-v9's WASM module, assets as files, a plugin that fails the build if postgres.js or a Node built-in would be bundled, a plugin that writes the pages' security headers, and one that makes the explorer page from `GET /ui`'s markup |
+
+## Explorer
+
+`index.html` is the MIP-0018 token explorer of `GET /ui` (`../mip0018/ui/`), the same script and style, with the API
+answered by the engine instead of a server:
+
+- **Transport.** The explorer script (`../mip0018/ui/page.js`) reads the API through one function, `api(path)`. On
+  `GET /ui` it is a same-origin `fetch`. Here `explorer-host.ts` runs first and installs `window.umbradbExplorerHost`,
+  whose `api(path)` sends `api` (`GET`, the path) to the engine and answers with a fetch `Response` of the handler's
+  status, headers and body (`explorer-transport.ts`); the script reads it exactly as a fetched one: the 8 MiB cap (the
+  announced `content-length`, then the bytes read), the JSON, and the error rendering (`… answered 503 BUSY`; a failed
+  engine request is `… answered nothing UNREACHABLE`). The host object is the switch: only this build installs it, so
+  `GET /ui` is unchanged.
+- **Start height.** This build's index may start mid-chain (at the tip by default), so next to every list (the token
+  list, a contract's token identities, a color's tokens, an identity's current fields and MIP-0018 mark, every
+  activity and events section) the explorer states "indexed from block H · history before block H is not indexed"
+  (`/v1/status` `startHeight`; "nothing indexed yet" before the first block): a token minted earlier shows only as
+  seen, and its metadata only holds what was written from H on.
+- **Page.** The build writes `GET /ui`'s markup (`UI_BODY` of `ui/page.ts`) into `index.html` and links `ui/page.css`,
+  whose font reference becomes the font file (`build-explorer.ts`). The page joins the tabs like the engine page
+  (`window.umbradbEngine`, persistent storage asked at load) and gets the build's policy like every page.
+- **Engine panel** (`engine-panel.ts`, between the header and the view): this tab's role (leader, or follower with the
+  engine in another tab) and the open tabs; the network; the engine's state (`not started`, `running`, `stopped`,
+  `waiting (network)`, `stalled (scan)`, `paused (storage)`, `failed`, …) with its detail; the saved configuration
+  (`settings`); "indexed from block H · history before block H is not indexed"; the synced (archive) and scanned
+  heights; durability; storage (`status`'s `storage` reading: usage, quota, where the sync pauses, the store's files,
+  persistence; the page's own `navigator.storage` figures until there is one). Controls, each one request (from a
+  follower the leader performs it): **start** (the saved configuration), **stop**, **change range** (a start, `tip` or
+  a height, and an optional end, checked before it is sent), **reset**, **export snapshot**, **import snapshot** (a
+  file). A range change, a reset or an import on a store that holds blocks first says which blocks will be dropped
+  and offers to export a snapshot before going on (or cancel, which sends nothing). The answer or the error is shown
+  under the controls. A link leads to the system status page (`system.html`). The panel refreshes every 2 s while the
+  page is visible, after each request and on the engine's notices; all text is set as text.
 
 ## Boot
 
@@ -71,7 +106,7 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 | `digest` | — | the store's archive digest (the 7 `chain_archive` tables, `chain-archive-sync/archive-digest.ts`) and the digest of every table of both schemas (`../engine/range-tables.ts`), read in one read-only transaction |
 | `system` | `watch` (with `viewer?`) or `refresh: { database?, exactCounts? }` | `{ watching, viewers, snapshot }`: the snapshot of a refresh (`null` for a watch) |
 | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | `{ limitMs, heartbeatMs }` |
-| `export`, `import` | as in `protocol.ts` | error `not-implemented` |
+| `export`, `import` | as in `protocol.ts` | error `not-implemented` (the explorer's panel shows it) |
 
 Error codes: `bad-request`, `unsupported-version`, `unknown-type`, `not-implemented`, `unsupported-browser`,
 `boot-failed`, `already-running`, `start-failed`, `internal`; the client adds `bad-response`, `worker-error`,
@@ -249,4 +284,3 @@ The snapshot's schema is `../engine/system-snapshot.ts` (versioned, strict). The
 PGlite and ledger versions; `vite.config.ts`). The storage section is the storage guard's reading (`quota.ts`), the
 start mode and the automatic start come from the saved configuration, the connected tabs from the tab locks; the
 role is `leader` in the worker (a follower tab marks what it relays). No snapshot export or import is recorded yet.
-
