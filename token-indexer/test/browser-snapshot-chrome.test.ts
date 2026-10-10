@@ -16,7 +16,7 @@
  * - `[[browser.worker.published-snapshot]]` — a new profile with no chain loads the build's published snapshot (fetched
  *   from the site, checked against `snapshots/index.json`): the API answers 714485–715183 with the recorded digests, no
  *   chain request was made, every request went to the site's origin, and no CSP violation was reported (page or
- *   worker). The snapshot was made in Node: a data directory PGlite dumped in Node loads in Chrome.
+ *   worker). The snapshot was made in Node: rows PGlite exported in Node load into a store PGlite makes in Chrome.
  * - `[[browser.worker.snapshot-follower]]` — a follower tab imports the published snapshot and exports the store through the
  *   leader tab's worker: the file crosses the tabs' BroadcastChannel as a parameter and as a result.
  * - `[[browser.explorer.panel-snapshot]]` — the explorer's engine panel (`index.html`): its export saves the snapshot as a

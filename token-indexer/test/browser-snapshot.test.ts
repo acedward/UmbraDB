@@ -405,7 +405,8 @@ describe("browser engine snapshots", () => {
     const heights: number[] = [];
     for (let i = 0; i < 4; i++) {
       const exported = await result<ExportResult>(host, "export");
-      // The trial an import runs: the data directory opened, its cursors, block hash and migrations equal the manifest.
+      // The trial an import runs: the rows loaded into a new store, its cursors, block hash and migrations equal the
+      // manifest.
       const prepared = await prepareImport(exported.file, expected);
       expect(prepared.manifest).toEqual(exported.manifest);
       expect(exported.timings.holdMs).toBeLessThan(2_000);
