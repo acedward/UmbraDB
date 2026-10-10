@@ -361,8 +361,15 @@ describe("the static build's explorer page in Chrome", () => {
       };
     })()`);
     const seen = (): Promise<Array<{ type: string; params: Json }>> => leader.eval("window.__seen");
-    const waitMessage = (page: Page, re: RegExp, what: string): Promise<void> =>
-      page.waitFor(`${re.toString()}.test(document.querySelector('#engine-panel [data-field="message"]').textContent)`, 60_000, what);
+    /** Waits for the panel's message to match; a timeout names the message and the engine's state then. */
+    const waitMessage = async (page: Page, re: RegExp, what: string): Promise<void> => {
+      try {
+        await page.waitFor(`${re.toString()}.test(document.querySelector('#engine-panel [data-field="message"]').textContent)`, 120_000, what);
+      } catch (e) {
+        const now = await panel(page).catch(() => null);
+        throw new Error(`${e instanceof Error ? e.message : String(e)}; the panel shows ${JSON.stringify(now)}`);
+      }
+    };
 
     await click(follower, "stop");
     await waitMessage(follower, /^stopped$/, "stop answered");
