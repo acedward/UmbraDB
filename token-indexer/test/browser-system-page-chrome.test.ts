@@ -462,6 +462,7 @@ describe("the system status page in Chrome (static build with its headers)", () 
 
       // Another tab in front: this page is hidden.
       const other = await b.newPage();
+      await other.send("Page.bringToFront");
       await p.waitFor("document.visibilityState === 'hidden'", 10_000, "the page hidden");
       expect(await p.eval("document.body.getAttribute('data-live')")).toBe("paused");
       expect(await p.eval("document.getElementById('live').textContent")).toBe("paused: nothing is read while this page is hidden");
