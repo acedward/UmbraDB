@@ -33,9 +33,11 @@
  * in one read-only transaction (the loops wait for it); `system` watches or refreshes the system snapshot and `watchdog`
  * sets the page's watchdog and starts the heartbeat (`host-system.ts`). `module` switches the token indexer (the
  * MIP-0018 scan) off or on: off, the running engine's scan stops at a block boundary while its sync goes on; on, it
- * continues from its cursor; the choice is saved with the settings, and every engine the host runs afterwards (a
- * `start`, a reopen, the next worker or tab) starts with it. `tables` and `rows` read the store's catalog and a page of
- * one of its tables for the Database tab (`store-tables.ts`), between the engine's transactions.
+ * continues from its cursor; the choice is saved with the settings (every save of the settings keeps it, also before
+ * and after the store is replaced), and every engine the host runs afterwards (a `start`, a reopen, a replaced store,
+ * the next worker or tab) starts with it. `tables` and `rows` read the store's catalog and a page of one of its tables
+ * for the Database tab (`store-tables.ts`), between the engine's transactions; while the store is replaced they wait
+ * for the new one (or answer `boot-failed` when the replacement fails).
  *
  * **Snapshots** (`snapshot-store.ts`): `export` writes a snapshot file (the rows of the store's tables) while the engine
  * runs (a consistent read between two transactions). `import` checks a snapshot file and loads its rows into a trial

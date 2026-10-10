@@ -13,6 +13,10 @@
  * - `[[browser.host.module-saved]]` — the choice is saved with the settings: a new host on the same store (a reload, the
  *   next leader tab) starts its engine with the scan off and the archive syncing; `module` refuses a module that is not
  *   switchable; `module` is never sent again to a new leader (it changes state), `tables` and `rows` are.
+ * - `[[browser.host.store-replaced]]` — a store replaced by `range`, `reset` or `import` keeps the saved switch: the new
+ *   store's engine runs with the scan off; `tables` and `rows` sent while the store is replaced are answered (they wait
+ *   for the new store) and, once it is in place, from it; when a replacement fails they get an error answer, never a
+ *   rejection, and the switch stays saved.
  * - `[[browser.host.tables]]` — `tables` lists every table of both schemas, as the catalog has them, with their
  *   estimated rows and sizes.
  * - `[[browser.host.rows]]` — `rows` of every table equals the same page read with SQL by the test (the primary key's
@@ -33,6 +37,7 @@ import { createWorkerHost, type WorkerHost, type WorkerHostOptions } from "../br
 import {
   type CapabilityReport,
   type DigestResult,
+  type ExportResult,
   type HostStatus,
   parseRequest,
   PROTOCOL_VERSION,
@@ -44,7 +49,7 @@ import {
   type TablesResult,
 } from "../browser/protocol.ts";
 import { memorySettingsStore } from "../browser/settings.ts";
-import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, openStore, type Store } from "../browser/store.ts";
+import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, migrateStore, openStore, type Store } from "../browser/store.ts";
 import { REPEATABLE_REQUEST_TYPES } from "../browser/tabs.ts";
 import { loadTape } from "../browser/tapes.ts";
 import { createIndexerEngine } from "../engine/engine.ts";
@@ -275,6 +280,94 @@ describe("the indexer's modules and the store's tables in the browser engine", (
     expect(REPEATABLE_REQUEST_TYPES.has("tables")).toBe(true);
     expect(REPEATABLE_REQUEST_TYPES.has("rows")).toBe(true);
   }, 120_000);
+
+  it("[[browser.host.store-replaced]] a store replaced by range, reset or import keeps the saved switch (the new store's engine runs with the scan off); tables and rows sent while the store is replaced are answered, from the new store once it is in place; when a replacement fails they get an error answer, never a rejection", async () => {
+    const config: StartConfig = { source: { kind: "tape", range: "u1" }, startHeight: U1.from, ...FAST };
+    const { host, stores } = newHost();
+    await result(host, "start", { config });
+    await until(host, "the U1 range", (s) => s.cursors?.scan?.nextHeight === U1.to + 1);
+    const exported = await result<ExportResult>(host, "export");
+    await result(host, "module", { module: "token-indexer", enabled: false });
+    const raw = (type: string, params: Record<string, unknown> = {}): Promise<Response> => host.receive({ v: PROTOCOL_VERSION, id: nextId++, type, ...params });
+    /** Sends tables and rows every few milliseconds until `replacing` settles; every answer must come, as an answer. */
+    async function readWhile(replacing: Promise<Response>): Promise<Response[]> {
+      const sent: Array<Promise<Response>> = [];
+      let settled = false;
+      void replacing.finally(() => (settled = true));
+      while (!settled) {
+        sent.push(raw("tables"), raw("rows", { schema: ARCHIVE_SCHEMA, table: "blocks", limit: 100 }));
+        await sleep(5);
+      }
+      return Promise.all(sent);
+    }
+    const blocksIn = async (s: Store): Promise<number> => Number((await s.pglite.query<{ n: string }>("SELECT count(*)::text AS n FROM chain_archive.blocks")).rows[0]!.n);
+
+    // range: a new store; tables and rows during the replacement are answered.
+    const ranging = raw("range", { startHeight: U1.from + 10, endHeight: U1.to });
+    const during = await readWhile(ranging);
+    expect((await ranging).ok).toBe(true);
+    expect(during.length).toBeGreaterThan(0);
+    for (const r of during) expect(r.ok, r.ok ? "" : `${r.request}: ${r.error.code} ${r.error.message}`).toBe(true);
+    const ranged = await until(host, "the new range's archive", (s) => s.cursors?.sync?.height === U1.to);
+    expect(ranged.settings?.modules).toEqual({ "token-indexer": false });
+    expect(ranged.engine!.status.scan).toMatchObject({ phase: "off", scanner: "off" });
+    expect(ranged.cursors!.scan).toBeNull();
+    // The Database tab reads the new store: its tables, and rows of the new range only.
+    const newStore = stores.at(-1)!;
+    expect(newStore).not.toBe(stores[0]);
+    const t = await result<TablesResult>(host, "tables");
+    expect(t.schemas.map((x) => x.name)).toEqual([ARCHIVE_SCHEMA, MIP0018_SCHEMA]);
+    const blocks = await result<RowsResult>(host, "rows", { schema: ARCHIVE_SCHEMA, table: "blocks", limit: 100 });
+    expect(blocks.rows.length).toBe(await blocksIn(newStore));
+    expect(blocks.rows.length).toBe(U1.to - (U1.from + 10) + 1);
+    expect(blocks.more).toBe(false);
+
+    // reset: a new, empty store again, the saved range started with the scan off.
+    const resetting = raw("reset");
+    for (const r of await readWhile(resetting)) expect(r.ok).toBe(true);
+    expect((await resetting).ok).toBe(true);
+    const reset = await until(host, "the reset store's archive", (s) => s.cursors?.sync?.height === U1.to);
+    expect(reset.settings?.modules).toEqual({ "token-indexer": false });
+    expect(reset.engine!.status.scan).toMatchObject({ phase: "off", scanner: "off" });
+    expect(reset.cursors!.scan).toBeNull();
+
+    // import: the snapshot's store; the switch stays saved and the next start runs with the scan off.
+    const importing = raw("import", { snapshot: exported.file });
+    for (const r of await readWhile(importing)) expect(r.ok).toBe(true);
+    const imported = await importing;
+    expect(imported.ok).toBe(true);
+    const afterImport = await result<HostStatus>(host, "status");
+    expect(afterImport.settings).toMatchObject({ autoStart: false, modules: { "token-indexer": false } });
+    expect(afterImport.cursors).toEqual({ sync: { height: U1.to, startHeight: U1.from }, scan: expect.objectContaining({ nextHeight: U1.to + 1 }) });
+    await result(host, "start");
+    const started = await result<HostStatus>(host, "status");
+    expect(started.engine!.status.scan).toMatchObject({ phase: "off", scanner: "off" });
+    const rowsAfterImport = await result<RowsResult>(host, "rows", { schema: ARCHIVE_SCHEMA, table: "blocks", limit: 100 });
+    expect(rowsAfterImport.rows.length).toBe(U1.to - U1.from + 1);
+    await result(host, "stop");
+
+    // A replacement that fails (the new store's migrations): tables and rows get an error answer, the switch stays saved.
+    const settings = memorySettingsStore();
+    let migrations = 0;
+    const f = newHost({ settings, migrate: async (s) => { if (++migrations > 1) throw new Error("the migrations failed"); await migrateStore(s); } });
+    await result(f.host, "module", { module: "token-indexer", enabled: false });
+    const failing = f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "reset" });
+    const failedReads: Array<Promise<Response>> = [];
+    let done = false;
+    void failing.finally(() => (done = true));
+    while (!done) {
+      failedReads.push(f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "tables" }), f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "rows", schema: ARCHIVE_SCHEMA, table: "blocks" }));
+      await sleep(5);
+    }
+    const failed = await failing;
+    expect(failed).toMatchObject({ ok: false, error: { code: "boot-failed" } });
+    for (const r of [...(await Promise.all(failedReads)), await f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "tables" }), await f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "rows", schema: ARCHIVE_SCHEMA, table: "blocks" })])
+      if (!r.ok) expect(r.error.code).toBe("boot-failed");
+    const last = await f.host.receive({ v: PROTOCOL_VERSION, id: nextId++, type: "rows", schema: ARCHIVE_SCHEMA, table: "blocks" });
+    expect(last).toMatchObject({ ok: false, error: { code: "boot-failed" } });
+    expect((await result<HostStatus>(f.host, "status")).boot).toMatchObject({ phase: "failed", storeProblem: "unusable" });
+    expect((await settings.load())?.modules).toEqual({ "token-indexer": false });
+  }, 240_000);
 
   it("[[browser.host.tables]] tables lists every table of both schemas as the catalog has them, with estimated rows and sizes", async () => {
     const { host, stores } = newHost();
