@@ -33,12 +33,16 @@
  *
  * In a browser without Web Locks or BroadcastChannel the tab runs alone as leader, so its worker's capability check can
  * report the browser as unsupported.
+ *
+ * A page inside a frame does not connect at all (`frame-guard.ts`): `connectEngineTabs()` replaces its content with a
+ * notice and throws, so a site that frames a page cannot steer clicks onto its controls.
  */
 import { z } from "zod";
 import { relayedSnapshot, type SystemSnapshot } from "../engine/system-snapshot.ts";
 import { type EngineClient, EngineError, type EngineErrorCode, startEngineWorker, unavailableAnswer } from "./client.ts";
 import type { SupervisedEngine } from "./supervisor.ts";
 import { BROWSER_BUILD_CONFIG, BROWSER_DATA_DIR } from "./config.ts";
+import { refuseFramed } from "./frame-guard.ts";
 import {
   type BootState,
   DEFAULT_SYSTEM_VIEWER,
@@ -255,6 +259,7 @@ function defaultStartWorker(): LocalEngine {
 }
 
 export function connectEngineTabs(opts: EngineTabsOptions = {}): EngineTabs {
+  refuseFramed();
   const scope = opts.scope ?? BROWSER_DATA_DIR;
   const self = opts.tabId ?? crypto.randomUUID();
   if (!tabId.safeParse(self).success) throw new RangeError(`a tab id is 1 to 64 letters, digits or dashes, not ${JSON.stringify(self)}`);

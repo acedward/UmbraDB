@@ -22,6 +22,8 @@
  *   the scan stores (the worker also refuses to boot when they are renamed).
  * - `assetsInlineLimit: 0`: every asset (WASM, PGlite's data file, the tapes) is a file of its own, never a data URL.
  * - The node-free guard (`build-guard.ts`) fails the build if postgres.js or a Node built-in would be bundled.
+ * - `build-notices.ts` writes `THIRD-PARTY-NOTICES.txt`: the licence of every package the bundles contain, PostgreSQL's
+ *   (PGlite's database), the Outfit font's and UmbraDB's own, so the folder is published with its notices.
  * - `__UMBRADB_BUILD__` (`define`): the app commit (`UMBRADB_APP_COMMIT`, else `git rev-parse HEAD`, else `null`) and
  *   the installed PGlite and ledger-v9 versions, which the worker's system snapshot shows.
  */
@@ -33,6 +35,7 @@ import * as wasmPlugin from "vite-plugin-wasm";
 import { browserChainFromEnv, chainOrigins, staticSecurity } from "./build-csp.ts";
 import { explorerPage } from "./build-explorer.ts";
 import { nodeFreeBundle } from "./build-guard.ts";
+import { thirdPartyNotices } from "./build-notices.ts";
 
 /** The plugin is the ES module's default export (its type declarations describe it as CommonJS). */
 const wasm = (wasmPlugin as unknown as { default: () => PluginOption }).default;
@@ -73,6 +76,9 @@ function appCommit(): string | null {
   }
 }
 
+/** The licence notices of the packages in the page and worker bundles (`build-notices.ts`). */
+const notices = thirdPartyNotices(repoRoot);
+
 const BUILD = { appCommit: appCommit(), pgliteVersion: packageVersion("@electric-sql/pglite"), ledgerVersion: packageVersion("@midnightntwrk/ledger-v9") };
 
 export default defineConfig({
@@ -80,10 +86,10 @@ export default defineConfig({
   base: "./",
   publicDir: false,
   define: { __UMBRADB_BROWSER_CHAIN__: JSON.stringify(chain), __UMBRADB_BUILD__: JSON.stringify(BUILD) },
-  plugins: [nodeFreeBundle(repoRoot), wasm(), explorerPage(), staticSecurity({ connectSrc: chainOrigins(chain), prelude: `${root}zod-jitless.ts`, root })],
+  plugins: [nodeFreeBundle(repoRoot), wasm(), explorerPage(), staticSecurity({ connectSrc: chainOrigins(chain), prelude: `${root}zod-jitless.ts`, root }), notices.plugin(true)],
   worker: {
     format: "es",
-    plugins: () => [nodeFreeBundle(repoRoot), wasm()],
+    plugins: () => [nodeFreeBundle(repoRoot), wasm(), notices.plugin(false)],
     rolldownOptions: { output: { keepNames: true, codeSplitting: { groups: [zodChunk] } } },
   },
   build: {

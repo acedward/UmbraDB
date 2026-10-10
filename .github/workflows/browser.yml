@@ -8,7 +8,8 @@ name: Browser and PGlite gate
 #   - `pglite`: the whole suite on PGlite in Node (`npm run test:pglite`), Chromium tests included, then the
 #     required-test reconciliation with the PostgreSQL-only list (`test/helpers/postgresql-only.ts`).
 # Both run on PGlite (`UMBRADB_BACKEND=pglite`): no database server and no Docker inside the job container. The same
-# browser tests also run on PostgreSQL in the required conformance gate (`conformance.yml`, the runner's Chrome).
+# browser tests also run on PostgreSQL in the required conformance gate (`conformance.yml`, with the runner image's
+# Chrome, whose path and version that job prints before its tests).
 # Chromium is the image's (`/ms-playwright/chromium-*/chrome-linux64/chrome` on x64), found by `findBrowser`
 # (`token-indexer/test/helpers/cdp-browser.ts`); the "Locate Chromium" step fails early when it is not there.
 

@@ -37,7 +37,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { DigestResult, HostStatus } from "../browser/protocol.ts";
 import { type SystemSnapshot, SystemSnapshotSchema } from "../engine/system-snapshot.ts";
 import { Browser, findBrowser, type Page } from "./helpers/cdp-browser.ts";
-import { referenceStates, storedHeights, tornTables } from "./helpers/crash-reference.ts";
+import { referenceStates, storedHeights, tornTables, withNullElements } from "./helpers/crash-reference.ts";
 import { buildEngineSite, engineDriver, REPO_ROOT, serveEngineSite, type EngineSite } from "./helpers/engine-site.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -136,7 +136,7 @@ describe("the browser engine at its limits (Chrome, OPFS)", () => {
       const d = await digest(p);
       const h = storedHeights(still);
       const ref = await referenceStates("idx", IDX.from, [h.archive, h.scan]);
-      expect(tornTables(ref, h, d.tables.tables), "the paused store equals the replay at its cursors").toEqual([]);
+      expect(tornTables(ref, h, withNullElements(d.tables.tables, d.nullElements)), "the paused store equals the replay at its cursors").toEqual([]);
       report.quotaPause = { pausedAt: h };
 
       await p.evalWorker(`(() => { self.__estimate = { usage: 1e8, quota: 1e10 }; return true; })()`);
@@ -173,7 +173,7 @@ describe("the browser engine at its limits (Chrome, OPFS)", () => {
       const d = await digest(p);
       const h = storedHeights(still);
       const ref = await referenceStates("idx", IDX.from, [h.archive, h.scan]);
-      expect(tornTables(ref, h, d.tables.tables), "the store equals the replay at its cursors").toEqual([]);
+      expect(tornTables(ref, h, withNullElements(d.tables.tables, d.nullElements)), "the store equals the replay at its cursors").toEqual([]);
       report.refusedWrite = { estimate: est, heldAt: h, panelState, health };
 
       await p.send("Storage.overrideQuotaForOrigin", { origin: site.origin });

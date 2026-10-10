@@ -57,6 +57,7 @@ const NODE_ONLY: Record<string, string> = {
   "token-indexer/browser/build-guard.ts": "a Vite plugin of the browser build, run by Node",
   "token-indexer/browser/build-csp.ts": "a Vite plugin of the browser build (the pages' security headers), run by Node",
   "token-indexer/browser/build-explorer.ts": "a Vite plugin of the browser build (the explorer page from the /ui page's markup), run by Node",
+  "token-indexer/browser/build-notices.ts": "a Vite plugin of the browser build (the licence notices), run by Node",
   "token-indexer/mip0018/scan-cli.ts": "command-line entry point (arguments, signals, exit codes)",
   "token-indexer/mip0018/serve-cli.ts": "command-line entry point that starts the node:http server",
   "token-indexer/mip0018/api-node.ts": "serves the runtime-neutral API handler (api.ts) over node:http",

@@ -27,6 +27,7 @@ PostgreSQL.
 | `client.ts` | The page's side: `startEngineWorker()` (the worker under the page's watchdog, created through the Trusted Types policy below) and `createEngineClient(endpoint)` (requests as promises of validated results) |
 | `supervisor.ts` | The page's watchdog: heartbeats, terminate and restart of a worker that stopped answering, what the page set up restored on the new worker |
 | `tabs.ts` | One engine across tabs: `connectEngineTabs()` elects the leader tab, which alone runs the worker; the other tabs proxy their requests to it and take over when it closes |
+| `frame-guard.ts` | A page inside a frame shows a notice and stops before it connects to the engine (no worker, no tab election, no request to the leader) |
 | `tab-locks.ts` | The Web Locks behind that (leader, tab presence, store) and the connected-tab count |
 | `host-system.ts` | The worker's telemetry, `system` snapshot collector and viewers, and the watchdog's heartbeat |
 | `system-view.ts` | The page's side of the `system` snapshot: follow it while the page is visible, refresh it, "Download diagnostics" |
@@ -52,7 +53,7 @@ PostgreSQL.
 | `explorer-host.ts`, `explorer-transport.ts` | The token explorer of `GET /ui` in the Token Indexer tab, reading the API through the engine |
 | `database-view.ts`, `database-model.ts`, `store-tables.ts` | The Database tab: the page, its pure view of the engine's answers, and the worker's reads of the store's tables (`tables`, `rows`) |
 | `engine.html`, `engine-page.ts` | A page that joins the tabs, asks for persistent storage, shows its role and the engine's status; `window.umbradbEngine` holds the client, the tabs and the snapshot helpers |
-| `vite.config.ts`, `build-guard.ts`, `build-csp.ts`, `build-explorer.ts` | The build (Node tooling): every `*.html` here is a page, ES module worker, `esnext`, class names kept, `vite-plugin-wasm` for ledger-v9's WASM module, assets as files, a plugin that fails the build if postgres.js or a Node built-in would be bundled, a plugin that writes the pages' security headers, and one that makes the explorer page from `GET /ui`'s markup |
+| `vite.config.ts`, `build-guard.ts`, `build-csp.ts`, `build-explorer.ts`, `build-notices.ts`, `notices/` | The build (Node tooling): every `*.html` here is a page, ES module worker, `esnext`, class names kept, `vite-plugin-wasm` for ledger-v9's WASM module, assets as files, a plugin that fails the build if postgres.js or a Node built-in would be bundled, a plugin that writes the pages' security headers, one that makes the explorer page from `GET /ui`'s markup, and one that writes the licence notices of everything the site contains |
 
 ## Main page
 
@@ -340,8 +341,11 @@ The build writes the policy twice:
 
 - **In each page**, as `<meta http-equiv="Content-Security-Policy">` (with that page's own hashes) followed by
   `<meta name="referrer" content="no-referrer">`, right after `<meta charset>`. The hashes are of the bytes the build
-  writes, so an inline block the build did not write cannot run. This form protects the page even on a host that sends
-  no headers, but it does not reach the worker: Chrome takes a worker's policy from its script's response.
+  writes, so an inline block the build did not write cannot run. This form protects the page's scripts even on a host
+  that sends no headers, but it cannot forbid framing (`frame-ancestors` is header only) and it does not reach the
+  worker: Chrome takes a worker's policy from its script's response. Framing is refused by the pages themselves too: a
+  page inside a frame shows a notice and stops before it connects to the engine (`frame-guard.ts`), so on a host
+  without the headers another site still cannot steer clicks onto its controls.
 - **In `dist-browser/_headers`**, for every path (Netlify and Cloudflare Pages read this file). A host that does not read
   it must send these headers with every file of the build — the pages, the worker's script and the other assets (the
   policy's exact text, with the current hashes, is in `_headers`; it changes when an inline block changes):
@@ -393,6 +397,7 @@ The dev server (`npm run dev:browser`) sends no policy.
 | `assets/` | the pages' and the worker's modules, PGlite's `pglite.wasm`, `pglite.data` and `initdb.wasm`, ledger-v9's WebAssembly module, the two gzip tapes, the font, the icon and the styles; each name carries a hash of its content |
 | `snapshots/` | `index.json` and the published snapshot (see [Snapshots](#snapshots)) |
 | `_headers` | the security headers for every path (see [Security headers](#security-headers)) |
+| `THIRD-PARTY-NOTICES.txt` | the licences of the works in the site: every package the modules contain (PGlite, ledger-v9, zod, `@noble/hashes`, …, found from the bundles), PostgreSQL's (PGlite's database), the Outfit font's and UmbraDB's own; publish it with the rest |
 
 Every reference between these files is relative, so the folder works at a domain's root or under a path
 (`https://example.org/umbradb/`); besides the site itself, the pages and the worker reach only the build's two chain
@@ -459,8 +464,9 @@ PGlite runs every statement synchronously on the worker's thread, so the worker 
   nothing during a grace of two heartbeats either, the page terminates the worker and starts a new one: the API request
   in flight gets the API's 503 `UNAVAILABLE` answer, other requests in flight `restarted`; the new worker carries the
   restart count and reason and the PGlite reopen count, boots on the same store and gets back the system snapshot's
-  viewers and the engine of the last `start` (it continues at the stored cursors; an engine the page stopped stays
-  stopped). While `range`, `reset`, `export` or `import` runs the limit is 10 min. More than 3 restarts within 10 min
+  viewers and the engine the worker last reported running, with the configuration it reported: the one a `start` (with
+  or without a configuration), a `range` or a `reset` answered with (it continues at the stored cursors; an engine the
+  page stopped, an import stopped or that failed stays stopped). While `range`, `reset`, `export` or `import` runs the limit is 10 min. More than 3 restarts within 10 min
   close the client with `worker-error`.
 - **Reopen.** PGlite 0.5.8 fails every statement with "stack depth limit exceeded" once a database has failed about
   1,700 statements, until it is reopened. The host counts the statements the database fails and reopens the store at
@@ -507,9 +513,11 @@ statements), **Browser**, **Snapshots** and **Logs** (the last 200 lines, newest
   it is hidden. "count rows exactly" reads `count(*)` of every table once.
 - "Download diagnostics" saves the snapshot shown as JSON (`umbradb-diagnostics-<time>.json`, its log lines
   included): a download through a `blob:` URL and `<a download>`, which the policy allows. URLs lose their
-  credentials, query and fragment, and secret-looking values (tokens, passwords, keys, `Authorization` and `Cookie`
-  headers, Bearer and Basic credentials, JWTs, viewing keys) are replaced, in every string of the snapshot; a log line
-  is redacted as it is written, before an event's fields become JSON.
+  credentials, query, fragment and the path segments that look like keys (16 or more characters mixing letters and
+  digits), and secret-looking values (tokens, passwords, keys, `Authorization` and `Cookie` headers, Bearer and Basic
+  credentials, JWTs, viewing keys, seed and mnemonic phrases, word by word) are replaced, whole (a JSON member's array
+  or object too, also inside JSON-escaped text), in every string of the snapshot; a log line is redacted as it is
+  written, before an event's fields become JSON.
 - Text from the engine (error messages, log lines, URLs) is drawn as text nodes with the explorer's hidden-character
   rules (`visible-text.ts`, the rule of `../mip0018/ui/page.js`): every control, format, private-use, unassigned or
   surrogate code point, line or paragraph separator and default-ignorable character is drawn as a visible mark

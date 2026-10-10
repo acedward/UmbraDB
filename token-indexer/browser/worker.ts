@@ -38,7 +38,9 @@ const host = createWorkerHost({
 });
 
 scope.addEventListener("message", (event) => {
-  void host.receive(event.data).then((response) => scope.postMessage(response));
+  host.receive(event.data).then((response) => scope.postMessage(response)).catch((e: unknown) => {
+    console.error(`[umbradb worker] a response could not be posted: ${e instanceof Error ? e.message : "unknown error"}`);
+  });
 });
 host.onNotice((notice) => scope.postMessage(notice));
 void host.boot();
