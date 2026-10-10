@@ -7,8 +7,9 @@
  *   scanned on OPFS with the worker's yielding scheduler, gives the recorded live sync's archive digest and the recorded
  *   live range's digest of every table of both schemas; the recorded U1 range (715402–715433), in a new profile, gives
  *   its live archive digest.
- * - `[[browser.worker.start-tip]]` — the build's own automatic start against a local chain (127.0.0.1) whose finalized
- *   tip advances: with an empty profile and the endpoints failing, the engine waits with back-off, asks for no block
+ * - `[[browser.worker.start-tip]]` — the engine page's automatic start (the leader tab starts the saved configuration;
+ *   the build's default points at a local chain on 127.0.0.1 whose finalized tip advances): with an empty profile and
+ *   the endpoints failing, the engine waits with back-off, asks for no block
  *   and has no first height; once they answer it starts at the tip H they serve then (`/v1/status` `startHeight` = H)
  *   and the archive and scan heights follow the advancing tip; the page asks for persistent storage and reports the
  *   answer; a closed and reopened tab resumes at the cursor through the gap (no jump, no hole); a storage estimate

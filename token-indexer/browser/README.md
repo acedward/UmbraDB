@@ -83,7 +83,7 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   system snapshot a follower receives is marked as relayed.
 - **Handover.** When the leader closes, the oldest follower gets the lock, starts its worker on the same store and
   resumes what the previous leader last reported running (the same `start` configuration, which continues at the stored
-  cursors). Requests in flight to the closed leader: `status`, `api`, `export` and `digest` are sent again to the next leader;
+  cursors); the first leader of a store starts its saved configuration instead (see Sync). Requests in flight to the closed leader: `status`, `api`, `export` and `digest` are sent again to the next leader;
   any other request fails with `leader-changed` (it may or may not have been applied); a request made while no leader
   is known waits up to 10 s, then fails with `leader-unavailable`.
 - **Store lock.** The worker opens the store only under `umbradb-store:<store>`, held until it closes the store or ends,
@@ -101,10 +101,12 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   height: history before it is not indexed. Requests to the Stagenet endpoints are spaced 250 ms apart per endpoint and
   a throttling answer is retried after its `Retry-After`, as in the Node commands.
 - **Automatic start and resume.** The configuration of the last `start` or `range` is saved beside the store
-  (`settings.ts`: `umbradb-stagenet.engine.json` in the OPFS root), with whether the engine starts by itself. When the
-  worker boots it starts that configuration (the build's default for a new store: the tip, following it), unless a
-  `stop` request turned that off. A reopened store continues at its cursor and fetches every height since, so a closed
-  or frozen tab leaves no hole; a chosen range keeps its end.
+  (`settings.ts`: `umbradb-stagenet.engine.json` in the OPFS root), with whether the engine starts by itself (`stop`
+  turns that off, the next `start` on). The leader tab starts it (`tabs.ts` `resumeOrAutoStart`, the default `resume`):
+  after its worker has booted it resumes what a previous leader was running, or else, when the saved configuration
+  says so, sends `start` with no configuration, which runs the saved one (for a new store, the build's default: the
+  tip, following it). Followers never start anything. A reopened store continues at its cursor and fetches every
+  height since, so a closed or frozen tab leaves no hole; a chosen range keeps its end.
 - **Ranges.** One archive has no gaps and no backfill, so `range` (a new start or end) and `reset` drop the store's data
   (both schemas, in one transaction, in the leader's worker, which holds the store's lock) and migrate again before
   starting. The page offers an export first; the host takes a `beforeWipe` hook for that. Neither is sent again after
@@ -125,6 +127,6 @@ A browser profile runs one engine per store, however many tabs are open. A page 
 ## Build settings
 
 `config.ts` holds the network, its endpoints and the store's location. A build can set `__UMBRADB_BROWSER_CONFIG__`
-through Vite's `define` (JSON): `autoStart` (default true: the worker starts the saved configuration), `start` (the
+through Vite's `define` (JSON): `autoStart` (default true: the leader tab starts the saved configuration), `start` (the
 configuration a new store starts with, default `{}`) and `quota` (the storage guard's `checkEveryMs`, `recheckMs`,
 `storeEveryMs`). The browser tests use it to turn the automatic start off, or to point it at a local chain.

@@ -3,10 +3,10 @@
  * lives (one OPFS directory per network, so a browser profile holds one store per network).
  *
  * A build can change the engine's start through Vite's `define` of `__UMBRADB_BROWSER_CONFIG__`, a JSON object:
- * `autoStart` (default true: the worker starts the engine when it boots, on a new store at the finalized tip),
- * `start` (the configuration a new store starts with, a `StartConfig` of `protocol.ts`; default `{}`: the network
- * endpoints below, from the tip) and `quota` (`checkEveryMs`, `recheckMs`, `storeEveryMs` of the storage guard,
- * `quota.ts`).
+ * `autoStart` (default true: the leader tab starts the store's saved configuration once its worker has booted, a new
+ * store's at the finalized tip; `tabs.ts`), `start` (the configuration a new store starts with, a `StartConfig` of
+ * `protocol.ts`; default `{}`: the network endpoints below, from the tip) and `quota` (`checkEveryMs`, `recheckMs`,
+ * `storeEveryMs` of the storage guard, `quota.ts`).
  */
 export const BROWSER_NETWORK = "stagenet";
 export const BROWSER_NODE_URL = "https://rpc.stagenet.shielded.tools";

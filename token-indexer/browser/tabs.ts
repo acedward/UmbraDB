@@ -17,7 +17,8 @@
  *
  * **Handover.** A tab that becomes leader announces itself; then, after its worker has booted on the same store, it
  * resumes what the previous leader last reported running (the same `start` configuration, which continues at the
- * stored cursors) — {@link EngineTabsOptions.resume} changes that. Requests in flight to a leader that closed follow one
+ * stored cursors), or, with nothing to resume, starts the store's saved configuration when it says to start by itself
+ * (a new store: the build's default, at the finalized tip) — {@link EngineTabsOptions.resume} changes that. Requests in flight to a leader that closed follow one
  * rule:
  * - `status`, `api`, `export` and `digest` change nothing, so they are sent again to the next leader (which may be this
  *   tab) and answered by it;
@@ -34,7 +35,7 @@
 import { z } from "zod";
 import { relayedSnapshot, type SystemSnapshot } from "../engine/system-snapshot.ts";
 import { type EngineClient, EngineError, type EngineErrorCode, startEngineWorker } from "./client.ts";
-import { BROWSER_DATA_DIR } from "./config.ts";
+import { BROWSER_BUILD_CONFIG, BROWSER_DATA_DIR } from "./config.ts";
 import {
   type BootState,
   type Notice,
@@ -107,8 +108,7 @@ export interface EngineTabsOptions {
   tabId?: string;
   /**
    * Runs once this tab has become leader and its worker has booted, with what the previous leader last reported (`null`
-   * when nothing was reported, e.g. the first tab). Default: start the engine with the previous configuration if it was
-   * running.
+   * when nothing was reported, e.g. the first tab). Default: {@link resumeOrAutoStart} with the build's `autoStart`.
    */
   resume?: (previous: EngineRecord | null, client: EngineClient) => Promise<void>;
   /** Default: the console. */
@@ -206,9 +206,24 @@ const defaultLog = (level: TabLogLevel, message: string): void => {
   else console.info(line);
 };
 
-/** The default {@link EngineTabsOptions.resume}: start again what the previous leader was running. */
+/** Starts again what the previous leader was running. */
 export async function resumePrevious(previous: EngineRecord | null, client: EngineClient): Promise<void> {
   if (previous?.running === true) await client.start(previous.config);
+}
+
+/**
+ * The default {@link EngineTabsOptions.resume}: start again what the previous leader was running; otherwise, with
+ * `autoStart` (the build's setting, default true), start the store's saved configuration when it says to start by
+ * itself (`start` with no configuration: a new store's is the build's default, from the finalized tip; a `stop` request
+ * turned it off).
+ */
+export function resumeOrAutoStart(autoStart: boolean = BROWSER_BUILD_CONFIG.autoStart ?? true): (previous: EngineRecord | null, client: EngineClient) => Promise<void> {
+  return async (previous, client) => {
+    if (previous?.running === true) return resumePrevious(previous, client);
+    if (!autoStart) return;
+    const s = await client.status();
+    if (s.engine === null && s.settings?.autoStart === true) await client.start();
+  };
 }
 
 const noChannel = (): ChannelLike => ({ postMessage() {}, addEventListener() {}, close() {} });
@@ -233,7 +248,7 @@ export function connectEngineTabs(opts: EngineTabsOptions = {}): EngineTabs {
   const open = openChannel ?? noChannel;
   const startWorker = opts.startWorker ?? defaultStartWorker;
   const leaderWaitMs = opts.leaderWaitMs ?? LEADER_WAIT_MS;
-  const resume = opts.resume ?? resumePrevious;
+  const resume = opts.resume ?? resumeOrAutoStart();
   const log = opts.log ?? defaultLog;
   const now = opts.now ?? (() => Date.now());
 

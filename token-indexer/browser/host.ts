@@ -27,8 +27,9 @@
  * begins: while the endpoints fail the engine waits with back-off, and it never starts at genesis by default.
  *
  * **Saved configuration** (`settings.ts`): the last `start` configuration or `range`, kept beside the store, and
- * whether the engine starts by itself. With `autoStart`, the end of a successful boot starts it (a new store at the
- * tip; a reopened one resumes, a chosen range keeping its end); a `stop` request turns that off until the next `start`.
+ * whether the engine should start by itself (`autoStart`; a `stop` request turns it off until the next `start`). A
+ * `start` with no configuration runs it; the leader tab sends one when its worker has booted (`tabs.ts`), so a new
+ * store starts at the tip and a reopened one resumes, a chosen range keeping its end.
  *
  * **Storage** (`quota.ts`): before each sync batch the guard compares the browser's usage with the quota and pauses the
  * sync before it is reached (`storage` in `status`); it resumes once space frees.
@@ -105,8 +106,6 @@ export interface WorkerHostOptions {
   log?: (level: LogLevel, message: string) => void;
   /** A monotonic clock in milliseconds for the boot timings. Default `performance.now`. */
   monotonic?: () => number;
-  /** Start the saved configuration when a boot succeeds, unless a `stop` request turned it off. Default false. */
-  autoStart?: boolean;
   /** The configuration of a store with no saved one. Default `{}` (the network endpoints, from the finalized tip). */
   defaultStart?: StartConfig;
   /** Where the saved configuration is kept. Default: a file beside an `opfs-ahp://` store, else memory. */
@@ -304,12 +303,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     return snapshotBoot();
   }
 
-  const boot = (): Promise<BootState> => (booting ??= runBoot().then((state) => {
-    if (state.phase === "ready" && opts.autoStart === true && saved?.autoStart === true) {
-      serial(() => start(undefined)).catch((e: unknown) => log("error", `the automatic start failed: ${messageOf(e)}`));
-    }
-    return state;
-  }));
+  const boot = (): Promise<BootState> => (booting ??= runBoot());
 
   /** The open store once the boot has succeeded. */
   async function ready(): Promise<Store> {

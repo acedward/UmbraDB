@@ -5,9 +5,12 @@
  * - `[[browser.host.digest]]` — `digest` gives the store's archive digest and the digest of every table of both
  *   schemas, read in one transaction; on the replayed U1 range the archive digest is the recorded live sync's.
  * - `[[browser.host.start-tip]]` — a start with no start height begins a new archive at the finalized tip
- *   (`/v1/status` `startHeight` = the tip) and saves its configuration; the automatic start does the same with no
- *   request; a reopened store resumes at its cursor through the gap (every height fetched once, the first height kept);
- *   a `stop` turns the automatic start off until the next `start`.
+ *   (`/v1/status` `startHeight` = the tip) and saves its configuration; a `start` with no configuration runs the saved
+ *   one (a new store: the default configuration), as the leader tab does once the worker has booted; a reopened store
+ *   resumes at its cursor through the gap (every height fetched once, the first height kept); a `stop` turns the
+ *   automatic start off until the next `start`.
+ * - `[[browser.tabs.auto-start]]` — the leader tab's default resume: the previous leader's running configuration, else
+ *   the saved configuration when it says to start by itself, else nothing; never with the build's automatic start off.
  * - `[[browser.host.range-reset]]` — `range` drops the store's data and starts the new range (a range whose end is
  *   below its start is refused and changes nothing); `reset` drops it and runs the same range again, to the same
  *   digests; `range("tip")` follows the tip again; the hook before a wipe is called each time; a reopened store keeps
@@ -31,6 +34,8 @@ import { createWorkerHost, type WorkerHost, type WorkerHostOptions } from "../br
 import { type CapabilityReport, type DigestResult, type HostStatus, PROTOCOL_VERSION, type Response, type StartConfig } from "../browser/protocol.ts";
 import { pauseThresholdBytes, QUOTA_RULE, type StorageEnvironment } from "../browser/quota.ts";
 import { memorySettingsStore } from "../browser/settings.ts";
+import { resumeOrAutoStart } from "../browser/tabs.ts";
+import type { EngineClient } from "../browser/client.ts";
 import { loadTape } from "../browser/tapes.ts";
 
 const U1 = { from: 715402, to: 715433 } as const;
@@ -138,7 +143,7 @@ describe("browser engine host: sync", () => {
     expect(await result<DigestResult>(host, "digest")).toMatchObject({ archive: done.archive, tables: done.tables });
   }, 120_000);
 
-  it("[[browser.host.start-tip]] a start with no start height begins at the finalized tip; the automatic start needs no request; a reopened store resumes at its cursor through the gap; a stop turns the automatic start off", async () => {
+  it("[[browser.host.start-tip]] a start with no start height begins at the finalized tip; a start with no configuration runs the saved one; a reopened store resumes at its cursor through the gap; a stop turns the automatic start off", async () => {
     // A start with no start height on an empty store: the tip the endpoints serve (here the tape's, 715420).
     const plain = createTapeFetch(await u1Tape(), { finalizedHeight: 715420 });
     const h0 = newHost({ fetch: plain.fetchImpl });
@@ -149,15 +154,18 @@ describe("browser engine host: sync", () => {
     expect(at.cursors!.sync).toEqual({ height: 715420, startHeight: 715420 });
     expect((await apiJson(h0, "/v1/status")).body).toMatchObject({ startHeight: 715420, archiveHeight: 715420, indexedHeight: 715420 });
 
-    // The automatic start, on a store that outlives the host: no request at all.
+    // A new store on a directory that outlives the host: its saved configuration is the default one, and a start with
+    // no configuration (what the leader tab sends once the worker has booted) runs it, from the tip.
     const dir = storeDir();
     const settings = memorySettingsStore();
     const replay = createTapeFetch(await u1Tape(), { finalizedHeight: 715410 });
     const net: StartConfig = { source: { kind: "network", nodeUrl: replay.nodeUrl, indexerUrl: replay.indexerUrl }, ...FAST };
-    const opts = { dataDir: dir, autoStart: true, settings, defaultStart: net, fetch: replay.fetchImpl };
+    const opts = { dataDir: dir, settings, defaultStart: net, fetch: replay.fetchImpl };
     const a = newHost(opts);
     expect((await a.boot()).phase).toBe("ready");
-    const first = await until(a, "the automatic start at the tip", (s) => s.cursors?.scan?.nextHeight === 715411);
+    expect((await result<HostStatus>(a, "status")).settings).toEqual({ config: net, autoStart: true });
+    await result(a, "start");
+    const first = await until(a, "the start at the tip", (s) => s.cursors?.scan?.nextHeight === 715411);
     expect(first.engine).toMatchObject({ running: true, config: net });
     expect(first.cursors!.sync).toEqual({ height: 715410, startHeight: 715410 });
     expect(first.settings).toEqual({ config: net, autoStart: true });
@@ -166,7 +174,7 @@ describe("browser engine host: sync", () => {
     // Reopened after the tip moved on: it resumes at its cursor and fetches each height of the gap once.
     replay.setFinalizedHeight(715420);
     const b = newHost(opts);
-    await b.boot();
+    await result(b, "start");
     const caught = await until(b, "the gap", (s) => s.cursors?.sync?.height === 715420 && s.cursors?.scan?.nextHeight === 715421);
     expect(caught.cursors!.sync).toEqual({ height: 715420, startHeight: 715410 });
     expect(replay.counts.get("chain_getBlock")).toBe(715420 - 715410 + 1);
@@ -221,10 +229,10 @@ describe("browser engine host: sync", () => {
     const d2 = await result<DigestResult>(h, "digest");
     expect({ archive: d2.archive, tables: d2.tables }).toEqual({ archive: d1.archive, tables: d1.tables });
 
-    // A reopened store keeps the range's end: the automatic start ends at once, past nothing.
+    // A reopened store keeps the range's end: its saved configuration ends at once, past nothing.
     await closeHost(h);
-    const h2 = newHost({ ...opts, autoStart: true });
-    await h2.boot();
+    const h2 = newHost(opts);
+    expect((await result<HostStatus>(h2, "start")).settings).toEqual(r.settings);
     const kept = await until(h2, "the resumed range", (s) => s.engine?.status.sync.phase === "done");
     expect(kept.cursors!.sync).toEqual({ height: 715410, startHeight: 715402 });
 
@@ -323,4 +331,47 @@ describe("browser engine host: sync", () => {
     }
     expect(logs, logs.join("\n")).toContain("warn sync chain_getBlock retried in 1000 ms: chain_getBlock: HTTP 429 from https://rpc.stagenet.shielded.tools//");
   }, 120_000);
+});
+
+describe("leader tab: automatic start", () => {
+  /** A client that records the starts it is asked for and reports `status` as given. */
+  function fakeClient(status: Partial<HostStatus>): { client: EngineClient; starts: Array<StartConfig | undefined> } {
+    const starts: Array<StartConfig | undefined> = [];
+    const client = {
+      status: async () => status as HostStatus,
+      start: async (config?: StartConfig) => {
+        starts.push(config);
+        return status as HostStatus;
+      },
+    } as unknown as EngineClient;
+    return { client, starts };
+  }
+
+  it("[[browser.tabs.auto-start]] the leader resumes the previous leader's running configuration, else starts the saved configuration when it says to start by itself, else nothing; with the build's automatic start off it starts only a previous leader's", async () => {
+    const config: StartConfig = { source: { kind: "tape", range: "u1" }, startHeight: 715402 };
+    const saved = (autoStart: boolean) => ({ engine: null, settings: { config: {}, autoStart } });
+
+    const resumed = fakeClient(saved(true));
+    await resumeOrAutoStart(true)({ running: true, config }, resumed.client);
+    expect(resumed.starts).toEqual([config]);
+
+    const fresh = fakeClient(saved(true));
+    await resumeOrAutoStart(true)(null, fresh.client);
+    expect(fresh.starts).toEqual([undefined]); // the saved configuration
+
+    const stopped = fakeClient(saved(false));
+    await resumeOrAutoStart(true)(null, stopped.client);
+    await resumeOrAutoStart(true)({ running: false, config }, stopped.client);
+    expect(stopped.starts).toEqual([]);
+
+    const off = fakeClient(saved(true));
+    await resumeOrAutoStart(false)(null, off.client);
+    expect(off.starts).toEqual([]);
+    await resumeOrAutoStart(false)({ running: true, config }, off.client);
+    expect(off.starts).toEqual([config]);
+
+    const busy = fakeClient({ engine: { running: true } as HostStatus["engine"], settings: { config: {}, autoStart: true } });
+    await resumeOrAutoStart(true)(null, busy.client);
+    expect(busy.starts).toEqual([]);
+  });
 });
