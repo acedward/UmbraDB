@@ -13,6 +13,10 @@ npm run dev:browser     # the same configuration served by Vite on 127.0.0.1 (no
 The build indexes Stagenet unless `UMBRADB_BROWSER_NETWORK`, `UMBRADB_BROWSER_NODE_URL` and
 `UMBRADB_BROWSER_INDEXER_URL` say otherwise when it runs (see [Security headers](#security-headers)).
 
+[MEASUREMENTS.md](MEASUREMENTS.md) records what the build costs and how fast it runs (cold start, sizes, live and replay
+blocks per second, storage per block, memory, a hidden tab, the status page's cost), next to the Node build on
+PostgreSQL.
+
 ## Modules
 
 | Module | Role |

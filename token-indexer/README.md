@@ -266,6 +266,10 @@ PG_URL=… node --import tsx token-indexer/dev/live-range-check.ts replay --tag 
 PG_URL=… node --import tsx token-indexer/dev/live-range-check.ts compare --tags a,r --out /tmp/live-range
 ```
 
+Measurements of the browser build next to the Node build (`browser/MEASUREMENTS.md`; not CI): `dev/measure-browser.ts`
+(sizes, cold start, replay, memory, a hidden tab, the status page's cost, in headless Chromium) and `dev/measure-node.ts`
+(the same replay on PostgreSQL and on PGlite in Node; the activity listings' page cost on a large store).
+
 ## Vendored code and provenance
 
 `vendor/mip0018/` holds, byte for byte, the reference implementation's codec (`packages/codec`), the language-neutral
