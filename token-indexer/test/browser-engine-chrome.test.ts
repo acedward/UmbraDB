@@ -16,13 +16,13 @@
  *   them marked `follower` with the time it received them; when it closes without unwatching, its viewer is released and
  *   the leader's worker stops collecting.
  * - `[[browser.worker.watchdog]]` — the worker's thread is held busy (as by a statement that does not return) while it
- *   replays the IDX range: the page terminates it after the watchdog's limit and grace, the API request in flight gets
- *   the API's 503 `UNAVAILABLE` answer, a new worker boots on the same store and continues the engine at the stored
- *   cursors; the finished store has the recorded archive digest and 37-table digest, and the snapshot counts the
- *   restart with its reason.
+ *   replays the IDX range: the page terminates it after the watchdog's limit (a short one: three times the page's boot
+ *   measured on the machine, at least 2 s) and grace, the API request in flight gets the API's 503 `UNAVAILABLE`
+ *   answer, a new worker boots on the same store and continues the engine at the stored cursors; the finished store has
+ *   the recorded archive digest and 37-table digest, and the snapshot counts the one restart with its reason.
  * - `[[browser.worker.api-latency]]` — the round trip of `/v1/status`, `/v1/tokens` and a contract's activity page from
  *   the page while the worker replays the IDX range (sync and scan running) and with the engine stopped: p95 bounded,
- *   and the heartbeat's largest gap during the replay (measured and reported).
+ *   and no heartbeat missed during the replay (every gap under two intervals; the largest measured and reported).
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH.
  * `UMBRADB_BROWSER_REPORT=<file>` writes the measurements as JSON (never committed).
@@ -32,7 +32,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readTape } from "../../chain-archive-sync/archive-tape.js";
 import { createTapeReplay, type TapeReplay } from "../../chain-archive-sync/tape-replay.js";
-import type { HostStatus } from "../browser/protocol.ts";
+import { DEFAULT_HEARTBEAT_MS, type HostStatus } from "../browser/protocol.ts";
 import { pauseThresholdBytes } from "../browser/quota.ts";
 import { type SystemSnapshot, SystemSnapshotSchema } from "../engine/system-snapshot.ts";
 import { Browser, findBrowser, type Page } from "./helpers/cdp-browser.ts";
@@ -120,16 +120,17 @@ describe("browser engine in Chrome: system snapshot, watchdog, scheduling", () =
     expect(watched[2]!.api.served - watched[1]!.api.served).toBe(1);
     expect(watched.every((s) => s.collection.watching)).toBe(true);
 
-    // Unwatched: no notice, no /v1/status read, no catalog read.
+    // Unwatched: no notice, no /v1/status read, no catalog read. A collection already under way when the watch ends
+    // still finishes (its snapshot is not posted); a refresh waits behind it, so the refreshed snapshot (catalog read
+    // included) is where the unwatched time starts.
     expect(await engine("c.system({ watch: false })")).toEqual({ watching: false, viewers: 0, snapshot: null });
-    await sleep(300);
+    const unwatched = SystemSnapshotSchema.parse((await engine("c.system({ refresh: { database: true } })")).snapshot);
     const n = (await page.eval("window.__snaps.length")) as number;
-    const lastWatched = SystemSnapshotSchema.parse(await page.eval("window.__snaps[window.__snaps.length - 1]"));
     await sleep(6_000);
     expect(await page.eval("window.__snaps.length"), "no snapshot while unwatched").toBe(n);
     const after = SystemSnapshotSchema.parse((await engine("c.system({ refresh: {} })")).snapshot);
-    expect(after.api.served, "only the refresh read /v1/status").toBe(lastWatched.api.served + 1);
-    expect(after.databases.collectedAt, "no catalog read while unwatched").toBe(lastWatched.databases.collectedAt);
+    expect(after.api.served, "only the refresh read /v1/status").toBe(unwatched.api.served + 1);
+    expect(after.databases.collectedAt, "no catalog read while unwatched").toBe(unwatched.databases.collectedAt);
     expect(after.collection.watching).toBe(false);
 
     // A snapshot of the stopped engine against its sources.
@@ -205,13 +206,17 @@ describe("browser engine in Chrome: system snapshot, watchdog, scheduling", () =
     expect(page.exceptions).toEqual([]);
   }, 300_000);
 
-  /** Opens the engine page in a tab of `b` and waits for its boot (and, for a leader, its worker's boot). */
-  async function engineTab(b: Browser, query = "", opts: { workers?: boolean } = {}): Promise<Page> {
-    const p = await b.newPage(opts);
+  /** Loads the engine page in `p` and waits for its boot (and, for a leader, its worker's boot). */
+  async function load(p: Page, query = ""): Promise<void> {
     await p.goto(`${server.origin}/engine.html${query}`);
     await p.waitFor("window.umbradbEngine !== undefined", 30_000, "the engine page");
     await p.eval("window.umbradbEngine.tabs.ready");
     await p.eval("window.umbradbEngine.client.booted()");
+  }
+  /** Opens the engine page in a tab of `b` and waits for its boot (and, for a leader, its worker's boot). */
+  async function engineTab(b: Browser, query = "", opts: { workers?: boolean } = {}): Promise<Page> {
+    const p = await b.newPage(opts);
+    await load(p, query);
     return p;
   }
   const on = (p: Page) => (expr: string): Promise<Json> => p.eval(`(async () => { const c = window.umbradbEngine.client; return ${expr}; })()`);
@@ -253,21 +258,32 @@ describe("browser engine in Chrome: system snapshot, watchdog, scheduling", () =
   it("[[browser.worker.watchdog]] the worker's thread held busy during the IDX replay is terminated after the limit and grace; the API request in flight gets the 503; a new worker continues at the stored cursors to the recorded digests; the snapshot counts the restart", async () => {
     const b = await Browser.launch(browserExe!);
     try {
-      const p = await engineTab(b, "?watchdogLimitMs=2000", { workers: true });
+      // The limit is short for a test, yet well above the time the engine page takes to boot its worker on this machine
+      // (measured first in the same tab, on the default limit), so a slow machine's boot of the replacement worker is
+      // not taken for a stuck worker: the held thread below is the one restart this test is about.
+      const p = await b.newPage({ workers: true });
+      const t0 = performance.now();
+      await load(p);
+      const bootMs = performance.now() - t0;
+      const LIMIT_MS = Math.max(2_000, Math.ceil(3 * bootMs));
+      await load(p, `?watchdogLimitMs=${LIMIT_MS}`);
       const inP = on(p);
       await inP(`c.start(${JSON.stringify({ source: { kind: "tape", range: "idx" }, startHeight: IDX.from, ...FAST })})`);
       const before = await waitFor("a first part of the range", () => inP("c.status()"), (s: HostStatus) => (s.cursors?.scan?.nextHeight ?? 0) > IDX.from + 150);
       // Hold the worker's thread, as a statement that does not return holds it.
       await p.evalWorker("setTimeout(() => { const end = Date.now() + 600000; while (Date.now() < end) {} }, 0); true");
       await sleep(50);
-      const t0 = Date.now();
+      const t1 = performance.now();
       const answer = (await inP(`c.api("GET", "/v1/tokens")`)) as Json;
-      const detectedMs = Date.now() - t0;
+      const detectedMs = performance.now() - t1;
       expect(answer).toEqual(unavailableAnswer("GET"));
       const restarts = (await p.eval("window.umbradbEngine.restarts()")) as Array<{ at: number; reason: string }>;
       expect(restarts).toHaveLength(1);
-      expect(restarts[0]!.reason).toMatch(/^the engine worker sent nothing for \d+ ms \(limit 2000 ms\)$/);
-      report.watchdog = { detectedMs, reason: restarts[0]!.reason, cursorsBefore: before.cursors };
+      expect(restarts[0]!.reason).toMatch(new RegExp(`^the engine worker sent nothing for \\d+ ms \\(limit ${LIMIT_MS} ms\\)$`));
+      expect((await inP("c.booted()")).phase, "the new worker's boot").toBe("ready");
+      const replacementBootMs = performance.now() - t1 - detectedMs;
+      report.watchdog = { bootMs: Math.round(bootMs), limitMs: LIMIT_MS, detectedMs: Math.round(detectedMs), replacementBootMs: Math.round(replacementBootMs), reason: restarts[0]!.reason, cursorsBefore: before.cursors };
+      console.log("watchdog in Chrome", JSON.stringify(report.watchdog));
 
       const end = await waitFor("the rest of the range on the new worker", () => inP("c.status()"), (s: HostStatus) => s.cursors?.sync?.height === IDX.to && s.cursors?.scan?.nextHeight === IDX.to + 1, 180_000);
       expect(end.engine).toMatchObject({ running: true });
@@ -278,7 +294,7 @@ describe("browser engine in Chrome: system snapshot, watchdog, scheduling", () =
       const snap = SystemSnapshotSchema.parse((await inP("c.system({ refresh: {} })")).snapshot);
       expect(snap.engine.watchdogRestarts).toBe(1);
       expect(snap.engine.lastWatchdogRestart?.reason).toBe(restarts[0]!.reason);
-      expect(snap.configuration.watchdogLimitMs).toBe(2_000);
+      expect(snap.configuration.watchdogLimitMs).toBe(LIMIT_MS);
       expect(snap.logs.some((l) => l.text === `watchdog restart: ${restarts[0]!.reason}`)).toBe(true);
       expect(p.exceptions).toEqual([]);
       await p.close();
@@ -343,7 +359,9 @@ describe("browser engine in Chrome: system snapshot, watchdog, scheduling", () =
         expect(during.lat[k]!.length, k).toBeGreaterThan(10);
         expect(percentile(during.lat[k]!, 0.95)!, `${k} p95 during the replay`).toBeLessThan(250);
       }
-      expect(Math.max(...gaps), "the heartbeat keeps coming during the replay").toBeLessThan(1_500);
+      // The heartbeat keeps coming: no beat is missed (a gap of two intervals would be one). A beat comes late by as long
+      // as the worker's thread is not given the processor, which a loaded machine stretches; the watchdog allows far more.
+      expect(Math.max(...gaps), "no heartbeat missed during the replay").toBeLessThan(2 * DEFAULT_HEARTBEAT_MS);
       await p.close();
     } finally {
       await b.close();
