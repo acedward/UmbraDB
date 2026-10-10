@@ -242,6 +242,7 @@ required gate runs it too, on PostgreSQL with the runner's Chrome.
 | The system status page: its view of a snapshot and the explorer's hidden-character rules; in Chromium on the static build with its headers, every section against its sources, each driven state, a follower tab, nothing read while hidden, hostile text, and the diagnostics file's schema and redaction (see `browser/README.md`) | `test/browser-system-page.test.ts`, `test/browser-system-page-chrome.test.ts` |
 | The dev server (`npm run dev:browser`): every stylesheet, icon and font the explorer and the status page link served as what it is, never as a page; in Chromium, the dev explorer styled (its font, the logo's size, the engine panel's grid) | `test/browser-dev-chrome.test.ts` |
 | The static deploy: `npm run serve:browser`'s server (every file kind's content type, no `Content-Encoding`, every `_headers` header, nothing outside the folder, a folder without `_headers` refused) and its command; in Chromium, the site `npm run build:browser` writes served by it: the explorer starts by itself, the status page follows it, the published snapshot imports with the recorded digests, only the site and the build's chain are requested, no CSP violation | `test/browser-deploy.test.ts`, `test/browser-deploy-chrome.test.ts` |
+| The build's licence notices: `THIRD-PARTY-NOTICES.txt` lists every bundled package with its licence text, PostgreSQL's, the font's and UmbraDB's; an unknown package without a licence text fails the build | `test/browser-notices.test.ts` |
 
 Fixtures:
 

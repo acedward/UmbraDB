@@ -150,7 +150,7 @@ describe("browser engine worker in Chrome", () => {
 
   it("[[browser.build.bundle]] the build holds one ledger-v9 instance with its class names kept, PGlite's assets and both tapes; the node-free plugin refuses postgres.js and Node built-ins", async () => {
     const assets = readdirSync(join(out, "assets"));
-    expect(readdirSync(out).sort()).toEqual(["_headers", "assets", "engine.html", "index.html", "system.html"]);
+    expect(readdirSync(out).sort()).toEqual(["THIRD-PARTY-NOTICES.txt", "_headers", "assets", "engine.html", "index.html", "system.html"]);
     expect(assets.filter((f) => /^midnight_ledger_wasm_v9_bg-.*\.wasm$/.test(f))).toHaveLength(1);
     expect(assets.filter((f) => f.endsWith(".wasm")).map((f) => f.replace(/-[\w-]+\.wasm$/, "")).sort()).toEqual(["initdb", "midnight_ledger_wasm_v9_bg", "pglite"]);
     expect(assets.filter((f) => /^pglite-.*\.data$/.test(f))).toHaveLength(1);

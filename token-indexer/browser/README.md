@@ -49,7 +49,7 @@ PostgreSQL.
 | `index.html`, `explorer-page.ts`, `explorer-host.ts`, `explorer-transport.ts`, `explorer.css` | The token explorer (see [Explorer](#explorer)): the page `GET /ui` serves, reading the API through the engine, with the engine panel |
 | `engine-panel.ts`, `panel-model.ts` | The explorer's engine panel: what the engine indexes and how it is doing, and its controls |
 | `engine.html`, `engine-page.ts` | A page that joins the tabs, asks for persistent storage, shows its role and the engine's status; `window.umbradbEngine` holds the client, the tabs and the snapshot helpers |
-| `vite.config.ts`, `build-guard.ts`, `build-csp.ts`, `build-explorer.ts` | The build (Node tooling): every `*.html` here is a page, ES module worker, `esnext`, class names kept, `vite-plugin-wasm` for ledger-v9's WASM module, assets as files, a plugin that fails the build if postgres.js or a Node built-in would be bundled, a plugin that writes the pages' security headers, and one that makes the explorer page from `GET /ui`'s markup |
+| `vite.config.ts`, `build-guard.ts`, `build-csp.ts`, `build-explorer.ts`, `build-notices.ts`, `notices/` | The build (Node tooling): every `*.html` here is a page, ES module worker, `esnext`, class names kept, `vite-plugin-wasm` for ledger-v9's WASM module, assets as files, a plugin that fails the build if postgres.js or a Node built-in would be bundled, a plugin that writes the pages' security headers, one that makes the explorer page from `GET /ui`'s markup, and one that writes the licence notices of everything the site contains |
 
 ## Explorer
 
@@ -334,6 +334,7 @@ The dev server (`npm run dev:browser`) sends no policy.
 | `assets/` | the pages' and the worker's modules, PGlite's `pglite.wasm`, `pglite.data` and `initdb.wasm`, ledger-v9's WebAssembly module, the two gzip tapes, the font, the icon and the styles; each name carries a hash of its content |
 | `snapshots/` | `index.json` and the published snapshot (see [Snapshots](#snapshots)) |
 | `_headers` | the security headers for every path (see [Security headers](#security-headers)) |
+| `THIRD-PARTY-NOTICES.txt` | the licences of the works in the site: every package the modules contain (PGlite, ledger-v9, zod, `@noble/hashes`, …, found from the bundles), PostgreSQL's (PGlite's database), the Outfit font's and UmbraDB's own; publish it with the rest |
 
 Every reference between these files is relative, so the folder works at a domain's root or under a path
 (`https://example.org/umbradb/`); besides the site itself, the pages and the worker reach only the build's two chain

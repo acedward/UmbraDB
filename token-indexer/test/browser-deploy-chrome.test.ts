@@ -98,7 +98,7 @@ describe("the static deploy recipe in Chrome", () => {
 
   it("[[browser.deploy.served-build]] the site npm run build:browser writes, served by npm run serve:browser: the explorer at the root leads, boots on OPFS and starts by itself, cross-origin isolated; the status page is a follower with every section, waiting (network) while the chain is down; the published snapshot imports with the recorded digests and the explorer lists its tokens from block 714485; only the site and the build's chain are requested; no CSP violation", async () => {
     // What the build wrote: the pages, the assets, the headers file and the published snapshot.
-    expect(readdirSync(dir).sort()).toEqual(["_headers", "assets", "engine.html", "index.html", "snapshots", "system.html"]);
+    expect(readdirSync(dir).sort()).toEqual(["THIRD-PARTY-NOTICES.txt", "_headers", "assets", "engine.html", "index.html", "snapshots", "system.html"]);
     expect(readdirSync(join(dir, "snapshots")).sort()).toEqual(["index.json", `umbradb-stagenet-${IDX.from}-${IDX.to}.snapshot.tar`]);
     const headers = readFileSync(join(dir, "_headers"), "utf8");
     expect(headers).toContain(`connect-src 'self' ${chain.origin};`);
