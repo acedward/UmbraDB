@@ -24,7 +24,7 @@ same recorded Stagenet range. Every figure says how it was measured; `../dev/mea
 | Measure | Browser: the Chrome worker, PGlite on OPFS | Node |
 |---|---|---|
 | Page open → engine ready ([Cold start](#cold-start)) | first open **1,267 ms**, reopen **385 ms**, browser restart 367 ms (download excluded) | — |
-| Download ([Bundle sizes](#bundle-sizes)) | **8.3 MB** brotli, 10.8 MB gzip, 28.6 MB raw; tapes +1.1 MB, published snapshot +10.4 MB, fetched only when used | — |
+| Download ([Bundle sizes](#bundle-sizes)) | **8.3 MB** brotli, 10.8 MB gzip, 28.6 MB raw; tapes +1.1 MB, published snapshot +2.1 MB, fetched only when used | — |
 | Live sync, paced, 714485–715183 ([Live sync](#live-sync-paced)) | **1.37 blocks/s** (510.6 s, sync and scan) | **1.47 blocks/s** (474.4 s, sync then scan), PostgreSQL 17 |
 | Replay, unpaced, the same range ([Replay](#replay-unpaced)) | **267 blocks/s** | PostgreSQL 17 **506 blocks/s**; the same worker host on PGlite 270–276; the Node commands 250 |
 | Storage per block ([Storage](#storage-per-block)) | **7,491 B** (OPFS files), 7,489 B (`pg_database_size`); empty store 42.3 MB | PostgreSQL 17: 7,536 B (relations) |
@@ -80,13 +80,21 @@ and come back at the last full block.
 | **Total without the tapes and the snapshot** (43 files) | **28,584,323** | **10,815,589** | **8,335,840** |
 | The recorded tapes (IDX 1,010,756; U1 48,947; already gzip; fetched only for a replay) | 1,059,703 | 1,055,371 | 1,051,290 |
 | Total with the tapes | 29,644,026 | 11,870,960 | 9,387,130 |
-| The published snapshot (`snapshots/`: IDX, 10,399,232, and its index; fetched only when imported) | 10,401,096 | 10,186,757 | 10,004,868 |
-| **Total with the tapes and the snapshot** | **40,045,122** | **22,057,717** | **19,391,998** |
+| The published snapshot (`snapshots/`: IDX, 2,134,016 — its manifest and the rows of every table, already gzip — and its index, 15,059; fetched only when imported; built at commit `1e1da8e`) | 2,149,075 | 2,122,005 | 2,109,076 |
+| **Total with the tapes and the snapshot** (the snapshot at `1e1da8e`, the other files at `b753c70`) | **31,793,101** | **13,992,965** | **11,496,206** |
 
 A first visit downloads about the total without the tapes and the snapshot (the explorer does not load the other two
 pages' few kilobytes): about 8.3 MB brotli or 10.8 MB gzip, which at 50 Mbit/s adds about 1.3 s or 1.7 s (10 Mbit/s:
 6.7 s or 8.7 s; size ÷ bandwidth, computed, not measured) before the cold start above. The build took 5.2 s, the
 snapshot generator included.
+
+The published snapshot (`../dev/browser-snapshot.ts`, measured at commit `1e1da8e` with `measure-browser.ts sizes`, the
+same compression, load 7.8) is the snapshot file an export writes: a tar of its manifest (11,221 bytes: the tables,
+their columns and row counts) and the gzip of the rows of every table of both schemas (2,120,357 bytes), 2,134,016 bytes
+for the 699 blocks, so a host's compression gains almost nothing on it; `snapshots/index.json` lists it with its
+manifest. At that commit the whole `npm run build:browser` took 6.2 s (load 6.8), 5.5 s of it the snapshot generator,
+which replays the range in Node, exports, loads the file's rows into a new store and checks its digests against the
+recorded live sync.
 
 ## Live sync (paced)
 
