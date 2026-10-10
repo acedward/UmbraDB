@@ -464,13 +464,42 @@ export type ParsedRequest =
 
 const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
 
-/** Validates one incoming request. */
+/** A short description of a value received in a message, for an error message: text and numbers as they are, anything
+ *  else by its kind. It never calls the value's own methods (`toString`, `Symbol.toPrimitive`), which a sender chooses. */
+function describeValue(value: unknown): string {
+  switch (typeof value) {
+    case "string":
+      return value.slice(0, 64);
+    case "number":
+    case "boolean":
+    case "bigint":
+    case "undefined":
+      return String(value);
+    case "symbol":
+      return "a symbol";
+    case "function":
+      return "a function";
+    default:
+      return value === null ? "null" : Array.isArray(value) ? "an array" : "an object";
+  }
+}
+
+/** Validates one incoming request. Never throws: a message that cannot even be read (a getter that throws) is a
+ *  `bad-request`. */
 export function parseRequest(raw: unknown): ParsedRequest {
+  try {
+    return readRequest(raw);
+  } catch {
+    return { ok: false, id: null, request: null, error: { code: "bad-request", message: "the request could not be read" } };
+  }
+}
+
+function readRequest(raw: unknown): ParsedRequest {
   if (!isRecord(raw)) return { ok: false, id: null, request: null, error: { code: "bad-request", message: "a request is an object" } };
   const id = typeof raw.id === "number" && Number.isSafeInteger(raw.id) && raw.id >= 1 ? raw.id : null;
   const type = typeof raw.type === "string" && (REQUEST_TYPES as readonly string[]).includes(raw.type) ? (raw.type as RequestType) : null;
   if (raw.v !== PROTOCOL_VERSION)
-    return { ok: false, id, request: type, error: { code: "unsupported-version", message: `protocol version ${String(raw.v)} is not ${PROTOCOL_VERSION}` } };
+    return { ok: false, id, request: type, error: { code: "unsupported-version", message: `protocol version ${describeValue(raw.v)} is not ${PROTOCOL_VERSION}` } };
   if (type === null) {
     const what = typeof raw.type === "string" ? JSON.stringify(raw.type.slice(0, 64)) : "missing";
     return { ok: false, id, request: null, error: { code: "unknown-type", message: `request type ${what} is not part of protocol version ${PROTOCOL_VERSION}` } };
@@ -485,10 +514,19 @@ export type ParsedWorkerMessage =
   | { kind: "notice"; notice: Notice }
   | { kind: "invalid"; message: string };
 
-/** Validates one message from the worker (a response's `result` is validated by {@link parseResult}). */
+/** Validates one message from the worker (a response's `result` is validated by {@link parseResult}). Never throws: a
+ *  message that cannot be read is `invalid`. */
 export function parseWorkerMessage(raw: unknown): ParsedWorkerMessage {
+  try {
+    return readWorkerMessage(raw);
+  } catch {
+    return { kind: "invalid", message: "the message could not be read" };
+  }
+}
+
+function readWorkerMessage(raw: unknown): ParsedWorkerMessage {
   if (!isRecord(raw)) return { kind: "invalid", message: "a message is an object" };
-  if (raw.v !== PROTOCOL_VERSION) return { kind: "invalid", message: `protocol version ${String(raw.v)} is not ${PROTOCOL_VERSION}` };
+  if (raw.v !== PROTOCOL_VERSION) return { kind: "invalid", message: `protocol version ${describeValue(raw.v)} is not ${PROTOCOL_VERSION}` };
   if (raw.type === "response") {
     const r = ResponseSchema.safeParse(raw);
     return r.success ? { kind: "response", response: r.data } : { kind: "invalid", message: issuesOf(r.error) };
@@ -497,7 +535,7 @@ export function parseWorkerMessage(raw: unknown): ParsedWorkerMessage {
     const r = NoticeSchema.safeParse(raw);
     return r.success ? { kind: "notice", notice: r.data } : { kind: "invalid", message: issuesOf(r.error) };
   }
-  return { kind: "invalid", message: `unknown message type ${JSON.stringify(String(raw.type).slice(0, 64))}` };
+  return { kind: "invalid", message: `unknown message type ${typeof raw.type === "string" ? JSON.stringify(raw.type.slice(0, 64)) : `(${describeValue(raw.type)})`}` };
 }
 
 /** Validates the result of a successful response to a request of type `type`. */

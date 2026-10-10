@@ -989,15 +989,16 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     boot,
 
     async receive(raw: unknown): Promise<Response> {
-      const parsed = parseRequest(raw);
-      if (!parsed.ok) return fail(parsed.id, parsed.request, parsed.error);
-      const r = parsed.request;
+      let r: Request | undefined;
       try {
+        const parsed = parseRequest(raw);
+        if (!parsed.ok) return fail(parsed.id, parsed.request, parsed.error);
+        r = parsed.request;
         return ok(r, await perform(r));
       } catch (e) {
-        if (e instanceof HostError) return fail(r.id, r.type, { code: e.code, message: e.message });
-        log("error", `${r.type} failed: ${messageOf(e)}`);
-        return fail(r.id, r.type, { code: "internal", message: messageOf(e) });
+        if (e instanceof HostError) return fail(r?.id ?? null, r?.type ?? null, { code: e.code, message: e.message });
+        log("error", `${r?.type ?? "a request"} failed: ${messageOf(e)}`);
+        return fail(r?.id ?? null, r?.type ?? null, { code: "internal", message: messageOf(e) });
       }
     },
 
