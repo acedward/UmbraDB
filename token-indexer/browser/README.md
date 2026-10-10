@@ -221,9 +221,12 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   each request (`type`, `params`) to the leader over BroadcastChannel (`umbradb-engine:<store>`) and get its answer on
   their own channel (`umbradb-engine:<store>:tab:<tab>`), validated again; every request type works from any tab. A
   system snapshot a follower receives is marked as relayed.
-- **Handover.** When the leader closes, the oldest follower gets the lock, starts its worker on the same store and
-  resumes what the previous leader last reported running (the same `start` configuration, which continues at the stored
-  cursors, with the saved modules); the first leader of a store starts its saved configuration instead (see Sync).
+- **Handover.** When the leader closes, the oldest follower gets the lock, starts its worker on the same store and,
+  once it has booted, starts the store's saved configuration when the saved settings say to start by itself (it
+  continues at the stored cursors, with the saved modules), as the first leader of a store does (see Sync). What the
+  previous leader last reported does not decide what runs: it may have closed in the middle of an import, a `range` or
+  a `reset`, and the new worker's boot finishes that first (the snapshot's store with its engine stopped, or a new
+  store for the new settings).
   Requests in flight to the closed leader: `status`, `api`, `export`, `digest`, `system`, `tables` and `rows` are sent
   again to the next leader; any other request (`module` among them) fails with `leader-changed` (it may or may not have
   been applied); a request made while no leader
@@ -244,10 +247,11 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   a throttling answer is retried after its `Retry-After`, as in the Node commands.
 - **Automatic start and resume.** The configuration of the last `start` or `range` is saved beside the store
   (`settings.ts`: `umbradb-stagenet.engine.json` in the OPFS root), with whether the engine starts by itself (`stop`
-  turns that off, the next `start` on). The leader tab starts it (`tabs.ts` `resumeOrAutoStart`, the default `resume`):
-  after its worker has booted it resumes what a previous leader was running, or else, when the saved configuration
-  says so, sends `start` with no configuration, which runs the saved one (for a new store, the build's default: the
-  tip, following it). Followers never start anything. A reopened store continues at its cursor and fetches every
+  and an import turn that off, the next `start` on). Every worker that boots on the store starts from this file alone:
+  the leader tab (`tabs.ts` `resumeOrAutoStart`, the default `resume`), the next leader after a handover and the worker
+  the watchdog puts in place of a stuck one start the saved configuration when it says to start by itself
+  (`client.ts` `startSaved`; for a new store, the build's default: the tip, following it). With the build's automatic
+  start off, a leader starts it only after a previous leader whose engine ran. Followers never start anything. A reopened store continues at its cursor and fetches every
   height since, so a closed or frozen tab leaves no hole; a chosen range keeps its end.
 - **Ranges.** One archive has no gaps and no backfill, so `range` (a new start or end) and `reset` replace the store
   with a new one before starting: in the leader's worker, which holds the store's lock, the engine stops, PGlite is
@@ -495,12 +499,13 @@ PGlite runs every statement synchronously on the worker's thread, so the worker 
   page's `watchdog` request. When nothing has come for the limit (30 s; `?watchdogLimitMs=` on the engine page) and
   nothing during a grace of two heartbeats either, the page terminates the worker and starts a new one: the API request
   in flight gets the API's 503 `UNAVAILABLE` answer, other requests in flight `restarted`; the new worker carries the
-  restart count and reason and the PGlite reopen count, boots on the same store and gets back the system snapshot's
-  viewers and the engine the worker last reported running, with the configuration it reported: the one a `start` (with
-  or without a configuration), a `range` or a `reset` answered with (it continues at the stored cursors; an engine the
-  page stopped, an import stopped or that failed stays stopped, and so does one whose import the restart interrupted
-  once the journal was saved: the new worker's boot finishes that import), with the modules as the saved settings have
-  them (the token indexer switched off stays off). While `range`, `reset`, `export` or `import` runs the limit is 10
+  restart count and reason and the PGlite reopen count, boots on the same store (finishing first an import or a store
+  replacement the old worker was in the middle of) and gets back the system snapshot's viewers and the engine: when the
+  engine was meant to run (the worker last reported it running, or a `start`, `range` or `reset` was in flight), the
+  new worker's saved configuration starts if the saved settings say to start by itself (it continues at the stored
+  cursors, with the saved modules: the token indexer switched off stays off). So a restart in the middle of a `range`
+  runs the new range, and one in the middle of an import starts nothing; an engine the page stopped, an import stopped
+  or that failed stays stopped. While `range`, `reset`, `export` or `import` runs the limit is 10
   min. More than 3 restarts within 10 min close the client with `worker-error`.
 - **Reopen.** PGlite 0.5.8 fails every statement with "stack depth limit exceeded" once a database has failed about
   1,700 statements, until it is reopened. The host counts the statements the database fails and reopens the store at

@@ -10,7 +10,8 @@
  * instead) or `closed` (the client was closed). A page that shares the engine with other tabs (`tabs.ts`) can also get
  * `leader-changed` and `leader-unavailable`. `requestPersistentStorage()` asks the browser to keep the site's storage:
  * `navigator.storage.persist()` exists only in a window, so a page asks, and the worker reports the outcome as
- * `persisted`.
+ * `persisted`. `startSaved()` starts a newly booted worker's saved configuration when its saved settings say so: the
+ * watchdog's restore (`supervisor.ts`) and the leader tab's resume (`tabs.ts`) both start the engine through it.
  */
 import {
   type ApiResult,
@@ -237,6 +238,21 @@ export interface PersistenceResult {
   /** Whether the site's storage is persistent now. */
   persisted: boolean;
   error: string | null;
+}
+
+/**
+ * Starts the saved configuration of the worker behind `client` when the worker runs no engine yet and its saved settings
+ * say the engine starts by itself: what a newly booted worker runs (the leader tab's automatic start, the next leader
+ * after a handover, a worker the watchdog put in place of a stuck one) comes from the store's own saved settings
+ * (`settings.ts`), which every acknowledged `start`, `stop`, `range`, `reset` and import changed before it was answered,
+ * never from what a page last saw running. `proceed`, asked once the status is read, can call the start off. Resolves
+ * with whether the start was sent (it rejects as `start` does).
+ */
+export async function startSaved(client: Pick<EngineClient, "status" | "start">, proceed: () => boolean = () => true): Promise<boolean> {
+  const s = await client.status();
+  if (s.engine !== null || s.settings?.autoStart !== true || !proceed()) return false;
+  await client.start(s.settings.config);
+  return true;
 }
 
 /** Asks the browser to keep this site's storage (`navigator.storage.persist()`) unless it already does, and reports the

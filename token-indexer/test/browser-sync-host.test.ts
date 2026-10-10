@@ -13,8 +13,10 @@
  *   runs, nothing is saved); a `start` that fails once its settings were saved puts them back; a `stop` always stops
  *   the engine and, when the setting that keeps it stopped cannot be saved, answers so, the status keeping the
  *   automatic start on.
- * - `[[browser.tabs.auto-start]]` — the leader tab's default resume: the previous leader's running configuration, else
- *   the saved configuration when it says to start by itself, else nothing; never with the build's automatic start off.
+ * - `[[browser.tabs.auto-start]]` — the leader tab's default resume: the store's saved configuration when its saved
+ *   settings say to start by itself, whatever the previous leader last reported (a configuration they no longer hold,
+ *   or an engine they no longer start, is not run), else nothing; with the build's automatic start off, only after a
+ *   previous leader whose engine ran.
  * - `[[browser.host.range-reset]]` — `range` replaces the store with a new one and starts the new range (a range whose
  *   end is below its start is refused and changes nothing); `reset` replaces it and runs the same range again, to the
  *   same digests; `range("tip")` follows the tip again; the hook before a wipe is called each time; a reopened store keeps
@@ -481,9 +483,10 @@ describe("leader tab: automatic start", () => {
     return { client, starts };
   }
 
-  it("[[browser.tabs.auto-start]] the leader resumes the previous leader's running configuration, else starts the saved configuration when it says to start by itself, else nothing; with the build's automatic start off it starts only a previous leader's", async () => {
+  it("[[browser.tabs.auto-start]] the leader starts the store's saved configuration when its saved settings say to start by itself, whatever the previous leader last reported, else nothing; with the build's automatic start off only after a previous leader whose engine ran", async () => {
     const config: StartConfig = { source: { kind: "tape", range: "u1" }, startHeight: 715402 };
-    const saved = (autoStart: boolean) => ({ engine: null, settings: { config: {}, autoStart } });
+    // The saved settings of a store whose last start ran `config` (the previous leader's running configuration).
+    const saved = (autoStart: boolean) => ({ engine: null, settings: { config, autoStart } });
 
     const resumed = fakeClient(saved(true));
     await resumeOrAutoStart(true)({ running: true, config }, resumed.client);
@@ -491,7 +494,7 @@ describe("leader tab: automatic start", () => {
 
     const fresh = fakeClient(saved(true));
     await resumeOrAutoStart(true)(null, fresh.client);
-    expect(fresh.starts).toEqual([undefined]); // the saved configuration
+    expect(fresh.starts).toEqual([config]); // the saved configuration
 
     const stopped = fakeClient(saved(false));
     await resumeOrAutoStart(true)(null, stopped.client);
@@ -507,5 +510,17 @@ describe("leader tab: automatic start", () => {
     const busy = fakeClient({ engine: { running: true } as HostStatus["engine"], settings: { config: {}, autoStart: true } });
     await resumeOrAutoStart(true)(null, busy.client);
     expect(busy.starts).toEqual([]);
+
+    // A previous leader that reported its engine running, on a store whose saved settings no longer start it (it
+    // finished an import, or a stop, the report does not show yet): nothing, also with the build's automatic start off.
+    const imported = fakeClient(saved(false));
+    await resumeOrAutoStart(true)({ running: true, config }, imported.client);
+    await resumeOrAutoStart(false)({ running: true, config }, imported.client);
+    expect(imported.starts).toEqual([]);
+    // Saved settings that changed since the previous leader's report (a range it was replacing the store for): they run.
+    const ranged: StartConfig = { ...config, startHeight: 715412, endHeight: 715420 };
+    const replaced = fakeClient({ engine: null, settings: { config: ranged, autoStart: true } });
+    await resumeOrAutoStart(true)({ running: true, config }, replaced.client);
+    expect(replaced.starts).toEqual([ranged]);
   });
 });

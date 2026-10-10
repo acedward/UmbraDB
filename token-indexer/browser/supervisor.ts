@@ -14,13 +14,16 @@
  *   answered are settled at once: an `api` request with the API's 503 `UNAVAILABLE` answer, any other request with the
  *   error `restarted`. The new worker gets the carried counts (restarts including this one, with the time and reason,
  *   and PGlite reopens, which the old worker's heartbeats reported), boots, and gets back what the page had set up: the
- *   system snapshot viewers, and the engine the worker last reported running, with the configuration it reported (it
- *   continues at the stored cursors). That report is the engine in the host status a successful `start`, `stop`,
- *   `range`, `reset` or `import` answers with, whatever started it (a `start` with no configuration runs the saved
- *   one); an `engine` notice that it stopped or failed clears it. So an engine the page stopped, that an import stopped,
- *   or that failed by itself is not started again, and a restart after a `range` runs the range. Nor is an engine
- *   started when the new worker's boot finished an import (one the restart interrupted once its journal was saved):
- *   the store is then the snapshot's, which an import leaves with its engine stopped. The modules are not sent again:
+ *   system snapshot viewers, and the engine. What runs comes from the new worker's own saved settings (`startSaved()`
+ *   in `client.ts`): their configuration starts when they say the engine starts by itself. Every `start`, `stop`,
+ *   `range`, `reset` and import changes them before it is answered, and the new worker's boot first finishes what they
+ *   and the import journal say was under way (a store a `range` or `reset` was replacing, an import), so a restart in the
+ *   middle of any of these runs what that request leaves: a range's new range, nothing after an import (it stops the
+ *   engine), and it continues at the stored cursors. The page restores an engine only when it was meant to run: the
+ *   worker last reported it running (an `engine` notice, or the host status a lifecycle request answered with), or a
+ *   request that runs it (`start`, `range`, `reset`) was in flight; an `engine` notice that it stopped or failed clears
+ *   that, except the stop of the engine a `range` or `reset` makes before it replaces the store. So an engine the page
+ *   stopped, that an import stopped, or that failed by itself is not started again. The modules are not sent again:
  *   the new worker's engine takes them from the saved settings, as every engine the host runs does, so the token
  *   indexer switched off stays off.
  * - **Long requests:** while a request whose work may legitimately keep the worker busy for long is in flight (`range`
@@ -30,7 +33,7 @@
  *   of restarting again. A new worker whose boot fails right after a restart (for example while the old worker's OPFS
  *   handles are still being released) is replaced again after a short wait, up to `bootRetries` times.
  */
-import { createEngineClient, type EngineClient, type EngineEndpoint, EngineError } from "./client.ts";
+import { createEngineClient, type EngineClient, type EngineEndpoint, EngineError, startSaved } from "./client.ts";
 import {
   type CarriedCountsMessage,
   DEFAULT_HEARTBEAT_MS,
@@ -38,7 +41,6 @@ import {
   type HostStatus,
   parseResult,
   parseWorkerMessage,
-  type StartConfig,
 } from "./protocol.ts";
 
 /** Default limit: how long the worker may stay silent before it is restarted. */
@@ -50,8 +52,12 @@ export const DEFAULT_BOOT_RETRIES = 5;
 export const DEFAULT_LONG_LIMIT_MS = 10 * 60_000;
 /** The requests during which the worker may stay silent up to `longLimitMs`. */
 export const LONG_REQUESTS: ReadonlySet<string> = new Set(["range", "reset", "export", "import"]);
-/** The requests whose answer reports the engine (a host status), from which the supervisor learns what runs. */
+/** The requests whose answer reports the engine (a host status), from which the supervisor learns whether it runs. */
 const LIFECYCLE_REQUESTS: ReadonlySet<string> = new Set(["start", "stop", "range", "reset", "import"]);
+/** The requests that leave the engine running when they succeed. */
+const RUN_REQUESTS: ReadonlySet<string> = new Set(["start", "range", "reset"]);
+/** The requests that stop the engine before they replace the store, and run it again once they have. */
+const REPLACING_REQUESTS: ReadonlySet<string> = new Set(["range", "reset"]);
 
 /** A worker as the supervisor drives it. */
 export interface WorkerLike extends EngineEndpoint {
@@ -163,8 +169,8 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
   const sent = new Map<number, { type: string; watch?: boolean; viewer?: string }>();
   /** Ids of the long requests in flight. */
   const long = new Set<number>();
-  /** The configuration of the engine the worker last reported running; `undefined` when none runs. */
-  let engineConfig: StartConfig | undefined;
+  /** Whether the worker last reported the engine running (see the module documentation). */
+  let engineRunning = false;
   const viewers = new Set<string>();
   let carried: CarriedCountsMessage = { watchdogRestarts: 0, lastWatchdogRestart: null, pgliteReopens: 0 };
   const restarts: RestartRecord[] = [];
@@ -174,6 +180,9 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
   let closed = false;
   let timer: unknown;
   let generation = 0;
+
+  /** Whether a request of one of `types` is in flight. */
+  const inFlight = (types: ReadonlySet<string>): boolean => [...sent.values()].some((s) => types.has(s.type));
 
   function outgoing(message: unknown): void {
     if (!isRecord(message) || typeof message.id !== "number") return;
@@ -189,7 +198,12 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
     const m = parseWorkerMessage(event.data);
     if (m.kind === "notice") {
       if (m.notice.notice === "heartbeat") carried = m.notice.heartbeat.carried;
-      else if (m.notice.notice === "engine" && m.notice.engine.state !== "running") engineConfig = undefined;
+      else if (m.notice.notice === "engine") {
+        if (m.notice.engine.state === "running") engineRunning = true;
+        // The stop a `range` or `reset` makes before it replaces the store: it runs the engine again once it has.
+        else if (m.notice.engine.state === "stopped" && inFlight(REPLACING_REQUESTS)) return;
+        else engineRunning = false;
+      }
       return;
     }
     if (m.kind !== "response" || m.response.id === null) return;
@@ -200,7 +214,7 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
     if (!m.response.ok) return;
     if (LIFECYCLE_REQUESTS.has(s.type)) {
       const status = reportedStatus(s.type, m.response.result);
-      if (status !== undefined) engineConfig = status.engine?.running === true ? status.engine.config : undefined;
+      if (status !== undefined) engineRunning = status.engine?.running === true;
     } else if (s.type === "system" && s.viewer !== undefined) {
       if (s.watch === true) viewers.add(s.viewer);
       else viewers.delete(s.viewer);
@@ -221,8 +235,8 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
   const arm = (counts?: CarriedCountsMessage): Promise<unknown> =>
     limitMs === null ? Promise.resolve() : client.watchdog({ limitMs, heartbeatMs, ...(counts === undefined ? {} : { carried: counts }) });
 
-  /** Restores what the page had set up on a new worker. */
-  async function restore(gen: number, counts: CarriedCountsMessage): Promise<void> {
+  /** Restores what the page had set up on a new worker; `engine`: whether the engine was meant to run. */
+  async function restore(gen: number, counts: CarriedCountsMessage, engine: boolean): Promise<void> {
     for (let attempt = 0; ; attempt++) {
       await arm(counts);
       const boot = await client.booted();
@@ -237,22 +251,16 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
       replace();
     }
     for (const viewer of [...viewers]) await client.system({ watch: true, viewer });
-    const config = engineConfig;
-    if (config === undefined) return;
-    // A boot that finished an import (one the restart interrupted once its journal was saved, before the engine's stop
-    // was reported) has replaced the store with the snapshot's; an import stops the engine, so nothing is started.
-    const finishedImport = (await client.status()).snapshots.lastImport !== null;
-    if (gen !== generation || closed) return;
-    if (finishedImport) {
-      if (engineConfig === config) engineConfig = undefined;
-      return;
-    }
+    if (!engine) return;
+    // What runs is what the new worker's saved settings say (after an import: nothing).
+    let started: boolean;
     try {
-      await client.start(config);
+      started = await startSaved(client, () => gen === generation && !closed);
     } catch (e) {
-      if (gen === generation && engineConfig === config) engineConfig = undefined;
+      if (gen === generation) engineRunning = false;
       throw e;
     }
+    if (!started && gen === generation) engineRunning = false;
   }
 
   /** Terminates the current worker and starts a new one in its place. */
@@ -276,11 +284,13 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
       close();
       return;
     }
+    // Read before the requests in flight are dropped.
+    const engine = engineRunning || inFlight(RUN_REQUESTS);
     client.interrupt(reason);
     replace();
     const gen = ++generation;
     opts.onRestart?.({ at, reason, count: counts.watchdogRestarts });
-    restore(gen, counts).catch((e: unknown) => {
+    restore(gen, counts, engine).catch((e: unknown) => {
       if (gen === generation && !closed) opts.onProblem?.(`restoring the restarted engine worker failed: ${e instanceof Error ? e.message : String(e)}`);
     });
   }

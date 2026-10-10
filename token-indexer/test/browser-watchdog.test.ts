@@ -27,6 +27,7 @@ import { createPgliteClient } from "../../src/postgres/pglite-sql.js";
 import { createEngineClient, EngineError, unavailableAnswer } from "../browser/client.ts";
 import { createWorkerHost, type WorkerHost } from "../browser/host.ts";
 import type { StartConfig } from "../browser/protocol.ts";
+import { memorySettingsStore } from "../browser/settings.ts";
 import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, openStore } from "../browser/store.ts";
 import { DEFAULT_LONG_LIMIT_MS, LONG_REQUESTS, superviseWorker, type WorkerLike } from "../browser/supervisor.ts";
 import { loadTape } from "../browser/tapes.ts";
@@ -42,7 +43,7 @@ afterAll(() => {
 });
 function tempDir(): string {
   const d = mkdtempSync(join(tmpdir(), "umbradb-watchdog-"));
-  dirs.push(d);
+  dirs.push(d, `${d}.engine.json`);
   return d;
 }
 
@@ -239,6 +240,8 @@ describe("page watchdog", () => {
 
   it("[[browser.watchdog.rules]] a late check is not a restart when the worker answers within the grace; a silent worker is restarted once with the viewers and the engine restored; an engine the page stopped stays stopped; a boot failing right after a restart is retried; too many restarts close the client", async () => {
     const dir = tempDir();
+    // The saved settings outlive each worker, as the file beside an OPFS store does.
+    const settings = memorySettingsStore();
     let now = 0;
     let check: () => void = () => {};
     const workers: ChannelWorker[] = [];
@@ -258,6 +261,7 @@ describe("page watchdog", () => {
             if (fail) throw new Error("NoModificationAllowedError: the store's files are still open in another worker");
             return openStore(d, o);
           },
+          settings,
           loadTape: (range) => loadTape(range, fileFetch()),
           log: () => {},
         }));

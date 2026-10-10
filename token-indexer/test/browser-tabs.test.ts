@@ -2,7 +2,8 @@
  * One engine across tabs (`token-indexer/browser/tabs.ts`, `tab-locks.ts`, the store lock in `store.ts`), in Node: each
  * "tab" is a `connectEngineTabs()` with its own view of an in-memory Web Locks manager and BroadcastChannel hub, so a
  * tab can be closed abruptly (its locks released and its channels cut with none of its code running, as when a browser
- * tab closes or crashes), and its engine worker is a scripted engine whose answers name the tab that runs it. The same
+ * tab closes or crashes), and its engine worker is a scripted engine whose answers name the tab that runs it, keeping its
+ * settings in one file the tabs share (as the settings beside an OPFS store are). The same
  * code in Chrome, with real tabs, workers and OPFS, is `browser-tabs-chrome.test.ts`.
  *
  * - `[[browser.tabs.election]]` — the first tab leads and is the only one to start a worker; the others follow it; when
@@ -13,8 +14,8 @@
  *   snapshot is marked as relayed.
  * - `[[browser.tabs.handover-rule]]` — requests in flight when the leader closes: `status`, `api` and `export` are sent
  *   again and answered by the next leader; the others fail with `leader-changed`; a late answer from the old leader is
- *   ignored; with no leader a request fails with `leader-unavailable` after the wait; the new leader resumes the engine
- *   the old one was running, and only then.
+ *   ignored; with no leader a request fails with `leader-unavailable` after the wait; the new leader starts the saved
+ *   configuration of the engine the old one was running, and nothing once it was stopped.
  * - `[[browser.tabs.messages]]` — invalid tab messages are reported and ignored; an unknown request type is refused by
  *   the leader; closing rejects what is pending and releases the tab's locks.
  * - `[[browser.store.lock]]` — the store lock admits one holder, the next waits for its release, and a wait that runs out
@@ -23,138 +24,18 @@
 import { describe, expect, it } from "vitest";
 import type { SystemSnapshot } from "../engine/system-snapshot.ts";
 import { createEngineClient, type EngineClient, EngineError, type EngineEndpoint } from "../browser/client.ts";
-import { type HostStatus, type Notice, PROTOCOL_VERSION, type StartConfig } from "../browser/protocol.ts";
+import { type EngineSettings, type HostStatus, type Notice, PROTOCOL_VERSION, type StartConfig } from "../browser/protocol.ts";
 import { acquireStoreLock } from "../browser/store.ts";
-import { connectedTabsCounter, leaderLockName, type LockInfoLike, type LockLike, type LockManagerLike, type LockRequestOptions, storeLockName, tabLockName } from "../browser/tab-locks.ts";
-import { asRelayed, type ChannelLike, connectEngineTabs, type EngineTabs, type EngineTabsOptions, tabChannelName, tabsChannelName } from "../browser/tabs.ts";
+import { connectedTabsCounter, leaderLockName, storeLockName, tabLockName } from "../browser/tab-locks.ts";
+import { asRelayed, connectEngineTabs, type EngineTabs, type EngineTabsOptions, tabChannelName, tabsChannelName } from "../browser/tabs.ts";
+import { FakeChannels, FakeLocks } from "./helpers/fake-tabs.ts";
 
 const SCOPE = "opfs-ahp://umbradb-test";
 
-// ── An in-memory Web Locks manager whose clients can die ─────────────────────────────────────────────────────────────
-
-interface Waiter { client: string; grant: () => void; drop: () => void }
-
-class FakeLocks {
-  private readonly held = new Map<string, { client: string; release: () => void }>();
-  private readonly queues = new Map<string, Waiter[]>();
-  private readonly dead = new Set<string>();
-
-  view(client: string): LockManagerLike {
-    const request = (name: string, a: LockRequestOptions | ((l: LockLike | null) => unknown), b?: (l: LockLike | null) => unknown): Promise<unknown> => {
-      const options = typeof a === "function" ? {} : a;
-      const callback = typeof a === "function" ? a : b!;
-      return new Promise((resolve, reject) => {
-        if (this.dead.has(client)) return; // a closed context runs nothing
-        const grant = (): void => {
-          let released = false;
-          const release = (): void => {
-            if (released) return;
-            released = true;
-            if (this.held.get(name)?.release === release) this.held.delete(name);
-            this.next(name);
-          };
-          this.held.set(name, { client, release });
-          queueMicrotask(() => {
-            let out: unknown;
-            try {
-              out = callback({ name });
-            } catch (e) {
-              release();
-              reject(e);
-              return;
-            }
-            Promise.resolve(out).then((v) => { release(); resolve(v); }, (e: unknown) => { release(); reject(e); });
-          });
-        };
-        const queue = this.queues.get(name) ?? [];
-        if (!this.held.has(name) && queue.length === 0) return grant();
-        if (options.ifAvailable === true) {
-          queueMicrotask(() => Promise.resolve(callback(null)).then(resolve, reject));
-          return;
-        }
-        const waiter: Waiter = { client, grant, drop: () => {} };
-        if (options.signal !== undefined) {
-          const onAbort = (): void => {
-            const q = this.queues.get(name) ?? [];
-            const i = q.indexOf(waiter);
-            if (i < 0) return;
-            q.splice(i, 1);
-            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
-          };
-          if (options.signal.aborted) return onAbort();
-          options.signal.addEventListener("abort", onAbort, { once: true });
-        }
-        queue.push(waiter);
-        this.queues.set(name, queue);
-      });
-    };
-    return {
-      request: request as LockManagerLike["request"],
-      query: async () => this.snapshot(),
-    };
-  }
-
-  private next(name: string): void {
-    if (this.held.has(name)) return;
-    const q = this.queues.get(name) ?? [];
-    const w = q.shift();
-    if (q.length === 0) this.queues.delete(name);
-    w?.grant();
-  }
-
-  snapshot(): { held: LockInfoLike[]; pending: LockInfoLike[] } {
-    return {
-      held: [...this.held].map(([name, h]) => ({ name, clientId: h.client, mode: "exclusive" })),
-      pending: [...this.queues].flatMap(([name, q]) => q.map((w) => ({ name, clientId: w.client, mode: "exclusive" }))),
-    };
-  }
-
-  /** The context `client` ended: its queued requests vanish and its locks are released, with none of its code run. */
-  kill(client: string): void {
-    this.dead.add(client);
-    for (const [name, q] of this.queues) this.queues.set(name, q.filter((w) => w.client !== client));
-    for (const h of [...this.held.values()]) if (h.client === client) h.release();
-  }
-}
-
-// ── An in-memory BroadcastChannel hub whose clients can die ──────────────────────────────────────────────────────────
-
-class FakeChannels {
-  private readonly open = new Set<{ name: string; client: string; listeners: Set<(e: MessageEvent) => void>; closed: boolean }>();
-
-  for(client: string): (name: string) => ChannelLike {
-    return (name) => {
-      const ch = { name, client, listeners: new Set<(e: MessageEvent) => void>(), closed: false };
-      this.open.add(ch);
-      return {
-        postMessage: (message: unknown) => {
-          if (ch.closed) throw new Error("channel closed");
-          const data = structuredClone(message);
-          for (const other of this.open) {
-            if (other === ch || other.name !== name) continue;
-            setTimeout(() => {
-              if (other.closed) return;
-              for (const l of [...other.listeners]) l({ data } as MessageEvent);
-            }, 0);
-          }
-        },
-        addEventListener: (type: string, l: (e: MessageEvent) => void) => {
-          if (type === "message") ch.listeners.add(l);
-        },
-        close: () => {
-          ch.closed = true;
-          this.open.delete(ch);
-        },
-      };
-    };
-  }
-
-  kill(client: string): void {
-    for (const ch of [...this.open]) if (ch.client === client) { ch.closed = true; this.open.delete(ch); }
-  }
-}
-
 // ── A scripted engine worker ─────────────────────────────────────────────────────────────────────────────────────────
+
+/** The settings saved beside the store the tabs share: every tab's engine reads and writes the same. */
+interface SavedFile { settings: EngineSettings | null }
 
 interface FakeEngine {
   name: string;
@@ -168,7 +49,7 @@ interface FakeEngine {
   notify(notice: Notice): void;
 }
 
-function hostStatus(engine: FakeEngine["state"]["engine"]): HostStatus {
+function hostStatus(engine: FakeEngine["state"]["engine"], settings: EngineSettings | null): HostStatus {
   return {
     protocol: PROTOCOL_VERSION,
     network: "stagenet",
@@ -187,13 +68,15 @@ function hostStatus(engine: FakeEngine["state"]["engine"]): HostStatus {
       error: null,
     },
     cursors: { sync: null, scan: null },
-    settings: null,
+    settings,
     storage: null,
     snapshots: { lastExport: null, lastImport: null },
   };
 }
 
-function fakeEngine(name: string): FakeEngine {
+/** A scripted engine worker: `start` saves its configuration with the automatic start on, `stop` turns it off, as the
+ *  host does, in the settings file the tabs share. */
+function fakeEngine(name: string, saved: SavedFile): FakeEngine {
   const listeners = new Set<(e: MessageEvent) => void>();
   const parked: Array<() => void> = [];
   const emit = (data: unknown): void => {
@@ -207,18 +90,20 @@ function fakeEngine(name: string): FakeEngine {
     const { id, type } = m as { id: number; type: string };
     switch (type) {
       case "status":
-        return ok(id, type, hostStatus(engine.state.engine));
+        return ok(id, type, hostStatus(engine.state.engine, saved.settings));
       case "api":
         return ok(id, type, { status: 200, headers: { "content-type": "application/json" }, body: JSON.stringify({ engine: name, method: m.method, target: m.target }) });
       case "start":
         if (engine.state.engine?.running === true) return err(id, type, "already-running", "the engine is running; stop it first");
-        engine.state.engine = { running: true, config: m.config as StartConfig };
+        engine.state.engine = { running: true, config: (m.config as StartConfig | undefined) ?? saved.settings?.config ?? {} };
+        saved.settings = { config: engine.state.engine.config, autoStart: true };
         engine.notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "running", error: null } });
-        return ok(id, type, hostStatus(engine.state.engine));
+        return ok(id, type, hostStatus(engine.state.engine, saved.settings));
       case "stop":
         if (engine.state.engine !== null) engine.state.engine = { ...engine.state.engine, running: false };
+        if (saved.settings !== null) saved.settings = { ...saved.settings, autoStart: false };
         engine.notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "stopped", error: null } });
-        return ok(id, type, hostStatus(engine.state.engine));
+        return ok(id, type, hostStatus(engine.state.engine, saved.settings));
       default:
         return err(id, type, type === "nope" ? "unknown-type" : "not-implemented", `${type} is not implemented by this worker`);
     }
@@ -255,6 +140,7 @@ function fakeEngine(name: string): FakeEngine {
 function browser(options: Partial<EngineTabsOptions> = {}) {
   const locks = new FakeLocks();
   const channels = new FakeChannels();
+  const saved: SavedFile = { settings: null };
   const engines: FakeEngine[] = [];
   const tabs: EngineTabs[] = [];
   const open = (id: string, over: Partial<EngineTabsOptions> = {}): EngineTabs => {
@@ -264,7 +150,7 @@ function browser(options: Partial<EngineTabsOptions> = {}) {
       locks: locks.view(id),
       openChannel: channels.for(id),
       startWorker: () => {
-        const e = fakeEngine(id);
+        const e = fakeEngine(id, saved);
         engines.push(e);
         return { client: e.client, terminate: () => { e.dead = true; } };
       },
