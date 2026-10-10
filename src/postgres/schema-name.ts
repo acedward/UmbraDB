@@ -13,7 +13,7 @@ export const DEFAULT_SCHEMA = "umbradb";
  * defense-in-depth (a malformed config value fails fast with a clear message here, rather than
  * producing confusing downstream DDL) — see design.md §2.
  *
- * **Length bound added after a cross-vendor audit**: Postgres truncates identifiers longer
+ * **Length bound**: Postgres truncates identifiers longer
  * than 63 bytes (`NAMEDATALEN - 1`) rather than rejecting them, so two configured schema names
  * agreeing on their first 63 characters would silently address the SAME physical schema —
  * while this module's own `hashtext()`-based advisory-lock keys (`migrate.ts`) hash the FULL

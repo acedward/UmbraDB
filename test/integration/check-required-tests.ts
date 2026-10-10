@@ -17,7 +17,7 @@
  * Exposed as pure functions (`reconcile`, `extractIds`, `statusesFromReport`) so the behaviour is
  * unit-tested against synthetic reporter payloads (`check-required-tests.test.ts`), and as a CLI
  * (`node --import tsx check-required-tests.ts <report.json> [--manifest <path>]`) wired into
- * `test:conformance` by Task 7. `--postgresql-only` reconciles a run on PGlite (`npm run test:pglite`): the ids of
+ * `test:conformance`. `--postgresql-only` reconciles a run on PGlite (`npm run test:pglite`): the ids of
  * the PostgreSQL-only list (`test/helpers/postgresql-only.ts`) must be not run or skipped there, every other id passed.
  */
 import { readFileSync } from "node:fs";
