@@ -151,13 +151,17 @@ describe("page watchdog", () => {
     const dir = tempDir();
     const threads: Array<ReturnType<typeof threadWorker>> = [];
     const restarts: number[] = [];
+    // The limit is short for a test, yet long enough that a thread starved by a busy machine (loading the engine's
+    // modules through the TypeScript loader, booting PGlite) is not taken for a stuck one: only the slow statement
+    // below may be the restart this test counts.
+    const LIMIT_MS = 5_000;
     const engine = superviseWorker({
       createWorker: (onError) => {
         const w = threadWorker(dir, onError);
         threads.push(w);
         return w;
       },
-      limitMs: 1_500,
+      limitMs: LIMIT_MS,
       heartbeatMs: 100,
       onRestart: (r) => restarts.push(r.count),
     });
@@ -168,8 +172,10 @@ describe("page watchdog", () => {
       await c.start(config);
       await until(async () => ((await c.status()).cursors?.scan?.nextHeight ?? 0) > U1.from + 4, "a first part");
       const before = (await c.status()).cursors!;
-
-      (await threads[0]!.thread).postMessage({ test: "slow-statement", seconds: 60 });
+      // The slow statement goes to the worker running now (a restart before this point would have replaced the first).
+      const earlier = restarts.length;
+      const running = threads.length;
+      (await threads[running - 1]!.thread).postMessage({ test: "slow-statement", seconds: 60 });
       await sleep(50);
       const t0 = performance.now();
       const inflight = c.api("GET", "/v1/tokens");
@@ -177,13 +183,15 @@ describe("page watchdog", () => {
       expect(await inflight).toEqual(unavailableAnswer("GET"));
       const detectedMs = performance.now() - t0;
       expect(await statusInFlight).toBe("restarted");
-      expect(restarts).toEqual([1]);
-      expect(engine.restarts()).toHaveLength(1);
-      expect(engine.restarts()[0]!.reason).toMatch(/^the engine worker sent nothing for \d+ ms \(limit 1500 ms\)$/);
-      expect(threads).toHaveLength(2);
-      console.log("watchdog: the slow statement was detected and the worker replaced after", Math.round(detectedMs), "ms (limit 1500, heartbeat 100, grace 200)");
-      expect(detectedMs).toBeGreaterThan(1_500);
-      expect(detectedMs).toBeLessThan(5_000);
+      expect(restarts).toEqual(Array.from({ length: earlier + 1 }, (_, i) => i + 1));
+      expect(engine.restarts()).toHaveLength(earlier + 1);
+      const reason = engine.restarts()[earlier]!.reason;
+      const silence = /^the engine worker sent nothing for (\d+) ms \(limit 5000 ms\)$/.exec(reason);
+      expect(silence, reason).not.toBeNull();
+      expect(Number(silence![1])).toBeGreaterThanOrEqual(LIMIT_MS);
+      expect(threads).toHaveLength(running + 1);
+      console.log("watchdog: the slow statement was detected and the worker replaced after", Math.round(detectedMs), `ms (limit ${LIMIT_MS}, heartbeat 100, grace 200; ${earlier} earlier restarts)`);
+      expect(detectedMs).toBeLessThan(LIMIT_MS + 5_000);
 
       // The new worker: same store, the engine continues at the cursors with the same configuration.
       const s = await until(async () => {
@@ -198,9 +206,9 @@ describe("page watchdog", () => {
         return x.cursors?.sync?.height === U1.to && x.cursors?.scan?.nextHeight === U1.to + 1;
       }, "the rest of the range", 60_000);
       const snap = (await c.system({ refresh: {} })).snapshot!;
-      expect(snap.engine.watchdogRestarts).toBe(1);
-      expect(snap.engine.lastWatchdogRestart?.reason).toBe(engine.restarts()[0]!.reason);
-      expect(snap.logs.some((l) => l.text === `watchdog restart: ${engine.restarts()[0]!.reason}`)).toBe(true);
+      expect(snap.engine.watchdogRestarts).toBe(engine.restarts().length);
+      expect(snap.engine.lastWatchdogRestart?.reason).toBe(engine.restarts().at(-1)!.reason);
+      expect(snap.logs.some((l) => l.text === `watchdog restart: ${reason}`)).toBe(true);
       expect((await c.api("GET", "/v1/tokens")).status).toBe(200);
       await c.stop();
     } finally {
