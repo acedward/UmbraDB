@@ -367,7 +367,8 @@ describe("browser parity in Chrome", () => {
   })());
 
   it("[[browser.parity.vectors]] the 110 vector requests (59/59 reference normative, 43/43 informative, 8/8 UmbraDB versions) answered through the PGlite store in a worker on OPFS in Chrome pass with every check applicable, and every answer equals the pure consumer's", async () => {
-    const page = await (await newBrowser()).newPage();
+    const browser = await newBrowser();
+    const page = await browser.newPage();
     await page.goto(`${site.origin}${VECTOR_CONSUMER_PAGE}`);
     await page.waitFor("window.vectorConsumer !== undefined", 30_000, "the vector consumer page");
     const info = await page.eval("window.vectorConsumer.info()");
@@ -413,6 +414,8 @@ describe("browser parity in Chrome", () => {
     expect(withoutOffset).toEqual(["INF-ZEXT-7"]);
     expect(responses.size).toBe(110);
     expect(page.exceptions).toEqual([]);
+    await browser.close(); // its profile is not used again
+    browsers.splice(browsers.indexOf(browser), 1);
   }, 600_000);
 
   it("[[browser.parity.case-stop-heights]] through the engine worker's API, each recorded case replayed in the worker only up to its own last block (and C06 at each step) equals its expectation while every later case is still absent; earlier cases stay equal; U1 at its last block", async () => {
