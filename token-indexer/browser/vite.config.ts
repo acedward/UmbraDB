@@ -1,7 +1,8 @@
 /**
  * The browser build: `npm run build:browser` writes the static site to `dist-browser/` (`npm run dev:browser` serves the
- * same configuration on 127.0.0.1). Pages: every `*.html` file in this directory (today `engine.html`, the engine's
- * status page). The engine runs in a dedicated module worker (`worker.ts`).
+ * same configuration on 127.0.0.1). Pages: every `*.html` file in this directory (`index.html`, the token explorer with
+ * the engine panel, and `engine.html`, the engine's status page). The engine runs in a dedicated module worker
+ * (`worker.ts`).
  *
  * - The chain (network and the node's and indexer's URLs) is fixed here, from `UMBRADB_BROWSER_NETWORK`,
  *   `UMBRADB_BROWSER_NODE_URL` and `UMBRADB_BROWSER_INDEXER_URL` (Stagenet when unset): defined in both bundles as
@@ -9,6 +10,7 @@
  * - `build-csp.ts` gives every page a meta Content-Security-Policy with the SHA-256 of its inline blocks, writes
  *   `_headers` (the same policy and the cross-origin isolation headers for a static host) and makes `zod-jitless.ts` the
  *   first module of every page.
+ * - `build-explorer.ts` makes `index.html` from the explorer `GET /ui` serves: its markup, and its style's font as a file.
  *
  * - `build.target: "esnext"` and `worker.format: "es"`: Chrome runs ES modules and top-level await in a module worker,
  *   so no top-level-await plugin is used.
@@ -25,6 +27,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig, type PluginOption } from "vite";
 import * as wasmPlugin from "vite-plugin-wasm";
 import { browserChainFromEnv, chainOrigins, staticSecurity } from "./build-csp.ts";
+import { explorerPage } from "./build-explorer.ts";
 import { nodeFreeBundle } from "./build-guard.ts";
 
 /** The plugin is the ES module's default export (its type declarations describe it as CommonJS). */
@@ -36,13 +39,20 @@ const chain = browserChainFromEnv(process.env);
 const pages = Object.fromEntries(readdirSync(root).filter((f) => f.endsWith(".html")).sort().map((f) => [f.slice(0, -".html".length), `${root}${f}`]));
 /** zod and `zod-jitless.ts` in one chunk, so the JIT is off before any module of another chunk creates a schema. */
 const zodChunk = { name: "zod", test: /[\\/]node_modules[\\/]zod[\\/]|[\\/]token-indexer[\\/]browser[\\/]zod-jitless\.ts$/ };
+/**
+ * The pages' own modules that two or more pages share (the engine client, the tabs, the protocol) in one chunk. Without
+ * it the bundler puts its runtime helpers (the `keepNames` helper the zod chunk needs) in that shared chunk, which itself
+ * imports the zod chunk: a cycle, and the first page to load fails before its first schema. With it the runtime has a
+ * chunk of its own, imported by both.
+ */
+const sharedPageChunk = { name: "pages", test: (id: string) => !id.includes("node_modules"), minShareCount: 2 };
 
 export default defineConfig({
   root,
   base: "./",
   publicDir: false,
   define: { __UMBRADB_BROWSER_CHAIN__: JSON.stringify(chain) },
-  plugins: [nodeFreeBundle(repoRoot), wasm(), staticSecurity({ connectSrc: chainOrigins(chain), prelude: `${root}zod-jitless.ts`, root })],
+  plugins: [nodeFreeBundle(repoRoot), wasm(), explorerPage(), staticSecurity({ connectSrc: chainOrigins(chain), prelude: `${root}zod-jitless.ts`, root })],
   worker: {
     format: "es",
     plugins: () => [nodeFreeBundle(repoRoot), wasm()],
@@ -58,7 +68,7 @@ export default defineConfig({
     chunkSizeWarningLimit: 20_000,
     rolldownOptions: {
       input: pages,
-      output: { keepNames: true, codeSplitting: { groups: [zodChunk] } },
+      output: { keepNames: true, codeSplitting: { groups: [zodChunk, sharedPageChunk] } },
     },
   },
   optimizeDeps: { exclude: ["@electric-sql/pglite"] },
