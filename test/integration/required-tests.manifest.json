@@ -1,5 +1,5 @@
 {
-  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 259) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
+  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 275) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
   "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` — those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early — that would re-open the exact self-skip hole this manifest closes.",
   "required": [
     {
@@ -1296,6 +1296,86 @@
       "id": "browser.parity.api-equals-node",
       "file": "token-indexer/test/browser-parity.test.ts",
       "description": "every answer of a crawl of the API (every listing page, color, lookup, identity field page, contract, event page and transaction, activity pages in both orders, error answers, HEAD and a refused method) from the engine worker equals the Node handler's over the same range synced and scanned in Node: status, headers and body, /v1/status apart from durability"
+    },
+    {
+      "id": "browser.worker.system",
+      "file": "token-indexer/test/browser-engine-chrome.test.ts",
+      "description": "a snapshot from the worker validates against the schema and equals its sources: heights equal /v1/status, storage equals navigator.storage, table sizes, estimates, exact counts and database size equal the catalog read from the store by another page, the configuration shows the build, the watchdog limit, the data directory and the browser; watched it arrives every 2 s, unwatched nothing is collected"
+    },
+    {
+      "id": "browser.worker.system-tabs",
+      "file": "token-indexer/test/browser-engine-chrome.test.ts",
+      "description": "a follower tab watches the leader's snapshots through the leader and gets them marked follower; closing it without unwatching releases its viewer, and the leader's worker stops collecting"
+    },
+    {
+      "id": "browser.worker.watchdog",
+      "file": "token-indexer/test/browser-engine-chrome.test.ts",
+      "description": "the worker's thread held busy during the IDX replay is terminated after the limit and grace; the API request in flight gets the 503; a new worker continues at the stored cursors to the recorded digests; the snapshot counts the restart"
+    },
+    {
+      "id": "browser.worker.api-latency",
+      "file": "token-indexer/test/browser-engine-chrome.test.ts",
+      "description": "the page's API round trips are bounded while the worker replays the IDX range (sync and scan running), and measured with the engine stopped"
+    },
+    {
+      "id": "browser.session.monitor",
+      "file": "token-indexer/test/browser-session.test.ts",
+      "description": "one turn of the event loop per time slice while statements run back to back; statements and database failures counted (with their SQLSTATE), a closed database is not a failed statement; the statement in flight is known"
+    },
+    {
+      "id": "browser.session.close",
+      "file": "token-indexer/test/browser-session.test.ts",
+      "description": "closing waits for the statements in flight and refuses new ones (the client answers CONNECTION_CLOSED); PGlite closes once they have ended"
+    },
+    {
+      "id": "browser.scheduler.interleave",
+      "file": "token-indexer/test/browser-session.test.ts",
+      "description": "while the IDX range replays, a page's API requests are answered between block transactions with a bounded round trip; without the time slices they wait for whole steps; the tables are the same either way"
+    },
+    {
+      "id": "browser.reopen.threshold",
+      "file": "token-indexer/test/browser-session.test.ts",
+      "description": "at 1,000 failed statements since the store was opened PGlite is reopened: requests are held, the engine stops at a full block and continues with the same configuration, and the replay ends with the same tables as an uninterrupted one; the reopen is counted and the failed statements start again from zero"
+    },
+    {
+      "id": "browser.reopen.stack-depth",
+      "file": "token-indexer/test/browser-session.test.ts",
+      "description": "with the count rule off PGlite's own defect appears (every statement fails with stack depth limit exceeded, 54001) after about 1,870 failures; the first such failure reopens the store at once and the engine continues to the same tables"
+    },
+    {
+      "id": "browser.system.sources",
+      "file": "token-indexer/test/browser-system.test.ts",
+      "description": "a refreshed snapshot validates against the schema and every value equals its source: heights and scanner equal /v1/status, table sizes, estimates, exact counts and database size equal the catalog, storage equals the storage reading, endpoint requests equal the chain's counts, the configuration shows the running engine, the watchdog limit, the build and the data directory; the diagnostics file reads back equal"
+    },
+    {
+      "id": "browser.system.watch",
+      "file": "token-indexer/test/browser-system.test.ts",
+      "description": "the page follows snapshots while visible: a notice every interval while watched; hidden or gone (pagehide) nothing is collected — no statement, no notice; visible again it resumes; collection runs until the last of two viewers leaves"
+    },
+    {
+      "id": "browser.watchdog.heartbeat",
+      "file": "token-indexer/test/browser-system.test.ts",
+      "description": "after a watchdog request the worker posts a heartbeat every interval with the counts a replacing worker carries; carried counts show in the snapshot and the log; a new request changes the interval; closing the host ends the heartbeat"
+    },
+    {
+      "id": "browser.watchdog.unavailable",
+      "file": "token-indexer/test/browser-watchdog.test.ts",
+      "description": "an API request in flight on a restart gets exactly the API handler's 503 UNAVAILABLE answer, for GET and HEAD"
+    },
+    {
+      "id": "browser.watchdog.slow-query",
+      "file": "token-indexer/test/browser-watchdog.test.ts",
+      "description": "a statement that does not return silences the worker; the page terminates it and starts a new one: the API request in flight gets the 503, a status request restarted; the new worker carries the counts, continues the engine at the cursors, and the range ends with the same tables"
+    },
+    {
+      "id": "browser.watchdog.rules",
+      "file": "token-indexer/test/browser-watchdog.test.ts",
+      "description": "a late check is not a restart when the worker answers within the grace; a silent worker is restarted once with the viewers and the engine restored; an engine the page stopped stays stopped; a boot failing right after a restart is retried; too many restarts close the client"
+    },
+    {
+      "id": "browser.watchdog.long-requests",
+      "file": "token-indexer/test/browser-watchdog.test.ts",
+      "description": "while a reset is in flight the worker may stay silent up to the longer limit; past it the worker is restarted and the reset fails restarted"
     }
   ],
   "deferred": [
