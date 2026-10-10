@@ -1,7 +1,8 @@
 /**
  * The browser build: `npm run build:browser` writes the static site to `dist-browser/` (`npm run dev:browser` serves the
- * same configuration on 127.0.0.1). Pages: every `*.html` file in this directory (`engine.html`, the engine page, and
- * `system.html`, the system status page). The engine runs in a dedicated module worker (`worker.ts`).
+ * same configuration on 127.0.0.1). Pages: every `*.html` file in this directory (`index.html`, the token explorer with
+ * the engine panel, `system.html`, the system status page, and `engine.html`, the engine page). The engine runs in a
+ * dedicated module worker (`worker.ts`).
  *
  * - The chain (network and the node's and indexer's URLs) is fixed here, from `UMBRADB_BROWSER_NETWORK`,
  *   `UMBRADB_BROWSER_NODE_URL` and `UMBRADB_BROWSER_INDEXER_URL` (Stagenet when unset): defined in both bundles as
@@ -9,6 +10,7 @@
  * - `build-csp.ts` gives every page a meta Content-Security-Policy with the SHA-256 of its inline blocks, writes
  *   `_headers` (the same policy and the cross-origin isolation headers for a static host) and makes `zod-jitless.ts` the
  *   first module of every page.
+ * - `build-explorer.ts` makes `index.html` from the explorer `GET /ui` serves: its markup, and its style's font as a file.
  *
  * - `build.target: "esnext"` and `worker.format: "es"`: Chrome runs ES modules and top-level await in a module worker,
  *   so no top-level-await plugin is used.
@@ -28,6 +30,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig, type PluginOption } from "vite";
 import * as wasmPlugin from "vite-plugin-wasm";
 import { browserChainFromEnv, chainOrigins, staticSecurity } from "./build-csp.ts";
+import { explorerPage } from "./build-explorer.ts";
 import { nodeFreeBundle } from "./build-guard.ts";
 
 /** The plugin is the ES module's default export (its type declarations describe it as CommonJS). */
@@ -76,7 +79,7 @@ export default defineConfig({
   base: "./",
   publicDir: false,
   define: { __UMBRADB_BROWSER_CHAIN__: JSON.stringify(chain), __UMBRADB_BUILD__: JSON.stringify(BUILD) },
-  plugins: [nodeFreeBundle(repoRoot), wasm(), staticSecurity({ connectSrc: chainOrigins(chain), prelude: `${root}zod-jitless.ts`, root })],
+  plugins: [nodeFreeBundle(repoRoot), wasm(), explorerPage(), staticSecurity({ connectSrc: chainOrigins(chain), prelude: `${root}zod-jitless.ts`, root })],
   worker: {
     format: "es",
     plugins: () => [nodeFreeBundle(repoRoot), wasm()],

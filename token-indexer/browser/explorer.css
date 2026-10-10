@@ -1,0 +1,21 @@
+/* The explorer page of the static browser build: the engine panel (engine-panel.ts) and the note the explorer puts
+   next to every list (the first indexed height). The rest of the look is the explorer's own (mip0018/ui/page.css). */
+.engine-panel { margin: 14px 28px 0; }
+.engine-panel h2 { margin: 0; flex: 1 1 auto; }
+.engine-panel > .row:first-child { margin-bottom: 12px; }
+.engine-panel .system-link { font-size: 12.5px; }
+.engine-panel .controls { margin-top: 14px; }
+.engine-panel .controls .sep { width: 1px; height: 22px; background: var(--rule); }
+.engine-panel input[type="text"] { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--ctl);
+  background: var(--md-white); color: var(--ink); }
+.engine-panel input[type="file"] { font-size: 12px; max-width: 26ch; }
+.engine-panel .confirm { margin-top: 12px; padding: 10px 14px; border: 1px solid var(--tag-observed-bd);
+  background: var(--tag-observed-bg); color: var(--tag-observed-fg); font-size: 13px; }
+.engine-panel .confirm .row { margin-top: 8px; }
+.engine-panel [data-field="message"] { margin-top: 10px; min-height: 1.4em; overflow-wrap: anywhere; }
+.engine-panel[data-state="failed"] [data-field="state"],
+.engine-panel[data-state="unsupported"] [data-field="state"],
+.engine-panel[data-state="stalled (scan)"] [data-field="state"] { color: var(--bad); }
+.engine-panel[data-state="waiting (network)"] [data-field="state"],
+.engine-panel[data-state="paused (storage)"] [data-field="state"] { color: var(--tag-observed-fg); }
+.range-note { margin: -6px 0 10px; }

@@ -110,7 +110,7 @@ describe("static build security headers", () => {
   }, 120_000);
 
   it("[[browser.csp.policy]] the default build: engine.html opens its head with the policy (inline style by its SHA-256) and no-referrer; _headers gives every path the same policy plus frame-ancestors, cross-origin isolation and hardening headers; connect-src is the site and the two Stagenet origins; no unsafe-eval or unsafe-inline", () => {
-    expect(readdirSync(out).sort()).toEqual(["_headers", "assets", "engine.html", "system.html"]);
+    expect(readdirSync(out).sort()).toEqual(["_headers", "assets", "engine.html", "index.html", "system.html"]);
     const html = read(out, "engine.html");
     expect(inlineBlocks(html, "script")).toEqual([]);
     const styles = inlineBlocks(html, "style");
