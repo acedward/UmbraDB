@@ -14,8 +14,11 @@
  *   answered are settled at once: an `api` request with the API's 503 `UNAVAILABLE` answer, any other request with the
  *   error `restarted`. The new worker gets the carried counts (restarts including this one, with the time and reason,
  *   and PGlite reopens, which the old worker's heartbeats reported), boots, and gets back what the page had set up: the
- *   system snapshot viewers, and the engine with the configuration of the last `start` that succeeded (it continues at
- *   the stored cursors). An engine the page stopped, or that failed by itself, is not started again.
+ *   system snapshot viewers, and the engine the worker last reported running, with the configuration it reported (it
+ *   continues at the stored cursors). That report is the engine in the host status a successful `start`, `stop`,
+ *   `range`, `reset` or `import` answers with, whatever started it (a `start` with no configuration runs the saved
+ *   one); an `engine` notice that it stopped or failed clears it. So an engine the page stopped, that an import stopped,
+ *   or that failed by itself is not started again, and a restart after a `range` runs the range.
  * - **Long requests:** while a request whose work may legitimately keep the worker busy for long is in flight (`range`
  *   and `reset` drop and recreate the store's schemas, `export` and `import` copy the whole data directory;
  *   {@link LONG_REQUESTS}), the limit is `longLimitMs` instead.
@@ -28,6 +31,8 @@ import {
   type CarriedCountsMessage,
   DEFAULT_HEARTBEAT_MS,
   DEFAULT_SYSTEM_VIEWER,
+  type HostStatus,
+  parseResult,
   parseWorkerMessage,
   type StartConfig,
 } from "./protocol.ts";
@@ -41,6 +46,8 @@ export const DEFAULT_BOOT_RETRIES = 5;
 export const DEFAULT_LONG_LIMIT_MS = 10 * 60_000;
 /** The requests during which the worker may stay silent up to `longLimitMs`. */
 export const LONG_REQUESTS: ReadonlySet<string> = new Set(["range", "reset", "export", "import"]);
+/** The requests whose answer reports the engine (a host status), from which the supervisor learns what runs. */
+const LIFECYCLE_REQUESTS: ReadonlySet<string> = new Set(["start", "stop", "range", "reset", "import"]);
 
 /** A worker as the supervisor drives it. */
 export interface WorkerLike extends EngineEndpoint {
@@ -123,6 +130,16 @@ class SwitchingEndpoint<W extends WorkerLike> implements EngineEndpoint {
 
 const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null;
 
+/** The host status a successful lifecycle request answered with (an import's is inside its result), once validated. */
+function reportedStatus(type: string, result: unknown): HostStatus | undefined {
+  if (type === "import") {
+    const r = parseResult("import", result);
+    return r.ok ? r.result.status : undefined;
+  }
+  const r = parseResult(type as "start" | "stop" | "range" | "reset", result);
+  return r.ok ? r.result : undefined;
+}
+
 export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>): SupervisedEngine<W> {
   const limitMs = opts.limitMs === undefined ? DEFAULT_WATCHDOG_LIMIT_MS : opts.limitMs;
   const heartbeatMs = opts.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
@@ -139,9 +156,10 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
   if (limitMs !== null && (!Number.isFinite(limitMs) || limitMs <= 0)) throw new RangeError(`limitMs must be a positive number or null, got ${limitMs}`);
 
   // What the page set up, replayed on a new worker.
-  const sent = new Map<number, { type: string; config?: StartConfig; watch?: boolean; viewer?: string }>();
+  const sent = new Map<number, { type: string; watch?: boolean; viewer?: string }>();
   /** Ids of the long requests in flight. */
   const long = new Set<number>();
+  /** The configuration of the engine the worker last reported running; `undefined` when none runs. */
   let engineConfig: StartConfig | undefined;
   const viewers = new Set<string>();
   let carried: CarriedCountsMessage = { watchdogRestarts: 0, lastWatchdogRestart: null, pgliteReopens: 0 };
@@ -156,8 +174,7 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
   function outgoing(message: unknown): void {
     if (!isRecord(message) || typeof message.id !== "number") return;
     if (typeof message.type === "string" && LONG_REQUESTS.has(message.type)) long.add(message.id);
-    if (message.type === "start" && isRecord(message.config)) sent.set(message.id, { type: "start", config: message.config as StartConfig });
-    else if (message.type === "stop") sent.set(message.id, { type: "stop" });
+    if (typeof message.type === "string" && LIFECYCLE_REQUESTS.has(message.type)) sent.set(message.id, { type: message.type });
     else if (message.type === "system" && typeof message.watch === "boolean")
       sent.set(message.id, { type: "system", watch: message.watch, viewer: typeof message.viewer === "string" ? message.viewer : DEFAULT_SYSTEM_VIEWER });
   }
@@ -168,7 +185,7 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
     const m = parseWorkerMessage(event.data);
     if (m.kind === "notice") {
       if (m.notice.notice === "heartbeat") carried = m.notice.heartbeat.carried;
-      else if (m.notice.notice === "engine" && m.notice.engine.state === "failed") engineConfig = undefined;
+      else if (m.notice.notice === "engine" && m.notice.engine.state !== "running") engineConfig = undefined;
       return;
     }
     if (m.kind !== "response" || m.response.id === null) return;
@@ -177,9 +194,10 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
     if (s === undefined) return;
     sent.delete(m.response.id);
     if (!m.response.ok) return;
-    if (s.type === "start") engineConfig = s.config;
-    else if (s.type === "stop") engineConfig = undefined;
-    else if (s.type === "system" && s.viewer !== undefined) {
+    if (LIFECYCLE_REQUESTS.has(s.type)) {
+      const status = reportedStatus(s.type, m.response.result);
+      if (status !== undefined) engineConfig = status.engine?.running === true ? status.engine.config : undefined;
+    } else if (s.type === "system" && s.viewer !== undefined) {
       if (s.watch === true) viewers.add(s.viewer);
       else viewers.delete(s.viewer);
     }
@@ -215,7 +233,14 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
       replace();
     }
     for (const viewer of [...viewers]) await client.system({ watch: true, viewer });
-    if (engineConfig !== undefined) await client.start(engineConfig);
+    const config = engineConfig;
+    if (config === undefined) return;
+    try {
+      await client.start(config);
+    } catch (e) {
+      if (gen === generation && engineConfig === config) engineConfig = undefined;
+      throw e;
+    }
   }
 
   /** Terminates the current worker and starts a new one in its place. */
