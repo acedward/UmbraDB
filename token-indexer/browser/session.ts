@@ -10,7 +10,7 @@
  * - **counts failed statements** (errors the database reports), for the reopen rule: PGlite 0.5.8 fails every statement
  *   with "stack depth limit exceeded" (SQLSTATE 54001) once a database has failed about 1,700–1,870 statements
  *   (`exec` and `query` respectively, measured), until it is reopened;
- * - **tracks the statement in flight** (since when), for the system snapshot and the logs;
+ * - **tracks the statement in flight** (`statementSince`) and counts statements, failures and turns (`counts`);
  * - **closes PGlite only when no statement is in flight**: once `close()` is called a new statement fails at once as on
  *   a closed database (`closed` reads true), and PGlite is closed after the statements already in flight have ended. A
  *   statement still queued inside PGlite when it closes would otherwise run on the shut-down backend and never return.

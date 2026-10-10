@@ -207,6 +207,32 @@ follower tab runs under the same policy and starts no worker).
 
 The dev server (`npm run dev:browser`) sends no policy.
 
+## Scheduling, watchdog and reopen
+
+PGlite runs every statement synchronously on the worker's thread, so the worker shares its time explicitly:
+
+- **Turns.** The engine's scheduler yields one task before each sync batch and scan step (`scheduler.ts`), and the
+  session monitor (`session.ts`) gives the event loop a turn before a statement once 10 ms have passed since the last
+  one. Requests that arrived meanwhile enter the clients' session lock in arrival order, between whole transactions:
+  an API read waits for at most the block transaction holding the session. Measured in Chrome on OPFS while the IDX
+  range replays in the worker: page round trips p95 10 ms (`/v1/status`), 16 ms (`/v1/tokens`), 20 ms (an activity
+  page), and the 1 s heartbeat never late by more than a few milliseconds.
+- **Watchdog** (`supervisor.ts`, in the page). `statement_timeout` has no effect in PGlite and a statement that does not
+  return holds the worker's thread, so only the page can end it. The worker posts a heartbeat every second after the
+  page's `watchdog` request. When nothing has come for the limit (30 s; `?watchdogLimitMs=` on the engine page) and
+  nothing during a grace of two heartbeats either, the page terminates the worker and starts a new one: the API request
+  in flight gets the API's 503 `UNAVAILABLE` answer, other requests in flight `restarted`; the new worker carries the
+  restart count and reason and the PGlite reopen count, boots on the same store and gets back the system snapshot's
+  viewers and the engine of the last `start` (it continues at the stored cursors; an engine the page stopped stays
+  stopped). While `range`, `reset`, `export` or `import` runs the limit is 10 min. More than 3 restarts within 10 min
+  close the client with `worker-error`.
+- **Reopen.** PGlite 0.5.8 fails every statement with "stack depth limit exceeded" once a database has failed about
+  1,700 statements, until it is reopened. The host counts the statements the database fails and reopens the store at
+  1,000 since it was opened, or at once on the first "stack depth limit exceeded": it holds new requests, stops the
+  engine at a full block, lets the requests reading the store end, closes PGlite, opens it again and runs the same
+  engine configuration (it continues at the cursors). Closing PGlite waits for the statements in flight: a statement
+  queued inside PGlite 0.5.8 when it closes never returns.
+
 ## System snapshot
 
 The worker keeps the engine's telemetry (`../engine/telemetry.ts`: per-endpoint requests, blocks per second, API
