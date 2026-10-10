@@ -41,6 +41,7 @@ const FILES: Record<string, [Uint8Array, string]> = {
   "assets/favicon-abc.ico": [Uint8Array.from([0, 0, 1, 0]), "image/x-icon"],
   "snapshots/index.json": [new TextEncoder().encode('{"snapshots":[]}\n'), "application/json"],
   "snapshots/umbradb-stagenet-1-2.snapshot.tar": [new Uint8Array(1024), "application/x-tar"],
+  "THIRD-PARTY-NOTICES.txt": [new TextEncoder().encode("Notices of the works in this site\n"), "text/plain; charset=utf-8"],
 };
 
 const HEADERS_TEXT = headersFile(securityHeaders(contentSecurityPolicy({ connectSrc: ["https://rpc.example.test", "https://indexer.example.test"], scriptHashes: [], styleHashes: [] }, "header")));

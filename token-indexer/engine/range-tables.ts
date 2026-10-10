@@ -10,7 +10,10 @@
  * Rows are normalized (bytes as lowercase hex, 64-bit integers as decimal strings), written as canonical JSON (keys
  * sorted at every depth) and sorted as strings, so the order of rows in the database and the collation never matter.
  * A NULL element of a `bytea[]` column is normalized as empty bytes, which is how postgres.js 3.4 reads it (PGlite
- * reads it as `null`), so both drivers give the same rows.
+ * reads it as `null`), so both drivers give the same rows and the same digest. The distinction is kept beside the
+ * digest instead: {@link NullElements} counts the NULL elements of every table with a `bytea[]` column and hashes where
+ * they are (each row holding one, with the positions of its NULL elements), read by SQL so that both drivers see them;
+ * {@link compareNullElements} compares two runs' and the range checks compare them with the digests.
  * Each table gets a row count and the SHA-256 of its sorted rows; the excluded columns are listed with the digest so a
  * reader can see what was left out. Table keys are `archive.<table>` and `mip0018.<table>`: the schema names of two runs
  * may differ.
@@ -34,6 +37,13 @@ export interface RangeTables {
   /** SHA-256 over the canonical JSON of `tables`. */
   sha256: string;
 }
+
+/**
+ * The NULL elements of `bytea[]` columns, which the row digests count as empty bytes: for every table with such a
+ * column (`archive.<table>` / `mip0018.<table>`), how many there are and the SHA-256 of the sorted lines
+ * `<row as in the digest>\t<{"column": [positions]}>` of the rows holding one (empty text: none).
+ */
+export type NullElements = Record<string, { count: number; sha256: string }>;
 
 /** JSON with object keys sorted at every depth (arrays keep their order). */
 export function canonical(value: unknown): string {
@@ -70,15 +80,19 @@ function nullElementsAsEmpty(row: Record<string, unknown>, byteaArrays: readonly
 
 interface ColumnInfo { table_name: string; column_name: string; data_type: string; udt_name: string; is_identity: string; column_default: string | null }
 
-/** Every base table of `schema`: its rows as sorted canonical JSON strings, and the excluded columns. */
-export async function schemaRows(sql: UmbraDBSql, schema: string): Promise<Map<string, { rows: string[]; excluded: string[] }>> {
+/** The result column holding the 1-based positions of a `bytea[]` column's NULL elements (`null`: none). */
+const nullPositionsColumn = (i: number): string => `umbradb_null_positions_${i}`;
+
+/** Every base table of `schema`: its rows as sorted canonical JSON strings, the excluded columns, and for a table with a
+ *  `bytea[]` column its NULL elements (see {@link NullElements}). */
+export async function schemaRows(sql: UmbraDBSql, schema: string): Promise<Map<string, { rows: string[]; excluded: string[]; nullElements?: { count: number; sha256: string } }>> {
   const tables = await sql<{ table_name: string }[]>`
     SELECT table_name FROM information_schema.tables
     WHERE table_schema = ${schema} AND table_type = 'BASE TABLE' ORDER BY table_name`;
   const columns = await sql<ColumnInfo[]>`
     SELECT table_name, column_name, data_type, udt_name, is_identity, column_default FROM information_schema.columns
     WHERE table_schema = ${schema} ORDER BY table_name, ordinal_position`;
-  const out = new Map<string, { rows: string[]; excluded: string[] }>();
+  const out = new Map<string, { rows: string[]; excluded: string[]; nullElements?: { count: number; sha256: string } }>();
   for (const { table_name: table } of tables) {
     const kept: string[] = [];
     const excluded: string[] = [];
@@ -91,26 +105,69 @@ export async function schemaRows(sql: UmbraDBSql, schema: string): Promise<Map<s
         if (c.udt_name === "_bytea") byteaArrays.push(c.column_name);
       }
     }
-    const rows = kept.length === 0
-      ? (await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ${sql(schema)}.${sql(table)}`).flatMap((r) => Array.from({ length: r.n }, () => "{}"))
-      : (await sql<Record<string, unknown>[]>`SELECT ${sql(kept)} FROM ${sql(schema)}.${sql(table)}`).map((r) => canonical(normalize(nullElementsAsEmpty({ ...r }, byteaArrays))));
+    if (kept.length === 0) {
+      const [counted] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ${sql(schema)}.${sql(table)}`;
+      out.set(table, { rows: Array.from({ length: counted?.n ?? 0 }, () => "{}"), excluded });
+      continue;
+    }
+    // An empty list would be sent as a parameter: no fragment at all when the table has no `bytea[]` column.
+    const positions = byteaArrays.length === 0 ? sql`` : byteaArrays.map((c, i) =>
+      sql`, (SELECT array_agg(n::int ORDER BY n) FROM unnest(${sql(c)}) WITH ORDINALITY AS e(x, n) WHERE x IS NULL) AS ${sql(nullPositionsColumn(i))}`);
+    const rows: string[] = [];
+    const nullLines: string[] = [];
+    let nullCount = 0;
+    for (const r of await sql<Record<string, unknown>[]>`SELECT ${sql(kept)}${positions} FROM ${sql(schema)}.${sql(table)}`) {
+      const row = { ...r };
+      const at: Record<string, number[]> = {};
+      byteaArrays.forEach((c, i) => {
+        const p = row[nullPositionsColumn(i)];
+        delete row[nullPositionsColumn(i)];
+        if (Array.isArray(p) && p.length > 0) {
+          at[c] = p.map(Number);
+          nullCount += p.length;
+        }
+      });
+      const line = canonical(normalize(nullElementsAsEmpty(row, byteaArrays)));
+      rows.push(line);
+      if (Object.keys(at).length > 0) nullLines.push(`${line}\t${canonical(at)}`);
+    }
     rows.sort();
-    out.set(table, { rows, excluded });
+    nullLines.sort();
+    out.set(table, { rows, excluded, ...(byteaArrays.length === 0 ? {} : { nullElements: { count: nullCount, sha256: sha256(nullLines.join("\n")) } }) });
   }
   return out;
 }
 
-/** Digest of the archive schema and the `mip0018` schema of one run. */
-export async function rangeTables(sql: UmbraDBSql, archiveSchema: string, mipSchema: string): Promise<{ digest: RangeTables; rows: Map<string, string[]> }> {
+/** Digest of the archive schema and the `mip0018` schema of one run, with the NULL `bytea[]` elements beside it. */
+export async function rangeTables(sql: UmbraDBSql, archiveSchema: string, mipSchema: string): Promise<{ digest: RangeTables; rows: Map<string, string[]>; nullElements: NullElements }> {
   const tables: Record<string, TableDigest> = {};
   const rows = new Map<string, string[]>();
+  const nullElements: NullElements = {};
   for (const [role, schema] of [["archive", archiveSchema], ["mip0018", mipSchema]] as const) {
     for (const [table, t] of await schemaRows(sql, schema)) {
       tables[`${role}.${table}`] = { rows: t.rows.length, sha256: sha256(t.rows.join("\n")), excluded: t.excluded };
       rows.set(`${role}.${table}`, t.rows);
+      if (t.nullElements !== undefined) nullElements[`${role}.${table}`] = t.nullElements;
     }
   }
-  return { digest: { tables, sha256: sha256(canonical(tables)) }, rows };
+  return { digest: { tables, sha256: sha256(canonical(tables)) }, rows, nullElements };
+}
+
+/** The NULL elements of a run with none in any table that has a `bytea[]` column (the tables named). */
+export function noNullElements(tables: readonly string[]): NullElements {
+  return Object.fromEntries(tables.map((t) => [t, { count: 0, sha256: sha256("") }]));
+}
+
+/** Per-table differences between two runs' NULL `bytea[]` elements ([] when they are the same). */
+export function compareNullElements(a: NullElements, b: NullElements): string[] {
+  const d: string[] = [];
+  for (const k of [...new Set([...Object.keys(a), ...Object.keys(b)])].sort()) {
+    const x = a[k];
+    const y = b[k];
+    if (x === undefined || y === undefined) d.push(`${k}: NULL bytea[] elements only in ${x === undefined ? "second" : "first"}`);
+    else if (x.count !== y.count || x.sha256 !== y.sha256) d.push(`${k}: ${x.count} NULL bytea[] elements ${x.sha256.slice(0, 12)} vs ${y.count} ${y.sha256.slice(0, 12)}`);
+  }
+  return d;
 }
 
 /** Per-table differences between two digests ([] when every table is identical). */

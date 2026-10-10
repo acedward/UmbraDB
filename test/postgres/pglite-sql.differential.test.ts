@@ -47,7 +47,7 @@ import { PgChainArchiveStore } from "../../src/postgres/chain-archive-store.js";
 import { createPgliteClient } from "../../src/postgres/pglite-sql.js";
 import { startFakeChain } from "../integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadManifest, loadRangeTape } from "../integration/fixtures/stagenet-archive/stagenet-fixtures.js";
-import { canonical, rangeTables } from "../../token-indexer/dev/range-tables.ts";
+import { canonical, noNullElements, rangeTables } from "../../token-indexer/dev/range-tables.ts";
 import { activityForColor, metadataTransactionsForContract } from "../../token-indexer/mip0018/activity.ts";
 import { createMip0018Api, listen } from "../../token-indexer/mip0018/api-node.ts";
 import { listEvents, eventCounts } from "../../token-indexer/mip0018/events.ts";
@@ -245,6 +245,10 @@ describe("PGlite client = postgres.js on PostgreSQL 17", () => {
     expect(u1Tables[1]!.digest.sha256).toBe(u1Tables[0]!.digest.sha256);
     for (const b of both)
       expect((await b.sql`SELECT count(*)::int AS n FROM diff_mip.mip0018_contract_actions WHERE array_position(maintenance_operations, NULL) IS NOT NULL`)[0]!.n).toBe(0);
+    // The NULL elements beside the digests (read by SQL, so postgres.js sees them too): none, on both.
+    expect(tables[0]!.nullElements).toEqual(noNullElements(["mip0018.mip0018_contract_actions"]));
+    expect(tables[1]!.nullElements).toEqual(tables[0]!.nullElements);
+    expect(u1Tables[1]!.nullElements).toEqual(u1Tables[0]!.nullElements);
     console.log(`[pglite-differential] digests: postgres ${tables[0]!.digest.sha256}, pglite ${tables[1]!.digest.sha256}; differing tables: ${differing.join(", ") || "none"}`);
     // Negative control: one changed parameter is reported at its statement.
     const tampered = lite.log.map((s, i) => (i === 10 ? { ...s, params: ["changed"] } : s));
@@ -292,6 +296,29 @@ describe("PGlite client = postgres.js on PostgreSQL 17", () => {
       [{ ops: ["\\x0102", "\\x"] }], [{ op: "\\x0102", n: "1n" }, { op: null, n: "2n" }],
       [{ ops: ["\\x0102", null] }], [{ op: "\\x0102", n: "1n" }, { op: null, n: "2n" }],
     ]);
+  }, 60_000);
+
+  it("[[pglite.differential.unsafe-results]] unsafe text with several statements gives the same results in the same shape: one result, or one per statement that describes rows, with the same rows, counts, commands and columns", async () => {
+    const shape = (r: unknown): unknown => {
+      const one = (x: { count: number | null; command: string | null; columns: Array<{ name: string }> | null } & unknown[]) =>
+        ({ rows: plain([...x]), count: x.count, command: x.command, columns: (x.columns ?? []).map((c) => c.name) });
+      const all = r as Array<unknown>;
+      return all.length > 0 && Array.isArray(all[0]) ? { results: all.map((x) => one(x as never)) } : one(r as never);
+    };
+    const out: Record<string, unknown[]> = { postgres: [], pglite: [] };
+    await phase("unsafe-multi-statement", async (b) => {
+      await b.sql.unsafe("CREATE TABLE diff_mip.multi (x int)");
+      for (const text of [
+        "SELECT 1 AS a; SELECT 2 AS b",
+        "INSERT INTO diff_mip.multi VALUES (1), (2); SELECT count(*)::int AS n FROM diff_mip.multi",
+        "SELECT 1 AS a UNION ALL SELECT 2; INSERT INTO diff_mip.multi VALUES (3), (4), (5); UPDATE diff_mip.multi SET x = 0",
+        "INSERT INTO diff_mip.multi VALUES (6) RETURNING x; DELETE FROM diff_mip.multi WHERE x = 0; SELECT x FROM diff_mip.multi WHERE false",
+        "SELECT 7 AS v",
+      ]) out[b.name]!.push(shape(await b.sql.unsafe(text)));
+      await b.sql.unsafe("DROP TABLE diff_mip.multi");
+    });
+    expect(out.pglite).toEqual(out.postgres);
+    expect(out.postgres![0]).toMatchObject({ results: [{ rows: [{ a: 1 }] }, { rows: [{ b: 2 }] }] });
   }, 60_000);
 
   it("[[pglite.differential.api]] answers every API route with the same responses and statements, one request at a time and concurrently", async () => {

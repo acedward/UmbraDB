@@ -7,6 +7,10 @@
  * transactions, blobs, cursor, events, fields, withdrawals, listed events, mints, sightings, actions, activity,
  * built-in rows, scan cursor).
  *
+ * The table digests count a NULL element of a `bytea[]` column as empty bytes (postgres.js reads it so); the NULL
+ * elements are compared beside them, read by SQL (`[[mip0018.live-range.null-elements]]`): the recorded range holds none,
+ * and a NULL operation changed into an empty one changes no digest but is caught there.
+ *
  * Kill-and-resume is covered on fixtures by `[[archive.sync.resume-kill-identical]]`, `[[mip0018.scan.resume-identical]]`
  * and `[[mip0018.activity.kill-resume]]`.
  */
@@ -18,7 +22,9 @@ import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.j
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { startFakeChain } from "../../test/integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadManifest, loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
-import { compareTables, rangeTables, type RangeTables } from "../dev/range-tables.ts";
+import { compareNullElements, compareTables, noNullElements, rangeTables, type RangeTables } from "../dev/range-tables.ts";
+import { runMigrations } from "../../src/postgres/migrate.js";
+import { mip0018Migrations } from "../../src/postgres/migrations/mip0018/index.js";
 import { Mip0018Scanner } from "../mip0018/scan.ts";
 
 const NET = "stagenet";
@@ -71,8 +77,10 @@ describe("recorded live range = fixture replay", () => {
       if (r.scannedBlocks === 0 || r.reachedEnd) break;
     }
 
-    const { digest } = await rangeTables(sql, archive, "replay_mip");
+    const { digest, nullElements } = await rangeTables(sql, archive, "replay_mip");
     expect(compareTables(digest, RECORDED.liveTables)).toEqual([]);
+    // No NULL bytea[] element, which the digest would count as empty bytes.
+    expect(nullElements).toEqual(noNullElements(["mip0018.mip0018_contract_actions"]));
     expect(digest.sha256).toBe(RECORDED.liveTables.sha256);
     // Every table of both schemas was compared, including the token tables the scan writes.
     for (const t of ["archive.blocks", "archive.transactions", "archive.chain_blobs", "archive.watermarks", "mip0018.mip0018_events",
@@ -87,4 +95,39 @@ describe("recorded live range = fixture replay", () => {
     const changed = await rangeTables(sql, archive, "replay_mip");
     expect(compareTables(changed.digest, RECORDED.liveTables).map((d) => d.split(":")[0])).toEqual(["mip0018.mip0018_fields"]);
   }, 300_000);
+
+  it("[[mip0018.live-range.null-elements]] a NULL bytea[] element and an empty one give the same table digests (postgres.js reads both as empty bytes) but different NULL elements beside them, read by SQL: the count and where they are", async () => {
+    const archive = "nulls_archive";
+    const mip = "nulls_mip";
+    await bootstrapChainArchiveSchema(sql, archive);
+    await runMigrations(sql, { schema: mip, migrations: mip0018Migrations });
+    const key = "mip0018.mip0018_contract_actions";
+    const at = async (updates: string[], operations: string): Promise<Awaited<ReturnType<typeof rangeTables>>> => {
+      await sql`DELETE FROM ${sql(mip)}.mip0018_contract_actions`;
+      await sql`INSERT INTO ${sql(mip)}.mip0018_contract_actions (network, block_height, tx_index, segment_id, action_index, tx_hash, action, contract_address, maintenance_counter, maintenance_updates, maintenance_operations)
+        VALUES (${NET}, 1, 0, 0, 0, decode(${"11".repeat(32)}, 'hex'), 'maintenance', decode(${"22".repeat(32)}, 'hex'), 1, ${updates}::text[], ${sql.unsafe(operations)})`;
+      return rangeTables(sql, archive, mip);
+    };
+    try {
+      const nullOp = await at(["VerifierKeyInsert"], "ARRAY[NULL]::bytea[]");
+      const emptyOp = await at(["VerifierKeyInsert"], "ARRAY['\\x'::bytea]");
+      // The documented normalization: the digests cannot tell them apart.
+      expect(compareTables(nullOp.digest, emptyOp.digest)).toEqual([]);
+      expect(nullOp.digest.sha256).toBe(emptyOp.digest.sha256);
+      // The NULL elements can.
+      expect(nullOp.nullElements[key]!.count).toBe(1);
+      expect(emptyOp.nullElements[key]).toEqual(noNullElements([key])[key]);
+      expect(compareNullElements(nullOp.nullElements, emptyOp.nullElements).map((d) => d.split(":")[0])).toEqual([key]);
+      // Where they are counts too.
+      const first = await at(["VerifierKeyInsert", "VerifierKeyRemove"], "ARRAY[NULL, '\\x'::bytea]");
+      const second = await at(["VerifierKeyInsert", "VerifierKeyRemove"], "ARRAY['\\x'::bytea, NULL]");
+      expect(first.digest.sha256).toBe(second.digest.sha256);
+      expect([first.nullElements[key]!.count, second.nullElements[key]!.count]).toEqual([1, 1]);
+      expect(compareNullElements(first.nullElements, second.nullElements).map((d) => d.split(":")[0])).toEqual([key]);
+      expect(compareNullElements(first.nullElements, (await at(["VerifierKeyInsert", "VerifierKeyRemove"], "ARRAY[NULL, '\\x'::bytea]")).nullElements)).toEqual([]);
+    } finally {
+      await sql`DROP SCHEMA IF EXISTS ${sql(mip)} CASCADE`;
+      await sql`DROP SCHEMA IF EXISTS ${sql(archive)} CASCADE`;
+    }
+  }, 120_000);
 });

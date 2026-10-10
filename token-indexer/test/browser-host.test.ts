@@ -9,6 +9,12 @@
  * - `[[browser.host.protocol]]` — every malformed message gets the right error code; `export` of an empty archive and
  *   `import` of a file that is not a snapshot are refused (`snapshot-refused`); a first start with no start height
  *   begins at the finalized tip.
+ * - `[[browser.host.hostile-message]]` — a message whose version or type is an object that cannot be turned into text
+ *   (no usable `toString`, a throwing `Symbol.toPrimitive`, a throwing getter) gets an error response, never a
+ *   rejection; the page's parser of worker messages reports such a message as invalid without throwing.
+ * - `[[browser.host.sync-failed]]` — a sync loop that ends with an error (a refused range) ends the engine: it is
+ *   reported failed with the sync's error (status and `engine` notice), the scan does not go on alone, the API keeps
+ *   answering, and a new start runs.
  * - `[[browser.host.engine]]` — start, run, stop, restart: the cursors and the API follow the replayed range, a restart
  *   continues at the cursor, and every block is fetched once.
  * - `[[browser.host.refusals]]` — an unsupported browser opens nothing; a ledger build with renamed classes fails the
@@ -25,7 +31,7 @@ import { createTapeFetch } from "../../chain-archive-sync/tape-replay.js";
 import { type CapabilityEnvironment, checkCapabilities } from "../browser/capabilities.ts";
 import { createEngineClient, EngineError } from "../browser/client.ts";
 import { createWorkerHost, type WorkerHost, type WorkerHostOptions } from "../browser/host.ts";
-import { type CapabilityReport, type HostStatus, type Notice, PROTOCOL_VERSION, type Response } from "../browser/protocol.ts";
+import { type CapabilityReport, type HostStatus, type Notice, parseRequest, parseWorkerMessage, PROTOCOL_VERSION, type Response } from "../browser/protocol.ts";
 import { openStore, type Store } from "../browser/store.ts";
 import { loadTape, TAPE_ASSETS } from "../browser/tapes.ts";
 
@@ -180,6 +186,50 @@ describe("browser engine host", () => {
     await result(host, "start", { config: { source: { kind: "tape", range: "u1" }, ...FAST } });
     const atTip = await until(host, "the tip block", (s) => s.cursors?.scan?.nextHeight === U1.to + 1);
     expect(atTip.cursors!.sync).toEqual({ height: U1.to, startHeight: U1.to });
+  }, 60_000);
+
+  it("[[browser.host.hostile-message]] a version or type that cannot be turned into text gets an error response, never a rejection; the page's parser reports such a worker message as invalid", async () => {
+    const { host } = newHost();
+    const noText = { toString: 0 };
+    const throwing = { [Symbol.toPrimitive]: () => { throw new Error("no primitive"); } };
+    const bare = Object.create(null) as object;
+    for (const v of [noText, throwing, bare, [noText]]) {
+      const r = await host.receive({ v, id: 1, type: "status" });
+      expect(r).toMatchObject({ ok: false, id: 1, request: "status", error: { code: "unsupported-version" } });
+      expect((r as Extract<Response, { ok: false }>).error.message).toMatch(/^protocol version (an object|an array) is not 1$/);
+      expect(parseRequest({ v, id: 2, type: "stop" })).toMatchObject({ ok: false, error: { code: "unsupported-version" } });
+      expect(parseWorkerMessage({ v, type: "response" })).toMatchObject({ kind: "invalid" });
+    }
+    for (const type of [noText, throwing, bare]) {
+      expect(await host.receive({ v: PROTOCOL_VERSION, id: 3, type })).toMatchObject({ ok: false, id: 3, error: { code: "unknown-type" } });
+      expect(parseWorkerMessage({ v: PROTOCOL_VERSION, type })).toMatchObject({ kind: "invalid", message: "unknown message type (an object)" });
+    }
+    const getter = Object.defineProperty({ id: 4, type: "status" }, "v", { get: () => { throw new Error("no version"); }, enumerable: true });
+    expect(await host.receive(getter)).toMatchObject({ ok: false, id: null, request: null, error: { code: "bad-request" } });
+    expect(parseWorkerMessage(getter)).toMatchObject({ kind: "invalid" });
+    expect(parseRequest({ v: 2, id: 5, type: "status" })).toMatchObject({ error: { message: "protocol version 2 is not 1" } });
+    expect((await result<HostStatus>(host, "status")).protocol).toBe(PROTOCOL_VERSION);
+  }, 60_000);
+
+  it("[[browser.host.sync-failed]] a sync loop that ends with an error ends the engine: reported failed with the sync's error in the status and an engine notice, the scan does not follow alone, the API keeps answering, a new start runs", async () => {
+    const { host, notices } = newHost();
+    const first = { source: { kind: "tape", range: "u1" }, startHeight: U1.from, endHeight: U1.from + 5, ...FAST };
+    await result(host, "start", { config: first });
+    await until(host, "the first range", (s) => s.engine!.status.sync.phase === "done" && s.cursors?.scan?.nextHeight === U1.from + 6);
+    await result(host, "stop");
+    // A start above the cursor + 1 is a range the archive cannot honour: the sync loop ends with an error.
+    const refused = { ...first, startHeight: U1.from + 10, endHeight: U1.to };
+    expect((await result<HostStatus>(host, "start", { config: refused })).engine).toMatchObject({ running: true });
+    const failed = await until(host, "the engine failed", (s) => s.engine?.running === false);
+    expect(failed.engine!.error).toMatch(/^the sync stopped: --from 715412 /);
+    expect(failed.engine!.status.sync.phase).toBe("failed");
+    expect(failed.engine!.status.scan.phase).toBe("stopped");
+    expect(notices.filter((n) => n.notice === "engine").map((n) => (n as Extract<Notice, { notice: "engine" }>).engine).at(-1)).toEqual({ state: "failed", error: failed.engine!.error });
+    expect((await result<{ status: number }>(host, "api", { method: "GET", target: "/v1/status" })).status).toBe(200);
+    // A new start runs (the configuration the archive can continue).
+    expect((await result<HostStatus>(host, "start", { config: { ...first, endHeight: U1.from + 8 } })).engine).toMatchObject({ running: true, error: null });
+    await until(host, "the next range", (s) => s.cursors?.sync?.height === U1.from + 8 && s.cursors?.scan?.nextHeight === U1.from + 9);
+    expect((await host.receive({ v: PROTOCOL_VERSION, id: 99, type: "status" })).ok).toBe(true);
   }, 60_000);
 
   it("[[browser.host.engine]] start syncs and scans the replayed range; stop leaves both cursors at a full block; a restart continues at the cursor", async () => {

@@ -11,8 +11,10 @@
  * - `begin(callback)` and `begin(mode, callback)`: `begin <mode>`, then `commit`, or `rollback` when the callback fails
  *   or any statement of the transaction failed; `savepoint` on transaction handles;
  * - `reserve()`: an exclusive handle on the session until `release()`; a manual `BEGIN`/`COMMIT` works on it;
- * - `unsafe(text)` (simple protocol, several statements allowed) and `unsafe(text, parameters)`;
- * - results: arrays carrying `count`, `command` and `columns`;
+ * - `unsafe(text)` (simple protocol, several statements allowed) and `unsafe(text, parameters)`; the results of several
+ *   statements are grouped as postgres.js groups them (see {@link simpleResult});
+ * - results: arrays carrying `count`, `command` (the first word of the statement's command tag, as PGlite reports it)
+ *   and `columns`;
  * - `end()`.
  * Anything else postgres.js offers (cursors, `forEach`, `values`, `listen`, …) throws `NOT_SUPPORTED`.
  *
@@ -26,6 +28,11 @@
  *
  * PGlite has a single session. All clients created over one PGlite database share one lock on it: a statement holds it
  * while it runs, `begin` for the whole transaction, `reserve` until `release`. Waiting statements run in arrival order.
+ * Only `begin` and a reserved handle open transactions. A top-level statement that starts a transaction block is refused
+ * with `UNSAFE_TRANSACTION` before it runs, also when the `BEGIN` or `START TRANSACTION` follows comments or other
+ * statements of the same text; and the session is never handed on inside a transaction: when a top-level statement
+ * leaves one open (whatever its text), it is rolled back and the statement refused, and a transaction still open when a
+ * reservation is released (or a `begin` ends) is rolled back.
  * Inside a `begin` callback every statement must go through the transaction handle: a statement on the outer client
  * waits for the session the transaction holds. Such a waiting statement fails with `PGLITE_SESSION_DEADLOCK` once the
  * transaction (or reservation) holding the session has run no statement for `deadlockTimeoutMs`, instead of waiting
@@ -71,6 +78,9 @@ export interface PgliteDatabase {
   exec(query: string, options?: PgliteQueryOptions): Promise<PgliteResults[]>;
   close(): Promise<void>;
   readonly closed: boolean;
+  /** Whether the session is inside a transaction block (PGlite's `isInTransaction`). Without it, a transaction left
+   *  open by a statement whose text does not show it cannot be detected. */
+  isInTransaction?(): boolean;
 }
 
 // ── Options ──────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -387,6 +397,31 @@ function toResult(res: PgliteResults | undefined): PgliteResult {
     columns: { value: (res?.fields ?? []).map((f) => ({ name: f.name, type: f.dataTypeID })), writable: true },
   });
   return out;
+}
+
+/**
+ * The result of a text run with the simple protocol, shaped as postgres.js 3.4 shapes it. The statements' results are
+ * grouped: a statement that describes rows starts a new group unless it is the first; any other statement joins the
+ * group before it. A group holds the rows and columns of its first statement, the first row count reported in it and
+ * the command of its last statement. One group gives that result; several give an array of them.
+ *
+ * A statement describes rows when it returns columns or rows; a statement that returns no column and no row (`SELECT`
+ * of an empty select list over no rows) cannot be told apart from one that describes none, so it joins the group
+ * before it instead of starting one.
+ */
+function simpleResult(all: readonly PgliteResults[]): PgliteResult | PgliteResult[] {
+  const groups: PgliteResult[] = [];
+  for (const res of all) {
+    const current = groups[groups.length - 1];
+    if (current === undefined || res.fields.length > 0 || res.rows.length > 0) {
+      groups.push(toResult(res));
+      continue;
+    }
+    if (current.count === null) current.count = res.rowCount ?? null;
+    current.command = res.command ?? null;
+  }
+  if (groups.length === 0) return toResult(undefined);
+  return groups.length === 1 ? groups[0]! : groups;
 }
 
 // ── Compilation (a port of postgres.js 3.4 `src/types.js`) ───────────────────────────────────────────────────────────
@@ -768,7 +803,89 @@ async function loadArrayTypes(session: Session): Promise<void> {
 
 const RESETS_SEARCH_PATH = /^\s*(reset\s+(search_path|all)|discard\s+all)\s*;?\s*$/i;
 const MENTIONS_SEARCH_PATH = /search_path|\breset\b|\bdiscard\b/i;
-const STARTS_TRANSACTION = /^\s*(begin|start\s+transaction)\b/i;
+
+const IDENTIFIER_CHAR = /[\p{L}\p{N}_$\u0080-\uffff]/u;
+const DOLLAR_QUOTE = /\$(?:[\p{L}_\u0080-\uffff][\p{L}\p{N}_\u0080-\uffff]*)?\$/uy;
+
+/** The index after the whitespace and comments (`--` to the end of the line, `/* … *\/`, nested) starting at `i`. */
+function skipSpace(text: string, i: number): number {
+  for (;;) {
+    while (i < text.length && /\s/.test(text[i]!)) i++;
+    if (text.startsWith("--", i)) {
+      const end = text.indexOf("\n", i);
+      i = end < 0 ? text.length : end + 1;
+    } else if (text.startsWith("/*", i)) {
+      let depth = 1;
+      i += 2;
+      while (i < text.length && depth > 0) {
+        if (text.startsWith("/*", i)) {
+          depth++;
+          i += 2;
+        } else if (text.startsWith("*/", i)) {
+          depth--;
+          i += 2;
+        } else i++;
+      }
+    } else return i;
+  }
+}
+
+/** The word (letters, digits, `_`) starting at `i`, lower-cased; empty when none starts there. */
+function wordAt(text: string, i: number): string {
+  const m = /[A-Za-z_][A-Za-z0-9_]*/y;
+  m.lastIndex = i;
+  return m.exec(text)?.[0].toLowerCase() ?? "";
+}
+
+/**
+ * Whether a statement of `text` (one, or several separated by `;`) starts a transaction block: `BEGIN` or `START
+ * TRANSACTION`, after any comments. Quoted text (`'…'`, `E'…'` with backslash escapes, `"…"`) and dollar-quoted bodies
+ * (`$$…$$`, `$tag$…$tag$`) are skipped, so a `BEGIN` or `;` inside them, in an identifier or in a comment does not count.
+ */
+export function startsTransactionBlock(text: string): boolean {
+  let i = 0;
+  let atStatementStart = true;
+  while (i < text.length) {
+    i = skipSpace(text, i);
+    if (i >= text.length) break;
+    if (atStatementStart) {
+      atStatementStart = false;
+      const first = wordAt(text, i);
+      if (first === "begin") return true;
+      if (first === "start" && wordAt(text, skipSpace(text, i + first.length)) === "transaction") return true;
+    }
+    const c = text[i]!;
+    if (c === ";") {
+      atStatementStart = true;
+      i++;
+    } else if (c === "'") {
+      const escapes = i > 0 && /[eE]/.test(text[i - 1]!) && (i < 2 || !IDENTIFIER_CHAR.test(text[i - 2]!));
+      i++;
+      while (i < text.length) {
+        if (escapes && text[i] === "\\") i += 2;
+        else if (text[i] === "'" && text[i + 1] === "'") i += 2;
+        else if (text[i] === "'") break;
+        else i++;
+      }
+      i++;
+    } else if (c === '"') {
+      i++;
+      while (i < text.length && !(text[i] === '"' && text[i + 1] !== '"')) i += text[i] === '"' ? 2 : 1;
+      i++;
+    } else if (c === "$" && (i === 0 || !IDENTIFIER_CHAR.test(text[i - 1]!))) {
+      DOLLAR_QUOTE.lastIndex = i;
+      const tag = DOLLAR_QUOTE.exec(text)?.[0];
+      if (tag === undefined) i++;
+      else {
+        const end = text.indexOf(tag, i + tag.length);
+        i = end < 0 ? text.length : end + tag.length;
+      }
+    } else if (IDENTIFIER_CHAR.test(c)) {
+      while (i < text.length && IDENTIFIER_CHAR.test(text[i]!)) i++;
+    } else i++;
+  }
+  return false;
+}
 
 let nextClientId = 0;
 
@@ -821,7 +938,7 @@ async function applySearchPath(state: ClientState): Promise<void> {
 }
 
 /** Runs one statement on the session the holder owns. */
-async function runStatement(state: ClientState, holder: Holder, q: PgliteQuery, topLevel: boolean): Promise<PgliteResult> {
+async function runStatement(state: ClientState, holder: Holder, q: PgliteQuery, topLevel: boolean): Promise<PgliteResult | PgliteResult[]> {
   const { session } = state;
   if (session.db.closed) throw connectionClosed();
   try {
@@ -831,13 +948,12 @@ async function runStatement(state: ClientState, holder: Holder, q: PgliteQuery, 
   }
   const compiled = compileQuery(q);
   state.debug?.(state.id, compiled.text, compiled.params, compiled.types);
-  if (topLevel && STARTS_TRANSACTION.test(compiled.text))
-    throw new PgliteSqlError("UNSAFE_TRANSACTION", "Only use sql.begin, sql.reserve or a transaction handle to start a transaction");
+  if (topLevel && startsTransactionBlock(compiled.text)) throw unsafeTransaction();
   let res: PgliteResults | undefined;
+  let all: PgliteResults[] | undefined;
   try {
     if (q.simple) {
-      const all = await session.db.exec(compiled.text, { parsers: state.parsers });
-      res = all[all.length - 1];
+      all = await session.db.exec(compiled.text, { parsers: state.parsers });
     } else {
       res = await session.db.query(compiled.text, compiled.params, {
         paramTypes: compiled.types,
@@ -854,12 +970,36 @@ async function runStatement(state: ClientState, holder: Holder, q: PgliteQuery, 
     }
   }
   if (RESETS_SEARCH_PATH.test(compiled.text)) await applySearchPath(state);
-  return toResult(res);
+  return all !== undefined ? simpleResult(all) : toResult(res);
 }
 
-function releaseHolder(state: ClientState, holder: Holder): void {
-  if (holder.searchPathTouched) state.session.searchPath = undefined;
-  state.session.lock.release(holder);
+function unsafeTransaction(): PgliteSqlError {
+  return new PgliteSqlError("UNSAFE_TRANSACTION", "Only use sql.begin, sql.reserve or a transaction handle to start a transaction");
+}
+
+/** Rolls back a transaction left open on the session, if any; whether there was one. Runs inside the holder's turn. */
+async function rollBackOpenTransaction(state: ClientState, holder: Holder): Promise<boolean> {
+  const { db } = state.session;
+  if (db.closed || db.isInTransaction?.() !== true) return false;
+  holder.searchPathTouched = true;
+  try {
+    await db.exec("rollback");
+  } catch (error) {
+    throw databaseError(state, error);
+  }
+  return true;
+}
+
+/** Hands the session on: first rolls back any transaction its holder left open, so no other statement runs inside it. */
+async function releaseHolder(state: ClientState, holder: Holder): Promise<void> {
+  try {
+    await holder.run(() => rollBackOpenTransaction(state, holder));
+  } catch {
+    // The database failed or closed: there is no session left to hand on inside a transaction.
+  } finally {
+    if (holder.searchPathTouched) state.session.searchPath = undefined;
+    state.session.lock.release(holder);
+  }
 }
 
 type SqlFunction = ((...args: any[]) => any) & Record<string, unknown>;
@@ -952,10 +1092,19 @@ function makeClient(state: ClientState, db: PgliteDatabase): UmbraDBSql {
       try {
         return await holder.run(async () => {
           await applySearchPath(state);
-          return runStatement(state, holder, q, true);
+          let result: PgliteResult | PgliteResult[] | undefined;
+          let failure: { error: unknown } | undefined;
+          try {
+            result = await runStatement(state, holder, q, true);
+          } catch (error) {
+            failure = { error };
+          }
+          if (await rollBackOpenTransaction(state, holder)) throw unsafeTransaction();
+          if (failure !== undefined) throw failure.error;
+          return result;
         });
       } finally {
-        releaseHolder(state, holder);
+        await releaseHolder(state, holder);
       }
     })();
     track(state, op).then(q.resolve, q.reject);
@@ -978,7 +1127,7 @@ function makeClient(state: ClientState, db: PgliteDatabase): UmbraDBSql {
         return await transactionScope(state, holder, body, undefined, { savepoints: 0 });
       } finally {
         await holder.drained();
-        releaseHolder(state, holder);
+        await releaseHolder(state, holder);
       }
     })();
     return track(state, op);
@@ -990,7 +1139,7 @@ function makeClient(state: ClientState, db: PgliteDatabase): UmbraDBSql {
     try {
       await holder.run(() => applySearchPath(state));
     } catch (error) {
-      releaseHolder(state, holder);
+      await releaseHolder(state, holder);
       throw error;
     }
     let released = false;
@@ -1006,10 +1155,7 @@ function makeClient(state: ClientState, db: PgliteDatabase): UmbraDBSql {
     reserved.release = (): void => {
       if (released) return;
       released = true;
-      void holder.drained().then(() => {
-        releaseHolder(state, holder);
-        finish();
-      });
+      void holder.drained().then(() => releaseHolder(state, holder)).then(finish, finish);
     };
     return reserved;
   };

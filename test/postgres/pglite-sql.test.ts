@@ -15,6 +15,7 @@ import {
   PgliteQuery,
   PgliteSqlError,
   type PgliteDatabase,
+  type PgliteResult,
 } from "../../src/postgres/pglite-sql.js";
 
 interface Logged { text: string; params: unknown[]; types: number[] }
@@ -152,11 +153,33 @@ describe("PGlite client", () => {
       expect((await a`UPDATE t SET ok = ${true} WHERE id = ${2n}`).count).toBe(0);
     });
 
-    it("[[pglite.client.unsafe-run]] runs unsafe text with several statements (the last result) and unsafe text with parameters", async () => {
-      const r = await a.unsafe("CREATE TEMP TABLE tmp_u (x int); INSERT INTO tmp_u VALUES (1), (2); SELECT count(*)::int AS n FROM tmp_u");
-      expect([...r]).toEqual([{ n: 2 }]);
+    it("[[pglite.client.unsafe-run]] runs unsafe text with several statements and unsafe text with parameters", async () => {
+      const r = await a.unsafe("CREATE TEMP TABLE tmp_u (x int); INSERT INTO tmp_u VALUES (1), (2); SELECT count(*)::int AS n FROM tmp_u") as unknown as PgliteResult[];
+      expect(r.map((x) => [[...x], x.count, x.command])).toEqual([[[], 2, "INSERT"], [[{ n: 2 }], 1, "SELECT"]]);
       expect([...(await a.unsafe("SELECT $1::int + 1 AS v", [41]))]).toEqual([{ v: 42 }]);
       expect([...(await a.unsafe("SELECT 7 AS v", { simple: false } as never))]).toEqual([{ v: 7 }]);
+    });
+
+    it("[[pglite.client.unsafe-results]] unsafe text with several statements gives every statement's rows, grouped as postgres.js groups them: a new result at each statement that describes rows after the first", async () => {
+      const two = await a.unsafe("SELECT 1 AS a; SELECT 2 AS b") as unknown as PgliteResult[];
+      expect(Array.isArray(two[0])).toBe(true);
+      expect(two.map((x) => [[...x], x.count, x.command, x.columns.map((c) => c.name)])).toEqual([
+        [[{ a: 1 }], 1, "SELECT", ["a"]],
+        [[{ b: 2 }], 1, "SELECT", ["b"]],
+      ]);
+      // Statements that describe no rows join the result before them: its rows and columns, the first count, the last command.
+      await a.unsafe("CREATE TEMP TABLE tmp_r (x int)");
+      const joined = await a.unsafe("SELECT 1 AS a UNION ALL SELECT 2; INSERT INTO tmp_r VALUES (1), (2), (3); UPDATE tmp_r SET x = 0");
+      expect([[...joined], joined.count, joined.command, joined.columns.map((c) => c.name)]).toEqual([[{ a: 1 }, { a: 2 }], 2, "UPDATE", ["a"]]);
+      const three = await a.unsafe("INSERT INTO tmp_r VALUES (4) RETURNING x; DELETE FROM tmp_r WHERE x = 0; SELECT count(*)::int AS n FROM tmp_r; SELECT x FROM tmp_r WHERE false") as unknown as PgliteResult[];
+      expect(three.map((x) => [[...x], x.count, x.command])).toEqual([
+        [[{ x: 4 }], 1, "DELETE"],
+        [[{ n: 1 }], 1, "SELECT"],
+        [[], 0, "SELECT"],
+      ]);
+      const single = await a.unsafe("SELECT 5 AS v");
+      expect(Array.isArray(single[0])).toBe(false);
+      expect([[...single], single.count]).toEqual([[{ v: 5 }], 1]);
     });
 
     it("[[pglite.client.parsers-map-error]] passes the parsers option to every statement and the error of PGlite through mapError (normalized by default)", async () => {
@@ -262,6 +285,68 @@ describe("PGlite client", () => {
       await expect(a`BEGIN`).rejects.toMatchObject({ code: "UNSAFE_TRANSACTION" });
       await expect(a.unsafe("start transaction")).rejects.toMatchObject({ code: "UNSAFE_TRANSACTION" });
       expect((await a`SELECT 1 AS one`)[0]).toEqual({ one: 1 });
+    });
+
+    it("[[pglite.client.transaction-guard]] refuses a top-level statement that starts a transaction block before it runs, also behind comments or after other statements; BEGIN in quoted text, identifiers, comments or a DO body is not refused", async () => {
+      const refused = [
+        "/* caller A */ BEGIN",
+        "-- a line comment\nbegin isolation level serializable",
+        "/* outer /* nested */ still a comment */ BEGIN",
+        "SELECT 1; BEGIN",
+        "INSERT INTO t (id) VALUES (40); begin",
+        "SELECT 'a;b'; START /* comment */ TRANSACTION READ ONLY",
+        "SELECT $q$;$q$ AS s; begin",
+      ];
+      for (const text of refused) await expect(a.unsafe(text), text).rejects.toMatchObject({ code: "UNSAFE_TRANSACTION" });
+      expect(db.isInTransaction()).toBe(false);
+      expect((await a`SELECT count(*)::int AS n FROM t WHERE id = 40`)[0]).toEqual({ n: 0 }); // refused before it ran
+      expect([...(await a.unsafe("SELECT 'BEGIN' AS s"))]).toEqual([{ s: "BEGIN" }]);
+      expect([...(await a.unsafe('SELECT 1 AS "begin"'))]).toEqual([{ begin: 1 }]);
+      expect([...(await a.unsafe("/* BEGIN */ SELECT 2 AS v -- ; BEGIN"))]).toEqual([{ v: 2 }]);
+      expect([...(await a.unsafe("SELECT E'it\\'s; begin' AS e"))]).toEqual([{ e: "it's; begin" }]);
+      await a.unsafe("DO $body$ BEGIN PERFORM 1; END $body$");
+      await a.unsafe("DO 'BEGIN PERFORM 1; END'");
+      expect(db.isInTransaction()).toBe(false);
+    });
+
+    it("[[pglite.client.transaction-isolation]] the session is never handed on inside a transaction: a statement that leaves one open is rolled back and refused, and a reservation released inside one has it rolled back", async () => {
+      // A client's hidden BEGIN, then another client's acknowledged write, then the first client's ROLLBACK.
+      await expect(a.unsafe("/* caller A */ BEGIN")).rejects.toMatchObject({ code: "UNSAFE_TRANSACTION" });
+      await b`INSERT INTO t (id, note) VALUES (41, 'acknowledged')`;
+      await a`ROLLBACK`;
+      expect([...(await b`SELECT note FROM t WHERE id = 41`)]).toEqual([{ note: "acknowledged" }]);
+
+      // Whatever its text: here a database that runs BEGIN for a statement the text check cannot recognize.
+      const own = await PGlite.create();
+      try {
+        const disguised: PgliteDatabase = {
+          query: (text, params, options) => own.query(text, params, options as never),
+          exec: (text, options) => own.exec(text === "SELECT 'disguised'" ? "BEGIN" : text, options as never),
+          close: () => own.close(),
+          get closed() {
+            return own.closed;
+          },
+          isInTransaction: () => own.isInTransaction(),
+        };
+        const x = createPgliteClient({ pglite: disguised, schema: "public" });
+        const y = createPgliteClient({ pglite: disguised, schema: "public" });
+        await y`CREATE TABLE w (id int)`;
+        await expect(x.unsafe("SELECT 'disguised'")).rejects.toMatchObject({ code: "UNSAFE_TRANSACTION" });
+        expect(own.isInTransaction()).toBe(false);
+        await y`INSERT INTO w VALUES (1)`;
+        await x`ROLLBACK`;
+        // A reservation released with its manual transaction still open: rolled back, the next statement runs outside it.
+        const r = await x.reserve();
+        await r`BEGIN`;
+        await r`INSERT INTO w VALUES (2)`;
+        r.release();
+        await y`INSERT INTO w VALUES (3)`;
+        expect(own.isInTransaction()).toBe(false);
+        await x`ROLLBACK`;
+        expect([...(await y`SELECT id FROM w ORDER BY id`)]).toEqual([{ id: 1 }, { id: 3 }]);
+      } finally {
+        await own.close();
+      }
     });
 
     it("[[pglite.client.handle-shapes]] transaction handles have savepoint and no begin; top-level clients have begin and no savepoint; reserved handles neither", async () => {

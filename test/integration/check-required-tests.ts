@@ -17,7 +17,7 @@
  * Exposed as pure functions (`reconcile`, `extractIds`, `statusesFromReport`) so the behaviour is
  * unit-tested against synthetic reporter payloads (`check-required-tests.test.ts`), and as a CLI
  * (`node --import tsx check-required-tests.ts <report.json> [--manifest <path>]`) wired into
- * `test:conformance` by Task 7. `--postgresql-only` reconciles a run on PGlite (`npm run test:pglite`): the ids of
+ * `test:conformance`. `--postgresql-only` reconciles a run on PGlite (`npm run test:pglite`): the ids of
  * the PostgreSQL-only list (`test/helpers/postgresql-only.ts`) must be not run or skipped there, every other id passed.
  */
 import { readFileSync } from "node:fs";
@@ -113,7 +113,7 @@ export function statusesFromReport(report: JsonReport): Map<string, string[]> {
  *  manifest so silently deleting (or adding) a required entry fails the gate: {@link loadManifest}
  *  rejects a manifest whose `required` length drifts from this constant. Bump it deliberately when
  *  a required test is genuinely added/removed. */
-export const EXPECTED_REQUIRED_COUNT = 337;
+export const EXPECTED_REQUIRED_COUNT = 353;
 
 /** The pinned count of `deferred` (WHERE-gated optional-feature) tests (BLOCK 6). Structurally PINS
  *  the deferred exemption set so deleting the sole deferred entry (a green "0 deferred" gate) fails the
