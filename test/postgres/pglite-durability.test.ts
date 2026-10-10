@@ -38,7 +38,7 @@ function claimingNonDurable(sql: UmbraDBSql): UmbraDBSql {
 }
 
 describe("durability modes: PostgreSQL refuses fsync=off, a non-durable PGlite client accepts it by configuration", () => {
-  it("classifiers: PGlite is recognized by its version string; fsync=off in the non-durable mode is a warning on PGlite and a violation elsewhere", () => {
+  it("[[pglite.durability.classifiers]] classifiers: PGlite is recognized by its version string; fsync=off in the non-durable mode is a warning on PGlite and a violation elsewhere", () => {
     expect(isPgliteServer(PGLITE_VERSION)).toBe(true);
     for (const v of [POSTGRES_VERSION, "PostgreSQL 18.3 on wasm32-unknown-emscripten", "(PGlite 0.5.8)", "", "PostgreSQL 17 (PGlite) x"])
       expect(isPgliteServer(v), v).toBe(false);
@@ -65,7 +65,7 @@ describe("durability modes: PostgreSQL refuses fsync=off, a non-durable PGlite c
       await fsyncOn?.close();
     });
 
-    it("a client is non-durable by default: fsync=off is accepted as a non-durable warning, the chain-archive and MIP-0018 migrations run", async () => {
+    it("[[pglite.durability.non-durable-default]] a client is non-durable by default: fsync=off is accepted as a non-durable warning, the chain-archive and MIP-0018 migrations run", async () => {
       const sql = createPgliteClient({ pglite: fsyncOff, schema: SCHEMA });
       expect(durabilityModeOf(sql)).toBe("non-durable");
       expect((await sql<{ v: string }[]>`select current_setting('fsync') as v`)[0]!.v).toBe("off");
@@ -82,7 +82,7 @@ describe("durability modes: PostgreSQL refuses fsync=off, a non-durable PGlite c
       expect(await migrated(sql, "mip0018")).toBe(true);
     }, 60_000);
 
-    it("a durable client keeps the PostgreSQL rule: fsync=off is refused before any migration runs", async () => {
+    it("[[pglite.durability.durable-refuses]] a durable client keeps the PostgreSQL rule: fsync=off is refused before any migration runs", async () => {
       const sql = createPgliteClient({ pglite: fsyncOff, schema: "durable_refused", durability: "durable" });
       expect(durabilityModeOf(sql)).toBe("durable");
       const refused = await probeDurability(sql).catch((e: unknown) => e);
@@ -92,7 +92,7 @@ describe("durability modes: PostgreSQL refuses fsync=off, a non-durable PGlite c
       expect(await migrated(sql, "durable_refused")).toBe(false);
     }, 60_000);
 
-    it("with fsync on, both modes pass with no warning and the probe sends the same statements as on PostgreSQL", async () => {
+    it("[[pglite.durability.fsync-on]] with fsync on, both modes pass with no warning and the probe sends the same statements as on PostgreSQL", async () => {
       for (const durability of ["durable", "non-durable"] as const) {
         const texts: string[] = [];
         const sql = createPgliteClient({ pglite: fsyncOn, schema: SCHEMA, durability, debug: (_c, text) => texts.push(text) });
@@ -101,7 +101,7 @@ describe("durability modes: PostgreSQL refuses fsync=off, a non-durable PGlite c
       }
     });
 
-    it("openPgliteClient: non-durable by default (PGlite's fsync=off); a durable client's database starts with fsync on; a bad mode is refused", async () => {
+    it("[[pglite.durability.open-modes]] openPgliteClient: non-durable by default (PGlite's fsync=off); a durable client's database starts with fsync on; a bad mode is refused", async () => {
       const nonDurable = await openPgliteClient({ schema: SCHEMA });
       const durable = await openPgliteClient({ schema: SCHEMA, durability: "durable" });
       try {
@@ -135,7 +135,7 @@ describe("durability modes: PostgreSQL refuses fsync=off, a non-durable PGlite c
       await Promise.all([healthy?.stop(), fsyncOff?.stop()]);
     });
 
-    it("a PostgreSQL client is durable; fsync=off is refused, also for a client that claims the non-durable mode (the server is not PGlite)", async () => {
+    it("[[pglite.durability.postgresql-refuses]] a PostgreSQL client is durable; fsync=off is refused, also for a client that claims the non-durable mode (the server is not PGlite)", async () => {
       const plain = createClient({ connectionString: fsyncOff.getConnectionUri(), schema: SCHEMA });
       const claiming = claimingNonDurable(createClient({ connectionString: fsyncOff.getConnectionUri(), schema: SCHEMA }));
       try {
@@ -153,7 +153,7 @@ describe("durability modes: PostgreSQL refuses fsync=off, a non-durable PGlite c
       }
     }, 60_000);
 
-    it("on a healthy server a client claiming the non-durable mode has nothing to accept: no warning, migrations run", async () => {
+    it("[[pglite.durability.postgresql-healthy]] on a healthy server a client claiming the non-durable mode has nothing to accept: no warning, migrations run", async () => {
       const claiming = claimingNonDurable(createClient({ connectionString: healthy.getConnectionUri(), schema: SCHEMA }));
       try {
         expect(await probeDurability(claiming)).toEqual([]);

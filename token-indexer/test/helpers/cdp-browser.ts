@@ -28,7 +28,7 @@ export function findBrowser(env: NodeJS.ProcessEnv = process.env): string | unde
   for (const root of [env.PLAYWRIGHT_BROWSERS_PATH, "/ms-playwright"]) {
     if (root === undefined || root === "" || !existsSync(root)) continue;
     const dirs = readdirSync(root).filter((d) => /^chromium-\d+$/.test(d)).sort((a, b) => Number(b.slice(9)) - Number(a.slice(9)));
-    for (const d of dirs) for (const sub of ["chrome-linux64/chrome", "chrome-linux/chrome"]) if (existsSync(join(root, d, sub))) return join(root, d, sub);
+    for (const d of dirs) for (const sub of ["chrome-linux64/chrome", "chrome-linux-arm64/chrome", "chrome-linux/chrome"]) if (existsSync(join(root, d, sub))) return join(root, d, sub);
   }
   for (const name of ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"])
     for (const dir of (env.PATH ?? "").split(delimiter)) if (dir !== "" && existsSync(join(dir, name))) return join(dir, name);

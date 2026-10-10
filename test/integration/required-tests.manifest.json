@@ -1,5 +1,5 @@
 {
-  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 119) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
+  "$schema-note": "v1.0.0-recovery-testing skip-enforcement manifest (design.md §1.1, Task 0.4). This is the AUTHORITATIVE required set: 'required' lists the stable id of EVERY non-live crash/soak test that MUST execute-and-pass in the required gate (G9). check-required-tests.ts fails the gate by id if any required id is missing or reported skipped/todo/failed. 'deferred' lists WHERE-gated optional-feature ids that reconcile as skipped-pending-feature and are exempt while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (which Vitest surfaces in assertionResults[].title/fullName). The Task-0 crash-harness smoke ids (crash-harness.smoke.*) plus the full T1/T2/T5/T3/soak/load-under-prune/P3 id set below form the contract that Tasks 1-6 tag their tests with; the ids are defined NOW so later tasks adopt them verbatim without a spec rewrite. CHANGE-LEVEL AUDIT (BLOCK 9): check-required-tests.ts now FAILS CLOSED (a missing/unparseable/empty-or-absent required set fails the gate, never reconciles as 'all 0 passed'), STRUCTURALLY PINS required.length to EXPECTED_REQUIRED_COUNT (currently 282) so silently deleting or adding a required entry fails the gate, and BINDS each required id to its 'file' so an id that executed-and-passed from a DIFFERENT file (a token moved to a trivial passing test) fails. The co-transactional saveAndAdvance crash test (crash.saveAndAdvance.co-tx-atomic, BLOCK 1) is required entry #23; the change-level round-3 differential negative-control (BLOCK 3) and reference import-clean (BLOCK 4) guards are required entries #24 and #25; every required entry MUST carry its bound 'file'.",
   "$check-mechanism-note": "IMPORTANT: run against the CURRENT Task-0-only suite, check-required-tests.ts will correctly report the not-yet-built required ids (the crash.* / soak.* / property.p3.* entries) as `missing` — those tests are authored by Tasks 1-6. That is EXPECTED and correct: check-required-tests.ts is the G9 RELEASE gate, green only once every task has landed its tagged tests. The check MECHANISM itself is proven independently, right now, by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so those unit tests stay green regardless of how many required ids are still unbuilt. Do NOT delete a required id to make the check pass early — that would re-open the exact self-skip hole this manifest closes.",
   "required": [
     {
@@ -596,6 +596,821 @@
       "id": "mip0018.activity.bounded-cost",
       "file": "token-indexer/test/mip0018-activity.test.ts",
       "description": "100 000 metadata transactions of a withdrawn identity behind one visible rejected event, and 100 000 visible ones of a sibling: with no statistics, with statistics taken while the listed events held two live rows on pages that later fill again, and with fresh statistics, the color's and the contract's activity pages in both orders read at most 100 + 20 buffers per row a page may read (auto_explain); in the stale state the listing's skip-scan step and a primary-key lookup planned without the listings' settings read the whole listed table (negative control); before the first vacuum after the withdrawal, its dead index entries add at most one buffer per 20 hidden rows; the API answers within a generous latency budget; the fast seeding equals the real apply path on a small count; the withdrawal that hides 100 000 listed rows is one bounded delete."
+    },
+    {
+      "id": "runtime.node-free.walk",
+      "file": "token-indexer/test/runtime-node-free.test.ts",
+      "description": "the import walk from the runtime entry modules resolves every relative import and reaches the core modules"
+    },
+    {
+      "id": "runtime.node-free.rules",
+      "file": "token-indexer/test/runtime-node-free.test.ts",
+      "description": "no runtime module imports a Node module or uses Buffer or another Node-only global (allow-list aside)"
+    },
+    {
+      "id": "runtime.node-free.allow-list",
+      "file": "token-indexer/test/runtime-node-free.test.ts",
+      "description": "every allow-listed module is scanned and still uses a Node API (an entry it no longer needs fails here)"
+    },
+    {
+      "id": "runtime.node-free.no-postgres-js",
+      "file": "token-indexer/test/runtime-node-free.test.ts",
+      "description": "the browser build's worker and page never load the PostgreSQL client (postgres.js), not even through a dynamic import"
+    },
+    {
+      "id": "runtime.node-free.tooling",
+      "file": "token-indexer/test/runtime-node-free.test.ts",
+      "description": "Node tooling exists and no runtime module imports it"
+    },
+    {
+      "id": "runtime.node-free.negative-control",
+      "file": "token-indexer/test/runtime-node-free.test.ts",
+      "description": "negative control: the rules flag every Node API shape and nothing in comments or strings"
+    },
+    {
+      "id": "pglite.client.fragments",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "nests fragments, conditional and empty fragments and arrays of fragments, numbering parameters in order"
+    },
+    {
+      "id": "pglite.client.fragment-reuse",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "reuses one fragment in several statements and inlines unsafe text used as a fragment"
+    },
+    {
+      "id": "pglite.client.identifiers",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "quotes identifiers, each part of a dotted name, and escapes quotes"
+    },
+    {
+      "id": "pglite.client.type-oids",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "infers the type oids postgres.js sends: Date 1184, bytes 17, boolean 16, bigint 20, json 3802, arrays by element; others 0"
+    },
+    {
+      "id": "pglite.client.insert-builders",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "builds insert column lists and value rows from objects, rows and named columns"
+    },
+    {
+      "id": "pglite.client.other-builders",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "builds update assignments, values lists, in lists (empty: null), select lists and returning lists"
+    },
+    {
+      "id": "pglite.client.unsafe-compile",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "compiles unsafe text with parameters after the text, and refuses an undefined value"
+    },
+    {
+      "id": "pglite.client.non-tagged-call",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "awaiting an identifier or a helper value is refused as a non-tagged call"
+    },
+    {
+      "id": "pglite.client.parameters-results",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "serializes parameters by their described type and returns arrays with count, command and columns"
+    },
+    {
+      "id": "pglite.client.unsafe-run",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "runs unsafe text with several statements (the last result) and unsafe text with parameters"
+    },
+    {
+      "id": "pglite.client.parsers-map-error",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "passes the parsers option to every statement and the error of PGlite through mapError (normalized by default)"
+    },
+    {
+      "id": "pglite.client.unsupported",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "cursors, forEach, values, raw, describe, streams, cancel and listen are not supported"
+    },
+    {
+      "id": "pglite.client.search-path",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "gives every client its own search_path, also for concurrent statements and transactions"
+    },
+    {
+      "id": "pglite.client.transaction-statements",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "writes the begin, commit, rollback and savepoint statements postgres.js writes"
+    },
+    {
+      "id": "pglite.client.savepoint-rollback",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "rolls a savepoint back to itself when its callback fails, keeping the transaction"
+    },
+    {
+      "id": "pglite.client.rollback-rules",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "rolls back when the callback throws, and when a statement failed even though the callback caught it"
+    },
+    {
+      "id": "pglite.client.ended-transaction",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "refuses a statement on a transaction handle after the transaction ended"
+    },
+    {
+      "id": "pglite.client.begin-refused",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "refuses BEGIN as a plain statement (only begin, reserve or a transaction handle start transactions)"
+    },
+    {
+      "id": "pglite.client.handle-shapes",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "transaction handles have savepoint and no begin; top-level clients have begin and no savepoint; reserved handles neither"
+    },
+    {
+      "id": "pglite.client.reserve",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "reserve() holds the session for its own statements until release(); RESET search_path returns to the client's schema"
+    },
+    {
+      "id": "pglite.client.deadlock",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "a statement on the outer client awaited inside a transaction fails with PGLITE_SESSION_DEADLOCK instead of hanging"
+    },
+    {
+      "id": "pglite.client.busy-wait",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "a statement waiting behind a transaction that keeps running statements waits as long as needed"
+    },
+    {
+      "id": "pglite.client.fifo",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "runs waiting statements in arrival order"
+    },
+    {
+      "id": "pglite.client.array-type-retry",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "a failed array-type load fails the statement and is retried by the next one"
+    },
+    {
+      "id": "pglite.client.option-validation",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "validates the schema and the deadlock timeout"
+    },
+    {
+      "id": "pglite.client.end",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "end() waits for the client's pending statements, then refuses new ones; the database stays open unless the client owns it"
+    },
+    {
+      "id": "pglite.client.open-memory",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "openPgliteClient opens an in-memory database that end() closes"
+    },
+    {
+      "id": "pglite.types.results",
+      "file": "test/postgres/pglite-sql.types-errors.test.ts",
+      "description": "int8 is always a bigint (also in int8[]), numeric the decimal text, bytea the bytes, on both backends"
+    },
+    {
+      "id": "pglite.errors.check-blob-role",
+      "file": "test/postgres/pglite-sql.types-errors.test.ts",
+      "description": "23514 from a chain-archive trigger (blob-role completeness): the same error shape and the same routing on both backends"
+    },
+    {
+      "id": "pglite.errors.check-unfinalize",
+      "file": "test/postgres/pglite-sql.types-errors.test.ts",
+      "description": "23514 from un-finalizing a finalized block: the same error shape and the same routing on both backends"
+    },
+    {
+      "id": "pglite.errors.check-role-referenced",
+      "file": "test/postgres/pglite-sql.types-errors.test.ts",
+      "description": "23514 from deleting a blob role still referenced: the same error shape and the same routing on both backends"
+    },
+    {
+      "id": "pglite.errors.check-status-enum",
+      "file": "test/postgres/pglite-sql.types-errors.test.ts",
+      "description": "23514 from an ordinary chain-archive CHECK (status enum): the same error shape and the same routing on both backends"
+    },
+    {
+      "id": "pglite.errors.check-canonical",
+      "file": "test/postgres/pglite-sql.types-errors.test.ts",
+      "description": "23514 from the canonical CHECK (a finalized block un-marked as canonical): the same error shape and the same routing on both backends"
+    },
+    {
+      "id": "pglite.errors.unique",
+      "file": "test/postgres/pglite-sql.types-errors.test.ts",
+      "description": "23505 unique violation: the same error shape and the same routing on both backends"
+    },
+    {
+      "id": "pglite.errors.not-null",
+      "file": "test/postgres/pglite-sql.types-errors.test.ts",
+      "description": "23502 not-null violation (column_name): the same error shape and the same routing on both backends"
+    },
+    {
+      "id": "pglite.errors.missing-relation",
+      "file": "test/postgres/pglite-sql.types-errors.test.ts",
+      "description": "42P01 missing relation: the same error shape and the same routing on both backends"
+    },
+    {
+      "id": "pglite.errors.serialization",
+      "file": "test/postgres/pglite-sql.types-errors.test.ts",
+      "description": "40001 serialization failure: the same error shape and the same routing on both backends"
+    },
+    {
+      "id": "pglite.errors.deadlock",
+      "file": "test/postgres/pglite-sql.types-errors.test.ts",
+      "description": "40P01 deadlock: the same error shape and the same routing on both backends"
+    },
+    {
+      "id": "pglite.errors.cancelled",
+      "file": "test/postgres/pglite-sql.types-errors.test.ts",
+      "description": "57014 statement cancelled: the same error shape and the same routing on both backends"
+    },
+    {
+      "id": "pglite.errors.lock-not-available",
+      "file": "test/postgres/pglite-sql.types-errors.test.ts",
+      "description": "55P03 lock not available: the same error shape and the same routing on both backends"
+    },
+    {
+      "id": "pglite.errors.failed-in-transaction",
+      "file": "test/postgres/pglite-sql.types-errors.test.ts",
+      "description": "a failed statement inside a transaction (the transaction is rolled back with the error): the same error shape and the same routing on both backends"
+    },
+    {
+      "id": "pglite.errors.fields",
+      "file": "test/postgres/pglite-sql.types-errors.test.ts",
+      "description": "the fields postgres.js reads: constraint_name, table_name, schema_name, column_name and detail equal on both backends"
+    },
+    {
+      "id": "pglite.errors.connection-ended",
+      "file": "test/postgres/pglite-sql.types-errors.test.ts",
+      "description": "a client that has ended fails with CONNECTION_ENDED on both backends: a connection error, a database error"
+    },
+    {
+      "id": "pglite.errors.connection-closed",
+      "file": "test/postgres/pglite-sql.types-errors.test.ts",
+      "description": "a closed PGlite database fails with CONNECTION_CLOSED, a code postgres.js gives for a closed connection: a connection error, a database error"
+    },
+    {
+      "id": "pglite.errors.session-deadlock",
+      "file": "test/postgres/pglite-sql.types-errors.test.ts",
+      "description": "the single PGlite session: a statement that can never get it fails with PGLITE_SESSION_DEADLOCK, a database error (503), passed through unchanged by the error catalog"
+    },
+    {
+      "id": "pglite.errors.normalize",
+      "file": "test/postgres/pglite-sql.types-errors.test.ts",
+      "description": "normalizePgliteError: PGlite's own error is recognized by shape too; non-database values pass unchanged"
+    },
+    {
+      "id": "pglite.durability.classifiers",
+      "file": "test/postgres/pglite-durability.test.ts",
+      "description": "classifiers: PGlite is recognized by its version string; fsync=off in the non-durable mode is a warning on PGlite and a violation elsewhere"
+    },
+    {
+      "id": "pglite.durability.non-durable-default",
+      "file": "test/postgres/pglite-durability.test.ts",
+      "description": "a client is non-durable by default: fsync=off is accepted as a non-durable warning, the chain-archive and MIP-0018 migrations run"
+    },
+    {
+      "id": "pglite.durability.durable-refuses",
+      "file": "test/postgres/pglite-durability.test.ts",
+      "description": "a durable client keeps the PostgreSQL rule: fsync=off is refused before any migration runs"
+    },
+    {
+      "id": "pglite.durability.fsync-on",
+      "file": "test/postgres/pglite-durability.test.ts",
+      "description": "with fsync on, both modes pass with no warning and the probe sends the same statements as on PostgreSQL"
+    },
+    {
+      "id": "pglite.durability.open-modes",
+      "file": "test/postgres/pglite-durability.test.ts",
+      "description": "openPgliteClient: non-durable by default (PGlite's fsync=off); a durable client's database starts with fsync on; a bad mode is refused"
+    },
+    {
+      "id": "pglite.durability.postgresql-refuses",
+      "file": "test/postgres/pglite-durability.test.ts",
+      "description": "a PostgreSQL client is durable; fsync=off is refused, also for a client that claims the non-durable mode (the server is not PGlite)"
+    },
+    {
+      "id": "pglite.durability.postgresql-healthy",
+      "file": "test/postgres/pglite-durability.test.ts",
+      "description": "on a healthy server a client claiming the non-durable mode has nothing to accept: no warning, migrations run"
+    },
+    {
+      "id": "pglite.differential.migrations",
+      "file": "test/postgres/pglite-sql.differential.test.ts",
+      "description": "runs the chain-archive and mip0018 migrations through the migration runner (durability probe, reserve, BEGIN/COMMIT, unsafe DDL) with the same statements"
+    },
+    {
+      "id": "pglite.differential.sync",
+      "file": "test/postgres/pglite-sql.differential.test.ts",
+      "description": "archives the recorded IDX and U1 ranges with the sync service, sending the same statements"
+    },
+    {
+      "id": "pglite.differential.scan-tables",
+      "file": "test/postgres/pglite-sql.differential.test.ts",
+      "description": "scans both ranges with the same statements and leaves every archive and mip0018 table equal; the recorded live-range digest holds on PostgreSQL"
+    },
+    {
+      "id": "pglite.differential.archive-store",
+      "file": "test/postgres/pglite-sql.differential.test.ts",
+      "description": "reads and writes through the rest of the archive store (blobs by role, verifier keys, canonical flips, lookups by height and hash) with the same statements and results"
+    },
+    {
+      "id": "pglite.differential.bytea-null-elements",
+      "file": "test/postgres/pglite-sql.differential.test.ts",
+      "description": "bytea[] NULL elements: postgres.js reads them as an empty Buffer, PGlite as null; unnest gives NULL on both"
+    },
+    {
+      "id": "pglite.differential.api",
+      "file": "test/postgres/pglite-sql.differential.test.ts",
+      "description": "answers every API route with the same responses and statements, one request at a time and concurrently"
+    },
+    {
+      "id": "pglite.differential.top-level-reads",
+      "file": "test/postgres/pglite-sql.differential.test.ts",
+      "description": "reads through top-level clients (activity listings in their own read-only transactions, events, tokens) with the same results and statements"
+    },
+    {
+      "id": "pglite.differential.vectors",
+      "file": "test/postgres/pglite-sql.differential.test.ts",
+      "description": "answers the 110 MIP-0018 vector requests through the PostgreSQL write and read path (a fresh migrated schema per request) with the same statements and answers"
+    },
+    {
+      "id": "pglite.differential.remove-above",
+      "file": "test/postgres/pglite-sql.differential.test.ts",
+      "description": "removes the scan above a height (event replay) and rescans with the same statements and tables; recomputing the fields changes nothing"
+    },
+    {
+      "id": "pglite.api.same-answers",
+      "file": "token-indexer/test/mip0018-api-errors-pglite.test.ts",
+      "description": "every route and every error envelope (400, 404, 405, HEAD) answers identically on both backends"
+    },
+    {
+      "id": "pglite.api.unavailable",
+      "file": "token-indexer/test/mip0018-api-errors-pglite.test.ts",
+      "description": "a database that cannot be read answers 503 UNAVAILABLE identically on both backends, the cause in the log only: an ended client, a missing schema"
+    },
+    {
+      "id": "pglite.api.pglite-failures",
+      "file": "token-indexer/test/mip0018-api-errors-pglite.test.ts",
+      "description": "failures only PGlite has answer 503 UNAVAILABLE: a closed database, the single session held too long, PGlite's own error class; another error stays 500 INTERNAL"
+    },
+    {
+      "id": "pglite.api.status-durability",
+      "file": "token-indexer/test/mip0018-api-errors-pglite.test.ts",
+      "description": "/v1/status reports the durability mode: durable on PostgreSQL and for a durable PGlite client, non-durable for a PGlite client in the default mode; the handler option overrides it; anything else is refused"
+    },
+    {
+      "id": "engine.start-tip",
+      "file": "token-indexer/test/engine-start-tip.test.ts",
+      "description": "a new archive starts at the finalized tip both sources serve, waits with back-off while they fail (never genesis), follows the tip, and a later engine catches up the gap from its cursor"
+    },
+    {
+      "id": "engine.start-tip.stop",
+      "file": "token-indexer/test/engine-start-tip.test.ts",
+      "description": "a stop while the engine waits for the tip ends the sync cleanly; an invalid start height is refused"
+    },
+    {
+      "id": "engine.system.sources",
+      "file": "token-indexer/test/engine-system-snapshot.test.ts",
+      "description": "a snapshot of an engine that synced and scanned the recorded U1 range validates against the schema, and every value equals its source: heights, scanner, unresolved events, durability and build references equal /v1/status; table sizes, row estimates, exact counts, database size, server version, fsync and migrations equal the catalog; per-endpoint requests equal the fake chain's; scan totals equal the scan events; the configuration shows the engine's effective options"
+    },
+    {
+      "id": "engine.system.cost",
+      "file": "token-indexer/test/engine-system-snapshot.test.ts",
+      "description": "the statistics are read one autocommit statement at a time — no transaction, reservation or multi-statement text, never two at once — each one timed; on PGlite another request's transaction runs on the session between two of them and none runs inside one"
+    },
+    {
+      "id": "engine.system.visibility",
+      "file": "token-indexer/test/engine-system-snapshot.test.ts",
+      "description": "collection follows the viewers: nothing while no one watches (no statement, no request, no timer); a viewer gets a snapshot at once, then one every 2 s with the catalog read again every 30 s; when the last viewer leaves collection stops, and a new viewer starts it again; a refresh on demand still works"
+    },
+    {
+      "id": "engine.system.states",
+      "file": "token-indexer/test/engine-system-snapshot.test.ts",
+      "description": "the health line follows the engine: catching up while the archive and the scan are behind the tip, following at the tip, waiting (network) while a call is retried and while the sync backs off after a network failure (with the last error and the next attempt), stalled (scan) after a failed scan step, paused (quota) from the host's storage reading, error from a fatal failure, stopped; watchdog restarts are counted; a follower shows the leader's snapshot"
+    },
+    {
+      "id": "engine.system.diagnostics",
+      "file": "token-indexer/test/engine-system-snapshot.test.ts",
+      "description": "the diagnostics file holds no secret from hostile configuration, errors and log lines (URL credentials and query secrets, API keys, tokens, passwords, cookies), keeps hostile text as text (control, bidirectional and markup characters), validates against the schema and reads back equal; host data outside the schema (a browsing history) is refused"
+    },
+    {
+      "id": "engine.telemetry.endpoint-counters",
+      "file": "token-indexer/test/engine-telemetry.test.ts",
+      "description": "an instrumented fetch counts each request to the node and to the indexer (same origin and path): started, in flight, 2xx, 429, 403, 5xx, other statuses, no answer and aborted; other URLs are not counted; answers and rejections pass through unchanged; retries come from the sync's backoff events (indexer.* operations are the indexer's)"
+    },
+    {
+      "id": "engine.telemetry.rates",
+      "file": "token-indexer/test/engine-telemetry.test.ts",
+      "description": "blocks per second over the last minute: each batch's blocks spread over the time since the loop's previous batch (or the sync's start), divided by the window or by the time since the start when shorter; totals since the start; the chain's seconds per block from the tip's rise"
+    },
+    {
+      "id": "engine.telemetry.api",
+      "file": "token-indexer/test/engine-telemetry.test.ts",
+      "description": "the API counters: answered requests by status class, BUSY refusals apart, and nearest-rank p50/p95 latency over the latest 1,000 admitted requests"
+    },
+    {
+      "id": "engine.telemetry.log-ring",
+      "file": "token-indexer/test/engine-telemetry.test.ts",
+      "description": "the log ring keeps the latest 200 lines, newest first with increasing sequence numbers; every sync and scan event is a line except a batch of zero blocks; API requests are not lines, the handler's error lines are; text is kept as given (control, bidirectional and markup characters included) up to the length cap"
+    },
+    {
+      "id": "engine.telemetry.hooks",
+      "file": "token-indexer/test/engine-telemetry.test.ts",
+      "description": "the hooks a host calls: watchdog restarts (and counts carried from the previous worker), PGlite reopens that restart the failed-statement count since the open, failed statements in total, and a fatal failure; each hook leaves a log line"
+    },
+    {
+      "id": "engine.telemetry.network-signals",
+      "file": "token-indexer/test/engine-telemetry.test.ts",
+      "description": "the network signals the health rule reads: a retry newer than the last batch means a call is being retried; a batch error after a retry, or after a failed request, failed on the network; a batch error with neither did not"
+    },
+    {
+      "id": "engine.telemetry.health",
+      "file": "token-indexer/test/engine-telemetry.test.ts",
+      "description": "the health line: error (fatal or a failed loop) before paused (quota) before stopped before stalled (scan) before waiting (network) before a non-network sync error, then running / catching up / following from the heights"
+    },
+    {
+      "id": "engine.telemetry.schema",
+      "file": "token-indexer/test/engine-telemetry.test.ts",
+      "description": "the snapshot schema is versioned and strict: a complete snapshot validates; an unknown key at any depth, a missing section, a wrong version or more than 200 log lines is refused; a follower relays the leader's snapshot marked follower; the diagnostics file is the redacted snapshot as JSON"
+    },
+    {
+      "id": "engine.telemetry.redaction",
+      "file": "token-indexer/test/engine-telemetry.test.ts",
+      "description": "redaction removes secrets from hostile values — URL userinfo, query and fragment of any scheme, key=value / key: value / JSON members naming a secret, Authorization and Cookie headers, Bearer and Basic credentials, JWTs, Bech32m secret keys — idempotently, and keeps public chain data, data directories and ordinary messages"
+    },
+    {
+      "id": "engine.compose",
+      "file": "token-indexer/test/engine.test.ts",
+      "description": "one engine syncs the recorded IDX range through an injected fetch (called as a plain function), scans it and answers the API: the archive digest equals the recorded live sync's, the 37 tables equal the recorded live range, every block is fetched once, and the events carry the sync's start, batches, range-complete and stop"
+    },
+    {
+      "id": "engine.start-height",
+      "file": "token-indexer/test/engine.test.ts",
+      "description": "a start-height function is asked only for a new archive, with the engine's signal; the archive, the scan and /v1/status start there; a later engine on the same store resumes at the cursor without asking and reports the archive's own first height"
+    },
+    {
+      "id": "engine.timing",
+      "file": "token-indexer/test/engine.test.ts",
+      "description": "the loops wait through the injected clock: the sync at the tip waits sync.idleMs and the scan at the archive's tip scan.idleMs; a failed batch backs off ×2 with injected jitter (750, 1500, 3000 for 1000 × 0.75) and resets after a success; a network call is retried through the same clock; a stalled scan backs off idleMs × 5^k up to 60 s, reports stalled in /v1/status and recovers"
+    },
+    {
+      "id": "engine.stop-scheduler",
+      "file": "token-indexer/test/engine.test.ts",
+      "description": "every sync batch and scan step goes through the injected scheduler and API requests never do; stop() during a held scan step resolves only after that step has written all its blocks, and no step starts after it"
+    },
+    {
+      "id": "engine.range-drain",
+      "file": "token-indexer/test/engine.test.ts",
+      "description": "a sync start above cursor + 1 is refused (range-refused, then stop; finished rejects with SyncRangeError); drain mode ends at scan.toHeight or when caught up, and a failed drain step ends it (finished rejects, the error event has no retry)"
+    },
+    {
+      "id": "engine.api",
+      "file": "token-indexer/test/engine.test.ts",
+      "description": "handle() answers exactly as the API handler, also before start(), and reports each request (status, busy, duration); the request cap answers 503 BUSY while requests are in flight; the handler's error lines arrive as api log events"
+    },
+    {
+      "id": "engine.options",
+      "file": "token-indexer/test/engine.test.ts",
+      "description": "options are checked when the engine is made; start() runs once; without loops start() and stop() do nothing and the cursors are undefined; an aborted signal stops the loops; a listener can be removed"
+    },
+    {
+      "id": "archive.tape-replay.advancing-tip",
+      "file": "chain-archive-sync/tape-replay.test.ts",
+      "description": "the reported finalized height rises with the injected clock (by blocks every everyMs, up to until), moves by hand, and node and indexer report the same height"
+    },
+    {
+      "id": "archive.tape-replay.fetch-equals-live",
+      "file": "test/integration/stagenet-tape-replay.integration.test.ts",
+      "description": "replaying each recorded range through the fetch-shaped tape replay, with no HTTP server, reproduces the live sync's archive digest (IDX cb0d5e21…, U1 fa89d909…)"
+    },
+    {
+      "id": "archive.tape-replay.follows-advancing-tip",
+      "file": "test/integration/stagenet-tape-replay.integration.test.ts",
+      "description": "a sync with no end height follows a finalized tip that rises with a clock: each round ingests up to the tip of that moment, never past it, and the finished archive equals the live U1 archive"
+    },
+    {
+      "id": "archive.tape-replay.same-answers-as-http",
+      "file": "test/integration/stagenet-tape-replay.test.ts",
+      "description": "the node:http fake chain and the fetch-shaped replay (and the fake chain's fetch transport) give identical answers (status, content-type, retry-after, body) to every request of the archive sync, the throttles and the error cases"
+    },
+    {
+      "id": "stagenet.fixtures.browser-tapes",
+      "file": "test/integration/stagenet-browser-tapes.test.ts",
+      "description": "every gzip copy matches its manifest's SHA-256 and size, names its fixture source by the fixture manifest's SHA-256, and decodes to byte-identical JSON (node:zlib and DecompressionStream alike)"
+    },
+    {
+      "id": "browser.csp.policy",
+      "file": "token-indexer/test/browser-csp-build.test.ts",
+      "description": "the default build: engine.html opens its head with the policy (inline style by its SHA-256) and no-referrer; _headers gives every path the same policy plus frame-ancestors, cross-origin isolation and hardening headers; connect-src is the site and the two Stagenet origins; no unsafe-eval or unsafe-inline"
+    },
+    {
+      "id": "browser.csp.every-page",
+      "file": "token-indexer/test/browser-csp-build.test.ts",
+      "description": "every HTML input gets the policy with its own inline hashes, _headers admits their union, the prelude runs first in each page; inline event handlers, style attributes and javascript: URLs fail the build"
+    },
+    {
+      "id": "browser.csp.chain-config",
+      "file": "token-indexer/test/browser-csp-build.test.ts",
+      "description": "the chain comes from UMBRADB_BROWSER_* (https, or http on a loopback host, no credentials, a network id); a build configured with other endpoints admits exactly their origins and carries them"
+    },
+    {
+      "id": "browser.csp.trusted-worker",
+      "file": "token-indexer/test/browser-csp-build.test.ts",
+      "description": "accepts only a same-origin script inside the loading module's directory, is created once under its allowed name, and hands the Worker constructor its result"
+    },
+    {
+      "id": "browser.csp.headers",
+      "file": "token-indexer/test/browser-csp.test.ts",
+      "description": "with the _headers rules: page and worker are cross-origin isolated; the worker boots on OPFS, replays and scans a recorded range and answers API requests with no CSP violation in the page or the worker, and every request stays on the site's origin; a second tab follows through the leader with the same answers and no violation"
+    },
+    {
+      "id": "browser.csp.chain-origins",
+      "file": "token-indexer/test/browser-csp.test.ts",
+      "description": "a build configured with a chain on another origin: the sync reads it cross-origin under COEP with no violation, and the requests are the site's and that origin's only"
+    },
+    {
+      "id": "browser.csp.meta",
+      "file": "token-indexer/test/browser-csp.test.ts",
+      "description": "with no headers, the page's meta policy alone: the same boot, replay and API answers with no violation and only same-origin requests"
+    },
+    {
+      "id": "browser.csp.enforced",
+      "file": "token-indexer/test/browser-csp.test.ts",
+      "description": "in both forms: an inline script without a hash does not run; eval and new Function are refused in the page (and in a worker under the header policy) while WebAssembly compiles; a fetch outside the policy is refused and never arrives; a Worker from a string, another Trusted Types policy and an HTML sink are refused; each refusal is reported"
+    },
+    {
+      "id": "browser.host.boot",
+      "file": "token-indexer/test/browser-host.test.ts",
+      "description": "boots through capabilities, store, ledger and migrate to ready; both schema lineages are migrated; the API answers before any start"
+    },
+    {
+      "id": "browser.host.protocol",
+      "file": "token-indexer/test/browser-host.test.ts",
+      "description": "a malformed message gets bad-request, another version unsupported-version, an unknown type unknown-type; export and import answer not-implemented; a first start with no start height begins at the finalized tip"
+    },
+    {
+      "id": "browser.host.engine",
+      "file": "token-indexer/test/browser-host.test.ts",
+      "description": "start syncs and scans the replayed range; stop leaves both cursors at a full block; a restart continues at the cursor"
+    },
+    {
+      "id": "browser.host.engine-network",
+      "file": "token-indexer/test/browser-host.test.ts",
+      "description": "a network source: every height is fetched once across a stop and a restart"
+    },
+    {
+      "id": "browser.host.refusals",
+      "file": "token-indexer/test/browser-host.test.ts",
+      "description": "an unsupported browser opens no store and starts nothing; a ledger build with renamed classes fails the boot and closes the store"
+    },
+    {
+      "id": "browser.capabilities",
+      "file": "token-indexer/test/browser-host.test.ts",
+      "description": "Chrome with OPFS sync access handles, Web Locks, BroadcastChannel and persistent storage is supported; each missing piece is named in a Chrome-only refusal"
+    },
+    {
+      "id": "browser.client",
+      "file": "token-indexer/test/browser-host.test.ts",
+      "description": "the client turns requests into validated results over a message channel: errors carry the worker's code, notices reach listeners, invalid messages are reported and dropped, close rejects what is pending"
+    },
+    {
+      "id": "browser.tapes",
+      "file": "token-indexer/test/browser-host.test.ts",
+      "description": "the catalog's files and SHA-256 values are the tapes' manifest; a tape that does not match its hash is refused"
+    },
+    {
+      "id": "browser.host.digest",
+      "file": "token-indexer/test/browser-sync-host.test.ts",
+      "description": "digest gives the archive digest and the digest of every table of both schemas in one transaction; the replayed U1 range gives the recorded live archive digest"
+    },
+    {
+      "id": "browser.host.start-tip",
+      "file": "token-indexer/test/browser-sync-host.test.ts",
+      "description": "a start with no start height begins at the finalized tip; a start with no configuration runs the saved one; a reopened store resumes at its cursor through the gap; a stop turns the automatic start off"
+    },
+    {
+      "id": "browser.host.range-reset",
+      "file": "token-indexer/test/browser-sync-host.test.ts",
+      "description": "range drops the data and starts the new range; reset runs it again to the same digests; range tip follows again; a reopened store keeps the range's end"
+    },
+    {
+      "id": "browser.host.quota",
+      "file": "token-indexer/test/browser-sync-host.test.ts",
+      "description": "the sync pauses before the quota (paused (quota)), a stop while paused returns at once, and it resumes once the usage is back under the threshold minus the margin"
+    },
+    {
+      "id": "browser.host.pacing",
+      "file": "token-indexer/test/browser-sync-host.test.ts",
+      "description": "with the default Stagenet endpoints, request starts are 250 ms apart per endpoint and a 429's Retry-After is honoured"
+    },
+    {
+      "id": "browser.tabs.auto-start",
+      "file": "token-indexer/test/browser-sync-host.test.ts",
+      "description": "the leader resumes the previous leader's running configuration, else starts the saved configuration when it says to start by itself, else nothing; with the build's automatic start off it starts only a previous leader's"
+    },
+    {
+      "id": "browser.worker.tape-digests",
+      "file": "token-indexer/test/browser-sync.test.ts",
+      "description": "the IDX and U1 ranges replayed in the worker on OPFS give the recorded live archive digests, and IDX the recorded live range's digest of every table of both schemas"
+    },
+    {
+      "id": "browser.tabs.one-engine",
+      "file": "token-indexer/test/browser-tabs-chrome.test.ts",
+      "description": "with two tabs exactly one worker runs, in the leader tab, and alone holds the store; the follower starts none, starts the engine through the leader, and gets identical answers"
+    },
+    {
+      "id": "browser.tabs.handover",
+      "file": "token-indexer/test/browser-tabs-chrome.test.ts",
+      "description": "closing the leader while its sync waits for the next height: the follower leads, boots its own worker on the same store, resumes the same configuration from the stored cursors, fetches no stored height again and every later one once, and ends with the uninterrupted run's answers"
+    },
+    {
+      "id": "browser.tabs.in-flight",
+      "file": "token-indexer/test/browser-tabs-chrome.test.ts",
+      "description": "requests in flight to a frozen leader when it closes: reads are answered by the next leader, also for a third tab; state changes fail with leader-changed; the next leader resumes the replay in its worker to the end"
+    },
+    {
+      "id": "browser.tabs.election",
+      "file": "token-indexer/test/browser-tabs.test.ts",
+      "description": "the first tab leads and alone starts a worker; the others follow; when the leader closes the oldest follower leads and the rest follow it; presence counts open tabs; without Web Locks or BroadcastChannel a tab runs alone"
+    },
+    {
+      "id": "browser.tabs.proxy",
+      "file": "token-indexer/test/browser-tabs.test.ts",
+      "description": "a follower's requests, reads and state changes alike, are answered by the leader's engine as the leader's own are; errors keep the leader's code; notices reach followers; a relayed system snapshot is marked relayed"
+    },
+    {
+      "id": "browser.tabs.handover-rule",
+      "file": "token-indexer/test/browser-tabs.test.ts",
+      "description": "in flight when the leader closes: status, api and export are answered by the next leader, other requests fail leader-changed, a late answer from the old leader is ignored; with no leader a request fails leader-unavailable; the new leader resumes the running engine, and only then"
+    },
+    {
+      "id": "browser.tabs.messages",
+      "file": "token-indexer/test/browser-tabs.test.ts",
+      "description": "invalid tab messages are reported and ignored; the leader refuses an unknown request type; closing rejects what is pending and releases the tab's locks"
+    },
+    {
+      "id": "browser.store.lock",
+      "file": "token-indexer/test/browser-tabs.test.ts",
+      "description": "the store lock admits one holder; the next waits for its release; a wait that runs out fails naming the store"
+    },
+    {
+      "id": "browser.build.bundle",
+      "file": "token-indexer/test/browser-worker.test.ts",
+      "description": "the build holds one ledger-v9 instance with its class names kept, PGlite's assets and both tapes; the node-free plugin refuses postgres.js and Node built-ins"
+    },
+    {
+      "id": "browser.worker.opfs-reload-resume",
+      "file": "token-indexer/test/browser-worker.test.ts",
+      "description": "the worker boots on OPFS, syncs and scans a replayed range, survives reloads with the same cursors and API answers, and resumes at the cursor fetching only the missing heights"
+    },
+    {
+      "id": "browser.worker.protocol",
+      "file": "token-indexer/test/browser-worker.test.ts",
+      "description": "the worker answers malformed and unknown messages with their error codes, refuses a second start, and answers not-implemented for export and import"
+    },
+    {
+      "id": "browser.parity.vectors",
+      "file": "token-indexer/test/browser-parity.test.ts",
+      "description": "the 110 vector requests (59/59 reference normative, 43/43 informative, 8/8 UmbraDB versions) answered through the PGlite store in a worker on OPFS in Chrome pass with every check applicable, and every answer equals the pure consumer's"
+    },
+    {
+      "id": "browser.parity.case-stop-heights",
+      "file": "token-indexer/test/browser-parity.test.ts",
+      "description": "through the engine worker's API, each recorded case replayed in the worker only up to its own last block (and C06 at each step) equals its expectation while every later case is still absent; earlier cases stay equal; U1 at its last block"
+    },
+    {
+      "id": "browser.parity.case-reference-index",
+      "file": "token-indexer/test/browser-parity.test.ts",
+      "description": "through the engine worker's API at the end of IDX and U1: the reference index's colors (first and last mint, mint count, amount), v1-named events (position, segment, phase, classification, reason) and range, and IDX/expected.json's colors through /v1/lookup; exactly 6 colors in IDX"
+    },
+    {
+      "id": "browser.parity.case-marks-activity",
+      "file": "token-indexer/test/browser-parity.test.ts",
+      "description": "through the engine worker's API: every case identity's mark (and C06's after each step) equals the mark rule applied to the reference expectations and the reference index's rejections; the third party's minted token has no mark; every case contract's metadata transactions are the reference index's, with their counts; C05 bronze, never minted, has no color"
+    },
+    {
+      "id": "browser.parity.api-equals-node",
+      "file": "token-indexer/test/browser-parity.test.ts",
+      "description": "every answer of a crawl of the API (every listing page, color, lookup, identity field page, contract, event page and transaction, activity pages in both orders, error answers, HEAD and a refused method) from the engine worker equals the Node handler's over the same range synced and scanned in Node: status, headers and body, /v1/status apart from durability"
+    },
+    {
+      "id": "browser.worker.system",
+      "file": "token-indexer/test/browser-engine-chrome.test.ts",
+      "description": "a snapshot from the worker validates against the schema and equals its sources: heights equal /v1/status, storage equals navigator.storage, table sizes, estimates, exact counts and database size equal the catalog read from the store by another page, the configuration shows the build, the watchdog limit, the data directory and the browser; watched it arrives every 2 s, unwatched nothing is collected"
+    },
+    {
+      "id": "browser.worker.system-tabs",
+      "file": "token-indexer/test/browser-engine-chrome.test.ts",
+      "description": "a follower tab watches the leader's snapshots through the leader and gets them marked follower; closing it without unwatching releases its viewer, and the leader's worker stops collecting"
+    },
+    {
+      "id": "browser.worker.watchdog",
+      "file": "token-indexer/test/browser-engine-chrome.test.ts",
+      "description": "the worker's thread held busy during the IDX replay is terminated after the limit and grace; the API request in flight gets the 503; a new worker continues at the stored cursors to the recorded digests; the snapshot counts the restart"
+    },
+    {
+      "id": "browser.worker.api-latency",
+      "file": "token-indexer/test/browser-engine-chrome.test.ts",
+      "description": "the page's API round trips are bounded while the worker replays the IDX range (sync and scan running), and measured with the engine stopped"
+    },
+    {
+      "id": "browser.session.monitor",
+      "file": "token-indexer/test/browser-session.test.ts",
+      "description": "one turn of the event loop per time slice while statements run back to back; statements and database failures counted (with their SQLSTATE), a closed database is not a failed statement; the statement in flight is known"
+    },
+    {
+      "id": "browser.session.close",
+      "file": "token-indexer/test/browser-session.test.ts",
+      "description": "closing waits for the statements in flight and refuses new ones (the client answers CONNECTION_CLOSED); PGlite closes once they have ended"
+    },
+    {
+      "id": "browser.scheduler.interleave",
+      "file": "token-indexer/test/browser-session.test.ts",
+      "description": "while the IDX range replays, a page's API requests are answered between block transactions with a bounded round trip; without the time slices they wait for whole steps; the tables are the same either way"
+    },
+    {
+      "id": "browser.reopen.threshold",
+      "file": "token-indexer/test/browser-session.test.ts",
+      "description": "at 1,000 failed statements since the store was opened PGlite is reopened: requests are held, the engine stops at a full block and continues with the same configuration, and the replay ends with the same tables as an uninterrupted one; the reopen is counted and the failed statements start again from zero"
+    },
+    {
+      "id": "browser.reopen.stack-depth",
+      "file": "token-indexer/test/browser-session.test.ts",
+      "description": "with the count rule off PGlite's own defect appears (every statement fails with stack depth limit exceeded, 54001) after about 1,870 failures; the first such failure reopens the store at once and the engine continues to the same tables"
+    },
+    {
+      "id": "browser.system.sources",
+      "file": "token-indexer/test/browser-system.test.ts",
+      "description": "a refreshed snapshot validates against the schema and every value equals its source: heights and scanner equal /v1/status, table sizes, estimates, exact counts and database size equal the catalog, storage equals the storage reading, endpoint requests equal the chain's counts, the configuration shows the running engine, the watchdog limit, the build and the data directory; the diagnostics file reads back equal"
+    },
+    {
+      "id": "browser.system.watch",
+      "file": "token-indexer/test/browser-system.test.ts",
+      "description": "the page follows snapshots while visible: a notice every interval while watched; hidden or gone (pagehide) nothing is collected — no statement, no notice; visible again it resumes; collection runs until the last of two viewers leaves"
+    },
+    {
+      "id": "browser.watchdog.heartbeat",
+      "file": "token-indexer/test/browser-system.test.ts",
+      "description": "after a watchdog request the worker posts a heartbeat every interval with the counts a replacing worker carries; carried counts show in the snapshot and the log; a new request changes the interval; closing the host ends the heartbeat"
+    },
+    {
+      "id": "browser.watchdog.unavailable",
+      "file": "token-indexer/test/browser-watchdog.test.ts",
+      "description": "an API request in flight on a restart gets exactly the API handler's 503 UNAVAILABLE answer, for GET and HEAD"
+    },
+    {
+      "id": "browser.watchdog.slow-query",
+      "file": "token-indexer/test/browser-watchdog.test.ts",
+      "description": "a statement that does not return silences the worker; the page terminates it and starts a new one: the API request in flight gets the 503, a status request restarted; the new worker carries the counts, continues the engine at the cursors, and the range ends with the same tables"
+    },
+    {
+      "id": "browser.watchdog.rules",
+      "file": "token-indexer/test/browser-watchdog.test.ts",
+      "description": "a late check is not a restart when the worker answers within the grace; a silent worker is restarted once with the viewers and the engine restored; an engine the page stopped stays stopped; a boot failing right after a restart is retried; too many restarts close the client"
+    },
+    {
+      "id": "browser.watchdog.long-requests",
+      "file": "token-indexer/test/browser-watchdog.test.ts",
+      "description": "while a reset is in flight the worker may stay silent up to the longer limit; past it the worker is restarted and the reset fails restarted"
+    },
+    {
+      "id": "browser.explorer.routes",
+      "file": "token-indexer/test/browser-explorer-chrome.test.ts",
+      "description": "the IDX range replayed in the worker: the explorer's route checks of the Node page pass with the API answered by the engine; 'history before block H is not indexed' next to the lists and in the panel; one module script; only same-origin requests, none to /v1; the font loaded; no CSP violation in the page or the worker, no exception or console error"
+    },
+    {
+      "id": "browser.explorer.activity",
+      "file": "token-indexer/test/browser-explorer-chrome.test.ts",
+      "description": "the explorer's recorded activity checks of the Node page pass with the API answered by the engine; only same-origin requests; no CSP violation, exception or console error"
+    },
+    {
+      "id": "browser.explorer.withdrawn",
+      "file": "token-indexer/test/browser-explorer-chrome.test.ts",
+      "description": "C06 step by step with the page open and refreshing on its own, the engine replaying the IDX tape up to each step: the withdrawn name is on no reachable view after the tombstone and stays absent after the revive; no CSP violation"
+    },
+    {
+      "id": "browser.explorer.seam",
+      "file": "token-indexer/test/browser-explorer-chrome.test.ts",
+      "description": "through the engine: an answer announced or streamed over 8 MiB is TOO_LARGE, a 503 is its error code, a failed engine request is UNREACHABLE (each as a fetched answer is rendered); hostile text in an engine answer is drawn as marks and markup as text, no script runs; no CSP violation"
+    },
+    {
+      "id": "browser.explorer.panel",
+      "file": "token-indexer/test/browser-explorer-chrome.test.ts",
+      "description": "the engine panel: empty store, then the start height and its 'history before' sentence next to the lists, heights, durability, configuration and storage; a second tab is marked follower; each control sends its one request (range with the typed heights, import with the chosen file), a drop of data first offers the export and cancel sends nothing; the engine's answers are shown; the follower is marked leader when the leader closes; the system status link; no CSP violation"
+    },
+    {
+      "id": "browser.explorer.transport",
+      "file": "token-indexer/test/browser-explorer.test.ts",
+      "description": "the explorer's host answers a /v1 path with the engine's answer as a fetch Response: status, headers (content-length included) and body; it asks the engine GET of the path when called; a failed engine request rejects; the host asks for the start-height notes"
+    },
+    {
+      "id": "browser.explorer.panel-model",
+      "file": "token-indexer/test/browser-explorer.test.ts",
+      "description": "the panel's view: every engine state with its detail, the first indexed height as 'history before block H is not indexed', the configuration in words, storage from the engine's reading (or the page's until there is one), the role and open tabs, the held range a drop would lose, and the typed range checked before it is sent"
+    },
+    {
+      "id": "browser.explorer.build",
+      "file": "token-indexer/test/browser-explorer.test.ts",
+      "description": "index.html is the /ui page's markup with one module script and stylesheets (no inline block) under the page policy; the bundle carries the explorer script, not the Node page module; the brand font and icon are emitted with the explorer's bytes; the plugin refuses a page style without its font reference and a doubled marker"
     }
   ],
   "deferred": [

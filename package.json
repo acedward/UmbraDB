@@ -41,6 +41,7 @@
     "test": "vitest run",
     "test:conformance": "node scripts/conformance-gate.mjs",
     "test:pglite": "node scripts/pglite-gate.mjs",
+    "test:browser": "vitest run token-indexer/test/browser- token-indexer/test/mip0018-ui-browser",
     "test:coverage": "vitest run --coverage",
     "test:mutation": "stryker run",
     "test:mutation:ci": "node scripts/mutation-per-adapter.mjs",

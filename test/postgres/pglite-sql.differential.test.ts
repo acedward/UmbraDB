@@ -171,7 +171,7 @@ describe("PGlite client = postgres.js on PostgreSQL 17", () => {
     await container?.stop();
   }, 60_000);
 
-  it("runs the chain-archive and mip0018 migrations through the migration runner (durability probe, reserve, BEGIN/COMMIT, unsafe DDL) with the same statements", async () => {
+  it("[[pglite.differential.migrations]] runs the chain-archive and mip0018 migrations through the migration runner (durability probe, reserve, BEGIN/COMMIT, unsafe DDL) with the same statements", async () => {
     await phase("migrations", async (b) => {
       await bootstrapChainArchiveSchema(b.sql, "diff_archive");
       await new Mip0018Scanner({ sql: b.sql, network: NET, schema: "diff_mip", archiveSchema: "diff_archive" }).bootstrap();
@@ -188,7 +188,7 @@ describe("PGlite client = postgres.js on PostgreSQL 17", () => {
     expect(lite.log.length).toBeGreaterThan(100);
   }, 120_000);
 
-  it("archives the recorded IDX and U1 ranges with the sync service, sending the same statements", async () => {
+  it("[[pglite.differential.sync]] archives the recorded IDX and U1 ranges with the sync service, sending the same statements", async () => {
     const ranges = loadManifest().ranges;
     const idx = ranges.find((r) => r.name === "idx")!;
     const u1 = ranges.find((r) => r.name === "u1")!;
@@ -214,7 +214,7 @@ describe("PGlite client = postgres.js on PostgreSQL 17", () => {
     expect(lite.log.some((s) => s.types.includes(3802))).toBe(true); // sql.json watermark and segments
   }, 300_000);
 
-  it("scans both ranges with the same statements and leaves every archive and mip0018 table equal; the recorded live-range digest holds on PostgreSQL", async () => {
+  it("[[pglite.differential.scan-tables]] scans both ranges with the same statements and leaves every archive and mip0018 table equal; the recorded live-range digest holds on PostgreSQL", async () => {
     await phase("scan", async (b) => {
       for (const [sql, schema, archiveSchema] of [[b.sql, "diff_mip", "diff_archive"], [b.u1, "u1_mip", "u1_archive"]] as const) {
         const scanner = new Mip0018Scanner({ sql, network: NET, schema, archiveSchema });
@@ -251,7 +251,7 @@ describe("PGlite client = postgres.js on PostgreSQL 17", () => {
     expect(() => expectSameStatements(pg.log, tampered, "control")).toThrow(/control: statement 10 differs/);
   }, 300_000);
 
-  it("reads and writes through the rest of the archive store (blobs by role, verifier keys, canonical flips, lookups by height and hash) with the same statements and results", async () => {
+  it("[[pglite.differential.archive-store]] reads and writes through the rest of the archive store (blobs by role, verifier keys, canonical flips, lookups by height and hash) with the same statements and results", async () => {
     const out: unknown[][] = [[], []];
     await phase("store", async (b) => {
       const store = new PgChainArchiveStore(b.u1, "u1_archive");
@@ -279,7 +279,7 @@ describe("PGlite client = postgres.js on PostgreSQL 17", () => {
     expect(await normalized.setCanonical(NET, 715409, "ab".repeat(32)).catch((e: Error) => e.name)).toBe("ChainArchiveCheckViolationError");
   }, 60_000);
 
-  it("bytea[] NULL elements: postgres.js reads them as an empty Buffer, PGlite as null; unnest gives NULL on both", async () => {
+  it("[[pglite.differential.bytea-null-elements]] bytea[] NULL elements: postgres.js reads them as an empty Buffer, PGlite as null; unnest gives NULL on both", async () => {
     const out: unknown[] = [];
     await phase("bytea-array-null", async (b) => {
       await b.sql`CREATE TABLE diff_mip.ops (id int PRIMARY KEY, ops bytea[])`;
@@ -294,7 +294,7 @@ describe("PGlite client = postgres.js on PostgreSQL 17", () => {
     ]);
   }, 60_000);
 
-  it("answers every API route with the same responses and statements, one request at a time and concurrently", async () => {
+  it("[[pglite.differential.api]] answers every API route with the same responses and statements, one request at a time and concurrently", async () => {
     const servers = await Promise.all(both.map(async (b) => {
       const server = createMip0018Api({ sql: b.sql, network: NET, schema: "diff_mip", archiveSchema: "diff_archive", log: () => undefined, maxConcurrentRequests: 64 });
       return { server, port: await listen(server, 0) };
@@ -355,7 +355,7 @@ describe("PGlite client = postgres.js on PostgreSQL 17", () => {
     }
   }, 300_000);
 
-  it("reads through top-level clients (activity listings in their own read-only transactions, events, tokens) with the same results and statements", async () => {
+  it("[[pglite.differential.top-level-reads]] reads through top-level clients (activity listings in their own read-only transactions, events, tokens) with the same results and statements", async () => {
     const color = (await pg.sql<{ color: Buffer }[]>`SELECT color FROM diff_mip.mip0018_mints ORDER BY block_height LIMIT 1`)[0]!.color.toString("hex");
     const contract = (await pg.sql<{ contract_address: Buffer }[]>`SELECT contract_address FROM diff_mip.mip0018_events ORDER BY block_height LIMIT 1`)[0]!.contract_address.toString("hex");
     const results: unknown[][] = [[], []];
@@ -381,7 +381,7 @@ describe("PGlite client = postgres.js on PostgreSQL 17", () => {
     expect(lite.log.filter((s) => s.text === "begin read only").length).toBe(3);
   }, 120_000);
 
-  it("answers the 110 MIP-0018 vector requests through the PostgreSQL write and read path (a fresh migrated schema per request) with the same statements and answers", async () => {
+  it("[[pglite.differential.vectors]] answers the 110 MIP-0018 vector requests through the PostgreSQL write and read path (a fresh migrated schema per request) with the same statements and answers", async () => {
     const sets = vectorSets();
     const vectors = [...loadVectors({ dir: VENDORED_VECTORS_DIR, only: sets.reference.map((v) => v.id) }), ...loadVectors({ dir: UMBRADB_VECTORS_DIR })];
     const answers: Json[][] = [[], []];
@@ -402,7 +402,7 @@ describe("PGlite client = postgres.js on PostgreSQL 17", () => {
     expect(reports[1]).toEqual({ normative: { passed: 67, total: 67 }, informative: { passed: 43, total: 43 }, failed: [] });
   }, 600_000);
 
-  it("removes the scan above a height (event replay) and rescans with the same statements and tables; recomputing the fields changes nothing", async () => {
+  it("[[pglite.differential.remove-above]] removes the scan above a height (event replay) and rescans with the same statements and tables; recomputing the fields changes nothing", async () => {
     await phase("remove-rescan", async (b) => {
       const scanner = new Mip0018Scanner({ sql: b.sql, network: NET, schema: "diff_mip", archiveSchema: "diff_archive" });
       await scanner.removeAbove(714812); // C06 withdraws at 714813
