@@ -1,9 +1,10 @@
 /**
  * The browser engine's worker host in a Node worker thread (run with the `tsx` loader), for tests that need the engine
  * on its own thread, as in a browser: PGlite at `workerData.dataDir`, its saved settings in the file
- * `<dataDir>.engine.json` beside it (as beside an OPFS store), the recorded ranges read from the repository's files. Every message is a protocol request answered with one response, and the host's notices are posted, as
- * `worker.ts` does; one test-only message, `{ test: "slow-statement", seconds }`, runs `select pg_sleep(seconds)` on the
- * store's session (between transactions), which keeps the thread busy as a statement that does not return would.
+ * `<dataDir>.engine.json` beside it (as beside an OPFS store), the recorded ranges read from the repository's files.
+ * Every message is a protocol request answered with one response, and the host's notices are posted, as `worker.ts`
+ * does; one test-only message, `{ test: "slow-statement", seconds }`, runs `select pg_sleep(seconds)` on the store's
+ * session (between transactions), which keeps the thread busy as a statement that does not return would.
  */
 import { parentPort, workerData } from "node:worker_threads";
 import { createWorkerHost } from "../../browser/host.ts";
