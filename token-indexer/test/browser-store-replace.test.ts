@@ -557,6 +557,7 @@ describe("replacing the browser engine's store", () => {
       { what: "range, right after its settings are saved", request: "range", at: "saved" },
       { what: "range, while its engine stops", request: "range", at: "stopping" },
       { what: "reset, right after its settings are saved", request: "reset", at: "saved" },
+      { what: "reset, while its engine stops", request: "reset", at: "stopping" },
     ] as const;
     for (const c of cases) {
       const dir = storeDir();

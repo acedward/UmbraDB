@@ -167,7 +167,7 @@ describe("page watchdog", () => {
     }
   });
 
-  it("[[browser.watchdog.slow-query]] a statement that does not return silences the worker; the page terminates it and starts a new one: the API request in flight gets the 503, a status request restarted; the new worker carries the counts, continues the engine at the cursors, and the range ends with the same tables", async () => {
+  it("[[browser.watchdog.slow-query]] with no restart before it, a statement that does not return silences the worker; the page terminates it and starts a new one: the API request in flight gets the 503, a status request restarted; the new worker carries the counts, continues the engine at the cursors, and the range ends with the same tables", async () => {
     const expected = await u1Reference();
     const dir = tempDir();
     const threads: Array<ReturnType<typeof threadWorker>> = [];

@@ -278,7 +278,7 @@ describe("one engine across tabs", () => {
     expect(asRelayed({ status: 200, body: "{}" }, 7)).toEqual({ status: 200, body: "{}" });
   });
 
-  it("[[browser.tabs.handover-rule]] in flight when the leader closes: status, api and export are answered by the next leader, other requests fail leader-changed, a late answer from the old leader is ignored; with no leader a request fails leader-unavailable; the new leader resumes the running engine, and only then", async () => {
+  it("[[browser.tabs.handover-rule]] in flight when the leader closes: status, api and export are answered by the next leader, other requests fail leader-changed, a late answer from the old leader is ignored; with no leader a request fails leader-unavailable; the new leader starts the saved configuration of the engine the old one ran, and nothing once it was stopped", async () => {
     const b = browser();
     const a = b.open("a");
     await a.ready;
