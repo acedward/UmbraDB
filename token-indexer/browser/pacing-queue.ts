@@ -7,9 +7,11 @@
  *
  * - {@link PacingQueue.admit} resolves when the caller may start. A caller that finds `maxWaiting` callers waiting is
  *   refused at once ({@link QueueFullError}).
- * - A wait can be cancelled with an `AbortSignal`: the caller leaves the queue (it is refused with the signal's reason)
- *   and the callers after it move up.
- * - {@link PacingQueue.holdFor} lets no caller start for a while (an endpoint's `Retry-After`).
+ * - A wait can be cancelled with an `AbortSignal` (`admit`, and `wait`, the archive sync's, with its run's signal): the
+ *   caller leaves the queue at once (it is refused with the signal's reason, its request never starts) and the
+ *   callers after it keep their turns.
+ * - {@link PacingQueue.holdFor} lets no caller start for a while (an endpoint's `Retry-After`), at most
+ *   {@link MAX_HOLD_MS}: an endpoint's answer never stops the origin's requests for longer.
  * - {@link PacingQueue.close} refuses every waiting and later caller with its reason.
  *
  * Runtime-neutral; the clock can be replaced (tests).
@@ -30,6 +32,10 @@ export interface PacingQueueOptions {
   maxWaiting?: number;
   clock?: PacingClock;
 }
+
+/** The longest a hold lets no caller start, whatever the endpoint asks (the archive sync's longest back-off,
+ *  `chain-archive-sync/retry.ts`). */
+export const MAX_HOLD_MS = 60_000;
 
 /** A caller refused because the queue already holds as many waiting callers as it may. */
 export class QueueFullError extends Error {
@@ -83,9 +89,9 @@ export class PacingQueue implements Pacer {
     return this.#interval;
   }
 
-  /** {@link PacingQueue.admit} with no cancellation (the archive sync's clients). */
-  wait(): Promise<void> {
-    return this.admit();
+  /** {@link PacingQueue.admit}: the archive sync's clients wait with their run's signal. */
+  wait(signal?: AbortSignal): Promise<void> {
+    return this.admit(signal);
   }
 
   /** The queue now: its interval, the callers waiting, and how long a hold still lets no caller start (0: none). */
@@ -93,10 +99,11 @@ export class PacingQueue implements Pacer {
     return { minIntervalMs: this.#interval, waiting: this.#waiting.length, heldForMs: Math.max(0, Math.ceil(this.#notBefore - this.#clock.now())) };
   }
 
-  /** Lets no caller start until `ms` from now (a later hold wins; an earlier one changes nothing). */
+  /** Lets no caller start until `ms` from now, at most {@link MAX_HOLD_MS} (a later hold wins; an earlier one changes
+   *  nothing). */
   holdFor(ms: number): void {
     if (!(ms > 0) || this.#closed !== undefined) return;
-    const until = this.#clock.now() + ms;
+    const until = this.#clock.now() + Math.min(ms, MAX_HOLD_MS);
     if (until <= this.#notBefore) return;
     this.#notBefore = until;
     // A timer set for an earlier start is set again for the hold.

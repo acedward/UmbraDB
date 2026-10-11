@@ -44,10 +44,12 @@ import {
   NODE_EVM_RPC_URL,
   outcomeOf,
   paramsFromFields,
+  paramsOfText,
   parseHistory,
   requestFor,
   type RpcView,
   rpcRouteOf,
+  shownText,
   SOURCE_LEGEND,
   statusFigures,
   stripParts,
@@ -336,7 +338,7 @@ export function mountJsonRpcView(opts: JsonRpcViewOptions): JsonRpcView {
     const d = draftOf(selected);
     if (mode === "raw") return buildRequest(nextId, selected.method, d.raw);
     const r = paramsFromFields(selected.paramSpecs, d.fields);
-    if (!r.ok) return { ok: false, error: `the form needs a fix: ${r.errors.filter((e) => e !== null).join("; ")}` };
+    if (!r.ok) return { ok: false, error: `the form needs a fix: ${[...r.errors.filter((e) => e !== null), ...(r.error === undefined ? [] : [r.error])].join("; ")}` };
     return requestFor(nextId, selected.method, r.params);
   }
 
@@ -353,7 +355,7 @@ export function mountJsonRpcView(opts: JsonRpcViewOptions): JsonRpcView {
     }
     preview.pre.replaceChildren(...(built.ok ? jsonLines(built.text) : []));
     preview.error.replaceChildren(...(built.ok ? [] : [dataNode(document, built.error)]));
-    preview.curl.replaceChildren(...(built.ok ? [dataNode(document, curlCommand(built.body))] : []));
+    preview.curl.replaceChildren(...(built.ok ? [dataNode(document, shownText(curlCommand(built.body)))] : []));
     if (preview.call !== null) preview.call.disabled = !built.ok || byMethod.get(selected.method)?.pending === true;
   }
 
@@ -550,13 +552,10 @@ export function mountJsonRpcView(opts: JsonRpcViewOptions): JsonRpcView {
       const p = paramsFromFields(r.paramSpecs, d.fields);
       if (p.ok) d.raw = JSON.stringify(p.params);
     } else {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(d.raw);
-      } catch {
-        parsed = undefined;
-      }
-      if (Array.isArray(parsed) && parsed.length <= r.paramSpecs.length) d.fields = fieldsFromParams(r.paramSpecs, parsed);
+      // The JSON text's own check first: what the tab could not send never reaches the form.
+      const read = paramsOfText(d.raw);
+      if (!read.ok) d.note = `the JSON cannot be put in the form: ${read.error}`;
+      else if (Array.isArray(read.params) && read.params.length <= r.paramSpecs.length) d.fields = fieldsFromParams(r.paramSpecs, read.params);
       else d.note = "the JSON is not a list of this method's parameters: the form keeps its own values";
     }
     mode = to;
@@ -618,6 +617,7 @@ export function mountJsonRpcView(opts: JsonRpcViewOptions): JsonRpcView {
     if (t.kind === "string") v.append(document.createTextNode('"'), dataNode(document, t.text), document.createTextNode('"'));
     else v.textContent = t.text;
     leaf.append(v);
+    if (t.cut > 0) leaf.append(field(el("span", "note", `… ${t.cut.toLocaleString("en-US")} more characters (in the text view)`), "rpc-leaf-cut"));
     if (t.decimal !== null) leaf.append(field(el("span", "note dec", ` = ${t.decimal}`), "rpc-decimal"));
     for (const next of t.next) {
       const b = button(next.label, "rpc-next", "mini");
@@ -787,12 +787,8 @@ export function mountJsonRpcView(opts: JsonRpcViewOptions): JsonRpcView {
     const d = draftOf(r);
     d.raw = paramsText;
     d.note = null;
-    let parsed: unknown;
-    try {
-      parsed = paramsText === "" ? undefined : JSON.parse(paramsText);
-    } catch {
-      parsed = undefined;
-    }
+    const read = paramsOfText(paramsText);
+    const parsed = read.ok ? read.params : undefined;
     let fits = false;
     if (Array.isArray(parsed)) {
       const fields = fieldsFromParams(r.paramSpecs, parsed);

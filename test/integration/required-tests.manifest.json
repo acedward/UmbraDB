@@ -1,5 +1,5 @@
 {
-  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 433), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
+  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 440), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
   "$check-mechanism-note": "The check mechanism itself is proven independently by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so they stay green whatever this manifest holds; check-required-tests.test.ts also validates this manifest's structure (every required entry bound to an existing file, the pinned count). Do NOT delete a required id to make the check pass — that would re-open the self-skip hole this manifest closes; a required id whose test is missing fails the gate, naming it.",
   "required": [
     {
@@ -2080,7 +2080,7 @@
     {
       "id": "browser.jsonrpc.model-bounds",
       "file": "token-indexer/test/browser-jsonrpc.test.ts",
-      "description": "parameters nested deeper than the bound, or that break serialization, are refused with a message and never throw; requests and answers too long to show are shown cut, with their length"
+      "description": "parameters nested deeper than the bound, or that break serialization, are refused with a message and never throw; one check of the parameters before any conversion between the JSON text and the form and before any request; every shown text (request, curl line, answer, tree strings) bounded"
     },
     {
       "id": "browser.host.jsonrpc-bounded",
@@ -2140,7 +2140,7 @@
     {
       "id": "browser.host.jsonrpc-state",
       "file": "token-indexer/test/browser-jsonrpc.test.ts",
-      "description": "the worker host's jsonrpc-state: switch, database, method counts, chain ID, client version and indexer, the calls as they happen, the origin's pacing queue (interval, waiting, Retry-After hold), the last error kept when the module stops"
+      "description": "the worker host's jsonrpc-state: switch, database, method counts, chain ID, client version and indexer, the calls as they happen, the origin's pacing queue (interval, waiting, Retry-After hold), the last error kept when the module stops; answered during a range, never boot-failed"
     },
     {
       "id": "browser.jsonrpc.page-structure",
@@ -2166,6 +2166,41 @@
       "id": "browser.jsonrpc.status",
       "file": "token-indexer/test/browser-jsonrpc-chrome.test.ts",
       "description": "in Chromium: the JSON RPC status view's figures equal their sources (the engine's state, the build's chain and indexer, Node's answers, the list's counts, the tab's calls, an indexer error), read again by refresh and every 5 s"
+    },
+    {
+      "id": "archive.clients.abort",
+      "file": "chain-archive-sync/client-abort.test.ts",
+      "description": "the node and indexer clients' stop signal ends a wait for the pacer's turn (passed to the pacer) and a request in flight at once; nothing is fetched after; the client's own pacer stops waiting too"
+    },
+    {
+      "id": "browser.pacing.hold",
+      "file": "token-indexer/test/browser-jsonrpc.test.ts",
+      "description": "on a test clock: a hold lasts at most 60 s whatever an endpoint asks; a wait its caller cancels during a hold leaves at once and never starts; the other callers start when the hold ends"
+    },
+    {
+      "id": "browser.host.stop-during-hold",
+      "file": "token-indexer/test/browser-jsonrpc.test.ts",
+      "description": "a Retry-After hold on the indexer's origin (60 s at most) never holds a stop: the sync's wait for its turn ends at once and its request is never made"
+    },
+    {
+      "id": "browser.host.jsonrpc-start-bounded",
+      "file": "token-indexer/test/browser-jsonrpc.test.ts",
+      "description": "while the JSON RPC module starts, 8 requests are admitted and each further one is refused busy at once; each slot is held until its answer"
+    },
+    {
+      "id": "browser.jsonrpc.editor-bounds",
+      "file": "token-indexer/test/browser-jsonrpc-chrome.test.ts",
+      "description": "in Chromium: parameters nested too deep never reach the form, a form longer than the parameters may be is refused, the curl line at the bound is shown cut and copied whole; nothing throws"
+    },
+    {
+      "id": "browser.host.stop-during-burst",
+      "file": "token-indexer/test/browser-jsonrpc.test.ts",
+      "description": "a burst of JSON-RPC calls puts at most 8 of the module's indexer requests in the origin's queue; a stop of the sync while they wait is prompt; every call answered as Node"
+    },
+    {
+      "id": "browser.host.settings-module-bound",
+      "file": "token-indexer/test/browser-jsonrpc.test.ts",
+      "description": "settings naming 64 unknown modules: a switch saves at most 64 ids (this build's first, the oldest unknown dropped), so the next worker still reads the settings"
     }
   ],
   "deferred": [

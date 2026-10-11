@@ -83,6 +83,9 @@ export interface NodeRpcClientOptions {
   /** A pacer shared with the other clients of the same endpoint, used instead of a pacer of the client's own (and of
    *  `minIntervalMs`). Default: none. */
   pacer?: Pacer;
+  /** The caller's stop: when it ends, a call waiting for the pacer's turn ends at once and never starts its request, a
+   *  request in flight is aborted, and a later call is refused. Default: none. */
+  signal?: AbortSignal;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -97,6 +100,7 @@ export class NodeRpcClient {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   private readonly pacer: Pacer;
+  private readonly signal: AbortSignal | undefined;
 
   constructor(opts: NodeRpcClientOptions) {
     this.url = opts.url;
@@ -104,6 +108,7 @@ export class NodeRpcClient {
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.pacer = opts.pacer ?? new RequestPacer(opts.minIntervalMs ?? defaultMinIntervalMs(opts.url));
+    this.signal = opts.signal;
   }
 
   /** The effective request spacing (logged by the CLI). */
@@ -113,14 +118,15 @@ export class NodeRpcClient {
 
   private async call<T>(method: string, params: unknown[]): Promise<T> {
     const id = nextId++;
-    await this.pacer.wait();
+    if (this.signal?.aborted === true) throw this.signal.reason;
+    await this.pacer.wait(this.signal);
     let res: Response;
     try {
       res = await this.fetchImpl(this.url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: this.signal === undefined ? AbortSignal.timeout(this.timeoutMs) : AbortSignal.any([AbortSignal.timeout(this.timeoutMs), this.signal]),
       });
     } catch (err) {
       throw new NodeRpcError(

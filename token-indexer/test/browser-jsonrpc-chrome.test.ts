@@ -45,6 +45,10 @@
  *   storage, and in an indexer answer is drawn as text: the request, the message and the history with visible marks,
  *   the indexer's text never passed on (the module answers `-32603`); parameters nested too deep are refused with a
  *   message and cannot be called; nothing comes alive, nothing throws and no raw hidden character is drawn.
+ * - `[[browser.jsonrpc.editor-bounds]]` — the editor's paths keep the JSON text's bounds: parameters nested too deep
+ *   are refused in JSON mode and never reach the form (the form keeps its values and says why, nothing throws); a form
+ *   field longer than the parameters may be is refused (no request, no `curl` line, Call disabled, nothing long drawn);
+ *   at the bound, the request is sent and its `curl` line (four characters per quote) is shown cut and copied whole.
  * - `[[browser.jsonrpc.concurrent-calls]]` — Call on a slow method and then on a fast one: each answer is kept with its
  *   method, the slow one shown while it is awaited and once it comes, never over the other's, and the call reported as
  *   the last is the last one made.
@@ -81,6 +85,8 @@ import {
   JSONRPC_TAB_NOTE,
   JSONRPC_TITLE,
   KIND_HINTS,
+  MAX_PARAMS_CHARS,
+  MAX_SHOWN_CHARS,
   METHOD_GROUPS,
   methodRows,
   requestFor,
@@ -1001,6 +1007,59 @@ describe("the JSON RPC module in the static build in Chrome (served with its hea
       await b.close();
     }
   }, 240_000);
+
+  it("[[browser.jsonrpc.editor-bounds]] the editor's paths keep the JSON text's bounds: too deep never reaches the form, a form too long is refused, the curl line at the bound is shown cut and copied whole; nothing throws", async () => {
+    const b = await Browser.launch(browserExe!);
+    try {
+      const p = await open(b, "/index.html?tab=jsonrpc&rpc-method=eth_call");
+      const example = (await previewOf(p)).params;
+      // JSON nested too deep: refused there; the form does not take it, keeps its values and says why.
+      await p.eval("document.querySelector('[data-action=rpc-mode-raw]').click()");
+      // As deep as the JSON text's length allows (65,536 characters).
+      await setRaw(p, `[{"x":${"[".repeat(32_000)}${"]".repeat(32_000)}}]`);
+      let d = await p.eval<Detail>(DETAIL);
+      expect([d.preview, d.requestError, d.callDisabled]).toEqual([null, "the parameters nest deeper than 64 levels", true]);
+      await p.eval("document.querySelector('[data-action=rpc-mode-form]').click()");
+      d = await p.eval<Detail>(DETAIL);
+      expect([d.form, d.modeNote]).toEqual([true, "the JSON cannot be put in the form: the parameters nest deeper than 64 levels"]);
+      expect((await previewOf(p)).params).toEqual(example);
+      expect(p.exceptions).toEqual([]);
+
+      // A form field longer than the parameters may be: refused, no request, no curl line, nothing long drawn.
+      await pick(p, "web3_sha3");
+      await setField(p, 0, `0x${"aa".repeat(200_000)}`);
+      d = await p.eval<Detail>(DETAIL);
+      expect([d.fields[0]!.error, d.preview, d.curl, d.callDisabled]).toEqual([`data: longer than ${MAX_PARAMS_CHARS} characters`, null, null, true]);
+      expect(await p.eval(`${RPC}.preview`)).toBeNull();
+      expect(await p.eval<number>("document.getElementById('tab-panel-jsonrpc').textContent.length")).toBeLessThan(20_000);
+      // Its JSON mode does not take it either.
+      await p.eval("document.querySelector('[data-action=rpc-mode-raw]').click()");
+      expect((await p.eval<Detail>(DETAIL)).raw!.length).toBeLessThan(1_000);
+      await p.eval("document.querySelector('[data-action=rpc-mode-form]').click()");
+
+      // At the bound: sent; its curl line, four characters per quote, shown cut and copied whole.
+      await pick(p, "eth_call");
+      await p.eval("document.querySelector('[data-action=rpc-mode-raw]').click()");
+      await setRaw(p, `["${"'".repeat(MAX_PARAMS_CHARS - 4)}"]`);
+      d = await p.eval<Detail>(DETAIL);
+      expect(d.requestError).toBeNull();
+      const body = (await p.eval<string>(`${RPC}.preview`))!;
+      expect(d.curl!.length).toBeLessThanOrEqual(MAX_SHOWN_CHARS + 60);
+      expect(d.curl).toMatch(/… \(cut: [\d,]+ characters in all\)$/);
+      await p.eval("document.querySelector('[data-action=rpc-copy-curl]').click()");
+      await p.waitFor("document.querySelector('[data-field=rpc-copied]').textContent === 'the curl command copied'", 5_000, "the curl copy");
+      expect(await p.eval(`${RPC}.copied`)).toBe(curlCommand(body));
+      const pane = await callFromTab(p);
+      expect(asAnswer((await p.eval<Json>(`${RPC}.latest`)).answer)).toEqual(await nodeAnswer(body));
+      expect(pane.status).toBe("HTTP 200");
+      // The history keeps the call and draws its parameters cut.
+      expect((await p.eval<string[][]>(HISTORY))[0]![1]!.length).toBeLessThanOrEqual(120);
+      await clean(p, true);
+      await p.close();
+    } finally {
+      await b.close();
+    }
+  }, 180_000);
 
   it("[[browser.jsonrpc.concurrent-calls]] calls on two methods at once: each answer kept with its method, the slow one shown while awaited and once it comes, never over the other's; the last call made is the one reported", async () => {
     const b = await Browser.launch(browserExe!);

@@ -44,15 +44,38 @@ export function defaultMinIntervalMs(url: string): number {
  *  clients of the same endpoint (the browser engine's, one per endpoint origin). */
 export interface Pacer {
   readonly minIntervalMs: number;
-  /** Resolves when the caller may start its request. */
-  wait(): Promise<void>;
+  /** Resolves when the caller may start its request; rejects with the signal's reason as soon as `signal` ends (the
+   *  caller's stop), and the caller never starts. */
+  wait(signal?: AbortSignal): Promise<void>;
+}
+
+/** Waits for `wait` unless `signal` ends first: then rejects with its reason at once (no listener is left behind). */
+export function unlessAborted(wait: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+  if (signal === undefined) return wait;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    wait.then(
+      () => {
+        signal.removeEventListener("abort", onAbort);
+        if (signal.aborted) reject(signal.reason);
+        else resolve();
+      },
+      (e: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e);
+      },
+    );
+  });
 }
 
 /**
  * Spaces request starts at least `minIntervalMs` apart, across every concurrent caller of one
  * client (each call reserves the next free slot synchronously, then waits for it). `0` disables it.
+ * A caller's signal ends its wait at once (its slot stays reserved, so the spacing never shrinks).
  */
-export class RequestPacer {
+export class RequestPacer implements Pacer {
   private nextSlot = 0;
 
   constructor(
@@ -65,11 +88,12 @@ export class RequestPacer {
     }
   }
 
-  async wait(): Promise<void> {
+  async wait(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted === true) throw signal.reason;
     if (this.minIntervalMs === 0) return;
     const t = this.now();
     const slot = Math.max(t, this.nextSlot);
     this.nextSlot = slot + this.minIntervalMs;
-    if (slot > t) await this.sleep(slot - t);
+    if (slot > t) await unlessAborted(this.sleep(slot - t), signal);
   }
 }

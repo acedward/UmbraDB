@@ -199,22 +199,33 @@ const HEX = /^0x[0-9a-fA-F]+$/;
 /** The longest number a quantity field takes, in characters (a 256-bit number has 78 decimal digits). */
 const MAX_QUANTITY_CHARS = 80;
 
-/** The form's values for `params` under `specs` (a missing value: an empty field, a block left out when optional). */
+/** `value` as JSON, or `""` when the tab could not send it (nested deeper than {@link MAX_PARAMS_DEPTH}, longer than
+ *  {@link MAX_PARAMS_CHARS}, or not writable as JSON). Never throws. */
+function jsonOrEmpty(value: unknown): string {
+  return checkParams(value) === null ? (JSON.stringify(value) ?? "") : "";
+}
+
+/**
+ * The form's values for `params` under `specs` (a missing value: an empty field, a block left out when optional). A
+ * value the tab could not send (see {@link checkParams}) makes an empty field. Never throws.
+ */
 export function fieldsFromParams(specs: readonly ParamSpec[], params: readonly unknown[]): FieldValue[] {
   return specs.map((spec, i): FieldValue => {
-    const v = params[i];
+    const raw = params[i];
+    // A value the tab could not send is not put in a field: the field is empty, as for a missing value.
+    const v = checkParams(raw) === null ? raw : undefined;
     if (spec.kind === "boolean") return { kind: "boolean", checked: v === true };
     if (spec.kind === "blockTag" || spec.kind === "blockRef") {
       if (typeof v === "string" && (BLOCK_TAGS as readonly string[]).includes(v)) return { kind: "block", choice: v as BlockTag, number: "", hash: "" };
       if (typeof v === "string" && spec.kind === "blockRef" && HEX32.test(v)) return { kind: "block", choice: "hash", number: "", hash: v };
       if (typeof v === "string") return { kind: "block", choice: "number", number: v, hash: "" };
-      if (v !== undefined) return { kind: "block", choice: "number", number: JSON.stringify(v) ?? "", hash: "" };
+      if (v !== undefined) return { kind: "block", choice: "number", number: jsonOrEmpty(v), hash: "" };
       return { kind: "block", choice: spec.optional === true ? "omit" : "latest", number: "", hash: "" };
     }
     if (v === undefined) return { kind: "text", text: "" };
     if (spec.kind === "percentiles" && Array.isArray(v) && v.every((x) => typeof x === "number")) return { kind: "text", text: v.join(", ") };
     if (typeof v === "string" && spec.kind !== "object") return { kind: "text", text: v };
-    return { kind: "text", text: JSON.stringify(v) ?? "" };
+    return { kind: "text", text: jsonOrEmpty(v) };
   });
 }
 
@@ -243,6 +254,7 @@ function readField(spec: ParamSpec, v: FieldValue): FieldRead {
     return value(v.choice);
   }
   const t = v.kind === "text" ? v.text.trim() : "";
+  if (t.length > MAX_PARAMS_CHARS) return bad(`longer than ${MAX_PARAMS_CHARS} characters`);
   if (t === "" && spec.optional === true) return { ok: true, value: undefined, omitted: true };
   switch (spec.kind) {
     case "address":
@@ -262,7 +274,6 @@ function readField(spec: ParamSpec, v: FieldValue): FieldRead {
       return numbers.every((n) => n >= 0 && n <= 100) ? value(numbers) : bad();
     }
     case "object": {
-      if (t.length > MAX_PARAMS_CHARS) return bad(`longer than ${MAX_PARAMS_CHARS} characters`);
       let parsed: unknown;
       try {
         parsed = JSON.parse(t) as unknown;
@@ -276,12 +287,13 @@ function readField(spec: ParamSpec, v: FieldValue): FieldRead {
   }
 }
 
-export type FormResult = { ok: true; params: unknown[] } | { ok: false; errors: Array<string | null> };
+export type FormResult = { ok: true; params: unknown[] } | { ok: false; errors: Array<string | null>; error?: string };
 
 /**
  * The parameters a form holds: each field read and checked (`errors[i]` says what is wrong with field `i`, `null` when
- * nothing is); optional fields left out at the end are dropped, and one may be left out only when every field after it
- * is too.
+ * nothing is; no field longer than {@link MAX_PARAMS_CHARS}); optional fields left out at the end are dropped, and one
+ * may be left out only when every field after it is too. The parameters as a whole are held to the same bounds as the
+ * JSON text ({@link checkParams}; `error` says why they are not).
  */
 export function paramsFromFields(specs: readonly ParamSpec[], values: readonly FieldValue[]): FormResult {
   const read = specs.map((s, i) => readField(s, values[i] ?? { kind: "text", text: "" }));
@@ -294,7 +306,9 @@ export function paramsFromFields(specs: readonly ParamSpec[], values: readonly F
     if (r.ok && r.omitted && i < last) errors[i] = `${specs[i]!.name}: needed when a later parameter is given`;
   });
   if (errors.some((e) => e !== null)) return { ok: false, errors };
-  return { ok: true, params: read.slice(0, last + 1).map((r) => (r.ok ? r.value : undefined)) };
+  const params = read.slice(0, last + 1).map((r) => (r.ok ? r.value : undefined));
+  const wrong = checkParams(params);
+  return wrong === null ? { ok: true, params } : { ok: false, errors, error: wrong };
 }
 
 // ── Requests and answers ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -321,20 +335,60 @@ export function nestingDepth(value: unknown): number {
   return deepest;
 }
 
-/** `text`, or its first {@link MAX_SHOWN_CHARS} characters and its length when it is longer. */
-function shown(text: string): string {
+/** `text`, or its first {@link MAX_SHOWN_CHARS} characters and its length when it is longer: every text the tab
+ *  shows (a request, its `curl` line, an answer) goes through it. */
+export function shownText(text: string): string {
   return text.length <= MAX_SHOWN_CHARS ? text : `${text.slice(0, MAX_SHOWN_CHARS)}… (cut: ${text.length.toLocaleString("en-US")} characters in all)`;
+}
+const shown = shownText;
+
+/** A message about text the tab could not use, at most 512 characters (a parser's message may quote the text). */
+const message = (text: string): string => (text.length <= 512 ? text : `${text.slice(0, 511)}…`);
+
+/**
+ * Why the tab cannot send `params`, or `null` when it can: nested deeper than {@link MAX_PARAMS_DEPTH}, longer than
+ * {@link MAX_PARAMS_CHARS} as JSON, or not writable as JSON. The one check of parameters, whatever made them (the JSON
+ * text, the form), before they are put in the form, in the JSON text or in a request. Never throws.
+ */
+export function checkParams(params: unknown): string | null {
+  if (nestingDepth(params) > MAX_PARAMS_DEPTH) return `the parameters nest deeper than ${MAX_PARAMS_DEPTH} levels`;
+  let text: string | undefined;
+  try {
+    text = JSON.stringify(params);
+  } catch (e) {
+    return message(`the parameters could not be written as JSON: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (text !== undefined && text.length > MAX_PARAMS_CHARS) return `the parameters are longer than ${MAX_PARAMS_CHARS} characters`;
+  return null;
+}
+
+/**
+ * The parameters written as JSON (empty: none, `undefined`), checked as the tab checks every parameters: no longer than
+ * {@link MAX_PARAMS_CHARS} characters, JSON, and {@link checkParams}. Never throws.
+ */
+export function paramsOfText(text: string): { ok: true; params: unknown } | { ok: false; error: string } {
+  if (text.length > MAX_PARAMS_CHARS) return { ok: false, error: `the parameters are longer than ${MAX_PARAMS_CHARS} characters` };
+  if (text.trim() === "") return { ok: true, params: undefined };
+  let params: unknown;
+  try {
+    params = JSON.parse(text) as unknown;
+  } catch (e) {
+    return { ok: false, error: message(`the parameters are not JSON: ${e instanceof Error ? e.message : String(e)}`) };
+  }
+  const wrong = checkParams(params);
+  return wrong === null ? { ok: true, params } : { ok: false, error: wrong };
 }
 
 /**
  * The JSON-RPC 2.0 request for `method` with `params` (`undefined`: no `params` member): its body (compact JSON, what the
- * engine receives) and its text (indented, cut at {@link MAX_SHOWN_CHARS}). Parameters nested deeper than
- * {@link MAX_PARAMS_DEPTH}, or anything that cannot be written as JSON, make no request. Never throws.
+ * engine receives) and its text (indented, cut at {@link MAX_SHOWN_CHARS}). Parameters the tab cannot send
+ * ({@link checkParams}) make no request. Never throws.
  */
 export function requestFor(id: number, method: string, params: unknown): BuiltRequest {
   const request: Record<string, unknown> = { jsonrpc: "2.0", id, method };
   if (params !== undefined) {
-    if (nestingDepth(params) > MAX_PARAMS_DEPTH) return { ok: false, error: `the parameters nest deeper than ${MAX_PARAMS_DEPTH} levels` };
+    const wrong = checkParams(params);
+    if (wrong !== null) return { ok: false, error: wrong };
     request.params = params;
   }
   try {
@@ -345,23 +399,16 @@ export function requestFor(id: number, method: string, params: unknown): BuiltRe
 }
 
 /**
- * The JSON-RPC 2.0 request for `method` with its parameters written as JSON (empty: no `params` member). Parameters that
- * are not JSON or longer than {@link MAX_PARAMS_CHARS} make no request; see {@link requestFor}. Never throws.
+ * The JSON-RPC 2.0 request for `method` with its parameters written as JSON (empty: no `params` member), checked by
+ * {@link paramsOfText}. Never throws.
  */
 export function buildRequest(id: number, method: string, paramsText: string): BuiltRequest {
-  if (paramsText.length > MAX_PARAMS_CHARS) return { ok: false, error: `the parameters are longer than ${MAX_PARAMS_CHARS} characters` };
-  if (paramsText.trim() === "") return requestFor(id, method, undefined);
-  let params: unknown;
-  try {
-    params = JSON.parse(paramsText) as unknown;
-  } catch (e) {
-    return { ok: false, error: `the parameters are not JSON: ${e instanceof Error ? e.message : String(e)}` };
-  }
-  return requestFor(id, method, params);
+  const read = paramsOfText(paramsText);
+  return read.ok ? requestFor(id, method, read.params) : { ok: false, error: read.error };
 }
 
 /** The `curl` command that sends the request `body` to Node's `npm run evm-rpc` at `url` (the body single-quoted for a
- *  POSIX shell). */
+ *  POSIX shell; each `'` takes four characters, so the tab shows it through {@link shownText}). */
 export function curlCommand(body: string, url: string = NODE_EVM_RPC_URL): string {
   return `curl -s -X POST -H 'Content-Type: application/json' --data '${body.replaceAll("'", "'\\''")}' ${url}`;
 }
@@ -390,8 +437,11 @@ export interface TreeNode {
   /** The member's name or the item's index (`null` for the root). */
   key: string | null;
   kind: "object" | "array" | "string" | "number" | "boolean" | "null";
-  /** A scalar's text (a string as it is, without quotes; `""` for an object or an array). */
+  /** A scalar's text (a string as it is, without quotes, its first {@link MAX_LEAF_CHARS} characters while the tree's
+   *  {@link MAX_SHOWN_CHARS} last; `""` for an object or an array). */
   text: string;
+  /** The characters of a string left out of `text` (the text view has them, up to its own bound). */
+  cut: number;
   /** A quantity's value in decimal, else `null`. */
   decimal: string | null;
   children: TreeNode[];
@@ -403,6 +453,10 @@ export interface TreeNode {
 
 /** The most nodes an answer's tree holds; the text view holds the rest. */
 export const MAX_TREE_NODES = 2_000;
+/** The most characters of one string an answer's tree shows (all its strings together: {@link MAX_SHOWN_CHARS}). */
+export const MAX_LEAF_CHARS = 4_096;
+/** The most characters of a member's name the tree shows. */
+const MAX_KEY_CHARS = 256;
 
 /** A quantity worth a decimal: canonical hex of at most 16 digits (hashes, addresses and blooms are longer). */
 const QUANTITY = /^0x(?:0|[1-9a-fA-F][0-9a-fA-F]{0,15})$/;
@@ -418,7 +472,8 @@ const transactionCalls = (v: string): NextCall[] => [
 function nextCalls(value: string, key: string | null, holder: Record<string, unknown> | null, arrayKey: string | null, rootOf: string | null): NextCall[] {
   if (rootOf === "eth_blockNumber") return QUANTITY.test(value) ? [blockByNumber(value)] : [];
   if (key === "number" || key === "blockNumber") return QUANTITY.test(value) ? [blockByNumber(value)] : [];
-  if (!HEX32.test(value)) return [];
+  // No block or transaction has the all-zero hash (Node writes it for the genesis block's parent): it opens nothing.
+  if (!HEX32.test(value) || /^0x0{64}$/.test(value)) return [];
   if (key === "blockHash" || key === "parentHash") return [blockByHash(value)];
   if (key === "transactionHash") return transactionCalls(value);
   if (key === "hash" && holder !== null) {
@@ -431,10 +486,12 @@ function nextCalls(value: string, key: string | null, holder: Record<string, unk
 
 /** The tree of a JSON answer `body` (already parsed) to a call of `method`: the `result` member is the method's value. */
 export function answerTree(body: unknown, method: string): TreeNode {
-  const leaf = (key: string | null): TreeNode => ({ key, kind: "null", text: "null", decimal: null, children: [], more: 0, next: [] });
-  // Iterative, so an answer nested as deep as JSON allows never overflows the stack; at most MAX_TREE_NODES nodes.
+  const leaf = (key: string | null): TreeNode => ({ key: key !== null && key.length > MAX_KEY_CHARS ? `${key.slice(0, MAX_KEY_CHARS)}…` : key, kind: "null", text: "null", decimal: null, cut: 0, children: [], more: 0, next: [] });
+  // Iterative, so an answer nested as deep as JSON allows never overflows the stack; at most MAX_TREE_NODES nodes, and
+  // at most MAX_SHOWN_CHARS characters of strings, in the order they are drawn.
   const root = leaf(null);
   let made = 1;
+  let budget = MAX_SHOWN_CHARS;
   const stack: Array<{ value: unknown; node: TreeNode; holder: Record<string, unknown> | null; arrayKey: string | null; rootOf: string | null }> = [
     { value: body, node: root, holder: null, arrayKey: null, rootOf: null },
   ];
@@ -463,7 +520,10 @@ export function answerTree(body: unknown, method: string): TreeNode {
     }
     if (typeof value === "string") {
       node.kind = "string";
-      node.text = value;
+      const keep = Math.min(value.length, MAX_LEAF_CHARS, budget);
+      budget -= keep;
+      node.text = value.slice(0, keep);
+      node.cut = value.length - keep;
       node.decimal = QUANTITY.test(value) ? BigInt(value).toString(10) : null;
       node.next = nextCalls(value, node.key, holder, arrayKey, rootOf);
     } else if (typeof value === "number" || typeof value === "boolean") {

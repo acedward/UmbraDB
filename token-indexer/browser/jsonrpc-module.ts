@@ -10,11 +10,15 @@
  *   Node. Every indexer request first waits for its turn in the endpoint's pacing queue (`pacing-queue.ts`; in the
  *   engine the one queue of that origin, shared with the archive sync, so the worker as a whole starts at most one
  *   request every 250 ms on a public endpoint) and only then starts, with its own timeout (Node's, 20 s), so waiting
- *   never uses up a request's time. An answer `429` holds the queue for its `Retry-After` (1 s without one): no request
- *   to that origin starts before then; the request itself is answered as Node answers it (`-32603`).
+ *   never uses up a request's time. An answer `429` holds the queue for its `Retry-After` (1 s without one, 60 s at
+ *   most, `MAX_HOLD_MS`): no request to that origin starts before then, while a caller that stops (the archive sync's
+ *   run, a request of the module that ends) leaves its place at once; the request itself is answered as Node answers
+ *   it (`-32603`).
  * - **Bounds**: at most {@link JSONRPC_MAX_REQUESTS} requests are answered at once; another one is refused at once
- *   ({@link JsonRpcModuleError} `busy`), never answered with an error of the module's own. A batch dispatches at most
- *   8 entries at a time, so at most 64 of its indexer requests ever wait for their turn.
+ *   ({@link JsonRpcModuleError} `busy`), never answered with an error of the module's own. At most
+ *   {@link JSONRPC_INDEXER_SLOTS} of the module's indexer requests wait for their turn in the origin's queue or are in
+ *   flight at once; the others (8 requests, a batch dispatching 8 entries at a time) wait in the module, so a burst of
+ *   calls never fills the queue ahead of the archive sync.
  * - **The `evm_rpc` database** is a PGlite database in memory, made by the module's own migrations
  *   (`src/postgres/migrations/evm_rpc`) when the module starts and closed when it stops. It is empty: the wallet monitor
  *   and the relayer that fill it in Node do not run here, so its methods answer as an empty Node deployment does.
@@ -25,7 +29,7 @@
  */
 import type { Sql } from "postgres";
 import { defaultMinIntervalMs, parseRetryAfterMs } from "../../chain-archive-sync/polite-http.js";
-import { BATCH_CONCURRENCY, handleHttpRequest, type HttpAnswer, textBody } from "../../evm-rpc/handler.js";
+import { handleHttpRequest, type HttpAnswer, textBody } from "../../evm-rpc/handler.js";
 import { IndexerGqlClient } from "../../evm-rpc/indexer-gql.js";
 import { registerReadOnlyMethods } from "../../evm-rpc/read-only.js";
 import { PostgresEvmRpcReader } from "../../evm-rpc/reader.js";
@@ -41,6 +45,49 @@ export const JSONRPC_CHAIN_ID = 2400n;
 
 /** The most requests the module answers at once. */
 export const JSONRPC_MAX_REQUESTS = 8;
+/** The most indexer requests of the module waiting for their turn in the origin's queue or in flight at once. */
+export const JSONRPC_INDEXER_SLOTS = 8;
+
+/** At most `n` holders at once, the others waiting in arrival order; a wait ends at once when its signal does. */
+class Slots {
+  #free: number;
+  readonly #waiting: Array<{ resolve: () => void; signal: AbortSignal; onAbort: () => void }> = [];
+
+  constructor(n: number) {
+    this.#free = n;
+  }
+
+  acquire(signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return Promise.reject(signal.reason);
+    if (this.#free > 0) {
+      this.#free--;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve, reject) => {
+      const waiter = {
+        resolve,
+        signal,
+        onAbort: (): void => {
+          const at = this.#waiting.indexOf(waiter);
+          if (at >= 0) this.#waiting.splice(at, 1);
+          reject(signal.reason);
+        },
+      };
+      signal.addEventListener("abort", waiter.onAbort, { once: true });
+      this.#waiting.push(waiter);
+    });
+  }
+
+  release(): void {
+    const next = this.#waiting.shift();
+    if (next === undefined) {
+      this.#free++;
+      return;
+    }
+    next.signal.removeEventListener("abort", next.onAbort);
+    next.resolve();
+  }
+}
 
 /** How long a `429` without `Retry-After` holds the endpoint's queue (the sync's first back-off). */
 export const THROTTLE_HOLD_MS = 1_000;
@@ -114,7 +161,7 @@ export async function startJsonRpcModule(opts: JsonRpcModuleOptions): Promise<Js
   // Aborted when the module stops: ends the waits for a turn and the indexer requests in flight.
   const stopping = new AbortController();
   const ownTurns = opts.pacer === undefined
-    ? new PacingQueue({ minIntervalMs: opts.minIntervalMs ?? defaultMinIntervalMs(opts.indexerUrl), maxWaiting: JSONRPC_MAX_REQUESTS * BATCH_CONCURRENCY })
+    ? new PacingQueue({ minIntervalMs: opts.minIntervalMs ?? defaultMinIntervalMs(opts.indexerUrl), maxWaiting: JSONRPC_INDEXER_SLOTS })
     : undefined;
   const turns = opts.pacer ?? ownTurns!;
   const base = opts.fetch ?? globalThis.fetch.bind(globalThis);
@@ -127,17 +174,23 @@ export async function startJsonRpcModule(opts: JsonRpcModuleOptions): Promise<Js
   })();
   let problem: { at: number; message: string } | null = null;
   const now = opts.now ?? Date.now;
+  // A slot is taken before the turn (`beforeRequest`) and given back when the request has its answer or has failed.
+  const slots = new Slots(JSONRPC_INDEXER_SLOTS);
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    let response: Response;
     try {
-      response = await base(input, { ...init, signal: init?.signal == null ? stopping.signal : AbortSignal.any([init.signal, stopping.signal]) });
-    } catch (e) {
-      if (!stopping.signal.aborted) problem = { at: now(), message: `a request to ${origin} failed: ${e instanceof Error ? e.message : String(e)}` };
-      throw e;
+      let response: Response;
+      try {
+        response = await base(input, { ...init, signal: init?.signal == null ? stopping.signal : AbortSignal.any([init.signal, stopping.signal]) });
+      } catch (e) {
+        if (!stopping.signal.aborted) problem = { at: now(), message: `a request to ${origin} failed: ${e instanceof Error ? e.message : String(e)}` };
+        throw e;
+      }
+      if (response.status === 429) turns.holdFor(parseRetryAfterMs(response.headers.get("retry-after")) ?? THROTTLE_HOLD_MS);
+      if (!response.ok) problem = { at: now(), message: `${origin} answered HTTP ${response.status}` };
+      return response;
+    } finally {
+      slots.release();
     }
-    if (response.status === 429) turns.holdFor(parseRetryAfterMs(response.headers.get("retry-after")) ?? THROTTLE_HOLD_MS);
-    if (!response.ok) problem = { at: now(), message: `${origin} answered HTTP ${response.status}` };
-    return response;
   }) as typeof fetch;
   const ctx: RpcContext = {
     chainId: opts.chainId ?? JSONRPC_CHAIN_ID,
@@ -146,7 +199,15 @@ export async function startJsonRpcModule(opts: JsonRpcModuleOptions): Promise<Js
       url: opts.indexerUrl,
       fetchImpl,
       ...(opts.indexerTimeoutMs === undefined ? {} : { timeoutMs: opts.indexerTimeoutMs }),
-      beforeRequest: () => turns.admit(stopping.signal),
+      beforeRequest: async () => {
+        await slots.acquire(stopping.signal);
+        try {
+          await turns.admit(stopping.signal);
+        } catch (e) {
+          slots.release();
+          throw e;
+        }
+      },
     }),
     db: new PostgresEvmRpcReader(sql as unknown as Sql<{ bigint: bigint }>),
   };

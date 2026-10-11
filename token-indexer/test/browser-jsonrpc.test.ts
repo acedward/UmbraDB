@@ -15,6 +15,9 @@
  * - `[[browser.jsonrpc.pacing-queue]]` — the module's pacing queue, on a test clock: callers admitted one at a time in
  *   arrival order, the interval apart; a burst beyond its bound refused at once; a cancelled wait gives up its place
  *   and the next caller moves up; closing it ends every wait.
+ * - `[[browser.pacing.hold]]` — the pacing queue on a test clock: a hold lasts at most 60 s whatever an endpoint asks;
+ *   a wait its caller cancels during a hold (the archive sync's `Pacer.wait` with its run's signal) leaves at once and
+ *   never starts; the other callers start when the hold ends; an already-ended signal is refused at once.
  * - `[[browser.jsonrpc.burst]]` — a burst of requests whose indexer calls wait far longer than the indexer timeout for
  *   their pacing slots (8 batches of 8 at 30 ms apart, against a 200 ms timeout): every answer is Node's, every indexer
  *   request starts with a live timeout, the starts the interval apart; a request beyond the module's 8 in flight is
@@ -33,14 +36,19 @@
  *   optional field is left out only after the last one given); the search keeps the methods holding every word; the
  *   `curl` command, run by a POSIX shell, sends exactly the request (quotes, `$(…)`, backticks and line breaks in it
  *   included); the answer tree of Node's answers shows quantities in decimal, and its block numbers, block hashes and
- *   transaction hashes open the calls that read them (and nothing else does), bounded in nodes; the URL's view and
+ *   transaction hashes open the calls that read them (and nothing else does, the all-zero hash of the genesis block's
+ *   parent among them), bounded in nodes; the URL's view and
  *   method keep the shell's tab and the explorer's fragment; the history keeps the newest calls, at most 50, and what
  *   is read back from storage is checked.
  * - `[[browser.jsonrpc.status-model]]` — the status view's figures and the strip, each from its field of the engine's
  *   `jsonrpc-state` answer.
  * - `[[browser.jsonrpc.model-bounds]]` — parameters the tab cannot send or show are refused with a message, never an
  *   exception: nesting deeper than the bound (also deep enough to break serialization), and parameters whose indented
- *   text would be too long to show; an answer too long to show is shown cut, with its length.
+ *   text would be too long to show; an answer too long to show is shown cut, with its length. One check of the
+ *   parameters (their JSON's length and depth) comes before any conversion between the JSON text and the form and
+ *   before any request: a form holding parameters longer than the JSON text may be is refused, and parameters nested
+ *   too deep never reach the form (putting them in it never throws). Every text shown is bounded: the request, its
+ *   `curl` line, the answer's text and each string of its tree (and all of them together).
  * - `[[browser.host.jsonrpc]]` — the worker host answers `jsonrpc` with Node's answers while the module is on (by
  *   default), making the module's database at the first request; `module` `jsonrpc` off is saved first, then requests
  *   are refused `module-off` and the module's database is closed; on again, a new one answers; the token indexer's
@@ -54,7 +62,20 @@
  *   call, open after it), the methods' counts (the registry's and the Node-only list's), the chain ID, client version
  *   and indexer the worker was given, the calls answered, in flight, refused busy, refused off and failed (each counted
  *   as it happens), the indexer origin's pacing queue (its interval, the requests waiting, a Retry-After hold), and the
- *   last error (a failed start, an indexer that answers an HTTP error, kept when the module stops).
+ *   last error (a failed start, an indexer that answers an HTTP error, kept when the module stops); while the store is
+ *   replaced (a `range`), it is answered as a call is, once the new store is in place, never `boot-failed`.
+ * - `[[browser.host.stop-during-hold]]` — a `Retry-After` hold on the indexer's origin (a `429` to the module; 600 s
+ *   asked, 60 s held) while the engine's sync waits there for its turn: the stop is answered at once, the sync's wait
+ *   leaves the queue, and its request is never made, also after the hold; the module's switch and the worker's close
+ *   are answered at once too.
+ * - `[[browser.host.stop-during-burst]]` — a burst of JSON-RPC calls (8 batches of 8 indexer-backed calls) puts at most
+ *   8 of the module's indexer requests in the origin's queue beside the sync's; a stop then is prompt; every call is
+ *   answered as Node answers it.
+ * - `[[browser.host.jsonrpc-start-bounded]]` — while the module's start is held, 8 `jsonrpc` requests are admitted and
+ *   every further one is refused `busy` at once; each slot is held until its answer; once started, the 8 are answered
+ *   as Node answers them.
+ * - `[[browser.host.settings-module-bound]]` — settings naming 64 modules this build does not know: a switch saves at
+ *   most 64 ids (this build's first, the oldest unknown dropped), so the next worker still reads the settings.
  * - `[[browser.host.jsonrpc-restored]]` — the switch lives in the settings: a new host on them (a reload, the next
  *   worker or leader tab) refuses while it is off and answers once on; a store replaced by `range`, `reset` or
  *   `import` keeps it off.
@@ -88,16 +109,19 @@ import {
   MAX_PARAMS_CHARS,
   MAX_PARAMS_DEPTH,
   MAX_SHOWN_CHARS,
+  MAX_LEAF_CHARS,
   MAX_TREE_NODES,
   METHOD_GROUPS,
   methodRows,
   NODE_EVM_RPC_URL,
   outcomeOf,
   paramsFromFields,
+  paramsOfText,
   parseHistory,
   registryMethods,
   requestFor,
   rpcRouteOf,
+  shownText,
   statusFigures,
   stripParts,
   type TreeNode,
@@ -106,7 +130,7 @@ import {
 } from "../browser/jsonrpc-model.ts";
 import { defaultMinIntervalMs } from "../../chain-archive-sync/polite-http.js";
 import { JSONRPC_CHAIN_ID, JSONRPC_MAX_REQUESTS, jsonRpcClientVersion, type JsonRpcModule, JsonRpcModuleError, type JsonRpcModuleOptions, openEvmRpcDatabase, startJsonRpcModule } from "../browser/jsonrpc-module.ts";
-import { PacingQueue, QueueFullError } from "../browser/pacing-queue.ts";
+import { MAX_HOLD_MS, PacingQueue, type PacingClock, QueueFullError } from "../browser/pacing-queue.ts";
 import type { WorkerHost } from "../browser/host.ts";
 import { type ApiResult, type ExportResult, type HostStatus, JSONRPC_MAX_BODY_CHARS, type JsonRpcStateResult, JsonRpcStateResultSchema, parseRequest, PROTOCOL_VERSION, type Response as HostResponse, type StartConfig } from "../browser/protocol.ts";
 import { type EngineSettingsStore, memorySettingsStore } from "../browser/settings.ts";
@@ -252,34 +276,14 @@ describe("the browser engine's JSON RPC module", () => {
   }, 60_000);
 
   it("[[browser.jsonrpc.pacing-queue]] FIFO admission the interval apart on a test clock; a burst beyond the bound refused; a cancelled wait gives up its place; close ends every wait", async () => {
-    let now = 0;
-    let nextTimer = 1;
-    const timers = new Map<number, { at: number; fn: () => void }>();
-    const clock = {
-      now: () => now,
-      setTimer: (fn: () => void, ms: number): number => { const id = nextTimer++; timers.set(id, { at: now + ms, fn }); return id; },
-      clearTimer: (id: unknown): void => { timers.delete(id as number); },
-    };
-    const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
-    /** Runs the timers due within `ms`, in order, letting the admitted callers run after each. */
-    const advance = async (ms: number): Promise<void> => {
-      const end = now + ms;
-      for (;;) {
-        const due = [...timers.entries()].filter(([, t]) => t.at <= end).sort((x, y) => x[1].at - y[1].at)[0];
-        if (due === undefined) break;
-        now = due[1].at;
-        timers.delete(due[0]);
-        due[1].fn();
-        await settle();
-      }
-      now = end;
-      await settle();
-    };
+    const t = testClock();
+    const { clock, settle, advance, timers } = t;
+    const now = (): number => t.now;
 
     const q = new PacingQueue({ minIntervalMs: 250, maxWaiting: 64, clock });
     const admittedAt = new Map<number, number>();
     const refused: number[] = [];
-    const waits = Array.from({ length: 100 }, (_, i) => q.admit().then(() => { admittedAt.set(i, now); }, (e: unknown) => {
+    const waits = Array.from({ length: 100 }, (_, i) => q.admit().then(() => { admittedAt.set(i, now()); }, (e: unknown) => {
       expect(e).toBeInstanceOf(QueueFullError);
       refused.push(i);
     }));
@@ -297,9 +301,9 @@ describe("the browser engine's JSON RPC module", () => {
     // A cancelled wait gives up its place: the caller after it is admitted in its slot.
     const order: string[] = [];
     const c = new AbortController();
-    const first = q.admit().then(() => order.push(`a@${now}`));
+    const first = q.admit().then(() => order.push(`a@${now()}`));
     const second = q.admit(c.signal).then(() => order.push("b"), (e: unknown) => order.push(`b: ${(e as Error).message}`));
-    const third = q.admit().then(() => order.push(`c@${now}`));
+    const third = q.admit().then(() => order.push(`c@${now()}`));
     await settle();
     expect(q.waiting).toBe(3);
     c.abort(new Error("cancelled"));
@@ -318,6 +322,43 @@ describe("the browser engine's JSON RPC module", () => {
     expect(await Promise.all(pending)).toEqual(["admitted", "stopped", "stopped"]);
     await expect(q.admit()).rejects.toThrow("stopped");
     expect(timers.size).toBe(0);
+  });
+
+  it("[[browser.pacing.hold]] a hold lasts at most 60 s whatever an endpoint asks; a wait its caller cancels during a hold leaves at once and never starts, the others start when the hold ends", async () => {
+    const t = testClock();
+    const { clock, settle, advance } = t;
+    expect(MAX_HOLD_MS).toBe(60_000);
+    const q = new PacingQueue({ minIntervalMs: 250, clock });
+    // Retry-After: 600 asks for ten minutes: the queue holds for 60 s.
+    q.holdFor(600_000);
+    expect(q.state()).toEqual({ minIntervalMs: 250, waiting: 0, heldForMs: 60_000 });
+    const order: string[] = [];
+    const stop = new AbortController();
+    // The archive sync's wait (`Pacer.wait`) with its run's signal, and a caller without one.
+    const sync = q.wait(stop.signal).then(() => order.push(`sync@${t.now}`), (e: unknown) => order.push(`sync: ${(e as Error).message} @${t.now}`));
+    const other = q.wait().then(() => order.push(`other@${t.now}`));
+    await settle();
+    expect(q.waiting).toBe(2);
+    await advance(10_000);
+    stop.abort(new Error("stopped"));
+    await settle();
+    expect(order).toEqual(["sync: stopped @10000"]);
+    expect(q.waiting).toBe(1);
+    // The others keep their turn: the hold ends at 60 s, not earlier and not later.
+    await advance(49_999);
+    expect(order).toEqual(["sync: stopped @10000"]);
+    await advance(1);
+    await Promise.all([sync, other]);
+    expect(order).toEqual(["sync: stopped @10000", "other@60000"]);
+    // A later, shorter hold changes nothing; a longer one is cut at 60 s from its start too.
+    q.holdFor(5_000);
+    q.holdFor(1_000);
+    expect(q.state().heldForMs).toBe(5_000);
+    q.holdFor(Number.MAX_SAFE_INTEGER);
+    expect(q.state().heldForMs).toBe(60_000);
+    // A caller whose signal has already ended is refused without waiting.
+    await expect(q.wait(AbortSignal.abort(new Error("gone")))).rejects.toThrow("gone");
+    q.close(new Error("closed"));
   });
 
   it("[[browser.jsonrpc.burst]] indexer calls waiting far beyond the indexer timeout for their slots: every answer Node's, every start with a live timeout, the interval apart; beyond 8 requests in flight refused busy", async () => {
@@ -448,6 +489,50 @@ describe("the browser engine's JSON RPC module", () => {
     const shown = answerText({ status: 200, body: long });
     expect(shown.text.length).toBeLessThanOrEqual(MAX_SHOWN_CHARS + 200);
     expect(shown.text).toMatch(/… \(cut: [\d,]+ characters in all\)$/);
+
+    // One check of the parameters before any conversion: the JSON text's length, its JSON, its depth.
+    const nested = `[{"x":${"[".repeat(10_000)}${"]".repeat(10_000)}}]`;
+    expect(paramsOfText(nested)).toEqual({ ok: false, error: `the parameters nest deeper than ${MAX_PARAMS_DEPTH} levels` });
+    expect(paramsOfText("[1,")).toMatchObject({ ok: false, error: expect.stringMatching(/^the parameters are not JSON: /) });
+    expect(paramsOfText(`[${" ".repeat(MAX_PARAMS_CHARS)}]`)).toEqual({ ok: false, error: `the parameters are longer than ${MAX_PARAMS_CHARS} characters` });
+    expect(paramsOfText(' [1, {"a": 2}] ')).toEqual({ ok: true, params: [1, { a: 2 }] });
+    expect(paramsOfText("  ")).toEqual({ ok: true, params: undefined });
+    // Values nested too deep never reach a field, and putting them in one never throws.
+    const object = [{ name: "transaction", kind: "object" as const }];
+    const deepValue = JSON.parse(nested.slice(1, -1)) as unknown;
+    expect(() => fieldsFromParams(object, [deepValue])).not.toThrow();
+    expect(paramsFromFields(object, fieldsFromParams(object, [deepValue]))).toMatchObject({ ok: false });
+    expect(() => fieldsFromParams([{ name: "data", kind: "data" }], [deepValue])).not.toThrow();
+    // A form's parameters are held to the JSON text's length: a field or the whole longer than it is refused.
+    const long400k = `0x${"aa".repeat(200_000)}`;
+    expect(paramsFromFields([{ name: "data", kind: "data" }], [{ kind: "text", text: long400k }])).toEqual({ ok: false, errors: [`data: longer than ${MAX_PARAMS_CHARS} characters`] });
+    const half = `0x${"aa".repeat(17_000)}`;
+    expect(paramsFromFields([{ name: "a", kind: "data" }, { name: "b", kind: "data" }], [{ kind: "text", text: half }, { kind: "text", text: half }])).toEqual({ ok: false, errors: [null, null], error: `the parameters are longer than ${MAX_PARAMS_CHARS} characters` });
+    expect(requestFor(1, "web3_sha3", [long400k])).toEqual({ ok: false, error: `the parameters are longer than ${MAX_PARAMS_CHARS} characters` });
+    const atBound = `0x${"aa".repeat((MAX_PARAMS_CHARS - 6) / 2)}`;
+    expect(JSON.stringify([atBound]).length).toBe(MAX_PARAMS_CHARS);
+    expect(requestFor(1, "web3_sha3", [atBound])).toMatchObject({ ok: true });
+    expect(paramsFromFields([{ name: "data", kind: "data" }], [{ kind: "text", text: atBound }])).toEqual({ ok: true, params: [atBound] });
+    expect(requestFor(1, "web3_sha3", [`${atBound}aa`])).toMatchObject({ ok: false });
+    // The curl line of a request at the bound whose quotes each take four characters: shown cut, copied whole.
+    const quotes = buildRequest(1, "eth_call", `["${"'".repeat(MAX_PARAMS_CHARS - 4)}"]`);
+    expect(quotes.ok).toBe(true);
+    if (quotes.ok) {
+      expect(curlCommand(quotes.body).length).toBeGreaterThan(4 * MAX_PARAMS_CHARS);
+      const line = shownText(curlCommand(quotes.body));
+      expect(line.length).toBeLessThanOrEqual(MAX_SHOWN_CHARS + 60);
+      expect(line).toMatch(/… \(cut: [\d,]+ characters in all\)$/);
+      expect(quotes.text.length).toBeLessThanOrEqual(MAX_SHOWN_CHARS + 60);
+    }
+    // Each string of an answer's tree: at most MAX_LEAF_CHARS, all of them together at most MAX_SHOWN_CHARS.
+    const tree = answerTree({ jsonrpc: "2.0", id: 1, result: ["x".repeat(1_000_000), ...Array.from({ length: 300 }, () => "y".repeat(5_000))] }, "eth_call");
+    const leaves = tree.children[2]!.children;
+    expect([leaves[0]!.text.length, leaves[0]!.cut]).toEqual([MAX_LEAF_CHARS, 1_000_000 - MAX_LEAF_CHARS]);
+    expect([leaves[1]!.text.length, leaves[1]!.cut]).toEqual([MAX_LEAF_CHARS, 5_000 - MAX_LEAF_CHARS]);
+    const total = leaves.reduce((a, l) => a + l.text.length, 0);
+    expect(total).toBeLessThanOrEqual(MAX_SHOWN_CHARS);
+    expect(leaves.every((l) => l.text.length + l.cut === (l === leaves[0] ? 1_000_000 : 5_000))).toBe(true);
+    expect(leaves.at(-1)).toMatchObject({ text: "", cut: 5_000 });
   });
 
   it("[[browser.jsonrpc.explorer-model]] the form gives back every example; each kind of field is checked; search, curl, the answer tree and its next calls, the URL and the history", async () => {
@@ -563,6 +648,10 @@ describe("the browser engine's JSON RPC module", () => {
     expect(receipt["/result/transactionHash"]).toEqual([`open transaction: eth_getTransactionByHash ["${tx0}"]`, `open receipt: eth_getTransactionReceipt ["${tx0}"]`]);
     expect(receipt["/result/blockHash"]).toEqual([`open block: eth_getBlockByHash ["${blockHash}",false]`]);
     expect(receipt["/result/blockNumber"]).toEqual(['open block: eth_getBlockByNumber ["0x2a",false]']);
+    // The genesis block's parent hash (all zeros, which no block has) opens nothing.
+    const genesis = links(answerTree(await nodeAnswer("eth_getBlockByNumber", ["0x0", false]), "eth_getBlockByNumber"));
+    expect(genesis["/result/parentHash"]).toBeUndefined();
+    expect(links(answerTree({ jsonrpc: "2.0", id: 1, result: { blockHash: `0x${"00".repeat(32)}`, transactionHash: `0x${"00".repeat(32)}`, transactionIndex: "0x0" } }, "eth_getTransactionReceipt"))).toEqual({});
     // A quantity that is not a block number opens nothing; a non-canonical one shows no decimal.
     expect(links(answerTree({ jsonrpc: "2.0", id: 1, result: "0x2a" }, "eth_gasPrice"))).toEqual({});
     expect(answerTree({ jsonrpc: "2.0", id: 1, result: "0x002a" }, "eth_blockNumber").children[2]).toMatchObject({ decimal: null, next: [] });
@@ -959,6 +1048,164 @@ describe("the browser engine's JSON RPC module", () => {
     }
   }, 120_000);
 
+  it("[[browser.host.stop-during-hold]] a Retry-After hold on the indexer's origin (60 s at most) never holds a stop, the module's switch or the worker's close: the sync's wait for its turn ends at once and its request is never made", async () => {
+    const replay = createTapeReplay(await loadTape("u1", fileFetch()));
+    const indexerOrigin = new URL(BROWSER_INDEXER_URL).origin;
+    const fetches: Array<{ who: "sync" | "jsonrpc"; at: number }> = [];
+    let retryAfter = "3";
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      const body = await request.text();
+      // The module's queries select the block's author or look a transaction up; the sync's do neither.
+      const who = url.origin === indexerOrigin && (body.includes("author") || body.includes("transactions(offset")) ? "jsonrpc" : "sync";
+      if (url.origin === indexerOrigin) fetches.push({ who, at: performance.now() });
+      if (who === "jsonrpc") return new Response("slow down", { status: 429, headers: { "retry-after": retryAfter } });
+      const a = await replay.answer(`${url.origin}${url.pathname}`.replace(/\/$/, "") === BROWSER_NODE_URL ? "/rpc" : "/graphql", body);
+      return new Response(a.body, { status: a.status, headers: a.headers });
+    }) as typeof fetch;
+    const { host } = jsonRpcHost(memorySettingsStore(), counted(), { nodeUrl: BROWSER_NODE_URL, indexerUrl: BROWSER_INDEXER_URL, fetch: fetchImpl });
+    const state = (): Promise<JsonRpcStateResult> => ok<JsonRpcStateResult>(host, "jsonrpc-state");
+    const untilWaiting = async (): Promise<void> => {
+      for (const end = Date.now() + 10_000; (await state()).pacing.waiting === 0; ) {
+        if (Date.now() > end) throw new Error("timed out waiting for the sync's request to wait for its turn");
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    };
+    /** A stop, with how long it took (or "still stopping" after 5 s). */
+    const timedStop = async (): Promise<number | "still stopping"> => {
+      const t0 = performance.now();
+      const stopped = ok<HostStatus>(host, "stop").then(() => performance.now() - t0);
+      return Promise.race([stopped, new Promise<"still stopping">((r) => setTimeout(() => r("still stopping"), 5_000))]);
+    };
+    const config = { startHeight: U1.from, endHeight: U1.from + 3, sync: { idleMs: 100 }, scan: { idleMs: 100 } };
+    const blockNumber = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_blockNumber" });
+    let closed = false;
+    try {
+      // A 429 with Retry-After: 3 to the module holds the indexer's origin for 3 s.
+      expect(JSON.parse(((await jsonrpc(host, blockNumber)) as ApiResult).body)).toMatchObject({ error: { code: -32603 } });
+      expect((await state()).pacing.heldForMs).toBeGreaterThan(2_000);
+      // The engine starts; its indexer request waits for the origin's turn; the stop ends that wait at once.
+      await ok(host, "start", { config });
+      await untilWaiting();
+      const stopAt = performance.now();
+      const took = await timedStop();
+      expect(took).toBeLessThan(1_500);
+      expect((await state()).pacing.waiting).toBe(0);
+      expect((await ok<HostStatus>(host, "status")).engine?.status.sync.phase).not.toBe("running");
+      // The hold ends: the request the sync had queued is never made.
+      for (const end = Date.now() + 10_000; (await state()).pacing.heldForMs > 0; ) {
+        if (Date.now() > end) throw new Error("timed out waiting for the hold to end");
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      await new Promise((r) => setTimeout(r, 500));
+      expect(fetches.filter((f) => f.who === "sync" && f.at >= stopAt)).toEqual([]);
+
+      // Retry-After: 600 holds the origin for 60 s at most; a stop is as prompt.
+      retryAfter = "600";
+      await jsonrpc(host, blockNumber);
+      const held = (await state()).pacing.heldForMs;
+      expect(held).toBeGreaterThan(55_000);
+      expect(held).toBeLessThanOrEqual(60_000);
+      await ok(host, "start", { config });
+      await untilWaiting();
+      // The module's switch, off and on, while the sync waits through the hold: answered at once.
+      for (const enabled of [false, true]) {
+        const t0 = performance.now();
+        await ok(host, "module", { module: "jsonrpc", enabled });
+        expect(performance.now() - t0, `module ${enabled ? "on" : "off"}`).toBeLessThan(1_500);
+      }
+      expect(await timedStop()).toBeLessThan(1_500);
+      expect((await state()).pacing.waiting).toBe(0);
+      // Closing the worker while the origin is held: prompt too.
+      await ok(host, "start", { config });
+      await untilWaiting();
+      const t1 = performance.now();
+      await host.close();
+      closed = true;
+      expect(performance.now() - t1).toBeLessThan(3_000);
+    } finally {
+      if (!closed) await host.close();
+    }
+  }, 60_000);
+
+  it("[[browser.host.stop-during-burst]] a burst of JSON-RPC calls puts at most 8 of the module's indexer requests in the origin's queue, and a stop of the sync while they wait is prompt; the calls are answered as Node", async () => {
+    const replay = createTapeReplay(await loadTape("u1", fileFetch()));
+    const indexerOrigin = new URL(BROWSER_INDEXER_URL).origin;
+    const recorded = recordedIndexerFetch().fetch;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      const body = await request.text();
+      if (url.origin === indexerOrigin && (body.includes("author") || body.includes("transactions(offset"))) return recorded(input, { ...init, body });
+      const a = await replay.answer(`${url.origin}${url.pathname}`.replace(/\/$/, "") === BROWSER_NODE_URL ? "/rpc" : "/graphql", body);
+      return new Response(a.body, { status: a.status, headers: a.headers });
+    }) as typeof fetch;
+    const { host } = jsonRpcHost(memorySettingsStore(), counted(), { nodeUrl: BROWSER_NODE_URL, indexerUrl: BROWSER_INDEXER_URL, fetch: fetchImpl });
+    const state = (): Promise<JsonRpcStateResult> => ok<JsonRpcStateResult>(host, "jsonrpc-state");
+    const batch = (n: number): string => JSON.stringify(Array.from({ length: 8 }, (_, i) => ({ jsonrpc: "2.0", id: n * 8 + i, method: "eth_blockNumber" })));
+    try {
+      // The module's start first, so the burst is all indexer requests.
+      await jsonrpc(host, CHAIN_ID);
+      await ok(host, "start", { config: { startHeight: U1.from, endHeight: U1.to, sync: { idleMs: 100 }, scan: { idleMs: 100 } } });
+      // 8 batches of 8 indexer-backed calls at once, 250 ms apart in the origin's queue: 64 requests, 16 s of turns.
+      const burst = Array.from({ length: 8 }, (_, n) => jsonrpc(host, batch(n)));
+      let most = 0;
+      for (const end = Date.now() + 1_500; Date.now() < end; ) {
+        most = Math.max(most, (await state()).pacing.waiting);
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      // The module's own indexer requests waiting for a turn: at most 8 (the sync's own on top).
+      expect(most).toBeGreaterThan(0);
+      expect(most).toBeLessThanOrEqual(8 + 4);
+      const t0 = performance.now();
+      await ok(host, "stop");
+      expect(performance.now() - t0).toBeLessThan(1_500);
+      for (const [n, a] of (await Promise.all(burst)).entries()) expect(asWire(a), `batch ${n}`).toEqual(await viaHttp(port, batch(n)));
+    } finally {
+      await host.close();
+    }
+  }, 120_000);
+
+  it("[[browser.host.jsonrpc-start-bounded]] while the module starts, 8 requests are admitted and each further one is refused busy at once; each slot is held until its answer", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const modules = counted();
+    const start = modules.start;
+    modules.start = async (o) => {
+      await gate;
+      return start(o);
+    };
+    const { host } = jsonRpcHost(memorySettingsStore(), modules);
+    const state = (): Promise<JsonRpcStateResult> => ok<JsonRpcStateResult>(host, "jsonrpc-state");
+    const chainId = (id: number): string => JSON.stringify({ jsonrpc: "2.0", id, method: "eth_chainId" });
+    /** The answer, or "still waiting" after 2 s. */
+    const within = <T>(p: Promise<T>): Promise<T | "still waiting"> => Promise.race([p, new Promise<"still waiting">((r) => setTimeout(() => r("still waiting"), 2_000))]);
+    try {
+      expect((await host.boot()).phase).toBe("ready");
+      const held = Array.from({ length: JSONRPC_MAX_REQUESTS }, (_, i) => jsonrpc(host, chainId(100 + i)));
+      for (const end = Date.now() + 10_000; (await state()).calls.inFlight < JSONRPC_MAX_REQUESTS; ) {
+        if (Date.now() > end) throw new Error("timed out waiting for the requests in flight");
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect((await state()).database).toBe("starting");
+      // The ninth, and twenty more: refused busy at once, none admitted.
+      expect(await within(jsonrpc(host, chainId(9)))).toMatchObject({ refused: "busy" });
+      const more = await within(Promise.all(Array.from({ length: 20 }, (_, i) => jsonrpc(host, chainId(200 + i)))));
+      expect(more === "still waiting" ? more : more.map((r) => ("refused" in r ? r.refused : "answered"))).toEqual(Array(20).fill("busy"));
+      expect((await state()).calls).toEqual({ answered: 0, inFlight: JSONRPC_MAX_REQUESTS, refusedBusy: 21, refusedOff: 0, failed: 0 });
+      // The start ends: the 8 are answered as Node answers them; a new request is admitted again.
+      release();
+      for (const [i, a] of (await Promise.all(held)).entries()) expect(asWire(a)).toEqual(await viaHttp(port, chainId(100 + i)));
+      expect((await state()).calls).toEqual({ answered: JSONRPC_MAX_REQUESTS, inFlight: 0, refusedBusy: 21, refusedOff: 0, failed: 0 });
+      expect(asWire(await jsonrpc(host, CHAIN_ID))).toEqual(await viaHttp(port, CHAIN_ID));
+      expect(modules.started).toBe(1);
+    } finally {
+      release();
+      await host.close();
+    }
+  }, 60_000);
+
   it("[[browser.host.jsonrpc-chain-id]] the module reports the chain ID the worker gives it (the build's), and Node's default without one", async () => {
     const given = jsonRpcHost(memorySettingsStore(), counted(), { jsonRpc: { clientVersion: CLIENT_VERSION, chainId: 2401n } });
     try {
@@ -1085,7 +1332,33 @@ describe("the browser engine's JSON RPC module", () => {
     } finally {
       await pub.host.close();
     }
-  }, 60_000);
+
+    // While the store is replaced (a range), the state is answered, as a call is: it waits for the new store.
+    const tape = jsonRpcHost(memorySettingsStore());
+    try {
+      await ok(tape.host, "start", { config: { source: { kind: "tape", range: "u1" }, startHeight: U1.from, sync: { idleMs: 100 }, scan: { idleMs: 100 } } });
+      await untilStatus(tape.host, "the U1 range", (st) => st.cursors?.scan?.nextHeight === U1.to + 1);
+      const answers: string[] = [];
+      let polling = true;
+      const poll = (async () => {
+        while (polling) {
+          const r = await send(tape.host, "jsonrpc-state");
+          answers.push(r.ok ? "state" : `${r.error.code}: ${r.error.message}`);
+          await new Promise((res) => setTimeout(res, 5));
+        }
+      })();
+      const replaced = ok<HostStatus>(tape.host, "range", { startHeight: U1.from + 10, endHeight: U1.to });
+      const call = jsonrpc(tape.host, CHAIN_ID);
+      await replaced;
+      polling = false;
+      await poll;
+      expect(asWire(await call)).toEqual(await viaHttp(port, CHAIN_ID));
+      expect(answers.length).toBeGreaterThan(1);
+      expect(answers.filter((a) => a !== "state")).toEqual([]);
+    } finally {
+      await tape.host.close();
+    }
+  }, 120_000);
 
   it("[[browser.host.settings-unknown-module]] settings naming a module this build does not know are read (the configuration kept, the known switches applied) and the unknown one written back; other fields keep their rules", async () => {
     const config: StartConfig = { source: { kind: "tape", range: "u1" }, startHeight: U1.from, endHeight: U1.from + 2 };
@@ -1105,6 +1378,45 @@ describe("the browser engine's JSON RPC module", () => {
     // A file whose other fields break their rules is still not read.
     expect(await memorySettingsStore({ config, autoStart: false, extra: 1 }).load()).toBeUndefined();
     expect(await memorySettingsStore({ config, autoStart: false, modules: { jsonrpc: "off" } }).load()).toBeUndefined();
+  }, 60_000);
+
+  it("[[browser.host.settings-module-bound]] settings naming 64 modules this build does not know: a switch is saved within the bound (the build's modules kept, the oldest unknown one dropped), so the next worker still reads the settings", async () => {
+    const config: StartConfig = { source: { kind: "tape", range: "u1" }, startHeight: U1.from, endHeight: U1.from + 2 };
+    const unknown = Object.fromEntries(Array.from({ length: 64 }, (_, i) => [`a-later-module-${i}`, i % 2 === 0]));
+    const settings = memorySettingsStore({ config, autoStart: false, modules: unknown });
+    expect(await settings.load()).toEqual({ config, autoStart: false, modules: unknown });
+    const { host } = jsonRpcHost(settings);
+    try {
+      expect((await host.boot()).phase).toBe("ready");
+      const on = await ok<HostStatus>(host, "module", { module: "jsonrpc", enabled: false });
+      const saved = await settings.load();
+      expect(saved).toBeDefined();
+      expect(saved!.config).toEqual(config);
+      expect(saved!.autoStart).toBe(false);
+      const ids = Object.keys(saved!.modules!);
+      expect(ids.length).toBe(64);
+      expect(ids[0]).toBe("jsonrpc");
+      expect(saved!.modules!.jsonrpc).toBe(false);
+      expect(ids).not.toContain("a-later-module-0");
+      expect(ids.slice(1)).toEqual(Array.from({ length: 63 }, (_, i) => `a-later-module-${i + 1}`));
+      expect(on.settings?.modules).toEqual(saved!.modules);
+      // The token indexer's switch too: both of the build's modules kept, the next oldest unknown one dropped.
+      await ok(host, "module", { module: "token-indexer", enabled: false });
+      const both = Object.keys((await settings.load())!.modules!);
+      expect([both.length, both.slice(0, 2).sort(), both.includes("a-later-module-1")]).toEqual([64, ["jsonrpc", "token-indexer"], false]);
+      expect(await jsonrpc(host, CHAIN_ID)).toMatchObject({ refused: "module-off" });
+    } finally {
+      await host.close();
+    }
+    // The next worker reads them: the switches hold.
+    const next = jsonRpcHost(settings);
+    try {
+      expect((await next.host.boot()).phase).toBe("ready");
+      expect((await ok<HostStatus>(next.host, "status")).settings?.config).toEqual(config);
+      expect(await jsonrpc(next.host, CHAIN_ID)).toMatchObject({ refused: "module-off" });
+    } finally {
+      await next.host.close();
+    }
   }, 60_000);
 
   it("[[browser.host.jsonrpc-restored]] the switch lives in the settings: a new host on them refuses while off and answers once on; range, reset and import keep it off", async () => {
@@ -1160,4 +1472,49 @@ async function until(cond: () => boolean, what: string, timeoutMs = 10_000): Pro
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
     await new Promise((r) => setTimeout(r, 10));
   }
+}
+
+/** A test clock for the pacing queue: its time moves only when `advance` runs the timers due, in order, letting the
+ *  admitted callers run after each. */
+interface TestClock {
+  now: number;
+  clock: PacingClock;
+  timers: Map<number, { at: number; fn: () => void }>;
+  settle(): Promise<void>;
+  advance(ms: number): Promise<void>;
+}
+function testClock(): TestClock {
+  let nextTimer = 1;
+  const timers = new Map<number, { at: number; fn: () => void }>();
+  const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+  const t: TestClock = {
+    now: 0,
+    timers,
+    clock: {
+      now: () => t.now,
+      setTimer: (fn: () => void, ms: number): number => {
+        const id = nextTimer++;
+        timers.set(id, { at: t.now + ms, fn });
+        return id;
+      },
+      clearTimer: (id: unknown): void => {
+        timers.delete(id as number);
+      },
+    },
+    settle,
+    async advance(ms: number): Promise<void> {
+      const end = t.now + ms;
+      for (;;) {
+        const due = [...timers.entries()].filter(([, x]) => x.at <= end).sort((x, y) => x[1].at - y[1].at)[0];
+        if (due === undefined) break;
+        t.now = due[1].at;
+        timers.delete(due[0]);
+        due[1].fn();
+        await settle();
+      }
+      t.now = end;
+      await settle();
+    },
+  };
+  return t;
 }
